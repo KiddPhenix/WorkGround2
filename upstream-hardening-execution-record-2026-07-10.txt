@@ -1,0 +1,150 @@
+WorkGround2 上游可靠性加固执行记录
+===================================
+
+执行日期：2026-07-10
+工作区：D:\Work\WorkGround2
+目标项目：https://github.com/esengine/deepseek-reasonix
+落地分支：developping/upstream-hardening+2026-07-10
+执行方式：按行为重新实现，未 cherry-pick 上游提交
+最终状态：实现及验证完成；工作树干净；分支尚未推送或合并
+
+
+一、任务目标
+------------
+
+跟踪 deepseek-reasonix 的近期更新，筛选值得学习的可靠性能力，在 WorkGround2
+现有架构和工程约束下重新实现。重点保证：幂等、可重试、失败显式暴露、状态
+可恢复、数据/UI 边界清楚，以及 Windows 环境兼容性。
+
+
+二、执行过程与提交记录
+----------------------
+
+1. 532e3511  fix: 加固 DeepSeek reasoning 回放
+   - 保持 reasoning_content 与 tool call 轮次正确配对。
+   - 避免工具调用回放时 reasoning 丢失或协议序列失真。
+   - 验证 provider/openai、provider、agent 相关测试和 vet。
+
+2. ad324040  fix: 加固 planner 降级与回滚
+   - Planner 普通故障降级为 executor 使用原始用户输入继续执行。
+   - cancellation 和 max-step pause 保持显式停止，不触发错误降级。
+   - 失败规划轮次安全回滚，避免 planner session 留下悬空 user message。
+   - 保留兼容 no-op 判断，并验证系统提示缓存稳定性。
+
+3. f1581f3b  fix: 收敛子代理只读边界与配置
+   - Review/只读子代理只暴露符合边界的工具。
+   - 子代理模型、effort、语言偏好和失败 transcript 行为统一配置。
+   - 防止只读工作流间接获得 writer-capable delegation。
+
+4. 54d2d864  fix: 按标签页隔离工作区文件访问
+   - Desktop 文件引用按 tab/controller 的 workspace root 解析。
+   - 外部目录授权保持会话级，不跨标签页泄漏。
+   - 后端 Go 测试、前端组件测试、typecheck 和 build 通过。
+
+5. 240394e8  feat: 增加安全的 MCP 配置查询
+   - 增加 MCP 配置 get 能力。
+   - 只返回脱敏元数据，不返回环境变量值、凭据或秘密内容。
+   - 配置不存在或输入非法时显式返回错误。
+
+6. c2653e93  fix: 统一解码 Windows 用户文本
+   - 建立 internal/fileutil/encoding 统一解码入口。
+   - 支持 UTF-8、UTF-8 BOM、UTF-16、GB18030/GBK 等常见编码。
+   - 配置、环境文件、MCP JSON、system prompt、hooks、skills、memory、
+     commands、output styles、plugin manifests、gitignore/git config 和
+     Desktop 状态读取统一使用安全解码。
+   - 作业 artifact 保持原始字节语义，不做不必要转换。
+
+7. 230f2a00  feat: 接入 planner 宿主决策闸门
+   - 支持 [planner_requires_approval] 明确审批标记。
+   - 支持 <planner-ask> 结构化用户决策请求。
+   - 只有宿主真实审批/问答结果可以进入 executor handoff。
+   - Planner 声称“用户已批准/已选择”时重新走宿主闸门。
+   - 子代理输出命中批准、确认、选择等措辞时追加幂等边界提示，防止
+     把子代理文本误当作用户授权。
+
+8. 6103bac2  feat: 补齐 ACP 客户端协作能力
+   - initialize 记录客户端 fs 和 terminal capabilities。
+   - read_file 可读取编辑器未保存 buffer；write_file 可经客户端更新文件
+     与打开的 buffer。
+   - Overlay 仅在本地路径解析和 confinement 之后介入，不能扩大访问范围。
+   - 非 UTF-8 文件继续走本地编码保持写入路径。
+   - 前台 bash 可使用宿主 terminal；sandbox enforce 和后台任务仍使用本地
+     执行/作业管理器。
+   - tool_call 增加文件 locations；read_file offset 映射为 1-based line。
+   - todo_write 映射为 ACP plan update。
+   - 支持 default、plan、auto 三种 session mode，并在控制器模式漂移后
+     发送 current_mode_update。
+   - 模型/effort 重建 controller 时保留 client IO 和当前 mode。
+
+9. fc1c8727  docs: 记录上游加固落地结果
+   - 更新 PROJECT_FEATURE_MAP.md，将任务状态改为 done。
+   - 补充能力位置、验证结果和已知风险。
+
+
+三、最终验证
+------------
+
+以下命令通过：
+
+go test ./internal/provider/openai ./internal/provider ./internal/agent ./internal/control ./internal/skill ./internal/plugin ./internal/acp -count=1 -timeout 90s
+go test ./... -run '^$'
+go vet ./...
+
+Set-Location desktop
+go test ./... -run '^$'
+go vet ./...
+
+Set-Location desktop/frontend
+npm.cmd run typecheck
+npm.cmd run build
+
+补充定向验证覆盖：
+
+- ACP file overlay、host terminal、tool location、todo plan、session mode。
+- DeepSeek reasoning/tool-call 回放。
+- Planner fallback、no-op、rollback、host approval、structured ask。
+- 子代理只读工具边界和授权防伪。
+- GB18030/UTF-16 Windows 文本解码。
+- Tab-scoped workspace 和外部目录授权隔离。
+- MCP 配置查询脱敏行为。
+- Planner system-prompt cache guard。
+
+
+四、异常与风险记录
+------------------
+
+1. Windows 历史测试 TestBackgroundBashWaitAndOutput 使用 Unix printf，在
+   PowerShell 环境下失败。这是已有跨 shell 假设，不是本轮功能回归。
+
+2. 部分长等待测试会启动：
+   powershell.exe -NoProfile -NonInteractive -Command Start-Sleep -Seconds 120
+   运行期间出现过 2147942632 (0x800700e8)。该测试进程已终止，最终采用
+   定向实跑、全仓测试编译和 vet 组合验证，产品代码未出现对应死锁。
+
+3. Desktop 全量测试存在既有环境相关问题，例如：
+   TestAddSkillPathRestoresConventionRootWithoutCustomPath。
+   CLI picker/statusline 和 config Windows 路径测试也存在既有波动，未把这些
+   历史失败误记为本轮通过。
+
+4. WorkGround2 Desktop worker 在执行期间出现命名 session 恢复漂移和迟到
+   写入，曾重复或越界修改文件。处理方式：停止 worker，人工检查 diff，
+   按当前设计重新落地并重新验证。后续修复需要增加 session 身份、进程归属
+   和 late-write 防护。
+
+
+五、恢复与后续操作
+------------------
+
+- 每项能力都有独立提交，可按提交粒度审查或回退。
+- 当前分支尚未推送或合并；需要发布时再执行 push/PR 流程。
+- 合并前建议在具备 Bash 的 CI 环境运行完整 go test ./...，以覆盖 Windows
+  PowerShell 无法可靠执行的 Unix shell 测试。
+- WorkGround2 Desktop session 漂移修复已记录为长期待办。
+
+
+六、Ctrl_CC 记录
+----------------
+
+执行知识：knowledge_mcp_1783665466893_19021bdafc
+后续待办：todo_mcp_1783665484725_39519f46f8
+

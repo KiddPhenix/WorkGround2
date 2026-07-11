@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=WorkGround2
+Comment=WorkGround2 desktop - a Wails shell around the Go kernel
+Exec=WorkGround2
+Icon=WorkGround2
+Categories=Development;Utility;
+Terminal=false
+StartupWMClass=WorkGround2

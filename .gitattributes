@@ -1,0 +1,15 @@
+.githooks/** text eol=lf
+benchmarks/**/*.sh text eol=lf
+
+# All Go sources — LF on every platform
+*.go text eol=lf
+
+# Markdown — LF on every platform
+*.md text eol=lf
+
+# Config files — LF on every platform
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.sh text eol=lf

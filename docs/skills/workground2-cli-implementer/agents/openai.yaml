@@ -1,0 +1,6 @@
+interface:
+  display_name: "WorkGround2 CLI Implementer"
+  short_description: "Delegate scoped edits to Desktop via CLI"
+  default_prompt: "Use $workground2-cli-implementer to delegate this scoped implementation task to a running WorkGround2 Desktop session."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,50 @@
+name: Release
+
+# CLI binary line. Tag namespace `v<semver>` triggers this — it builds the
+# release archives + checksums, publishes the GitHub release, and updates the
+# Homebrew cask. npm is a SEPARATE line (release-npm.yml, `npm-v*`) so an npm
+# prerelease can ship without forcing the stable cask, and vice versa; desktop is
+# `desktop-v*` (release-desktop.yml). A prerelease `v*-rc*` still builds archives
+# and a prerelease GitHub release, but goreleaser auto-skips the cask upload
+# (brew has no prerelease channel — see .goreleaser.yaml).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the release and upload archives
+
+jobs:
+  cache-guard:
+    name: cache hit guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: ./scripts/cache-guard.sh
+
+  goreleaser:
+    name: archives + checksums + homebrew tap
+    needs: cache-guard
+    runs-on: ubuntu-latest
+    # CLI stable release (archives + GitHub release + Homebrew cask). Gated on the
+    # `release` environment so only esengine can approve it going public.
+    environment: release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

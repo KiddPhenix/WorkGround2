@@ -1,0 +1,33 @@
+# Skill + MCP registry for WorkGround2.io — publish, discover, and track installs.
+# Identity is delegated to the account service (id.WorkGround2.io); this worker
+# never holds SESSION_PEPPER. First deploy:
+#   wrangler d1 create WorkGround2-registry         # paste database_id below
+#   wrangler d1 migrations apply WorkGround2-registry --remote
+#   wrangler deploy
+name = "WorkGround2-registry"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+routes = [{ pattern = "registry.WorkGround2.io", custom_domain = true }]
+
+[vars]
+# Account service that resolves the session cookie / CLI bearer to an account.
+ACCOUNTS_ORIGIN = "https://id.WorkGround2.io"
+# Where the web frontend lives (canonical links back to package pages).
+APP_ORIGIN = "https://WorkGround2.io"
+# Browsers that may call this API with credentials (comma-separated).
+ALLOWED_ORIGINS = "https://WorkGround2.io,https://www.WorkGround2.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "WorkGround2-registry"
+# Fill in after `wrangler d1 create WorkGround2-registry`.
+database_id = "PLACEHOLDER-run-wrangler-d1-create-WorkGround2-registry"
+migrations_dir = "migrations"
+
+# Per-IP throttle for writes (publish / install-ping / star).
+[[unsafe.bindings]]
+name = "WRITE_LIMITER"
+type = "ratelimit"
+namespace_id = "3001"
+simple = { limit = 30, period = 60 }

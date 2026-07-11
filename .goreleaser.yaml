@@ -1,0 +1,61 @@
+version: 2
+project_name: WorkGround2
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: WorkGround2
+    main: ./cmd/WorkGround2
+    binary: WorkGround2
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: WorkGround2
+    ids: [WorkGround2]
+    name_template: "WorkGround2-{{ .Os }}-{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+
+homebrew_casks:
+  - name: WorkGround2
+    ids: [WorkGround2]
+    # Prereleases (v*-rc*) must not update the stable tap; brew has no separate
+    # prerelease channel, so a pushed rc cask becomes the default `brew install`.
+    # npm is a separate line (release-npm.yml, `npm-v*`), so an npm prerelease no
+    # longer drags brew along — a stable `v*` cask can ship while npm stays on rc.
+    skip_upload: "auto"
+    repository:
+      owner: KiddPhenix
+      name: homebrew-WorkGround2
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/KiddPhenix/WorkGround2"
+    description: "Cache-first DeepSeek coding agent for the terminal."
+    commit_author:
+      name: WorkGround2
+      email: WorkGround2@users.noreply.github.com
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/WorkGround2"]
+          end
+
+release:
+  prerelease: auto
+  name_template: "WorkGround2 CLI {{ .Tag }}"

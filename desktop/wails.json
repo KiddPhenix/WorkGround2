@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "WorkGround2",
+  "outputfilename": "WorkGround2",
+  "frontend:install": "pnpm install",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "WorkGround2"
+  },
+  "info": {
+    "companyName": "WorkGround2",
+    "productName": "WorkGround2",
+    "productVersion": "0.0.0",
+    "copyright": "Copyright © 2026 WorkGround2 Contributors",
+    "comments": "WorkGround2 desktop — a Wails shell around the Go kernel."
+  }
+}

@@ -1,0 +1,88 @@
+name: Release npm
+
+# npm line. Tag namespace `npm-v<semver>` triggers this — plain `v<semver>` tags
+# are the CLI binary + Homebrew release (release.yml) and intentionally do NOT
+# trigger here (GitHub glob `npm-v*` does not match `v*`). Splitting npm onto its
+# own tag lets a prerelease ship to npm's `next` channel without touching the
+# stable Homebrew cask (and lets a stable cask ship without forcing npm to leave
+# its rc). Bump with:
+#   git tag npm-vX.Y.Z          # stable  -> publishes under `next`
+#   git tag npm-vX.Y.Z-rc.N     # prerelease -> publishes under `next`
+#   git push origin <tag>
+#
+# A manual workflow_dispatch can publish either an opt-in canary from the current
+# ref or an approved stable/next version when tag creation is restricted. Canary
+# publishes to the `canary` dist-tag (npm i WorkGround2@canary) and never moves
+# `next`/`latest`. build.mjs decides the dist-tag: 0.x stable is `latest`; a
+# `-canary.` build is `canary`; the 1.x line and rc prereleases are `next`. Promote
+# a 1.x stable to the default install with `npm dist-tag add WorkGround2@X.Y.Z latest`.
+on:
+  push:
+    tags: ['npm-v*']
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Publish channel"
+        required: true
+        default: canary
+        type: choice
+        options:
+          - canary
+          - stable
+      base_version:
+        description: "Version to publish. Canary appends -canary.<run_number>; stable publishes exactly this version."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cache-guard:
+    name: cache hit guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: ./scripts/cache-guard.sh
+
+  npm:
+    name: publish npm packages
+    needs: cache-guard
+    runs-on: ubuntu-latest
+    # A tag push (npm-v*) or manual stable dispatch publishes a stable/next
+    # release and goes through the `release` environment (esengine approves);
+    # canary dispatches run free.
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.channel == 'canary' && 'canary' || 'release' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      # Tag push uses the npm-v* tag. A canary dispatch synthesizes a
+      # <base>-canary.<run_number> version; a manual stable dispatch publishes
+      # the requested semver exactly. build.mjs strips the leading `npm-`/`v`.
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            base="${{ inputs.base_version }}"; base="${base#v}"
+            if [ "${{ inputs.channel }}" = "canary" ]; then
+              echo "arg=v${base}-canary.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            else
+              echo "arg=v${base}" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "arg=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - run: node npm/build.mjs "${{ steps.ver.outputs.arg }}" --publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

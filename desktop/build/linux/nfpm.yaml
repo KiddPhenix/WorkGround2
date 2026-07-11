@@ -1,0 +1,77 @@
+# nfpm config for the Linux .deb package. scripts/desktop-build.sh's linux branch
+# runs `nfpm package` after `wails build`, from the desktop/ dir (so the src paths
+# below are relative to desktop/). The .deb is a human-download artifact only — like
+# the macOS .dmg — so the Linux updater channel stays the .tar.gz and cmd/sign's
+# manifest skips .deb files.
+#
+# $DEB_VERSION and $DEB_ARCH are exported by desktop-build.sh. DEB_VERSION is the tag
+# minus a leading "v" and any prerelease suffix (a strict X.Y.Z that dpkg accepts);
+# DEB_ARCH is the Go arch name, which already matches Debian's (amd64, arm64).
+name: "WorkGround2-desktop"
+arch: "${DEB_ARCH}"
+platform: "linux"
+version: "${DEB_VERSION}"
+section: "utils"
+priority: "optional"
+maintainer: "KiddPhenix <KiddPhenix@users.noreply.github.com>"
+description: |
+  WorkGround2 desktop — a Wails shell around the Go kernel.
+vendor: "WorkGround2 Contributors"
+homepage: "https://github.com/KiddPhenix/WorkGround2"
+license: "MIT"
+# Runtime libraries the WebKitGTK 4.1 build links against (-tags webkit2_41); apt
+# pulls them in on install. These package names ship from Ubuntu 22.04 / Debian 12 on.
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.1-0
+contents:
+  - src: ./build/bin/WorkGround2
+    dst: /usr/bin/WorkGround2-desktop
+    file_info:
+      mode: 0755
+  - src: ./build/linux/WorkGround2.desktop
+    dst: /usr/share/applications/WorkGround2.desktop
+    file_info:
+      mode: 0644
+  # appicon.png is 1024x1024 — not a standard hicolor size dir, so install it under
+  # the size-agnostic pixmaps path that the .desktop's `Icon=WorkGround2-desktop` finds.
+  - src: ./build/appicon.png
+    dst: /usr/share/pixmaps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/16x16/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/16x16/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/24x24/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/24x24/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/32x32/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/32x32/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/48x48/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/48x48/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/64x64/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/64x64/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/128x128/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/128x128/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/256x256/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/256x256/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/512x512/apps/WorkGround2-desktop.png
+    dst: /usr/share/icons/hicolor/512x512/apps/WorkGround2-desktop.png
+    file_info:
+      mode: 0644
+  - src: ./build/linux/icons/hicolor/scalable/apps/WorkGround2-desktop.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/WorkGround2-desktop.svg
+    file_info:
+      mode: 0644

@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WorkGround2 图片/图标资源清单</title>
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg2: #161b22;
+  --bg3: #21262d;
+  --border: #30363d;
+  --fg: #e6edf3;
+  --fg2: #8b949e;
+  --fg3: #6e7681;
+  --accent: #58a6ff;
+  --accent2: #3fb950;
+  --warn: #d2991d;
+  --danger: #f85149;
+  --radius: 8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  padding: 24px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+h1 { font-size: 28px; margin-bottom: 4px; }
+h1 + p { color: var(--fg2); margin-bottom: 32px; }
+h2 {
+  font-size: 22px;
+  margin: 40px 0 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+}
+h3 {
+  font-size: 16px;
+  margin: 28px 0 10px;
+  color: var(--fg2);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+table { width: 100%; border-collapse: collapse; margin-bottom: 24px; font-size: 13px; }
+th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+th { background: var(--bg2); color: var(--fg2); font-weight: 600; font-size: 12px; white-space: nowrap; position: sticky; top: 0; }
+td { vertical-align: middle; }
+tr:hover td { background: var(--bg2); }
+.thumb { width: 48px; height: 48px; object-fit: contain; border-radius: 4px; background: var(--bg3); display: block; }
+.thumb-sm { width: 28px; height: 28px; }
+.thumb-placeholder {
+  width: 48px; height: 48px; border-radius: 4px; background: var(--bg3);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg3); font-size: 10px;
+}
+.icon-cell { display: flex; align-items: center; gap: 8px; }
+.icon-cell i { color: var(--fg2); }
+.icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.icon-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius);
+  background: var(--bg2); border: 1px solid var(--border);
+  font-size: 13px;
+}
+.icon-card i { color: var(--accent); flex-shrink: 0; }
+.icon-card .sz { color: var(--fg2); font-size: 11px; margin-left: auto; }
+.tag {
+  display: inline-block; padding: 2px 7px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; margin-left: 6px;
+}
+.tag-img { background: #1a3a5c; color: #58a6ff; }
+.tag-svg { background: #1a3c2a; color: #3fb950; }
+.tag-sound { background: #3d2e0a; color: #d2991d; }
+.tag-icon { background: #2a1a3c; color: #bc8cff; }
+.badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px; border-radius: 10px;
+  font-size: 11px; background: var(--bg3); color: var(--fg2);
+}
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.summary-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px;
+  text-align: center;
+}
+.summary-card .num { font-size: 36px; font-weight: 700; color: var(--accent); }
+.summary-card .label { font-size: 13px; color: var(--fg2); margin-top: 4px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-size: 12px; background: var(--bg3); padding: 1px 5px; border-radius: 3px; color: var(--fg2); }
+.toc { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 24px; }
+.toc a { padding: 6px 14px; background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; font-size: 13px; }
+.toc a:hover { background: var(--bg3); text-decoration: none; }
+.section-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+audio { height: 28px; }
+</style>
+</head>
+<body>
+
+<h1>🎨 WorkGround2 图片/图标资源清单</h1>
+<p>生成日期: 2025-07-07 &nbsp;|&nbsp; 基于 desktop/frontend/src 全量扫描 &nbsp;|&nbsp; 图标库: lucide-react ^1.21.0</p>
+
+<div class="toc">
+  <a href="#summary">📊 汇总</a>
+  <a href="#logos">🏷️ Logo/图标</a>
+  <a href="#docs-imgs">📄 文档图片</a>
+  <a href="#lucide">🧩 Lucide 图标</a>
+  <a href="#sounds">🔊 音效</a>
+  <a href="#dynamic">🖼️ 动态图片</a>
+</div>
+
+<!-- ==================== 汇总 ==================== -->
+<h2 id="summary">📊 汇总统计</h2>
+<div class="summary-cards">
+  <div class="summary-card"><div class="num">7</div><div class="label">静态 PNG (前端引用)</div></div>
+  <div class="summary-card"><div class="num">10</div><div class="label">品牌概念稿 PNG</div></div>
+  <div class="summary-card"><div class="num">~12</div><div class="label">静态 SVG</div></div>
+  <div class="summary-card"><div class="num">11</div><div class="label">平台图标文件</div></div>
+  <div class="summary-card"><div class="num">73</div><div class="label">Lucide 图标组件</div></div>
+  <div class="summary-card"><div class="num">27</div><div class="label">引用图标的 TSX 文件</div></div>
+  <div class="summary-card"><div class="num">4</div><div class="label">音效文件</div></div>
+  <div class="summary-card"><div class="num">~20</div><div class="label">文档截图/图示</div></div>
+</div>
+
+<!-- ==================== 第一部分：静态图片 ==================== -->
+<h2 id="logos">🏷️ 静态图片资源</h2>
+
+<h3>1.1 应用图标 / Logo 文件</h3>
+<table>
+<thead><tr><th>预览</th><th>文件路径</th><th>原始尺寸</th><th>使用系统</th><th>显示尺寸</th></tr></thead>
+<tbody>
+<tr>
+  <td><img class="thumb thumb-sm" src="../desktop/build/appicon.png" alt="appicon" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">PNG</span></td>
+  <td><code>desktop/build/appicon.png</code></td>
+  <td>1024×1024</td>
+  <td>桌面应用图标（Go embed + Unix 托盘 + Linux pixmaps）</td>
+  <td>原始</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">SVG</span></td>
+  <td><code>desktop/build/appicon.svg</code></td>
+  <td>矢量</td>
+  <td>appicon SVG 源</td>
+  <td>—</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">ICO</span></td>
+  <td><code>desktop/build/windows/icon.ico</code></td>
+  <td>ICO 多尺寸</td>
+  <td>Windows 托盘图标 + NSIS 安装程序</td>
+  <td>系统决定</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">ICNS</span></td>
+  <td><code>desktop/build/darwin/icon.icns</code></td>
+  <td>ICNS 多尺寸</td>
+  <td>macOS 应用图标</td>
+  <td>系统决定</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">PNG</span></td>
+  <td><code>desktop/build/linux/icons/hicolor/*/</code></td>
+  <td>16~512px + SVG</td>
+  <td>Linux hicolor 主题 (nfpm)</td>
+  <td>各尺寸 PNG</td>
+</tr>
+<tr>
+  <td><img class="thumb thumb-sm" src="../desktop/frontend/src/assets/logo.png" alt="logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">PNG</span></td>
+  <td><code>desktop/frontend/src/assets/logo.png</code></td>
+  <td>512×512</td>
+  <td>OnboardingOverlay 引导页</td>
+  <td>CSS: <b>36×36</b></td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">SVG</span></td>
+  <td><code>desktop/frontend/src/assets/logo.svg</code></td>
+  <td>矢量</td>
+  <td>logo 源文件（代码未引用）</td>
+  <td>—</td>
+</tr>
+<tr>
+  <td><img class="thumb thumb-sm" src="../desktop/frontend/src/assets/logo-symbol.png" alt="logo-symbol" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">PNG</span></td>
+  <td><code>desktop/frontend/src/assets/logo-symbol.png</code></td>
+  <td>512×512</td>
+  <td>StartupSplash 启动闪屏</td>
+  <td>CSS: <b>64×64</b></td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">SVG</span></td>
+  <td><code>desktop/frontend/src/assets/logo-symbol.svg</code></td>
+  <td>矢量</td>
+  <td>logo-symbol 源文件</td>
+  <td>—</td>
+</tr>
+<tr>
+  <td><img class="thumb thumb-sm" src="../desktop/frontend/src/assets/logo-wordmark.png" alt="logo-wordmark" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">PNG</span></td>
+  <td><code>desktop/frontend/src/assets/logo-wordmark.png</code></td>
+  <td>760×160</td>
+  <td>App.tsx 侧边栏 / Welcome 欢迎页</td>
+  <td>CSS: <b>136×32</b> / <b>240×56</b></td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">SVG</span></td>
+  <td><code>desktop/frontend/src/assets/logo-wordmark.svg</code></td>
+  <td>矢量</td>
+  <td>logo-wordmark 源文件</td>
+  <td>—</td>
+</tr>
+</tbody>
+</table>
+
+<h3>1.2 品牌概念设计稿 <span class="tag tag-img">PNG</span> <span class="badge">前端未引用</span></h3>
+<table>
+<thead><tr><th>文件</th><th>大小</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/abstract-concept-1.png</code></td><td>~1.4MB</td><td>抽象概念设计</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/abstract-concept-2.png</code></td><td>~1.3MB</td><td>抽象概念设计</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/ai-gen-concept-1.png</code></td><td>~1.5MB</td><td>AI 生成概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/ai-gen-concept-2.png</code></td><td>~1.4MB</td><td>AI 生成概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/ai-gen-concept-3.png</code></td><td>~1.3MB</td><td>AI 生成概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/ai-gen-concept-4.png</code></td><td>~1.5MB</td><td>AI 生成概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/brand-mark-1.png</code></td><td>~1.2MB</td><td>品牌标识概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/brand-mark-2.png</code></td><td>~1.3MB</td><td>品牌标识概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/brand-mark-3.png</code></td><td>~1.2MB</td><td>品牌标识概念</td></tr>
+<tr><td><code>desktop/frontend/src/assets/brand-concepts/brand-mark-4.png</code></td><td>~1.4MB</td><td>品牌标识概念</td></tr>
+</tbody>
+</table>
+
+<h3>1.3 站点公开资源 <span class="tag tag-img">PNG/SVG</span></h3>
+<table>
+<thead><tr><th>预览</th><th>文件</th><th>用途</th></tr></thead>
+<tbody>
+<tr>
+  <td><img class="thumb thumb-sm" src="favicon.svg" alt="favicon" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">SVG</span></td>
+  <td><code>site/public/favicon.svg</code></td>
+  <td>Astro 站点 Favicon</td>
+</tr>
+<tr>
+  <td><img class="thumb thumb-sm" src="logo.svg" alt="logo" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">SVG</span></td>
+  <td><code>site/public/logo.svg</code></td>
+  <td>Astro 站点 Logo</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">PNG</span></td>
+  <td><code>site/public/og.png</code></td>
+  <td>Open Graph 社交分享卡片</td>
+</tr>
+<tr>
+  <td><span class="thumb-placeholder">JPG</span></td>
+  <td><code>.github/sponsor/wechat-pay.jpg</code></td>
+  <td>微信支付赞助二维码</td>
+</tr>
+</tbody>
+</table>
+
+<!-- ==================== 第二部分：文档图片 ==================== -->
+<h2 id="docs-imgs">📄 文档图片</h2>
+
+<h3>2.1 文档截图与图示（<code>docs/</code>）</h3>
+<table>
+<thead><tr><th>预览</th><th>文件</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/logo.svg</code></td><td>README 头部 Logo</td></tr>
+<tr><td><img class="thumb thumb-sm" src="favicon.svg" alt="favicon" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><span class="thumb-placeholder" style="display:none">SVG</span></td><td><code>docs/favicon.svg</code></td><td>网站 Favicon</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/claude-desktop-layout-preview.png</code></td><td>Claude 桌面布局预览</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/desktop-v2-layout-preview.png</code></td><td>桌面 v2 布局预览</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/desktop-v2-skills-preview.png</code></td><td>桌面 v2 技能预览</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/project-topic-tabs-context.png</code></td><td>项目主题标签页</td></tr>
+<tr><td><span class="thumb-placeholder">JPG</span></td><td><code>docs/desktop-theme-dark.jpg</code></td><td>暗色主题截图</td></tr>
+<tr><td><span class="thumb-placeholder">JPG</span></td><td><code>docs/desktop-theme-light.jpg</code></td><td>亮色主题截图</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/cli-image-paste-effect.svg</code></td><td>CLI 图片粘贴效果</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/cli-theme-effect.svg</code></td><td>CLI 主题效果</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/paste-folding-effect.svg</code></td><td>粘贴折叠效果</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/slash-command-views.svg</code></td><td>斜杠命令视图</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/assets/agent-skill-sources.png</code></td><td>代理技能来源</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/assets/approval-authorization-mocks.svg</code></td><td>批准授权模拟</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/assets/issue-2605-plan-approval-shelf.png</code></td><td>Issue 截图 #2605</td></tr>
+<tr><td><span class="thumb-placeholder">PNG</span></td><td><code>docs/assets/issue-2605-tool-approval-shelf.png</code></td><td>Issue 截图 #2605</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/assets/bot-feishu-approval.svg</code></td><td>飞书机器人批准</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/assets/bot-lark-yolo.svg</code></td><td>Lark YOLO 模式</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/assets/bot-qq-approval.svg</code></td><td>QQ 机器人批准</td></tr>
+<tr><td><span class="thumb-placeholder">SVG</span></td><td><code>docs/assets/bot-weixin-text-commands.svg</code></td><td>微信文本命令</td></tr>
+</tbody>
+</table>
+
+<!-- ==================== 第三部分：Lucide 图标 ==================== -->
+<h2 id="lucide">🧩 Lucide React 图标</h2>
+<p style="color:var(--fg2);margin-bottom:16px">依赖: <code>lucide-react ^1.21.0</code> · 共 <b>73</b> 个不同图标 · 分布在 <b>27</b> 个 TSX 文件中 · 尺寸范围: <b>10px ~ 24px</b></p>
+
+<h3>3.1 App.tsx — 主应用框架 + 侧边栏</h3>
+<div class="icon-grid" id="icons-app"></div>
+
+<h3>3.2 AppChrome.tsx — 顶部 Chrome 栏</h3>
+<div class="icon-grid" id="icons-chrome"></div>
+
+<h3>3.3 Composer.tsx — 输入编辑器</h3>
+<div class="icon-grid" id="icons-composer"></div>
+
+<h3>3.4 Message.tsx — 消息显示</h3>
+<div class="icon-grid" id="icons-message"></div>
+
+<h3>3.5 ProjectTree.tsx — 项目文件树</h3>
+<div class="icon-grid" id="icons-tree"></div>
+
+<h3>3.6 SettingsPanel.tsx — 设置面板</h3>
+<div class="icon-grid" id="icons-settings"></div>
+
+<h3>3.7 MemoryPanel.tsx — 记忆面板</h3>
+<div class="icon-grid" id="icons-memory"></div>
+
+<h3>3.8 HistoryPanel.tsx — 历史面板</h3>
+<div class="icon-grid" id="icons-history"></div>
+
+<h3>3.9 WorkspacePanel.tsx — 工作区面板</h3>
+<div class="icon-grid" id="icons-workspace"></div>
+
+<h3>3.10 MermaidDiagram.tsx — 图表渲染</h3>
+<div class="icon-grid" id="icons-mermaid"></div>
+
+<h3>3.11 StatusBar.tsx — 状态栏</h3>
+<div class="icon-grid" id="icons-statusbar"></div>
+
+<h3>3.12 HeartbeatPanel.tsx — 定时任务</h3>
+<div class="icon-grid" id="icons-heartbeat"></div>
+
+<h3>3.13 小型通用组件</h3>
+<div class="icon-grid" id="icons-small"></div>
+
+<!-- ==================== 第四部分：音效 ==================== -->
+<h2 id="sounds">🔊 音效文件</h2>
+<table>
+<thead><tr><th>文件</th><th>大小</th><th>用途</th><th>播放</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>public/sounds/mixkit-positive-notification-951.wav</code></td>
+  <td>~482 KB</td>
+  <td><code>positive</code> — 正面通知音</td>
+  <td><audio controls src="../desktop/frontend/public/sounds/mixkit-positive-notification-951.wav"></audio></td>
+</tr>
+<tr>
+  <td><code>public/sounds/mixkit-correct-answer-tone-2870.wav</code></td>
+  <td>~338 KB</td>
+  <td><code>correct</code> — 正确答案音</td>
+  <td><audio controls src="../desktop/frontend/public/sounds/mixkit-correct-answer-tone-2870.wav"></audio></td>
+</tr>
+<tr>
+  <td><code>public/sounds/mixkit-software-interface-start-2574.wav</code></td>
+  <td>~404 KB</td>
+  <td><code>start</code> — 界面启动音</td>
+  <td><audio controls src="../desktop/frontend/public/sounds/mixkit-software-interface-start-2574.wav"></audio></td>
+</tr>
+<tr>
+  <td><code>public/sounds/mixkit-software-interface-back-2575.wav</code></td>
+  <td>~229 KB</td>
+  <td><code>back</code> — 返回音</td>
+  <td><audio controls src="../desktop/frontend/public/sounds/mixkit-software-interface-back-2575.wav"></audio></td>
+</tr>
+</tbody>
+</table>
+
+<!-- ==================== 第五部分：动态图片 ==================== -->
+<h2 id="dynamic">🖼️ 运行时动态图片</h2>
+<table>
+<thead><tr><th>位置</th><th>CSS 类</th><th>显示尺寸</th><th>说明</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>Message.tsx</code></td>
+  <td><code>.msg-attachment__icon--image</code></td>
+  <td><b>56×56</b></td>
+  <td>消息中的图片附件缩略图</td>
+</tr>
+<tr>
+  <td><code>ComposerContextCard.tsx</code></td>
+  <td><code>.composer-context__thumb</code></td>
+  <td><b>56×56</b> / <b>68×68</b></td>
+  <td>普通模式 56px；纯图片模式 68px</td>
+</tr>
+<tr>
+  <td><code>SettingsPanel.tsx</code></td>
+  <td><code>&lt;QRCodeSVG size={196}&gt;</code></td>
+  <td><b>196×196</b></td>
+  <td>Bot 安装二维码（qrcode.react 生成）</td>
+</tr>
+<tr>
+  <td><code>SettingsPanel.tsx</code></td>
+  <td><code>&lt;img src={installQrURL}&gt;</code></td>
+  <td>无显式 CSS</td>
+  <td>动态安装二维码图片</td>
+</tr>
+<tr>
+  <td><code>WorkspacePanel.tsx</code></td>
+  <td><code>.workspace-media--image img</code></td>
+  <td><code>max-width:100%; height:auto</code></td>
+  <td>工作区媒体文件预览</td>
+</tr>
+</tbody>
+</table>
+
+<script>
+// Icon data grouped by system
+const iconGroups = {
+  'icons-app': [
+    ['minus','Minus','13'],['square','Square','11'],['x','X','13'],
+    ['square-pen','SquarePen','15,18'],['message-square','MessageSquare','14,18'],
+    ['settings','SettingsIcon','14-16'],['history','History','15,16'],
+    ['trash-2','Trash2','15,16'],['palette','Palette','15'],
+    ['brain','Brain','14,15'],['cpu','Cpu','15'],
+    ['panel-left','PanelLeft','14,15'],['panel-right','PanelRight','14,15'],
+    ['search','Search','15'],['alarm-clock','AlarmClock','14-16'],
+    ['command','Command','14'],['pencil','Pencil','14'],
+    ['download','Download','14'],['file-text','FileText','13'],
+    ['file-json','FileJson','13'],['file-down','FileDown','13'],
+    ['file-image','FileImage','13'],['git-branch','GitBranch','13,14'],
+    ['circle-help','CircleHelp','14'],['activity','Activity','13']
+  ],
+  'icons-chrome': [
+    ['panel-left','PanelLeft','16'],['panel-right','PanelRight','16'],
+    ['search','Search','16,18']
+  ],
+  'icons-composer': [
+    ['arrow-up','ArrowUp','16'],['sliders-horizontal','SlidersHorizontal','17'],
+    ['list','List','14,16'],['target','Target','14,16'],
+    ['gauge','Gauge','13-16'],['shield','Shield','14'],
+    ['shield-check','ShieldCheck','14'],['shield-alert','ShieldAlert','14'],
+    ['search','Search','13'],['file-text','FileText','13,15'],
+    ['folder','Folder','13'],['message-square','MessageSquare','13,15'],
+    ['eye','Eye','14'],['trash-2','Trash2','14'],
+    ['x','X','11,13'],['square','Square','10'],
+    ['corner-down-right','CornerDownRight','13,14'],
+    ['chevron-up','ChevronUp','13'],['chevron-down','ChevronDown','13'],
+    ['chevrons-up-down','ChevronsUpDown','11'],['check','Check','13']
+  ],
+  'icons-message': [
+    ['image','Image','15,20'],['file-text','FileText','15'],
+    ['folder','Folder','15'],['message-square','MessageSquare','14'],
+    ['brain-circuit','BrainCircuit','14'],['pencil','Pencil','14'],
+    ['git-branch','GitBranch','13'],['scroll-text','ScrollText','13'],
+    ['rotate-ccw','RotateCcw','13'],['chevron-down','ChevronDown','12'],
+    ['chevron-right','ChevronRight','12,15']
+  ],
+  'icons-tree': [
+    ['folder','Folder','—'],['folder-plus','FolderPlus','—'],
+    ['folder-open','FolderOpen','13'],['file-text','FileText','—'],
+    ['search','Search','—'],['plus','Plus','13'],
+    ['pencil','Pencil','13'],['archive','Archive','13,15'],
+    ['history','History','13'],['copy','Copy','13'],
+    ['x-circle','XCircle','13'],['pin','Pin','13,15'],
+    ['check','Check','12,13'],['message-square','MessageSquare','11'],
+    ['clock','Clock','—'],['more-horizontal','MoreHorizontal','—'],
+    ['minimize-2','Minimize2','—'],['maximize-2','Maximize2','—'],
+    ['briefcase-business','BriefcaseBusiness','—'],['arrow-down','ArrowDown','—'],
+    ['list-collapse','ListCollapse','—'],['list-restart','ListRestart','—']
+  ],
+  'icons-settings': [
+    ['check','Check','—'],['check-circle-2','CheckCircle2','—'],
+    ['chevron-down','ChevronDown','—'],['chevron-up','ChevronUp','—'],
+    ['clipboard','Clipboard','—'],['grip-vertical','GripVertical','—'],
+    ['key-round','KeyRound','—'],['loader-2','Loader2','—'],
+    ['play','Play','—'],['qr-code','QrCode','—'],
+    ['refresh-cw','RefreshCw','—'],['send','Send','—']
+  ],
+  'icons-memory': [
+    ['chevron-down','ChevronDown','15'],['chevron-right','ChevronRight','15'],
+    ['file-text','FileText','15'],['search','Search','14'],
+    ['plus','Plus','13'],['pencil','Pencil','13'],
+    ['trash-2','Trash2','13'],['refresh-cw','RefreshCw','13'],
+    ['sparkles','Sparkles','13,14'],['check','Check','13']
+  ],
+  'icons-history': [
+    ['search','Search','13'],['rotate-ccw','RotateCcw','13'],
+    ['trash-2','Trash2','13,22'],['pencil','Pencil','13'],
+    ['archive','Archive','13']
+  ],
+  'icons-workspace': [
+    ['chevron-down','ChevronDown','—'],['chevron-right','ChevronRight','—'],
+    ['file-text','FileText','—'],['folder','Folder','—'],
+    ['folder-open','FolderOpen','—'],['folder-tree','FolderTree','—'],
+    ['folder-x','FolderX','—'],['git-branch','GitBranch','—'],
+    ['message-square-plus','MessageSquarePlus','—'],['minimize-2','Minimize2','—'],
+    ['maximize-2','Maximize2','—'],['refresh-cw','RefreshCw','—'],
+    ['search','Search','—'],['x','X','—']
+  ],
+  'icons-mermaid': [
+    ['play','Play','14'],['code-2','Code2','14'],
+    ['zoom-out','ZoomOut','14'],['zoom-in','ZoomIn','14'],
+    ['rotate-ccw','RotateCcw','14'],['minimize-2','Minimize2','14'],
+    ['maximize-2','Maximize2','14'],['alert-circle','AlertCircle','14']
+  ],
+  'icons-statusbar': [
+    ['activity','Activity','—'],['circle-dollar-sign','CircleDollarSign','—'],
+    ['circle-gauge','CircleGauge','—'],['database','Database','—'],
+    ['folder','Folder','—'],['git-branch','GitBranch','—'],
+    ['layers','Layers','—'],['percent','Percent','—'],
+    ['refresh-cw','RefreshCw','—'],['wallet','Wallet','—'],
+    ['zap','Zap','—']
+  ],
+  'icons-heartbeat': [
+    ['activity','Activity','16'],['heart','Heart','24'],
+    ['chevron-left','ChevronLeft','16'],['x','X','12,16'],
+    ['search','Search','13'],['chevrons-up-down','ChevronsUpDown','12'],
+    ['check','Check','12'],['plus','Plus','14'],
+    ['clock','Clock','10'],['play','Play','12'],
+    ['message-square','MessageSquare','13'],['trash-2','Trash2','13']
+  ],
+  'icons-small': [
+    ['check','Check','11,13'],['copy','Copy','11,13'],
+    ['chevron-down','ChevronDown','11'],['chevron-right','ChevronRight','11,—'],
+    ['x','X','15'],['gauge','Gauge','13'],['chevrons-up-down','ChevronsUpDown','11'],
+    ['brain','Brain','11,13'],['search','Search','13,18'],
+    ['file-text','FileText','13,15,20'],['folder','Folder','13'],
+    ['message-square','MessageSquare','15,20'],['command','Command','15'],
+    ['chevron-right','ChevronRight','—']
+  ]
+};
+
+// Render icon cards
+Object.entries(iconGroups).forEach(([gridId, icons]) => {
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+
+  // Deduplicate
+  const seen = new Set();
+  const unique = icons.filter(([name]) => {
+    const key = name;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  unique.forEach(([iconName, label, size]) => {
+    const card = document.createElement('div');
+    card.className = 'icon-card';
+    card.innerHTML = `<i data-lucide="${iconName}" style="width:20px;height:20px"></i><span>${label}</span><span class="sz">${size}px</span>`;
+    grid.appendChild(card);
+  });
+});
+
+// Init lucide
+lucide.createIcons({ size: 20, strokeWidth: 1.8 });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,32 @@
+# WorkGround2 Community forum API. Identity from id.WorkGround2.io; content + anti-abuse
+# state in its own D1. First deploy:
+#   wrangler d1 create WorkGround2-forum        # paste database_id below
+#   wrangler d1 execute WorkGround2-forum --remote --file=schema.sql
+#   wrangler d1 execute WorkGround2-forum --remote --file=seed.sql
+#   wrangler deploy
+name = "workground2-forum"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+routes = [{ pattern = "forum.WorkGround2.io", custom_domain = true }]
+
+[vars]
+# Where the forum web app lives (for CORS + login redirects).
+APP_ORIGIN = "https://WorkGround2.io"
+ALLOWED_ORIGINS = "https://WorkGround2.io,https://www.WorkGround2.io"
+# Shared identity service that resolves the session.
+ID_ORIGIN = "https://id.WorkGround2.io"
+# Emails minted as forum admins/moderators on first sign-in.
+ADMIN_EMAILS = "359807859@qq.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "WorkGround2-forum"
+database_id = "294f6daa-6ee5-4c2d-a98f-54b38a1b3ac0"
+
+# Per-IP throttle for content creation (topics/replies/flags).
+[[unsafe.bindings]]
+name = "POST_LIMITER"
+type = "ratelimit"
+namespace_id = "3001"
+simple = { limit = 10, period = 60 }

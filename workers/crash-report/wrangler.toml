@@ -1,0 +1,41 @@
+# Deploy: wrangler d1 create WorkGround2-crash → paste database_id → wrangler deploy.
+name = "workground2-crash-report"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+routes = [{ pattern = "crash.WorkGround2.io", custom_domain = true }]
+
+[vars]
+# Emails force-promoted to dashboard admin — the owner is never locked out even
+# if the role migration misses them.
+ADMIN_EMAILS = "359807859@qq.com"
+# Shared identity service (resolves the session) and the site hosting its login
+# page. Override for local dev.
+ID_ORIGIN = "https://id.WorkGround2.io"
+APP_ORIGIN = "https://WorkGround2.io"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "WorkGround2-crash"
+database_id = "54825184-366f-4877-80fc-924efab0239b"
+
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+
+# Looser than RATE_LIMITER: many installs can share one office/campus NAT IP.
+[[unsafe.bindings]]
+name = "PING_LIMITER"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 30, period = 60 }
+
+# Opt-in metrics flush fires once per launch like the ping; its own bucket so it
+# never eats the ping budget on a shared NAT IP.
+[[unsafe.bindings]]
+name = "METRICS_LIMITER"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 30, period = 60 }
