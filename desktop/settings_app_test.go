@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -991,6 +992,69 @@ func TestSetDesktopComposerSubmitKeyPersistsToUserConfig(t *testing.T) {
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	if cfg.Desktop.ComposerSubmitKey != "ctrl_enter" {
 		t.Fatalf("desktop.composer_submit_key = %q, want ctrl_enter", cfg.Desktop.ComposerSubmitKey)
+	}
+}
+
+func TestUserConfigMutationsSerializeWithoutLostUpdates(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- app.applyConfigOnly(func(cfg *config.Config) error {
+			if err := cfg.SetDesktopComposerSubmitKey("ctrl_enter"); err != nil {
+				return err
+			}
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+
+	secondStarted := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		secondDone <- app.applyConfigOnly(func(cfg *config.Config) error {
+			close(secondEntered)
+			return cfg.SetDesktopDefaultToolApprovalMode(control.ToolApprovalAuto)
+		})
+	}()
+	<-secondStarted
+
+	select {
+	case <-secondEntered:
+		t.Fatal("second config mutation entered before the first transaction saved")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+
+	for name, done := range map[string]<-chan error{"first": firstDone, "second": secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s config mutation: %v", name, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for %s config mutation", name)
+		}
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if got := cfg.DesktopComposerSubmitKey(); got != "ctrl_enter" {
+		t.Fatalf("composer submit key after concurrent saves = %q, want ctrl_enter", got)
+	}
+	if got := cfg.DesktopDefaultToolApprovalMode(); got != control.ToolApprovalAuto {
+		t.Fatalf("default approval after concurrent saves = %q, want auto", got)
+	}
+
+	restarted := NewApp().Settings()
+	if restarted.ComposerSubmitKey != "ctrl_enter" || restarted.DefaultToolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("settings after restart = submit %q, approval %q", restarted.ComposerSubmitKey, restarted.DefaultToolApprovalMode)
 	}
 }
 

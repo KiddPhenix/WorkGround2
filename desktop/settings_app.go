@@ -690,6 +690,23 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 	if err := a.ensureActiveTabRebuildAllowed("settings"); err != nil {
 		return err
 	}
+	if err := a.updateUserConfig(mutate); err != nil {
+		return err
+	}
+	return a.rebuild()
+}
+
+func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
+	return a.updateUserConfig(mutate)
+}
+
+// updateUserConfig performs one serialized read-modify-write transaction on the
+// user-global config. Keep controller rebuilds and event emission outside this
+// lock so configuration persistence cannot deadlock with runtime state changes.
+func (a *App) updateUserConfig(mutate func(*config.Config) error) error {
+	a.configWriteMu.Lock()
+	defer a.configWriteMu.Unlock()
+
 	cfg, path, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
@@ -700,18 +717,7 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 	if err := cfg.SaveTo(path); err != nil {
 		return err
 	}
-	return a.rebuild()
-}
-
-func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := mutate(cfg); err != nil {
-		return err
-	}
-	return cfg.SaveTo(path)
+	return nil
 }
 
 // applyConfigDeferred saves user config unconditionally (skipping the active-work
@@ -719,14 +725,7 @@ func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
 // rebuild is skipped and the caller must call tryDeferredConfigRebuild later
 // (e.g. after TurnDone) to finish the work.
 func (a *App) applyConfigDeferred(mutate func(*config.Config) error) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := mutate(cfg); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	if err := a.updateUserConfig(mutate); err != nil {
 		return err
 	}
 	return a.tryRebuildAfterConfigChange()

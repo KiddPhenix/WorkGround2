@@ -259,3 +259,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: model settings, provider access, connection check, default model, progressive disclosure
 - Source: user-approved-design
 - Updated: 2026-07-12
+
+### 桌面全局设置持久化
+- Status: done
+- Branch: `developping/settings-persistence-race+2026-07-12`
+- Owner: Codex
+- Location: `desktop/app.go`, `desktop/settings_app.go`, `desktop/settings_app_test.go`
+- Summary: Desktop 设置通过 `updateUserConfig` 串行执行用户 config 的读取、修改和原子写回，避免后台 provider 刷新或相邻设置操作用旧快照覆盖 `composer_submit_key`、`default_tool_approval_mode` 等字段。
+- Keywords: configWriteMu, updateUserConfig, composer_submit_key, default_tool_approval_mode, lost update, debug-restart
+- Source: user-reported+verified-by-tests
+- Updated: 2026-07-12

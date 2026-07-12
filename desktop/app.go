@@ -130,6 +130,11 @@ type App struct {
 	tabsSaveVersion        uint64 // protected by mu; assigned when collecting a snapshot
 	tabsLastWrittenVersion uint64 // protected by tabsSaveMu
 
+	// configWriteMu serializes user-config read-modify-write transactions. Without
+	// it, a background provider refresh and a UI setting change can load the same
+	// snapshot and the later SaveTo call silently overwrite the earlier change.
+	configWriteMu sync.Mutex
+
 	forceQuit           atomic.Bool
 	backgroundMaximised atomic.Bool
 	trayReady           bool
