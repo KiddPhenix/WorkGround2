@@ -331,21 +331,51 @@ installDom();
     { kind: "user", id: "u1", text: "增加启动脚本" },
     { kind: "assistant", id: "a1", text: "## 已完成\n创建了 `start.bat`、`start.ps1` 和 `start.sh`。", reasoning: "", streaming: false },
   ]);
-  ok(summary === "已完成 创建了 start.bat、start.ps1 和 start.sh。", "SessionMemoryBar: recap is cleaned from real assistant history");
+  ok(summary?.headline === "已完成：创建了 start.bat、start.ps1 和 start.sh", "SessionMemoryBar: generic completion heading is replaced by a factual headline");
+  ok(summary?.detail === "已完成：创建了 start.bat、start.ps1 和 start.sh。", "SessionMemoryBar: short assistant recap keeps a complete detail sentence");
+}
+
+{
+  const assistantText = [
+    "## 完成总结",
+    "| 改动文件 | 文件 | 改动 |",
+    "| --- | --- | --- |",
+    "| 主架 | `desktop/frontend/src/components/desktop-ui/ArtifactShelf.tsx` | Artifact Shelf 重写完成：主架最多展示 6 项，并新增历史浮层、搜索和筛选 |",
+    "| 样式 | `desktop/frontend/src/styles.css` | 浮层改为可搜索、可筛选的分组历史视图 |",
+    "## 验证命令",
+    "```powershell",
+    "pnpm.cmd exec tsx src/__tests__/artifact-shelf-scale.test.tsx",
+    "```",
+    "- ✅ 80 项测试通过",
+    "- ✅ 类型检查通过",
+    "- ✅ build 通过",
+    "- ✅ stale/missing/failed 不显示在主架",
+    "- ✅ AnchoredPopover portal 渲染到 body",
+  ].join("\n");
+  const summary = recentSessionSummary([
+    { kind: "assistant", id: "a-rich", text: assistantText, reasoning: "", streaming: false },
+  ]);
+  ok(summary?.headline === "Artifact Shelf 重写完成：主架最多展示 6 项，并新增历史浮层、搜索和筛选", "SessionMemoryBar: headline leads with the main human-facing result");
+  ok(summary?.detail.includes("浮层改为可搜索、可筛选的分组历史视图"), "SessionMemoryBar: detail adds the next complete major change");
+  ok(summary?.detail.includes("验证：80 项测试、类型检查、构建通过"), "SessionMemoryBar: detail consolidates verification facts");
+  ok(!summary?.detail.includes("desktop/frontend") && !summary?.detail.includes("pnpm.cmd"), "SessionMemoryBar: recap removes paths and commands");
+  ok(!summary?.detail.includes("stale/missing") && !summary?.detail.includes("portal 渲染"), "SessionMemoryBar: recap omits raw checklist noise");
+  ok(!summary?.detail.endsWith("…"), "SessionMemoryBar: complete recap detail is never character-truncated");
+
+  const container = render(<TaskMemoryBar memoryLine={null} recentlyDid={summary!.headline} recentlyDidDetail={summary!.detail} />);
+  const ariaLabel = container.querySelector(".task-memory-bar")?.getAttribute("aria-label") ?? "";
+  ok(ariaLabel === `最近：${summary!.detail}`, "TaskMemoryBar: aria-label uses detail when recentlyDidDetail is provided");
+  ok(hasText(container, summary!.headline), "TaskMemoryBar: visible bar renders the headline");
+  ok(!hasText(container, "验证：80 项测试"), "TaskMemoryBar: full detail stays out of the one-line bar DOM");
+  ok(container.querySelector(".task-memory-bar__segment-slot--recent.tooltip-trigger") !== null, "TaskMemoryBar: complete detail is wired to the recent tooltip trigger");
+  cleanup();
 }
 
 {
   const fullText = "需要完整展示的会话总结".repeat(12);
-  const summary = recentSessionSummary([
-    { kind: "user", id: "u-long", text: fullText },
-  ]);
-  ok(summary === `处理：${fullText}`, "SessionMemoryBar: long recap keeps the complete cleaned transcript for its tooltip");
-  ok(!summary?.endsWith("…"), "SessionMemoryBar: long recap is not truncated before rendering");
-
-  const container = render(<TaskMemoryBar memoryLine={null} recentlyDid={summary} />);
-  const ariaLabel = container.querySelector(".task-memory-bar")?.getAttribute("aria-label") ?? "";
-  ok(ariaLabel === `最近：${summary}`, "TaskMemoryBar: long recap exposes the same full text to disclosure UI");
-  cleanup();
+  const summary = recentSessionSummary([{ kind: "user", id: "u-long", text: fullText }]);
+  ok(summary?.headline === `处理：${fullText}`, "SessionMemoryBar: user fallback keeps 处理语义");
+  ok(summary?.detail === `处理：${fullText}`, "SessionMemoryBar: user fallback detail remains complete");
 }
 
 {

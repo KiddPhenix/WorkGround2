@@ -29,35 +29,138 @@ import type { Item } from "../../lib/useController";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function plainRecentText(text: string): string {
-  return text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
-    .replace(/^[#>*+-]+\s*/gm, "")
-    .replace(/[`_|]/g, "")
+export interface SessionSummary {
+  headline: string;
+  detail: string;
+}
+
+type RecapPoints = { outcomes: string[]; checks: string[] };
+
+const NOISE_HEADING = /^(已?完成(?:总结)?|总结|改动文件|变更文件|文件列表|创建的文件|修改的文件|验证命令|验证|命令|测试|注意事项)$/i;
+const COMMAND_LINE = /^(?:[$>#]\s*)?(?:cd|pnpm|npm|npx|yarn|go\s+(?:test|build|vet)|git\s+|tsc\b|make\b|\.\\)[\s>]/i;
+const CHECK_LINE = /测试|typecheck|类型检查|构建|build|编译|lint|校验|验证/i;
+
+function cleanRecapPoint(value: string): string {
+  return value
+    .replace(/^[-*+]\s+(?:\[[ xX]\]\s*)?/, "")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/[*_~]/g, "")
+    .replace(/[✅✔☑❌⚠️]/gu, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function compactRecentText(text: string, maxRunes = 96): string {
-  const plain = plainRecentText(text);
-  const runes = Array.from(plain);
-  return runes.length > maxRunes ? `${runes.slice(0, maxRunes).join("")}…` : plain;
+function compactTaskText(value: string, maxRunes = 96): string {
+  const runes = Array.from(cleanRecapPoint(value));
+  return runes.length > maxRunes ? `${runes.slice(0, maxRunes).join("")}…` : runes.join("");
 }
 
-/** Return factual persisted transcript text for a terminal-session summary. */
-export function recentSessionSummary(items: Item[]): string | null {
+function isPathLike(value: string): boolean {
+  return /[\\/]/.test(value) && /\.[a-z0-9]{1,8}(?:\s|$)/i.test(value);
+}
+
+function addPoint(target: string[], value: string) {
+  const point = cleanRecapPoint(value).replace(/[，。；：:]+$/, "");
+  const key = point.replace(/\s+/g, "").toLowerCase();
+  if (point.length < 4 || target.some((item) => item.replace(/\s+/g, "").toLowerCase() === key)) return;
+  target.push(point);
+}
+
+function tablePoint(line: string): string | null {
+  if (/^\|[\s:|-]+\|$/.test(line)) return null;
+  const cells = line.split("|").slice(1, -1).map(cleanRecapPoint).filter(Boolean);
+  if (cells.some((cell) => /^(文件|改动|说明|状态|路径|file|change|status|path)$/i.test(cell))) return null;
+  const descriptions = cells.filter((cell) => !isPathLike(cell) && !/^(完成|通过|done|pass(?:ed)?)$/i.test(cell));
+  return descriptions[descriptions.length - 1] ?? null;
+}
+
+function recapPoints(text: string): RecapPoints {
+  const outcomes: string[] = [];
+  const checks: string[] = [];
+  let fenced = false;
+  for (const source of text.split("\n")) {
+    const raw = source.trim();
+    if (raw.startsWith("```")) { fenced = !fenced; continue; }
+    if (fenced || !raw || COMMAND_LINE.test(raw)) continue;
+
+    let point: string | null;
+    if (raw.startsWith("|") && raw.endsWith("|")) {
+      point = tablePoint(raw);
+    } else if (/^#{1,6}\s+/.test(raw)) {
+      point = cleanRecapPoint(raw.replace(/^#{1,6}\s+/, ""));
+      if (NOISE_HEADING.test(point)) continue;
+    } else {
+      point = cleanRecapPoint(raw);
+    }
+    if (!point || COMMAND_LINE.test(point) || isPathLike(point)) continue;
+    if (CHECK_LINE.test(point)) {
+      addPoint(checks, point);
+    } else if (!/^[-*+]\s+(?:\[[xX ]\]|[✅✔☑])/u.test(raw)) {
+      addPoint(outcomes, point);
+    }
+  }
+  return { outcomes, checks };
+}
+
+function firstSentence(value: string): string {
+  return value.split(/(?<=[。！？!?])/u)[0].replace(/[。；]+$/, "");
+}
+
+function checkSummary(checks: string[]): string | null {
+  if (checks.length === 0) return null;
+  const source = checks.join(" ");
+  const count = [...source.matchAll(/(\d+)\s*(?:项|个)?[^，。；\d]{0,12}测试/gu)]
+    .map((match) => Number(match[1]))
+    .sort((a, b) => b - a)[0];
+  const parts = [count ? `${count} 项测试` : /测试/i.test(source) ? "测试" : ""];
+  if (/typecheck|类型检查/i.test(source)) parts.push("类型检查");
+  if (/构建|build|编译/i.test(source)) parts.push("构建");
+  if (/lint|校验/i.test(source)) parts.push("代码校验");
+  const named = parts.filter(Boolean);
+  return named.length > 0 ? `验证：${named.join("、")}通过` : "验证完成";
+}
+
+function isBridgePoint(point: string, lead: string): boolean {
+  if (!/^(?:重写|更新|修改|完成|实现|调整)了?.+(?:组件|功能|内容)$/u.test(point)) return false;
+  const subject = point.replace(/^(?:重写|更新|修改|完成|实现|调整)了?/u, "").replace(/(?:组件|功能|内容)$/u, "").trim();
+  return subject.length > 0 && lead.includes(subject);
+}
+
+function buildSummary(text: string): SessionSummary | null {
+  const points = recapPoints(text);
+  const first = points.outcomes[0];
+  if (!first) return null;
+  let lead = firstSentence(first);
+  if (!/完成|修复|新增|重写|更新|实现|优化|支持|移除|通过/.test(lead)) lead = `已完成：${lead}`;
+
+  const specifics = points.outcomes.slice(1).map(firstSentence).filter((point) => !isBridgePoint(point, lead));
+  const headlinePoints = lead.length < 32 ? specifics.slice(0, 3) : [];
+  const headline = headlinePoints.length > 0 ? `${lead}：${headlinePoints.join("，")}` : lead;
+  const extra = specifics[headlinePoints.length] ?? "";
+  const detail = [headline, extra, checkSummary(points.checks) ?? ""]
+    .filter(Boolean)
+    .map((point) => `${point.replace(/[。；]+$/, "")}。`)
+    .join("");
+  return { headline, detail };
+}
+
+/** Return one structured recap: a visible headline and its complete tooltip detail. */
+export function recentSessionSummary(items: Item[]): SessionSummary | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.kind === "assistant" && !item.streaming && item.text.trim()) {
-      return plainRecentText(item.text) || null;
+      const summary = buildSummary(item.text);
+      if (summary) return summary;
     }
   }
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.kind === "user" && !item.queued && item.text.trim()) {
-      const text = plainRecentText(item.text);
-      return text ? `处理：${text}` : null;
+      const cleaned = cleanRecapPoint(item.text);
+      if (!cleaned) continue;
+      const headline = `处理：${firstSentence(cleaned)}`;
+      return { headline, detail: `处理：${cleaned}` };
     }
   }
   return null;
@@ -66,7 +169,7 @@ export function recentSessionSummary(items: Item[]): string | null {
 function latestUserTask(items: Item[]): string | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
-    if (item.kind === "user" && !item.queued && item.text.trim()) return compactRecentText(item.text) || null;
+    if (item.kind === "user" && !item.queued && item.text.trim()) return compactTaskText(item.text) || null;
   }
   return null;
 }
@@ -92,13 +195,16 @@ export function SessionMemoryBar({
 
   // Completed sessions retain the persisted task briefing and add a compact
   // transcript-derived recap. This also covers old sessions without sidecars.
-  const recentlyDid = useMemo(() => {
+  const summary = useMemo(() => {
     if (running) return null;
     if (!items || items.length === 0) return null;
     return recentSessionSummary(items);
   }, [running, items]);
 
-  return <TaskMemoryBar memoryLine={visibleMemory} recentlyDid={recentlyDid} />;
+  const recentlyDid = summary?.headline ?? null;
+  const recentlyDidDetail = summary?.detail ?? null;
+
+  return <TaskMemoryBar memoryLine={visibleMemory} recentlyDid={recentlyDid} recentlyDidDetail={recentlyDidDetail} />;
 }
 
 // ── SessionRunStream ───────────────────────────────────────────────────────
