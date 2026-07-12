@@ -37,6 +37,11 @@ const maxExecutorHandoffNudges = 1
 const memoryCompilerInjectionMax = 5
 const memoryCompilerInjectionCooldown = 30 * time.Second
 
+// readOnlyStreakThreshold is how many consecutive read-only tool-call rounds
+// without progress trigger a soft convergence nudge to the model. The nudge is
+// a single user message injected into the session; it does not abort the turn.
+const readOnlyStreakThreshold = 8
+
 // Renderer redraws the assistant's final-answer text as styled output. It is
 // applied only after a turn's text stream completes, so the user sees raw
 // markdown stream live, then a single redraw replaces it with formatted
@@ -397,6 +402,14 @@ type Agent struct {
 	// (a different failure shape, or any success). See applyStormBreaker.
 	stormSig   string
 	stormCount int
+
+	// readOnlyStreak counts consecutive tool-call rounds where every tool was
+	// ReadOnly (read_file, ls, grep, etc.) — no writers, no bash, no
+	// complete_step/todo_write. When it reaches readOnlyStreakThreshold the
+	// agent injects a one-shot convergence nudge into the session.
+	readOnlyStreak    int
+	readOnlyNudgeSent bool
+	readOnlyNudgeDue  bool
 
 	// repeatSuccessCounts tracks write-like tool calls that have already
 	// succeeded in this user turn. This catches the complementary loop shape to
@@ -934,6 +947,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		a.evidence.Reset()
 	}
 	a.repeatSuccessCounts = nil
+	a.readOnlyStreak = 0
+	a.readOnlyNudgeSent = false
+	a.readOnlyNudgeDue = false
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
 	rawInput := input
 	memoryCompilerInput := rawInput
@@ -1130,6 +1146,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				Name:       call.Name,
 			})
 		}
+		a.flushReadOnlyNudge()
 		// If the context was cancelled during tool execution, return after storing
 		// the batch results so the session keeps paired tool-call history.
 		if ctx.Err() != nil {
@@ -1596,6 +1613,14 @@ var executorHandoffTextOnlyPlanTerms = []string{
 	"手动", "无需工具", "不需要工具", "试听", "听歌", "对比", "勾选",
 }
 
+// readOnlyStreakNudgeMessage returns a soft convergence hint injected into the
+// session after too many consecutive read-only rounds without actual progress.
+// It does not abort the turn or change foregroundActive — just nudges the model
+// to start doing real work.
+func readOnlyStreakNudgeMessage() string {
+	return "This turn has been purely reading context for many rounds. Based on the evidence you already have, start the minimal implementation now. Only continue reading if you need a specific missing piece. When you need multiple small edits to the same file, prefer multi_edit over repeated edit_file calls — it is faster and avoids stale-anchor errors."
+}
+
 func executorHandoffRetryMessage() string {
 	return `You are already in the executor phase. The planner's read-only limitations do not apply to you.
 
@@ -1933,8 +1958,46 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 	}
 	if !cancelled {
 		a.applyStormBreaker(calls, outcomes, results)
+		a.updateReadOnlyStreak(calls, outcomes)
 	}
 	return results
+}
+
+func (a *Agent) updateReadOnlyStreak(calls []provider.ToolCall, outcomes []toolOutcome) {
+	onlyContextReads := len(calls) > 0
+	progress := false
+	for i, call := range calls {
+		t, ok := a.tools.Get(call.Name)
+		contextRead := ok && t.ReadOnly() && call.Name != "complete_step" && call.Name != "todo_write"
+		onlyContextReads = onlyContextReads && contextRead
+		if i < len(outcomes) && outcomes[i].errMsg == "" && !contextRead {
+			progress = true
+		}
+	}
+	if progress {
+		a.readOnlyStreak = 0
+		a.readOnlyNudgeSent = false
+		a.readOnlyNudgeDue = false
+		return
+	}
+	if !onlyContextReads {
+		return
+	}
+	a.readOnlyStreak++
+	if a.readOnlyStreak < readOnlyStreakThreshold || a.readOnlyNudgeSent {
+		return
+	}
+	a.readOnlyNudgeSent = true
+	a.readOnlyNudgeDue = true
+}
+
+func (a *Agent) flushReadOnlyNudge() {
+	if !a.readOnlyNudgeDue {
+		return
+	}
+	a.readOnlyNudgeDue = false
+	a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(readOnlyStreakNudgeMessage())})
+	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("read-only streak (%d rounds): convergence nudge injected", a.readOnlyStreak)})
 }
 
 func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
@@ -2386,6 +2449,13 @@ func (a *Agent) staleAnchorEditBlock(call provider.ToolCall) (string, bool) {
 	}
 	rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), true, false)
 	if len(rec.Paths) == 0 {
+		return "", false
+	}
+	// edit_file re-reads the file before applying each edit and requires a
+	// unique old_string, so it does not need a separate refresh read after
+	// any earlier same-file writer. delete_range still requires one because
+	// line ranges shift after writes.
+	if call.Name == "edit_file" {
 		return "", false
 	}
 	writeIndex, ok := a.evidence.LatestSuccessfulWriteIndex(rec.Paths)
