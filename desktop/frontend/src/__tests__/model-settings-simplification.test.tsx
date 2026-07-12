@@ -3,7 +3,7 @@
 import { JSDOM } from "jsdom";
 import type { Root } from "react-dom/client";
 import type { AppBindings } from "../lib/bridge";
-import type { ProviderView, SettingsView } from "../lib/types";
+import type { LocalCLIOptionView, ProviderView, SettingsView } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -138,7 +138,12 @@ function buttonContaining(label: string): HTMLButtonElement {
   return match as HTMLButtonElement;
 }
 
-async function renderSettings(settings: SettingsView, fetchModels: AppBindings["FetchProviderModels"]): Promise<Root> {
+async function renderSettings(
+  settings: SettingsView,
+  fetchModels: AppBindings["FetchProviderModels"],
+  scanCLI?: AppBindings["ScanLocalCLIProviders"],
+  connectCLI?: AppBindings["ConnectLocalCLIProvider"],
+): Promise<Root> {
   window.go = {
     main: {
       App: {
@@ -147,6 +152,8 @@ async function renderSettings(settings: SettingsView, fetchModels: AppBindings["
         SetDefaultModel: async (ref: string) => { settings.defaultModel = ref; },
         AddOfficialProviderAccess: async () => "",
         SaveProvider: async () => {},
+        ScanLocalCLIProviders: scanCLI ?? (async () => []),
+        ConnectLocalCLIProvider: connectCLI ?? (async () => {}),
         SetPlannerModel: async () => {},
         SetSubagentModel: async () => {},
         SetSubagentEffort: async () => {},
@@ -200,6 +207,9 @@ await act(async () => {
 });
 ok(document.body.textContent?.includes("Add provider") === true, "add flow opens in the current settings page");
 ok(document.body.textContent?.includes("Name (e.g. deepseek-work)") === false, "official add flow hides the internal provider name");
+ok(document.body.textContent?.includes("Official provider") === true, "official tab is visible");
+ok(document.body.textContent?.includes("Custom provider") === true, "custom tab is visible");
+ok(document.body.textContent?.includes("Local CLI") === true, "cli tab is visible as third option");
 
 await act(async () => root.unmount());
 document.body.innerHTML = '<div id="root"></div>';
@@ -251,6 +261,143 @@ await act(async () => {
 });
 await waitFor("retry request", () => manualFetchCalls === 2);
 ok(manualFetchCalls === 2, "retry performs a fresh connection check");
+
+await act(async () => root.unmount());
+document.body.innerHTML = '<div id="root"></div>';
+
+console.log("\nlocal CLI flow");
+
+// Helper: mock codex CLI scan result
+function codexCLIOption(): LocalCLIOptionView {
+  return {
+    id: "codex", name: "Codex CLI", description: "Codex CLI",
+    command: "C:\\Users\\test\\AppData\\Local\\OpenAI\\Codex\\bin\\codex.exe",
+    args: ["exec", "--json", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"],
+    protocol: "jsonl", model: "gpt-5.5", timeoutSeconds: 120,
+    installed: true, version: "1.2.3", error: "",
+  };
+}
+
+// Test 1: CLI tab auto-scans on switch, shows installed Codex as selected
+let scanCalls = 0;
+root = await renderSettings(
+  settingsWithProvider(),
+  async () => [],
+  async () => { scanCalls += 1; return [codexCLIOption()]; },
+);
+await act(async () => {
+  button("+ Add model service").click();
+  await flushPromises();
+});
+// Switch to CLI tab
+await act(async () => {
+  button("Local CLI").click();
+  await flushPromises();
+});
+await waitFor("cli scan completes", () => scanCalls >= 1);
+ok(scanCalls === 1, "switching to cli tab triggers auto-scan");
+ok(document.body.textContent?.includes("Codex CLI") === true, "installed codex is displayed");
+ok(document.body.textContent?.includes("Found") === true, "codex shows detected badge");
+ok(document.body.textContent?.includes("gpt-5.5") === true, "codex model is displayed");
+ok(document.body.textContent?.includes("1.2.3") === true, "codex version is displayed");
+
+await act(async () => root.unmount());
+document.body.innerHTML = '<div id="root"></div>';
+
+// Test 2: Connect success closes panel
+let connectCalls = 0;
+let connectedId = "";
+root = await renderSettings(
+  settingsWithProvider(),
+  async () => [],
+  async () => { scanCalls = 1; return [codexCLIOption()]; },
+  async (id: string) => { connectCalls += 1; connectedId = id; },
+);
+await act(async () => {
+  button("+ Add model service").click();
+  await flushPromises();
+});
+await act(async () => {
+  button("Local CLI").click();
+  await flushPromises();
+});
+await waitFor("cli loaded", () => document.body.textContent?.includes("Codex CLI") === true);
+await act(async () => {
+  button("Add and use").click();
+  await flushPromises();
+});
+await flushPromises();
+ok(connectCalls === 1, "add and use calls ConnectLocalCLIProvider");
+ok(connectedId === "codex", "connect receives selected codex id");
+ok(document.body.textContent?.includes("Add model service") === true, "panel closes after successful connect");
+
+await act(async () => root.unmount());
+document.body.innerHTML = '<div id="root"></div>';
+
+// Test 3: Connect failure keeps panel open
+let failConnect = true;
+root = await renderSettings(
+  settingsWithProvider(),
+  async () => [],
+  async () => [codexCLIOption()],
+  async () => { if (failConnect) throw new Error("connection refused"); },
+);
+await act(async () => {
+  button("+ Add model service").click();
+  await flushPromises();
+});
+await act(async () => {
+  button("Local CLI").click();
+  await flushPromises();
+});
+await waitFor("cli loaded", () => document.body.textContent?.includes("Codex CLI") === true);
+await act(async () => {
+  button("Add and use").click();
+  await flushPromises();
+});
+await waitFor("connect error shown", () => document.body.textContent?.includes("connection refused") === true);
+ok(document.body.textContent?.includes("Codex CLI") === true, "panel stays open after connect failure");
+ok(button("Add and use").disabled === false, "add button is re-enabled after failure");
+
+await act(async () => root.unmount());
+document.body.innerHTML = '<div id="root"></div>';
+
+// Test 4: No installed CLI shows empty state with rescan
+root = await renderSettings(
+  settingsWithProvider(),
+  async () => [],
+  async () => [{ ...codexCLIOption(), installed: false, command: "codex", version: "", error: "not found" }],
+);
+await act(async () => {
+  button("+ Add model service").click();
+  await flushPromises();
+});
+await act(async () => {
+  button("Local CLI").click();
+  await flushPromises();
+});
+await waitFor("empty state", () => document.body.textContent?.includes("No installed CLI") === true);
+ok(button("Rescan").disabled === false, "rescan button is available when empty");
+
+await act(async () => root.unmount());
+document.body.innerHTML = '<div id="root"></div>';
+
+// Test 5: Scan failure shows retry
+root = await renderSettings(
+  settingsWithProvider(),
+  async () => [],
+  async () => { throw new Error("permission denied"); },
+);
+await act(async () => {
+  button("+ Add model service").click();
+  await flushPromises();
+});
+await act(async () => {
+  button("Local CLI").click();
+  await flushPromises();
+});
+await waitFor("scan failure", () => document.body.textContent?.includes("permission denied") === true);
+ok(button("Retry").disabled === false, "retry button is available on scan failure");
 
 await act(async () => root.unmount());
 dom.window.close();

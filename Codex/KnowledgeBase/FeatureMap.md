@@ -2,6 +2,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 本地 CLI 一级接入与自动扫描 | done | `developping/local-cli-provider-entry+2026-07-12` | Codex + WorkGround2 | `desktop/onboarding_cli.go`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `desktop/frontend/src/__tests__` | 本地 CLI 已成为添加供应商第三个一级分支；进入即自动扫描，只展示已安装项，可重新扫描并一键添加使用。参考 `D:\Work\Ctrl_CC\src\appModel.ts` 补齐预设；真实桌面包已识别本机 Codex CLI 0.130.0-alpha.5。29 项前端契约、前端类型检查与构建、desktop Go 测试通过。 |
 | 桌面设置持久化防覆盖 | done | `developping/settings-persistence-race+2026-07-12` | Codex | `desktop/app.go`, `desktop/settings_app.go`, `desktop/settings_app_test.go` | 用户全局配置读改写已通过独立事务锁串行；后台 provider 保存不再覆盖发送快捷键与新会话默认审批。并发回归连续 10 次、desktop 全量 Go 测试和实际 `debug-restart.bat` 重启保持验证通过。 |
 | 模型设置简化与接入引导 | done | `developping/model-settings-simplification+2026-07-12` | Codex | `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/locales`, `desktop/frontend/src/__tests__/model-settings-simplification.test.tsx`, `internal/config/fetch.go`, `docs/design-qa.md` | 模型页已改为连接状态优先、显式“添加模型服务”、默认模型和折叠高级设置；官方接入隐藏内部名称并支持失败重试。14 项专项契约、18 项既有设置契约、前端构建、desktop 全量 Go 测试及同屏视觉 QA 通过。 |
 | CLI 会话标题启动对账 | done | `developping/session-title-startup-reconcile+2026-07-12` | Codex | `desktop/tabs.go`, `desktop/tabs_title_reconcile_test.go` | 启动构建 SessionList 时仅对空标题或自动来源的“新的会话”做 sidecar 级轻量对账；优先最新 session 的命名标题、CustomTitle、TopicTitle 与 Preview，不读取完整 JSONL，不覆盖手工标题。5 项专项回归、desktop 全量 Go 测试和 go vet 通过。 |

@@ -3110,6 +3110,15 @@ function ModelsSection({ s, busy, apply, applyResult, backgroundApply }: ModelsS
             const ok = await applyResult(() => app.SaveProvider(provider));
             if (ok) setAdding(null);
           }}
+          onAddCli={async (id) => {
+            const ok = await applyResult(async () => {
+              await app.ConnectLocalCLIProvider(id);
+            });
+            if (ok) {
+              setAdding(null);
+              setCheckResult({ kind: "ok", text: t("settings.addProvider.cliConnectSuccess", { name: id }) });
+            }
+          }}
         />
       )}
 
@@ -3705,6 +3714,7 @@ function ProvidersSection({ s, busy, apply, showAddAction = true }: SectionProps
             onCancel={() => setAdding(null)}
             onAddOfficial={(kind, key, name) => apply(() => app.AddOfficialProviderAccess(kind, key, name)).then(() => setAdding(null))}
             onAddCustom={(pv) => apply(() => app.SaveProvider(pv)).then(() => setAdding(null))}
+            onAddCli={(id) => apply(() => app.ConnectLocalCLIProvider(id)).then(() => setAdding(null))}
           />
         )}
         {duplicating && (
@@ -3805,7 +3815,7 @@ type ProviderModelDraft = {
   visionModels: string[];
 };
 
-type AddProviderMode = null | "official" | "custom";
+type AddProviderMode = null | "official" | "custom" | "cli";
 type OfficialProviderKind = "deepseek" | "openai" | "anthropic" | "google" | "groq";
 
 const OFFICIAL_PROVIDER_CHOICES: Array<{ kind: OfficialProviderKind; labelKey: DictKey; descKey: DictKey; keyEnv: string; defaultName: string }> = [
@@ -3824,6 +3834,7 @@ function AddProviderPanel({
   onCancel,
   onAddOfficial,
   onAddCustom,
+  onAddCli,
 }: {
   mode: AddProviderMode;
   kinds: string[];
@@ -3832,11 +3843,44 @@ function AddProviderPanel({
   onCancel: () => void;
   onAddOfficial: (kind: OfficialProviderKind, key: string, name: string) => Promise<void>;
   onAddCustom: (p: ProviderView) => void | Promise<void>;
+  onAddCli: (id: string) => Promise<void>;
 }) {
   const t = useT();
   const [officialKind, setOfficialKind] = useState<OfficialProviderKind>("deepseek");
   const [key, setKey] = useState("");
   const selected = OFFICIAL_PROVIDER_CHOICES.find((choice) => choice.kind === officialKind) ?? OFFICIAL_PROVIDER_CHOICES[0];
+
+  // CLI mode state
+  const [cliOptions, setCliOptions] = useState<LocalCLIOptionView[]>([]);
+  const [cliScanning, setCliScanning] = useState(false);
+  const [cliError, setCliError] = useState<string | null>(null);
+  const [selectedCliId, setSelectedCliId] = useState<string | null>(null);
+  const [cliConnecting, setCliConnecting] = useState(false);
+  const [cliConnectError, setCliConnectError] = useState<string | null>(null);
+
+  const scanLocalCLIs = useCallback(async () => {
+    setCliScanning(true);
+    setCliError(null);
+    setCliConnectError(null);
+    try {
+      const options = await app.ScanLocalCLIProviders();
+      setCliOptions(options);
+      const installed = options.filter((o) => o.installed);
+      setSelectedCliId((current) => (
+        installed.some((option) => option.id === current) ? current : installed[0]?.id ?? null
+      ));
+    } catch (e) {
+      setCliError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCliScanning(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode === "cli") {
+      void scanLocalCLIs();
+    }
+  }, [mode, scanLocalCLIs]);
 
   const header = (
     <div className="provider-add-panel__head">
@@ -3870,6 +3914,16 @@ function AddProviderPanel({
         onClick={() => onMode("custom")}
       >
         {t("settings.addProvider.customChoice")}
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={mode === "cli"}
+        className={mode === "cli" ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+        disabled={busy}
+        onClick={() => onMode("cli")}
+      >
+        {t("settings.addProvider.cliChoice")}
       </button>
     </div>
   );
@@ -3932,6 +3986,124 @@ function AddProviderPanel({
           onCancel={onCancel}
           onSave={onAddCustom}
         />
+      </div>
+    );
+  }
+
+  if (mode === "cli") {
+    const installed = cliOptions.filter((o) => o.installed);
+    const selected = cliOptions.find((o) => o.id === selectedCliId);
+    return (
+      <div className="provider-add-panel">
+        {header}
+        {modeSwitch}
+        <div className="provider-add-panel__hint">{t("settings.addProvider.cliHint")}</div>
+        {cliScanning && (
+          <div className="provider-cli-scan">
+            <div className="provider-model-fetch-row">
+              <Loader2 size={16} className="spin" aria-hidden="true" />
+              <span>{t("settings.providerCliScanning")}</span>
+            </div>
+          </div>
+        )}
+        {cliError && (
+          <div className="provider-fetch-banner provider-fetch-banner--warn" role="alert">
+            <span>{t("settings.addProvider.cliScanFailed", { err: cliError })}</span>
+            <button type="button" className="btn btn--small" disabled={busy} onClick={() => void scanLocalCLIs()}>
+              {t("common.retry")}
+            </button>
+          </div>
+        )}
+        {!cliScanning && !cliError && installed.length === 0 && (
+          <div className="provider-empty">
+            <strong>{t("settings.addProvider.cliEmpty")}</strong>
+            <span>{t("settings.providerCliScanNone")}</span>
+            <div className="provider-empty__actions">
+              <button type="button" className="btn btn--small" disabled={busy} onClick={() => void scanLocalCLIs()}>
+                {t("settings.addProvider.cliRescan")}
+              </button>
+            </div>
+          </div>
+        )}
+        {!cliScanning && !cliError && installed.length > 0 && (
+          <>
+            <div className="provider-cli-scan-list" role="list" aria-label={t("settings.providerCliScanFound", { n: installed.length })}>
+              {installed.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`provider-cli-scan-option${selectedCliId === option.id ? " provider-template-card--active" : ""}`}
+                  disabled={busy || cliConnecting}
+                  onClick={() => { setSelectedCliId(option.id); setCliConnectError(null); }}
+                >
+                  <span className="provider-cli-scan-option__head">
+                    <strong>{option.name}</strong>
+                    <em>{t("settings.providerCliDetected")}</em>
+                  </span>
+                  <code>{option.command}{option.args.length ? " " + option.args.join(" ") : ""}</code>
+                  <span>
+                    {option.model}
+                    {option.version ? ` · ${option.version}` : ""}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div className="provider-model-fetch-row">
+              <button
+                type="button"
+                className="btn btn--small btn--secondary"
+                disabled={busy || cliScanning || cliConnecting}
+                onClick={() => void scanLocalCLIs()}
+              >
+                {t("settings.addProvider.cliRescan")}
+              </button>
+              {selected && (
+                <span className="provider-fetch-status provider-fetch-status--ok">
+                  {t("settings.addProvider.cliChoiceHint")}
+                </span>
+              )}
+            </div>
+            {cliConnectError && (
+              <div className="provider-fetch-banner provider-fetch-banner--warn" role="alert">
+                <span>{cliConnectError}</span>
+              </div>
+            )}
+            <div className="prov-card__actions">
+              <button type="button" className="btn btn--small" disabled={busy || cliConnecting} onClick={onCancel}>
+                {t("common.cancel")}
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary btn--small"
+                disabled={busy || cliConnecting || !selectedCliId}
+                onClick={async () => {
+                  if (!selectedCliId) return;
+                  setCliConnecting(true);
+                  setCliConnectError(null);
+                  try {
+                    await onAddCli(selectedCliId);
+                  } catch (e) {
+                    setCliConnectError(t("settings.addProvider.cliConnectFailed", {
+                      name: selected?.name ?? selectedCliId,
+                      err: String((e as Error)?.message ?? e),
+                    }));
+                  } finally {
+                    setCliConnecting(false);
+                  }
+                }}
+              >
+                {cliConnecting ? (
+                  <>
+                    <Loader2 size={16} className="spin" aria-hidden="true" />
+                    {t("settings.providerCliScanning")}
+                  </>
+                ) : (
+                  t("settings.addProvider.cliConnectAndUse")
+                )}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     );
   }

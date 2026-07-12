@@ -48,6 +48,7 @@ var onboardingLocalCLIPresets = []onboardingLocalCLIPreset{
 		Commands:    []string{"codex", "codex.exe", "codex.cmd"},
 		Args:        []string{"exec", "--json", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"},
 		Protocol:    "jsonl",
+		Model:       "gpt-5.5",
 	},
 	{
 		ID:          "claude",
@@ -81,6 +82,27 @@ var onboardingLocalCLIPresets = []onboardingLocalCLIPreset{
 		Name:        "DeepSeek CLI",
 		Description: "Runs a DeepSeek-compatible local CLI and sends the model request on stdin.",
 		Commands:    []string{"deepseek", "deepseek-cli", "deepseek.exe", "deepseek.cmd", "deepseek-cli.exe", "deepseek-cli.cmd"},
+		Args:        []string{"--prompt-stdin"},
+	},
+	{
+		ID:          "zcode",
+		Name:        "ZCode CLI",
+		Description: "Runs ZCode CLI in prompt-stdin mode.",
+		Commands:    []string{"zcode", "zcode.exe", "zcode.cmd"},
+		Args:        []string{"--prompt-stdin"},
+	},
+	{
+		ID:          "pi",
+		Name:        "Pi",
+		Description: "Runs Pi CLI in prompt-stdin mode.",
+		Commands:    []string{"pi", "pi.exe", "pi.cmd"},
+		Args:        []string{"--prompt-stdin"},
+	},
+	{
+		ID:          "deepcode",
+		Name:        "DeepCode",
+		Description: "Runs DeepCode CLI in prompt-stdin mode.",
+		Commands:    []string{"deepcode", "deepcode.exe", "deepcode.cmd"},
 		Args:        []string{"--prompt-stdin"},
 	},
 }

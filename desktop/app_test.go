@@ -164,6 +164,61 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 	if codex.Protocol != "jsonl" {
 		t.Fatalf("codex protocol = %q, want jsonl", codex.Protocol)
 	}
+	if codex.Model != "gpt-5.5" {
+		t.Fatalf("codex model = %q, want gpt-5.5 to match --model arg", codex.Model)
+	}
+}
+
+func TestNewCLIPresetsDefined(t *testing.T) {
+	presetIDs := map[string]bool{}
+	for _, p := range onboardingLocalCLIPresets {
+		presetIDs[p.ID] = true
+	}
+	for _, want := range []string{"zcode", "pi", "deepcode"} {
+		if !presetIDs[want] {
+			t.Fatalf("preset %q is missing from onboardingLocalCLIPresets", want)
+		}
+	}
+}
+
+func TestNewCLIPresetsScanWithDefaults(t *testing.T) {
+	withLocalCLIPresets(t, []onboardingLocalCLIPreset{
+		{ID: "zcode", Name: "ZCode CLI", Commands: []string{"zcode"}, Args: []string{"--prompt-stdin"}},
+		{ID: "pi", Name: "Pi", Commands: []string{"pi"}, Args: []string{"--prompt-stdin"}},
+		{ID: "deepcode", Name: "DeepCode", Commands: []string{"deepcode"}, Args: []string{"--prompt-stdin"}},
+	})
+
+	options := scanLocalCLIOptions()
+	if len(options) != 3 {
+		t.Fatalf("scan returned %d options, want 3", len(options))
+	}
+	for _, opt := range options {
+		if opt.Installed {
+			// If installed, that's fine — just ensure the fields are populated.
+			t.Logf("%s is installed: command=%q", opt.ID, opt.Command)
+		}
+		if opt.Protocol != "text" {
+			t.Errorf("%s protocol = %q, want text", opt.ID, opt.Protocol)
+		}
+		if opt.Model != "default" {
+			t.Errorf("%s model = %q, want default", opt.ID, opt.Model)
+		}
+		if opt.TimeoutSeconds != onboardingLocalCLITimeoutSeconds {
+			t.Errorf("%s timeout = %d, want %d", opt.ID, opt.TimeoutSeconds, onboardingLocalCLITimeoutSeconds)
+		}
+		// Args should be preserved even when not installed.
+		if !reflect.DeepEqual(opt.Args, []string{"--prompt-stdin"}) {
+			t.Errorf("%s args = %+v, want [--prompt-stdin]", opt.ID, opt.Args)
+		}
+		// Verify JSON serialization doesn't produce null for args.
+		data, err := json.Marshal(opt)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", opt.ID, err)
+		}
+		if strings.Contains(string(data), `"args":null`) {
+			t.Errorf("%s args serializes as null instead of []", opt.ID)
+		}
+	}
 }
 
 func TestNeedsOnboardingIgnoresInheritedEnv(t *testing.T) {
