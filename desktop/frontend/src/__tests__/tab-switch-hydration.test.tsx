@@ -209,6 +209,7 @@ window.go = {
         historyCalls.push(tabID);
         if (tabID === "tab-b") return historyB.promise;
         if (tabID === "tab-d") return historyD.promise;
+        if (tabID === "tab-f") return [];
         if (tabID === "tab-e") {
           if (holdNextHistoryForE) {
             holdNextHistoryForE = false;
@@ -591,6 +592,22 @@ await act(async () => {
 });
 await waitFor("startup queue drained", () => submittedPrompts.some((entry) => entry.tabId === "tab-g" && entry.text === "queued during startup"));
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "queued during startup" && !item.queued) ?? false, "ready session promotes the queued message to sending");
+
+openProjectTabTargetId = "tab-f";
+await act(async () => {
+  await controller?.openProjectTab(tabF.workspaceRoot, tabF.topicId || "");
+  await flushPromises();
+});
+await waitFor("empty history resolution", () => controller?.state.historyLoading === false);
+eq(controller?.state.items.length, 0, "empty session resolves without transcript items");
+const tabFHistoryCallsBeforeReady = historyCalls.filter((tabID) => tabID === "tab-f").length;
+await act(async () => {
+  for (const handler of readyHandlers) handler("tab-f");
+  await flushPromises();
+});
+await waitFor("empty ready reconciliation", () => controller?.state.hydrating === false);
+eq(controller?.state.historyLoading, false, "same-path agent ready keeps resolved empty history visible");
+eq(historyCalls.filter((tabID) => tabID === "tab-f").length, tabFHistoryCallsBeforeReady, "same-path agent ready does not reload resolved empty history");
 
 await act(async () => {
   root.unmount();
