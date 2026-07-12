@@ -152,3 +152,38 @@ func TestControllerImageInputEnabledIncludesVisionDelegate(t *testing.T) {
 		t.Fatal("vision delegate should enable image attachment UX")
 	}
 }
+
+func TestControllerInputImagesDoesNotBypassVisionDelegate(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultModel = "custom/text-only"
+	cfg.Providers = []config.ProviderEntry{{
+		Name:         "custom",
+		Kind:         "openai",
+		BaseURL:      "https://example.invalid/v1",
+		Models:       []string{"text-only", "vision-pro"},
+		VisionModels: []string{"vision-pro"},
+	}}
+	if err := cfg.SaveTo(filepath.Join(workspace, "WorkGround2.toml")); err != nil {
+		t.Fatalf("save workspace config: %v", err)
+	}
+	path := filepath.Join(workspace, "diagram.png")
+	if err := os.WriteFile(path, mustBase64(t, tinyPNG), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Controller{
+		workspaceRoot:  workspace,
+		modelRef:       "custom/text-only",
+		visionDelegate: &recordingProvider{},
+	}
+	if !c.ImageInputEnabled() {
+		t.Fatal("vision delegate should keep image attachment UX enabled")
+	}
+	if urls := c.inputImages("look at @diagram.png"); len(urls) != 0 {
+		t.Fatalf("text-only main model should not receive direct image payloads, got %v", urls)
+	}
+	if urls := c.resolveInputImages("look at @diagram.png"); len(urls) != 1 {
+		t.Fatalf("vision delegate should still resolve image refs, got %v", urls)
+	}
+}

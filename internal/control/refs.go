@@ -495,7 +495,7 @@ func (c *Controller) HasRefs(line string) bool {
 // turn can carry them to a vision-capable model. Best-effort: an unreadable image
 // is skipped — the @ref still lands as text via ResolveRefs.
 func (c *Controller) inputImages(line string) []string {
-	if !c.imageInputEnabled() {
+	if !c.directImageInputEnabled() {
 		return nil
 	}
 	var urls []string

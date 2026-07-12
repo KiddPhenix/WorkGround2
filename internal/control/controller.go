@@ -3863,11 +3863,10 @@ func (c *Controller) Label() string { return c.label }
 func (c *Controller) WorkspaceRoot() string { return c.workspaceRoot }
 
 func (c *Controller) imageInputEnabled() bool {
-	// Vision delegate: when available, images can be attached even if the main
-	// model is text-only — the delegate will handle them.
-	if c.visionDelegate != nil {
-		return true
-	}
+	return c.directImageInputEnabled() || c.visionDelegate != nil
+}
+
+func (c *Controller) directImageInputEnabled() bool {
 	ref := c.modelRef
 	cfg, err := config.LoadForRoot(c.workspaceRoot)
 	if err == nil && ref == "" {
@@ -3880,8 +3879,8 @@ func (c *Controller) imageInputEnabled() bool {
 	return ok && config.EffectiveVision(entry)
 }
 
-// ImageInputEnabled reports whether the current model accepts direct image
-// inputs, so frontends can gate image-only UX before a turn starts.
+// ImageInputEnabled reports whether image attachments can be accepted, either by
+// the current model directly or through the configured vision delegate.
 func (c *Controller) ImageInputEnabled() bool { return c.imageInputEnabled() }
 
 // HasVisionDelegate reports whether a vision-capable delegate provider is
