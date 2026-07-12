@@ -31,6 +31,27 @@ func (e *ProviderEntry) FetchModels(ctx context.Context) ([]string, error) {
 	if e.RequiresAPIKey() && key == "" {
 		return nil, fmt.Errorf("fetch models: provider %q has no API key (set %s in .env)", e.Name, e.APIKeyEnv)
 	}
+	kind := strings.ToLower(strings.TrimSpace(e.Kind))
+	if kind == "anthropic" {
+		headers := make(map[string]string, len(e.Headers)+2)
+		for name, value := range e.Headers {
+			headers[name] = value
+		}
+		headers["x-api-key"] = key
+		headers["anthropic-version"] = "2023-06-01"
+		base := strings.TrimRight(strings.TrimSpace(e.BaseURL), "/")
+		if !strings.HasSuffix(base, "/v1") {
+			base += "/v1"
+		}
+		return openai.FetchModels(ctx, base, "", headers)
+	}
+	if kind == "google" {
+		base := strings.TrimRight(strings.TrimSpace(e.BaseURL), "/")
+		if !strings.HasSuffix(base, "/v1beta/openai") {
+			base += "/v1beta/openai"
+		}
+		return openai.FetchModels(ctx, base, key, e.Headers)
+	}
 	candidates, err := BuildModelFetchURLs(e.BaseURL, e.ModelsURL)
 	if err != nil {
 		return nil, err

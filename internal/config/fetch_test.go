@@ -177,3 +177,57 @@ func TestProviderFetchModelsAllowsNoAuthEndpoint(t *testing.T) {
 		t.Fatalf("got %v, want [local-a local-b]", got)
 	}
 }
+
+func TestProviderFetchModelsUsesAnthropicModelEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "anthropic-key" {
+			t.Fatalf("x-api-key = %q", r.Header.Get("x-api-key"))
+		}
+		if r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Fatalf("anthropic-version = %q", r.Header.Get("anthropic-version"))
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("unexpected Authorization header %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"id": "claude-sonnet"}, {"id": "claude-haiku"}},
+		})
+	}))
+	defer srv.Close()
+
+	p := ProviderEntry{Name: "anthropic", Kind: "anthropic", BaseURL: srv.URL, APIKeyEnv: "ANTHROPIC_API_KEY", resolvedAPIKey: "anthropic-key"}
+	got, err := p.FetchModels(context.Background())
+	if err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if len(got) != 2 || got[0] != "claude-haiku" || got[1] != "claude-sonnet" {
+		t.Fatalf("models = %v", got)
+	}
+}
+
+func TestProviderFetchModelsUsesGoogleOpenAICompatibilityEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1beta/openai/models" {
+			t.Fatalf("path = %q, want /v1beta/openai/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer google-key" {
+			t.Fatalf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{"id": "gemini-pro"}, {"id": "gemini-flash"}},
+		})
+	}))
+	defer srv.Close()
+
+	p := ProviderEntry{Name: "google", Kind: "google", BaseURL: srv.URL, APIKeyEnv: "GEMINI_API_KEY", resolvedAPIKey: "google-key"}
+	got, err := p.FetchModels(context.Background())
+	if err != nil {
+		t.Fatalf("FetchModels: %v", err)
+	}
+	if len(got) != 2 || got[0] != "gemini-flash" || got[1] != "gemini-pro" {
+		t.Fatalf("models = %v", got)
+	}
+}

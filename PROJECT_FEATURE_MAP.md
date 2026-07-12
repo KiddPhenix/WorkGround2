@@ -249,3 +249,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: WorkGround2, WorkGround2, SPEC, WorkGround2.md, project memory
 - Source: verified-by-search
 - Updated: 2026-07-03
+
+### 模型设置简化与接入引导
+- Status: done
+- Branch: `developping/model-settings-simplification+2026-07-12`
+- Owner: Codex
+- Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/locales`, `internal/config/fetch.go`, `docs/MODEL_CONFIGURATION_UX_DESIGN.zh-CN.md`
+- Summary: 模型设置已收敛为连接状态、默认模型和显式“添加模型服务”主任务；高级运行参数按需展开，官方供应商接入隐藏内部字段并在保存时验证连接，失败显式提示且保留草稿供重试。专项契约、既有设置契约、生产构建、desktop 全量 Go 测试与视觉 QA 通过。
+- Keywords: model settings, provider access, connection check, default model, progressive disclosure
+- Source: user-approved-design
+- Updated: 2026-07-12

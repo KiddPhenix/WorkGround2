@@ -149,6 +149,23 @@ export function SettingsPanel({
       setBusy(false);
     }
   }, [reload, onChanged]);
+  const applyResult = useCallback(async (fn: () => Promise<unknown>): Promise<boolean> => {
+    setBusy(true);
+    setErr(null);
+    setWarning(null);
+    try {
+      const result = await fn();
+      const next = await reload();
+      onChanged(next);
+      if (typeof result === "string" && result.trim()) setWarning(result.trim());
+      return true;
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, [reload, onChanged]);
   const backgroundApply = useCallback(async (fn: () => Promise<void>) => {
     setErr(null);
     setWarning(null);
@@ -212,7 +229,7 @@ export function SettingsPanel({
             ) : (
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
-                {tab === "models" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><ModelsSection s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} /></SettingsPageShell>}
+                {tab === "models" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><ModelsSection s={s} busy={busy} apply={apply} applyResult={applyResult} backgroundApply={backgroundApply} /></SettingsPageShell>}
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "ai" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><AICollaborationSection /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
@@ -490,6 +507,7 @@ type SectionProps = {
 };
 
 type ModelsSectionProps = SectionProps & {
+  applyResult: (fn: () => Promise<unknown>) => Promise<boolean>;
   backgroundApply: (fn: () => Promise<void>) => Promise<void>;
 };
 
@@ -703,8 +721,9 @@ function ShortcutsSection() {
 // allRefs flattens providers into "provider/model" refs for the model selectors.
 function allRefs(s: SettingsView): string[] {
   const out: string[] = [];
+  const defaultProvider = toRef(s.defaultModel, s).split("/", 1)[0];
   for (const p of s.providers) {
-    if (!p.added || !providerIsConfigured(p)) continue;
+    if ((!p.added && p.name !== defaultProvider) || !providerIsConfigured(p)) continue;
     for (const m of p.models) out.push(`${p.name}/${m}`);
   }
   return out;
@@ -2913,9 +2932,14 @@ function botDraftWithDerivedGatewayState(draft: BotSettingsView): BotSettingsVie
   };
 }
 
-function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) {
+function ModelsSection({ s, busy, apply, applyResult, backgroundApply }: ModelsSectionProps) {
   const t = useT();
-  const [subtab, setSubtab] = useState<"usage" | "access">("usage");
+  const [adding, setAdding] = useState<AddProviderMode>(null);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checkResult, setCheckResult] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
+  const [defaultSaved, setDefaultSaved] = useState(false);
   const autoRefreshKeyRef = useRef("");
   const refs = useMemo(() => allRefs(s), [s.providers]);
   const defaultRef = toRef(s.defaultModel, s);
@@ -2924,6 +2948,13 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
   const plannerSelectRef = plannerRef === defaultRef ? "" : plannerRef;
   const [defaultProvider] = defaultRef.split("/");
   const defaultProviderView = s.providers.find((p) => p.name === defaultProvider);
+  const activeProvider = defaultProviderView && providerIsConfigured(defaultProviderView)
+    ? defaultProviderView
+    : s.providers.find((p) => p.added && providerIsConfigured(p));
+  const connected = Boolean(activeProvider && providerIsConfigured(activeProvider));
+  const activeProviderLabel = activeProvider
+    ? modelProviderLabel(activeProvider.name, activeProvider, t)
+    : t("settings.modelConnectionNone");
   const modelIssue = !defaultProviderView
     ? t("settings.modelUnavailable", { ref: defaultRef || t("common.none") })
     : !providerIsConfigured(defaultProviderView)
@@ -2935,8 +2966,28 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
     app.SetAgentParams(agent.temperature, maxSteps, plannerMaxSteps, agent.systemPrompt)
   );
 
+  const checkConnection = async () => {
+    if (!activeProvider) {
+      setAdding("official");
+      return;
+    }
+    setChecking(true);
+    setCheckResult(null);
+    try {
+      const models = await app.FetchProviderModels(activeProvider);
+      if (models.length === 0) throw new Error(t("settings.modelConnectionNoModels"));
+      setCheckResult({ kind: "ok", text: t("settings.modelConnectionChecked") });
+    } catch (e) {
+      setCheckResult({
+        kind: "warn",
+        text: t("settings.modelConnectionFailed", { err: String((e as Error)?.message ?? e) }),
+      });
+    } finally {
+      setChecking(false);
+    }
+  };
+
   useEffect(() => {
-    if (subtab !== "usage") return;
     const groups = providerAccessGroups(s.providers.filter((p) => p.added), t);
     const candidates = groups
       .map((group) => {
@@ -2962,49 +3013,143 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
           const visionModels = provider.visionModels.filter((model) => models.includes(model));
           if (sameStringList(provider.models, models) && provider.default === currentDefault && sameStringList(provider.visionModels, visionModels)) continue;
           await app.SaveProvider({ ...provider, models, default: currentDefault, visionModels });
-        } catch {
-          // Background discovery is opportunistic; manual refresh shows errors.
+        } catch (e) {
+          if (provider.name === activeProvider?.name) {
+            setCheckResult({
+              kind: "warn",
+              text: t("settings.modelConnectionStale", { err: String((e as Error)?.message ?? e) }),
+            });
+          }
         }
       }
     });
-  }, [backgroundApply, s.providers, subtab, t]);
+  }, [activeProvider?.name, backgroundApply, s.providers, t]);
 
   return (
-    <>
-      <div className="settings-subtabs">
+    <div className="model-settings-simple">
+      <section className="model-connection-overview" aria-live="polite">
+        <div className="model-connection-overview__head">
+          <div className="model-connection-overview__status">
+            <span className={`model-connection-overview__dot${connected ? " model-connection-overview__dot--connected" : ""}`} aria-hidden="true" />
+            <div>
+              <h2>{connected ? t("settings.modelConnected") : t("settings.modelNotConnected")}</h2>
+              <p>{connected ? t("settings.modelConnectedHint") : t("settings.modelNotConnectedHint")}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn--primary model-add-service"
+            disabled={busy}
+            aria-expanded={adding !== null}
+            onClick={() => {
+              setManageOpen(false);
+              setAdding((current) => current === null ? "official" : null);
+            }}
+          >
+            {t("settings.addProvider")}
+          </button>
+        </div>
+
+        <div className="model-connection-overview__service">
+          <div className="model-connection-overview__identity">
+            <strong>{activeProviderLabel}</strong>
+            <span>{checkResult?.kind === "ok" ? checkResult.text : connected ? t("settings.modelConnectionVerified") : t("settings.modelConnectionRequired")}</span>
+          </div>
+          <div className="model-connection-overview__actions">
+            <button type="button" className="btn" disabled={busy || checking || !activeProvider} onClick={() => void checkConnection()}>
+              {checking ? <Loader2 size={16} className="spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
+              {checking ? t("settings.modelConnectionChecking") : t("settings.checkConnection")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              aria-expanded={manageOpen}
+              onClick={() => {
+                setAdding(null);
+                setManageOpen((open) => !open);
+              }}
+            >
+              {t("settings.manageConnections")}
+            </button>
+          </div>
+        </div>
+        {checkResult?.kind === "warn" && (
+          <div className="provider-fetch-banner provider-fetch-banner--warn" role="alert">
+            <span>{checkResult.text}</span>
+            <button type="button" className="btn btn--small" disabled={checking} onClick={() => void checkConnection()}>
+              {t("common.retry")}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {adding !== null && (
+        <AddProviderPanel
+          mode={adding}
+          kinds={s.providerKinds}
+          busy={busy}
+          onMode={setAdding}
+          onCancel={() => setAdding(null)}
+          onAddOfficial={async (kind, key, name) => {
+            const ok = await applyResult(async () => {
+              const warning = await app.AddOfficialProviderAccess(kind, key, name);
+              const latest = await app.Settings();
+              const probe = latest.providers.find((provider) => provider.added && provider.name === name);
+              if (!probe) throw new Error(t("settings.modelConnectionMissingProvider"));
+              const models = await app.FetchProviderModels(probe);
+              if (models.length === 0) throw new Error(t("settings.modelConnectionNoModels"));
+              return warning;
+            });
+            if (ok) {
+              setAdding(null);
+              setCheckResult({ kind: "ok", text: t("settings.modelConnectionSaved") });
+            }
+          }}
+          onAddCustom={async (provider) => {
+            const ok = await applyResult(() => app.SaveProvider(provider));
+            if (ok) setAdding(null);
+          }}
+        />
+      )}
+
+      {manageOpen && <ProvidersSection s={s} busy={busy} apply={apply} showAddAction={false} />}
+
+      <SettingsSection title={t("settings.defaultModelSimple")} description={t("settings.defaultModelHint")}>
+        <div className="model-default-control">
+          <ModelPicker
+            s={s}
+            refs={refs}
+            value={toRef(s.defaultModel, s)}
+            disabled={busy || refs.length === 0}
+            onPick={(ref) => {
+              setDefaultSaved(false);
+              void applyResult(() => app.SetDefaultModel(ref)).then(setDefaultSaved);
+            }}
+          />
+          {defaultSaved && <span className="model-default-control__saved"><CheckCircle2 size={15} aria-hidden="true" />{t("settings.autoSaved")}</span>}
+          {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
+        </div>
+      </SettingsSection>
+
+      <section className="model-advanced">
         <button
           type="button"
-          className={`settings-subtab${subtab === "usage" ? " settings-subtab--active" : ""}`}
-          aria-selected={subtab === "usage"}
-          onClick={() => setSubtab("usage")}
+          className="model-advanced__toggle"
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((open) => !open)}
         >
-          {t("settings.modelTab.usage")}
+          <div>
+            <strong>{t("settings.modelAdvanced")}</strong>
+            <span>{t("settings.modelAdvancedHint")}</span>
+          </div>
+          {advancedOpen ? <ChevronUp size={20} aria-hidden="true" /> : <ChevronDown size={20} aria-hidden="true" />}
         </button>
-        <button
-          type="button"
-          className={`settings-subtab${subtab === "access" ? " settings-subtab--active" : ""}`}
-          aria-selected={subtab === "access"}
-          onClick={() => setSubtab("access")}
-        >
-          {t("settings.modelTab.access")}
-        </button>
-      </div>
-
-      {subtab === "usage" ? (
-        <>
-          <SettingsSection title={t("settings.modelUsage")}>
-            <SettingsField label={t("settings.defaultModel")} hint={t("settings.defaultModelHint")}>
-              <ModelPicker
-                s={s}
-                refs={refs}
-                value={toRef(s.defaultModel, s)}
-                disabled={busy}
-                onPick={(ref) => void apply(() => app.SetDefaultModel(ref))}
-              />
-            </SettingsField>
-
-            <SettingsField label={t("settings.plannerModel")}>
-              <ModelPicker
+        {advancedOpen && (
+          <div className="model-advanced__body">
+            <SettingsSection title={t("settings.modelCollaboration")}>
+              <SettingsField label={t("settings.plannerModelSimple")} hint={t("settings.plannerNoneHint")}>
+                <ModelPicker
                 s={s}
                 refs={refs}
                 value={plannerSelectRef}
@@ -3012,9 +3157,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                 includeSameDefault
                 onPick={(ref) => void apply(() => app.SetPlannerModel(ref))}
               />
-            </SettingsField>
-
-            <SettingsField label={t("settings.subagentModel")}>
+              </SettingsField>
+              <SettingsField label={t("settings.subagentModelSimple")}>
               <ModelPicker
                 s={s}
                 refs={refs}
@@ -3024,9 +3168,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                 emptyOptionHint={t("common.auto")}
                 onPick={(ref) => void apply(() => app.SetSubagentModel(ref))}
               />
-            </SettingsField>
-
-            <SettingsField label={t("settings.subagentEffort")} hint={t("settings.subagentHint")}>
+              </SettingsField>
+              <SettingsField label={t("settings.subagentEffortSimple")} hint={t("settings.subagentHint")}>
               <select
                 className="mem-select set-grow"
                 value={s.subagentEffort || ""}
@@ -3040,9 +3183,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </option>
                 ))}
               </select>
-            </SettingsField>
-
-            <SettingsField label={t("settings.subagentDepth")} hint={t("settings.subagentDepthHint")}>
+              </SettingsField>
+              <SettingsField label={t("settings.subagentDepthSimple")} hint={t("settings.subagentDepthHint")}>
               <div className="provider-add-segmented" role="group" aria-label={t("settings.subagentDepth")}>
                 {[1, 2].map((depth) => (
                   <button
@@ -3057,28 +3199,26 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </button>
                 ))}
               </div>
-            </SettingsField>
-
-            {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
-          </SettingsSection>
-          <SettingsSection title={t("settings.agentRuntime")} description={t("settings.agentRuntimeHint")}>
-            <SettingsField label={t("settings.executorMaxSteps")} hint={t("settings.executorMaxStepsHint")}>
+              </SettingsField>
+            </SettingsSection>
+            <SettingsSection title={t("settings.agentRuntime")} description={t("settings.agentRuntimeHint")}>
+              <SettingsField label={t("settings.executorMaxSteps")} hint={t("settings.executorMaxStepsHint")}>
               <StepLimitControl
                 value={agent.maxSteps}
                 presets={[10, 25, 50, 0]}
                 busy={busy}
                 onChange={(next) => void apply(() => setAgentSteps(next, agent.plannerMaxSteps))}
               />
-            </SettingsField>
-            <SettingsField label={t("settings.plannerMaxSteps")} hint={plannerSelectRef ? t("settings.plannerMaxStepsHint") : t("settings.plannerMaxStepsDisabledHint")}>
+              </SettingsField>
+              <SettingsField label={t("settings.plannerMaxSteps")} hint={plannerSelectRef ? t("settings.plannerMaxStepsHint") : t("settings.plannerMaxStepsDisabledHint")}>
               <StepLimitControl
                 value={agent.plannerMaxSteps}
                 presets={[6, 12, 25, 0]}
                 busy={busy}
                 onChange={(next) => void apply(() => setAgentSteps(agent.maxSteps, next))}
               />
-            </SettingsField>
-            <SettingsField label={t("settings.coldResumePrune")} hint={t("settings.coldResumePruneHint")}>
+              </SettingsField>
+              <SettingsField label={t("settings.coldResumePrune")} hint={t("settings.coldResumePruneHint")}>
               <div className="set-seg">
                 {([true, false] as const).map((on) => (
                   <button
@@ -3091,8 +3231,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </button>
                 ))}
               </div>
-            </SettingsField>
-            <SettingsField label={t("settings.reasoningLanguage")} hint={t("settings.reasoningLanguageHint")}>
+              </SettingsField>
+              <SettingsField label={t("settings.reasoningLanguage")} hint={t("settings.reasoningLanguageHint")}>
               <div className="set-seg">
                 {(["auto", "zh", "en"] as const).map((lang) => (
                   <button
@@ -3105,13 +3245,12 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </button>
                 ))}
               </div>
-            </SettingsField>
-          </SettingsSection>
-        </>
-      ) : (
-        <ProvidersSection s={s} busy={busy} apply={apply} />
-      )}
-    </>
+              </SettingsField>
+            </SettingsSection>
+          </div>
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -3348,7 +3487,7 @@ function proxyModeLabel(mode: ProxyMode, t: ReturnType<typeof useT>): string {
   }
 }
 
-function ProvidersSection({ s, busy, apply }: SectionProps) {
+function ProvidersSection({ s, busy, apply, showAddAction = true }: SectionProps & { showAddAction?: boolean }) {
   const t = useT();
   const defaultProvider = toRef(s.defaultModel, s).split("/")[0];
   const [editing, setEditing] = useState<string | null>(null);
@@ -3536,25 +3675,25 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     <SettingsSection
       title={t("settings.providerAccess")}
       description={t("settings.providerAccessHint")}
-      actions={
+      actions={showAddAction ? (
         <button className="btn btn--small" disabled={busy || adding !== null} onClick={() => setAdding("official")}>
           {t("settings.addProvider")}
         </button>
-      }
+      ) : undefined}
     >
       <div className="provider-access-grid">
         {groups.length === 0 && adding === null && (
           <div className="provider-empty">
             <strong>{t("settings.providerAccessEmptyTitle")}</strong>
             <span>{t("settings.providerAccessEmptyHint")}</span>
-            <div className="provider-empty__actions">
+            {showAddAction && <div className="provider-empty__actions">
               <button type="button" className="btn btn--small" disabled={busy} onClick={() => setAdding("official")}>
                 {t("settings.addProvider.officialChoice")}
               </button>
               <button type="button" className="btn btn--small" disabled={busy} onClick={() => setAdding("custom")}>
                 {t("settings.addProvider.customChoice")}
               </button>
-            </div>
+            </div>}
           </div>
         )}
         {adding !== null && (
@@ -3697,9 +3836,7 @@ function AddProviderPanel({
   const t = useT();
   const [officialKind, setOfficialKind] = useState<OfficialProviderKind>("deepseek");
   const [key, setKey] = useState("");
-  const [providerName, setProviderName] = useState("");
   const selected = OFFICIAL_PROVIDER_CHOICES.find((choice) => choice.kind === officialKind) ?? OFFICIAL_PROVIDER_CHOICES[0];
-  useEffect(() => { setProviderName(selected.defaultName); }, [officialKind]);
 
   const header = (
     <div className="provider-add-panel__head">
@@ -3757,15 +3894,6 @@ function AddProviderPanel({
             </button>
           ))}
         </div>
-        <label className="set-label">{t("settings.providerName")}</label>
-        <input
-          className="mem-input"
-          type="text"
-          placeholder={selected.defaultName}
-          value={providerName}
-          disabled={busy}
-          onChange={(e) => setProviderName(e.target.value)}
-        />
         <label className="set-label">{t("settings.providerKeyOptional")}</label>
         <input
           className="mem-input"
@@ -3783,7 +3911,7 @@ function AddProviderPanel({
             type="button"
             className="btn btn--primary btn--small"
             disabled={busy}
-            onClick={() => void onAddOfficial(officialKind, key.trim(), providerName.trim() || selected.defaultName)}
+            onClick={() => void onAddOfficial(officialKind, key.trim(), selected.defaultName)}
           >
             {t("settings.addProvider.confirm")}
           </button>

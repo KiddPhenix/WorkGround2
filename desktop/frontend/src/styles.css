@@ -12845,6 +12845,192 @@ body > .mermaid-diagram--fullscreen {
   overflow-wrap: anywhere;
 }
 
+.model-settings-simple {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.model-connection-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.model-connection-overview__head,
+.model-connection-overview__service {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.model-connection-overview__status,
+.model-connection-overview__identity,
+.model-connection-overview__actions,
+.model-default-control__saved {
+  display: flex;
+  align-items: center;
+}
+
+.model-connection-overview__status {
+  min-width: 0;
+  gap: 14px;
+}
+
+.model-connection-overview__status h2 {
+  margin: 0;
+  color: var(--fg);
+  font-size: clamp(22px, 2vw, 30px);
+  line-height: 1.15;
+}
+
+.model-connection-overview__status p {
+  margin: 5px 0 0;
+  color: var(--fg-dim);
+  font-size: var(--font-control);
+}
+
+.model-connection-overview__dot {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--fg-faint) 16%, transparent);
+}
+
+.model-connection-overview__dot--connected {
+  background: var(--ok);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--ok) 16%, transparent);
+}
+
+.model-add-service {
+  min-height: 44px;
+  padding-inline: 18px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.model-connection-overview__identity {
+  min-width: 0;
+  gap: 14px;
+}
+
+.model-connection-overview__identity strong {
+  color: var(--fg);
+  font-size: var(--text-lg);
+}
+
+.model-connection-overview__identity span {
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+}
+
+.model-connection-overview__actions {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
+.model-connection-overview__actions .btn {
+  gap: 7px;
+}
+
+.model-settings-simple > .settings-section {
+  margin-inline: 24px;
+}
+
+.model-default-control {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.model-default-control .model-picker {
+  width: 100%;
+  max-width: none;
+}
+
+.model-default-control__saved {
+  gap: 6px;
+  color: var(--ok);
+  font-size: var(--font-control-small);
+}
+
+.model-advanced {
+  margin: 0 24px 24px;
+  border-top: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.model-advanced__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 18px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-advanced__toggle > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.model-advanced__toggle strong {
+  font-size: var(--text-lg);
+}
+
+.model-advanced__toggle span {
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+}
+
+.model-advanced__toggle:hover,
+.model-advanced__toggle:focus-visible {
+  color: var(--accent);
+}
+
+.model-advanced__body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 0 0 20px;
+}
+
+.model-settings-simple > .provider-add-panel,
+.model-settings-simple > .settings-section:has(.provider-access-grid) {
+  margin-inline: 24px;
+}
+
+@media (max-width: 900px) {
+  .model-connection-overview__head,
+  .model-connection-overview__service {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .model-add-service {
+    width: 100%;
+  }
+
+  .model-connection-overview__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+}
+
 .settings-subtabs {
   display: inline-flex;
   max-width: 100%;

@@ -56,3 +56,43 @@ wails build -o WorkGround2-iris-qa.exe -m -nosyncgomod
 ```
 
 浏览器验证覆盖：完成 Run 展开、AddOn 关闭/重开、登录字段输入、Queue 下移、同视口视觉对照、1024/820 宽度稳定性。Wails 真实桌面验证覆盖：真实 Workspace/Session 树、长会话名、真实历史内容及滚动、折叠思考/工具块、空产物态、Composer、运行配置条、单滚动容器与 Windows 无框窗口边界。
+
+---
+
+# 模型设置简化设计 QA
+
+## 结论
+
+- 最终状态：通过。
+- 设计基准：`docs/assets/model-configuration-ux-design.png`。
+- 实现快照：`docs/assets/model-configuration-implemented.png`。
+- 并排对照：`docs/assets/model-configuration-qa-comparison.png`。
+- P0 / P1 / P2 / P3：0。
+
+## 对照结果
+
+实现保持了设计基准的核心层级：顶部先显示连接状态和显式“添加模型服务”主按钮，中部只保留默认模型，复杂任务、多模型协作与运行上限统一折叠到高级区。连接状态、供应商名称、检查连接与管理连接集中在同一区域；已配置但 `added=false` 的官方默认供应商按真实凭据状态显示为已连接，默认模型不再误报“未配置”。
+
+官方接入流程默认隐藏内部供应商名称，只要求选择服务并填写密钥；保存后立即验证模型列表，失败会显式提示并保留密钥草稿供安全重试。Anthropic 与 Google 官方模型发现分别使用各自受支持的鉴权头和兼容端点。
+
+## 浏览器交互检查
+
+- “+ 添加模型服务”在模型页首屏始终可见且唯一，点击后在当前页面展开官方/自定义接入。
+- 官方接入只暴露服务选择与密钥输入，DeepSeek、OpenAI、Anthropic、Google、Groq 预设可见。
+- 默认模型显示 `deepseek-v4-flash` 与“已设密钥”，没有“未配置模型”误报。
+- 高级区默认收起；展开后显示规划模型、协作助手模型、思考深度、嵌套深度与运行上限。
+- 设置导航、主内容和内部滚动在 1212 × 720 的 Wails 模拟窗口中无横向溢出。
+
+## 验证记录
+
+```text
+npm.cmd run build
+npm.cmd run typecheck
+npx.cmd tsx src/__tests__/model-settings-simplification.test.tsx
+npx.cmd tsx src/__tests__/settings-refresh-snapshot.test.tsx
+go test ./internal/config/
+```
+
+模型设置专项契约共 14 项通过；既有设置刷新契约 18 项通过。浏览器实际渲染验收覆盖连接状态、默认模型、添加入口、添加表单与高级区展开。
+
+仓库前端全量 `npm.cmd test` 运行到既有 `composer-goal-toggle.test.tsx` 时失败，原因为 Composer stop button 未渲染；该用例单独运行可稳定复现，且本功能未改动 Composer。模型设置专项、相关设置回归、TypeScript、CSS、生产构建与 desktop 全量 Go 测试均独立通过。
