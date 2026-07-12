@@ -2,6 +2,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| CLI 会话标题启动对账 | done | `developping/session-title-startup-reconcile+2026-07-12` | Codex | `desktop/tabs.go`, `desktop/tabs_title_reconcile_test.go` | 启动构建 SessionList 时仅对空标题或自动来源的“新的会话”做 sidecar 级轻量对账；优先最新 session 的命名标题、CustomTitle、TopicTitle 与 Preview，不读取完整 JSONL，不覆盖手工标题。5 项专项回归、desktop 全量 Go 测试和 go vet 通过。 |
 | 会话初始化内容展示解耦 | done | `developping/session-hydration-view+2026-07-12` | Codex | `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/tab-switch-hydration.test.tsx` | 历史加载状态已与 Controller/附属数据 hydrate 解耦，并按 sessionPath 记录包括空历史在内的解析结果；同一路径 agent:ready 可幂等复用，不再卸载 Welcome。72 项 hydration 回归、12 项新会话竞态回归、生产 TypeScript 检查和前端构建通过。 |
 | 会话最近摘要分层展示 | done | `developping/session-recap-headline+2026-07-12` | Codex + WorkGround2 | `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `TaskMemoryBar.tsx`, `desktop-ui-components.test.tsx` | 最近 assistant 原文先提炼为同源的新闻式 headline 与完整摘要；横条只展示 headline 并由 CSS 省略，Tooltip 展示未截断的完整摘要。过滤代码块、路径、命令和逐项清单，合并验证结果。159 项组件测试、类型检查及生产构建通过。 |
 | 工作台侧栏窄屏切换 | done | `developping/workbench-sidebar-toggle+2026-07-12` | Codex + WorkGround2 | `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__` | 工作台 SessionList 已与统一的 sidebarCollapsed 状态及 Ctrl+B 联动；宽屏可折叠，820px 以下展开为浮层，并提供可点击收起/展开按钮。App Chrome 74 项、Workbench 89 项专项测试及生产构建通过。 |
