@@ -384,6 +384,83 @@ ok(
   "CSS: session tree restores Firefox thin scrollbar after the broad sidebar rule",
 );
 
+// ── Sidebar collapse ──────────────────────────────────────────────────────
+
+// CSS: collapsed sidebar is hidden
+ok(
+  finalDeclaration(stylesSource, ".layout--workbench.layout--sidebar-collapsed .workspace-sidebar", "display") === "none",
+  "CSS: collapsed workbench sidebar is hidden",
+);
+
+// CSS: collapsed session-workspace spans full grid
+const collapsedGridCol = finalDeclaration(stylesSource, ".layout--workbench.layout--sidebar-collapsed .session-workspace", "grid-column");
+ok(collapsedGridCol === "1 / -1", `CSS: collapsed session-workspace spans 1 / -1 (got: ${collapsedGridCol})`);
+
+// App.tsx: collapse button exists in workspace-sidebar brand
+ok(
+  includes(appSource, 'className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}') &&
+    includes(appSource, 'aria-label={sidebarToggleTitle}') &&
+    includes(appSource, 'aria-pressed={!sidebarCollapsed}'),
+  "App.tsx: workspace-sidebar brand has PanelLeft collapse button with correct aria",
+);
+
+// App.tsx: expand button in session-header when collapsed
+ok(
+  includes(appSource, 'className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}') &&
+    includes(appSource, 'className="session-header__identity"') &&
+    includes(appSource, "{sidebarCollapsed && (") &&
+    includes(appSource, '<PanelRight size={15} aria-hidden="true" />'),
+  "App.tsx: session-header shows PanelRight expand button when sidebar is collapsed",
+);
+
+ok(
+  finalDeclaration(stylesSource, ".session-header__identity", "min-width") === "0" &&
+    finalDeclaration(stylesSource, ".session-header__identity", "flex") === "1 1 auto",
+  "CSS: session header identity keeps the expand button and ellipsized title in one flexible group",
+);
+
+// CSS: collapse button is transparent with hover
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "background") === "transparent",
+  "CSS: collapse button has transparent background by default",
+);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "--wails-draggable") === "no-drag",
+  "CSS: collapse button opts out of window dragging",
+);
+
+// CSS: expand button in session header
+ok(
+  finalDeclaration(stylesSource, ".session-header__expand-btn", "margin-right") === "12px",
+  "CSS: expand button has right margin before title",
+);
+ok(
+  finalDeclaration(stylesSource, ".session-header__expand-btn", "--wails-draggable") === "no-drag",
+  "CSS: expand button opts out of window dragging",
+);
+
+// ── 820px responsive workspace-sidebar ──────────────────────────────────────
+
+// At narrow widths, expanded workspace-sidebar floats as overlay
+const respFloatDisp = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "display");
+ok(respFloatDisp === "flex", `CSS (820px): expanded workspace-sidebar display is flex (got: ${respFloatDisp})`);
+const respFloatPos = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "position");
+ok(respFloatPos === "absolute", `CSS (820px): expanded workspace-sidebar floats as overlay (got: ${respFloatPos})`);
+const respFloatZ = finalDeclaration(stylesSource, ".app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "z-index");
+ok(respFloatZ === "var(--z-workspace-float)", `CSS (820px): floating workspace-sidebar uses --z-workspace-float (got: ${respFloatZ})`);
+
+// At narrow widths, collapsed workspace-sidebar is hidden
+const respCollDisp = finalDeclaration(stylesSource, ".app .layout.layout--workbench.layout--sidebar-collapsed .workspace-sidebar", "display");
+ok(respCollDisp === "none", `CSS (820px): collapsed workspace-sidebar is hidden (got: ${respCollDisp})`);
+
+// At narrow widths, session-workspace always fills the grid
+const respSessGrid = finalDeclaration(stylesSource, ".app .layout.layout--workbench .session-workspace", "grid-column");
+ok(respSessGrid === "1 / -1", `CSS (820px): session-workspace always fills grid (got: ${respSessGrid})`);
+
+// Themed variant also covered for floating workspace-sidebar
+const themedFloatDisp = finalDeclaration(stylesSource, ":root[data-theme-style] .app .layout.layout--workbench:not(.layout--sidebar-collapsed) .workspace-sidebar", "display");
+ok(themedFloatDisp === "flex", `CSS (820px themed): expanded workspace-sidebar display is flex (got: ${themedFloatDisp})`);
+
 // ── Done ─────────────────────────────────────────────────────────────────────
 
 const total = passed + failed;

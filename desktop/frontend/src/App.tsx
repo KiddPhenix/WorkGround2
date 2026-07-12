@@ -3065,7 +3065,7 @@ export default function App() {
         {sidebarWorkbench ? (
           <>
             {/* Iris layout — preserves controller state, overlays still render below */}
-            <aside className="workspace-sidebar" aria-label="Workspace sidebar">
+            <aside className={`workspace-sidebar${sidebarCollapsed ? " workspace-sidebar--collapsed" : ""}`} aria-label="Workspace sidebar">
               <div className="workspace-sidebar__brand">
                 <img
                   src={logoWordmark}
@@ -3073,6 +3073,17 @@ export default function App() {
                   className="workspace-sidebar__brand-logo"
                   draggable={false}
                 />
+                <Tooltip label={sidebarToggleTitle} side="right">
+                  <button
+                    className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
+                    type="button"
+                    onClick={toggleSidebar}
+                    aria-label={sidebarToggleTitle}
+                    aria-pressed={!sidebarCollapsed}
+                  >
+                    <PanelLeft size={15} aria-hidden="true" />
+                  </button>
+                </Tooltip>
               </div>
 
               <button
@@ -3142,9 +3153,24 @@ export default function App() {
     <section className="session-workspace" aria-label="Session workspace">
               {/* SessionHeader (104px) */}
               <header className="session-header">
-                <h1 className="session-header__title" title={irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}>
-                  {irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}
-                </h1>
+                <div className="session-header__identity">
+                  {sidebarCollapsed && (
+                    <Tooltip label={sidebarToggleTitle}>
+                      <button
+                        className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}
+                        type="button"
+                        onClick={toggleSidebar}
+                        aria-label={sidebarToggleTitle}
+                        aria-pressed={!sidebarCollapsed}
+                      >
+                        <PanelRight size={15} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
+                  <h1 className="session-header__title" title={irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}>
+                    {irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}
+                  </h1>
+                </div>
                 <div className="session-header__actions">
                   <AddOnLauncherButton />
                   <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => void openPalette()}>

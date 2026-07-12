@@ -153,10 +153,11 @@ ok(
 );
 
 ok(
-  /"sidebar__header-toggle"/.test(appSource) &&
-    /workbenchChromeHidden && sidebarCollapsed && \(/.test(appSource) &&
-    /"topicbar__chrome-btn--sidebar"/.test(appSource),
-  "workbench puts collapse in the sidebar head and expand in collapsed top chrome",
+  /workspace-sidebar__collapse-btn/.test(appSource) &&
+    /session-header__expand-btn/.test(appSource) &&
+    /workspace-sidebar--collapsed/.test(appSource) &&
+    /sidebarCollapsed &&\s*\([\s\S]*?session-header__expand-btn/.test(appSource),
+  "real workbench puts PanelLeft collapse in sidebar brand and PanelRight expand in session header when collapsed",
 );
 
 ok(
