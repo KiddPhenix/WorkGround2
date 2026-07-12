@@ -141,6 +141,8 @@ interface State {
   hydrateError?: string;
   hydrateHistoryLoaded?: boolean;
   hydratePlaceholderItems?: Item[];
+  historyLoading: boolean;
+  historyResolvedPath?: string;
   historyStartTurn: number;
   historyTotalTurns: number;
   historyHasOlder: boolean;
@@ -178,6 +180,7 @@ export const initialState: State = {
   jobs: [],
   checkpoints: [],
   hydrating: false,
+  historyLoading: true,
   historyStartTurn: 0,
   historyTotalTurns: 0,
   historyHasOlder: false,
@@ -360,8 +363,16 @@ function hasCachedLiveTurn(state: State | undefined): boolean {
 }
 
 function hasReusableCachedTranscript(state: State | undefined, sessionPath?: string): boolean {
-  if (!state || state.items.length === 0) return false;
+  if (!state) return false;
   const expectedSessionPath = (sessionPath ?? "").trim();
+  if (state.historyResolvedPath !== undefined) {
+    if (!expectedSessionPath) return true;
+    return state.historyResolvedPath.trim() === expectedSessionPath;
+  }
+  // Live/event-projected transcripts predate history resolution. Preserve the
+  // existing cache behavior for non-empty content while the explicit resolved
+  // path extends the same guarantee to a successfully loaded empty session.
+  if (state.items.length === 0) return false;
   if (!expectedSessionPath) return true;
   return (state.meta?.sessionPath ?? "").trim() === expectedSessionPath;
 }
@@ -442,15 +453,15 @@ type Action =
   | { type: "effort"; effort: EffortInfo }
   | { type: "jobs"; jobs: JobView[] }
   | { type: "checkpoints"; checkpoints: CheckpointMeta[] }
-  | { type: "hydrate_start"; reason: HydrateReason; placeholderItems?: Item[] }
+  | { type: "hydrate_start"; reason: HydrateReason; placeholderItems?: Item[]; historyLoading?: boolean }
   | { type: "hydrate_done" }
   | { type: "hydrate_error"; reason: HydrateReason; error: string }
   | { type: "backend_activation_start" }
   | { type: "backend_activation_done" }
   | { type: "message_action_start"; action: MessageActionState }
   | { type: "message_action_done" }
-  | { type: "history"; messages: HistoryMessage[] }
-  | { type: "history_page"; page: HistoryPage; mode: "replace" | "prepend" }
+  | { type: "history"; messages: HistoryMessage[]; sessionPath?: string }
+  | { type: "history_page"; page: HistoryPage; mode: "replace" | "prepend"; sessionPath?: string }
   | { type: "history_older_start" }
   | { type: "history_older_error" }
   | { type: "history_checkpoint_turns"; turns: number[] }
@@ -1082,6 +1093,8 @@ export function reducer(s: State, a: Action): State {
       hydrateError: undefined,
       hydrateHistoryLoaded: false,
       hydratePlaceholderItems: a.placeholderItems?.length ? a.placeholderItems : undefined,
+      historyLoading: a.historyLoading ?? true,
+      historyResolvedPath: a.historyLoading === false ? s.historyResolvedPath : undefined,
     };
     case "hydrate_done": return s.hydrating || s.hydrateReason || s.hydrateError || s.hydrateHistoryLoaded || s.hydratePlaceholderItems
       ? { ...s, hydrating: false, hydrateReason: undefined, hydrateError: undefined, hydrateHistoryLoaded: undefined, hydratePlaceholderItems: undefined }
@@ -1093,7 +1106,7 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(appendStartupQueued(items, s.items)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
+      return { ...s, items: compactArchivedToolItems(appendStartupQueued(items, s.items)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyLoading: false, historyResolvedPath: a.sessionPath ?? s.meta?.sessionPath ?? "", historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
     }
     case "history_page": {
       const { items, seq } = historyPageItems(a.page);
@@ -1104,6 +1117,8 @@ export function reducer(s: State, a: Action): State {
         seq: Math.max(s.seq, seq),
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
+        historyLoading: false,
+        historyResolvedPath: a.sessionPath ?? s.meta?.sessionPath ?? "",
         historyStartTurn: a.page.startTurn,
         historyTotalTurns: a.page.totalTurns,
         historyHasOlder: a.page.hasOlder,
@@ -1291,11 +1306,11 @@ export function useController() {
       const hydrateStartedAt = Date.now();
       const skipHistory = Boolean(
         options.skipHistory ||
-        (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), options.sessionPath)),
+        (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), sessionPath)),
       );
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
-      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems });
       if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset" });
+      dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems, historyLoading: !skipHistory });
 
       const stillCurrent = () => sessionLoadCurrent(tabId, seq);
       const noteFailure = (label: string, err: unknown) => {
@@ -1317,7 +1332,7 @@ export function useController() {
       if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
       if (!skipHistory && historyPage !== undefined) {
         const messages = asArray(historyPage.messages);
-        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace" });
+        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace", sessionPath });
         projectRunHistory(tabId, statesRef.current.get(tabId)?.items ?? []);
         addBreadcrumb(
           "tab.hydrate",
@@ -1424,7 +1439,7 @@ export function useController() {
         dispatchTo(targetTabId, { type: "history_older_error" });
         return;
       }
-      dispatchTo(targetTabId, { type: "history_page", page, mode: "prepend" });
+      dispatchTo(targetTabId, { type: "history_page", page, mode: "prepend", sessionPath });
       addBreadcrumb(
         "tab.hydrate",
         `history older ${targetTabId} messages=${asArray(page.messages).length} turns=${page.startTurn}-${page.endTurn}/${page.totalTurns} ms=${Date.now() - startedAt}`,
@@ -1925,7 +1940,10 @@ export function useController() {
     }
     invalidateCache();
     if (tabId) {
-      dispatchTo(tabId, { type: "history", messages: [] });
+      const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
+      const tab = tabs.find((candidate) => candidate.id === tabId);
+      if (tab) dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(tab, statesRef.current.get(tabId)?.meta) });
+      dispatchTo(tabId, { type: "history", messages: [], sessionPath: tab?.sessionPath });
       dispatchTo(tabId, { type: "hydrate_done" });
       void refreshMetaForTab(tabId, dispatchTo);
       app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
@@ -1980,7 +1998,7 @@ export function useController() {
     }
     if (!sessionLoadCurrent(targetTabId, seq)) return;
     dispatchTo(targetTabId, { type: "reset" });
-    dispatchTo(targetTabId, { type: "history_page", page, mode: "replace" });
+    dispatchTo(targetTabId, { type: "history_page", page, mode: "replace", sessionPath: path });
     dispatchTo(targetTabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(targetTabId);
     app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
@@ -2004,7 +2022,7 @@ export function useController() {
     }
     if (!sessionLoadCurrent(tabId, seq)) return;
     dispatchTo(tabId, { type: "reset" });
-    dispatchTo(tabId, { type: "history_page", page, mode: "replace" });
+    dispatchTo(tabId, { type: "history_page", page, mode: "replace", sessionPath: path });
     dispatchTo(tabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(tabId);
     app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});

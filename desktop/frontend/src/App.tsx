@@ -2360,7 +2360,9 @@ export default function App() {
     state.items.length === 0 &&
     state.hydratePlaceholderItems?.length,
   );
-  const transcriptHydrating = state.hydrating && !state.hydrateHistoryLoaded;
+  // Runtime/ancillary hydration may repeat after agent:ready. Only unresolved
+  // history should replace the transcript surface with its loading state.
+  const transcriptHydrating = state.historyLoading;
   const transcriptItems = hydratePlaceholderActive ? state.hydratePlaceholderItems! : state.items;
 
   // Display items: truncated when an optimistic rewind is pending.

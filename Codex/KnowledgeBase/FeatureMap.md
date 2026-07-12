@@ -2,6 +2,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 会话初始化内容展示解耦 | done | `developping/session-hydration-view+2026-07-12` | Codex | `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/tab-switch-hydration.test.tsx` | 历史加载状态已与 Controller/附属数据 hydrate 解耦，并按 sessionPath 记录包括空历史在内的解析结果；同一路径 agent:ready 可幂等复用，不再卸载 Welcome。72 项 hydration 回归、12 项新会话竞态回归、生产 TypeScript 检查和前端构建通过。 |
 | 会话最近摘要分层展示 | done | `developping/session-recap-headline+2026-07-12` | Codex + WorkGround2 | `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `TaskMemoryBar.tsx`, `desktop-ui-components.test.tsx` | 最近 assistant 原文先提炼为同源的新闻式 headline 与完整摘要；横条只展示 headline 并由 CSS 省略，Tooltip 展示未截断的完整摘要。过滤代码块、路径、命令和逐项清单，合并验证结果。159 项组件测试、类型检查及生产构建通过。 |
 | 工作台侧栏窄屏切换 | done | `developping/workbench-sidebar-toggle+2026-07-12` | Codex + WorkGround2 | `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__` | 工作台 SessionList 已与统一的 sidebarCollapsed 状态及 Ctrl+B 联动；宽屏可折叠，820px 以下展开为浮层，并提供可点击收起/展开按钮。App Chrome 74 项、Workbench 89 项专项测试及生产构建通过。 |
 | 会话总结浮层显示全文 | done | `developping/full-session-summary-tooltip+2026-07-12` | Codex | `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `desktop/frontend/src/__tests__/desktop-ui-components.test.tsx` | 保留总结清洗后的完整文本，行内继续由 CSS 省略，悬浮浮层展示全文。149 项专项组件测试、TypeScript 检查和前端生产构建通过。 |
