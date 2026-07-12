@@ -29,14 +29,18 @@ import type { Item } from "../../lib/useController";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function compactRecentText(text: string, maxRunes = 96): string {
-  const plain = text
+function plainRecentText(text: string): string {
+  return text
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
     .replace(/^[#>*+-]+\s*/gm, "")
     .replace(/[`_|]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function compactRecentText(text: string, maxRunes = 96): string {
+  const plain = plainRecentText(text);
   const runes = Array.from(plain);
   return runes.length > maxRunes ? `${runes.slice(0, maxRunes).join("")}…` : plain;
 }
@@ -46,13 +50,13 @@ export function recentSessionSummary(items: Item[]): string | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.kind === "assistant" && !item.streaming && item.text.trim()) {
-      return compactRecentText(item.text) || null;
+      return plainRecentText(item.text) || null;
     }
   }
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
     if (item.kind === "user" && !item.queued && item.text.trim()) {
-      const text = compactRecentText(item.text);
+      const text = plainRecentText(item.text);
       return text ? `处理：${text}` : null;
     }
   }

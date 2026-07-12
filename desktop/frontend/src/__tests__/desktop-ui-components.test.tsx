@@ -331,7 +331,21 @@ installDom();
     { kind: "user", id: "u1", text: "增加启动脚本" },
     { kind: "assistant", id: "a1", text: "## 已完成\n创建了 `start.bat`、`start.ps1` 和 `start.sh`。", reasoning: "", streaming: false },
   ]);
-  ok(summary === "已完成 创建了 start.bat、start.ps1 和 start.sh。", "SessionMemoryBar: recap is compacted from real assistant history");
+  ok(summary === "已完成 创建了 start.bat、start.ps1 和 start.sh。", "SessionMemoryBar: recap is cleaned from real assistant history");
+}
+
+{
+  const fullText = "需要完整展示的会话总结".repeat(12);
+  const summary = recentSessionSummary([
+    { kind: "user", id: "u-long", text: fullText },
+  ]);
+  ok(summary === `处理：${fullText}`, "SessionMemoryBar: long recap keeps the complete cleaned transcript for its tooltip");
+  ok(!summary?.endsWith("…"), "SessionMemoryBar: long recap is not truncated before rendering");
+
+  const container = render(<TaskMemoryBar memoryLine={null} recentlyDid={summary} />);
+  const ariaLabel = container.querySelector(".task-memory-bar")?.getAttribute("aria-label") ?? "";
+  ok(ariaLabel === `最近：${summary}`, "TaskMemoryBar: long recap exposes the same full text to disclosure UI");
+  cleanup();
 }
 
 {
