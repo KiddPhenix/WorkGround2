@@ -3115,6 +3115,139 @@ func autoTitleTopicFromSession(workspaceRoot, topicID, sessionPath string) (stri
 	return nextTitle, true
 }
 
+type topicTitleCandidate struct {
+	title          string
+	source         string
+	lastActivityAt time.Time
+	createdAt      time.Time
+	path           string
+}
+
+// collectTopicTitleCandidates derives one title per topic from the sidecars
+// ListProjectTree already loaded. It never opens a transcript body.
+func collectTopicTitleCandidates(sessionInfos map[string]agent.SessionInfo, sessionTitles map[string]string) map[string]topicTitleCandidate {
+	out := make(map[string]topicTitleCandidate)
+	for sessionKey, info := range sessionInfos {
+		if strings.TrimSpace(info.TopicID) == "" {
+			continue
+		}
+		title, source := sessionTitleCandidate(info, sessionTitles[sessionKey])
+		if title == "" {
+			continue
+		}
+		key := topicSummaryKey(info.Scope, info.WorkspaceRoot, info.TopicID)
+		next := topicTitleCandidate{
+			title:          title,
+			source:         source,
+			lastActivityAt: info.LastActivityAt,
+			createdAt:      info.CreatedAt,
+			path:           info.Path,
+		}
+		current, ok := out[key]
+		if !ok || newerTopicTitleCandidate(next, current) {
+			out[key] = next
+		}
+	}
+	return out
+}
+
+func newerTopicTitleCandidate(next, current topicTitleCandidate) bool {
+	if !next.lastActivityAt.Equal(current.lastActivityAt) {
+		return next.lastActivityAt.After(current.lastActivityAt)
+	}
+	if !next.createdAt.Equal(current.createdAt) {
+		return next.createdAt.After(current.createdAt)
+	}
+	return next.path > current.path
+}
+
+func sessionTitleCandidate(info agent.SessionInfo, sessionTitle string) (string, string) {
+	for _, raw := range []string{sessionTitle, info.CustomTitle, info.TopicTitle} {
+		if title := topicTitleFromText(raw); title != "" {
+			return title, topicTitleSourceManual
+		}
+	}
+	if title := topicTitleFromUserText(info.Preview); title != "" {
+		return title, topicTitleSourceAuto
+	}
+	return "", ""
+}
+
+// reconcileAndPersistTopicTitles repairs only empty/default automatic titles.
+// The in-memory map changes first so this tree render is correct even when the
+// best-effort persistence step fails.
+func reconcileAndPersistTopicTitles(scope, workspaceRoot string, topicIDs []string, titles map[string]string, candidates map[string]topicTitleCandidate) {
+	ids := orderedTopicIDs(topicIDs, titles)
+	needsReconcile := false
+	for _, topicID := range ids {
+		title := strings.TrimSpace(titles[topicID])
+		if title == "" || title == defaultTopicTitle {
+			needsReconcile = true
+			break
+		}
+	}
+	if !needsReconcile {
+		return
+	}
+
+	sources := loadTopicTitleSources(workspaceRoot)
+	updates := make(map[string]topicTitleCandidate)
+	for _, topicID := range ids {
+		currentTitle := strings.TrimSpace(titles[topicID])
+		currentSource := strings.TrimSpace(sources[topicID])
+		if currentSource == topicTitleSourceManual || (currentTitle != "" && currentTitle != defaultTopicTitle) {
+			continue
+		}
+		if currentSource != "" && currentSource != topicTitleSourceAuto {
+			continue
+		}
+		candidate, ok := candidates[topicSummaryKey(scope, workspaceRoot, topicID)]
+		if !ok || candidate.title == "" || candidate.title == currentTitle {
+			continue
+		}
+		titles[topicID] = candidate.title
+		sources[topicID] = candidate.source
+		updates[topicID] = candidate
+	}
+	if len(updates) == 0 {
+		return
+	}
+
+	diskTitles, err := loadTopicTitlesForUpdate(workspaceRoot)
+	if err != nil {
+		return
+	}
+	diskSources, err := loadTopicTitleSourcesForUpdate(workspaceRoot)
+	if err != nil {
+		return
+	}
+	write := false
+	for topicID, candidate := range updates {
+		currentTitle := strings.TrimSpace(diskTitles[topicID])
+		currentSource := strings.TrimSpace(diskSources[topicID])
+		if currentSource == topicTitleSourceManual || (currentTitle != "" && currentTitle != defaultTopicTitle) {
+			titles[topicID] = currentTitle
+			continue
+		}
+		if currentSource != "" && currentSource != topicTitleSourceAuto {
+			continue
+		}
+		diskTitles[topicID] = candidate.title
+		diskSources[topicID] = candidate.source
+		write = true
+	}
+	if !write {
+		return
+	}
+	if err := saveTopicTitles(workspaceRoot, diskTitles); err != nil {
+		slog.Warn("desktop: reconcile topic titles: save titles failed", "workspaceRoot", workspaceRoot, "err", err)
+		return
+	}
+	if err := saveTopicTitleSources(workspaceRoot, diskSources); err != nil {
+		slog.Warn("desktop: reconcile topic titles: save sources failed", "workspaceRoot", workspaceRoot, "err", err)
+	}
+}
+
 func topicTitleFallbackForOpen(workspaceRoot, topicID, sessionPath string) (string, string, bool) {
 	topicID = strings.TrimSpace(topicID)
 	sessionPath = strings.TrimSpace(sessionPath)
@@ -5546,6 +5679,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		timer.Stop()
 	}
+	topicTitleCandidates := collectTopicTitleCandidates(sessionInfos, sessionTitles)
 
 	runtimeSessionsByTopic := map[string][]runtimeSessionStatus{}
 	a.mu.RLock()
@@ -5647,6 +5781,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 	// Global section.
 	globalTitleMap := loadTopicTitles("")
 	globalCreatedMap := loadTopicCreatedAts("")
+	reconcileAndPersistTopicTitles("global", "", f.GlobalTopics, globalTitleMap, topicTitleCandidates)
 	globalTitleSetting := strings.TrimSpace(f.GlobalTitle)
 	globalTitle := globalTitleSetting
 	globalColor := normalizeProjectColor(f.GlobalColor)
@@ -5724,6 +5859,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 
 		// Gather topics: explicit topic list + all known topic titles.
 		titleMap := loaded.titles
+		reconcileAndPersistTopicTitles("project", p.Root, p.Topics, titleMap, topicTitleCandidates)
 		createdMap := loaded.createdAts
 		topicIDs := pinnedTopicIDs(orderedTopicIDs(p.Topics, titleMap), p.PinnedTopics)
 
