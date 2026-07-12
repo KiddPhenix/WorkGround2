@@ -644,7 +644,6 @@ export function Composer({
 
   useEffect(() => {
     if (wasRunning.current && !running) {
-      setPendingGuidance([]);
       setGuidanceExpanded(false);
       if (text.trim() === "") {
         pastedBlocksRef.current = [];
@@ -1185,9 +1184,15 @@ export function Composer({
   const activeGoal = (goal ?? "").trim();
   const goalModeOn = collaborationMode === "goal";
   const tokenModeOn = tokenMode === "economy";
-  const warnImageInputFallback = useCallback((message = t("composer.imageInputUnsupported")) => {
-    showToast(message, "warn");
-  }, [showToast, t]);
+  const imageInputPromptKey = "image-input-fallback";
+
+  useEffect(() => {
+    if (!imageInputEnabled && hasImageAttachments(attachments)) {
+      setComposerPrompt((prev) => (prev === imageInputPromptKey ? prev : imageInputPromptKey));
+    } else if (composerPrompt === imageInputPromptKey) {
+      setComposerPrompt(null);
+    }
+  }, [imageInputEnabled, attachments, composerPrompt]);
 
   const submit = async () => {
     if (disabled || (!running && submitDisabled) || readOnly || submittingRef.current) return;
@@ -1195,9 +1200,6 @@ export function Composer({
     const currentText = textRef.current;
     const trimmedText = currentText.trim();
     if (pendingPaste > 0) return;
-    if (!imageInputEnabled && hasImageAttachments(attachmentsRef.current)) {
-      warnImageInputFallback();
-    }
     const currentAttachments = attachmentsRef.current;
     const currentWorkspaceRefs = workspaceRefsRef.current;
     if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
@@ -2507,7 +2509,7 @@ export function Composer({
           />
           {composerPrompt && (
             <span className="composer__prompt" role="status">
-              {composerPrompt}
+              {composerPrompt === imageInputPromptKey ? t("composer.imageInputUnsupported") : composerPrompt}
             </span>
           )}
           <Tooltip label={submitTooltip}>

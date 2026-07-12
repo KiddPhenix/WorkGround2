@@ -60,7 +60,7 @@ api_key_env = "LOCAL_KEY"
 	}
 }
 
-func TestLoadForEditMigratesLegacyMCPTiers(t *testing.T) {
+func TestLoadForEditNormalizesMCPTiersInMemory(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WorkGround2.toml")
 	body := `
@@ -87,11 +87,12 @@ model = "m"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(updated), "\ntier") {
-		t.Fatalf("legacy tier lines should be removed from file:\n%s", updated)
+	// Tier lines are kept in the file; only the in-memory config is normalized.
+	if !strings.Contains(string(updated), `tier = "lazy"`) {
+		t.Fatalf("tier lines should stay in the file:\n%s", updated)
 	}
 	if !strings.Contains(string(updated), `command = "npx"`) || !strings.Contains(string(updated), `name = "local"`) {
-		t.Fatalf("migration should preserve ordinary config:\n%s", updated)
+		t.Fatalf("load should preserve ordinary config:\n%s", updated)
 	}
 }
 

@@ -230,30 +230,39 @@ export function SessionRunStream({
 
   if (sessionRuns.length === 0) return null;
 
-  const terminalOnly = sessionRuns.every((run) =>
+  const terminalRuns = sessionRuns.filter((run) =>
     (run.status === "completed" || run.status === "failed" || run.status === "cancelled") && !run.expanded,
+  );
+  const activeRuns = sessionRuns.filter((run) => !terminalRuns.includes(run));
+  const terminalOnly = activeRuns.length === 0;
+
+  const renderRun = (run: (typeof sessionRuns)[number]) => (
+    <RunBlock
+      key={run.runId}
+      run={run}
+      onToggle={(runId) => setRunExpanded(runId, !runs[runId]?.expanded)}
+      onStop={onStop ? () => onStop() : undefined}
+      onStepSelect={(runId, stepIndex) => {
+        const currentRun = runs[runId];
+        if (!currentRun) return;
+        // Toggle off: clicking the already-selected last tab restores auto-follow
+        if (currentRun.selectedStepIndex === stepIndex && stepIndex === currentRun.events.length - 1) {
+          setRunSelectedStep(runId, undefined);
+        } else {
+          setRunSelectedStep(runId, stepIndex);
+        }
+      }}
+    />
   );
 
   return (
     <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}`} aria-label="任务运行记录">
-      {sessionRuns.map((run) => (
-        <RunBlock
-          key={run.runId}
-          run={run}
-          onToggle={(runId) => setRunExpanded(runId, !runs[runId]?.expanded)}
-          onStop={onStop ? () => onStop() : undefined}
-          onStepSelect={(runId, stepIndex) => {
-            const run = runs[runId];
-            if (!run) return;
-            // Toggle off: clicking the already-selected last tab restores auto-follow
-            if (run.selectedStepIndex === stepIndex && stepIndex === run.events.length - 1) {
-              setRunSelectedStep(runId, undefined);
-            } else {
-              setRunSelectedStep(runId, stepIndex);
-            }
-          }}
-        />
-      ))}
+      {terminalRuns.length > 0 && (
+        <div className="session-run-stream__terminal" aria-label="已结束运行">
+          {terminalRuns.map(renderRun)}
+        </div>
+      )}
+      {activeRuns.map(renderRun)}
     </div>
   );
 }

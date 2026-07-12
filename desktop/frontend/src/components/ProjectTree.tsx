@@ -1783,7 +1783,17 @@ export function ProjectTree({
       </span>
       <span className="project-tree__header-actions">
         {mode === "workbench" ? (
-          <></>
+          <Tooltip label={t("projectTree.addProjectTooltip")} className="project-tree__action-slot project-tree__header-action-slot">
+            <button
+              type="button"
+              className="project-tree__add-project project-tree__header-icon-btn"
+              aria-label={t("projectTree.addProjectTooltip")}
+              disabled={addingProject}
+              onClick={() => void handleAddProject()}
+            >
+              <FolderPlus size={15} aria-hidden="true" />
+            </button>
+          </Tooltip>
         ) : (
           <>
             {renderTimeFilterControl("classic")}

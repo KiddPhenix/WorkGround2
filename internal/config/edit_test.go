@@ -1086,7 +1086,7 @@ func TestSaveToRoundTrips(t *testing.T) {
 }
 
 func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	isolateUserConfigHome(t)
 	c := Default()
 	c.Desktop.Theme = "dark"
 	c.Desktop.ThemeStyle = "graphite"

@@ -21,6 +21,63 @@ type savedAccount struct {
 	SavedAt string `json:"saved_at"`
 }
 
+// SavedAccountData is the read-only view of a persisted WeChat account token.
+type SavedAccountData struct {
+	AccountID string
+	Token     string
+	BaseURL   string
+	UserID    string
+	SavedAt   string
+}
+
+// LoadSavedAccount reads a saved WeChat account by ID and returns its data.
+// On Windows the data lives under %APPDATA%\WorkGround2\weixin\accounts\{id}.json.
+func LoadSavedAccount(accountID string) (SavedAccountData, error) {
+	account, err := loadSavedAccount(accountID)
+	if err != nil {
+		return SavedAccountData{}, err
+	}
+	return SavedAccountData{
+		AccountID: accountID,
+		Token:     account.Token,
+		BaseURL:   account.BaseURL,
+		UserID:    account.UserID,
+		SavedAt:   account.SavedAt,
+	}, nil
+}
+
+// FindSavedAccounts enumerates every non-context-token account file in the
+// weixin accounts directory and returns all saved accounts.
+func FindSavedAccounts() ([]SavedAccountData, error) {
+	root := config.MemoryUserDir()
+	if root == "" {
+		return nil, fmt.Errorf("WorkGround2 user config dir is unavailable")
+	}
+	entries, err := os.ReadDir(weixinAccountDir(root))
+	if err != nil {
+		return nil, err
+	}
+	var out []SavedAccountData
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.Contains(entry.Name(), "context-tokens") {
+			continue
+		}
+		accountID := strings.TrimSuffix(entry.Name(), ".json")
+		account, err := loadSavedAccount(accountID)
+		if err != nil || account.Token == "" {
+			continue
+		}
+		out = append(out, SavedAccountData{
+			AccountID: accountID,
+			Token:     account.Token,
+			BaseURL:   account.BaseURL,
+			UserID:    account.UserID,
+			SavedAt:   account.SavedAt,
+		})
+	}
+	return out, nil
+}
+
 type LoginResult struct {
 	AccountID string
 	Token     string

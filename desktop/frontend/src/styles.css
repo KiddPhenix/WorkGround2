@@ -30363,8 +30363,8 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 4px;
   margin-left: auto;
-  opacity: 0;
-  pointer-events: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .workspace-sidebar .project-tree__list--workbench {
@@ -30999,12 +30999,29 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
 }
 
-.session-run-stream--terminal .completed-run-tab {
+.session-run-stream__terminal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--bg-soft);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-soft) transparent;
+}
+
+.session-run-stream--terminal .completed-run-tab,
+.session-run-stream__terminal .completed-run-tab {
   flex: 0 0 auto;
   width: auto;
   min-width: 176px;
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+
+/* Keep the terminal-only selector stable for themed overrides. */
+.session-run-stream--terminal .completed-run-tab {
+  width: auto;
 }
 
 .session-run-stream .run-detail-viewport__event {

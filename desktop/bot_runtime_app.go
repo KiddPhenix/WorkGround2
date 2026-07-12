@@ -74,7 +74,10 @@ func (a *App) refreshBotRuntime() {
 		a.botRuntime.stop("error", err.Error())
 		return
 	}
-	_ = a.botRuntime.apply(a.bootContext(), cfg, globalTabWorkspaceRoot(), a.persistRemoteBotToolApprovalMode)
+	// An empty root is the bot gateway's Global scope. The desktop tab layer
+	// uses globalTabWorkspaceRoot() as a storage/session path, but passing that
+	// path here would make an otherwise global group chat look like a project.
+	_ = a.botRuntime.apply(a.bootContext(), cfg, "", a.persistRemoteBotToolApprovalMode)
 }
 
 func (a *App) loadDesktopBotConfig() (*config.Config, error) {

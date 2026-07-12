@@ -103,6 +103,17 @@ ok(
   "ProjectTree: workbench workspace exposes create and more actions",
 );
 ok(
+  includes(projectTreeSource, 'mode === "workbench" ? (') &&
+    includes(projectTreeSource, 'className="project-tree__add-project project-tree__header-icon-btn"') &&
+    includes(projectTreeSource, "void handleAddProject()"),
+  "ProjectTree: workbench header keeps the add-workspace action available",
+);
+ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar .project-tree__header-actions", "opacity") === "1" &&
+    finalDeclaration(stylesSource, ".workspace-sidebar .project-tree__header-actions", "pointer-events") === "auto",
+  "CSS: workbench header actions remain visible and clickable",
+);
+ok(
   includes(stylesSource, ".workspace-sidebar .project-tree__folder:hover .project-tree__workspace-actions") &&
     includes(stylesSource, ".workspace-sidebar .project-tree__folder:focus-within .project-tree__workspace-actions") &&
     includes(stylesSource, "flex: 0 0 52px;"),
@@ -296,6 +307,11 @@ ok(
   finalDeclaration(stylesSource, ".session-run-stream--terminal", "display") === "flex" &&
     finalDeclaration(stylesSource, ".session-run-stream--terminal", "overflow-x") === "auto",
   "CSS: completed runs form a compact horizontal tab strip",
+);
+ok(
+  finalDeclaration(stylesSource, ".session-run-stream__terminal", "display") === "flex" &&
+    finalDeclaration(stylesSource, ".session-run-stream__terminal", "overflow-x") === "auto",
+  "CSS: completed runs stay horizontal while another run is active",
 );
 ok(
   finalDeclaration(stylesSource, ".session-run-stream--terminal .completed-run-tab", "width") === "auto",

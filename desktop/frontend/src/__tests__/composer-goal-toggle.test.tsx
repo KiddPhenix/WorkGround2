@@ -696,7 +696,18 @@ console.log("\ncomposer goal toggle");
   ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders before turn stop");
 
   await rerender({ running: false });
-  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when the turn stops");
+  const retainedGuidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  if (!retainedGuidanceItem) throw new Error("queued guidance disappeared when the turn stopped");
+  ok(retainedGuidanceItem.textContent?.includes("then stop showing the chip") === true, "queued guidance survives when the turn stops");
+
+  const retainedGuideButton = retainedGuidanceItem.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!retainedGuideButton) throw new Error("retained guidance guide button did not render");
+  await act(async () => {
+    retainedGuideButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.join(","), "keep the files small,then stop showing the chip", "retained guidance can be sent after the turn stops");
+  ok(document.querySelector(".composer-guidance-item") === null, "retained guidance clears only after successful send");
 
   await act(async () => {
     root.unmount();

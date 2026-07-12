@@ -992,6 +992,10 @@ type AgentConfig struct {
 	// PlanModeAllowedTools names extra custom tools the plan-mode policy may treat
 	// as read-only. It cannot unlock known blocked tools or unsafe bash commands.
 	PlanModeAllowedTools []string `toml:"plan_mode_allowed_tools"`
+	// VisionDelegate optionally names a provider to use for image analysis when
+	// the main model is non-vision. When empty, the system auto-discovers the
+	// first vision-capable provider (see capability.go).
+	VisionDelegate string `toml:"vision_delegate"`
 	// MemoryCompiler controls the v5 execution-memory compiler. Missing configs
 	// default to enabled so users get the self-improving planner unless they opt
 	// out explicitly.
@@ -1087,6 +1091,12 @@ type ProviderEntry struct {
 	// (the field is omitted). "low" caps an image to a fixed ~85 tokens for cheap
 	// coarse reads; ignored by providers without the knob (e.g. anthropic).
 	VisionDetail string `toml:"vision_detail"`
+	// Capabilities is the explicit list of model capabilities for this provider.
+	// When set it replaces the built-in capability database and legacy Vision /
+	// VisionModels fields. Supported values: "vision", "reasoning" (more to come).
+	// An empty list means "no capabilities" — use this to suppress built-in defaults.
+	// When absent (nil) the system falls back to the built-in database.
+	Capabilities []string `toml:"capabilities"`
 	// ReasoningProtocol selects the request shape for OpenAI-compatible reasoning
 	// models. Empty/auto uses the model capability registry plus endpoint
 	// heuristics; none disables automatic reasoning controls for this provider.

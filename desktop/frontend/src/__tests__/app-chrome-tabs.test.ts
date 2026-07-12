@@ -251,7 +251,13 @@ ok(
 );
 
 ok(
-  !/await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
+  /else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock) &&
+    /scope === "project" && session\.workspaceRoot \? "project" : "global"/.test(navigationBlock),
+  "history navigation opens CLI sessions without topic metadata on a blank scoped tab",
+);
+
+ok(
+  /else if \(scope === "global" && session\.topicId\) \{[\s\S]*?openTopicTarget\("global", "", session\.topicId, session\.path\);[\s\S]*?\} else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
   "history navigation does not re-resume a session that OpenTopicSession already pinned",
 );
 

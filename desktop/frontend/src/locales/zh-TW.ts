@@ -472,7 +472,7 @@ export const zhTW: Record<DictKey, string> = {
   "composer.pastedExpand": "展開",
   "composer.pastedRemove": "刪除貼上文字",
   "composer.removeImage": "移除圖片",
-  "composer.imageInputUnsupported": "目前模型不會直接接收圖片。可切換到支援圖片的模型，或讓 OCR/識圖 MCP 工具讀取附件路徑。",
+  "composer.imageInputUnsupported": "目前模型不支援直接辨識圖片，圖片將以檔案附件路徑傳送。可切換到視覺模型，或透過 OCR/識圖工具讀取附件。",
   "composer.contextItems": "上下文項目",
   "composer.workspaceReferences": "工作區引用",
   "composer.removeReference": "移除引用",

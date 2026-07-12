@@ -1131,7 +1131,43 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
+	// Vision delegate: auto-discover or use explicit vision_delegate config.
+	vd := cfg.Agent.VisionDelegate
+	if vd == "" {
+		vd = autoDiscoverVisionDelegate(cfg, entry)
+	}
+	if vd != "" {
+		ve, ok := cfg.ResolveModel(vd)
+		if !ok {
+			if cfg.Agent.VisionDelegate != "" {
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf("vision_delegate %q is not a configured provider \u2014 image delegation disabled", vd)})
+			}
+		} else {
+			vp, err := NewProviderWithProxy(ve, proxySpec)
+			if err != nil {
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf("vision_delegate %q provider construction failed: %v \u2014 image delegation disabled", vd, err)})
+			} else {
+				ctrlOpts.VisionDelegateProvider = vp
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("vision delegate: auto-discovered %q for image analysis", vd)})
+			}
+		}
+	}
 	return control.New(ctrlOpts), nil
+}
+
+
+func autoDiscoverVisionDelegate(cfg *config.Config, current *config.ProviderEntry) string {
+	for i := range cfg.Providers {
+		p := &cfg.Providers[i]
+		if !config.EffectiveVision(p) {
+			continue
+		}
+		if p.Name == current.Name && p.EffectiveModel() == current.EffectiveModel() {
+			continue
+		}
+		return p.Name + "/" + p.EffectiveModel()
+	}
+	return ""
 }
 
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {
@@ -1396,6 +1432,7 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 			"proxy_spec":         proxy,
 			"vision":             config.EffectiveVision(e),
 			"vision_detail":      e.VisionDetail,
+			"capabilities":       config.EntryCapabilities(e),
 		},
 	})
 }

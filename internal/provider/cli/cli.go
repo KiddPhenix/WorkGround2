@@ -37,6 +37,7 @@ type client struct {
 	args     []string
 	protocol string
 	timeout  time.Duration
+	vision   bool
 }
 
 type request struct {
@@ -45,6 +46,7 @@ type request struct {
 	Tools       []provider.ToolSchema `json:"tools,omitempty"`
 	Temperature float64               `json:"temperature,omitempty"`
 	MaxTokens   int                   `json:"max_tokens,omitempty"`
+	Vision      bool                  `json:"vision,omitempty"`
 }
 
 type output struct {
@@ -146,6 +148,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		args:     args,
 		protocol: protocol,
 		timeout:  timeoutValue(cfg.Extra["timeout_seconds"]),
+		vision:   boolValue(cfg.Extra["vision"]),
 	}, nil
 }
 
@@ -171,6 +174,7 @@ func (c *client) run(ctx context.Context, req provider.Request, out chan<- provi
 		Tools:       req.Tools,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
+		Vision:      c.vision,
 	})
 	if err != nil {
 		return fmt.Errorf("%s: encode cli request: %w", c.name, err)
@@ -533,6 +537,11 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("output exceeds %d bytes", limit)
 	}
 	return buf.Bytes(), nil
+}
+
+func boolValue(raw any) bool {
+	v, _ := raw.(bool)
+	return v
 }
 
 type limitedBuffer struct {

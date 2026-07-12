@@ -126,15 +126,22 @@ export function sortDisplayAttachments<T extends { kind: "image" | "file" | "fol
   });
 }
 
+// isAttachmentPath reports whether path is under the attachment root
+// (either .workground2/attachments/ or .WorkGround2/attachments/).
+function isAttachmentPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return lower.startsWith(".workground2/attachments/") || lower.startsWith(".workground2\\attachments\\");
+}
+
 function isDisplayReference(path: string): boolean {
-  if (path.startsWith(".WorkGround2/attachments/")) return true;
+  if (isAttachmentPath(path)) return true;
   if (path.endsWith("/")) return true;
   if (path.includes("/")) return true;
   return attachmentExt(path) !== "";
 }
 
 function displayAttachment(path: string, name: string): DisplayAttachment {
-  if (path.startsWith(".WorkGround2/attachments/")) {
+  if (isAttachmentPath(path)) {
     const kind = isImageAttachmentRef(path) ? "image" : "file";
     return {
       path,
@@ -145,10 +152,12 @@ function displayAttachment(path: string, name: string): DisplayAttachment {
     };
   }
   const isDir = path.endsWith("/");
+  const isFile = !isDir;
+  const kind = isDir ? "folder" : isFile && isImageAttachmentRef(path) ? "image" : "file";
   return {
     path,
     name,
-    kind: isDir ? "folder" : "file",
+    kind,
     source: "workspace",
     ext: isDir ? "" : attachmentExt(path).replace(/^\./, "").toUpperCase(),
   };

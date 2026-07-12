@@ -183,6 +183,10 @@ function imagePasteEvent(file: File): Event {
   return event;
 }
 
+function composerPromptText(): string {
+  return document.querySelector(".composer__prompt")?.textContent?.trim() ?? "";
+}
+
 console.log("\ncomposer image capability");
 
 {
@@ -207,8 +211,8 @@ console.log("\ncomposer image capability");
 
   eq(saveCalls, 1, "text-only model stores pasted image attachments as tool-readable refs");
   eq(contextItemCount(), 1, "text-only model keeps the pasted image attachment in the draft");
-  eq(toastText(), "", "text-only image attach does not warn before send");
-  eq(document.querySelector(".composer__prompt") === null, true, "image attach warning does not render inside the composer layout");
+  ok(composerPromptText().length > 0, "text-only model shows persistent prompt when image is attached");
+  eq(toastText(), "", "text-only image attach does not show a toast");
 
   await act(async () => {
     root.unmount();
@@ -236,17 +240,18 @@ console.log("\ncomposer image capability");
   });
   await waitFor(() => contextItemCount() === 1);
   eq(contextItemCount(), 1, "vision-capable model keeps the pasted image attachment");
+  eq(composerPromptText(), "", "vision-capable model does not show image-input prompt");
 
   await rerender({ imageInputEnabled: false, insertRequest: { id: 1, text: "describe this image", mode: "insert" } });
   eq(toastText(), "", "model switch alone does not show a warning toast");
+  ok(composerPromptText().length > 0, "switching to text-only model shows persistent prompt while images are attached");
   await act(async () => {
     sendButton().click();
     await flushTimers();
   });
 
   eq(sent.length, 1, "switching to a text-only model still sends the image ref for tool use");
-  ok(toastText().includes("will not receive images directly"), "text-only send warns about direct image input without blocking");
-  eq(document.querySelector(".composer__prompt") === null, true, "image-input warning does not render inside the composer layout");
+  eq(toastText(), "", "text-only send no longer shows a toast when prompt is already visible");
   ok(sent[0]?.submit?.includes("@.WorkGround2/attachments/mock.png") === true, "submitted text retains the local image attachment ref");
 
   await act(async () => {

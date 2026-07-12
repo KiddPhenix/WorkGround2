@@ -5248,6 +5248,9 @@ func (a *App) imageInputEnabledForTab(tabID string) bool {
 	if tab == nil {
 		return false
 	}
+	if delegate, ok := tab.Ctrl.(interface{ HasVisionDelegate() bool }); ok && delegate.HasVisionDelegate() {
+		return true
+	}
 	ref := tab.selectedModel()
 	cfg, err := config.LoadForRoot(tab.WorkspaceRoot)
 	if err == nil && ref == "" {

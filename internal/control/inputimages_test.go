@@ -138,3 +138,17 @@ func TestControllerImageInputEnabledDoesNotFallbackFromUnknownRef(t *testing.T) 
 		t.Fatal("unknown ref should not inherit image input from the default fallback model")
 	}
 }
+
+func TestControllerImageInputEnabledIncludesVisionDelegate(t *testing.T) {
+	workspace := t.TempDir()
+	writeVisionTestConfig(t, workspace)
+
+	c := &Controller{
+		workspaceRoot:  workspace,
+		modelRef:       "custom/text-only",
+		visionDelegate: &recordingProvider{},
+	}
+	if !c.ImageInputEnabled() {
+		t.Fatal("vision delegate should enable image attachment UX")
+	}
+}

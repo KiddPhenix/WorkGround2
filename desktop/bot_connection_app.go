@@ -1012,3 +1012,129 @@ func weixinInstallStatusMessage(status string) string {
 		return "等待扫码。"
 	}
 }
+
+// backfillSavedBotConnections creates [[bot.connections]] entries from saved
+// account tokens and legacy config sections when the connections array is
+// missing entries. This recovers connections that were made by older versions
+// which only persisted the token/credential without writing a
+// BotConnectionConfig to config.toml.
+func backfillSavedBotConnections(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	changed := backfillWeixinConnection(cfg)
+	if backfillFeishuConnection(cfg) {
+		changed = true
+	}
+	return changed
+}
+
+func backfillWeixinConnection(cfg *config.Config) bool {
+	// If a weixin connection already exists, skip.
+	for _, c := range cfg.Bot.Connections {
+		if c.Provider == "weixin" {
+			return false
+		}
+	}
+	accounts, err := weixin.FindSavedAccounts()
+	if err != nil || len(accounts) == 0 {
+		return false
+	}
+	accountID := strings.TrimSpace(cfg.Bot.Weixin.AccountID)
+	var picked *weixin.SavedAccountData
+	for i, a := range accounts {
+		if accountID != "" && a.AccountID == accountID {
+			picked = &accounts[i]
+			break
+		}
+	}
+	if picked == nil {
+		for i := range accounts {
+			if picked == nil || accounts[i].SavedAt > picked.SavedAt {
+				p := accounts[i]
+				picked = &p
+			}
+		}
+	}
+	if picked == nil {
+		return false
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	conn := config.BotConnectionConfig{
+		ID:       connectionID("weixin", "weixin"),
+		Provider: "weixin",
+		Domain:   "weixin",
+		Label:    "微信",
+		Enabled:  true,
+		Status:   "connected",
+		Access: config.BotAccessConfig{
+			Enabled:        cfg.Bot.Allowlist.Enabled,
+			PairingEnabled: true,
+		},
+		Credential: config.BotConnectionCredential{
+			AccountID: picked.AccountID,
+			TokenEnv:  "WEIXIN_BOT_TOKEN",
+		},
+		CreatedAt: picked.SavedAt,
+		UpdatedAt: now,
+	}
+	if conn.CreatedAt == "" {
+		conn.CreatedAt = now
+	}
+	cfg.Bot.Connections = append(cfg.Bot.Connections, conn)
+	cfg.Bot.Enabled = true
+	cfg.Bot.Weixin.Enabled = true
+	cfg.Bot.Weixin.AccountID = picked.AccountID
+	if picked.UserID != "" {
+		cfg.Bot.Allowlist.WeixinUsers = appendUniqueBotString(cfg.Bot.Allowlist.WeixinUsers, picked.UserID)
+	}
+	return true
+}
+
+func backfillFeishuConnection(cfg *config.Config) bool {
+	// If a feishu connection already exists, skip.
+	for _, c := range cfg.Bot.Connections {
+		if c.Provider == "feishu" {
+			return false
+		}
+	}
+	feishu := cfg.Bot.Feishu
+	if strings.TrimSpace(feishu.AppID) == "" {
+		return false
+	}
+	domain := strings.TrimSpace(feishu.Domain)
+	if domain == "" {
+		domain = "feishu"
+	}
+	label := "飞书"
+	if domain == "lark" {
+		label = "Lark"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	conn := config.BotConnectionConfig{
+		ID:       connectionID("feishu", domain),
+		Provider: "feishu",
+		Domain:   domain,
+		Label:    label,
+		Enabled:  feishu.Enabled,
+		Status:   "connected",
+		Access: config.BotAccessConfig{
+			Enabled:        cfg.Bot.Allowlist.Enabled,
+			PairingEnabled: true,
+		},
+		Credential: config.BotConnectionCredential{
+			AppID:        feishu.AppID,
+			AppSecretEnv: feishu.AppSecretEnv,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	cfg.Bot.Connections = append(cfg.Bot.Connections, conn)
+	if cfg.Bot.Enabled {
+		// Bot already globally enabled — just keep it that way.
+	} else {
+		cfg.Bot.Enabled = true
+	}
+	return true
+}

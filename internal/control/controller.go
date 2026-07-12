@@ -167,6 +167,10 @@ type Controller struct {
 	pinnedMemos pinnedMemoStore
 	taskMemory  taskMemoryState
 
+	// visionDelegate is an optional vision-capable provider that pre-processes
+	// image @-references into text descriptions when the main model is non-vision.
+	visionDelegate provider.Provider
+
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
 	mu                      sync.Mutex
@@ -386,6 +390,9 @@ type Options struct {
 	// terminal. Bot/headless frontends set a positive value so an unanswered
 	// prompt can't wedge the session indefinitely (#4626, #4402).
 	ApprovalTimeout time.Duration
+	// VisionDelegateProvider is an optional vision-capable provider used to
+	// describe images when the main model cannot process them directly.
+	VisionDelegateProvider provider.Provider
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -437,6 +444,7 @@ func New(opts Options) *Controller {
 		workspaceRoot:              opts.WorkspaceRoot,
 		externalFolderToolRefs:     opts.ExternalFolderToolRefs,
 		approval:                   newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
+		visionDelegate:             opts.VisionDelegateProvider,
 	}
 	c.loadTaskMemory(opts.SessionPath)
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -1335,7 +1343,23 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
 	ctx = jobs.WithSession(ctx, parentSession)
-	ctx = agent.WithUserImages(ctx, c.inputImages(input))
+	images := c.inputImages(input)
+	if len(images) == 0 && c.visionDelegate != nil {
+		images = c.resolveInputImages(input)
+		if len(images) > 0 {
+			slog.Info("vision delegate: resolved images for delegation", "count", len(images))
+			if desc := c.delegateImages(ctx, images, input); desc != "" {
+				input = input + "\n\n[Image analysis from vision model]:\n" + desc
+				slog.Info("vision delegate: injected description into input", "descLen", len(desc))
+			}
+			images = nil
+		} else {
+			slog.Debug("vision delegate: no @image references found in input")
+		}
+	} else if len(images) > 0 {
+		slog.Debug("vision delegate: main model supports vision, images passed directly", "count", len(images))
+	}
+	ctx = agent.WithUserImages(ctx, images)
 	input = c.Compose(input)
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
@@ -3839,6 +3863,11 @@ func (c *Controller) Label() string { return c.label }
 func (c *Controller) WorkspaceRoot() string { return c.workspaceRoot }
 
 func (c *Controller) imageInputEnabled() bool {
+	// Vision delegate: when available, images can be attached even if the main
+	// model is text-only — the delegate will handle them.
+	if c.visionDelegate != nil {
+		return true
+	}
 	ref := c.modelRef
 	cfg, err := config.LoadForRoot(c.workspaceRoot)
 	if err == nil && ref == "" {
@@ -3854,6 +3883,10 @@ func (c *Controller) imageInputEnabled() bool {
 // ImageInputEnabled reports whether the current model accepts direct image
 // inputs, so frontends can gate image-only UX before a turn starts.
 func (c *Controller) ImageInputEnabled() bool { return c.imageInputEnabled() }
+
+// HasVisionDelegate reports whether a vision-capable delegate provider is
+// available for image analysis (even when the main model is text-only).
+func (c *Controller) HasVisionDelegate() bool { return c.visionDelegate != nil }
 
 // InheritLifecycleFrom carries same-session lifecycle state across controller
 // rebuilds, such as model switches that preserve the conversation.

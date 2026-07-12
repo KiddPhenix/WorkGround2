@@ -58,24 +58,12 @@ func modelTokenSeparator(r rune) bool {
 	return r == '-' || r == '_' || r == '.' || r == '/' || r == ':'
 }
 
-// EffectiveVision resolves whether the selected model accepts image input.
-// Explicit provider vision still wins for custom vision-capable gateways; the
-// MiMo endpoint heuristic is deliberately limited to known MiMo endpoints so
-// arbitrary OpenAI-compatible proxies do not get image payloads unexpectedly.
+// EffectiveVision reports whether the selected model accepts image input.
+// Delegates to HasCapability(CapVision) which checks model_overrides, explicit
+// capabilities list, legacy Vision/VisionModels fields, and the built-in
+// capability database.
 func EffectiveVision(e *ProviderEntry) bool {
-	if e == nil {
-		return false
-	}
-	if e.visionOverride != nil {
-		return *e.visionOverride
-	}
-	if e.Vision {
-		return true
-	}
-	if e.HasVisionModel(e.Model) {
-		return true
-	}
-	return isOfficialMimoVisionEntry(e)
+	return e.HasCapability(CapVision)
 }
 
 func (e *ProviderEntry) HasVisionModel(model string) bool {

@@ -511,6 +511,21 @@ func (c *Controller) inputImages(line string) []string {
 	return urls
 }
 
+// resolveInputImages works like inputImages but skips the vision-capability guard.
+func (c *Controller) resolveInputImages(line string) []string {
+	var urls []string
+	for _, r := range c.detectRefs(line) {
+		baseDir := c.workspaceRoot
+		if r.baseDir != "" {
+			baseDir = r.baseDir
+		}
+		if url, err := visionRefImageDataURL(r, baseDir); err == nil {
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
 func visionRefImageDataURL(r ref, baseDir string) (string, error) {
 	switch r.kind {
 	case refImage:

@@ -799,6 +799,9 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 		if err := a.migrateLegacyBotConfigToUser(cfg, userPath); err != nil {
 			return nil, "", err
 		}
+		if backfillSavedBotConnections(cfg) {
+			_ = cfg.SaveTo(userPath)
+		}
 		return cfg, userPath, nil
 	}
 	cfg := config.LoadForEdit(userPath)
@@ -806,6 +809,9 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
 		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
 			return nil, "", err
+		}
+		if backfillSavedBotConnections(cfg) {
+			_ = cfg.SaveTo(userPath)
 		}
 		return cfg, userPath, nil
 	}

@@ -8,6 +8,9 @@ set "EXE=%DESKTOP_DIR%\build\bin\WorkGround2.exe"
 set "LEGACY_EXE=%DESKTOP_DIR%\build\bin\WorkGround2-desktop.exe"
 set "PNPM="
 
+rem Debug: make user config.toml override project WorkGround2.toml.
+set "WorkGround2_PREFER_USER_CONFIG=1"
+
 echo [WorkGround2] stopping existing debug build...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $targets=@('%EXE%','%LEGACY_EXE%') | ForEach-Object { [System.IO.Path]::GetFullPath($_) }; Get-Process | Where-Object { try { $path=$_.Path; $path -and ($targets -contains [System.IO.Path]::GetFullPath($path)) } catch { $false } } | ForEach-Object { Write-Host ('Stopping {0} ({1})' -f $_.ProcessName,$_.Id); Stop-Process -Id $_.Id -Force -ErrorAction Stop }"
 if errorlevel 1 exit /b %ERRORLEVEL%

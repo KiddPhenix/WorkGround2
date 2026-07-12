@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"workground2/internal/agent"
@@ -57,7 +58,19 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
 	ctx = jobs.WithSession(ctx, parentSession)
-	ctx = agent.WithUserImages(ctx, c.inputImages(turn.input))
+	images := c.inputImages(turn.input)
+	if len(images) == 0 && c.visionDelegate != nil {
+		images = c.resolveInputImages(turn.input)
+		if len(images) > 0 {
+			slog.Info("vision delegate: resolved images for delegation (orchestrated)", "count", len(images))
+			if desc := c.delegateImages(ctx, images, turn.input); desc != "" {
+				turn.input = turn.input + "\n\n[Image analysis from vision model]:\n" + desc
+				slog.Info("vision delegate: injected description (orchestrated)", "descLen", len(desc))
+			}
+			images = nil
+		}
+	}
+	ctx = agent.WithUserImages(ctx, images)
 	// Synthetic, controller-injected turns (goal-loop continuation,
 	// plan-approved execution, …) must not be Memory v5-compiled: compiling them
 	// re-injects a contract the model echoes back, which spins the goal loop

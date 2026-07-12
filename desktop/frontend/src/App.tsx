@@ -2649,9 +2649,14 @@ export default function App() {
       } else if (scope === "global" && session.topicId) {
         targetTab = await openTopicTarget("global", "", session.topicId, session.path);
       } else {
-        throw new Error(scope === "global" && !session.topicId
-          ? t("history.failedOpenSession")
-          : (session.topicId ? "Missing workspaceRoot" : t("history.failedOpenSession")));
+        // CLI-created sessions predate desktop topic metadata. Open a blank
+        // surface in their resolved scope, then bind the saved transcript.
+        targetTab = await openBlankTarget(
+          scope === "project" && session.workspaceRoot ? "project" : "global",
+          scope === "project" ? session.workspaceRoot || "" : "",
+        );
+        if (!latest()) return;
+        await resumeSession(session.path, targetTab.id);
       }
       if (!latest()) return;
       seedActiveTabMeta(targetTab);

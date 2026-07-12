@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	fileencoding "workground2/internal/fileutil/encoding"
 	"workground2/internal/provider"
 )
 
@@ -37,27 +36,43 @@ func LoadForRoot(root string) (*Config, error) {
 		projectTOML = filepath.Join(root, "WorkGround2.toml")
 	}
 
+	preferUser := isTruthyEnv("WorkGround2_PREFER_USER_CONFIG")
+
 	var tomlSources []string
-	if uc := userConfigLoadPath(); uc != "" {
-		tomlSources = append(tomlSources, uc)
-		if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
+	if preferUser {
+		// Debug mode: project loads first, user overrides it later.
+		tomlSources = append(tomlSources, projectTOML)
+		if err := mergeRuntimeTOMLFile(cfg, projectTOML); err != nil {
 			return nil, err
 		}
-	}
-	globalMaxSteps := cfg.Agent.MaxSteps
-	globalPlannerMaxSteps := cfg.Agent.PlannerMaxSteps
-	globalMemoryCompiler := cfg.Agent.MemoryCompiler
+		if uc := userConfigLoadPath(); uc != "" {
+			tomlSources = append(tomlSources, uc)
+			if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		if uc := userConfigLoadPath(); uc != "" {
+			tomlSources = append(tomlSources, uc)
+			if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
+				return nil, err
+			}
+		}
+		globalMaxSteps := cfg.Agent.MaxSteps
+		globalPlannerMaxSteps := cfg.Agent.PlannerMaxSteps
+		globalMemoryCompiler := cfg.Agent.MemoryCompiler
 
-	tomlSources = append(tomlSources, projectTOML)
-	if err := mergeRuntimeTOMLFile(cfg, projectTOML); err != nil {
-		return nil, err
+		tomlSources = append(tomlSources, projectTOML)
+		if err := mergeRuntimeTOMLFile(cfg, projectTOML); err != nil {
+			return nil, err
+		}
+		// Runtime step caps are user/global controls, not project policy. Keep the
+		// project config's other fields, but do not let ./WorkGround2.toml override
+		// the user's execution and planner round limits.
+		cfg.Agent.MaxSteps = globalMaxSteps
+		cfg.Agent.PlannerMaxSteps = globalPlannerMaxSteps
+		cfg.Agent.MemoryCompiler = globalMemoryCompiler
 	}
-	// Runtime step caps are user/global controls, not project policy. Keep the
-	// project config's other fields, but do not let ./WorkGround2.toml override
-	// the user's execution and planner round limits.
-	cfg.Agent.MaxSteps = globalMaxSteps
-	cfg.Agent.PlannerMaxSteps = globalPlannerMaxSteps
-	cfg.Agent.MemoryCompiler = globalMemoryCompiler
 	// toml.DecodeFile replaces [[plugins]] wholesale, so cfg.Plugins now holds
 	// only the last file's. Re-merge by name across all sources (later wins) so a
 	// project WorkGround2.toml doesn't drop the global config's MCP servers.
@@ -432,11 +447,6 @@ func loadForEditStrict(path string, loadCredentials bool) (*Config, error) {
 		loadDotEnvForEditPath(path)
 	}
 	cfg := Default()
-	if _, err := os.Stat(path); err == nil {
-		if err := migrateLegacyMCPTiersFile(path); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
-		}
-	}
 	if err := mergeFile(cfg, path); err != nil {
 		return nil, err
 	}
@@ -485,11 +495,6 @@ func mergeFile(cfg *Config, path string) error {
 }
 
 func mergeRuntimeTOMLFile(cfg *Config, path string) error {
-	if _, err := os.Stat(path); err == nil {
-		if err := migrateLegacyMCPTiersFile(path); err != nil {
-			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
-		}
-	}
 	return mergeFile(cfg, path)
 }
 
@@ -503,65 +508,6 @@ func normalizeLegacyMCPTiers(c *Config) {
 	for i := range c.Plugins {
 		c.Plugins[i].Tier = ""
 	}
-}
-
-func migrateLegacyMCPTiersFile(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	raw, err := fileencoding.ReadFileUTF8(path)
-	if err != nil {
-		return err
-	}
-	next, changed := stripLegacyMCPTierLines(string(raw))
-	if !changed {
-		return nil
-	}
-	return os.WriteFile(path, []byte(next), info.Mode().Perm())
-}
-
-func stripLegacyMCPTierLines(raw string) (string, bool) {
-	lines := strings.Split(raw, "\n")
-	section := ""
-	changed := false
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if header := tomlSectionHeader(line); header != "" {
-			section = header
-		}
-		if section == "plugins" && isTOMLKeyAssignment(line, "tier") {
-			changed = true
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n"), changed
-}
-
-func tomlSectionHeader(line string) string {
-	trimmed := strings.TrimSpace(line)
-	if !strings.HasPrefix(trimmed, "[") {
-		return ""
-	}
-	if i := strings.Index(trimmed, "#"); i >= 0 {
-		trimmed = strings.TrimSpace(trimmed[:i])
-	}
-	switch trimmed {
-	case "[[plugins]]":
-		return "plugins"
-	default:
-		return "other"
-	}
-}
-
-func isTOMLKeyAssignment(line, key string) bool {
-	trimmed := strings.TrimSpace(line)
-	if strings.HasPrefix(trimmed, "#") || !strings.HasPrefix(trimmed, key) {
-		return false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, key))
-	return strings.HasPrefix(rest, "=")
 }
 
 // normalizeLegacyProviderModels repairs provider entries written by older
@@ -1146,5 +1092,16 @@ func retargetDesktopOfficialRef(ref string, access map[string]bool) string {
 		return "deepseek/" + model
 	default:
 		return ref
+	}
+}
+
+// isTruthyEnv reports whether the environment variable named key is set to a
+// truthy value ("1", "true", "yes" — case-insensitive).
+func isTruthyEnv(key string) bool {
+	switch strings.ToLower(os.Getenv(key)) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
 	}
 }

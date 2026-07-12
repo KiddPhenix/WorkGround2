@@ -666,6 +666,7 @@ func TestProjectConfigCannotOverrideCredentialStoreMode(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	t.Setenv("WorkGround2_CREDENTIALS_STORE", "")
 	os.Unsetenv("WorkGround2_CREDENTIALS_STORE")
 	if err := os.MkdirAll(filepath.Dir(UserConfigPath()), 0o755); err != nil {
