@@ -323,6 +323,48 @@ func TestConnectLocalCLIProviderPersistsDefaultProvider(t *testing.T) {
 	}
 }
 
+func TestConnectLocalCLIProviderKeepsAPIDefault(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	command := fakeLocalCLI(t, "WorkGround2-fake-cli")
+	withLocalCLIPresets(t, []onboardingLocalCLIPreset{{
+		ID:       "fake",
+		Name:     "Fake CLI",
+		Commands: []string{command},
+	}})
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	api := config.ProviderEntry{
+		Name:    "api-provider",
+		Kind:    "openai",
+		BaseURL: "https://example.com/v1",
+		Model:   "api-model",
+		Models:  []string{"api-model"},
+		Default: "api-model",
+	}
+	if err := cfg.UpsertProvider(api); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	addProviderAccess(cfg, api.Name)
+	cfg.DefaultModel = "api-provider/api-model"
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().ConnectLocalCLIProvider("fake"); err != nil {
+		t.Fatalf("ConnectLocalCLIProvider: %v", err)
+	}
+	got := config.LoadForEdit(config.UserConfigPath())
+	if got.DefaultModel != "api-provider/api-model" {
+		t.Fatalf("default_model = %q, want API default preserved", got.DefaultModel)
+	}
+	if _, ok := got.Provider("local-fake"); !ok {
+		t.Fatal("local-fake provider should still be added")
+	}
+	if !providerAccessSet(got.Desktop.ProviderAccess)["local-fake"] {
+		t.Fatalf("provider_access = %+v, want local-fake", got.Desktop.ProviderAccess)
+	}
+}
+
 func TestSkipOnboardingPersistsProviderAccessWithoutKey(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv(onboardingKeyEnv, "")

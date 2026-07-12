@@ -89,7 +89,7 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ### Provider 引导与本地 CLI 接入
 - Location: `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/frontend/src/components/OnboardingOverlay.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
-- Summary: first-run gate 由 `NeedsOnboarding` 判断是否已有 key、provider_access 或可配置 provider；overlay 支持 DeepSeek key 和本地 CLI 两条路径，本地 CLI 扫描常见命令后保存为 `kind=cli` provider 并切换默认模型。Settings 的“添加供应商”把本地 CLI 提升为与官方、自定义同级的第三个入口，进入后自动扫描并只展示已安装项，可重新扫描或一键添加并使用；高级 provider 编辑器仍可修改 command/args/protocol/timeout/model。Codex 预设使用 `exec --json` 和 `jsonl` 协议接收 stdout 事件流，并支持 Windows Codex Desktop 安装目录探测。
+- Summary: first-run gate 由 `NeedsOnboarding` 判断是否已有 key、provider_access 或可配置 provider；overlay 支持 DeepSeek key 和本地 CLI 两条路径，本地 CLI 扫描常见命令后保存为 `kind=cli` provider。Settings 的“添加供应商”把本地 CLI 提升为与官方、自定义同级的第三个入口，进入后自动扫描并只展示已安装项，可重新扫描或一键添加并使用；已有可用 API provider 时不会覆盖当前 API 默认模型，无可用 API 时 CLI 作为兜底默认。高级 provider 编辑器仍可修改 command/args/protocol/timeout/model。Codex 预设使用 `exec --json` 和 `jsonl` 协议接收 stdout 事件流，并支持 Windows Codex Desktop 安装目录探测。
 - Keywords: onboarding, first-run, settings, ConnectKey, SkipOnboarding, ScanLocalCLIProviders, ConnectLocalCLIProvider, local CLI, codex --json
 - Source: verified-by-search
 - Updated: 2026-07-12

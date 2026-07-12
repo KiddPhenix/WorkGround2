@@ -135,13 +135,27 @@ func (a *App) ConnectLocalCLIProvider(id string) error {
 	}
 	entry := localCLIProviderEntry(*selected)
 	return a.applyConfigChange(func(c *config.Config) error {
+		hasAPI := hasConfiguredAPIProvider(c)
 		if err := c.UpsertProvider(entry); err != nil {
 			return err
 		}
 		addProviderAccess(c, entry.Name)
-		c.DefaultModel = entry.Name + "/" + entry.DefaultModel()
+		if !hasAPI {
+			c.DefaultModel = entry.Name + "/" + entry.DefaultModel()
+		}
 		return nil
 	})
+}
+
+func hasConfiguredAPIProvider(c *config.Config) bool {
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if strings.EqualFold(strings.TrimSpace(p.Kind), "cli") || !p.Configured() || len(p.ModelList()) == 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func localCLIProviderEntry(opt LocalCLIOptionView) config.ProviderEntry {
