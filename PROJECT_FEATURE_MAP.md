@@ -10,6 +10,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### AddOn 框架与插件包
+- Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, `D:\Work\wg2addons`, `D:\Work\WG2AddOnsExample`
+- Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。
+- Keywords: AddOn, plugin package, external package, wg2addons, WG2AddOnsExample, HOST_INTERFACES, addon.runtime, MCP runtime, zip package, install archive, skill sharing, manifest, update, management UI, credential ref
+- Source: user-requested+verified-by-search
+- Updated: 2026-07-06
+
 ### Agent 执行循环
 - Location: `internal/agent/agent.go`, `internal/agent/session.go`
 - Summary: Agent 持有 Provider、Tool Registry 和 Session，执行流式模型请求、工具调用、权限/plan-mode gating、上下文维护和事件输出。
@@ -38,6 +45,27 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-10
 
+### Desktop AI 协作导出
+- Location: `desktop/ai_collaboration_app.go`, `desktop/ai_collaboration_app_test.go`, `desktop/frontend/src/components/SettingsPanel.tsx`
+- Summary: Settings 的 AI 协作页导出一次性 skill 安装契约，自动注入仅写入不超过 12 行的运行规则；worker 使用独立命名会话，status 暴露前台/后台状态与限长完成报告，Codex 按 stat、scope diff、单次验证收口以减少重复上下文。
+- Keywords: AI Collaboration, workground2-worker, compact skill, dispatch.ps1, references/cli.md, AICollaborationPrompt
+- Source: verified-by-search
+- Updated: 2026-07-10
+
+### Desktop 会话来源标识
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/session_source_test.go`
+- Summary: desktop new 新建会话写入 sessionSource=cli；复用既有会话不重分类，Desktop 接管会清除 CLI 来源；侧栏按 sessionSource/channel/titleSource 渲染来源标签。
+- Keywords: sessionSource, CLI badge, setActiveSessionSource, takeoverFromCLI, ProjectTree
+- Source: verified-by-search
+- Updated: 2026-07-14
+
+### Draw AddOn 画图工具
+- Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
+- Summary: draw-tool AddOn 管理多 provider 画图配置、secret 引用、CLI/API 生成任务；主项目不再默认注册 `draw_image` 或固定渲染 Draw AddOn 设置块，安装外部 draw-tool zip 包后由独立编译的 MCP runtime `workground2-draw-addon` 承接模型侧 `draw_image`，插件页按已安装 AddOn package 渲染通用管理块。
+- Keywords: DrawAddon, draw-tool, draw_image, GenerateImageWithDrawAddon, apiKeyRef, cliCommand, external AddOn package, wg2addons, zip package, MCP runtime
+- Source: verified-by-search
+- Updated: 2026-07-06
+
 ### HTTP Serve 前端
 - Location: `internal/serve/serve.go`, `internal/serve/index.html`
 - Summary: serve 包把 Controller 暴露成 HTTP/SSE 前端，提供 /events 流和 submit/cancel/approve/plan/rewind/session 等 JSON 端点。
@@ -51,20 +79,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: MCP, plugin, JSON-RPC, stdio, streamable-http, mcp__, tools/list
 - Source: verified-by-search
 - Updated: 2026-07-03
-
-### AddOn 框架与插件包
-- Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, external `D:\Work\wg2addons`, external `D:\Work\WG2AddOnsExample`
-- Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。
-- Keywords: AddOn, plugin package, external package, wg2addons, WG2AddOnsExample, HOST_INTERFACES, addon.runtime, MCP runtime, zip package, install archive, skill sharing, manifest, update, management UI, credential ref
-- Source: user-requested+verified-by-search
-- Updated: 2026-07-06
-
-### Draw AddOn 画图工具
-- Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, external `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
-- Summary: draw-tool AddOn 管理多 provider 画图配置、secret 引用、CLI/API 生成任务；主项目不再默认注册 `draw_image` 或固定渲染 Draw AddOn 设置块，安装外部 draw-tool zip 包后由独立编译的 MCP runtime `workground2-draw-addon` 承接模型侧 `draw_image`，插件页按已安装 AddOn package 渲染通用管理块。
-- Keywords: DrawAddon, draw-tool, draw_image, GenerateImageWithDrawAddon, apiKeyRef, cliCommand, external AddOn package, wg2addons, zip package, MCP runtime
-- Source: verified-by-search
-- Updated: 2026-07-06
 
 ### Memory 与 Skill 系统
 - Location: `internal/memory/memory.go`, `internal/skill/skill.go`, `internal/skill/protected.go`, `internal/skill/tools.go`, `internal/agent/protected.go`, `internal/agent/agent.go`, `internal/agent/save.go`, `internal/agent/compact.go`, `internal/cli/skill_picker_view.go`, `internal/skillshare/remote.go`, `desktop/app.go`, `WorkGround2.md`
@@ -80,6 +94,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-requested+verified-by-tests
 - Updated: 2026-07-10
 
+### Provider 引导与本地 CLI 接入
+- Location: `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/frontend/src/components/OnboardingOverlay.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
+- Summary: first-run gate 由 `NeedsOnboarding` 判断是否已有 key、provider_access 或可配置 provider；overlay 支持 DeepSeek key 和本地 CLI 两条路径，本地 CLI 扫描常见命令后保存为 `kind=cli` provider。Settings 的“添加供应商”把本地 CLI 提升为与官方、自定义同级的第三个入口，进入后自动扫描并只展示已安装项，可重新扫描或一键添加并使用；已有可用 API provider 时不会覆盖当前 API 默认模型，无可用 API 时 CLI 作为兜底默认。高级 provider 编辑器仍可修改 command/args/protocol/timeout/model。Codex 预设使用 `exec --json` 和 `jsonl` 协议接收 stdout 事件流，并支持 Windows Codex Desktop 安装目录探测。
+- Keywords: onboarding, first-run, settings, ConnectKey, SkipOnboarding, ScanLocalCLIProviders, ConnectLocalCLIProvider, local CLI, codex --json
+- Source: verified-by-search
+- Updated: 2026-07-12
+
 ### Provider 模型后端
 - Location: `internal/provider/provider.go`, `internal/provider/openai`, `internal/provider/anthropic`, `internal/provider/cli`
 - Summary: provider 包定义模型后端接口和 kind->factory 注册表，OpenAI-compatible、Anthropic、本地 CLI 子包自注册并负责把模型请求适配为对应后端调用；CLI provider 在 Windows 隐藏子进程控制台，并按 stdout text/jsonl 分块转发。
@@ -87,12 +108,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Provider 引导与本地 CLI 接入
-- Location: `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/frontend/src/components/OnboardingOverlay.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
-- Summary: first-run gate 由 `NeedsOnboarding` 判断是否已有 key、provider_access 或可配置 provider；overlay 支持 DeepSeek key 和本地 CLI 两条路径，本地 CLI 扫描常见命令后保存为 `kind=cli` provider。Settings 的“添加供应商”把本地 CLI 提升为与官方、自定义同级的第三个入口，进入后自动扫描并只展示已安装项，可重新扫描或一键添加并使用；已有可用 API provider 时不会覆盖当前 API 默认模型，无可用 API 时 CLI 作为兜底默认。高级 provider 编辑器仍可修改 command/args/protocol/timeout/model。Codex 预设使用 `exec --json` 和 `jsonl` 协议接收 stdout 事件流，并支持 Windows Codex Desktop 安装目录探测。
-- Keywords: onboarding, first-run, settings, ConnectKey, SkipOnboarding, ScanLocalCLIProviders, ConnectLocalCLIProvider, local CLI, codex --json
+### Provider 访问与首次启动
+- Location: `desktop/app.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/OnboardingOverlay.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/providerModels.ts`
+- Summary: desktop 首次启动通过 NeedsOnboarding/SkipOnboarding 处理 provider setup；Settings 的 provider_access 记录显式访问项，ProviderEntry 支持 key-backed、无 key、本地/私有 endpoint 和本地 CLI provider。
+- Keywords: onboarding, SkipOnboarding, NeedsOnboarding, provider_access, api_key_env, no-key provider, local provider, local CLI
 - Source: verified-by-search
-- Updated: 2026-07-12
+- Updated: 2026-07-03
 
 ### Session 持久化、后台任务与回滚
 - Location: `internal/store/session.go`, `internal/agent/save.go`, `internal/agent/session.go`, `internal/agent/session_lease.go`, `internal/agent/session_removal.go`, `internal/agent/recovery_gc.go`, `internal/checkpoint/checkpoint.go`, `internal/jobs/jobs.go`, `internal/control/controller.go`, `internal/control/checkpoint.go`, `internal/control/session_lease_keeper.go`, `internal/boot/boot.go`, `internal/cli/session_lease.go`, `internal/acp/service.go`, `internal/serve/serve.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/settings_app.go`, `desktop/sessions.go`, `desktop/recovery_gc.go`
@@ -114,57 +135,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: Wails, WorkGround2, App, WorkspaceTab, bridge.ts, agent:event, React
 - Source: verified-by-search
 - Updated: 2026-07-03
-
-### Desktop Obsidian Iris 信息架构翻新
-- Status: done
-- Branch: `codex/desktop-ui-obsidian-iris`
-- Owner: Codex + WorkGround2 Desktop
-- Location: `docs/DESKTOP_UI_DESIGN_SPEC.zh-CN.md`, `docs/design-qa.md`, `docs/assets/workground2-desktop-obsidian-iris-reference.png`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/desktop-ui`, `desktop/frontend/src/store`, `desktop/frontend/src/styles.css`
-- Summary: 已按 1488×1024 黄金夹具完成 Workspace/Session 两级导航、任务记忆、Run 完成态 40px 折叠与运行态 160px 受限窗、固定 Artifact Shelf、可排序 Queue、运行配置条和多实例 AddOn 浮层；同视口视觉 QA、窄屏稳定性、核心交互和构建均通过。
-- Keywords: Obsidian Iris, WorkspaceSidebar, TaskMemoryBar, RunBlock, ArtifactShelf, RuntimeConfigBar, AddOnSurfaceRegistry, design QA
-- Source: user-approved-design + implementation-spec
-- Updated: 2026-07-10
-
-### 桌面会话运行态恢复与回看
-- Status: done
-- Branch: `developping/session-runtime-resume+2026-07-11`
-- Owner: Codex + WorkGround2 Desktop
-- Location: `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/Transcript.tsx`, `desktop/frontend/src/components/desktop-ui`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/lib/useScrollManager.ts`, `desktop/frontend/src/store`
-- Summary: Run 停止操作改为明确的 CircleStop；处理结果阶段只显示风格化短句；Workbench 统一由 conversation viewport 持有滚动并在会话切换后落到底部；TaskMemory 从 TabMeta/Meta/ListTabs 即时恢复，运行态显示真实任务与状态，完成态补充来自真实历史的最近摘要。类型检查、定向回归和前端生产构建通过。
-- Keywords: session resume, runtime status, TaskMemoryBar, RunBlock, auto scroll, stop action
-- Source: user-reported-runtime-ux
-- Updated: 2026-07-11
-
-### 桌面侧栏会话入口与滚动反馈
-- Status: done
-- Branch: `developping/sidebar-session-list-polish+2026-07-11`
-- Owner: Codex + WorkGround2 Desktop
-- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/workbench-layout.test.ts`
-- Summary: 侧栏“新建会话”已改为无重描边的轻量工具入口；会话列表使用默认透明、真实滚动时显示并在 700ms 后隐藏的细圆角滚动条，原生箭头常驻隐藏，兼容 Chromium/Wails 与 Firefox。类型检查、74 项 Workbench 布局契约和前端生产构建通过。
-- Keywords: workspace sidebar, new session, session list, scrollbar, scroll feedback
-- Source: user-reported-sidebar-ux
-- Updated: 2026-07-11
-
-### 桌面会话产物投影与历史恢复
-- Status: done
-- Branch: `developping/session-artifact-projection+2026-07-11`
-- Owner: Codex
-- Location: `desktop/artifacts.go`, `desktop/artifacts_test.go`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/store/artifacts.ts`, `desktop/frontend/src/components/desktop-ui/ArtifactShelf.tsx`, `desktop/frontend/src/__tests__`
-- Summary: 后端从完整会话历史中的成功产物工具和 `complete_step` host-verified 文件证据识别脚本、可执行文件、安装包、压缩包、图片、音视频与 PDF；路径必须位于当前工作区并按磁盘状态验证。前端在会话恢复、产物工具完成和回合结束时幂等刷新 Artifact Shelf；类型检查、专项回归、Go vet、前端生产构建和历史时序测试通过。
-- Restart recovery: 桌面启动时控制器异步恢复，前端可能在控制器就绪前调用 `ArtifactsForTab`。当 `Ctrl==nil` 但 tab 有合法的 `SessionPath` 时，`ArtifactsForTab` 调用 `agent.LoadSession` 从磁盘 `.jsonl` / `.events.jsonl` 恢复历史消息并投影产物；失败路径安全返回空列表并记录 `slog.Warn`。路径经 `validateSessionPath` 校验，禁止加载会话目录之外的文件。`TestArtifactsForTab_RestartRecoveryFromEventLog` 会清空兼容 `.jsonl` 锚点，验证产物确实由权威 `.events.jsonl` 重放恢复。
-- Keywords: Artifact Shelf, complete_step, files evidence, write_file, history hydration, artifact projection, restart recovery, agent.LoadSession
-- Source: user-reported-artifact-missing
-- Updated: 2026-07-12
-
-### 桌面产物架扩展浏览
-- Status: done
-- Branch: `developping/artifact-shelf-scale+2026-07-11`
-- Owner: Codex + WorkGround2 Desktop
-- Location: `desktop/frontend/src/components/desktop-ui/ArtifactShelf.tsx`, `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__`
-- Summary: Artifact Shelf 保持 64px 单行高度，左侧固定总数与“全部”入口，最多展示 6 个最近的可用/生成中产物；完整列表在入口上方浮层按当前/历史分组，超过 12 项提供名称/路径搜索和实际类型筛选，保留打开、重新校验、重新生成操作。入口在 AddOn 浮层开启时仍可访问；专项交互、组件、布局、主题、Store 回归与前端生产构建通过，并完成真实浏览器渲染检查。
-- Keywords: Artifact Shelf, recent artifacts, all artifacts, search, type filter, history states, scalable UI
-- Source: user-requested-artifact-shelf-scale
-- Updated: 2026-07-11
 
 ### Web 站点与 Cloudflare Workers
 - Location: `site/package.json`, `site/src/pages`, `workers/accounts`, `workers/registry`, `workers/forum`, `workers/crash-report`
@@ -215,13 +185,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-07
 
-### Desktop AI 协作导出
-- Location: `desktop/ai_collaboration_app.go`, `desktop/ai_collaboration_app_test.go`, `desktop/frontend/src/components/SettingsPanel.tsx`
-- Summary: Settings 的 AI 协作页导出一次性 skill 安装契约，自动注入仅写入不超过 12 行的运行规则；worker 使用独立命名会话，status 暴露前台/后台状态与限长完成报告，Codex 按 stat、scope diff、单次验证收口以减少重复上下文。
-- Keywords: AI Collaboration, workground2-worker, compact skill, dispatch.ps1, references/cli.md, AICollaborationPrompt
-- Source: verified-by-search
-- Updated: 2026-07-10
-
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`
 - Summary: 通用设置页隐藏桌面风格、会话展示、底部信息栏配置，保留工作台默认及兼容配置，并细化新会话审批选项说明。
@@ -236,36 +199,9 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Provider 访问与首次启动
-- Location: `desktop/app.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/OnboardingOverlay.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/providerModels.ts`
-- Summary: desktop 首次启动通过 NeedsOnboarding/SkipOnboarding 处理 provider setup；Settings 的 provider_access 记录显式访问项，ProviderEntry 支持 key-backed、无 key、本地/私有 endpoint 和本地 CLI provider。
-- Keywords: onboarding, SkipOnboarding, NeedsOnboarding, provider_access, api_key_env, no-key provider, local provider, local CLI
-- Source: verified-by-search
-- Updated: 2026-07-03
-
 ### 项目说明与工程约定
 - Location: `README.md`, `README.zh-CN.md`, `docs/SPEC.md`, `WorkGround2.md`
 - Summary: README 说明产品定位和用法，SPEC 是工程合同，WorkGround2.md 是本项目会话常驻工程记忆。
-- Keywords: WorkGround2, WorkGround2, SPEC, WorkGround2.md, project memory
+- Keywords: WorkGround2, SPEC, WorkGround2.md, project memory
 - Source: verified-by-search
 - Updated: 2026-07-03
-
-### 模型设置简化与接入引导
-- Status: done
-- Branch: `developping/model-settings-simplification+2026-07-12`
-- Owner: Codex
-- Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/locales`, `internal/config/fetch.go`, `docs/MODEL_CONFIGURATION_UX_DESIGN.zh-CN.md`
-- Summary: 模型设置已收敛为连接状态、默认模型和显式“添加模型服务”主任务；高级运行参数按需展开，官方供应商接入隐藏内部字段并在保存时验证连接，失败显式提示且保留草稿供重试。专项契约、既有设置契约、生产构建、desktop 全量 Go 测试与视觉 QA 通过。
-- Keywords: model settings, provider access, connection check, default model, progressive disclosure
-- Source: user-approved-design
-- Updated: 2026-07-12
-
-### 桌面全局设置持久化
-- Status: done
-- Branch: `developping/settings-persistence-race+2026-07-12`
-- Owner: Codex
-- Location: `desktop/app.go`, `desktop/settings_app.go`, `desktop/settings_app_test.go`
-- Summary: Desktop 设置通过 `updateUserConfig` 串行执行用户 config 的读取、修改和原子写回，避免后台 provider 刷新或相邻设置操作用旧快照覆盖 `composer_submit_key`、`default_tool_approval_mode` 等字段。
-- Keywords: configWriteMu, updateUserConfig, composer_submit_key, default_tool_approval_mode, lost update, debug-restart
-- Source: user-reported+verified-by-tests
-- Updated: 2026-07-12
