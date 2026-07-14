@@ -349,6 +349,10 @@ func TestRemoteAPIStatusKeepsSubmittedSessionStartingUntilObservedActive(t *test
 	if got["running"] == true || got["starting"] != true || got["submitted"] != true || got["mode"] != "starting" {
 		t.Fatalf("starting status = %+v, want submitted/start but not running", got)
 	}
+	if got["foregroundActive"] != true || got["activeRuntimeWork"] != true ||
+		got["pendingPrompt"] != false || got["backgroundOnly"] != false || got["cancelRequested"] != false {
+		t.Fatalf("starting status has incomplete runtime state: %+v", got)
+	}
 
 	ctrl.status = control.RuntimeStatus{
 		Mode:              control.RuntimeModeForeground,
@@ -909,6 +913,39 @@ func TestRemoteAPITargetSessionResponsePrefersRemoteTarget(t *testing.T) {
 	}
 	if got["toolApprovalMode"] != control.ToolApprovalYolo {
 		t.Fatalf("bg toolApprovalMode = %v, want yolo; body=%+v", got["toolApprovalMode"], got)
+	}
+}
+
+func TestRemoteAPITargetStartingStatusHasStableSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "starting.jsonl")
+	tab := &WorkspaceTab{
+		ID:          "starting",
+		Scope:       "project",
+		SessionPath: path,
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{"starting": tab}}
+	api := &remoteAPI{app: app}
+	api.setRemoteTarget(sessionRuntimeKey(path))
+	api.markSubmitted(path, time.Now())
+
+	got := api.targetSessionResponse("ok")
+	if got["running"] != false || got["pendingPrompt"] != false ||
+		got["foregroundActive"] != true || got["backgroundOnly"] != false ||
+		got["activeRuntimeWork"] != true || got["cancelRequested"] != false ||
+		got["starting"] != true || got["mode"] != "starting" {
+		t.Fatalf("starting status = %+v, want stable starting schema", got)
+	}
+}
+
+func TestRemoteAPIStatusWithoutActiveTabHasStableSchema(t *testing.T) {
+	api := &remoteAPI{app: &App{tabs: map[string]*WorkspaceTab{}}}
+
+	got := api.activeSessionResponse("ok")
+	if got["running"] != false || got["pendingPrompt"] != false ||
+		got["foregroundActive"] != false || got["backgroundOnly"] != false ||
+		got["activeRuntimeWork"] != false || got["cancelRequested"] != false ||
+		got["mode"] != string(control.RuntimeModeIdle) {
+		t.Fatalf("idle status = %+v, want stable idle schema", got)
 	}
 }
 

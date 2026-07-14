@@ -3096,7 +3096,11 @@ func (a *App) PurgeTrashedSession(path string) error {
 // RenameSession sets a custom display name for a session (empty clears it back to
 // the preview). It only affects the history panel; the file on disk is unchanged.
 func (a *App) RenameSession(path, title string) error {
-	if err := setSessionTitle(a.activeSessionDir(), path, title); err != nil {
+	dir, sessionPath, err := a.sessionDirForPath(path)
+	if err != nil {
+		return err
+	}
+	if err := setSessionTitle(dir, sessionPath, title); err != nil {
 		return err
 	}
 	a.invalidatePromptHistoryCache()

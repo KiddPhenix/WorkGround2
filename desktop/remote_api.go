@@ -311,14 +311,25 @@ func (api *remoteAPI) targetSessionResponse(status string) map[string]any {
 	return api.activeSessionResponse(status)
 }
 
+func newSessionResponse(status, path string) map[string]any {
+	return map[string]any{
+		"status":            status,
+		"path":              path,
+		"running":           false,
+		"pendingPrompt":     false,
+		"mode":              string(control.RuntimeModeIdle),
+		"foregroundActive":  false,
+		"backgroundOnly":    false,
+		"activeRuntimeWork": false,
+		"cancelRequested":   false,
+	}
+}
+
 // sessionResponseForTab builds a status JSON response for a specific tab,
 // mirroring the shape of activeSessionResponse.
 func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) map[string]any {
 	path := tab.currentSessionPath()
-	out := map[string]any{
-		"status": status,
-		"path":   path,
-	}
+	out := newSessionResponse(status, path)
 	if path != "" {
 		out["path"] = path
 	}
@@ -326,7 +337,9 @@ func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) ma
 		rs := tab.Ctrl.RuntimeStatus()
 		out["running"] = rs.ActiveRuntimeWork || rs.ForegroundActive || rs.PendingPrompt
 		out["pendingPrompt"] = rs.PendingPrompt
-		out["mode"] = string(rs.Mode)
+		if rs.Mode != "" {
+			out["mode"] = string(rs.Mode)
+		}
 		out["foregroundActive"] = rs.ForegroundActive
 		out["backgroundOnly"] = rs.BackgroundOnly
 		out["activeRuntimeWork"] = rs.ActiveRuntimeWork
@@ -410,10 +423,7 @@ func (api *remoteAPI) writeJSON(w http.ResponseWriter, value any) {
 
 func (api *remoteAPI) activeSessionResponse(status string) map[string]any {
 	path := api.app.CurrentSessionPath()
-	out := map[string]any{
-		"status": status,
-		"path":   path,
-	}
+	out := newSessionResponse(status, path)
 	for _, tab := range api.app.ListTabs() {
 		if !tab.Active {
 			continue
@@ -424,7 +434,9 @@ func (api *remoteAPI) activeSessionResponse(status string) map[string]any {
 		}
 		out["running"] = tab.Running
 		out["pendingPrompt"] = tab.PendingPrompt
-		out["mode"] = tab.RuntimeMode
+		if tab.RuntimeMode != "" {
+			out["mode"] = tab.RuntimeMode
+		}
 		out["foregroundActive"] = tab.ForegroundActive
 		out["backgroundOnly"] = tab.BackgroundOnly
 		out["activeRuntimeWork"] = tab.ActiveRuntimeWork
@@ -534,6 +546,11 @@ func (api *remoteAPI) applySubmittedState(out map[string]any, path string, runti
 	// Accepted/submitted is observable, but it is deliberately outside the
 	// user-facing Running set until the controller reports active runtime work.
 	out["running"] = false
+	out["pendingPrompt"] = false
+	out["foregroundActive"] = true
+	out["backgroundOnly"] = false
+	out["activeRuntimeWork"] = true
+	out["cancelRequested"] = false
 	out["starting"] = true
 	out["mode"] = "starting"
 }

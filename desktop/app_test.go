@@ -4291,6 +4291,53 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	}
 }
 
+func TestRenameSessionUsesOwningSessionDir(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	dirA := desktopSessionDir(rootA)
+	dirB := desktopSessionDir(rootB)
+	for _, dir := range []string{dirA, dirB} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	pathA := filepath.Join(dirA, "active.jsonl")
+	pathB := filepath.Join(dirB, "background.jsonl")
+	for _, path := range []string{pathA, pathB} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	ctrlA := control.New(control.Options{SessionDir: dirA, SessionPath: pathA, Label: "active"})
+	defer ctrlA.Close()
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {
+				ID: "active", Scope: "project", WorkspaceRoot: rootA,
+				Ready: true, Ctrl: ctrlA, SessionPath: pathA,
+			},
+			"background": {
+				ID: "background", Scope: "project", WorkspaceRoot: rootB,
+				SessionPath: pathB,
+			},
+		},
+		activeTabID: "active",
+	}
+
+	if err := app.RenameSession(pathB, "Background title"); err != nil {
+		t.Fatalf("RenameSession in background session dir: %v", err)
+	}
+	if titles := loadSessionTitles(dirB); titles[filepath.Base(pathB)] != "Background title" {
+		t.Fatalf("background title should be written beside its session, got %+v", titles)
+	}
+	if titles := loadSessionTitles(dirA); len(titles) != 0 {
+		t.Fatalf("active session titles should remain untouched, got %+v", titles)
+	}
+}
+
 func TestListSessionsHidesOpenBlankRuntimeSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
