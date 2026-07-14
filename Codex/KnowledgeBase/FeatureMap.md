@@ -2,6 +2,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 自适应新会话页 | in_progress | `developping/adaptive-new-session+2026-07-14` | Codex + WorkGround2 | `desktop/frontend/src/components/Welcome.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/locales`, `desktop/frontend/src/__tests__` | 将固定通用欢迎页调整为按 Workspace 内容、会话历史和熟悉度生成的一主两辅入口；覆盖非代码 Workspace、显式降级与默认低频 MicroGlitch。设计基准：`docs/ADAPTIVE_NEW_SESSION_DESIGN.zh-CN.md`。 |
 | 外部会话空闲自动回收 | done | `developping/external-session-idle-trash+2026-07-14` | Codex | `internal/agent`, `internal/bot`, `internal/botruntime`, `desktop` | IM 自动会话空闲 4 小时、CLI 远程会话空闲 6 小时后移入回收站；pin、运行中、会话 lease 与可恢复清理状态豁免。受影响 Go/前端专项测试与 go vet 通过。 |
 | CLI 会话中新建桌面会话 | done | `developping/cli-session-new-session+2026-07-14` | Codex + WorkGround2 | `desktop/tabs.go`, `desktop/session_source_test.go` | workspace “+” 不再复用 CLI 来源 tab；运行时 source 与持久化 sidecar 均可识别，新建 desktop blank 后仍保持普通幂等复用。专项测试与 go vet 通过；desktop 全量测试受既有 topic-tree/cache、session lease 用例失败阻塞。 |
 | 全局会话状态与待关注跳转 | done | `developping/global-session-status+2026-07-14` | Codex + WorkGround2 | `internal/control`, `desktop/app.go`, `desktop/tabs.go`, `desktop/remote_api.go`, `desktop/desktop_cli.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/SessionStatusIndicators.tsx`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/frontend/src/__tests__` | Running 与待关注口径已统一；当前活动、正在查看的 session 完成时保持已读，后台或已切走的桌面 session 完成后进入待关注。CLI 会话支持桌面接管，外部 CLI 创建/提交走后台 tab，状态与交互按远程目标 session 路由。专项回归及 go vet 通过。 |
