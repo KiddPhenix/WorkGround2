@@ -36,6 +36,7 @@ type BranchMeta struct {
 	SessionSource    string    `json:"session_source,omitempty"`
 	Channel          string    `json:"channel,omitempty"`
 	ChannelLabel     string    `json:"channel_label,omitempty"`
+	Pinned           bool      `json:"pinned,omitempty"`
 	NeedsAttention   bool      `json:"needs_attention,omitempty"`
 	NeedsAttentionAt int64     `json:"needs_attention_at,omitempty"`
 	RemoteID         string    `json:"remote_id,omitempty"`
@@ -429,6 +430,26 @@ func SetBranchSource(sessionPath, source string) error {
 		meta.NeedsAttention = false
 		meta.NeedsAttentionAt = 0
 	}
+	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// SetBranchPinned controls the durable auto-retention pin without changing the
+// session activity timestamp. It is safe to repeat and is used for standalone
+// channel sessions that do not belong to a desktop topic.
+func SetBranchPinned(sessionPath string, pinned bool) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	meta, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	if meta.Pinned == pinned {
+		return nil
+	}
+	meta.Pinned = pinned
 	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
 }
 

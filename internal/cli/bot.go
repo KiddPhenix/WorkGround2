@@ -148,6 +148,7 @@ func botStart(args []string, version string) int {
 		Debounce:       time.Duration(cfg.Bot.DebounceMs) * time.Millisecond,
 		OnInbound:      rememberInboundRemote,
 		OnSessionReady: botruntime.NewSessionRemembererWithWorkspace(logger, workspaceRoot),
+		OnSessionIdle:  botruntime.ExpireAutoSession,
 	}
 
 	feishuDomains := botruntime.RequestedFeishuDomains(requestedChannels)

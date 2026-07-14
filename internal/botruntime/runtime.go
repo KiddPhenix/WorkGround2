@@ -14,6 +14,7 @@ import (
 	"workground2/internal/bot/qq"
 	"workground2/internal/bot/weixin"
 	"workground2/internal/config"
+	"workground2/internal/session"
 )
 
 // EnabledPlatforms resolves the requested channel list against the saved config.
@@ -510,6 +511,20 @@ func ForgetAutoSessionMappingsForPath(sessionPath string) error {
 		return nil
 	}
 	return cfg.SaveTo(userPath)
+}
+
+// ExpireAutoSession moves an inactive auto-created IM session to trash and only
+// then removes its remote mapping. A failed move leaves the mapping intact so a
+// later inbound message can still resume the conversation safely.
+func ExpireAutoSession(sessionPath string) error {
+	sessionPath = normalizedBotSessionPath(sessionPath)
+	if sessionPath == "" {
+		return nil
+	}
+	if err := session.TrashSession(filepath.Dir(sessionPath), sessionPath); err != nil {
+		return err
+	}
+	return ForgetAutoSessionMappingsForPath(sessionPath)
 }
 
 func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRoot string) error {

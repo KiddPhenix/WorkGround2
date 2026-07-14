@@ -159,6 +159,8 @@ type App struct {
 
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
+	externalSessionGCRunning atomic.Bool
+
 	sessionWatcher *sessionWatcher // filesystem watcher for session dir changes
 	remoteAPI      *remoteAPI      // localhost HTTP API for CLI control
 
@@ -608,6 +610,7 @@ func (a *App) restoreOrBuildTabs() {
 			a.startTabControllerBuild(tab)
 		}
 		a.startRecoveryGC()
+		a.startExternalSessionGC()
 		return
 	}
 
@@ -622,6 +625,7 @@ func (a *App) restoreOrBuildTabs() {
 	a.mu.Unlock()
 	a.startTabControllerBuild(tab)
 	a.startRecoveryGC()
+	a.startExternalSessionGC()
 }
 
 func (a *App) createTabEntry(scope, workspaceRoot, topicID string) *WorkspaceTab {
@@ -2601,6 +2605,23 @@ func (a *App) DeleteSession(path string) error {
 	return nil
 }
 
+// SetSessionPinned controls retention for a standalone session such as an IM
+// Crew conversation. Topic sessions continue to use SetTopicPinned.
+func (a *App) SetSessionPinned(path string, pinned bool) error {
+	dir, sessionPath, err := a.sessionDirForPath(path)
+	if err != nil {
+		return err
+	}
+	if _, _, err := validateSessionPath(dir, sessionPath); err != nil {
+		return err
+	}
+	if err := agent.SetBranchPinned(sessionPath, pinned); err != nil {
+		return err
+	}
+	a.emitProjectTreeChanged()
+	return nil
+}
+
 type removedSessionRuntime struct {
 	tab           *WorkspaceTab
 	ctrl          control.SessionAPI
@@ -3044,6 +3065,9 @@ func (a *App) RestoreSession(path string) error {
 		return fmt.Errorf("session is open: %s", key)
 	}
 	if err := restoreTrashedSessionFile(dir, path); err != nil {
+		return err
+	}
+	if err := agent.TouchBranchMeta(target); err != nil {
 		return err
 	}
 	if err := restoreSessionTopicIndex(dir, target); err != nil {

@@ -1196,6 +1196,7 @@ type SessionInfo struct {
 	SessionSource  string
 	Channel        string
 	ChannelLabel   string
+	Pinned         bool
 	RemoteID       string
 	ChatType       string
 	UserID         string
@@ -1222,6 +1223,7 @@ type SessionOrderInfo struct {
 	SessionSource  string
 	Channel        string
 	ChannelLabel   string
+	Pinned         bool
 	RemoteID       string
 	ChatType       string
 	UserID         string
@@ -1745,6 +1747,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		sessionSource := ""
 		channel := ""
 		channelLabel := ""
+		pinned := false
 		remoteID := ""
 		chatType := ""
 		userID := ""
@@ -1771,6 +1774,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			sessionSource = meta.SessionSource
 			channel = meta.Channel
 			channelLabel = meta.ChannelLabel
+			pinned = meta.Pinned
 			remoteID = meta.RemoteID
 			chatType = meta.ChatType
 			userID = meta.UserID
@@ -1796,6 +1800,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			SessionSource:  sessionSource,
 			Channel:        channel,
 			ChannelLabel:   channelLabel,
+			Pinned:         pinned,
 			RemoteID:       remoteID,
 			ChatType:       chatType,
 			UserID:         userID,
@@ -1859,6 +1864,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			SessionSource:  session.SessionSource,
 			Channel:        session.Channel,
 			ChannelLabel:   session.ChannelLabel,
+			Pinned:         session.Pinned,
 			RemoteID:       session.RemoteID,
 			ChatType:       session.ChatType,
 			UserID:         session.UserID,

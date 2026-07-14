@@ -6315,6 +6315,7 @@ func crewProjectNode(sessionInfos map[string]agent.SessionInfo, sessionTitles ma
 			SessionSource:  firstNonEmpty(strings.TrimSpace(info.SessionSource), route.sessionSource),
 			Channel:        firstNonEmpty(strings.TrimSpace(info.Channel), route.channel),
 			ChannelLabel:   firstNonEmpty(strings.TrimSpace(info.ChannelLabel), route.channelLabel),
+			Pinned:         info.Pinned,
 			Turns:          info.Turns,
 			CreatedAt:      unixMilliOrZero(info.CreatedAt),
 			LastActivityAt: unixMilliOrZero(info.LastActivityAt),

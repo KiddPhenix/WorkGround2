@@ -452,6 +452,7 @@ export interface AppBindings {
   DeleteTopic(topicID: string): Promise<void>;
   TrashTopic(topicID: string): Promise<void>;
   SetTopicPinned(topicID: string, pinned: boolean): Promise<void>;
+  SetSessionPinned(path: string, pinned: boolean): Promise<void>;
   ContextPanel(tabID: string): Promise<ContextPanelInfo>;
   CurrentSessionPath(): Promise<string>;
   // New native-feel bindings (added with the desktop native-feel plan).
@@ -4092,6 +4093,9 @@ function makeMockApp(): AppBindings {
     },
     async SetTopicPinned(topicID: string, pinned: boolean) {
       setMockTopicPinned(topicID, pinned);
+    },
+    async SetSessionPinned(_path: string, _pinned: boolean) {
+      // Browser mock has no persisted session sidecar.
     },
     async SaveWindowState(_state) {
       // no-op in browser dev — no real window geometry to persist

@@ -223,8 +223,8 @@ export function projectTreeTopicHasUnreadActivity(
   return Boolean(key && activityAt > 0 && (readActivity[key] ?? 0) < activityAt);
 }
 
-export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, compactTopics: boolean, unread: boolean): boolean {
-  return !isSessionNode && compactTopics && !unread;
+export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, compactTopics: boolean, unread: boolean, isCrewSession = false): boolean {
+  return compactTopics && !unread && (!isSessionNode || isCrewSession);
 }
 
 function topicActivityLabel(ms: number, t: Translator, compact = false): string {
@@ -986,6 +986,16 @@ export function ProjectTree({
     }
   };
 
+  const setSessionPinned = async (path: string, pinned: boolean) => {
+    if (!path) return;
+    try {
+      await app.SetSessionPinned(path, pinned);
+      await refresh();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  };
+
   const setProjectPinned = async (workspaceRoot: string, pinned: boolean) => {
     if (!workspaceRoot) return;
     try {
@@ -1351,7 +1361,7 @@ export function ProjectTree({
             )}
           </button>
           {!compactTopics && unread && <span className="project-tree__topic-unread-dot" aria-hidden="true" />}
-          {!compactTopics && projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread) && (
+          {projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node)) && (
             <span className="project-tree__topic-actions" aria-label={t("projectTree.topicActions")}>
               <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
                 <button
@@ -1362,13 +1372,14 @@ export function ProjectTree({
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    void setTopicPinned(topicId, !pinned);
+                    if (isCrewSessionNode(node)) void setSessionPinned(node.sessionPath ?? "", !pinned);
+                    else void setTopicPinned(topicId, !pinned);
                   }}
                 >
                   <Pin size={15} aria-hidden="true" />
                 </button>
               </Tooltip>
-              <Tooltip label={t("projectTree.archiveTopic")} side="top" className="project-tree__topic-action-slot">
+              {!isSessionNode && <Tooltip label={t("projectTree.archiveTopic")} side="top" className="project-tree__topic-action-slot">
                 <button
                   className="project-tree__topic-action project-tree__topic-action--archive"
                   type="button"
@@ -1381,7 +1392,7 @@ export function ProjectTree({
                 >
                   <Archive size={15} aria-hidden="true" />
                 </button>
-              </Tooltip>
+              </Tooltip>}
             </span>
           )}
           {!isSessionNode && (

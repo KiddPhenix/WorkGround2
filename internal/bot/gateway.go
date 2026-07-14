@@ -59,6 +59,9 @@ type GatewayConfig struct {
 	// The gateway updates the live session and in-memory defaults first; this
 	// callback lets desktop save the chosen connection mode to user config.
 	OnToolApprovalModeChange func(InboundMessage, string) error
+	// OnSessionIdle lets the host move an idle auto-created IM transcript to its
+	// own trash implementation after the gateway has closed its controller.
+	OnSessionIdle func(string) error
 }
 
 // ChannelConfig overrides gateway defaults for one IM channel.
@@ -192,6 +195,7 @@ type sessionState struct {
 	lastAskID        string
 	createdAt        time.Time
 	lastActive       time.Time
+	lease            *agent.SessionLease
 }
 
 type sessionRuntimeProfile struct {
@@ -217,6 +221,10 @@ type pendingReactionAdapter interface {
 }
 
 const outboundEchoTTL = 10 * time.Minute
+
+const botIdleSessionLimit = 4 * time.Hour
+
+const botIdleSessionSweepInterval = 5 * time.Minute
 
 func (s *sessionEventSink) setTarget(target event.Sink) {
 	s.mu.Lock()
@@ -374,6 +382,9 @@ func (gw *BotGateway) Start(ctx context.Context) error {
 	// 合并所有适配器的消息通道
 	for _, binding := range gw.adapters {
 		go gw.dispatchLoop(ctx, binding)
+	}
+	if gw.cfg.OnSessionIdle != nil {
+		go gw.reapIdleSessions(ctx)
 	}
 
 	return nil
@@ -1827,6 +1838,12 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	ctrl.EnableInteractiveApproval()
 	ctrl.SetToolApprovalMode(profile.toolApprovalMode)
 	ctrl.EnsureSessionPath()
+	lease, err := agent.TryAcquireSessionLease(ctrl.SessionPath())
+	if err != nil {
+		ctrl.Close()
+		gw.logger.Warn("bot session lease unavailable", "path", ctrl.SessionPath(), "err", err)
+		return nil
+	}
 
 	var replace *sessionState
 	gw.mu.Lock()
@@ -1838,6 +1855,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 			updateSessionStateRuntime(existing, msg, profile)
 			gw.mu.Unlock()
 			ctrl.Close()
+			lease.Release()
 			safeBotSetToolApprovalMode(existing.ctrl, profile.toolApprovalMode)
 			gw.logger.Info("bot session built concurrently; discarding duplicate", "platform", msg.Platform, "chat", hashID(msg.ChatID), "session", key[:8])
 			return existing
@@ -1857,6 +1875,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 		pendingAsks:      make(map[string][]event.AskQuestion),
 		createdAt:        time.Now(),
 		lastActive:       time.Now(),
+		lease:            lease,
 	}
 	gw.controllers[key] = state
 	gw.mu.Unlock()
@@ -1893,6 +1912,55 @@ func closeBotSessionState(state *sessionState) {
 	if state.ctrl != nil {
 		state.ctrl.Close()
 	}
+	if state.lease != nil {
+		state.lease.Release()
+	}
+}
+
+func (gw *BotGateway) reapIdleSessions(ctx context.Context) {
+	gw.sweepIdleSessions(time.Now())
+	ticker := time.NewTicker(botIdleSessionSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			gw.sweepIdleSessions(now)
+		}
+	}
+}
+
+func (gw *BotGateway) sweepIdleSessions(now time.Time) int {
+	if gw.cfg.OnSessionIdle == nil {
+		return 0
+	}
+	var expired []*sessionState
+	gw.mu.Lock()
+	for key, state := range gw.controllers {
+		if state == nil || state.ctrl == nil || gw.sessions.IsActive(key) || state.ctrl.Running() || state.ctrl.PendingPrompt() || now.Sub(state.lastActive) < botIdleSessionLimit {
+			continue
+		}
+		path := state.ctrl.SessionPath()
+		meta, ok, err := agent.LoadBranchMeta(path)
+		if err != nil || !ok || meta.Pinned || strings.ToLower(strings.TrimSpace(meta.SessionSource)) != "auto" || strings.TrimSpace(meta.Channel) == "" || now.Sub(meta.UpdatedAt) < botIdleSessionLimit {
+			continue
+		}
+		delete(gw.controllers, key)
+		expired = append(expired, state)
+	}
+	gw.mu.Unlock()
+
+	for _, state := range expired {
+		path := state.ctrl.SessionPath()
+		closeBotSessionState(state)
+		if err := gw.cfg.OnSessionIdle(path); err != nil {
+			gw.logger.Warn("idle bot session trash failed", "path", path, "err", err)
+			continue
+		}
+		gw.logger.Info("moved idle bot session to trash", "path", path)
+	}
+	return len(expired)
 }
 
 func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntimeProfile {
