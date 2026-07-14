@@ -31527,3 +31527,207 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 4px;
   background: url("./assets/brand-concepts/workground2-w2-imagegen-concept.png") center / cover no-repeat, var(--bg-elev-2);
 }
+
+/* ── Adaptive new-session welcome ─────────────────────────────────── */
+
+.welcome--adaptive {
+  width: min(100%, 560px);
+  transform: translateY(-12px);
+}
+
+.welcome--adaptive .welcome__brand {
+  margin-bottom: 18px;
+}
+
+.welcome--adaptive .welcome__brand-logo {
+  width: 210px;
+  height: 49px;
+}
+
+.welcome-adaptive__workspace {
+  position: relative;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.welcome-adaptive__summary {
+  max-width: 520px;
+  margin: 10px 0 0;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1.65;
+  text-wrap: balance;
+}
+
+.welcome-adaptive__primary {
+  width: min(100%, 430px);
+  min-height: 52px;
+  margin-top: 24px;
+  padding: 13px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-fast) var(--ease-out);
+}
+
+.welcome-adaptive__primary:hover {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elev));
+  transform: translateY(-1px);
+}
+
+.welcome-adaptive__primary:focus-visible,
+.welcome-adaptive__secondary button:focus-visible,
+.welcome-adaptive__status button:focus-visible,
+.welcome-adaptive__delight button:focus-visible,
+.welcome-adaptive__disable-delight:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.welcome-adaptive__secondary {
+  min-height: 28px;
+  margin-top: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+
+.welcome-adaptive__secondary button,
+.welcome-adaptive__status button,
+.welcome-adaptive__disable-delight {
+  border: 0;
+  padding: 4px 0;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.welcome-adaptive__secondary button:hover,
+.welcome-adaptive__status button:hover,
+.welcome-adaptive__disable-delight:hover {
+  color: var(--fg);
+}
+
+.welcome-adaptive__status {
+  min-height: 22px;
+  margin-top: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
+.welcome-adaptive__status--normal::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.welcome-adaptive__status--warning {
+  color: var(--warning, #c8a45c);
+}
+
+.welcome-adaptive__status button {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.welcome--adaptive .welcome__hints {
+  margin: 14px 0 0;
+  opacity: 0.72;
+}
+
+.welcome-adaptive__art {
+  margin: 0 0 8px;
+  color: color-mix(in srgb, var(--accent) 64%, var(--fg-faint));
+  font: 11px/1.05 var(--mono);
+  user-select: none;
+}
+
+.welcome-adaptive__delight {
+  min-height: 24px;
+  margin-top: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-faint);
+  font-size: 11.5px;
+}
+
+.welcome-adaptive__delight--emoticon {
+  font-family: var(--mono);
+}
+
+.welcome-adaptive__delight button {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.welcome-adaptive__disable-delight {
+  margin-top: 5px;
+  font-size: 10.5px;
+  opacity: 0;
+  transition: opacity var(--dur-fast);
+}
+
+.welcome--adaptive:hover .welcome-adaptive__disable-delight,
+.welcome-adaptive__disable-delight:focus-visible {
+  opacity: 0.75;
+}
+
+@keyframes welcome-microglitch {
+  0%, 18% { transform: translateX(0); text-shadow: none; }
+  24% { transform: translateX(1px); text-shadow: -2px 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  34% { transform: translateX(-1px); text-shadow: 2px 0 color-mix(in srgb, #4cc9f0 45%, transparent); }
+  48%, 100% { transform: translateX(0); text-shadow: none; }
+}
+
+.welcome-adaptive__workspace--glitch {
+  animation: welcome-microglitch 460ms steps(2, end) 1 both;
+}
+
+@container (max-height: 560px) {
+  .welcome--adaptive .welcome__brand {
+    margin-bottom: 12px;
+  }
+  .welcome-adaptive__primary {
+    margin-top: 16px;
+  }
+  .welcome-adaptive__delight,
+  .welcome-adaptive__art {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-adaptive__workspace--glitch {
+    animation: none;
+  }
+  .welcome-adaptive__primary {
+    transition: none;
+  }
+}

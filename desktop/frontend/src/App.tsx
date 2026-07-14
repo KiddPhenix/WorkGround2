@@ -1374,6 +1374,13 @@ export default function App() {
   const composerSessionKey = useMemo(() => {
     return composerDraftKeyForTab(activeTab, activeTabId);
   }, [activeTab, activeTabId]);
+  const welcomeTarget = useMemo(() => ({
+    tabId: activeTabId || activeTab?.id || "",
+    scope: activeTab?.scope || (state.meta?.workspaceRoot ? "project" : "global"),
+    workspaceRoot: activeTab?.workspaceRoot || state.meta?.workspaceRoot || "",
+    workspaceName: activeTab?.workspaceName || state.meta?.workspaceName || tabWorkspaceTitle(activeTab),
+    sessionKey: composerSessionKey,
+  }), [activeTab, activeTabId, composerSessionKey, state.meta?.workspaceName, state.meta?.workspaceRoot]);
   const sidebarImDetailConnection = useMemo(
     () => sidebarImConnections.find((connection) => connection.id === sidebarImDetailConnectionId) ?? null,
     [sidebarImConnections, sidebarImDetailConnectionId],
@@ -2425,6 +2432,9 @@ export default function App() {
       console.warn("Failed to submit transcript prompt", err);
     });
   }, [commitThenSend, controllerReady]);
+  const handleWelcomeDraft = useCallback((text: string) => {
+    setComposerInsertRequest({ id: Date.now(), text, mode: "replace" });
+  }, []);
   commitThenSendRef.current = commitThenSend;
 
   const handleMessageAction = useCallback((turn: number, scope: string) => {
@@ -3285,6 +3295,8 @@ export default function App() {
                       tabId={activeTabId}
                       footerHeight={footerHeight}
                       onPrompt={handleTranscriptPrompt}
+                      onWelcomeDraft={handleWelcomeDraft}
+                      welcomeTarget={welcomeTarget}
                       onEditPrompt={handleEditPrompt}
                       onRewind={handleMessageAction}
                       onPinMemory={handlePinMemory}
@@ -3949,6 +3961,8 @@ export default function App() {
                 tabId={activeTabId}
                 footerHeight={footerHeight}
                 onPrompt={handleTranscriptPrompt}
+                onWelcomeDraft={handleWelcomeDraft}
+                welcomeTarget={welcomeTarget}
                 onEditPrompt={handleEditPrompt}
                 onRewind={handleMessageAction}
                 onPinMemory={handlePinMemory}

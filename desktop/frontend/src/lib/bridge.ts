@@ -88,6 +88,7 @@ import type {
   UpdateProgress,
   WireEvent,
   WorkspaceChangesView,
+  WorkspaceWelcomeView,
   PinMemoryResult,
   PinnedMemoriesView,
   GitCommitView,
@@ -308,6 +309,7 @@ export interface AppBindings {
   ReadFile(rel: string): Promise<FilePreview>;
   ReadFileForTab(tabID: string, rel: string): Promise<FilePreview>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
+  WorkspaceWelcome(tabID: string): Promise<WorkspaceWelcomeView>;
   PinnedMemoriesForTab(tabID: string): Promise<PinnedMemoriesView>;
   PinMemoryForTab(tabID: string, role: string, content: string, turn: number): Promise<PinMemoryResult>;
   SetPinnedMemoryPinnedForTab(tabID: string, id: string, pinned: boolean): Promise<boolean>;
@@ -3215,6 +3217,20 @@ function makeMockApp(): AppBindings {
           { path: "README.md", sources: ["git"], gitStatus: "??" },
           { path: "internal/control/controller.go", sources: ["session"], turns: [1], latestTime: Date.now() - 120_000 },
         ],
+      };
+    },
+    async WorkspaceWelcome(_tabID: string) {
+      return {
+        workspaceName: "WorkGround2",
+        scope: "project",
+        contentKinds: ["code", "docs"],
+        confidence: 0.95,
+        fileCount: 184,
+        changedCount: 3,
+        sessionCount: 7,
+        recentTitle: "Improve workspace session sync",
+        recentActivity: Date.now() - 90 * 60_000,
+        scannedAt: Date.now(),
       };
     },
     async PinnedMemoriesForTab(_tabID: string) {

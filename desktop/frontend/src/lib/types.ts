@@ -664,6 +664,22 @@ export interface WorkspaceChangesView {
   gitBranch?: string;
 }
 
+export interface WorkspaceWelcomeView {
+  workspaceName: string;
+  scope: string;
+  contentKinds: string[];
+  confidence: number;
+  fileCount: number;
+  changedCount: number;
+  sessionCount: number;
+  recentTitle?: string;
+  recentActivity?: number;
+  scannedAt: number;
+  partial?: boolean;
+  degraded?: boolean;
+  degradedReason?: string;
+}
+
 export interface PinnedMemory {
   id: string;
   role: string;

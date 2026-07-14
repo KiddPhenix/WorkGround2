@@ -7,6 +7,7 @@ import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
 import { ArrowDown, ChevronRight } from "lucide-react";
 import { Welcome } from "./Welcome";
+import type { WorkspaceWelcomeTarget } from "../lib/useWorkspaceWelcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup, isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "./ToolGroup";
 import { getDisplayMode, onDisplayModeChange, type DisplayMode } from "../lib/displayMode";
@@ -83,6 +84,8 @@ export function Transcript({
   tabId,
   footerHeight = 0,
   onPrompt,
+  onWelcomeDraft,
+  welcomeTarget,
   onEditPrompt,
   onRewind,
   onPinMemory,
@@ -109,6 +112,8 @@ export function Transcript({
   tabId?: string;
   footerHeight?: number;
   onPrompt: (text: string) => void;
+  onWelcomeDraft?: (text: string) => void;
+  welcomeTarget?: WorkspaceWelcomeTarget;
   onEditPrompt?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onRewind?: (turn: number, scope: string) => void;
   onPinMemory?: PinMemoryHandler;
@@ -657,7 +662,7 @@ export function Transcript({
         ref={scrollRef}
         onScroll={onScroll}
       >
-        {empty && !hydrating && <Welcome onPrompt={onPrompt} variant={welcomeVariant} />}
+        {empty && !hydrating && <Welcome onPrompt={onPrompt} onDraft={onWelcomeDraft} target={welcomeTarget} variant={welcomeVariant} />}
 
         {(!empty || hydrating) && (
           <LiveStreamContext.Provider value={live}>
