@@ -764,3 +764,52 @@ func TestRejectedDesktopSubmitKeepsCLISource(t *testing.T) {
 		t.Fatalf("SessionSource after rejected submit = %q, want cli", source)
 	}
 }
+
+func TestBlankTabMatchExcludesCLIRuntimeSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cli-runtime.jsonl")
+	tab := &WorkspaceTab{
+		Scope:             "global",
+		SessionPath:       path,
+		runtimeSourcePath: path,
+		runtimeSource:     "cli",
+	}
+	if (&App{}).blankTabMatchesTargetLocked(tab, "global", "") {
+		t.Fatal("CLI runtime tab matched as a reusable desktop blank")
+	}
+}
+
+func TestEnsureBlankTabDoesNotReuseCLISession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	cli, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.setTabSessionSource(cli.ID, "cli"); err != nil {
+		t.Fatalf("set CLI source: %v", err)
+	}
+	// Exercise the persisted-source fallback used after runtime state is rebuilt.
+	cliTab := app.tabs[cli.ID]
+	cliTab.runtimeSourcePath = ""
+	cliTab.runtimeSource = ""
+
+	created, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	if created.ID == cli.ID || created.TopicID == cli.TopicID || created.SessionPath == cli.SessionPath {
+		t.Fatalf("CLI session was reused: cli=%+v created=%+v", cli, created)
+	}
+	if created.SessionSource != "" {
+		t.Fatalf("new desktop session source = %q, want empty", created.SessionSource)
+	}
+
+	reused, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatalf("reuse new desktop blank: %v", err)
+	}
+	if reused.ID != created.ID {
+		t.Fatalf("desktop blank was not reused: created=%q reused=%q", created.ID, reused.ID)
+	}
+}

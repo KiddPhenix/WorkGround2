@@ -1904,11 +1904,16 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 
 // blankTabMatchesTargetLocked returns true if tab is a reusable blank tab
 // matching the given scope/project root — no running controller, no real history.
+// CLI-originated tabs are never reusable blanks: the desktop "+" must create or
+// switch to an independent non-CLI blank instead.
 func (a *App) blankTabMatchesTargetLocked(tab *WorkspaceTab, scope, workspaceRoot string) bool {
 	if tab == nil || tab.Scope != scope {
 		return false
 	}
 	if scope == "project" && tab.WorkspaceRoot != workspaceRoot {
+		return false
+	}
+	if tabSourceIsCLILocked(tab) {
 		return false
 	}
 	if tab.Ctrl == nil {
@@ -1918,6 +1923,27 @@ func (a *App) blankTabMatchesTargetLocked(tab *WorkspaceTab, scope, workspaceRoo
 		return false
 	}
 	return !messagesHaveConversationContent(tab.Ctrl.History())
+}
+
+// tabSourceIsCLILocked reports whether tab is a CLI-originated session,
+// checking runtime source first then falling back to persisted BranchMeta.
+// Caller must hold a.mu (read or write).
+func tabSourceIsCLILocked(tab *WorkspaceTab) bool {
+	if tab == nil {
+		return false
+	}
+	if source := tabRuntimeSource(tab); source != "" {
+		return strings.EqualFold(source, "cli")
+	}
+	path := strings.TrimSpace(tab.currentSessionPath())
+	if path == "" {
+		return false
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli")
 }
 
 func createEmptySessionFile(dir, model string) (string, error) {
