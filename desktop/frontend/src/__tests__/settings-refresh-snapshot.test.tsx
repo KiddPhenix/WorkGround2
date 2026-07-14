@@ -6,7 +6,6 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import {
   SettingsPanel,
-  aboutReadmeMarkdown,
   providerBaseURLFromChatURL,
   providerChatURLPreview,
   providerEditorEffectiveKind,
@@ -103,23 +102,6 @@ eq(providerEditorEffectiveKind(false, "anthropic", ["anthropic", "openai"]), "an
 eq(providerChatURLPreview("https://proxy.example.com/v1", "", false), "https://proxy.example.com/v1/chat/completions", "base URL mode previews chat completions URL");
 eq(providerChatURLPreview("", "https://proxy.example.com/custom/chat", true), "https://proxy.example.com/custom/chat", "full URL mode previews configured URL");
 eq(providerBaseURLFromChatURL("https://proxy.example.com/v1/chat/completions"), "https://proxy.example.com/v1", "chat URL derives base URL for model discovery");
-eq(
-  aboutReadmeMarkdown([
-    '<p align="center">',
-    '  <img src="docs/logo.svg" alt="WorkGround2" width="640"/>',
-    "</p>",
-    "",
-    '<p align="center">',
-    "  <strong>English</strong>",
-    "</p>",
-    "",
-    "# WorkGround2",
-    "",
-    "Desktop workbench.",
-  ].join("\n")),
-  "# WorkGround2\n\nDesktop workbench.",
-  "about readme strips GitHub HTML header before markdown rendering",
-);
 
 const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
   pretendToBeVisual: true,

@@ -182,7 +182,7 @@ function topicStatusLabel(node: ProjectNode, t: Translator): string {
 type TopicVisualState = "none" | "running" | "done" | "failed";
 
 export function projectTreeTopicVisualState(node: ProjectNode, unread: boolean, status = topicStatus(node)): TopicVisualState {
-  if (node.running && (status === "thinking" || status === "streaming" || status === "background_job")) return "running";
+  if (node.running) return "running";
   if (!unread) return "none";
   if (status === "error") return "failed";
   if ((node.turns ?? 0) > 0 || topicActivityAt(node) > 0) return "done";

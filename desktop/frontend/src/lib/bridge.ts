@@ -413,7 +413,6 @@ export interface AppBindings {
   // Runtime-only.
   SetBypass(on: boolean): Promise<void>;
   Version(): Promise<string>;
-  GetReadme(): Promise<string>;
   AICollaborationPrompt(): Promise<string>;
   InjectAICollaborationPrompt(): Promise<AICollaborationInjectResult>;
   GetGlobalAgentsMD(): Promise<string>;
@@ -3747,9 +3746,6 @@ function makeMockApp(): AppBindings {
     },
     async Version() {
       return "v1.0.0 (browser dev)";
-    },
-    async GetReadme() {
-      return "# WorkGround2\n\nBrowser-dev workspace preview.\n\n- Chat in the center\n- Browse files on the right\n- Keep sessions on the left\n";
     },
     async AICollaborationPrompt() {
       return "# WorkGround2 AI Collaboration\n\nInstall: write this into Codex's default AGENTS.md / Agent.md so it loads automatically.\n\nUse WorkGround2 Desktop as a CLI implementation worker. Codex owns planning, review, and final verification.\n\nWorkGround2 CLI location: workground2\n\nDispatch rule: actually run the CLI from shell. Do not only show this snippet. This is a required workflow, not a suggestion.\n\nExecution default: if WorkGround2 is reachable, Codex should mainly plan and verify while WorkGround2 executes implementation work. Before Codex edits files itself, it must decide whether the task requires Codex-only execution. For ordinary code/doc/config/test/file changes, Codex must dispatch WorkGround2 first, then wait/poll, inspect diff, run final verification, and only fix what the worker cannot handle.\n\nPlanning rule: for complex implementation, Codex decomposes the task into bounded packets and dispatches one or more WorkGround2 sessions. WorkGround2 executes; Codex owns reasoning, sequencing, review, and final result quality.\n\nSkip delegation only when Desktop is unreachable, the task is mainly multimodal/image/audio/video/visual/OCR/Figma/browser-GUI inspection, involves secrets/security/release/commits/staging, or lacks enough acceptance criteria to write a safe packet.\n\nSession rule: pass a stable `--session-name` for the current Codex conversation/task so WorkGround2 reuses that session. Omit or leave it empty only when a fresh session is intended.\n\nParallel rule: independent, non-overlapping tasks may use multiple `desktop new --workspace ... --session-name ... --yolo --no-wait` calls; give each a separate session name, goal/scope and reconcile diffs after polling.\n\nAsync rule: with `--no-wait`, exit code 0 means dispatched, not completed. Poll `desktop status --json` until `running=false` and `pendingPrompt=false`, then inspect report, target files, and diff.\n\nWorkspace rule: use the current Codex conversation's repo/workspace root for both packet Workspace and `--workspace`; never create a child directory for WorkGround2.\n\n```powershell\n$wg = 'workground2'\n$sessionName = '<stable Codex task/session name; empty means fresh new session>'\n& $wg desktop workspaces\n& $wg desktop new --workspace \"<current Codex repo/workspace root>\" --session-name $sessionName --yolo --no-wait $prompt\n& $wg desktop status --json\n```";

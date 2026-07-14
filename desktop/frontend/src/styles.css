@@ -12118,6 +12118,38 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
 }
 
+/* ── About ─────────────────────────────────────────────────── */
+
+.about-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.about-name {
+  font-size: var(--sz-h2);
+  font-weight: 700;
+  margin: 0;
+}
+
+.about-version {
+  font-size: var(--sz-sm);
+  color: var(--clr-muted);
+  font-family: var(--font-mono);
+}
+
+.about-desc {
+  color: var(--clr-muted);
+  margin: 4px 0 0 0;
+}
+
+.about-copyright {
+  font-size: var(--sz-xs);
+  color: var(--clr-muted);
+  margin: 12px 0 0 0;
+}
+
 .settings-field {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(320px, 1fr);

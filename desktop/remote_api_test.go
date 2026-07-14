@@ -69,6 +69,13 @@ func TestRemoteAPIActiveWorkspaceReadyStates(t *testing.T) {
 	}
 }
 
+func TestDesktopEmbeddedSessionOptionsRequestBackground(t *testing.T) {
+	got := desktopEmbeddedSessionOptions("worker", control.ToolApprovalYolo)
+	if got["background"] != true || got["sessionName"] != "worker" || got["toolApprovalMode"] != control.ToolApprovalYolo {
+		t.Fatalf("session options = %+v", got)
+	}
+}
+
 func TestRemoteAPIWaitForActiveWorkspaceReadyObservesAsyncBuild(t *testing.T) {
 	root := t.TempDir()
 	tab := &WorkspaceTab{ID: "tab", Scope: "project", WorkspaceRoot: root}
@@ -250,6 +257,68 @@ func TestRemoteAPISessionNewEmitsSessionActivated(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("session:activated event was not emitted")
+	}
+}
+
+func TestRemoteAPISessionNewBackgroundKeepsActiveTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	root := t.TempDir()
+	sessionDir := desktopSessionDir(root)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	activePath := filepath.Join(sessionDir, "active.jsonl")
+	backgroundPath := filepath.Join(sessionDir, "background.jsonl")
+	if err := os.WriteFile(backgroundPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := setSessionTitle(sessionDir, backgroundPath, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	activeCtrl := &remoteStatusCtrlStub{path: activePath, status: control.RuntimeStatus{Mode: control.RuntimeModeIdle}}
+	backgroundCtrl := &remoteStatusCtrlStub{path: backgroundPath, status: control.RuntimeStatus{Mode: control.RuntimeModeIdle}}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {
+				ID: "active", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: activeCtrl, SessionPath: activePath,
+			},
+			"background": {
+				ID: "background", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: backgroundCtrl, SessionPath: backgroundPath,
+			},
+		},
+		activeTabID: "active",
+	}
+	api := &remoteAPI{app: app}
+
+	payload, _ := json.Marshal(map[string]any{
+		"background": true, "workspace": root, "sessionName": "worker",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	api.handleSessionNew(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	path, _ := got["path"].(string)
+	if sessionRuntimeKey(path) != sessionRuntimeKey(backgroundPath) {
+		t.Fatalf("background path = %q, want %q", path, backgroundPath)
+	}
+	app.mu.RLock()
+	activeID := app.activeTabID
+	app.mu.RUnlock()
+	if activeID != "active" {
+		t.Fatalf("active tab changed to %q", activeID)
+	}
+	if key := api.getRemoteTargetKey(); key != sessionRuntimeKey(path) {
+		t.Fatalf("remote target = %q, want %q", key, sessionRuntimeKey(path))
 	}
 }
 
@@ -788,6 +857,222 @@ func (p remoteBlockingProvider) Stream(ctx context.Context, _ provider.Request) 
 	return ch, nil
 }
 
+// --- Background session tests ------------------------------------------------
+
+func TestRemoteAPITargetSessionResponsePrefersRemoteTarget(t *testing.T) {
+	root := t.TempDir()
+	activeCtrl := &remoteStatusCtrlStub{
+		path:         filepath.Join(root, "active.jsonl"),
+		approvalMode: control.ToolApprovalAsk,
+		status:       control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	bgCtrl := &remoteStatusCtrlStub{
+		path:         filepath.Join(root, "bg.jsonl"),
+		approvalMode: control.ToolApprovalYolo,
+		status: control.RuntimeStatus{
+			Mode:              control.RuntimeModeForeground,
+			Running:           true,
+			ForegroundActive:  true,
+			ActiveRuntimeWork: true,
+		},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {
+				ID: "active", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: activeCtrl,
+				SessionPath: activeCtrl.path,
+			},
+			"bg": {
+				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: bgCtrl,
+				SessionPath: bgCtrl.path,
+			},
+		},
+		activeTabID: "active",
+	}
+	api := &remoteAPI{app: app}
+
+	// Without remote target, falls back to active (idle).
+	got := api.targetSessionResponse("ok")
+	if got["running"] == true {
+		t.Fatalf("active should be idle; got running=%v", got["running"])
+	}
+
+	// Set remote target to bg.
+	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+
+	// Status should return bg's state (running).
+	got = api.targetSessionResponse("ok")
+	if got["running"] != true {
+		t.Fatalf("bg running = %v, want true; body=%+v", got["running"], got)
+	}
+	if got["toolApprovalMode"] != control.ToolApprovalYolo {
+		t.Fatalf("bg toolApprovalMode = %v, want yolo; body=%+v", got["toolApprovalMode"], got)
+	}
+}
+
+func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
+	root := t.TempDir()
+
+	// Active tab A.
+	activeCtrl := &remoteStatusCtrlStub{
+		path:   filepath.Join(root, "active.jsonl"),
+		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	// Background tab B.
+	bgCtrl := &remoteStatusCtrlStub{
+		path:   filepath.Join(root, "bg.jsonl"),
+		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {
+				ID: "active", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: activeCtrl,
+				SessionPath: activeCtrl.path,
+			},
+			"bg": {
+				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: bgCtrl,
+				SessionPath: bgCtrl.path,
+			},
+		},
+		activeTabID: "active",
+	}
+	api := &remoteAPI{app: app}
+
+	// Submit to B by session path.
+	submitBody := map[string]string{"prompt": "hello bg", "session": bgCtrl.path}
+	payload, _ := json.Marshal(submitBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	api.handleSessionSubmit(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Remote target should be set to B.
+	if key := api.getRemoteTargetKey(); key != sessionRuntimeKey(bgCtrl.path) {
+		t.Fatalf("remote target key = %q, want %q", key, sessionRuntimeKey(bgCtrl.path))
+	}
+
+	// Active tab should still be "active".
+	app.mu.RLock()
+	stillActive := app.activeTabID
+	app.mu.RUnlock()
+	if stillActive != "active" {
+		t.Fatalf("active tab changed to %q, want active", stillActive)
+	}
+}
+
+func TestRemoteAPISubmitNoSessionUsesRemoteTarget(t *testing.T) {
+	root := t.TempDir()
+	activeCtrl := &remoteStatusCtrlStub{
+		path:   filepath.Join(root, "active.jsonl"),
+		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	bgCtrl := &remoteStatusCtrlStub{
+		path:   filepath.Join(root, "bg.jsonl"),
+		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"active": {
+				ID: "active", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: activeCtrl,
+				SessionPath: activeCtrl.path,
+			},
+			"bg": {
+				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: bgCtrl,
+				SessionPath: bgCtrl.path,
+			},
+		},
+		activeTabID: "active",
+	}
+	api := &remoteAPI{app: app}
+
+	// Set remote target to bg (simulating a prior new/submit).
+	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+
+	// Submit without session — should go to bg via remote target.
+	submitBody := map[string]string{"prompt": "hello via target"}
+	payload, _ := json.Marshal(submitBody)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	api.handleSessionSubmit(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Response should be for bg.
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if path, _ := got["path"].(string); filepath.Clean(path) != filepath.Clean(bgCtrl.path) {
+		t.Fatalf("response path = %q, want bg path %q", path, bgCtrl.path)
+	}
+}
+
+func TestRemoteAPIApproveRoutesToRemoteTarget(t *testing.T) {
+	root := t.TempDir()
+	bgCtrl := &remoteStatusCtrlStub{
+		path:         filepath.Join(root, "bg.jsonl"),
+		approvalMode: control.ToolApprovalAsk,
+		status:       control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"bg": {
+				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: bgCtrl,
+				SessionPath: bgCtrl.path,
+			},
+		},
+		activeTabID: "bg",
+	}
+	api := &remoteAPI{app: app}
+	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+
+	// approve on remote target with no pending interaction → error (expected).
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/approve", bytes.NewBufferString(`{"allow":true}`))
+	rec := httptest.NewRecorder()
+	api.handleSessionApprove(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for no pending interaction, got %d", rec.Code)
+	}
+}
+
+func TestRemoteAPIAnswerRoutesToRemoteTarget(t *testing.T) {
+	root := t.TempDir()
+	bgCtrl := &remoteStatusCtrlStub{
+		path:   filepath.Join(root, "bg.jsonl"),
+		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
+	}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			"bg": {
+				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				Ready: true, Ctrl: bgCtrl,
+				SessionPath: bgCtrl.path,
+			},
+		},
+		activeTabID: "bg",
+	}
+	api := &remoteAPI{app: app}
+	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+
+	// answer on remote target with no pending interaction → error (expected).
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/answer", bytes.NewBufferString(`{"id":"ask-1","answers":[]}`))
+	rec := httptest.NewRecorder()
+	api.handleSessionAnswer(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected bad request for no pending interaction, got %d", rec.Code)
+	}
+}
+
 type remoteStatusCtrlStub struct {
 	control.SessionAPI
 	path         string
@@ -818,6 +1103,8 @@ func (s *remoteStatusCtrlStub) PlanMode() bool {
 func (s *remoteStatusCtrlStub) AutoApproveTools() bool {
 	return false
 }
+
+func (s *remoteStatusCtrlStub) SubmitDisplay(display, raw string) {}
 
 func (s *remoteStatusCtrlStub) Goal() string {
 	return ""

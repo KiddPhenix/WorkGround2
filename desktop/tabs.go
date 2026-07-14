@@ -884,8 +884,8 @@ func (s *tabEventSink) Emit(e event.Event) {
 		s.recordPlannerDisplay(e)
 	}
 	// Persist after each turn so a force-kill loses at most the in-flight prompt.
-	// All non-CLI sessions mark needs-attention on completion; the active tab
-	// is not special-cased — its completion also deserves a persistent marker.
+	// Completed desktop sessions need attention only when the user is viewing
+	// another tab; CLI-owned and currently active tabs stay unmarked.
 	if e.Kind == event.TurnDone && s.app != nil {
 		s.app.queueNeedsAttention(s.tabID, time.Now().UnixMilli())
 		s.app.scheduleTabSnapshot(s.tabID)
@@ -3030,8 +3030,9 @@ func (a *App) queueNeedsAttention(tabID string, completedAt int64) {
 	a.mu.RLock()
 	tab := a.tabByEventSinkIDLocked(tabID)
 	source := tabRuntimeSource(tab)
+	active := tab != nil && tab.ID == a.activeTabID
 	a.mu.RUnlock()
-	if tab == nil || strings.EqualFold(source, "cli") {
+	if tab == nil || active || strings.EqualFold(source, "cli") {
 		return
 	}
 	tab.saveMu.Lock()
@@ -3073,8 +3074,12 @@ func tabRuntimeSource(tab *WorkspaceTab) string {
 // sessions and persists it once a transcript exists. This avoids creating an
 // orphan sidecar that would hide a blank named session from runtime listings.
 func (a *App) setActiveSessionSource(source string) error {
+	return a.setTabSessionSource("", source)
+}
+
+func (a *App) setTabSessionSource(tabID, source string) error {
 	a.mu.Lock()
-	tab := a.activeTabLocked()
+	tab := a.tabByIDLocked(tabID)
 	if tab == nil {
 		a.mu.Unlock()
 		return nil
@@ -3190,6 +3195,258 @@ func (a *App) ctrlByTabID(tabID string) control.SessionAPI {
 		return nil
 	}
 	return tab.Ctrl
+}
+
+// findTabBySessionRuntimeKey returns the visible or detached tab whose session
+// runtime key matches key, or nil if none is found.
+func (a *App) findTabBySessionRuntimeKey(key string) *WorkspaceTab {
+	if key == "" {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab != nil && sessionRuntimeKey(tab.currentSessionPath()) == key {
+			return tab
+		}
+	}
+	return nil
+}
+
+// ensureBlankBackgroundTab creates a new blank tab in the target scope
+// without activating it in the UI. When no active tab exists, the first tab
+// becomes active so the UI is never left without a visible session.
+func (a *App) ensureBlankBackgroundTab(scope, workspaceRoot string) (*WorkspaceTab, error) {
+	scope = strings.TrimSpace(scope)
+	actualRoot := globalWorkspaceRoot()
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			return nil, fmt.Errorf("workspaceRoot is required")
+		}
+		actualRoot = workspaceRoot
+		saveWorkspace(workspaceRoot)
+		_ = addProject(workspaceRoot, "")
+	} else {
+		scope = "global"
+		workspaceRoot = ""
+	}
+	topicID := newTopicID()
+	if err := setTopicTitleWithSource(workspaceRoot, topicID, defaultTopicTitle, topicTitleSourceAuto); err != nil {
+		return nil, err
+	}
+	_ = prependTopicInProjectsFile(workspaceRoot, topicID, false)
+
+	sessionDir := desktopSessionDir(actualRoot)
+	sessionPath, err := createEmptySessionFile(sessionDir, "")
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = a.openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath, a.noActiveTab())
+	if err != nil {
+		return nil, err
+	}
+	tab := a.findTabBySessionRuntimeKey(sessionRuntimeKey(sessionPath))
+	if tab == nil {
+		return nil, fmt.Errorf("background tab was not created")
+	}
+	return tab, nil
+}
+
+// noActiveTab returns true when the app has no active tab.
+func (a *App) noActiveTab() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.activeTabLocked() == nil
+}
+
+// ensureNamedBackgroundSession finds or creates a named session in the given
+// workspace, without activating the tab. Returns the tab, session path, and
+// whether a new session was created.
+func (a *App) ensureNamedBackgroundSession(scope, workspaceRoot, name string) (*WorkspaceTab, bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, false, fmt.Errorf("session name is required")
+	}
+	actualRoot := globalWorkspaceRoot()
+	if strings.TrimSpace(scope) == "project" {
+		scope = "project"
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			return nil, false, fmt.Errorf("workspaceRoot is required")
+		}
+		actualRoot = workspaceRoot
+		saveWorkspace(workspaceRoot)
+		_ = addProject(workspaceRoot, "")
+	} else {
+		scope = "global"
+		workspaceRoot = ""
+	}
+
+	// Search for an existing session by title.
+	sessionDir := desktopSessionDir(actualRoot)
+	titles := loadSessionTitles(sessionDir)
+	a.mu.RLock()
+	tabs := a.runtimeTabsLocked()
+	a.mu.RUnlock()
+	for _, tab := range tabs {
+		if tab == nil || tab.Scope != scope || (scope == "project" && normalizeProjectRoot(tab.WorkspaceRoot) != workspaceRoot) {
+			continue
+		}
+		path := tab.currentSessionPath()
+		if strings.TrimSpace(titles[filepath.Base(path)]) == name {
+			// Ensure tab is loaded but don't activate.
+			meta, err := a.openTopicTabWithActivation(scope, workspaceRoot, tab.TopicID, path, false)
+			if err != nil {
+				return nil, false, err
+			}
+			found := a.findTabBySessionRuntimeKey(sessionRuntimeKey(meta.SessionPath))
+			if found == nil {
+				return nil, false, fmt.Errorf("named session tab not found after open")
+			}
+			return found, false, nil
+		}
+	}
+
+	infos, err := agent.ListSessions(sessionDir)
+	if err == nil {
+		for _, info := range infos {
+			if strings.TrimSpace(titles[filepath.Base(info.Path)]) == name {
+				meta, err := a.openTopicTabWithActivation(scope, workspaceRoot, "", info.Path, false)
+				if err != nil {
+					return nil, false, err
+				}
+				found := a.findTabBySessionRuntimeKey(sessionRuntimeKey(meta.SessionPath))
+				if found == nil {
+					return nil, false, fmt.Errorf("named session tab not found after open")
+				}
+				return found, false, nil
+			}
+		}
+	}
+
+	// Not found — create a new blank session and rename it.
+	tab, err := a.ensureBlankBackgroundTab(scope, workspaceRoot)
+	if err != nil {
+		return nil, false, err
+	}
+	path := tab.currentSessionPath()
+	if path == "" {
+		return nil, false, fmt.Errorf("new session has no path")
+	}
+	if err := a.RenameSession(path, name); err != nil {
+		return nil, false, err
+	}
+	// Set topic title on the tab.
+	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current == tab {
+		tab.TopicTitle = name
+		a.saveTabsLocked()
+	}
+	a.mu.Unlock()
+	if err := setTopicTitleWithSource(workspaceRoot, tab.TopicID, name, topicTitleSourceManual); err != nil {
+		return nil, false, err
+	}
+	_ = ensureTopicIndexed(scope, workspaceRoot, tab.TopicID, name, topicTitleSourceManual)
+	return tab, true, nil
+}
+
+// ensureTabForSessionPath finds or loads a session into a tab without
+// activating it. Returns the tab that holds the session.
+func (a *App) ensureTabForSessionPath(sessionPath string) (*WorkspaceTab, error) {
+	_, sessionPath, err := a.sessionDirForPath(sessionPath)
+	if err != nil {
+		return nil, err
+	}
+	sessionPath = canonicalTabSessionPath(sessionPath)
+	if sessionPath == "" {
+		return nil, fmt.Errorf("session path is required")
+	}
+	key := sessionRuntimeKey(sessionPath)
+
+	// Check if a tab already has this session loaded.
+	if tab := a.findTabBySessionRuntimeKey(key); tab != nil {
+		return tab, nil
+	}
+
+	// Determine scope and workspace root from the session path.
+	scope, workspaceRoot := scopeAndRootForSessionPath(sessionPath)
+	activate := a.noActiveTab()
+	meta, err := a.openTopicTabWithActivation(scope, workspaceRoot, "", sessionPath, activate)
+	if err != nil {
+		return nil, err
+	}
+	tab := a.findTabBySessionRuntimeKey(sessionRuntimeKey(meta.SessionPath))
+	if tab == nil {
+		return nil, fmt.Errorf("session tab not found after loading")
+	}
+	return tab, nil
+}
+
+// scopeAndRootForSessionPath derives the scope and workspace root from a
+// session file path by matching against known workspace session directories.
+func scopeAndRootForSessionPath(sessionPath string) (scope, workspaceRoot string) {
+	sessionPath = filepath.Clean(sessionPath)
+	dir := filepath.Dir(sessionPath)
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		if strings.EqualFold(strings.TrimSpace(meta.Scope), "global") {
+			return "global", ""
+		}
+		if root := normalizeProjectRoot(meta.WorkspaceRoot); root != "" {
+			return "project", root
+		}
+	}
+
+	// Check if it belongs to a known project workspace.
+	projects := loadProjectsFile().Projects
+	for _, p := range projects {
+		sd := desktopSessionDir(p.Root)
+		if filepath.Clean(sd) == dir {
+			return "project", p.Root
+		}
+	}
+
+	// Check global workspace.
+	globalRoot := globalWorkspaceRoot()
+	if filepath.Clean(desktopSessionDir(globalRoot)) == dir {
+		return "global", ""
+	}
+
+	// Fall back to global scope.
+	return "global", ""
+}
+
+// newBackgroundSession creates or reuses a session in the given scope. When
+// sessionName is non-empty it finds or creates a named session;
+// otherwise it creates a new blank tab. The active tab is never changed unless
+// no active tab exists. Returns the tab, session path, and whether created.
+func (a *App) newBackgroundSession(scope, workspaceRoot, sessionName string) (*WorkspaceTab, string, bool, error) {
+	if sessionName != "" {
+		tab, created, err := a.ensureNamedBackgroundSession(scope, workspaceRoot, sessionName)
+		if err != nil {
+			return nil, "", false, err
+		}
+		path := tab.currentSessionPath()
+		if created {
+			if err := a.setTabSessionSource(tab.ID, "cli"); err != nil {
+				return nil, "", false, err
+			}
+		}
+		return tab, path, created, nil
+	}
+	tab, err := a.ensureBlankBackgroundTab(scope, workspaceRoot)
+	if err != nil {
+		return nil, "", false, err
+	}
+	path := tab.currentSessionPath()
+	if path == "" {
+		return nil, "", false, fmt.Errorf("new session has no path")
+	}
+	if err := a.setTabSessionSource(tab.ID, "cli"); err != nil {
+		return nil, "", false, err
+	}
+	return tab, path, true, nil
 }
 
 // --- autosave per tab -------------------------------------------------------
@@ -4962,10 +5219,10 @@ func activityStatusForTab(tab *WorkspaceTab) string {
 	case control.RuntimeModeWaitingUser:
 		return topicStatusWaitingConfirmation
 	case control.RuntimeModeForeground, control.RuntimeModeCancelling:
-		if status == "" || status == topicStatusError {
-			return topicStatusThinking
+		if status == topicStatusStreaming {
+			return status
 		}
-		return status
+		return topicStatusThinking
 	case control.RuntimeModeBackgroundOnly:
 		return topicStatusBackgroundJob
 	}
@@ -6203,11 +6460,38 @@ func (a *App) ListProjectTree() []ProjectNode {
 	}
 	topicRuntimeStatus := func(key string) (open, running bool, status string, turnStartedAt int64) {
 		sessions := runtimeSessionsByTopic[key]
-		if len(sessions) != 1 {
+		if len(sessions) == 0 {
 			return false, false, "", 0
 		}
-		session := sessions[0]
-		return session.open, session.running, session.status, session.turnStartedAt
+		if len(sessions) == 1 {
+			session := sessions[0]
+			return session.open, session.running, session.status, session.turnStartedAt
+		}
+		for _, s := range sessions {
+			if s.open {
+				open = true
+			}
+			if !s.running {
+				continue
+			}
+			running = true
+			switch s.status {
+			case topicStatusStreaming:
+				status = topicStatusStreaming
+			case topicStatusThinking:
+				if status != topicStatusStreaming {
+					status = topicStatusThinking
+				}
+			case topicStatusBackgroundJob:
+				if status == "" {
+					status = topicStatusBackgroundJob
+				}
+			}
+			if s.turnStartedAt > turnStartedAt {
+				turnStartedAt = s.turnStartedAt
+			}
+		}
+		return
 	}
 	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)

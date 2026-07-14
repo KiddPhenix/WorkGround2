@@ -610,8 +610,8 @@ func TestListTabsExposesStructuredRuntimeStatus(t *testing.T) {
 	if len(tabs) != 1 {
 		t.Fatalf("tabs = %d, want 1", len(tabs))
 	}
-	if !tabs[0].Running || !tabs[0].PendingPrompt || !tabs[0].Cancellable || tabs[0].CancelRequested || tabs[0].RuntimeMode != string(control.RuntimeModeWaitingUser) || !tabs[0].ForegroundActive || tabs[0].BackgroundOnly || !tabs[0].ActiveRuntimeWork {
-		t.Fatalf("tab runtime = %+v, want waiting-user foreground runtime", tabs[0])
+	if tabs[0].Running || tabs[0].RunningWork || !tabs[0].PendingPrompt || !tabs[0].Cancellable || tabs[0].CancelRequested || tabs[0].RuntimeMode != string(control.RuntimeModeWaitingUser) || !tabs[0].ForegroundActive || tabs[0].BackgroundOnly || !tabs[0].ActiveRuntimeWork {
+		t.Fatalf("tab runtime = %+v, want waiting-user lifecycle outside Running", tabs[0])
 	}
 
 	app.CancelTab("test")

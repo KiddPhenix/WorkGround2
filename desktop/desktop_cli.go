@@ -186,8 +186,8 @@ func desktopEmbeddedToolApprovalMode(yolo bool, explicit string) (string, error)
 	}
 }
 
-func desktopEmbeddedSessionOptions(sessionName, toolApprovalMode string) map[string]string {
-	body := map[string]string{}
+func desktopEmbeddedSessionOptions(sessionName, toolApprovalMode string) map[string]any {
+	body := map[string]any{"background": true}
 	if strings.TrimSpace(sessionName) != "" {
 		body["sessionName"] = strings.TrimSpace(sessionName)
 	}
@@ -281,11 +281,6 @@ func desktopEmbeddedPrintStatus(result map[string]any, asJSON bool) error {
 	return nil
 }
 
-func desktopEmbeddedSwitchWorkspace(workspace string) error {
-	_, err := desktopEmbeddedPostJSON("/api/v1/workspace/switch", map[string]string{"dir": workspace})
-	return err
-}
-
 func desktopEmbeddedWorkspaces(args []string) int {
 	fs := flag.NewFlagSet("desktop workspaces", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -344,13 +339,11 @@ func desktopEmbeddedNew(args []string) int {
 		fmt.Fprintf(os.Stderr, "desktop new: %v\n", err)
 		return 2
 	}
+	body := desktopEmbeddedSessionOptions(*sessionName, toolApprovalMode)
 	if strings.TrimSpace(*workspace) != "" {
-		if err := desktopEmbeddedSwitchWorkspace(*workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "desktop new: switch workspace: %v\n", err)
-			return 1
-		}
+		body["workspace"] = strings.TrimSpace(*workspace)
 	}
-	result, err := desktopEmbeddedPostJSON("/api/v1/session/new", desktopEmbeddedSessionOptions(*sessionName, toolApprovalMode))
+	result, err := desktopEmbeddedPostJSON("/api/v1/session/new", body)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop new: %v\n", err)
 		return 1
@@ -401,13 +394,18 @@ func desktopEmbeddedSubmit(args []string) int {
 		fmt.Fprintf(os.Stderr, "desktop submit: %v\n", err)
 		return 2
 	}
-	if strings.TrimSpace(*workspace) != "" {
-		if err := desktopEmbeddedSwitchWorkspace(*workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "desktop submit: switch workspace: %v\n", err)
+	sessionPath := strings.TrimSpace(*session)
+	if sessionPath == "" && strings.TrimSpace(*workspace) != "" {
+		body := desktopEmbeddedSessionOptions("", toolApprovalMode)
+		body["workspace"] = strings.TrimSpace(*workspace)
+		created, err := desktopEmbeddedPostJSON("/api/v1/session/new", body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "desktop submit: create background session: %v\n", err)
 			return 1
 		}
+		sessionPath = desktopEmbeddedStringField(created, "path")
 	}
-	result, err := desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(strings.Join(fs.Args(), " "), *session, toolApprovalMode))
+	result, err := desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(strings.Join(fs.Args(), " "), sessionPath, toolApprovalMode))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop submit: %v\n", err)
 		return 1

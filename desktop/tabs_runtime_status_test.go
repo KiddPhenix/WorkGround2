@@ -71,6 +71,48 @@ func TestProjectTreeShowsDetachedRuntimeStatus(t *testing.T) {
 	waitNotRunning(t, ctrl)
 }
 
+func TestProjectTreeForegroundOverridesStaleWaitingStatus(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := desktopSessionDir(globalTabWorkspaceRoot())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	topicID := "topic_stale_waiting_status"
+	topicTitle := "Stale waiting status"
+	if err := setTopicTitle("", topicID, topicTitle); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	path := writeTopicSessionWithPrompt(t, dir, "stale-waiting.jsonl", topicID, topicTitle, "", "stale waiting prompt", time.Now())
+
+	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: path, Label: "stale-waiting"})
+	defer ctrl.Close()
+	app := NewApp()
+	app.tabs["stale-waiting"] = &WorkspaceTab{
+		ID:             "stale-waiting",
+		Scope:          "global",
+		WorkspaceRoot:  globalTabWorkspaceRoot(),
+		TopicID:        topicID,
+		TopicTitle:     topicTitle,
+		SessionPath:    path,
+		Ctrl:           ctrl,
+		Ready:          true,
+		ActivityStatus: topicStatusWaitingConfirmation,
+		disabledMCP:    map[string]ServerView{},
+	}
+	app.tabOrder = []string{"stale-waiting"}
+
+	ctrl.Submit("keep foreground running")
+	<-runner.started
+	topic := app.ListProjectTree()[0].Children[0]
+	if !topic.Running || topic.Status != topicStatusThinking {
+		t.Fatalf("foreground topic = %+v, want running/thinking despite stale waiting status", topic)
+	}
+
+	close(runner.release)
+	waitNotRunning(t, ctrl)
+}
+
 func TestListTabsReportsForegroundTurnStartedAt(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := desktopSessionDir(globalTabWorkspaceRoot())
@@ -231,12 +273,36 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 	sessionB := writeTopicSessionWithPrompt(t, dir, "session-b.jsonl", topicID, topicTitle, "", "session B prompt", time.Now())
 
 	app := NewApp()
-	runnerA := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
+	asks := make(chan event.Ask, 1)
+	doneA := make(chan event.Event, 1)
+	runnerA := &desktopAskRuntimeRunner{}
 	runnerB := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	ctrlA := control.New(control.Options{Runner: runnerA, SessionDir: dir, SessionPath: sessionA, Label: "a", Sink: event.Discard})
+	ctrlA := control.New(control.Options{
+		Runner:      runnerA,
+		SessionDir:  dir,
+		SessionPath: sessionA,
+		Label:       "a",
+		Sink: event.FuncSink(func(e event.Event) {
+			switch e.Kind {
+			case event.AskRequest:
+				asks <- e.Ask
+			case event.TurnDone:
+				doneA <- e
+			}
+		}),
+	})
 	ctrlB := control.New(control.Options{Runner: runnerB, SessionDir: dir, SessionPath: sessionB, Label: "b", Sink: event.Discard})
 	defer ctrlA.Close()
 	defer ctrlB.Close()
+	runnerA.ask = func(ctx context.Context) error {
+		_, err := ctrlA.Ask(ctx, []event.AskQuestion{{
+			ID:      "choice",
+			Header:  "Pick",
+			Prompt:  "Pick one",
+			Options: []event.AskOption{{Label: "A"}, {Label: "B"}},
+		}})
+		return err
+	}
 
 	detached := &WorkspaceTab{
 		ID:             detachedRuntimeTabID(sessionRuntimeKey(sessionA)),
@@ -267,9 +333,13 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 	app.tabOrder = []string{visible.ID}
 	app.activeTabID = visible.ID
 
-	ctrlA.Submit("block A")
+	ctrlA.Send("wait for user A")
 	ctrlB.Submit("block B")
-	<-runnerA.started
+	select {
+	case <-asks:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session A ask request")
+	}
 	<-runnerB.started
 
 	nodes := app.ListProjectTree()
@@ -277,27 +347,52 @@ func TestProjectTreeSplitsMultipleRuntimeSessionsInSameTopic(t *testing.T) {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
 	topic := nodes[0].Children[0]
-	if topic.Status != "" || topic.Running {
-		t.Fatalf("topic should not merge child runtime statuses: %+v", topic)
+	if !topic.Running || topic.Status != topicStatusThinking {
+		t.Fatalf("topic should aggregate child runtime statuses: Running=%v Status=%q, want running/thinking", topic.Running, topic.Status)
+	}
+	if !topic.Open {
+		t.Fatalf("topic Open should be true when any child is open: %+v", topic)
 	}
 	if len(topic.Children) != 2 {
 		t.Fatalf("topic children = %#v, want two session runtime rows", topic.Children)
 	}
 	statusByPath := map[string]string{}
+	runningByPath := map[string]bool{}
 	for _, child := range topic.Children {
 		statusByPath[filepath.Clean(child.SessionPath)] = child.Status
+		runningByPath[filepath.Clean(child.SessionPath)] = child.Running
 	}
 	if statusByPath[filepath.Clean(sessionA)] != topicStatusWaitingConfirmation {
 		t.Fatalf("session A status = %q, want waiting; children=%#v", statusByPath[filepath.Clean(sessionA)], topic.Children)
 	}
+	if runningByPath[filepath.Clean(sessionA)] {
+		t.Fatalf("waiting_user session A should not be running; children=%#v", topic.Children)
+	}
 	if statusByPath[filepath.Clean(sessionB)] != topicStatusThinking {
 		t.Fatalf("session B status = %q, want thinking; children=%#v", statusByPath[filepath.Clean(sessionB)], topic.Children)
 	}
+	if !runningByPath[filepath.Clean(sessionB)] {
+		t.Fatalf("session B should be running; children=%#v", topic.Children)
+	}
 
-	close(runnerA.release)
+	ctrlA.Cancel()
+	select {
+	case <-doneA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for session A turn_done")
+	}
 	close(runnerB.release)
 	waitNotRunning(t, ctrlA)
 	waitNotRunning(t, ctrlB)
+
+	nodes = app.ListProjectTree()
+	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
+		t.Fatalf("project tree after finish = %#v, want one global topic", nodes)
+	}
+	topic = nodes[0].Children[0]
+	if topic.Running || topic.Status != "" {
+		t.Fatalf("topic after finish should not be running: %+v", topic)
+	}
 }
 
 func TestProjectTreeShowsBackgroundJobStatus(t *testing.T) {

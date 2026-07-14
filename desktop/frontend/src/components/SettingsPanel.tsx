@@ -54,7 +54,6 @@ import { SoundSelect } from "./SoundSelect";
 import { getSuccessPreference, setSuccessPreference, getAttentionPreference, setAttentionPreference, playSuccessChime, playAttentionChime, type SoundWavPref } from "../lib/sound";
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
-import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 
 const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "global", "about"];
@@ -5985,27 +5984,6 @@ function monoFontFamilyName(font: MonoFontFamily, t: ReturnType<typeof useT>): s
 const MB = 1024 * 1024;
 const mb = (n: number) => (n / MB).toFixed(1);
 
-const CENTERED_README_HTML_OPEN_RE = /^<p\b(?=[^>]*\balign\s*=\s*["']?center["']?)[^>]*>\s*$/i;
-const README_HTML_CLOSE_RE = /^<\/p>\s*$/i;
-
-export function aboutReadmeMarkdown(readme: string): string {
-  const lines = readme.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").split("\n");
-  let index = 0;
-  let stripped = false;
-
-  while (index < lines.length && lines[index].trim() === "") index += 1;
-  while (index < lines.length && CENTERED_README_HTML_OPEN_RE.test(lines[index].trim())) {
-    index += 1;
-    while (index < lines.length && !README_HTML_CLOSE_RE.test(lines[index].trim())) index += 1;
-    if (index >= lines.length) return readme;
-    index += 1;
-    stripped = true;
-    while (index < lines.length && lines[index].trim() === "") index += 1;
-  }
-
-  return stripped ? lines.slice(index).join("\n").replace(/^\n+/, "") : readme;
-}
-
 function AICollaborationSection() {
   const t = useT();
   const [prompt, setPrompt] = useState("");
@@ -6083,54 +6061,22 @@ function AICollaborationSection() {
   );
 }
 
-// AboutSection renders the project README.md (or README.zh-CN.md) as Markdown.
+// AboutSection shows the app name, version, description, and copyright.
 function AboutSection() {
   const t = useT();
-  const [readme, setReadme] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [version, setVersion] = useState("");
 
   useEffect(() => {
-    let cancelled = false;
-    app.GetReadme()
-      .then((content) => {
-        if (cancelled) return;
-        if (content) {
-          setReadme(aboutReadmeMarkdown(content));
-        } else {
-          setError(t("settings.about.notFound"));
-        }
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setError(String((e as Error)?.message ?? e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [t]);
-
-  if (loading) {
-    return (
-      <SettingsSection title={t("settings.tab.about")}>
-        <div className="empty">{t("settings.loading")}</div>
-      </SettingsSection>
-    );
-  }
-
-  if (error) {
-    return (
-      <SettingsSection title={t("settings.tab.about")}>
-        <div className="banner banner--error">{error}</div>
-      </SettingsSection>
-    );
-  }
+    app.Version().then(setVersion).catch(() => {});
+  }, []);
 
   return (
     <SettingsSection title={t("settings.tab.about")}>
-      <div className="md">
-        <Markdown text={readme} />
+      <div className="about-content">
+        <h2 className="about-name">WorkGround2</h2>
+        {version && <div className="about-version">{version}</div>}
+        <p className="about-desc">{t("settings.about.description")}</p>
+        <p className="about-copyright">{t("settings.about.copyright")}</p>
       </div>
     </SettingsSection>
   );

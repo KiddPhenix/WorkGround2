@@ -359,38 +359,6 @@ func (a *App) Platform() string {
 	return goruntime.GOOS
 }
 
-// GetReadme returns the content of README.md (preferring README.zh-CN.md) found
-// alongside the executable or in the current working directory. It returns an
-// empty string when no README is found.
-func (a *App) GetReadme() string {
-	names := []string{"README.zh-CN.md", "README.md"}
-
-	// 1. Try the current working directory first.
-	if wd, err := os.Getwd(); err == nil {
-		for _, name := range names {
-			if data, err := os.ReadFile(filepath.Join(wd, name)); err == nil {
-				return string(data)
-			}
-		}
-	}
-
-	// 2. Fall back to the executable directory.
-	if exe, err := os.Executable(); err == nil {
-		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = resolved
-		}
-		dir := filepath.Dir(exe)
-		for _, name := range names {
-			if data, err := os.ReadFile(filepath.Join(dir, name)); err == nil {
-				return string(data)
-			}
-		}
-	}
-
-	return ""
-}
-
-// startup runs once the webview process is up, before the frontend can issue any
 // bound call. It captures the Wails context (needed for EventsEmit), then kicks
 // off the initialization in a background goroutine so the webview loads immediately.
 func (a *App) startup(ctx context.Context) {
@@ -1194,7 +1162,11 @@ func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
 
 // pendingInteraction returns the decision currently blocking the active tab.
 func (a *App) pendingInteraction() (control.PendingInteraction, bool) {
-	ctrl := a.ctrlByTabID("")
+	return a.pendingInteractionForTab("")
+}
+
+func (a *App) pendingInteractionForTab(tabID string) (control.PendingInteraction, bool) {
+	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
 		return control.PendingInteraction{}, false
 	}
@@ -1208,7 +1180,11 @@ func (a *App) ApprovePending(allow bool) error {
 
 // approvePendingID resolves the current approval only when its ID still matches.
 func (a *App) approvePendingID(id string, allow bool) error {
-	ctrl := a.ctrlByTabID("")
+	return a.approvePendingIDForTab("", id, allow)
+}
+
+func (a *App) approvePendingIDForTab(tabID, id string, allow bool) error {
+	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
@@ -1404,7 +1380,11 @@ func (a *App) AnswerQuestionForTab(tabID, id string, answers []QuestionAnswer) {
 // the active tab. Remote callers must answer every question using labels from
 // the current option set.
 func (a *App) answerPendingQuestion(id string, answers []QuestionAnswer) error {
-	ctrl := a.ctrlByTabID("")
+	return a.answerPendingQuestionForTab("", id, answers)
+}
+
+func (a *App) answerPendingQuestionForTab(tabID, id string, answers []QuestionAnswer) error {
+	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}

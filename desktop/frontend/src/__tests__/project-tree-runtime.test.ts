@@ -170,6 +170,12 @@ eq(
   "completed read topic hides done visual state",
 );
 
+eq(
+  projectTreeTopicVisualState({ ...completedTopic, running: true, status: "waiting_confirmation" }, false),
+  "running",
+  "backend RunningWork stays authoritative when an event status is stale",
+);
+
 const failedTopic = { ...completedTopic, status: "error" };
 
 eq(

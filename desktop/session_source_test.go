@@ -322,7 +322,7 @@ func TestTabMetaShowsPendingAttentionBeforePersistence(t *testing.T) {
 		t.Fatalf("create transcript: %v", err)
 	}
 	tab := &WorkspaceTab{ID: "tab", SessionPath: sp, disabledMCP: map[string]ServerView{}}
-	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}}
 
 	// Queue attention; sidecar should NOT exist yet.
 	app.queueNeedsAttention(tab.ID, 2000)
@@ -364,20 +364,20 @@ func TestTabMetaKeepsEarliestAttentionTimestamp(t *testing.T) {
 	}
 }
 
-func TestTurnDoneMarksActiveTabAttentionImmediatelyAndPersists(t *testing.T) {
+func TestTurnDoneDoesNotMarkActiveTabAttention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "active-turn-done.jsonl")
 	app, tab := appWithTab(t, path)
 
 	tab.sink.Emit(event.Event{Kind: event.TurnDone})
 	immediate := app.tabMeta(tab, true)
-	if !immediate.NeedsAttention || immediate.NeedsAttentionAt == 0 {
-		t.Fatalf("immediate attention = %+v, want active completed tab to need attention", immediate)
+	if immediate.NeedsAttention || immediate.NeedsAttentionAt != 0 {
+		t.Fatalf("immediate attention = %+v, want active completed tab to stay read", immediate)
 	}
 
 	waitForAutosaveIdle(t, tab)
 	persisted := app.tabMeta(tab, true)
-	if !persisted.NeedsAttention || persisted.NeedsAttentionAt == 0 {
-		t.Fatalf("persisted attention = %+v, want active completed tab to remain attention", persisted)
+	if persisted.NeedsAttention || persisted.NeedsAttentionAt != 0 {
+		t.Fatalf("persisted attention = %+v, want active completed tab to stay read", persisted)
 	}
 }
 
@@ -687,13 +687,14 @@ func TestTakeoverFromCLIAllowsAttentionAfter(t *testing.T) {
 	if err := app.takeoverFromCLI(tab); err != nil {
 		t.Fatalf("takeoverFromCLI: %v", err)
 	}
+	app.activeTabID = ""
 	app.queueNeedsAttention(tab.ID, 2000)
 	if tab.pendingAttentionAt != 2000 {
 		t.Fatalf("after takeover, attention should be queued, got %d", tab.pendingAttentionAt)
 	}
 }
 
-func TestDesktopSubmitTakesOverCLIAndAllowsAttention(t *testing.T) {
+func TestDesktopSubmitTakesOverCLIWithoutAttentionWhileActive(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "desktop-submit.jsonl")
 	app, tab := appWithTab(t, path)
 	ctrl := tab.Ctrl.(*control.Controller)
@@ -710,8 +711,8 @@ func TestDesktopSubmitTakesOverCLIAndAllowsAttention(t *testing.T) {
 	}
 	waitForControllerIdle(t, ctrl)
 	app.queueNeedsAttention(tab.ID, 4000)
-	if tab.pendingAttentionAt != 4000 {
-		t.Fatalf("desktop-owned session attention = %d, want 4000", tab.pendingAttentionAt)
+	if tab.pendingAttentionAt != 0 {
+		t.Fatalf("active desktop-owned session attention = %d, want 0", tab.pendingAttentionAt)
 	}
 }
 
