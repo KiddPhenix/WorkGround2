@@ -46,6 +46,8 @@ type WorkspaceTab struct {
 	TopicID             string             // topic within the project
 	TopicTitle          string             // display title
 	SessionPath         string             // exact .jsonl file this tab continues
+	runtimeSourcePath   string             // session path paired with runtimeSource
+	runtimeSource       string             // source for a runtime-only session before its sidecar exists
 	ReadOnly            bool               // true for external channel transcripts opened for browsing
 	Ctrl                control.SessionAPI // nil while booting / on error
 	Label               string             // model label (for the tab badge)
@@ -64,10 +66,11 @@ type WorkspaceTab struct {
 	ActivityStatus string // transient project-tree status for the in-flight turn
 
 	// Per-turn autosave per tab.
-	saveMu       sync.Mutex
-	saving       bool
-	saveAgain    bool
-	saveFailures int
+	saveMu             sync.Mutex
+	saving             bool
+	saveAgain          bool
+	saveFailures       int
+	pendingAttentionAt int64
 
 	// closing is set under saveMu when the tab is being torn down. Once set,
 	// tabSnapshotLoop stops taking new snapshot work and CloseTab waits on
@@ -881,7 +884,10 @@ func (s *tabEventSink) Emit(e event.Event) {
 		s.recordPlannerDisplay(e)
 	}
 	// Persist after each turn so a force-kill loses at most the in-flight prompt.
+	// All non-CLI sessions mark needs-attention on completion; the active tab
+	// is not special-cased — its completion also deserves a persistent marker.
 	if e.Kind == event.TurnDone && s.app != nil {
+		s.app.queueNeedsAttention(s.tabID, time.Now().UnixMilli())
 		s.app.scheduleTabSnapshot(s.tabID)
 		s.app.TryDeferredConfigRebuild()
 	}
@@ -1289,6 +1295,7 @@ type TabMeta struct {
 	Label               string                   `json:"label"`
 	Ready               bool                     `json:"ready"`
 	Running             bool                     `json:"running"`
+	RunningWork         bool                     `json:"runningWork"`
 	PendingPrompt       bool                     `json:"pendingPrompt,omitempty"`
 	BackgroundJobs      int                      `json:"backgroundJobs,omitempty"`
 	CancelRequested     bool                     `json:"cancelRequested,omitempty"`
@@ -1309,6 +1316,9 @@ type TabMeta struct {
 	StartupErr          string                   `json:"startupErr,omitempty"`
 	Active              bool                     `json:"active"`
 	Cwd                 string                   `json:"cwd"`
+	SessionSource       string                   `json:"sessionSource,omitempty"`
+	NeedsAttention      bool                     `json:"needsAttention"`
+	NeedsAttentionAt    int64                    `json:"needsAttentionAt,omitempty"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -1350,6 +1360,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		StartupErr:        tab.StartupErr,
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,
+		SessionSource:     tabRuntimeSource(tab),
 	}
 	switch tab.Scope {
 	case "global":
@@ -1366,7 +1377,8 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	}
 	if tab.Ctrl != nil {
 		status := tab.Ctrl.RuntimeStatus()
-		m.Running = status.ActiveRuntimeWork
+		m.Running = status.RunningWork
+		m.RunningWork = status.RunningWork
 		m.PendingPrompt = status.PendingPrompt
 		m.BackgroundJobs = status.BackgroundJobs
 		m.CancelRequested = status.CancelRequested
@@ -1377,6 +1389,34 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.ActiveRuntimeWork = status.ActiveRuntimeWork
 		if status.ForegroundActive {
 			m.TurnStartedAt = tab.activeTurnStartedAt()
+		}
+	}
+	// Populate session source and needs-attention from the BranchMeta sidecar.
+	if sp := strings.TrimSpace(m.SessionPath); sp != "" {
+		if meta, _, err := agent.LoadBranchMeta(sp); err == nil {
+			if s := strings.TrimSpace(meta.SessionSource); s != "" {
+				m.SessionSource = s
+			} else if meta.Channel != "" {
+				m.SessionSource = "bot"
+			}
+			m.NeedsAttention = meta.NeedsAttention
+			m.NeedsAttentionAt = meta.NeedsAttentionAt
+		}
+	}
+	// Fold in transient attention states that have not yet been persisted or
+	// are inherently runtime-only. CLI sessions are excluded from both.
+	if !strings.EqualFold(m.SessionSource, "cli") {
+		tab.saveMu.Lock()
+		if tab.pendingAttentionAt != 0 {
+			m.NeedsAttention = true
+			if m.NeedsAttentionAt == 0 || tab.pendingAttentionAt < m.NeedsAttentionAt {
+				m.NeedsAttentionAt = tab.pendingAttentionAt
+			}
+		}
+		tab.saveMu.Unlock()
+		// waiting_user (approval/ask): user must act; real-time attention.
+		if !m.RunningWork && m.PendingPrompt {
+			m.NeedsAttention = true
 		}
 	}
 	return m
@@ -1427,6 +1467,44 @@ func (a *App) ListTabs() []TabMeta {
 		}
 	}
 	a.mu.Unlock()
+	return enrichTabMetas(out)
+}
+
+// ListRuntimeTabs returns every live session runtime, including runtimes that
+// are detached from the visible tab strip. Visible tabs retain their UI order;
+// detached runtimes follow in stable session-path order.
+func (a *App) ListRuntimeTabs() []TabMeta {
+	a.mu.RLock()
+	ordered, _ := a.orderedTabIDsSnapshotLocked()
+	visibleRank := make(map[*WorkspaceTab]int, len(ordered))
+	for rank, id := range ordered {
+		if tab := a.tabs[id]; tab != nil {
+			visibleRank[tab] = rank
+		}
+	}
+	tabs := a.runtimeTabsLocked()
+	sort.SliceStable(tabs, func(i, j int) bool {
+		leftRank, leftVisible := visibleRank[tabs[i]]
+		rightRank, rightVisible := visibleRank[tabs[j]]
+		if leftVisible != rightVisible {
+			return leftVisible
+		}
+		if leftVisible {
+			return leftRank < rightRank
+		}
+		leftPath := sessionRuntimeKey(tabs[i].currentSessionPath())
+		rightPath := sessionRuntimeKey(tabs[j].currentSessionPath())
+		if leftPath != rightPath {
+			return leftPath < rightPath
+		}
+		return tabs[i].ID < tabs[j].ID
+	})
+	out := make([]TabMeta, 0, len(tabs))
+	for _, tab := range tabs {
+		_, visible := visibleRank[tab]
+		out = append(out, a.tabMeta(tab, visible && tab.ID == a.activeTabID))
+	}
+	a.mu.RUnlock()
 	return enrichTabMetas(out)
 }
 
@@ -1488,12 +1566,19 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 				continue
 			}
 			if sessionRuntimeKey(tab.currentSessionPath()) == targetKey {
+				var sessionToClear string
 				if activate {
 					a.activeTabID = tab.ID
+					sessionToClear = strings.TrimSpace(tab.currentSessionPath())
 				}
 				meta := a.tabMeta(tab, tab.ID == a.activeTabID)
 				a.saveTabsLocked()
 				a.mu.Unlock()
+				if sessionToClear != "" {
+					if err := clearNeedsAttention(sessionToClear); err != nil {
+						slog.Warn("desktop: clear opened topic attention failed", "path", sessionToClear, "err", err)
+					}
+				}
 				return enrichTabMeta(meta), nil
 			}
 		}
@@ -1501,13 +1586,20 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 
 	for _, tab := range a.tabs {
 		if tabMatchesTopicTarget(tab, scope, workspaceRoot, topicID) {
+			var sessionToClear string
 			if activate {
 				a.activeTabID = tab.ID
+				sessionToClear = strings.TrimSpace(tab.currentSessionPath())
 			}
 			sameSession := targetKey == "" || sessionRuntimeKey(tab.currentSessionPath()) == targetKey
 			meta := a.tabMeta(tab, tab.ID == a.activeTabID)
 			a.saveTabsLocked()
 			a.mu.Unlock()
+			if sessionToClear != "" {
+				if err := clearNeedsAttention(sessionToClear); err != nil {
+					slog.Warn("desktop: clear opened topic attention failed", "path", sessionToClear, "err", err)
+				}
+			}
 			if sameSession {
 				return enrichTabMeta(meta), nil
 			}
@@ -1987,7 +2079,7 @@ func (a *App) SetActiveTab(tabID string) error {
 		return fmt.Errorf("tab %q not found", tabID)
 	}
 	if alreadyActive {
-		return nil
+		return clearTabAttention(active)
 	}
 	if err := a.snapshotTabForAction(active, "switching tabs"); err != nil {
 		return err
@@ -2006,9 +2098,14 @@ func (a *App) SetActiveTab(tabID string) error {
 	dir, entries, activeID, version := a.saveTabsCollectLocked()
 	a.mu.Unlock()
 
+	attentionErr := clearTabAttention(a.tabByID(tabID))
+
 	// I/O outside the lock — disk writes can block for hundreds of ms on
 	// Windows when antivirus or the search indexer briefly locks the file.
 	a.saveTabsWrite(dir, entries, activeID, version)
+	if attentionErr != nil {
+		return fmt.Errorf("clear tab attention: %w", attentionErr)
+	}
 	return nil
 }
 
@@ -2926,6 +3023,158 @@ func (a *App) tabByID(tabID string) *WorkspaceTab {
 	return a.tabByIDLocked(tabID)
 }
 
+// queueNeedsAttention records completion in memory first. The autosave loop
+// persists it only after the transcript snapshot succeeds, avoiding orphan
+// sidecars when the first save needs to retry.
+func (a *App) queueNeedsAttention(tabID string, completedAt int64) {
+	a.mu.RLock()
+	tab := a.tabByEventSinkIDLocked(tabID)
+	source := tabRuntimeSource(tab)
+	a.mu.RUnlock()
+	if tab == nil || strings.EqualFold(source, "cli") {
+		return
+	}
+	tab.saveMu.Lock()
+	if tab.pendingAttentionAt == 0 {
+		tab.pendingAttentionAt = completedAt
+	}
+	tab.saveMu.Unlock()
+}
+
+func persistTabAttention(tab *WorkspaceTab) error {
+	if tab == nil {
+		return nil
+	}
+	tab.saveMu.Lock()
+	defer tab.saveMu.Unlock()
+	completedAt := tab.pendingAttentionAt
+	if completedAt == 0 {
+		return nil
+	}
+	sp := strings.TrimSpace(tab.currentSessionPath())
+	if sp == "" {
+		return nil
+	}
+	if err := setNeedsAttention(sp, completedAt); err != nil {
+		return err
+	}
+	tab.pendingAttentionAt = 0
+	return nil
+}
+
+func tabRuntimeSource(tab *WorkspaceTab) string {
+	if tab == nil || strings.TrimSpace(tab.runtimeSourcePath) == "" || sessionRuntimeKey(tab.runtimeSourcePath) != sessionRuntimeKey(tab.currentSessionPath()) {
+		return ""
+	}
+	return strings.TrimSpace(tab.runtimeSource)
+}
+
+// setActiveSessionSource records the source immediately for runtime-only
+// sessions and persists it once a transcript exists. This avoids creating an
+// orphan sidecar that would hide a blank named session from runtime listings.
+func (a *App) setActiveSessionSource(source string) error {
+	a.mu.Lock()
+	tab := a.activeTabLocked()
+	if tab == nil {
+		a.mu.Unlock()
+		return nil
+	}
+	path := strings.TrimSpace(tab.currentSessionPath())
+	tab.runtimeSourcePath = path
+	tab.runtimeSource = strings.ToLower(strings.TrimSpace(source))
+	a.mu.Unlock()
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return stampSessionSource(path, source)
+}
+
+// takeoverFromCLI clears the CLI session source on a tab, converting it
+// to a desktop-local session. It persists the cleared source before
+// touching in-memory state so a persistence failure leaves the tab in its
+// original CLI state — the caller must surface the error and the retry is
+// safe. Repeat calls are idempotent: non-CLI tabs are a no-op.
+func (a *App) takeoverFromCLI(tab *WorkspaceTab) error {
+	if tab == nil {
+		return nil
+	}
+	a.mu.RLock()
+	path := strings.TrimSpace(tab.currentSessionPath())
+	source := tabRuntimeSource(tab)
+	a.mu.RUnlock()
+	if source == "" && path != "" {
+		if meta, ok, err := agent.LoadBranchMeta(path); err != nil {
+			return fmt.Errorf("takeover from CLI: read source: %w", err)
+		} else if ok {
+			source = strings.TrimSpace(meta.SessionSource)
+		}
+	}
+	if !strings.EqualFold(source, "cli") {
+		return nil
+	}
+	if path != "" {
+		if _, err := os.Stat(path); err == nil {
+			// Persist before clearing memory. If this fails the tab stays
+			// CLI and the caller returns an error, blocking the request.
+			if err := stampSessionSource(path, ""); err != nil {
+				return fmt.Errorf("takeover from CLI: persist source: %w", err)
+			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("takeover from CLI: inspect transcript: %w", err)
+		}
+	}
+	a.mu.Lock()
+	if sessionRuntimeKey(tab.currentSessionPath()) != sessionRuntimeKey(path) {
+		a.mu.Unlock()
+		return fmt.Errorf("takeover from CLI: session changed during source update")
+	}
+	if strings.EqualFold(tabRuntimeSource(tab), "cli") {
+		tab.runtimeSourcePath = ""
+		tab.runtimeSource = ""
+	}
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *App) persistTabSessionSource(tabID string) error {
+	a.mu.RLock()
+	tab := a.tabs[tabID]
+	path := ""
+	source := ""
+	if tab != nil {
+		path = strings.TrimSpace(tab.currentSessionPath())
+		source = tabRuntimeSource(tab)
+	}
+	a.mu.RUnlock()
+	if path == "" || source == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
+	return stampSessionSource(path, source)
+}
+
+func clearTabAttention(tab *WorkspaceTab) error {
+	if tab == nil {
+		return nil
+	}
+	tab.saveMu.Lock()
+	tab.pendingAttentionAt = 0
+	tab.saveMu.Unlock()
+	sp := strings.TrimSpace(tab.currentSessionPath())
+	if sp == "" {
+		return nil
+	}
+	return clearNeedsAttention(sp)
+}
+
 func (a *App) tabByIDLocked(tabID string) *WorkspaceTab {
 	if strings.TrimSpace(tabID) == "" {
 		return a.activeTabLocked()
@@ -3015,7 +3264,13 @@ func (a *App) tabSnapshotLoop(tab *WorkspaceTab) {
 		a.mu.RUnlock()
 		if ctrl != nil {
 			if err := a.snapshotTab(tab); err == nil {
-				if !a.maybeAutoTitleTopic(tab) {
+				if err := a.persistTabSessionSource(tab.ID); err != nil {
+					snapshotErr = err
+					a.reportTabSnapshotError(tab, "persisting session source", err)
+				} else if err := persistTabAttention(tab); err != nil {
+					snapshotErr = err
+					a.reportTabSnapshotError(tab, "persisting session attention", err)
+				} else if !a.maybeAutoTitleTopic(tab) {
 					a.emitProjectTreeChanged()
 				}
 			} else {
@@ -4670,6 +4925,10 @@ type ProjectNode struct {
 	TopicID        string        `json:"topicId,omitempty"`
 	SessionPath    string        `json:"sessionPath,omitempty"`
 	ProjectColor   string        `json:"projectColor,omitempty"`
+	TitleSource    string        `json:"titleSource,omitempty"`
+	SessionSource  string        `json:"sessionSource,omitempty"`
+	Channel        string        `json:"channel,omitempty"`
+	ChannelLabel   string        `json:"channelLabel,omitempty"`
 	Turns          int           `json:"turns,omitempty"`
 	CreatedAt      int64         `json:"createdAt,omitempty"`
 	LastActivityAt int64         `json:"lastActivityAt,omitempty"`
@@ -4876,6 +5135,9 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 		meta.WorkspaceRoot = workspaceRoot
 		meta.TopicID = topicID
 		meta.TopicTitle = title
+		if strings.TrimSpace(meta.SessionSource) == "" {
+			meta.SessionSource = "external"
+		}
 		if err := agent.SaveBranchMetaPreserveUpdated(info.Path, meta); err != nil {
 			deferred = true
 			continue
@@ -5626,11 +5888,18 @@ func (a *App) topicTrashTargets(topicID string) ([]topicTrashTarget, error) {
 type topicSummary struct {
 	turns          int
 	lastActivityAt int64
+	sourceAt       int64
+	sessionSource  string
+	channel        string
+	channelLabel   string
 }
 
 type runtimeSessionStatus struct {
 	sessionPath    string
 	label          string
+	sessionSource  string
+	channel        string
+	channelLabel   string
 	turns          int
 	createdAt      int64
 	lastActivityAt int64
@@ -5760,6 +6029,9 @@ func crewProjectNode(sessionInfos map[string]agent.SessionInfo, sessionTitles ma
 			Kind:           "crew_session",
 			Label:          crewSessionLabel(info, sessionTitles[key], route),
 			SessionPath:    info.Path,
+			SessionSource:  firstNonEmpty(strings.TrimSpace(info.SessionSource), route.sessionSource),
+			Channel:        firstNonEmpty(strings.TrimSpace(info.Channel), route.channel),
+			ChannelLabel:   firstNonEmpty(strings.TrimSpace(info.ChannelLabel), route.channelLabel),
 			Turns:          info.Turns,
 			CreatedAt:      unixMilliOrZero(info.CreatedAt),
 			LastActivityAt: unixMilliOrZero(info.LastActivityAt),
@@ -5892,7 +6164,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		if status == "" && runtimeStatus.PendingPrompt {
 			status = topicStatusWaitingConfirmation
 		}
-		running := status != "" || runtimeStatus.ActiveRuntimeWork
+		running := runtimeStatus.RunningWork
 		turnStartedAt := int64(0)
 		if runtimeStatus.ForegroundActive {
 			turnStartedAt = tab.activeTurnStartedAt()
@@ -5900,6 +6172,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
 			sessionPath:    sessionPath,
 			label:          label,
+			sessionSource:  strings.TrimSpace(info.SessionSource),
+			channel:        strings.TrimSpace(info.Channel),
+			channelLabel:   strings.TrimSpace(info.ChannelLabel),
 			turns:          info.Turns,
 			createdAt:      unixMilliOrZero(info.CreatedAt),
 			lastActivityAt: unixMilliOrZero(info.LastActivityAt),
@@ -5954,6 +6229,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 				TopicID:        topicID,
 				SessionPath:    session.sessionPath,
 				ProjectColor:   projectColor,
+				SessionSource:  session.sessionSource,
+				Channel:        session.channel,
+				ChannelLabel:   session.channelLabel,
 				Turns:          session.turns,
 				CreatedAt:      session.createdAt,
 				LastActivityAt: session.lastActivityAt,
@@ -5998,6 +6276,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          title,
 				TopicID:        id,
 				ProjectColor:   globalColor,
+				TitleSource:    globalTitleSourceMap[id],
+				SessionSource:  summary.sessionSource,
+				Channel:        summary.channel,
+				ChannelLabel:   summary.channelLabel,
 				Turns:          summary.turns,
 				CreatedAt:      globalCreatedMap[id],
 				LastActivityAt: summary.lastActivityAt,
@@ -6088,6 +6370,10 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Root:           p.Root,
 				TopicID:        tid,
 				ProjectColor:   p.Color,
+				TitleSource:    loaded.sources[tid],
+				SessionSource:  summary.sessionSource,
+				Channel:        summary.channel,
+				ChannelLabel:   summary.channelLabel,
 				Turns:          summary.turns,
 				CreatedAt:      createdMap[tid],
 				LastActivityAt: summary.lastActivityAt,
@@ -6641,6 +6927,24 @@ func saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) error {
 	return saveTabSessionMeta(tab, path)
 }
 
+// stampSessionSource sets the SessionSource field on the BranchMeta sidecar.
+// It preserves the UpdatedAt timestamp so the meta ordering is not disturbed.
+func stampSessionSource(sessionPath, source string) error {
+	return agent.SetBranchSource(sessionPath, source)
+}
+
+// setNeedsAttention marks a session as needing user attention with the given
+// completion timestamp. No-op for CLI-originated sessions.
+func setNeedsAttention(sessionPath string, completedAt int64) error {
+	return agent.SetBranchAttention(sessionPath, true, completedAt)
+}
+
+// clearNeedsAttention removes the needs-attention flag from a session.
+// Safe to call on sessions without the flag.
+func clearNeedsAttention(sessionPath string) error {
+	return agent.SetBranchAttention(sessionPath, false, 0)
+}
+
 type tabSessionProfile struct {
 	tokenMode        string
 	mode             string
@@ -6914,6 +7218,35 @@ func (c *sessionListCache) invalidate() {
 
 var projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
 
+func projectTreeSessionSource(info agent.SessionInfo) (source, channel, channelLabel string) {
+	source = strings.TrimSpace(info.SessionSource)
+	channel = strings.TrimSpace(info.Channel)
+	channelLabel = strings.TrimSpace(info.ChannelLabel)
+	if source == "" && strings.TrimSpace(info.TopicID) != "" && info.TopicID == legacySessionTopicID(info.Path) {
+		source = "external"
+	}
+	return source, channel, channelLabel
+}
+
+func projectTreeSessionSourceAt(info agent.SessionInfo) int64 {
+	for _, ts := range []time.Time{info.LastActivityAt, info.ModTime, info.CreatedAt} {
+		if !ts.IsZero() {
+			return ts.UnixMilli()
+		}
+	}
+	return 0
+}
+
+func topicSummaryShouldUseSource(summary topicSummary, sourceAt int64, channel string) bool {
+	if summary.sessionSource == "" && summary.channel == "" {
+		return true
+	}
+	if strings.TrimSpace(summary.channel) == "" && strings.TrimSpace(channel) != "" {
+		return true
+	}
+	return sourceAt >= summary.sourceAt
+}
+
 // mergeSessionInfos merges one directory's session listing into the maps used by
 // ListProjectTree. The result collection loop calls it serially.
 func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]string, sessionInfos map[string]agent.SessionInfo, sessionTitles map[string]string, topicSummaries map[string]topicSummary) {
@@ -6932,6 +7265,16 @@ func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]
 		lastActivityAt := info.LastActivityAt.UnixMilli()
 		if lastActivityAt > summary.lastActivityAt {
 			summary.lastActivityAt = lastActivityAt
+		}
+		source, channel, channelLabel := projectTreeSessionSource(info)
+		if source != "" || channel != "" {
+			sourceAt := projectTreeSessionSourceAt(info)
+			if topicSummaryShouldUseSource(summary, sourceAt, channel) {
+				summary.sourceAt = sourceAt
+				summary.sessionSource = source
+				summary.channel = channel
+				summary.channelLabel = channelLabel
+			}
 		}
 		topicSummaries[key] = summary
 	}

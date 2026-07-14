@@ -36,6 +36,8 @@ type BranchMeta struct {
 	SessionSource    string    `json:"session_source,omitempty"`
 	Channel          string    `json:"channel,omitempty"`
 	ChannelLabel     string    `json:"channel_label,omitempty"`
+	NeedsAttention   bool      `json:"needs_attention,omitempty"`
+	NeedsAttentionAt int64     `json:"needs_attention_at,omitempty"`
 	RemoteID         string    `json:"remote_id,omitempty"`
 	ChatType         string    `json:"chat_type,omitempty"`
 	UserID           string    `json:"user_id,omitempty"`
@@ -401,6 +403,67 @@ func SetBranchModelPreserveUpdated(sessionPath, model string) error {
 		return err
 	}
 	meta.Model = strings.TrimSpace(model)
+	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// SetBranchSource stores the normalized current owner of a session without
+// changing its activity time. Ownership may change: an empty source means the
+// desktop has taken over. Marking a session as CLI-owned also clears any stale
+// attention flag so CLI work can never leak into the desktop attention queue.
+func SetBranchSource(sessionPath, source string) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	meta, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	if meta.SessionSource == source && (source != "cli" || !meta.NeedsAttention) {
+		return nil
+	}
+	meta.SessionSource = source
+	if source == "cli" {
+		meta.NeedsAttention = false
+		meta.NeedsAttentionAt = 0
+	}
+	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// SetBranchAttention updates the durable desktop-attention state without
+// changing session activity ordering. Repeated marks preserve the first
+// completion time, making retries idempotent and queue ordering stable.
+func SetBranchAttention(sessionPath string, needed bool, completedAt int64) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	meta, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(meta.SessionSource), "cli") {
+		needed = false
+	}
+	if !needed {
+		if !meta.NeedsAttention && meta.NeedsAttentionAt == 0 {
+			return nil
+		}
+		meta.NeedsAttention = false
+		meta.NeedsAttentionAt = 0
+		return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+	}
+	if meta.NeedsAttention && meta.NeedsAttentionAt > 0 {
+		return nil
+	}
+	if completedAt <= 0 {
+		completedAt = time.Now().UnixMilli()
+	}
+	meta.NeedsAttention = true
+	meta.NeedsAttentionAt = completedAt
 	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
 }
 

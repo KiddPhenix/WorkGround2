@@ -238,9 +238,14 @@ const (
 // RuntimeStatus is the frontend-facing snapshot of active controller work. The
 // legacy Running bool still means "foreground turn goroutine is active"; Mode
 // and the derived facts make prompt waits and background-only work explicit.
+//
+// RunningWork is the user-facing Running semantic:
+//   - true for foreground, background_only, cancelling modes
+//   - false for waiting_user, idle (even when the goroutine is alive)
 type RuntimeStatus struct {
 	Mode              RuntimeMode
 	Running           bool
+	RunningWork       bool
 	PendingPrompt     bool
 	BackgroundJobs    int
 	CancelRequested   bool
@@ -1442,9 +1447,11 @@ func (c *Controller) RuntimeStatus() RuntimeStatus {
 	backgroundJobs := len(c.Jobs())
 	mode := deriveRuntimeMode(running, pending, backgroundJobs, canceling)
 	foregroundActive := running || pending
+	runningWork := mode == RuntimeModeForeground || mode == RuntimeModeBackgroundOnly || mode == RuntimeModeCancelling
 	return RuntimeStatus{
 		Mode:              mode,
 		Running:           running,
+		RunningWork:       runningWork,
 		PendingPrompt:     pending,
 		BackgroundJobs:    backgroundJobs,
 		CancelRequested:   canceling,

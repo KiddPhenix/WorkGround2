@@ -9,7 +9,9 @@ import {
   projectTreeSessionPathMatches,
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
+  projectTreeTopicVisualState,
   projectTreeShouldRenderTopicActions,
+  reorderedProjectRoots,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -157,6 +159,38 @@ eq(
 );
 
 eq(
+  projectTreeTopicVisualState(completedTopic, true),
+  "done",
+  "completed unread topic shows done visual state",
+);
+
+eq(
+  projectTreeTopicVisualState(completedTopic, false),
+  "none",
+  "completed read topic hides done visual state",
+);
+
+const failedTopic = { ...completedTopic, status: "error" };
+
+eq(
+  projectTreeTopicHasUnreadActivity(failedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
+  true,
+  "failed inactive topic with newer activity is unread",
+);
+
+eq(
+  projectTreeTopicVisualState(failedTopic, true),
+  "failed",
+  "failed unread topic shows failed visual state",
+);
+
+eq(
+  projectTreeTopicVisualState(failedTopic, false),
+  "none",
+  "failed read topic hides failed visual state",
+);
+
+eq(
   projectTreeShouldRenderTopicActions(false, true, false),
   true,
   "read workbench topic renders hover actions",
@@ -269,6 +303,22 @@ eq(
   projectTreeSessionPathMatches("D:\\Temp\\Crew-Session.jsonl", "d:/temp/crew-session.jsonl"),
   true,
   "session path matching tolerates Windows slash and drive-case differences",
+);
+
+eq(
+  reorderedProjectRoots(
+    [
+      { key: "global_folder", kind: "global_folder", label: "Global" },
+      crewFolder,
+      { key: "project_a", kind: "project", label: "A", root: "/a" },
+      { key: "project_b", kind: "project", label: "B", root: "/b" },
+    ],
+    "/b",
+    "/a",
+    "before",
+  ),
+  ["__global__", "/b", "/a"],
+  "project reorder excludes virtual Crew from persisted order",
 );
 
 eq(

@@ -165,6 +165,13 @@ func (api *remoteAPI) handleSessionNew(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Stamp CLI-originated sessions so they are excluded from needs-attention.
+	if created {
+		if err := api.app.setActiveSessionSource("cli"); err != nil {
+			http.Error(w, fmt.Sprintf("stamp CLI session source: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
 	api.app.mu.RLock()
 	active := api.app.activeTabLocked()
 	workspaceRoot := ""
@@ -355,7 +362,9 @@ func (api *remoteAPI) applySubmittedState(out map[string]any, path string, runti
 	if !starting {
 		return
 	}
-	out["running"] = true
+	// Accepted/submitted is observable, but it is deliberately outside the
+	// user-facing Running set until the controller reports active runtime work.
+	out["running"] = false
 	out["starting"] = true
 	out["mode"] = "starting"
 }
@@ -429,7 +438,7 @@ func (api *remoteAPI) handleSessionSubmit(w http.ResponseWriter, r *http.Request
 		api.app.emitSessionActivated("remote-submit")
 	}
 	submittedAt := time.Now()
-	if err := api.app.Submit(body.Prompt); err != nil {
+	if err := api.app.submitToTab("", body.Prompt, false); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

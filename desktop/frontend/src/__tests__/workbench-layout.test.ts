@@ -287,12 +287,8 @@ ok(
   `CSS: workbench transcript-shell height is auto (got: ${finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell", "height")})`,
 );
 ok(
-  finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell", "min-height") === "0",
-  `CSS: non-empty workbench transcript-shell uses natural content height (got: ${finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell", "min-height")})`,
-);
-ok(
-  finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell:has(> .transcript--empty)", "min-height") === "100%",
-  "CSS: only an empty transcript fills the available viewport",
+  finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell", "min-height") === "100%",
+  `CSS: workbench transcript-shell fills the available viewport without :has() (got: ${finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell", "min-height")})`,
 );
 ok(
   finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport .transcript-shell > .jump-bar", "top") === "calc(50% - 120px)" &&

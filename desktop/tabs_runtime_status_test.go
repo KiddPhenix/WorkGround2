@@ -62,6 +62,10 @@ func TestProjectTreeShowsDetachedRuntimeStatus(t *testing.T) {
 	if topic.TurnStartedAt <= 0 {
 		t.Fatalf("detached topic turnStartedAt = %d, want active turn start time", topic.TurnStartedAt)
 	}
+	runtimeTabs := app.ListRuntimeTabs()
+	if len(runtimeTabs) != 1 || runtimeTabs[0].ID != "detached" || !runtimeTabs[0].RunningWork || !runtimeTabs[0].Running {
+		t.Fatalf("runtime tabs = %+v, want detached running runtime", runtimeTabs)
+	}
 
 	close(runner.release)
 	waitNotRunning(t, ctrl)
@@ -196,8 +200,12 @@ func TestProjectTreeUsesPendingPromptRuntimeStatus(t *testing.T) {
 		t.Fatalf("project tree = %#v, want one global topic", nodes)
 	}
 	topic := nodes[0].Children[0]
-	if topic.TopicID != topicID || topic.Status != topicStatusWaitingConfirmation || !topic.Running {
-		t.Fatalf("pending topic status = %+v, want waiting_confirmation/running for %q", topic, topicID)
+	if topic.TopicID != topicID || topic.Status != topicStatusWaitingConfirmation || topic.Running {
+		t.Fatalf("pending topic status = %+v, want waiting_confirmation but not running for %q", topic, topicID)
+	}
+	tabs := app.ListTabs()
+	if len(tabs) != 1 || tabs[0].Running || tabs[0].RunningWork || !tabs[0].PendingPrompt || !tabs[0].ActiveRuntimeWork {
+		t.Fatalf("pending tab runtime = %+v, want waiting_user outside Running while lifecycle stays active", tabs)
 	}
 
 	ctrl.Cancel()

@@ -43,6 +43,16 @@ export const en = {
   "tabBar.commandSearch": "Search · Command · Open file",
   "tabBar.commandSearchCompact": "Search",
 
+  // session status badges
+  "sessionStatus.running": "Running",
+  "sessionStatus.runningCount": "Running {n}",
+  "sessionStatus.needsAttention": "Needs attention",
+  "sessionStatus.needsAttentionCount": "Needs attention {n}",
+  "sessionStatus.justNow": "just now",
+  "sessionStatus.minutesAgo": "{n}m ago",
+  "sessionStatus.hoursAgo": "{n}h ago",
+  "sessionStatus.daysAgo": "{n}d ago",
+
   // sidebar
   "sidebar.conversations": "Chats",
   "sidebar.allHistory": "History",
@@ -855,6 +865,10 @@ export const en = {
   "projectTree.status.backgroundJob": "background job",
   "projectTree.status.paused": "paused",
   "projectTree.status.error": "error",
+  "projectTree.status.done": "done",
+  "projectTree.externalNamed": "Externally named",
+  "projectTree.sourceExternalShort": "EXT",
+  "projectTree.visualLabel": "Visual label",
   "projectTree.removeProject": "Remove from sidebar",
   "projectTree.confirmRemoveProject": "Confirm remove from sidebar",
   "projectTree.removeProjectShort": "Remove",

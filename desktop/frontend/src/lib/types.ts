@@ -232,6 +232,7 @@ export interface TabMeta {
   label: string;
   ready: boolean;
   running: boolean;
+  runningWork?: boolean;
   pendingPrompt?: boolean;
   backgroundJobs?: number;
   cancelRequested?: boolean;
@@ -252,6 +253,9 @@ export interface TabMeta {
   startupErr?: string;
   active: boolean;
   cwd: string;
+  sessionSource?: string;
+  needsAttention?: boolean;
+  needsAttentionAt?: number;
 }
 
 export interface ProjectNode {
@@ -262,6 +266,10 @@ export interface ProjectNode {
   topicId?: string;
   sessionPath?: string;
   projectColor?: string;
+  titleSource?: string;
+  sessionSource?: string;
+  channel?: string;
+  channelLabel?: string;
   turns?: number;
   createdAt?: number;
   lastActivityAt?: number;

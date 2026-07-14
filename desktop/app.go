@@ -630,7 +630,12 @@ func (a *App) restoreOrBuildTabs() {
 			}
 		}
 		a.saveTabsLocked()
+		activeID := a.activeTabID
+		active := a.tabs[activeID]
 		a.mu.Unlock()
+		if err := clearTabAttention(active); err != nil {
+			slog.Warn("desktop: clear restored active tab attention failed", "tab", activeID, "err", err)
+		}
 		for _, tab := range toBuild {
 			a.startTabControllerBuild(tab)
 		}
@@ -770,6 +775,12 @@ func (a *App) Submit(input string) error {
 }
 
 func (a *App) SubmitToTab(tabID, input string) error {
+	return a.submitToTab(tabID, input, true)
+}
+
+// submitToTab distinguishes an explicit desktop send from automated/remote
+// submission so only real desktop input can take ownership from CLI.
+func (a *App) submitToTab(tabID, input string, desktopInput bool) error {
 	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
@@ -793,9 +804,15 @@ func (a *App) SubmitToTab(tabID, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if desktopInput {
+		if err := a.takeoverFromCLI(tab); err != nil {
+			return err
+		}
+	}
 	a.ensureTabTopicIndexedForUserTurn(tab)
 	a.maybeAutoTitleTopicFromText(tab, input)
 	ctrl.SubmitDisplay(input, input)
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -818,6 +835,7 @@ func (a *App) submitUserTurnToTab(tabID, input string) bool {
 	a.ensureTabTopicIndexedForUserTurn(tab)
 	a.maybeAutoTitleTopicFromText(tab, input)
 	ctrl.SubmitUserTurn(input, input)
+	a.emitProjectTreeChanged()
 	return true
 }
 
@@ -842,8 +860,12 @@ func (a *App) RunShellForTab(tabID, command string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.takeoverFromCLI(tab); err != nil {
+		return err
+	}
 	a.ensureTabTopicIndexedForUserTurn(tab)
 	ctrl.RunShell(command)
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -872,6 +894,9 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.takeoverFromCLI(tab); err != nil {
+		return err
+	}
 	a.ensureTabTopicIndexedForUserTurn(tab)
 	titleText := display
 	if strings.TrimSpace(titleText) == "" {
@@ -879,6 +904,7 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	}
 	a.maybeAutoTitleTopicFromText(tab, titleText)
 	ctrl.SubmitDisplay(display, input)
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -901,6 +927,9 @@ func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) e
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.takeoverFromCLI(tab); err != nil {
+		return err
+	}
 	a.ensureTabTopicIndexedForUserTurn(tab)
 	titleText := display
 	if strings.TrimSpace(titleText) == "" {
@@ -908,6 +937,7 @@ func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) e
 	}
 	a.maybeAutoTitleTopicFromText(tab, titleText)
 	ctrl.SubmitEditedDisplay(display, input, original)
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -2307,9 +2337,6 @@ func (a *App) runtimeSessionMetasForDir(dir string, titles map[string]string, se
 		turns := 0
 		if rt.ctrl != nil {
 			preview, turns = agent.SessionPreviewFromMessages(rt.ctrl.History())
-		}
-		if turns == 0 {
-			continue
 		}
 		if title == "" && preview == "" {
 			continue

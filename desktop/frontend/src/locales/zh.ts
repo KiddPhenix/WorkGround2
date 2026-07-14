@@ -44,6 +44,16 @@ export const zh: Record<DictKey, string> = {
   "tabBar.commandSearch": "搜索 · 命令 · 打开文件",
   "tabBar.commandSearchCompact": "搜索",
 
+  // session status badges
+  "sessionStatus.running": "运行中",
+  "sessionStatus.runningCount": "运行中 {n}",
+  "sessionStatus.needsAttention": "待关注",
+  "sessionStatus.needsAttentionCount": "待关注 {n}",
+  "sessionStatus.justNow": "刚刚",
+  "sessionStatus.minutesAgo": "{n}分钟前",
+  "sessionStatus.hoursAgo": "{n}小时前",
+  "sessionStatus.daysAgo": "{n}天前",
+
   // 侧边栏
   "sidebar.conversations": "会话",
   "sidebar.allHistory": "历史",
@@ -856,6 +866,10 @@ export const zh: Record<DictKey, string> = {
   "projectTree.status.backgroundJob": "后台任务",
   "projectTree.status.paused": "已暂停",
   "projectTree.status.error": "异常",
+  "projectTree.status.done": "已完成",
+  "projectTree.externalNamed": "外部命名",
+  "projectTree.sourceExternalShort": "外部",
+  "projectTree.visualLabel": "视觉标签",
   "projectTree.removeProject": "移出侧边栏",
   "projectTree.confirmRemoveProject": "确认移出侧边栏",
   "projectTree.removeProjectShort": "移除",

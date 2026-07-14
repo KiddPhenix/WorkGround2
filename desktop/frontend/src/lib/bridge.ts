@@ -432,6 +432,7 @@ export interface AppBindings {
   // version/os/arch, POSTs to the collection endpoint. Only ever sent on user click.
   ReportCrash(kind: string, detail: string): Promise<void>;
   ListTabs(): Promise<TabMeta[]>;
+  ListRuntimeTabs(): Promise<TabMeta[]>;
   RetryTabStartup(tabID: string): Promise<void>;
   OpenProjectTab(workspaceRoot: string, topicID: string): Promise<TabMeta>;
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
@@ -3875,6 +3876,9 @@ function makeMockApp(): AppBindings {
     },
     // Tab management mocks.
     async ListTabs() {
+      return mockTabs.map((tab) => ({ ...tab }));
+    },
+    async ListRuntimeTabs() {
       return mockTabs.map((tab) => ({ ...tab }));
     },
     async RetryTabStartup(tabID: string) {

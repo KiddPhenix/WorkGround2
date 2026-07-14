@@ -2656,6 +2656,9 @@ func TestProjectTreeMigratesCLISessionFromProjectDir(t *testing.T) {
 	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != wantTopicID {
 		t.Fatalf("project CLI session should appear in project tree, got %#v; want topic %q", nodes, wantTopicID)
 	}
+	if got := nodes[0].Children[0].SessionSource; got != "external" {
+		t.Fatalf("project CLI session source = %q, want external", got)
+	}
 }
 
 func TestProjectTreeMigratesNewCLISessionAfterProjectDirMarker(t *testing.T) {
@@ -3061,6 +3064,8 @@ func TestCrewProjectNodeUsesPersistedBotSessionMeta(t *testing.T) {
 	}
 	if got := crew.Children[0]; got.Kind != "crew_session" || got.SessionPath != sessionPath {
 		t.Fatalf("crew child = %+v, want persisted bot session", got)
+	} else if got.SessionSource != "auto" || got.Channel != "weixin" || got.ChannelLabel != "微信" {
+		t.Fatalf("crew child source fields = source:%q channel:%q label:%q", got.SessionSource, got.Channel, got.ChannelLabel)
 	}
 }
 

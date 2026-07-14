@@ -61,6 +61,7 @@ import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
 import { SessionMemoryBar, SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar, AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
+import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { CopyButton } from "./components/CopyButton";
@@ -1012,6 +1013,7 @@ export default function App() {
   const yoloRestoreToolApprovalModesRef = useRef<Record<string, RestorableToolApprovalMode>>({});
   const userPlanModeByTabRef = useRef<UserPlanModeIntents>({});
   const [tabMetas, setTabMetas] = useState<TabMeta[]>([]);
+  const [runtimeTabMetas, setRuntimeTabMetas] = useState<TabMeta[]>([]);
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
@@ -1828,8 +1830,14 @@ export default function App() {
   );
 
   const refreshTabMetas = useCallback(async (): Promise<TabMeta[]> => {
-    const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
+    const [tabsResult, runtimeTabsResult] = await Promise.all([
+      app.ListTabs().catch(() => [] as TabMeta[]),
+      app.ListRuntimeTabs().catch(() => [] as TabMeta[]),
+    ]);
+    const tabs = asArray(tabsResult);
+    const runtimeTabs = asArray(runtimeTabsResult);
     setTabMetas(tabs);
+    setRuntimeTabMetas(runtimeTabs.length > 0 ? runtimeTabs : tabs);
     return tabs;
   }, []);
   const seedActiveTabMeta = useCallback((tab: TabMeta): void => {
@@ -2723,6 +2731,38 @@ export default function App() {
     return enqueueNavigation({ kind: "topic", scope, workspaceRoot, topicId, sessionPath, runtimeHint });
   }, [closeTransientOverlays, enqueueNavigation]);
 
+  const handleOpenRuntimeTab = useCallback((tab: TabMeta): Promise<void> => {
+    if (tabMetas.some((visible) => visible.id === tab.id)) {
+      handleTabChange(tab.id);
+      return Promise.resolve();
+    }
+    if (tab.topicId) {
+      return handleOpenTopic(tab.scope, tab.workspaceRoot || "", tab.topicId, tab.sessionPath);
+    }
+    if (!tab.sessionPath) return Promise.resolve();
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    return enqueueNavigation({
+      kind: "resume-session",
+      session: {
+        path: tab.sessionPath,
+        preview: tab.sessionDisplayTitle || tab.topicTitle || tab.label || "",
+        title: tab.sessionDisplayTitle || tab.topicTitle || undefined,
+        turns: 0,
+        createdAt: 0,
+        lastActivityAt: tab.needsAttentionAt || 0,
+        modTime: tab.needsAttentionAt || 0,
+        current: false,
+        open: false,
+        scope: tab.scope,
+        workspaceRoot: tab.workspaceRoot || "",
+        topicId: tab.topicId,
+        topicTitle: tab.topicTitle,
+        sessionSource: tab.sessionSource,
+      },
+    });
+  }, [closeTransientOverlays, enqueueNavigation, handleOpenTopic, handleTabChange, tabMetas]);
+
   const handleOpenCrewSession = useCallback((sessionPath: string): Promise<void> => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
@@ -3211,6 +3251,7 @@ export default function App() {
                   </h1>
                 </div>
                 <div className="session-header__actions">
+                  <SessionStatusIndicators tabs={runtimeTabMetas} activeTabId={activeTabId} onSwitchTab={(tab) => void handleOpenRuntimeTab(tab)} t={t} />
                   <AddOnLauncherButton />
                   <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => void openPalette()}>
                     <Command size={16} />

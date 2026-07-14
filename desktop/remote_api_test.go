@@ -175,6 +175,9 @@ func TestRemoteAPISessionNewForcesFreshBlankSession(t *testing.T) {
 	if got := tab.sessionLeaseRuntimeKey(); got != sessionRuntimeKey(newPath) {
 		t.Fatalf("lease key = %q, want %q", got, sessionRuntimeKey(newPath))
 	}
+	if source := app.tabMeta(tab, true).SessionSource; source != "cli" {
+		t.Fatalf("CLI-created runtime session source = %q, want cli", source)
+	}
 
 	var got map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -274,8 +277,8 @@ func TestRemoteAPIStatusKeepsSubmittedSessionStartingUntilObservedActive(t *test
 	api.markSubmitted(path, time.Now())
 
 	got := api.activeSessionResponse("ok")
-	if got["running"] != true || got["starting"] != true || got["submitted"] != true || got["mode"] != "starting" {
-		t.Fatalf("starting status = %+v, want running/start/submitted mode=starting", got)
+	if got["running"] == true || got["starting"] != true || got["submitted"] != true || got["mode"] != "starting" {
+		t.Fatalf("starting status = %+v, want submitted/start but not running", got)
 	}
 
 	ctrl.status = control.RuntimeStatus{
@@ -284,6 +287,7 @@ func TestRemoteAPIStatusKeepsSubmittedSessionStartingUntilObservedActive(t *test
 		Cancellable:       true,
 		ForegroundActive:  true,
 		ActiveRuntimeWork: true,
+		RunningWork:       true,
 	}
 	got = api.activeSessionResponse("ok")
 	if got["running"] != true || got["submitted"] != true {
@@ -378,6 +382,13 @@ func TestRemoteAPISessionNewReusesNamedSession(t *testing.T) {
 	if got["sessionName"] != "codex-worker" {
 		t.Fatalf("sessionName = %v, want codex-worker", got["sessionName"])
 	}
+	meta, _, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil {
+		t.Fatalf("LoadBranchMeta reused session: %v", err)
+	}
+	if meta.SessionSource == "cli" {
+		t.Fatal("reusing a desktop-created named session must not reclassify it as CLI-created")
+	}
 }
 
 func TestRemoteAPISessionNewCreatesMissingNamedSession(t *testing.T) {
@@ -453,7 +464,6 @@ func TestRemoteAPISessionNewCreatesMissingNamedSession(t *testing.T) {
 	if got["created"] != true {
 		t.Fatalf("created = %v, want true; body=%s", got["created"], rec.Body.String())
 	}
-
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewBufferString(`{"sessionName":"codex-worker"}`))
 	rec = httptest.NewRecorder()
 	api.handleSessionNew(rec, req)
@@ -546,12 +556,77 @@ func TestRemoteAPISessionSubmitUsesCurrentBlankNamedSession(t *testing.T) {
 	if report, _ := status["report"].(string); report != "ack" {
 		t.Fatalf("completion report = %q, want ack; status=%+v", report, status)
 	}
+	if meta := app.tabMeta(tab, true); meta.SessionSource != "cli" || meta.NeedsAttention {
+		t.Fatalf("remote submit changed CLI ownership: %+v", meta)
+	}
 	if got := loadSessionTitles(dir)[filepath.Base(sessionPath)]; got != "codex-worker" {
 		t.Fatalf("session title = %q, want codex-worker", got)
 	}
 	if got := tab.TopicTitle; got != "codex-worker" {
 		t.Fatalf("topic title after submit = %q, want codex-worker", got)
 	}
+}
+
+func TestRemoteAPISessionSubmitReportsRunningImmediately(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "immediate-running")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{{Role: provider.RoleSystem, Content: "sys"}})
+	ag := agent.New(remoteBlockingProvider{started: started, release: release}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{
+		Runner:        ag,
+		Executor:      ag,
+		SystemPrompt:  "sys",
+		Label:         "immediate-running",
+		WorkspaceRoot: root,
+		SessionDir:    dir,
+		SessionPath:   path,
+		Sink:          event.Discard,
+	})
+	defer ctrl.Close()
+
+	tab := &WorkspaceTab{
+		ID:            "tab",
+		Scope:         "project",
+		WorkspaceRoot: root,
+		Ready:         true,
+		Ctrl:          ctrl,
+		SessionPath:   path,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
+	api := &remoteAPI{app: app}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"prompt":"run now"}`))
+	rec := httptest.NewRecorder()
+	api.handleSessionSubmit(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var submitted map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&submitted); err != nil {
+		t.Fatalf("decode submit response: %v", err)
+	}
+	if submitted["running"] != true || submitted["mode"] != string(control.RuntimeModeForeground) {
+		t.Fatalf("immediate submit response = %+v, want foreground running", submitted)
+	}
+	status := api.activeSessionResponse("ok")
+	if status["running"] != true || status["mode"] != string(control.RuntimeModeForeground) {
+		t.Fatalf("immediate status response = %+v, want foreground running", status)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not start")
+	}
+	close(release)
+	waitForControllerIdle(t, ctrl)
 }
 
 func TestRemoteAPIStatusExposesAskAndAnswerResolvesIt(t *testing.T) {
@@ -684,6 +759,32 @@ func (remoteReplyProvider) Stream(_ context.Context, _ provider.Request) (<-chan
 	ch <- provider.Chunk{Type: provider.ChunkText, Text: "ack"}
 	ch <- provider.Chunk{Type: provider.ChunkDone}
 	close(ch)
+	return ch, nil
+}
+
+type remoteBlockingProvider struct {
+	started chan<- struct{}
+	release <-chan struct{}
+}
+
+func (remoteBlockingProvider) Name() string { return "remote-blocking" }
+
+func (p remoteBlockingProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	ch := make(chan provider.Chunk, 2)
+	go func() {
+		defer close(ch)
+		select {
+		case p.started <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-p.release:
+			ch <- provider.Chunk{Type: provider.ChunkText, Text: "ack"}
+			ch <- provider.Chunk{Type: provider.ChunkDone}
+		case <-ctx.Done():
+		}
+	}()
 	return ch, nil
 }
 
