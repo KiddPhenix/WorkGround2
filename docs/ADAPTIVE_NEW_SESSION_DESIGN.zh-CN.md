@@ -10,11 +10,11 @@
 
 | 项目 | 内容 |
 |---|---|
-| 状态 | 产品与交互方案 v1.1，MicroGlitch 默认策略已确认 |
+| 状态 | V1 已实现，MicroGlitch 默认策略已确认 |
 | 目标区域 | Desktop 新建会话后的空状态 |
-| 当前实现 | `desktop/frontend/src/components/Welcome.tsx` |
+| 当前实现 | `desktop/workspace_welcome.go`、`desktop/frontend/src/lib/welcome.ts`、`desktop/frontend/src/lib/useWorkspaceWelcome.ts`、`desktop/frontend/src/components/Welcome.tsx` |
 | 核心约束 | 有独特性、不过载、随使用变化、随 Workspace 变化 |
-| 本期范围 | 设计与状态规划，不包含实现 |
+| 本期范围 | Workspace 轻量画像、自适应策略、熟悉度、本地缓存与低频趣味体验 |
 
 ---
 
