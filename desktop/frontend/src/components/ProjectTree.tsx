@@ -25,6 +25,7 @@ interface ProjectTreeProps {
   imTopicSources?: Record<string, ProjectTreeImTopicSource>;
   variant?: "classic" | "workbench" | "creation";
   onOpenTopic: (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string, runtimeHint?: ProjectTopicRuntimeHint) => Promise<void> | void;
+  onOpenCrewSession?: (sessionPath: string) => Promise<void> | void;
   onOpenProjectHistory: (scope: "global" | "project", workspaceRoot: string) => Promise<void> | void;
   onAddProject: () => Promise<void>;
   onCreateTopic?: (scope: string, workspaceRoot: string) => Promise<void> | void;
@@ -55,8 +56,23 @@ function isRuntimeSessionNode(node: ProjectNode): boolean {
   return node.kind === "session" || node.kind === "global_session";
 }
 
+function isCrewSessionNode(node: ProjectNode): boolean {
+  return node.kind === "crew_session";
+}
+
 function isTopicNode(node: ProjectNode): boolean {
   return node.kind === "topic" || node.kind === "global_topic";
+}
+
+function comparableSessionPath(path: string): string {
+  const trimmed = path.trim().replace(/\\/g, "/");
+  return /^[a-z]:/i.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+}
+
+export function projectTreeSessionPathMatches(activeSessionPath?: string, nodeSessionPath?: string): boolean {
+  const active = comparableSessionPath(activeSessionPath ?? "");
+  const node = comparableSessionPath(nodeSessionPath ?? "");
+  return Boolean(active && node && active === node);
 }
 
 export type ProjectTreeTopicOpenRequest = {
@@ -116,8 +132,8 @@ export function projectTreeFolderDisclosure(hasChildren: boolean, isExpanded: bo
 }
 
 function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceRoot?: string, activeTopicId?: string, activeSessionPath?: string): boolean {
-  if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return false;
-  if (node.sessionPath) return Boolean(activeSessionPath && activeSessionPath === node.sessionPath);
+  if (!isTopicNode(node) && !isRuntimeSessionNode(node) && !isCrewSessionNode(node)) return false;
+  if (node.sessionPath) return projectTreeSessionPathMatches(activeSessionPath, node.sessionPath);
   if (activeSessionPath && asArray(node.children).some(isRuntimeSessionNode)) return false;
   const scope = node.kind === "global_topic" ? "global" : "project";
   return (
@@ -312,8 +328,11 @@ function loadWorkbenchSortMode(): WorkbenchSortMode {
   return "updated";
 }
 
+const CREW_PROJECT_ORDER_KEY = "__crew__";
+
 function projectOrderKey(node: ProjectNode): string {
   if (node.kind === "global_folder") return GLOBAL_PROJECT_ORDER_KEY;
+  if (node.kind === "crew_folder") return CREW_PROJECT_ORDER_KEY;
   if (node.kind === "project" && node.root) return node.root;
   return "";
 }
@@ -329,7 +348,7 @@ function collapsibleFolderKeys(nodes: ProjectNode[], depth = 0): string[] {
   for (const node of nodes) {
     if (!node) continue;
     const children = asArray(node.children);
-    if ((node.kind === "project" || node.kind === "global_folder") && children.length > 0) {
+    if ((node.kind === "project" || node.kind === "global_folder" || node.kind === "crew_folder") && children.length > 0) {
       keys.push(projectNodeKey(node, depth));
     }
     keys.push(...collapsibleFolderKeys(children, depth + 1));
@@ -412,7 +431,7 @@ function sortWorkbenchChildren(children: ProjectNode[], sortMode: WorkbenchSortM
 
 function arrangeWorkbenchTree(nodes: ProjectNode[], organizeMode: WorkbenchOrganizeMode, sortMode: WorkbenchSortMode): ProjectNode[] {
   const arranged = nodes.map((node) => {
-    if (node.kind !== "project" && node.kind !== "global_folder") return node;
+    if (node.kind !== "project" && node.kind !== "global_folder" && node.kind !== "crew_folder") return node;
     return { ...node, children: sortWorkbenchChildren(asArray(node.children), sortMode) };
   });
   if (organizeMode === "project") return arranged;
@@ -430,7 +449,7 @@ function splitWorkbenchPinnedTree(nodes: ProjectNode[], sortMode: WorkbenchSortM
 
   for (const node of nodes) {
     if (!node) continue;
-    const isFolder = node.kind === "project" || node.kind === "global_folder";
+    const isFolder = node.kind === "project" || node.kind === "global_folder" || node.kind === "crew_folder";
     if (!isFolder) {
       if (node.pinned) pinnedTopics.push(node);
       else projects.push(node);
@@ -513,6 +532,7 @@ export function ProjectTree({
   imTopicSources = {},
   variant = "classic",
   onOpenTopic,
+  onOpenCrewSession,
   onOpenProjectHistory,
   onAddProject,
   onCreateTopic,
@@ -1005,7 +1025,7 @@ export function ProjectTree({
       [node.label, node.root, node.topicId].some((value) => (value ?? "").toLowerCase().includes(q));
     const filterNode = (node: ProjectNode): ProjectNode | null => {
       // For folder nodes: always show when time filter is active (so the tree structure remains navigable).
-      const isFolder = node.kind === "project" || node.kind === "global_folder";
+      const isFolder = node.kind === "project" || node.kind === "global_folder" || node.kind === "crew_folder";
       const children = asArray(node.children)
         .map(filterNode)
         .filter((child): child is ProjectNode => child !== null);
@@ -1093,12 +1113,12 @@ export function ProjectTree({
     const hasChildren = children.length > 0;
     const folderDisclosure = projectTreeFolderDisclosure(hasChildren, isExpanded);
 
-    if (isTopicNode(node) || isRuntimeSessionNode(node)) {
-      const isSessionNode = isRuntimeSessionNode(node);
-      const openRequest = projectTreeTopicOpenRequest(node);
-      const scope = openRequest?.scope ?? "project";
+    if (isTopicNode(node) || isRuntimeSessionNode(node) || isCrewSessionNode(node)) {
+      const isSessionNode = isRuntimeSessionNode(node) || isCrewSessionNode(node);
+      const openRequest = isCrewSessionNode(node) ? null : projectTreeTopicOpenRequest(node);
+      const scope = isCrewSessionNode(node) ? "global" : (openRequest?.scope ?? "project");
       const scopeClass = scope === "global" ? " project-tree__topic--global" : " project-tree__topic--project";
-      const accentStyle = projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
+      const accentStyle = isCrewSessionNode(node) ? undefined : projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
       const active = topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const label = (node.label || node.topicId || "Untitled").replace(/^●\s*/, "");
       const activityAt = node.lastActivityAt || node.createdAt || 0;
@@ -1109,7 +1129,7 @@ export function ProjectTree({
       const status = topicStatus(node);
       const statusLabel = topicStatusLabel(node, t);
       const showStatusInSide = status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job";
-      const unread = projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
+      const unread = isCrewSessionNode(node) ? false : projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const topicId = node.topicId ?? "";
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
@@ -1202,6 +1222,11 @@ export function ProjectTree({
             title={title}
             style={{ paddingLeft: 14 + depth * 16 }}
             onClick={() => {
+              if (isCrewSessionNode(node)) {
+                markNodeRead(node);
+                void onOpenCrewSession?.(node.sessionPath ?? "");
+                return;
+              }
               if (!openRequest) return;
               const nextClick = { rowKey: key, canRename: !isSessionNode };
               const pending = clickTimerRef.current;
@@ -1324,6 +1349,45 @@ export function ProjectTree({
       return (
         <div key={key}>
           {row}
+          {hasChildren && (
+            <div className={`project-tree__children${isExpanded ? " project-tree__children--expanded" : ""}`}>
+              <div className="project-tree__children-inner">
+                {children.map((child) => renderNode(child, depth + 1, section, isVisible && isExpanded))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Crew folder: virtual bot-session container.
+    if (node.kind === "crew_folder") {
+      const scopeClass = " project-tree__folder--global";
+      const crewLabel = node.label || "Crew";
+      const projectActive = children.some((child) => topicIsActive(child, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath));
+      const folderClass = `project-tree__folder project-tree__folder--crew${scopeClass}${isExpanded ? " project-tree__folder--expanded" : ""}${projectActive ? " project-tree__folder--active" : ""}`;
+      return (
+        <div key={key}>
+          <div
+            className={folderClass}
+            style={{ "--project-accent": "var(--project-tree-global-accent)" } as CSSProperties}
+          >
+            <button
+              type="button"
+              className="project-tree__folder-main"
+              style={{ paddingLeft: 8 + depth * 16 }}
+              title={crewLabel}
+              onClick={() => { if (folderDisclosure.canExpand) toggleExpand(key); }}
+              aria-expanded={folderDisclosure.ariaExpanded}
+            >
+              <span className={folderDisclosure.iconStackClassName}>
+                {folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+              </span>
+              <span className="project-tree__folder-heading">
+                <span className="project-tree__folder-label">{crewLabel}</span>
+              </span>
+            </button>
+          </div>
           {hasChildren && (
             <div className={`project-tree__children${isExpanded ? " project-tree__children--expanded" : ""}`}>
               <div className="project-tree__children-inner">
@@ -1585,6 +1649,7 @@ export function ProjectTree({
           <button
             type="button"
             className="project-tree__folder-main"
+            title={projectLabel}
             style={{ paddingLeft: 8 + depth * 16 }}
             onClick={() => {
               if (folderDisclosure.canExpand) toggleExpand(key);

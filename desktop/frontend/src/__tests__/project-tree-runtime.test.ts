@@ -6,6 +6,7 @@ import {
   activeSessionAncestorKeys,
   projectTreeTopicOpenRequest,
   projectTreeShouldSuppressOpenForRename,
+  projectTreeSessionPathMatches,
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
   projectTreeShouldRenderTopicActions,
@@ -231,6 +232,54 @@ eq(
     iconStackClassName: "project-tree__icon-stack project-tree__icon-stack--expandable",
   },
   "expanded project folders can show the open-folder state only when children exist",
+);
+
+// === Crew nodes ===
+
+const crewFolder: ProjectNode = {
+  key: "crew_folder",
+  kind: "crew_folder",
+  label: "Crew",
+  children: [
+    {
+      key: "crew_session_1",
+      kind: "crew_session",
+      label: "WeChat · test-user",
+      sessionPath: "/tmp/crew-session.jsonl",
+      turns: 5,
+      createdAt: 1000,
+      lastActivityAt: 2000,
+    },
+  ],
+};
+
+eq(
+  projectTreeTopicOpenRequest(crewFolder.children[0]),
+  null,
+  "crew_session returns null from projectTreeTopicOpenRequest (opens via onOpenCrewSession)",
+);
+
+eq(
+  activeSessionAncestorKeys([crewFolder], "global", "", "", "/tmp/crew-session.jsonl"),
+  ["crew_folder"],
+  "crew folder key appears in active ancestor keys when a crew session is active",
+);
+
+eq(
+  projectTreeSessionPathMatches("D:\\Temp\\Crew-Session.jsonl", "d:/temp/crew-session.jsonl"),
+  true,
+  "session path matching tolerates Windows slash and drive-case differences",
+);
+
+eq(
+  activeSessionAncestorKeys([{
+    key: "crew_folder_windows",
+    kind: "crew_folder",
+    label: "Crew",
+    children: [{ ...crewFolder.children[0], sessionPath: "d:/temp/crew-session.jsonl" }],
+  }], "global", "", "", "D:\\Temp\\Crew-Session.jsonl"),
+  ["crew_folder_windows"],
+  "crew folder expands when active session path differs only by Windows formatting",
 );
 
 console.log(`\n${passed} passed, ${failed} failed`);

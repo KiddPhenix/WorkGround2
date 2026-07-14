@@ -3,9 +3,11 @@ package botruntime
 import (
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"workground2/internal/agent"
 	"workground2/internal/bot"
 	"workground2/internal/config"
 )
@@ -284,6 +286,48 @@ func TestRememberInboundSessionUpdatesAutoMappingTarget(t *testing.T) {
 	mapping := got.Bot.Connections[0].SessionMappings[0]
 	if mapping.SessionID != "path:/sessions/new.jsonl" || mapping.SessionSource != "auto" {
 		t.Fatalf("mapping = %+v, want auto target updated", mapping)
+	}
+}
+
+func TestRememberInboundSessionPersistsAutoSourceOnEverySession(t *testing.T) {
+	isolateUserConfig(t)
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	newPath := filepath.Join(dir, "new.jsonl")
+	for _, path := range []string{oldPath, newPath} {
+		if err := os.WriteFile(path, []byte(`{"role":"user","content":"from bot"}`+"\n"), 0o644); err != nil {
+			t.Fatalf("write session %s: %v", path, err)
+		}
+	}
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{{
+		ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	msg := bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: bot.ChatDM, ChatID: "wx-chat-1", UserID: "wx-user-1"}
+	if err := RememberInboundSession(msg, "path:"+oldPath); err != nil {
+		t.Fatalf("remember old session: %v", err)
+	}
+	if err := RememberInboundSession(msg, "path:"+newPath); err != nil {
+		t.Fatalf("remember new session: %v", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	mappings := got.Bot.Connections[0].SessionMappings
+	if len(mappings) != 1 || mappings[0].SessionID != "path:"+newPath || mappings[0].SessionSource != "auto" {
+		t.Fatalf("mappings = %+v, want one current auto mapping to new session", mappings)
+	}
+	for _, path := range []string{oldPath, newPath} {
+		meta, ok, err := agent.LoadBranchMeta(path)
+		if err != nil || !ok {
+			t.Fatalf("load meta %s: ok=%v err=%v", path, ok, err)
+		}
+		if meta.SessionSource != "auto" || meta.Channel != "weixin" || meta.ChannelLabel != "微信" || meta.RemoteID != "wx-chat-1" {
+			t.Fatalf("meta for %s = %+v, want persisted bot source", path, meta)
+		}
 	}
 }
 

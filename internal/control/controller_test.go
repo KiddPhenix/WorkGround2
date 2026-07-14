@@ -1767,6 +1767,46 @@ func TestSendWhileRunningDoesNotInterleaveTurns(t *testing.T) {
 	}
 }
 
+func TestSendTouchesSessionActivityBeforeTurnCompletes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{CreatedAt: old, UpdatedAt: old}); err != nil {
+		t.Fatal(err)
+	}
+
+	sess := agent.NewSession("sys")
+	release := make(chan struct{})
+	c := New(Options{
+		Runner:      blockingRunner{session: sess, release: release},
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+	})
+	defer c.autosaveWG.Wait()
+
+	c.Send("touch now")
+	waitForRunning(t, c)
+	defer close(release)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		meta, ok, err := agent.LoadBranchMeta(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && meta.UpdatedAt.After(old) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	meta, _, _ := agent.LoadBranchMeta(path)
+	t.Fatalf("session activity was not touched before turn completion: got %v want after %v", meta.UpdatedAt, old)
+}
+
 func waitForRunning(t *testing.T, c *Controller) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

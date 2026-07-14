@@ -2936,3 +2936,138 @@ func TestEnsureTopicIndexedConcurrentRunsHaveNoLostProjectUpdates(t *testing.T) 
 		}
 	}
 }
+
+func TestCrewProjectNodeAppearsWithBotAutoSessions(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := writeTopicSession(t, sessionDir, "crew_test_bot.jsonl", "topic_crew_bot", "Crew Bot Chat", "")
+	// Re-write meta to be global scope since crew sessions have no workspace.
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		CreatedAt:  time.Now().Add(-time.Hour),
+		UpdatedAt:  time.Now(),
+		Scope:      "global",
+		TopicID:    "topic_crew_bot",
+		TopicTitle: "Crew Bot Chat",
+	}); err != nil {
+		t.Fatalf("rewrite meta: %v", err)
+	}
+
+	// Write bot config with an auto session mapping pointing to the session.
+	cfgPath := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgContent := fmt.Sprintf(`[bot]
+[[bot.connections]]
+id = "test-wechat"
+provider = "weixin"
+label = "Test WeChat"
+[[bot.connections.session_mappings]]
+remote_id = "test-user-001"
+session_id = "path:%s"
+session_source = "auto"
+chat_type = "private"
+`, strings.ReplaceAll(sessionPath, `\`, `\\`))
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	nodes := NewApp().ListProjectTree()
+
+	// Find crew folder.
+	var crew *ProjectNode
+	for i := range nodes {
+		if nodes[i].Kind == "crew_folder" {
+			crew = &nodes[i]
+			break
+		}
+	}
+	if crew == nil {
+		t.Fatalf("expected crew_folder in project tree, got %d nodes: %+v", len(nodes), nodeKinds(nodes))
+	}
+	if crew.Label != "Crew" {
+		t.Fatalf("crew folder label = %q, want \"Crew\"", crew.Label)
+	}
+	if len(crew.Children) != 1 {
+		t.Fatalf("crew folder should have 1 child, got %d", len(crew.Children))
+	}
+	child := crew.Children[0]
+	if child.Kind != "crew_session" {
+		t.Fatalf("crew child kind = %q, want crew_session", child.Kind)
+	}
+	if child.SessionPath != sessionPath {
+		t.Fatalf("crew child SessionPath = %q, want %q", child.SessionPath, sessionPath)
+	}
+	if child.Turns != 1 {
+		t.Fatalf("crew child Turns = %d, want 1", child.Turns)
+	}
+
+	// Remove the config and verify Crew disappears.
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	nodes = NewApp().ListProjectTree()
+	for i := range nodes {
+		if nodes[i].Kind == "crew_folder" {
+			t.Fatalf("crew_folder should not appear without bot auto sessions")
+		}
+	}
+}
+
+func TestCrewProjectNodeUsesPersistedBotSessionMeta(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := writeTopicSession(t, sessionDir, "crew_meta_bot.jsonl", "topic_crew_meta_bot", "Crew Meta Bot Chat", "")
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		CreatedAt:     time.Now().Add(-time.Hour),
+		UpdatedAt:     time.Now(),
+		Scope:         "global",
+		TopicID:       "topic_crew_meta_bot",
+		TopicTitle:    "Crew Meta Bot Chat",
+		SessionSource: "auto",
+		Channel:       "weixin",
+		ChannelLabel:  "微信",
+		RemoteID:      "wx-chat-1",
+	}); err != nil {
+		t.Fatalf("rewrite meta: %v", err)
+	}
+
+	nodes := NewApp().ListProjectTree()
+
+	var crew *ProjectNode
+	for i := range nodes {
+		if nodes[i].Kind == "crew_folder" {
+			crew = &nodes[i]
+			break
+		}
+		if nodes[i].Kind == "global_folder" {
+			for _, child := range nodes[i].Children {
+				if child.TopicID == "topic_crew_meta_bot" {
+					t.Fatalf("bot topic leaked into Global folder: %+v", child)
+				}
+			}
+		}
+	}
+	if crew == nil || len(crew.Children) != 1 {
+		t.Fatalf("expected one persisted bot session under Crew, nodes=%+v", nodes)
+	}
+	if got := crew.Children[0]; got.Kind != "crew_session" || got.SessionPath != sessionPath {
+		t.Fatalf("crew child = %+v, want persisted bot session", got)
+	}
+}
+
+func nodeKinds(nodes []ProjectNode) []string {
+	kinds := make([]string, len(nodes))
+	for i, n := range nodes {
+		kinds[i] = n.Kind
+	}
+	return kinds
+}

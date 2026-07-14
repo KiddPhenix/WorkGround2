@@ -134,7 +134,7 @@ func TestHistoryPageFromMessagesWindowsByUserTurn(t *testing.T) {
 		{Role: "assistant", Content: "three"},
 	}
 
-	latest := historyPageFromMessages(messages, 0, 2)
+	latest := historyPageFromMessages(messages, 0, 2, "/test/session.jsonl")
 	if latest.StartTurn != 1 || latest.EndTurn != 3 || latest.TotalTurns != 3 || !latest.HasOlder {
 		t.Fatalf("latest page metadata = %+v, want turns 1-3/3 hasOlder", latest)
 	}
@@ -142,7 +142,7 @@ func TestHistoryPageFromMessagesWindowsByUserTurn(t *testing.T) {
 		t.Fatalf("latest page messages = %+v, want second and third turns", latest.Messages)
 	}
 
-	older := historyPageFromMessages(messages, latest.StartTurn, 2)
+	older := historyPageFromMessages(messages, latest.StartTurn, 2, "/test/session.jsonl")
 	if older.StartTurn != 0 || older.EndTurn != 1 || older.TotalTurns != 3 || older.HasOlder {
 		t.Fatalf("older page metadata = %+v, want turns 0-1/3 no older", older)
 	}
@@ -172,6 +172,7 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 		map[int]int{1: 0, 5: 2, 8: 3},
 		0,
 		2,
+		"/test/session.jsonl",
 	)
 	if latest.StartTurn != 1 || latest.EndTurn != 3 || latest.TotalTurns != 3 || !latest.HasOlder {
 		t.Fatalf("latest page metadata = %+v, want turns 1-3/3 hasOlder", latest)
@@ -202,6 +203,7 @@ func TestHistoryPageFromProviderMessagesWindowsVisibleUsers(t *testing.T) {
 		map[int]int{1: 0, 5: 2, 8: 3},
 		latest.StartTurn,
 		2,
+		"/test/session.jsonl",
 	)
 	if older.StartTurn != 0 || older.EndTurn != 1 || older.TotalTurns != 3 || older.HasOlder {
 		t.Fatalf("older page metadata = %+v, want turns 0-1/3 no older", older)
@@ -1062,5 +1064,44 @@ func writeHistoryTestSession(t *testing.T, path, prompt string) {
 	session.Add(provider.Message{Role: provider.RoleUser, Content: prompt})
 	if err := session.Save(path); err != nil {
 		t.Fatalf("Save %s: %v", path, err)
+	}
+}
+
+func TestHistoryPageSessionPath(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+
+	// historyPageFromMessages: SessionPath propagated.
+	messages := []HistoryMessage{
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+	}
+	page := historyPageFromMessages(messages, 0, 1, sessionPath)
+	if page.SessionPath != sessionPath {
+		t.Fatalf("historyPageFromMessages SessionPath = %q, want %q", page.SessionPath, sessionPath)
+	}
+
+	// historyPageFromProviderMessages: SessionPath propagated.
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "hello"},
+		{Role: provider.RoleAssistant, Content: "hi"},
+	}
+	page2 := historyPageFromProviderMessages(
+		msgs,
+		func(content string) string { return content },
+		nil, nil,
+		0, 1,
+		sessionPath,
+	)
+	if page2.SessionPath != sessionPath {
+		t.Fatalf("historyPageFromProviderMessages SessionPath = %q, want %q", page2.SessionPath, sessionPath)
+	}
+
+	// Empty page: SessionPath still set.
+	emptyPage := historyPageFromMessages([]HistoryMessage{}, 0, 1, sessionPath)
+	if emptyPage.SessionPath != sessionPath {
+		t.Fatalf("empty historyPageFromMessages SessionPath = %q, want %q", emptyPage.SessionPath, sessionPath)
+	}
+	if len(emptyPage.Messages) != 0 {
+		t.Fatalf("empty page should have no messages")
 	}
 }

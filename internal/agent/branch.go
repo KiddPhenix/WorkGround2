@@ -33,6 +33,13 @@ type BranchMeta struct {
 	TokenMode        string    `json:"token_mode,omitempty"`
 	Mode             string    `json:"mode,omitempty"`
 	ToolApprovalMode string    `json:"tool_approval_mode,omitempty"`
+	SessionSource    string    `json:"session_source,omitempty"`
+	Channel          string    `json:"channel,omitempty"`
+	ChannelLabel     string    `json:"channel_label,omitempty"`
+	RemoteID         string    `json:"remote_id,omitempty"`
+	ChatType         string    `json:"chat_type,omitempty"`
+	UserID           string    `json:"user_id,omitempty"`
+	ThreadID         string    `json:"thread_id,omitempty"`
 	Goal             string    `json:"goal,omitempty"`
 	Recovered        bool      `json:"recovered,omitempty"`
 	RecoveryReason   string    `json:"recovery_reason,omitempty"`
@@ -256,6 +263,10 @@ func TouchBranchMeta(sessionPath string) error {
 	}
 	m.UpdatedAt = time.Now().UTC()
 	return saveBranchMeta(sessionPath, m, false)
+}
+
+func TouchSessionActivity(sessionPath string) error {
+	return TouchBranchMeta(sessionPath)
 }
 
 func MarkSessionInFlightTurn(sessionPath string, startMessageIndex int, preserveUser bool) error {

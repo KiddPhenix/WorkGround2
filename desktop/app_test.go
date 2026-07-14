@@ -4291,6 +4291,131 @@ func TestDesktopSessionAPIsUseControllerSessionDir(t *testing.T) {
 	}
 }
 
+func TestListSessionsHidesOpenBlankRuntimeSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := filepath.Join(t.TempDir(), "workspace-sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "blank.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write blank session: %v", err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test"}), "")
+	defer app.activeCtrl().Close()
+	app.mu.Lock()
+	app.tabs["test"].TopicTitle = defaultTopicTitle
+	app.mu.Unlock()
+
+	if sessions := app.ListSessions(); len(sessions) != 0 {
+		t.Fatalf("ListSessions should hide open blank runtime sessions, got %+v", sessions)
+	}
+}
+
+func TestListProjectTreeHidesOpenBlankTopic(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	meta, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	t.Cleanup(func() {
+		if ctrl := app.activeCtrl(); ctrl != nil {
+			ctrl.Close()
+		}
+	})
+	if !meta.Blank {
+		t.Fatalf("blank tab meta should be marked blank: %+v", meta)
+	}
+	if projectTreeContainsTopic(app.ListProjectTree(), meta.TopicID) {
+		t.Fatalf("blank topic %q should be hidden from project tree", meta.TopicID)
+	}
+}
+
+func TestListProjectTreeOrdersWorkspaceTopicsByLastActivity(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	projectSessionCache.invalidate()
+
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := addProject(workspace, "Workspace"); err != nil {
+		t.Fatal(err)
+	}
+	dir := desktopSessionDir(workspace)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	writeProjectTreeSession := func(topicID, title string, updatedAt time.Time) {
+		t.Helper()
+		if err := prependTopicInProjectsFile(workspace, topicID, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := setTopicTitleWithSource(workspace, topicID, title, topicTitleSourceAuto); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, topicID+".jsonl")
+		s := agent.NewSession("sys")
+		s.Add(provider.Message{Role: provider.RoleUser, Content: title})
+		if err := s.Save(path); err != nil {
+			t.Fatal(err)
+		}
+		if err := agent.SaveBranchMetaPreserveUpdated(path, agent.BranchMeta{
+			CreatedAt:     base,
+			UpdatedAt:     updatedAt,
+			Scope:         "project",
+			WorkspaceRoot: workspace,
+			TopicID:       topicID,
+			TopicTitle:    title,
+			Turns:         1,
+			Preview:       title,
+			SchemaVersion: agent.BranchMetaCountsVersion,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProjectTreeSession("old-topic", "Old session", base.Add(time.Minute))
+	writeProjectTreeSession("new-topic", "New session", base.Add(2*time.Hour))
+
+	app := NewApp()
+	tree := app.ListProjectTree()
+	var project *ProjectNode
+	for i := range tree {
+		if tree[i].Kind == "project" && normalizeProjectRoot(tree[i].Root) == normalizeProjectRoot(workspace) {
+			project = &tree[i]
+			break
+		}
+	}
+	if project == nil {
+		t.Fatalf("project node missing from tree: %+v", tree)
+	}
+	if len(project.Children) < 2 {
+		t.Fatalf("project children = %+v, want at least two topics", project.Children)
+	}
+	if project.Children[0].TopicID != "new-topic" || project.Children[1].TopicID != "old-topic" {
+		t.Fatalf("project topics order = %+v, want newest activity first", project.Children)
+	}
+}
+
+func projectTreeContainsTopic(nodes []ProjectNode, topicID string) bool {
+	for _, node := range nodes {
+		if node.TopicID == topicID {
+			return true
+		}
+		if projectTreeContainsTopic(node.Children, topicID) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestListSessionsMarksAutoBotSessionAsChannel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -4428,6 +4553,143 @@ func TestOpenChannelSessionForTabIsReadOnly(t *testing.T) {
 	}
 	if !strings.Contains(string(afterSnapshot), "external follow-up") {
 		t.Fatalf("read-only channel snapshot overwrote external append:\n%s", afterSnapshot)
+	}
+}
+
+func TestOpenChannelSessionForTabResolvesKnownSessionDirs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	activeDir := filepath.Join(t.TempDir(), "active")
+	channelDir := config.SessionDir()
+	if err := os.MkdirAll(activeDir, 0o755); err != nil {
+		t.Fatalf("mkdir active dir: %v", err)
+	}
+	if err := os.MkdirAll(channelDir, 0o755); err != nil {
+		t.Fatalf("mkdir channel dir: %v", err)
+	}
+	path := filepath.Join(channelDir, "bot-channel.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"from channel"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write channel session: %v", err)
+	}
+
+	app := NewApp()
+	ctrl := control.New(control.Options{SessionDir: activeDir, SessionPath: filepath.Join(activeDir, "active.jsonl"), Label: "test"})
+	app.setTestCtrl(ctrl, "")
+	defer app.activeCtrl().Close()
+
+	page, err := app.OpenChannelSessionPageForTab("test", path, 20)
+	if err != nil {
+		t.Fatalf("OpenChannelSessionPageForTab: %v", err)
+	}
+	if len(page.Messages) == 0 {
+		t.Fatalf("channel page should include history")
+	}
+	if page.SessionPath != path {
+		t.Fatalf("page session path = %q, want %q", page.SessionPath, path)
+	}
+	if meta := app.tabMeta(app.activeTab(), true); !meta.ReadOnly || meta.SessionPath != path {
+		t.Fatalf("channel tab meta = %+v, want read-only cross-dir session %q", meta, path)
+	}
+}
+
+func TestLoadPinnedTabSessionUsesPreloadAcrossDirs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	workspaceDir := filepath.Join(t.TempDir(), "workspace-sessions")
+	channelDir := filepath.Join(t.TempDir(), "channel-sessions")
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace dir: %v", err)
+	}
+	if err := os.MkdirAll(channelDir, 0o755); err != nil {
+		t.Fatalf("mkdir channel dir: %v", err)
+	}
+	path := filepath.Join(channelDir, "weixin-channel.jsonl")
+	session := agent.NewSession("sys")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "北京"})
+	if err := session.Save(path); err != nil {
+		t.Fatalf("save channel session: %v", err)
+	}
+	preloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("load preloaded session: %v", err)
+	}
+
+	loaded, resolvedPath, ok := loadPinnedTabSessionWithPreload(workspaceDir, path, loadedTabSession{Path: path, Session: preloaded})
+	if !ok {
+		t.Fatal("preloaded cross-dir session should be accepted")
+	}
+	if resolvedPath != path {
+		t.Fatalf("resolved path = %q, want %q", resolvedPath, path)
+	}
+	if loaded == nil {
+		t.Fatal("loaded session is nil")
+	}
+	if got := loaded.Snapshot(); len(got) != 2 || got[1].Role != provider.RoleUser || got[1].Content != "北京" {
+		t.Fatalf("loaded snapshot = %+v, want preloaded channel transcript", got)
+	}
+}
+
+func TestOpenChannelSessionCreatesTargetTabDirectly(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	activeDir := filepath.Join(t.TempDir(), "active")
+	channelDir := config.SessionDir()
+	if err := os.MkdirAll(activeDir, 0o755); err != nil {
+		t.Fatalf("mkdir active dir: %v", err)
+	}
+	if err := os.MkdirAll(channelDir, 0o755); err != nil {
+		t.Fatalf("mkdir channel dir: %v", err)
+	}
+	path := filepath.Join(channelDir, "legacy-channel.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"D盘有个photo文件夹 , 有多大?"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write channel session: %v", err)
+	}
+	if err := agent.SaveBranchMeta(path, agent.BranchMeta{
+		CreatedAt:  time.Now().Add(-time.Hour),
+		UpdatedAt:  time.Now(),
+		Scope:      "global",
+		TopicID:    "legacy_channel",
+		TopicTitle: "D盘有个photo文件夹 , 有多大",
+		Turns:      1,
+		Preview:    "D盘有个photo文件夹 , 有多大?",
+	}); err != nil {
+		t.Fatalf("save branch meta: %v", err)
+	}
+
+	app := NewApp()
+	ctrl := control.New(control.Options{SessionDir: activeDir, SessionPath: filepath.Join(activeDir, "active.jsonl"), Label: "test"})
+	app.setTestCtrl(ctrl, "")
+	defer app.activeCtrl().Close()
+
+	meta, err := app.OpenChannelSession(path)
+	if err != nil {
+		t.Fatalf("OpenChannelSession: %v", err)
+	}
+	if !meta.ReadOnly || meta.SessionPath != path || meta.TopicTitle != "D盘有个photo文件夹 , 有多大" {
+		t.Fatalf("channel tab meta = %+v, want direct read-only target %q", meta, path)
+	}
+	if filepath.Dir(meta.SessionPath) == activeDir {
+		t.Fatalf("channel open reused blank active dir: %+v", meta)
+	}
+	page := app.HistoryPageForTab(meta.ID, 0, 20)
+	if page.SessionPath != path {
+		t.Fatalf("history page session path = %q, want %q", page.SessionPath, path)
+	}
+	if len(page.Messages) == 0 {
+		t.Fatalf("history page should include channel transcript for %s", path)
+	}
+	tabs := app.ListTabs()
+	activeCount := 0
+	for _, tab := range tabs {
+		if tab.Active {
+			activeCount++
+			if tab.ID != meta.ID || tab.SessionPath != path || !tab.ReadOnly {
+				t.Fatalf("active tab = %+v, want direct channel tab %+v", tab, meta)
+			}
+		}
+	}
+	if activeCount != 1 {
+		t.Fatalf("active tab count = %d, tabs=%+v", activeCount, tabs)
 	}
 }
 

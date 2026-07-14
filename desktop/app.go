@@ -2235,7 +2235,9 @@ func (a *App) ListSessions() []SessionMeta {
 	for _, s := range infos {
 		_, isOpen := open[s.Path]
 		meta := sessionMetaFromInfo(s, titles[filepath.Base(s.Path)], s.Path == active, isOpen, 0)
-		if route, ok := channelRoutes[sessionRuntimeKey(s.Path)]; ok {
+		if route, ok := channelSessionRouteFromInfo(s); ok {
+			applyChannelSessionRoute(&meta, route)
+		} else if route, ok := channelRoutes[sessionRuntimeKey(s.Path)]; ok {
 			applyChannelSessionRoute(&meta, route)
 		}
 		out = append(out, meta)
@@ -2305,6 +2307,9 @@ func (a *App) runtimeSessionMetasForDir(dir string, titles map[string]string, se
 		turns := 0
 		if rt.ctrl != nil {
 			preview, turns = agent.SessionPreviewFromMessages(rt.ctrl.History())
+		}
+		if turns == 0 {
+			continue
 		}
 		if title == "" && preview == "" {
 			continue
@@ -2417,6 +2422,41 @@ func applyChannelSessionRoute(meta *SessionMeta, route channelSessionRoute) {
 	meta.UserID = route.userID
 	meta.ThreadID = route.threadID
 	meta.SessionSource = route.sessionSource
+}
+
+func channelSessionRouteFromInfo(info agent.SessionInfo) (channelSessionRoute, bool) {
+	if strings.TrimSpace(info.SessionSource) != "auto" {
+		return channelSessionRoute{}, false
+	}
+	return channelSessionRouteFromFields(info.Channel, info.ChannelLabel, info.RemoteID, info.ChatType, info.UserID, info.ThreadID, info.SessionSource)
+}
+
+func channelSessionRouteFromOrder(info agent.SessionOrderInfo) (channelSessionRoute, bool) {
+	if strings.TrimSpace(info.SessionSource) != "auto" {
+		return channelSessionRoute{}, false
+	}
+	return channelSessionRouteFromFields(info.Channel, info.ChannelLabel, info.RemoteID, info.ChatType, info.UserID, info.ThreadID, info.SessionSource)
+}
+
+func channelSessionRouteFromFields(channel, channelLabel, remoteID, chatType, userID, threadID, sessionSource string) (channelSessionRoute, bool) {
+	sessionSource = strings.TrimSpace(sessionSource)
+	if sessionSource == "" {
+		return channelSessionRoute{}, false
+	}
+	channel = strings.TrimSpace(channel)
+	channelLabel = strings.TrimSpace(channelLabel)
+	if channelLabel == "" && channel != "" {
+		channelLabel = channelDisplayName(channel, "")
+	}
+	return channelSessionRoute{
+		channel:       channel,
+		channelLabel:  channelLabel,
+		remoteID:      strings.TrimSpace(remoteID),
+		chatType:      strings.TrimSpace(chatType),
+		userID:        strings.TrimSpace(userID),
+		threadID:      strings.TrimSpace(threadID),
+		sessionSource: sessionSource,
+	}, true
 }
 
 func channelSessionRoutesForDir(dir string) map[string]channelSessionRoute {
@@ -3089,7 +3129,9 @@ func (a *App) ResumeSessionPageForTab(tabID, path string, limit int) (HistoryPag
 		}
 	}
 	a.setTabReadOnly(tab.ID, false)
-	return a.HistoryPageForTab(tab.ID, 0, limit), nil
+	page := a.HistoryPageForTab(tab.ID, 0, limit)
+	page.SessionPath = sessionPath
+	return page, nil
 }
 
 // ResumeSessionForTab is the tab-scoped form of ResumeSession. A saved session
@@ -3126,8 +3168,7 @@ func (a *App) OpenChannelSessionForTab(tabID, path string) ([]HistoryMessage, er
 	if tab == nil || tab.Ctrl == nil {
 		return []HistoryMessage{}, fmt.Errorf("tab is not ready")
 	}
-	ctrl := tab.Ctrl
-	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	sessionPath, err := a.resolveChannelSessionPath(tab, path)
 	if err != nil {
 		return nil, err
 	}
@@ -3144,13 +3185,109 @@ func (a *App) OpenChannelSessionForTab(tabID, path string) ([]HistoryMessage, er
 	return a.HistoryForTab(tab.ID), nil
 }
 
+func (a *App) OpenChannelSession(path string) (TabMeta, error) {
+	if a.singleSurfaceLayoutEnabled() {
+		a.singleSurfaceMu.Lock()
+		defer a.singleSurfaceMu.Unlock()
+		meta, err := a.openChannelSession(path)
+		if err != nil {
+			return TabMeta{}, err
+		}
+		return a.keepOnlyVisibleTab(meta.ID)
+	}
+	return a.openChannelSession(path)
+}
+
+func (a *App) openChannelSession(path string) (TabMeta, error) {
+	_, sessionPath, err := a.sessionDirForPath(path)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	loaded, err := loadResumableSession(sessionPath)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	scope, workspaceRoot, topicID, topicTitle := channelSessionTabTarget(sessionPath)
+	actualRoot := workspaceRoot
+	if scope == "global" {
+		actualRoot = globalWorkspaceRoot()
+		if err := os.MkdirAll(actualRoot, 0o755); err != nil {
+			return TabMeta{}, fmt.Errorf("create global workspace: %w", err)
+		}
+	} else {
+		saveWorkspace(workspaceRoot)
+		_ = addProject(workspaceRoot, "")
+	}
+	targetKey := sessionRuntimeKey(sessionPath)
+
+	a.mu.Lock()
+	for _, tab := range a.tabs {
+		if tab == nil || sessionRuntimeKey(tab.currentSessionPath()) != targetKey {
+			continue
+		}
+		tab.ReadOnly = true
+		a.activeTabID = tab.ID
+		meta := a.tabMeta(tab, true)
+		a.saveTabsLocked()
+		a.mu.Unlock()
+		return enrichTabMeta(meta), nil
+	}
+
+	tabID := a.newUniqueTabIDLocked()
+	profile := loadTabSessionProfile(sessionPath)
+	tab := &WorkspaceTab{
+		ID:            tabID,
+		Scope:         scope,
+		WorkspaceRoot: actualRoot,
+		TopicID:       topicID,
+		TopicTitle:    topicTitle,
+		SessionPath:   sessionPath,
+		ReadOnly:      true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	applyTabSessionProfile(tab, profile)
+	tab.sink = &tabEventSink{tabID: tabID, app: a}
+	a.tabs[tabID] = tab
+	a.tabOrder = append(a.tabOrder, tabID)
+	a.activeTabID = tabID
+	a.saveTabsLocked()
+	meta := a.tabMeta(tab, true)
+	a.mu.Unlock()
+
+	a.startTabControllerBuildWithLoadedSession(tab, loadedTabSession{Path: sessionPath, Session: loaded})
+	a.emitProjectTreeChanged()
+	return enrichTabMeta(meta), nil
+}
+
+func channelSessionTabTarget(sessionPath string) (scope, workspaceRoot, topicID, topicTitle string) {
+	scope = "global"
+	if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+		scope = meta.DefaultScope()
+		if scope == "project" {
+			workspaceRoot = normalizeProjectRoot(meta.WorkspaceRoot)
+			if workspaceRoot == "" {
+				scope = "global"
+			}
+		}
+		topicID = strings.TrimSpace(meta.TopicID)
+		topicTitle = firstNonEmpty(strings.TrimSpace(meta.TopicTitle), topicTitleFromText(meta.Preview))
+	}
+	if scope != "project" {
+		scope = "global"
+		workspaceRoot = ""
+	}
+	if strings.TrimSpace(topicTitle) == "" {
+		topicTitle = strings.TrimSuffix(filepath.Base(sessionPath), filepath.Ext(sessionPath))
+	}
+	return scope, workspaceRoot, topicID, topicTitle
+}
+
 func (a *App) OpenChannelSessionPageForTab(tabID, path string, limit int) (HistoryPage, error) {
 	tab := a.tabByID(tabID)
 	if tab == nil || tab.Ctrl == nil {
 		return HistoryPage{}, fmt.Errorf("tab is not ready")
 	}
-	ctrl := tab.Ctrl
-	sessionPath, _, err := validateSessionPath(controllerSessionDir(ctrl), path)
+	sessionPath, err := a.resolveChannelSessionPath(tab, path)
 	if err != nil {
 		return HistoryPage{}, err
 	}
@@ -3164,7 +3301,23 @@ func (a *App) OpenChannelSessionPageForTab(tabID, path string, limit int) (Histo
 		}
 	}
 	a.setTabReadOnly(tab.ID, true)
-	return a.HistoryPageForTab(tab.ID, 0, limit), nil
+	page := a.HistoryPageForTab(tab.ID, 0, limit)
+	page.SessionPath = sessionPath
+	return page, nil
+}
+
+func (a *App) resolveChannelSessionPath(tab *WorkspaceTab, path string) (string, error) {
+	if tab == nil || tab.Ctrl == nil {
+		return "", fmt.Errorf("tab is not ready")
+	}
+	if sessionPath, _, err := validateSessionPath(controllerSessionDir(tab.Ctrl), path); err == nil {
+		return sessionPath, nil
+	}
+	_, sessionPath, err := a.sessionDirForPath(path)
+	if err != nil {
+		return "", err
+	}
+	return sessionPath, nil
 }
 
 func (a *App) setTabReadOnly(tabID string, readOnly bool) {
@@ -4142,11 +4295,12 @@ const (
 )
 
 type HistoryPage struct {
-	Messages   []HistoryMessage `json:"messages"`
-	StartTurn  int              `json:"startTurn"`
-	EndTurn    int              `json:"endTurn"`
-	TotalTurns int              `json:"totalTurns"`
-	HasOlder   bool             `json:"hasOlder"`
+	Messages    []HistoryMessage `json:"messages"`
+	StartTurn   int              `json:"startTurn"`
+	EndTurn     int              `json:"endTurn"`
+	TotalTurns  int              `json:"totalTurns"`
+	HasOlder    bool             `json:"hasOlder"`
+	SessionPath string           `json:"sessionPath"`
 }
 
 // History returns the session's message log.
@@ -4171,11 +4325,11 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 	a.mu.RUnlock()
 	if ctrl == nil {
 		if strings.TrimSpace(sessionPath) == "" {
-			return HistoryPage{Messages: []HistoryMessage{}}
+			return HistoryPage{Messages: []HistoryMessage{}, SessionPath: sessionPath}
 		}
 		page, err := previewSessionPage(sessionDir, sessionPath, beforeTurn, limit)
 		if err != nil {
-			return HistoryPage{Messages: []HistoryMessage{}}
+			return HistoryPage{Messages: []HistoryMessage{}, SessionPath: sessionPath}
 		}
 		return page
 	}
@@ -4189,6 +4343,7 @@ func (a *App) HistoryPageForTab(tabID string, beforeTurn, limit int) HistoryPage
 		ctrl.CheckpointTurnsByMessageIndex(),
 		beforeTurn,
 		limit,
+		path,
 	)
 }
 
@@ -4202,7 +4357,7 @@ func normalizeHistoryPageLimit(limit int) int {
 	return limit
 }
 
-func historyPageFromMessages(messages []HistoryMessage, beforeTurn, limit int) HistoryPage {
+func historyPageFromMessages(messages []HistoryMessage, beforeTurn, limit int, sessionPath string) HistoryPage {
 	limit = normalizeHistoryPageLimit(limit)
 	totalTurns := 0
 	for _, msg := range messages {
@@ -4218,10 +4373,11 @@ func historyPageFromMessages(messages []HistoryMessage, beforeTurn, limit int) H
 		startTurn = 0
 	}
 	page := HistoryPage{
-		StartTurn:  startTurn,
-		EndTurn:    beforeTurn,
-		TotalTurns: totalTurns,
-		HasOlder:   startTurn > 0,
+		StartTurn:   startTurn,
+		EndTurn:     beforeTurn,
+		TotalTurns:  totalTurns,
+		HasOlder:    startTurn > 0,
+		SessionPath: sessionPath,
 	}
 	if len(messages) == 0 || startTurn >= beforeTurn {
 		page.Messages = []HistoryMessage{}
@@ -4410,6 +4566,7 @@ func historyPageFromProviderMessages(
 	plannerTurns []plannerDisplayTurn,
 	checkpointTurns map[int]int,
 	beforeTurn, limit int,
+	sessionPath string,
 ) HistoryPage {
 	limit = normalizeHistoryPageLimit(limit)
 	totalTurns := visibleHistoryUserTurns(msgs, resolveUserContent)
@@ -4421,10 +4578,11 @@ func historyPageFromProviderMessages(
 		startTurn = 0
 	}
 	page := HistoryPage{
-		StartTurn:  startTurn,
-		EndTurn:    beforeTurn,
-		TotalTurns: totalTurns,
-		HasOlder:   startTurn > 0,
+		StartTurn:   startTurn,
+		EndTurn:     beforeTurn,
+		TotalTurns:  totalTurns,
+		HasOlder:    startTurn > 0,
+		SessionPath: sessionPath,
 	}
 	if len(msgs) == 0 || startTurn >= beforeTurn {
 		page.Messages = []HistoryMessage{}
@@ -4855,7 +5013,7 @@ func previewSessionPage(sessionDir, path string, beforeTurn, limit int) (History
 		if err != nil {
 			return HistoryPage{}, err
 		}
-		return historyPageFromMessages(out, beforeTurn, limit), nil
+		return historyPageFromMessages(out, beforeTurn, limit, sessionPath), nil
 	}
 	loaded, err := agent.LoadSession(sessionPath)
 	if err != nil {
@@ -4868,6 +5026,7 @@ func previewSessionPage(sessionDir, path string, beforeTurn, limit int) (History
 		nil,
 		beforeTurn,
 		limit,
+		sessionPath,
 	), nil
 }
 

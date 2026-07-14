@@ -979,7 +979,7 @@ export default function App() {
     listSessions,
     listTrashedSessions,
     resumeSession,
-    openChannelSession,
+    openChannelTab,
     previewSession,
     deleteSession,
     restoreSession,
@@ -2584,6 +2584,11 @@ export default function App() {
       const root = scope === "project" ? workspaceRoot : "";
       return singleSurfaceLayout ? ensureBlankSurface(scope, root) : ensureBlankTab(scope, root);
     };
+    const closeFailedBlankTarget = async (tab: TabMeta | undefined): Promise<void> => {
+      if (!tab || singleSurfaceLayout) return;
+      await closeTab(tab.id);
+      await refreshLatestTabMetas();
+    };
 
     try {
       if (request.kind === "topic") {
@@ -2617,13 +2622,15 @@ export default function App() {
         }
         let openedTab: TabMeta | undefined;
         if (connection.sessionSource === "auto" && target.kind === "path") {
-          openedTab = await openBlankTarget(connection.scope, connection.workspaceRoot);
-          if (!latest()) return;
-          await openChannelSession(target.value, openedTab.id);
+          openedTab = await openChannelTab(target.value);
         } else if (target.kind === "path") {
           openedTab = await openBlankTarget(connection.scope, connection.workspaceRoot);
           if (!latest()) return;
-          await resumeSession(target.value, openedTab.id);
+          if (!(await resumeSession(target.value, openedTab.id))) {
+            await closeFailedBlankTarget(openedTab);
+            throw new Error(t("history.failedOpenSession"));
+          }
+          openedTab = { ...openedTab, sessionPath: target.value, readOnly: false };
         } else {
           openedTab = await openTopicTarget(connection.scope, connection.workspaceRoot, target.value);
         }
@@ -2641,9 +2648,7 @@ export default function App() {
       const scope = session.scope || (session.workspaceRoot ? "project" : "global");
       let targetTab: TabMeta;
       if (isChannelSession(session)) {
-        targetTab = await openBlankTarget(scope === "project" ? "project" : "global", scope === "project" ? session.workspaceRoot || "" : "");
-        if (!latest()) return;
-        await openChannelSession(session.path, targetTab.id);
+        targetTab = await openChannelTab(session.path);
       } else if (scope === "project" && session.workspaceRoot && session.topicId) {
         targetTab = await openTopicTarget("project", session.workspaceRoot, session.topicId, session.path);
       } else if (scope === "global" && session.topicId) {
@@ -2656,7 +2661,11 @@ export default function App() {
           scope === "project" ? session.workspaceRoot || "" : "",
         );
         if (!latest()) return;
-        await resumeSession(session.path, targetTab.id);
+        if (!(await resumeSession(session.path, targetTab.id))) {
+          await closeFailedBlankTarget(targetTab);
+          throw new Error(t("history.failedOpenSession"));
+        }
+        targetTab = { ...targetTab, sessionPath: session.path, readOnly: false };
       }
       if (!latest()) return;
       seedActiveTabMeta(targetTab);
@@ -2689,7 +2698,7 @@ export default function App() {
         showToast(err?.message || String(err));
       }
     }
-  }, [activateTopic, ensureBlankSurface, ensureBlankTab, openChannelSession, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
+  }, [activateTopic, closeTab, ensureBlankSurface, ensureBlankTab, openChannelTab, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
 
   const enqueueNavigation = useCallback((input: DesktopNavigationInput): Promise<void> => enqueueNavigationRequest(
     { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
@@ -2712,6 +2721,28 @@ export default function App() {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
     return enqueueNavigation({ kind: "topic", scope, workspaceRoot, topicId, sessionPath, runtimeHint });
+  }, [closeTransientOverlays, enqueueNavigation]);
+
+  const handleOpenCrewSession = useCallback((sessionPath: string): Promise<void> => {
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    return enqueueNavigation({
+      kind: "resume-session",
+      session: {
+        path: sessionPath,
+        preview: "",
+        turns: 0,
+        createdAt: 0,
+        lastActivityAt: 0,
+        modTime: 0,
+        current: false,
+        open: false,
+        kind: "channel",
+        sessionSource: "auto",
+        scope: "global",
+        workspaceRoot: "",
+      },
+    });
   }, [closeTransientOverlays, enqueueNavigation]);
 
   const openSidebarImConnectionSession = useCallback((connection: SidebarImConnection): Promise<void> => {
@@ -3126,6 +3157,7 @@ export default function App() {
                   activeSessionPath={activeTab?.sessionPath}
                   imTopicSources={imTopicSources}
                   onOpenTopic={handleOpenTopic}
+                  onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
                   onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
                   onTopicsChanged={refreshProjectsAndTabs}
@@ -3481,6 +3513,7 @@ export default function App() {
               activeSessionPath={activeTab?.sessionPath}
               imTopicSources={imTopicSources}
               onOpenTopic={handleOpenTopic}
+              onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
               onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
               onTopicsChanged={refreshProjectsAndTabs}

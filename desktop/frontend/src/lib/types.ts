@@ -226,6 +226,7 @@ export interface TabMeta {
   sessionDisplayTitle?: string;
   sessionPath?: string;
   readOnly?: boolean;
+  blank?: boolean;
   filePath?: string;
   projectColor?: string;
   label: string;
@@ -255,7 +256,7 @@ export interface TabMeta {
 
 export interface ProjectNode {
   key: string;
-  kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session";
+  kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session" | "crew_folder" | "crew_session";
   label: string;
   root?: string;
   topicId?: string;
@@ -382,6 +383,7 @@ export interface HistoryPage {
   endTurn: number;
   totalTurns: number;
   hasOlder: boolean;
+  sessionPath?: string;
 }
 
 export interface PromptHistoryEntry {

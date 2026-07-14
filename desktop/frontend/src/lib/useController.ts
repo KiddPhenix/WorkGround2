@@ -377,6 +377,11 @@ function hasReusableCachedTranscript(state: State | undefined, sessionPath?: str
   return (state.meta?.sessionPath ?? "").trim() === expectedSessionPath;
 }
 
+function comparableSessionPath(path: string): string {
+  const trimmed = path.trim().replace(/\\/g, "/");
+  return /^[a-z]:/i.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+}
+
 /** Mirrors Go backend's ReadOnly() hints. */
 export function isReadOnlyTool(name: string): boolean {
   switch (name) {
@@ -927,6 +932,12 @@ export function reducer(s: State, a: Action): State {
   switch (a.type) {
     case "user": {
       const seq = a.seq !== undefined ? a.seq : s.seq;
+      if (s.pendingUser === a.text) {
+        const lastItem = s.items[s.items.length - 1];
+        if (lastItem?.kind === "user" && lastItem.text === a.text && lastItem.submitText === a.submitText) {
+          return s;
+        }
+      }
       return {
         ...s,
         seq: seq + 1,
@@ -1111,6 +1122,7 @@ export function reducer(s: State, a: Action): State {
     case "history_page": {
       const { items, seq } = historyPageItems(a.page);
       const nextItems = a.mode === "prepend" ? [...items, ...s.items] : appendStartupQueued(items, s.items);
+      const sessionPath = a.sessionPath ?? a.page.sessionPath ?? s.meta?.sessionPath ?? "";
       return {
         ...s,
         items: compactArchivedToolItems(nextItems),
@@ -1118,7 +1130,7 @@ export function reducer(s: State, a: Action): State {
         hydrateHistoryLoaded: true,
         hydratePlaceholderItems: undefined,
         historyLoading: false,
-        historyResolvedPath: a.sessionPath ?? s.meta?.sessionPath ?? "",
+        historyResolvedPath: sessionPath,
         historyStartTurn: a.page.startTurn,
         historyTotalTurns: a.page.totalTurns,
         historyHasOlder: a.page.hasOlder,
@@ -1332,7 +1344,7 @@ export function useController() {
       if (meta !== undefined) dispatchTo(tabId, { type: "meta", meta });
       if (!skipHistory && historyPage !== undefined) {
         const messages = asArray(historyPage.messages);
-        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace", sessionPath });
+        dispatchTo(tabId, { type: "history_page", page: historyPage, mode: "replace", sessionPath: historyPage.sessionPath || sessionPath });
         projectRunHistory(tabId, statesRef.current.get(tabId)?.items ?? []);
         addBreadcrumb(
           "tab.hydrate",
@@ -1439,7 +1451,7 @@ export function useController() {
         dispatchTo(targetTabId, { type: "history_older_error" });
         return;
       }
-      dispatchTo(targetTabId, { type: "history_page", page, mode: "prepend", sessionPath });
+      dispatchTo(targetTabId, { type: "history_page", page, mode: "prepend", sessionPath: page.sessionPath || sessionPath });
       addBreadcrumb(
         "tab.hydrate",
         `history older ${targetTabId} messages=${asArray(page.messages).length} turns=${page.startTurn}-${page.endTurn}/${page.totalTurns} ms=${Date.now() - startedAt}`,
@@ -1977,11 +1989,20 @@ export function useController() {
 
   const listSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListSessions().catch(() => [])), []);
   const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions().catch(() => [])), []);
-  const resumeSession = useCallback(async (path: string, tabId?: string) => {
+  const resolvedHistoryPath = useCallback((requestedPath: string, page: HistoryPage): string | undefined => {
+    const requested = requestedPath.trim();
+    const resolved = (page.sessionPath ?? "").trim();
+    if (!resolved) return requested || undefined;
+    if (requested && comparableSessionPath(resolved) !== comparableSessionPath(requested)) {
+      return undefined;
+    }
+    return resolved;
+  }, []);
+  const resumeSession = useCallback(async (path: string, tabId?: string): Promise<boolean> => {
     const targetTabId = tabId || activeTabId;
-    if (!targetTabId) return;
+    if (!targetTabId) return false;
     if (tabId) await waitForTabReady(tabId);
-    else if (!(await waitForBackendActiveTab(targetTabId))) return;
+    else if (!(await waitForBackendActiveTab(targetTabId))) return false;
     const seq = bumpSessionLoadSeq(targetTabId);
     dispatchTo(targetTabId, { type: "hydrate_start", reason: "resume-session" });
     let page: HistoryPage;
@@ -1994,19 +2015,26 @@ export function useController() {
         dispatchTo(targetTabId, { type: "hydrate_error", reason: "resume-session", error: errorMessage(err) });
         dispatchTo(targetTabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: ${errorMessage(err)}` });
       }
-      return;
+      return false;
     }
-    if (!sessionLoadCurrent(targetTabId, seq)) return;
+    if (!sessionLoadCurrent(targetTabId, seq)) return false;
+    const resolvedPath = resolvedHistoryPath(path, page);
+    if (!resolvedPath) {
+      dispatchTo(targetTabId, { type: "hydrate_error", reason: "resume-session", error: t("history.failedOpenSession") });
+      dispatchTo(targetTabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: session path mismatch` });
+      return false;
+    }
     dispatchTo(targetTabId, { type: "reset" });
-    dispatchTo(targetTabId, { type: "history_page", page, mode: "replace", sessionPath: path });
+    dispatchTo(targetTabId, { type: "history_page", page, mode: "replace", sessionPath: resolvedPath });
     dispatchTo(targetTabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(targetTabId);
     app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(targetTabId);
-  }, [activeTabId, bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, scheduleOpenRuntimeReconcile, sessionLoadCurrent, waitForBackendActiveTab, waitForTabReady]);
+    return true;
+  }, [activeTabId, bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForBackendActiveTab, waitForTabReady]);
 
-  const openChannelSession = useCallback(async (path: string, tabId: string) => {
-    if (!tabId) return;
+  const openChannelSession = useCallback(async (path: string, tabId: string): Promise<boolean> => {
+    if (!tabId) return false;
     await waitForTabReady(tabId);
     const seq = bumpSessionLoadSeq(tabId);
     dispatchTo(tabId, { type: "hydrate_start", reason: "resume-session" });
@@ -2018,16 +2046,23 @@ export function useController() {
         dispatchTo(tabId, { type: "hydrate_error", reason: "resume-session", error: errorMessage(err) });
         dispatchTo(tabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: ${errorMessage(err)}` });
       }
-      return;
+      return false;
     }
-    if (!sessionLoadCurrent(tabId, seq)) return;
+    if (!sessionLoadCurrent(tabId, seq)) return false;
+    const resolvedPath = resolvedHistoryPath(path, page);
+    if (!resolvedPath) {
+      dispatchTo(tabId, { type: "hydrate_error", reason: "resume-session", error: t("history.failedOpenSession") });
+      dispatchTo(tabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: session path mismatch` });
+      return false;
+    }
     dispatchTo(tabId, { type: "reset" });
-    dispatchTo(tabId, { type: "history_page", page, mode: "replace", sessionPath: path });
+    dispatchTo(tabId, { type: "history_page", page, mode: "replace", sessionPath: resolvedPath });
     dispatchTo(tabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(tabId);
     app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(tabId);
-  }, [bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, scheduleOpenRuntimeReconcile, sessionLoadCurrent, waitForTabReady]);
+    return true;
+  }, [bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForTabReady]);
 
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
   const deleteSession = useCallback((path: string) => app.DeleteSession(path).finally(() => invalidateCache()), []);
@@ -2285,6 +2320,23 @@ export function useController() {
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
 
+  const openChannelTab = useCallback(async (path: string): Promise<TabMeta> => {
+    const meta = await app.OpenChannelSession(path);
+    const prevState = statesRef.current.get(meta.id);
+    const isNewTab = !prevState;
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    setActiveTabId(meta.id);
+    activeTabIdRef.current = meta.id;
+    confirmBackendActiveTab(meta.id);
+    dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
+    void loadSessionDataForTab(meta.id, isNewTab, "resume-session", {
+      preserveCachedHistory,
+      sessionPath: meta.sessionPath,
+    });
+    seedOpenTabRuntime(meta);
+    return meta;
+  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
+
   const activateTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath = "", runtimeHint?: ProjectTopicRuntimeHint): Promise<TabMeta> => {
     const meta = tabWithTopicRuntimeHint(await app.ActivateTopic(scope, workspaceRoot, topicId, sessionPath), runtimeHint);
     // Save previous tab's items so the new tab can use them as a placeholder
@@ -2372,7 +2424,7 @@ export function useController() {
     state: activeState,
     activeTabId,
     send, sendToTab, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
-    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
+    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, openChannelTab, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc, pinMemory,

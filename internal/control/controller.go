@@ -1362,6 +1362,7 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	ctx = agent.WithUserImages(ctx, images)
 	input = c.Compose(input)
 	startMessages := c.messageCount()
+	c.touchSessionActivity()
 	defer c.snapshotActivityIfChanged(startMessages)
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
@@ -3165,6 +3166,16 @@ func (c *Controller) clearInFlightTurn() {
 	}
 	if err := agent.ClearSessionInFlightTurn(path); err != nil {
 		slog.Warn("controller: clear in-flight turn", "err", err)
+	}
+}
+
+func (c *Controller) touchSessionActivity() {
+	path := c.SessionPath()
+	if path == "" {
+		return
+	}
+	if err := agent.TouchSessionActivity(path); err != nil {
+		slog.Warn("controller: touch session activity", "err", err)
 	}
 }
 

@@ -94,6 +94,7 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	// backend checkpoint turns without a matching frontend turn.
 	if !turn.synthetic {
 		c.beginCheckpoint(input)
+		c.touchSessionActivity()
 	}
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()

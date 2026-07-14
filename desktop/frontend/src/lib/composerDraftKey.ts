@@ -4,12 +4,16 @@ type ComposerDraftKeyTab = {
   workspaceRoot?: string;
   topicId?: string;
   sessionPath?: string;
+  blank?: boolean;
 };
 
 export function composerDraftKeyForTab(activeTab: ComposerDraftKeyTab | undefined, activeTabId?: string | null): string {
   if (!activeTab) return activeTabId ?? "";
   const scope = activeTab.scope === "project" ? "project" : "global";
   const workspaceRoot = scope === "project" ? activeTab.workspaceRoot || "" : "";
+  if (activeTab.blank) {
+    return ["blank-workspace", scope, workspaceRoot].join("\u0000");
+  }
   const topicId = activeTab.topicId || "";
   const sessionPath = activeTab.sessionPath || "";
   if (topicId) {

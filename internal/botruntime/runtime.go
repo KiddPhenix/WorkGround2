@@ -2,11 +2,13 @@ package botruntime
 
 import (
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/bot"
 	"workground2/internal/bot/feishu"
 	"workground2/internal/bot/qq"
@@ -523,6 +525,7 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 	cfg := config.LoadForEdit(userPath)
 	now := time.Now().UTC().Format(time.RFC3339)
 	changed := false
+	var metaErr error
 	for i := range cfg.Bot.Connections {
 		conn := &cfg.Bot.Connections[i]
 		if strings.TrimSpace(conn.Provider) != string(platform) || !conn.Enabled || !connectionMatchesInbound(*conn, msg) {
@@ -541,14 +544,19 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 			}
 			mapping := &conn.SessionMappings[mappingIndex]
 			current := strings.TrimSpace(mapping.SessionID)
-			if current == sessionID || botSessionMappingHasExplicitTarget(*mapping) {
+			if botSessionMappingHasExplicitTarget(*mapping) {
 				continue
 			}
-			mapping.SessionID = sessionID
-			mapping.SessionSource = "auto"
-			mapping.UpdatedAt = now
-			conn.UpdatedAt = now
-			changed = true
+			if current != sessionID {
+				mapping.SessionID = sessionID
+				mapping.SessionSource = "auto"
+				mapping.UpdatedAt = now
+				conn.UpdatedAt = now
+				changed = true
+			}
+			if err := rememberBotSessionMeta(msg, sessionID, *conn, *mapping); err != nil && metaErr == nil {
+				metaErr = err
+			}
 			continue
 		}
 		scope := "global"
@@ -561,7 +569,7 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 			workspaceRoot = actualWorkspaceRoot
 		}
 		chatType, userID, threadID := botSessionMappingIdentity(msg)
-		conn.SessionMappings = append(conn.SessionMappings, config.BotConnectionSessionMapping{
+		mapping := config.BotConnectionSessionMapping{
 			RemoteID:      remoteID,
 			SessionID:     sessionID,
 			SessionSource: botSessionSource(sessionID),
@@ -571,17 +579,63 @@ func rememberInbound(msg bot.InboundMessage, sessionID string, actualWorkspaceRo
 			Scope:         scope,
 			WorkspaceRoot: workspaceRoot,
 			UpdatedAt:     now,
-		})
+		}
+		conn.SessionMappings = append(conn.SessionMappings, mapping)
 		conn.UpdatedAt = now
 		changed = true
+		if err := rememberBotSessionMeta(msg, sessionID, *conn, mapping); err != nil && metaErr == nil {
+			metaErr = err
+		}
 	}
 	if rememberAllowlist(&cfg.Bot.Allowlist, platform, msg.UserID, remoteID, msg.ChatType) {
 		changed = true
 	}
 	if !changed {
+		return metaErr
+	}
+	if err := cfg.SaveTo(userPath); err != nil {
+		return err
+	}
+	return metaErr
+}
+
+func rememberBotSessionMeta(msg bot.InboundMessage, sessionID string, conn config.BotConnectionConfig, mapping config.BotConnectionSessionMapping) error {
+	if strings.TrimSpace(mapping.SessionSource) != "auto" {
 		return nil
 	}
-	return cfg.SaveTo(userPath)
+	sessionPath := normalizedBotSessionPath(sessionID)
+	if sessionPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		parent, parentErr := os.Stat(filepath.Dir(sessionPath))
+		if parentErr != nil || !parent.IsDir() {
+			return nil
+		}
+	}
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	meta.SessionSource = "auto"
+	meta.Channel = firstNonEmptyString(strings.TrimSpace(conn.Provider), string(msg.Platform))
+	meta.ChannelLabel = strings.TrimSpace(conn.Label)
+	meta.RemoteID = firstNonEmptyString(strings.TrimSpace(mapping.RemoteID), strings.TrimSpace(msg.ChatID))
+	meta.ChatType = strings.TrimSpace(mapping.ChatType)
+	meta.UserID = strings.TrimSpace(mapping.UserID)
+	meta.ThreadID = strings.TrimSpace(mapping.ThreadID)
+	switch strings.TrimSpace(mapping.Scope) {
+	case "project":
+		meta.Scope = "project"
+		meta.WorkspaceRoot = strings.TrimSpace(mapping.WorkspaceRoot)
+	case "global":
+		meta.Scope = "global"
+		meta.WorkspaceRoot = ""
+	}
+	return agent.SaveBranchMetaPreserveUpdated(sessionPath, meta)
 }
 
 func botSessionMappingMatches(mapping config.BotConnectionSessionMapping, msg bot.InboundMessage) bool {

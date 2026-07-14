@@ -26,6 +26,8 @@ eq(sent.items.length, 1, "submit appends the user bubble immediately");
 eq(sent.items[0].kind === "user" && sent.items[0].text, "hello", "bubble carries the submitted text");
 eq(sent.running, true, "submit marks the turn running");
 eq(sent.pendingUser, "hello", "submit tracks the optimistic bubble");
+const duplicatePending = reducer(sent, { type: "user", text: "hello", seq: sent.seq });
+eq(duplicatePending.items.filter((it) => it.kind === "user").length, 1, "duplicate pending submit does not add a second user bubble");
 
 const hiddenSubmit = reducer({ ...initialState }, { type: "user", text: "display prompt", submitText: "hidden context\ndisplay prompt", seq: 0 });
 eq(
@@ -33,6 +35,8 @@ eq(
   "hidden context\ndisplay prompt",
   "optimistic user bubble preserves submit-only context",
 );
+const duplicateHiddenSubmit = reducer(hiddenSubmit, { type: "user", text: "display prompt", submitText: "hidden context\ndisplay prompt", seq: hiddenSubmit.seq });
+eq(duplicateHiddenSubmit.items.filter((it) => it.kind === "user").length, 1, "duplicate pending submit with submit-only context is ignored");
 
 const startupQueued = reducer({ ...initialState }, {
   type: "startup_user_queued",

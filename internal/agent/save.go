@@ -1193,6 +1193,13 @@ type SessionInfo struct {
 	TopicID        string
 	TopicTitle     string
 	CustomTitle    string
+	SessionSource  string
+	Channel        string
+	ChannelLabel   string
+	RemoteID       string
+	ChatType       string
+	UserID         string
+	ThreadID       string
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -1212,6 +1219,13 @@ type SessionOrderInfo struct {
 	TopicID        string
 	TopicTitle     string
 	CustomTitle    string
+	SessionSource  string
+	Channel        string
+	ChannelLabel   string
+	RemoteID       string
+	ChatType       string
+	UserID         string
+	ThreadID       string
 	Recovered      bool
 	RecoveryReason string
 	RecoveryDigest string
@@ -1728,6 +1742,13 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		topicID := ""
 		topicTitle := ""
 		customTitle := ""
+		sessionSource := ""
+		channel := ""
+		channelLabel := ""
+		remoteID := ""
+		chatType := ""
+		userID := ""
+		threadID := ""
 		recovered := false
 		recoveryReason := ""
 		recoveryDigest := ""
@@ -1747,6 +1768,13 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			topicID = meta.TopicID
 			topicTitle = meta.TopicTitle
 			customTitle = meta.CustomTitle
+			sessionSource = meta.SessionSource
+			channel = meta.Channel
+			channelLabel = meta.ChannelLabel
+			remoteID = meta.RemoteID
+			chatType = meta.ChatType
+			userID = meta.UserID
+			threadID = meta.ThreadID
 			recovered = meta.Recovered
 			recoveryReason = meta.RecoveryReason
 			recoveryDigest = meta.RecoveryDigest
@@ -1765,6 +1793,13 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			TopicID:        topicID,
 			TopicTitle:     topicTitle,
 			CustomTitle:    customTitle,
+			SessionSource:  sessionSource,
+			Channel:        channel,
+			ChannelLabel:   channelLabel,
+			RemoteID:       remoteID,
+			ChatType:       chatType,
+			UserID:         userID,
+			ThreadID:       threadID,
 			Recovered:      recovered,
 			RecoveryReason: recoveryReason,
 			RecoveryDigest: recoveryDigest,
@@ -1821,6 +1856,13 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			TopicID:        session.TopicID,
 			TopicTitle:     session.TopicTitle,
 			CustomTitle:    session.CustomTitle,
+			SessionSource:  session.SessionSource,
+			Channel:        session.Channel,
+			ChannelLabel:   session.ChannelLabel,
+			RemoteID:       session.RemoteID,
+			ChatType:       session.ChatType,
+			UserID:         session.UserID,
+			ThreadID:       session.ThreadID,
 			Recovered:      session.Recovered,
 			RecoveryReason: session.RecoveryReason,
 			RecoveryDigest: session.RecoveryDigest,

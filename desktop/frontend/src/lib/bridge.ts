@@ -212,6 +212,7 @@ export interface AppBindings {
   ResumeSessionPageForTab(tabID: string, path: string, limit: number): Promise<HistoryPage>;
   OpenChannelSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
   OpenChannelSessionPageForTab(tabID: string, path: string, limit: number): Promise<HistoryPage>;
+  OpenChannelSession(path: string): Promise<TabMeta>;
   PreviewSession(path: string): Promise<HistoryMessage[]>;
   DeleteSession(path: string): Promise<void>;
   RestoreSession(path: string): Promise<void>;
@@ -2309,6 +2310,36 @@ function makeMockApp(): AppBindings {
 	    },
 	    async OpenChannelSessionPageForTab(tabID: string, path: string, limit = 60) {
 	      return mockHistoryPage(await this.OpenChannelSessionForTab(tabID, path), 0, limit);
+	    },
+	    async OpenChannelSession(path: string) {
+	      const existing = mockTabs.find((tab) => tab.sessionPath === path);
+	      if (existing) {
+	        const active = { ...existing, active: true, readOnly: true };
+	        mockTabs = mockTabs.map((tab) => tab.id === existing.id ? active : { ...tab, active: false });
+	        return { ...active };
+	      }
+	      const tab: TabMeta = {
+	        id: "tab_" + Date.now(),
+	        scope: "global",
+	        workspaceRoot: "",
+	        workspaceName: "Global",
+	        workspacePath: cwd,
+	        topicId: "",
+	        topicTitle: "Channel",
+	        sessionPath: path,
+	        label: mockModelLabel(settings.defaultModel),
+	        ready: true,
+	        running: false,
+	        readOnly: true,
+	        mode: "normal",
+	        collaborationMode: "normal",
+	        toolApprovalMode: normalizeToolApprovalMode(settings.defaultToolApprovalMode),
+	        tokenMode: "full",
+	        active: true,
+	        cwd: "",
+	      };
+	      mockTabs = [...mockTabs.map((item) => ({ ...item, active: false })), tab];
+	      return { ...tab };
 	    },
 	    async PreviewSession(path: string) {
       const s = sessions.find((x) => x.path === path) ?? trashedSessions.find((x) => x.path === path);
