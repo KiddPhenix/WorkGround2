@@ -25,6 +25,15 @@ cd desktop && wails build  # desktop app build
 
 No `make` on Windows — use direct Go commands: `go build -o bin/workground2.exe ./cmd/workground2`, `go test ./...`, `go vet ./...`, `gofmt -w .`.
 
+## Test Strategy
+
+- **Fast feedback first:** during implementation, run the smallest relevant test or package. Do not run the full suite after every edit.
+  - Single test: `go test ./internal/boot/ -run RequestHelp -count=1`
+  - Related packages: `go test ./internal/tool/builtin/ ./internal/boot/`
+- **Full validation at gates:** run `go test ./...` and `go vet ./...` only when the feature is ready for handoff, before commit/push, or when shared infrastructure changes require broad regression coverage.
+- **External model tests are integration tests:** real DeepSeek, Codex CLI, Gemini, network, credential, or image-generation calls must be opt-in through a build tag or explicit environment variable. Default unit tests should use fakes and verify capability detection, routing, `request_help` arguments, retries, and failure states without external calls.
+- **Failures stay visible and retryable:** skipped integration tests must state how to enable them; failed external calls must report the provider/model and error instead of silently passing or hanging.
+
 ## Architecture
 
 All frontends share one transport-agnostic `control.Controller`; add behavior to the controller, never a single frontend.

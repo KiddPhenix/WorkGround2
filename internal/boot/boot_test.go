@@ -2892,19 +2892,35 @@ func TestBuildMigratesLegacyXDGAndProjectSessions(t *testing.T) {
 	}
 }
 
-// isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
-// it) at a per-test temp dir by overriding the env vars Go's stdlib reads —
-// HOME on darwin, XDG_CONFIG_HOME on linux. Without this, Build's plugin path
-// would persist startup stats and cached schemas into the developer's real
-// ~/Library/Application Support tree and bleed state across tests. Mirrors the
-// withTempCache helper in internal/plugin/stats_test.go.
+// isolateConfigHome keeps every WorkGround2-owned config/state/cache path inside
+// a per-test temp dir. The explicit WorkGround2 overrides are required on
+// Windows, where HOME and XDG_CONFIG_HOME do not replace %APPDATA%; without
+// them, Build can load the developer's real Flow SkillShare profiles and fetch
+// remote skills during unit tests. Mirrors the withTempCache helper in
+// internal/plugin/stats_test.go.
 func isolateConfigHome(t *testing.T) string {
 	t.Helper()
 	dir := robustTempDir(t)
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("WorkGround2_HOME", dir)
+	t.Setenv("WorkGround2_STATE_HOME", dir)
+	t.Setenv("WorkGround2_CACHE_HOME", dir)
 	t.Setenv("WorkGround2_CREDENTIALS_STORE", "file")
 	return dir
+}
+
+func TestIsolateConfigHomeRedirectsWorkGround2Paths(t *testing.T) {
+	dir := isolateConfigHome(t)
+	if got := config.WorkGround2HomeDir(); got != dir {
+		t.Fatalf("WorkGround2HomeDir() = %q, want %q", got, dir)
+	}
+	if got := config.CacheDir(); got != dir {
+		t.Fatalf("CacheDir() = %q, want %q", got, dir)
+	}
+	if got := config.SessionDir(); got != filepath.Join(dir, "sessions") {
+		t.Fatalf("SessionDir() = %q, want under %q", got, dir)
+	}
 }
 
 // TestPartitionByTier pins the bucket assignment contract that the rest of

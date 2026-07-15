@@ -14,12 +14,13 @@ import (
 
 // mockProvider replays preset chunks and records the last request it received.
 type mockProvider struct {
-	name      string
-	chunks    []provider.Chunk
-	streams   [][]provider.Chunk
-	lastReq   provider.Request
-	requests  []provider.Request
-	streamErr error
+	name          string
+	chunks        []provider.Chunk
+	streams       [][]provider.Chunk
+	lastReq       provider.Request
+	requests      []provider.Request
+	streamErr     error
+	artifactPaths []string // paths to add to ArtifactCollector from ctx during Stream
 }
 
 func (m *mockProvider) Name() string { return m.name }
@@ -27,6 +28,14 @@ func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	m.lastReq = req
 	m.requests = append(m.requests, req)
+	// Report side-effect artifacts to the request-scoped collector if wired.
+	if len(m.artifactPaths) > 0 {
+		if c, ok := provider.ArtifactCollectorFrom(ctx); ok {
+			for _, p := range m.artifactPaths {
+				c.AddArtifact(p)
+			}
+		}
+	}
 	if m.streamErr != nil {
 		return nil, m.streamErr
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -622,4 +623,162 @@ func requestHelpConfig(capability, name, model string) *config.Config {
 	})
 	cfg.Agent.AssistModels = map[string][]string{capability: {name + "/" + model}}
 	return cfg
+}
+
+// writeMinimalPNG writes a 1×1 pixel PNG to path and returns the path.
+func writeMinimalPNG(t *testing.T, path string) string {
+	t.Helper()
+	// Minimal valid 1×1 blue PNG (IHDR+IDAT+IEND).
+	png := []byte{
+		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, // IHDR chunk length 13
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, // width=1 height=1
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, // bit depth=8 color=2
+		0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, // CRC + IDAT chunk
+		0x54, 0x08, 0xD7, 0x63, 0x68, 0x00, 0x00, 0x00,
+		0x02, 0x00, 0x01, 0xE5, 0x27, 0xDE, 0xFC, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, // IEND chunk
+		0x42, 0x60, 0x82,
+	}
+	if err := os.WriteFile(path, png, 0644); err != nil {
+		t.Fatalf("writeMinimalPNG: %v", err)
+	}
+	return path
+}
+
+// setupCodexArtifactEnv creates a temp CODEX_HOME with generated_images/
+// containing a minimal PNG, and sets CODEX_HOME in the environment.
+// Returns the png path and a cleanup function.
+func setupCodexArtifactEnv(t *testing.T) (pngPath string, cleanup func()) {
+	t.Helper()
+	codexHome := t.TempDir()
+	genDir := filepath.Join(codexHome, "generated_images")
+	if err := os.MkdirAll(genDir, 0755); err != nil {
+		t.Fatalf("mkdir generated_images: %v", err)
+	}
+	pngPath = filepath.Join(genDir, "output.png")
+	writeMinimalPNG(t, pngPath)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexHome)
+	cleanup = func() {
+		if oldCodexHome == "" {
+			os.Unsetenv("CODEX_HOME")
+		} else {
+			os.Setenv("CODEX_HOME", oldCodexHome)
+		}
+	}
+	return pngPath, cleanup
+}
+
+// TestRequestHelpImageRecoveryFromChunkError verifies that when
+// image_generation's CLI provider reports a valid PNG via ArtifactCollector
+// but the text stream returns a ChunkError, Execute recovers: returns
+// success with the artifact, a recovery diagnostic, and the transcript
+// stored as completed. Only one candidate is resolved.
+func TestRequestHelpImageRecoveryFromChunkError(t *testing.T) {
+	pngPath, cleanup := setupCodexArtifactEnv(t)
+	defer cleanup()
+
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name: "img1", Kind: "openai", BaseURL: "https://api.example.com", Model: "m1",
+		Capabilities: []string{"image_generation"},
+	}, config.ProviderEntry{
+		Name: "img2", Kind: "openai", BaseURL: "https://api.example.com", Model: "m2",
+		Capabilities: []string{"image_generation"},
+	})
+	cfg.Agent.AssistModels = map[string][]string{
+		"image_generation": {"img1/m1", "img2/m2"},
+	}
+
+	prov := &mockProvider{
+		name:          "img1/m1",
+		artifactPaths: []string{pngPath},
+		chunks: []provider.Chunk{
+			{Type: provider.ChunkError, Err: fmt.Errorf("text stream timeout")},
+			{Type: provider.ChunkDone},
+		},
+	}
+	resolveCount := 0
+	resolve := func(ref, effort string) (provider.Provider, *provider.Pricing, int, error) {
+		resolveCount++
+		return prov, nil, 0, nil
+	}
+
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	helper := NewRequestHelpTool(cfg, tool.NewRegistry(), "current-model", resolve, 20, 0, 0, 0, 0, 0, 0, 0, nil, 0, 2).
+		WithTranscripts(store, t.TempDir(), "base-model", "")
+
+	out, err := helper.Execute(WithParentSession(context.Background(), "parent"), []byte(`{"capability":"image_generation","prompt":"draw a cat"}`))
+	if err != nil {
+		t.Fatalf("Execute should succeed via artifact recovery: %v", err)
+	}
+	if resolveCount != 1 {
+		t.Fatalf("should only resolve 1 candidate, got %d", resolveCount)
+	}
+	if !strings.Contains(out, `"path"`) || !strings.Contains(out, filepath.Base(pngPath)) {
+		t.Fatalf("output should contain artifact with path, got: %s", out)
+	}
+	if !strings.Contains(out, "Recovery diagnostic") || !strings.Contains(out, "text stream timeout") {
+		t.Fatalf("output should contain recovery diagnostic with original error, got: %s", out)
+	}
+
+	// Transcript must be completed.
+	ref := subagentRefFromOutput(t, out)
+	meta, err := store.LoadMeta(ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentCompleted {
+		t.Fatalf("transcript status = %q, want completed", meta.Status)
+	}
+}
+
+// TestRequestHelpImageNoRecoveryWithInvalidArtifact verifies that when
+// image_generation fails and the artifact collector has an invalid or
+// nonexistent artifact, Execute fails normally and only one candidate is tried.
+func TestRequestHelpImageNoRecoveryWithInvalidArtifact(t *testing.T) {
+	_, cleanup := setupCodexArtifactEnv(t)
+	defer cleanup()
+
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name: "img1", Kind: "openai", BaseURL: "https://api.example.com", Model: "m1",
+		Capabilities: []string{"image_generation"},
+	}, config.ProviderEntry{
+		Name: "img2", Kind: "openai", BaseURL: "https://api.example.com", Model: "m2",
+		Capabilities: []string{"image_generation"},
+	})
+	cfg.Agent.AssistModels = map[string][]string{
+		"image_generation": {"img1/m1", "img2/m2"},
+	}
+
+	// The artifact path does not exist on disk — validateCodexArtifact fails.
+	prov := &mockProvider{
+		name:          "img1/m1",
+		artifactPaths: []string{`Z:\nonexistent\fake.png`},
+		chunks: []provider.Chunk{
+			{Type: provider.ChunkError, Err: fmt.Errorf("text stream timeout")},
+			{Type: provider.ChunkDone},
+		},
+	}
+	resolveCount := 0
+	resolve := func(ref, effort string) (provider.Provider, *provider.Pricing, int, error) {
+		resolveCount++
+		return prov, nil, 0, nil
+	}
+
+	helper := newTestRequestHelpTool(t, cfg, nil, tool.NewRegistry(), resolve)
+	_, err := helper.Execute(testRequestHelpContext(), []byte(`{"capability":"image_generation","prompt":"draw a cat"}`))
+	if err == nil {
+		t.Fatal("Execute should fail — artifact is invalid")
+	}
+	if resolveCount != 1 {
+		t.Fatalf("should only resolve 1 candidate, got %d", resolveCount)
+	}
+	if !strings.Contains(err.Error(), "all 1 candidate(s) failed") {
+		t.Fatalf("error should report all candidates failed, got: %v", err)
+	}
 }
