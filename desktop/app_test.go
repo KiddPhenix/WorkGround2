@@ -7093,3 +7093,240 @@ func TestScanPromptHistoryCacheIsScopedBySessionPath(t *testing.T) {
 		t.Fatalf("second entries = %+v, want session B followed by session A", second.Entries)
 	}
 }
+
+// --- Official provider template tests for zhipu / doubao / qwen-ollama ---
+
+func TestOfficialProviderTemplateZhipuReturnsCorrectFields(t *testing.T) {
+	entries, keyEnv, err := officialProviderTemplate("zhipuqingyan", "")
+	if err != nil {
+		t.Fatalf("officialProviderTemplate(zhipuqingyan): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Name != "zhipuqingyan" {
+		t.Errorf("Name = %q, want zhipuqingyan", e.Name)
+	}
+	if e.BaseURL != "https://open.bigmodel.cn/api/paas/v4" {
+		t.Errorf("BaseURL = %q", e.BaseURL)
+	}
+	if e.Kind != "openai" {
+		t.Errorf("Kind = %q, want openai", e.Kind)
+	}
+	if e.APIKeyEnv != "ZHIPU_API_KEY" || keyEnv != "ZHIPU_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, keyEnv = %q, want ZHIPU_API_KEY", e.APIKeyEnv, keyEnv)
+	}
+	if e.ModelsURL != "https://open.bigmodel.cn/api/paas/v4/models" {
+		t.Errorf("ModelsURL = %q", e.ModelsURL)
+	}
+	if len(e.Models) < 3 {
+		t.Errorf("Models = %v, want at least glm-5.1, glm-4.7, glm-4.6", e.Models)
+	}
+	if e.Default != "glm-5.1" {
+		t.Errorf("Default = %q, want glm-5.1", e.Default)
+	}
+	if e.ContextWindow != 128_000 {
+		t.Errorf("ContextWindow = %d, want 128000", e.ContextWindow)
+	}
+}
+
+func TestOfficialProviderTemplateDoubaoReturnsCorrectFields(t *testing.T) {
+	entries, keyEnv, err := officialProviderTemplate("doubao", "")
+	if err != nil {
+		t.Fatalf("officialProviderTemplate(doubao): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Name != "doubao" {
+		t.Errorf("Name = %q, want doubao", e.Name)
+	}
+	if e.BaseURL != "https://ark.cn-beijing.volces.com/api/v3" {
+		t.Errorf("BaseURL = %q", e.BaseURL)
+	}
+	if e.Kind != "openai" {
+		t.Errorf("Kind = %q, want openai", e.Kind)
+	}
+	if e.APIKeyEnv != "ARK_API_KEY" || keyEnv != "ARK_API_KEY" {
+		t.Errorf("APIKeyEnv = %q, keyEnv = %q, want ARK_API_KEY", e.APIKeyEnv, keyEnv)
+	}
+	if e.ModelsURL != "https://ark.cn-beijing.volces.com/api/v3/models" {
+		t.Errorf("ModelsURL = %q", e.ModelsURL)
+	}
+	if len(e.Models) == 0 || e.Models[0] != "doubao-seed-2-0-lite-260215" {
+		t.Errorf("Models = %v, want [doubao-seed-2-0-lite-260215]", e.Models)
+	}
+	if e.Default != "doubao-seed-2-0-lite-260215" {
+		t.Errorf("Default = %q", e.Default)
+	}
+}
+
+func TestOfficialProviderTemplateQwenOllamaReturnsCorrectFields(t *testing.T) {
+	entries, keyEnv, err := officialProviderTemplate("qwen-ollama", "")
+	if err != nil {
+		t.Fatalf("officialProviderTemplate(qwen-ollama): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Name != "qwen-ollama" {
+		t.Errorf("Name = %q, want qwen-ollama", e.Name)
+	}
+	if e.BaseURL != "http://127.0.0.1:11434/v1" {
+		t.Errorf("BaseURL = %q", e.BaseURL)
+	}
+	if e.Kind != "openai" {
+		t.Errorf("Kind = %q, want openai", e.Kind)
+	}
+	if e.APIKeyEnv != "" || keyEnv != "" {
+		t.Errorf("APIKeyEnv = %q, keyEnv = %q, want empty", e.APIKeyEnv, keyEnv)
+	}
+	if e.ModelsURL != "http://127.0.0.1:11434/v1/models" {
+		t.Errorf("ModelsURL = %q", e.ModelsURL)
+	}
+	if len(e.Models) == 0 || e.Models[0] != "qwen3:8b" {
+		t.Errorf("Models = %v, want [qwen3:8b]", e.Models)
+	}
+	if e.Default != "qwen3:8b" {
+		t.Errorf("Default = %q", e.Default)
+	}
+	// Local Qwen should not require an API key.
+	if e.RequiresAPIKey() {
+		t.Error("qwen-ollama should not require an API key")
+	}
+}
+
+func TestAddOfficialProviderAccessZhipu(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("ZHIPU_API_KEY", "")
+	os.Unsetenv("ZHIPU_API_KEY")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if _, err := NewApp().AddOfficialProviderAccess("zhipuqingyan", "", ""); err != nil {
+		t.Fatalf("AddOfficialProviderAccess(zhipuqingyan): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	p, ok := cfg.Provider("zhipuqingyan")
+	if !ok {
+		t.Fatal("zhipuqingyan provider not saved")
+	}
+	if p.Default != "glm-5.1" || p.Models[0] != "glm-5.1" {
+		t.Fatalf("zhipuqingyan provider = %+v, want glm-5.1 as default", p)
+	}
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["zhipuqingyan"] {
+		t.Fatalf("provider_access missing zhipuqingyan: %+v", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestAddOfficialProviderAccessDoubao(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("ARK_API_KEY", "")
+	os.Unsetenv("ARK_API_KEY")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if _, err := NewApp().AddOfficialProviderAccess("doubao", "", ""); err != nil {
+		t.Fatalf("AddOfficialProviderAccess(doubao): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	p, ok := cfg.Provider("doubao")
+	if !ok {
+		t.Fatal("doubao provider not saved")
+	}
+	if p.Default != "doubao-seed-2-0-lite-260215" {
+		t.Fatalf("doubao provider default = %q", p.Default)
+	}
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["doubao"] {
+		t.Fatalf("provider_access missing doubao: %+v", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestAddOfficialProviderAccessQwenOllamaNoKey(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if _, err := NewApp().AddOfficialProviderAccess("qwen-ollama", "", ""); err != nil {
+		t.Fatalf("AddOfficialProviderAccess(qwen-ollama): %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	p, ok := cfg.Provider("qwen-ollama")
+	if !ok {
+		t.Fatal("qwen-ollama provider not saved")
+	}
+	if p.APIKeyEnv != "" {
+		t.Fatalf("qwen-ollama api_key_env = %q, want empty", p.APIKeyEnv)
+	}
+	if p.RequiresAPIKey() {
+		t.Fatal("qwen-ollama should not require an API key")
+	}
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["qwen-ollama"] {
+		t.Fatalf("provider_access missing qwen-ollama: %+v", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestAddOfficialProviderAccessIdempotent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	app := NewApp()
+	for i := 0; i < 3; i++ {
+		if _, err := app.AddOfficialProviderAccess("zhipuqingyan", "", ""); err != nil {
+			t.Fatalf("AddOfficialProviderAccess attempt %d: %v", i, err)
+		}
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	count := 0
+	for _, p := range cfg.Providers {
+		if p.Name == "zhipuqingyan" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("got %d zhipuqingyan providers, want 1 (idempotent)", count)
+	}
+	accessCount := 0
+	for _, name := range cfg.Desktop.ProviderAccess {
+		if name == "zhipuqingyan" {
+			accessCount++
+		}
+	}
+	if accessCount != 1 {
+		t.Fatalf("got %d zhipuqingyan access entries, want 1", accessCount)
+	}
+}
+
+func TestSettingsSurfacesAllOfficialProviderTemplates(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	got := NewApp().Settings()
+	official := providerAccessSet(providerNamesFromView(got.OfficialProviders))
+	for _, kind := range []string{"deepseek", "zhipuqingyan", "doubao", "qwen-ollama"} {
+		if !official[kind] {
+			t.Errorf("official providers missing %q: %+v", kind, got.OfficialProviders)
+		}
+	}
+}
+
+func TestOfficialProviderKindDetectsAllNewKinds(t *testing.T) {
+	tests := []struct {
+		entry config.ProviderEntry
+		kind  string
+	}{
+		{config.ProviderEntry{Name: "zhipuqingyan", BaseURL: "https://open.bigmodel.cn/api/paas/v4"}, "zhipuqingyan"},
+		{config.ProviderEntry{Name: "doubao", BaseURL: "https://ark.cn-beijing.volces.com/api/v3"}, "doubao"},
+		{config.ProviderEntry{Name: "qwen-ollama", BaseURL: "http://127.0.0.1:11434/v1"}, "qwen-ollama"},
+		{config.ProviderEntry{Name: "qwen-ollama", BaseURL: "http://localhost:11434/v1"}, "qwen-ollama"},
+		{config.ProviderEntry{Name: "deepseek", BaseURL: "https://api.deepseek.com"}, "deepseek"},
+	}
+	for _, tc := range tests {
+		got := officialProviderKindFromEntry(tc.entry)
+		if got != tc.kind {
+			t.Errorf("officialProviderKindFromEntry(%+v) = %q, want %q", tc.entry, got, tc.kind)
+		}
+	}
+}

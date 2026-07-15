@@ -3815,7 +3815,7 @@ type ProviderModelDraft = {
 };
 
 type AddProviderMode = null | "official" | "custom" | "cli";
-type OfficialProviderKind = "deepseek" | "openai" | "anthropic" | "google" | "groq";
+type OfficialProviderKind = "deepseek" | "openai" | "anthropic" | "google" | "groq" | "zhipuqingyan" | "doubao" | "qwen-ollama";
 
 const OFFICIAL_PROVIDER_CHOICES: Array<{ kind: OfficialProviderKind; labelKey: DictKey; descKey: DictKey; keyEnv: string; defaultName: string }> = [
   { kind: "deepseek", labelKey: "settings.addProvider.official.deepseek", descKey: "settings.addProvider.official.deepseekDesc", keyEnv: "DEEPSEEK_API_KEY", defaultName: "deepseek" },
@@ -3823,6 +3823,9 @@ const OFFICIAL_PROVIDER_CHOICES: Array<{ kind: OfficialProviderKind; labelKey: D
   { kind: "anthropic", labelKey: "settings.addProvider.official.anthropic", descKey: "settings.addProvider.official.anthropicDesc", keyEnv: "ANTHROPIC_API_KEY", defaultName: "anthropic" },
   { kind: "google", labelKey: "settings.addProvider.official.google", descKey: "settings.addProvider.official.googleDesc", keyEnv: "GEMINI_API_KEY", defaultName: "google" },
   { kind: "groq", labelKey: "settings.addProvider.official.groq", descKey: "settings.addProvider.official.groqDesc", keyEnv: "GROQ_API_KEY", defaultName: "groq" },
+  { kind: "zhipuqingyan", labelKey: "settings.addProvider.official.zhipuqingyan", descKey: "settings.addProvider.official.zhipuqingyanDesc", keyEnv: "ZHIPU_API_KEY", defaultName: "zhipuqingyan" },
+  { kind: "doubao", labelKey: "settings.addProvider.official.doubao", descKey: "settings.addProvider.official.doubaoDesc", keyEnv: "ARK_API_KEY", defaultName: "doubao" },
+  { kind: "qwen-ollama", labelKey: "settings.addProvider.official.qwenOllama", descKey: "settings.addProvider.official.qwenOllamaDesc", keyEnv: "", defaultName: "qwen-ollama" },
 ];
 
 function AddProviderPanel({
@@ -3947,15 +3950,19 @@ function AddProviderPanel({
             </button>
           ))}
         </div>
-        <label className="set-label">{t("settings.providerKeyOptional")}</label>
-        <input
-          className="mem-input"
-          type="password"
-          placeholder={t("settings.setKey", { env: selected.keyEnv })}
-          value={key}
-          disabled={busy}
-          onChange={(e) => setKey(e.target.value)}
-        />
+        {selected.keyEnv && (
+          <>
+            <label className="set-label">{t("settings.providerKeyOptional")}</label>
+            <input
+              className="mem-input"
+              type="password"
+              placeholder={t("settings.setKey", { env: selected.keyEnv })}
+              value={key}
+              disabled={busy}
+              onChange={(e) => setKey(e.target.value)}
+            />
+          </>
+        )}
         <div className="prov-card__actions">
           <button type="button" className="btn btn--small" disabled={busy} onClick={onCancel}>
             {t("common.cancel")}
@@ -4469,6 +4476,9 @@ function officialProviderKind(p: ProviderView): string {
   const name = canonicalOfficialProviderName(p.name);
   const host = providerBaseHost(p.baseUrl);
   if (name === "deepseek" && host === "api.deepseek.com") return "deepseek";
+  if (name === "zhipuqingyan" && host === "open.bigmodel.cn") return "zhipuqingyan";
+  if (name === "doubao" && host === "ark.cn-beijing.volces.com") return "doubao";
+  if (name === "qwen-ollama" && (host === "127.0.0.1" || host === "localhost")) return "qwen-ollama";
   return "";
 }
 
@@ -4481,12 +4491,18 @@ function providerGroupID(p: ProviderView): string {
 function providerGroupLabel(p: ProviderView, t?: ReturnType<typeof useT>): string {
   const id = providerGroupID(p);
   if (id === "builtin:deepseek") return t ? t("settings.providerLabel.deepseek") : "DeepSeek";
+  if (id === "builtin:zhipuqingyan") return t ? t("settings.providerLabel.zhipuqingyan") : "ZhipuQingYan";
+  if (id === "builtin:doubao") return t ? t("settings.providerLabel.doubao") : "Doubao";
+  if (id === "builtin:qwen-ollama") return t ? t("settings.providerLabel.qwenOllama") : "Qwen (Ollama)";
   return p.name;
 }
 
 function providerGroupDescription(p: ProviderView, t: ReturnType<typeof useT>): string {
   const id = providerGroupID(p);
   if (id === "builtin:deepseek") return t("settings.providerDesc.deepseek");
+  if (id === "builtin:zhipuqingyan") return t("settings.providerDesc.zhipuqingyan");
+  if (id === "builtin:doubao") return t("settings.providerDesc.doubao");
+  if (id === "builtin:qwen-ollama") return t("settings.providerDesc.qwenOllama");
   if (p.kind === "cli") return p.command || t("settings.providerProtocolCli");
   return p.baseUrl;
 }

@@ -333,6 +333,18 @@ func officialProviderKindFromEntry(p config.ProviderEntry) string {
 		if host == "api.deepseek.com" {
 			return "deepseek"
 		}
+	case "zhipuqingyan":
+		if host == "open.bigmodel.cn" {
+			return "zhipuqingyan"
+		}
+	case "doubao":
+		if host == "ark.cn-beijing.volces.com" {
+			return "doubao"
+		}
+	case "qwen-ollama":
+		if host == "127.0.0.1" || host == "localhost" {
+			return "qwen-ollama"
+		}
 	}
 	return ""
 }
@@ -440,7 +452,7 @@ func officialProviderViewsForRootWithResolver(added map[string]bool, pricingLang
 	if resolver == nil {
 		resolver = config.NewCredentialResolverForRoot(root)
 	}
-	for _, kind := range []string{"deepseek", "openai", "anthropic", "google", "groq"} {
+	for _, kind := range []string{"deepseek", "openai", "anthropic", "google", "groq", "zhipuqingyan", "doubao", "qwen-ollama"} {
 		entries, _, err := officialProviderTemplate(kind, pricingLanguage)
 		if err != nil {
 			continue
@@ -1390,6 +1402,39 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			APIKeyEnv:     "GROQ_API_KEY",
 			ContextWindow: 131_072,
 		}}, "GROQ_API_KEY", nil
+	case "zhipuqingyan", "zhipu", "glm":
+		return []config.ProviderEntry{{
+			Name:          "zhipuqingyan",
+			Kind:          "openai",
+			BaseURL:       "https://open.bigmodel.cn/api/paas/v4",
+			Models:        []string{"glm-5.1", "glm-4.7", "glm-4.6", "glm-4-flash", "glm-4-plus"},
+			Default:       "glm-5.1",
+			APIKeyEnv:     "ZHIPU_API_KEY",
+			ModelsURL:     "https://open.bigmodel.cn/api/paas/v4/models",
+			ContextWindow: 128_000,
+		}}, "ZHIPU_API_KEY", nil
+	case "doubao", "volcano", "ark":
+		return []config.ProviderEntry{{
+			Name:          "doubao",
+			Kind:          "openai",
+			BaseURL:       "https://ark.cn-beijing.volces.com/api/v3",
+			Models:        []string{"doubao-seed-2-0-lite-260215"},
+			Default:       "doubao-seed-2-0-lite-260215",
+			APIKeyEnv:     "ARK_API_KEY",
+			ModelsURL:     "https://ark.cn-beijing.volces.com/api/v3/models",
+			ContextWindow: 128_000,
+		}}, "ARK_API_KEY", nil
+	case "qwen-ollama", "qwen-ollama-local", "ollama-qwen":
+		return []config.ProviderEntry{{
+			Name:          "qwen-ollama",
+			Kind:          "openai",
+			BaseURL:       "http://127.0.0.1:11434/v1",
+			Models:        []string{"qwen3:8b"},
+			Default:       "qwen3:8b",
+			APIKeyEnv:     "",
+			ModelsURL:     "http://127.0.0.1:11434/v1/models",
+			ContextWindow: 131_072,
+		}}, "", nil
 	default:
 		return nil, "", fmt.Errorf("unknown official provider template %q", kind)
 	}
