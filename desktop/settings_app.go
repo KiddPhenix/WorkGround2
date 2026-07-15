@@ -1407,11 +1407,11 @@ func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEn
 			Name:          "zhipuqingyan",
 			Kind:          "openai",
 			BaseURL:       "https://open.bigmodel.cn/api/paas/v4",
-			Models:        []string{"glm-5.1", "glm-4.7", "glm-4.6", "glm-4-flash", "glm-4-plus"},
-			Default:       "glm-5.1",
+			Models:        []string{"glm-5.2", "glm-5.1", "glm-4.7", "glm-4.6", "glm-4-flash", "glm-4-plus"},
+			Default:       "glm-5.2",
 			APIKeyEnv:     "ZHIPU_API_KEY",
 			ModelsURL:     "https://open.bigmodel.cn/api/paas/v4/models",
-			ContextWindow: 128_000,
+			ContextWindow: 1_000_000,
 		}}, "ZHIPU_API_KEY", nil
 	case "doubao", "volcano", "ark":
 		return []config.ProviderEntry{{

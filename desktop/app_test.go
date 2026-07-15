@@ -7120,14 +7120,15 @@ func TestOfficialProviderTemplateZhipuReturnsCorrectFields(t *testing.T) {
 	if e.ModelsURL != "https://open.bigmodel.cn/api/paas/v4/models" {
 		t.Errorf("ModelsURL = %q", e.ModelsURL)
 	}
-	if len(e.Models) < 3 {
-		t.Errorf("Models = %v, want at least glm-5.1, glm-4.7, glm-4.6", e.Models)
+	wantModels := []string{"glm-5.2", "glm-5.1", "glm-4.7", "glm-4.6", "glm-4-flash", "glm-4-plus"}
+	if !reflect.DeepEqual(e.Models, wantModels) {
+		t.Errorf("Models = %v, want %v", e.Models, wantModels)
 	}
-	if e.Default != "glm-5.1" {
-		t.Errorf("Default = %q, want glm-5.1", e.Default)
+	if e.Default != "glm-5.2" {
+		t.Errorf("Default = %q, want glm-5.2", e.Default)
 	}
-	if e.ContextWindow != 128_000 {
-		t.Errorf("ContextWindow = %d, want 128000", e.ContextWindow)
+	if e.ContextWindow != 1_000_000 {
+		t.Errorf("ContextWindow = %d, want 1000000", e.ContextWindow)
 	}
 }
 
@@ -7214,8 +7215,8 @@ func TestAddOfficialProviderAccessZhipu(t *testing.T) {
 	if !ok {
 		t.Fatal("zhipuqingyan provider not saved")
 	}
-	if p.Default != "glm-5.1" || p.Models[0] != "glm-5.1" {
-		t.Fatalf("zhipuqingyan provider = %+v, want glm-5.1 as default", p)
+	if p.Default != "glm-5.2" || p.Models[0] != "glm-5.2" {
+		t.Fatalf("zhipuqingyan provider = %+v, want glm-5.2 as default", p)
 	}
 	if !providerAccessSet(cfg.Desktop.ProviderAccess)["zhipuqingyan"] {
 		t.Fatalf("provider_access missing zhipuqingyan: %+v", cfg.Desktop.ProviderAccess)

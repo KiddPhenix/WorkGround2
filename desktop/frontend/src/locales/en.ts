@@ -1689,7 +1689,7 @@ export const en = {
   "settings.addProvider.official.groq": "Groq",
   "settings.addProvider.official.groqDesc": "Groq — ultra-fast inference, open models",
   "settings.addProvider.official.zhipuqingyan": "ZhipuQingYan",
-  "settings.addProvider.official.zhipuqingyanDesc": "ZhipuQingYan — GLM-5.1, GLM-4.7, GLM-4.6",
+  "settings.addProvider.official.zhipuqingyanDesc": "ZhipuQingYan — GLM-5.2, GLM-5.1, GLM-4.7, GLM-4.6",
   "settings.addProvider.official.doubao": "Doubao",
   "settings.addProvider.official.doubaoDesc": "Doubao — Volcano Ark, Seed 2.0 Lite",
   "settings.addProvider.official.qwenOllama": "Qwen (Ollama)",

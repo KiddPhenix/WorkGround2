@@ -1121,7 +1121,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.addProvider.official.groq": "Groq",
   "settings.addProvider.official.groqDesc": "Groq — 超快推理，開放模型",
   "settings.addProvider.official.zhipuqingyan": "智譜清言",
-  "settings.addProvider.official.zhipuqingyanDesc": "智譜清言 — GLM-5.1、GLM-4.7、GLM-4.6",
+  "settings.addProvider.official.zhipuqingyanDesc": "智譜清言 — GLM-5.2、GLM-5.1、GLM-4.7、GLM-4.6",
   "settings.addProvider.official.doubao": "豆包",
   "settings.addProvider.official.doubaoDesc": "豆包火山方舟 — Seed 2.0 Lite",
   "settings.addProvider.official.qwenOllama": "Qwen (Ollama)",

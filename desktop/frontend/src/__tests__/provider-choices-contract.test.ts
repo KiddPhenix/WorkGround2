@@ -51,6 +51,7 @@ const localeCases: Array<{
     dict: en,
     values: {
       "settings.addProvider.official.zhipuqingyan": "ZhipuQingYan",
+      "settings.addProvider.official.zhipuqingyanDesc": "ZhipuQingYan — GLM-5.2, GLM-5.1, GLM-4.7, GLM-4.6",
       "settings.addProvider.official.doubao": "Doubao",
       "settings.addProvider.official.qwenOllama": "Qwen (Ollama)",
       "settings.providerLabel.zhipuqingyan": "ZhipuQingYan",
@@ -63,6 +64,7 @@ const localeCases: Array<{
     dict: zh,
     values: {
       "settings.addProvider.official.zhipuqingyan": "智谱清言",
+      "settings.addProvider.official.zhipuqingyanDesc": "智谱清言 — GLM-5.2、GLM-5.1、GLM-4.7、GLM-4.6",
       "settings.addProvider.official.doubao": "豆包",
       "settings.addProvider.official.qwenOllama": "Qwen (Ollama)",
       "settings.providerLabel.zhipuqingyan": "智谱清言",
@@ -75,6 +77,7 @@ const localeCases: Array<{
     dict: zhTW,
     values: {
       "settings.addProvider.official.zhipuqingyan": "智譜清言",
+      "settings.addProvider.official.zhipuqingyanDesc": "智譜清言 — GLM-5.2、GLM-5.1、GLM-4.7、GLM-4.6",
       "settings.addProvider.official.doubao": "豆包",
       "settings.addProvider.official.qwenOllama": "Qwen (Ollama)",
       "settings.providerLabel.zhipuqingyan": "智譜清言",
