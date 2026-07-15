@@ -1988,6 +1988,14 @@ export const zh: Record<DictKey, string> = {
   "requestHelp.selecting": "选择模型中",
   "requestHelp.selectingModel": "正在选择可用模型…",
   "requestHelp.details": "详情",
+  "requestHelp.imagePreview": "生成的图片",
+  "requestHelp.loadingImage": "加载图片中…",
+  "requestHelp.imageLoadFailed": "图片加载失败",
+  "requestHelp.openImage": "打开图片",
+  "requestHelp.revealImage": "在文件夹中显示",
+  "requestHelp.copyImagePath": "复制路径",
+  "requestHelp.retry": "重试",
+  "requestHelp.closePreview": "关闭预览",
 
   // 软件更新
   "updater.title": "软件更新",

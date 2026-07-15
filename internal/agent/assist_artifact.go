@@ -24,6 +24,8 @@ type imageArtifact struct {
 	Path   string `json:"path"`
 	MIME   string `json:"mime"`
 	Size   int64  `json:"size"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
 }
 
 type drawTaskResult struct {
@@ -81,10 +83,11 @@ func validateImageArtifact(run *SubagentRun) (imageArtifact, error) {
 	if _, err := file.Seek(0, 0); err != nil {
 		return imageArtifact{}, fmt.Errorf("seek generated image %q: %w", path, err)
 	}
-	if _, _, err := image.DecodeConfig(file); err != nil {
+	cfg, _, err := image.DecodeConfig(file)
+	if err != nil {
 		return imageArtifact{}, fmt.Errorf("decode generated image %q: %w", path, err)
 	}
-	return imageArtifact{TaskID: result.TaskID, Path: path, MIME: mime, Size: info.Size()}, nil
+	return imageArtifact{TaskID: result.TaskID, Path: path, MIME: mime, Size: info.Size(), Width: cfg.Width, Height: cfg.Height}, nil
 }
 
 func lastDrawResult(messages []provider.Message) (drawTaskResult, error) {
@@ -205,8 +208,9 @@ func validateCodexFile(path, root string) (imageArtifact, error) {
 	if _, err := file.Seek(0, 0); err != nil {
 		return imageArtifact{}, fmt.Errorf("seek CLI artifact %q: %w", cleaned, err)
 	}
-	if _, _, err := image.DecodeConfig(file); err != nil {
+	cfg, _, err := image.DecodeConfig(file)
+	if err != nil {
 		return imageArtifact{}, fmt.Errorf("decode CLI artifact %q: %w", cleaned, err)
 	}
-	return imageArtifact{TaskID: "codex-cli", Path: cleaned, MIME: mime, Size: info.Size()}, nil
+	return imageArtifact{TaskID: "codex-cli", Path: cleaned, MIME: mime, Size: info.Size(), Width: cfg.Width, Height: cfg.Height}, nil
 }

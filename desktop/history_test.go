@@ -1118,3 +1118,85 @@ func TestHistoryRequestHelpSummaryKeepsDisplayState(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryRequestHelpSummaryPreservesArtifact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.png")
+	artifact, err := json.Marshal(requestHelpImageArtifact{TaskID: "img-1", Path: path, MIME: "image/png", Size: 2048, Width: 1024, Height: 768})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := `Capability assist succeeded
+request_id: assist-img
+capability: image_generation
+from_model: deepseek/deepseek-pro
+model: img/gen-img
+attempt: 1/1
+artifact: ` + string(artifact) + `
+
+generated image answer`
+	summary := historyToolSummary("request_help", `{}`, output)
+	if !strings.HasPrefix(summary, "request_help_summary:") {
+		t.Fatalf("summary = %q, want structured request_help prefix", summary)
+	}
+	for _, want := range []string{`"state":"completed"`, `"capability":"image_generation"`, `"task_id":"img-1"`, `"width":1024`, `"height":768`} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q missing %s", summary, want)
+		}
+	}
+}
+
+func TestHistoryRequestHelpSummaryToleratesCorruptArtifact(t *testing.T) {
+	output := `Capability assist succeeded
+request_id: assist-bad
+capability: image_generation
+from_model: a/b
+model: c/d
+attempt: 1/1
+artifact: not-json
+
+result`
+	summary := historyToolSummary("request_help", `{}`, output)
+	if !strings.HasPrefix(summary, "request_help_summary:") {
+		t.Fatalf("summary = %q, want structured request_help prefix even with corrupt artifact", summary)
+	}
+	if strings.Contains(summary, `"artifact"`) {
+		t.Fatal("summary should not include corrupt artifact")
+	}
+	// Core fields still work.
+	for _, want := range []string{`"state":"completed"`, `"capability":"image_generation"`} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q missing %s after corrupt artifact", summary, want)
+		}
+	}
+}
+
+func TestHistoryRequestHelpSummaryKeepsLegacyArtifactWithoutDimensions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.png")
+	artifact, err := json.Marshal(requestHelpImageArtifact{TaskID: "legacy", Path: path, MIME: "image/png", Size: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := "Capability assist succeeded\nrequest_id: assist-legacy\ncapability: image_generation\nfrom_model: a/b\nmodel: c/d\nattempt: 1/1\nartifact: " + string(artifact) + "\n"
+	summary := historyToolSummary("request_help", `{}`, output)
+	if !strings.Contains(summary, `"task_id":"legacy"`) {
+		t.Fatalf("legacy artifact was not preserved: %q", summary)
+	}
+}
+
+func TestHistoryRequestHelpSummaryNoArtifactForWebSearch(t *testing.T) {
+	output := `Capability assist succeeded
+request_id: assist-web
+capability: web_search
+from_model: a/b
+model: c/d
+attempt: 1/1
+
+search result`
+	summary := historyToolSummary("request_help", `{}`, output)
+	if !strings.HasPrefix(summary, "request_help_summary:") {
+		t.Fatalf("summary = %q, want structured request_help prefix", summary)
+	}
+	if strings.Contains(summary, `"artifact"`) {
+		t.Fatal("web_search summary should not have artifact")
+	}
+}
