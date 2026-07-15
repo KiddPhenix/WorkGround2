@@ -282,6 +282,32 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		answer, runErr := RunSubAgentWithSession(runCtx, prov, subReg, run.Session, assistPrompt(requestID, cap, prompt), opts, sink)
 
 		if runErr != nil {
+			// image_generation: the CLI provider may have produced valid
+			// side-effect image artifacts (via ArtifactCollector) before
+			// the text stream timed out. Validate and recover instead of
+			// discarding the artifact.
+			if cap == config.CapImageGeneration {
+				if validated, valErr := validateCodexArtifact(artifactCollector); valErr == nil {
+					artifact := validated
+					if err := t.transcripts.SaveCompleted(run); err != nil {
+						saveErr := t.transcripts.SaveFailed(run)
+						run.Release()
+						joined := errors.Join(fmt.Errorf("request_help: persist completed recovery candidate %q: %w", ref, err), saveErr)
+						emitProgress("candidate_failed", ref, attempt+1, joined)
+						return "", joined
+					}
+					// answer is "" when RunSubAgentWithSession returns an
+					// error — provide a short deterministic answer.
+					recoveryAnswer := fmt.Sprintf(
+						"Image artifact recovered from CLI provider despite text-stream error.\n"+
+							"Recovery diagnostic (original run error): %v", runErr)
+					result := formatAssistAnswer(recoveryAnswer, run)
+					run.Release()
+					emitProgress("completed", ref, attempt+1, nil)
+					return formatAssistResult(requestID, cap, t.currentModelRef, ref, attempt+1, len(candidates), failures, &artifact, result), nil
+				}
+			}
+
 			saveErr := t.transcripts.SaveFailed(run)
 			run.Release()
 			joined := errors.Join(runErr, saveErr)
