@@ -13,6 +13,7 @@ import { stageFromEvent, type Stage } from "./activity";
 import { createRafBatch } from "./rafBatch";
 import { t } from "./i18n";
 import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
+import { applyRequestHelpProgress, finishRequestHelp, requestHelpFromArgs, requestHelpFromHistory, type RequestHelpStatus } from "./requestHelp";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode } from "./types";
 import { useMemoryStore } from "../store/memory";
 import { useArtifactStore } from "../store/artifacts";
@@ -114,6 +115,7 @@ export type Item =
       isShell?: boolean; // true for !-prefix shell commands (controls default expand)
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
+      assistStatus?: RequestHelpStatus; // durable request_help state retained after output archival
     };
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -576,6 +578,11 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         const output = result?.toolResultArchived ? undefined : result?.content ?? "";
         const error = result?.toolResultError || (output ? historyToolError(output) : undefined);
         const fileDiff = fileDiffFromWire(tc);
+        const assistStatus = tc.name === "request_help"
+          ? result
+            ? requestHelpFromHistory(tc.arguments ?? "", output, error, tc.summary)
+            : requestHelpFromArgs(tc.arguments ?? "")
+          : undefined;
         items.push({
           kind: "tool",
           id: tc.id || `${idPrefix}tool${seq}`,
@@ -590,6 +597,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           summary: summarizeFileDiff(fileDiff) || tc.summary,
           fileDiff,
           isShell: (tc.id || "").startsWith("shell-"),
+          assistStatus,
         });
         seq++;
       }
@@ -599,17 +607,22 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       if ((m.toolCallId && consumedToolIDs.has(m.toolCallId)) || consumedPositionalToolIndexes.has(messageIndex)) continue;
       const output = m.toolResultArchived ? undefined : m.content;
       const error = m.toolResultError || (output ? historyToolError(output) : undefined);
+      const name = m.toolName || "tool";
+      const assistStatus = name === "request_help"
+        ? requestHelpFromHistory("", output, error)
+        : undefined;
       items.push({
         kind: "tool",
         id: m.toolCallId || `${idPrefix}tool${seq}`,
-        name: m.toolName || "tool",
+        name,
         args: "",
-        readOnly: isReadOnlyTool(m.toolName || "tool"),
+        readOnly: isReadOnlyTool(name),
         status: error ? "error" : "done",
         output,
         error,
         dataArchived: m.toolResultArchived || undefined,
         isShell: (m.toolCallId || "").startsWith("shell-"),
+        assistStatus,
       });
       seq++;
       continue;
@@ -796,13 +809,26 @@ function applyEvent(s: State, e: WireEvent): State {
           const args = t.args ? t.args : it.args;
           const fileDiff = fileDiffFromWire(t);
           const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff };
+          const parsedAssist = t.name === "request_help" ? requestHelpFromArgs(args) : undefined;
+          next[idx] = {
+            ...it,
+            name: t.name,
+            args,
+            readOnly: t.readOnly,
+            profile: t.profile ?? it.profile,
+            summary,
+            fileDiff,
+            assistStatus: parsedAssist
+              ? { ...(it.assistStatus ?? parsedAssist), capability: parsedAssist.capability || it.assistStatus?.capability || "" }
+              : it.assistStatus,
+          };
         }
         return stageResult({ ...s, items: next }, s, evStage);
       }
       const args = t.args ?? "";
       const fileDiff = fileDiffFromWire(t);
-      return stageResult({ ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] }, s, evStage);
+      const assistStatus = t.name === "request_help" ? requestHelpFromArgs(args) : undefined;
+      return stageResult({ ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile, assistStatus }] }, s, evStage);
     }
     case "tool_result": {
       const t = e.tool;
@@ -823,6 +849,9 @@ function applyEvent(s: State, e: WireEvent): State {
           // demand via app.ToolResultForTab when the card is expanded.
           const existing = it;
           const summary = t.err ? undefined : existing.summary || summarize(existing.name, existing.args, t.output);
+          const assistStatus = existing.name === "request_help"
+            ? finishRequestHelp(existing.assistStatus ?? requestHelpFromArgs(existing.args), t.output, t.err, existing.summary)
+            : existing.assistStatus;
           next[idx] = {
             ...existing,
             status: t.err ? "error" : "done",
@@ -831,6 +860,7 @@ function applyEvent(s: State, e: WireEvent): State {
             truncated: t.truncated,
             durationMs: t.durationMs,
             summary,
+            assistStatus,
           };
         }
       }
@@ -843,7 +873,13 @@ function applyEvent(s: State, e: WireEvent): State {
       if (idx < 0) return s;
       const next = [...s.items];
       const it = next[idx];
-      if (it.kind === "tool") next[idx] = { ...it, output: (it.output ?? "") + (t.output ?? "") };
+      if (it.kind === "tool") {
+        const output = (it.output ?? "") + (t.output ?? "");
+        const assistStatus = it.name === "request_help"
+          ? applyRequestHelpProgress(it.assistStatus ?? requestHelpFromArgs(it.args), t.output ?? "")
+          : it.assistStatus;
+        next[idx] = { ...it, output, assistStatus };
+      }
       return stageResult({ ...s, items: next }, s, evStage);
     }
     case "usage": {

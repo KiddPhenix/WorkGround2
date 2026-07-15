@@ -1105,3 +1105,16 @@ func TestHistoryPageSessionPath(t *testing.T) {
 		t.Fatalf("empty page should have no messages")
 	}
 }
+
+func TestHistoryRequestHelpSummaryKeepsDisplayState(t *testing.T) {
+	output := "Capability assist succeeded\nrequest_id: assist-1\ncapability: web_search\nfrom_model: deepseek/deepseek-pro\nmodel: codex/codex-cli\nattempt: 2/3\n\nFinal answer:\nok"
+	summary := historyToolSummary("request_help", `{\"capability\":\"web_search\"}`, output)
+	if !strings.HasPrefix(summary, "request_help_summary:") {
+		t.Fatalf("summary = %q, want structured request_help prefix", summary)
+	}
+	for _, want := range []string{`"state":"completed"`, `"from_model":"deepseek/deepseek-pro"`, `"model":"codex/codex-cli"`, `"attempt":2`, `"total":3`} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary %q missing %s", summary, want)
+		}
+	}
+}

@@ -45,3 +45,35 @@ No actionable P0/P1/P2 differences.
 - P3: the disabled `待关注 0` state is intentionally subdued; its contrast can be raised later if user testing finds it too quiet.
 
 final result: passed
+
+---
+
+# Design QA — Request Help 状态卡
+
+- Source truth: `docs/assets/request-help-display-reference.png`
+- Implementation: `docs/assets/request-help-display-implementation.png`
+- Responsive evidence: `docs/assets/request-help-display-narrow.png`
+- State: `deepseek/deepseek-pro` 请求网页搜索，`codex/codex-cli` 第 1/2 次接管执行
+- Viewports: 1100×420（主视图）、600×360（窄屏）
+
+## 对比与修正
+
+- 首轮同输入全视图对比发现标题和接管状态不够醒目；已将活动标题调整为主题橙色，并将“已接管”改为绿色状态徽标。
+- 聚焦区域为单一状态卡，主视图已完整覆盖，无需额外裁切证据。
+- 参考图是视觉方向稿；实现按现有对话流密度压缩高度，保留左侧活动轨、模型路由、能力、尝试次数和接管状态。未复制方向稿中的装饰性长进度轨，避免对未知执行时长作虚假进度表达。
+
+## 五项保真检查
+
+- Layout: 内联卡片层级、模型路由和元信息顺序一致；窄屏无横向溢出。
+- Typography: 标题、模型名、辅助信息按现有桌面字体层级实现。
+- Color: 沿用产品暗色 token、橙色活动强调和绿色完成/接管语义。
+- Shape: 圆角、细边框、左侧活动轨与现有工具卡体系一致。
+- Interaction: “详情”按钮可展开原始参数；`aria-live` 暴露状态变化。
+
+## 工程验收
+
+- 浏览器：详情按钮唯一且可展开；600px 下页面 `scrollWidth` 等于视口宽度；控制台无 error/warning。
+- 自动化：Go agent/desktop 专项测试、Go vet、前端 17 项状态展示测试、typecheck、生产构建通过。
+- 严重问题：P0/P1/P2 均为 0。
+
+final result: passed

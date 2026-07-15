@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -436,6 +437,181 @@ func TestRequestHelpPersistsFailedTranscript(t *testing.T) {
 	if len(artifacts) != 1 || artifacts[0].Meta.Status != SubagentFailed || artifacts[0].Meta.Model != "img1/m1" {
 		t.Fatalf("artifacts = %+v", artifacts)
 	}
+}
+
+// TestRequestHelpProgressFirstCandidate verifies structured progress is emitted
+// for the first candidate attempt.
+func TestRequestHelpProgressFirstCandidate(t *testing.T) {
+	cfg := requestHelpConfig("web_search", "ws1", "m1")
+	prov := &mockProvider{name: "ws1/m1", chunks: successChunks}
+	resolve := func(string, string) (provider.Provider, *provider.Pricing, int, error) {
+		return prov, nil, 0, nil
+	}
+	helper := newTestRequestHelpTool(t, cfg, prov, tool.NewRegistry(), resolve)
+
+	var chunks []string
+	ctx := tool.WithProgress(testRequestHelpContext(), func(c string) {
+		chunks = append(chunks, c)
+	})
+	_, err := helper.Execute(ctx, []byte(`{"capability":"web_search","prompt":"search"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 progress chunks (attempting + succeeded), got %d: %v", len(chunks), chunks)
+	}
+	first, ok := parseRhProgress(chunks[0])
+	if !ok {
+		t.Fatalf("first chunk is not rh progress: %q", chunks[0])
+	}
+	if first.State != "attempting" {
+		t.Fatalf("first chunk state should be attempting, got %q", first.State)
+	}
+	if first.Capability != "web_search" {
+		t.Fatalf("capability: %q", first.Capability)
+	}
+	if first.Attempt != 1 || first.Total != 1 {
+		t.Fatalf("attempt/total: %d/%d", first.Attempt, first.Total)
+	}
+	last, ok := parseRhProgress(chunks[len(chunks)-1])
+	if !ok {
+		t.Fatalf("last chunk is not rh progress: %q", chunks[len(chunks)-1])
+	}
+	if last.State != "completed" {
+		t.Fatalf("last chunk state should be completed, got %q", last.State)
+	}
+}
+
+// TestRequestHelpProgressFailureSwitch verifies that when a candidate
+// fails and another is available, both "failed" and the next "attempting"
+// progress chunks are emitted.
+func TestRequestHelpProgressFailureSwitch(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name: "ws1", Kind: "openai", BaseURL: "https://api.example.com", Model: "m1",
+		Capabilities: []string{"web_search"},
+	}, config.ProviderEntry{
+		Name: "ws2", Kind: "openai", BaseURL: "https://api.example.com", Model: "m2",
+		Capabilities: []string{"web_search"},
+	})
+	cfg.Agent.AssistModels = map[string][]string{
+		"web_search": {"ws1/m1", "ws2/m2"},
+	}
+
+	goodProv := &mockProvider{name: "ws2/m2", chunks: successChunks}
+	resolveCount := 0
+	resolve := func(ref, effort string) (provider.Provider, *provider.Pricing, int, error) {
+		resolveCount++
+		if ref == "ws1/m1" {
+			return nil, nil, 0, fmt.Errorf("ws1 down")
+		}
+		return goodProv, nil, 0, nil
+	}
+	helper := newTestRequestHelpTool(t, cfg, nil, tool.NewRegistry(), resolve)
+
+	var chunks []string
+	ctx := tool.WithProgress(testRequestHelpContext(), func(c string) {
+		chunks = append(chunks, c)
+	})
+	_, err := helper.Execute(ctx, []byte(`{"capability":"web_search","prompt":"search"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	states := collectRhProgressStates(chunks)
+	if len(states) < 4 {
+		t.Fatalf("expected at least 4 progress events (attempting failed attempting succeeded), got %d: %v", len(states), states)
+	}
+	if states[0] != "attempting" {
+		t.Fatalf("state[0] = %q, want attempting", states[0])
+	}
+	if states[1] != "candidate_failed" {
+		t.Fatalf("state[1] = %q, want candidate_failed", states[1])
+	}
+	if states[2] != "attempting" {
+		t.Fatalf("state[2] = %q, want attempting", states[2])
+	}
+	if states[3] != "completed" {
+		t.Fatalf("state[3] = %q, want completed", states[3])
+	}
+}
+
+// TestRequestHelpProgressSuccess verifies that a single-candidate success
+// emits both attempting and succeeded.
+func TestRequestHelpProgressSuccess(t *testing.T) {
+	cfg := requestHelpConfig("web_search", "ws1", "m1")
+	prov := &mockProvider{name: "ws1/m1", chunks: successChunks}
+	resolve := func(string, string) (provider.Provider, *provider.Pricing, int, error) {
+		return prov, nil, 0, nil
+	}
+	helper := newTestRequestHelpTool(t, cfg, prov, tool.NewRegistry(), resolve)
+
+	var chunks []string
+	ctx := tool.WithProgress(testRequestHelpContext(), func(c string) {
+		chunks = append(chunks, c)
+	})
+	out, err := helper.Execute(ctx, []byte(`{"capability":"web_search","prompt":"search"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	_ = out
+
+	states := collectRhProgressStates(chunks)
+	if len(states) != 2 {
+		t.Fatalf("expected 2 progress events, got %d: %v", len(states), states)
+	}
+	if states[0] != "attempting" || states[1] != "completed" {
+		t.Fatalf("expected attempting→completed, got %v", states)
+	}
+}
+
+// TestRhProgressPrefixIsolation verifies that the progress prefix cannot be
+// confused with ordinary tool output.
+func TestRhProgressPrefixIsolation(t *testing.T) {
+	if strings.HasPrefix("normal bash output\n", RequestHelpProgressPrefix) {
+		t.Fatal("ordinary text should not match rh progress prefix")
+	}
+	if strings.HasPrefix("{\"version\":1", RequestHelpProgressPrefix) {
+		t.Fatal("JSON should not match rh progress prefix")
+	}
+	var got string
+	ctx := tool.WithProgress(context.Background(), func(chunk string) { got = chunk })
+	emitRequestHelpProgress(ctx, requestHelpProgress{Version: 1, State: "attempting", RequestID: "r1", Capability: config.CapWebSearch, FromModel: "gpt", Model: "gpt-search", Attempt: 1, Total: 3})
+	if !strings.HasPrefix(got, RequestHelpProgressPrefix) {
+		t.Fatal("emitRequestHelpProgress must use the dedicated prefix")
+	}
+}
+
+type rhProgress struct {
+	State      string `json:"state"`
+	Capability string `json:"capability"`
+	FromModel  string `json:"from_model"`
+	Model      string `json:"model"`
+	Attempt    int    `json:"attempt"`
+	Total      int    `json:"total"`
+	RequestID  string `json:"request_id"`
+}
+
+func parseRhProgress(chunk string) (rhProgress, bool) {
+	if !strings.HasPrefix(chunk, RequestHelpProgressPrefix) {
+		return rhProgress{}, false
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(chunk, RequestHelpProgressPrefix), "\n")
+	var p rhProgress
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return rhProgress{}, false
+	}
+	return p, true
+}
+
+func collectRhProgressStates(chunks []string) []string {
+	var states []string
+	for _, c := range chunks {
+		if p, ok := parseRhProgress(c); ok {
+			states = append(states, p.State)
+		}
+	}
+	return states
 }
 
 func requestHelpConfig(capability, name, model string) *config.Config {

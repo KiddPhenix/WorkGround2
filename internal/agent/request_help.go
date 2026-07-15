@@ -14,6 +14,22 @@ import (
 	"workground2/internal/tool"
 )
 
+// RequestHelpProgressPrefix identifies structured request_help progress chunks.
+// Frontends ignore ordinary tool output that does not start with this prefix.
+const RequestHelpProgressPrefix = "request_help_status:"
+
+type requestHelpProgress struct {
+	Version    int                    `json:"version"`
+	State      string                 `json:"state"`
+	RequestID  string                 `json:"request_id"`
+	Capability config.ModelCapability `json:"capability"`
+	FromModel  string                 `json:"from_model"`
+	Model      string                 `json:"model"`
+	Attempt    int                    `json:"attempt"`
+	Total      int                    `json:"total"`
+	Error      string                 `json:"error,omitempty"`
+}
+
 // RequestHelpSystemPrompt steers a capability-assist sub-agent.
 const RequestHelpSystemPrompt = `You are a capability assistant invoked by a parent coding agent that needs help with a task it cannot perform directly. Use the provided tools to fulfill the request. Return a single final answer — concise and self-contained — that the parent will see as your result. Do not ask the parent for clarification; do your best with the information provided.`
 
@@ -177,14 +193,34 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 	// safe to retry—they happen before any work starts.
 	noRetryAfterRun := cap == config.CapImageGeneration
 
+	emitProgress := func(state, model string, attempt int, progressErr error) {
+		status := requestHelpProgress{
+			Version:    1,
+			State:      state,
+			RequestID:  requestID,
+			Capability: cap,
+			FromModel:  t.currentModelRef,
+			Model:      model,
+			Attempt:    attempt,
+			Total:      len(candidates),
+		}
+		if progressErr != nil {
+			status.Error = progressErr.Error()
+		}
+		emitRequestHelpProgress(ctx, status)
+	}
+
 	var attempted []string
 	var failures []string
 	for attempt, ref := range candidates {
 		attempted = append(attempted, ref)
 
+		emitProgress("attempting", ref, attempt+1, nil)
+
 		prov, pricing, ctxWin, err := t.resolveProvider(ref, "")
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: provider setup: %v", ref, err))
+			emitProgress("candidate_failed", ref, attempt+1, err)
 			continue // provider resolution failure is always safe to retry
 		}
 
@@ -197,12 +233,15 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		run, prepErr := t.prepareRun(ctx, subReg, ref, requestID)
 		if prepErr != nil {
 			failures = append(failures, fmt.Sprintf("%s: prepare transcript: %v", ref, prepErr))
+			emitProgress("candidate_failed", ref, attempt+1, prepErr)
 			continue
 		}
 		if err := t.transcripts.MarkRunning(run); err != nil {
 			saveErr := t.transcripts.SaveFailed(run)
 			run.Release()
-			failures = append(failures, fmt.Sprintf("%s: mark running: %v", ref, errors.Join(err, saveErr)))
+			joined := errors.Join(err, saveErr)
+			failures = append(failures, fmt.Sprintf("%s: mark running: %v", ref, joined))
+			emitProgress("candidate_failed", ref, attempt+1, joined)
 			continue
 		}
 
@@ -231,7 +270,9 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if runErr != nil {
 			saveErr := t.transcripts.SaveFailed(run)
 			run.Release()
-			failures = append(failures, fmt.Sprintf("%s: run: %v", ref, errors.Join(runErr, saveErr)))
+			joined := errors.Join(runErr, saveErr)
+			failures = append(failures, fmt.Sprintf("%s: run: %v", ref, joined))
+			emitProgress("candidate_failed", ref, attempt+1, joined)
 			if noRetryAfterRun {
 				// image_generation: RunSubAgentWithSession was called and
 				// failed; do not try another candidate to avoid duplicates.
@@ -242,7 +283,9 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if cap == config.CapWebSearch && !hasWebSource(answer) {
 			saveErr := t.transcripts.SaveFailed(run)
 			run.Release()
-			failures = append(failures, fmt.Sprintf("%s: result validation: %v", ref, errors.Join(fmt.Errorf("web search answer contains no http(s) source URL"), saveErr)))
+			joined := errors.Join(fmt.Errorf("web search answer contains no http(s) source URL"), saveErr)
+			failures = append(failures, fmt.Sprintf("%s: result validation: %v", ref, joined))
+			emitProgress("candidate_failed", ref, attempt+1, joined)
 			continue
 		}
 
@@ -252,7 +295,9 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 			if artifactErr != nil {
 				saveErr := t.transcripts.SaveFailed(run)
 				run.Release()
-				failures = append(failures, fmt.Sprintf("%s: artifact validation: %v", ref, errors.Join(artifactErr, saveErr)))
+				joined := errors.Join(artifactErr, saveErr)
+				failures = append(failures, fmt.Sprintf("%s: artifact validation: %v", ref, joined))
+				emitProgress("candidate_failed", ref, attempt+1, joined)
 				break
 			}
 			artifact = &validated
@@ -261,11 +306,14 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if err := t.transcripts.SaveCompleted(run); err != nil {
 			saveErr := t.transcripts.SaveFailed(run)
 			run.Release()
-			return "", errors.Join(fmt.Errorf("request_help: persist completed candidate %q: %w", ref, err), saveErr)
+			joined := errors.Join(fmt.Errorf("request_help: persist completed candidate %q: %w", ref, err), saveErr)
+			emitProgress("candidate_failed", ref, attempt+1, joined)
+			return "", joined
 		}
 		result := formatAssistAnswer(answer, run)
 		run.Release()
-		return formatAssistResult(requestID, cap, ref, attempt+1, len(candidates), failures, artifact, result), nil
+		emitProgress("completed", ref, attempt+1, nil)
+		return formatAssistResult(requestID, cap, t.currentModelRef, ref, attempt+1, len(candidates), failures, artifact, result), nil
 	}
 
 	if len(failures) > 0 {
@@ -310,9 +358,9 @@ func assistPrompt(requestID string, capability config.ModelCapability, prompt st
 	return prefix + "Complete the task and include the source URLs used in your final answer.\n\nTask: " + prompt
 }
 
-func formatAssistResult(requestID string, capability config.ModelCapability, modelRef string, attempt, total int, failures []string, artifact *imageArtifact, result string) string {
+func formatAssistResult(requestID string, capability config.ModelCapability, fromModelRef, modelRef string, attempt, total int, failures []string, artifact *imageArtifact, result string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Capability assist succeeded\nrequest_id: %s\ncapability: %s\nmodel: %s\nattempt: %d/%d\n", requestID, capability, modelRef, attempt, total)
+	fmt.Fprintf(&b, "Capability assist succeeded\nrequest_id: %s\ncapability: %s\nfrom_model: %s\nmodel: %s\nattempt: %d/%d\n", requestID, capability, fromModelRef, modelRef, attempt, total)
 	if len(failures) > 0 {
 		b.WriteString("previous_failures:\n- ")
 		b.WriteString(strings.Join(failures, "\n- "))
@@ -343,4 +391,16 @@ func hasWebSource(answer string) bool {
 		}
 	}
 	return false
+}
+
+func emitRequestHelpProgress(ctx context.Context, status requestHelpProgress) {
+	emit, ok := tool.ProgressFrom(ctx)
+	if !ok {
+		return
+	}
+	data, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+	emit(RequestHelpProgressPrefix + string(data) + "\n")
 }

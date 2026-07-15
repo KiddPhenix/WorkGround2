@@ -4814,6 +4814,9 @@ func historyToolSubject(name, args string) string {
 }
 
 func historyToolSummary(name, args, output string) string {
+	if name == "request_help" {
+		return historyRequestHelpSummary(output)
+	}
 	if historyToolResultFailed(output) {
 		return ""
 	}
@@ -4862,6 +4865,36 @@ func historyToolSummary(name, args, output string) string {
 	default:
 		return ""
 	}
+}
+
+func historyRequestHelpSummary(output string) string {
+	if !strings.HasPrefix(output, "Capability assist succeeded\n") {
+		return ""
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(output, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if ok {
+			fields[key] = strings.TrimSpace(value)
+		}
+	}
+	attempt, total := 0, 0
+	_, _ = fmt.Sscanf(fields["attempt"], "%d/%d", &attempt, &total)
+	payload := map[string]any{
+		"version":    1,
+		"state":      "completed",
+		"request_id": fields["request_id"],
+		"capability": fields["capability"],
+		"from_model": fields["from_model"],
+		"model":      fields["model"],
+		"attempt":    attempt,
+		"total":      total,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return "request_help_summary:" + string(data)
 }
 
 func parseHistoryToolArgs(args string) map[string]any {

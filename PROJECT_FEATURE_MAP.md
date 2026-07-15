@@ -88,9 +88,9 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Updated: 2026-07-06
 
 ### 能力求助路由
-- Location: `internal/config/assist.go`, `internal/config/cli_capability.go`, `internal/agent/request_help.go`, `internal/agent/assist_artifact.go`, `internal/boot/boot.go`, `desktop/onboarding_cli.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/SettingsPanel.tsx`, `docs/SPEC.md`
-- Summary: 状态 done；主模型缺少 `web_search` 或 `image_generation` 时，宿主 `request_help` 按显式路由或 provider 顺序选择已配置候选，排除当前/不可用模型，安全切换失败候选并持久化运行结果。网页结果必须带来源 URL；图片必须来自真实 draw_image 任务并校验输出目录、文件和格式。Codex CLI 只在实际浏览 feature 启用时自动声明搜索能力，桌面可显式配置 provider 求助能力。
-- Keywords: capability assist, request_help, web_search, image_generation, assist_models, request_id, artifact validation, Codex CLI probe, subagent transcript
+- Location: `internal/config/assist.go`, `internal/config/cli_capability.go`, `internal/agent/request_help.go`, `internal/agent/assist_artifact.go`, `internal/boot/boot.go`, `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/RequestHelpCard.tsx`, `desktop/frontend/src/components/ToolCard.tsx`, `desktop/frontend/src/lib/requestHelp.ts`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `docs/SPEC.md`
+- Summary: 状态 done；主模型缺少 `web_search` 或 `image_generation` 时，宿主 `request_help` 按显式路由或 provider 顺序选择已配置候选，排除当前/不可用模型，安全切换失败候选并持久化运行结果。网页结果必须带来源 URL；图片必须来自真实 draw_image 任务并校验输出目录、文件和格式。Codex CLI 只在实际浏览 feature 启用时自动声明搜索能力，桌面可显式配置 provider 求助能力。对话流会明确展示发起模型、接管模型、能力、尝试次数、切换和最终状态，并可从历史摘要恢复。
+- Keywords: capability assist, request_help, web_search, image_generation, assist_models, request_id, artifact validation, progress status, history replay, Codex CLI probe, subagent transcript
 - Source: user-requested+verified-by-tests
 - Updated: 2026-07-15
 

@@ -1337,6 +1337,20 @@ export const zhTW: Record<DictKey, string> = {
   "tool.emptyFile": "空檔案",
   "tool.noOutput": "無輸出",
 
+  // request_help 狀態卡片
+  "requestHelp.title": "正在求助其他模型",
+  "requestHelp.webSearch": "網頁搜尋",
+  "requestHelp.imageGeneration": "圖片生成",
+  "requestHelp.detectingCapability": "識別能力中",
+  "requestHelp.attempt": "第 {n}/{m} 次",
+  "requestHelp.switching": "切換候選",
+  "requestHelp.completed": "已完成",
+  "requestHelp.failed": "求助失敗",
+  "requestHelp.claimed": "已接管",
+  "requestHelp.selecting": "選擇模型中",
+  "requestHelp.selectingModel": "正在選擇可用模型…",
+  "requestHelp.details": "詳情",
+
   // 軟體更新
   "updater.title": "軟體更新",
   "updater.currentVersion": "當前版本：{v}",

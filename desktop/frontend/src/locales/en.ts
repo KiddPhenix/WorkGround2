@@ -1973,6 +1973,20 @@ export const en = {
   "tool.emptyFile": "empty file",
   "tool.noOutput": "no output",
 
+  // request_help status card
+  "requestHelp.title": "Asking other models for help",
+  "requestHelp.webSearch": "Web search",
+  "requestHelp.imageGeneration": "Image generation",
+  "requestHelp.detectingCapability": "Detecting capability",
+  "requestHelp.attempt": "Attempt {n}/{m}",
+  "requestHelp.switching": "Switching candidate",
+  "requestHelp.completed": "Completed",
+  "requestHelp.failed": "Help request failed",
+  "requestHelp.claimed": "Handed off",
+  "requestHelp.selecting": "Selecting model",
+  "requestHelp.selectingModel": "Selecting an available model…",
+  "requestHelp.details": "Details",
+
   // software update
   "updater.title": "Software update",
   "updater.autoCheckLabel": "Check for updates on startup",

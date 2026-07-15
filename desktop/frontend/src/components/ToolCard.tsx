@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
+import { RequestHelpCard } from "./RequestHelpCard";
 import { useT } from "../lib/i18n";
 import { diffsFor, languageForToolArgs, subjectOf, summarize, summarizeFileDiff } from "../lib/tools";
 import { useShellExpand } from "../lib/shellExpand";
@@ -54,7 +55,9 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // All tools default to collapsed. Sub-agent tools open while running so the
   // user sees nested calls; they collapse when done. Reasoning (AssistantMessage)
   // also opens while streaming and closes on finish.
-  const defaultOpen = hasNested ? item.status === "running" : false;
+  // request_help always stays open so the status card is visible.
+  const isRequestHelp = item.name === "request_help";
+  const defaultOpen = isRequestHelp ? true : hasNested ? item.status === "running" : false;
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? defaultOpen;
   const openRef = useRef(open);
@@ -116,6 +119,25 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // GSAP-driven collapse/expand for tool body
   const toolBodyRef = useRef<HTMLDivElement>(null);
   useGSAPCollapse(toolBodyRef, open);
+
+  if (isRequestHelp) {
+    return (
+      <div className="request-help-wrap">
+        <RequestHelpCard
+          status={item.assistStatus ?? { phase: item.status === "error" ? "failed" : item.status === "done" ? "completed" : "selecting", capability: "", error: item.error }}
+          args={effectiveArgs}
+          output={effectiveOutput}
+          error={item.error}
+          entranceId={item.id}
+        />
+        {hasNested && (
+          <div className="request-help__nested">
+            {nested.map((child) => <ToolCard key={child.id} item={child} tabId={tabId} />)}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`tool${quiet ? " tool--quiet" : ""}${isSubagent ? " tool--subagent" : ""}${open && hasBody ? " tool--open" : ""}`} data-entrance={item.id}>

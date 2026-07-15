@@ -1975,6 +1975,20 @@ export const zh: Record<DictKey, string> = {
   "tool.emptyFile": "空文件",
   "tool.noOutput": "无输出",
 
+  // request_help 状态卡片
+  "requestHelp.title": "正在求助其他模型",
+  "requestHelp.webSearch": "网页搜索",
+  "requestHelp.imageGeneration": "图片生成",
+  "requestHelp.detectingCapability": "识别能力中",
+  "requestHelp.attempt": "第 {n}/{m} 次",
+  "requestHelp.switching": "切换候选",
+  "requestHelp.completed": "已完成",
+  "requestHelp.failed": "求助失败",
+  "requestHelp.claimed": "已接管",
+  "requestHelp.selecting": "选择模型中",
+  "requestHelp.selectingModel": "正在选择可用模型…",
+  "requestHelp.details": "详情",
+
   // 软件更新
   "updater.title": "软件更新",
   "updater.autoCheckLabel": "启动时检测新版本",
