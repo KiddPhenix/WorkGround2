@@ -4890,11 +4890,34 @@ func historyRequestHelpSummary(output string) string {
 		"attempt":    attempt,
 		"total":      total,
 	}
+	// Parse artifact JSON from the header line; tolerate old records without
+	// dimensions and any corruption so normal request_help history is unaffected.
+	if raw := fields["artifact"]; raw != "" {
+		var artifact requestHelpImageArtifact
+		if json.Unmarshal([]byte(raw), &artifact) == nil && artifact.valid() {
+			payload["artifact"] = artifact
+		}
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return ""
 	}
 	return "request_help_summary:" + string(data)
+}
+
+type requestHelpImageArtifact struct {
+	TaskID string `json:"task_id"`
+	Path   string `json:"path"`
+	MIME   string `json:"mime"`
+	Size   int64  `json:"size"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+}
+
+func (a requestHelpImageArtifact) valid() bool {
+	return strings.TrimSpace(a.TaskID) != "" && filepath.IsAbs(strings.TrimSpace(a.Path)) &&
+		strings.HasPrefix(strings.ToLower(strings.TrimSpace(a.MIME)), "image/") && a.Size > 0 &&
+		a.Width >= 0 && a.Height >= 0
 }
 
 func parseHistoryToolArgs(args string) map[string]any {

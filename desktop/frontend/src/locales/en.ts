@@ -1986,6 +1986,14 @@ export const en = {
   "requestHelp.selecting": "Selecting model",
   "requestHelp.selectingModel": "Selecting an available model…",
   "requestHelp.details": "Details",
+  "requestHelp.imagePreview": "Generated image",
+  "requestHelp.loadingImage": "Loading image…",
+  "requestHelp.imageLoadFailed": "Failed to load image",
+  "requestHelp.openImage": "Open image",
+  "requestHelp.revealImage": "Show in folder",
+  "requestHelp.copyImagePath": "Copy path",
+  "requestHelp.retry": "Retry",
+  "requestHelp.closePreview": "Close preview",
 
   // software update
   "updater.title": "Software update",

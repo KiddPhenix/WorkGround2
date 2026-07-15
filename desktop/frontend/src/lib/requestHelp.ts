@@ -10,6 +10,29 @@ export const REQUEST_HELP_SUMMARY_PREFIX = "request_help_summary:";
 export type RequestHelpCapability = "web_search" | "image_generation" | "";
 export type RequestHelpPhase = "selecting" | "attempting" | "switching" | "completed" | "failed";
 
+export interface ImageArtifact {
+  task_id: string;
+  path: string;
+  mime: string;
+  size: number;
+  width?: number;
+  height?: number;
+}
+
+function imageArtifactOf(value: unknown): ImageArtifact | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const artifact = value as Partial<ImageArtifact>;
+  const optionalDimension = (dimension: unknown) => dimension === undefined || (typeof dimension === "number" && Number.isInteger(dimension) && dimension > 0);
+  if (
+    typeof artifact.task_id !== "string" || artifact.task_id.trim() === "" ||
+    typeof artifact.path !== "string" || artifact.path.trim() === "" ||
+    typeof artifact.mime !== "string" || !artifact.mime.toLowerCase().startsWith("image/") ||
+    typeof artifact.size !== "number" || !Number.isSafeInteger(artifact.size) || artifact.size <= 0 ||
+    !optionalDimension(artifact.width) || !optionalDimension(artifact.height)
+  ) return undefined;
+  return artifact as ImageArtifact;
+}
+
 export interface RequestHelpStatus {
   phase: RequestHelpPhase;
   requestId?: string;
@@ -19,6 +42,7 @@ export interface RequestHelpStatus {
   attempt?: number;
   total?: number;
   error?: string;
+  artifact?: ImageArtifact;
 }
 
 interface RequestHelpWireStatus {
@@ -31,6 +55,9 @@ interface RequestHelpWireStatus {
   attempt?: number;
   total?: number;
   error?: string;
+  // artifact is a raw image artifact object from the Go side;
+  // it uses snake_case to match the JSON wire format directly.
+  artifact?: ImageArtifact;
 }
 
 function capabilityOf(value: unknown): RequestHelpCapability {
@@ -53,6 +80,9 @@ function wirePhase(value: string | undefined, attempt?: number, total?: number):
 function fromWire(current: RequestHelpStatus, wire: RequestHelpWireStatus): RequestHelpStatus {
   const attempt = positiveInt(wire.attempt) ?? current.attempt;
   const total = positiveInt(wire.total) ?? current.total;
+  // Only accept a wire artifact when it looks valid; never overwrite a
+  // known artifact with undefined (later/duplicate events must not clear it).
+  const artifact = imageArtifactOf(wire.artifact) ?? current.artifact;
   return {
     phase: wirePhase(wire.state, attempt, total),
     requestId: wire.request_id?.trim() || current.requestId,
@@ -62,6 +92,7 @@ function fromWire(current: RequestHelpStatus, wire: RequestHelpWireStatus): Requ
     attempt,
     total,
     error: wire.error?.trim() || undefined,
+    artifact,
   };
 }
 
@@ -102,7 +133,7 @@ function finalWire(output: string): RequestHelpWireStatus | undefined {
     if (match) fields.set(match[1], match[2]);
   }
   const attempt = /^(\d+)\/(\d+)$/.exec(fields.get("attempt") ?? "");
-  return {
+  const wire: RequestHelpWireStatus = {
     version: 1,
     state: "completed",
     request_id: fields.get("request_id"),
@@ -112,6 +143,16 @@ function finalWire(output: string): RequestHelpWireStatus | undefined {
     attempt: attempt ? Number(attempt[1]) : undefined,
     total: attempt ? Number(attempt[2]) : undefined,
   };
+  // Parse artifact line (if present) — tolerate any corruption.
+  const rawArtifact = fields.get("artifact");
+  if (rawArtifact) {
+    try {
+      wire.artifact = imageArtifactOf(JSON.parse(rawArtifact));
+    } catch {
+      // Corrupt artifact JSON — ignore, normal helper output still works.
+    }
+  }
+  return wire;
 }
 
 export function finishRequestHelp(current: RequestHelpStatus, output?: string, error?: string, summary?: string): RequestHelpStatus {

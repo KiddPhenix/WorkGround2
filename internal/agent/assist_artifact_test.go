@@ -215,6 +215,90 @@ func TestValidateCodexArtifactNoArtifacts(t *testing.T) {
 	}
 }
 
+// TestImageArtifactDimensions verifies that validateImageArtifact captures
+// width/height from the decoded image config.
+func TestImageArtifactDimensions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	outputDir := filepath.Join(home, "images")
+	if _, err := drawaddon.New(home).Save(context.Background(), drawaddon.ProviderInput{
+		ID: "dims", Enabled: true, Mode: drawaddon.ModeCLI, CLICommand: "test", OutputDir: outputDir,
+	}); err != nil {
+		t.Fatalf("save draw provider: %v", err)
+	}
+	// Create a 4×3 image (wider than tall).
+	path := filepath.Join(outputDir, "wide.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	data, _ := json.Marshal(drawTaskResult{
+		TaskID: "dims-1", ProviderID: "dims", Status: drawaddon.TaskSucceeded, OutputPath: path,
+	})
+	run := EphemeralSubagentRun("")
+	run.Session.Add(provider.Message{Role: provider.RoleTool, Name: "draw_image", Content: string(data)})
+
+	artifact, err := validateImageArtifact(run)
+	if err != nil {
+		t.Fatalf("validateImageArtifact: %v", err)
+	}
+	if artifact.Width != 4 {
+		t.Fatalf("width = %d, want 4", artifact.Width)
+	}
+	if artifact.Height != 3 {
+		t.Fatalf("height = %d, want 3", artifact.Height)
+	}
+	if artifact.Size <= 0 {
+		t.Fatal("size should be non-zero")
+	}
+	if artifact.MIME != "image/png" {
+		t.Fatalf("mime = %q, want image/png", artifact.MIME)
+	}
+}
+
+// TestCodexArtifactDimensions verifies that validateCodexFile captures
+// width/height.
+func TestCodexArtifactDimensions(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	dir := filepath.Join(codexHome, "generated_images", "thread_dims")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "tall.png")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 2, 5))
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	artifact, err := validateCodexFile(path, dir)
+	if err != nil {
+		t.Fatalf("validateCodexFile: %v", err)
+	}
+	if artifact.Width != 2 {
+		t.Fatalf("width = %d, want 2", artifact.Width)
+	}
+	if artifact.Height != 5 {
+		t.Fatalf("height = %d, want 5", artifact.Height)
+	}
+}
+
 // codexArtifactProvider simulates a Codex CLI provider: it streams a text
 // answer (e.g. a placeholder _image_id_.png) and, as a side effect, reports a
 // generated image file through the request-scoped ArtifactCollector attached

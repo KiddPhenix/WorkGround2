@@ -1350,6 +1350,14 @@ export const zhTW: Record<DictKey, string> = {
   "requestHelp.selecting": "選擇模型中",
   "requestHelp.selectingModel": "正在選擇可用模型…",
   "requestHelp.details": "詳情",
+  "requestHelp.imagePreview": "生成的圖片",
+  "requestHelp.loadingImage": "載入圖片中…",
+  "requestHelp.imageLoadFailed": "圖片載入失敗",
+  "requestHelp.openImage": "開啟圖片",
+  "requestHelp.revealImage": "在資料夾中顯示",
+  "requestHelp.copyImagePath": "複製路徑",
+  "requestHelp.retry": "重試",
+  "requestHelp.closePreview": "關閉預覽",
 
   // 軟體更新
   "updater.title": "軟體更新",

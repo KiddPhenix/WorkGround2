@@ -329,6 +329,9 @@ export interface AppBindings {
   SaveExportFile(path: string, payload: string, base64Encoded: boolean): Promise<void>;
   AttachDropped(path: string): Promise<DroppedItem>;
   AttachmentDataURL(path: string): Promise<string>;
+  RequestHelpImageDataURL(path: string): Promise<string>;
+  RequestHelpOpenImage(path: string): Promise<void>;
+  RequestHelpRevealImage(path: string): Promise<void>;
   Models(): Promise<ModelInfo[]>;
   SetModel(name: string): Promise<void>;
   ModelsForTab(tabID: string): Promise<ModelInfo[]>;
@@ -3315,6 +3318,15 @@ function makeMockApp(): AppBindings {
     },
     async AttachmentDataURL(_path: string) {
       return "data:image/png;base64,iVBORw0KGgo=";
+    },
+    async RequestHelpImageDataURL(_path: string) {
+      return "data:image/png;base64,iVBORw0KGgo=";
+    },
+    async RequestHelpOpenImage(path: string) {
+      console.info("mock RequestHelpOpenImage", path);
+    },
+    async RequestHelpRevealImage(path: string) {
+      console.info("mock RequestHelpRevealImage", path);
     },
         async Models() {
           const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
