@@ -141,3 +141,72 @@ func pathWithin(path, root string) bool {
 	rel, err := filepath.Rel(resolvedRoot, resolvedPath)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
+
+// validateCodexArtifact validates image files reported by a CLI provider
+// (Codex CLI) as side effects — files written to $CODEX_HOME/generated_images/
+// outside the draw_image tool flow. It applies the same rigor as
+// validateImageArtifact: absolute path, boundary check, non-empty regular
+// file, image MIME, and decodable image data. The first valid file wins.
+func validateCodexArtifact(collector *provider.ArtifactCollector) (imageArtifact, error) {
+	if collector == nil {
+		return imageArtifact{}, fmt.Errorf("no CLI artifact collector for this request")
+	}
+	candidates := collector.Artifacts()
+	if len(candidates) == 0 {
+		return imageArtifact{}, fmt.Errorf("CLI provider reported no generated image files")
+	}
+	root := provider.CodexGeneratedImagesRoot()
+	if root == "" {
+		return imageArtifact{}, fmt.Errorf("cannot resolve Codex generated_images directory")
+	}
+	var lastErr error
+	for _, path := range candidates {
+		artifact, err := validateCodexFile(path, root)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return artifact, nil
+	}
+	return imageArtifact{}, fmt.Errorf("no valid CLI image artifact: %w", lastErr)
+}
+
+// validateCodexFile validates a single Codex-generated image file against the
+// generated_images root boundary.
+func validateCodexFile(path, root string) (imageArtifact, error) {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "." || !filepath.IsAbs(cleaned) {
+		return imageArtifact{}, fmt.Errorf("CLI artifact path %q is not absolute", path)
+	}
+	if !pathWithin(cleaned, root) {
+		return imageArtifact{}, fmt.Errorf("CLI artifact %q is outside generated_images directory %q", cleaned, root)
+	}
+	file, err := os.Open(cleaned)
+	if err != nil {
+		return imageArtifact{}, fmt.Errorf("open CLI artifact %q: %w", cleaned, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return imageArtifact{}, fmt.Errorf("stat CLI artifact %q: %w", cleaned, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return imageArtifact{}, fmt.Errorf("CLI artifact %q is not a non-empty regular file", cleaned)
+	}
+	header := make([]byte, 512)
+	n, err := file.Read(header)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return imageArtifact{}, fmt.Errorf("read CLI artifact %q: %w", cleaned, err)
+	}
+	mime := http.DetectContentType(header[:n])
+	if !strings.HasPrefix(mime, "image/") {
+		return imageArtifact{}, fmt.Errorf("CLI artifact %q has non-image MIME %q", cleaned, mime)
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return imageArtifact{}, fmt.Errorf("seek CLI artifact %q: %w", cleaned, err)
+	}
+	if _, _, err := image.DecodeConfig(file); err != nil {
+		return imageArtifact{}, fmt.Errorf("decode CLI artifact %q: %w", cleaned, err)
+	}
+	return imageArtifact{TaskID: "codex-cli", Path: cleaned, MIME: mime, Size: info.Size()}, nil
+}

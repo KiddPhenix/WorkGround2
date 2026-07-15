@@ -87,13 +87,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-06
 
-### 能力求助路由
-- Location: `internal/config/assist.go`, `internal/config/cli_capability.go`, `internal/agent/request_help.go`, `internal/agent/assist_artifact.go`, `internal/boot/boot.go`, `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/RequestHelpCard.tsx`, `desktop/frontend/src/components/ToolCard.tsx`, `desktop/frontend/src/lib/requestHelp.ts`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `docs/SPEC.md`
-- Summary: 状态 done；主模型缺少 `web_search` 或 `image_generation` 时，宿主 `request_help` 按显式路由或 provider 顺序选择已配置候选，排除当前/不可用模型，安全切换失败候选并持久化运行结果。网页结果必须带来源 URL；图片必须来自真实 draw_image 任务并校验输出目录、文件和格式。Codex CLI 只在实际浏览 feature 启用时自动声明搜索能力，桌面可显式配置 provider 求助能力。对话流会明确展示发起模型、接管模型、能力、尝试次数、切换和最终状态，并可从历史摘要恢复。
-- Keywords: capability assist, request_help, web_search, image_generation, assist_models, request_id, artifact validation, progress status, history replay, Codex CLI probe, subagent transcript
-- Source: user-requested+verified-by-tests
-- Updated: 2026-07-15
-
 ### Pin Memory Sidebar
 - Location: `internal/control/pinned_memory.go`, `internal/control/input.go`, `internal/store/session.go`, `desktop/app.go`, `desktop/frontend/src/components/Message.tsx`, `desktop/frontend/src/components/Transcript.tsx`, `desktop/frontend/src/components/WorkspacePanel.tsx`, `desktop/frontend/src/lib/useController.ts`
 - Summary: 分支 `developping/pin-memory-sidebar+2026-07-10`；会话级 pinned memory 使用 `<session>.pinned-memo.json` sidecar 持久化；用户话和助手结论可从 transcript 钉选，右侧 workspace sidebar 的“钉选”页沿改动列表样式展示并支持 unpin/re-pin；Compose 把 active pins 注入 `<pinned-memory>` transient block，压缩/展示清理路径会识别该 block。
@@ -198,6 +191,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: SettingsPanel, GeneralSection, defaultToolApprovalMode, workbench
 - Source: verified-by-search
 - Updated: 2026-07-12
+
+### 能力求助路由
+- Location: `internal/config/assist.go`, `internal/config/capability.go`, `internal/config/cli_capability.go`, `internal/provider/artifact.go`, `internal/provider/cli/cli.go`, `internal/agent/request_help.go`, `internal/agent/assist_artifact.go`, `internal/boot/boot.go`, `desktop/app.go`, `desktop/onboarding_cli.go`, `desktop/settings_app.go`, `desktop/frontend/src/components/RequestHelpCard.tsx`, `desktop/frontend/src/components/ToolCard.tsx`, `desktop/frontend/src/lib/requestHelp.ts`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `docs/SPEC.md`
+- Summary: 状态 done；主模型缺少网页搜索或图片生成能力时，request_help 按显式路由或 provider 顺序选择候选，并在对话流展示接管状态。Codex CLI 运行时探测搜索和画图能力，按 JSONL thread_id 收集请求作用域图片并严格校验；Google/Gemini 按模型识别搜索、识图和画图能力；显式 capabilities 含空数组始终优先。
+- Keywords: capability assist, request_help, web_search, image_generation, vision, assist_models, request_id, artifact validation, progress status, history replay, Codex CLI probe, Gemini, thread_id, subagent transcript
+- Source: user-requested+verified-by-tests
+- Updated: 2026-07-15
 
 ### 配置加载与模型解析
 - Location: `internal/config/config.go`, `WorkGround2.example.toml`, `docs/CONFIG_PATHS.md`, `docs/GUIDE.md`

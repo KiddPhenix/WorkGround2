@@ -39,6 +39,11 @@ var validAssistCapabilities = map[config.ModelCapability]bool{
 	config.CapImageGeneration: true,
 }
 
+// errNoVerifiedImage is returned when image_generation succeeds at the model
+// level but no verifiable image artifact is found — neither via the draw_image
+// tool result nor via CLI side-effect files reported by the provider.
+var errNoVerifiedImage = errors.New("no verified image artifact produced")
+
 // RequestHelpTool lets the primary model delegate a task to a
 // capability-matched helper model when it lacks a requested capability.
 // The public schema exposes only capability and prompt; the host owns
@@ -127,14 +132,14 @@ func (t *RequestHelpTool) Description() string {
 	if len(available) > 0 {
 		availableText = strings.Join(available, ", ")
 	}
-	return "Request help from a capability-matched helper model when you lack the required capability for a task. Use this by default instead of telling the user you cannot perform a task — the host will route your request to a model that has the capability you need. The helper model runs in its own session with access to the same tools you have, within the subagent depth boundary. Only the helper's final answer is returned to you. Available helper capabilities in this session: " + availableText + "."
+	return "Request help from a capability-matched helper model when you lack the required capability for a task. Use this by default instead of telling the user you cannot perform a task — the host will route your request to a model that has the capability you need. The helper model runs in its own session with access to the same tools you have, within the subagent depth boundary. Only the helper's final answer is returned to you. Available helper capabilities in this session: " + availableText + ".\n\nWhen to use each capability:\n- web_search: the user asks to search the web or needs current information and your model cannot browse.\n- image_generation: the user asks you to draw, generate, or create an image and your model lacks image generation capability. Call request_help(image_generation) instead of declining or producing text-only descriptions."
 }
 
 func (t *RequestHelpTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 "type":"object",
 "properties":{
-  "capability":{"type":"string","enum":["web_search","image_generation"],"description":"The capability you need help with. Must be one of: web_search, image_generation."},
+  "capability":{"type":"string","enum":["web_search","image_generation"],"description":"The capability you need help with. Use web_search when the user needs current web information. Use image_generation when the user asks to draw, generate, or create an image and your model cannot produce one."},
   "prompt":{"type":"string","description":"What you need the helper to accomplish. Be specific — the helper does not see this conversation."}
 },
 "required":["capability","prompt"]
@@ -265,7 +270,16 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		}
 
 		sink := subSink(ctx)
-		answer, runErr := RunSubAgentWithSession(ctx, prov, subReg, run.Session, assistPrompt(requestID, cap, prompt), opts, sink)
+		// For image_generation, attach a request-scoped artifact collector
+		// so the CLI provider (Codex) can report side-effect image files it
+		// writes outside the draw_image tool flow.
+		runCtx := ctx
+		var artifactCollector *provider.ArtifactCollector
+		if cap == config.CapImageGeneration {
+			artifactCollector = &provider.ArtifactCollector{}
+			runCtx = provider.WithArtifactCollector(ctx, artifactCollector)
+		}
+		answer, runErr := RunSubAgentWithSession(runCtx, prov, subReg, run.Session, assistPrompt(requestID, cap, prompt), opts, sink)
 
 		if runErr != nil {
 			saveErr := t.transcripts.SaveFailed(run)
@@ -293,12 +307,19 @@ func (t *RequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (st
 		if cap == config.CapImageGeneration {
 			validated, artifactErr := validateImageArtifact(run)
 			if artifactErr != nil {
-				saveErr := t.transcripts.SaveFailed(run)
-				run.Release()
-				joined := errors.Join(artifactErr, saveErr)
-				failures = append(failures, fmt.Sprintf("%s: artifact validation: %v", ref, joined))
-				emitProgress("candidate_failed", ref, attempt+1, joined)
-				break
+				// Fall back to side-effect artifacts reported by the CLI
+				// provider (e.g. Codex CLI generated_images). The collector
+				// is request-scoped and was injected before the sub-agent run.
+				codexArtifact, codexErr := validateCodexArtifact(artifactCollector)
+				if codexErr != nil {
+					saveErr := t.transcripts.SaveFailed(run)
+					run.Release()
+					joined := errors.Join(fmt.Errorf("%w (draw_image: %v; codex artifact: %v)", errNoVerifiedImage, artifactErr, codexErr), saveErr)
+					failures = append(failures, fmt.Sprintf("%s: artifact validation: %v", ref, joined))
+					emitProgress("candidate_failed", ref, attempt+1, joined)
+					break
+				}
+				validated = codexArtifact
 			}
 			artifact = &validated
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -273,6 +274,18 @@ func TestHelperProcess(t *testing.T) {
 	case "codex-jsonl-cumulative":
 		fmt.Println(`{"type":"item.updated","item":{"id":"item_1","type":"agent_message","text":"hello"}}`)
 		fmt.Println(`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"hello world"}}`)
+	case "codex-jsonl-artifact":
+		threadID := "thread_capture_test"
+		fmt.Println(`{"type":"thread.started","thread_id":"` + threadID + `"}`)
+		fmt.Println(`{"type":"turn.started"}`)
+		fmt.Println(`{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"_image_id_.png"}}`)
+		fmt.Println(`{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`)
+		// Simulate Codex writing a real PNG as a side effect.
+		if home := os.Getenv("CODEX_HOME"); home != "" {
+			dir := filepath.Join(home, "generated_images", threadID)
+			_ = os.MkdirAll(dir, 0o755)
+			_ = os.WriteFile(filepath.Join(dir, "result.png"), []byte("\x89PNG\r\n\x1a\n fake-png"), 0o644)
+		}
 	case "fail":
 		fmt.Fprint(os.Stderr, "boom")
 		os.Exit(7)

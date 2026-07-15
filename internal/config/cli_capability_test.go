@@ -10,7 +10,9 @@ func TestParseCodexCapabilities(t *testing.T) {
 	output := `browser_use stable true
 image_generation stable true
 standalone_web_search under development false`
-	if got, want := parseCodexCapabilities(output), []string{"web_search"}; !reflect.DeepEqual(got, want) {
+	got := parseCodexCapabilities(output)
+	want := []string{"web_search", "image_generation"}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseCodexCapabilities() = %v, want %v", got, want)
 	}
 }
@@ -20,6 +22,16 @@ func TestParseCodexCapabilitiesDisabled(t *testing.T) {
 standalone_web_search under development false`
 	if got := parseCodexCapabilities(output); len(got) != 0 {
 		t.Fatalf("parseCodexCapabilities() = %v, want none", got)
+	}
+}
+
+func TestParseCodexCapabilitiesImageOnly(t *testing.T) {
+	output := `browser_use stable false
+image_generation stable true
+standalone_web_search under development false`
+	got := parseCodexCapabilities(output)
+	if len(got) != 1 || got[0] != "image_generation" {
+		t.Fatalf("parseCodexCapabilities() = %v, want [image_generation]", got)
 	}
 }
 

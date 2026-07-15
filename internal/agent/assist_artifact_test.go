@@ -117,3 +117,230 @@ func TestValidateImageArtifactRejectsOutsideOutputRoot(t *testing.T) {
 		t.Fatalf("expected output-root validation error, got %v", err)
 	}
 }
+
+func TestValidateCodexArtifactSuccess(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	threadID := "thread_ok"
+	dir := filepath.Join(codexHome, "generated_images", threadID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imgPath := filepath.Join(dir, "result.png")
+	if _, err := (&testDrawTool{path: imgPath}).Execute(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	collector := &provider.ArtifactCollector{}
+	collector.AddArtifact(imgPath)
+
+	artifact, err := validateCodexArtifact(collector)
+	if err != nil {
+		t.Fatalf("validateCodexArtifact: %v", err)
+	}
+	if artifact.Path != imgPath {
+		t.Fatalf("path = %q, want %q", artifact.Path, imgPath)
+	}
+	if !strings.HasPrefix(artifact.MIME, "image/") {
+		t.Fatalf("mime = %q", artifact.MIME)
+	}
+	if artifact.Size == 0 {
+		t.Fatal("size should be non-zero")
+	}
+}
+
+func TestValidateCodexArtifactRejectsPathOutsideRoot(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	// Plant a file outside the generated_images root.
+	outside := filepath.Join(codexHome, "evil.png")
+	if _, err := (&testDrawTool{path: outside}).Execute(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	collector := &provider.ArtifactCollector{}
+	collector.AddArtifact(outside)
+
+	_, err := validateCodexArtifact(collector)
+	if err == nil || !strings.Contains(err.Error(), "outside generated_images") {
+		t.Fatalf("expected boundary error, got %v", err)
+	}
+}
+
+func TestValidateCodexArtifactRejectsRelativePath(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	collector := &provider.ArtifactCollector{}
+	collector.AddArtifact("relative/path.png")
+
+	_, err := validateCodexArtifact(collector)
+	if err == nil || !strings.Contains(err.Error(), "not absolute") {
+		t.Fatalf("expected absolute-path error, got %v", err)
+	}
+}
+
+func TestValidateCodexArtifactRejectsNonImageMIME(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	threadID := "thread_text"
+	dir := filepath.Join(codexHome, "generated_images", threadID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	txtPath := filepath.Join(dir, "not_image.txt")
+	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	collector := &provider.ArtifactCollector{}
+	collector.AddArtifact(txtPath)
+
+	_, err := validateCodexArtifact(collector)
+	if err == nil || !strings.Contains(err.Error(), "non-image MIME") {
+		t.Fatalf("expected MIME error, got %v", err)
+	}
+}
+
+func TestValidateCodexArtifactNoCollector(t *testing.T) {
+	_, err := validateCodexArtifact(nil)
+	if err == nil || !strings.Contains(err.Error(), "no CLI artifact collector") {
+		t.Fatalf("expected no-collector error, got %v", err)
+	}
+}
+
+func TestValidateCodexArtifactNoArtifacts(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	collector := &provider.ArtifactCollector{}
+	_, err := validateCodexArtifact(collector)
+	if err == nil || !strings.Contains(err.Error(), "no generated image files") {
+		t.Fatalf("expected no-artifacts error, got %v", err)
+	}
+}
+
+// codexArtifactProvider simulates a Codex CLI provider: it streams a text
+// answer (e.g. a placeholder _image_id_.png) and, as a side effect, reports a
+// generated image file through the request-scoped ArtifactCollector attached
+// to ctx — exactly as the real CLI provider does.
+type codexArtifactProvider struct {
+	name   string
+	chunks []provider.Chunk
+	paths  []string // files to report via the collector
+}
+
+func (p *codexArtifactProvider) Name() string { return p.name }
+func (p *codexArtifactProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	if collector, ok := provider.ArtifactCollectorFrom(ctx); ok {
+		for _, path := range p.paths {
+			collector.AddArtifact(path)
+		}
+	}
+	ch := make(chan provider.Chunk, len(p.chunks))
+	for _, c := range p.chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
+}
+
+// TestRequestHelpCodexArtifactSucceeds verifies the full flow: image_generation
+// request_help runs the sub-agent, the provider reports a Codex side-effect
+// image via the ArtifactCollector (no draw_image tool call), and request_help
+// falls back to validateCodexArtifact and succeeds.
+func TestRequestHelpCodexArtifactSucceeds(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	threadID := "thread_e2e"
+	dir := filepath.Join(codexHome, "generated_images", threadID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imgPath := filepath.Join(dir, "cat.png")
+	if _, err := (&testDrawTool{path: imgPath}).Execute(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name:         "codex",
+		Kind:         "cli",
+		Command:      "codex",
+		Model:        "codex",
+		Capabilities: []string{"image_generation"},
+	})
+	cfg.Agent.AssistModels = map[string][]string{
+		"image_generation": {"codex/codex"},
+	}
+
+	prov := &codexArtifactProvider{
+		name: "codex/codex",
+		chunks: []provider.Chunk{
+			{Type: provider.ChunkText, Text: "_image_id_.png"},
+			{Type: provider.ChunkDone},
+		},
+		paths: []string{imgPath},
+	}
+	resolve := func(string, string) (provider.Provider, *provider.Pricing, int, error) {
+		return prov, nil, 0, nil
+	}
+	helper := NewRequestHelpTool(cfg, tool.NewRegistry(), "current-model", resolve,
+		20, 0, 0, 0, 0, 0, 0, 0, nil, 0, 2).
+		WithTranscripts(NewSubagentStore(t.TempDir()), t.TempDir(), "base-model", "")
+
+	out, err := helper.Execute(WithParentSession(context.Background(), "parent"), []byte(`{"capability":"image_generation","prompt":"draw a cat"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	encodedPath, _ := json.Marshal(imgPath)
+	for _, want := range []string{
+		"request_id: assist-",
+		`"path":` + string(encodedPath),
+		"image/png",
+		"codex-cli",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output should contain %q: %s", want, out)
+		}
+	}
+}
+
+// TestRequestHelpCodexArtifactRejectsFakePath verifies that when the CLI
+// provider reports a path that does not point to a real image file, the
+// request_help tool fails explicitly instead of accepting a fake path.
+func TestRequestHelpCodexArtifactRejectsFakePath(t *testing.T) {
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+
+	cfg := config.Default()
+	cfg.Providers = append(cfg.Providers, config.ProviderEntry{
+		Name:         "codex",
+		Kind:         "cli",
+		Command:      "codex",
+		Model:        "codex",
+		Capabilities: []string{"image_generation"},
+	})
+	cfg.Agent.AssistModels = map[string][]string{
+		"image_generation": {"codex/codex"},
+	}
+
+	// Provider reports a non-existent path.
+	prov := &codexArtifactProvider{
+		name: "codex/codex",
+		chunks: []provider.Chunk{
+			{Type: provider.ChunkText, Text: "_image_id_.png"},
+			{Type: provider.ChunkDone},
+		},
+		paths: []string{filepath.Join(codexHome, "generated_images", "thread_fake", "nope.png")},
+	}
+	resolve := func(string, string) (provider.Provider, *provider.Pricing, int, error) {
+		return prov, nil, 0, nil
+	}
+	helper := NewRequestHelpTool(cfg, tool.NewRegistry(), "current-model", resolve,
+		20, 0, 0, 0, 0, 0, 0, 0, nil, 0, 2).
+		WithTranscripts(NewSubagentStore(t.TempDir()), t.TempDir(), "base-model", "")
+
+	_, err := helper.Execute(WithParentSession(context.Background(), "parent"), []byte(`{"capability":"image_generation","prompt":"draw a cat"}`))
+	if err == nil {
+		t.Fatal("Execute should fail when no real image exists")
+	}
+	if !strings.Contains(err.Error(), "no verified image artifact") {
+		t.Fatalf("expected no-verified-image error, got: %v", err)
+	}
+}

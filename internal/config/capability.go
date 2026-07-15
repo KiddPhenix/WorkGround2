@@ -16,12 +16,14 @@ const (
 	CapReasoning ModelCapability = "reasoning"
 
 	// CapWebSearch means the model/provider can perform web searches.
-	// It is never inferred from model brands; providers must declare it
-	// explicitly via capabilities or a known CLI tool entry.
+	// Google Search grounding on Gemini chat models is inferred from the
+	// model name; other providers must declare it explicitly via
+	// capabilities or a known CLI tool entry.
 	CapWebSearch ModelCapability = "web_search"
 
 	// CapImageGeneration means the model/provider can generate images.
-	// It is never inferred from model brands; providers must declare it
+	// Google image models (Gemini Flash Image, Nano Banana, Imagen) are
+	// inferred from the model name; other providers must declare it
 	// explicitly via capabilities or a known CLI tool entry.
 	CapImageGeneration ModelCapability = "image_generation"
 )
@@ -105,8 +107,8 @@ func (e *ProviderEntry) HasCapability(cap ModelCapability) bool {
 		return *e.visionOverride
 	}
 
-	// 2. Explicit capabilities list
-	if len(e.Capabilities) > 0 {
+	// 2. Explicit capabilities list (including empty — suppresses inference)
+	if e.Capabilities != nil {
 		for _, c := range e.Capabilities {
 			if ModelCapability(strings.TrimSpace(c)) == cap {
 				return true
@@ -184,7 +186,13 @@ func hasBuiltinCapability(kind, model string, cap ModelCapability) bool {
 				return true
 			}
 		}
-		return false
+		// Action capabilities (web_search, image_generation) may be inferred
+		// from the Gemini model family even when the built-in entry doesn't
+		// list them. Fall through for Gemini models; other exact matches are
+		// authoritative and return false.
+		if !strings.HasPrefix(lower, "gemini-") {
+			return false
+		}
 	}
 
 	// Prefix match for versioned/suffixed variants of known vision families.
@@ -207,6 +215,14 @@ func hasBuiltinCapability(kind, model string, cap ModelCapability) bool {
 		}
 	}
 
+	// Google/Gemini action capabilities inferred from model family.
+	if cap == CapWebSearch && isGeminiWebSearchModel(lower) {
+		return true
+	}
+	if cap == CapImageGeneration && isGeminiImageModel(lower) {
+		return true
+	}
+
 	return false
 }
 
@@ -225,4 +241,37 @@ func EntryCapabilities(e *ProviderEntry) []string {
 		}
 	}
 	return out
+}
+
+// isGeminiImageModel reports whether a lowercased model id is a Google image
+// generation model: Gemini Flash Image (gemini-*-image*), Nano Banana
+// (nano-banana-*), or Imagen (imagen-*). These — and only these — get
+// image_generation inferred from the model name.
+func isGeminiImageModel(lower string) bool {
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "imagen-") || strings.HasPrefix(lower, "nano-banana") {
+		return true
+	}
+	if strings.HasPrefix(lower, "gemini-") && (strings.Contains(lower, "-flash-image") ||
+		strings.Contains(lower, "-flash-lite-image") ||
+		strings.Contains(lower, "-pro-image") ||
+		strings.Contains(lower, "-image-generation")) {
+		return true
+	}
+	return false
+}
+
+// isGeminiWebSearchModel reports whether a lowercased model id belongs to a
+// Gemini family that supports Google Search grounding. Gemini text models
+// qualify; current Gemini 3 image models also support search grounding.
+func isGeminiWebSearchModel(lower string) bool {
+	if lower == "" || !strings.HasPrefix(lower, "gemini-") {
+		return false
+	}
+	if isGeminiImageModel(lower) {
+		return strings.HasPrefix(lower, "gemini-3")
+	}
+	return true
 }

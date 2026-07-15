@@ -69,8 +69,12 @@ func parseCodexCapabilities(output string) []string {
 		}
 		enabled[fields[0]] = true
 	}
+	var caps []string
 	if enabled["browser_use"] || enabled["standalone_web_search"] {
-		return []string{string(CapWebSearch)}
+		caps = append(caps, string(CapWebSearch))
 	}
-	return nil
+	if enabled["image_generation"] {
+		caps = append(caps, string(CapImageGeneration))
+	}
+	return caps
 }

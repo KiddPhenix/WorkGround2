@@ -205,17 +205,28 @@ the backing model.
   up to `agent.assist_max_attempts` (default 3).
 - **Retry and validation.** `web_search` may retry and success requires at least
   one HTTP(S) source URL. `image_generation` must not automatically repeat after
-  an ambiguous started attempt. Image success requires a real `draw_image` tool
-  result with succeeded status; its path must remain under that provider's
-  configured output directory and point to a non-empty, MIME-detected, decodable
-  image. Text-only claims and fake/escaped paths fail explicitly.
+  an ambiguous started attempt. Image success first tries a real `draw_image`
+  tool result (succeeded status, path under the provider's configured output
+  directory, non-empty, MIME-detected, decodable). If that fails, it falls back
+  to side-effect artifacts reported by the CLI provider via a request-scoped
+  collector — Codex CLI captures the `thread.started` thread ID and reports
+  files under `$CODEX_HOME/generated_images/<thread_id>/` (falling back to
+  `~/.codex/generated_images/<thread_id>/`), validated against the same root
+  boundary, absolute path, non-empty regular file, image MIME, and decodability.
+  Text-only claims and fake/escaped paths fail explicitly.
 - **Model capabilities.** `web_search` and `image_generation` are not inferred
-  from model brands. Providers normally declare them explicitly via the
-  `capabilities` field. Codex CLI is runtime-probed with `codex features list`
-  under a two-second timeout; only an enabled `browser_use` or
-  `standalone_web_search` adds `web_search`. Probe failure is warned and does
-  not block startup. Explicit capabilities disable probing. Image generation is
-  not auto-declared until the CLI protocol can validate a real artifact.
+  from model brands, with two controlled exceptions: (1) Google Gemini chat
+  models (`gemini-*`) infer `web_search` from the model name, and current
+  Gemini 3 image models also infer search grounding; (2) Google image models
+  (`imagen-*`, `nano-banana*`, and known Gemini Image families) infer
+  `image_generation`. All Gemini models infer `vision`.
+  Other providers declare them explicitly via the `capabilities` field. An
+  explicit `capabilities` list (including an empty list) always takes
+  precedence and suppresses inference. Codex CLI is runtime-probed with
+  `codex features list` under a two-second timeout: an enabled `browser_use` or
+  `standalone_web_search` adds `web_search`; an enabled `image_generation` adds
+  `image_generation`. Probe failure is warned and does not block startup.
+  Explicit capabilities disable probing.
 - **Plumbing.** `request_help` reuses the same `RunSubAgentWithSession` entry
   point as `task` — it creates a fresh session, runs the prompt, and returns the
   helper's final answer. Tool activity nests under the parent call via the same

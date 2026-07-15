@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,6 +40,7 @@ type client struct {
 	protocol string
 	timeout  time.Duration
 	vision   bool
+	codex    bool
 }
 
 type request struct {
@@ -52,6 +55,7 @@ type request struct {
 type output struct {
 	Text      string          `json:"text,omitempty"`
 	Type      string          `json:"type,omitempty"`
+	ThreadID  string          `json:"thread_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	Delta     string          `json:"delta,omitempty"`
 	Reasoning string          `json:"reasoning,omitempty"`
@@ -121,6 +125,7 @@ type deltaOutput struct {
 type jsonlState struct {
 	itemText      map[string]string
 	itemReasoning map[string]string
+	threadID      string
 }
 
 // New builds a provider backed by a local CLI process.
@@ -149,6 +154,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		protocol: protocol,
 		timeout:  timeoutValue(cfg.Extra["timeout_seconds"]),
 		vision:   boolValue(cfg.Extra["vision"]),
+		codex:    isCodexCommand(command),
 	}, nil
 }
 
@@ -206,9 +212,14 @@ func (c *client) run(ctx context.Context, req provider.Request, out chan<- provi
 		_, _ = stdin.Write(body)
 		_ = stdin.Close()
 	}()
-	parseErr := c.readStdout(ctx, stdout, out)
+	threadID, parseErr := c.readStdout(ctx, stdout, out)
 	waitErr := cmd.Wait()
 	<-stderrDone
+	// Report side-effect image artifacts even when the process exits with an
+	// error: Codex may have already written PNGs before failing late.
+	if c.codex && threadID != "" {
+		reportCodexArtifacts(ctx, threadID)
+	}
 	if waitErr != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("%s: local cli timed out or was cancelled: %w", c.name, ctx.Err())
@@ -221,7 +232,7 @@ func (c *client) run(ctx context.Context, req provider.Request, out chan<- provi
 	return nil
 }
 
-func (c *client) readStdout(ctx context.Context, r io.Reader, out chan<- provider.Chunk) error {
+func (c *client) readStdout(ctx context.Context, r io.Reader, out chan<- provider.Chunk) (string, error) {
 	switch c.protocol {
 	case "jsonl":
 		state := jsonlState{
@@ -237,31 +248,34 @@ func (c *client) readStdout(ctx context.Context, r io.Reader, out chan<- provide
 			}
 			var ev output
 			if err := json.Unmarshal([]byte(line), &ev); err != nil {
-				return fmt.Errorf("%s: decode jsonl output: %w", c.name, err)
+				return "", fmt.Errorf("%s: decode jsonl output: %w", c.name, err)
+			}
+			if ev.Type == "thread.started" && state.threadID == "" {
+				state.threadID = strings.TrimSpace(ev.ThreadID)
 			}
 			if err := emitOutput(ctx, out, ev, &state); err != nil {
-				return fmt.Errorf("%s: cli output: %w", c.name, err)
+				return "", fmt.Errorf("%s: cli output: %w", c.name, err)
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("%s: read jsonl output: %w", c.name, err)
+			return "", fmt.Errorf("%s: read jsonl output: %w", c.name, err)
 		}
-		return nil
+		return state.threadID, nil
 	case "json":
 		data, err := readLimited(r, maxOutputBytes)
 		if err != nil {
-			return fmt.Errorf("%s: read json output: %w", c.name, err)
+			return "", fmt.Errorf("%s: read json output: %w", c.name, err)
 		}
 		if len(bytes.TrimSpace(data)) == 0 {
-			return fmt.Errorf("%s: local cli returned empty stdout", c.name)
+			return "", fmt.Errorf("%s: local cli returned empty stdout", c.name)
 		}
 		var ev output
 		if err := json.Unmarshal(data, &ev); err != nil {
-			return fmt.Errorf("%s: decode json output: %w", c.name, err)
+			return "", fmt.Errorf("%s: decode json output: %w", c.name, err)
 		}
-		return emitOutput(ctx, out, ev, nil)
+		return "", emitOutput(ctx, out, ev, nil)
 	default:
-		return c.readTextStdout(ctx, r, out)
+		return "", c.readTextStdout(ctx, r, out)
 	}
 }
 
@@ -569,4 +583,62 @@ func stderrSuffix(stderr string) string {
 		return ""
 	}
 	return ": " + strings.TrimSpace(stderr)
+}
+
+// reportCodexArtifacts scans $CODEX_HOME/generated_images/<threadID>/ for real
+// image files produced by Codex CLI as a side effect and reports their absolute
+// paths through the request-scoped ArtifactCollector attached to ctx (if any).
+//
+// Security: threadID is treated as untrusted input. The resolved directory must
+// stay inside the generated_images root — a threadID containing path separators
+// or ".." segments is rejected. Only regular, non-empty files are reported.
+func reportCodexArtifacts(ctx context.Context, threadID string) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" {
+		return
+	}
+	collector, ok := provider.ArtifactCollectorFrom(ctx)
+	if !ok || collector == nil {
+		return
+	}
+	root := provider.CodexGeneratedImagesRoot()
+	if root == "" {
+		return
+	}
+	// Reject thread IDs that attempt path traversal — the directory must be a
+	// direct child of the generated_images root.
+	if strings.ContainsAny(threadID, `/\`) || threadID == "." || threadID == ".." || strings.Contains(threadID, "..") {
+		return
+	}
+	dir := filepath.Join(root, threadID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			continue
+		}
+		abs := filepath.Join(dir, entry.Name())
+		// Final boundary check: the cleaned absolute path must be inside dir.
+		if !pathWithinRoot(abs, dir) {
+			continue
+		}
+		collector.AddArtifact(abs)
+	}
+}
+
+// pathWithinRoot reports whether path is inside root after cleaning both.
+func pathWithinRoot(path, root string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanRoot := filepath.Clean(root)
+	rel, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

@@ -662,12 +662,22 @@ capability. Runtime failures try the next candidate up to `assist_max_attempts`.
 
 `web_search` may retry and a successful answer must include at least one HTTP(S)
 source URL. `image_generation` never automatically retries after a started
-attempt. Success requires a real `draw_image` tool result whose task status,
-configured output directory, file existence, non-empty size, MIME, and image
-decoding all validate; text-only claims, fake paths, and escaped paths fail.
+attempt. Success first tries a real `draw_image` tool result (task status,
+configured output directory, file existence, non-empty size, MIME, image
+decoding); if that is absent, it falls back to side-effect artifacts reported by
+the CLI provider via a request-scoped collector (Codex CLI files under
+`$CODEX_HOME/generated_images/<thread_id>/`), validated against the same root
+boundary, absolute path, non-empty regular file, image MIME, and decodability.
+Text-only claims, fake paths, and escaped paths fail.
 
-Capabilities are not inferred from model brands. A provider normally declares
-them explicitly:
+Capabilities are not inferred from model brands, with two controlled
+exceptions: Google Gemini chat models (`gemini-*`) infer `web_search` from the
+model name, and current Gemini 3 image models also infer search grounding;
+Google image models (`imagen-*`, `nano-banana*`, and known Gemini Image
+families) infer `image_generation`. All Gemini models infer `vision`. An
+explicit `capabilities` list (including an empty list)
+always takes precedence and suppresses inference. Other providers normally
+declare them explicitly:
 
 ```toml
 [[providers]]
@@ -680,11 +690,16 @@ capabilities = ["web_search"]
 ```
 
 Codex CLI is a controlled exception: startup reads `codex features list` with a
-two-second timeout and only adds it as a `web_search` candidate when
-`browser_use` or `standalone_web_search` is actually enabled. Probe failures
-emit a warning and startup continues; explicit `capabilities` disables probing.
-`image_generation` is not auto-declared because the CLI text protocol cannot yet
-verify that a real image artifact was produced.
+two-second timeout. An enabled `browser_use` or `standalone_web_search` adds
+`web_search`; an enabled `image_generation` adds `image_generation`. Probe
+failures emit a warning and startup continues; explicit `capabilities`
+(including an empty list) disables probing. When Codex generates images as a
+side effect, the CLI provider captures the `thread.started` thread ID from the
+JSONL stream and reports files under `$CODEX_HOME/generated_images/<thread_id>/`
+(or the standard `~/.codex/generated_images/<thread_id>/` fallback) through a
+request-scoped artifact collector. `request_help` validates these
+Codex artifacts with the same rigor as `draw_image` results: absolute path,
+boundary check, non-empty regular file, image MIME, and decodable image data.
 
 Desktop exposes verified Web search / Image generation checkboxes under each
 provider's compatibility settings. Every result includes a stable request ID,

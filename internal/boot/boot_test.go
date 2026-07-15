@@ -1352,6 +1352,7 @@ func defaultFullBootToolNames() []string {
 		"read_session",
 		"read_skill",
 		"remember",
+		"request_help",
 		"research",
 		"review",
 		"run_skill",
