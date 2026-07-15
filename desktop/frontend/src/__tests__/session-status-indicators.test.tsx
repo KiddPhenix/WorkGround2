@@ -282,6 +282,7 @@ console.log("\n── Controls render before AddOn in App.tsx ──\n");
   ok(statusPos > -1 && addonPos > -1 && statusPos < addonPos,
     "SessionStatusIndicators appears before AddOnLauncherButton in App.tsx");
   ok(appSource.includes("tabs={runtimeTabMetas}"), "global status uses visible and detached runtime tabs");
+  ok(appSource.includes("handleTabChange(tab.id, tab)"), "running-list navigation forwards the fresh runtime snapshot into tab switching");
 }
 
 console.log("\n── CSS classes exist ──\n");

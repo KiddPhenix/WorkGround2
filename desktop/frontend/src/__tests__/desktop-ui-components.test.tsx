@@ -18,7 +18,7 @@ import { TaskMemoryBar } from "../components/desktop-ui/TaskMemoryBar";
 import { RunBlock, CompletedRunTab, ActiveRunView } from "../components/desktop-ui/RunBlock";
 import { ArtifactShelf, ArtifactItem } from "../components/desktop-ui/ArtifactShelf";
 import { QueueTray } from "../components/desktop-ui/QueueTray";
-import { RuntimeConfigBar, derivePrimaryActionLabel } from "../components/desktop-ui/RuntimeConfigBar";
+import { RuntimeConfigBar, connectionStatusFromRuntime, derivePrimaryActionLabel, runtimeStatusLabel } from "../components/desktop-ui/RuntimeConfigBar";
 import { LocaleProvider } from "../lib/i18n";
 import { AddOnWorkbench, WorkbenchHeader, InstanceHeader, AddOnInstanceView } from "../components/desktop-ui/AddOnWorkbench";
 import { recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
@@ -798,18 +798,30 @@ installDom();
 
 {
   const container = render(
-    <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="running" hasQueue={false} onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
+    <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="foreground" hasQueue={false} onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
   );
-  ok(hasText(container, "加入队列"), "RuntimeConfigBar: shows 加入队列 for running");
+  ok(hasText(container, "加入队列"), "RuntimeConfigBar: shows 加入队列 for foreground");
   cleanup();
 }
 
 // ── derivePrimaryActionLabel ────────────────────────────────────────────────
 
 eq(derivePrimaryActionLabel("idle", false), "发送", "derivePrimaryActionLabel: idle → 发送");
-eq(derivePrimaryActionLabel("running", true), "加入队列", "derivePrimaryActionLabel: running → 加入队列");
+eq(derivePrimaryActionLabel("foreground", true), "加入队列", "derivePrimaryActionLabel: foreground → 加入队列");
 eq(derivePrimaryActionLabel("waiting_user", false), "加入队列", "derivePrimaryActionLabel: waiting_user → 加入队列");
+eq(derivePrimaryActionLabel("background_only", false), "发送", "derivePrimaryActionLabel: background_only → 发送");
+eq(derivePrimaryActionLabel("cancelling", false), "加入队列", "derivePrimaryActionLabel: cancelling → 加入队列");
 eq(derivePrimaryActionLabel("offline", false), "保存到本地队列", "derivePrimaryActionLabel: offline → 保存到本地队列");
+eq(connectionStatusFromRuntime("foreground", true), "foreground", "foreground runtime queues replies");
+eq(connectionStatusFromRuntime("waiting_user", true), "waiting_user", "waiting_user runtime queues replies");
+eq(connectionStatusFromRuntime("background_only", false), "background_only", "background_only runtime allows a new send");
+eq(connectionStatusFromRuntime("cancelling", true), "cancelling", "cancelling runtime preserves foreground queue semantics");
+eq(connectionStatusFromRuntime("cancelling", false), "idle", "cancelling without foreground activity does not claim replies are queued");
+eq(connectionStatusFromRuntime("idle", false), "idle", "idle runtime sends normally");
+eq(runtimeStatusLabel("foreground"), "运行中", "foreground runtime label");
+eq(runtimeStatusLabel("waiting_user"), "等待用户", "waiting_user runtime label");
+eq(runtimeStatusLabel("background_only"), "后台运行", "background_only runtime label");
+eq(runtimeStatusLabel("cancelling"), "取消中", "cancelling runtime label");
 
 // ── AddOnWorkbench ─────────────────────────────────────────────────────────
 

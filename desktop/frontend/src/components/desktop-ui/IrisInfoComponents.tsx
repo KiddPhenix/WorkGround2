@@ -18,13 +18,13 @@ import {
 import { TaskMemoryBar } from "../desktop-ui/TaskMemoryBar";
 import { ArtifactShelf } from "../desktop-ui/ArtifactShelf";
 import { QueueTray } from "../desktop-ui/QueueTray";
-import { RuntimeConfigBar } from "../desktop-ui/RuntimeConfigBar";
+import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type ConnectionStatus } from "../desktop-ui/RuntimeConfigBar";
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
 import { useRunStore } from "../../store/run";
 import { Layers } from "lucide-react";
 import { app } from "../../lib/bridge";
-import type { CollaborationMode, ToolApprovalMode } from "../../lib/types";
+import type { CollaborationMode, RuntimeMode, ToolApprovalMode } from "../../lib/types";
 import type { Item } from "../../lib/useController";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -322,7 +322,8 @@ export function SessionQueueTray({ onEditContent }: { onEditContent?: (content: 
 export function SessionConfigBar({
   modelLabel,
   contextPercent,
-  running,
+  runtimeMode,
+  foregroundActive,
   collaborationMode,
   toolApprovalMode,
   controllerReady,
@@ -334,7 +335,8 @@ export function SessionConfigBar({
 }: {
   modelLabel: string;
   contextPercent: number;
-  running: boolean;
+  runtimeMode: RuntimeMode;
+  foregroundActive: boolean;
   collaborationMode: CollaborationMode;
   toolApprovalMode: ToolApprovalMode;
   controllerReady: boolean;
@@ -345,16 +347,19 @@ export function SessionConfigBar({
   onSetApprovalMode?: (mode: ToolApprovalMode) => void;
 }) {
   const hasQueue = useComposerQueueStore((s) => s.items.length > 0);
+  const connectionStatus: ConnectionStatus = controllerReady
+    ? connectionStatusFromRuntime(runtimeMode, foregroundActive)
+    : "offline";
   return (
     <RuntimeConfigBar
       config={{
         modelId: modelLabel,
         contextPercent,
-        runtimeStatus: running ? "运行中" : "空闲",
+        runtimeStatus: runtimeStatusLabel(runtimeMode),
         collaborationMode,
         approvalMode: toolApprovalMode,
       }}
-      connectionStatus={running ? "running" : "idle"}
+      connectionStatus={connectionStatus}
       hasQueue={hasQueue}
       tabId={tabId}
       onPrimaryAction={controllerReady ? onPrimaryAction : undefined}

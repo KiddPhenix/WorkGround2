@@ -1325,6 +1325,7 @@ export default function App() {
   const conversationViewportRef = useRef<HTMLDivElement>(null);
   const workspaceTreeRef = useRef<HTMLDivElement>(null);
   const runningRef = useRef(state.running);
+  runningRef.current = state.running;
   const activeTabIdRef = useRef(activeTabId);
   const commitThenSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
@@ -1723,12 +1724,6 @@ export default function App() {
       notice(msg || t("clearContext.failed"), "warn");
     }
   }, [clearSession, notice, t]);
-
-  // Keep runningRef in sync so handleSend sees the latest running value
-  // even inside a stale closure.
-  useEffect(() => {
-    runningRef.current = state.running;
-  }, [state.running]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -2289,13 +2284,17 @@ export default function App() {
     [switchTab, refreshTabMetas],
   );
 
-  const handleTabChange = useCallback((id: string) => {
+  const handleTabChange = useCallback((id: string, optimisticTab?: TabMeta) => {
     closeTransientOverlays();
-    const selected = tabMetas.find((tab) => tab.id === id);
+    // Prefer the runtime snapshot (from ListRuntimeTabs) for fresher
+    // foregroundActive / runtimeMode; fall back to regular tabMetas.
+    const selected = optimisticTab
+                  ?? runtimeTabMetas.find((tab) => tab.id === id)
+                  ?? tabMetas.find((tab) => tab.id === id);
     setTabMetas((current) => current.map((tab) => ({ ...tab, active: tab.id === id })));
     void enqueueTabSwitch(id, selected);
     setTabRevealSignal((signal) => signal + 1);
-  }, [closeTransientOverlays, enqueueTabSwitch, tabMetas]);
+  }, [closeTransientOverlays, enqueueTabSwitch, runtimeTabMetas, tabMetas]);
 
   const handleTabClose = useCallback(async (id: string) => {
     closeTransientOverlays();
@@ -2743,7 +2742,7 @@ export default function App() {
 
   const handleOpenRuntimeTab = useCallback((tab: TabMeta): Promise<void> => {
     if (tabMetas.some((visible) => visible.id === tab.id)) {
-      handleTabChange(tab.id);
+      handleTabChange(tab.id, tab);
       return Promise.resolve();
     }
     if (tab.topicId) {
@@ -3404,7 +3403,8 @@ export default function App() {
                 <SessionConfigBar
                   modelLabel={irisFixtureActive ? "DeepSeek-R1" : state.meta?.label ?? t("status.connecting")}
                   contextPercent={irisFixtureActive ? 33 : contextPercent}
-                  running={irisFixtureActive || state.running}
+                  runtimeMode={state.runtimeMode}
+                  foregroundActive={irisFixtureActive || state.running}
                   collaborationMode={collaborationMode}
                   toolApprovalMode={toolApprovalMode}
                   controllerReady={controllerReady}

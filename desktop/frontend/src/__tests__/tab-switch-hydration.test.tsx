@@ -593,6 +593,30 @@ await act(async () => {
 await waitFor("startup queue drained", () => submittedPrompts.some((entry) => entry.tabId === "tab-g" && entry.text === "queued during startup"));
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "queued during startup" && !item.queued) ?? false, "ready session promotes the queued message to sending");
 
+runningTabs.delete("tab-g");
+await act(async () => {
+  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-g" });
+  await flushPromises();
+});
+tabG.ready = false;
+await act(async () => {
+  await controller?.switchTab("tab-g", tabG);
+  await controller?.sendToTab("tab-g", "queue owned by old session");
+  await flushPromises();
+});
+ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "queue owned by old session" && item.queued) ?? false, "old session owns its startup queue before session activation");
+const submittedBeforeSessionChange = submittedPrompts.length;
+const nextTabGSessionPath = `${tabG.workspaceRoot}/sessions/next-tab-g.jsonl`;
+tabG.sessionPath = nextTabGSessionPath;
+tabG.ready = true;
+await act(async () => {
+  for (const handler of sessionActivatedHandlers) handler({ reason: "remote-new", tabId: "tab-g", sessionPath: nextTabGSessionPath });
+  await flushPromises();
+});
+await waitFor("tab-g session queue isolation", () => controller?.state.meta?.sessionPath === nextTabGSessionPath && controller.state.hydrating === false);
+ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "queue owned by old session") ?? false), "new session does not display the previous session queue");
+eq(submittedPrompts.length, submittedBeforeSessionChange, "new session does not drain the previous session queue");
+
 openProjectTabTargetId = "tab-f";
 await act(async () => {
   await controller?.openProjectTab(tabF.workspaceRoot, tabF.topicId || "");
@@ -608,6 +632,62 @@ await act(async () => {
 await waitFor("empty ready reconciliation", () => controller?.state.hydrating === false);
 eq(controller?.state.historyLoading, false, "same-path agent ready keeps resolved empty history visible");
 eq(historyCalls.filter((tabID) => tabID === "tab-f").length, tabFHistoryCallsBeforeReady, "same-path agent ready does not reload resolved empty history");
+
+// ── foreground runtime snapshot during tab switch ──────────────────────
+// Goal: when switching from the global running tab list, the full runtime
+// snapshot (foregroundActive, runtimeMode, turnStartedAt) must seed
+// immediately and survive a stale idle backend snapshot.
+
+const tabH = tabMeta("tab-h", {
+  running: true,
+  runtimeMode: "foreground" as const,
+  foregroundActive: true,
+  backgroundJobs: 0,
+  cancellable: true,
+  turnStartedAt: Date.now() - 10_000,
+});
+tabsById.set("tab-h", tabH);
+runningTabs.add("tab-h");
+const setActiveHGate = deferred<void>();
+const originalSetActive = window.go.main.App.SetActiveTab;
+const setActiveHResolve: typeof setActiveHGate.resolve = setActiveHGate.resolve;
+window.go.main.App.SetActiveTab = async (tabID: string) => {
+  if (tabID === "tab-h") {
+    await setActiveHGate.promise;
+  }
+  return originalSetActive(tabID);
+};
+
+let switchToH: Promise<TabMeta[] | undefined> | undefined;
+await act(async () => {
+  switchToH = controller?.switchTab("tab-h", tabH);
+  await flushPromises();
+});
+eq(controller?.activeTabId, "tab-h", "foreground runtime snapshot: active tab updated before backend activation");
+eq(controller?.state.running, true, "foreground runtime snapshot: running is true before SetActiveTab resolves");
+eq(controller?.state.runtimeMode, "foreground", "foreground runtime snapshot: runtimeMode is foreground before SetActiveTab resolves");
+eq((controller?.state.turnStartAt ?? 0) > 0, true, "foreground runtime snapshot: turnStartedAt preserved before SetActiveTab resolves");
+
+// Now simulate a stale idle snapshot arriving during backend activation.
+// The protection should prevent clearing the live foreground turn.
+runningTabs.delete("tab-h");
+await act(async () => {
+  setActiveHGate.resolve();
+  await switchToH;
+  await flushPromises();
+});
+eq(controller?.state.running, true, "foreground runtime snapshot: stale idle backend snapshot does not clear running after SetActiveTab");
+eq((controller?.state.turnStartAt ?? 0) > 0, true, "foreground runtime snapshot: turnStartedAt survives stale idle reconciliation");
+
+// Only turn_done from the authoritative event stream should finish the turn.
+await act(async () => {
+  for (const handler of eventHandlers) handler({ kind: "turn_done", tabId: "tab-h" });
+  await flushPromises();
+});
+eq(controller?.state.running, false, "foreground runtime snapshot: turn_done finishes the turn");
+
+// Restore original SetActiveTab
+window.go.main.App.SetActiveTab = originalSetActive;
 
 await act(async () => {
   root.unmount();

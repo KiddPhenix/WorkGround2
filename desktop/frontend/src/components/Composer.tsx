@@ -558,6 +558,8 @@ export function Composer({
   const lastGuidanceConsumedKey = useRef(guidanceConsumedKey);
   const selfDispatchedGuidanceRef = useRef<string[]>([]);
   const submittingRef = useRef(false);
+  const runningRef = useRef(running);
+  runningRef.current = running;
   const nativeClipboardPasteTimerRef = useRef<number | null>(null);
   // Snapshot of the current cwd so async callbacks (openPastChats) can detect
   // workspace switches and discard stale responses (issue #3601).
@@ -1195,7 +1197,7 @@ export function Composer({
   }, [imageInputEnabled, attachments, composerPrompt]);
 
   const submit = async () => {
-    if (disabled || (!running && submitDisabled) || readOnly || submittingRef.current) return;
+    if (disabled || (!runningRef.current && submitDisabled) || readOnly || submittingRef.current) return;
     const submitDraftKey = activeDraftKeyRef.current;
     const currentText = textRef.current;
     const trimmedText = currentText.trim();
@@ -1231,7 +1233,7 @@ export function Composer({
       const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
       const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
-      if (running) {
+      if (runningRef.current) {
         const guidanceText = displayText.trim();
         const guidanceSubmitText = submitText.trim();
         if (guidanceText) {

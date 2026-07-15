@@ -237,7 +237,8 @@ const configEl = render(
   <LocaleProvider><SessionConfigBar
     modelLabel={configData.modelId}
     contextPercent={configData.contextPercent}
-    running={true}
+    runtimeMode="foreground"
+    foregroundActive={true}
     collaborationMode="normal"
     toolApprovalMode="ask"
     controllerReady={true}

@@ -44,16 +44,79 @@ const startupQueued = reducer({ ...initialState }, {
   text: "run after startup",
   submitText: "hidden context\nrun after startup",
   seq: 0,
+  queueSessionPath: "/repo/session.jsonl",
 });
 const startupQueuedBubble = startupQueued.items[0];
 eq(startupQueuedBubble.kind === "user" && startupQueuedBubble.queued, true, "startup submit is visible as queued");
 eq(startupQueued.running, false, "startup queue does not pretend a turn is running");
 eq(startupQueued.pendingUser, undefined, "startup queue does not create a backend pending marker");
-const startupQueuedAfterHydrate = reducer(startupQueued, { type: "history", messages: [] });
+const startupQueuedAfterHydrate = reducer(startupQueued, { type: "history", messages: [], sessionPath: "/repo/session.jsonl" });
 eq(startupQueuedAfterHydrate.items[0].kind === "user" && startupQueuedAfterHydrate.items[0].queued, true, "startup queue survives empty history hydration");
 const startupQueuedAfterReset = reducer(startupQueued, { type: "reset" });
 eq(startupQueuedAfterReset.items[0].kind === "user" && startupQueuedAfterReset.items[0].queued, true, "startup queue survives session reset during activation");
 eq(startupQueuedAfterReset.seq, startupQueued.seq, "startup queue keeps sequence identity across reset");
+
+// Same tab, different sessionPath: queued items must be filtered out
+const altSessionQueued = reducer({ ...initialState }, {
+  type: "startup_user_queued",
+  id: "u0",
+  text: "msg for session A",
+  seq: 0,
+  queueSessionPath: "/repo/sessions/a.jsonl",
+});
+const altSessionReset = reducer(altSessionQueued, { type: "reset" });
+eq(altSessionReset.items.length, 1, "reset preserves queued items before history resolves session identity");
+const altSessionHistory = reducer(altSessionReset, { type: "history", messages: [], sessionPath: "/repo/sessions/b.jsonl" });
+eq(altSessionHistory.items.length, 0, "queued item from session A is dropped when history resolves to session B");
+
+// Same sessionPath: queued items survive
+const sameSessionQueued = reducer({ ...initialState }, {
+  type: "startup_user_queued",
+  id: "u0",
+  text: "msg for same session",
+  seq: 0,
+  queueSessionPath: "/repo/sessions/same.jsonl",
+});
+const sameSessionReset = reducer(sameSessionQueued, { type: "reset" });
+const sameSessionHistory = reducer(sameSessionReset, { type: "history", messages: [], sessionPath: "/repo/sessions/same.jsonl" });
+eq(sameSessionHistory.items.length, 1, "queued item survives when history resolves to the same sessionPath");
+eq(sameSessionHistory.items[0].kind === "user" && sameSessionHistory.items[0].text, "msg for same session", "queued item text survives same-session history hydration");
+
+// Empty sessionPath in queued item, non-empty in history: drop (conservative)
+const emptyPathQueued = reducer({ ...initialState }, {
+  type: "startup_user_queued",
+  id: "u0",
+  text: "msg with empty sessionPath",
+  seq: 0,
+  queueSessionPath: "",
+});
+const emptyPathReset = reducer(emptyPathQueued, { type: "reset" });
+const emptyPathHistory = reducer(emptyPathReset, { type: "history", messages: [], sessionPath: "/repo/sessions/b.jsonl" });
+eq(emptyPathHistory.items.length, 0, "queued item with empty sessionPath is dropped when history has a known sessionPath");
+
+// Non-empty sessionPath in queued item, empty in history: drop (conservative)
+const knownPathQueued = reducer({ ...initialState }, {
+  type: "startup_user_queued",
+  id: "u0",
+  text: "msg with known sessionPath",
+  seq: 0,
+  queueSessionPath: "/repo/sessions/a.jsonl",
+});
+const knownPathReset = reducer(knownPathQueued, { type: "reset" });
+const knownPathHistory = reducer(knownPathReset, { type: "history", messages: [], sessionPath: "" });
+eq(knownPathHistory.items.length, 0, "queued item with known sessionPath is dropped when history has empty sessionPath");
+
+// Both empty: preserve (no session identity to violate)
+const bothEmptyQueued = reducer({ ...initialState }, {
+  type: "startup_user_queued",
+  id: "u0",
+  text: "msg with both empty",
+  seq: 0,
+  queueSessionPath: "",
+});
+const bothEmptyReset = reducer(bothEmptyQueued, { type: "reset" });
+const bothEmptyHistory = reducer(bothEmptyReset, { type: "history", messages: [], sessionPath: "" });
+eq(bothEmptyHistory.items.length, 1, "queued item with empty sessionPath survives when history also has empty sessionPath");
 
 const startupSending = reducer(startupQueued, { type: "startup_user_sending", id: "u0" });
 eq(startupSending.items[0].kind === "user" && startupSending.items[0].queued, false, "ready drain promotes the queued bubble to sending");

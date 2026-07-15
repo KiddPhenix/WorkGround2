@@ -83,7 +83,7 @@ async function refreshArtifactsForTab(tabId: string): Promise<void> {
 }
 
 export type Item =
-  | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; queued?: boolean; queueError?: string; createdAt?: number; checkpointTurn?: number }
+  | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; queued?: boolean; queueError?: string; queueSessionPath?: string; createdAt?: number; checkpointTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean; memoryCitations?: MemoryCitation[] }
   | { kind: "phase"; id: string; text: string }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string }
@@ -435,16 +435,26 @@ function compactArchivedToolItems(items: Item[]): Item[] {
   });
 }
 
-function appendStartupQueued(history: Item[], current: Item[]): Item[] {
+function sameQueueSession(left: string | undefined, right: string | undefined): boolean {
+  return comparableSessionPath(left ?? "") === comparableSessionPath(right ?? "");
+}
+
+function retainQueueSession(items: Item[], sessionPath: string): Item[] {
+  const filtered = items.filter((item) => item.kind !== "user" || !item.queued || sameQueueSession(item.queueSessionPath, sessionPath));
+  return filtered.length === items.length ? items : filtered;
+}
+
+function appendStartupQueued(history: Item[], current: Item[], sessionPath: string): Item[] {
   const ids = new Set(history.map((item) => item.id));
-  const queued = current.filter((item) => item.kind === "user" && item.queued && !ids.has(item.id));
+  const queued = retainQueueSession(current, sessionPath)
+    .filter((item) => item.kind === "user" && item.queued && !ids.has(item.id));
   return queued.length > 0 ? [...history, ...queued] : history;
 }
 
 type Action =
   | { type: "event"; e: WireEvent }
   | { type: "user"; text: string; submitText?: string; seq: number }
-  | { type: "startup_user_queued"; id: string; text: string; submitText?: string; seq: number }
+  | { type: "startup_user_queued"; id: string; text: string; submitText?: string; seq: number; queueSessionPath: string }
   | { type: "startup_user_sending"; id: string }
   | { type: "startup_user_waiting"; id: string; error?: string }
   | { type: "unsend" }
@@ -473,7 +483,7 @@ type Action =
   | { type: "local_notice"; level: "info" | "warn"; text: string }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
-  | { type: "reset" };
+  | { type: "reset"; queueSessionPath?: string; dropQueued?: boolean };
 
 function backendStatusFromTab(tab: TabMeta, options: { finishActiveTurn?: boolean } = {}): Extract<Action, { type: "backend_status" }> {
   const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
@@ -967,6 +977,7 @@ export function reducer(s: State, a: Action): State {
           text: a.text,
           submitText: a.submitText,
           queued: true,
+          queueSessionPath: a.queueSessionPath,
           createdAt: Date.now(),
         }],
       };
@@ -1080,9 +1091,13 @@ export function reducer(s: State, a: Action): State {
     }
     case "meta": {
       const meta = a.meta.sessionPath === undefined && s.meta?.sessionPath !== undefined ? { ...a.meta, sessionPath: s.meta.sessionPath } : a.meta;
-      return sameMeta(s.meta, meta) ? s : { ...s, meta };
+      const items = meta.sessionPath === undefined ? s.items : retainQueueSession(s.items, meta.sessionPath);
+      return sameMeta(s.meta, meta) && items === s.items ? s : { ...s, meta, items };
     }
-    case "optimistic_meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta, hydrateError: undefined };
+    case "optimistic_meta": {
+      const items = a.meta.sessionPath === undefined ? s.items : retainQueueSession(s.items, a.meta.sessionPath);
+      return sameMeta(s.meta, a.meta) && items === s.items ? s : { ...s, meta: a.meta, items, hydrateError: undefined };
+    }
     case "context": {
       const sessionTokens = typeof a.context.sessionTokens === "number"
         ? Math.max(0, a.context.sessionTokens)
@@ -1117,12 +1132,13 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items: compactArchivedToolItems(appendStartupQueued(items, s.items)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyLoading: false, historyResolvedPath: a.sessionPath ?? s.meta?.sessionPath ?? "", historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
+      const sessionPath = a.sessionPath ?? s.meta?.sessionPath ?? "";
+      return { ...s, items: compactArchivedToolItems(appendStartupQueued(items, s.items, sessionPath)), seq: Math.max(s.seq, seq), hydrateHistoryLoaded: true, hydratePlaceholderItems: undefined, historyLoading: false, historyResolvedPath: sessionPath, historyStartTurn: 0, historyTotalTurns: 0, historyHasOlder: false, historyOlderLoading: false };
     }
     case "history_page": {
       const { items, seq } = historyPageItems(a.page);
-      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : appendStartupQueued(items, s.items);
       const sessionPath = a.sessionPath ?? a.page.sessionPath ?? s.meta?.sessionPath ?? "";
+      const nextItems = a.mode === "prepend" ? [...items, ...s.items] : appendStartupQueued(items, s.items, sessionPath);
       return {
         ...s,
         items: compactArchivedToolItems(nextItems),
@@ -1145,7 +1161,12 @@ export function reducer(s: State, a: Action): State {
     case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false, runtimeMode: s.running ? "foreground" : idleOrBackgroundMode(s.backgroundJobs), activityStage: s.running ? "waiting_model" : undefined, activityStageSeed: s.running ? Date.now() : 0 };
     case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false, runtimeMode: s.running ? "foreground" : idleOrBackgroundMode(s.backgroundJobs), activityStage: s.running ? "waiting_model" : undefined, activityStageSeed: s.running ? Date.now() : 0 };
     case "reset": {
-      const queued = s.items.filter((item) => item.kind === "user" && item.queued);
+      const queueItems = a.dropQueued
+        ? []
+        : a.queueSessionPath === undefined
+          ? s.items
+          : retainQueueSession(s.items, a.queueSessionPath);
+      const queued = queueItems.filter((item) => item.kind === "user" && item.queued);
       return { ...initialState, items: queued, seq: queued.length > 0 ? s.seq : 0, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
     }
     case "event": return applyEvent(s, a.e);
@@ -1162,6 +1183,7 @@ type StartupSend = {
   display: string;
   submit: string;
   original: string;
+  sessionPath: string;
 };
 
 function getOrCreateState(states: TabStates, tabId: string): State {
@@ -1239,6 +1261,14 @@ export function useController() {
     const states = statesRef.current;
     const prev = getOrCreateState(states, tabId);
     const next = reducer(prev, action);
+    if ((action.type === "meta" || action.type === "optimistic_meta") && next.meta?.sessionPath !== undefined) {
+      const queue = startupSendQueue.current.get(tabId);
+      if (queue) {
+        const retained = queue.filter((entry) => sameQueueSession(entry.sessionPath, next.meta?.sessionPath));
+        if (retained.length > 0) startupSendQueue.current.set(tabId, retained);
+        else startupSendQueue.current.delete(tabId);
+      }
+    }
     if (prev !== next) {
       states.set(tabId, next);
       bump();
@@ -1321,7 +1351,7 @@ export function useController() {
         (options.preserveCachedHistory && !reset && hasReusableCachedTranscript(statesRef.current.get(tabId), sessionPath)),
       );
       addBreadcrumb("tab.hydrate", `start ${reason} ${tabId}`);
-      if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset" });
+      if (reset && sessionLoadCurrent(tabId, seq)) dispatchTo(tabId, { type: "reset", queueSessionPath: sessionPath });
       dispatchTo(tabId, { type: "hydrate_start", reason, placeholderItems: options.placeholderItems, historyLoading: !skipHistory });
 
       const stillCurrent = () => sessionLoadCurrent(tabId, seq);
@@ -1736,7 +1766,8 @@ export function useController() {
   const enqueueStartupSend = useCallback((tabId: string, display: string, submit: string, original = "") => {
     const state = getOrCreateState(statesRef.current, tabId);
     const seq = state.seq;
-    const entry: StartupSend = { id: `u${seq}`, display, submit, original };
+    const sessionPath = state.meta?.sessionPath ?? "";
+    const entry: StartupSend = { id: `u${seq}`, display, submit, original, sessionPath };
     const queue = startupSendQueue.current.get(tabId) ?? [];
     startupSendQueue.current.set(tabId, [...queue, entry]);
     dispatchTo(tabId, {
@@ -1745,16 +1776,26 @@ export function useController() {
       text: display,
       submitText: display !== submit ? submit : undefined,
       seq,
+      queueSessionPath: sessionPath,
     });
     invalidateCache();
   }, [dispatchTo]);
 
+  const retainStartupSends = useCallback((tabId: string, sessionPath: string): StartupSend[] => {
+    const queue = startupSendQueue.current.get(tabId) ?? [];
+    const retained = queue.filter((entry) => sameQueueSession(entry.sessionPath, sessionPath));
+    if (retained.length > 0) startupSendQueue.current.set(tabId, retained);
+    else startupSendQueue.current.delete(tabId);
+    return retained;
+  }, []);
+
   const drainStartupSend = useCallback((tabId: string) => {
     if (!tabId || startupSendInFlight.current.has(tabId)) return;
     const state = statesRef.current.get(tabId);
-    const queue = startupSendQueue.current.get(tabId);
+    if (!state) return;
+    const queue = retainStartupSends(tabId, state.meta?.sessionPath ?? "");
     const entry = queue?.[0];
-    if (!entry || !state || state.running || state.backendActivationPending) return;
+    if (!entry || state.running || state.backendActivationPending) return;
     if (!state.meta?.ready) return;
     if (state.meta.startupErr) {
       dispatchTo(tabId, { type: "startup_user_waiting", id: entry.id, error: state.meta.startupErr });
@@ -1783,7 +1824,7 @@ export function useController() {
       startupSendInFlight.current.delete(tabId);
       dispatchTo(tabId, { type: "startup_user_waiting", id: entry.id, error: errorMessage(error) });
     });
-  }, [dispatchTo, submitToBackend]);
+  }, [dispatchTo, retainStartupSends, submitToBackend]);
 
   const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText, originalText?: string) => {
     if (!tabId) throw new Error("workspace is still starting");
@@ -1812,7 +1853,7 @@ export function useController() {
   useEffect(() => {
     if (!activeTabId) return;
     drainStartupSend(activeTabId);
-  }, [activeTabId, activeState.backendActivationPending, activeState.meta?.ready, activeState.meta?.startupErr, activeState.running, activeState.seq, drainStartupSend]);
+  }, [activeTabId, activeState.backendActivationPending, activeState.meta?.ready, activeState.meta?.sessionPath, activeState.meta?.startupErr, activeState.running, activeState.seq, drainStartupSend]);
 
   const send = useCallback((displayText: string, submitText = displayText) => {
     const tabId = activeTabIdRef.current ?? activeTabId;
@@ -1952,6 +1993,9 @@ export function useController() {
     }
     invalidateCache();
     if (tabId) {
+      startupSendQueue.current.delete(tabId);
+      startupSendInFlight.current.delete(tabId);
+      dispatchTo(tabId, { type: "reset", dropQueued: true });
       const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
       const tab = tabs.find((candidate) => candidate.id === tabId);
       if (tab) dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(tab, statesRef.current.get(tabId)?.meta) });
@@ -2024,14 +2068,15 @@ export function useController() {
       dispatchTo(targetTabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: session path mismatch` });
       return false;
     }
-    dispatchTo(targetTabId, { type: "reset" });
+    retainStartupSends(targetTabId, resolvedPath);
+    dispatchTo(targetTabId, { type: "reset", queueSessionPath: resolvedPath });
     dispatchTo(targetTabId, { type: "history_page", page, mode: "replace", sessionPath: resolvedPath });
     dispatchTo(targetTabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(targetTabId);
     app.ContextUsageForTab(targetTabId).then((context) => dispatchTo(targetTabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(targetTabId);
     return true;
-  }, [activeTabId, bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForBackendActiveTab, waitForTabReady]);
+  }, [activeTabId, bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, retainStartupSends, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForBackendActiveTab, waitForTabReady]);
 
   const openChannelSession = useCallback(async (path: string, tabId: string): Promise<boolean> => {
     if (!tabId) return false;
@@ -2055,14 +2100,15 @@ export function useController() {
       dispatchTo(tabId, { type: "local_notice", level: "warn", text: `${t("history.failedOpenSession")}: session path mismatch` });
       return false;
     }
-    dispatchTo(tabId, { type: "reset" });
+    retainStartupSends(tabId, resolvedPath);
+    dispatchTo(tabId, { type: "reset", queueSessionPath: resolvedPath });
     dispatchTo(tabId, { type: "history_page", page, mode: "replace", sessionPath: resolvedPath });
     dispatchTo(tabId, { type: "hydrate_done" });
     scheduleOpenRuntimeReconcile(tabId);
     app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
     void refreshCheckpoints(tabId);
     return true;
-  }, [bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForTabReady]);
+  }, [bumpSessionLoadSeq, dispatchTo, refreshCheckpoints, resolvedHistoryPath, retainStartupSends, scheduleOpenRuntimeReconcile, sessionLoadCurrent, t, waitForTabReady]);
 
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
   const deleteSession = useCallback((path: string) => app.DeleteSession(path).finally(() => invalidateCache()), []);

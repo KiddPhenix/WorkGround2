@@ -8,13 +8,13 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
-import type { CollaborationMode, ToolApprovalMode } from "../../lib/types";
+import type { CollaborationMode, RuntimeMode, ToolApprovalMode } from "../../lib/types";
 import { ModelSwitcher } from "../ModelSwitcher";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
 /** Connection / runtime status for the primary action derivation. */
-export type ConnectionStatus = "idle" | "running" | "waiting_user" | "offline";
+export type ConnectionStatus = "idle" | "foreground" | "waiting_user" | "background_only" | "cancelling" | "offline";
 
 /** RuntimeConfig holds the five config pill values. */
 export interface RuntimeConfig {
@@ -43,14 +43,16 @@ export interface RuntimeConfigBarProps {
 // ── Primary action label derivation ────────────────────────────────────────
 
 /**
- * Derive the primary action label according to spec section 6.8.
+ * Derive the primary action label.
  *
- * | connectionStatus | hasQueue | label |
- * |-----------------|----------|-------|
- * | idle            | any      | 发送  |
- * | running         | any      | 加入队列 |
- * | waiting_user    | any      | 加入队列 |
- * | offline         | any      | 保存到本地队列 |
+ * | connectionStatus | label |
+ * |-----------------|-------|
+ * | idle            | 发送  |
+ * | foreground      | 加入队列 |
+ * | waiting_user    | 加入队列 |
+ * | background_only | 发送  |
+ * | cancelling      | 加入队列 |
+ * | offline         | 保存到本地队列 |
  */
 export function derivePrimaryActionLabel(
   connectionStatus: ConnectionStatus,
@@ -58,9 +60,11 @@ export function derivePrimaryActionLabel(
 ): string {
   switch (connectionStatus) {
     case "idle":
+    case "background_only":
       return "发送";
-    case "running":
+    case "foreground":
     case "waiting_user":
+    case "cancelling":
       return "加入队列";
     case "offline":
       return "保存到本地队列";
@@ -70,11 +74,40 @@ export function derivePrimaryActionLabel(
 function primaryActionIcon(connectionStatus: ConnectionStatus): React.ReactNode {
   switch (connectionStatus) {
     case "idle":
+    case "background_only":
       return <ArrowUp size={18} />;
-    case "running":
+    case "foreground":
     case "waiting_user":
+    case "cancelling":
     case "offline":
       return <CornerDownRight size={18} />;
+  }
+}
+
+// ── Runtime metadata → ConnectionStatus derivation ─────────────────────────
+
+/** Derive ConnectionStatus from typed runtime state. */
+export function connectionStatusFromRuntime(runtimeMode: RuntimeMode, foregroundActive: boolean): ConnectionStatus {
+  if (foregroundActive && runtimeMode === "cancelling") return "cancelling";
+  if (foregroundActive && runtimeMode === "waiting_user") return "waiting_user";
+  if (foregroundActive) return "foreground";
+  if (runtimeMode === "background_only") return "background_only";
+  return "idle";
+}
+
+/** Derive a short runtime status label from runtimeMode. */
+export function runtimeStatusLabel(runtimeMode: RuntimeMode): string {
+  switch (runtimeMode) {
+    case "foreground":
+      return "运行中";
+    case "waiting_user":
+      return "等待用户";
+    case "background_only":
+      return "后台运行";
+    case "cancelling":
+      return "取消中";
+    default:
+      return "空闲";
   }
 }
 

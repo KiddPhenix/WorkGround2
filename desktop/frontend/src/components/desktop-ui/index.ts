@@ -5,6 +5,8 @@ export { QueueTray, type QueueTrayProps } from "./QueueTray";
 export {
   RuntimeConfigBar,
   derivePrimaryActionLabel,
+  connectionStatusFromRuntime,
+  runtimeStatusLabel,
   type RuntimeConfigBarProps,
   type RuntimeConfig,
   type ConnectionStatus,
