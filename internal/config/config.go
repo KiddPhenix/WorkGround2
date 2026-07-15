@@ -1000,6 +1000,17 @@ type AgentConfig struct {
 	// default to enabled so users get the self-improving planner unless they opt
 	// out explicitly.
 	MemoryCompiler MemoryCompilerConfig `toml:"memory_compiler"`
+	// AssistMode controls whether the primary model may call request_help when it
+	// lacks a capability: "auto" (default) exposes the tool; "off" hides it.
+	AssistMode string `toml:"assist_mode"`
+	// AssistModels maps capability names (e.g. "web_search") to ordered model
+	// references the host should try, overriding auto-discovery from providers.
+	// Each value is an ordered list of refs. When non-empty for a capability,
+	// only these refs are tried; the auto-discovered provider list is skipped.
+	AssistModels map[string][]string `toml:"assist_models"`
+	// AssistMaxAttempts bounds how many candidate providers are tried per
+	// request_help call. Zero (default) means 3.
+	AssistMaxAttempts int `toml:"assist_max_attempts"`
 }
 
 // MemoryCompilerConfig controls the v5 execution-memory compiler.
@@ -1030,6 +1041,30 @@ func (c *Config) MemoryCompilerVerbosity() string {
 		return MemoryCompilerVerbosityObserve
 	}
 	return NormalizeMemoryCompilerVerbosity(c.Agent.MemoryCompiler.Verbosity)
+}
+
+// AssistEnabled reports whether capability assist is active. Missing or empty
+// config defaults to "auto" (enabled). Returns false only for explicit "off".
+func (c *Config) AssistEnabled() bool {
+	if c == nil {
+		return true
+	}
+	return strings.ToLower(strings.TrimSpace(c.Agent.AssistMode)) != "off"
+}
+
+// AssistMaxAttempts returns the bounded retry limit for request_help calls.
+// Zero (default) means 3. Values above 10 are clamped to 10.
+const assistMaxAttemptsCap = 10
+
+func (c *Config) AssistMaxAttempts() int {
+	if c == nil || c.Agent.AssistMaxAttempts <= 0 {
+		return 3
+	}
+	n := c.Agent.AssistMaxAttempts
+	if n > assistMaxAttemptsCap {
+		return assistMaxAttemptsCap
+	}
+	return n
 }
 
 // NormalizeMemoryCompilerVerbosity accepts current and legacy spellings for the
@@ -1093,7 +1128,8 @@ type ProviderEntry struct {
 	VisionDetail string `toml:"vision_detail"`
 	// Capabilities is the explicit list of model capabilities for this provider.
 	// When set it replaces the built-in capability database and legacy Vision /
-	// VisionModels fields. Supported values: "vision", "reasoning" (more to come).
+	// VisionModels fields. Supported values: "vision", "reasoning",
+	// "web_search", and "image_generation".
 	// An empty list means "no capabilities" — use this to suppress built-in defaults.
 	// When absent (nil) the system falls back to the built-in database.
 	Capabilities []string `toml:"capabilities"`

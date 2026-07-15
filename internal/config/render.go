@@ -274,6 +274,22 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# output_style = \"explanatory\"   # explanatory | learning | concise | custom; empty = default\n")
 	}
+	assistMode := c.Agent.AssistMode
+	if strings.EqualFold(strings.TrimSpace(assistMode), "off") {
+		fmt.Fprintf(&b, "assist_mode = %q   # off disables request_help; auto (default) enables it\n", strings.TrimSpace(assistMode))
+	} else {
+		b.WriteString("# assist_mode = \"off\"   # auto (default) enables request_help; off hides the tool\n")
+	}
+	if len(c.Agent.AssistModels) > 0 {
+		fmt.Fprintf(&b, "assist_models = %s   # capability -> ordered helper model refs\n", renderStringMapSlice(c.Agent.AssistModels))
+	} else {
+		b.WriteString("# assist_models = { web_search = [\"provider/model\"] }   # explicit routes; empty = auto-discover from providers\n")
+	}
+	if c.Agent.AssistMaxAttempts > 0 {
+		fmt.Fprintf(&b, "assist_max_attempts = %d   # max candidates to try per request_help call; default 3\n", c.Agent.AssistMaxAttempts)
+	} else {
+		b.WriteString("# assist_max_attempts = 3   # max candidates to try per request_help call\n")
+	}
 	b.WriteString("\n")
 
 	if shouldRenderProviders(c, defaults, scope) {
@@ -342,6 +358,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			}
 			if p.VisionDetail != "" {
 				fmt.Fprintf(&b, "vision_detail = %q   # openai image detail hint: low|high; empty = auto\n", p.VisionDetail)
+			}
+			if p.Capabilities != nil {
+				fmt.Fprintf(&b, "capabilities = %s   # explicit model/action capabilities; [] disables built-in inference\n", renderStringArray(p.Capabilities))
 			}
 			if p.ReasoningProtocol != "" {
 				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)
@@ -771,6 +790,18 @@ func RenderTOMLProjectDelta(c *Config) string {
 		fmt.Fprintf(&agentBuf, "output_style = %q\n", c.Agent.OutputStyle)
 		anyAgent = true
 	}
+	if c.Agent.AssistMode != "" && c.Agent.AssistMode != d.Agent.AssistMode {
+		fmt.Fprintf(&agentBuf, "assist_mode = %q\n", c.Agent.AssistMode)
+		anyAgent = true
+	}
+	if len(c.Agent.AssistModels) > 0 && !reflect.DeepEqual(c.Agent.AssistModels, d.Agent.AssistModels) {
+		fmt.Fprintf(&agentBuf, "assist_models = %s\n", renderStringMapSlice(c.Agent.AssistModels))
+		anyAgent = true
+	}
+	if c.Agent.AssistMaxAttempts > 0 && c.Agent.AssistMaxAttempts != d.Agent.AssistMaxAttempts {
+		fmt.Fprintf(&agentBuf, "assist_max_attempts = %d\n", c.Agent.AssistMaxAttempts)
+		anyAgent = true
+	}
 
 	if anyAgent {
 		b.WriteString("[agent]\n")
@@ -830,6 +861,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 			}
 			if p.VisionDetail != "" {
 				fmt.Fprintf(&b, "vision_detail = %q\n", p.VisionDetail)
+			}
+			if p.Capabilities != nil {
+				fmt.Fprintf(&b, "capabilities = %s\n", renderStringArray(p.Capabilities))
 			}
 			if p.ReasoningProtocol != "" {
 				fmt.Fprintf(&b, "reasoning_protocol = %q\n", p.ReasoningProtocol)
@@ -1216,6 +1250,26 @@ func renderStringMap(m map[string]string) string {
 			b.WriteString(", ")
 		}
 		fmt.Fprintf(&b, "%s = %q", k, m[k])
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+// renderStringMapSlice renders a map[string][]string as a TOML inline table
+// with sorted keys and each value as a TOML array.
+func renderStringMapSlice(m map[string][]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%s = %s", k, renderStringArray(m[k]))
 	}
 	b.WriteString(" }")
 	return b.String()

@@ -24,6 +24,7 @@ type LocalCLIOptionView struct {
 	Args           []string `json:"args"`
 	Protocol       string   `json:"protocol"`
 	Model          string   `json:"model"`
+	Capabilities   []string `json:"capabilities"`
 	TimeoutSeconds int      `json:"timeoutSeconds"`
 	Installed      bool     `json:"installed"`
 	Version        string   `json:"version"`
@@ -171,7 +172,7 @@ func localCLIProviderEntry(opt LocalCLIOptionView) config.ProviderEntry {
 	if protocol == "" {
 		protocol = "text"
 	}
-	return config.ProviderEntry{
+	entry := config.ProviderEntry{
 		Name:           localCLIProviderName(opt.ID),
 		Kind:           "cli",
 		Command:        strings.TrimSpace(opt.Command),
@@ -183,6 +184,8 @@ func localCLIProviderEntry(opt LocalCLIOptionView) config.ProviderEntry {
 		Default:        model,
 		ContextWindow:  128000,
 	}
+	entry.AddCapabilities(opt.Capabilities...)
+	return entry
 }
 
 func localCLIProviderName(id string) string {
@@ -229,8 +232,15 @@ func scanLocalCLIOptionsWithPresets(presets []onboardingLocalCLIPreset) []LocalC
 			displayCommand = preset.Commands[0]
 		}
 		version := ""
+		capabilities := []string{}
 		if installed {
 			version = readLocalCLIVersion(command)
+			probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			probed, _ := config.ProbeCLICapabilities(probeCtx, &config.ProviderEntry{
+				Kind: "cli", Command: command, Model: model,
+			})
+			cancel()
+			capabilities = append(capabilities, probed...)
 		}
 		out = append(out, LocalCLIOptionView{
 			ID:             strings.ToLower(strings.TrimSpace(preset.ID)),
@@ -240,6 +250,7 @@ func scanLocalCLIOptionsWithPresets(presets []onboardingLocalCLIPreset) []LocalC
 			Args:           append([]string{}, preset.Args...),
 			Protocol:       protocol,
 			Model:          model,
+			Capabilities:   capabilities,
 			TimeoutSeconds: onboardingLocalCLITimeoutSeconds,
 			Installed:      installed,
 			Version:        version,

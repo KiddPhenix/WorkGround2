@@ -4685,6 +4685,7 @@ function ProviderEditor({
   const [visionModelsConfigured, setVisionModelsConfigured] = useState(
     Boolean(initial?.visionModelsConfigured ?? ((initial?.visionModels ?? []).length > 0)),
   );
+  const [capabilities, setCapabilities] = useState<string[]>(initial?.capabilities ?? []);
   const [modelsUrl, setModelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
@@ -4754,6 +4755,7 @@ function ProviderEditor({
         models: [],
         visionModels: [],
         visionModelsConfigured: false,
+        capabilities,
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
         headers: effectiveHeaders,
@@ -4798,6 +4800,7 @@ function ProviderEditor({
     setModelCandidates([model]);
     setVisionModels("");
     setVisionModelsConfigured(true);
+    setCapabilities(option.capabilities ?? []);
     if (!ctx.trim()) setCtx("128000");
     setCliScanStatus(t("settings.providerCliScanApplied", { name: option.name }));
     setCliScanError(null);
@@ -4838,6 +4841,7 @@ function ProviderEditor({
       models: ms,
       visionModels: vms,
       visionModelsConfigured: visionModelsConfigured || vms.length > 0,
+      capabilities,
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
       headers: effectiveHeaders,
@@ -5013,6 +5017,30 @@ function ProviderEditor({
           onChange={(e) => setCtx(e.target.value)}
         />
         <div className="mem-hint">{t("settings.contextWindowHint")}</div>
+        <label className="set-label">{t("settings.providerAssistCapabilities")}</label>
+        <div className="set-row">
+          <label className="set-check">
+            <input
+              type="checkbox"
+              checked={capabilities.includes("web_search")}
+              onChange={(e) => setCapabilities((current) => e.target.checked
+                ? uniqueStrings([...current, "web_search"])
+                : current.filter((value) => value !== "web_search"))}
+            />
+            {t("settings.providerCapabilityWebSearch")}
+          </label>
+          <label className="set-check">
+            <input
+              type="checkbox"
+              checked={capabilities.includes("image_generation")}
+              onChange={(e) => setCapabilities((current) => e.target.checked
+                ? uniqueStrings([...current, "image_generation"])
+                : current.filter((value) => value !== "image_generation"))}
+            />
+            {t("settings.providerCapabilityImageGeneration")}
+          </label>
+        </div>
+        <div className="mem-hint">{t("settings.providerAssistCapabilitiesHint")}</div>
       </div>
     </details>
   );

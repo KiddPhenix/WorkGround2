@@ -14,6 +14,16 @@ const (
 	// CapReasoning means the model exposes thinking/reasoning tokens
 	// separately from the visible output (e.g. o1/o3/deepseek-reasoner).
 	CapReasoning ModelCapability = "reasoning"
+
+	// CapWebSearch means the model/provider can perform web searches.
+	// It is never inferred from model brands; providers must declare it
+	// explicitly via capabilities or a known CLI tool entry.
+	CapWebSearch ModelCapability = "web_search"
+
+	// CapImageGeneration means the model/provider can generate images.
+	// It is never inferred from model brands; providers must declare it
+	// explicitly via capabilities or a known CLI tool entry.
+	CapImageGeneration ModelCapability = "image_generation"
 )
 
 // builtinModelCapabilities maps canonical model IDs to their known
@@ -25,33 +35,33 @@ const (
 // tool name (e.g. "codex").
 var builtinModelCapabilities = map[string][]ModelCapability{
 	// ── OpenAI ──────────────────────────────────────────────
-	"gpt-4o":              {CapVision, CapReasoning},
-	"gpt-4o-mini":         {CapVision},
-	"gpt-4-turbo":         {CapVision},
-	"gpt-4.1":             {CapVision},
-	"gpt-4.1-mini":        {CapVision},
-	"gpt-4.1-nano":        {CapVision},
-	"o1":                  {CapReasoning},
-	"o1-mini":             {CapReasoning},
-	"o3":                  {CapVision, CapReasoning},
-	"o3-mini":             {CapReasoning},
-	"o4-mini":             {CapVision, CapReasoning},
-	"gpt-5":               {CapVision, CapReasoning},
-	"gpt-5.5":             {CapVision, CapReasoning},
-	"gpt-5-mini":          {CapVision},
-	"gpt-5-nano":          {CapVision},
+	"gpt-4o":       {CapVision, CapReasoning},
+	"gpt-4o-mini":  {CapVision},
+	"gpt-4-turbo":  {CapVision},
+	"gpt-4.1":      {CapVision},
+	"gpt-4.1-mini": {CapVision},
+	"gpt-4.1-nano": {CapVision},
+	"o1":           {CapReasoning},
+	"o1-mini":      {CapReasoning},
+	"o3":           {CapVision, CapReasoning},
+	"o3-mini":      {CapReasoning},
+	"o4-mini":      {CapVision, CapReasoning},
+	"gpt-5":        {CapVision, CapReasoning},
+	"gpt-5.5":      {CapVision, CapReasoning},
+	"gpt-5-mini":   {CapVision},
+	"gpt-5-nano":   {CapVision},
 
 	// ── Anthropic ───────────────────────────────────────────
-	"claude-3-opus-20240229":   {CapVision},
-	"claude-3-sonnet-20240229": {CapVision},
-	"claude-3-haiku-20240307":  {CapVision},
+	"claude-3-opus-20240229":     {CapVision},
+	"claude-3-sonnet-20240229":   {CapVision},
+	"claude-3-haiku-20240307":    {CapVision},
 	"claude-3-5-sonnet-20241022": {CapVision},
 	"claude-3-5-haiku-20241022":  {CapVision},
-	"claude-sonnet-4-20250514": {CapVision, CapReasoning},
-	"claude-opus-4-20250514":   {CapVision, CapReasoning},
+	"claude-sonnet-4-20250514":   {CapVision, CapReasoning},
+	"claude-opus-4-20250514":     {CapVision, CapReasoning},
 
 	// ── Google ──────────────────────────────────────────────
-	"gemini-2.5-pro":  {CapVision, CapReasoning},
+	"gemini-2.5-pro":   {CapVision, CapReasoning},
 	"gemini-2.5-flash": {CapVision},
 	"gemini-2.0-flash": {CapVision},
 
@@ -74,9 +84,9 @@ var cliToolCapabilities = map[string][]ModelCapability{
 // visionModelPrefixes lists model-name prefixes whose dated/suffixed variants
 // inherit vision capability from the base family (e.g. gpt-5.5, gpt-4o-2024-08-06).
 var visionModelPrefixes = []string{
-	"gpt-4o", "gpt-4.1", "gpt-5",    // OpenAI vision families
-	"claude-",                        // all Claude models that match
-	"gemini-",                        // all Gemini chat models that match
+	"gpt-4o", "gpt-4.1", "gpt-5", // OpenAI vision families
+	"claude-", // all Claude models that match
+	"gemini-", // all Gemini chat models that match
 }
 
 // HasCapability reports whether the model/provider entry supports cap.
@@ -209,7 +219,7 @@ func EntryCapabilities(e *ProviderEntry) []string {
 		return nil
 	}
 	var out []string
-	for _, cap := range []ModelCapability{CapVision, CapReasoning} {
+	for _, cap := range []ModelCapability{CapVision, CapReasoning, CapWebSearch, CapImageGeneration} {
 		if e.HasCapability(cap) {
 			out = append(out, string(cap))
 		}

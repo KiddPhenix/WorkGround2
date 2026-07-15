@@ -478,6 +478,21 @@ func (c *Config) RemoveProvider(name string) error {
 			delete(c.Agent.SubagentModels, skill)
 		}
 	}
+	// Clean up assist_models references to the removed provider.
+	for capName, refs := range c.Agent.AssistModels {
+		filtered := refs[:0]
+		for _, ref := range refs {
+			if c.modelRefTargetsProvider(ref, name) {
+				continue
+			}
+			filtered = append(filtered, ref)
+		}
+		if len(filtered) == 0 {
+			delete(c.Agent.AssistModels, capName)
+		} else {
+			c.Agent.AssistModels[capName] = filtered
+		}
+	}
 	return nil
 }
 

@@ -24,6 +24,7 @@
 - [Slash commands](#slash-commands)
 - [@ references](#-references)
 - [Two-model collaboration](#two-model-collaboration)
+- [Capability assist](#capability-assist)
 
 ## Configuration
 
@@ -638,6 +639,61 @@ subagents do not receive recursive agent/skill tools. Set
 intended for workflows such as Superpowers where a workflow skill may dispatch a
 reviewer subagent, while still avoiding unbounded recursion and background
 fanout.
+
+### Capability assist
+
+When a model lacks a capability — say, a non-search model needs web results, or a
+non-image model needs to generate an image — it can call the `request_help` tool.
+The host selects a capable helper model and runs the task for the caller.
+
+```toml
+[agent]
+# assist_mode = "off"     # auto (default) enables request_help; off hides the tool
+# assist_models = { web_search = ["provider/model"] }
+#                          # capability → ordered helper model refs; empty = auto-discover from providers
+# assist_max_attempts = 3  # max candidates to try per request_help call
+```
+
+`assist_models` maps capability names (`web_search`, `image_generation`) to
+ordered model references the host should try. When non-empty for a capability,
+auto-discovery is skipped. Exclusions: the current model, unresolvable refs,
+providers without required credentials/CLI commands, and providers without the
+capability. Runtime failures try the next candidate up to `assist_max_attempts`.
+
+`web_search` may retry and a successful answer must include at least one HTTP(S)
+source URL. `image_generation` never automatically retries after a started
+attempt. Success requires a real `draw_image` tool result whose task status,
+configured output directory, file existence, non-empty size, MIME, and image
+decoding all validate; text-only claims, fake paths, and escaped paths fail.
+
+Capabilities are not inferred from model brands. A provider normally declares
+them explicitly:
+
+```toml
+[[providers]]
+name         = "search-pro"
+kind         = "openai"
+base_url     = "https://api.search-provider.example.com"
+model        = "search-model"
+api_key_env  = "SEARCH_API_KEY"
+capabilities = ["web_search"]
+```
+
+Codex CLI is a controlled exception: startup reads `codex features list` with a
+two-second timeout and only adds it as a `web_search` candidate when
+`browser_use` or `standalone_web_search` is actually enabled. Probe failures
+emit a warning and startup continues; explicit `capabilities` disables probing.
+`image_generation` is not auto-declared because the CLI text protocol cannot yet
+verify that a real image artifact was produced.
+
+Desktop exposes verified Web search / Image generation checkboxes under each
+provider's compatibility settings. Every result includes a stable request ID,
+selected model, attempt number, prior failures, and helper transcript reference.
+Running/completed/failed helper transcripts are persisted so interrupted state is
+observable and recoverable after restart.
+
+Use `request_help` by default instead of telling users you cannot perform a task
+that another configured model can handle.
 
 Use `read_only_task` when planning needs isolated, deeper research without
 granting write-capable delegation. Use `read_only_skill` when the same need is

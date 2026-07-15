@@ -1084,6 +1084,7 @@ export interface ProviderView {
   models: string[];
   visionModels: string[]; // subset of models that accepts image input
   visionModelsConfigured: boolean; // true when an empty list is an explicit choice
+  capabilities?: string[]; // explicit helper capabilities: web_search, image_generation
   modelsUrl: string; // optional override for model discovery; empty derives from baseUrl
   default: string;
   apiKeyEnv: string;
@@ -1109,6 +1110,7 @@ export interface LocalCLIOptionView {
   args: string[];
   protocol: string;
   model: string;
+  capabilities: string[];
   timeoutSeconds: number;
   installed: boolean;
   version: string;

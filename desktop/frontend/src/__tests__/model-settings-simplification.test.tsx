@@ -273,7 +273,7 @@ function codexCLIOption(): LocalCLIOptionView {
     id: "codex", name: "Codex CLI", description: "Codex CLI",
     command: "C:\\Users\\test\\AppData\\Local\\OpenAI\\Codex\\bin\\codex.exe",
     args: ["exec", "--json", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5.5"],
-    protocol: "jsonl", model: "gpt-5.5", timeoutSeconds: 120,
+    protocol: "jsonl", model: "gpt-5.5", capabilities: ["web_search"], timeoutSeconds: 120,
     installed: true, version: "1.2.3", error: "",
   };
 }

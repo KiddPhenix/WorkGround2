@@ -43,6 +43,7 @@ type ProviderView struct {
 	Models            []string                    `json:"models"`
 	VisionModels      []string                    `json:"visionModels"`
 	VisionModelsSet   bool                        `json:"visionModelsConfigured"`
+	Capabilities      []string                    `json:"capabilities"`
 	ModelsURL         string                      `json:"modelsUrl"`
 	Default           string                      `json:"default"`
 	APIKeyEnv         string                      `json:"apiKeyEnv"`
@@ -414,7 +415,7 @@ func providerViewFromEntryForRootWithResolver(p config.ProviderEntry, builtIn, a
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL, ChatURL: p.ChatURL,
 		Command: p.Command, Args: args, Protocol: protocol, TimeoutSeconds: p.TimeoutSeconds,
-		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
+		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, Capabilities: nonNil(p.Capabilities), ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
 		Headers:           nonNilStringMap(p.Headers),
 		KeySet:            key.Set,
@@ -1531,12 +1532,48 @@ func (a *App) SaveProvider(p ProviderView) error {
 			e.VisionModels = nil
 			e.ModelOverrides = nil
 		}
+		if p.Capabilities != nil {
+			setAssistCapabilities(&e, p.Capabilities)
+		}
 		if err := c.UpsertProvider(e); err != nil {
 			return err
 		}
 		addProviderAccess(c, p.Name)
 		return nil
 	})
+}
+
+func setAssistCapabilities(entry *config.ProviderEntry, selected []string) {
+	if entry == nil {
+		return
+	}
+	actions := make([]string, 0, 2)
+	seen := map[string]bool{}
+	for _, capability := range selected {
+		capability = strings.TrimSpace(capability)
+		if seen[capability] {
+			continue
+		}
+		switch capability {
+		case string(config.CapWebSearch), string(config.CapImageGeneration):
+			seen[capability] = true
+			actions = append(actions, capability)
+		}
+	}
+	if entry.Capabilities == nil {
+		entry.AddCapabilities(actions...)
+		return
+	}
+	kept := make([]string, 0, len(entry.Capabilities)+len(actions))
+	for _, capability := range entry.Capabilities {
+		switch strings.TrimSpace(capability) {
+		case string(config.CapWebSearch), string(config.CapImageGeneration):
+			continue
+		default:
+			kept = append(kept, capability)
+		}
+	}
+	entry.Capabilities = append(kept, actions...)
 }
 
 // AddOfficialProviderAccess adds one curated desktop provider template to the

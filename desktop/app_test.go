@@ -169,6 +169,17 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 	}
 }
 
+func TestLocalCLIProviderEntryPersistsDetectedCapabilities(t *testing.T) {
+	entry := localCLIProviderEntry(LocalCLIOptionView{
+		ID: "codex", Command: "codex", Model: "gpt-5.5", Capabilities: []string{"web_search"},
+	})
+	for _, capability := range []config.ModelCapability{config.CapVision, config.CapReasoning, config.CapWebSearch} {
+		if !entry.HasCapability(capability) {
+			t.Fatalf("entry should have %q: %v", capability, entry.Capabilities)
+		}
+	}
+}
+
 func TestNewCLIPresetsDefined(t *testing.T) {
 	presetIDs := map[string]bool{}
 	for _, p := range onboardingLocalCLIPresets {

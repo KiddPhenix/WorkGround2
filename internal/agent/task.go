@@ -46,6 +46,7 @@ var subagentRecursiveTools = []string{
 	"research",
 	"review",
 	"security_review",
+	"request_help",
 }
 
 var subagentAlwaysHiddenTools = []string{

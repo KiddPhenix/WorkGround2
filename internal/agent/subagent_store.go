@@ -34,7 +34,7 @@ type SubagentMeta struct {
 	CreatedAt        time.Time      `json:"createdAt"`
 	UpdatedAt        time.Time      `json:"updatedAt"`
 	Status           SubagentStatus `json:"status"`
-	Kind             string         `json:"kind"` // task | skill
+	Kind             string         `json:"kind"` // task | skill | request_help
 	Name             string         `json:"name"`
 	WorkspaceRoot    string         `json:"workspaceRoot"`
 	ParentSession    string         `json:"parentSession,omitempty"`

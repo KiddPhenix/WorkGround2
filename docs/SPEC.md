@@ -182,7 +182,61 @@ prefix cache-stable:
   "cache-first" with "two-model collaboration": switching models *inside one
   shared conversation* would break the prefix and tank cache hits, so we don't.
 
-### 3.6 Context management (compaction)
+### 3.6 Capability assist (`request_help`)
+
+When the primary model lacks a capability (e.g. web search, image generation), it
+may call the `request_help` tool with only `capability` and `prompt`. The host
+owns provider selection, retry, and error reporting — the caller never chooses
+the backing model.
+
+- **Registration.** The tool is registered by `boot.Build` when
+  `agent.assist_mode` is not `"off"` (default `"auto"`) and token-economy mode
+  is off. Its description tells the primary model to use it by default instead of
+  claiming inability.
+- **Candidate routing.** Candidate providers are resolved in order:
+  1. Explicit `agent.assist_models[capability]` entries (user-configured, stable
+     order), if any. When explicit routes exist, auto-discovery is skipped
+     entirely.
+  2. All configured providers whose `HasCapability(cap)` is true, in config
+     order, with duplicates removed.
+  Exclusions: the current model (matched by provider name + model), unresolvable
+  refs, missing credentials/CLI commands, and providers that do not declare the
+  capability. Provider construction or runtime failure tries the next candidate
+  up to `agent.assist_max_attempts` (default 3).
+- **Retry and validation.** `web_search` may retry and success requires at least
+  one HTTP(S) source URL. `image_generation` must not automatically repeat after
+  an ambiguous started attempt. Image success requires a real `draw_image` tool
+  result with succeeded status; its path must remain under that provider's
+  configured output directory and point to a non-empty, MIME-detected, decodable
+  image. Text-only claims and fake/escaped paths fail explicitly.
+- **Model capabilities.** `web_search` and `image_generation` are not inferred
+  from model brands. Providers normally declare them explicitly via the
+  `capabilities` field. Codex CLI is runtime-probed with `codex features list`
+  under a two-second timeout; only an enabled `browser_use` or
+  `standalone_web_search` adds `web_search`. Probe failure is warned and does
+  not block startup. Explicit capabilities disable probing. Image generation is
+  not auto-declared until the CLI protocol can validate a real artifact.
+- **Plumbing.** `request_help` reuses the same `RunSubAgentWithSession` entry
+  point as `task` — it creates a fresh session, runs the prompt, and returns the
+  helper's final answer. Tool activity nests under the parent call via the same
+  `subSink` mechanism. Errors include the capability and attempted candidate
+  refs; they never silently return success. A stable request ID identifies a
+  replayed parent tool call. Results expose the chosen model, attempt number,
+  previous failures, verified artifact metadata, and helper transcript ref.
+  Running/completed/failed transcripts are persisted, and stale running entries
+  are recoverable by existing subagent startup cleanup.
+- **Desktop.** Provider compatibility settings expose explicit `web_search` and
+  `image_generation` capability toggles. Saving merges action capabilities with
+  built-in vision/reasoning metadata and persists them to TOML.
+- **Config format.**
+  ```toml
+  [agent]
+  # assist_mode = "off"   # auto (default) enables request_help; off hides the tool
+  # assist_models = { web_search = ["provider/model"] }
+  # assist_max_attempts = 3
+  ```
+
+### 3.7 Context management (compaction)
 
 Long tasks eventually fill the model's context window. WorkGround2 manages this with
 **low-frequency compaction** that respects the cache-first design:
@@ -248,7 +302,7 @@ This is the **only** point where the prompt prefix changes — a deliberate, rar
 stays cache-friendly, so cache hit rate (the key observability signal) stays
 high. `context_window = 0` disables compaction for an instance.
 
-### 3.7 Permissions (`internal/permission`) — per-call gating
+### 3.8 Permissions (`internal/permission`) — per-call gating
 
 A coding agent runs shell commands and edits files autonomously. The permission
 layer decides, **per tool call**, whether to allow it, deny it, or ask the user
@@ -380,7 +434,7 @@ Out of the box (`mode = "ask"`, no rules) `WorkGround2 run` behaves exactly as b
 (writers resolve `Ask`→allow with no TTY), while `WorkGround2` now prompts before
 each writer/bash call. `deny` rules harden both modes.
 
-### 3.8 Slash commands (`internal/command`)
+### 3.9 Slash commands (`internal/command`)
 
 The chat TUI accepts `/command` input. Three kinds share one dispatch:
 
@@ -430,7 +484,7 @@ tests so `bottomRows()` accounts for either `panel + status` or
 `panel + composer + status`. This prevents inactive chat input boxes from being
 rendered under modal panels.
 
-### 3.9 Chat references (`@`)
+### 3.10 Chat references (`@`)
 
 A chat message may embed `@` references; before the turn is sent, each is
 resolved and prepended to the message as a tagged block the model can read.

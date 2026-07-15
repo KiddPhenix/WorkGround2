@@ -24,6 +24,7 @@
 - [斜杠命令](#斜杠命令)
 - [@ 引用](#-引用)
 - [双模型协同](#双模型协同)
+- [能力辅助（Capability Assist）](#能力辅助capability-assist)
 
 ## 配置
 
@@ -519,6 +520,52 @@ Subagent 默认允许再委派一层：根会话是 depth 0，第一层 subagent
 或 implementer；depth 2 不再拿到递归 agent/skill 工具。设
 `agent.max_subagent_depth = 1` 可恢复旧的单层边界。这主要用于 Superpowers 这类
 workflow skill 派发 reviewer subagent 的场景，同时避免无限递归和后台 fanout。
+
+### 能力辅助（Capability Assist）
+
+当模型缺少某种能力时——比如需要搜索的非搜索模型，或无法生成图片的模型——它可以调用
+`request_help` 工具。宿主自动选择具备该能力的辅助模型，代为完成任务。
+
+```toml
+[agent]
+# assist_mode = "off"     # auto（默认）启用 request_help；off 隐藏该工具
+# assist_models = { web_search = ["provider/model"] }
+#                          # 能力 → 有序辅助模型引用列表；为空则从 providers 自动发现
+# assist_max_attempts = 3  # 每次 request_help 调用最多尝试的候选数量
+```
+
+`assist_models` 将能力名称（`web_search`、`image_generation`）映射到有序模型引用。
+当某个能力的列表非空时，自动发现会被跳过。排除规则：当前模型、无法解析的引用、
+未配置凭据或 CLI 命令的 provider，以及未声明该能力的 provider。运行时失败会尝试下一个候选，最多
+`assist_max_attempts` 次。
+
+`web_search` 失败可重试，成功答复必须包含至少一个 `http(s)` 来源 URL。
+`image_generation` 启动后绝不自动重试——返回明确错误以避免重复产出。图片成功还必须
+来自真实 `draw_image` 工具结果，并通过任务状态、配置输出目录、文件存在、非空、MIME
+和图片解码校验；文字声称、伪路径和越界路径都会失败。
+
+能力不会从模型品牌自动推断。Provider 通常需要显式声明：
+
+```toml
+[[providers]]
+name         = "search-pro"
+kind         = "openai"
+base_url     = "https://api.search-provider.example.com"
+model        = "search-model"
+api_key_env  = "SEARCH_API_KEY"
+capabilities = ["web_search"]
+```
+
+Codex CLI 是一个受控例外：启动时会在 2 秒超时内读取 `codex features list`，仅当
+`browser_use` 或 `standalone_web_search` 实际启用时，才把它加入 `web_search` 候选。
+探测失败会输出警告并继续启动；显式 `capabilities` 会关闭探测。当前不会据此自动声明
+`image_generation`，因为 CLI 文本协议还不能验证图片制品是否真实生成。
+
+桌面端可在 Provider 的“兼容设置”中勾选已确认的“网页搜索 / 图片生成”能力。每次求助
+结果都会显示稳定 request ID、实际候选模型、尝试序号、之前的失败和辅助 transcript；
+运行中、完成和失败 transcript 会持久化，重启时可识别并清理中断状态。
+
+当其他已配置模型可以完成某项任务时，默认使用 `request_help`，而不是告诉用户你做不了。
 
 当计划阶段需要隔离上下文做更深的调研时，用 `read_only_task`，而不是放开可写的
 `task`。如果这类调研更适合复用已有 skill，用 `read_only_skill`。两者都会启动

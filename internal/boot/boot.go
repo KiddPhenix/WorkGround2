@@ -76,6 +76,23 @@ func agentKeepPolicy(keep []string) agent.KeepPolicy {
 	return p
 }
 
+func probeCLICapabilities(ctx context.Context, cfg *config.Config, stderr io.Writer) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.Providers {
+		entry := &cfg.Providers[i]
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		capabilities, err := config.ProbeCLICapabilities(probeCtx, entry)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(stderr, "warning: %s capability probe failed: %v\n", entry.Name, err)
+			continue
+		}
+		entry.AddCapabilities(capabilities...)
+	}
+}
+
 // Options carries the per-run knobs a frontend chooses; everything else is read
 // from configuration. Model "" falls back to the configured default_model;
 // MaxSteps 0 uses the config/default. RequireKey forces the executor's API key to
@@ -155,6 +172,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	probeCLICapabilities(ctx, cfg, stderr)
 	modelName := opts.Model
 	if modelName == "" {
 		modelName = cfg.DefaultModel
@@ -625,6 +643,23 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !tokenEconomy {
 		addTaskTool()
 		addReadOnlyTaskTool()
+	}
+
+	// request_help lets the primary model delegate to a capability-matched
+	// helper when it lacks a requested capability (e.g. web_search).
+	// Hidden when assist_mode is "off" or in token-economy mode.
+	if cfg.AssistEnabled() && !tokenEconomy {
+		requestHelpTool := agent.NewRequestHelpTool(
+			cfg, reg, modelRef,
+			resolveSubagentProvider,
+			maxSteps, cfg.Agent.Temperature, entry.ContextWindow,
+			cfg.Agent.RecentKeep,
+			cfg.Agent.SoftCompactRatio, cfg.Agent.ToolResultSnipRatio,
+			cfg.Agent.CompactRatio, cfg.Agent.CompactForceRatio,
+			headlessGate, keepPolicy,
+			maxSubagentDepth,
+		).WithTranscripts(subagentStore, root, modelName, entry.Effort)
+		reg.Add(requestHelpTool)
 	}
 
 	// The `memory` tool searches/reads saved facts on demand; `remember` persists
@@ -1154,7 +1189,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	return control.New(ctrlOpts), nil
 }
-
 
 func autoDiscoverVisionDelegate(cfg *config.Config, current *config.ProviderEntry) string {
 	for i := range cfg.Providers {

@@ -428,6 +428,38 @@ func TestSaveProviderUpgradesLegacyCodexCLI(t *testing.T) {
 	}
 }
 
+func TestSaveProviderPersistsAssistCapabilities(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := NewApp().SaveProvider(ProviderView{
+		Name: "helper", Kind: "openai", BaseURL: "https://example.com/v1",
+		Models: []string{"gpt-5.5"}, Capabilities: []string{"web_search", "image_generation"},
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+	got, ok := config.LoadForEdit(config.UserConfigPath()).Provider("helper")
+	if !ok {
+		t.Fatal("saved provider not found")
+	}
+	for _, capability := range []config.ModelCapability{config.CapVision, config.CapReasoning, config.CapWebSearch, config.CapImageGeneration} {
+		if !got.HasCapability(capability) {
+			t.Fatalf("provider should have %q: %v", capability, got.Capabilities)
+		}
+	}
+	if err := NewApp().SaveProvider(ProviderView{
+		Name: "helper", Kind: "openai", BaseURL: "https://example.com/v1",
+		Models: []string{"gpt-5.5"}, Capabilities: []string{},
+	}); err != nil {
+		t.Fatalf("clear assist capabilities: %v", err)
+	}
+	got, _ = config.LoadForEdit(config.UserConfigPath()).Provider("helper")
+	if got.HasCapability(config.CapWebSearch) || got.HasCapability(config.CapImageGeneration) {
+		t.Fatalf("action capabilities should be cleared: %v", got.Capabilities)
+	}
+	if !got.HasCapability(config.CapVision) || !got.HasCapability(config.CapReasoning) {
+		t.Fatalf("built-in baseline should be preserved: %v", got.Capabilities)
+	}
+}
+
 func TestSaveProviderPersistsCustomEndpointURLs(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
