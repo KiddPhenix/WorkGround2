@@ -924,9 +924,9 @@ export function stageDisplay(
   return { label, flavor: text };
 }
 
-/** Join stage and flavor copy for the compact composer status pill. */
-export function activityLead(stage: Stage, label: string, flavor: string, retryCount = ""): string {
-  return stage === "processing_result" ? flavor : `${label}${retryCount} · ${flavor}`;
+/** Return the concise flavor copy used by the compact composer status pill. */
+export function activityLead(flavor: string): string {
+  return flavor;
 }
 
 /** Return all weighted entries for a stage+locale (for testing). */
