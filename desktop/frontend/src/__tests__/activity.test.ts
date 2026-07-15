@@ -152,8 +152,8 @@ eq(stageFromEvent("tool_dispatch", undefined, "someRandomTool"), "tooling", "unk
 
 // tool_result
 eq(stageFromEvent("tool_result"), "processing_result", "tool_result → processing_result");
-eq(activityLead("processing_result", "处理结果", "从噪声中提取有效信号"), "从噪声中提取有效信号", "processing_result omits generic stage label");
-eq(activityLead("testing", "跑测试", "让 Bug 主动交代"), "跑测试 · 让 Bug 主动交代", "other stages keep their label");
+eq(activityLead("从噪声中提取有效信号"), "从噪声中提取有效信号", "processing_result keeps only flavor copy");
+eq(activityLead("让 Bug 主动交代"), "让 Bug 主动交代", "other stages omit the generic stage label");
 
 // compaction
 eq(stageFromEvent("compaction_started"), "compacting", "compaction_started → compacting");

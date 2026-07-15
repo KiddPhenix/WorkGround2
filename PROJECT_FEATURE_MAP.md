@@ -179,11 +179,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Updated: 2026-07-03
 
 ### 桌面运行状态与待办提示
-- Location: `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/TodoPanel.tsx`, `desktop/frontend/src/lib/todoVisibility.ts`
-- Summary: 桌面端运行提示由 useController 的 per-tab runtime state 驱动，Composer 渲染右下运行状态，TodoPanel 从最新 todo_write 快照渲染待办进度。
+- Location: `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/lib/activity.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/TodoPanel.tsx`, `desktop/frontend/src/lib/todoVisibility.ts`
+- Summary: 状态 done；桌面端运行提示由 useController 的 per-tab runtime state 驱动，Composer 渲染右下运行状态，activity 负责阶段趣味文案，TodoPanel 从最新 todo_write 快照渲染待办进度。
+- Note: 运行状态胶囊移除 `·` 前的通用阶段前缀，只保留具体任务文案。
 - Keywords: running, runstatus, todo_write, TodoPanel, tab switch, openProjectTab, detached runtime
 - Source: verified-by-search
-- Updated: 2026-07-07
+- Updated: 2026-07-15
 
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`

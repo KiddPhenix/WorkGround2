@@ -2035,10 +2035,9 @@ export function Composer({
   const runActivity = (() => {
     if (running && turnStartAt && activityStage) {
       const elapsedMs = Math.max(0, now - turnStartAt);
-      const { label, flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
-      const retryCount = retry ? ` ${retry.attempt}/${retry.max}` : "";
+      const { flavor } = stageDisplay(activityStage, locale, activityStageSeed ?? 0);
       const tok = turnTokens && turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
-      return `${activityLead(activityStage, label, flavor, retryCount)} ${fmtElapsed(elapsedMs)}${tok}`;
+      return `${activityLead(flavor)} ${fmtElapsed(elapsedMs)}${tok}`;
     }
     if (retry) return t("status.retrying", { attempt: retry.attempt, max: retry.max });
     return null;
