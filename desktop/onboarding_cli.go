@@ -294,7 +294,91 @@ func localCLICommandCandidates(preset onboardingLocalCLIPreset) []string {
 			candidates = append(candidates, command+".exe", command+".cmd")
 		}
 	}
+	if runtime.GOOS == "darwin" {
+		candidates = append(candidates, darwinCLICommandCandidates(preset, userHomeDir())...)
+	}
 	return uniqueCLIStrings(candidates)
+}
+
+func userHomeDir() string {
+	home, _ := os.UserHomeDir()
+	return strings.TrimSpace(home)
+}
+
+// darwinCLICommandCandidates covers installations that a Finder-launched
+// desktop app cannot discover through PATH. macOS GUI processes do not inherit
+// the user's interactive shell setup, so package-manager and user-local bin
+// directories need explicit fallbacks.
+func darwinCLICommandCandidates(preset onboardingLocalCLIPreset, home string) []string {
+	commandNames := make([]string, 0, len(preset.Commands))
+	for _, command := range preset.Commands {
+		command = strings.TrimSpace(command)
+		if command == "" || strings.ContainsAny(command, `/\`) {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(command))
+		if ext == ".exe" || ext == ".cmd" {
+			continue
+		}
+		commandNames = append(commandNames, command)
+	}
+	commandNames = uniqueCLIStrings(commandNames)
+
+	out := make([]string, 0, len(commandNames)*16)
+	if preset.ID == "codex" {
+		out = append(out, "/Applications/Codex.app/Contents/Resources/codex")
+	}
+	for _, root := range []string{
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/opt/local/bin",
+		"/nix/var/nix/profiles/default/bin",
+		"/run/current-system/sw/bin",
+	} {
+		out = appendCLICommandPaths(out, root, commandNames)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return uniqueCLIStrings(out)
+	}
+	if preset.ID == "codex" {
+		out = append(out, filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"))
+	}
+	for _, root := range []string{
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, ".npm-global", "bin"),
+		filepath.Join(home, "Library", "pnpm"),
+		filepath.Join(home, ".bun", "bin"),
+		filepath.Join(home, ".volta", "bin"),
+		filepath.Join(home, ".yarn", "bin"),
+		filepath.Join(home, ".asdf", "shims"),
+		filepath.Join(home, ".local", "share", "mise", "shims"),
+		filepath.Join(home, ".nix-profile", "bin"),
+		filepath.Join(home, ".opencode", "bin"),
+		filepath.Join(home, ".kiro", "bin"),
+	} {
+		out = appendCLICommandPaths(out, root, commandNames)
+	}
+	for _, pattern := range []string{
+		filepath.Join(home, ".nvm", "versions", "node", "*", "bin"),
+		filepath.Join(home, ".local", "share", "node-*", "bin"),
+		filepath.Join(home, ".local", "share", "fnm", "node-versions", "*", "installation", "bin"),
+		filepath.Join(home, "Library", "Application Support", "fnm", "node-versions", "*", "installation", "bin"),
+	} {
+		matches, _ := filepath.Glob(pattern)
+		sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+		for _, root := range matches {
+			out = appendCLICommandPaths(out, root, commandNames)
+		}
+	}
+	return uniqueCLIStrings(out)
+}
+
+func appendCLICommandPaths(out []string, root string, commandNames []string) []string {
+	for _, command := range commandNames {
+		out = append(out, filepath.Join(root, command))
+	}
+	return out
 }
 
 func codexWindowsCommandCandidates() []string {
