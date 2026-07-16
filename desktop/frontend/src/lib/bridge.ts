@@ -148,6 +148,7 @@ export interface WidgetOption {
   label: string;
   description?: string;
   value: string;
+  code?: "allow" | "deny";
 }
 
 export interface WidgetMessage {
@@ -156,9 +157,13 @@ export interface WidgetMessage {
   tabId: string;
   projectName: string;
   taskName: string;
+  taskNameCode?: "current";
   kind: "choice" | "reply" | "result" | "error";
   stateLabel: string;
+  stateCode?: "confirm" | "reply" | "action" | "complete";
   message: string;
+  messageCode?: "complete_fallback" | "multi_question";
+  messageCount?: number;
   interactionId?: string;
   questionId?: string;
   options: WidgetOption[];
@@ -211,6 +216,7 @@ export interface WidgetConversationResult {
   workspaceRoot?: string;
   workspaceName?: string;
   routeReason?: string;
+  routeReasonCode?: "global_fallback" | "recent" | "name_match" | "history" | "current" | "primary" | "manual";
   snapshot: WidgetSnapshot;
 }
 

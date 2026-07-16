@@ -179,9 +179,9 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Updated: 2026-07-03
 
 ### 桌面传呼机小组件模式
-- Location: `desktop/widget_mode.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/components/widget/WidgetMode.tsx`
-- Summary: 小组件聚合任务状态；完成态返回主窗口或查看结果会激活对应 tab/session，运行无待处理消息时从 40 条短文案中随机轮播。
-- Keywords: widget mode, session:activated, widget-open, IDLE_SUFFIXES, 任务完成, 随机文案
+- Location: `desktop/widget_mode.go`, `desktop/widget_conversation.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/components/widget/WidgetMode.tsx`, `desktop/frontend/src/components/widget/widgetCopy.ts`, `desktop/frontend/src/locales`
+- Summary: 小组件聚合任务状态；完成态操作会激活对应 session；简中、繁中、英文界面及 40 组短运行文案随桌面语言切换，后端通过稳定语义码传递可翻译状态。
+- Keywords: widget mode, session:activated, widget-open, widgetSuffixes, routeReasonCode, 多语言, 随机文案
 - Source: verified-by-search
 - Updated: 2026-07-16
 

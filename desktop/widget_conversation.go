@@ -21,6 +21,14 @@ const (
 	widgetWorkspaceAuto    = "auto"
 	widgetWorkspaceGlobal  = "global"
 	widgetWorkspaceProject = "project"
+
+	widgetRouteGlobalFallback = "global_fallback"
+	widgetRouteRecent         = "recent"
+	widgetRouteNameMatch      = "name_match"
+	widgetRouteHistory        = "history"
+	widgetRouteCurrent        = "current"
+	widgetRoutePrimary        = "primary"
+	widgetRouteManual         = "manual"
 )
 
 // WidgetWorkspaceOption is one selectable workspace for the widget dropdown.
@@ -42,13 +50,14 @@ type WidgetConversationInput struct {
 // WidgetConversationResult reports the chosen workspace and an explicit,
 // retryable outcome so the widget never has to infer whether a send succeeded.
 type WidgetConversationResult struct {
-	Status        string         `json:"status"`
-	Error         string         `json:"error,omitempty"`
-	TabID         string         `json:"tabId,omitempty"`
-	WorkspaceRoot string         `json:"workspaceRoot,omitempty"`
-	WorkspaceName string         `json:"workspaceName,omitempty"`
-	RouteReason   string         `json:"routeReason,omitempty"`
-	Snapshot      WidgetSnapshot `json:"snapshot"`
+	Status          string         `json:"status"`
+	Error           string         `json:"error,omitempty"`
+	TabID           string         `json:"tabId,omitempty"`
+	WorkspaceRoot   string         `json:"workspaceRoot,omitempty"`
+	WorkspaceName   string         `json:"workspaceName,omitempty"`
+	RouteReason     string         `json:"routeReason,omitempty"`
+	RouteReasonCode string         `json:"routeReasonCode,omitempty"`
+	Snapshot        WidgetSnapshot `json:"snapshot"`
 }
 
 type widgetConversationReceipt struct {
@@ -59,6 +68,7 @@ type widgetConversationReceipt struct {
 	WorkspaceRoot      string `json:"workspaceRoot,omitempty"`
 	WorkspaceName      string `json:"workspaceName"`
 	RouteReason        string `json:"routeReason"`
+	RouteReasonCode    string `json:"routeReasonCode,omitempty"`
 	TabID              string `json:"tabId,omitempty"`
 	Status             string `json:"status"`
 	Error              string `json:"error,omitempty"`
@@ -77,10 +87,11 @@ type widgetWorkspaceCandidate struct {
 }
 
 type widgetWorkspaceRoute struct {
-	Scope  string
-	Root   string
-	Name   string
-	Reason string
+	Scope      string
+	Root       string
+	Name       string
+	Reason     string
+	ReasonCode string
 }
 
 // StartWidgetConversation routes, creates and submits one new conversation.
@@ -131,7 +142,8 @@ func (a *App) StartWidgetConversation(input WidgetConversationInput) WidgetConve
 			RequestID: requestID, PromptHash: promptHash,
 			WorkspaceSelection: wsSelection,
 			Scope:              route.Scope, WorkspaceRoot: route.Root, WorkspaceName: route.Name,
-			RouteReason: route.Reason, Status: "routing", UpdatedAt: time.Now().UnixMilli(),
+			RouteReason: route.Reason, RouteReasonCode: route.ReasonCode,
+			Status: "routing", UpdatedAt: time.Now().UnixMilli(),
 		}
 		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话路由: %w", err), receipt)
@@ -191,7 +203,7 @@ func (a *App) StartWidgetConversation(input WidgetConversationInput) WidgetConve
 func (a *App) widgetConversationResult(status string, err error, receipt widgetConversationReceipt) WidgetConversationResult {
 	result := WidgetConversationResult{
 		Status: status, TabID: receipt.TabID, WorkspaceRoot: receipt.WorkspaceRoot,
-		WorkspaceName: receipt.WorkspaceName, RouteReason: receipt.RouteReason,
+		WorkspaceName: receipt.WorkspaceName, RouteReason: receipt.RouteReason, RouteReasonCode: receipt.RouteReasonCode,
 		Snapshot: a.GetWidgetSnapshot(),
 	}
 	if err != nil {
@@ -311,18 +323,18 @@ func (a *App) widgetWorkspaceCandidates() []widgetWorkspaceCandidate {
 
 func chooseWidgetWorkspace(prompt string, candidates []widgetWorkspaceCandidate) widgetWorkspaceRoute {
 	if len(candidates) == 0 {
-		return widgetWorkspaceRoute{Scope: "global", Name: globalProjectTitle(), Reason: "Global 兜底"}
+		return widgetWorkspaceRoute{Scope: "global", Name: globalProjectTitle(), Reason: "Global 兜底", ReasonCode: widgetRouteGlobalFallback}
 	}
 	normalizedPrompt := normalizeWidgetMatchText(prompt)
-	bestIndex, bestScore, bestReason := -1, -1, ""
+	bestIndex, bestScore, bestReason, bestReasonCode := -1, -1, "", ""
 	for i, candidate := range candidates {
-		score, reason := 0, "最近使用"
+		score, reason, reasonCode := 0, "最近使用", widgetRouteRecent
 		for _, alias := range candidate.Aliases {
 			normalizedAlias := normalizeWidgetMatchText(alias)
 			if len([]rune(normalizedAlias)) >= 2 && strings.Contains(normalizedPrompt, normalizedAlias) {
 				next := 100 + len([]rune(normalizedAlias))
 				if next > score {
-					score, reason = next, "名称匹配"
+					score, reason, reasonCode = next, "名称匹配", widgetRouteNameMatch
 				}
 			}
 		}
@@ -331,16 +343,16 @@ func chooseWidgetWorkspace(prompt string, candidates []widgetWorkspaceCandidate)
 				if overlap := widgetTextOverlap(normalizedPrompt, normalizeWidgetMatchText(topic)); overlap >= 2 {
 					next := 40 + overlap
 					if next > score {
-						score, reason = next, "历史上下文"
+						score, reason, reasonCode = next, "历史上下文", widgetRouteHistory
 					}
 				}
 			}
 		}
 		if candidate.Active && score < 10 {
-			score, reason = 10, "当前工作区"
+			score, reason, reasonCode = 10, "当前工作区", widgetRouteCurrent
 		}
 		if score > bestScore || (score == bestScore && bestIndex >= 0 && candidate.Order < candidates[bestIndex].Order) {
-			bestIndex, bestScore, bestReason = i, score, reason
+			bestIndex, bestScore, bestReason, bestReasonCode = i, score, reason, reasonCode
 		}
 	}
 	best := candidates[bestIndex]
@@ -348,17 +360,17 @@ func chooseWidgetWorkspace(prompt string, candidates []widgetWorkspaceCandidate)
 	// never become the implicit destination of a compact conversation.
 	if best.Transient && bestReason != "名称匹配" {
 		if stable, ok := stableWidgetFamily(best, candidates); ok {
-			best, bestReason = stable, "主工作区"
+			best, bestReason, bestReasonCode = stable, "主工作区", widgetRoutePrimary
 		} else {
 			for _, candidate := range candidates {
 				if !candidate.Transient {
-					best, bestReason = candidate, "最近使用"
+					best, bestReason, bestReasonCode = candidate, "最近使用", widgetRouteRecent
 					break
 				}
 			}
 		}
 	}
-	return widgetWorkspaceRoute{Scope: best.Scope, Root: best.Root, Name: best.Name, Reason: bestReason}
+	return widgetWorkspaceRoute{Scope: best.Scope, Root: best.Root, Name: best.Name, Reason: bestReason, ReasonCode: bestReasonCode}
 }
 
 // ListWidgetWorkspaces returns the selectable workspace options for the widget
@@ -384,7 +396,7 @@ func resolveWidgetWorkspace(selection, prompt string, candidates []widgetWorkspa
 	case selection == widgetWorkspaceAuto:
 		return chooseWidgetWorkspace(prompt, candidates), nil
 	case selection == widgetWorkspaceGlobal:
-		return widgetWorkspaceRoute{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle(), Reason: "手动选择"}, nil
+		return widgetWorkspaceRoute{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle(), Reason: "手动选择", ReasonCode: widgetRouteManual}, nil
 	case strings.HasPrefix(selection, widgetWorkspaceProject+":"):
 		root := strings.TrimSpace(selection[len(widgetWorkspaceProject+":"):])
 		if root == "" {
@@ -396,7 +408,7 @@ func resolveWidgetWorkspace(selection, prompt string, candidates []widgetWorkspa
 				if c.Transient {
 					return widgetWorkspaceRoute{}, fmt.Errorf("临时工作区 %q 不可手动选择", c.Name)
 				}
-				return widgetWorkspaceRoute{Scope: c.Scope, Root: c.Root, Name: c.Name, Reason: "手动选择"}, nil
+				return widgetWorkspaceRoute{Scope: c.Scope, Root: c.Root, Name: c.Name, Reason: "手动选择", ReasonCode: widgetRouteManual}, nil
 			}
 		}
 		return widgetWorkspaceRoute{}, fmt.Errorf("工作区 %q 不在当前候选列表中或已过期", root)

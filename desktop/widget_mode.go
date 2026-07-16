@@ -50,6 +50,7 @@ type WidgetOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description,omitempty"`
 	Value       string `json:"value"`
+	Code        string `json:"code,omitempty"`
 }
 
 // WidgetMessage is the only important message shown by compact mode. Context
@@ -60,9 +61,13 @@ type WidgetMessage struct {
 	TabID          string         `json:"tabId"`
 	ProjectName    string         `json:"projectName"`
 	TaskName       string         `json:"taskName"`
+	TaskNameCode   string         `json:"taskNameCode,omitempty"`
 	Kind           string         `json:"kind"`
 	StateLabel     string         `json:"stateLabel"`
+	StateCode      string         `json:"stateCode,omitempty"`
 	Message        string         `json:"message"`
+	MessageCode    string         `json:"messageCode,omitempty"`
+	MessageCount   int            `json:"messageCount,omitempty"`
 	InteractionID  string         `json:"interactionId,omitempty"`
 	QuestionID     string         `json:"questionId,omitempty"`
 	Options        []WidgetOption `json:"options"`
@@ -376,20 +381,26 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 		if text := strings.TrimSpace(meta.StartupErr); text != "" {
 			snapshot.FailedCount++
 			message := baseWidgetMessage(meta, "error", "需要处理", conciseWidgetText(text, 84))
+			message.StateCode = "action"
 			message.ID = "error:" + meta.ID
-			message.Revision = widgetRevision(message.ID, message.Message)
+			message.Revision = widgetMessageRevision(message)
 			items = append(items, item{message: message, priority: 1, at: meta.NeedsAttentionAt, rank: source.rank, deferred: deferred[message.ID]})
 			continue
 		}
 		if meta.NeedsAttention {
 			snapshot.CompletedCount++
 			text := conciseWidgetText(source.resultText, 110)
+			fallback := text == ""
 			if text == "" {
 				text = "执行已完成，结果可以查看。"
 			}
 			message := baseWidgetMessage(meta, "result", "任务完成", text)
+			message.StateCode = "complete"
+			if fallback {
+				message.MessageCode = "complete_fallback"
+			}
 			message.ID = fmt.Sprintf("result:%s:%d", meta.ID, meta.NeedsAttentionAt)
-			message.Revision = widgetRevision(message.ID, message.Message)
+			message.Revision = widgetMessageRevision(message)
 			items = append(items, item{message: message, priority: 2, at: meta.NeedsAttentionAt, rank: source.rank, deferred: deferred[message.ID]})
 		}
 	}
@@ -465,23 +476,27 @@ func messageForPending(source widgetSource) WidgetMessage {
 			text = strings.TrimSpace(approval.Tool)
 		}
 		message := baseWidgetMessage(meta, "choice", "需要确认", conciseWidgetText(text, 84))
+		message.StateCode = "confirm"
 		message.ID = "approval:" + meta.ID + ":" + approval.ID
 		message.InteractionID = approval.ID
 		message.Options = []WidgetOption{
-			{Label: "允许", Description: "继续执行这一步", Value: "allow"},
-			{Label: "拒绝", Description: "停止这一步", Value: "deny"},
+			{Label: "允许", Description: "继续执行这一步", Value: "allow", Code: "allow"},
+			{Label: "拒绝", Description: "停止这一步", Value: "deny", Code: "deny"},
 		}
-		message.Revision = widgetRevision(message.ID, message.Message)
+		message.Revision = widgetMessageRevision(message)
 		return message
 	}
 
 	ask := pending.Ask
 	if len(ask.Questions) != 1 {
 		message := baseWidgetMessage(meta, "reply", "等待回复", fmt.Sprintf("需要回答 %d 个问题，请在主窗口继续。", len(ask.Questions)))
+		message.StateCode = "reply"
+		message.MessageCode = "multi_question"
+		message.MessageCount = len(ask.Questions)
 		message.ID = "ask:" + meta.ID + ":" + ask.ID
 		message.InteractionID = ask.ID
 		message.RequiresWindow = true
-		message.Revision = widgetRevision(message.ID, message.Message)
+		message.Revision = widgetMessageRevision(message)
 		return message
 	}
 	question := ask.Questions[0]
@@ -490,6 +505,7 @@ func messageForPending(source widgetSource) WidgetMessage {
 		kind = "choice"
 	}
 	message := baseWidgetMessage(meta, kind, "等待回复", conciseWidgetText(question.Prompt, 110))
+	message.StateCode = "reply"
 	message.ID = "ask:" + meta.ID + ":" + ask.ID
 	message.InteractionID = ask.ID
 	message.QuestionID = question.ID
@@ -500,7 +516,7 @@ func messageForPending(source widgetSource) WidgetMessage {
 			message.Options = append(message.Options, WidgetOption{Label: option.Label, Description: option.Description, Value: option.Label})
 		}
 	}
-	message.Revision = widgetRevision(message.ID, message.Message)
+	message.Revision = widgetMessageRevision(message)
 	return message
 }
 
@@ -513,13 +529,25 @@ func baseWidgetMessage(meta TabMeta, kind, state, message string) WidgetMessage 
 	if task == "" {
 		task = strings.TrimSpace(meta.TopicTitle)
 	}
+	taskCode := ""
 	if task == "" {
 		task = "当前任务"
+		taskCode = "current"
 	}
 	return WidgetMessage{
-		TabID: meta.ID, ProjectName: project, TaskName: conciseWidgetText(task, 42),
+		TabID: meta.ID, ProjectName: project, TaskName: conciseWidgetText(task, 42), TaskNameCode: taskCode,
 		Kind: kind, StateLabel: state, Message: message, Options: []WidgetOption{},
 	}
+}
+
+func widgetMessageRevision(message WidgetMessage) string {
+	return widgetRevision(
+		message.ID,
+		message.Message,
+		message.StateCode,
+		message.MessageCode,
+		fmt.Sprint(message.MessageCount),
+	)
 }
 
 func conciseWidgetText(text string, maxRunes int) string {
