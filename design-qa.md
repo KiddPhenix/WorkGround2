@@ -46,6 +46,41 @@ No actionable P0/P1/P2 differences.
 
 final result: passed
 
+---
+
+# Design QA — 小组件左侧点阵信息轮播
+
+- Source visual truth：`docs/assets/widget-mode/widget-info-token-target.png`、`widget-info-pet-target.png`、`widget-info-system-target.png`
+- Implementation screenshots：`docs/assets/widget-mode/implementation-widget-info-token.png`、`implementation-widget-info-pet.png`、`implementation-widget-info-system.png`、`implementation-widget-info-model.png`、`implementation-widget-info-context.png`
+- Viewport：`590 × 176`；内部逻辑画布沿用 `200%` 尺寸并整体缩放 `50%`
+- States：TOKEN、时钟、电子宠物、IDLE、系统状态、模型标志、任务上下文抢占
+
+## Full-view comparison evidence
+
+- 三组目标图与对应实现截图已在同一比较输入中成对检查。机壳、左侧约 25% 信息区、主消息区、扫描线、主窗口键及青黄配色保持稳定。
+- TOKEN 使用 Doto 点阵字体显示 `12.84M`；宠物使用真实六帧透明图集；系统页按 NET / CPU / MEM 三行展示；模型页显示真实品牌标志和当前模型名。
+
+## Focused interaction evidence
+
+- 点击左侧整区按 TOKEN → 时钟 → 宠物 → IDLE → 系统 → 模型循环；系统或模型不可用时自动跳过。
+- 新 `message id + revision` 只触发一次任务上下文。点击返回信息页后等待超过一次 800ms 轮询，页面仍保持用户选择；同 revision 不重复抢占。
+- 模型标志每 3 秒内部轮换，主轮播不自动切页；reduced-motion 下停止轮换。按钮具备唯一 accessible name 和可见焦点环。
+
+## Comparison history
+
+- Pass 1：发现宠物图集按容器比例拉伸导致角色偏扁；品牌 SVG 的 mask 简写覆盖了 mask-image，显示为黄色方块，均记为 P2。
+- Fix：图集改为保持原始纵横比并按帧中心裁切；品牌标志改为项目内真实 SVG + 稳定 class mask。
+- Pass 2：宠物轮廓、品牌图标、TOKEN 精度和任务上下文保持行为完成复拍；P0/P1/P2 清零。
+
+## Engineering evidence
+
+- `go test . -run 'TestWidget(Info|System|Model|Snapshot)|TestNextWidgetIdleSince' -count=1`：通过。
+- `npm.cmd run test:widget-info`、`npm.cmd run typecheck`、`npm.cmd run build`：通过。
+- 浏览器 console error/warning：0。
+- `go test . -count=1` 的仓库全量桌面测试仍有既有 Darwin 路径、Windows topic-tree/临时锁失败；失败文件与本功能无交集，专项测试独立通过。
+
+final result: passed
+
 # Design QA — 传呼机小组件半尺寸与透明切角
 
 - Source visual truth: `D:/Temp/codex-clipboard-c05887a1-0fdf-47ed-ad37-4cbb8450203d.png` 与已确认的 `docs/assets/widget-mode/implementation-idle.png`

@@ -431,3 +431,8 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - 交互检查：点选回复和键入发送均成功，失败信息保留输入并复用同一 `requestId`。
 - 构建检查：前端 `npm.cmd run build` 通过；Wails Windows production build 通过。
 - 全量桌面既有测试中仍有与本功能无关的 Windows 临时目录清理、Topic tree 时序失败；本功能定向测试全部通过。
+- 2026-07-16 左侧信息轮播：身份区改为整区可点击的六页点阵终端，依次显示 TOKEN 累计、点阵时钟、W2 电子宠物、IDLE 时长、网络/CPU/内存、已接入模型。用户选择通过 `localStorage` 恢复；系统或模型数据不可用时安全跳过对应页。
+- 新任务上下文按 `message id + revision` 仅抢占一次。用户点击返回信息页后，同 revision 的 800ms 快照轮询不会再次抢回；下一 revision 才重新展示上下文。
+- 后端 `WidgetInfo` 复用当前会话遥测汇总 TOKEN，运行中但缺少遥测时返回 `tokenPartial`；IDLE 起点由快照单入口维护；系统指标使用 gopsutil 每 3 秒采样缓存，配置模型列表每 30 秒刷新。
+- 电子宠物使用六帧透明 PNG 图集；点阵数字使用随包分发的 Doto 字体；模型页使用真实品牌 SVG，未知品牌退回清晰的字母标记。`prefers-reduced-motion` 下停止模型自动轮换。
+- 视觉验收：`590 × 176` 浏览器 mock 对照 `widget-info-*-target.png` 完成 TOKEN、宠物、系统、模型及上下文逐页复验；修正宠物纵横比与品牌 mask 后 P0/P1/P2 清零。

@@ -82,6 +82,7 @@ type WidgetSnapshot struct {
 	FailedCount     int            `json:"failedCount"`
 	BackgroundCount int            `json:"backgroundCount"`
 	IsIdle          bool           `json:"isIdle"`
+	Info            WidgetInfo     `json:"info"`
 	Version         string         `json:"version"`
 }
 
@@ -116,11 +117,14 @@ type widgetPersistedState struct {
 }
 
 type widgetSource struct {
-	meta       TabMeta
-	pending    control.PendingInteraction
-	has        bool
-	rank       int
-	resultText string
+	meta         TabMeta
+	pending      control.PendingInteraction
+	has          bool
+	rank         int
+	resultText   string
+	totalTokens  int
+	tokenTracked bool
+	model        string
 }
 
 func widgetWindowStatePath() string {
@@ -320,6 +324,10 @@ func (a *App) widgetSources() []widgetSource {
 			continue
 		}
 		source := widgetSource{meta: a.tabMeta(tab, tab.ID == a.activeTabID), rank: rank}
+		telemetry := tab.telemetrySnapshot().Usage
+		source.totalTokens = telemetry.TotalTokens
+		source.tokenTracked = telemetry.RequestCount > 0 || telemetry.TotalTokens > 0
+		source.model = strings.TrimSpace(tab.Label)
 		if tab.Ctrl != nil {
 			source.pending, source.has = tab.Ctrl.PendingInteraction()
 			source.resultText = lastWidgetAssistantText(tab.Ctrl.History())
@@ -545,7 +553,24 @@ func widgetSnapshotVersion(snapshot WidgetSnapshot) string {
 	if snapshot.Current != nil {
 		current = snapshot.Current.ID + ":" + snapshot.Current.Revision
 	}
-	return widgetRevision(current, fmt.Sprint(snapshot.RemainingCount), fmt.Sprint(snapshot.RunningCount), fmt.Sprint(snapshot.WaitingCount), fmt.Sprint(snapshot.CompletedCount), fmt.Sprint(snapshot.FailedCount), fmt.Sprint(snapshot.BackgroundCount), fmt.Sprint(snapshot.IsIdle))
+	return widgetRevision(
+		current,
+		fmt.Sprint(snapshot.RemainingCount),
+		fmt.Sprint(snapshot.RunningCount),
+		fmt.Sprint(snapshot.WaitingCount),
+		fmt.Sprint(snapshot.CompletedCount),
+		fmt.Sprint(snapshot.FailedCount),
+		fmt.Sprint(snapshot.BackgroundCount),
+		fmt.Sprint(snapshot.IsIdle),
+		fmt.Sprint(snapshot.Info.TotalTokens),
+		fmt.Sprint(snapshot.Info.TokenPartial),
+		fmt.Sprint(snapshot.Info.IdleSince),
+		fmt.Sprint(snapshot.Info.System.Available),
+		snapshot.Info.System.Network,
+		fmt.Sprint(snapshot.Info.System.CPU),
+		fmt.Sprint(snapshot.Info.System.Memory),
+		widgetModelSignature(snapshot.Info.Models),
+	)
 }
 
 // ApplyWidgetAction validates the current item, deduplicates retried requests,
@@ -601,14 +626,28 @@ func (a *App) ApplyWidgetAction(input WidgetActionInput) WidgetActionResult {
 }
 
 func (a *App) widgetSnapshotLocked() WidgetSnapshot {
-	snapshot := buildWidgetSnapshotState(a.widgetSources(), a.widgetState.Deferred, a.widgetState.CurrentID)
+	sources := a.widgetSources()
+	snapshot := buildWidgetSnapshotState(sources, a.widgetState.Deferred, a.widgetState.CurrentID)
 	if snapshot.Current == nil {
 		a.widgetState.CurrentID = ""
 	} else {
 		a.widgetState.CurrentID = snapshot.Current.ID
 	}
 	snapshot.Mode = a.IsWidgetMode()
+	a.widgetIdleSince = nextWidgetIdleSince(a.widgetIdleSince, snapshot.IsIdle, time.Now().UnixMilli())
+	snapshot.Info = a.widgetInfo(sources, a.widgetIdleSince)
+	snapshot.Version = widgetSnapshotVersion(snapshot)
 	return snapshot
+}
+
+func nextWidgetIdleSince(current int64, idle bool, now int64) int64 {
+	if !idle {
+		return 0
+	}
+	if current > 0 {
+		return current
+	}
+	return now
 }
 
 func (a *App) pruneWidgetDeferredLocked() {

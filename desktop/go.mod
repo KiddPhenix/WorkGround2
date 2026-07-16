@@ -17,6 +17,7 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/minio/selfupdate v0.6.0
+	github.com/shirou/gopsutil/v4 v4.26.4
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/mod v0.37.0
 	golang.org/x/sys v0.46.0
@@ -29,6 +30,7 @@ require (
 	github.com/bep/debounce v1.2.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
+	github.com/ebitengine/purego v0.10.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -54,6 +56,7 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	github.com/wailsapp/go-webview2 v1.0.23 // indirect
 	github.com/wailsapp/mimetype v1.4.1 // indirect
+	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
 	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/image v0.43.0 // indirect

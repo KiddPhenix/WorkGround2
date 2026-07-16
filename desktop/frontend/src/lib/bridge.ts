@@ -175,7 +175,30 @@ export interface WidgetSnapshot {
   failedCount: number;
   backgroundCount: number;
   isIdle: boolean;
+  info: WidgetInfo;
   version: string;
+}
+
+export interface WidgetInfo {
+  totalTokens: number;
+  tokenPartial: boolean;
+  idleSince?: number;
+  system: WidgetSystemInfo;
+  models: WidgetModelInfo[];
+}
+
+export interface WidgetSystemInfo {
+  available: boolean;
+  network: "online" | "offline" | "unknown";
+  cpu: number;
+  memory: number;
+  sampledAt?: number;
+}
+
+export interface WidgetModelInfo {
+  provider?: string;
+  model: string;
+  brand: string;
 }
 
 export interface WidgetActionInput {
@@ -931,6 +954,17 @@ function makeMockApp(): AppBindings {
       failedCount: 0,
       backgroundCount: 1,
       isIdle: false,
+      info: {
+        totalTokens: 12_840_000,
+        tokenPartial: false,
+        idleSince: t0 - 2_945_000,
+        system: { available: true, network: "online" as const, cpu: 23, memory: 61, sampledAt: t0 },
+        models: [
+          { provider: "deepseek", model: "deepseek-chat", brand: "deepseek" },
+          { provider: "anthropic", model: "claude-sonnet-4", brand: "anthropic" },
+          { provider: "google", model: "gemini-2.5-pro", brand: "gemini" },
+        ],
+      },
       version: `mock-${widgetScenario}-${widgetRevision}`,
     };
 		if (widgetConversationStarted || (widgetScenario === "widget-choice3" && widgetChoiceAnswered)) {

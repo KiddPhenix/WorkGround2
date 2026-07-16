@@ -5,14 +5,11 @@ import {
   type WidgetActionInput,
   type WidgetActionResult,
   type WidgetConversationResult,
-  type WidgetMessage,
   type WidgetOption,
   type WidgetSnapshot,
   type WidgetWorkspaceOption,
 } from "../../lib/bridge";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
-import calibrationRail from "../../assets/widget-mode/calibration-rail.png";
-import w2Mark from "../../assets/widget-mode/w2-mark.png";
 import shellTopLeft from "../../assets/widget-mode/pager-shell.9/top-left.png";
 import shellTop from "../../assets/widget-mode/pager-shell.9/top.png";
 import shellTopRight from "../../assets/widget-mode/pager-shell.9/top-right.png";
@@ -22,6 +19,7 @@ import shellRight from "../../assets/widget-mode/pager-shell.9/right.png";
 import shellBottomLeft from "../../assets/widget-mode/pager-shell.9/bottom-left.png";
 import shellBottom from "../../assets/widget-mode/pager-shell.9/bottom.png";
 import shellBottomRight from "../../assets/widget-mode/pager-shell.9/bottom-right.png";
+import { WidgetInfoCarousel } from "./WidgetInfoCarousel";
 import "./widget-mode.css";
 
 const EMPTY_SNAPSHOT: WidgetSnapshot = {
@@ -33,6 +31,12 @@ const EMPTY_SNAPSHOT: WidgetSnapshot = {
   failedCount: 0,
   backgroundCount: 0,
   isIdle: true,
+  info: {
+    totalTokens: 0,
+    tokenPartial: false,
+    system: { available: false, network: "unknown", cpu: 0, memory: 0 },
+    models: [],
+  },
   version: "loading",
 };
 
@@ -236,23 +240,6 @@ function PagedText({ children }: { children: string }) {
       <h1><span key={page} className="widget-pager__text">{pages[page]}</span><span ref={measureRef} className="widget-pager__measure" aria-hidden="true" /></h1>
       {hasNext && <span className="widget-pager__next" aria-hidden="true">下一页 <ChevronRight size={17} /></span>}
     </div>
-  );
-}
-
-function ContextBlock({ message, projectName, taskName }: {
-  message?: WidgetMessage;
-  projectName?: string;
-  taskName?: string;
-}) {
-  return (
-    <section className="widget-context" aria-label="任务上下文">
-      <img className="widget-context__rail" src={calibrationRail} alt="" aria-hidden="true" />
-      <div className="widget-context__identity">
-        <img className="widget-context__mark" src={w2Mark} alt="WorkGround2" />
-        <strong className="widget-context__project">{message?.projectName ?? projectName ?? "WorkGround2"}</strong>
-        <span className="widget-context__task">{message?.taskName ?? taskName ?? "任务状态"}</span>
-      </div>
-    </section>
   );
 }
 
@@ -704,7 +691,7 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
       <div className="widget-shell">
         <NineSliceShell />
         <div className="widget-shell__drag" aria-hidden="true" />
-        <ContextBlock message={current} projectName={contextProject} taskName={contextTask} />
+		<WidgetInfoCarousel snapshot={snapshot} message={current} projectName={contextProject} taskName={contextTask} />
         {body}
         <button className="widget-return" type="button" onClick={() => void exit(current?.kind === "result" ? current.tabId : "")} disabled={busy} aria-label="返回主窗口">
           <span className="widget-return__icon"><PanelTopOpen size={18} strokeWidth={1.8} /></span>

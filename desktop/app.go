@@ -175,6 +175,10 @@ type App struct {
 	widgetMode           bool
 	widgetStateLoaded    bool
 	widgetState          widgetPersistedState
+	widgetIdleSince      int64 // protected by widgetActionMu
+	widgetInfoMu         sync.Mutex
+	widgetInfoCache      widgetInfoCache
+	widgetSystemProbe    func() WidgetSystemInfo
 }
 
 type skillRootsCache struct {
