@@ -17,18 +17,23 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/fileutil"
+	"workground2/internal/provider"
 )
 
 const (
 	widgetDefaultWidth  = 590
-	widgetDefaultHeight = 142
+	widgetDefaultHeight = 176
 	widgetMinWidth      = 520
-	widgetMinHeight     = 128
+	widgetMinHeight     = 160
 	widgetMaxWidth      = 900
 	widgetMaxHeight     = 220
 	widgetEdgeGap       = 16
 	widgetBottomGap     = 24
 	widgetActionLimit   = 64
+
+	// legacyDefaultHeight is the old default height before the 142→176 bump.
+	// Persisted state matching the old default is migrated transparently.
+	legacyDefaultHeight = 142
 )
 
 // WidgetWindowState is persisted separately so compact mode never overwrites
@@ -76,6 +81,8 @@ type WidgetSnapshot struct {
 	CompletedCount  int            `json:"completedCount"`
 	FailedCount     int            `json:"failedCount"`
 	BackgroundCount int            `json:"backgroundCount"`
+	IsIdle          bool           `json:"isIdle"`
+	Info            WidgetInfo     `json:"info"`
 	Version         string         `json:"version"`
 }
 
@@ -103,16 +110,21 @@ type widgetAppliedAction struct {
 }
 
 type widgetPersistedState struct {
-	Applied   []widgetAppliedAction `json:"applied"`
-	Deferred  map[string]int64      `json:"deferred,omitempty"`
-	CurrentID string                `json:"currentId,omitempty"`
+	Applied       []widgetAppliedAction       `json:"applied"`
+	Deferred      map[string]int64            `json:"deferred,omitempty"`
+	CurrentID     string                      `json:"currentId,omitempty"`
+	Conversations []widgetConversationReceipt `json:"conversations,omitempty"`
 }
 
 type widgetSource struct {
-	meta    TabMeta
-	pending control.PendingInteraction
-	has     bool
-	rank    int
+	meta         TabMeta
+	pending      control.PendingInteraction
+	has          bool
+	rank         int
+	resultText   string
+	totalTokens  int
+	tokenTracked bool
+	model        string
 }
 
 func widgetWindowStatePath() string {
@@ -129,7 +141,16 @@ func loadWidgetWindowState() (WidgetWindowState, bool) {
 		return WidgetWindowState{}, false
 	}
 	var state WidgetWindowState
-	if json.Unmarshal(data, &state) != nil || state.Width < widgetMinWidth || state.Height < widgetMinHeight || state.Width > widgetMaxWidth || state.Height > widgetMaxHeight {
+	if json.Unmarshal(data, &state) != nil {
+		return WidgetWindowState{}, false
+	}
+	// Migrate old default 590×142 → 590×176 before validation, because the
+	// legacy height is below the current minHeight.
+	if state.Width == widgetDefaultWidth && state.Height == legacyDefaultHeight {
+		state.Height = widgetDefaultHeight
+		state.Y -= widgetDefaultHeight - legacyDefaultHeight
+	}
+	if state.Width < widgetMinWidth || state.Height < widgetMinHeight || state.Width > widgetMaxWidth || state.Height > widgetMaxHeight {
 		return WidgetWindowState{}, false
 	}
 	return state, true
@@ -157,6 +178,9 @@ func (a *App) loadWidgetStateLocked() {
 	}
 	if len(a.widgetState.Applied) > widgetActionLimit {
 		a.widgetState.Applied = a.widgetState.Applied[len(a.widgetState.Applied)-widgetActionLimit:]
+	}
+	if len(a.widgetState.Conversations) > widgetActionLimit {
+		a.widgetState.Conversations = a.widgetState.Conversations[len(a.widgetState.Conversations)-widgetActionLimit:]
 	}
 	if a.widgetState.Deferred == nil {
 		a.widgetState.Deferred = map[string]int64{}
@@ -222,7 +246,10 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	if !a.widgetMode {
 		a.widgetMu.Unlock()
 		if strings.TrimSpace(tabID) != "" {
-			return a.SetActiveTab(tabID)
+			if err := a.SetActiveTab(tabID); err != nil {
+				return err
+			}
+			a.emitSessionActivated("widget-open")
 		}
 		return nil
 	}
@@ -253,7 +280,10 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	}
 	runtime.EventsEmit(a.ctx, "widget:mode", false)
 	if strings.TrimSpace(tabID) != "" {
-		return a.SetActiveTab(tabID)
+		if err := a.SetActiveTab(tabID); err != nil {
+			return err
+		}
+		a.emitSessionActivated("widget-open")
 	}
 	return nil
 }
@@ -294,8 +324,13 @@ func (a *App) widgetSources() []widgetSource {
 			continue
 		}
 		source := widgetSource{meta: a.tabMeta(tab, tab.ID == a.activeTabID), rank: rank}
+		telemetry := tab.telemetrySnapshot().Usage
+		source.totalTokens = telemetry.TotalTokens
+		source.tokenTracked = telemetry.RequestCount > 0 || telemetry.TotalTokens > 0
+		source.model = strings.TrimSpace(tab.Label)
 		if tab.Ctrl != nil {
 			source.pending, source.has = tab.Ctrl.PendingInteraction()
+			source.resultText = lastWidgetAssistantText(tab.Ctrl.History())
 		}
 		out = append(out, source)
 	}
@@ -356,7 +391,11 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 		}
 		if meta.NeedsAttention {
 			snapshot.CompletedCount++
-			message := baseWidgetMessage(meta, "result", "任务完成", "执行已完成，结果可以查看。")
+			text := conciseWidgetText(source.resultText, 110)
+			if text == "" {
+				text = "执行已完成，结果可以查看。"
+			}
+			message := baseWidgetMessage(meta, "result", "任务完成", text)
 			message.ID = fmt.Sprintf("result:%s:%d", meta.ID, meta.NeedsAttentionAt)
 			message.Revision = widgetRevision(message.ID, message.Message)
 			items = append(items, item{message: message, priority: 2, at: meta.NeedsAttentionAt, rank: source.rank, deferred: deferred[message.ID]})
@@ -402,8 +441,26 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 		snapshot.Current = &current
 		snapshot.RemainingCount = len(items) - 1
 	}
+	snapshot.IsIdle = snapshot.Current == nil &&
+		snapshot.RunningCount == 0 &&
+		snapshot.WaitingCount == 0 &&
+		snapshot.CompletedCount == 0 &&
+		snapshot.FailedCount == 0 &&
+		snapshot.BackgroundCount == 0 &&
+		snapshot.RemainingCount == 0
 	snapshot.Version = widgetSnapshotVersion(snapshot)
 	return snapshot
+}
+
+func lastWidgetAssistantText(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == provider.RoleAssistant {
+			if text := strings.TrimSpace(messages[i].Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func messageForPending(source widgetSource) WidgetMessage {
@@ -444,7 +501,7 @@ func messageForPending(source widgetSource) WidgetMessage {
 	message.ID = "ask:" + meta.ID + ":" + ask.ID
 	message.InteractionID = ask.ID
 	message.QuestionID = question.ID
-	message.RequiresWindow = question.Multi || len(question.Options) > 2
+	message.RequiresWindow = question.Multi || len(question.Options) > 3
 	if !message.RequiresWindow {
 		message.Options = make([]WidgetOption, 0, len(question.Options))
 		for _, option := range question.Options {
@@ -496,7 +553,24 @@ func widgetSnapshotVersion(snapshot WidgetSnapshot) string {
 	if snapshot.Current != nil {
 		current = snapshot.Current.ID + ":" + snapshot.Current.Revision
 	}
-	return widgetRevision(current, fmt.Sprint(snapshot.RemainingCount), fmt.Sprint(snapshot.RunningCount), fmt.Sprint(snapshot.WaitingCount), fmt.Sprint(snapshot.CompletedCount), fmt.Sprint(snapshot.FailedCount))
+	return widgetRevision(
+		current,
+		fmt.Sprint(snapshot.RemainingCount),
+		fmt.Sprint(snapshot.RunningCount),
+		fmt.Sprint(snapshot.WaitingCount),
+		fmt.Sprint(snapshot.CompletedCount),
+		fmt.Sprint(snapshot.FailedCount),
+		fmt.Sprint(snapshot.BackgroundCount),
+		fmt.Sprint(snapshot.IsIdle),
+		fmt.Sprint(snapshot.Info.TotalTokens),
+		fmt.Sprint(snapshot.Info.TokenPartial),
+		fmt.Sprint(snapshot.Info.IdleSince),
+		fmt.Sprint(snapshot.Info.System.Available),
+		snapshot.Info.System.Network,
+		fmt.Sprint(snapshot.Info.System.CPU),
+		fmt.Sprint(snapshot.Info.System.Memory),
+		widgetModelSignature(snapshot.Info.Models),
+	)
 }
 
 // ApplyWidgetAction validates the current item, deduplicates retried requests,
@@ -552,14 +626,28 @@ func (a *App) ApplyWidgetAction(input WidgetActionInput) WidgetActionResult {
 }
 
 func (a *App) widgetSnapshotLocked() WidgetSnapshot {
-	snapshot := buildWidgetSnapshotState(a.widgetSources(), a.widgetState.Deferred, a.widgetState.CurrentID)
+	sources := a.widgetSources()
+	snapshot := buildWidgetSnapshotState(sources, a.widgetState.Deferred, a.widgetState.CurrentID)
 	if snapshot.Current == nil {
 		a.widgetState.CurrentID = ""
 	} else {
 		a.widgetState.CurrentID = snapshot.Current.ID
 	}
 	snapshot.Mode = a.IsWidgetMode()
+	a.widgetIdleSince = nextWidgetIdleSince(a.widgetIdleSince, snapshot.IsIdle, time.Now().UnixMilli())
+	snapshot.Info = a.widgetInfo(sources, a.widgetIdleSince)
+	snapshot.Version = widgetSnapshotVersion(snapshot)
 	return snapshot
+}
+
+func nextWidgetIdleSince(current int64, idle bool, now int64) int64 {
+	if !idle {
+		return 0
+	}
+	if current > 0 {
+		return current
+	}
+	return now
 }
 
 func (a *App) pruneWidgetDeferredLocked() {

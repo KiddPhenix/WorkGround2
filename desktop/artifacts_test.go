@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"workground2/internal/agent"
@@ -367,5 +369,252 @@ func TestArtifactsForTab_NoCtrlBadPath(t *testing.T) {
 	tabID := "test-bad-path"
 	if arts := artifactRecoveryApp(tabID, workspaceRoot, sneakyPath).ArtifactsForTab(tabID); len(arts) != 0 {
 		t.Errorf("expected 0 artifacts for path outside session dir, got %d", len(arts))
+	}
+}
+
+// setupCodexArtifactEnv creates a temp CODEX_HOME with generated_images/
+// containing a minimal PNG, and sets CODEX_HOME in t's environment.
+func setupCodexArtifactEnv(t *testing.T) string {
+	t.Helper()
+	codexHome := t.TempDir()
+	genDir := filepath.Join(codexHome, "generated_images")
+	if err := os.MkdirAll(genDir, 0755); err != nil {
+		t.Fatalf("mkdir generated_images: %v", err)
+	}
+	pngPath := filepath.Join(genDir, "output.png")
+	writeRequestHelpPNG(t, pngPath)
+	t.Setenv("CODEX_HOME", codexHome)
+	return pngPath
+}
+
+func requestHelpOutput(capability string, artifactJSON string) string {
+	var b strings.Builder
+	b.WriteString("Capability assist succeeded\n")
+	b.WriteString("request_id: assist-test\n")
+	b.WriteString("capability: " + capability + "\n")
+	b.WriteString("from_model: test/a\n")
+	b.WriteString("model: test/b\n")
+	b.WriteString("attempt: 1/1\n")
+	if artifactJSON != "" {
+		b.WriteString("artifact: " + artifactJSON + "\n")
+	}
+	b.WriteString("\ngenerated image result")
+	return b.String()
+}
+
+func TestExtractArtifacts_RequestHelpImageInWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "generated.png")
+	writeRequestHelpPNG(t, imgPath)
+
+	artifactData, err := json.Marshal(map[string]any{
+		"task_id": "img-1", "path": imgPath, "mime": "image/png",
+		"size": 100, "width": 1, "height": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// For workspace-internal images, readRequestHelpImage will reject them
+	// because the workspace root is not in the allowed roots. This is
+	// expected — request_help images are always in CODEX_HOME/generated_images
+	// or draw provider output dirs. The test verifies that workspace-internal
+	// images from request_help are correctly filtered (security boundary).
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-img", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-img", Name: "request_help",
+			Content: requestHelpOutput("image_generation", string(artifactData))},
+	}
+	// Workspace-internal images from request_help are rejected by
+	// readRequestHelpImage (not in allowed roots). This is by design.
+	if len(extractArtifacts(msgs, dir)) != 0 {
+		t.Error("workspace-internal request_help images should be rejected (not in allowed roots)")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageOutsideWorkspace(t *testing.T) {
+	pngPath := setupCodexArtifactEnv(t)
+
+	workspaceDir := t.TempDir()
+	artifactData, err := json.Marshal(map[string]any{
+		"task_id": "img-out", "path": pngPath, "mime": "image/png",
+		"size": 100, "width": 1, "height": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-out", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-out", Name: "request_help",
+			Content: requestHelpOutput("image_generation", string(artifactData))},
+	}
+	artifacts := extractArtifacts(msgs, workspaceDir)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact for workspace-external valid PNG, got %d", len(artifacts))
+	}
+	a := artifacts[0]
+	if a.Name != "output.png" {
+		t.Errorf("Name = %q, want output.png", a.Name)
+	}
+	if a.Type != "image" {
+		t.Errorf("Type = %q, want image", a.Type)
+	}
+	if a.Status != "available" {
+		t.Errorf("Status = %q, want available", a.Status)
+	}
+	if a.Path != pngPath {
+		t.Errorf("Path = %q, want %q", a.Path, pngPath)
+	}
+	if a.SourceRunID != "tc-out" {
+		t.Errorf("SourceRunID = %q, want tc-out", a.SourceRunID)
+	}
+	// Outside workspace: RelativePath falls back to filename.
+	if a.RelativePath != "output.png" {
+		t.Errorf("RelativePath = %q, want output.png", a.RelativePath)
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageRejectedCorruptFile(t *testing.T) {
+	// A file with .png extension but not a valid image.
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	// Create generated_images subdir with the fake file inside it.
+	genDir := filepath.Join(dir, "generated_images")
+	os.MkdirAll(genDir, 0755)
+	fakeCodexPath := filepath.Join(genDir, "fake.png")
+	os.WriteFile(fakeCodexPath, []byte("not a real image"), 0644)
+
+	artifactData, _ := json.Marshal(map[string]any{
+		"task_id": "corrupt", "path": fakeCodexPath, "mime": "image/png",
+		"size": 100, "width": 1, "height": 1,
+	})
+	workspaceDir := t.TempDir()
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-corrupt", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-corrupt", Name: "request_help",
+			Content: requestHelpOutput("image_generation", string(artifactData))},
+	}
+	if len(extractArtifacts(msgs, workspaceDir)) != 0 {
+		t.Error("corrupt image file should be rejected by readRequestHelpImage")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageRejectedNonImageGen(t *testing.T) {
+	// web_search capability — artifact line should be ignored.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-web", Name: "request_help", Arguments: `{"capability":"web_search"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-web", Name: "request_help",
+			Content: requestHelpOutput("web_search", "")},
+	}
+	if len(extractArtifacts(msgs, t.TempDir())) != 0 {
+		t.Error("web_search request_help should not produce artifacts")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageRejectedBadJSON(t *testing.T) {
+	workspaceDir := t.TempDir()
+	output := "Capability assist succeeded\ncapability: image_generation\nartifact: not-json\n\nresult"
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bad", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bad", Name: "request_help",
+			Content: output},
+	}
+	if len(extractArtifacts(msgs, workspaceDir)) != 0 {
+		t.Error("malformed artifact JSON should be rejected")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageRejectedMissingFile(t *testing.T) {
+	// Setup CODEX_HOME so the root check passes, but the file doesn't exist.
+	codexHome := t.TempDir()
+	genDir := filepath.Join(codexHome, "generated_images")
+	os.MkdirAll(genDir, 0755)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	missingPath := filepath.Join(genDir, "missing.png")
+	artifactData, _ := json.Marshal(map[string]any{
+		"task_id": "missing", "path": missingPath, "mime": "image/png",
+		"size": 100, "width": 1, "height": 1,
+	})
+	workspaceDir := t.TempDir()
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-missing", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-missing", Name: "request_help",
+			Content: requestHelpOutput("image_generation", string(artifactData))},
+	}
+	if len(extractArtifacts(msgs, workspaceDir)) != 0 {
+		t.Error("nonexistent file should be rejected by readRequestHelpImage")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageDedup(t *testing.T) {
+	pngPath := setupCodexArtifactEnv(t)
+
+	workspaceDir := t.TempDir()
+	artifactData, err := json.Marshal(map[string]any{
+		"task_id": "img-dup", "path": pngPath, "mime": "image/png",
+		"size": 100, "width": 1, "height": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := requestHelpOutput("image_generation", string(artifactData))
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-dup1", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-dup1", Name: "request_help", Content: output},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-dup2", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-dup2", Name: "request_help", Content: output},
+	}
+	artifacts := extractArtifacts(msgs, workspaceDir)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 deduplicated artifact, got %d", len(artifacts))
+	}
+}
+
+func TestParseRequestHelpArtifactPathIgnoresBodyOverrides(t *testing.T) {
+	valid := `C:\generated_images\valid.png`
+	malicious := `C:\generated_images\other.png`
+	validJSON, _ := json.Marshal(map[string]string{"path": valid})
+	maliciousJSON, _ := json.Marshal(map[string]string{"path": malicious})
+	output := requestHelpOutput("image_generation", string(validJSON)) +
+		"\ncapability: image_generation\nartifact: " + string(maliciousJSON)
+
+	got, ok := parseRequestHelpArtifactPath(`{"capability":"image_generation"}`, output)
+	if !ok || got != valid {
+		t.Fatalf("path = %q, ok = %v, want trusted header path %q", got, ok, valid)
+	}
+	if _, ok := parseRequestHelpArtifactPath(`{"capability":"web_search"}`, output); ok {
+		t.Fatal("tool-call capability mismatch should reject artifact")
+	}
+}
+
+func TestExtractArtifacts_RequestHelpImageFailedTool(t *testing.T) {
+	// A failed request_help (output starts with "error:") should already be
+	// filtered by historyToolResultFailed before reaching extractArtifacts.
+	workspaceDir := t.TempDir()
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-fail", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-fail", Name: "request_help",
+			Content: "error: all candidates failed"},
+	}
+	if len(extractArtifacts(msgs, workspaceDir)) != 0 {
+		t.Error("failed request_help should not produce artifacts")
 	}
 }

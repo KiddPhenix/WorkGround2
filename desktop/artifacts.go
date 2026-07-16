@@ -177,6 +177,56 @@ func completeStepEvidencePaths(argsJSON string) []string {
 	return paths
 }
 
+// parseRequestHelpArtifactPath extracts the absolute image path from a
+// successful request_help(image_generation) tool result. It parses the
+// structured output: checks the capability line, decodes the artifact JSON,
+// and returns the path only when everything is valid.
+func parseRequestHelpArtifactPath(argsJSON, output string) (string, bool) {
+	var args struct {
+		Capability string `json:"capability"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args.Capability != "image_generation" {
+		return "", false
+	}
+	lines := strings.Split(output, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "Capability assist succeeded" {
+		return "", false
+	}
+	var capability, artifactJSON string
+	for _, line := range lines[1:] {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			break
+		}
+		if after, ok := strings.CutPrefix(line, "capability: "); ok {
+			if capability != "" {
+				return "", false
+			}
+			capability = strings.TrimSpace(after)
+		}
+		if after, ok := strings.CutPrefix(line, "artifact: "); ok {
+			if artifactJSON != "" {
+				return "", false
+			}
+			artifactJSON = strings.TrimSpace(after)
+		}
+	}
+	if capability != "image_generation" || artifactJSON == "" {
+		return "", false
+	}
+	var artifact struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(artifactJSON), &artifact); err != nil {
+		return "", false
+	}
+	path := strings.TrimSpace(artifact.Path)
+	if path == "" {
+		return "", false
+	}
+	return path, true
+}
+
 func extractResultPaths(output string) []string {
 	var paths []string
 	patterns := []string{
@@ -326,7 +376,65 @@ func extractArtifacts(msgs []provider.Message, workspaceRoot string) []ArtifactV
 
 	seen := map[string]bool{}
 	var artifacts []ArtifactView
+	appendArtifact := func(abs, sourceRunID string, allowExternal bool) {
+		abs = filepath.Clean(abs)
+		if !filepath.IsAbs(abs) {
+			return
+		}
+		rel, inWorkspace := workspaceRelativeIn(abs, workspaceRoot)
+		if !inWorkspace {
+			if !allowExternal {
+				return
+			}
+			rel = filepath.Base(abs)
+		}
+		key := abs
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+
+		status := "missing"
+		var verifiedAt int64
+		if info, err := os.Stat(abs); err == nil {
+			status = "available"
+			verifiedAt = info.ModTime().UnixMilli()
+		}
+		artifacts = append(artifacts, ArtifactView{
+			ArtifactID:     artifactID(workspaceRoot, abs),
+			Name:           filepath.Base(abs),
+			Type:           classifyArtifact(abs),
+			Status:         status,
+			SessionID:      workspaceRoot,
+			Path:           abs,
+			RelativePath:   filepath.ToSlash(rel),
+			SourceRunID:    sourceRunID,
+			LastVerifiedAt: verifiedAt,
+		})
+	}
 	for _, cr := range callResults {
+		// request_help(image_generation) produces structured artifact lines;
+		// re-validate at the desktop boundary and allow workspace-external
+		// paths inside allowed output directories.
+		if cr.call.Name == "request_help" {
+			imgPath, ok := parseRequestHelpArtifactPath(cr.call.Arguments, cr.out)
+			if !ok {
+				continue
+			}
+			abs := filepath.Clean(imgPath)
+			if !filepath.IsAbs(abs) {
+				continue
+			}
+			if _, _, err := readRequestHelpImage(abs); err != nil {
+				continue
+			}
+			appendArtifact(abs, cr.call.ID, true)
+			continue
+		}
+
 		if !isProducerTool(cr.call.Name) {
 			continue
 		}
@@ -358,37 +466,7 @@ func extractArtifacts(msgs []provider.Message, workspaceRoot string) []ArtifactV
 			if abs == "" {
 				continue
 			}
-			if _, ok := workspaceRelativeIn(abs, workspaceRoot); !ok {
-				continue
-			}
-			key := filepath.Clean(abs)
-			if runtime.GOOS == "windows" {
-				key = strings.ToLower(key)
-			}
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-
-			rel, _ := filepath.Rel(workspaceRoot, abs)
-			status := "missing"
-			var verifiedAt int64
-			if info, err := os.Stat(abs); err == nil {
-				status = "available"
-				verifiedAt = info.ModTime().UnixMilli()
-			}
-
-			artifacts = append(artifacts, ArtifactView{
-				ArtifactID:     artifactID(workspaceRoot, abs),
-				Name:           filepath.Base(abs),
-				Type:           classifyArtifact(abs),
-				Status:         status,
-				SessionID:      workspaceRoot,
-				Path:           abs,
-				RelativePath:   filepath.ToSlash(rel),
-				SourceRunID:    cr.call.ID,
-				LastVerifiedAt: verifiedAt,
-			})
+			appendArtifact(abs, cr.call.ID, false)
 		}
 	}
 
