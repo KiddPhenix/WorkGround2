@@ -18,6 +18,12 @@ export const THEME_STYLES = [
   "nocturne",
   "amber",
   "iris",
+  "verdant",
+  "cobalt",
+  "bordeaux",
+  "digital-rain",
+  "shinobi-flame",
+  "mecha-sakura",
 ] as const;
 
 export type ThemeStyle = (typeof THEME_STYLES)[number];
