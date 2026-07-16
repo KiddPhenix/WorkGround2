@@ -33,6 +33,7 @@ import {
   Brain,
   Cpu,
   Palette,
+	RadioTower,
   X,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
@@ -165,6 +166,7 @@ import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
+import { WidgetMode } from "./components/widget/WidgetMode";
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
@@ -257,6 +259,19 @@ function WindowsWindowControls() {
 
   return (
     <div className="windows-window-controls" aria-label="Window controls">
+	  <button
+		className="windows-window-control windows-window-control--widget"
+		type="button"
+		aria-label="进入小组件模式"
+		title="小组件模式"
+		onClick={() => {
+		  void app.EnterWidgetMode().then(() => {
+			window.dispatchEvent(new CustomEvent("widget-mode-change", { detail: true }));
+		  }).catch(() => undefined);
+		}}
+	  >
+		<RadioTower size={13} strokeWidth={1.8} />
+	  </button>
       <button
         className="windows-window-control windows-window-control--minimize"
         type="button"
@@ -959,7 +974,7 @@ function TextSizeHotkeys() {
   return null;
 }
 
-export default function App() {
+function MainApp() {
   const {
     state,
     activeTabId,
@@ -4301,5 +4316,37 @@ export default function App() {
       {windowsFramelessChrome && <WindowsWindowControls />}
     </div>
     </ShellExpandProvider>
+  );
+}
+
+export default function App() {
+  const [widgetMode, setWidgetMode] = useState(false);
+
+  useEffect(() => {
+	let alive = true;
+	const sync = () => {
+	  void app.IsWidgetMode().then((active) => {
+		if (alive) setWidgetMode(active);
+	  }).catch(() => undefined);
+	};
+	const onChange = (event: Event) => {
+	  const active = (event as CustomEvent<boolean>).detail;
+	  setWidgetMode(Boolean(active));
+	};
+	sync();
+	const timer = window.setInterval(sync, 2000);
+	window.addEventListener("widget-mode-change", onChange);
+	return () => {
+	  alive = false;
+	  window.clearInterval(timer);
+	  window.removeEventListener("widget-mode-change", onChange);
+	};
+  }, []);
+
+  return (
+	<>
+	  <MainApp />
+	  {widgetMode && <WidgetMode onExit={() => setWidgetMode(false)} />}
+	</>
   );
 }

@@ -3058,6 +3058,11 @@ func (a *App) queueNeedsAttention(tabID string, completedAt int64) {
 	source := tabRuntimeSource(tab)
 	active := tab != nil && tab.ID == a.activeTabID
 	a.mu.RUnlock()
+	// In pager mode the full conversation is hidden, so a completion on the
+	// nominally active tab still needs to enter the widget queue.
+	if active && a.IsWidgetMode() {
+		active = false
+	}
 	if tab == nil || active || strings.EqualFold(source, "cli") {
 		return
 	}

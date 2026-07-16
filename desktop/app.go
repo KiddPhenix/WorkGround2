@@ -165,6 +165,15 @@ type App struct {
 	remoteAPI      *remoteAPI      // localhost HTTP API for CLI control
 
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
+
+	// widgetMu owns the pager-style compact window mode and its idempotent
+	// action ledger. It is intentionally independent from a.mu: widget actions
+	// may call normal tab APIs, which acquire a.mu themselves.
+	widgetMu          sync.Mutex
+	widgetActionMu    sync.Mutex
+	widgetMode        bool
+	widgetStateLoaded bool
+	widgetState       widgetPersistedState
 }
 
 type skillRootsCache struct {

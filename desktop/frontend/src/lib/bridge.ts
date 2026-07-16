@@ -144,6 +144,53 @@ interface DesktopWindowState {
   maximised: boolean;
 }
 
+export interface WidgetOption {
+  label: string;
+  description?: string;
+  value: string;
+}
+
+export interface WidgetMessage {
+  id: string;
+  revision: string;
+  tabId: string;
+  projectName: string;
+  taskName: string;
+  kind: "choice" | "reply" | "result" | "error";
+  stateLabel: string;
+  message: string;
+  interactionId?: string;
+  questionId?: string;
+  options: WidgetOption[];
+  requiresWindow?: boolean;
+}
+
+export interface WidgetSnapshot {
+  mode: boolean;
+  current?: WidgetMessage;
+  remainingCount: number;
+  runningCount: number;
+  waitingCount: number;
+  completedCount: number;
+  failedCount: number;
+  backgroundCount: number;
+  version: string;
+}
+
+export interface WidgetActionInput {
+  itemId: string;
+  revision: string;
+  requestId: string;
+	action: "answer" | "approve" | "deny" | "next" | "retry" | "open" | "later";
+  values: string[];
+}
+
+export interface WidgetActionResult {
+  status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid";
+  error?: string;
+  snapshot: WidgetSnapshot;
+}
+
 // AppBindings is the hand-written contract between the React app and the Go
 // kernel. It uses local types (types.ts) so components don't import generated
 // model classes. _CheckGeneratedBindings catches drift: when a Go method is
@@ -152,6 +199,11 @@ interface DesktopWindowState {
 // to AppBindings, then run `pnpm typecheck` to verify.
 export interface AppBindings {
   Platform(): Promise<string>;
+	EnterWidgetMode(): Promise<WidgetSnapshot>;
+	ExitWidgetMode(tabID: string): Promise<void>;
+	IsWidgetMode(): Promise<boolean>;
+	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
+	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
@@ -827,6 +879,11 @@ function makeMockApp(): AppBindings {
   const freshMock = scenario === "fresh";
   const guidanceMock = scenario === "guidance";
   const runningMock = scenario === "running" || guidanceMock;
+  const widgetScenario = typeof window === "undefined"
+    ? ""
+    : new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
+  let widgetMode = widgetScenario.startsWith("widget-");
+  let widgetRevision = 1;
   let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
@@ -836,6 +893,94 @@ function makeMockApp(): AppBindings {
   let mockEffort = "auto";
   const day = 86_400_000;
   const t0 = Date.now();
+
+  const mockWidgetSnapshot = (): WidgetSnapshot => {
+    const base = {
+      mode: widgetMode,
+      remainingCount: 3,
+      runningCount: 4,
+      waitingCount: 1,
+      completedCount: 2,
+      failedCount: 0,
+      backgroundCount: 1,
+      version: `mock-${widgetScenario}-${widgetRevision}`,
+    };
+    if (widgetScenario === "widget-idle" || widgetScenario === "widget-running") {
+      return { ...base, remainingCount: 0, waitingCount: 0, completedCount: 0, current: undefined };
+    }
+    if (widgetScenario === "widget-result") {
+      return {
+        ...base,
+        remainingCount: 2,
+        current: {
+          id: "mock-result",
+          revision: String(widgetRevision),
+          tabId: "tab-wg2",
+          projectName: "WorkGround2",
+          taskName: "桌面小组件模式",
+          kind: "result",
+          stateLabel: "任务完成",
+          message: "小组件模式已实现，构建与测试均已通过。",
+          options: [],
+        },
+      };
+    }
+	if (widgetScenario === "widget-error") {
+	  return {
+		...base,
+		failedCount: 1,
+		current: {
+		  id: "mock-error",
+		  revision: String(widgetRevision),
+		  tabId: "tab-wg2",
+		  projectName: "WorkGround2",
+		  taskName: "桌面构建",
+		  kind: "error",
+		  stateLabel: "需要处理",
+		  message: "依赖暂时不可用，任务已保留现场，可以安全重试。",
+		  options: [],
+		},
+	  };
+	}
+    if (widgetScenario === "widget-reply") {
+      return {
+        ...base,
+        remainingCount: 1,
+        current: {
+          id: "mock-reply",
+          revision: String(widgetRevision),
+          tabId: "tab-wg2",
+          projectName: "WorkGround2",
+          taskName: "发布说明",
+          kind: "reply",
+          stateLabel: "等待回复",
+          message: "这次更新要附带迁移说明吗？",
+          interactionId: "ask-reply",
+          questionId: "question-reply",
+          options: [],
+        },
+      };
+    }
+    return {
+      ...base,
+      current: {
+        id: "mock-choice",
+        revision: String(widgetRevision),
+        tabId: "tab-wg2",
+        projectName: "WorkGround2",
+        taskName: "插件文档",
+        kind: "choice",
+        stateLabel: "选择回复",
+        message: "英文版也一起更新？",
+        interactionId: "ask-choice",
+        questionId: "question-choice",
+        options: [
+          { label: "一起更新", description: "中英文保持同步", value: "一起更新" },
+          { label: "仅更新中文", description: "英文版稍后处理", value: "仅更新中文" },
+        ],
+      },
+    };
+  };
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
     {
@@ -1855,6 +2000,28 @@ function makeMockApp(): AppBindings {
     }
   };
   return {
+    async EnterWidgetMode() {
+      widgetMode = true;
+      return mockWidgetSnapshot();
+    },
+    async ExitWidgetMode() {
+      widgetMode = false;
+    },
+    async IsWidgetMode() {
+      return widgetMode;
+    },
+    async GetWidgetSnapshot() {
+      return mockWidgetSnapshot();
+    },
+    async ApplyWidgetAction(input) {
+      const current = mockWidgetSnapshot().current;
+      if (!current || current.id !== input.itemId || current.revision !== input.revision) {
+        return { status: "stale", error: "消息已经变化，请按最新状态操作", snapshot: mockWidgetSnapshot() };
+      }
+      if (input.action === "open") widgetMode = false;
+      widgetRevision += 1;
+      return { status: "accepted", snapshot: mockWidgetSnapshot() };
+    },
     async MinimiseMainWindow() {
       console.info("mock MinimiseMainWindow");
     },

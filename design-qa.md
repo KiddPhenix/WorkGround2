@@ -48,6 +48,86 @@ final result: passed
 
 ---
 
+# Design QA — 传呼机小组件半尺寸与透明切角
+
+- Source visual truth: `D:/Temp/codex-clipboard-c05887a1-0fdf-47ed-ad37-4cbb8450203d.png` 与已确认的 `docs/assets/widget-mode/implementation-idle.png`
+- Implementation screenshot: `docs/assets/widget-mode/implementation-idle-half-transparent.png`
+- Viewport: 原生窗口 `590 × 142`；内部逻辑画布 `1180 × 284`，统一缩放 `50%`
+- State: 空闲；真实桌面包另验证错误状态与固定“返回窗口”
+
+## Full-view comparison evidence
+
+- 已把原 `1180 × 284` 确认稿和新 `590 × 142` 实现放入同一比较输入；身份区、分隔线、消息基线、扫描线与返回按钮保持同一相对位置，未出现单独缩字或九宫格变形。
+- 新窗口长宽均为旧版的 `50%`，显示面积为旧版的 `25%`。
+
+## Focused region evidence
+
+- 四角为本轮聚焦区域。浏览器计算样式确认 `html`、`body`、`#root` 与 `.widget-mode` 背景均为透明，旧 `.app` 在小组件模式隐藏；`.widget-shell` 使用八点切角裁剪。
+- 隔离 Wails production 包在 Windows 原生窗口中实测为 `590 × 142`，四个裁掉的三角区域直接显示后方窗口内容，没有矩形黑底；返回窗口按钮保持可见。
+
+## Fidelity surfaces
+
+- Typography: 字体、字重、行距随整个逻辑画布等比缩放，信息层级与确认稿一致。
+- Spacing/layout: 原布局整体缩小 `50%`，没有局部重排、溢出或内容裁切。
+- Colors/tokens: 石墨黑、青色、酸性黄不变；透明只作用于机壳外切角。
+- Image quality/assets: 继续使用九张 PNG 底图、独立标尺和 W2 图素；缩放发生在完整逻辑画布，九宫格接缝未被放大。
+- Copy/content: 状态、主信息和“返回窗口”文案保持不变。
+
+## Comparison history
+
+- Pass 1: 发现浏览器截图合成器会用暗色填充透明页面，无法单独证明 Windows 原生透明度；实现样式和 Wails 透明选项均已就位。
+- Pass 2: 构建并启动跳过单实例锁的隔离 production 包；原生截图确认窗口尺寸和四角透出，P0/P1/P2 清零。
+
+## Engineering evidence
+
+- `go test . -run "Widget|QueueNeedsAttentionIncludesActiveTab" -count=1`：通过。
+- `npm.cmd run typecheck`：通过。
+- `wails build -skipbindings -o WorkGround2-widget-half-test.exe`：通过。
+- 浏览器控制台 error/warning：0。
+
+final result: passed
+
+---
+
+# Design QA — 传呼机小组件模式
+
+- Source truth: `docs/assets/widget-mode/state-choice.png`、`state-typed-reply.png`、`state-result.png`、`state-running.png`
+- Implementation: `docs/assets/widget-mode/implementation-choice.png`、`implementation-reply.png`、`implementation-result.png`、`implementation-idle.png`、`implementation-error.png`
+- Viewports: `1180 × 284` 主验收，`960 × 260` 响应式验收
+- States: 点选、键入、完成、错误、运行/空闲
+
+## 同输入对照与修正
+
+- 参考图与实现截图已在同一比较输入中逐态对照。
+- 首轮发现 W2 偏大、按钮过于方正、运行状态使用黄色、完成态主操作顺序偏离参考；已分别缩小并左上偏置 W2、改为切角按钮、运行态改青色、把“下一条”设为黄色主操作。
+- 原生窗口初始 `MinHeight=480` 会阻止窗口缩到 284px；进入/退出时现已动态切换为 `760 × 220` / `760 × 480` 最小尺寸。
+
+## 保真与可用性
+
+- Layout: 九宫格机壳、左侧上下文、固定返回按钮和中央消息基线在各状态不跳动；同一时刻只显示一条主要信息。
+- Typography: 项目名明显强于任务名；主要信息保留最大文字空间，长错误使用更小字号并截断。
+- Color: 石墨黑、青色和酸性黄与确认稿一致；错误使用红色，健康运行使用青色。
+- Assets: 机壳使用九张真实 PNG 切片；标尺和 W2 使用独立透明 PNG。原尺寸九宫格重组抽样像素差为 0。
+- Interaction: 点选与键入发送成功；“稍后”轮转但不丢项；固定“返回窗口”不确认当前消息；失败重试保留输入并复用 request ID。
+- Accessibility: 语义按钮、输入标签、`aria-live`、完整剩余数读屏文案、焦点环、Esc 退出输入焦点和 reduced-motion 均已覆盖。
+- Responsiveness: `960 × 260` 页面 scroll size 等于 viewport，按钮和返回控制无重叠。
+
+## 工程证据
+
+- `go test . -run "Widget|QueueNeedsAttentionIncludesActiveTab" -count=1`：通过。
+- `npm.cmd run typecheck`：通过。
+- `npm.cmd run build`：通过。
+- `wails build -skipbindings -o WorkGround2-widget-test.exe`：通过。
+- 桌面全量既有测试出现 Windows 临时目录清理和 Topic tree 时序失败；均不涉及本功能改动，专项测试与生产构建独立通过。
+
+## 结论
+
+P0 / P1 / P2：0。原生桌面包可构建；当前机器已有另一 WorkGround2 worktree 实例占用单实例锁，因此未强行关闭用户现有实例做第二次原生窗口截图。
+
+final result: passed
+
+---
+
 # Design QA — Request Help 状态卡
 
 - Source truth: `docs/assets/request-help-display-reference.png`

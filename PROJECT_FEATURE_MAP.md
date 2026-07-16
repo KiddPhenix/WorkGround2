@@ -186,6 +186,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-15
 
+### 桌面传呼机小组件模式
+- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/scripts/build-widget-slices.ps1`, `desktop/frontend/src/components/widget`
+- Summary: 状态 complete；桌面主窗口可缩为单消息传呼机小组件，从现有 Controller 与 Tab attention 状态投影跨任务待回复、完成、错误和运行状态；支持稳定当前项、稍后轮转、幂等动作、固定返回窗口、独立几何恢复和九宫格资源。窗口已调整为 `590 × 142`，内部逻辑画布统一缩放 `50%`；四角通过透明 WebView、透明根节点和机壳裁剪真实透出桌面，隔离 production 包已验收。
+- Keywords: widget mode, pager, attention queue, single message, remaining count, Wails window, nine-slice, 返回窗口
+- Source: user-requested+design-approved
+- Updated: 2026-07-15
+
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`
 - Summary: 通用设置页隐藏桌面风格、会话展示、底部信息栏配置，保留工作台默认及兼容配置，并细化新会话审批选项说明。

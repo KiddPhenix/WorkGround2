@@ -158,6 +158,9 @@ func main() {
 			// preference instead of being locked to dark.
 			Theme:                windows.SystemDefault,
 			ZoomFactor:           zoomFactor,
+			WebviewIsTransparent: true,
+			WindowIsTranslucent:  true,
+			BackdropType:         windows.None,
 			WebviewGpuIsDisabled: windowsWebview2GPUDisabled(),
 		},
 		Linux: &linux.Options{
