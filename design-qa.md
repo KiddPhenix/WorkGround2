@@ -46,8 +46,6 @@ No actionable P0/P1/P2 differences.
 
 final result: passed
 
----
-
 # Design QA — 传呼机小组件半尺寸与透明切角
 
 - Source visual truth: `D:/Temp/codex-clipboard-c05887a1-0fdf-47ed-ad37-4cbb8450203d.png` 与已确认的 `docs/assets/widget-mode/implementation-idle.png`
@@ -168,3 +166,40 @@ final result: passed
 - 路由确认态：DOM 验证同一时刻只出现 `已交给 WorkGround2`、`名称匹配` 与当前输入摘要；随后进入聚合运行状态。
 - 交互验收：实际点击“新对话”、键入任务并发送，浏览器 mock 返回自动路由到 WorkGround2；按钮禁用态、焦点和路由反馈正常。
 - 控制台：无 error。
+
+# Design QA — 小组件大字号与溢出滚屏
+
+- Source visual truth：`docs/assets/widget-mode/widget-idle-new-conversation.png`（用户反馈字体过小的上一版实现）。
+- Implementation screenshots：`docs/assets/widget-mode/widget-large-type-idle.png`、`widget-large-type-ticker.png`。
+- Viewport：`590 × 142`；状态：无待处理消息、长错误消息。
+- Full-view comparison：机壳、九宫格、身份区、操作区和右上模式键的位置未变化；主信息从约 `17px` 上限提升到约 `23.5px` 上限，项目名、状态、按钮与输入文字同步放大，信息区仍保持单条消息。
+- Focused typography comparison：上一版主信息与次级文字接近，放大版建立清晰层级；主信息最醒目，项目名第二，状态/剩余数/说明文字继续弱化。没有出现两行挤压、按钮裁切或身份区溢出。
+- Motion evidence：短状态消息测得 `textWidth=656 < frameWidth=768`，保持静止；长错误消息测得 `textWidth=794 > frameWidth=768`，组件进入 moving 状态，变换从 `translateX(0)` 到 `translateX(-26px)`。动画包含首尾停留与缓慢往返，reduced-motion 下关闭。
+- Typography：通过；使用既有字体链，字号、字重和层级明显改善。
+- Spacing/layout rhythm：通过；未改机壳与区域几何，输入聚焦时容器 `scrollTop=0`。
+- Colors/tokens：通过；沿用青、黄、红与石墨黑 token。
+- Image/assets：通过；九宫格、W2 与标尺资源未替换、未拉伸。
+- Copy/content：通过；消息内容与状态语义未变化。
+- Comparison history：首轮发现长消息需要移动验证；使用实际 error mock 确认溢出检测与位移生效，无 P0/P1/P2 遗留。
+- 浏览器控制台：无 error。
+
+final result: passed
+
+# Design QA — 任务消息点击分页 / 状态滚动
+
+- Source visual truth：`docs/assets/widget-mode/widget-large-type-ticker.png`（同尺寸、同 error 状态的大字号滚屏版）。
+- Implementation screenshots：`docs/assets/widget-mode/widget-message-page-1.png`、`widget-message-page-2.png`。
+- Viewport：`590 × 142`；状态：长错误消息，`还有 3 条`主要信息待看。
+- Full-view comparison：机壳、身份区、状态、剩余主要消息数、操作区与主窗口键完全保持；任务正文从自动横移改为用户控制的单行分页。
+- Focused interaction evidence：消息实测拆为 2 页；第一页显示“依赖暂时不可用，任务已保留现场，”与唯一 `下一页 ›` 提示，点击后 `data-page-index` 从 `0` 变为 `1`，第二页显示“可以安全重试。”并隐藏翻页提示。
+- Fonts/typography：通过；沿用大字号层级，分页避免阅读过程中正文自行移动。
+- Spacing/layout rhythm：通过；`下一页`占用消息行右侧保留区，不挤压状态和底部任务操作。
+- Colors/tokens：通过；翻页提示复用黄色强调色，未增加新色。
+- Image/assets：通过；九宫格、W2、标尺和图标资源未改变。
+- Copy/content：通过；分页保持原消息字符与标点，没有显示页码或额外列表。
+- Accessibility：通过；有下一页时消息区暴露为 button，支持点击、Enter、Space；最后一页移除 button 语义。
+- 状态策略：运行/空闲/路由确认继续使用 `TickerText`，只在溢出时滚动；任务消息统一使用 `PagedText`。
+- Comparison history：首轮发现 aria-label 在页尾标点后产生重复逗号，已改为空格连接并重新验证；无 P0/P1/P2 遗留。
+- 浏览器控制台：无 error。
+
+final result: passed

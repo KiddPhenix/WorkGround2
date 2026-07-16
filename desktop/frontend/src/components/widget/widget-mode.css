@@ -122,8 +122,8 @@ body:has(.widget-mode) .app {
   max-width: 100%;
   overflow: hidden;
   color: var(--widget-white);
-  font-size: clamp(16px, 1.65vw, 22px);
-  font-weight: 650;
+	font-size: clamp(23px, 2.25vw, 29px);
+	font-weight: 700;
   letter-spacing: 0.01em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -134,7 +134,8 @@ body:has(.widget-mode) .app {
   max-width: 100%;
   overflow: hidden;
   color: #a9b0b2;
-  font-size: clamp(12px, 1.2vw, 16px);
+	font-size: clamp(16px, 1.55vw, 20px);
+	font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -162,7 +163,7 @@ body:has(.widget-mode) .app {
 
 .widget-message__state {
   color: var(--widget-yellow);
-  font-size: clamp(14px, 1.45vw, 19px);
+	font-size: clamp(18px, 1.8vw, 23px);
   font-weight: 650;
   letter-spacing: 0.08em;
   text-shadow: 0 0 13px rgb(255 230 0 / 0.18);
@@ -173,12 +174,12 @@ body:has(.widget-mode) .app {
 }
 
 .widget-message--error h1 {
-	font-size: clamp(20px, 2.3vw, 31px);
+	font-size: clamp(32px, 3.3vw, 43px);
 }
 
 .widget-message__queue {
   color: var(--widget-muted);
-  font-size: clamp(12px, 1.16vw, 15px);
+	font-size: clamp(15px, 1.45vw, 19px);
   letter-spacing: 0.04em;
 }
 
@@ -188,13 +189,86 @@ body:has(.widget-mode) .app {
   margin: 0;
   overflow: hidden;
   color: var(--widget-white);
-  font-size: clamp(22px, 2.75vw, 38px);
-  font-weight: 420;
+	font-size: clamp(34px, 3.65vw, 47px);
+	font-weight: 520;
   line-height: 1.14;
   letter-spacing: 0.015em;
-  text-overflow: ellipsis;
   white-space: nowrap;
   text-shadow: 0 0 18px rgb(8 215 242 / 0.08);
+}
+
+.widget-ticker > span {
+	display: inline-block;
+	min-width: max-content;
+}
+
+.widget-ticker--moving > span {
+	animation: widget-ticker-pan var(--widget-ticker-duration) ease-in-out infinite;
+}
+
+.widget-pager {
+	position: relative;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	overflow: hidden;
+	--wails-draggable: no-drag;
+}
+
+.widget-pager--more {
+	cursor: pointer;
+}
+
+.widget-pager h1 {
+	width: 100%;
+	max-width: 100%;
+}
+
+.widget-pager--more h1 {
+	max-width: calc(100% - 126px);
+}
+
+.widget-pager__text {
+	display: block;
+	overflow: hidden;
+	text-overflow: clip;
+	animation: widget-page-in 120ms ease-out both;
+}
+
+.widget-pager__measure {
+	position: absolute;
+	visibility: hidden;
+	width: max-content;
+	white-space: nowrap;
+	pointer-events: none;
+}
+
+.widget-pager__next {
+	position: absolute;
+	right: 4px;
+	bottom: 4px;
+	min-width: 102px;
+	min-height: 34px;
+	padding: 0 8px 0 12px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 4px;
+	border-left: 2px solid var(--widget-yellow);
+	background: rgb(1 10 13 / 0.82);
+	color: var(--widget-yellow);
+	font-size: 16px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+}
+
+.widget-pager--more:hover .widget-pager__next {
+	background: rgb(255 230 0 / 0.12);
+}
+
+.widget-pager:focus-visible {
+	outline: 2px solid var(--widget-white);
+	outline-offset: 2px;
 }
 
 .widget-message__scan,
@@ -267,7 +341,7 @@ body:has(.widget-mode) .app {
 .widget-action span {
   position: relative;
   z-index: 1;
-  font-size: clamp(14px, 1.5vw, 19px);
+	font-size: clamp(18px, 1.85vw, 23px);
   white-space: nowrap;
 }
 
@@ -275,7 +349,7 @@ body:has(.widget-mode) .app {
   position: relative;
   z-index: 1;
   color: #8e9a9e;
-  font-size: 10px;
+	font-size: 13px;
   white-space: nowrap;
 }
 
@@ -346,7 +420,7 @@ body:has(.widget-mode) .app {
   border: 0;
   background: transparent;
   color: var(--widget-white);
-  font: 17px/1.2 inherit;
+	font: 21px/1.2 inherit;
   outline: none;
 }
 
@@ -374,7 +448,7 @@ body:has(.widget-mode) .app {
 	background: rgb(0 8 11 / 0.72);
 	color: var(--widget-muted);
 	cursor: pointer;
-	font: 14px/1 inherit;
+	font: 17px/1 inherit;
 }
 
 .widget-message--idle {
@@ -382,7 +456,7 @@ body:has(.widget-mode) .app {
 }
 
 .widget-message--idle h1 {
-  font-size: clamp(23px, 2.45vw, 34px);
+	font-size: clamp(32px, 3.25vw, 42px);
 }
 
 .widget-message--idle .widget-message__state {
@@ -393,7 +467,7 @@ body:has(.widget-mode) .app {
 .widget-message--idle p {
   margin: 0;
   color: var(--widget-muted);
-  font-size: clamp(12px, 1.15vw, 15px);
+	font-size: clamp(15px, 1.45vw, 19px);
 }
 
 .widget-idle__foot {
@@ -436,7 +510,7 @@ body:has(.widget-mode) .app {
 }
 
 .widget-new strong {
-  font-size: 16px;
+	font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.06em;
 }
@@ -444,7 +518,7 @@ body:has(.widget-mode) .app {
 .widget-new small {
   margin-top: 3px;
   color: rgb(2 16 20 / 0.62);
-  font-size: 9px;
+	font-size: 12px;
   letter-spacing: 0.04em;
 }
 
@@ -453,7 +527,7 @@ body:has(.widget-mode) .app {
 
 .widget-message--compose h1,
 .widget-message--route h1 {
-  font-size: clamp(22px, 2.5vw, 34px);
+	font-size: clamp(32px, 3.3vw, 43px);
 }
 
 .widget-reply--compose {
@@ -471,7 +545,7 @@ body:has(.widget-mode) .app {
   padding: 2px 8px;
   border-left: 2px solid var(--widget-cyan);
   color: var(--widget-muted);
-  font-size: 12px;
+	font-size: 16px;
   letter-spacing: 0.06em;
 }
 
@@ -479,7 +553,7 @@ body:has(.widget-mode) .app {
   margin: 0;
   overflow: hidden;
   color: var(--widget-muted);
-  font-size: 14px;
+	font-size: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -533,13 +607,13 @@ body:has(.widget-mode) .app {
 }
 
 .widget-return__copy strong {
-  font-size: 13px;
+	font-size: 17px;
   letter-spacing: 0.08em;
 }
 
 .widget-return__copy small {
   color: #7d8c90;
-  font-size: 8px;
+	font-size: 10px;
   letter-spacing: 0.12em;
 }
 
@@ -555,7 +629,7 @@ body:has(.widget-mode) .app {
   max-width: 58%;
   overflow: hidden;
   color: var(--widget-red);
-  font-size: 11px;
+	font-size: 15px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -575,6 +649,17 @@ body:has(.widget-mode) .app {
 	to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes widget-ticker-pan {
+	0%, 16% { transform: translateX(0); }
+	44%, 60% { transform: translateX(var(--widget-ticker-shift)); }
+	88%, 100% { transform: translateX(0); }
+}
+
+@keyframes widget-page-in {
+	from { opacity: 0.2; transform: translateX(8px); }
+	to { opacity: 1; transform: translateX(0); }
+}
+
 @media (max-width: 510px), (max-height: 124px) {
   .widget-context__identity { padding-right: 12px; padding-left: 12px; }
   .widget-context__mark { width: 42px; }
@@ -589,5 +674,7 @@ body:has(.widget-mode) .app {
 	.widget-mode,
 	.widget-message,
   .widget-message__scan span,
-	.widget-status-line span { animation: none; }
+	.widget-status-line span,
+	.widget-ticker--moving > span,
+	.widget-pager__text { animation: none; }
 }

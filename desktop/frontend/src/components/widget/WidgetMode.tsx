@@ -1,5 +1,5 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Maximize2, MessageSquarePlus, PanelTopOpen, RotateCcw, Send, X } from "lucide-react";
+import { FormEvent, type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, ChevronRight, Maximize2, MessageSquarePlus, PanelTopOpen, RotateCcw, Send, X } from "lucide-react";
 import {
   app,
   type WidgetActionInput,
@@ -53,6 +53,125 @@ function NineSliceShell() {
   return (
     <div className="widget-shell__nine-slice" aria-hidden="true">
       {shellTiles.map((source, index) => <img key={source} src={source} alt="" data-tile={index} />)}
+    </div>
+  );
+}
+
+function TickerText({ children }: { children: string }) {
+  const frameRef = useRef<HTMLHeadingElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const text = textRef.current;
+    if (!frame || !text) return;
+    const measure = () => setShift(Math.max(0, Math.ceil(text.scrollWidth - frame.clientWidth)));
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(frame);
+    observer?.observe(text);
+    return () => observer?.disconnect();
+  }, [children]);
+
+  const style = shift > 0 ? {
+    "--widget-ticker-shift": `-${shift}px`,
+    "--widget-ticker-duration": `${Math.min(22, Math.max(10, 9 + shift / 28))}s`,
+  } as CSSProperties : undefined;
+
+  return (
+    <h1 ref={frameRef} className={`widget-ticker${shift > 0 ? " widget-ticker--moving" : ""}`}>
+      <span ref={textRef} style={style}>{children}</span>
+    </h1>
+  );
+}
+
+function splitWidgetPages(text: string, maxWidth: number, measure: (value: string) => number): string[] {
+  if (maxWidth <= 0 || measure(text) <= maxWidth) return [text];
+  const tokens = text.split(/(\s+|[，。！？、；：,.!?;:])/u).filter(Boolean);
+  const pages: string[] = [];
+  let current = "";
+
+  const pushCurrent = () => {
+    const value = current.trim();
+    if (value) pages.push(value);
+    current = "";
+  };
+
+  for (const token of tokens) {
+    const candidate = current + token;
+    if (measure(candidate) <= maxWidth) {
+      current = candidate;
+      continue;
+    }
+    pushCurrent();
+    if (measure(token.trim()) <= maxWidth) {
+      current = token.trimStart();
+      continue;
+    }
+    for (const char of Array.from(token.trim())) {
+      if (current && measure(current + char) > maxWidth) pushCurrent();
+      current += char;
+    }
+  }
+  pushCurrent();
+  return pages.length > 0 ? pages : [text];
+}
+
+function PagedText({ children }: { children: string }) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [pages, setPages] = useState([children]);
+  const [page, setPage] = useState(0);
+
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const measureNode = measureRef.current;
+    if (!frame || !measureNode) return;
+    let active = true;
+    const measure = (value: string) => {
+      measureNode.textContent = value;
+      return measureNode.scrollWidth;
+    };
+    const paginate = () => {
+      if (!active) return;
+      const next = splitWidgetPages(children, Math.max(1, frame.clientWidth - 126), measure);
+      setPages(next);
+      setPage(0);
+    };
+    paginate();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(paginate);
+    observer?.observe(frame);
+    void document.fonts?.ready.then(paginate);
+    return () => {
+      active = false;
+      observer?.disconnect();
+    };
+  }, [children]);
+
+  const hasNext = page < pages.length - 1;
+  const next = () => {
+    if (hasNext) setPage((current) => current + 1);
+  };
+
+  return (
+    <div
+      ref={frameRef}
+      className={`widget-pager${hasNext ? " widget-pager--more" : ""}`}
+      role={hasNext ? "button" : undefined}
+      tabIndex={hasNext ? 0 : undefined}
+      aria-label={hasNext ? `${pages[page]} 点击显示下一页` : pages[page]}
+      data-page-index={page}
+      data-page-count={pages.length}
+      onClick={next}
+      onKeyDown={(event) => {
+        if (!hasNext || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        next();
+      }}
+    >
+      <h1><span key={page} className="widget-pager__text">{pages[page]}</span><span ref={measureRef} className="widget-pager__measure" aria-hidden="true" /></h1>
+      {hasNext && <span className="widget-pager__next" aria-hidden="true">下一页 <ChevronRight size={17} /></span>}
     </div>
   );
 }
@@ -114,7 +233,7 @@ function IdleStatus({ snapshot, onNew, disabled }: {
       <div className="widget-message__head">
 		<span className="widget-message__state">{snapshot.runningCount > 0 ? "运行中" : "系统在线"}</span>
       </div>
-      <h1>{runningText}</h1>
+      <TickerText>{runningText}</TickerText>
       <div className="widget-status-line" aria-hidden="true"><span /></div>
       <div className="widget-idle__foot">
         <p>{secondary}</p>
@@ -137,7 +256,7 @@ function NewConversation({ prompt, busy, onPrompt, onSubmit, onCancel }: {
   return (
     <section className="widget-message widget-message--compose" aria-live="polite">
       <div className="widget-message__head"><span className="widget-message__state">新对话</span></div>
-      <h1>想让 WorkGround2 做什么？</h1>
+      <TickerText>想让 WorkGround2 做什么？</TickerText>
       <div className="widget-message__scan" aria-hidden="true"><span /></div>
       <form className="widget-reply widget-reply--compose" onSubmit={onSubmit}>
         <input
@@ -163,7 +282,7 @@ function RouteNotice({ result, prompt }: { result: WidgetConversationResult; pro
         <span className="widget-message__state">新对话已创建</span>
         <span className="widget-route__reason">{result.routeReason}</span>
       </div>
-      <h1>已交给 {result.workspaceName || "Global"}</h1>
+      <TickerText>{`已交给 ${result.workspaceName || "Global"}`}</TickerText>
       <div className="widget-message__scan" aria-hidden="true"><span /></div>
       <p>正在处理：{prompt}</p>
     </section>
@@ -305,7 +424,7 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
           <span className="widget-message__state">{current.stateLabel}</span>
           <QueueLabel snapshot={snapshot} />
         </div>
-        <h1>{current.message}</h1>
+        <PagedText>{current.message}</PagedText>
         <div className="widget-message__scan" aria-hidden="true"><span /></div>
 
         {current.requiresWindow ? (
