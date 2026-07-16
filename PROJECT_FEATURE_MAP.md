@@ -178,20 +178,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### 桌面运行状态与待办提示
-- Location: `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/lib/activity.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/TodoPanel.tsx`, `desktop/frontend/src/lib/todoVisibility.ts`
-- Summary: 状态 done；桌面端运行提示由 useController 的 per-tab runtime state 驱动，Composer 渲染右下运行状态，activity 负责阶段趣味文案，TodoPanel 从最新 todo_write 快照渲染待办进度。
-- Note: 运行状态胶囊移除 `·` 前的通用阶段前缀，只保留具体任务文案。
-- Keywords: running, runstatus, todo_write, TodoPanel, tab switch, openProjectTab, detached runtime
+### 桌面传呼机小组件模式
+- Location: `desktop/widget_mode.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/components/widget/WidgetMode.tsx`
+- Summary: 小组件聚合任务状态；完成态返回主窗口或查看结果会激活对应 tab/session，运行无待处理消息时从 40 条短文案中随机轮播。
+- Keywords: widget mode, session:activated, widget-open, IDLE_SUFFIXES, 任务完成, 随机文案
 - Source: verified-by-search
 - Updated: 2026-07-16
-
-### 桌面传呼机小组件模式
-- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/scripts/build-widget-slices.ps1`, `desktop/frontend/src/components/widget`
-- Summary: 状态 complete；桌面主窗口可缩为单消息传呼机小组件，从现有 Controller 与 Tab attention 状态投影跨任务待回复、完成、错误和运行状态；支持稳定当前项、稍后轮转、幂等动作、独立几何恢复和九宫格资源。空闲态可在小组件内发起新对话，按项目名、最近主题和当前项目自动选择 workspace，创建与发送阶段有持久化回执并可安全重试；完成时直接显示助手结果摘要。固定“主窗口 / FULL VIEW”模式键可随时恢复完整窗口。窗口为 `590 × 142`，内部逻辑画布统一缩放 `50%`，四角真实透明。
-- Keywords: widget mode, pager, attention queue, single message, remaining count, new conversation, workspace routing, idempotent submit, Wails window, nine-slice, 主窗口
-- Source: user-requested+design-approved
-- Updated: 2026-07-15
 
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`

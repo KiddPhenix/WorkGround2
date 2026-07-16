@@ -71,7 +71,7 @@
 
 ### 主要信息
 
-- 单行分页，逻辑画布字号 `34–47px / 520`，最终屏幕约 `17–23.5px`。
+- 单行分页，最终屏幕约 `22–28px`（逻辑画布 `44–56px`）。
 - 中文建议不超过 24 个字；英文建议不超过 64 个字符。
 - 任务消息按当前字体和消息区实际宽度拆页；中文按字符、英文优先按单词边界切分。
 - 有后续内容时，消息区右侧只显示 `下一页 ›`，点击整条消息或按 `Enter / Space` 前进。
@@ -83,7 +83,7 @@
 
 | 状态 | 主要内容 | 操作 | 是否显示剩余数 |
 |---|---|---|---|
-| `choice` | 一个问题 | 1 个主选项、最多 1 个次选项、`稍后` | 是 |
+| `choice` | 一个问题 | 1–3 个选项 + `稍后`；4 个以上回主窗口 | 是 |
 | `reply` | 一个问题 + 单行输入 | `发送`、`稍后` | 是 |
 | `result` | 一条完成结果 | `下一条`、`查看结果` | 是 |
 | `error` | 一条失败摘要 | `重试`、`查看详情` | 是 |
@@ -96,7 +96,8 @@
 
 ### 点选回复
 
-- 选项总数最多 3 个。
+- 选项最多 3 个直接在小组件内点选，4 个及以上回主窗口处理。
+- 多问题和多选始终回主窗口。
 - 主选项使用黄色实底。
 - 次选项使用青色描边。
 - `稍后`使用纯文字或低对比描边。
@@ -126,11 +127,14 @@
 1. 用户在空闲/运行状态点击“新对话”，直接在小组件内输入任务。
 2. 明确提到项目名或目录名时，路由到该项目。
 3. 没有名称命中时，使用最近主题标题与输入的上下文重合度选择。
-4. 仍无上下文命中时，优先当前项目；没有可用项目时落到 Global。
-5. 创建后只显示一条确认：`已交给 {workspace}`，旁边显示 `名称匹配 / 历史上下文 / 当前工作区 / Global 兜底`。
-6. 对话运行、提问、完成结果继续沿用同一小组件状态模型；完成消息优先显示助手最终回复的 110 字以内摘要。
+4. 仍无上下文命中时，优先当前稳定项目。linked worktree、CI/临时目录和只剩 `.WorkGround2` 会话数据的空壳分组不参与默认选择；若它们与稳定主项目同目录、同名前缀，则回到主项目。
+5. 只有输入明确包含临时分组完整名称时才允许路由到该分组；没有可用稳定项目时落到 Global。
+6. 创建后只显示一条确认：`已交给 {workspace}`，旁边显示 `名称匹配 / 历史上下文 / 当前工作区 / 主工作区 / Global 兜底 / 手动选择`。
+7. 对话运行、提问、完成结果继续沿用同一小组件状态模型；完成消息优先显示助手最终回复的 110 字以内摘要。
+8. “新对话”按钮旁提供 workspace 选择器，默认“自动”。点击向上展开菜单，包含“自动”、所有非 transient 的稳定 project workspace、Global。长名省略号截断。支持 Escape 和点击外部关闭，具备可访问语义。手动选择后 reason 为“手动选择”；自动仍走现有智能路由。
+9. 请求 idempotency key 包含 prompt 与 workspace 选择。切换 workspace 目标后必须生成新 requestId，后端对同一 requestId 的不同 workspace 选择显式返回 invalid。
 
-发送使用稳定 `requestId`。后端先持久化路由和发送阶段回执，再创建空白 Tab、等待 Controller 就绪并提交。IPC 断开或应用重启后可使用同一 `requestId` 重试；若历史中已经存在完全一致的用户消息，则恢复为已发送，避免重复创建 turn。同一 `requestId` 携带不同文本会显式返回 `invalid`。
+发送使用稳定 `requestId`。后端先持久化路由和发送阶段回执，再创建空白 Tab、等待 Controller 就绪并提交。IPC 断开或应用重启后可使用同一 `requestId` 重试；若历史中已经存在完全一致的用户消息，则恢复为已发送，避免重复创建 turn。同一 `requestId` 携带不同文本或不同 workspace 选择会显式返回 `invalid`。
 
 ## 6. 多任务消息模型
 
@@ -214,9 +218,10 @@ ExitWidgetMode() error
 GetWidgetSnapshot() WidgetSnapshot
 ApplyWidgetAction(input WidgetActionInput) WidgetActionResult
 StartWidgetConversation(input WidgetConversationInput) WidgetConversationResult
+ListWidgetWorkspaces() []WidgetWorkspaceOption
 ```
 
-`ApplyWidgetAction`必须携带 `itemID`、`revision`、`requestID` 和动作值。`StartWidgetConversation`必须携带 `prompt` 与 `requestID`。后端返回 `accepted`、`already_applied`、`stale`、`retryable_error` 或 `invalid`，禁止只靠日志表达结果。
+`ApplyWidgetAction`必须携带 `itemID`、`revision`、`requestID` 和动作值。`StartWidgetConversation`必须携带 `prompt`、`requestID` 与可选 `workspace`（`"auto"` / `"global"` / `"project:<root>"`）。后端返回 `accepted`、`already_applied`、`stale`、`retryable_error` 或 `invalid`，禁止只靠日志表达结果。`ListWidgetWorkspaces` 返回自动、所有非 transient 稳定项目和 Global。
 
 ## 8. 窗口行为
 
@@ -228,7 +233,7 @@ StartWidgetConversation(input WidgetConversationInput) WidgetConversationResult
 2. 保存主窗口几何到 `desktop-window.json`。
 3. 取消最大化。
 4. 恢复上次小组件位置；首次进入放在当前显示器右下角安全区。
-5. 设置原生窗口尺寸，默认 `590 × 142`；内部继续使用 `1180 × 284` 逻辑画布并整体缩放 `50%`，保证既有排版和九宫格比例不漂移。
+5. 设置原生窗口尺寸，默认 `590 × 176`；内部继续使用 `1180 × 352` 逻辑画布并整体缩放 `50%`，保证既有排版和九宫格比例不漂移。
 6. 可配置置顶；默认开启。
 7. 切换 React 根视图为 widget surface。
 
@@ -253,14 +258,14 @@ desktop-widget-window.json
 
 ## 9. 布局规格
 
-底图设计空间为 `2132 × 512`。内部逻辑画布为 `1180 × 284`，再缩放到 `590 × 142` 原生窗口。运行时定义：
+底图设计空间为 `2132 × 512`。内部逻辑画布为 `1180 × 352`，再缩放到 `590 × 176` 原生窗口。运行时定义：
 
 ```text
 assetScale = logicalHeight / 512
 windowScale = 0.5
 ```
 
-默认 `assetScale ≈ 0.555`，最终屏幕总缩放约为 `0.277`。窗口最小可缩到 `520 × 128`，旧版 `1180 × 284` 几何会自动失效并迁移到新默认值。
+默认纵向 `assetScale ≈ 0.688`，最终屏幕纵向总缩放约为 `0.344`；九宫格横向按容器独立伸展。窗口最小可缩到 `520 × 160`，旧版 `590 × 142` 几何会自动迁移到新默认值（高度升到 176，Y 同步上移差值以保持底边位置）。其它仍满足新最小尺寸的自定义几何不变。
 
 | 区域 | 设计坐标 | 说明 |
 |---|---:|---|
@@ -290,7 +295,7 @@ windowScale = 0.5
 
 Windows 继续使用项目现有 `Segoe UI Variable Text / Microsoft YaHei UI` 字体链。按钮和正文不引入新字体，保证中文宽度与主应用一致。
 
-半尺寸模式的最终屏幕字号基线：项目名约 `11.5–14.5px`，状态约 `9–11.5px`，主信息约 `17–23.5px`，输入文字约 `10.5px`。主信息优先保证扫读，状态、队列数量和英文副标签保持次级层级。
+半尺寸模式的最终屏幕字号基线：项目名约 `13–16px`，状态约 `12–14px`，主信息约 `22–28px`，输入文字约 `16–18px`。选项正文至少 `12–14px`，任务名约 `11–13px`。主信息优先保证扫读，状态、队列数量和英文副标签保持次级层级。
 
 ## 11. 9 宫格底图
 
@@ -381,7 +386,7 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - W2 位于身份区左上，项目名明显强于任务名。
 - 任意有消息状态只出现一条主要信息和一个剩余数量。
 - 无消息状态不出现任务列表、剩余数量和虚构任务名。
-- 9 宫格在 `520 × 128`、`590 × 142`、`720 × 180` 三档无明显接缝、切角变形或标尺拉伸。
+- 9 宫格在 `520 × 160`、`590 × 176`、`720 × 180` 三档无明显接缝、切角变形或标尺拉伸。
 - 四角必须透出桌面内容；WebView、页面根节点和小组件外层保持透明，机壳使用切角裁剪，不能留下矩形黑底。
 
 ### 行为
@@ -418,6 +423,11 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - 2026-07-16 尺寸修正：原生窗口调整为 `590 × 142`，内部逻辑画布整体缩放 `50%`；Windows WebView 与窗口启用透明合成，机壳切角外区域真实透出桌面。
 - 2026-07-16 新对话：空闲态增加单入口输入；后端自动选择 workspace、复用/创建空白 Tab 并通过现有 Controller 提交；发送阶段持久化、可重试、可恢复。返回窗口改为黄色模式图标与“主窗口 / FULL VIEW”双行控制。
 - 2026-07-16 大字号与分页：主信息、项目名、状态、按钮和输入文字整体放大；任务消息溢出时点击进入下一页，状态信息继续使用条件式往返滚动，并遵循 reduced-motion 设置。
+- 2026-07-16 选项内嵌扩展：1–3 个单选项直接在小部件内展示点选；4 个及以上、多问题、多选仍进入主窗口。前端 mock 增加 `widget-choice3` 状态用于真实点选验收。
+- 2026-07-16 workspace 路由：新增候选 transient 标记，CI gate / 临时 shell / linked worktree 不会被默认选中；同族稳定候选优先于 transient active，reason 为"主工作区"；显式名称匹配仍可选中 transient。字号二次放大至屏幕目标（输入 16–18px，主信息 22–28px，状态 12–14px，项目名 13–16px，任务名 11–13px，选项正文 12–14px）。
+- 2026-07-16 小组件高度调整：默认 590×142 → 590×176，最小高度 128 → 160。旧默认持久化自动迁移（高度升到 176，Y 上移 34 保持底边）；用户自定义尺寸不迁移。补 Go 测试覆盖迁移逻辑。
+- 2026-07-16 空闲动画暂停：WidgetSnapshot 新增 `isIdle` 字段；前端在真正空闲时（无 current、无计数、未进入新对话/路由提示）为 `.widget-mode` 追加 `widget-mode--idle` class，暂停 ticker、扫描线、状态光带动画。入场/分页交互动画保持不变。
+- 2026-07-16 workspace 选择器：“新对话”按钮旁增加 workspace 下拉，默认"自动"。点击向上展开菜单含"自动"、所有非 transient 稳定项目、Global。Escape/点击外部关闭，具备 aria 语义。Go 新增 `ListWidgetWorkspaces` 接口；`WidgetConversationInput` 扩展 `workspace` 字段（auto/global/project:root）；手动选择 reason="手动选择"，project 精确校验且必须稳定，非法/过期显式 invalid。请求幂等键含 prompt 与 workspace 选择，切换目标生成新 requestId。前端 mock 支持 WorkGround2/CICDBOT/Global 手动路由验证。
 - 交互检查：点选回复和键入发送均成功，失败信息保留输入并复用同一 `requestId`。
 - 构建检查：前端 `npm.cmd run build` 通过；Wails Windows production build 通过。
 - 全量桌面既有测试中仍有与本功能无关的 Windows 临时目录清理、Topic tree 时序失败；本功能定向测试全部通过。

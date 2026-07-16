@@ -22,14 +22,18 @@ import (
 
 const (
 	widgetDefaultWidth  = 590
-	widgetDefaultHeight = 142
+	widgetDefaultHeight = 176
 	widgetMinWidth      = 520
-	widgetMinHeight     = 128
+	widgetMinHeight     = 160
 	widgetMaxWidth      = 900
 	widgetMaxHeight     = 220
 	widgetEdgeGap       = 16
 	widgetBottomGap     = 24
 	widgetActionLimit   = 64
+
+	// legacyDefaultHeight is the old default height before the 142→176 bump.
+	// Persisted state matching the old default is migrated transparently.
+	legacyDefaultHeight = 142
 )
 
 // WidgetWindowState is persisted separately so compact mode never overwrites
@@ -77,6 +81,7 @@ type WidgetSnapshot struct {
 	CompletedCount  int            `json:"completedCount"`
 	FailedCount     int            `json:"failedCount"`
 	BackgroundCount int            `json:"backgroundCount"`
+	IsIdle          bool           `json:"isIdle"`
 	Version         string         `json:"version"`
 }
 
@@ -132,7 +137,16 @@ func loadWidgetWindowState() (WidgetWindowState, bool) {
 		return WidgetWindowState{}, false
 	}
 	var state WidgetWindowState
-	if json.Unmarshal(data, &state) != nil || state.Width < widgetMinWidth || state.Height < widgetMinHeight || state.Width > widgetMaxWidth || state.Height > widgetMaxHeight {
+	if json.Unmarshal(data, &state) != nil {
+		return WidgetWindowState{}, false
+	}
+	// Migrate old default 590×142 → 590×176 before validation, because the
+	// legacy height is below the current minHeight.
+	if state.Width == widgetDefaultWidth && state.Height == legacyDefaultHeight {
+		state.Height = widgetDefaultHeight
+		state.Y -= widgetDefaultHeight - legacyDefaultHeight
+	}
+	if state.Width < widgetMinWidth || state.Height < widgetMinHeight || state.Width > widgetMaxWidth || state.Height > widgetMaxHeight {
 		return WidgetWindowState{}, false
 	}
 	return state, true
@@ -228,7 +242,10 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	if !a.widgetMode {
 		a.widgetMu.Unlock()
 		if strings.TrimSpace(tabID) != "" {
-			return a.SetActiveTab(tabID)
+			if err := a.SetActiveTab(tabID); err != nil {
+				return err
+			}
+			a.emitSessionActivated("widget-open")
 		}
 		return nil
 	}
@@ -259,7 +276,10 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	}
 	runtime.EventsEmit(a.ctx, "widget:mode", false)
 	if strings.TrimSpace(tabID) != "" {
-		return a.SetActiveTab(tabID)
+		if err := a.SetActiveTab(tabID); err != nil {
+			return err
+		}
+		a.emitSessionActivated("widget-open")
 	}
 	return nil
 }
@@ -413,6 +433,13 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 		snapshot.Current = &current
 		snapshot.RemainingCount = len(items) - 1
 	}
+	snapshot.IsIdle = snapshot.Current == nil &&
+		snapshot.RunningCount == 0 &&
+		snapshot.WaitingCount == 0 &&
+		snapshot.CompletedCount == 0 &&
+		snapshot.FailedCount == 0 &&
+		snapshot.BackgroundCount == 0 &&
+		snapshot.RemainingCount == 0
 	snapshot.Version = widgetSnapshotVersion(snapshot)
 	return snapshot
 }
@@ -466,7 +493,7 @@ func messageForPending(source widgetSource) WidgetMessage {
 	message.ID = "ask:" + meta.ID + ":" + ask.ID
 	message.InteractionID = ask.ID
 	message.QuestionID = question.ID
-	message.RequiresWindow = question.Multi || len(question.Options) > 2
+	message.RequiresWindow = question.Multi || len(question.Options) > 3
 	if !message.RequiresWindow {
 		message.Options = make([]WidgetOption, 0, len(question.Options))
 		for _, option := range question.Options {
@@ -518,7 +545,7 @@ func widgetSnapshotVersion(snapshot WidgetSnapshot) string {
 	if snapshot.Current != nil {
 		current = snapshot.Current.ID + ":" + snapshot.Current.Revision
 	}
-	return widgetRevision(current, fmt.Sprint(snapshot.RemainingCount), fmt.Sprint(snapshot.RunningCount), fmt.Sprint(snapshot.WaitingCount), fmt.Sprint(snapshot.CompletedCount), fmt.Sprint(snapshot.FailedCount))
+	return widgetRevision(current, fmt.Sprint(snapshot.RemainingCount), fmt.Sprint(snapshot.RunningCount), fmt.Sprint(snapshot.WaitingCount), fmt.Sprint(snapshot.CompletedCount), fmt.Sprint(snapshot.FailedCount), fmt.Sprint(snapshot.BackgroundCount), fmt.Sprint(snapshot.IsIdle))
 }
 
 // ApplyWidgetAction validates the current item, deduplicates retried requests,

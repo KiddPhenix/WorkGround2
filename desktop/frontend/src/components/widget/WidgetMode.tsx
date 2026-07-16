@@ -1,5 +1,5 @@
 import { FormEvent, type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, ChevronRight, Maximize2, MessageSquarePlus, PanelTopOpen, RotateCcw, Send, X } from "lucide-react";
+import { ArrowRight, Check, ChevronRight, ChevronUp, Maximize2, MessageSquarePlus, PanelTopOpen, RotateCcw, Send, X } from "lucide-react";
 import {
   app,
   type WidgetActionInput,
@@ -8,7 +8,9 @@ import {
   type WidgetMessage,
   type WidgetOption,
   type WidgetSnapshot,
+  type WidgetWorkspaceOption,
 } from "../../lib/bridge";
+import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import calibrationRail from "../../assets/widget-mode/calibration-rail.png";
 import w2Mark from "../../assets/widget-mode/w2-mark.png";
 import shellTopLeft from "../../assets/widget-mode/pager-shell.9/top-left.png";
@@ -30,8 +32,69 @@ const EMPTY_SNAPSHOT: WidgetSnapshot = {
   completedCount: 0,
   failedCount: 0,
   backgroundCount: 0,
+  isIdle: true,
   version: "loading",
 };
+
+// IDLE_SUFFIXES are the rotating second-half phrases shown when tasks are
+// running but nothing requires user attention. Every entry must be ≤10 Chinese
+// characters to fit the 590 px widget without wrapping.
+export const IDLE_SUFFIXES = [
+  "一切正常",
+  "无需回复",
+  "一切顺利",
+  "无需操作",
+  "自动运行中",
+  "静待完成",
+  "平稳进行中",
+  "无需干预",
+  "一切安好",
+  "安心等待",
+  "正常运行",
+  "风平浪静",
+  "无需挂念",
+  "自动巡航",
+  "一切就绪",
+  "安稳运行",
+  "无需操心",
+  "进展顺利",
+  "一切良好",
+  "状态平稳",
+  "自动推进",
+  "无需照看",
+  "运行平稳",
+  "一帆风顺",
+  "安好勿念",
+  "自动作业",
+  "无需关注",
+  "顺风顺水",
+  "一切如常",
+  "平静运行",
+  "自动处理",
+  "无需过问",
+  "稳步推进",
+  "安然无恙",
+  "自动执行",
+  "无需在意",
+  "平安无事",
+  "运行如常",
+  "无需协助",
+  "一切安稳",
+];
+
+// pickIdleSuffix returns a random idle suffix that differs from prev.
+// Callers guarantee that IDLE_SUFFIXES has at least 2 entries.
+export function pickIdleSuffix(prev: string): string {
+  const candidates = IDLE_SUFFIXES.filter((s) => s !== prev);
+  if (candidates.length === 0) return IDLE_SUFFIXES[0];
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// validateIdleSuffixes returns suffixes longer than 10 characters — a pure
+// function so the constraint is verifiable at build time.
+export function validateIdleSuffixes(): string[] {
+  return IDLE_SUFFIXES.filter((s) => s.length > 10);
+}
 
 const shellTiles = [
   shellTopLeft,
@@ -217,17 +280,122 @@ function OptionButton({ option, primary, onClick, disabled }: {
   );
 }
 
-function IdleStatus({ snapshot, onNew, disabled }: {
+function workspaceKey(opt: WidgetWorkspaceOption): string {
+  if (opt.scope === "auto") return "auto";
+  if (opt.scope === "global") return "global";
+  return `project:${opt.root ?? ""}`;
+}
+
+const AUTO_WORKSPACE: WidgetWorkspaceOption = { scope: "auto", name: "自动" };
+
+function WorkspaceDropdown({ options, selected, onChange, disabled }: {
+  options: WidgetWorkspaceOption[];
+  selected: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const clickHandler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setOpen(false); e.stopPropagation(); }
+    };
+    document.addEventListener("mousedown", clickHandler);
+    document.addEventListener("keydown", keyHandler);
+    return () => {
+      document.removeEventListener("mousedown", clickHandler);
+      document.removeEventListener("keydown", keyHandler);
+    };
+  }, [open]);
+
+  const selectedOption = options.find((o) => workspaceKey(o) === selected);
+  const label = selectedOption?.name ?? "自动";
+
+  return (
+    <div className="widget-workspace" ref={ref}>
+      <button
+        className="widget-workspace__toggle"
+        type="button"
+        onClick={() => setOpen(!open)}
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`工作区选择：${label}`}
+      >
+        <span className="widget-workspace__value"><strong>{label}</strong><small>工作区</small></span>
+        <ChevronUp size={16} />
+      </button>
+      {open && (
+        <ul className="widget-workspace__menu" role="menu" aria-label="选择工作区">
+          {options.map((opt) => {
+            const key = workspaceKey(opt);
+            const isSelected = key === selected;
+            return (
+              <li key={key} role="none">
+                <button
+                  className={`widget-workspace__item${isSelected ? " widget-workspace__item--selected" : ""}`}
+                  type="button"
+                  onClick={() => { onChange(key); setOpen(false); }}
+                  role="menuitemradio"
+                  aria-checked={isSelected}
+                >
+                  {isSelected && <Check size={20} className="widget-workspace__check" />}
+                  <span className="widget-workspace__label">{opt.name}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function IdleStatus({ snapshot, workspaces, selectedWorkspace, onWorkspaceChange, onNew, disabled }: {
   snapshot: WidgetSnapshot;
+  workspaces: WidgetWorkspaceOption[];
+  selectedWorkspace: string;
+  onWorkspaceChange: (value: string) => void;
   onNew: () => void;
   disabled: boolean;
 }) {
-	const runningText = snapshot.runningCount > 0
-	  ? `${snapshot.runningCount} 个任务运行中 · 无待处理消息`
-	  : "暂无运行任务 · 无待处理消息";
+  const [suffix, setSuffix] = useState(() => pickIdleSuffix(""));
+  const prevRunning = useRef(snapshot.runningCount);
+  const prevHasCurrent = useRef(snapshot.current != null);
+
+  // Reset suffix when runningCount or current presence changes.
+  useEffect(() => {
+    const hasCurrent = snapshot.current != null;
+    if (prevRunning.current !== snapshot.runningCount || prevHasCurrent.current !== hasCurrent) {
+      prevRunning.current = snapshot.runningCount;
+      prevHasCurrent.current = hasCurrent;
+      if (snapshot.runningCount > 0 && !hasCurrent) {
+        setSuffix(pickIdleSuffix(""));
+      }
+    }
+  }, [snapshot.runningCount, snapshot.current]);
+
+  // Rotate suffix every 4–7 seconds when tasks are running and there is no
+  // current message. Independent of the 800 ms snapshot poll.
+  useEffect(() => {
+    if (snapshot.runningCount <= 0 || snapshot.current != null) return;
+    const timer = window.setInterval(() => {
+      setSuffix((prev) => pickIdleSuffix(prev));
+    }, 4000 + Math.floor(Math.random() * 3000));
+    return () => window.clearInterval(timer);
+  }, [snapshot.runningCount, snapshot.current]);
+
+  const runningText = snapshot.runningCount > 0
+    ? `${snapshot.runningCount} 个任务运行中 · ${suffix}`
+    : "暂无运行任务 · 无待处理消息";
   const secondary = snapshot.backgroundCount > 0
     ? `${snapshot.backgroundCount} 个后台作业持续运行`
-    : "没有需要处理的重要信息";
+    : snapshot.runningCount > 0 ? "目前没有需要处理的消息" : "没有需要处理的重要信息";
   return (
     <section className="widget-message widget-message--idle" aria-live="polite">
       <div className="widget-message__head">
@@ -237,22 +405,31 @@ function IdleStatus({ snapshot, onNew, disabled }: {
       <div className="widget-status-line" aria-hidden="true"><span /></div>
       <div className="widget-idle__foot">
         <p>{secondary}</p>
+        <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={disabled} />
         <button className="widget-new" type="button" onClick={onNew} disabled={disabled}>
           <MessageSquarePlus size={18} />
-          <span><strong>新对话</strong><small>自动选择工作区</small></span>
+          <span><strong>新对话</strong><small>输入任务</small></span>
         </button>
       </div>
     </section>
   );
 }
 
-function NewConversation({ prompt, busy, onPrompt, onSubmit, onCancel }: {
+function NewConversation({ prompt, busy, workspaces, selectedWorkspace, onWorkspaceChange, onPrompt, onSubmit, onCancel, submitKey }: {
   prompt: string;
   busy: boolean;
+  workspaces: WidgetWorkspaceOption[];
+  selectedWorkspace: string;
+  onWorkspaceChange: (value: string) => void;
   onPrompt: (value: string) => void;
   onSubmit: (event: FormEvent) => void;
   onCancel: () => void;
+  submitKey: ComposerSubmitKey;
 }) {
+  const selectedName = workspaces.find((option) => workspaceKey(option) === selectedWorkspace)?.name ?? "自动";
+  const placeholder = selectedWorkspace === "auto"
+    ? "输入任务，系统会自动选择工作区…"
+    : `输入任务，将发送到 ${selectedName}…`;
   return (
     <section className="widget-message widget-message--compose" aria-live="polite">
       <div className="widget-message__head"><span className="widget-message__state">新对话</span></div>
@@ -262,12 +439,24 @@ function NewConversation({ prompt, busy, onPrompt, onSubmit, onCancel }: {
         <input
           value={prompt}
           onChange={(event) => onPrompt(event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Escape") onCancel(); }}
-          placeholder="输入任务，系统会自动选择工作区…"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") { onCancel(); return; }
+            if (event.key !== "Enter") return;
+            if (isComposerSubmitKey(event, submitKey, false)) {
+              if (submitKey !== "enter") {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+              return;
+            }
+            event.preventDefault();
+          }}
+          placeholder={placeholder}
           aria-label="新对话内容"
           autoFocus
           disabled={busy}
         />
+        <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={busy} />
         <button className="widget-reply__send" type="submit" disabled={busy || prompt.trim() === ""} aria-label="开始新对话"><Send size={18} /></button>
         <button className="widget-reply__later" type="button" onClick={onCancel} disabled={busy}><X size={15} /> 取消</button>
       </form>
@@ -289,7 +478,7 @@ function RouteNotice({ result, prompt }: { result: WidgetConversationResult; pro
   );
 }
 
-export function WidgetMode({ onExit }: { onExit: () => void }) {
+export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKey?: string }) {
   const [snapshot, setSnapshot] = useState<WidgetSnapshot>(EMPTY_SNAPSHOT);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -298,7 +487,10 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
 	const [newPrompt, setNewPrompt] = useState("");
 	const [routeNotice, setRouteNotice] = useState<{ result: WidgetConversationResult; prompt: string } | null>(null);
 	const retryRequest = useRef<{ key: string; id: string } | null>(null);
-	const conversationRequest = useRef<{ prompt: string; id: string } | null>(null);
+	const conversationRequest = useRef<{ prompt: string; workspace: string; id: string } | null>(null);
+	const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([AUTO_WORKSPACE]);
+	const [selectedWorkspace, setSelectedWorkspace] = useState("auto");
+	const composerSubmitKey = normalizeComposerSubmitKey(submitKey);
 
   const refresh = useCallback(async () => {
     try {
@@ -314,6 +506,17 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
     const timer = window.setInterval(() => void refresh(), 800);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    app.ListWidgetWorkspaces()
+      .then((options) => {
+        setWorkspaces(options.length > 0 ? options : [AUTO_WORKSPACE]);
+      })
+      .catch(() => {
+        setWorkspaces([AUTO_WORKSPACE]);
+        setError("工作区列表加载失败，仍可使用自动选择");
+      });
+  }, []);
 
   useEffect(() => {
     setTyped("");
@@ -374,14 +577,16 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
 		event.preventDefault();
 		const prompt = newPrompt.trim();
 		if (!prompt || busy) return;
+		const ws = selectedWorkspace;
 		const requestId = conversationRequest.current?.prompt === prompt
+			&& conversationRequest.current?.workspace === ws
 			? conversationRequest.current.id
 			: requestID();
-		conversationRequest.current = { prompt, id: requestId };
+		conversationRequest.current = { prompt, workspace: ws, id: requestId };
 		setBusy(true);
 		setError("");
 		try {
-			const result = await app.StartWidgetConversation({ prompt, requestId });
+			const result = await app.StartWidgetConversation({ prompt, requestId, workspace: ws });
 			setSnapshot(result.snapshot);
 			if (result.status === "retryable_error" || result.status === "invalid") {
 				setError(result.error ?? "新对话创建失败，可以重试");
@@ -397,13 +602,13 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
 		} finally {
 			setBusy(false);
 		}
-	}, [busy, newPrompt]);
+	}, [busy, newPrompt, selectedWorkspace]);
 
-  const exit = useCallback(async () => {
+  const exit = useCallback(async (tabID = "") => {
     if (busy) return;
     setBusy(true);
     try {
-      await app.ExitWidgetMode("");
+      await app.ExitWidgetMode(tabID);
       onExit();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -412,12 +617,13 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
   }, [busy, onExit]);
 
   const current = snapshot.current;
+  const widgetIdle = snapshot.isIdle && !composing && !routeNotice;
   const body = useMemo(() => {
     if (!current && composing) return (
-		<NewConversation prompt={newPrompt} busy={busy} onPrompt={setNewPrompt} onSubmit={startConversation} onCancel={() => setComposing(false)} />
+		<NewConversation prompt={newPrompt} busy={busy} workspaces={workspaces} selectedWorkspace={selectedWorkspace} onWorkspaceChange={setSelectedWorkspace} onPrompt={setNewPrompt} onSubmit={startConversation} onCancel={() => setComposing(false)} submitKey={composerSubmitKey} />
 	);
 	if (!current && routeNotice) return <RouteNotice result={routeNotice.result} prompt={routeNotice.prompt} />;
-    if (!current) return <IdleStatus snapshot={snapshot} onNew={() => { setRouteNotice(null); setComposing(true); }} disabled={busy} />;
+    if (!current) return <IdleStatus snapshot={snapshot} workspaces={workspaces} selectedWorkspace={selectedWorkspace} onWorkspaceChange={setSelectedWorkspace} onNew={() => { setRouteNotice(null); setComposing(true); }} disabled={busy} />;
     return (
 	  <section key={current.id} className={`widget-message widget-message--${current.kind}`} aria-live="polite">
         <div className="widget-message__head">
@@ -448,7 +654,16 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
               value={typed}
               onChange={(event) => setTyped(event.target.value)}
 			  onKeyDown={(event) => {
-				if (event.key === "Escape") event.currentTarget.blur();
+				if (event.key === "Escape") { event.currentTarget.blur(); return; }
+				if (event.key !== "Enter") return;
+				if (isComposerSubmitKey(event, composerSubmitKey, false)) {
+				  if (composerSubmitKey !== "enter") {
+					event.preventDefault();
+					event.currentTarget.form?.requestSubmit();
+				  }
+				  return;
+				}
+				event.preventDefault();
 			  }}
               placeholder="输入简短回复…"
               aria-label="回复内容"
@@ -479,19 +694,19 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
         )}
       </section>
     );
-  }, [apply, busy, choose, composing, current, newPrompt, routeNotice, snapshot, startConversation, submitTyped, typed]);
+  }, [apply, busy, choose, composing, composerSubmitKey, current, newPrompt, routeNotice, selectedWorkspace, snapshot, startConversation, submitTyped, typed, workspaces]);
 
 	const contextProject = routeNotice?.result.workspaceName;
 	const contextTask = composing || routeNotice ? "新对话" : undefined;
 
   return (
-    <main className="widget-mode">
+    <main className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`}>
       <div className="widget-shell">
         <NineSliceShell />
         <div className="widget-shell__drag" aria-hidden="true" />
         <ContextBlock message={current} projectName={contextProject} taskName={contextTask} />
         {body}
-        <button className="widget-return" type="button" onClick={() => void exit()} disabled={busy} aria-label="返回主窗口">
+        <button className="widget-return" type="button" onClick={() => void exit(current?.kind === "result" ? current.tabId : "")} disabled={busy} aria-label="返回主窗口">
           <span className="widget-return__icon"><PanelTopOpen size={18} strokeWidth={1.8} /></span>
           <span className="widget-return__copy"><strong>主窗口</strong><small>FULL VIEW</small></span>
         </button>

@@ -174,6 +174,7 @@ export interface WidgetSnapshot {
   completedCount: number;
   failedCount: number;
   backgroundCount: number;
+  isIdle: boolean;
   version: string;
 }
 
@@ -194,6 +195,13 @@ export interface WidgetActionResult {
 export interface WidgetConversationInput {
   prompt: string;
   requestId: string;
+  workspace?: string;
+}
+
+export interface WidgetWorkspaceOption {
+  scope: "auto" | "project" | "global";
+  name: string;
+  root?: string;
 }
 
 export interface WidgetConversationResult {
@@ -220,6 +228,7 @@ export interface AppBindings {
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
+	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
@@ -901,6 +910,7 @@ function makeMockApp(): AppBindings {
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
+	let widgetChoiceAnswered = false;
   let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
@@ -920,13 +930,17 @@ function makeMockApp(): AppBindings {
       completedCount: 2,
       failedCount: 0,
       backgroundCount: 1,
+      isIdle: false,
       version: `mock-${widgetScenario}-${widgetRevision}`,
     };
-		if (widgetConversationStarted) {
+		if (widgetConversationStarted || (widgetScenario === "widget-choice3" && widgetChoiceAnswered)) {
 			return { ...base, remainingCount: 0, runningCount: 5, waitingCount: 0, completedCount: 0, current: undefined };
 		}
-    if (widgetScenario === "widget-idle" || widgetScenario === "widget-running") {
-      return { ...base, remainingCount: 0, waitingCount: 0, completedCount: 0, current: undefined };
+    if (widgetScenario === "widget-idle") {
+      return { ...base, remainingCount: 0, runningCount: 0, waitingCount: 0, completedCount: 0, backgroundCount: 0, current: undefined, isIdle: true };
+    }
+    if (widgetScenario === "widget-running") {
+      return { ...base, remainingCount: 0, waitingCount: 0, completedCount: 0, current: undefined, runningCount: 2, isIdle: false };
     }
     if (widgetScenario === "widget-result") {
       return {
@@ -978,6 +992,28 @@ function makeMockApp(): AppBindings {
           interactionId: "ask-reply",
           questionId: "question-reply",
           options: [],
+        },
+      };
+    }
+    if (widgetScenario === "widget-choice3") {
+      return {
+        ...base,
+        current: {
+          id: "mock-choice3",
+          revision: String(widgetRevision),
+          tabId: "tab-wg2",
+          projectName: "WorkGround2",
+          taskName: "多语言设置",
+          kind: "choice",
+          stateLabel: "选择回复",
+          message: "请选择文档的目标语言：",
+          interactionId: "ask-choice3",
+          questionId: "question-choice3",
+          options: [
+            { label: "中文", description: "简体中文文档", value: "中文" },
+            { label: "英文", description: "English documentation", value: "英文" },
+            { label: "日语", description: "日本語ドキュメント", value: "日语" },
+          ],
         },
       };
     }
@@ -2038,6 +2074,7 @@ function makeMockApp(): AppBindings {
       if (!current || current.id !== input.itemId || current.revision !== input.revision) {
         return { status: "stale", error: "消息已经变化，请按最新状态操作", snapshot: mockWidgetSnapshot() };
       }
+		if (widgetScenario === "widget-choice3" && input.action === "answer") widgetChoiceAnswered = true;
       if (input.action === "open") widgetMode = false;
       widgetRevision += 1;
       return { status: "accepted", snapshot: mockWidgetSnapshot() };
@@ -2049,14 +2086,31 @@ function makeMockApp(): AppBindings {
 			}
 			widgetConversationStarted = true;
 			widgetRevision += 1;
+			const ws = input.workspace || "auto";
+			let workspaceName = "WorkGround2";
+			let routeReason = "名称匹配";
+			if (ws === "global") { workspaceName = "Global"; routeReason = "手动选择"; }
+			else if (ws.startsWith("project:")) {
+				const root = ws.slice("project:".length);
+				if (root.includes("CICDBOT")) { workspaceName = "CICDBOT"; routeReason = "手动选择"; }
+				else { workspaceName = root.split("/").pop() || root.split("\\").pop() || "Project"; routeReason = "手动选择"; }
+			}
 			return {
 				status: "accepted",
 				tabId: "tab-widget-new",
-				workspaceRoot: "~/projects/WorkGround2",
-				workspaceName: "WorkGround2",
-				routeReason: "名称匹配",
+				workspaceRoot: `~/projects/${workspaceName}`,
+				workspaceName,
+				routeReason,
 				snapshot: mockWidgetSnapshot(),
 			};
+		},
+		async ListWidgetWorkspaces() {
+			return [
+				{ scope: "auto", name: "自动" },
+				{ scope: "project", name: "WorkGround2", root: "~/projects/WorkGround2" },
+				{ scope: "project", name: "CICDBOT", root: "~/projects/CICDBOT" },
+				{ scope: "global", name: "Global" },
+			];
 		},
     async MinimiseMainWindow() {
       console.info("mock MinimiseMainWindow");

@@ -96,3 +96,40 @@ go test ./internal/config/
 模型设置专项契约共 14 项通过；既有设置刷新契约 18 项通过。浏览器实际渲染验收覆盖连接状态、默认模型、添加入口、添加表单与高级区展开。
 
 仓库前端全量 `npm.cmd test` 运行到既有 `composer-goal-toggle.test.tsx` 时失败，原因为 Composer stop button 未渲染；该用例单独运行可稳定复现，且本功能未改动 Composer。模型设置专项、相关设置回归、TypeScript、CSS、生产构建与 desktop 全量 Go 测试均独立通过。
+
+---
+
+# 小组件可读性、三项点选与 workspace 路由设计 QA
+
+## 结论
+
+- `final result: blocked`：实现、专项测试、构建和已有同版本截图的静态视觉对照通过；本轮内置浏览器停在网络错误 `data:` 页后触发 URL 安全策略，无法完成三项点选与输入框的点击复拍。
+- 参考截图：`D:/Temp/codex-clipboard-e0b3bd32-1d7d-4ee1-b569-e11490c2442d.png`、`D:/Temp/codex-clipboard-28707a04-37b2-40a9-b142-a07ce47b2b26.png`。
+- 实现截图：`docs/assets/widget-mode/widget-large-type-idle.png`、`docs/assets/widget-mode/widget-large-type-ticker.png`、`docs/assets/widget-mode/widget-message-page-1.png`、`docs/assets/widget-mode/widget-message-page-2.png`。
+- 目标视口：原生窗口 `590 × 142`，WebView 实际截图高度 `160px`；内部逻辑画布 `1180 × 284` 后按 `0.5` 缩放。
+
+## 同屏视觉对照
+
+- 字体：参考图中的主信息、用户输入与状态过小；实现截图中的主信息达到约 `22–28px`，项目名约 `13–16px`，状态约 `12–14px`。消息分页截图保持一屏一页，第二页只显示剩余正文。
+- 空间：W2 标识继续占较小区域，项目名更醒目；右侧仍以文字为主，没有把消息退化成列表。
+- 色彩与图素：沿用黑底、青色刻度/扫描线、黄色主动作和红色错误态；九宫格机壳、切角与透明外角保持原设计资源。
+- 文案：主信息只显示当前一条；需要关注时只额外显示“还有 N 条”；无重要消息时显示运行状态。
+
+## 功能证据
+
+- `messageForPending`：1–3 个单选项留在小组件，4 个以上、多选或多问题进入主窗口。
+- `widget-choice3` mock：提供中文、英文、日语三个真实选项；回答后 mock 进入无待处理消息的运行状态，可用于复验状态切换。
+- workspace 路由：CI gate、临时目录、linked worktree 与仅含 `.WorkGround2` 的会话空壳不会成为隐式目标；同目录同名前缀优先回落到稳定主 workspace；输入完整名称时仍允许显式选择临时目标。
+
+## 验证记录
+
+```text
+go test . -run 'Test(BuildWidget|MessageForPending|ChooseWidgetWorkspace|WidgetWorkspace|WidgetIsTransient|WidgetHistory|DefaultWidget|QueueNeeds|ConciseWidget|LastWidget)' -count=1
+go vet .
+pnpm.cmd typecheck
+pnpm.cmd check:css
+pnpm.cmd build
+git diff --check
+```
+
+以上命令均通过。待人工复验 URL：`http://127.0.0.1:4174/?mock=widget-choice3`；新对话输入复验：`http://127.0.0.1:4174/?mock=widget-idle`。

@@ -4321,6 +4321,13 @@ function MainApp() {
 
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
+  const [composerSubmitKey, setComposerSubmitKey] = useState<ComposerSubmitKey>("enter");
+
+  useEffect(() => {
+    app.Settings().then((s) => {
+      setComposerSubmitKey(normalizeComposerSubmitKey(s.composerSubmitKey));
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
 	let alive = true;
@@ -4346,7 +4353,7 @@ export default function App() {
   return (
 	<>
 	  <MainApp />
-	  {widgetMode && <WidgetMode onExit={() => setWidgetMode(false)} />}
+	  {widgetMode && <WidgetMode onExit={() => setWidgetMode(false)} submitKey={composerSubmitKey} />}
 	</>
   );
 }

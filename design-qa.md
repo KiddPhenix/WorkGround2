@@ -203,3 +203,53 @@ final result: passed
 - 浏览器控制台：无 error。
 
 final result: passed
+
+---
+
+# Design QA — 小组件默认高度、空闲停帧与工作区选择
+
+- Source visual truth：`D:/Temp/codex-clipboard-343ff3d5-a2d5-4870-8493-390cfe653610.png`
+- Implementation screenshots：`docs/assets/widget-mode/widget-idle-workspace-selector.png`、`widget-workspace-menu-open.png`、`widget-compose-manual-workspace.png`
+- Viewport：`590 × 176`；内部逻辑画布按既有 `50%` 比例显示
+- States：完全空闲、工作区菜单展开、手动选择 WorkGround2 后输入与提交
+
+## Full-view comparison evidence
+
+- 参考图和三个实现状态已在同一比较输入中检查。机壳九宫格、左侧身份区、状态区、右上主窗口键及青黄配色保持一致。
+- 默认高度从 `142px` 提高到 `176px`，宽度维持 `590px`。旧默认几何只在精确匹配 `590 × 142` 时迁移，窗口底边位置保持稳定；用户自定义尺寸不覆盖。
+- 新对话入口仍是单一黄色主操作。工作区选择器紧邻入口，不常驻展示列表；展开时向上浮出，完整落在窗口内。
+
+## Focused comparison evidence
+
+- 空闲态：DOM 带 `widget-mode--idle`，扫描、状态条和装饰跑马动画的计算样式均为 `animation: none`。
+- 工作区菜单：展开后可见“自动选择”“WorkGround2”“CICDBOT”“Global”，当前值以单选语义标记；菜单物理范围未越过 `590 × 176` 视口。
+- 输入态：选择 WorkGround2 后，选择器显示 `WorkGround2 / 工作区`，占位文案变为“输入任务，将发送到 WorkGround2…”。
+
+## Fidelity surfaces
+
+- Fonts and typography：输入字号修正为逻辑 `36px`、物理约 `18px`；状态、项目名、主信息和按钮层级清晰。
+- Spacing and layout rhythm：增加高度后正文与底部操作不拥挤；菜单、输入框和按钮没有裁切或重叠。
+- Colors and visual tokens：继续使用石墨黑、青色、酸性黄和既有焦点描边。
+- Image quality and assets：继续使用原九宫格 PNG、W2 与标尺图素，没有新增近似绘制资源或拉伸。
+- Copy and content：“自动选择”明确表达智能路由；手动选择后同时更新按钮值、占位文案和提交回执。
+
+## Interaction evidence
+
+- 点击工作区选择器可展开；选择 WorkGround2 后菜单关闭且选择值保持。
+- 点击“新对话”后可直接输入；提交后 mock 回执显示“新对话已创建 / 手动选择 / 已交给 WorkGround2”。
+- `Escape` 可关闭展开菜单；菜单使用 `menu` / `menuitemradio` 和 `aria-checked`。
+- 浏览器控制台 error：0。
+
+## Comparison history
+
+- Pass 1：发现输入样式使用无效的 `font: 36px/1.2 inherit`，浏览器实际物理字号约 `13.33px`，属于 P2 可读性问题。
+- Fix：改为显式 `font-family`、`font-size`、`line-height`，并同步修正按钮字体声明。
+- Pass 2：输入物理字号约 `18px`，菜单、输入和路由回执均完成复验；P0/P1/P2 清零。
+
+## Engineering evidence
+
+- Widget 专项 Go 测试与 `go vet .`：通过。
+- 前端 TypeScript、CSS 语法检查和生产构建：通过。
+- 旧回执缺失 workspace 选择字段时按 Auto 兼容；手动选择、无效选择和短暂 workspace 均有显式测试。
+
+final result: passed
