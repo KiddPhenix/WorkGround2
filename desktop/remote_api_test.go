@@ -69,10 +69,26 @@ func TestRemoteAPIActiveWorkspaceReadyStates(t *testing.T) {
 	}
 }
 
-func TestDesktopEmbeddedSessionOptionsRequestBackground(t *testing.T) {
+func TestDesktopEmbeddedSessionOptions(t *testing.T) {
 	got := desktopEmbeddedSessionOptions("worker", control.ToolApprovalYolo)
-	if got["background"] != true || got["sessionName"] != "worker" || got["toolApprovalMode"] != control.ToolApprovalYolo {
+	if _, ok := got["background"]; ok || got["sessionName"] != "worker" || got["toolApprovalMode"] != control.ToolApprovalYolo {
 		t.Fatalf("session options = %+v", got)
+	}
+}
+
+func TestDesktopEmbeddedSubmitBodyUsesSessionID(t *testing.T) {
+	got := desktopEmbeddedSubmitBody("hello", "session-123", control.ToolApprovalYolo)
+	if got["sessionId"] != "session-123" || got["prompt"] != "hello" || got["toolApprovalMode"] != control.ToolApprovalYolo {
+		t.Fatalf("submit body = %#v", got)
+	}
+	if _, exists := got["session"]; exists {
+		t.Fatalf("legacy path target leaked into submit body: %#v", got)
+	}
+}
+
+func TestDesktopEmbeddedStatusRequiresSessionID(t *testing.T) {
+	if code := desktopEmbeddedStatus(nil); code != 2 {
+		t.Fatalf("desktopEmbeddedStatus without SessionID = %d, want 2", code)
 	}
 }
 
@@ -99,15 +115,67 @@ func TestRemoteAPIWaitForActiveWorkspaceReadyObservesAsyncBuild(t *testing.T) {
 	}
 }
 
+func TestSingleSurfacePruneKeepsExternalSessionAddressable(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	uiPath := filepath.Join(root, "ui.jsonl")
+	externalPath := filepath.Join(root, "external.jsonl")
+	ui := &WorkspaceTab{ID: "ui-tab", SessionID: "session-ui", Scope: "project", WorkspaceRoot: root, SessionPath: uiPath, Ready: true}
+	external := &WorkspaceTab{ID: "external-tab", SessionID: "session-external", Scope: "project", WorkspaceRoot: root, SessionPath: externalPath}
+	app := &App{
+		tabs: map[string]*WorkspaceTab{
+			ui.ID:       ui,
+			external.ID: external,
+		},
+		tabOrder:         []string{ui.ID, external.ID},
+		activeTabID:      ui.ID,
+		detachedSessions: map[string]*WorkspaceTab{},
+	}
+	app.trackSession(ui)
+	app.trackSession(external)
+
+	if _, err := app.keepOnlyVisibleTab(ui.ID); err != nil {
+		t.Fatalf("keepOnlyVisibleTab: %v", err)
+	}
+	if got := app.sessionByID(external.SessionID); got != external {
+		t.Fatalf("external SessionID no longer resolves: got %p want %p", got, external)
+	}
+	app.mu.RLock()
+	_, stillVisible := app.tabs[external.ID]
+	detached := app.detachedSessions[sessionRuntimeKey(externalPath)]
+	removed := external.removed
+	app.mu.RUnlock()
+	if stillVisible || detached != external || removed {
+		t.Fatalf("pruned external state: visible=%t detached=%p removed=%t", stillVisible, detached, removed)
+	}
+
+	ctrl := &remoteStatusCtrlStub{path: externalPath, status: control.RuntimeStatus{Mode: control.RuntimeModeIdle}}
+	app.mu.Lock()
+	external.Ctrl = ctrl
+	external.Ready = true
+	app.mu.Unlock()
+	api := &remoteAPI{app: app}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := api.waitForTabReady(ctx, external.ID, time.Second); err != nil {
+		t.Fatalf("waitForTabReady after UI prune: %v", err)
+	}
+	status := api.sessionResponseForTab(app.sessionByID(external.SessionID), "ok")
+	if status["sessionId"] != external.SessionID || status["path"] != externalPath {
+		t.Fatalf("external status after UI prune = %+v", status)
+	}
+}
+
 func TestRemoteAPISessionNewAppliesToolApprovalMode(t *testing.T) {
 	root := t.TempDir()
 	ctrl := control.New(control.Options{Label: "ready", WorkspaceRoot: root, SessionDir: t.TempDir()})
 	defer ctrl.Close()
 	ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
 
-	tab := &WorkspaceTab{ID: "tab", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: ctrl}
+	tab := &WorkspaceTab{ID: "tab", SessionID: "session-ask", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: ctrl}
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
 	api := &remoteAPI{app: app}
+	app.trackSession(tab)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewBufferString(`{"toolApprovalMode":"yolo"}`))
 	rec := httptest.NewRecorder()
@@ -122,8 +190,16 @@ func TestRemoteAPISessionNewAppliesToolApprovalMode(t *testing.T) {
 	if got["toolApprovalMode"] != control.ToolApprovalYolo {
 		t.Fatalf("toolApprovalMode response = %v, want yolo; body=%s", got["toolApprovalMode"], rec.Body.String())
 	}
-	if mode := ctrl.ToolApprovalMode(); mode != control.ToolApprovalYolo {
-		t.Fatalf("controller tool approval mode = %q, want yolo", mode)
+	created := app.sessionByID(desktopEmbeddedStringField(got, "sessionId"))
+	if created == nil || created.Ctrl == nil {
+		t.Fatalf("created session is unavailable: %+v", got)
+	}
+	defer app.closeTabRuntime(created)
+	if mode := created.Ctrl.ToolApprovalMode(); mode != control.ToolApprovalYolo {
+		t.Fatalf("created controller tool approval mode = %q, want yolo", mode)
+	}
+	if mode := ctrl.ToolApprovalMode(); mode != control.ToolApprovalAsk {
+		t.Fatalf("active UI controller was mutated: %q", mode)
 	}
 }
 
@@ -149,6 +225,7 @@ func TestRemoteAPISessionNewForcesFreshBlankSession(t *testing.T) {
 	oldTopicID := "topic_old"
 	tab := &WorkspaceTab{
 		ID:            "tab",
+		SessionID:     "session-worker",
 		Scope:         "project",
 		WorkspaceRoot: root,
 		Ready:         true,
@@ -172,30 +249,37 @@ func TestRemoteAPISessionNewForcesFreshBlankSession(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	newPath := ctrl.SessionPath()
-	if newPath == "" || filepath.Clean(newPath) == filepath.Clean(oldPath) {
-		t.Fatalf("session path = %q, want fresh path distinct from %q", newPath, oldPath)
-	}
-	if tab.TopicID == "" || tab.TopicID == oldTopicID {
-		t.Fatalf("topic ID = %q, want fresh ID distinct from %q", tab.TopicID, oldTopicID)
-	}
-	if got := tab.sessionLeaseRuntimeKey(); got != sessionRuntimeKey(newPath) {
-		t.Fatalf("lease key = %q, want %q", got, sessionRuntimeKey(newPath))
-	}
-	if source := app.tabMeta(tab, true).SessionSource; source != "cli" {
-		t.Fatalf("CLI-created runtime session source = %q, want cli", source)
-	}
-
 	var got map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode response: %v", err)
+	}
+	created := app.sessionByID(desktopEmbeddedStringField(got, "sessionId"))
+	if created == nil {
+		t.Fatalf("created session is unavailable: %+v", got)
+	}
+	defer app.closeTabRuntime(created)
+	newPath := created.currentSessionPath()
+	if newPath == "" || filepath.Clean(newPath) == filepath.Clean(oldPath) {
+		t.Fatalf("session path = %q, want fresh path distinct from %q", newPath, oldPath)
+	}
+	if created.TopicID == "" || created.TopicID == oldTopicID {
+		t.Fatalf("topic ID = %q, want fresh ID distinct from %q", created.TopicID, oldTopicID)
+	}
+	if leaseKey := created.sessionLeaseRuntimeKey(); leaseKey != sessionRuntimeKey(newPath) {
+		t.Fatalf("lease key = %q, want %q", leaseKey, sessionRuntimeKey(newPath))
+	}
+	if source := app.tabMeta(created, false).SessionSource; source != "cli" {
+		t.Fatalf("CLI-created runtime session source = %q, want cli", source)
+	}
+	if ctrl.SessionPath() != oldPath || tab.TopicID != oldTopicID {
+		t.Fatal("external creation mutated the active UI session")
 	}
 	if responsePath, _ := got["path"].(string); filepath.Clean(responsePath) != filepath.Clean(newPath) {
 		t.Fatalf("response path = %q, want %q; body=%s", responsePath, newPath, rec.Body.String())
 	}
 }
 
-func TestRemoteAPISessionNewEmitsSessionActivated(t *testing.T) {
+func TestRemoteAPISessionNewDoesNotEmitSessionActivated(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	root := t.TempDir()
@@ -214,7 +298,6 @@ func TestRemoteAPISessionNewEmitsSessionActivated(t *testing.T) {
 	}
 	events := make(chan sessionActivatedEvent, 1)
 	app := &App{
-		ctx:         context.Background(),
 		tabs:        map[string]*WorkspaceTab{"tab": tab},
 		activeTabID: "tab",
 	}
@@ -241,22 +324,20 @@ func TestRemoteAPISessionNewEmitsSessionActivated(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	defer tab.releaseSessionLease()
-	newPath := ctrl.SessionPath()
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	created := app.sessionByID(desktopEmbeddedStringField(got, "sessionId"))
+	if created == nil {
+		t.Fatalf("created session is unavailable: %+v", got)
+	}
+	defer app.closeTabRuntime(created)
 
 	select {
 	case event := <-events:
-		if event.Reason != "remote-new" {
-			t.Fatalf("event reason = %q, want remote-new", event.Reason)
-		}
-		if event.TabID != "tab" {
-			t.Fatalf("event tabID = %q, want tab", event.TabID)
-		}
-		if filepath.Clean(event.SessionPath) != filepath.Clean(newPath) {
-			t.Fatalf("event session path = %q, want %q", event.SessionPath, newPath)
-		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("session:activated event was not emitted")
+		t.Fatalf("external create emitted UI activation: %+v", event)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -308,17 +389,19 @@ func TestRemoteAPISessionNewBackgroundKeepsActiveTab(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	path, _ := got["path"].(string)
-	if sessionRuntimeKey(path) != sessionRuntimeKey(backgroundPath) {
-		t.Fatalf("background path = %q, want %q", path, backgroundPath)
+	if path == "" || sessionRuntimeKey(path) == sessionRuntimeKey(backgroundPath) {
+		t.Fatalf("background path = %q, want a newly created session distinct from %q", path, backgroundPath)
+	}
+	if sessionID, _ := got["sessionId"].(string); sessionID == "" {
+		t.Fatalf("new response missing sessionId: %s", rec.Body.String())
+	} else if created := app.sessionByID(sessionID); created != nil {
+		defer app.closeTabRuntime(created)
 	}
 	app.mu.RLock()
 	activeID := app.activeTabID
 	app.mu.RUnlock()
 	if activeID != "active" {
 		t.Fatalf("active tab changed to %q", activeID)
-	}
-	if key := api.getRemoteTargetKey(); key != sessionRuntimeKey(path) {
-		t.Fatalf("remote target = %q, want %q", key, sessionRuntimeKey(path))
 	}
 }
 
@@ -412,7 +495,7 @@ func TestRemoteAPIStatusClearsSubmittedStartingAfterSessionFileUpdate(t *testing
 	}
 }
 
-func TestRemoteAPISessionNewReusesNamedSession(t *testing.T) {
+func TestRemoteAPISessionNewDoesNotReuseNamedSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
 	root := t.TempDir()
@@ -446,21 +529,29 @@ func TestRemoteAPISessionNewReusesNamedSession(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got["created"] != false {
-		t.Fatalf("created = %v, want false; body=%s", got["created"], rec.Body.String())
+	if got["created"] != true {
+		t.Fatalf("created = %v, want true", got["created"])
 	}
-	if responsePath, _ := got["path"].(string); filepath.Clean(responsePath) != filepath.Clean(sessionPath) {
-		t.Fatalf("response path = %q, want existing %q; body=%s", responsePath, sessionPath, rec.Body.String())
+	if responsePath, _ := got["path"].(string); responsePath == "" || filepath.Clean(responsePath) == filepath.Clean(sessionPath) {
+		t.Fatalf("response path = %q, want a new session distinct from %q", responsePath, sessionPath)
 	}
 	if got["sessionName"] != "codex-worker" {
 		t.Fatalf("sessionName = %v, want codex-worker", got["sessionName"])
 	}
+	created := app.sessionByID(desktopEmbeddedStringField(got, "sessionId"))
+	if created == nil {
+		t.Fatalf("created session is unavailable: %+v", got)
+	}
+	defer app.closeTabRuntime(created)
 	meta, _, err := agent.LoadBranchMeta(sessionPath)
 	if err != nil {
 		t.Fatalf("LoadBranchMeta reused session: %v", err)
 	}
 	if meta.SessionSource == "cli" {
-		t.Fatal("reusing a desktop-created named session must not reclassify it as CLI-created")
+		t.Fatal("existing same-name desktop session was reclassified")
+	}
+	if source := app.tabMeta(created, false).SessionSource; source != "cli" {
+		t.Fatalf("new session source = %q, want cli", source)
 	}
 }
 
@@ -501,41 +592,31 @@ func TestRemoteAPISessionNewCreatesMissingNamedSession(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	defer tab.releaseSessionLease()
-
-	newPath := ctrl.SessionPath()
-	if newPath == "" || filepath.Clean(newPath) == filepath.Clean(oldPath) {
-		t.Fatalf("session path = %q, want fresh path distinct from %q", newPath, oldPath)
-	}
-	if title := loadSessionTitles(dir)[filepath.Base(newPath)]; title != "codex-worker" {
-		t.Fatalf("new session title = %q, want codex-worker", title)
-	}
-	if got := tab.TopicTitle; got != "codex-worker" {
-		t.Fatalf("new session topic title = %q, want codex-worker", got)
-	}
-	if got := loadTopicTitle(root, tab.TopicID); got != "codex-worker" {
-		t.Fatalf("stored topic title = %q, want codex-worker", got)
-	}
-	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
-		t.Fatalf("new named session should still be runtime-only before first submit, stat err = %v", err)
-	}
-	sessions := app.ListSessions()
-	if len(sessions) == 0 {
-		t.Fatalf("ListSessions should expose runtime-only named session")
-	}
-	if filepath.Clean(sessions[0].Path) != filepath.Clean(newPath) {
-		t.Fatalf("ListSessions[0].Path = %q, want runtime path %q; sessions=%+v", sessions[0].Path, newPath, sessions)
-	}
-	if sessions[0].Title != "codex-worker" || !sessions[0].Current || !sessions[0].Open {
-		t.Fatalf("runtime named session meta = %+v, want title/current/open", sessions[0])
-	}
-
 	var got map[string]any
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	firstID := desktopEmbeddedStringField(got, "sessionId")
+	created := app.sessionByID(firstID)
+	if created == nil {
+		t.Fatalf("created session is unavailable: %+v", got)
+	}
+	defer app.closeTabRuntime(created)
+	newPath := created.currentSessionPath()
+	if newPath == "" || filepath.Clean(newPath) == filepath.Clean(oldPath) {
+		t.Fatalf("session path = %q, want fresh path distinct from %q", newPath, oldPath)
+	}
+	if title := loadSessionTitles(filepath.Dir(newPath))[filepath.Base(newPath)]; title != "codex-worker" {
+		t.Fatalf("new session title = %q, want codex-worker", title)
+	}
+	if got := created.TopicTitle; got != "codex-worker" {
+		t.Fatalf("new session topic title = %q, want codex-worker", got)
+	}
+	if got := loadTopicTitle("", created.TopicID); got != "codex-worker" {
+		t.Fatalf("stored topic title = %q, want codex-worker", got)
+	}
 	if got["created"] != true {
-		t.Fatalf("created = %v, want true; body=%s", got["created"], rec.Body.String())
+		t.Fatalf("created = %v, want true", got["created"])
 	}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewBufferString(`{"sessionName":"codex-worker"}`))
 	rec = httptest.NewRecorder()
@@ -543,15 +624,24 @@ func TestRemoteAPISessionNewCreatesMissingNamedSession(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("second status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if ctrl.SessionPath() != newPath {
-		t.Fatalf("second named open changed session path = %q, want %q", ctrl.SessionPath(), newPath)
-	}
-	got = map[string]any{}
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+	second := map[string]any{}
+	if err := json.NewDecoder(rec.Body).Decode(&second); err != nil {
 		t.Fatalf("decode second response: %v", err)
 	}
-	if got["created"] != false {
-		t.Fatalf("second created = %v, want false; body=%s", got["created"], rec.Body.String())
+	secondID := desktopEmbeddedStringField(second, "sessionId")
+	secondTab := app.sessionByID(secondID)
+	if secondTab == nil {
+		t.Fatalf("second session is unavailable: %+v", second)
+	}
+	defer app.closeTabRuntime(secondTab)
+	if second["created"] != true || secondID == "" || secondID == firstID {
+		t.Fatalf("second create did not produce a distinct SessionID: first=%q second=%+v", firstID, second)
+	}
+	if sessionRuntimeKey(secondTab.currentSessionPath()) == sessionRuntimeKey(newPath) {
+		t.Fatalf("second create reused path %q", newPath)
+	}
+	if ctrl.SessionPath() != oldPath {
+		t.Fatalf("external creates changed active UI session path to %q", ctrl.SessionPath())
 	}
 }
 
@@ -578,6 +668,7 @@ func TestRemoteAPISessionSubmitUsesCurrentBlankNamedSession(t *testing.T) {
 
 	tab := &WorkspaceTab{
 		ID:            "tab",
+		SessionID:     "session-worker",
 		Scope:         "project",
 		WorkspaceRoot: root,
 		Ready:         true,
@@ -587,26 +678,18 @@ func TestRemoteAPISessionSubmitUsesCurrentBlankNamedSession(t *testing.T) {
 	}
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
 	api := &remoteAPI{app: app}
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewBufferString(`{"sessionName":"codex-worker","toolApprovalMode":"yolo"}`))
-	rec := httptest.NewRecorder()
-	api.handleSessionNew(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("new status = %d, body = %s", rec.Code, rec.Body.String())
+	app.trackSession(tab)
+	if err := setSessionTitle(dir, oldPath, "codex-worker"); err != nil {
+		t.Fatal(err)
 	}
-	defer tab.releaseSessionLease()
-
-	var created map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
-		t.Fatalf("decode new response: %v", err)
+	tab.TopicTitle = "codex-worker"
+	if err := app.setTabSessionSource(tab.ID, "cli"); err != nil {
+		t.Fatal(err)
 	}
-	sessionPath, _ := created["path"].(string)
-	if sessionPath == "" {
-		t.Fatalf("new response missing path: %s", rec.Body.String())
-	}
+	sessionPath := oldPath
 
 	body := map[string]string{
-		"session":          sessionPath,
+		"sessionId":        tab.SessionID,
 		"prompt":           "run the worker packet",
 		"toolApprovalMode": "yolo",
 	}
@@ -614,15 +697,15 @@ func TestRemoteAPISessionSubmitUsesCurrentBlankNamedSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
-	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
 	api.handleSessionSubmit(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	waitForControllerIdle(t, ctrl)
 	waitForFile(t, sessionPath, "run the worker packet")
-	status := api.activeSessionResponse("ok")
+	status := api.sessionResponseForTab(tab, "ok")
 	if status["foregroundActive"] != false || status["activeRuntimeWork"] != false {
 		t.Fatalf("completed structured status = %+v", status)
 	}
@@ -634,9 +717,6 @@ func TestRemoteAPISessionSubmitUsesCurrentBlankNamedSession(t *testing.T) {
 	}
 	if got := loadSessionTitles(dir)[filepath.Base(sessionPath)]; got != "codex-worker" {
 		t.Fatalf("session title = %q, want codex-worker", got)
-	}
-	if got := tab.TopicTitle; got != "codex-worker" {
-		t.Fatalf("topic title after submit = %q, want codex-worker", got)
 	}
 }
 
@@ -665,6 +745,7 @@ func TestRemoteAPISessionSubmitReportsRunningImmediately(t *testing.T) {
 
 	tab := &WorkspaceTab{
 		ID:            "tab",
+		SessionID:     "session-immediate",
 		Scope:         "project",
 		WorkspaceRoot: root,
 		Ready:         true,
@@ -674,8 +755,9 @@ func TestRemoteAPISessionSubmitReportsRunningImmediately(t *testing.T) {
 	}
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
 	api := &remoteAPI{app: app}
+	app.trackSession(tab)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"prompt":"run now"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"sessionId":"session-immediate","prompt":"run now"}`))
 	rec := httptest.NewRecorder()
 	api.handleSessionSubmit(rec, req)
 	if rec.Code != http.StatusOK {
@@ -688,7 +770,7 @@ func TestRemoteAPISessionSubmitReportsRunningImmediately(t *testing.T) {
 	if submitted["running"] != true || submitted["mode"] != string(control.RuntimeModeForeground) {
 		t.Fatalf("immediate submit response = %+v, want foreground running", submitted)
 	}
-	status := api.activeSessionResponse("ok")
+	status := api.sessionResponseForTab(tab, "ok")
 	if status["running"] != true || status["mode"] != string(control.RuntimeModeForeground) {
 		t.Fatalf("immediate status response = %+v, want foreground running", status)
 	}
@@ -715,9 +797,10 @@ func TestRemoteAPIStatusExposesAskAndAnswerResolvesIt(t *testing.T) {
 		}),
 	})
 	defer ctrl.Close()
-	tab := &WorkspaceTab{ID: "tab", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: ctrl}
+	tab := &WorkspaceTab{ID: "tab", SessionID: "session-ask", Scope: "project", WorkspaceRoot: root, Ready: true, Ctrl: ctrl}
 	app := &App{tabs: map[string]*WorkspaceTab{"tab": tab}, activeTabID: "tab"}
 	api := &remoteAPI{app: app}
+	app.trackSession(tab)
 
 	type askResult struct {
 		answers []event.AskAnswer
@@ -738,7 +821,7 @@ func TestRemoteAPIStatusExposesAskAndAnswerResolvesIt(t *testing.T) {
 	}()
 	ask := <-askEvents
 
-	status := api.activeSessionResponse("ok")
+	status := api.sessionResponseForTab(tab, "ok")
 	if status["pendingPrompt"] != true || status["mode"] != string(control.RuntimeModeWaitingUser) {
 		t.Fatalf("status = %+v, want waiting pending prompt", status)
 	}
@@ -761,7 +844,7 @@ func TestRemoteAPIStatusExposesAskAndAnswerResolvesIt(t *testing.T) {
 		t.Fatalf("options = %#v", questions[0]["options"])
 	}
 
-	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/session/answer", bytes.NewBufferString(`{"id":"stale","answers":[{"questionId":"q1","selected":["Use existing path"]}]}`))
+	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/session/answer", bytes.NewBufferString(`{"sessionId":"session-ask","id":"stale","answers":[{"questionId":"q1","selected":["Use existing path"]}]}`))
 	badRec := httptest.NewRecorder()
 	api.handleSessionAnswer(badRec, badReq)
 	if badRec.Code != http.StatusBadRequest || !strings.Contains(badRec.Body.String(), "pending ask changed") {
@@ -769,7 +852,8 @@ func TestRemoteAPIStatusExposesAskAndAnswerResolvesIt(t *testing.T) {
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"id": ask.ID,
+		"sessionId": "session-ask",
+		"id":        ask.ID,
 		"answers": []QuestionAnswer{{
 			QuestionID: "q1",
 			Selected:   []string{"Use existing path"},
@@ -863,7 +947,7 @@ func (p remoteBlockingProvider) Stream(ctx context.Context, _ provider.Request) 
 
 // --- Background session tests ------------------------------------------------
 
-func TestRemoteAPITargetSessionResponsePrefersRemoteTarget(t *testing.T) {
+func TestRemoteAPIStatusUsesExplicitSessionID(t *testing.T) {
 	root := t.TempDir()
 	activeCtrl := &remoteStatusCtrlStub{
 		path:         filepath.Join(root, "active.jsonl"),
@@ -883,12 +967,12 @@ func TestRemoteAPITargetSessionResponsePrefersRemoteTarget(t *testing.T) {
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"active": {
-				ID: "active", Scope: "project", WorkspaceRoot: root,
+				ID: "active", SessionID: "session-active", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: activeCtrl,
 				SessionPath: activeCtrl.path,
 			},
 			"bg": {
-				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				ID: "bg", SessionID: "session-bg", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: bgCtrl,
 				SessionPath: bgCtrl.path,
 			},
@@ -896,20 +980,23 @@ func TestRemoteAPITargetSessionResponsePrefersRemoteTarget(t *testing.T) {
 		activeTabID: "active",
 	}
 	api := &remoteAPI{app: app}
-
-	// Without remote target, falls back to active (idle).
-	got := api.targetSessionResponse("ok")
-	if got["running"] == true {
-		t.Fatalf("active should be idle; got running=%v", got["running"])
+	app.trackSession(app.tabs["active"])
+	app.trackSession(app.tabs["bg"])
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/session/status?sessionId=session-bg", nil)
+	rec := httptest.NewRecorder()
+	api.handleSessionStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-
-	// Set remote target to bg.
-	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
-
-	// Status should return bg's state (running).
-	got = api.targetSessionResponse("ok")
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
 	if got["running"] != true {
 		t.Fatalf("bg running = %v, want true; body=%+v", got["running"], got)
+	}
+	if got["sessionId"] != "session-bg" {
+		t.Fatalf("sessionId = %v, want session-bg", got["sessionId"])
 	}
 	if got["toolApprovalMode"] != control.ToolApprovalYolo {
 		t.Fatalf("bg toolApprovalMode = %v, want yolo; body=%+v", got["toolApprovalMode"], got)
@@ -920,15 +1007,16 @@ func TestRemoteAPITargetStartingStatusHasStableSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "starting.jsonl")
 	tab := &WorkspaceTab{
 		ID:          "starting",
+		SessionID:   "session-starting",
 		Scope:       "project",
 		SessionPath: path,
 	}
 	app := &App{tabs: map[string]*WorkspaceTab{"starting": tab}}
 	api := &remoteAPI{app: app}
-	api.setRemoteTarget(sessionRuntimeKey(path))
+	app.trackSession(tab)
 	api.markSubmitted(path, time.Now())
 
-	got := api.targetSessionResponse("ok")
+	got := api.sessionResponseForTab(tab, "ok")
 	if got["running"] != false || got["pendingPrompt"] != false ||
 		got["foregroundActive"] != true || got["backgroundOnly"] != false ||
 		got["activeRuntimeWork"] != true || got["cancelRequested"] != false ||
@@ -937,19 +1025,25 @@ func TestRemoteAPITargetStartingStatusHasStableSchema(t *testing.T) {
 	}
 }
 
-func TestRemoteAPIStatusWithoutActiveTabHasStableSchema(t *testing.T) {
+func TestRemoteAPIStatusRequiresKnownSessionID(t *testing.T) {
 	api := &remoteAPI{app: &App{tabs: map[string]*WorkspaceTab{}}}
-
-	got := api.activeSessionResponse("ok")
-	if got["running"] != false || got["pendingPrompt"] != false ||
-		got["foregroundActive"] != false || got["backgroundOnly"] != false ||
-		got["activeRuntimeWork"] != false || got["cancelRequested"] != false ||
-		got["mode"] != string(control.RuntimeModeIdle) {
-		t.Fatalf("idle status = %+v, want stable idle schema", got)
+	for _, target := range []struct {
+		url  string
+		code int
+	}{
+		{url: "/api/v1/session/status", code: http.StatusBadRequest},
+		{url: "/api/v1/session/status?sessionId=missing", code: http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodGet, target.url, nil)
+		rec := httptest.NewRecorder()
+		api.handleSessionStatus(rec, req)
+		if rec.Code != target.code {
+			t.Fatalf("%s status = %d, want %d; body=%s", target.url, rec.Code, target.code, rec.Body.String())
+		}
 	}
 }
 
-func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
+func TestRemoteAPISessionSubmitUsesExplicitSessionID(t *testing.T) {
 	root := t.TempDir()
 
 	// Active tab A.
@@ -965,12 +1059,12 @@ func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"active": {
-				ID: "active", Scope: "project", WorkspaceRoot: root,
+				ID: "active", SessionID: "session-active", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: activeCtrl,
 				SessionPath: activeCtrl.path,
 			},
 			"bg": {
-				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				ID: "bg", SessionID: "session-bg", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: bgCtrl,
 				SessionPath: bgCtrl.path,
 			},
@@ -978,9 +1072,10 @@ func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
 		activeTabID: "active",
 	}
 	api := &remoteAPI{app: app}
+	app.trackSession(app.tabs["active"])
+	app.trackSession(app.tabs["bg"])
 
-	// Submit to B by session path.
-	submitBody := map[string]string{"prompt": "hello bg", "session": bgCtrl.path}
+	submitBody := map[string]string{"prompt": "hello bg", "sessionId": "session-bg"}
 	payload, _ := json.Marshal(submitBody)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
@@ -989,9 +1084,12 @@ func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
 		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// Remote target should be set to B.
-	if key := api.getRemoteTargetKey(); key != sessionRuntimeKey(bgCtrl.path) {
-		t.Fatalf("remote target key = %q, want %q", key, sessionRuntimeKey(bgCtrl.path))
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["sessionId"] != "session-bg" {
+		t.Fatalf("response sessionId = %v, want session-bg", got["sessionId"])
 	}
 
 	// Active tab should still be "active".
@@ -1003,57 +1101,18 @@ func TestRemoteAPISessionSubmitToPathSetsRemoteTarget(t *testing.T) {
 	}
 }
 
-func TestRemoteAPISubmitNoSessionUsesRemoteTarget(t *testing.T) {
-	root := t.TempDir()
-	activeCtrl := &remoteStatusCtrlStub{
-		path:   filepath.Join(root, "active.jsonl"),
-		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
-	}
-	bgCtrl := &remoteStatusCtrlStub{
-		path:   filepath.Join(root, "bg.jsonl"),
-		status: control.RuntimeStatus{Mode: control.RuntimeModeIdle},
-	}
-	app := &App{
-		tabs: map[string]*WorkspaceTab{
-			"active": {
-				ID: "active", Scope: "project", WorkspaceRoot: root,
-				Ready: true, Ctrl: activeCtrl,
-				SessionPath: activeCtrl.path,
-			},
-			"bg": {
-				ID: "bg", Scope: "project", WorkspaceRoot: root,
-				Ready: true, Ctrl: bgCtrl,
-				SessionPath: bgCtrl.path,
-			},
-		},
-		activeTabID: "active",
-	}
-	api := &remoteAPI{app: app}
-
-	// Set remote target to bg (simulating a prior new/submit).
-	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
-
-	// Submit without session — should go to bg via remote target.
-	submitBody := map[string]string{"prompt": "hello via target"}
-	payload, _ := json.Marshal(submitBody)
+func TestRemoteAPISubmitRejectsMissingSessionID(t *testing.T) {
+	api := &remoteAPI{app: &App{tabs: map[string]*WorkspaceTab{}}}
+	payload, _ := json.Marshal(map[string]string{"prompt": "hello"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
 	api.handleSessionSubmit(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-
-	// Response should be for bg.
-	var got map[string]any
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if path, _ := got["path"].(string); filepath.Clean(path) != filepath.Clean(bgCtrl.path) {
-		t.Fatalf("response path = %q, want bg path %q", path, bgCtrl.path)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("submit status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestRemoteAPIApproveRoutesToRemoteTarget(t *testing.T) {
+func TestRemoteAPIApproveUsesExplicitSessionID(t *testing.T) {
 	root := t.TempDir()
 	bgCtrl := &remoteStatusCtrlStub{
 		path:         filepath.Join(root, "bg.jsonl"),
@@ -1063,7 +1122,7 @@ func TestRemoteAPIApproveRoutesToRemoteTarget(t *testing.T) {
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"bg": {
-				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				ID: "bg", SessionID: "session-bg", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: bgCtrl,
 				SessionPath: bgCtrl.path,
 			},
@@ -1071,10 +1130,9 @@ func TestRemoteAPIApproveRoutesToRemoteTarget(t *testing.T) {
 		activeTabID: "bg",
 	}
 	api := &remoteAPI{app: app}
-	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+	app.trackSession(app.tabs["bg"])
 
-	// approve on remote target with no pending interaction → error (expected).
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/approve", bytes.NewBufferString(`{"allow":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/approve", bytes.NewBufferString(`{"sessionId":"session-bg","allow":true}`))
 	rec := httptest.NewRecorder()
 	api.handleSessionApprove(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -1082,7 +1140,7 @@ func TestRemoteAPIApproveRoutesToRemoteTarget(t *testing.T) {
 	}
 }
 
-func TestRemoteAPIAnswerRoutesToRemoteTarget(t *testing.T) {
+func TestRemoteAPIAnswerUsesExplicitSessionID(t *testing.T) {
 	root := t.TempDir()
 	bgCtrl := &remoteStatusCtrlStub{
 		path:   filepath.Join(root, "bg.jsonl"),
@@ -1091,7 +1149,7 @@ func TestRemoteAPIAnswerRoutesToRemoteTarget(t *testing.T) {
 	app := &App{
 		tabs: map[string]*WorkspaceTab{
 			"bg": {
-				ID: "bg", Scope: "project", WorkspaceRoot: root,
+				ID: "bg", SessionID: "session-bg", Scope: "project", WorkspaceRoot: root,
 				Ready: true, Ctrl: bgCtrl,
 				SessionPath: bgCtrl.path,
 			},
@@ -1099,10 +1157,9 @@ func TestRemoteAPIAnswerRoutesToRemoteTarget(t *testing.T) {
 		activeTabID: "bg",
 	}
 	api := &remoteAPI{app: app}
-	api.setRemoteTarget(sessionRuntimeKey(bgCtrl.path))
+	app.trackSession(app.tabs["bg"])
 
-	// answer on remote target with no pending interaction → error (expected).
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/answer", bytes.NewBufferString(`{"id":"ask-1","answers":[]}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/answer", bytes.NewBufferString(`{"sessionId":"session-bg","id":"ask-1","answers":[]}`))
 	rec := httptest.NewRecorder()
 	api.handleSessionAnswer(rec, req)
 	if rec.Code != http.StatusBadRequest {

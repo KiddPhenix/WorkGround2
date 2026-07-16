@@ -321,6 +321,22 @@ func TestDesktopSessionOptionsIncludesSessionName(t *testing.T) {
 	}
 }
 
+func TestDesktopSubmitBodyUsesSessionID(t *testing.T) {
+	got := desktopSubmitBody("hello", "session-123", "yolo")
+	if got["sessionId"] != "session-123" || got["prompt"] != "hello" || got["toolApprovalMode"] != "yolo" {
+		t.Fatalf("submit body = %#v", got)
+	}
+	if _, exists := got["session"]; exists {
+		t.Fatalf("legacy path target leaked into submit body: %#v", got)
+	}
+}
+
+func TestDesktopStatusRequiresSessionID(t *testing.T) {
+	if code := desktopStatus(nil); code != 2 {
+		t.Fatalf("desktopStatus without SessionID = %d, want 2", code)
+	}
+}
+
 func TestParseDesktopAnswersGroupsMultiSelect(t *testing.T) {
 	got, err := parseDesktopAnswers([]string{"q1=First", "q1=Second", "q2=Only"})
 	if err != nil {

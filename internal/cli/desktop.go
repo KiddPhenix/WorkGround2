@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,17 +65,17 @@ func desktopUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: workground2 desktop <subcommand>")
 	fmt.Fprintln(os.Stderr, "  workspaces            list Desktop workspaces")
 	fmt.Fprintln(os.Stderr, "  new [prompt]          create a new session")
-	fmt.Fprintln(os.Stderr, "  submit <prompt>       submit to the active session")
+	fmt.Fprintln(os.Stderr, "  submit <prompt>       submit to an explicit session ID")
 	fmt.Fprintln(os.Stderr, "  answer               answer a structured ask")
 	fmt.Fprintln(os.Stderr, "  approve              allow or deny a pending approval")
-	fmt.Fprintln(os.Stderr, "  status                show active session status")
+	fmt.Fprintln(os.Stderr, "  status                show one session's status")
 	fmt.Fprintln(os.Stderr, "  open <path>           open a session file")
 	fmt.Fprintln(os.Stderr, "  focus                 bring Desktop window to front")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Options:")
 	fmt.Fprintln(os.Stderr, "  --workspace <dir>     target a specific workspace")
-	fmt.Fprintln(os.Stderr, "  --session <path>      target a specific session file (submit only)")
-	fmt.Fprintln(os.Stderr, "  --session-name NAME   reuse or create a named session (new only)")
+	fmt.Fprintln(os.Stderr, "  --session <id>        target a specific SessionID")
+	fmt.Fprintln(os.Stderr, "  --session-name NAME   display name for a newly created session")
 	fmt.Fprintln(os.Stderr, "  --no-wait             do not wait for reply")
 	fmt.Fprintln(os.Stderr, "  --yolo                run with tool approval mode yolo")
 	fmt.Fprintln(os.Stderr, "  --tool-approval MODE  ask, auto, or yolo")
@@ -200,10 +201,10 @@ func desktopSessionOptions(sessionName, toolApprovalMode string) map[string]stri
 	return body
 }
 
-func desktopSubmitBody(prompt, session, toolApprovalMode string) map[string]string {
+func desktopSubmitBody(prompt, sessionID, toolApprovalMode string) map[string]string {
 	body := map[string]string{"prompt": prompt}
-	if strings.TrimSpace(session) != "" {
-		body["session"] = session
+	if strings.TrimSpace(sessionID) != "" {
+		body["sessionId"] = strings.TrimSpace(sessionID)
 	}
 	if toolApprovalMode != "" {
 		body["toolApprovalMode"] = toolApprovalMode
@@ -249,6 +250,9 @@ func parseDesktopAnswers(values []string) ([]desktopQuestionAnswer, error) {
 }
 
 func printDesktopSessionReport(action string, result map[string]interface{}) {
+	if sessionID := stringField(result, "sessionId"); sessionID != "" {
+		fmt.Printf("SessionID: %s\n", sessionID)
+	}
 	if path := stringField(result, "path"); path != "" {
 		fmt.Printf("%s session: %s\n", action, path)
 	} else {
@@ -290,7 +294,7 @@ func switchWorkspace(dir string) error {
 // pollSession polls a session file until activity settles or an approval is
 // needed, printing new messages as they arrive. If the Desktop pauses for
 // approval, it prompts the user and sends the answer back.
-func pollSession(sessionPath string) error {
+func pollSession(sessionID, sessionPath string) error {
 	client, baseURL, err := desktopClient()
 	if err != nil {
 		return err
@@ -307,12 +311,12 @@ func pollSession(sessionPath string) error {
 		}
 
 		// 1. Check session status — are we waiting for approval?
-		status, err := checkSessionStatus(client, baseURL)
+		status, err := checkSessionStatus(client, baseURL, sessionID)
 		if err == nil && status.PendingPrompt && !approvalHandled {
 			if status.PendingInteraction.Kind == "ask" {
 				encoded, _ := json.MarshalIndent(status.PendingInteraction, "", "  ")
 				fmt.Printf("\nDesktop is waiting for a structured answer:\n%s\n", encoded)
-				fmt.Println("Use `workground2 desktop answer --id <id> --answer 'q1=<option>'` and then poll status again.")
+				fmt.Printf("Use `workground2 desktop answer --session %s --id <id> --answer 'q1=<option>'` and then poll status again.\n", sessionID)
 				return nil
 			}
 			approvalHandled = true
@@ -326,17 +330,17 @@ func pollSession(sessionPath string) error {
 
 			switch answer {
 			case "y", "yes", "allow", "批准":
-				if err := approvePending(client, baseURL, true); err != nil {
+				if err := approvePending(client, baseURL, sessionID, true); err != nil {
 					return fmt.Errorf("send approval: %w", err)
 				}
 				fmt.Println("✅ 已批准，继续执行…")
 			case "c", "cancel":
-				if err := approvePending(client, baseURL, false); err != nil {
+				if err := approvePending(client, baseURL, sessionID, false); err != nil {
 					return fmt.Errorf("send cancel: %w", err)
 				}
 				fmt.Println("❌ 已拒绝，继续执行…")
 			default:
-				if err := approvePending(client, baseURL, false); err != nil {
+				if err := approvePending(client, baseURL, sessionID, false); err != nil {
 					return fmt.Errorf("send deny: %w", err)
 				}
 				fmt.Println("❌ 已拒绝，继续执行…")
@@ -431,8 +435,9 @@ type desktopPendingOption struct {
 	Description string `json:"description"`
 }
 
-func checkSessionStatus(client *http.Client, baseURL string) (*sessionStatus, error) {
-	resp, err := client.Get(baseURL + "/api/v1/session/status")
+func checkSessionStatus(client *http.Client, baseURL, sessionID string) (*sessionStatus, error) {
+	endpoint := baseURL + "/api/v1/session/status?sessionId=" + url.QueryEscape(strings.TrimSpace(sessionID))
+	resp, err := client.Get(endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -444,8 +449,8 @@ func checkSessionStatus(client *http.Client, baseURL string) (*sessionStatus, er
 	return &st, nil
 }
 
-func approvePending(client *http.Client, baseURL string, allow bool) error {
-	b, _ := json.Marshal(map[string]bool{"allow": allow})
+func approvePending(client *http.Client, baseURL, sessionID string, allow bool) error {
+	b, _ := json.Marshal(map[string]any{"sessionId": strings.TrimSpace(sessionID), "allow": allow})
 	resp, err := client.Post(baseURL+"/api/v1/session/approve", "application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
@@ -561,7 +566,7 @@ func desktopOpen(args []string) int {
 func desktopNew(args []string) int {
 	fs := flag.NewFlagSet("desktop new", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target workspace directory")
-	sessionName := fs.String("session-name", "", "reuse or create a named session")
+	sessionName := fs.String("session-name", "", "display name for the new session")
 	noWait := fs.Bool("no-wait", false, "do not wait for reply")
 	yolo := fs.Bool("yolo", false, "run with tool approval mode yolo")
 	toolApproval := fs.String("tool-approval", "", "tool approval mode: ask, auto, or yolo")
@@ -574,31 +579,28 @@ func desktopNew(args []string) int {
 		return 2
 	}
 
-	// Switch workspace if requested.
-	if *workspace != "" {
-		if err := switchWorkspace(*workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "desktop new: switch workspace: %v\n", err)
-			return 1
-		}
+	body := desktopSessionOptions(*sessionName, toolApprovalMode)
+	if body == nil {
+		body = map[string]string{}
 	}
-
-	result, err := desktopPostJSON("/api/v1/session/new", desktopSessionOptions(*sessionName, toolApprovalMode))
+	if strings.TrimSpace(*workspace) != "" {
+		body["workspace"] = strings.TrimSpace(*workspace)
+	}
+	result, err := desktopPostJSON("/api/v1/session/new", body)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop new: %v\n", err)
 		return 1
 	}
-	sessionPath := stringField(result, "path")
-	action := "Created"
-	if strings.TrimSpace(*sessionName) != "" {
-		if created, ok := boolField(result, "created"); ok && !created {
-			action = "Opened"
-		}
+	sessionID := stringField(result, "sessionId")
+	if sessionID == "" {
+		fmt.Fprintln(os.Stderr, "desktop new: response missing sessionId")
+		return 1
 	}
-	printDesktopSessionReport(action, result)
+	printDesktopSessionReport("Created", result)
 
 	if fs.NArg() > 0 {
 		prompt := strings.Join(fs.Args(), " ")
-		result, err = desktopPostJSON("/api/v1/session/submit", desktopSubmitBody(prompt, sessionPath, toolApprovalMode))
+		result, err = desktopPostJSON("/api/v1/session/submit", desktopSubmitBody(prompt, sessionID, toolApprovalMode))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "desktop new: submit: %v\n", err)
 			return 1
@@ -606,12 +608,9 @@ func desktopNew(args []string) int {
 		printDesktopSessionReport("Submitted to", result)
 
 		if !*noWait {
-			sessionPath = stringField(result, "path")
-			if sessionPath == "" {
-				sessionPath = stringField(result, "path")
-			}
+			sessionPath := stringField(result, "path")
 			if sessionPath != "" {
-				_ = pollSession(sessionPath)
+				_ = pollSession(sessionID, sessionPath)
 			}
 		}
 	}
@@ -625,7 +624,7 @@ func desktopNew(args []string) int {
 func desktopSubmit(args []string) int {
 	fs := flag.NewFlagSet("desktop submit", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target workspace directory")
-	session := fs.String("session", "", "target session file path")
+	session := fs.String("session", "", "target SessionID")
 	noWait := fs.Bool("no-wait", false, "do not wait for reply")
 	yolo := fs.Bool("yolo", false, "run with tool approval mode yolo")
 	toolApproval := fs.String("tool-approval", "", "tool approval mode: ask, auto, or yolo")
@@ -633,7 +632,7 @@ func desktopSubmit(args []string) int {
 		return 2
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: workground2 desktop submit [--workspace <dir>] [--session <path>] <prompt>")
+		fmt.Fprintln(os.Stderr, "Usage: workground2 desktop submit [--workspace <dir> | --session <id>] <prompt>")
 		return 2
 	}
 	toolApprovalMode, err := desktopToolApprovalMode(*yolo, *toolApproval)
@@ -642,16 +641,27 @@ func desktopSubmit(args []string) int {
 		return 2
 	}
 
-	// Switch workspace if requested.
-	if *workspace != "" {
-		if err := switchWorkspace(*workspace); err != nil {
-			fmt.Fprintf(os.Stderr, "desktop submit: switch workspace: %v\n", err)
+	sessionID := strings.TrimSpace(*session)
+	if sessionID == "" && strings.TrimSpace(*workspace) != "" {
+		body := desktopSessionOptions("", toolApprovalMode)
+		if body == nil {
+			body = map[string]string{}
+		}
+		body["workspace"] = strings.TrimSpace(*workspace)
+		created, err := desktopPostJSON("/api/v1/session/new", body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "desktop submit: create background session: %v\n", err)
 			return 1
 		}
+		sessionID = stringField(created, "sessionId")
+	}
+	if sessionID == "" {
+		fmt.Fprintln(os.Stderr, "desktop submit: --session or --workspace is required")
+		return 2
 	}
 
 	prompt := strings.Join(fs.Args(), " ")
-	result, err := desktopPostJSON("/api/v1/session/submit", desktopSubmitBody(prompt, *session, toolApprovalMode))
+	result, err := desktopPostJSON("/api/v1/session/submit", desktopSubmitBody(prompt, sessionID, toolApprovalMode))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop submit: %v\n", err)
 		return 1
@@ -661,7 +671,7 @@ func desktopSubmit(args []string) int {
 	if !*noWait {
 		sessionPath := stringField(result, "path")
 		if sessionPath != "" {
-			_ = pollSession(sessionPath)
+			_ = pollSession(sessionID, sessionPath)
 		}
 	}
 	return 0
@@ -669,14 +679,15 @@ func desktopSubmit(args []string) int {
 
 func desktopAnswer(args []string) int {
 	fs := flag.NewFlagSet("desktop answer", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	id := fs.String("id", "", "pending ask ID")
 	var values desktopAnswerValues
 	fs.Var(&values, "answer", "selected option as QUESTION_ID=OPTION_LABEL; repeat for multi-select")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if strings.TrimSpace(*id) == "" {
-		fmt.Fprintln(os.Stderr, "desktop answer: --id is required")
+	if strings.TrimSpace(*sessionID) == "" || strings.TrimSpace(*id) == "" {
+		fmt.Fprintln(os.Stderr, "desktop answer: --session and --id are required")
 		return 2
 	}
 	answers, err := parseDesktopAnswers(values)
@@ -685,8 +696,9 @@ func desktopAnswer(args []string) int {
 		return 2
 	}
 	if _, err := desktopPostJSON("/api/v1/session/answer", map[string]any{
-		"id":      strings.TrimSpace(*id),
-		"answers": answers,
+		"sessionId": strings.TrimSpace(*sessionID),
+		"id":        strings.TrimSpace(*id),
+		"answers":   answers,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop answer: %v\n", err)
 		return 1
@@ -697,19 +709,21 @@ func desktopAnswer(args []string) int {
 
 func desktopApprove(args []string) int {
 	fs := flag.NewFlagSet("desktop approve", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	id := fs.String("id", "", "pending approval ID")
 	allow := fs.Bool("allow", false, "allow the pending approval")
 	deny := fs.Bool("deny", false, "deny the pending approval")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if strings.TrimSpace(*id) == "" || *allow == *deny {
-		fmt.Fprintln(os.Stderr, "desktop approve: --id and exactly one of --allow/--deny are required")
+	if strings.TrimSpace(*sessionID) == "" || strings.TrimSpace(*id) == "" || *allow == *deny {
+		fmt.Fprintln(os.Stderr, "desktop approve: --session, --id and exactly one of --allow/--deny are required")
 		return 2
 	}
 	if _, err := desktopPostJSON("/api/v1/session/approve", map[string]any{
-		"id":    strings.TrimSpace(*id),
-		"allow": *allow,
+		"sessionId": strings.TrimSpace(*sessionID),
+		"id":        strings.TrimSpace(*id),
+		"allow":     *allow,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop approve: %v\n", err)
 		return 1
@@ -724,12 +738,18 @@ func desktopApprove(args []string) int {
 
 func desktopStatus(args []string) int {
 	fs := flag.NewFlagSet("desktop status", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	asJSON := fs.Bool("json", false, "print raw status JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	result, err := desktopGetJSON("/api/v1/session/status")
+	if strings.TrimSpace(*sessionID) == "" {
+		fmt.Fprintln(os.Stderr, "desktop status: --session is required")
+		return 2
+	}
+	endpoint := "/api/v1/session/status?sessionId=" + url.QueryEscape(strings.TrimSpace(*sessionID))
+	result, err := desktopGetJSON(endpoint)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop status: %v\n", err)
 		return 1

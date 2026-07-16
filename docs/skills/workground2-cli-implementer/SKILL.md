@@ -65,19 +65,19 @@ Codex.
 ## Async Dispatch And Polling
 
 For `--no-wait`, exit code 0 means the task was dispatched to Desktop, not that
-the implementation is done. Poll `desktop status --json` every few seconds. If
+the implementation is done. Capture the SessionID returned by `desktop new`,
+then poll `desktop status --session <id> --json` every few seconds. If
 `pendingPrompt=true`, inspect `pendingInteraction` immediately. For a clear
-structured ask, choose from the returned options and run `desktop answer --id
-<id> --answer '<questionId>=<option label>'`; for a reviewed approval, run
-`desktop approve --id <id> --allow` or `--deny`. Then resume polling. Ask the
+structured ask, choose from the returned options and run `desktop answer
+--session <sessionId> --id <interactionId> --answer '<questionId>=<option label>'`;
+for a reviewed approval, run `desktop approve --session <sessionId> --id
+<interactionId> --allow` or `--deny`. Then resume polling. Ask the
 user only when the packet does not determine a safe choice. Completion requires
 `running=false` and `pendingPrompt=false`; only then inspect the worker report,
 target files, and repo diff.
 
-If dispatch prints no session/status report, query `desktop status --json`
-before deciding what happened. Treat a task as not caught only when Desktop has
-no running/pending work and no expected files or diff appeared after the polling
-window.
+If dispatch does not return a SessionID, treat dispatch as failed. Never query
+status without an ID or substitute the UI's current session.
 
 ## CLI Pattern
 
@@ -135,11 +135,14 @@ Completion report:
 - Commands run and results.
 - Blockers or skipped validation.
 '@
-$sessionName = "<stable Codex task/session name; empty means fresh new session>"
-& $wg desktop new --workspace "<absolute repo path>" --session-name $sessionName --yolo --no-wait $prompt
+$sessionName = "<display name for this worker session>"
+$dispatch = @(& $wg desktop new --workspace "<absolute repo path>" --session-name $sessionName --yolo --no-wait $prompt 2>&1)
+$dispatch | ForEach-Object { $_ }
+$sessionID = ($dispatch | Select-String '^SessionID:\s*(.+)$' | Select-Object -First 1).Matches.Groups[1].Value.Trim()
+if (-not $sessionID) { throw "desktop new did not return SessionID" }
 & $wg desktop focus
 for ($i = 0; $i -lt 60; $i++) {
-  $status = (& $wg desktop status --json | ConvertFrom-Json)
+  $status = (& $wg desktop status --session $sessionID --json | ConvertFrom-Json)
   if ($status.pendingPrompt) {
     $status.pendingInteraction | ConvertTo-Json -Depth 8
     break
@@ -149,11 +152,11 @@ for ($i = 0; $i -lt 60; $i++) {
 }
 ```
 
-Use a stable `--session-name` to reuse a WorkGround2 session across repeated
-dispatches for the same Codex task. Leave the name empty only when a fresh
-session is intended. Use `desktop submit --session <path> --yolo --no-wait` only
-when Codex intentionally continues a specific Desktop session. Omit `--no-wait`
-only for small read-only tasks where Codex needs the reply immediately.
+Every `desktop new` call creates a new SessionID; `--session-name` is display
+metadata and may repeat. Preserve the returned ID and use `desktop submit
+--session <id> --yolo --no-wait` only when Codex intentionally continues that
+specific Session. Omit `--no-wait` only for small read-only tasks where Codex
+needs the reply immediately.
 
 ## Approval Boundary
 

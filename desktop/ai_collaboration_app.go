@@ -133,11 +133,11 @@ Keep exact CLI syntax and rare recovery details in references/cli.md:
 
 - ` + bt + `desktop workspaces` + bt + `
 - ` + bt + `desktop new` + bt + `
-- ` + bt + `desktop status --json` + bt + `
-- ` + bt + `desktop answer --id ... --answer ...` + bt + `
+- ` + bt + `desktop status --session <id> --json` + bt + `
+- ` + bt + `desktop answer --session <id> --id ... --answer ...` + bt + `
 - repeated ` + bt + `--answer` + bt + ` for multiple questions and multi-select
-- ` + bt + `desktop approve --id ... --allow` + bt + `
-- ` + bt + `desktop approve --id ... --deny` + bt + `
+- ` + bt + `desktop approve --session <id> --id ... --allow` + bt + `
+- ` + bt + `desktop approve --session <id> --id ... --deny` + bt + `
 - ` + bt + `desktop submit --session ...` + bt + `
 - ` + bt + `desktop focus` + bt + `
 - invalid or expired interaction recovery
@@ -158,7 +158,7 @@ CLI: ` + cli + `
 
 Use the installed ` + "`workground2-worker`" + ` skill for eligible code, documentation, configuration, and test changes. Codex defines a compact outcome/scope/acceptance packet, WorkGround2 inspects and implements, and Codex reviews only the scoped diff plus final validation.
 
-If the skill is unavailable, dispatch directly with ` + "`desktop new --workspace <root> --session-name <stable-name> --yolo --no-wait <packet>`" + `, then poll ` + "`desktop status --json`" + `. Exit 0 means dispatched; resolve returned interactions and wait for foreground work to end.
+If the skill is unavailable, dispatch directly with ` + "`desktop new --workspace <root> --session-name <display-name> --yolo --no-wait <packet>`" + `, capture the returned SessionID, then poll ` + "`desktop status --session <id> --json`" + `. Exit 0 means dispatched; resolve returned interactions with the same SessionID and wait for foreground work to end.
 
 Keep Codex context small: do not duplicate repository background or pre-solve delegated implementation; prefer one dispatch, one compact worker report, ` + "`git diff --stat`" + `, scoped diff review, and one validation pass. Read full worker transcripts or files only after failure.
 
