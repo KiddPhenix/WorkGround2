@@ -40,6 +40,7 @@ import (
 // topics can be active concurrently without interfering.
 type WorkspaceTab struct {
 	ID                  string             // stable random id
+	SessionID           string             // stable business identity; independent of UI selection and storage path
 	Scope               string             // "project" | "global"
 	WorkspaceRoot       string             // project root dir (empty for global)
 	SharedHostKey       string             // opaque key for the shared plugin host (set by buildTabController)
@@ -435,6 +436,7 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 
 	return &WorkspaceTab{
 		ID:                  detachedRuntimeTabID(key),
+		SessionID:           tab.SessionID,
 		Scope:               tab.Scope,
 		WorkspaceRoot:       tab.WorkspaceRoot,
 		SharedHostKey:       tab.SharedHostKey,
@@ -1280,6 +1282,7 @@ type wireEventTab struct {
 // TabMeta is the frontend-facing shape of one tab.
 type TabMeta struct {
 	ID                  string                   `json:"id"`
+	SessionID           string                   `json:"sessionId"`
 	Scope               string                   `json:"scope"`
 	WorkspaceRoot       string                   `json:"workspaceRoot"`
 	WorkspaceName       string                   `json:"workspaceName"`
@@ -1340,6 +1343,7 @@ func enrichTabMetas(metas []TabMeta) []TabMeta {
 func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	m := TabMeta{
 		ID:                tab.ID,
+		SessionID:         tab.SessionID,
 		Scope:             tab.Scope,
 		WorkspaceRoot:     tab.WorkspaceRoot,
 		WorkspaceName:     workspaceName(tab.WorkspaceRoot),
@@ -1631,6 +1635,7 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	profile := loadTabSessionProfile(sessionPath)
 	tab := &WorkspaceTab{
 		ID:            tabID,
+		SessionID:     newSessionID(),
 		Scope:         scope,
 		WorkspaceRoot: actualRoot,
 		TopicID:       topicID,
@@ -1825,6 +1830,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		topicTitle := topicTitleForTab(scope, workspaceRoot, topicID)
 		created = &WorkspaceTab{
 			ID:               tabID,
+			SessionID:        newSessionID(),
 			Scope:            scope,
 			WorkspaceRoot:    actualRoot,
 			TopicID:          topicID,
@@ -1869,6 +1875,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 	tabID := a.newUniqueTabIDLocked()
 	created = &WorkspaceTab{
 		ID:               tabID,
+		SessionID:        newSessionID(),
 		Scope:            scope,
 		WorkspaceRoot:    actualRoot,
 		TopicID:          topicID,
@@ -2495,6 +2502,7 @@ func (a *App) startTabControllerBuild(tab *WorkspaceTab) {
 }
 
 func (a *App) startTabControllerBuildWithLoadedSession(tab *WorkspaceTab, loadedSession loadedTabSession) {
+	a.trackSession(tab)
 	buildCtx, cancel := context.WithCancel(a.bootContext())
 	a.mu.Lock()
 	if tab == nil || tab.removed {
@@ -3921,6 +3929,7 @@ type desktopProjectFile struct {
 
 type desktopTabEntry struct {
 	ID               string  `json:"id"`
+	SessionID        string  `json:"sessionId,omitempty"`
 	Scope            string  `json:"scope"`
 	WorkspaceRoot    string  `json:"workspaceRoot"`
 	TopicID          string  `json:"topicId"`
@@ -3989,6 +3998,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 		if tab := a.tabs[id]; tab != nil {
 			entries = append(entries, desktopTabEntry{
 				ID:               tab.ID,
+				SessionID:        tab.SessionID,
 				Scope:            tab.Scope,
 				WorkspaceRoot:    tab.WorkspaceRoot,
 				TopicID:          tab.TopicID,

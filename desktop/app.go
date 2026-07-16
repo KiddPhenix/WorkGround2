@@ -109,6 +109,10 @@ type App struct {
 	readyHook              func()
 	projectTreeChangedHook func()
 
+	// sessions is the business-level registry. Unlike activeTabID, it has no
+	// concept of a current UI selection and accepts only explicit SessionIDs.
+	sessions sessionRegistry
+
 	// singleSurfaceMu serializes open/reuse plus visible-tab pruning for the
 	// one-conversation layout so overlapping navigation cannot remove the tab
 	// another navigation is still activating.
@@ -596,6 +600,8 @@ func (a *App) restoreOrBuildTabs() {
 				tab.toolApprovalMode = control.ToolApprovalYolo
 			}
 			tab.SessionPath = strings.TrimSpace(entry.SessionPath)
+			tab.SessionID = strings.TrimSpace(entry.SessionID)
+			a.trackSession(tab)
 			tab.ReadOnly = entry.ReadOnly
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
 			a.mu.Lock()
@@ -630,6 +636,7 @@ func (a *App) restoreOrBuildTabs() {
 
 	// First launch: create a default Global tab.
 	tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
+	a.trackSession(tab)
 	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
 	tab.TopicTitle = "Global"
 	a.mu.Lock()
@@ -655,6 +662,7 @@ func (a *App) createTabEntryWithID(scope, workspaceRoot, topicID, id string) *Wo
 	model, toolApprovalMode := desktopNewSessionDefaults()
 	return &WorkspaceTab{
 		ID:               id,
+		SessionID:        newSessionID(),
 		Scope:            scope,
 		WorkspaceRoot:    workspaceRoot,
 		TopicID:          topicID,
@@ -2098,6 +2106,7 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 	tabID := a.newUniqueTabIDLocked()
 	tab := &WorkspaceTab{
 		ID:               tabID,
+		SessionID:        newSessionID(),
 		Scope:            scope,
 		WorkspaceRoot:    workspaceRoot,
 		TopicID:          topicID,
@@ -2991,6 +3000,7 @@ func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
 		return err
 	}
 	tab := &WorkspaceTab{
+		SessionID:        newSessionID(),
 		Scope:            scope,
 		WorkspaceRoot:    actualRoot,
 		TopicTitle:       defaultTopicTitle,
@@ -3286,6 +3296,7 @@ func (a *App) openChannelSession(path string) (TabMeta, error) {
 	profile := loadTabSessionProfile(sessionPath)
 	tab := &WorkspaceTab{
 		ID:            tabID,
+		SessionID:     newSessionID(),
 		Scope:         scope,
 		WorkspaceRoot: actualRoot,
 		TopicID:       topicID,
