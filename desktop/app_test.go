@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,6 +167,53 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 	}
 	if codex.Model != "gpt-5.5" {
 		t.Fatalf("codex model = %q, want gpt-5.5 to match --model arg", codex.Model)
+	}
+}
+
+func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	got := darwinCLICommandCandidates(onboardingLocalCLIPreset{
+		ID:       "codex",
+		Commands: []string{"codex", "codex.exe", "codex.cmd"},
+	}, home)
+	for _, want := range []string{
+		"/Applications/Codex.app/Contents/Resources/codex",
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
+		filepath.Join(home, ".local", "bin", "codex"),
+		filepath.Join(home, "Library", "pnpm", "codex"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("darwin Codex candidates missing %q: %+v", want, got)
+		}
+	}
+}
+
+func TestDarwinCLICommandCandidatesSupportEveryPreset(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	for _, preset := range onboardingLocalCLIPresets {
+		got := darwinCLICommandCandidates(preset, home)
+		wantCommand := ""
+		for _, command := range preset.Commands {
+			ext := strings.ToLower(filepath.Ext(command))
+			if ext != ".exe" && ext != ".cmd" {
+				wantCommand = command
+				break
+			}
+		}
+		if wantCommand == "" {
+			t.Fatalf("preset %q has no macOS command", preset.ID)
+		}
+		for _, want := range []string{
+			filepath.Join("/opt/homebrew/bin", wantCommand),
+			filepath.Join(home, ".local", "bin", wantCommand),
+			filepath.Join(home, "Library", "pnpm", wantCommand),
+		} {
+			if !slices.Contains(got, want) {
+				t.Errorf("preset %q missing darwin candidate %q", preset.ID, want)
+			}
+		}
 	}
 }
 

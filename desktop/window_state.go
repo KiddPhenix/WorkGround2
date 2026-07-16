@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/config"
+	"workground2/internal/fileutil"
 )
 
 // DesktopWindowState captures the window geometry to restore across launches.
@@ -55,15 +55,20 @@ func loadWindowState() (DesktopWindowState, bool) {
 // SaveWindowState is the bound method the frontend calls to persist the current
 // window geometry before quit and periodically during use.
 func (a *App) SaveWindowState(state DesktopWindowState) error {
-	path := windowStatePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	if a.IsWidgetMode() {
+		return saveWidgetWindowState(WidgetWindowState{
+			Width: state.Width, Height: state.Height, X: state.X, Y: state.Y,
+		})
 	}
+	return saveMainWindowState(state)
+}
+
+func saveMainWindowState(state DesktopWindowState) error {
 	data, err := json.Marshal(state)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return fileutil.AtomicWriteFile(windowStatePath(), data, 0o644)
 }
 
 // saveWindowStateSync saves the current window geometry from the Go side (called
@@ -76,11 +81,16 @@ func (a *App) saveWindowStateSync() {
 	w, h := runtime.WindowGetSize(a.ctx)
 	x, y := runtime.WindowGetPosition(a.ctx)
 	max := runtime.WindowIsMaximised(a.ctx)
-	_ = a.SaveWindowState(DesktopWindowState{
+	state := DesktopWindowState{
 		Width:     w,
 		Height:    h,
 		X:         x,
 		Y:         y,
 		Maximised: max,
-	})
+	}
+	if a.IsWidgetMode() {
+		_ = saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y})
+		return
+	}
+	_ = saveMainWindowState(state)
 }

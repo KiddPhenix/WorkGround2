@@ -1,0 +1,465 @@
+:root:has(.widget-mode) {
+  background: transparent;
+  color-scheme: dark;
+}
+
+body:has(.widget-mode),
+body:has(.widget-mode) #root {
+  overflow: hidden;
+  background: transparent !important;
+}
+
+body:has(.widget-mode) .app {
+  visibility: hidden;
+}
+
+.widget-mode {
+  --widget-cyan: #08d7f2;
+  --widget-yellow: #ffe600;
+  --widget-red: #ff554f;
+  --widget-white: #f4f7f8;
+  --widget-muted: #9da6aa;
+	position: fixed;
+	inset: 0;
+	z-index: 2147483000;
+	width: 100vw;
+	height: 100vh;
+  min-width: 520px;
+  min-height: 128px;
+  overflow: hidden;
+  background: transparent;
+  color: var(--widget-white);
+  font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  user-select: none;
+	animation: widget-enter 160ms ease-out both;
+}
+
+.widget-shell {
+  position: relative;
+  width: 200%;
+  height: 200%;
+  overflow: hidden;
+  isolation: isolate;
+  clip-path: polygon(
+    34px 0,
+    calc(100% - 24px) 0,
+    100% 24px,
+    100% calc(100% - 26px),
+    calc(100% - 34px) 100%,
+    34px 100%,
+    0 calc(100% - 30px),
+    0 34px
+  );
+  transform: scale(0.5);
+  transform-origin: left top;
+}
+
+.widget-shell__nine-slice {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  display: grid;
+  grid-template-columns: 27.017% 35.46% 37.523%;
+  grid-template-rows: 21.875% 46.875% 31.25%;
+  pointer-events: none;
+}
+
+.widget-shell__nine-slice img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.widget-shell__drag {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 170px;
+  left: 0;
+  height: 48px;
+  --wails-draggable: drag;
+}
+
+.widget-context {
+  position: absolute;
+  z-index: 2;
+  top: 12%;
+  bottom: 14%;
+  left: 1.8%;
+  width: 25.2%;
+  display: flex;
+  align-items: center;
+  border-right: 1px solid color-mix(in srgb, var(--widget-cyan) 72%, transparent);
+}
+
+.widget-context__rail {
+  width: 38px;
+  height: 86%;
+  object-fit: cover;
+  object-position: 50% 48%;
+  opacity: 0.9;
+}
+
+.widget-context__identity {
+  min-width: 0;
+  padding: 0 22px 0 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
+.widget-context__mark {
+	width: 40px;
+	height: 23px;
+	margin: -23px 0 5px -10px;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.widget-context__project {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--widget-white);
+  font-size: clamp(16px, 1.65vw, 22px);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 15px rgb(8 215 242 / 0.16);
+}
+
+.widget-context__task {
+  max-width: 100%;
+  overflow: hidden;
+  color: #a9b0b2;
+  font-size: clamp(12px, 1.2vw, 16px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-message {
+  position: absolute;
+  z-index: 2;
+  top: 17%;
+  right: 4.6%;
+  bottom: 13%;
+  left: 29.5%;
+  display: grid;
+  grid-template-rows: auto minmax(38px, 1fr) 10px auto;
+  gap: 7px;
+  min-width: 0;
+	animation: widget-content-in 120ms ease-out both;
+}
+
+.widget-message__head {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  min-height: 24px;
+}
+
+.widget-message__state {
+  color: var(--widget-yellow);
+  font-size: clamp(14px, 1.45vw, 19px);
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-shadow: 0 0 13px rgb(255 230 0 / 0.18);
+}
+
+.widget-message--error .widget-message__state {
+  color: var(--widget-red);
+}
+
+.widget-message--error h1 {
+	font-size: clamp(20px, 2.3vw, 31px);
+}
+
+.widget-message__queue {
+  color: var(--widget-muted);
+  font-size: clamp(12px, 1.16vw, 15px);
+  letter-spacing: 0.04em;
+}
+
+.widget-message h1 {
+  align-self: center;
+  max-width: calc(100% - 10px);
+  margin: 0;
+  overflow: hidden;
+  color: var(--widget-white);
+  font-size: clamp(22px, 2.75vw, 38px);
+  font-weight: 420;
+  line-height: 1.14;
+  letter-spacing: 0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 0 18px rgb(8 215 242 / 0.08);
+}
+
+.widget-message__scan,
+.widget-status-line {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  background: repeating-linear-gradient(90deg, var(--widget-cyan) 0 2px, transparent 2px 6px);
+  opacity: 0.82;
+}
+
+.widget-message__scan::after,
+.widget-status-line::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 0;
+  width: 27%;
+  height: 2px;
+  background: var(--widget-cyan);
+  box-shadow: -30px 0 0 var(--widget-yellow), -48px 0 0 var(--widget-yellow), -66px 0 0 var(--widget-yellow);
+}
+
+.widget-message__scan span,
+.widget-status-line span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 22%;
+  background: linear-gradient(90deg, transparent, rgb(255 230 0 / 0.72), transparent);
+  animation: widget-scan 2.8s linear infinite;
+}
+
+.widget-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  min-height: 52px;
+}
+
+.widget-action {
+  position: relative;
+  min-width: 145px;
+  flex: 1 1 0;
+  padding: 8px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  overflow: hidden;
+	border: 0;
+  border-radius: 1px;
+  background: rgb(0 8 11 / 0.76);
+  box-shadow: inset 0 0 0 2px rgb(8 215 242 / 0.1), 0 0 13px rgb(8 215 242 / 0.08);
+  color: var(--widget-white);
+  cursor: pointer;
+  font: inherit;
+	clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% calc(100% - 10px), calc(100% - 10px) 100%, 10px 100%, 0 calc(100% - 10px), 0 10px);
+  --wails-draggable: no-drag;
+}
+
+.widget-action::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+	border: 1px solid var(--widget-cyan);
+	clip-path: polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% calc(100% - 7px), calc(100% - 7px) 100%, 7px 100%, 0 calc(100% - 7px), 0 7px);
+  pointer-events: none;
+}
+
+.widget-action span {
+  position: relative;
+  z-index: 1;
+  font-size: clamp(14px, 1.5vw, 19px);
+  white-space: nowrap;
+}
+
+.widget-action small {
+  position: relative;
+  z-index: 1;
+  color: #8e9a9e;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.widget-action--primary {
+  border-color: var(--widget-yellow);
+  background: var(--widget-yellow);
+  box-shadow: inset 0 0 18px rgb(255 255 255 / 0.28), 0 0 15px rgb(255 230 0 / 0.16);
+  color: #071013;
+}
+
+.widget-action--primary::before {
+	border-color: rgb(2 16 20 / 0.72);
+}
+
+.widget-action--primary small {
+  color: rgb(2 16 20 / 0.68);
+}
+
+.widget-action--quiet {
+	min-width: 82px;
+	flex: 0 0 96px;
+	border-color: transparent;
+	background: rgb(0 8 11 / 0.42);
+	box-shadow: none;
+}
+
+.widget-action--quiet::before {
+	border-color: rgb(157 166 170 / 0.38);
+}
+
+.widget-action:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.widget-action:focus-visible,
+.widget-return:focus-visible,
+.widget-reply input:focus-visible,
+.widget-reply button:focus-visible {
+  outline: 2px solid var(--widget-white);
+  outline-offset: 2px;
+}
+
+.widget-action:disabled,
+.widget-return:disabled,
+.widget-reply button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.widget-actions--result .widget-action {
+  flex: 0 1 240px;
+}
+
+.widget-reply {
+  display: grid;
+	grid-template-columns: 1fr 58px 78px;
+  min-height: 52px;
+  border: 1px solid var(--widget-cyan);
+  background: rgb(0 8 11 / 0.82);
+  box-shadow: inset 0 0 14px rgb(8 215 242 / 0.08);
+  --wails-draggable: no-drag;
+}
+
+.widget-reply input {
+  min-width: 0;
+  padding: 0 18px;
+  border: 0;
+  background: transparent;
+  color: var(--widget-white);
+  font: 17px/1.2 inherit;
+  outline: none;
+}
+
+.widget-reply input::placeholder {
+  color: #69777b;
+}
+
+.widget-reply__send {
+  border: 0;
+  border-left: 1px solid var(--widget-cyan);
+  background: var(--widget-yellow);
+  color: #071013;
+  cursor: pointer;
+}
+
+.widget-reply__send:disabled {
+	background: #5c5714;
+	color: #b8b27b;
+	opacity: 1;
+}
+
+.widget-reply__later {
+	border: 0;
+	border-left: 1px solid rgb(8 215 242 / 0.46);
+	background: rgb(0 8 11 / 0.72);
+	color: var(--widget-muted);
+	cursor: pointer;
+	font: 14px/1 inherit;
+}
+
+.widget-message--idle {
+  grid-template-rows: auto minmax(38px, 1fr) 10px auto;
+}
+
+.widget-message--idle h1 {
+  font-size: clamp(23px, 2.45vw, 34px);
+}
+
+.widget-message--idle .widget-message__state {
+	color: var(--widget-cyan);
+	text-shadow: 0 0 13px rgb(8 215 242 / 0.2);
+}
+
+.widget-message--idle p {
+  margin: 0;
+  color: var(--widget-muted);
+  font-size: clamp(12px, 1.15vw, 15px);
+}
+
+.widget-return {
+  position: absolute;
+  z-index: 5;
+  top: 9.5%;
+  right: 7.8%;
+  min-height: 34px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+	border: 1px solid var(--widget-cyan);
+	border-radius: 0;
+  background: rgb(0 10 14 / 0.88);
+  box-shadow: inset 0 0 10px rgb(8 215 242 / 0.12), 0 0 10px rgb(8 215 242 / 0.12);
+  color: var(--widget-white);
+  cursor: pointer;
+  font: 13px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+  --wails-draggable: no-drag;
+}
+
+.widget-return:hover:not(:disabled) {
+  background: rgb(5 31 37 / 0.94);
+}
+
+.widget-error {
+  position: absolute;
+  z-index: 6;
+  right: 8%;
+  bottom: 5%;
+  max-width: 58%;
+  overflow: hidden;
+  color: var(--widget-red);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes widget-scan {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(560%); }
+}
+
+@keyframes widget-enter {
+	from { opacity: 0; transform: scale(0.992); }
+	to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes widget-content-in {
+	from { opacity: 0; transform: translateY(2px); }
+	to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 510px), (max-height: 124px) {
+  .widget-context__identity { padding-right: 12px; padding-left: 12px; }
+  .widget-context__mark { width: 42px; }
+  .widget-message { top: 16%; bottom: 12%; gap: 4px; }
+  .widget-action { min-width: 110px; min-height: 42px; padding: 6px 10px; }
+  .widget-action small { display: none; }
+  .widget-return { top: 8%; right: 8%; min-height: 30px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.widget-mode,
+	.widget-message,
+  .widget-message__scan span,
+	.widget-status-line span { animation: none; }
+}

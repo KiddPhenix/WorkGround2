@@ -29107,7 +29107,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--windows-frameless {
-  --windows-window-controls-width: 138px;
+  --windows-window-controls-width: 184px;
   --windows-window-control-width: 46px;
   --windows-window-controls-gap: 18px;
   --windows-window-controls-safe: calc(var(--windows-window-controls-width) + var(--windows-window-controls-gap));
