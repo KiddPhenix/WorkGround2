@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -539,5 +540,88 @@ func TestExitWidgetModeSetActiveTabFailureDoesNotEmitSessionActivated(t *testing
 	}
 	if emitted {
 		t.Fatal("session:activated must not be emitted when SetActiveTab fails")
+	}
+}
+
+func leaseErrorTab(t *testing.T) (*App, *WorkspaceTab) {
+	t.Helper()
+	tab := &WorkspaceTab{
+		ID:                  "lease-tab",
+		SessionPath:         filepath.Join(t.TempDir(), "session.jsonl"),
+		StartupErr:          "session lease held by another runtime",
+		StartupErrLeaseHeld: true,
+	}
+	return &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}, tab
+}
+
+func TestRetryLeaseTabsWaitsWhileLeaseHeld(t *testing.T) {
+	app, _ := leaseErrorTab(t)
+	calls := 0
+	app.retryLeaseTabsWith(func(string) bool { return true }, func(string) error {
+		calls++
+		return nil
+	})
+	if calls != 0 {
+		t.Fatalf("retry calls = %d, want 0 while lease is held", calls)
+	}
+}
+
+func TestRetryLeaseTabsRecoversOnceReleased(t *testing.T) {
+	app, tab := leaseErrorTab(t)
+	calls := 0
+	retry := func(id string) error {
+		calls++
+		if id != tab.ID {
+			t.Fatalf("retry id = %q, want %q", id, tab.ID)
+		}
+		clearTabStartupError(tab)
+		return nil
+	}
+	app.retryLeaseTabsWith(func(string) bool { return false }, retry)
+	app.retryLeaseTabsWith(func(string) bool { return false }, retry)
+	if calls != 1 {
+		t.Fatalf("retry calls = %d, want one idempotent recovery", calls)
+	}
+}
+
+func TestRetryLeaseTabsKeepsRetryableFailure(t *testing.T) {
+	app, tab := leaseErrorTab(t)
+	calls := 0
+	retry := func(string) error {
+		calls++
+		return errors.New("lease raced with another runtime")
+	}
+	app.retryLeaseTabsWith(func(string) bool { return false }, retry)
+	app.retryLeaseTabsWith(func(string) bool { return false }, retry)
+	if calls != 2 || tab.StartupErr == "" || !tab.StartupErrLeaseHeld {
+		t.Fatalf("failed recovery = calls %d, err %q, lease %v", calls, tab.StartupErr, tab.StartupErrLeaseHeld)
+	}
+}
+
+func TestRetryLeaseTabsFiltersInvalidCandidates(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	valid := func(id string) *WorkspaceTab {
+		return &WorkspaceTab{ID: id, SessionPath: filepath.Join(t.TempDir(), id+".jsonl"), StartupErr: "lease held", StartupErrLeaseHeld: true}
+	}
+	tabs := map[string]*WorkspaceTab{
+		"normal-error": valid("normal-error"),
+		"has-ctrl":     valid("has-ctrl"),
+		"building":     valid("building"),
+		"no-path":      valid("no-path"),
+		"no-error":     valid("no-error"),
+	}
+	tabs["normal-error"].StartupErrLeaseHeld = false
+	tabs["has-ctrl"].Ctrl = (*control.Controller)(nil)
+	tabs["building"].buildCancel = cancel
+	tabs["no-path"].SessionPath = ""
+	tabs["no-error"].StartupErr = ""
+	calls := 0
+	(&App{tabs: tabs}).retryLeaseTabsWith(func(string) bool { return false }, func(string) error {
+		calls++
+		return nil
+	})
+	if calls != 0 {
+		t.Fatalf("retry calls = %d, want 0 for filtered candidates", calls)
 	}
 }
