@@ -85,72 +85,21 @@ console.log("\nrequest_help display state");
   ok(styles.includes("@media (prefers-reduced-motion: reduce)"), "card respects reduced motion");
 }
 
+// ── RequestHelpCard: image preview moved to ArtifactImagesForTool ──
 {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  const originalGo = window.go;
-  let opened = "";
-  let revealed = "";
-  window.go = { main: { App: {
-    RequestHelpImageDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
-    RequestHelpOpenImage: async (path: string) => { opened = path; },
-    RequestHelpRevealImage: async (path: string) => { revealed = path; },
-  } as any } };
   const artifact = { task_id: "img-ui", path: "C:\\images\\result.png", mime: "image/png", size: 128, width: 3, height: 2 };
   await act(async () => {
     root.render(<LocaleProvider><RequestHelpCard status={{ phase: "completed", capability: "image_generation", artifact }} args="{}" entranceId="image-card" /></LocaleProvider>);
     await Promise.resolve();
   });
-  ok(document.querySelector(".request-help__thumb") !== null, "image card renders a validated preview");
-  const actions = [...document.querySelectorAll(".request-help__image-actions button")] as HTMLButtonElement[];
-  await act(async () => {
-    actions[0]?.click();
-    actions[1]?.click();
-    await Promise.resolve();
-  });
-  eq(opened, artifact.path, "image card opens the validated image");
-  eq(revealed, artifact.path, "image card reveals the validated image");
-  await act(async () => (document.querySelector(".request-help__thumb-btn") as HTMLButtonElement).click());
-  ok(document.querySelector(".request-help__overlay") !== null, "thumbnail opens full-size preview");
-  const close = document.querySelector(".request-help__overlay-close") as HTMLButtonElement;
-  ok(document.activeElement === close, "full-size preview focuses its close action");
-  await act(async () => close.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  ok(document.querySelector(".request-help__overlay") === null, "Escape closes full-size preview");
+  ok(document.querySelector(".request-help__title") !== null, "status card still renders title");
+  ok(document.querySelector(".request-help__image") === null, "no inline image preview (moved to ArtifactImageCard)");
+  ok(document.querySelector(".request-help__overlay") === null, "no inline overlay (moved to ArtifactImageCard)");
   await act(async () => root.unmount());
   host.remove();
-  window.go = originalGo;
-}
-
-{
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  const originalGo = window.go;
-  let loads = 0;
-  window.go = { main: { App: {
-    RequestHelpImageDataURL: async () => {
-      loads += 1;
-      if (loads === 1) throw new Error("file moved");
-      return "data:image/png;base64,iVBORw0KGgo=";
-    },
-  } as any } };
-  const artifact = { task_id: "img-retry", path: "C:\\images\\retry.png", mime: "image/png", size: 64, width: 2, height: 2 };
-  await act(async () => {
-    root.render(<LocaleProvider><RequestHelpCard status={{ phase: "completed", capability: "image_generation", artifact }} args="{}" entranceId="image-retry" /></LocaleProvider>);
-    await Promise.resolve();
-  });
-  ok(document.body.textContent?.includes("file moved") === true, "image load failure is explicit");
-  const retry = document.querySelector(".request-help__image-placeholder--error button") as HTMLButtonElement;
-  await act(async () => {
-    retry.click();
-    await Promise.resolve();
-  });
-  eq(loads, 2, "retry performs one safe reload");
-  ok(document.querySelector(".request-help__thumb") !== null, "retry recovers the image preview");
-  await act(async () => root.unmount());
-  host.remove();
-  window.go = originalGo;
 }
 
 // ── artifact parsing ──

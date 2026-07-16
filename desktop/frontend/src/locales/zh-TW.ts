@@ -1359,6 +1359,17 @@ export const zhTW: Record<DictKey, string> = {
   "requestHelp.retry": "重試",
   "requestHelp.closePreview": "關閉預覽",
 
+  // 產物圖片
+  "artifact.imagePreview": "生成的產物圖片",
+  "artifact.loadingImage": "載入圖片中…",
+  "artifact.imageLoadFailed": "圖片載入失敗",
+  "artifact.openImage": "開啟圖片",
+  "artifact.revealImage": "在資料夾中顯示",
+  "artifact.viewFullscreen": "全螢幕查看",
+  "artifact.copyName": "複製名稱",
+  "artifact.retry": "重試",
+  "artifact.closePreview": "關閉預覽",
+
   // 軟體更新
   "updater.title": "軟體更新",
   "updater.currentVersion": "當前版本：{v}",

@@ -384,6 +384,9 @@ export interface AppBindings {
   RequestHelpImageDataURL(path: string): Promise<string>;
   RequestHelpOpenImage(path: string): Promise<void>;
   RequestHelpRevealImage(path: string): Promise<void>;
+  ArtifactImageDataURL(tabID: string, artifactID: string): Promise<string>;
+  ArtifactOpenImage(tabID: string, artifactID: string): Promise<void>;
+  ArtifactRevealImage(tabID: string, artifactID: string): Promise<void>;
   Models(): Promise<ModelInfo[]>;
   SetModel(name: string): Promise<void>;
   ModelsForTab(tabID: string): Promise<ModelInfo[]>;
@@ -3494,6 +3497,15 @@ function makeMockApp(): AppBindings {
     },
     async RequestHelpRevealImage(path: string) {
       console.info("mock RequestHelpRevealImage", path);
+    },
+    async ArtifactImageDataURL(_tabID: string, _artifactID: string) {
+      return "data:image/png;base64,iVBORw0KGgo=";
+    },
+    async ArtifactOpenImage(_tabID: string, _artifactID: string) {
+      console.info("mock ArtifactOpenImage", _tabID, _artifactID);
+    },
+    async ArtifactRevealImage(_tabID: string, _artifactID: string) {
+      console.info("mock ArtifactRevealImage", _tabID, _artifactID);
     },
         async Models() {
           const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];

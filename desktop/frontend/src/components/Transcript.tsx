@@ -5,6 +5,7 @@ import { useT } from "../lib/i18n";
 import { AssistantMessage, TurnActions, UserMessage } from "./Message";
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
+import { ArtifactImagesForTool } from "./ArtifactImageCard";
 import { ArrowDown, ChevronRight } from "lucide-react";
 import { Welcome } from "./Welcome";
 import type { WorkspaceWelcomeTarget } from "../lib/useWorkspaceWelcome";
@@ -1089,7 +1090,8 @@ type TurnCollapseProps = {
   active?: boolean;
 };
 
-function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, active = false }: TurnCollapseProps) {
+/** @internal Exported for focused fold-placement tests. */
+export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, active = false }: TurnCollapseProps) {
   const t = useT();
   const [open, setOpen] = useState(active);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -1116,6 +1118,23 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
 
   const seconds = Math.round(durationMs / 1000);
   const label = active ? t("transcript.running") : seconds > 0 ? t("transcript.processedDuration", { s: seconds }) : t("transcript.processed");
+
+  // Collect every completed tool ID (direct + nested) for artifact image preview.
+  const completedToolIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const it of displayItems) {
+      if (it.kind !== "tool") continue;
+      if (it.status !== "done") continue;
+      ids.push(it.id);
+      const nested = subcalls.get(it.id);
+      if (nested) {
+        for (const n of nested) {
+          if (n.status === "done") ids.push(n.id);
+        }
+      }
+    }
+    return ids;
+  }, [displayItems, subcalls]);
 
   if (displayItems.length === 0) return null;
 
@@ -1192,6 +1211,9 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
         <span className="turn-collapse__label" data-creation-label={creationLabel}>{label}</span>
       </button>
       <div ref={bodyRef} className="turn-collapse__body">{body}</div>
+      {tabId && completedToolIds.length > 0 && (
+        <ArtifactImagesForTool tabId={tabId} toolIds={completedToolIds} />
+      )}
     </div>
   );
 }
