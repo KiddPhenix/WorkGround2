@@ -980,6 +980,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
   const {
     state,
     activeTabId,
+    activeSessionId,
     send,
     sendToTab,
     runShell,
@@ -3346,7 +3347,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                       key={state.approval.id}
                       approval={state.approval}
                       cwd={state.meta?.cwd}
-                      tabId={activeTabId}
+                      tabId={activeSessionId}
                       insertRequest={planRevisionInsertRequest}
                       onRevisionActiveChange={(active) => setWorkspaceInsertTarget(active ? "planRevision" : "composer")}
                       onAnswer={async (allow, session, persist) => {
@@ -3387,7 +3388,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                   modelLabel={state.meta?.label ?? t("status.connecting")}
                   submitKey={composerSubmitKey}
                   imageInputEnabled={state.meta?.imageInputEnabled !== false}
-                  tabId={activeTabId}
+                  tabId={activeSessionId}
                   effort={state.effort}
                   onSend={handleSend}
                   onCancel={cancel}
@@ -3425,7 +3426,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                   collaborationMode={collaborationMode}
                   toolApprovalMode={toolApprovalMode}
                   controllerReady={controllerReady}
-                  tabId={activeTabId}
+                  tabId={activeSessionId}
                   onPrimaryAction={() => {
                     document.querySelector<HTMLButtonElement>(".session-footer-dock .composer__btn--send")?.click();
                   }}
@@ -4032,7 +4033,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                 key={state.approval.id}
                 approval={state.approval}
                 cwd={state.meta?.cwd}
-                tabId={activeTabId}
+                tabId={activeSessionId}
                 insertRequest={planRevisionInsertRequest}
                 onRevisionActiveChange={(active) => setWorkspaceInsertTarget(active ? "planRevision" : "composer")}
                 onAnswer={async (allow, session, persist) => {
@@ -4083,7 +4084,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
               modelLabel={state.meta?.label ?? t("status.connecting")}
               submitKey={composerSubmitKey}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
-              tabId={activeTabId}
+              tabId={activeSessionId}
               widgetEnabled={widgetEnabled}
               effort={state.effort}
               onSend={handleSend}
@@ -4200,7 +4201,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
             <div className="workbench-dock__body">
               {rightDockMode === "context" ? (
                 <ContextPanel
-                  tabId={activeTabId}
+                  tabId={activeSessionId}
                   context={state.context}
                   usage={state.usage}
                   sessionTokens={state.sessionTokens}
@@ -4216,7 +4217,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
               ) : (
                 <WorkspacePanel
                   open={workspacePanelRenderable}
-                  tabId={activeTabId}
+                  tabId={activeSessionId}
                   cwd={state.meta?.cwd}
                   maximized={workspacePanelMaximized}
                   panelWidth={workspacePanelRenderWidth}

@@ -253,7 +253,6 @@ func newSessionResponse(status, path string) map[string]any {
 // sessionResponseForTab builds a status JSON response for a specific tab,
 // mirroring the shape of activeSessionResponse.
 func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) map[string]any {
-	api.app.trackSession(tab)
 	path := tab.currentSessionPath()
 	out := newSessionResponse(status, path)
 	out["sessionId"] = tab.SessionID

@@ -286,6 +286,7 @@ export interface AppBindings {
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
   ReplayPendingPrompts(): Promise<void>;
+  ReplayPendingPromptsForSession(sessionID: string): Promise<void>;
   SetPlanMode(on: boolean): Promise<void>;
   SetMode(mode: string): Promise<void>;
   SetModeForTab(tabID: string, mode: string): Promise<void>;
@@ -299,8 +300,11 @@ export interface AppBindings {
   ClearGoal(): Promise<void>;
   ClearGoalForTab(tabID: string): Promise<void>;
   Compact(): Promise<void>;
+  CompactForSession(sessionID: string): Promise<void>;
   NewSession(): Promise<void>;
+  NewSessionForSession(sessionID: string): Promise<void>;
   ClearSession(): Promise<void>;
+  ClearSessionForSession(sessionID: string): Promise<void>;
   History(): Promise<HistoryMessage[]>;
   HistoryForTab(tabID: string): Promise<HistoryMessage[]>;
   HistoryPage(beforeTurn: number, limit: number): Promise<HistoryPage>;
@@ -309,10 +313,15 @@ export interface AppBindings {
   Checkpoints(): Promise<CheckpointMeta[]>;
   CheckpointsForTab(tabID: string): Promise<CheckpointMeta[]>;
   Rewind(turn: number, scope: string): Promise<void>;
+  RewindForSession(sessionID: string, turn: number, scope: string): Promise<void>;
   Fork(turn: number): Promise<TabMeta>;
+  ForkForSession(sessionID: string, turn: number): Promise<TabMeta>;
   SummarizeFrom(turn: number): Promise<void>;
+  SummarizeFromForSession(sessionID: string, turn: number): Promise<void>;
   SummarizeUpTo(turn: number): Promise<void>;
+  SummarizeUpToForSession(sessionID: string, turn: number): Promise<void>;
   ListSessions(): Promise<SessionMeta[]>;
+  ListSessionsForSession(sessionID: string): Promise<SessionMeta[]>;
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ResumeSession(path: string): Promise<HistoryMessage[]>;
   ResumeSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
@@ -2459,6 +2468,7 @@ function makeMockApp(): AppBindings {
         async AnswerQuestionForTab(_tabID, id, answers) {
           await withMockTabScope(_tabID, () => this.AnswerQuestion(id, answers));
         },
+        async ReplayPendingPromptsForSession() {},
         async ReplayPendingPrompts() {},
         async ConfirmAction(req) {
           void req;
@@ -2545,8 +2555,11 @@ function makeMockApp(): AppBindings {
           await this.SetGoalForTab(tabID, "");
         },
         async Compact() {},
+        async CompactForSession() {},
         async NewSession() {},
+        async NewSessionForSession() {},
         async ClearSession() {},
+        async ClearSessionForSession() {},
     async Checkpoints() {
       return [
         { turn: 0, prompt: "你好呀", files: ["src/App.tsx"], fileCount: 1, turnFileCount: 1, time: Date.now() - 30_000, canCode: true, canConversation: true },
@@ -2556,6 +2569,7 @@ function makeMockApp(): AppBindings {
       return this.Checkpoints();
     },
     async Rewind() {},
+    async RewindForSession() {},
     async Fork() {
       const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
       const tab: TabMeta = {
@@ -2569,8 +2583,13 @@ function makeMockApp(): AppBindings {
       mockTabs = [...mockTabs.map((item) => ({ ...item, active: false })), tab];
       return { ...tab };
     },
+    async ForkForSession(_sessionID, turn) {
+      return this.Fork(turn);
+    },
     async SummarizeFrom() {},
+    async SummarizeFromForSession() {},
     async SummarizeUpTo() {},
+    async SummarizeUpToForSession() {},
         async History() {
           return [];
         },
@@ -2598,6 +2617,9 @@ function makeMockApp(): AppBindings {
         },
     async ListSessions() {
       return sessions.map((s) => ({ ...s }));
+    },
+    async ListSessionsForSession() {
+      return this.ListSessions();
     },
     async ListTrashedSessions() {
       return trashedSessions.map((s) => ({ ...s }));
@@ -4104,7 +4126,7 @@ function makeMockApp(): AppBindings {
       return "v1.0.0 (browser dev)";
     },
     async AICollaborationPrompt() {
-      return "# WorkGround2 AI Collaboration\n\nInstall: write this into Codex's default AGENTS.md / Agent.md so it loads automatically.\n\nUse WorkGround2 Desktop as a CLI implementation worker. Codex owns planning, review, and final verification.\n\nWorkGround2 CLI location: workground2\n\nDispatch rule: actually run the CLI from shell. Do not only show this snippet. This is a required workflow, not a suggestion.\n\nExecution default: if WorkGround2 is reachable, Codex should mainly plan and verify while WorkGround2 executes implementation work. Before Codex edits files itself, it must decide whether the task requires Codex-only execution. For ordinary code/doc/config/test/file changes, Codex must dispatch WorkGround2 first, then wait/poll, inspect diff, run final verification, and only fix what the worker cannot handle.\n\nPlanning rule: for complex implementation, Codex decomposes the task into bounded packets and dispatches one or more WorkGround2 sessions. WorkGround2 executes; Codex owns reasoning, sequencing, review, and final result quality.\n\nSkip delegation only when Desktop is unreachable, the task is mainly multimodal/image/audio/video/visual/OCR/Figma/browser-GUI inspection, involves secrets/security/release/commits/staging, or lacks enough acceptance criteria to write a safe packet.\n\nSession rule: pass a stable `--session-name` for the current Codex conversation/task so WorkGround2 reuses that session. Omit or leave it empty only when a fresh session is intended.\n\nParallel rule: independent, non-overlapping tasks may use multiple `desktop new --workspace ... --session-name ... --yolo --no-wait` calls; give each a separate session name, goal/scope and reconcile diffs after polling.\n\nAsync rule: with `--no-wait`, exit code 0 means dispatched, not completed. Poll `desktop status --json` until `running=false` and `pendingPrompt=false`, then inspect report, target files, and diff.\n\nWorkspace rule: use the current Codex conversation's repo/workspace root for both packet Workspace and `--workspace`; never create a child directory for WorkGround2.\n\n```powershell\n$wg = 'workground2'\n$sessionName = '<stable Codex task/session name; empty means fresh new session>'\n& $wg desktop workspaces\n& $wg desktop new --workspace \"<current Codex repo/workspace root>\" --session-name $sessionName --yolo --no-wait $prompt\n& $wg desktop status --json\n```";
+      return "# WorkGround2 AI Collaboration\n\nUse WorkGround2 Desktop as a bounded implementation worker. Codex owns planning, review, and final verification.\n\nEvery `desktop new` call creates one new Session and returns its SessionID. Capture that ID; session names are display labels and never deduplication keys.\n\nAll later operations must pass the explicit ID. Poll `desktop status --session <id> --json` until `foregroundActive=false` and `pendingPrompt=false`; `backgroundOnly` does not block completion. UI tab selection must not affect external status, submit, approve, or answer calls.\n\n```powershell\n$wg = 'workground2'\n$output = & $wg desktop new --workspace \"<current Codex repo/workspace root>\" --yolo --no-wait $prompt\n$sessionID = (($output | Select-String '^SessionID:\\s*(.+)$').Matches[0].Groups[1].Value)\n& $wg desktop status --session $sessionID --json\n```";
     },
     async InjectAICollaborationPrompt() {
       await delay(200);

@@ -215,6 +215,7 @@ export type RuntimeMode = "idle" | "foreground" | "waiting_user" | "background_o
 
 export interface TabMeta {
   id: string;
+  sessionId?: string;
   tabType?: "session" | "file";
   scope: string;
   workspaceRoot: string;
@@ -476,6 +477,7 @@ export interface ContextInfo {
 }
 
 export interface Meta {
+  sessionId?: string;
   label: string;
   ready: boolean;
   startupErr?: string;

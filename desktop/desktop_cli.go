@@ -331,7 +331,7 @@ func desktopEmbeddedWorkspaces(args []string) int {
 func desktopEmbeddedNew(args []string) int {
 	fs := flag.NewFlagSet("desktop new", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target workspace directory")
-	sessionName := fs.String("session-name", "", "reuse or create a named session")
+	sessionName := fs.String("session-name", "", "display name for the new session")
 	_ = fs.Bool("no-wait", false, "do not wait for reply")
 	yolo := fs.Bool("yolo", false, "run with tool approval mode yolo")
 	toolApproval := fs.String("tool-approval", "", "tool approval mode: ask, auto, or yolo")

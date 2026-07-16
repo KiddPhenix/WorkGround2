@@ -1244,6 +1244,15 @@ func (a *App) ReplayPendingPrompts() {
 	}
 }
 
+func (a *App) ReplayPendingPromptsForSession(sessionID string) error {
+	_, ctrl := a.sessionAndCtrl(sessionID)
+	if ctrl == nil {
+		return fmt.Errorf("session %q is not ready or no longer exists", sessionID)
+	}
+	ctrl.ReplayPendingPrompts()
+	return nil
+}
+
 // SetPlanMode toggles the read-only plan axis while preserving the current
 // tool-auto-approval axis.
 func (a *App) SetPlanMode(on bool) {
@@ -1478,10 +1487,14 @@ func (a *App) answerPendingQuestionForTab(tabID, id string, answers []QuestionAn
 // Compact runs a plain compaction pass (the "compact now" button). Focus-guided
 // compaction goes through Submit("/compact <focus>") instead.
 func (a *App) Compact() error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.CompactForSession(a.activeSessionID())
+}
+
+func (a *App) CompactForSession(sessionID string) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -1510,13 +1523,17 @@ func workspaceNotReadyErr(tab *WorkspaceTab) error {
 
 // NewSession snapshots the current conversation and rotates to a fresh one.
 func (a *App) NewSession() error {
-	return a.newSession(false)
+	return a.NewSessionForSession(a.activeSessionID())
+}
+
+func (a *App) NewSessionForSession(sessionID string) error {
+	return a.newSessionFor(sessionID, false)
 }
 
 // forceNewSession always rotates the active workspace to a fresh session. Remote
 // task submission uses this when no named session is requested.
 func (a *App) forceNewSession() error {
-	return a.newSession(true)
+	return a.newSessionFor(a.activeSessionID(), true)
 }
 
 func (a *App) openOrCreateNamedSession(name string) (bool, error) {
@@ -1628,11 +1645,11 @@ func (a *App) findSessionByTitle(name string) string {
 	return ""
 }
 
-func (a *App) newSession(force bool) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+func (a *App) newSessionFor(sessionID string, force bool) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -1657,6 +1674,9 @@ func (a *App) newSession(force bool) error {
 	}
 	if err := tab.ensureSessionLease(ctrl.SessionPath()); err != nil {
 		return userFacingSessionLeaseError("", err)
+	}
+	if err := a.rotateSessionID(tab); err != nil {
+		return err
 	}
 	a.assignFreshSessionTopic(tab)
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
@@ -1757,10 +1777,14 @@ func messagesHaveConversationContent(messages []provider.Message) bool {
 
 // ClearSession discards the current conversation and rotates to a fresh unsaved one.
 func (a *App) ClearSession() error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.ClearSessionForSession(a.activeSessionID())
+}
+
+func (a *App) ClearSessionForSession(sessionID string) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -1778,6 +1802,9 @@ func (a *App) ClearSession() error {
 		return a.clearActiveSessionRuntime(tab, ctrl)
 	}
 	if err := ctrl.ClearSession(); err != nil {
+		return err
+	}
+	if err := a.rotateSessionID(tab); err != nil {
 		return err
 	}
 	tab.resetTelemetry()
@@ -1863,6 +1890,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	}
 	newCtrl.SetSessionPath(path)
 
+	installed := false
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current == tab {
 		tab.Ctrl = newCtrl
@@ -1873,11 +1901,17 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		clearTabStartupError(tab)
 		a.supersedeTabBuildLocked(tab)
 		a.saveTabsLocked()
+		installed = true
 	} else {
 		newCtrl.Close()
 		tab.releaseSessionLease()
 	}
 	a.mu.Unlock()
+	if installed {
+		if err := a.rotateSessionID(tab); err != nil {
+			return err
+		}
+	}
 	oldCtrl.CloseAfterDestroy()
 	a.emitProjectTreeChanged()
 	return nil
@@ -2023,10 +2057,14 @@ func (a *App) ToolResultForTab(tabID, toolID string) *control.ToolResultData {
 // "conversation", or "both" (anything else is treated as "both"). The frontend
 // re-reads History after this resolves.
 func (a *App) Rewind(turn int, scope string) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.RewindForSession(a.activeSessionID(), turn, scope)
+}
+
+func (a *App) RewindForSession(sessionID string, turn int, scope string) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -2046,12 +2084,19 @@ func (a *App) Rewind(turn int, scope string) error {
 // Fork branches the conversation at the start of turn into a new session tab
 // (preserving the current tab), keeping code intact, and switches to the new tab.
 func (a *App) Fork(turn int) (TabMeta, error) {
+	return a.ForkForSession(a.activeSessionID(), turn)
+}
+
+func (a *App) ForkForSession(sessionID string, turn int) (TabMeta, error) {
 	a.mu.RLock()
-	sourceTab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
+	sourceTab := a.sessions.get(sessionID)
+	var ctrl control.SessionAPI
+	if sourceTab != nil {
+		ctrl = sourceTab.Ctrl
+	}
 	if sourceTab == nil || ctrl == nil {
 		a.mu.RUnlock()
-		return TabMeta{}, nil
+		return TabMeta{}, fmt.Errorf("session %q is not ready or no longer exists", sessionID)
 	}
 	if sourceTab.ReadOnly {
 		a.mu.RUnlock()
@@ -2136,10 +2181,14 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 // of turn into one summary (Claude Code's "summarize from/up to here"), keeping
 // code intact. The frontend re-reads History after this resolves.
 func (a *App) SummarizeFrom(turn int) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.SummarizeFromForSession(a.activeSessionID(), turn)
+}
+
+func (a *App) SummarizeFromForSession(sessionID string, turn int) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -2150,10 +2199,14 @@ func (a *App) SummarizeFrom(turn int) error {
 }
 
 func (a *App) SummarizeUpTo(turn int) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.SummarizeUpToForSession(a.activeSessionID(), turn)
+}
+
+func (a *App) SummarizeUpToForSession(sessionID string, turn int) error {
+	tab, ctrl := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q no longer exists", sessionID)
+	}
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
@@ -2244,7 +2297,10 @@ func tabRuntimeSessionDir(tab *WorkspaceTab) string {
 }
 
 func (a *App) activeSessionDir() string {
-	tab := a.activeTab()
+	return a.sessionDirForTab(a.activeTab())
+}
+
+func (a *App) sessionDirForTab(tab *WorkspaceTab) string {
 	if path, ok := a.reconcileTabWithPinnedSessionMeta(tab); ok && strings.TrimSpace(path) != "" {
 		return filepath.Dir(path)
 	}
@@ -2258,7 +2314,15 @@ func (a *App) activeSessionDir() string {
 // marking the one the current conversation is writing to and attaching any
 // user-chosen titles.
 func (a *App) ListSessions() []SessionMeta {
-	dir := a.activeSessionDir()
+	return a.ListSessionsForSession(a.activeSessionID())
+}
+
+func (a *App) ListSessionsForSession(sessionID string) []SessionMeta {
+	tab := a.sessionByID(sessionID)
+	if tab == nil {
+		return []SessionMeta{}
+	}
+	dir := a.sessionDirForTab(tab)
 	infos, err := agent.ListSessions(dir)
 	if err != nil {
 		return []SessionMeta{}
@@ -5433,6 +5497,7 @@ func (a *App) jobsForCtrl(ctrl control.SessionAPI, out []JobView) []JobView {
 
 // Meta describes the session for the frontend's header and status line.
 type Meta struct {
+	SessionID         string                   `json:"sessionId"`
 	Label             string                   `json:"label"`
 	Ready             bool                     `json:"ready"`
 	StartupErr        string                   `json:"startupErr,omitempty"`
@@ -5558,6 +5623,7 @@ func (a *App) MetaForTab(tabID string) Meta {
 		taskMemory = &memory
 	}
 	return Meta{
+		SessionID:         tab.SessionID,
 		Label:             tab.Label,
 		Ready:             tab.Ready,
 		StartupErr:        tab.StartupErr,

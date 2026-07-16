@@ -477,6 +477,7 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 	if tab == nil {
 		return false
 	}
+	a.trackSession(tab)
 	sourcePath := tab.currentSessionPath()
 	key := sessionRuntimeKey(sourcePath)
 	if key == "" {
@@ -484,6 +485,13 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 	}
 	detached := cloneDetachedRuntimeTab(tab, key, sourcePath)
 	if detached == nil {
+		return false
+	}
+	a.mu.Lock()
+	a.ensureDetachedSessionsLocked()
+	if err := a.sessions.replace(tab.SessionID, tab, detached); err != nil {
+		a.mu.Unlock()
+		slog.Error("desktop: detach session identity", "sessionId", tab.SessionID, "err", err)
 		return false
 	}
 	detached.adoptSessionLease(tab.takeSessionLease())
@@ -495,9 +503,6 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 		// (#5352 — stale "AI 不断输出" on the now-visible session).
 		detached.sink.clearContext()
 	}
-
-	a.mu.Lock()
-	a.ensureDetachedSessionsLocked()
 	a.detachedSessions[key] = detached
 	a.mu.Unlock()
 	return true
@@ -544,6 +549,7 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	if tab == nil || key == "" {
 		return false
 	}
+	a.trackSession(tab)
 
 	a.mu.Lock()
 	if tab.removed || a.tabs[tab.ID] != tab {
@@ -552,6 +558,12 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	}
 	detached := a.detachedSessions[key]
 	if detached != nil {
+		a.trackSession(detached)
+		if err := a.sessions.adopt(tab, detached); err != nil {
+			a.mu.Unlock()
+			slog.Error("desktop: attach detached session identity", "sessionId", detached.SessionID, "err", err)
+			return false
+		}
 		delete(a.detachedSessions, key)
 		applyRuntimeTab(tab, detached, path, wailsCtx, a)
 		if current := a.tabs[tab.ID]; current == tab {
@@ -576,6 +588,12 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	}
 	if source == nil {
 		a.mu.Unlock()
+		return false
+	}
+	a.trackSession(source)
+	if err := a.sessions.adopt(tab, source); err != nil {
+		a.mu.Unlock()
+		slog.Error("desktop: attach visible session identity", "sessionId", source.SessionID, "err", err)
 		return false
 	}
 	delete(a.tabs, source.ID)
@@ -2414,6 +2432,7 @@ func (a *App) markTabRemovedLocked(tab *WorkspaceTab) {
 		return
 	}
 	tab.removed = true
+	a.untrackSession(tab)
 	if tab.buildCancel != nil {
 		tab.buildCancel()
 		tab.buildCancel = nil
@@ -3244,8 +3263,13 @@ func (a *App) tabByIDLocked(tabID string) *WorkspaceTab {
 	if tab := a.tabs[tabID]; tab != nil {
 		return tab
 	}
+	for _, tab := range a.tabs {
+		if tab != nil && tab.SessionID == tabID {
+			return tab
+		}
+	}
 	for _, tab := range a.detachedSessions {
-		if tab != nil && tab.ID == tabID {
+		if tab != nil && (tab.ID == tabID || tab.SessionID == tabID) {
 			return tab
 		}
 	}
