@@ -56,7 +56,7 @@ import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 import { CopyButton } from "./CopyButton";
 
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "global", "about"];
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "widget", "global", "about"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -190,7 +190,7 @@ export function SettingsPanel({
   // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
   // and Memory
   // load their own data and render regardless.
-  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
+  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "widget" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
 
   return (
@@ -299,6 +299,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -542,6 +543,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.sandbox");
     case "appearance":
       return t("settings.tab.appearance");
+    case "widget":
+      return t("settings.tab.widget");
     case "updates":
       return t("settings.tab.updates");
     case "about":
@@ -587,6 +590,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return sandboxModeLabel(s.sandbox.bash, t);
     case "appearance":
       return t("settings.appearanceMeta");
+    case "widget":
+      return t("settings.pageDesc.widget");
     case "updates":
       return t("settings.updatesMeta");
     default:
@@ -6128,6 +6133,46 @@ function AboutSection() {
         <p className="about-desc">{t("settings.about.description")}</p>
         <p className="about-copyright">{t("settings.about.copyright")}</p>
       </div>
+    </SettingsSection>
+  );
+}
+
+export function WidgetSection({
+  widgetEnabled,
+  widgetAlwaysOnTop,
+  settingsBusy,
+  applySettings,
+}: {
+  widgetEnabled: boolean;
+  widgetAlwaysOnTop: boolean;
+  settingsBusy: boolean;
+  applySettings: (fn: () => Promise<void>) => Promise<void>;
+}) {
+  const t = useT();
+  return (
+    <SettingsSection title={t("settings.tab.widget")}>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.enableLabel")}
+        hint={t("settings.widget.enableHint")}
+      >
+        <ToggleSegment
+          value={widgetEnabled}
+          disabled={settingsBusy}
+          onChange={(enabled) => void applySettings(() => app.SetDesktopWidgetEnabled(enabled))}
+        />
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.alwaysOnTopLabel")}
+        hint={t("settings.widget.alwaysOnTopHint")}
+      >
+        <ToggleSegment
+          value={widgetAlwaysOnTop}
+          disabled={settingsBusy}
+          onChange={(on) => void applySettings(() => app.SetDesktopWidgetAlwaysOnTop(on))}
+        />
+      </SettingsField>
     </SettingsSection>
   );
 }

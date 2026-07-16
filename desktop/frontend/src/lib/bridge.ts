@@ -258,6 +258,7 @@ export interface AppBindings {
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
+	RefreshWidgetWindowRegion(): Promise<void>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
@@ -515,6 +516,8 @@ export interface AppBindings {
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
   SetDesktopTelemetry(enabled: boolean): Promise<void>;
   SetDesktopMetrics(enabled: boolean): Promise<void>;
+  SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
+  SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
   SetMemoryCompilerEnabled(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
@@ -1597,6 +1600,8 @@ function makeMockApp(): AppBindings {
     checkUpdates: true,
     telemetry: true,
     metrics: true,
+    widgetEnabled: true,
+    widgetAlwaysOnTop: true,
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
     providerKinds: ["cli", "openai"],
@@ -2154,6 +2159,9 @@ function makeMockApp(): AppBindings {
 				{ scope: "project", name: "CICDBOT", root: "~/projects/CICDBOT" },
 				{ scope: "global", name: "Global" },
 			];
+		},
+		async RefreshWidgetWindowRegion() {
+			// no-op in mock — the real Wails binding calls the Go backend
 		},
     async MinimiseMainWindow() {
       console.info("mock MinimiseMainWindow");
@@ -3786,7 +3794,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -3798,6 +3806,7 @@ function makeMockApp(): AppBindings {
         statusBarStyle,
         statusBarItems,
         checkUpdates,
+        widgetEnabled,
       })) as DesktopStartupSettingsView;
     },
     async Settings() {
@@ -4050,6 +4059,12 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopMetrics(enabled: boolean) {
           settings.metrics = enabled;
+        },
+        async SetDesktopWidgetEnabled(enabled: boolean) {
+          settings.widgetEnabled = enabled;
+        },
+        async SetDesktopWidgetAlwaysOnTop(on: boolean) {
+          settings.widgetAlwaysOnTop = on;
         },
         async SetMemoryCompilerEnabled(enabled: boolean) {
           settings.memoryCompilerEnabled = enabled;

@@ -1746,3 +1746,66 @@ func TestEffortCapabilityEmptySupportedEffortsNotConfigurable(t *testing.T) {
 		t.Fatalf("empty supported_efforts should also fall through to the heuristic, got %+v", cap)
 	}
 }
+
+func TestSetDesktopWidgetEnabled(t *testing.T) {
+	cfg := Default()
+	if !cfg.DesktopWidgetEnabled() {
+		t.Fatal("default DesktopWidgetEnabled should be true")
+	}
+	if err := cfg.SetDesktopWidgetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DesktopWidgetEnabled() {
+		t.Fatal("DesktopWidgetEnabled should be false after SetDesktopWidgetEnabled(false)")
+	}
+	if cfg.Desktop.WidgetEnabled == nil || *cfg.Desktop.WidgetEnabled {
+		t.Fatal("Desktop.WidgetEnabled should be pointer to false")
+	}
+	// Round-trip through TOML rendering
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, "widget_enabled = false") {
+		t.Fatalf("rendered user config missing widget_enabled = false:\n%s", rendered)
+	}
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n---\n%s", err, rendered)
+	}
+	if got.DesktopWidgetEnabled() {
+		t.Fatal("DesktopWidgetEnabled after round trip should be false")
+	}
+}
+
+func TestSetDesktopWidgetAlwaysOnTop(t *testing.T) {
+	cfg := Default()
+	if !cfg.DesktopWidgetAlwaysOnTop() {
+		t.Fatal("default DesktopWidgetAlwaysOnTop should be true")
+	}
+	if err := cfg.SetDesktopWidgetAlwaysOnTop(false); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DesktopWidgetAlwaysOnTop() {
+		t.Fatal("DesktopWidgetAlwaysOnTop should be false after SetDesktopWidgetAlwaysOnTop(false)")
+	}
+	// Round-trip through TOML rendering
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, "widget_always_on_top = false") {
+		t.Fatalf("rendered user config missing widget_always_on_top = false:\n%s", rendered)
+	}
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n---\n%s", err, rendered)
+	}
+	if got.DesktopWidgetAlwaysOnTop() {
+		t.Fatal("DesktopWidgetAlwaysOnTop after round trip should be false")
+	}
+}
+
+func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
+	var cfg *Config
+	if !cfg.DesktopWidgetEnabled() {
+		t.Fatal("nil config DesktopWidgetEnabled should default to true")
+	}
+	if !cfg.DesktopWidgetAlwaysOnTop() {
+		t.Fatal("nil config DesktopWidgetAlwaysOnTop should default to true")
+	}
+}

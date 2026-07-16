@@ -800,6 +800,7 @@ export const zhTW: Record<DictKey, string> = {
 	  "settings.tab.permissions": "權限",
   "settings.tab.sandbox": "沙箱",
   "settings.tab.appearance": "外觀",
+  "settings.tab.widget": "小組件",
   "settings.tab.updates": "更新",
   "settings.tab.about": "關於",
   "settings.tab.global": "全域偏好",
@@ -817,6 +818,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.tabSub.permissions": "寫操作前詢問",
   "settings.tabSub.sandbox": "強制隔離",
   "settings.tabSub.appearance": "主題與字號",
+  "settings.tabSub.widget": "傳呼機與置頂",
   "settings.tabSub.updates": "版本與設定",
   "settings.tabSub.global": "全域 AGENTS.md",
   "settings.providerCount": "{n} 個服務",
@@ -2279,4 +2281,11 @@ export const zhTW: Record<DictKey, string> = {
   "widget.routeCurrent": "目前工作區",
   "widget.routePrimary": "主要工作區",
   "widget.routeManual": "手動選擇",
+
+  // 設定 > 小組件
+  "settings.pageDesc.widget": "設定桌面傳呼機小組件。",
+  "settings.widget.enableLabel": "啟用小組件",
+  "settings.widget.enableHint": "在視窗標題列中顯示小組件入口按鈕。",
+  "settings.widget.alwaysOnTopLabel": "小組件保持置頂",
+  "settings.widget.alwaysOnTopHint": "小組件視窗始終位於其他應用視窗之上。",
 };

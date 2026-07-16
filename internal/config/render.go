@@ -112,6 +112,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "check_updates = %v   # desktop: check for new versions on startup\n", c.DesktopCheckUpdates())
 		fmt.Fprintf(&b, "telemetry = %v   # desktop: anonymous launch ping (install id + version + OS); never content\n", c.DesktopTelemetry())
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate desktop metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
+		fmt.Fprintf(&b, "widget_enabled = %v   # desktop: show the compact widget button in the window frame\n", c.DesktopWidgetEnabled())
+		fmt.Fprintf(&b, "widget_always_on_top = %v   # desktop: keep the widget window always-on-top\n", c.DesktopWidgetAlwaysOnTop())
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}

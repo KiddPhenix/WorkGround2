@@ -29,6 +29,12 @@ const (
 	widgetRouteCurrent        = "current"
 	widgetRoutePrimary        = "primary"
 	widgetRouteManual         = "manual"
+
+	// widgetMaxConversationRetries is the maximum number of automatic
+	// retries for retryable failures when starting a widget
+	// conversation. The initial attempt + 5 retries = 6 total tries.
+	widgetMaxConversationRetries = 5
+	widgetConversationRetryDelay = 200 * time.Millisecond
 )
 
 // WidgetWorkspaceOption is one selectable workspace for the widget dropdown.
@@ -97,9 +103,50 @@ type widgetWorkspaceRoute struct {
 // StartWidgetConversation routes, creates and submits one new conversation.
 // Only starts are serialized; snapshot polling and existing task actions remain
 // responsive while a workspace controller boots.
+// Retryable results are automatically retried
+// up to widgetMaxConversationRetries times with bounded exponential backoff.
+// The same requestId, prompt, and workspace are reused for idempotent retries.
+// Terminal results (accepted, already_applied, invalid) return immediately.
 func (a *App) StartWidgetConversation(input WidgetConversationInput) WidgetConversationResult {
 	a.widgetConversationMu.Lock()
 	defer a.widgetConversationMu.Unlock()
+	return retryWidgetConversation(input, a.startWidgetConversationOnce, time.Sleep)
+}
+
+func retryWidgetConversation(
+	input WidgetConversationInput,
+	start func(WidgetConversationInput) WidgetConversationResult,
+	sleep func(time.Duration),
+) WidgetConversationResult {
+	for attempt := 0; attempt <= widgetMaxConversationRetries; attempt++ {
+		result := start(input)
+
+		switch result.Status {
+		case "accepted", "already_applied":
+			return result
+		case "invalid":
+			return result
+		case "retryable_error":
+			if attempt == widgetMaxConversationRetries {
+				return result
+			}
+			// Bounded exponential backoff: 200ms, 400ms, 800ms, 1.6s, 3.2s.
+			delay := widgetConversationRetryDelay * (1 << attempt)
+			if maxDelay := 5 * time.Second; delay > maxDelay {
+				delay = maxDelay
+			}
+			sleep(delay)
+		default:
+			// Unknown status: treat as terminal, don't retry.
+			return result
+		}
+	}
+	panic("unreachable widget conversation retry loop")
+}
+
+// startWidgetConversationOnce is the single-attempt core of StartWidgetConversation.
+// It is extracted so the retry loop can reuse the same input without re-locking.
+func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetConversationResult {
 
 	prompt := strings.TrimSpace(input.Prompt)
 	requestID := strings.TrimSpace(input.RequestID)

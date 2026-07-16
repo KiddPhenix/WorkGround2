@@ -13,6 +13,7 @@ import {
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import { useI18n, useT, type Translator } from "../../lib/i18n";
 import { pickWidgetSuffix, widgetSuffixes } from "./widgetCopy";
+import { startWidgetConversationWithRetry } from "./startWidgetConversation";
 import shellTopLeft from "../../assets/widget-mode/pager-shell.9/top-left.png";
 import shellTop from "../../assets/widget-mode/pager-shell.9/top.png";
 import shellTopRight from "../../assets/widget-mode/pager-shell.9/top-right.png";
@@ -516,6 +517,28 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
       });
   }, [t]);
 
+  // Update native window region on resize so the four transparent corners stay
+  // accurate.  Debounced — the Go-side SetWindowRgn is cheap but CreatePolygonRgn
+  // on every pixel is unnecessary.
+  const regionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const refreshRegion = () => {
+      if (regionTimer.current !== null) window.clearTimeout(regionTimer.current);
+      regionTimer.current = window.setTimeout(() => {
+        regionTimer.current = null;
+        void app.RefreshWidgetWindowRegion().catch((cause) => {
+          setError(cause instanceof Error ? cause.message : String(cause));
+        });
+      }, 120);
+    };
+    refreshRegion();
+    window.addEventListener("resize", refreshRegion);
+    return () => {
+      window.removeEventListener("resize", refreshRegion);
+      if (regionTimer.current !== null) window.clearTimeout(regionTimer.current);
+    };
+  }, []);
+
   useEffect(() => {
     setTyped("");
     setError("");
@@ -584,7 +607,8 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 		setBusy(true);
 		setError("");
 		try {
-			const result = await app.StartWidgetConversation({ prompt, requestId, workspace: ws });
+			const input = { prompt, requestId, workspace: ws };
+			const result = await startWidgetConversationWithRetry(app.StartWidgetConversation, input);
 			setSnapshot(result.snapshot);
 			if (result.status === "retryable_error" || result.status === "invalid") {
 				setError(result.error ?? t("widget.conversationFailed"));

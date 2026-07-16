@@ -103,6 +103,8 @@ type DesktopConfig struct {
 	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts; no content); nil keeps the default enabled
 	ProviderAccess          []string `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
 	ExpandThinking          bool     `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
+	WidgetEnabled           *bool    `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
+	WidgetAlwaysOnTop       *bool    `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
 }
 
 // NotificationsConfig controls optional system notifications for CLI chat/run.
@@ -469,6 +471,24 @@ func (c *Config) DesktopMetrics() bool {
 		return true
 	}
 	return *c.Desktop.Metrics
+}
+
+// DesktopWidgetEnabled reports whether the widget entry is shown in the
+// desktop window frame (default true).
+func (c *Config) DesktopWidgetEnabled() bool {
+	if c == nil || c.Desktop.WidgetEnabled == nil {
+		return true
+	}
+	return *c.Desktop.WidgetEnabled
+}
+
+// DesktopWidgetAlwaysOnTop reports whether the widget window is always-on-top
+// (default true).
+func (c *Config) DesktopWidgetAlwaysOnTop() bool {
+	if c == nil || c.Desktop.WidgetAlwaysOnTop == nil {
+		return true
+	}
+	return *c.Desktop.WidgetAlwaysOnTop
 }
 
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,

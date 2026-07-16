@@ -366,6 +366,20 @@ func (c *Config) SetExpandThinking(on bool) error {
 	return nil
 }
 
+// SetDesktopWidgetEnabled sets whether the widget entry is shown in the
+// desktop window frame.
+func (c *Config) SetDesktopWidgetEnabled(enabled bool) error {
+	c.Desktop.WidgetEnabled = &enabled
+	return nil
+}
+
+// SetDesktopWidgetAlwaysOnTop sets whether the widget window stays
+// always-on-top.
+func (c *Config) SetDesktopWidgetAlwaysOnTop(on bool) error {
+	c.Desktop.WidgetAlwaysOnTop = &on
+	return nil
+}
+
 // SetShowReasoning sets the CLI's default verbose-reasoning preference. When
 // true, thinking text is shown in the chat TUI on startup; when false (the
 // default), it stays collapsed until the user toggles it with Ctrl+O or

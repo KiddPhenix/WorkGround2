@@ -207,11 +207,38 @@ func (a *App) IsWidgetMode() bool {
 	return a.widgetMode
 }
 
+// RefreshWidgetWindowRegion re-applies the native window region clipping from
+// the current window size.  The frontend calls this on widget resize so the
+// transparent corners stay accurate.  No-op outside widget mode and on
+// non-Windows platforms.
+func (a *App) RefreshWidgetWindowRegion() error {
+	if a.ctx == nil || !a.IsWidgetMode() {
+		return nil
+	}
+	w, h := runtime.WindowGetSize(a.ctx)
+	return setWidgetWindowRegion(w, h)
+}
+
+func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) {
+	cfg, _, err := a.loadDesktopUserConfigForView()
+	if err != nil {
+		return false, false, err
+	}
+	return cfg.DesktopWidgetEnabled(), cfg.DesktopWidgetAlwaysOnTop(), nil
+}
+
 // EnterWidgetMode preserves the main geometry and switches the same Wails
 // window into an always-on-top pager. Repeated calls are harmless.
 func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 	if a.ctx == nil {
 		return WidgetSnapshot{}, errors.New("desktop window is not ready")
+	}
+	widgetEnabled, widgetAlwaysOnTop, err := a.desktopWidgetPreferences()
+	if err != nil {
+		return WidgetSnapshot{}, fmt.Errorf("读取小组件设置: %w", err)
+	}
+	if !widgetEnabled {
+		return WidgetSnapshot{}, errors.New("小组件已在设置中禁用，请前往 设置 > 小组件 重新启用")
 	}
 	a.widgetMu.Lock()
 	if a.widgetMode {
@@ -234,9 +261,16 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 
 	runtime.WindowUnmaximise(a.ctx)
 	runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
-	runtime.WindowSetAlwaysOnTop(a.ctx, true)
+	runtime.WindowSetAlwaysOnTop(a.ctx, widgetAlwaysOnTop)
 	runtime.WindowSetSize(a.ctx, state.Width, state.Height)
 	runtime.WindowSetPosition(a.ctx, state.X, state.Y)
+
+	// Clip native window corners to match the .widget-shell CSS clip-path so
+	// the four corners are truly transparent instead of showing solid wedges.
+	if err := setWidgetWindowRegion(state.Width, state.Height); err != nil {
+		fmt.Printf("widget: initial window region failed; frontend will retry: %v\n", err)
+	}
+
 	runtime.EventsEmit(a.ctx, "widget:mode", true)
 	return a.GetWidgetSnapshot(), nil
 }
@@ -268,6 +302,21 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	a.widgetMu.Unlock()
 
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+
+	// Restore rectangular window shape before resizing back to main geometry.
+	if err := clearWidgetWindowRegion(); err != nil {
+		a.widgetMu.Lock()
+		a.widgetMode = true
+		a.widgetMu.Unlock()
+		_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
+		if configErr != nil {
+			fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
+			alwaysOnTop = true
+		}
+		runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
+		return fmt.Errorf("restore widget window shape: %w", err)
+	}
+
 	runtime.WindowSetMinSize(a.ctx, 760, 480)
 	state, ok := loadWindowState()
 	if ok {

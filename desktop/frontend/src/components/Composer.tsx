@@ -451,6 +451,7 @@ export function Composer({
   guidanceConsumedKey,
   guidanceConsumedText,
   guidanceQueuePreviewItems,
+  widgetEnabled = true,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -462,6 +463,7 @@ export function Composer({
   submitKey?: ComposerSubmitKey | string;
   imageInputEnabled?: boolean;
   tabId?: string;
+  widgetEnabled?: boolean;
   effort?: EffortInfo;
   onSend: (displayText: string, submitText?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
@@ -1205,6 +1207,14 @@ export function Composer({
     const currentAttachments = attachmentsRef.current;
     const currentWorkspaceRefs = workspaceRefsRef.current;
     if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
+      if (runningRef.current) {
+        if (widgetEnabled) {
+          void app.EnterWidgetMode().then(() => {
+            window.dispatchEvent(new CustomEvent("widget-mode-change", { detail: true }));
+          }).catch(() => undefined);
+        }
+        return;
+      }
       if (goalModeOn && !activeGoal) {
         setComposerPrompt(t("composer.goalInputRequired"));
         requestAnimationFrame(() => taRef.current?.focus());
@@ -2043,7 +2053,7 @@ export function Composer({
     return null;
   })();
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
-  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
+  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal) && !running) || disabled || (!running && submitDisabled) || readOnly;
   const submitTooltip = running ? t("composer.queueGuidance") : t(composerSubmitKey === "ctrl_enter" ? "composer.sendCtrlEnter" : "composer.send");
   const composerPlaceholder = readOnly
     ? t("composer.readOnlyChannel")

@@ -111,9 +111,9 @@ function TokensPage({ snapshot }: { snapshot: WidgetSnapshot }) {
 function ClockPage({ now }: { now: number }) {
   const date = new Date(now);
   return (
-    <span className="widget-info__page">
+    <span className="widget-info__page widget-info__page--clock">
       <Header label={PAGE_LABEL.clock} active="clock" />
-      <strong className="widget-info__value">{date.toLocaleTimeString([], { hour12: false })}</strong>
+      <strong className="widget-info__value widget-info__value--clock">{date.toLocaleTimeString([], { hour12: false })}</strong>
       <span className="widget-info__caption">{date.toLocaleDateString([], { weekday: "short", month: "2-digit", day: "2-digit" }).toUpperCase()}</span>
     </span>
   );

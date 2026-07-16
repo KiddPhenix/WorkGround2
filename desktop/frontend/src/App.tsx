@@ -248,7 +248,7 @@ type HistoryScopeFilter = { scope: "global" | "project"; workspaceRoot: string }
 type WorkspaceInsertTarget = "composer" | "planRevision";
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
-function WindowsWindowControls() {
+function WindowsWindowControls({ widgetEnabled }: { widgetEnabled: boolean }) {
   const { maximised, syncMaximised } = useWindowsMaximisedState();
 
   const toggleMaximise = useCallback(() => {
@@ -259,6 +259,7 @@ function WindowsWindowControls() {
 
   return (
     <div className="windows-window-controls" aria-label="Window controls">
+      {widgetEnabled && (
 	  <button
 		className="windows-window-control windows-window-control--widget"
 		type="button"
@@ -272,6 +273,7 @@ function WindowsWindowControls() {
 	  >
 		<RadioTower size={13} strokeWidth={1.8} />
 	  </button>
+      )}
       <button
         className="windows-window-control windows-window-control--minimize"
         type="button"
@@ -974,7 +976,7 @@ function TextSizeHotkeys() {
   return null;
 }
 
-function MainApp() {
+function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
   const {
     state,
     activeTabId,
@@ -4082,6 +4084,7 @@ function MainApp() {
               submitKey={composerSubmitKey}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
               tabId={activeTabId}
+              widgetEnabled={widgetEnabled}
               effort={state.effort}
               onSend={handleSend}
               onCancel={cancel}
@@ -4313,7 +4316,7 @@ function MainApp() {
         void handleOpenTopic(scope, workspaceRoot, topicId);
       }} />
       {windowsFramelessChrome && <WindowsResizeHandles />}
-      {windowsFramelessChrome && <WindowsWindowControls />}
+      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} />}
     </div>
     </ShellExpandProvider>
   );
@@ -4321,12 +4324,22 @@ function MainApp() {
 
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
+  const [widgetEnabled, setWidgetEnabled] = useState(true);
   const [composerSubmitKey, setComposerSubmitKey] = useState<ComposerSubmitKey>("enter");
 
   useEffect(() => {
-    app.Settings().then((s) => {
+    app.DesktopStartupSettings().then((s) => {
       setComposerSubmitKey(normalizeComposerSubmitKey(s.composerSubmitKey));
+      setWidgetEnabled(s.widgetEnabled);
     }).catch(() => {});
+  }, []);
+
+  // Live widget-enabled toggle from Settings panel.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.runtime) return;
+    return window.runtime.EventsOn("widget:enabled", (payload: unknown) => {
+      setWidgetEnabled(Boolean(payload));
+    });
   }, []);
 
   useEffect(() => {
@@ -4352,7 +4365,7 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp />
+	  <MainApp widgetEnabled={widgetEnabled} />
 	  {widgetMode && <WidgetMode onExit={() => setWidgetMode(false)} submitKey={composerSubmitKey} />}
 	</>
   );

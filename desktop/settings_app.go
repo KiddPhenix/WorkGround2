@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"workground2/internal/agent"
 	"workground2/internal/boot"
 	"workground2/internal/botruntime"
@@ -188,6 +190,8 @@ type SettingsView struct {
 	CheckUpdates            bool            `json:"checkUpdates"`
 	Telemetry               bool            `json:"telemetry"`
 	Metrics                 bool            `json:"metrics"`
+	WidgetEnabled           bool            `json:"widgetEnabled"`
+	WidgetAlwaysOnTop       bool            `json:"widgetAlwaysOnTop"`
 	MemoryCompiler          bool            `json:"memoryCompilerEnabled"`
 	ExpandThinking          bool            `json:"expandThinking"`
 	ConfigPath              string          `json:"configPath"`
@@ -217,6 +221,7 @@ type DesktopStartupSettingsView struct {
 	StatusBarStyle     string          `json:"statusBarStyle"`
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
+	WidgetEnabled      bool            `json:"widgetEnabled"`
 }
 
 func nonNil(s []string) []string {
@@ -495,6 +500,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			StatusBarStyle:     "text",
 			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
 			CheckUpdates:       true,
+			WidgetEnabled:      true,
 		}
 	}
 	return DesktopStartupSettingsView{
@@ -508,6 +514,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarStyle:     cfg.DesktopStatusBarStyle(),
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
+		WidgetEnabled:      cfg.DesktopWidgetEnabled(),
 	}
 }
 
@@ -552,6 +559,8 @@ func (a *App) Settings() SettingsView {
 			CheckUpdates:            true,
 			Telemetry:               true,
 			Metrics:                 true,
+			WidgetEnabled:           true,
+			WidgetAlwaysOnTop:       true,
 			MemoryCompiler:          true,
 			ExpandThinking:          false,
 		}
@@ -611,6 +620,8 @@ func (a *App) Settings() SettingsView {
 		CheckUpdates:            cfg.DesktopCheckUpdates(),
 		Telemetry:               cfg.DesktopTelemetry(),
 		Metrics:                 cfg.DesktopMetrics(),
+		WidgetEnabled:           cfg.DesktopWidgetEnabled(),
+		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
 		ConfigPath:              cfgPath,
@@ -2240,6 +2251,25 @@ func (a *App) SetDesktopMetrics(enabled bool) error {
 // the desktop. It is desktop-only and does not rebuild the controller.
 func (a *App) SetExpandThinking(on bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetExpandThinking(on) })
+}
+
+// SetDesktopWidgetEnabled sets whether the widget entry is shown in the
+// desktop window frame. The change takes effect immediately without restart.
+func (a *App) SetDesktopWidgetEnabled(enabled bool) error {
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetEnabled(enabled) }); err != nil {
+		return err
+	}
+	// Emit event so the frontend can hide/show the widget button without restart.
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:enabled", enabled)
+	}
+	return nil
+}
+
+// SetDesktopWidgetAlwaysOnTop sets whether the widget window stays
+// always-on-top. The change takes effect on the next EnterWidgetMode.
+func (a *App) SetDesktopWidgetAlwaysOnTop(on bool) error {
+	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetAlwaysOnTop(on) })
 }
 
 // MigrateDesktopPreferences imports old browser-local desktop preferences into

@@ -1084,6 +1084,7 @@ export const zh: Record<DictKey, string> = {
 	  "settings.tab.permissions": "权限",
   "settings.tab.sandbox": "沙箱",
   "settings.tab.appearance": "外观",
+  "settings.tab.widget": "小组件",
   "settings.tab.updates": "更新",
   "settings.tab.about": "关于",
   "settings.tab.global": "全局偏好",
@@ -1103,6 +1104,7 @@ export const zh: Record<DictKey, string> = {
   "settings.tabSub.permissions": "写操作前询问",
   "settings.tabSub.sandbox": "强制隔离",
   "settings.tabSub.appearance": "主题与字号",
+  "settings.tabSub.widget": "传呼机与置顶",
   "settings.tabSub.updates": "版本与配置",
   "settings.tabSub.global": "全局 AGENTS.md",
   "settings.providerCount": "{n} 个服务",
@@ -2230,6 +2232,13 @@ export const zh: Record<DictKey, string> = {
   "widget.routeCurrent": "当前工作区",
   "widget.routePrimary": "主工作区",
   "widget.routeManual": "手动选择",
+
+  // 设置 > 小组件
+  "settings.pageDesc.widget": "配置桌面传呼机小组件。",
+  "settings.widget.enableLabel": "启用小组件",
+  "settings.widget.enableHint": "在窗口标题栏中显示小组件入口按钮。",
+  "settings.widget.alwaysOnTopLabel": "小组件保持置顶",
+  "settings.widget.alwaysOnTopHint": "小组件窗口始终位于其他应用窗口之上。",
 
   // 模拟/演示种子数据（仅浏览器开发模式）
   "mock.sessionFixLogin": "fix the login bug in auth.go",

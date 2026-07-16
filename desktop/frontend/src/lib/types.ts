@@ -1062,7 +1062,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "ai" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates" | "about" | "global";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "ai" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "widget" | "updates" | "about" | "global";
 
 export interface AICollaborationInjectResult {
   ok: boolean;
@@ -1369,6 +1369,8 @@ export interface SettingsView {
   checkUpdates: boolean; // check for new versions on startup
   telemetry: boolean; // anonymous launch ping (install id + version + OS)
   metrics: boolean; // aggregate desktop metrics (anonymous signal/bucket counts)
+  widgetEnabled: boolean; // show the widget entry in the window frame
+  widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
@@ -1387,6 +1389,7 @@ export interface DesktopStartupSettingsView {
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
+  widgetEnabled: boolean; // show the widget entry in the window frame
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;

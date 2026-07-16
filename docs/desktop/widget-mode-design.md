@@ -445,3 +445,8 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - 后端 `WidgetInfo` 复用当前会话遥测汇总 TOKEN，运行中但缺少遥测时返回 `tokenPartial`；IDLE 起点由快照单入口维护；系统指标使用 gopsutil 每 3 秒采样缓存，配置模型列表每 30 秒刷新。
 - 电子宠物使用六帧透明 PNG 图集；点阵数字使用随包分发的 Doto 字体；模型页使用真实品牌 SVG，未知品牌退回清晰的字母标记。`prefers-reduced-motion` 下停止模型自动轮换。
 - 视觉验收：`590 × 176` 浏览器 mock 对照 `widget-info-*-target.png` 完成 TOKEN、宠物、系统、模型及上下文逐页复验；修正宠物纵横比与品牌 mask 后 P0/P1/P2 清零。
+- 2026-07-16 自动重试：Go 端 `StartWidgetConversation` 对 `retryable_error` 自动重试最多 5 次，前端对 Wails/IPC 传输异常同样自动重试最多 5 次；两层均使用有界指数退避（200ms/400ms/800ms/1.6s/3.2s，上限 5s），只在各自负责的失败类型触发。`accepted`/`already_applied`/`invalid` 立即返回。所有重试复用相同 requestId、prompt 和 workspace 保持幂等，测试通过注入启动函数和等待函数验证调用次数、参数与停止条件。
+- 2026-07-16 设置面板小组件 Tab：新增 Settings 小组件/Widget/小組件 标签页，包含两个持久化布尔开关——"启用小组件"（`widget_enabled`，默认 true）和"小组件保持置顶"（`widget_always_on_top`，默认 true）。`DesktopConfig` 新增 `WidgetEnabled *bool` 和 `WidgetAlwaysOnTop *bool` 字段，含 TOML 持久化、规范化 getter/setter 和渲染。
+- 2026-07-16 小组件启用/禁用：`widget_enabled = false` 时隐藏窗口标题栏中的小组件按钮和 Composer 空提交入口，Go 端 `EnterWidgetMode` 显式拒绝并返回错误信息。设置变更通过 `widget:enabled` 事件实时传播，无需重启。`DesktopStartupSettingsView` 包含 `WidgetEnabled` 字段供启动期读取。
+- 2026-07-16 置顶偏好：`EnterWidgetMode` 使用持久化的 `widget_always_on_top` 代替硬编码 `true`；`ExitWidgetMode` 退出时清除置顶，回滚到小组件模式时恢复配置值而非盲目 `true`。
+- 2026-07-16 Windows DPI 裁切修复：`SetWindowRgn` 的多边形坐标按 `GetDpiForWindow / 96` 换算后再提交，避免 125% 等系统缩放下 Region 只覆盖窗口约 80%，导致右侧按钮和下半部被原生裁掉。96 DPI 保持原坐标，120 DPI 的 `764×225` 窗口有独立回归测试。
