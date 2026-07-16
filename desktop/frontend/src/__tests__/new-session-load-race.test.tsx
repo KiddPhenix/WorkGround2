@@ -55,6 +55,7 @@ async function waitFor(label: string, predicate: () => boolean) {
 function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
   return {
     id: "tab-a",
+    sessionId: "session-a",
     scope: "project",
     workspaceRoot: "/repo",
     workspaceName: "repo",
@@ -139,6 +140,7 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.windo
 
 const staleHistory = deferred<HistoryMessage[]>();
 let newSessionCalls = 0;
+let newSessionTarget = "";
 const context: ContextInfo = { used: 12, window: 100, sessionTokens: 12 };
 const effort: EffortInfo = { supported: true, current: "auto", default: "auto", levels: ["auto"] };
 const balance: BalanceInfo = { available: false, display: "" };
@@ -169,6 +171,10 @@ window.go = {
       NewSession: async () => {
         newSessionCalls += 1;
       },
+      NewSessionForSession: async (sessionId: string) => {
+        newSessionCalls += 1;
+        newSessionTarget = sessionId;
+      },
     } as Partial<AppBindings> as AppBindings,
   },
 };
@@ -190,12 +196,14 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("active tab", () => controller?.activeTabId === "tab-a");
+eq(controller?.activeSessionId, "session-a", "UI caches the active SessionID separately from TabID");
 
 await act(async () => {
   await controller?.newSession();
   await flushPromises();
 });
 eq(newSessionCalls, 1, "NewSession is called once");
+eq(newSessionTarget, "session-a", "new session uses the cached SessionID");
 eq(controller?.state.items.length, 0, "new session clears the visible transcript");
 
 await act(async () => {

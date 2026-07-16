@@ -151,9 +151,7 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("active tab", () => controller?.activeTabId === "tab-a");
-await act(async () => {
-  await flushPromises(50);
-});
+await waitFor("initial hydration", () => controller?.state.hydrating === false && controller.state.meta?.ready === true);
 
 backendRunning = true;
 await act(async () => {

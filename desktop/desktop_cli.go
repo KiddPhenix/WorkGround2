@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,17 +77,17 @@ func desktopEmbeddedDesktopUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: WorkGround2 desktop <subcommand>")
 	fmt.Fprintln(os.Stderr, "  workspaces            list Desktop workspaces")
 	fmt.Fprintln(os.Stderr, "  new [prompt]          create a new session")
-	fmt.Fprintln(os.Stderr, "  submit <prompt>       submit to the active session")
+	fmt.Fprintln(os.Stderr, "  submit <prompt>       submit to an explicit session ID")
 	fmt.Fprintln(os.Stderr, "  answer               answer a structured ask")
 	fmt.Fprintln(os.Stderr, "  approve              allow or deny a pending approval")
-	fmt.Fprintln(os.Stderr, "  status                show active session status")
+	fmt.Fprintln(os.Stderr, "  status                show one session's status")
 	fmt.Fprintln(os.Stderr, "  open <path>           open a session file")
 	fmt.Fprintln(os.Stderr, "  focus                 bring Desktop window to front")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Options:")
 	fmt.Fprintln(os.Stderr, "  --workspace <dir>     target a specific workspace")
-	fmt.Fprintln(os.Stderr, "  --session <path>      target a specific session file (submit only)")
-	fmt.Fprintln(os.Stderr, "  --session-name NAME   reuse or create a named session (new only)")
+	fmt.Fprintln(os.Stderr, "  --session <id>        target a specific SessionID")
+	fmt.Fprintln(os.Stderr, "  --session-name NAME   display name for a newly created session")
 	fmt.Fprintln(os.Stderr, "  --no-wait             do not wait for reply")
 	fmt.Fprintln(os.Stderr, "  --yolo                run with tool approval mode yolo")
 	fmt.Fprintln(os.Stderr, "  --tool-approval MODE  ask, auto, or yolo")
@@ -187,7 +188,7 @@ func desktopEmbeddedToolApprovalMode(yolo bool, explicit string) (string, error)
 }
 
 func desktopEmbeddedSessionOptions(sessionName, toolApprovalMode string) map[string]any {
-	body := map[string]any{"background": true}
+	body := map[string]any{}
 	if strings.TrimSpace(sessionName) != "" {
 		body["sessionName"] = strings.TrimSpace(sessionName)
 	}
@@ -200,10 +201,10 @@ func desktopEmbeddedSessionOptions(sessionName, toolApprovalMode string) map[str
 	return body
 }
 
-func desktopEmbeddedSubmitBody(prompt, session, toolApprovalMode string) map[string]string {
+func desktopEmbeddedSubmitBody(prompt, sessionID, toolApprovalMode string) map[string]string {
 	body := map[string]string{"prompt": prompt}
-	if strings.TrimSpace(session) != "" {
-		body["session"] = session
+	if strings.TrimSpace(sessionID) != "" {
+		body["sessionId"] = strings.TrimSpace(sessionID)
 	}
 	if toolApprovalMode != "" {
 		body["toolApprovalMode"] = toolApprovalMode
@@ -249,6 +250,9 @@ func desktopEmbeddedParseAnswers(values []string) ([]desktopEmbeddedQuestionAnsw
 }
 
 func desktopEmbeddedPrintSessionReport(action string, result map[string]any) {
+	if sessionID := desktopEmbeddedStringField(result, "sessionId"); sessionID != "" {
+		fmt.Printf("SessionID: %s\n", sessionID)
+	}
 	if path := desktopEmbeddedStringField(result, "path"); path != "" {
 		fmt.Printf("%s session: %s\n", action, path)
 	} else {
@@ -327,7 +331,7 @@ func desktopEmbeddedWorkspaces(args []string) int {
 func desktopEmbeddedNew(args []string) int {
 	fs := flag.NewFlagSet("desktop new", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target workspace directory")
-	sessionName := fs.String("session-name", "", "reuse or create a named session")
+	sessionName := fs.String("session-name", "", "display name for the new session")
 	_ = fs.Bool("no-wait", false, "do not wait for reply")
 	yolo := fs.Bool("yolo", false, "run with tool approval mode yolo")
 	toolApproval := fs.String("tool-approval", "", "tool approval mode: ask, auto, or yolo")
@@ -348,28 +352,20 @@ func desktopEmbeddedNew(args []string) int {
 		fmt.Fprintf(os.Stderr, "desktop new: %v\n", err)
 		return 1
 	}
-	sessionPath := desktopEmbeddedStringField(result, "path")
-	action := "Created"
-	if strings.TrimSpace(*sessionName) != "" {
-		if created, ok := desktopEmbeddedBoolField(result, "created"); ok && !created {
-			action = "Opened"
-		}
+	sessionID := desktopEmbeddedStringField(result, "sessionId")
+	if sessionID == "" {
+		fmt.Fprintln(os.Stderr, "desktop new: response missing sessionId")
+		return 1
 	}
-	desktopEmbeddedPrintSessionReport(action, result)
+	desktopEmbeddedPrintSessionReport("Created", result)
 	if fs.NArg() == 0 {
 		return 0
 	}
 	prompt := strings.Join(fs.Args(), " ")
-	result, err = desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(prompt, sessionPath, toolApprovalMode))
+	result, err = desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(prompt, sessionID, toolApprovalMode))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop new: submit: %v\n", err)
 		return 1
-	}
-	if path := desktopEmbeddedStringField(result, "path"); path != "" {
-		sessionPath = path
-	}
-	if sessionPath != "" {
-		result["path"] = sessionPath
 	}
 	desktopEmbeddedPrintSessionReport("Submitted to", result)
 	return 0
@@ -378,7 +374,7 @@ func desktopEmbeddedNew(args []string) int {
 func desktopEmbeddedSubmit(args []string) int {
 	fs := flag.NewFlagSet("desktop submit", flag.ContinueOnError)
 	workspace := fs.String("workspace", "", "target workspace directory")
-	session := fs.String("session", "", "target session file path")
+	session := fs.String("session", "", "target SessionID")
 	_ = fs.Bool("no-wait", false, "do not wait for reply")
 	yolo := fs.Bool("yolo", false, "run with tool approval mode yolo")
 	toolApproval := fs.String("tool-approval", "", "tool approval mode: ask, auto, or yolo")
@@ -386,7 +382,7 @@ func desktopEmbeddedSubmit(args []string) int {
 		return 2
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "Usage: WorkGround2 desktop submit [--workspace <dir>] [--session <path>] <prompt>")
+		fmt.Fprintln(os.Stderr, "Usage: WorkGround2 desktop submit [--workspace <dir> | --session <id>] <prompt>")
 		return 2
 	}
 	toolApprovalMode, err := desktopEmbeddedToolApprovalMode(*yolo, *toolApproval)
@@ -394,8 +390,8 @@ func desktopEmbeddedSubmit(args []string) int {
 		fmt.Fprintf(os.Stderr, "desktop submit: %v\n", err)
 		return 2
 	}
-	sessionPath := strings.TrimSpace(*session)
-	if sessionPath == "" && strings.TrimSpace(*workspace) != "" {
+	sessionID := strings.TrimSpace(*session)
+	if sessionID == "" && strings.TrimSpace(*workspace) != "" {
 		body := desktopEmbeddedSessionOptions("", toolApprovalMode)
 		body["workspace"] = strings.TrimSpace(*workspace)
 		created, err := desktopEmbeddedPostJSON("/api/v1/session/new", body)
@@ -403,9 +399,13 @@ func desktopEmbeddedSubmit(args []string) int {
 			fmt.Fprintf(os.Stderr, "desktop submit: create background session: %v\n", err)
 			return 1
 		}
-		sessionPath = desktopEmbeddedStringField(created, "path")
+		sessionID = desktopEmbeddedStringField(created, "sessionId")
 	}
-	result, err := desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(strings.Join(fs.Args(), " "), sessionPath, toolApprovalMode))
+	if sessionID == "" {
+		fmt.Fprintln(os.Stderr, "desktop submit: --session or --workspace is required")
+		return 2
+	}
+	result, err := desktopEmbeddedPostJSON("/api/v1/session/submit", desktopEmbeddedSubmitBody(strings.Join(fs.Args(), " "), sessionID, toolApprovalMode))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop submit: %v\n", err)
 		return 1
@@ -416,14 +416,15 @@ func desktopEmbeddedSubmit(args []string) int {
 
 func desktopEmbeddedAnswer(args []string) int {
 	fs := flag.NewFlagSet("desktop answer", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	id := fs.String("id", "", "pending ask ID")
 	var values desktopEmbeddedAnswerValues
 	fs.Var(&values, "answer", "selected option as QUESTION_ID=OPTION_LABEL; repeat for multi-select")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if strings.TrimSpace(*id) == "" {
-		fmt.Fprintln(os.Stderr, "desktop answer: --id is required")
+	if strings.TrimSpace(*sessionID) == "" || strings.TrimSpace(*id) == "" {
+		fmt.Fprintln(os.Stderr, "desktop answer: --session and --id are required")
 		return 2
 	}
 	answers, err := desktopEmbeddedParseAnswers(values)
@@ -432,8 +433,9 @@ func desktopEmbeddedAnswer(args []string) int {
 		return 2
 	}
 	if _, err := desktopEmbeddedPostJSON("/api/v1/session/answer", map[string]any{
-		"id":      strings.TrimSpace(*id),
-		"answers": answers,
+		"sessionId": strings.TrimSpace(*sessionID),
+		"id":        strings.TrimSpace(*id),
+		"answers":   answers,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop answer: %v\n", err)
 		return 1
@@ -444,19 +446,21 @@ func desktopEmbeddedAnswer(args []string) int {
 
 func desktopEmbeddedApprove(args []string) int {
 	fs := flag.NewFlagSet("desktop approve", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	id := fs.String("id", "", "pending approval ID")
 	allow := fs.Bool("allow", false, "allow the pending approval")
 	deny := fs.Bool("deny", false, "deny the pending approval")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if strings.TrimSpace(*id) == "" || *allow == *deny {
-		fmt.Fprintln(os.Stderr, "desktop approve: --id and exactly one of --allow/--deny are required")
+	if strings.TrimSpace(*sessionID) == "" || strings.TrimSpace(*id) == "" || *allow == *deny {
+		fmt.Fprintln(os.Stderr, "desktop approve: --session, --id and exactly one of --allow/--deny are required")
 		return 2
 	}
 	if _, err := desktopEmbeddedPostJSON("/api/v1/session/approve", map[string]any{
-		"id":    strings.TrimSpace(*id),
-		"allow": *allow,
+		"sessionId": strings.TrimSpace(*sessionID),
+		"id":        strings.TrimSpace(*id),
+		"allow":     *allow,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "desktop approve: %v\n", err)
 		return 1
@@ -467,11 +471,17 @@ func desktopEmbeddedApprove(args []string) int {
 
 func desktopEmbeddedStatus(args []string) int {
 	fs := flag.NewFlagSet("desktop status", flag.ContinueOnError)
+	sessionID := fs.String("session", "", "target SessionID")
 	asJSON := fs.Bool("json", false, "print raw status JSON")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	result, err := desktopEmbeddedGetJSON("/api/v1/session/status")
+	if strings.TrimSpace(*sessionID) == "" {
+		fmt.Fprintln(os.Stderr, "desktop status: --session is required")
+		return 2
+	}
+	endpoint := "/api/v1/session/status?sessionId=" + url.QueryEscape(strings.TrimSpace(*sessionID))
+	result, err := desktopEmbeddedGetJSON(endpoint)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "desktop status: %v\n", err)
 		return 1

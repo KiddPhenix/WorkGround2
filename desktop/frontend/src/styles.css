@@ -32180,13 +32180,17 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .workspace-sidebar .project-tree__workspace-actions {
+  position: absolute;
+  top: 50%;
+  right: 0;
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
-  flex: 0 0 78px;
+  flex: 0 0 auto;
   width: 78px;
   padding-right: 2px;
+  transform: translateY(-50%);
   opacity: 0;
   visibility: hidden;
   pointer-events: none;

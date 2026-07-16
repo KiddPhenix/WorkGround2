@@ -12,15 +12,15 @@ focus, approval handling, reply polling.
 ```
 workground2 desktop workspaces                        # 列出 Desktop 所有工作区
 workground2 desktop new [prompt]                      # 新建会话，可选发送首条消息
-workground2 desktop submit <prompt>                   # 向当前活跃会话发送消息
-workground2 desktop status [--json]                   # 查看当前活跃会话运行状态
+workground2 desktop submit --session <id> <prompt>    # 向指定 SessionID 发送消息
+workground2 desktop status --session <id> [--json]    # 查看指定会话运行状态
 workground2 desktop open <path>                       # 打开指定会话文件
 workground2 desktop focus                             # 聚焦 Desktop 窗口
 
 Options:
   --workspace <dir>     指定目标工作区目录
-  --session <path>      指定目标会话文件（submit 专用）
-  --session-name NAME   复用或创建命名会话（new 专用）
+  --session <id>        指定目标 SessionID
+  --session-name NAME   设置新会话展示名称（new 专用，名称允许重复）
   --no-wait             发送后不等待回复（fire-and-forget）
   --yolo                使用 yolo 工具审批模式
   --tool-approval MODE  ask、auto 或 yolo
@@ -70,8 +70,8 @@ workground2 desktop new
 # 创建会话并发送首条消息，等待回复
 workground2 desktop new "介绍一下这个项目的架构"
 
-# 复用或创建一个命名会话；同名会话存在时会打开最新的同名会话
-workground2 desktop new --session-name codex-worker "继续执行这条任务"
+# 创建一个带展示名称的新会话；每次调用都会得到新的 SessionID
+workground2 desktop new --session-name codex-worker "执行这条任务"
 
 # 在指定工作区创建
 workground2 desktop new --workspace D:\myproject "帮我修复 README"
@@ -84,24 +84,20 @@ workground2 desktop new --workspace D:\myproject --session-name codex-worker --y
 ```
 
 流程：
-1. CLI → Desktop 创建新会话；如果传了 `--session-name`，则先按会话标题复用最新同名会话，找不到才创建并命名
-2. Desktop 返回 `path`、`running`、`pendingPrompt`、`pendingInteraction`、`mode`、`toolApprovalMode`
+1. CLI → Desktop 创建新会话；每次调用都创建一个新的 SessionID，名称只用于展示
+2. Desktop 返回 `sessionId`、`path`、`running`、`pendingPrompt`、`pendingInteraction`、`mode`、`toolApprovalMode`
 3. 如果有 prompt，CLI 发送 submit 请求
 4. 默认等待回复：轮询 `.jsonl` 文件，新消息实时打印
 5. 遇到审批自动暂停，提示用户 `y/n/c`
 
 对应 API：
 - `POST /api/v1/session/new`
-- `POST /api/v1/workspace/switch`（如果有 `--workspace`）
 
-### `submit` — submit a prompt to the active session
+### `submit` — submit a prompt to an explicit session
 
 ```sh
-# 向当前活跃标签页发送
-workground2 desktop submit "解释这段代码"
-
-# 指定目标会话（Desktop 会自动打开该会话）
-workground2 desktop submit --session 20260708-xxxx.jsonl "继续上次的讨论"
+# 指定目标 SessionID
+workground2 desktop submit --session session_abc123 "继续上次的讨论"
 
 # 指定工作区 + 不等待
 workground2 desktop submit --workspace D:\myproject --no-wait "改一下标题"
@@ -110,26 +106,26 @@ workground2 desktop submit --workspace D:\myproject --no-wait "改一下标题"
 workground2 desktop submit --workspace D:\myproject --yolo --no-wait "改一下标题"
 ```
 
-`--session` 指定后 Desktop 会先调用 `ResumeSession` 打开目标会话，再发送消息。
+`--session` 必须是 `new` 返回的 SessionID。发送不会激活或切换 UI 会话。
 
-对应 API：`POST /api/v1/session/submit`（可选 `session` 字段）。
+对应 API：`POST /api/v1/session/submit`（必填 `sessionId` 字段）。
 
-### `status` — inspect the active session
+### `status` — inspect an explicit session
 
 ```sh
-workground2 desktop status
-workground2 desktop status --json
+workground2 desktop status --session session_abc123
+workground2 desktop status --session session_abc123 --json
 ```
 
 `--no-wait` 的 `new` / `submit` 返回 0 表示 Desktop 已接收任务，不表示任务完成。
-调用方应定时查询 `status --json`。优先使用 `foregroundActive` 判断当前 turn，
+调用方应保存 `new` 返回的 SessionID，并定时查询 `status --session <id> --json`。优先使用 `foregroundActive` 判断当前 turn，
 `backgroundOnly=true` 不阻塞 worker 完成；`running` 保留为兼容字段，可能包含后台工作。
 当 `pendingPrompt=true` 时应立即读取
 `pendingInteraction`，选择并提交答案后继续轮询，不能继续空等。最终直到
 `foregroundActive=false` 且 `pendingPrompt=false`。完成状态会附带最多 2000 字符的
 `report`，调用方应先看报告和 `git diff --stat`，再只检查 scope 内 diff。
 
-对应 API：`GET /api/v1/session/status`。
+对应 API：`GET /api/v1/session/status?sessionId=<id>`。
 
 ### `answer` — answer a structured ask
 
@@ -137,10 +133,10 @@ workground2 desktop status --json
 和返回的 option label 回答：
 
 ```powershell
-workground2 desktop answer --id 7 --answer 'q1=Use existing path'
+workground2 desktop answer --session session_abc123 --id 7 --answer 'q1=Use existing path'
 
 # multiSelect 问题重复同一个 question ID
-workground2 desktop answer --id 7 --answer 'q1=Option A' --answer 'q1=Option B'
+workground2 desktop answer --session session_abc123 --id 7 --answer 'q1=Option A' --answer 'q1=Option B'
 ```
 
 服务端会校验 interaction ID、question ID 和选项标签；状态已变化或答案拼错时返回非零。
@@ -151,8 +147,8 @@ workground2 desktop answer --id 7 --answer 'q1=Option A' --answer 'q1=Option B'
 `reason` 后按 ID 允许或拒绝：
 
 ```powershell
-workground2 desktop approve --id 8 --allow
-workground2 desktop approve --id 8 --deny
+workground2 desktop approve --session session_abc123 --id 8 --allow
+workground2 desktop approve --session session_abc123 --id 8 --deny
 ```
 
 ### `open` — open a session file
@@ -203,9 +199,9 @@ workground2 desktop focus
 它适合 Codex 委托的有明确 scope 的实现任务；普通探索或不确定任务仍建议用默认审批。
 
 对应 API：
-- `GET /api/v1/session/status` — 检测 `pendingPrompt`
-- `POST /api/v1/session/approve` `{"id":"8","allow":true}` — 审批
-- `POST /api/v1/session/answer` `{"id":"7","answers":[{"questionId":"q1","selected":["Use existing path"]}]}` — 回答询问
+- `GET /api/v1/session/status?sessionId=session_abc123` — 检测 `pendingPrompt`
+- `POST /api/v1/session/approve` `{"sessionId":"session_abc123","id":"8","allow":true}` — 审批
+- `POST /api/v1/session/answer` `{"sessionId":"session_abc123","id":"7","answers":[{"questionId":"q1","selected":["Use existing path"]}]}` — 回答询问
 
 ## Reply Polling
 
@@ -226,12 +222,12 @@ workground2 desktop focus
 
 | Method | Endpoint | Request Body | Response |
 |---|---|---|---|
-| `POST` | `/api/v1/session/new` | `{"toolApprovalMode":"yolo"}` 可选 | `{"status":"ok","path":"…","running":bool,"pendingPrompt":bool,"mode":"…","toolApprovalMode":"…"}` |
+| `POST` | `/api/v1/session/new` | `{"workspace":"…","sessionName":"…","toolApprovalMode":"yolo"}` 可选 | `{"status":"ok","sessionId":"…","path":"…","running":bool,"pendingPrompt":bool,"mode":"…"}` |
 | `POST` | `/api/v1/session/open` | `{"path":"…"}` | 同 session 状态响应 |
-| `POST` | `/api/v1/session/submit` | `{"prompt":"…"[, "session":"…", "toolApprovalMode":"yolo"]}` | 同 session 状态响应 |
-| `GET` | `/api/v1/session/status` | — | 同 session 状态响应 |
-| `POST` | `/api/v1/session/approve` | `{"id":"…","allow":bool}` | `{"status":"ok"}` |
-| `POST` | `/api/v1/session/answer` | `{"id":"…","answers":[{"questionId":"q1","selected":["label"]}]}` | `{"status":"ok"}` |
+| `POST` | `/api/v1/session/submit` | `{"sessionId":"…","prompt":"…","toolApprovalMode":"yolo"}` | 同 session 状态响应 |
+| `GET` | `/api/v1/session/status?sessionId=<id>` | — | 同 session 状态响应 |
+| `POST` | `/api/v1/session/approve` | `{"sessionId":"…","id":"…","allow":bool}` | `{"status":"ok"}` |
+| `POST` | `/api/v1/session/answer` | `{"sessionId":"…","id":"…","answers":[{"questionId":"q1","selected":["label"]}]}` | `{"status":"ok"}` |
 | `GET` | `/api/v1/workspaces` | — | `[{"path":"…","name":"…","current":bool}]` |
 | `POST` | `/api/v1/workspace/switch` | `{"dir":"…"}` | `{"status":"ok"}` |
 | `POST` | `/api/v1/window/focus` | — | `{"status":"ok"}` |

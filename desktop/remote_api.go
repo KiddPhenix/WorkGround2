@@ -32,11 +32,6 @@ type remoteAPI struct {
 
 	mu        sync.Mutex
 	submitted map[string]remoteSubmittedSession
-
-	// remoteTargetKey stores the session runtime key of the last externally
-	// targeted session. Status, submit, approve, and answer operations read
-	// from this target instead of implicitly reading the active tab.
-	remoteTargetKey string
 }
 
 type remoteSubmittedSession struct {
@@ -141,9 +136,15 @@ func (api *remoteAPI) handleSessionOpen(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	api.setRemoteTarget(sessionRuntimeKey(api.app.CurrentSessionPath()))
 	api.app.emitSessionActivated("remote-open")
-	api.writeSessionResponse(w, "ok")
+	api.app.mu.RLock()
+	tab := api.app.activeTabLocked()
+	api.app.mu.RUnlock()
+	if tab == nil {
+		http.Error(w, "opened session is unavailable", http.StatusInternalServerError)
+		return
+	}
+	api.writeJSON(w, api.sessionResponseForTab(tab, "ok"))
 }
 
 func (api *remoteAPI) handleSessionNew(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +153,6 @@ func (api *remoteAPI) handleSessionNew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Background       bool   `json:"background,omitempty"`
 		Workspace        string `json:"workspace,omitempty"`
 		ToolApprovalMode string `json:"toolApprovalMode,omitempty"`
 		SessionName      string `json:"sessionName,omitempty"`
@@ -164,81 +164,29 @@ func (api *remoteAPI) handleSessionNew(w http.ResponseWriter, r *http.Request) {
 	workspace := strings.TrimSpace(body.Workspace)
 	sessionName := strings.TrimSpace(body.SessionName)
 
-	if body.Background || workspace != "" {
-		// The desktop CLI always requests background creation. If it omits a
-		// workspace, inherit the active tab's scope without replacing that tab.
-		scope := "project"
-		if workspace == "" {
-			api.app.mu.RLock()
-			active := api.app.activeTabLocked()
-			if active == nil || active.Scope != "project" {
-				scope = "global"
-			} else {
-				workspace = active.WorkspaceRoot
-			}
-			api.app.mu.RUnlock()
-		}
-		tab, sessionPath, created, err := api.app.newBackgroundSession(scope, workspace, sessionName)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if body.ToolApprovalMode != "" {
-			api.app.SetToolApprovalModeForTab(tab.ID, body.ToolApprovalMode)
-		}
-		api.setRemoteTarget(sessionRuntimeKey(sessionPath))
-		if err := api.waitForTabReady(r.Context(), tab.ID, remoteWorkspaceReadyTimeout); err != nil {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		out := api.sessionResponseForTab(tab, "ok")
-		if sessionName != "" {
-			out["sessionName"] = sessionName
-			out["created"] = created
-		}
-		api.writeJSON(w, out)
-		return
+	// Every external create call creates one new Session. Missing workspace
+	// means Global and never reads or changes the UI's current workspace.
+	scope := "global"
+	if workspace != "" {
+		scope = "project"
 	}
-
-	// Keep the HTTP endpoint's legacy foreground behavior for callers that do
-	// not opt into background creation.
-	created := true
-	var err error
-	if sessionName == "" {
-		err = api.app.forceNewSession()
-	} else {
-		created, err = api.app.openOrCreateNamedSession(sessionName)
-	}
+	tab, _, created, err := api.app.newBackgroundSession(scope, workspace, sessionName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if created {
-		if err := api.app.setActiveSessionSource("cli"); err != nil {
-			http.Error(w, fmt.Sprintf("stamp CLI session source: %v", err), http.StatusInternalServerError)
-			return
-		}
+	if body.ToolApprovalMode != "" {
+		api.app.SetToolApprovalModeForTab(tab.ID, body.ToolApprovalMode)
 	}
-	api.app.mu.RLock()
-	active := api.app.activeTabLocked()
-	workspaceRoot := ""
-	if active != nil {
-		workspaceRoot = active.WorkspaceRoot
-	}
-	api.app.mu.RUnlock()
-	if err := api.waitForActiveWorkspaceReady(r.Context(), workspaceRoot, remoteWorkspaceReadyTimeout); err != nil {
+	if err := api.waitForTabReady(r.Context(), tab.ID, remoteWorkspaceReadyTimeout); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	if body.ToolApprovalMode != "" {
-		api.app.SetToolApprovalMode(body.ToolApprovalMode)
-	}
-	api.app.emitSessionActivated("remote-new")
-	out := api.activeSessionResponse("ok")
+	out := api.sessionResponseForTab(tab, "ok")
 	if sessionName != "" {
 		out["sessionName"] = sessionName
-		out["created"] = created
 	}
+	out["created"] = created
 	api.writeJSON(w, out)
 }
 
@@ -276,39 +224,16 @@ func decodeRemoteOptionalJSON(r *http.Request, out any) error {
 	return err
 }
 
-func (api *remoteAPI) setRemoteTarget(key string) {
-	api.mu.Lock()
-	api.remoteTargetKey = key
-	api.mu.Unlock()
-}
-
-func (api *remoteAPI) getRemoteTargetKey() string {
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	return api.remoteTargetKey
-}
-
-// remoteTargetTab returns the tab that matches the stored remote target key,
-// or nil when no remote target is set or the tab is no longer available.
-func (api *remoteAPI) remoteTargetTab() *WorkspaceTab {
-	key := api.getRemoteTargetKey()
-	if key == "" {
-		return nil
+func (api *remoteAPI) remoteSession(id string) (*WorkspaceTab, int, string) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, http.StatusBadRequest, "sessionId is required"
 	}
-	return api.app.findTabBySessionRuntimeKey(key)
-}
-
-func (api *remoteAPI) writeSessionResponse(w http.ResponseWriter, status string) {
-	api.writeJSON(w, api.targetSessionResponse(status))
-}
-
-// targetSessionResponse returns status for the remote target tab when one is
-// set; otherwise it falls back to the active tab (backward compatibility).
-func (api *remoteAPI) targetSessionResponse(status string) map[string]any {
-	if tab := api.remoteTargetTab(); tab != nil {
-		return api.sessionResponseForTab(tab, status)
+	tab := api.app.sessionByID(id)
+	if tab == nil {
+		return nil, http.StatusNotFound, fmt.Sprintf("session %q was not found", id)
 	}
-	return api.activeSessionResponse(status)
+	return tab, http.StatusOK, ""
 }
 
 func newSessionResponse(status, path string) map[string]any {
@@ -330,6 +255,7 @@ func newSessionResponse(status, path string) map[string]any {
 func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) map[string]any {
 	path := tab.currentSessionPath()
 	out := newSessionResponse(status, path)
+	out["sessionId"] = tab.SessionID
 	if path != "" {
 		out["path"] = path
 	}
@@ -597,80 +523,37 @@ func (api *remoteAPI) handleSessionSubmit(w http.ResponseWriter, r *http.Request
 	}
 	var body struct {
 		Prompt           string `json:"prompt"`
-		Session          string `json:"session,omitempty"`          // optional: target a specific session
+		SessionID        string `json:"sessionId"`
 		ToolApprovalMode string `json:"toolApprovalMode,omitempty"` // optional: ask, auto, yolo
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Prompt == "" {
 		http.Error(w, "invalid request: prompt is required", http.StatusBadRequest)
 		return
 	}
-
-	// When a specific session path is given, try to route to it without
-	// activating the tab. First check if the session is already loaded in
-	// any tab; if not, fall back to the old behaviour (ResumeSession on
-	// the active tab) for backward compatibility.
-	var targetTab *WorkspaceTab
-	if body.Session != "" {
-		targetKey := sessionRuntimeKey(body.Session)
-		if tab := api.app.findTabBySessionRuntimeKey(targetKey); tab != nil {
-			// Session is already loaded — route directly without activating.
-			targetTab = tab
-		} else if tab, err := api.app.ensureTabForSessionPath(body.Session); err == nil {
-			// Session can be loaded into a background tab.
-			targetTab = tab
-		}
-	} else if targetKey := api.getRemoteTargetKey(); targetKey != "" {
-		// Use the last remote target if set.
-		if tab := api.remoteTargetTab(); tab != nil {
-			targetTab = tab
-		}
-	}
-
-	if targetTab != nil {
-		// Route directly to the target tab's controller without affecting
-		// the active tab.
-		if body.ToolApprovalMode != "" {
-			api.app.SetToolApprovalModeForTab(targetTab.ID, body.ToolApprovalMode)
-		}
-		submittedAt := time.Now()
-		if err := api.app.submitToTab(targetTab.ID, body.Prompt, false); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		api.setRemoteTarget(sessionRuntimeKey(targetTab.currentSessionPath()))
-		api.markSubmitted(targetTab.currentSessionPath(), submittedAt)
-		api.writeJSON(w, api.sessionResponseForTab(targetTab, "ok"))
+	targetTab, status, message := api.remoteSession(body.SessionID)
+	if targetTab == nil {
+		http.Error(w, message, status)
 		return
 	}
-
-	// No explicit target — fall back to the active tab (backward compatible).
-	sessionActivated := false
-	if body.Session != "" && sessionRuntimeKey(api.app.CurrentSessionPath()) != sessionRuntimeKey(body.Session) {
-		if _, err := api.app.ResumeSession(body.Session); err != nil {
-			http.Error(w, "open session: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		sessionActivated = true
-	}
-
 	if body.ToolApprovalMode != "" {
-		api.app.SetToolApprovalMode(body.ToolApprovalMode)
-	}
-	if sessionActivated {
-		api.app.emitSessionActivated("remote-submit")
+		api.app.SetToolApprovalModeForTab(targetTab.ID, body.ToolApprovalMode)
 	}
 	submittedAt := time.Now()
-	if err := api.app.submitToTab("", body.Prompt, false); err != nil {
+	if err := api.app.submitToTab(targetTab.ID, body.Prompt, false); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	api.markSubmitted(api.app.CurrentSessionPath(), submittedAt)
-	api.writeSessionResponse(w, "ok")
+	api.markSubmitted(targetTab.currentSessionPath(), submittedAt)
+	api.writeJSON(w, api.sessionResponseForTab(targetTab, "ok"))
 }
 
 func (api *remoteAPI) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(api.targetSessionResponse("ok"))
+	tab, status, message := api.remoteSession(r.URL.Query().Get("sessionId"))
+	if tab == nil {
+		http.Error(w, message, status)
+		return
+	}
+	api.writeJSON(w, api.sessionResponseForTab(tab, "ok"))
 }
 
 func (api *remoteAPI) handleSessionApprove(w http.ResponseWriter, r *http.Request) {
@@ -679,26 +562,25 @@ func (api *remoteAPI) handleSessionApprove(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var body struct {
-		ID    string `json:"id,omitempty"`
-		Allow bool   `json:"allow"`
+		SessionID string `json:"sessionId"`
+		ID        string `json:"id,omitempty"`
+		Allow     bool   `json:"allow"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := api.app.approvePendingIDForTab(api.remoteTargetTabID(), body.ID, body.Allow); err != nil {
+	tab, status, message := api.remoteSession(body.SessionID)
+	if tab == nil {
+		http.Error(w, message, status)
+		return
+	}
+	if err := api.app.approvePendingIDForTab(tab.ID, body.ID, body.Allow); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-}
-
-func (api *remoteAPI) remoteTargetTabID() string {
-	if tab := api.remoteTargetTab(); tab != nil {
-		return tab.ID
-	}
-	return ""
 }
 
 func (api *remoteAPI) handleSessionAnswer(w http.ResponseWriter, r *http.Request) {
@@ -707,14 +589,20 @@ func (api *remoteAPI) handleSessionAnswer(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var body struct {
-		ID      string           `json:"id"`
-		Answers []QuestionAnswer `json:"answers"`
+		SessionID string           `json:"sessionId"`
+		ID        string           `json:"id"`
+		Answers   []QuestionAnswer `json:"answers"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
-	if err := api.app.answerPendingQuestionForTab(api.remoteTargetTabID(), body.ID, body.Answers); err != nil {
+	tab, status, message := api.remoteSession(body.SessionID)
+	if tab == nil {
+		http.Error(w, message, status)
+		return
+	}
+	if err := api.app.answerPendingQuestionForTab(tab.ID, body.ID, body.Answers); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -763,7 +651,7 @@ func (api *remoteAPI) waitForTabReady(ctx context.Context, tabID string, timeout
 			return false, fmt.Errorf("app not ready")
 		}
 		api.app.mu.RLock()
-		tab := api.app.tabs[tabID]
+		tab := api.app.tabByIDLocked(tabID)
 		if tab == nil {
 			api.app.mu.RUnlock()
 			return false, fmt.Errorf("session tab is no longer available")

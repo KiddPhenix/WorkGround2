@@ -1696,7 +1696,8 @@ export function Composer({
     setPastChatQuery("");
     setLoadingPastChats(true);
     try {
-      const sessions = await app.ListSessions();
+      if (!tabId) throw new Error("session identity is unavailable");
+      const sessions = await app.ListSessionsForSession(tabId);
       // Discard stale response if workspace changed while the request was in-flight.
       if (cwdRef.current !== snapshotCwd) return;
       const sorted = asArray(sessions)

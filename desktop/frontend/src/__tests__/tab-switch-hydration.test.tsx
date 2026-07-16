@@ -233,7 +233,16 @@ window.go = {
       NewSession: async () => {
         newSessionCalls += 1;
       },
+      NewSessionForSession: async () => {
+        newSessionCalls += 1;
+      },
       ReplayPendingPrompts: async () => {
+        replayPendingCalls += 1;
+        for (const event of replayPendingEvents.values()) {
+          for (const handler of eventHandlers) handler(event);
+        }
+      },
+      ReplayPendingPromptsForSession: async () => {
         replayPendingCalls += 1;
         for (const event of replayPendingEvents.values()) {
           for (const handler of eventHandlers) handler(event);

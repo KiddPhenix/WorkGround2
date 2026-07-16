@@ -13,6 +13,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"workground2/internal/agent"
 	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/event"
@@ -392,11 +393,57 @@ func (a *App) widgetSources() []widgetSource {
 	return out
 }
 
+// retryLeaseTabs retries startup after a session lease becomes available.
+func (a *App) retryLeaseTabs() {
+	a.retryLeaseTabsWith(agent.SessionLeaseHeldByOtherRuntime, a.RetryTabStartup)
+}
+
+// retryLeaseTabsWith keeps probing and mutation outside a.mu. The injected
+// functions make filtering, retry, and failure recovery deterministic in tests.
+func (a *App) retryLeaseTabsWith(leaseHeld func(string) bool, retry func(string) error) {
+	type candidate struct {
+		id          string
+		sessionPath string
+	}
+	a.mu.RLock()
+	var candidates []candidate
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab == nil {
+			continue
+		}
+		if tab.Ctrl != nil || tab.buildCancel != nil {
+			continue
+		}
+		if !tab.StartupErrLeaseHeld || tab.StartupErr == "" {
+			continue
+		}
+		sp := strings.TrimSpace(tab.currentSessionPath())
+		if sp == "" {
+			continue
+		}
+		candidates = append(candidates, candidate{tab.ID, sp})
+	}
+	a.mu.RUnlock()
+
+	for _, c := range candidates {
+		if leaseHeld(c.sessionPath) {
+			continue
+		}
+		_ = retry(c.id)
+	}
+}
+
 // GetWidgetSnapshot aggregates all runtimes while exposing one current message.
+// It also attempts to auto-recover tabs that failed with a session-lease error
+// when the foreign runtime has since released the lease.
 func (a *App) GetWidgetSnapshot() WidgetSnapshot {
 	a.widgetActionMu.Lock()
 	defer a.widgetActionMu.Unlock()
 	a.loadWidgetStateLocked()
+
+	// The lease probe and retry release a.mu before doing I/O or mutation.
+	a.retryLeaseTabs()
+
 	return a.widgetSnapshotLocked()
 }
 

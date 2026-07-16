@@ -40,6 +40,7 @@ import (
 // topics can be active concurrently without interfering.
 type WorkspaceTab struct {
 	ID                  string             // stable random id
+	SessionID           string             // stable business identity; independent of UI selection and storage path
 	Scope               string             // "project" | "global"
 	WorkspaceRoot       string             // project root dir (empty for global)
 	SharedHostKey       string             // opaque key for the shared plugin host (set by buildTabController)
@@ -408,19 +409,29 @@ func (a *App) detachSessionRuntime(tab *WorkspaceTab) bool {
 	if tab == nil {
 		return false
 	}
+	if tab.sink != nil {
+		tab.sink.clearContext()
+	}
+	a.mu.Lock()
+	detached := a.detachSessionRuntimeLocked(tab)
+	a.mu.Unlock()
+	return detached
+}
+
+// detachSessionRuntimeLocked removes UI ownership without ending the Session.
+// The caller holds a.mu; controller shutdown and other blocking work stay out.
+func (a *App) detachSessionRuntimeLocked(tab *WorkspaceTab) bool {
+	if tab == nil {
+		return false
+	}
 	sourcePath := tab.currentSessionPath()
 	key := sessionRuntimeKey(sourcePath)
 	if key == "" {
 		return false
 	}
-	if tab.sink != nil {
-		tab.sink.clearContext()
-	}
-	a.mu.Lock()
 	a.ensureDetachedSessionsLocked()
 	tab.SessionPath = canonicalTabSessionPath(sourcePath)
 	a.detachedSessions[key] = tab
-	a.mu.Unlock()
 	return true
 }
 
@@ -435,6 +446,7 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 
 	return &WorkspaceTab{
 		ID:                  detachedRuntimeTabID(key),
+		SessionID:           tab.SessionID,
 		Scope:               tab.Scope,
 		WorkspaceRoot:       tab.WorkspaceRoot,
 		SharedHostKey:       tab.SharedHostKey,
@@ -465,6 +477,7 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 	if tab == nil {
 		return false
 	}
+	a.trackSession(tab)
 	sourcePath := tab.currentSessionPath()
 	key := sessionRuntimeKey(sourcePath)
 	if key == "" {
@@ -472,6 +485,13 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 	}
 	detached := cloneDetachedRuntimeTab(tab, key, sourcePath)
 	if detached == nil {
+		return false
+	}
+	a.mu.Lock()
+	a.ensureDetachedSessionsLocked()
+	if err := a.sessions.replace(tab.SessionID, tab, detached); err != nil {
+		a.mu.Unlock()
+		slog.Error("desktop: detach session identity", "sessionId", tab.SessionID, "err", err)
 		return false
 	}
 	detached.adoptSessionLease(tab.takeSessionLease())
@@ -483,9 +503,6 @@ func (a *App) detachRuntimeForReplacement(tab *WorkspaceTab) bool {
 		// (#5352 — stale "AI 不断输出" on the now-visible session).
 		detached.sink.clearContext()
 	}
-
-	a.mu.Lock()
-	a.ensureDetachedSessionsLocked()
 	a.detachedSessions[key] = detached
 	a.mu.Unlock()
 	return true
@@ -532,6 +549,7 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	if tab == nil || key == "" {
 		return false
 	}
+	a.trackSession(tab)
 
 	a.mu.Lock()
 	if tab.removed || a.tabs[tab.ID] != tab {
@@ -540,6 +558,12 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	}
 	detached := a.detachedSessions[key]
 	if detached != nil {
+		a.trackSession(detached)
+		if err := a.sessions.adopt(tab, detached); err != nil {
+			a.mu.Unlock()
+			slog.Error("desktop: attach detached session identity", "sessionId", detached.SessionID, "err", err)
+			return false
+		}
 		delete(a.detachedSessions, key)
 		applyRuntimeTab(tab, detached, path, wailsCtx, a)
 		if current := a.tabs[tab.ID]; current == tab {
@@ -564,6 +588,12 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	}
 	if source == nil {
 		a.mu.Unlock()
+		return false
+	}
+	a.trackSession(source)
+	if err := a.sessions.adopt(tab, source); err != nil {
+		a.mu.Unlock()
+		slog.Error("desktop: attach visible session identity", "sessionId", source.SessionID, "err", err)
 		return false
 	}
 	delete(a.tabs, source.ID)
@@ -1280,6 +1310,7 @@ type wireEventTab struct {
 // TabMeta is the frontend-facing shape of one tab.
 type TabMeta struct {
 	ID                  string                   `json:"id"`
+	SessionID           string                   `json:"sessionId"`
 	Scope               string                   `json:"scope"`
 	WorkspaceRoot       string                   `json:"workspaceRoot"`
 	WorkspaceName       string                   `json:"workspaceName"`
@@ -1340,6 +1371,7 @@ func enrichTabMetas(metas []TabMeta) []TabMeta {
 func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	m := TabMeta{
 		ID:                tab.ID,
+		SessionID:         tab.SessionID,
 		Scope:             tab.Scope,
 		WorkspaceRoot:     tab.WorkspaceRoot,
 		WorkspaceName:     workspaceName(tab.WorkspaceRoot),
@@ -1631,6 +1663,7 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	profile := loadTabSessionProfile(sessionPath)
 	tab := &WorkspaceTab{
 		ID:            tabID,
+		SessionID:     newSessionID(),
 		Scope:         scope,
 		WorkspaceRoot: actualRoot,
 		TopicID:       topicID,
@@ -1825,6 +1858,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		topicTitle := topicTitleForTab(scope, workspaceRoot, topicID)
 		created = &WorkspaceTab{
 			ID:               tabID,
+			SessionID:        newSessionID(),
 			Scope:            scope,
 			WorkspaceRoot:    actualRoot,
 			TopicID:          topicID,
@@ -1869,6 +1903,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 	tabID := a.newUniqueTabIDLocked()
 	created = &WorkspaceTab{
 		ID:               tabID,
+		SessionID:        newSessionID(),
 		Scope:            scope,
 		WorkspaceRoot:    actualRoot,
 		TopicID:          topicID,
@@ -2275,7 +2310,8 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 		return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
 	}
 	a.activeTabID = tabID
-	removed := make([]*WorkspaceTab, 0, len(a.tabs)-1)
+	closed := make([]*WorkspaceTab, 0, len(a.tabs)-1)
+	detached := make([]*WorkspaceTab, 0, len(a.tabs)-1)
 	for id, tab := range a.tabs {
 		if id == tabID {
 			continue
@@ -2290,10 +2326,12 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 			slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
 			return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
 		}
-		if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
+		if a.detachSessionRuntimeLocked(tab) {
+			detached = append(detached, tab)
+		} else {
 			a.markTabRemovedLocked(tab)
+			closed = append(closed, tab)
 		}
-		removed = append(removed, tab)
 		delete(a.tabs, id)
 		a.removeTabOrderLocked(id)
 	}
@@ -2302,7 +2340,12 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 	meta := a.tabMeta(active, true)
 	a.mu.Unlock()
 
-	for _, tab := range removed {
+	for _, tab := range detached {
+		if tab.sink != nil {
+			tab.sink.clearContext()
+		}
+	}
+	for _, tab := range closed {
 		a.removeVisibleTabRuntime(tab)
 	}
 	a.emitProjectTreeChanged()
@@ -2389,6 +2432,7 @@ func (a *App) markTabRemovedLocked(tab *WorkspaceTab) {
 		return
 	}
 	tab.removed = true
+	a.untrackSession(tab)
 	if tab.buildCancel != nil {
 		tab.buildCancel()
 		tab.buildCancel = nil
@@ -2399,7 +2443,7 @@ func (a *App) tabBuildSupersededLocked(tab *WorkspaceTab, generation uint64) boo
 	if tab == nil {
 		return true
 	}
-	if tab.removed || a.tabs[tab.ID] != tab {
+	if tab.removed || a.tabByIDLocked(tab.ID) != tab {
 		return true
 	}
 	return generation != 0 && tab.buildGeneration != generation
@@ -2495,6 +2539,7 @@ func (a *App) startTabControllerBuild(tab *WorkspaceTab) {
 }
 
 func (a *App) startTabControllerBuildWithLoadedSession(tab *WorkspaceTab, loadedSession loadedTabSession) {
+	a.trackSession(tab)
 	buildCtx, cancel := context.WithCancel(a.bootContext())
 	a.mu.Lock()
 	if tab == nil || tab.removed {
@@ -3215,7 +3260,20 @@ func (a *App) tabByIDLocked(tabID string) *WorkspaceTab {
 	if strings.TrimSpace(tabID) == "" {
 		return a.activeTabLocked()
 	}
-	return a.tabs[tabID]
+	if tab := a.tabs[tabID]; tab != nil {
+		return tab
+	}
+	for _, tab := range a.tabs {
+		if tab != nil && tab.SessionID == tabID {
+			return tab
+		}
+	}
+	for _, tab := range a.detachedSessions {
+		if tab != nil && (tab.ID == tabID || tab.SessionID == tabID) {
+			return tab
+		}
+	}
+	return nil
 }
 
 func (a *App) ctrlByTabID(tabID string) control.SessionAPI {
@@ -3256,7 +3314,6 @@ func (a *App) ensureBlankBackgroundTab(scope, workspaceRoot string) (*WorkspaceT
 			return nil, fmt.Errorf("workspaceRoot is required")
 		}
 		actualRoot = workspaceRoot
-		saveWorkspace(workspaceRoot)
 		_ = addProject(workspaceRoot, "")
 	} else {
 		scope = "global"
@@ -3448,24 +3505,10 @@ func scopeAndRootForSessionPath(sessionPath string) (scope, workspaceRoot string
 	return "global", ""
 }
 
-// newBackgroundSession creates or reuses a session in the given scope. When
-// sessionName is non-empty it finds or creates a named session;
-// otherwise it creates a new blank tab. The active tab is never changed unless
-// no active tab exists. Returns the tab, session path, and whether created.
+// newBackgroundSession creates one session in the given scope. sessionName is
+// only the new session's display name. The active UI tab is never changed.
+// Returns the tab, session path, and whether created.
 func (a *App) newBackgroundSession(scope, workspaceRoot, sessionName string) (*WorkspaceTab, string, bool, error) {
-	if sessionName != "" {
-		tab, created, err := a.ensureNamedBackgroundSession(scope, workspaceRoot, sessionName)
-		if err != nil {
-			return nil, "", false, err
-		}
-		path := tab.currentSessionPath()
-		if created {
-			if err := a.setTabSessionSource(tab.ID, "cli"); err != nil {
-				return nil, "", false, err
-			}
-		}
-		return tab, path, created, nil
-	}
 	tab, err := a.ensureBlankBackgroundTab(scope, workspaceRoot)
 	if err != nil {
 		return nil, "", false, err
@@ -3473,6 +3516,19 @@ func (a *App) newBackgroundSession(scope, workspaceRoot, sessionName string) (*W
 	path := tab.currentSessionPath()
 	if path == "" {
 		return nil, "", false, fmt.Errorf("new session has no path")
+	}
+	if sessionName = strings.TrimSpace(sessionName); sessionName != "" {
+		if err := a.RenameSession(path, sessionName); err != nil {
+			return nil, "", false, err
+		}
+		a.mu.Lock()
+		tab.TopicTitle = sessionName
+		a.saveTabsLocked()
+		a.mu.Unlock()
+		if err := setTopicTitleWithSource(workspaceRoot, tab.TopicID, sessionName, topicTitleSourceManual); err != nil {
+			return nil, "", false, err
+		}
+		_ = ensureTopicIndexed(scope, workspaceRoot, tab.TopicID, sessionName, topicTitleSourceManual)
 	}
 	if err := a.setTabSessionSource(tab.ID, "cli"); err != nil {
 		return nil, "", false, err
@@ -3921,6 +3977,7 @@ type desktopProjectFile struct {
 
 type desktopTabEntry struct {
 	ID               string  `json:"id"`
+	SessionID        string  `json:"sessionId,omitempty"`
 	Scope            string  `json:"scope"`
 	WorkspaceRoot    string  `json:"workspaceRoot"`
 	TopicID          string  `json:"topicId"`
@@ -3989,6 +4046,7 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 		if tab := a.tabs[id]; tab != nil {
 			entries = append(entries, desktopTabEntry{
 				ID:               tab.ID,
+				SessionID:        tab.SessionID,
 				Scope:            tab.Scope,
 				WorkspaceRoot:    tab.WorkspaceRoot,
 				TopicID:          tab.TopicID,
