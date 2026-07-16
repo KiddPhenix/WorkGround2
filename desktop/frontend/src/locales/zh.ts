@@ -2015,6 +2015,17 @@ export const zh: Record<DictKey, string> = {
   "requestHelp.retry": "重试",
   "requestHelp.closePreview": "关闭预览",
 
+  // 产物图片
+  "artifact.imagePreview": "生成的产物图片",
+  "artifact.loadingImage": "加载图片中…",
+  "artifact.imageLoadFailed": "图片加载失败",
+  "artifact.openImage": "打开图片",
+  "artifact.revealImage": "在文件夹中显示",
+  "artifact.viewFullscreen": "全屏查看",
+  "artifact.copyName": "复制名称",
+  "artifact.retry": "重试",
+  "artifact.closePreview": "关闭预览",
+
   // 软件更新
   "updater.title": "软件更新",
   "updater.autoCheckLabel": "启动时检测新版本",

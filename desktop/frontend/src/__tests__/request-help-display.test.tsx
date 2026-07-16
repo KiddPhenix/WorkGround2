@@ -6,7 +6,6 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { RequestHelpCard } from "../components/RequestHelpCard";
-import { TurnCollapse } from "../components/Transcript";
 import { LocaleProvider } from "../lib/i18n";
 import { REQUEST_HELP_PROGRESS_PREFIX, REQUEST_HELP_SUMMARY_PREFIX, applyRequestHelpProgress, finishRequestHelp, requestHelpFromArgs } from "../lib/requestHelp";
 import { historyMessagesToItems, initialState, reducer } from "../lib/useController";
@@ -86,72 +85,21 @@ console.log("\nrequest_help display state");
   ok(styles.includes("@media (prefers-reduced-motion: reduce)"), "card respects reduced motion");
 }
 
+// ── RequestHelpCard: image preview moved to ArtifactImagesForTool ──
 {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
-  const originalGo = window.go;
-  let opened = "";
-  let revealed = "";
-  window.go = { main: { App: {
-    RequestHelpImageDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
-    RequestHelpOpenImage: async (path: string) => { opened = path; },
-    RequestHelpRevealImage: async (path: string) => { revealed = path; },
-  } as any } };
   const artifact = { task_id: "img-ui", path: "C:\\images\\result.png", mime: "image/png", size: 128, width: 3, height: 2 };
   await act(async () => {
     root.render(<LocaleProvider><RequestHelpCard status={{ phase: "completed", capability: "image_generation", artifact }} args="{}" entranceId="image-card" /></LocaleProvider>);
     await Promise.resolve();
   });
-  ok(document.querySelector(".request-help__thumb") !== null, "image card renders a validated preview");
-  const actions = [...document.querySelectorAll(".request-help__image-actions button")] as HTMLButtonElement[];
-  await act(async () => {
-    actions[0]?.click();
-    actions[1]?.click();
-    await Promise.resolve();
-  });
-  eq(opened, artifact.path, "image card opens the validated image");
-  eq(revealed, artifact.path, "image card reveals the validated image");
-  await act(async () => (document.querySelector(".request-help__thumb-btn") as HTMLButtonElement).click());
-  ok(document.querySelector(".request-help__overlay") !== null, "thumbnail opens full-size preview");
-  const close = document.querySelector(".request-help__overlay-close") as HTMLButtonElement;
-  ok(document.activeElement === close, "full-size preview focuses its close action");
-  await act(async () => close.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-  ok(document.querySelector(".request-help__overlay") === null, "Escape closes full-size preview");
+  ok(document.querySelector(".request-help__title") !== null, "status card still renders title");
+  ok(document.querySelector(".request-help__image") === null, "no inline image preview (moved to ArtifactImageCard)");
+  ok(document.querySelector(".request-help__overlay") === null, "no inline overlay (moved to ArtifactImageCard)");
   await act(async () => root.unmount());
   host.remove();
-  window.go = originalGo;
-}
-
-{
-  const host = document.createElement("div");
-  document.body.appendChild(host);
-  const root = createRoot(host);
-  const originalGo = window.go;
-  let loads = 0;
-  window.go = { main: { App: {
-    RequestHelpImageDataURL: async () => {
-      loads += 1;
-      if (loads === 1) throw new Error("file moved");
-      return "data:image/png;base64,iVBORw0KGgo=";
-    },
-  } as any } };
-  const artifact = { task_id: "img-retry", path: "C:\\images\\retry.png", mime: "image/png", size: 64, width: 2, height: 2 };
-  await act(async () => {
-    root.render(<LocaleProvider><RequestHelpCard status={{ phase: "completed", capability: "image_generation", artifact }} args="{}" entranceId="image-retry" /></LocaleProvider>);
-    await Promise.resolve();
-  });
-  ok(document.body.textContent?.includes("file moved") === true, "image load failure is explicit");
-  const retry = document.querySelector(".request-help__image-placeholder--error button") as HTMLButtonElement;
-  await act(async () => {
-    retry.click();
-    await Promise.resolve();
-  });
-  eq(loads, 2, "retry performs one safe reload");
-  ok(document.querySelector(".request-help__thumb") !== null, "retry recovers the image preview");
-  await act(async () => root.unmount());
-  host.remove();
-  window.go = originalGo;
 }
 
 // ── artifact parsing ──
@@ -233,124 +181,6 @@ search result with http://example.com`;
   const status = finishRequestHelp(requestHelpFromArgs(`{"capability":"web_search"}`), output);
   eq(status.phase, "completed", "web_search: completes");
   ok(status.artifact === undefined, "web_search: no artifact");
-}
-
-// ── TurnCollapse image promotion ──
-{
-  const originalGo = window.go;
-
-  const imageArtifact = { task_id: "img-test", path: "C:\\images\\test.png", mime: "image/png", size: 128, width: 3, height: 2 };
-
-  function mockWails() {
-    window.go = { main: { App: {
-      RequestHelpImageDataURL: async () => "data:image/png;base64,iVBORw0KGgo=",
-      RequestHelpOpenImage: async () => {},
-      RequestHelpRevealImage: async () => {},
-    } as any } };
-  }
-
-  function imgTool(id: string): any {
-    return {
-      kind: "tool", id, name: "request_help",
-      args: '{"capability":"image_generation"}', readOnly: false, status: "done",
-      assistStatus: { phase: "completed", capability: "image_generation", fromModel: "a/b", model: "c/d", attempt: 1, total: 1, artifact: imageArtifact },
-    };
-  }
-
-  function normalTool(id: string): any {
-    return { kind: "tool", id, name: "bash", args: "echo hi", readOnly: false, status: "done" };
-  }
-
-  async function renderThenCleanup(el: React.ReactElement) {
-    const host = document.createElement("div");
-    document.body.appendChild(host);
-    const r = createRoot(host);
-    await act(async () => {
-      r.render(el);
-      await Promise.resolve();
-    });
-    return {
-      async cleanup() {
-        await act(async () => r.unmount());
-        host.remove();
-      },
-    };
-  }
-
-  // Test 1: completed image_generation with artifact renders outside collapse
-  mockWails();
-  {
-    const { cleanup } = await renderThenCleanup(
-      <LocaleProvider><TurnCollapse items={[imgTool("img-1")]} durationMs={0} mode="compact" subcalls={new Map()} /></LocaleProvider>
-    );
-    ok(document.querySelector(".request-help") !== null, "image card renders outside collapse fold");
-    ok(document.querySelector(".turn-collapse") === null, "no empty collapse when only image card exists");
-    await cleanup();
-  }
-
-  // Test 2: no duplicate rendering — only one card
-  mockWails();
-  {
-    const { cleanup } = await renderThenCleanup(
-      <LocaleProvider><TurnCollapse items={[imgTool("img-2")]} durationMs={0} mode="compact" subcalls={new Map()} /></LocaleProvider>
-    );
-    eq(document.querySelectorAll(".request-help").length, 1, "image card is not duplicated");
-    await cleanup();
-  }
-
-  // Test 3: normal tool stays inside collapse, image card stays outside
-  mockWails();
-  {
-    const { cleanup } = await renderThenCleanup(
-      <LocaleProvider><TurnCollapse items={[imgTool("img-3"), normalTool("bash-1")]} durationMs={5000} mode="compact" subcalls={new Map()} /></LocaleProvider>
-    );
-    const collapse = document.querySelector(".turn-collapse");
-    ok(collapse !== null, "collapse exists when normal tool present");
-    eq(collapse!.querySelector(".reasoning__head")?.getAttribute("aria-expanded"), "false", "normal tool fold starts collapsed");
-    // Image card should be after the process fold, not inside it.
-    ok(collapse!.nextElementSibling?.querySelector(".request-help") !== null, "image card is after collapse fold");
-    // Normal tool is inside the collapse body
-    ok(collapse!.querySelector(".turn-collapse__body .tool") !== null, "normal tool is inside collapse body");
-    await cleanup();
-  }
-
-  // Test 4: request_help without artifact stays inside collapse
-  mockWails();
-  {
-    const webHelpTool: any = {
-      kind: "tool", id: "web-1", name: "request_help",
-      args: '{"capability":"web_search"}', readOnly: false, status: "done",
-      assistStatus: { phase: "completed", capability: "web_search", fromModel: "a/b", model: "c/d", attempt: 1, total: 1 },
-    };
-    const { cleanup } = await renderThenCleanup(
-      <LocaleProvider><TurnCollapse items={[webHelpTool]} durationMs={3000} mode="compact" subcalls={new Map()} /></LocaleProvider>
-    );
-    const webCollapse = document.querySelector(".turn-collapse");
-    ok(webCollapse !== null, "web_search collapse exists");
-    ok(webCollapse!.querySelector(".turn-collapse__body .request-help") !== null, "web_search request_help stays inside collapse body");
-    // No image artifact visible outside since it doesn't have one
-    ok(webCollapse!.nextElementSibling === null || !webCollapse!.nextElementSibling?.querySelector(".request-help"), "no image card promoted outside for web_search");
-    await cleanup();
-  }
-
-  // Test 5: running image_generation stays inside collapse
-  mockWails();
-  {
-    const runningImgTool: any = {
-      kind: "tool", id: "img-running", name: "request_help",
-      args: '{"capability":"image_generation"}', readOnly: false, status: "running",
-      assistStatus: { phase: "attempting", capability: "image_generation", fromModel: "a/b", model: "c/d", attempt: 1, total: 2 },
-    };
-    const { cleanup } = await renderThenCleanup(
-      <LocaleProvider><TurnCollapse items={[runningImgTool]} durationMs={0} mode="compact" subcalls={new Map()} active /></LocaleProvider>
-    );
-    const runningCollapse = document.querySelector(".turn-collapse");
-    ok(runningCollapse !== null, "running request_help stays inside collapse");
-    ok(runningCollapse!.querySelector(".turn-collapse__body .request-help") !== null, "running image_generation stays inside collapse body");
-    await cleanup();
-  }
-
-  window.go = originalGo;
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

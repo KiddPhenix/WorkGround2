@@ -2013,6 +2013,17 @@ export const en = {
   "requestHelp.retry": "Retry",
   "requestHelp.closePreview": "Close preview",
 
+  // artifact images
+  "artifact.imagePreview": "Generated artifact image",
+  "artifact.loadingImage": "Loading image…",
+  "artifact.imageLoadFailed": "Failed to load image",
+  "artifact.openImage": "Open image",
+  "artifact.revealImage": "Show in folder",
+  "artifact.viewFullscreen": "View fullscreen",
+  "artifact.copyName": "Copy name",
+  "artifact.retry": "Retry",
+  "artifact.closePreview": "Close preview",
+
   // software update
   "updater.title": "Software update",
   "updater.autoCheckLabel": "Check for updates on startup",

@@ -5,6 +5,7 @@ import { useT } from "../lib/i18n";
 import { AssistantMessage, TurnActions, UserMessage } from "./Message";
 import { ProcessCompactIcon, ProcessPhaseIcon } from "./ProcessCard";
 import { ToolCard } from "./ToolCard";
+import { ArtifactImagesForTool } from "./ArtifactImageCard";
 import { ArrowDown, ChevronRight } from "lucide-react";
 import { Welcome } from "./Welcome";
 import type { WorkspaceWelcomeTarget } from "../lib/useWorkspaceWelcome";
@@ -1089,7 +1090,7 @@ type TurnCollapseProps = {
   active?: boolean;
 };
 
-/** @internal Exported only for focused rendering tests. */
+/** @internal Exported for focused fold-placement tests. */
 export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, active = false }: TurnCollapseProps) {
   const t = useT();
   const [open, setOpen] = useState(active);
@@ -1101,11 +1102,9 @@ export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creatio
   }, [active]);
 
   // Keep only items the body will actually render — an expandable fold over
-  // nothing is worse than no fold. Completed image_generation request_help
-  // items with a valid artifact are promoted out of the fold so the image
-  // preview is visible without expanding "思考过程".
-  const { promotedItems, collapsedItems } = useMemo(() => {
-    const renderable = items.filter((it) => {
+  // nothing is worse than no fold.
+  const displayItems = useMemo(() => {
+    return items.filter((it) => {
       if (it.kind === "assistant") {
         if (it.text.trim() !== "") return true;
         return Boolean(it.reasoning);
@@ -1115,41 +1114,33 @@ export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creatio
       if (it.parentId || it.name === "todo_write" || it.name === "exit_plan_mode") return false;
       return true;
     });
-    const promoted: Item[] = [];
-    const collapsed: Item[] = [];
-    for (const it of renderable) {
-      if (
-        it.kind === "tool" &&
-        it.name === "request_help" &&
-        it.assistStatus?.capability === "image_generation" &&
-        it.assistStatus?.phase === "completed" &&
-        it.assistStatus?.artifact !== undefined
-      ) {
-        promoted.push(it);
-      } else {
-        collapsed.push(it);
-      }
-    }
-    return { promotedItems: promoted, collapsedItems: collapsed };
   }, [items, mode]);
 
   const seconds = Math.round(durationMs / 1000);
   const label = active ? t("transcript.running") : seconds > 0 ? t("transcript.processedDuration", { s: seconds }) : t("transcript.processed");
 
-  if (collapsedItems.length === 0) {
-    if (promotedItems.length === 0) return null;
-    return (
-      <>
-        {promotedItems.map((it) => (
-          <ToolCard key={it.id} item={it as ToolItem} subcalls={subcalls.get(it.id)} tabId={tabId} />
-        ))}
-      </>
-    );
-  }
+  // Collect every completed tool ID (direct + nested) for artifact image preview.
+  const completedToolIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const it of displayItems) {
+      if (it.kind !== "tool") continue;
+      if (it.status !== "done") continue;
+      ids.push(it.id);
+      const nested = subcalls.get(it.id);
+      if (nested) {
+        for (const n of nested) {
+          if (n.status === "done") ids.push(n.id);
+        }
+      }
+    }
+    return ids;
+  }, [displayItems, subcalls]);
 
-  const collapseKind = collapsedItems.some((it) => it.kind === "tool")
+  if (displayItems.length === 0) return null;
+
+  const collapseKind = displayItems.some((it) => it.kind === "tool")
     ? "tool"
-    : collapsedItems.some((it) => it.kind === "assistant" && Boolean(it.reasoning))
+    : displayItems.some((it) => it.kind === "assistant" && Boolean(it.reasoning))
       ? "reasoning"
       : "process";
   const creationLabel = collapseKind === "tool"
@@ -1174,7 +1165,7 @@ export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creatio
     toolBatch.length = 0;
     toolBatchKind = null;
   };
-  for (const it of collapsedItems) {
+  for (const it of displayItems) {
     if (creationMode && it.kind === "tool" && isCreationGroupableTool(it as ToolItem)) {
       const kind = toolGroupKind(it as ToolItem);
       if (kind) {
@@ -1209,23 +1200,21 @@ export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creatio
   flushRO();
 
   return (
-    <>
-      <div className={`turn-collapse${open ? " turn-collapse--open" : ""}${active ? " turn-collapse--active" : ""}`} data-kind={collapseKind} data-entrance={collapsedItems[0]?.id || undefined}>
-        <button
-          type="button"
-          className="reasoning__head"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
-          <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
-          <span className="turn-collapse__label" data-creation-label={creationLabel}>{label}</span>
-        </button>
-        <div ref={bodyRef} className="turn-collapse__body">{body}</div>
-      </div>
-      {promotedItems.map((it) => (
-        <ToolCard key={it.id} item={it as ToolItem} subcalls={subcalls.get(it.id)} tabId={tabId} />
-      ))}
-    </>
+    <div className={`turn-collapse${open ? " turn-collapse--open" : ""}${active ? " turn-collapse--active" : ""}`} data-kind={collapseKind} data-entrance={displayItems[0]?.id || undefined}>
+      <button
+        type="button"
+        className="reasoning__head"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
+        <span className="turn-collapse__label" data-creation-label={creationLabel}>{label}</span>
+      </button>
+      <div ref={bodyRef} className="turn-collapse__body">{body}</div>
+      {tabId && completedToolIds.length > 0 && (
+        <ArtifactImagesForTool tabId={tabId} toolIds={completedToolIds} />
+      )}
+    </div>
   );
 }
 
