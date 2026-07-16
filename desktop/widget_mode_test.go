@@ -66,6 +66,23 @@ func TestMessageForPendingComplexAskRequiresMainWindow(t *testing.T) {
 	if !strings.Contains(message.Message, "2") {
 		t.Fatalf("message %q does not explain question count", message.Message)
 	}
+	if message.StateCode != "reply" || message.MessageCode != "multi_question" || message.MessageCount != 2 {
+		t.Fatalf("message localization metadata = %#v", message)
+	}
+}
+
+func TestMessageForPendingApprovalCarriesLocalizationCodes(t *testing.T) {
+	message := messageForPending(widgetSource{
+		meta:    TabMeta{ID: "tab"},
+		pending: control.PendingInteraction{Kind: control.PendingInteractionApproval, Approval: event.Approval{ID: "approval", Subject: "npm test"}},
+		has:     true,
+	})
+	if message.StateCode != "confirm" || len(message.Options) != 2 {
+		t.Fatalf("approval localization metadata = %#v", message)
+	}
+	if message.Options[0].Code != "allow" || message.Options[1].Code != "deny" {
+		t.Fatalf("approval option codes = %#v", message.Options)
+	}
 }
 
 func TestConciseWidgetTextFlattensAndTruncates(t *testing.T) {
@@ -247,6 +264,16 @@ func TestBuildWidgetSnapshotUsesAssistantResult(t *testing.T) {
 	if snapshot.Current == nil || snapshot.Current.Message != "已完成构建，全部测试通过。" {
 		t.Fatalf("result = %#v", snapshot.Current)
 	}
+	if snapshot.Current.StateCode != "complete" || snapshot.Current.MessageCode != "" {
+		t.Fatalf("assistant result localization metadata = %#v", snapshot.Current)
+	}
+}
+
+func TestBuildWidgetSnapshotMarksGeneratedCompletionCopy(t *testing.T) {
+	snapshot := buildWidgetSnapshot([]widgetSource{{meta: TabMeta{ID: "done", NeedsAttention: true}}})
+	if snapshot.Current == nil || snapshot.Current.StateCode != "complete" || snapshot.Current.MessageCode != "complete_fallback" {
+		t.Fatalf("generated result localization metadata = %#v", snapshot.Current)
+	}
 }
 
 func TestLastWidgetAssistantTextSkipsEmptyMessages(t *testing.T) {
@@ -265,7 +292,7 @@ func TestChooseWidgetWorkspacePrefersExplicitName(t *testing.T) {
 		{Scope: "project", Root: `D:\Work\Other`, Name: "Other", Aliases: []string{"Other"}, Active: true, Order: 0},
 		{Scope: "project", Root: `D:\Work\WorkGround2`, Name: "WorkGround2", Aliases: []string{"WorkGround2"}, Order: 1},
 	})
-	if route.Name != "WorkGround2" || route.Reason != "名称匹配" {
+	if route.Name != "WorkGround2" || route.Reason != "名称匹配" || route.ReasonCode != widgetRouteNameMatch {
 		t.Fatalf("route = %#v", route)
 	}
 }
@@ -393,7 +420,7 @@ func TestResolveWidgetWorkspaceGlobal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.Scope != "global" || route.Reason != "手动选择" {
+	if route.Scope != "global" || route.Reason != "手动选择" || route.ReasonCode != widgetRouteManual {
 		t.Fatalf("global routing = %#v", route)
 	}
 }
@@ -407,7 +434,7 @@ func TestResolveWidgetWorkspaceProjectExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.Name != "CICDBOT" || route.Reason != "手动选择" || route.Root != `D:\Work\CICDBOT` {
+	if route.Name != "CICDBOT" || route.Reason != "手动选择" || route.ReasonCode != widgetRouteManual || route.Root != `D:\Work\CICDBOT` {
 		t.Fatalf("project routing = %#v", route)
 	}
 }

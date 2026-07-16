@@ -93,7 +93,7 @@ function ContextPage({ message, projectName, taskName }: {
       <Header label="TASK CONTEXT" />
       <img className="widget-info__mark" src={w2Mark} alt="WorkGround2" />
       <strong className="widget-info__project">{message?.projectName ?? projectName ?? "WorkGround2"}</strong>
-      <span className="widget-info__caption">{message?.taskName ?? taskName ?? "任务状态"}</span>
+      <span className="widget-info__caption">{message?.taskName ?? taskName ?? "TASK STATUS"}</span>
     </span>
   );
 }
@@ -261,9 +261,9 @@ export function WidgetInfoCarousel({ snapshot, message, projectName, taskName }:
     content = <TokensPage snapshot={snapshot} />;
   }
 
-  const visibleLabel = showContext ? "任务上下文" : PAGE_LABEL[page];
+  const visibleLabel = showContext ? "TASK CONTEXT" : PAGE_LABEL[page];
   return (
-    <button className="widget-info" type="button" onClick={next} aria-label={`${visibleLabel}，点击显示下一项`}>
+    <button className="widget-info" type="button" onClick={next} aria-label={`${visibleLabel}. Click to show the next item`}>
       <img className="widget-info__rail" src={calibrationRail} alt="" aria-hidden="true" />
       {content}
     </button>

@@ -136,6 +136,14 @@
 
 发送使用稳定 `requestId`。后端先持久化路由和发送阶段回执，再创建空白 Tab、等待 Controller 就绪并提交。IPC 断开或应用重启后可使用同一 `requestId` 重试；若历史中已经存在完全一致的用户消息，则恢复为已发送，避免重复创建 turn。同一 `requestId` 携带不同文本或不同 workspace 选择会显式返回 `invalid`。
 
+### 多语言
+
+- 小组件跟随 Desktop locale，支持简体中文、繁体中文和英文；切换语言后当前小组件即时刷新，无需重启或重建任务。
+- 按钮、状态、分页、队列、占位符、Auto workspace、路由原因和 40 条运行态轮播文案全部本地化；左侧点阵信息轮播作为终端视觉层统一保留英文，相关 aria 同步使用英文。
+- 项目名、工作区名、任务标题、用户输入、助手结果和服务端原始错误详情保持原文。
+- Go 投影使用稳定的 `stateCode`、`messageCode`、`option.code`、`routeReasonCode` 和 `taskNameCode` 表达系统语义；前端负责翻译，同时兼容旧 snapshot / receipt 的原始中文字段。
+- 三种语言的运行态文案均不少于 40 条且不连续重复；英文控制为短句，超出可用宽度时继续使用既有 ticker 动画。
+
 ## 6. 多任务消息模型
 
 小组件展示由单一 `WidgetSnapshot` 推导。React 不直接拼接网络回包或跨 Tab 猜测状态。
@@ -428,6 +436,7 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - 2026-07-16 小组件高度调整：默认 590×142 → 590×176，最小高度 128 → 160。旧默认持久化自动迁移（高度升到 176，Y 上移 34 保持底边）；用户自定义尺寸不迁移。补 Go 测试覆盖迁移逻辑。
 - 2026-07-16 空闲动画暂停：WidgetSnapshot 新增 `isIdle` 字段；前端在真正空闲时（无 current、无计数、未进入新对话/路由提示）为 `.widget-mode` 追加 `widget-mode--idle` class，暂停 ticker、扫描线、状态光带动画。入场/分页交互动画保持不变。
 - 2026-07-16 workspace 选择器：“新对话”按钮旁增加 workspace 下拉，默认"自动"。点击向上展开菜单含"自动"、所有非 transient 稳定项目、Global。Escape/点击外部关闭，具备 aria 语义。Go 新增 `ListWidgetWorkspaces` 接口；`WidgetConversationInput` 扩展 `workspace` 字段（auto/global/project:root）；手动选择 reason="手动选择"，project 精确校验且必须稳定，非法/过期显式 invalid。请求幂等键含 prompt 与 workspace 选择，切换目标生成新 requestId。前端 mock 支持 WorkGround2/CICDBOT/Global 手动路由验证。
+- 2026-07-16 多语言：WidgetMode 接入 Desktop i18n，补齐简中、繁中、英文交互文案和各 40 条运行态短句；点阵信息轮播按产品约定统一使用英文。后端新增稳定语义 code，旧中文 snapshot/receipt 继续通过 fallback 映射显示；用户与助手内容保持原文。
 - 交互检查：点选回复和键入发送均成功，失败信息保留输入并复用同一 `requestId`。
 - 构建检查：前端 `npm.cmd run build` 通过；Wails Windows production build 通过。
 - 全量桌面既有测试中仍有与本功能无关的 Windows 临时目录清理、Topic tree 时序失败；本功能定向测试全部通过。

@@ -5,11 +5,14 @@ import {
   type WidgetActionInput,
   type WidgetActionResult,
   type WidgetConversationResult,
+  type WidgetMessage,
   type WidgetOption,
   type WidgetSnapshot,
   type WidgetWorkspaceOption,
 } from "../../lib/bridge";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
+import { useI18n, useT, type Translator } from "../../lib/i18n";
+import { pickWidgetSuffix, widgetSuffixes } from "./widgetCopy";
 import shellTopLeft from "../../assets/widget-mode/pager-shell.9/top-left.png";
 import shellTop from "../../assets/widget-mode/pager-shell.9/top.png";
 import shellTopRight from "../../assets/widget-mode/pager-shell.9/top-right.png";
@@ -40,66 +43,6 @@ const EMPTY_SNAPSHOT: WidgetSnapshot = {
   version: "loading",
 };
 
-// IDLE_SUFFIXES are the rotating second-half phrases shown when tasks are
-// running but nothing requires user attention. Every entry must be ≤10 Chinese
-// characters to fit the 590 px widget without wrapping.
-export const IDLE_SUFFIXES = [
-  "一切正常",
-  "无需回复",
-  "一切顺利",
-  "无需操作",
-  "自动运行中",
-  "静待完成",
-  "平稳进行中",
-  "无需干预",
-  "一切安好",
-  "安心等待",
-  "正常运行",
-  "风平浪静",
-  "无需挂念",
-  "自动巡航",
-  "一切就绪",
-  "安稳运行",
-  "无需操心",
-  "进展顺利",
-  "一切良好",
-  "状态平稳",
-  "自动推进",
-  "无需照看",
-  "运行平稳",
-  "一帆风顺",
-  "安好勿念",
-  "自动作业",
-  "无需关注",
-  "顺风顺水",
-  "一切如常",
-  "平静运行",
-  "自动处理",
-  "无需过问",
-  "稳步推进",
-  "安然无恙",
-  "自动执行",
-  "无需在意",
-  "平安无事",
-  "运行如常",
-  "无需协助",
-  "一切安稳",
-];
-
-// pickIdleSuffix returns a random idle suffix that differs from prev.
-// Callers guarantee that IDLE_SUFFIXES has at least 2 entries.
-export function pickIdleSuffix(prev: string): string {
-  const candidates = IDLE_SUFFIXES.filter((s) => s !== prev);
-  if (candidates.length === 0) return IDLE_SUFFIXES[0];
-  return candidates[Math.floor(Math.random() * candidates.length)];
-}
-
-// validateIdleSuffixes returns suffixes longer than 10 characters — a pure
-// function so the constraint is verifiable at build time.
-export function validateIdleSuffixes(): string[] {
-  return IDLE_SUFFIXES.filter((s) => s.length > 10);
-}
-
 const shellTiles = [
   shellTopLeft,
   shellTop,
@@ -114,6 +57,66 @@ const shellTiles = [
 
 function requestID(): string {
   return globalThis.crypto?.randomUUID?.() ?? `widget-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function workspaceLabel(option: WidgetWorkspaceOption | undefined, t: Translator): string {
+  if (!option || option.scope === "auto") return t("common.auto");
+  return option.name;
+}
+
+function stateLabel(message: WidgetMessage, t: Translator): string {
+  const code = message.stateCode
+    ?? (message.id.startsWith("approval:") ? "confirm"
+      : message.id.startsWith("ask:") ? "reply"
+        : message.id.startsWith("error:") ? "action"
+          : message.id.startsWith("result:") ? "complete" : undefined);
+  switch (code) {
+    case "confirm": return t("widget.stateConfirm");
+    case "reply": return t("widget.stateReply");
+    case "action": return t("widget.stateAction");
+    case "complete": return t("widget.stateComplete");
+    default: return message.stateLabel;
+  }
+}
+
+function messageText(message: WidgetMessage, t: Translator): string {
+  if (message.messageCode === "complete_fallback" || message.message === "执行已完成，结果可以查看。") {
+    return t("widget.completeFallback");
+  }
+  if (message.messageCode === "multi_question") {
+    return t("widget.multiQuestion", { count: message.messageCount ?? 0 });
+  }
+  const legacyMulti = /^需要回答\s+(\d+)\s+个问题，请在主窗口继续。$/.exec(message.message);
+  return legacyMulti ? t("widget.multiQuestion", { count: Number(legacyMulti[1]) }) : message.message;
+}
+
+function routeReason(result: WidgetConversationResult, t: Translator): string {
+  const legacy: Record<string, WidgetConversationResult["routeReasonCode"]> = {
+    "Global 兜底": "global_fallback",
+    "最近使用": "recent",
+    "名称匹配": "name_match",
+    "历史上下文": "history",
+    "当前工作区": "current",
+    "主工作区": "primary",
+    "手动选择": "manual",
+  };
+  switch (result.routeReasonCode ?? legacy[result.routeReason ?? ""]) {
+    case "global_fallback": return t("widget.routeGlobalFallback");
+    case "recent": return t("widget.routeRecent");
+    case "name_match": return t("widget.routeNameMatch");
+    case "history": return t("widget.routeHistory");
+    case "current": return t("widget.routeCurrent");
+    case "primary": return t("widget.routePrimary");
+    case "manual": return t("widget.routeManual");
+    default: return result.routeReason ?? "";
+  }
+}
+
+function optionCopy(option: WidgetOption, message: WidgetMessage, t: Translator): WidgetOption {
+  const code = option.code ?? (message.id.startsWith("approval:") && (option.value === "allow" || option.value === "deny") ? option.value : undefined);
+  if (code === "allow") return { ...option, label: t("widget.approvalAllow"), description: t("widget.approvalAllowDesc") };
+  if (code === "deny") return { ...option, label: t("widget.approvalDeny"), description: t("widget.approvalDenyDesc") };
+  return option;
 }
 
 function NineSliceShell() {
@@ -186,6 +189,7 @@ function splitWidgetPages(text: string, maxWidth: number, measure: (value: strin
 }
 
 function PagedText({ children }: { children: string }) {
+  const t = useT();
   const frameRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const [pages, setPages] = useState([children]);
@@ -227,7 +231,7 @@ function PagedText({ children }: { children: string }) {
       className={`widget-pager${hasNext ? " widget-pager--more" : ""}`}
       role={hasNext ? "button" : undefined}
       tabIndex={hasNext ? 0 : undefined}
-      aria-label={hasNext ? `${pages[page]} 点击显示下一页` : pages[page]}
+      aria-label={hasNext ? t("widget.pageAria", { text: pages[page] }) : pages[page]}
       data-page-index={page}
       data-page-count={pages.length}
       onClick={next}
@@ -238,14 +242,15 @@ function PagedText({ children }: { children: string }) {
       }}
     >
       <h1><span key={page} className="widget-pager__text">{pages[page]}</span><span ref={measureRef} className="widget-pager__measure" aria-hidden="true" /></h1>
-      {hasNext && <span className="widget-pager__next" aria-hidden="true">下一页 <ChevronRight size={17} /></span>}
+      {hasNext && <span className="widget-pager__next" aria-hidden="true">{t("widget.pageNext")} <ChevronRight size={17} /></span>}
     </div>
   );
 }
 
 function QueueLabel({ snapshot }: { snapshot: WidgetSnapshot }) {
+  const t = useT();
   if (snapshot.remainingCount <= 0) return null;
-	return <span className="widget-message__queue" aria-label={`当前消息之后还有 ${snapshot.remainingCount} 条待查看信息`}>还有 {snapshot.remainingCount} 条</span>;
+	return <span className="widget-message__queue" aria-label={t("widget.queueAria", { count: snapshot.remainingCount })}>{t("widget.queueMore", { count: snapshot.remainingCount })}</span>;
 }
 
 function OptionButton({ option, primary, onClick, disabled }: {
@@ -273,7 +278,7 @@ function workspaceKey(opt: WidgetWorkspaceOption): string {
   return `project:${opt.root ?? ""}`;
 }
 
-const AUTO_WORKSPACE: WidgetWorkspaceOption = { scope: "auto", name: "自动" };
+const AUTO_WORKSPACE: WidgetWorkspaceOption = { scope: "auto", name: "" };
 
 function WorkspaceDropdown({ options, selected, onChange, disabled }: {
   options: WidgetWorkspaceOption[];
@@ -281,6 +286,7 @@ function WorkspaceDropdown({ options, selected, onChange, disabled }: {
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -301,7 +307,7 @@ function WorkspaceDropdown({ options, selected, onChange, disabled }: {
   }, [open]);
 
   const selectedOption = options.find((o) => workspaceKey(o) === selected);
-  const label = selectedOption?.name ?? "自动";
+  const label = workspaceLabel(selectedOption, t);
 
   return (
     <div className="widget-workspace" ref={ref}>
@@ -312,13 +318,13 @@ function WorkspaceDropdown({ options, selected, onChange, disabled }: {
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`工作区选择：${label}`}
+        aria-label={t("widget.workspaceSelectAria", { name: label })}
       >
-        <span className="widget-workspace__value"><strong>{label}</strong><small>工作区</small></span>
+        <span className="widget-workspace__value"><strong>{label}</strong><small>{t("widget.workspaceLabel")}</small></span>
         <ChevronUp size={16} />
       </button>
       {open && (
-        <ul className="widget-workspace__menu" role="menu" aria-label="选择工作区">
+        <ul className="widget-workspace__menu" role="menu" aria-label={t("widget.workspaceMenu")}>
           {options.map((opt) => {
             const key = workspaceKey(opt);
             const isSelected = key === selected;
@@ -332,7 +338,7 @@ function WorkspaceDropdown({ options, selected, onChange, disabled }: {
                   aria-checked={isSelected}
                 >
                   {isSelected && <Check size={20} className="widget-workspace__check" />}
-                  <span className="widget-workspace__label">{opt.name}</span>
+                  <span className="widget-workspace__label">{workspaceLabel(opt, t)}</span>
                 </button>
               </li>
             );
@@ -351,7 +357,9 @@ function IdleStatus({ snapshot, workspaces, selectedWorkspace, onWorkspaceChange
   onNew: () => void;
   disabled: boolean;
 }) {
-  const [suffix, setSuffix] = useState(() => pickIdleSuffix(""));
+  const { t, locale } = useI18n();
+  const suffixes = widgetSuffixes(locale);
+  const [suffix, setSuffix] = useState(() => pickWidgetSuffix(suffixes));
   const prevRunning = useRef(snapshot.runningCount);
   const prevHasCurrent = useRef(snapshot.current != null);
 
@@ -362,31 +370,31 @@ function IdleStatus({ snapshot, workspaces, selectedWorkspace, onWorkspaceChange
       prevRunning.current = snapshot.runningCount;
       prevHasCurrent.current = hasCurrent;
       if (snapshot.runningCount > 0 && !hasCurrent) {
-        setSuffix(pickIdleSuffix(""));
+        setSuffix(pickWidgetSuffix(suffixes));
       }
     }
-  }, [snapshot.runningCount, snapshot.current]);
+  }, [locale, snapshot.runningCount, snapshot.current, suffixes]);
 
   // Rotate suffix every 4–7 seconds when tasks are running and there is no
   // current message. Independent of the 800 ms snapshot poll.
   useEffect(() => {
     if (snapshot.runningCount <= 0 || snapshot.current != null) return;
     const timer = window.setInterval(() => {
-      setSuffix((prev) => pickIdleSuffix(prev));
+      setSuffix((prev) => pickWidgetSuffix(suffixes, prev));
     }, 4000 + Math.floor(Math.random() * 3000));
     return () => window.clearInterval(timer);
-  }, [snapshot.runningCount, snapshot.current]);
+  }, [locale, snapshot.runningCount, snapshot.current, suffixes]);
 
   const runningText = snapshot.runningCount > 0
-    ? `${snapshot.runningCount} 个任务运行中 · ${suffix}`
-    : "暂无运行任务 · 无待处理消息";
+    ? t(snapshot.runningCount === 1 ? "widget.runningOne" : "widget.runningMany", { count: snapshot.runningCount, status: suffix })
+    : t("widget.noTasks");
   const secondary = snapshot.backgroundCount > 0
-    ? `${snapshot.backgroundCount} 个后台作业持续运行`
-    : snapshot.runningCount > 0 ? "目前没有需要处理的消息" : "没有需要处理的重要信息";
+    ? t(snapshot.backgroundCount === 1 ? "widget.backgroundOne" : "widget.backgroundMany", { count: snapshot.backgroundCount })
+    : snapshot.runningCount > 0 ? t("widget.noMessages") : t("widget.noImportantMessages");
   return (
     <section className="widget-message widget-message--idle" aria-live="polite">
       <div className="widget-message__head">
-		<span className="widget-message__state">{snapshot.runningCount > 0 ? "运行中" : "系统在线"}</span>
+		<span className="widget-message__state">{t(snapshot.runningCount > 0 ? "widget.stateRunning" : "widget.stateOnline")}</span>
       </div>
       <TickerText>{runningText}</TickerText>
       <div className="widget-status-line" aria-hidden="true"><span /></div>
@@ -395,7 +403,7 @@ function IdleStatus({ snapshot, workspaces, selectedWorkspace, onWorkspaceChange
         <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={disabled} />
         <button className="widget-new" type="button" onClick={onNew} disabled={disabled}>
           <MessageSquarePlus size={18} />
-          <span><strong>新对话</strong><small>输入任务</small></span>
+          <span><strong>{t("widget.newConversation")}</strong><small>{t("widget.enterTask")}</small></span>
         </button>
       </div>
     </section>
@@ -413,14 +421,15 @@ function NewConversation({ prompt, busy, workspaces, selectedWorkspace, onWorksp
   onCancel: () => void;
   submitKey: ComposerSubmitKey;
 }) {
-  const selectedName = workspaces.find((option) => workspaceKey(option) === selectedWorkspace)?.name ?? "自动";
+  const t = useT();
+  const selectedName = workspaceLabel(workspaces.find((option) => workspaceKey(option) === selectedWorkspace), t);
   const placeholder = selectedWorkspace === "auto"
-    ? "输入任务，系统会自动选择工作区…"
-    : `输入任务，将发送到 ${selectedName}…`;
+    ? t("widget.composePlaceholderAuto")
+    : t("widget.composePlaceholderWorkspace", { name: selectedName });
   return (
     <section className="widget-message widget-message--compose" aria-live="polite">
-      <div className="widget-message__head"><span className="widget-message__state">新对话</span></div>
-      <TickerText>想让 WorkGround2 做什么？</TickerText>
+      <div className="widget-message__head"><span className="widget-message__state">{t("widget.newConversation")}</span></div>
+      <TickerText>{t("widget.composePrompt")}</TickerText>
       <div className="widget-message__scan" aria-hidden="true"><span /></div>
       <form className="widget-reply widget-reply--compose" onSubmit={onSubmit}>
         <input
@@ -439,33 +448,35 @@ function NewConversation({ prompt, busy, workspaces, selectedWorkspace, onWorksp
             event.preventDefault();
           }}
           placeholder={placeholder}
-          aria-label="新对话内容"
+          aria-label={t("widget.composeAria")}
           autoFocus
           disabled={busy}
         />
         <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={busy} />
-        <button className="widget-reply__send" type="submit" disabled={busy || prompt.trim() === ""} aria-label="开始新对话"><Send size={18} /></button>
-        <button className="widget-reply__later" type="button" onClick={onCancel} disabled={busy}><X size={15} /> 取消</button>
+        <button className="widget-reply__send" type="submit" disabled={busy || prompt.trim() === ""} aria-label={t("widget.startConversation")}><Send size={18} /></button>
+        <button className="widget-reply__later" type="button" onClick={onCancel} disabled={busy}><X size={15} /> {t("common.cancel")}</button>
       </form>
     </section>
   );
 }
 
 function RouteNotice({ result, prompt }: { result: WidgetConversationResult; prompt: string }) {
+  const t = useT();
   return (
     <section className="widget-message widget-message--route" aria-live="polite">
       <div className="widget-message__head">
-        <span className="widget-message__state">新对话已创建</span>
-        <span className="widget-route__reason">{result.routeReason}</span>
+        <span className="widget-message__state">{t("widget.conversationCreated")}</span>
+        <span className="widget-route__reason">{routeReason(result, t)}</span>
       </div>
-      <TickerText>{`已交给 ${result.workspaceName || "Global"}`}</TickerText>
+      <TickerText>{t("widget.assignedTo", { name: result.workspaceName || "Global" })}</TickerText>
       <div className="widget-message__scan" aria-hidden="true"><span /></div>
-      <p>正在处理：{prompt}</p>
+      <p>{t("widget.processing", { prompt })}</p>
     </section>
   );
 }
 
 export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKey?: string }) {
+  const t = useT();
   const [snapshot, setSnapshot] = useState<WidgetSnapshot>(EMPTY_SNAPSHOT);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -501,9 +512,9 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
       })
       .catch(() => {
         setWorkspaces([AUTO_WORKSPACE]);
-        setError("工作区列表加载失败，仍可使用自动选择");
+        setError(t("widget.workspaceLoadFailed"));
       });
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     setTyped("");
@@ -531,12 +542,12 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
       setSnapshot(result.snapshot);
       if (result.status === "retryable_error" || result.status === "invalid") {
 		retryRequest.current = { key: actionKey, id: actionRequestID };
-        setError(result.error ?? "操作失败，可以重试");
+        setError(result.error ?? t("widget.actionFailed"));
         return;
       }
 	  retryRequest.current = null;
       if (result.status === "stale") {
-        setError(result.error ?? "信息已更新");
+        setError(result.error ?? t("widget.infoUpdated"));
         return;
       }
       if (action === "open") onExit();
@@ -546,7 +557,7 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
     } finally {
       setBusy(false);
     }
-  }, [busy, onExit, snapshot.current]);
+  }, [busy, onExit, snapshot.current, t]);
 
   const choose = useCallback((option: WidgetOption) => {
     if (option.value === "allow") void apply("approve");
@@ -576,7 +587,7 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 			const result = await app.StartWidgetConversation({ prompt, requestId, workspace: ws });
 			setSnapshot(result.snapshot);
 			if (result.status === "retryable_error" || result.status === "invalid") {
-				setError(result.error ?? "新对话创建失败，可以重试");
+				setError(result.error ?? t("widget.conversationFailed"));
 				return;
 			}
 			conversationRequest.current = null;
@@ -589,7 +600,7 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 		} finally {
 			setBusy(false);
 		}
-	}, [busy, newPrompt, selectedWorkspace]);
+	}, [busy, newPrompt, selectedWorkspace, t]);
 
   const exit = useCallback(async (tabID = "") => {
     if (busy) return;
@@ -614,25 +625,25 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
     return (
 	  <section key={current.id} className={`widget-message widget-message--${current.kind}`} aria-live="polite">
         <div className="widget-message__head">
-          <span className="widget-message__state">{current.stateLabel}</span>
+          <span className="widget-message__state">{stateLabel(current, t)}</span>
           <QueueLabel snapshot={snapshot} />
         </div>
-        <PagedText>{current.message}</PagedText>
+        <PagedText>{messageText(current, t)}</PagedText>
         <div className="widget-message__scan" aria-hidden="true"><span /></div>
 
         {current.requiresWindow ? (
           <div className="widget-actions">
             <button className="widget-action widget-action--primary" type="button" onClick={() => void apply("open")} disabled={busy}>
-              <span>在窗口中处理</span><small>打开完整上下文</small>
+              <span>{t("widget.handleInWindow")}</span><small>{t("widget.openFullContext")}</small>
             </button>
           </div>
         ) : current.kind === "choice" ? (
           <div className="widget-actions">
             {current.options.slice(0, 3).map((option, index) => (
-              <OptionButton key={option.value} option={option} primary={index === 0} onClick={() => choose(option)} disabled={busy} />
+              <OptionButton key={option.value} option={optionCopy(option, current, t)} primary={index === 0} onClick={() => choose(option)} disabled={busy} />
             ))}
 			<button className="widget-action widget-action--quiet" type="button" onClick={() => void apply("later")} disabled={busy}>
-			  <span>稍后</span>
+			  <span>{t("widget.later")}</span>
 			</button>
           </div>
         ) : current.kind === "reply" ? (
@@ -652,39 +663,39 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 				}
 				event.preventDefault();
 			  }}
-              placeholder="输入简短回复…"
-              aria-label="回复内容"
+              placeholder={t("widget.replyPlaceholder")}
+              aria-label={t("widget.replyAria")}
               autoFocus
               disabled={busy}
             />
-			<button className="widget-reply__send" type="submit" disabled={busy || typed.trim() === ""} aria-label="发送回复"><Send size={18} /></button>
-			<button className="widget-reply__later" type="button" onClick={() => void apply("later")} disabled={busy}>稍后</button>
+			<button className="widget-reply__send" type="submit" disabled={busy || typed.trim() === ""} aria-label={t("widget.sendReply")}><Send size={18} /></button>
+			<button className="widget-reply__later" type="button" onClick={() => void apply("later")} disabled={busy}>{t("widget.later")}</button>
           </form>
         ) : current.kind === "result" ? (
           <div className="widget-actions widget-actions--result">
 			<button className="widget-action widget-action--primary" type="button" onClick={() => void apply("next")} disabled={busy}>
-              <span>下一条</span><ArrowRight size={16} />
+			  <span>{t("widget.next")}</span><ArrowRight size={16} />
             </button>
 			<button className="widget-action" type="button" onClick={() => void apply("open")} disabled={busy}>
-			  <span>查看结果</span><Maximize2 size={16} />
+			  <span>{t("widget.viewResult")}</span><Maximize2 size={16} />
 			</button>
           </div>
         ) : (
           <div className="widget-actions widget-actions--result">
             <button className="widget-action widget-action--primary" type="button" onClick={() => void apply("retry")} disabled={busy}>
-              <span>重试</span><RotateCcw size={16} />
+              <span>{t("common.retry")}</span><RotateCcw size={16} />
             </button>
             <button className="widget-action" type="button" onClick={() => void apply("open")} disabled={busy}>
-              <span>查看详情</span><Maximize2 size={16} />
+              <span>{t("widget.viewDetails")}</span><Maximize2 size={16} />
             </button>
           </div>
         )}
       </section>
     );
-  }, [apply, busy, choose, composing, composerSubmitKey, current, newPrompt, routeNotice, selectedWorkspace, snapshot, startConversation, submitTyped, typed, workspaces]);
+  }, [apply, busy, choose, composing, composerSubmitKey, current, newPrompt, routeNotice, selectedWorkspace, snapshot, startConversation, submitTyped, t, typed, workspaces]);
 
 	const contextProject = routeNotice?.result.workspaceName;
-	const contextTask = composing || routeNotice ? "新对话" : undefined;
+	const contextTask = composing || routeNotice ? t("widget.newConversation") : undefined;
 
   return (
     <main className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`}>
@@ -693,9 +704,9 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
         <div className="widget-shell__drag" aria-hidden="true" />
 		<WidgetInfoCarousel snapshot={snapshot} message={current} projectName={contextProject} taskName={contextTask} />
         {body}
-        <button className="widget-return" type="button" onClick={() => void exit(current?.kind === "result" ? current.tabId : "")} disabled={busy} aria-label="返回主窗口">
+        <button className="widget-return" type="button" onClick={() => void exit(current?.kind === "result" ? current.tabId : "")} disabled={busy} aria-label={t("widget.returnMain")}>
           <span className="widget-return__icon"><PanelTopOpen size={18} strokeWidth={1.8} /></span>
-          <span className="widget-return__copy"><strong>主窗口</strong><small>FULL VIEW</small></span>
+          <span className="widget-return__copy"><strong>{t("widget.mainWindow")}</strong><small>{t("widget.fullView")}</small></span>
         </button>
         {error && <div className="widget-error" role="alert">{error}</div>}
       </div>

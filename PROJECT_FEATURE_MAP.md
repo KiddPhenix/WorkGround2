@@ -185,10 +185,11 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: running, runstatus, todo_write, TodoPanel, tab switch, openProjectTab, detached runtime
 - Source: verified-by-search
 - Updated: 2026-07-15
+
 ### 桌面传呼机小组件模式
-- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_info.go`, `desktop/widget_mode_test.go`, `desktop/widget_info_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/src/components/widget`
-- Summary: 状态 done；桌面主窗口可缩为单消息传呼机小组件，聚合任务状态并支持幂等操作、稳定当前项、工作区路由、固定返回窗口和独立几何恢复。左侧为点击切换的六页点阵信息终端，显示 TOKEN、时钟、W2 宠物、IDLE、系统状态和已接入模型；新任务 revision 只抢占一次上下文。
-- Keywords: widget mode, pager, info carousel, token meter, system telemetry, model logo, idle timer, W2 companion, session:activated, widget-open
+- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_conversation.go`, `desktop/widget_info.go`, `desktop/widget_mode_test.go`, `desktop/widget_info_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/src/components/widget`, `desktop/frontend/src/locales`
+- Summary: 状态 done；桌面主窗口可缩为单消息传呼机小组件，聚合任务状态并支持幂等操作、稳定当前项、工作区路由、完成态 session 激活和独立几何恢复。左侧六页点阵信息终端统一使用英文；其余交互支持简中、繁中、英文，并为每种语言提供 40 条短运行文案，后端通过稳定语义码传递可翻译状态。
+- Keywords: widget mode, pager, info carousel, widgetSuffixes, routeReasonCode, 多语言, 随机文案, token meter, system telemetry, model logo, idle timer, W2 companion, session:activated, widget-open
 - Source: user-requested+design-approved+verified-by-search
 - Updated: 2026-07-16
 
