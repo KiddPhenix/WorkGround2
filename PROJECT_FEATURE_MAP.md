@@ -184,12 +184,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Note: 运行状态胶囊移除 `·` 前的通用阶段前缀，只保留具体任务文案。
 - Keywords: running, runstatus, todo_write, TodoPanel, tab switch, openProjectTab, detached runtime
 - Source: verified-by-search
-- Updated: 2026-07-15
+- Updated: 2026-07-16
 
 ### 桌面传呼机小组件模式
 - Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_mode_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/scripts/build-widget-slices.ps1`, `desktop/frontend/src/components/widget`
-- Summary: 状态 complete；桌面主窗口可缩为单消息传呼机小组件，从现有 Controller 与 Tab attention 状态投影跨任务待回复、完成、错误和运行状态；支持稳定当前项、稍后轮转、幂等动作、固定返回窗口、独立几何恢复和九宫格资源。窗口已调整为 `590 × 142`，内部逻辑画布统一缩放 `50%`；四角通过透明 WebView、透明根节点和机壳裁剪真实透出桌面，隔离 production 包已验收。
-- Keywords: widget mode, pager, attention queue, single message, remaining count, Wails window, nine-slice, 返回窗口
+- Summary: 状态 complete；桌面主窗口可缩为单消息传呼机小组件，从现有 Controller 与 Tab attention 状态投影跨任务待回复、完成、错误和运行状态；支持稳定当前项、稍后轮转、幂等动作、独立几何恢复和九宫格资源。空闲态可在小组件内发起新对话，按项目名、最近主题和当前项目自动选择 workspace，创建与发送阶段有持久化回执并可安全重试；完成时直接显示助手结果摘要。固定“主窗口 / FULL VIEW”模式键可随时恢复完整窗口。窗口为 `590 × 142`，内部逻辑画布统一缩放 `50%`，四角真实透明。
+- Keywords: widget mode, pager, attention queue, single message, remaining count, new conversation, workspace routing, idempotent submit, Wails window, nine-slice, 主窗口
 - Source: user-requested+design-approved
 - Updated: 2026-07-15
 

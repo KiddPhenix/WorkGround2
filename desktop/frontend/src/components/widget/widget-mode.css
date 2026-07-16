@@ -5,7 +5,7 @@
 
 body:has(.widget-mode),
 body:has(.widget-mode) #root {
-  overflow: hidden;
+  overflow: clip;
   background: transparent !important;
 }
 
@@ -26,7 +26,7 @@ body:has(.widget-mode) .app {
 	height: 100vh;
   min-width: 520px;
   min-height: 128px;
-  overflow: hidden;
+  overflow: clip;
   background: transparent;
   color: var(--widget-white);
   font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
@@ -311,6 +311,7 @@ body:has(.widget-mode) .app {
 }
 
 .widget-action:focus-visible,
+.widget-new:focus-visible,
 .widget-return:focus-visible,
 .widget-reply input:focus-visible,
 .widget-reply button:focus-visible {
@@ -395,25 +396,151 @@ body:has(.widget-mode) .app {
   font-size: clamp(12px, 1.15vw, 15px);
 }
 
+.widget-idle__foot {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.widget-idle__foot p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.widget-new {
+  position: relative;
+  flex: 0 0 216px;
+  min-height: 48px;
+  padding: 5px 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  border: 0;
+  background: var(--widget-yellow);
+  box-shadow: inset 0 0 0 2px rgb(1 13 16 / 0.72), 0 0 16px rgb(255 230 0 / 0.13);
+  color: #071013;
+  cursor: pointer;
+  clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
+  --wails-draggable: no-drag;
+}
+
+.widget-new > span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.05;
+}
+
+.widget-new strong {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.widget-new small {
+  margin-top: 3px;
+  color: rgb(2 16 20 / 0.62);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.widget-new:hover:not(:disabled) { filter: brightness(1.08); }
+.widget-new:disabled { cursor: wait; opacity: 0.58; }
+
+.widget-message--compose h1,
+.widget-message--route h1 {
+  font-size: clamp(22px, 2.5vw, 34px);
+}
+
+.widget-reply--compose {
+  grid-template-columns: 1fr 58px 92px;
+}
+
+.widget-reply--compose .widget-reply__later {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.widget-route__reason {
+  padding: 2px 8px;
+  border-left: 2px solid var(--widget-cyan);
+  color: var(--widget-muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.widget-message--route p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--widget-muted);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .widget-return {
   position: absolute;
   z-index: 5;
-  top: 9.5%;
-  right: 7.8%;
-  min-height: 34px;
-  padding: 0 12px;
+  top: 7.5%;
+  right: 6.5%;
+  min-width: 132px;
+  min-height: 50px;
+  padding: 4px 9px 4px 5px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-	border: 1px solid var(--widget-cyan);
+	gap: 9px;
+	border: 0;
 	border-radius: 0;
   background: rgb(0 10 14 / 0.88);
   box-shadow: inset 0 0 10px rgb(8 215 242 / 0.12), 0 0 10px rgb(8 215 242 / 0.12);
   color: var(--widget-white);
   cursor: pointer;
   font: 13px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
-	clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+	clip-path: polygon(9px 0, 100% 0, 100% calc(100% - 9px), calc(100% - 9px) 100%, 0 100%, 0 9px);
   --wails-draggable: no-drag;
+}
+
+.widget-return::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--widget-cyan);
+  clip-path: inherit;
+  pointer-events: none;
+}
+
+.widget-return__icon {
+  width: 38px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  background: var(--widget-yellow);
+  color: #071013;
+  clip-path: polygon(7px 0, 100% 0, 100% calc(100% - 7px), calc(100% - 7px) 100%, 0 100%, 0 7px);
+}
+
+.widget-return__copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.widget-return__copy strong {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.widget-return__copy small {
+  color: #7d8c90;
+  font-size: 8px;
+  letter-spacing: 0.12em;
 }
 
 .widget-return:hover:not(:disabled) {
@@ -454,7 +581,8 @@ body:has(.widget-mode) .app {
   .widget-message { top: 16%; bottom: 12%; gap: 4px; }
   .widget-action { min-width: 110px; min-height: 42px; padding: 6px 10px; }
   .widget-action small { display: none; }
-  .widget-return { top: 8%; right: 8%; min-height: 30px; }
+  .widget-return { top: 7%; right: 7%; min-width: 118px; min-height: 44px; }
+	.widget-new { flex-basis: 190px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

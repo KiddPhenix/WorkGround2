@@ -6,6 +6,7 @@ import (
 
 	"workground2/internal/control"
 	"workground2/internal/event"
+	"workground2/internal/provider"
 )
 
 func TestBuildWidgetSnapshotShowsOneMessageAndRemainingCount(t *testing.T) {
@@ -147,5 +148,70 @@ func TestBuildWidgetSnapshotKeepsCurrentWhenHigherPriorityArrives(t *testing.T) 
 	after := buildWidgetSnapshotState([]widgetSource{done, ask}, nil, first.Current.ID)
 	if after.Current == nil || after.Current.TabID != "done" || after.RemainingCount != 1 {
 		t.Fatalf("current was preempted: %#v", after)
+	}
+}
+
+func TestBuildWidgetSnapshotUsesAssistantResult(t *testing.T) {
+	snapshot := buildWidgetSnapshot([]widgetSource{{
+		meta:       TabMeta{ID: "done", WorkspaceName: "WorkGround2", NeedsAttention: true},
+		resultText: "已完成构建，全部测试通过。",
+	}})
+	if snapshot.Current == nil || snapshot.Current.Message != "已完成构建，全部测试通过。" {
+		t.Fatalf("result = %#v", snapshot.Current)
+	}
+}
+
+func TestLastWidgetAssistantTextSkipsEmptyMessages(t *testing.T) {
+	got := lastWidgetAssistantText([]provider.Message{
+		{Role: provider.RoleAssistant, Content: "最终结果"},
+		{Role: provider.RoleTool, Content: "tool output"},
+		{Role: provider.RoleAssistant, Content: "   "},
+	})
+	if got != "最终结果" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestChooseWidgetWorkspacePrefersExplicitName(t *testing.T) {
+	route := chooseWidgetWorkspace("帮我修复 WorkGround2 的登录问题", []widgetWorkspaceCandidate{
+		{Scope: "project", Root: `D:\Work\Other`, Name: "Other", Aliases: []string{"Other"}, Active: true, Order: 0},
+		{Scope: "project", Root: `D:\Work\WorkGround2`, Name: "WorkGround2", Aliases: []string{"WorkGround2"}, Order: 1},
+	})
+	if route.Name != "WorkGround2" || route.Reason != "名称匹配" {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestChooseWidgetWorkspaceUsesRecentTopicContext(t *testing.T) {
+	route := chooseWidgetWorkspace("继续处理登录页面样式", []widgetWorkspaceCandidate{
+		{Scope: "project", Root: `D:\Work\API`, Name: "API", Aliases: []string{"API"}, Active: true, Order: 0},
+		{Scope: "project", Root: `D:\Work\Client`, Name: "Client", Aliases: []string{"Client"}, Topics: []string{"登录页面重构"}, Order: 1},
+	})
+	if route.Name != "Client" || route.Reason != "历史上下文" {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestChooseWidgetWorkspaceFallsBackToActive(t *testing.T) {
+	route := chooseWidgetWorkspace("整理一下", []widgetWorkspaceCandidate{
+		{Scope: "project", Root: `D:\Work\One`, Name: "One", Active: false, Order: 0},
+		{Scope: "project", Root: `D:\Work\Two`, Name: "Two", Active: true, Order: 1},
+	})
+	if route.Name != "Two" || route.Reason != "当前工作区" {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestChooseWidgetWorkspaceFallsBackToGlobal(t *testing.T) {
+	route := chooseWidgetWorkspace("整理一下", nil)
+	if route.Scope != "global" || route.Reason != "Global 兜底" {
+		t.Fatalf("route = %#v", route)
+	}
+}
+
+func TestWidgetHistoryHasPromptMatchesExactUserTurn(t *testing.T) {
+	messages := []provider.Message{{Role: provider.RoleUser, Content: "修复登录页"}}
+	if !widgetHistoryHasPrompt(messages, " 修复登录页 ") || widgetHistoryHasPrompt(messages, "修复注册页") {
+		t.Fatal("prompt receipt matching is incorrect")
 	}
 }

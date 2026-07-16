@@ -191,6 +191,21 @@ export interface WidgetActionResult {
   snapshot: WidgetSnapshot;
 }
 
+export interface WidgetConversationInput {
+  prompt: string;
+  requestId: string;
+}
+
+export interface WidgetConversationResult {
+  status: "accepted" | "already_applied" | "retryable_error" | "invalid";
+  error?: string;
+  tabId?: string;
+  workspaceRoot?: string;
+  workspaceName?: string;
+  routeReason?: string;
+  snapshot: WidgetSnapshot;
+}
+
 // AppBindings is the hand-written contract between the React app and the Go
 // kernel. It uses local types (types.ts) so components don't import generated
 // model classes. _CheckGeneratedBindings catches drift: when a Go method is
@@ -204,6 +219,7 @@ export interface AppBindings {
 	IsWidgetMode(): Promise<boolean>;
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
+	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
@@ -884,6 +900,7 @@ function makeMockApp(): AppBindings {
     : new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
+	let widgetConversationStarted = false;
   let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
@@ -905,6 +922,9 @@ function makeMockApp(): AppBindings {
       backgroundCount: 1,
       version: `mock-${widgetScenario}-${widgetRevision}`,
     };
+		if (widgetConversationStarted) {
+			return { ...base, remainingCount: 0, runningCount: 5, waitingCount: 0, completedCount: 0, current: undefined };
+		}
     if (widgetScenario === "widget-idle" || widgetScenario === "widget-running") {
       return { ...base, remainingCount: 0, waitingCount: 0, completedCount: 0, current: undefined };
     }
@@ -2022,6 +2042,22 @@ function makeMockApp(): AppBindings {
       widgetRevision += 1;
       return { status: "accepted", snapshot: mockWidgetSnapshot() };
     },
+		async StartWidgetConversation(input) {
+			await delay(420);
+			if (!input.prompt.trim()) {
+				return { status: "invalid", error: "请输入对话内容", snapshot: mockWidgetSnapshot() };
+			}
+			widgetConversationStarted = true;
+			widgetRevision += 1;
+			return {
+				status: "accepted",
+				tabId: "tab-widget-new",
+				workspaceRoot: "~/projects/WorkGround2",
+				workspaceName: "WorkGround2",
+				routeReason: "名称匹配",
+				snapshot: mockWidgetSnapshot(),
+			};
+		},
     async MinimiseMainWindow() {
       console.info("mock MinimiseMainWindow");
     },

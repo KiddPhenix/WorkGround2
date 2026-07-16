@@ -1,9 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Maximize2, RotateCcw, Send } from "lucide-react";
+import { ArrowRight, Maximize2, MessageSquarePlus, PanelTopOpen, RotateCcw, Send, X } from "lucide-react";
 import {
   app,
   type WidgetActionInput,
   type WidgetActionResult,
+  type WidgetConversationResult,
   type WidgetMessage,
   type WidgetOption,
   type WidgetSnapshot,
@@ -56,14 +57,18 @@ function NineSliceShell() {
   );
 }
 
-function ContextBlock({ message }: { message?: WidgetMessage }) {
+function ContextBlock({ message, projectName, taskName }: {
+  message?: WidgetMessage;
+  projectName?: string;
+  taskName?: string;
+}) {
   return (
     <section className="widget-context" aria-label="任务上下文">
       <img className="widget-context__rail" src={calibrationRail} alt="" aria-hidden="true" />
       <div className="widget-context__identity">
         <img className="widget-context__mark" src={w2Mark} alt="WorkGround2" />
-        <strong className="widget-context__project">{message?.projectName ?? "WorkGround2"}</strong>
-        <span className="widget-context__task">{message?.taskName ?? "任务状态"}</span>
+        <strong className="widget-context__project">{message?.projectName ?? projectName ?? "WorkGround2"}</strong>
+        <span className="widget-context__task">{message?.taskName ?? taskName ?? "任务状态"}</span>
       </div>
     </section>
   );
@@ -93,7 +98,11 @@ function OptionButton({ option, primary, onClick, disabled }: {
   );
 }
 
-function IdleStatus({ snapshot }: { snapshot: WidgetSnapshot }) {
+function IdleStatus({ snapshot, onNew, disabled }: {
+  snapshot: WidgetSnapshot;
+  onNew: () => void;
+  disabled: boolean;
+}) {
 	const runningText = snapshot.runningCount > 0
 	  ? `${snapshot.runningCount} 个任务运行中 · 无待处理消息`
 	  : "暂无运行任务 · 无待处理消息";
@@ -107,7 +116,56 @@ function IdleStatus({ snapshot }: { snapshot: WidgetSnapshot }) {
       </div>
       <h1>{runningText}</h1>
       <div className="widget-status-line" aria-hidden="true"><span /></div>
-      <p>{secondary}</p>
+      <div className="widget-idle__foot">
+        <p>{secondary}</p>
+        <button className="widget-new" type="button" onClick={onNew} disabled={disabled}>
+          <MessageSquarePlus size={18} />
+          <span><strong>新对话</strong><small>自动选择工作区</small></span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function NewConversation({ prompt, busy, onPrompt, onSubmit, onCancel }: {
+  prompt: string;
+  busy: boolean;
+  onPrompt: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <section className="widget-message widget-message--compose" aria-live="polite">
+      <div className="widget-message__head"><span className="widget-message__state">新对话</span></div>
+      <h1>想让 WorkGround2 做什么？</h1>
+      <div className="widget-message__scan" aria-hidden="true"><span /></div>
+      <form className="widget-reply widget-reply--compose" onSubmit={onSubmit}>
+        <input
+          value={prompt}
+          onChange={(event) => onPrompt(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Escape") onCancel(); }}
+          placeholder="输入任务，系统会自动选择工作区…"
+          aria-label="新对话内容"
+          autoFocus
+          disabled={busy}
+        />
+        <button className="widget-reply__send" type="submit" disabled={busy || prompt.trim() === ""} aria-label="开始新对话"><Send size={18} /></button>
+        <button className="widget-reply__later" type="button" onClick={onCancel} disabled={busy}><X size={15} /> 取消</button>
+      </form>
+    </section>
+  );
+}
+
+function RouteNotice({ result, prompt }: { result: WidgetConversationResult; prompt: string }) {
+  return (
+    <section className="widget-message widget-message--route" aria-live="polite">
+      <div className="widget-message__head">
+        <span className="widget-message__state">新对话已创建</span>
+        <span className="widget-route__reason">{result.routeReason}</span>
+      </div>
+      <h1>已交给 {result.workspaceName || "Global"}</h1>
+      <div className="widget-message__scan" aria-hidden="true"><span /></div>
+      <p>正在处理：{prompt}</p>
     </section>
   );
 }
@@ -117,7 +175,11 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+	const [composing, setComposing] = useState(false);
+	const [newPrompt, setNewPrompt] = useState("");
+	const [routeNotice, setRouteNotice] = useState<{ result: WidgetConversationResult; prompt: string } | null>(null);
 	const retryRequest = useRef<{ key: string; id: string } | null>(null);
+	const conversationRequest = useRef<{ prompt: string; id: string } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -189,6 +251,35 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
     if (value) void apply("answer", [value]);
   }, [apply, typed]);
 
+	const startConversation = useCallback(async (event: FormEvent) => {
+		event.preventDefault();
+		const prompt = newPrompt.trim();
+		if (!prompt || busy) return;
+		const requestId = conversationRequest.current?.prompt === prompt
+			? conversationRequest.current.id
+			: requestID();
+		conversationRequest.current = { prompt, id: requestId };
+		setBusy(true);
+		setError("");
+		try {
+			const result = await app.StartWidgetConversation({ prompt, requestId });
+			setSnapshot(result.snapshot);
+			if (result.status === "retryable_error" || result.status === "invalid") {
+				setError(result.error ?? "新对话创建失败，可以重试");
+				return;
+			}
+			conversationRequest.current = null;
+			setComposing(false);
+			setNewPrompt("");
+			setRouteNotice({ result, prompt });
+			window.setTimeout(() => setRouteNotice((current) => current?.result.tabId === result.tabId ? null : current), 3200);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setBusy(false);
+		}
+	}, [busy, newPrompt]);
+
   const exit = useCallback(async () => {
     if (busy) return;
     setBusy(true);
@@ -203,7 +294,11 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
 
   const current = snapshot.current;
   const body = useMemo(() => {
-    if (!current) return <IdleStatus snapshot={snapshot} />;
+    if (!current && composing) return (
+		<NewConversation prompt={newPrompt} busy={busy} onPrompt={setNewPrompt} onSubmit={startConversation} onCancel={() => setComposing(false)} />
+	);
+	if (!current && routeNotice) return <RouteNotice result={routeNotice.result} prompt={routeNotice.prompt} />;
+    if (!current) return <IdleStatus snapshot={snapshot} onNew={() => { setRouteNotice(null); setComposing(true); }} disabled={busy} />;
     return (
 	  <section key={current.id} className={`widget-message widget-message--${current.kind}`} aria-live="polite">
         <div className="widget-message__head">
@@ -265,18 +360,21 @@ export function WidgetMode({ onExit }: { onExit: () => void }) {
         )}
       </section>
     );
-  }, [apply, busy, choose, current, snapshot, submitTyped, typed]);
+  }, [apply, busy, choose, composing, current, newPrompt, routeNotice, snapshot, startConversation, submitTyped, typed]);
+
+	const contextProject = routeNotice?.result.workspaceName;
+	const contextTask = composing || routeNotice ? "新对话" : undefined;
 
   return (
     <main className="widget-mode">
       <div className="widget-shell">
         <NineSliceShell />
         <div className="widget-shell__drag" aria-hidden="true" />
-        <ContextBlock message={current} />
+        <ContextBlock message={current} projectName={contextProject} taskName={contextTask} />
         {body}
-        <button className="widget-return" type="button" onClick={() => void exit()} disabled={busy}>
-          <Maximize2 size={15} strokeWidth={1.8} />
-          <span>返回窗口</span>
+        <button className="widget-return" type="button" onClick={() => void exit()} disabled={busy} aria-label="返回主窗口">
+          <span className="widget-return__icon"><PanelTopOpen size={18} strokeWidth={1.8} /></span>
+          <span className="widget-return__copy"><strong>主窗口</strong><small>FULL VIEW</small></span>
         </button>
         {error && <div className="widget-error" role="alert">{error}</div>}
       </div>

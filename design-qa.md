@@ -157,3 +157,14 @@ final result: passed
 - 严重问题：P0/P1/P2 均为 0。
 
 final result: passed
+
+# Design QA — 小组件新对话与主窗口模式键
+
+- Viewport：`590 × 142` 原生尺寸；浏览器实际最小高度约束为 `160px`，内部逻辑画布仍按 `50%` 缩放。
+- 实现截图：`docs/assets/widget-mode/widget-idle-new-conversation.png`、`widget-new-conversation-compose.png`；路由确认态使用 DOM 文案与交互状态验收。
+- 返回控件：改为紧凑的黄色 `PanelTopOpen` 图标区 + `主窗口 / FULL VIEW` 双行文案；所有状态固定右上角，accessible name 为“返回主窗口”。
+- 空闲态：只新增一个“新对话 / 自动选择工作区”入口；无列表、无 workspace 选择器。
+- 输入态：唯一主要信息为“想让 WorkGround2 做什么？”，单行输入支持 Enter 发送、Esc/取消退出；修复聚焦输入时 overflow 容器自动滚动导致机壳上移的问题，`.widget-mode` 使用 `overflow: clip`。
+- 路由确认态：DOM 验证同一时刻只出现 `已交给 WorkGround2`、`名称匹配` 与当前输入摘要；随后进入聚合运行状态。
+- 交互验收：实际点击“新对话”、键入任务并发送，浏览器 mock 返回自动路由到 WorkGround2；按钮禁用态、焦点和路由反馈正常。
+- 控制台：无 error。

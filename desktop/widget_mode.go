@@ -17,6 +17,7 @@ import (
 	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/fileutil"
+	"workground2/internal/provider"
 )
 
 const (
@@ -103,16 +104,18 @@ type widgetAppliedAction struct {
 }
 
 type widgetPersistedState struct {
-	Applied   []widgetAppliedAction `json:"applied"`
-	Deferred  map[string]int64      `json:"deferred,omitempty"`
-	CurrentID string                `json:"currentId,omitempty"`
+	Applied       []widgetAppliedAction       `json:"applied"`
+	Deferred      map[string]int64            `json:"deferred,omitempty"`
+	CurrentID     string                      `json:"currentId,omitempty"`
+	Conversations []widgetConversationReceipt `json:"conversations,omitempty"`
 }
 
 type widgetSource struct {
-	meta    TabMeta
-	pending control.PendingInteraction
-	has     bool
-	rank    int
+	meta       TabMeta
+	pending    control.PendingInteraction
+	has        bool
+	rank       int
+	resultText string
 }
 
 func widgetWindowStatePath() string {
@@ -157,6 +160,9 @@ func (a *App) loadWidgetStateLocked() {
 	}
 	if len(a.widgetState.Applied) > widgetActionLimit {
 		a.widgetState.Applied = a.widgetState.Applied[len(a.widgetState.Applied)-widgetActionLimit:]
+	}
+	if len(a.widgetState.Conversations) > widgetActionLimit {
+		a.widgetState.Conversations = a.widgetState.Conversations[len(a.widgetState.Conversations)-widgetActionLimit:]
 	}
 	if a.widgetState.Deferred == nil {
 		a.widgetState.Deferred = map[string]int64{}
@@ -296,6 +302,7 @@ func (a *App) widgetSources() []widgetSource {
 		source := widgetSource{meta: a.tabMeta(tab, tab.ID == a.activeTabID), rank: rank}
 		if tab.Ctrl != nil {
 			source.pending, source.has = tab.Ctrl.PendingInteraction()
+			source.resultText = lastWidgetAssistantText(tab.Ctrl.History())
 		}
 		out = append(out, source)
 	}
@@ -356,7 +363,11 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 		}
 		if meta.NeedsAttention {
 			snapshot.CompletedCount++
-			message := baseWidgetMessage(meta, "result", "任务完成", "执行已完成，结果可以查看。")
+			text := conciseWidgetText(source.resultText, 110)
+			if text == "" {
+				text = "执行已完成，结果可以查看。"
+			}
+			message := baseWidgetMessage(meta, "result", "任务完成", text)
 			message.ID = fmt.Sprintf("result:%s:%d", meta.ID, meta.NeedsAttentionAt)
 			message.Revision = widgetRevision(message.ID, message.Message)
 			items = append(items, item{message: message, priority: 2, at: meta.NeedsAttentionAt, rank: source.rank, deferred: deferred[message.ID]})
@@ -404,6 +415,17 @@ func buildWidgetSnapshotState(sources []widgetSource, deferred map[string]int64,
 	}
 	snapshot.Version = widgetSnapshotVersion(snapshot)
 	return snapshot
+}
+
+func lastWidgetAssistantText(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == provider.RoleAssistant {
+			if text := strings.TrimSpace(messages[i].Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func messageForPending(source widgetSource) WidgetMessage {

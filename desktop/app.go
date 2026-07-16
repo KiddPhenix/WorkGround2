@@ -169,11 +169,12 @@ type App struct {
 	// widgetMu owns the pager-style compact window mode and its idempotent
 	// action ledger. It is intentionally independent from a.mu: widget actions
 	// may call normal tab APIs, which acquire a.mu themselves.
-	widgetMu          sync.Mutex
-	widgetActionMu    sync.Mutex
-	widgetMode        bool
-	widgetStateLoaded bool
-	widgetState       widgetPersistedState
+	widgetMu             sync.Mutex
+	widgetActionMu       sync.Mutex
+	widgetConversationMu sync.Mutex
+	widgetMode           bool
+	widgetStateLoaded    bool
+	widgetState          widgetPersistedState
 }
 
 type skillRootsCache struct {

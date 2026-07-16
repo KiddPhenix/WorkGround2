@@ -10,7 +10,7 @@
 
 1. 显示当前最需要用户处理的一条信息。
 2. 允许用户直接回复、点选或确认结果。
-3. 没有重要信息时，显示聚合运行状态。
+3. 没有重要信息时，显示聚合运行状态，并可直接发起新对话。
 
 多任务可以同时运行，完成和待回复消息可以累计。界面同一时刻只展示一条主要信息；查看主要信息时，唯一允许同时出现的队列信息是“还有 N 条”。
 
@@ -21,7 +21,8 @@
 - 文字优先：图标保持小尺寸，主要空间交给消息和回复。
 - 结果可跳过回复：完成结果只提供“下一条”和“查看结果”。
 - 操作不丢消息：发送、确认、跳过均等待后端确认；失败后保留当前项并允许安全重试。
-- 固定回主窗口：右上角始终显示“返回窗口”，位置不随状态变化。
+- 固定回主窗口：右上角始终显示带黄色模式图标的“主窗口 / FULL VIEW”控制，位置不随状态变化。
+- 自动路由：新对话不展示 workspace 列表；系统按项目名、最近主题、当前工作区的顺序选择，并短暂显示选择结果与依据。
 - 状态可恢复：主窗口几何、小组件几何、消息来源状态、已处理回执和“稍后”顺序互不覆盖；重启后从 Controller 与 attention sidecar 恢复。
 
 ## 3. 视觉参考
@@ -84,7 +85,9 @@
 | `result` | 一条完成结果 | `下一条`、`查看结果` | 是 |
 | `error` | 一条失败摘要 | `重试`、`查看详情` | 是 |
 | `running` | 聚合运行状态 | `展开` | 否 |
-| `idle` | `暂无运行任务` | `返回窗口` | 否 |
+| `idle` | `暂无运行任务` | `新对话` | 否 |
+| `new` | 新对话单行输入 | `发送`、`取消` | 否 |
+| `routed` | `已交给 {workspace}` | 无，短暂确认后进入运行状态 | 否 |
 
 `返回窗口`属于固定窗口控制，不计入消息操作数量。
 
@@ -113,6 +116,18 @@
 - 文案格式：`{runningCount} 个任务执行中 · 无待处理消息`。
 - 只显示聚合数量，不展示任务名称列表。
 - 健康运行使用青色；黄色只保留在机壳装饰。
+- 右下角只增加一个“新对话 / 自动选择工作区”入口；进入输入态后，运行状态被替换，仍只显示一条主要信息。
+
+### 新对话与 workspace 自动选择
+
+1. 用户在空闲/运行状态点击“新对话”，直接在小组件内输入任务。
+2. 明确提到项目名或目录名时，路由到该项目。
+3. 没有名称命中时，使用最近主题标题与输入的上下文重合度选择。
+4. 仍无上下文命中时，优先当前项目；没有可用项目时落到 Global。
+5. 创建后只显示一条确认：`已交给 {workspace}`，旁边显示 `名称匹配 / 历史上下文 / 当前工作区 / Global 兜底`。
+6. 对话运行、提问、完成结果继续沿用同一小组件状态模型；完成消息优先显示助手最终回复的 110 字以内摘要。
+
+发送使用稳定 `requestId`。后端先持久化路由和发送阶段回执，再创建空白 Tab、等待 Controller 就绪并提交。IPC 断开或应用重启后可使用同一 `requestId` 重试；若历史中已经存在完全一致的用户消息，则恢复为已发送，避免重复创建 turn。同一 `requestId` 携带不同文本会显式返回 `invalid`。
 
 ## 6. 多任务消息模型
 
@@ -185,6 +200,7 @@ type WidgetSnapshot struct {
 
 - `internal/control`：继续负责真实的运行状态、待确认和待回复，不新增平行队列。
 - `desktop/widget_mode.go`：消息投影、排序、稳定当前项、幂等动作回执、“稍后”、进入/退出和独立几何。
+- `desktop/widget_conversation.go`：新对话 workspace 路由、可恢复创建、Controller 就绪等待和幂等发送回执。
 - `desktop/frontend/src/components/widget/`：纯展示和用户输入。
 
 公共入口保持少而清楚：
@@ -194,9 +210,10 @@ EnterWidgetMode() (WidgetWindowView, error)
 ExitWidgetMode() error
 GetWidgetSnapshot() WidgetSnapshot
 ApplyWidgetAction(input WidgetActionInput) WidgetActionResult
+StartWidgetConversation(input WidgetConversationInput) WidgetConversationResult
 ```
 
-`ActOnWidgetMessage`必须携带 `itemID`、`revision`、`requestID` 和动作值。后端返回 `accepted`、`alreadyApplied`、`stale` 或 `retryableError`，禁止只靠日志表达结果。
+`ApplyWidgetAction`必须携带 `itemID`、`revision`、`requestID` 和动作值。`StartWidgetConversation`必须携带 `prompt` 与 `requestID`。后端返回 `accepted`、`already_applied`、`stale`、`retryable_error` 或 `invalid`，禁止只靠日志表达结果。
 
 ## 8. 窗口行为
 
@@ -214,7 +231,7 @@ ApplyWidgetAction(input WidgetActionInput) WidgetActionResult
 
 ### 返回主窗口
 
-1. 固定按钮调用 `ExitWidgetMode()`。
+1. 固定“主窗口 / FULL VIEW”模式控制调用 `ExitWidgetMode()`；黄色图标区与文字区共同点击。
 2. 关闭置顶。
 3. 恢复主窗口几何和最大化状态。
 4. 如果由某条结果触发，主窗口定位到对应 `TaskID`。
@@ -248,7 +265,7 @@ windowScale = 0.5
 | 身份区 | `x 120–540` | W2、项目名、任务名 |
 | 固定分隔线 | `x ≈ 532` | 烘焙在左切片中 |
 | 消息区 | `x 620–1800` | 状态、剩余数、消息、输入 |
-| 返回窗口 | `x 1770–2020`，`y 44–108` | 所有状态固定 |
+| 主窗口模式控制 | `x 1770–2020`，`y 44–108` | 所有状态固定；黄色图标 + 双行文案 |
 | 操作区 | `y 300–424` | 选项、发送、下一条 |
 
 布局使用同一 CSS Grid，不因状态切换改变左区、消息区和窗口控制区的宽度。状态变化只替换中央内容。
@@ -394,6 +411,7 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 - 前端：`desktop/frontend/src/components/widget/WidgetMode.tsx` 与 `widget-mode.css`。
 - 浏览器视觉检查：初版 `1180 × 284` 与 `960 × 260` 无横向/纵向溢出；选择、文字发送、结果、错误、运行状态均已截图验收。
 - 2026-07-16 尺寸修正：原生窗口调整为 `590 × 142`，内部逻辑画布整体缩放 `50%`；Windows WebView 与窗口启用透明合成，机壳切角外区域真实透出桌面。
+- 2026-07-16 新对话：空闲态增加单入口输入；后端自动选择 workspace、复用/创建空白 Tab 并通过现有 Controller 提交；发送阶段持久化、可重试、可恢复。返回窗口改为黄色模式图标与“主窗口 / FULL VIEW”双行控制。
 - 交互检查：点选回复和键入发送均成功，失败信息保留输入并复用同一 `requestId`。
 - 构建检查：前端 `npm.cmd run build` 通过；Wails Windows production build 通过。
 - 全量桌面既有测试中仍有与本功能无关的 Windows 临时目录清理、Topic tree 时序失败；本功能定向测试全部通过。
