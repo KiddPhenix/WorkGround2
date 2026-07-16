@@ -5779,6 +5779,12 @@ const THEME_STYLE_META: Record<ThemeStyle, { name: string; zh: DictKey; note: Di
   nocturne: { name: "Nocturne", zh: "settings.style.nocturne.zh", note: "settings.style.nocturne.note", desc: "settings.style.nocturne.desc" },
   amber: { name: "Amber", zh: "settings.style.amber.zh", note: "settings.style.amber.note", desc: "settings.style.amber.desc" },
   iris: { name: "Iris", zh: "settings.style.iris.zh", note: "settings.style.iris.note", desc: "settings.style.iris.desc" },
+  verdant: { name: "Verdant", zh: "settings.style.verdant.zh", note: "settings.style.verdant.note", desc: "settings.style.verdant.desc" },
+  cobalt: { name: "Cobalt", zh: "settings.style.cobalt.zh", note: "settings.style.cobalt.note", desc: "settings.style.cobalt.desc" },
+  bordeaux: { name: "Bordeaux", zh: "settings.style.bordeaux.zh", note: "settings.style.bordeaux.note", desc: "settings.style.bordeaux.desc" },
+  "digital-rain": { name: "Digital Rain", zh: "settings.style.digital-rain.zh", note: "settings.style.digital-rain.note", desc: "settings.style.digital-rain.desc" },
+  "shinobi-flame": { name: "Shinobi Flame", zh: "settings.style.shinobi-flame.zh", note: "settings.style.shinobi-flame.note", desc: "settings.style.shinobi-flame.desc" },
+  "mecha-sakura": { name: "Mecha Sakura", zh: "settings.style.mecha-sakura.zh", note: "settings.style.mecha-sakura.note", desc: "settings.style.mecha-sakura.desc" },
 };
 
 function AppearanceSection({
