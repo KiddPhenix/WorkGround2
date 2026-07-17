@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "source": "shell.png",
+  "sourceSize": {
+    "width": 2132,
+    "height": 512
+  },
+  "capInsets": {
+    "left": 576,
+    "top": 112,
+    "right": 800,
+    "bottom": 160
+  },
+  "stretchRect": {
+    "x": 576,
+    "y": 112,
+    "width": 756,
+    "height": 240
+  },
+  "tiles": {
+    "top-left": {
+      "file": "shell.9/top-left.png",
+      "x": 0,
+      "y": 0,
+      "width": 576,
+      "height": 112
+    },
+    "top": {
+      "file": "shell.9/top.png",
+      "x": 576,
+      "y": 0,
+      "width": 756,
+      "height": 112
+    },
+    "top-right": {
+      "file": "shell.9/top-right.png",
+      "x": 1332,
+      "y": 0,
+      "width": 800,
+      "height": 112
+    },
+    "left": {
+      "file": "shell.9/left.png",
+      "x": 0,
+      "y": 112,
+      "width": 576,
+      "height": 240
+    },
+    "center": {
+      "file": "shell.9/center.png",
+      "x": 576,
+      "y": 112,
+      "width": 756,
+      "height": 240
+    },
+    "right": {
+      "file": "shell.9/right.png",
+      "x": 1332,
+      "y": 112,
+      "width": 800,
+      "height": 240
+    },
+    "bottom-left": {
+      "file": "shell.9/bottom-left.png",
+      "x": 0,
+      "y": 352,
+      "width": 576,
+      "height": 160
+    },
+    "bottom": {
+      "file": "shell.9/bottom.png",
+      "x": 576,
+      "y": 352,
+      "width": 756,
+      "height": 160
+    },
+    "bottom-right": {
+      "file": "shell.9/bottom-right.png",
+      "x": 1332,
+      "y": 352,
+      "width": 800,
+      "height": 160
+    }
+  }
+}

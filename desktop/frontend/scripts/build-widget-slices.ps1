@@ -5,6 +5,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDir,
 
+    [ValidatePattern('^[a-z0-9][a-z0-9-]*$')]
+    [string]$BaseName = 'pager-shell',
+
     [int]$CropX = 16,
     [int]$CropY = 96,
     [int]$CropWidth = 2132,
@@ -29,7 +32,8 @@ if ($CropWidth -le ($Left + $Right) -or $CropHeight -le ($Top + $Bottom)) {
 }
 
 New-Item -ItemType Directory -Force -Path $outputFull | Out-Null
-$tileDir = Join-Path $outputFull 'pager-shell.9'
+$tileDirName = "$BaseName.9"
+$tileDir = Join-Path $outputFull $tileDirName
 New-Item -ItemType Directory -Force -Path $tileDir | Out-Null
 
 $source = [System.Drawing.Bitmap]::FromFile($inputFull)
@@ -41,8 +45,17 @@ try {
 
     $shell = $source.Clone($cropRect, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
-        $shellPath = Join-Path $outputFull 'pager-shell.png'
-        $shell.Save($shellPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        $shellFile = "$BaseName.png"
+        $shellPath = Join-Path $outputFull $shellFile
+        $sameShell = [System.StringComparer]::OrdinalIgnoreCase.Equals($inputFull, $shellPath)
+        if ($sameShell) {
+            if ($CropX -ne 0 -or $CropY -ne 0 -or $CropWidth -ne $source.Width -or $CropHeight -ne $source.Height) {
+                throw 'Input and output shell paths match, but the requested crop would overwrite the open source image.'
+            }
+        }
+        else {
+            $shell.Save($shellPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        }
 
         $centerWidth = $CropWidth - $Left - $Right
         $centerHeight = $CropHeight - $Top - $Bottom
@@ -70,7 +83,7 @@ try {
 
         $manifest = [ordered]@{
             version = 1
-            source = 'pager-shell.png'
+            source = $shellFile
             sourceSize = [ordered]@{ width = $CropWidth; height = $CropHeight }
             capInsets = [ordered]@{ left = $Left; top = $Top; right = $Right; bottom = $Bottom }
             stretchRect = [ordered]@{
@@ -84,14 +97,14 @@ try {
         foreach ($entry in $tiles.GetEnumerator()) {
             $rect = $entry.Value
             $manifest.tiles[$entry.Key] = [ordered]@{
-                file = "pager-shell.9/$($entry.Key).png"
+                file = "$tileDirName/$($entry.Key).png"
                 x = $rect.X
                 y = $rect.Y
                 width = $rect.Width
                 height = $rect.Height
             }
         }
-        $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $outputFull 'pager-shell.9.json') -Encoding utf8
+        $manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $outputFull "$BaseName.9.json") -Encoding utf8
     }
     finally {
         $shell.Dispose()

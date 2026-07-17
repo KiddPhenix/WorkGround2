@@ -17,6 +17,7 @@
     "test:widget-layout": "tsx src/__tests__/widget-layout-contract.test.ts",
     "test:widget-retry": "tsx src/__tests__/widget-conversation-retry.test.ts",
     "test:widget-settings": "tsx src/__tests__/widget-settings-contract.test.ts",
+    "test:widget-skins": "python scripts/validate-widget-skins.py --assets-root src/assets/widget-mode/skins",
     "pretest": "tsx src/__tests__/widget-layout-contract.test.ts",
     "pretest:all": "tsx src/__tests__/widget-layout-contract.test.ts",
     "typecheck": "tsc --noEmit",
