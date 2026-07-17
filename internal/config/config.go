@@ -88,23 +88,50 @@ type UIConfig struct {
 // separate from top-level language and [ui] so desktop choices do not affect CLI
 // language, terminal colours, or provider-visible prompt/request data.
 type DesktopConfig struct {
-	Language                string   `toml:"language"`                   // auto|en|zh; empty/auto = browser/OS auto-detect
-	LayoutStyle             string   `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
-	Theme                   string   `toml:"theme"`                      // auto|dark|light; empty resolves to auto
-	ThemeStyle              string   `toml:"theme_style"`                // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
-	CloseBehavior           string   `toml:"close_behavior"`             // quit|background; desktop window close behavior
-	DisplayMode             string   `toml:"display_mode"`               // standard|compact (legacy "minimal" maps to compact); transcript display mode
-	ComposerSubmitKey       string   `toml:"composer_submit_key"`        // enter|ctrl_enter; desktop composer send shortcut
-	StatusBarStyle          string   `toml:"status_bar_style"`           // icon|text; desktop status bar metric labels
-	StatusBarItems          []string `toml:"status_bar_items"`           // ordered visible desktop status bar items
-	DefaultToolApprovalMode string   `toml:"default_tool_approval_mode"` // ask|auto|yolo; default for newly-created desktop sessions
-	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
-	Telemetry               *bool    `toml:"telemetry"`                  // anonymous launch ping (install id + version + OS); nil keeps the default enabled
-	Metrics                 *bool    `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts; no content); nil keeps the default enabled
-	ProviderAccess          []string `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
-	ExpandThinking          bool     `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
-	WidgetEnabled           *bool    `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
-	WidgetAlwaysOnTop       *bool    `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
+	Language                string                         `toml:"language"`                   // auto|en|zh; empty/auto = browser/OS auto-detect
+	LayoutStyle             string                         `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
+	Theme                   string                         `toml:"theme"`                      // auto|dark|light; empty resolves to auto
+	ThemeStyle              string                         `toml:"theme_style"`                // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
+	CloseBehavior           string                         `toml:"close_behavior"`             // quit|background; desktop window close behavior
+	DisplayMode             string                         `toml:"display_mode"`               // standard|compact (legacy "minimal" maps to compact); transcript display mode
+	ComposerSubmitKey       string                         `toml:"composer_submit_key"`        // enter|ctrl_enter; desktop composer send shortcut
+	StatusBarStyle          string                         `toml:"status_bar_style"`           // icon|text; desktop status bar metric labels
+	StatusBarItems          []string                       `toml:"status_bar_items"`           // ordered visible desktop status bar items
+	DefaultToolApprovalMode string                         `toml:"default_tool_approval_mode"` // ask|auto|yolo; default for newly-created desktop sessions
+	CheckUpdates            *bool                          `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
+	Telemetry               *bool                          `toml:"telemetry"`                  // anonymous launch ping (install id + version + OS); nil keeps the default enabled
+	Metrics                 *bool                          `toml:"metrics"`                    // aggregate desktop metrics (anonymous signal/bucket counts; no content); nil keeps the default enabled
+	ProviderAccess          []string                       `toml:"provider_access"`            // desktop-only list of provider entries shown in Settings > Model > Access
+	ExpandThinking          bool                           `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
+	WidgetEnabled           *bool                          `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
+	WidgetAlwaysOnTop       *bool                          `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
+	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
+}
+
+const (
+	SessionBackgroundSourceFile   = "file"
+	SessionBackgroundSourceFolder = "folder"
+)
+
+// DesktopSessionBackgroundConfig is a user-level, presentation-only image pool.
+// Pointer booleans let an absent field retain the safe default when loading old
+// configuration files.
+type DesktopSessionBackgroundConfig struct {
+	Enabled       bool                             `toml:"enabled"`
+	MaskEnabled   *bool                            `toml:"mask_enabled"`
+	RandomOnOpen  *bool                            `toml:"random_on_open"`
+	RotateSeconds int                              `toml:"rotate_seconds"`
+	Sources       []DesktopSessionBackgroundSource `toml:"sources"`
+}
+
+// DesktopSessionBackgroundSource references either one image or one folder.
+// Folder recursion is opt-in so selecting a broad directory cannot accidentally
+// trigger an unbounded tree walk.
+type DesktopSessionBackgroundSource struct {
+	Kind      string `toml:"kind"`
+	Path      string `toml:"path"`
+	Enabled   *bool  `toml:"enabled"`
+	Recursive bool   `toml:"recursive"`
 }
 
 // NotificationsConfig controls optional system notifications for CLI chat/run.
@@ -238,6 +265,35 @@ func (c *Config) DesktopTheme() string {
 // chooses the default style for the resolved desktop theme.
 func (c *Config) DesktopThemeStyle() string {
 	return normalizeThemeStyle(c.Desktop.ThemeStyle)
+}
+
+// DesktopSessionBackground returns a normalized copy of the desktop-only
+// Session background preferences without exposing mutable config slices.
+func (c *Config) DesktopSessionBackground() DesktopSessionBackgroundConfig {
+	bg := c.Desktop.SessionBackground
+	if bg.MaskEnabled == nil {
+		bg.MaskEnabled = boolValue(true)
+	} else {
+		bg.MaskEnabled = boolValue(*bg.MaskEnabled)
+	}
+	if bg.RandomOnOpen == nil {
+		bg.RandomOnOpen = boolValue(true)
+	} else {
+		bg.RandomOnOpen = boolValue(*bg.RandomOnOpen)
+	}
+	bg.Sources = append([]DesktopSessionBackgroundSource(nil), bg.Sources...)
+	for i := range bg.Sources {
+		if bg.Sources[i].Enabled == nil {
+			bg.Sources[i].Enabled = boolValue(true)
+		} else {
+			bg.Sources[i].Enabled = boolValue(*bg.Sources[i].Enabled)
+		}
+	}
+	return bg
+}
+
+func boolValue(value bool) *bool {
+	return &value
 }
 
 // DesktopLayoutStyle normalizes the desktop layout style. New installs default

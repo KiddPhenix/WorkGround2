@@ -1809,3 +1809,72 @@ func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 		t.Fatal("nil config DesktopWidgetAlwaysOnTop should default to true")
 	}
 }
+
+func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
+	cfg := Default()
+	defaults := cfg.DesktopSessionBackground()
+	if defaults.Enabled || defaults.MaskEnabled == nil || !*defaults.MaskEnabled || defaults.RandomOnOpen == nil || !*defaults.RandomOnOpen || defaults.RotateSeconds != 0 {
+		t.Fatalf("unexpected background defaults: %+v", defaults)
+	}
+
+	disabled := false
+	input := DesktopSessionBackgroundConfig{
+		Enabled:       true,
+		MaskEnabled:   &disabled,
+		RandomOnOpen:  &disabled,
+		RotateSeconds: 300,
+		Sources: []DesktopSessionBackgroundSource{
+			{Kind: " FILE ", Path: filepath.Join("images", "one.png")},
+			{Kind: SessionBackgroundSourceFolder, Path: filepath.Join("images", "pool"), Recursive: true},
+			{Kind: SessionBackgroundSourceFile, Path: filepath.Join("images", "one.png")},
+		},
+	}
+	if err := cfg.SetDesktopSessionBackground(input); err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.DesktopSessionBackground()
+	if !got.Enabled || *got.MaskEnabled || *got.RandomOnOpen || got.RotateSeconds != 300 || len(got.Sources) != 2 {
+		t.Fatalf("normalized background = %+v", got)
+	}
+	wantFilePath, err := filepath.Abs(input.Sources[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sources[0].Kind != SessionBackgroundSourceFile || got.Sources[0].Path != wantFilePath || got.Sources[0].Enabled == nil || !*got.Sources[0].Enabled {
+		t.Fatalf("normalized file source = %+v", got.Sources[0])
+	}
+	if !got.Sources[1].Recursive {
+		t.Fatalf("folder recursion was lost: %+v", got.Sources[1])
+	}
+
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, "[desktop.session_background]") || !strings.Contains(rendered, "[[desktop.session_background.sources]]") {
+		t.Fatalf("background tables missing from rendered config:\n%s", rendered)
+	}
+	var decoded Config
+	if _, err := toml.Decode(rendered, &decoded); err != nil {
+		t.Fatalf("decode rendered config: %v", err)
+	}
+	roundTrip := decoded.DesktopSessionBackground()
+	if !reflect.DeepEqual(got, roundTrip) {
+		t.Fatalf("round trip background = %#v, want %#v", roundTrip, got)
+	}
+}
+
+func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testing.T) {
+	cfg := Default()
+	before := cfg.DesktopSessionBackground()
+	for _, input := range []DesktopSessionBackgroundConfig{
+		{RotateSeconds: 29},
+		{RotateSeconds: 86_401},
+		{Sources: []DesktopSessionBackgroundSource{{Kind: "url", Path: "https://example.com/a.png"}}},
+		{Sources: []DesktopSessionBackgroundSource{{Kind: SessionBackgroundSourceFile}}},
+	} {
+		if err := cfg.SetDesktopSessionBackground(input); err == nil {
+			t.Fatalf("SetDesktopSessionBackground(%+v) succeeded", input)
+		}
+		if got := cfg.DesktopSessionBackground(); !reflect.DeepEqual(got, before) {
+			t.Fatalf("invalid input mutated config: got %#v want %#v", got, before)
+		}
+	}
+}
