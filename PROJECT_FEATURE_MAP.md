@@ -187,11 +187,11 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Updated: 2026-07-15
 
 ### 桌面传呼机小组件模式
-- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_conversation.go`, `desktop/widget_info.go`, `desktop/widget_mode_test.go`, `desktop/widget_info_test.go`, `desktop/widget_conversation_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/src/components/widget`, `desktop/frontend/src/__tests__/widget-conversation-retry.test.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `desktop/settings_app.go`, `internal/config/config.go`, `internal/config/edit.go`, `internal/config/render.go`, `internal/config/edit_test.go`
-- Summary: 状态 done；桌面主窗口可缩为单消息传呼机小组件，聚合任务状态并支持幂等操作、稳定当前项、工作区路由、完成态 session 激活和独立几何恢复。左侧六页点阵信息终端统一使用英文；其余交互支持简中、繁中、英文，并为每种语言提供 40 条短运行文案，后端通过稳定语义码传递可翻译状态。新任务支持自动重试（最多 5 次，有界指数退避，幂等 requestId）。设置面板新增小组件 Tab，含启用小组件和保持置顶两个持久化开关，变更通过事件实时传播无需重启。EnterWidgetMode 使用配置的 always-on-top 偏好。Windows 原生 Region 坐标按窗口 DPI 换算，避免系统缩放时裁掉右侧按钮和下半部。
-- Keywords: widget mode, pager, info carousel, widgetSuffixes, routeReasonCode, 多语言, 随机文案, token meter, system telemetry, model logo, idle timer, W2 companion, session:activated, widget-open, widget_enabled, widget_always_on_top, retry, settings widget tab
+- Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_window_windows.go`, `desktop/widget_conversation.go`, `desktop/widget_info.go`, `desktop/widget_mode_test.go`, `desktop/widget_window_windows_test.go`, `desktop/widget_info_test.go`, `desktop/widget_conversation_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/src/components/widget`, `desktop/frontend/src/__tests__/widget-conversation-retry.test.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `desktop/settings_app.go`, `internal/config/config.go`, `internal/config/edit.go`, `internal/config/render.go`, `internal/config/edit_test.go`
+- Summary: 状态 done；桌面主窗口可缩为单消息传呼机小组件，聚合任务状态并支持幂等操作、稳定当前项、工作区路由、完成态 session 激活和独立几何恢复。左侧六页点阵信息终端统一使用英文；其余交互支持简中、繁中、英文，并为每种语言提供 40 条短运行文案，后端通过稳定语义码传递可翻译状态。新任务支持自动重试（最多 5 次，有界指数退避，幂等 requestId）。设置面板新增小组件 Tab，含启用小组件和保持置顶两个持久化开关，变更通过事件实时传播无需重启。Enter/Exit 使用同一互斥入口串行执行“判定、几何持久化、原生变形、模式发布”，快速反向切换不会观察或覆盖中间态。Windows 原生 Region 坐标按窗口 DPI 换算，避免系统缩放时裁掉右侧按钮和下半部。
+- Keywords: widget mode, window transition, geometry, widgetMu, pager, info carousel, widgetSuffixes, routeReasonCode, 多语言, 随机文案, token meter, system telemetry, model logo, idle timer, W2 companion, session:activated, widget-open, widget_enabled, widget_always_on_top, retry, settings widget tab
 - Source: user-requested+design-approved+verified-by-search
-- Updated: 2026-07-16
+- Updated: 2026-07-17
 
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`

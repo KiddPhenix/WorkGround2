@@ -208,16 +208,43 @@ func (a *App) IsWidgetMode() bool {
 	return a.widgetMode
 }
 
+// transitionWidgetMode serialises the complete native-window transition and
+// publishes the new mode only after every transition step has finished.
+func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error) {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if a.widgetMode == target {
+		return false, nil
+	}
+	if err := apply(); err != nil {
+		return false, err
+	}
+	a.widgetMode = target
+	return true, nil
+}
+
+func (a *App) refreshWidgetRegion(size func() (int, int), apply func(int, int) error) error {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode {
+		return nil
+	}
+	w, h := size()
+	return apply(w, h)
+}
+
 // RefreshWidgetWindowRegion re-applies the native window region clipping from
 // the current window size.  The frontend calls this on widget resize so the
 // transparent corners stay accurate.  No-op outside widget mode and on
 // non-Windows platforms.
 func (a *App) RefreshWidgetWindowRegion() error {
-	if a.ctx == nil || !a.IsWidgetMode() {
+	if a.ctx == nil {
 		return nil
 	}
-	w, h := runtime.WindowGetSize(a.ctx)
-	return setWidgetWindowRegion(w, h)
+	return a.refreshWidgetRegion(
+		func() (int, int) { return runtime.WindowGetSize(a.ctx) },
+		setWidgetWindowRegion,
+	)
 }
 
 func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) {
@@ -241,38 +268,37 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 	if !widgetEnabled {
 		return WidgetSnapshot{}, errors.New("小组件已在设置中禁用，请前往 设置 > 小组件 重新启用")
 	}
-	a.widgetMu.Lock()
-	if a.widgetMode {
-		a.widgetMu.Unlock()
-		return a.GetWidgetSnapshot(), nil
-	}
-	w, h := runtime.WindowGetSize(a.ctx)
-	x, y := runtime.WindowGetPosition(a.ctx)
-	mainState := DesktopWindowState{Width: w, Height: h, X: x, Y: y, Maximised: runtime.WindowIsMaximised(a.ctx)}
-	if err := saveMainWindowState(mainState); err != nil {
-		a.widgetMu.Unlock()
-		return WidgetSnapshot{}, fmt.Errorf("save main window: %w", err)
-	}
-	state, ok := loadWidgetWindowState()
-	if !ok {
-		state = defaultWidgetWindowState(a.ctx)
-	}
-	a.widgetMode = true
-	a.widgetMu.Unlock()
+	changed, err := a.transitionWidgetMode(true, func() error {
+		w, h := runtime.WindowGetSize(a.ctx)
+		x, y := runtime.WindowGetPosition(a.ctx)
+		mainState := DesktopWindowState{Width: w, Height: h, X: x, Y: y, Maximised: runtime.WindowIsMaximised(a.ctx)}
+		if err := saveMainWindowState(mainState); err != nil {
+			return fmt.Errorf("save main window: %w", err)
+		}
+		state, ok := loadWidgetWindowState()
+		if !ok {
+			state = defaultWidgetWindowState(a.ctx)
+		}
 
-	runtime.WindowUnmaximise(a.ctx)
-	runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
-	runtime.WindowSetAlwaysOnTop(a.ctx, widgetAlwaysOnTop)
-	runtime.WindowSetSize(a.ctx, state.Width, state.Height)
-	runtime.WindowSetPosition(a.ctx, state.X, state.Y)
+		runtime.WindowUnmaximise(a.ctx)
+		runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
+		runtime.WindowSetAlwaysOnTop(a.ctx, widgetAlwaysOnTop)
+		runtime.WindowSetSize(a.ctx, state.Width, state.Height)
+		runtime.WindowSetPosition(a.ctx, state.X, state.Y)
 
-	// Clip native window corners to match the .widget-shell CSS clip-path so
-	// the four corners are truly transparent instead of showing solid wedges.
-	if err := setWidgetWindowRegion(state.Width, state.Height); err != nil {
-		fmt.Printf("widget: initial window region failed; frontend will retry: %v\n", err)
+		// Clip native window corners to match the .widget-shell CSS clip-path so
+		// the four corners are truly transparent instead of showing solid wedges.
+		if err := setWidgetWindowRegion(state.Width, state.Height); err != nil {
+			fmt.Printf("widget: initial window region failed; frontend will retry: %v\n", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return WidgetSnapshot{}, err
 	}
-
-	runtime.EventsEmit(a.ctx, "widget:mode", true)
+	if changed {
+		runtime.EventsEmit(a.ctx, "widget:mode", true)
+	}
 	return a.GetWidgetSnapshot(), nil
 }
 
@@ -282,58 +308,49 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
-	a.widgetMu.Lock()
-	if !a.widgetMode {
-		a.widgetMu.Unlock()
-		if strings.TrimSpace(tabID) != "" {
-			if err := a.SetActiveTab(tabID); err != nil {
-				return err
+	changed, err := a.transitionWidgetMode(false, func() error {
+		w, h := runtime.WindowGetSize(a.ctx)
+		x, y := runtime.WindowGetPosition(a.ctx)
+		if err := saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y}); err != nil {
+			return fmt.Errorf("save widget window: %w", err)
+		}
+
+		runtime.WindowSetAlwaysOnTop(a.ctx, false)
+
+		// Restore rectangular window shape before resizing back to main geometry.
+		if err := clearWidgetWindowRegion(); err != nil {
+			_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
+			if configErr != nil {
+				fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
+				alwaysOnTop = true
 			}
-			a.emitSessionActivated("widget-open")
+			runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
+			return fmt.Errorf("restore widget window shape: %w", err)
+		}
+
+		runtime.WindowSetMinSize(a.ctx, 760, 480)
+		state, ok := loadWindowState()
+		if ok {
+			runtime.WindowUnmaximise(a.ctx)
+			if state.Width > 0 && state.Height > 0 {
+				runtime.WindowSetSize(a.ctx, state.Width, state.Height)
+			}
+			runtime.WindowSetPosition(a.ctx, state.X, state.Y)
+			if state.Maximised {
+				runtime.WindowMaximise(a.ctx)
+			}
+		} else {
+			runtime.WindowSetSize(a.ctx, 1280, 800)
+			runtime.WindowCenter(a.ctx)
 		}
 		return nil
+	})
+	if err != nil {
+		return err
 	}
-	w, h := runtime.WindowGetSize(a.ctx)
-	x, y := runtime.WindowGetPosition(a.ctx)
-	if err := saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y}); err != nil {
-		a.widgetMu.Unlock()
-		return fmt.Errorf("save widget window: %w", err)
+	if changed {
+		runtime.EventsEmit(a.ctx, "widget:mode", false)
 	}
-	a.widgetMode = false
-	a.widgetMu.Unlock()
-
-	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-
-	// Restore rectangular window shape before resizing back to main geometry.
-	if err := clearWidgetWindowRegion(); err != nil {
-		a.widgetMu.Lock()
-		a.widgetMode = true
-		a.widgetMu.Unlock()
-		_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
-		if configErr != nil {
-			fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
-			alwaysOnTop = true
-		}
-		runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
-		return fmt.Errorf("restore widget window shape: %w", err)
-	}
-
-	runtime.WindowSetMinSize(a.ctx, 760, 480)
-	state, ok := loadWindowState()
-	if ok {
-		runtime.WindowUnmaximise(a.ctx)
-		if state.Width > 0 && state.Height > 0 {
-			runtime.WindowSetSize(a.ctx, state.Width, state.Height)
-		}
-		runtime.WindowSetPosition(a.ctx, state.X, state.Y)
-		if state.Maximised {
-			runtime.WindowMaximise(a.ctx)
-		}
-	} else {
-		runtime.WindowSetSize(a.ctx, 1280, 800)
-		runtime.WindowCenter(a.ctx)
-	}
-	runtime.EventsEmit(a.ctx, "widget:mode", false)
 	if strings.TrimSpace(tabID) != "" {
 		if err := a.SetActiveTab(tabID); err != nil {
 			return err

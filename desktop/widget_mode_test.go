@@ -16,6 +16,148 @@ import (
 	"workground2/internal/provider"
 )
 
+func TestWidgetTransitionPublishesModeAfterApply(t *testing.T) {
+	app := &App{}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(true, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	<-entered
+
+	observed := make(chan bool, 1)
+	go func() { observed <- app.IsWidgetMode() }()
+	select {
+	case mode := <-observed:
+		t.Fatalf("mode became observable before native transition finished: %v", mode)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if mode := <-observed; !mode {
+		t.Fatal("mode was not published after native transition finished")
+	}
+}
+
+func TestWidgetTransitionSerialisesOpposingCalls(t *testing.T) {
+	app := &App{}
+	enterStarted := make(chan struct{})
+	releaseEnter := make(chan struct{})
+	enterDone := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(true, func() error {
+			close(enterStarted)
+			<-releaseEnter
+			return nil
+		})
+		enterDone <- err
+	}()
+	<-enterStarted
+
+	exitStarted := make(chan struct{})
+	exitDone := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(false, func() error {
+			close(exitStarted)
+			return nil
+		})
+		exitDone <- err
+	}()
+	select {
+	case <-exitStarted:
+		t.Fatal("exit transition interleaved with enter transition")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseEnter)
+	if err := <-enterDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("exit transition did not resume after enter transition")
+	}
+	if err := <-exitDone; err != nil {
+		t.Fatal(err)
+	}
+	if app.IsWidgetMode() {
+		t.Fatal("final mode should match the last serialized transition")
+	}
+}
+
+func TestWidgetTransitionFailureKeepsModeRetryable(t *testing.T) {
+	app := &App{}
+	wantErr := errors.New("window resize failed")
+	changed, err := app.transitionWidgetMode(true, func() error { return wantErr })
+	if changed || !errors.Is(err, wantErr) || app.IsWidgetMode() {
+		t.Fatalf("failed transition changed state: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+	}
+
+	changed, err = app.transitionWidgetMode(true, func() error { return nil })
+	if err != nil || !changed || !app.IsWidgetMode() {
+		t.Fatalf("retry did not complete: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+	}
+}
+
+func TestWidgetRegionRefreshSerialisesWithExit(t *testing.T) {
+	app := &App{widgetMode: true}
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- app.refreshWidgetRegion(
+			func() (int, int) { return widgetDefaultWidth, widgetDefaultHeight },
+			func(_, _ int) error {
+				close(refreshStarted)
+				<-releaseRefresh
+				return nil
+			},
+		)
+	}()
+	<-refreshStarted
+
+	exitStarted := make(chan struct{})
+	exitDone := make(chan error, 1)
+	go func() {
+		_, err := app.transitionWidgetMode(false, func() error {
+			close(exitStarted)
+			return nil
+		})
+		exitDone <- err
+	}()
+	select {
+	case <-exitStarted:
+		t.Fatal("exit interleaved with native region refresh")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseRefresh)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("exit did not resume after region refresh")
+	}
+	if err := <-exitDone; err != nil {
+		t.Fatal(err)
+	}
+	if app.IsWidgetMode() {
+		t.Fatal("exit did not publish main-window mode")
+	}
+}
+
 func TestBuildWidgetSnapshotShowsOneMessageAndRemainingCount(t *testing.T) {
 	snapshot := buildWidgetSnapshot([]widgetSource{
 		{rank: 0, meta: TabMeta{ID: "done", WorkspaceName: "WorkGround2", SessionDisplayTitle: "更新插件文档", NeedsAttention: true, NeedsAttentionAt: 20}},
