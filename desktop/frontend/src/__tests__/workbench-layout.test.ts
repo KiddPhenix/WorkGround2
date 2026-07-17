@@ -73,6 +73,10 @@ ok(
   finalDeclaration(stylesSource, ".workspace-sidebar", "box-sizing") === "border-box",
   "CSS: 264px sidebar includes its horizontal padding",
 );
+ok(
+  includes(appSource, 'const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? SIDEBAR_MIN_WIDTH : (liveSidebarWidth ?? sidebarWidth);'),
+  "App.tsx: workbench grid track uses the same fixed 264px width as workspace-sidebar",
+);
 
 // CSS: workspace-sidebar project-tree folder-main uses 9px gap (matching fixture)
 const folderGap = finalDeclaration(stylesSource, ".workspace-sidebar .project-tree__folder-main", "gap");

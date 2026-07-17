@@ -2022,7 +2022,10 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
   }, [anchorAppScrollToChat, closeTransientOverlays, pulseSidebarToggle, sidebarCollapsed]);
 
   const sidebarWidthClamp = desktopLayoutStyle === "creation" ? clampCreationSidebarWidth : clampSidebarWidth;
-  const sidebarRenderWidth = liveSidebarWidth ?? sidebarWidth;
+  // Workbench owns a fixed 264px navigation rail and does not render the
+  // resizer. Reusing a persisted classic/creation width here leaves an empty
+  // grid track between the fixed rail and the session workspace.
+  const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? SIDEBAR_MIN_WIDTH : (liveSidebarWidth ?? sidebarWidth);
   const sidebarResizeMinWidth = desktopLayoutStyle === "creation" ? CREATION_SIDEBAR_MIN_WIDTH : SIDEBAR_MIN_WIDTH;
 
   useEffect(() => {

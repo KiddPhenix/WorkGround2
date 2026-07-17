@@ -98,6 +98,7 @@ ok((appSource.match(/<SessionBackground tabId=\{activeTabId\}/g) ?? []).length =
 ok(componentSource.includes('document.addEventListener("visibilitychange"') && componentSource.includes("Date.now() >= dueAt"), "rotation pauses while hidden and catches up at most once");
 ok(componentSource.includes("image.decode()") && componentSource.includes("prefers-reduced-motion") === false, "component decodes images before swapping layers");
 ok(cssSource.includes("@media (prefers-reduced-motion: reduce)") && cssSource.includes("color-mix(in srgb, var(--bg)"), "CSS provides reduced-motion and theme-derived masking");
+ok(cssSource.includes(".session-workspace:has(> .session-background) .task-memory-bar") && cssSource.includes("backdrop-filter: blur(8px)"), "background sessions soften the memory rail instead of painting an opaque stripe");
 ok(settingsSource.includes("PickSessionBackgroundFiles") && settingsSource.includes("PickSessionBackgroundFolder") && settingsSource.includes("recursive"), "Appearance settings manage multiple image and folder sources");
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

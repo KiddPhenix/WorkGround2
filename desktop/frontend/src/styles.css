@@ -6457,6 +6457,14 @@ body > .mermaid-diagram--fullscreen {
   backdrop-filter: blur(8px);
 }
 
+/* Keep the memory/status rail legible without cutting an opaque stripe through
+   a configured session background. */
+.session-workspace:has(> .session-background) .task-memory-bar {
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  border-color: color-mix(in srgb, var(--border) 62%, transparent);
+  backdrop-filter: blur(8px);
+}
+
 @keyframes session-background-in {
   to { opacity: 1; }
 }
