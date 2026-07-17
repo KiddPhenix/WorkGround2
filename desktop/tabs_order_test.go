@@ -212,6 +212,69 @@ func TestKeepOnlyVisibleTabCancelsBuildingHiddenTab(t *testing.T) {
 	}
 }
 
+type reentrantSnapshotController struct {
+	control.SessionAPI
+	app *App
+}
+
+func (c *reentrantSnapshotController) Snapshot() error {
+	c.app.mu.Lock()
+	c.app.mu.Unlock()
+	return nil
+}
+
+func (*reentrantSnapshotController) SessionPath() string { return "" }
+func (*reentrantSnapshotController) RuntimeStatus() control.RuntimeStatus {
+	return control.RuntimeStatus{}
+}
+func (*reentrantSnapshotController) SetSessionPath(string) {}
+func (*reentrantSnapshotController) Cancel()               {}
+func (*reentrantSnapshotController) Close()                {}
+
+func TestKeepOnlyVisibleTabSnapshotsOutsideAppLock(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{},
+		tabOrder:    []string{"source", "target"},
+		activeTabID: "source",
+	}
+	source := &WorkspaceTab{
+		ID:          "source",
+		SessionID:   "session_source",
+		Scope:       "global",
+		Ready:       true,
+		disabledMCP: map[string]ServerView{},
+	}
+	source.Ctrl = &reentrantSnapshotController{app: app}
+	target := &WorkspaceTab{
+		ID:          "target",
+		SessionID:   "session_target",
+		Scope:       "global",
+		Ready:       true,
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs[source.ID] = source
+	app.tabs[target.ID] = target
+	app.trackSession(source)
+	app.trackSession(target)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.keepOnlyVisibleTab(target.ID)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("keepOnlyVisibleTab: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("keepOnlyVisibleTab deadlocked while Snapshot re-entered App.mu")
+	}
+	assertTabIDs(t, app.ListTabs(), target.ID)
+}
+
 func TestConcurrentActivateTopicSerializesSingleSurfacePruning(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()

@@ -2303,53 +2303,83 @@ func (a *App) CloseTab(tabID string) error {
 }
 
 func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
-	a.mu.Lock()
-	active := a.tabs[tabID]
-	if active == nil {
-		a.mu.Unlock()
-		return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
-	}
-	a.activeTabID = tabID
-	closed := make([]*WorkspaceTab, 0, len(a.tabs)-1)
-	detached := make([]*WorkspaceTab, 0, len(a.tabs)-1)
-	for id, tab := range a.tabs {
-		if id == tabID {
+	for {
+		// Snapshotting can invoke OnSessionRecovered, which updates the tab and
+		// takes a.mu. Keep controller and filesystem work outside the app lock;
+		// otherwise an externally changed CLI session deadlocks navigation.
+		a.mu.RLock()
+		active := a.tabs[tabID]
+		if active == nil {
+			a.mu.RUnlock()
+			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
+		}
+		hidden := make(map[string]*WorkspaceTab, len(a.tabs)-1)
+		for id, tab := range a.tabs {
+			if id != tabID {
+				hidden[id] = tab
+			}
+		}
+		a.mu.RUnlock()
+
+		for id, tab := range hidden {
+			if err := snapshotTabDirect(tab); err != nil {
+				slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
+			}
+			if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
+				slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
+			}
+		}
+
+		a.mu.Lock()
+		if a.tabs[tabID] != active {
+			a.mu.Unlock()
 			continue
 		}
-		if err := snapshotTabDirect(tab); err != nil {
+		stable := len(a.tabs)-1 == len(hidden)
+		if stable {
+			for id, tab := range hidden {
+				if a.tabs[id] != tab {
+					stable = false
+					break
+				}
+			}
+		}
+		if !stable {
 			a.mu.Unlock()
-			slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
+			continue
 		}
-		if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
-			a.mu.Unlock()
-			slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
-		}
-		if a.detachSessionRuntimeLocked(tab) {
-			detached = append(detached, tab)
-		} else {
-			a.markTabRemovedLocked(tab)
-			closed = append(closed, tab)
-		}
-		delete(a.tabs, id)
-		a.removeTabOrderLocked(id)
-	}
-	a.tabOrder = []string{tabID}
-	a.saveTabsLocked()
-	meta := a.tabMeta(active, true)
-	a.mu.Unlock()
 
-	for _, tab := range detached {
-		if tab.sink != nil {
-			tab.sink.clearContext()
+		a.activeTabID = tabID
+		closed := make([]*WorkspaceTab, 0, len(hidden))
+		detached := make([]*WorkspaceTab, 0, len(hidden))
+		for id, tab := range hidden {
+			if a.detachSessionRuntimeLocked(tab) {
+				detached = append(detached, tab)
+			} else {
+				a.markTabRemovedLocked(tab)
+				closed = append(closed, tab)
+			}
+			delete(a.tabs, id)
+			a.removeTabOrderLocked(id)
 		}
+		a.tabOrder = []string{tabID}
+		a.saveTabsLocked()
+		meta := a.tabMeta(active, true)
+		a.mu.Unlock()
+
+		for _, tab := range detached {
+			if tab.sink != nil {
+				tab.sink.clearContext()
+			}
+		}
+		for _, tab := range closed {
+			a.removeVisibleTabRuntime(tab)
+		}
+		a.emitProjectTreeChanged()
+		return enrichTabMeta(meta), nil
 	}
-	for _, tab := range closed {
-		a.removeVisibleTabRuntime(tab)
-	}
-	a.emitProjectTreeChanged()
-	return enrichTabMeta(meta), nil
 }
 
 func (a *App) applySingleSurfaceTabPolicy() error {
