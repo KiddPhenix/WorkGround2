@@ -91,6 +91,12 @@ function extractFontSize(css: string, selector: string): string | null {
   return m ? m[1].trim() : null;
 }
 
+function extractCssRule(css: string, selector: string): string | null {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(escaped + "\\s*\\{[^}]*\\}", "s");
+  return css.match(re)?.[0] ?? null;
+}
+
 const carouselCss = readFileSync(
   resolve(import.meta.dirname, "../components/widget/widget-info-carousel.css"),
   "utf-8",
@@ -123,6 +129,80 @@ assert.equal(clampMin, expectedClamp.min);
 assert.equal(clampPreferred, expectedClamp.preferred);
 assert.equal(clampMax, expectedClamp.max);
 assert.match(carouselCss, /\.widget-info__page--clock\s*\{[^}]*padding-right:\s*12px;[^}]*padding-left:\s*12px;/s);
+
+// ---- Nine-slice seam-free contract ----
+
+// Every tile must bleed 1 px past its grid cell so adjacent tiles overlap
+// and subpixel rounding cannot leave a visible seam.
+const nineSliceImg = extractCssRule(modeCss, ".widget-shell__nine-slice img");
+assert.ok(nineSliceImg, "Missing .widget-shell__nine-slice img rule");
+assert.match(nineSliceImg!, /width:\s*calc\(\s*100%\s*\+\s*2px\s*\)/, "nine-slice tiles must bleed horizontally: width: calc(100% + 2px)");
+assert.match(nineSliceImg!, /height:\s*calc\(\s*100%\s*\+\s*2px\s*\)/, "nine-slice tiles must bleed vertically: height: calc(100% + 2px)");
+assert.match(nineSliceImg!, /margin:\s*-1px/, "nine-slice tiles must overlap neighbours: margin: -1px");
+assert.match(nineSliceImg!, /object-fit:\s*fill/, "nine-slice tiles must still use object-fit: fill");
+
+// The shell must clip the outer 1 px bleed so tiles never overflow
+// past the shell clip-path.
+assert.match(modeCss, /\.widget-shell\s*\{[^}]*overflow:\s*hidden/s, ".widget-shell must have overflow:hidden to clip tile bleed");
+
+// The nine-slice container itself must also clip.
+const nineSliceContainer = extractCssRule(modeCss, ".widget-shell__nine-slice");
+assert.ok(nineSliceContainer, "Missing .widget-shell__nine-slice rule");
+assert.match(nineSliceContainer!, /overflow:\s*hidden/, ".widget-shell__nine-slice must have overflow:hidden");
+
+// ---- Per-skin independent component coverage ----
+
+const skinsCss = readFileSync(
+  resolve(import.meta.dirname, "../components/widget/widget-skins.css"),
+  "utf-8",
+);
+
+const SKIN_IDS = ["bp", "instant", "pet", "recorder"] as const;
+
+const REQUIRED_DECLARATIONS = [
+  [".widget-info", "info"],
+  [".widget-message", "left"],
+  [".widget-context", "border-right-color"],
+  [".widget-return", "top"],
+  [".widget-workspace__toggle", "border-radius"],
+  [".widget-new", "border-radius"],
+  [".widget-action", "border-radius"],
+  [".widget-reply", "border-radius"],
+  [".widget-message__scan", "background"],
+  [".widget-status-line", "background"],
+] as const;
+
+function extractSkinRule(skin: string, component: string): string | null {
+  const selector = `[data-widget-skin="${skin}"] ${component}`;
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return skinsCss.match(new RegExp(`${escaped}[^\\{]*\\{[^}]*\\}`, "s"))?.[0] ?? null;
+}
+
+for (const skin of SKIN_IDS) {
+  for (const [component, property] of REQUIRED_DECLARATIONS) {
+    const rule = extractSkinRule(skin, component);
+    assert.ok(rule, `Skin "${skin}" must define a rule for ${component}`);
+
+    if (property === "info") {
+      const expected = skin === "bp" || skin === "pet" ? /left:\s*[^;]+/ : /visibility:\s*hidden/;
+      assert.match(rule!, expected, `Skin "${skin}" must own the ${component} geometry or visibility`);
+      continue;
+    }
+
+    const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    assert.match(
+      rule!,
+      new RegExp(`${escapedProperty}:\\s*[^;]+`),
+      `Skin "${skin}" must own ${property} for ${component}`,
+    );
+  }
+}
+
+assert.match(
+  skinsCss,
+  /\[data-widget-skin\]:not\(\[data-widget-skin="classic"\]\)/,
+  "shared control mechanics must explicitly exclude the classic skin",
+);
 
 process.stdout.write("widget layout contract tests passed\n");
 

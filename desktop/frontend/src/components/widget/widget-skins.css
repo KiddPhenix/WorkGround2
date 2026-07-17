@@ -1,5 +1,6 @@
-/* Device shells share geometry and interaction; these tokens tune the DOM UI
-   to the LCD/material palette baked into each nine-slice shell. */
+/* Generated shells share the interaction model, while every device owns its
+   display safe area, control geometry and material palette. Classic keeps the
+   original widget-mode.css styling. */
 
 [data-widget-skin="bp"] {
   --widget-cyan: #d9f0d2;
@@ -8,7 +9,7 @@
   --widget-white: #f8f4df;
   --widget-muted: #d0d5bd;
   --widget-control-bg: rgb(64 74 54 / 0.94);
-  --widget-control-bg-soft: rgb(75 84 64 / 0.78);
+  --widget-control-bg-soft: rgb(75 84 64 / 0.8);
   --widget-control-hover: rgb(82 94 68 / 0.98);
   --widget-control-border: #c5c7a7;
   --widget-control-fg: #f8f4df;
@@ -16,7 +17,7 @@
   --widget-primary-bg: #e2b65f;
   --widget-primary-fg: #273023;
   --widget-control-radius: 5px;
-  --widget-control-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.14), 0 2px 5px rgb(26 30 22 / 0.28);
+  --widget-control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.14), inset 0 -2px 0 rgb(0 0 0 / 0.12), 0 2px 5px rgb(26 30 22 / 0.28);
 }
 
 [data-widget-skin="instant"] {
@@ -24,9 +25,9 @@
   --widget-yellow: #f29272;
   --widget-red: #ff7468;
   --widget-white: #faf8ef;
-  --widget-muted: #bbbdb5;
+  --widget-muted: #c6c5ba;
   --widget-control-bg: rgb(51 68 63 / 0.94);
-  --widget-control-bg-soft: rgb(66 81 75 / 0.78);
+  --widget-control-bg-soft: rgb(66 81 75 / 0.8);
   --widget-control-hover: rgb(67 88 80 / 0.98);
   --widget-control-border: #d9d2bd;
   --widget-control-fg: #faf8ef;
@@ -34,7 +35,7 @@
   --widget-primary-bg: #ed9275;
   --widget-primary-fg: #39261f;
   --widget-control-radius: 8px;
-  --widget-control-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16), 0 2px 6px rgb(37 42 38 / 0.24);
+  --widget-control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16), 0 2px 6px rgb(37 42 38 / 0.24);
 }
 
 [data-widget-skin="pet"] {
@@ -42,9 +43,9 @@
   --widget-yellow: #ffb482;
   --widget-red: #ff7468;
   --widget-white: #f4f5d8;
-  --widget-muted: #b8cdbd;
+  --widget-muted: #d8e6d8;
   --widget-control-bg: rgb(82 126 108 / 0.94);
-  --widget-control-bg-soft: rgb(102 143 126 / 0.78);
+  --widget-control-bg-soft: rgb(102 143 126 / 0.8);
   --widget-control-hover: rgb(96 147 126 / 0.98);
   --widget-control-border: #c8ead9;
   --widget-control-fg: #f6f6df;
@@ -52,7 +53,7 @@
   --widget-primary-bg: #ffb482;
   --widget-primary-fg: #463629;
   --widget-control-radius: 12px;
-  --widget-control-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18), 0 3px 7px rgb(70 80 65 / 0.2);
+  --widget-control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 3px 7px rgb(70 80 65 / 0.2);
 }
 
 [data-widget-skin="recorder"] {
@@ -60,9 +61,9 @@
   --widget-yellow: #ef8a54;
   --widget-red: #ff5a4f;
   --widget-white: #f5eee2;
-  --widget-muted: #bfae9d;
+  --widget-muted: #c8b7a6;
   --widget-control-bg: rgb(54 46 39 / 0.96);
-  --widget-control-bg-soft: rgb(69 58 48 / 0.82);
+  --widget-control-bg-soft: rgb(69 58 48 / 0.84);
   --widget-control-hover: rgb(75 62 51 / 0.98);
   --widget-control-border: #b99c79;
   --widget-control-fg: #f5eee2;
@@ -70,45 +71,19 @@
   --widget-primary-bg: #d97845;
   --widget-primary-fg: #261811;
   --widget-control-radius: 2px;
-  --widget-control-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.1), 0 2px 4px rgb(0 0 0 / 0.38);
+  --widget-control-shadow: inset 0 1px 0 rgb(255 255 255 / 0.1), inset 0 -2px 0 rgb(0 0 0 / 0.24), 0 2px 4px rgb(0 0 0 / 0.38);
 }
 
-:is([data-widget-skin="bp"], [data-widget-skin="pet"]) .widget-info__rail {
-  display: none;
-}
-
-[data-widget-skin="pet"] .widget-info {
-  top: 17%;
-  bottom: 20%;
-  left: 3.2%;
-  width: 17.2%;
-  border-right: 0;
-}
-
-[data-widget-skin="pet"] .widget-info__page {
-  padding: 0 10px;
-}
-
-:is([data-widget-skin="instant"], [data-widget-skin="recorder"]) .widget-info {
-  visibility: hidden;
-  pointer-events: none;
-}
-
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-context {
-  border-right-color: color-mix(in srgb, var(--widget-cyan) 72%, transparent);
-}
-
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action, .widget-new, .widget-reply, .widget-return, .widget-workspace__toggle, .widget-workspace__menu) {
+/* Shared control mechanics. The values above make the result device-specific;
+   the blocks below this section own each shell's geometry and accents. */
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action,
+  .widget-new,
+  .widget-reply,
+  .widget-return,
+  .widget-workspace__toggle,
+  .widget-workspace__menu
+) {
   border-radius: var(--widget-control-radius);
   background: var(--widget-control-bg);
   box-shadow: var(--widget-control-shadow);
@@ -116,161 +91,241 @@
   clip-path: none;
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action::before, .widget-return::after, .widget-workspace__toggle::after) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action::before,
+  .widget-return::after,
+  .widget-workspace__toggle::after
+) {
   border-color: var(--widget-control-border);
   border-radius: inherit;
   clip-path: none;
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action--primary, .widget-reply__send, .widget-return__icon, .widget-new) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action--primary,
+  .widget-reply__send,
+  .widget-return__icon,
+  .widget-new
+) {
   border-color: var(--widget-primary-bg);
   background: var(--widget-primary-bg);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2), 0 2px 5px color-mix(in srgb, var(--widget-primary-bg) 28%, transparent);
+  box-shadow: var(--widget-control-shadow);
   color: var(--widget-primary-fg);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action--primary::before, .widget-reply__send, .widget-reply__later) {
-  border-color: var(--widget-control-border);
-}
-
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action--quiet, .widget-reply__later) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action--quiet,
+  .widget-reply__later
+) {
   background: var(--widget-control-bg-soft);
   color: var(--widget-control-muted);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action small, .widget-return__copy small, .widget-workspace__value small, .widget-reply input::placeholder) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action small,
+  .widget-return__copy small,
+  .widget-workspace__value small,
+  .widget-reply input::placeholder
+) {
   color: var(--widget-control-muted);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action--primary small, .widget-new small) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-action--primary small,
+  .widget-new small
+) {
   color: color-mix(in srgb, var(--widget-primary-fg) 72%, transparent);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-reply input, .widget-workspace__item) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-reply input,
+  .widget-workspace__item
+) {
   color: var(--widget-control-fg);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-return:hover:not(:disabled), .widget-workspace__toggle:hover:not(:disabled), .widget-workspace__item:hover) {
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-reply,
+  .widget-workspace__menu,
+  .widget-reply__send,
+  .widget-reply__later
+) {
+  border-color: var(--widget-control-border);
+}
+
+[data-widget-skin]:not([data-widget-skin="classic"]) :is(
+  .widget-return:hover:not(:disabled),
+  .widget-workspace__toggle:hover:not(:disabled),
+  .widget-workspace__item:hover
+) {
   background: var(--widget-control-hover);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-reply__send:disabled {
+[data-widget-skin]:not([data-widget-skin="classic"]) .widget-reply__send:disabled {
   background: color-mix(in srgb, var(--widget-primary-bg) 42%, var(--widget-control-bg));
   color: var(--widget-control-muted);
+  box-shadow: none;
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-return__icon {
+[data-widget-skin]:not([data-widget-skin="classic"]) .widget-return__icon {
   border-radius: max(0px, calc(var(--widget-control-radius) - 2px));
   clip-path: none;
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-message__scan,
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-status-line {
-  background: repeating-linear-gradient(90deg, var(--widget-cyan) 0 2px, transparent 2px 6px);
+/* BP: the left olive LCD is functional; compact square keys echo the keypad. */
+[data-widget-skin="bp"] .widget-info {
+  top: 18%;
+  bottom: 18%;
+  left: 3.4%;
+  width: 24.4%;
+  border-right: 1px solid color-mix(in srgb, var(--widget-cyan) 55%, transparent);
+  background: rgb(51 62 43 / 0.1);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-message__scan::after,
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) .widget-status-line::after {
-  background: var(--widget-cyan);
-  box-shadow: -30px 0 0 var(--widget-yellow), -48px 0 0 var(--widget-yellow), -66px 0 0 var(--widget-yellow);
+[data-widget-skin="bp"] .widget-info__rail { display: none; }
+
+[data-widget-skin="bp"] .widget-message {
+  top: 17%;
+  right: 4.6%;
+  bottom: 13%;
+  left: 30.2%;
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action::before, .widget-reply, .widget-workspace__toggle::after, .widget-workspace__menu, .widget-return::after) {
-  border-color: var(--widget-control-border);
+[data-widget-skin="bp"] .widget-context {
+  border-right-color: color-mix(in srgb, var(--widget-cyan) 64%, transparent);
 }
 
-:is(
-  [data-widget-skin="bp"],
-  [data-widget-skin="instant"],
-  [data-widget-skin="pet"],
-  [data-widget-skin="recorder"]
-) :is(.widget-action--primary, .widget-reply__send, .widget-return__icon, .widget-new) {
-  background: var(--widget-primary-bg);
+[data-widget-skin="bp"] .widget-return { top: 7.5%; right: 6.2%; border-radius: 4px; }
+[data-widget-skin="bp"] .widget-workspace__toggle { border-radius: 4px; }
+[data-widget-skin="bp"] .widget-new { border-radius: 4px; }
+[data-widget-skin="bp"] .widget-action,
+[data-widget-skin="bp"] .widget-reply { border-radius: 4px; }
+
+[data-widget-skin="bp"] .widget-message__scan,
+[data-widget-skin="bp"] .widget-status-line {
+  background: repeating-linear-gradient(90deg, #cfe4c5 0 2px, transparent 2px 6px);
 }
 
-[data-widget-skin="recorder"] .widget-action {
-  border-radius: 2px;
-  clip-path: none;
+[data-widget-skin="bp"] .widget-message__scan::after,
+[data-widget-skin="bp"] .widget-status-line::after {
+  background: #d9f0d2;
+  box-shadow: -30px 0 0 #d8b259, -48px 0 0 #d8b259, -66px 0 0 #d8b259;
 }
 
-[data-widget-skin="pet"] :is(.widget-action, .widget-reply, .widget-workspace__toggle) {
-  border-radius: 12px;
-  clip-path: none;
+/* Instant camera: the lens/shutter bay stays decorative; controls resemble
+   cream camera controls with a coral shutter key. */
+[data-widget-skin="instant"] .widget-info {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+[data-widget-skin="instant"] .widget-message {
+  top: 17.5%;
+  right: 4.2%;
+  bottom: 13%;
+  left: 30.1%;
+}
+
+[data-widget-skin="instant"] .widget-context {
+  border-right-color: color-mix(in srgb, #d9d2bd 58%, transparent);
+}
+
+[data-widget-skin="instant"] .widget-return { top: 7.4%; right: 6%; border-radius: 8px; }
+[data-widget-skin="instant"] .widget-workspace__toggle { border-radius: 7px; }
+[data-widget-skin="instant"] .widget-new { border-radius: 9px; }
+[data-widget-skin="instant"] .widget-action,
+[data-widget-skin="instant"] .widget-reply { border-radius: 8px; }
+
+[data-widget-skin="instant"] .widget-message__scan,
+[data-widget-skin="instant"] .widget-status-line {
+  background: repeating-linear-gradient(90deg, #e5d8b8 0 3px, transparent 3px 7px);
+  opacity: 0.82;
+}
+
+[data-widget-skin="instant"] .widget-message__scan::after,
+[data-widget-skin="instant"] .widget-status-line::after {
+  background: #ed9275;
+  box-shadow: -30px 0 0 #d7f0e4, -48px 0 0 #ed9275, -66px 0 0 #d7f0e4;
+}
+
+/* Virtual pet: the left companion screen remains functional; all controls are
+   soft mint/apricot and leave a clean gutter after that mini display. */
+[data-widget-skin="pet"] .widget-info {
+  top: 19%;
+  bottom: 21%;
+  left: 4.4%;
+  width: 17.4%;
+  border-right: 0;
+  border-radius: 7px;
+  background: rgb(73 112 95 / 0.12);
+}
+
+[data-widget-skin="pet"] .widget-info__rail { display: none; }
+[data-widget-skin="pet"] .widget-info__page { padding: 0 9px; }
+
+[data-widget-skin="pet"] .widget-message {
+  top: 18%;
+  right: 4.4%;
+  bottom: 13%;
+  left: 30.2%;
+}
+
+[data-widget-skin="pet"] .widget-context {
+  border-right-color: color-mix(in srgb, #bde7d5 65%, transparent);
+}
+
+[data-widget-skin="pet"] .widget-return { top: 7.8%; right: 6.1%; border-radius: 13px; }
+[data-widget-skin="pet"] .widget-workspace__toggle { border-radius: 14px; }
+[data-widget-skin="pet"] .widget-new { border-radius: 14px; }
+[data-widget-skin="pet"] .widget-action,
+[data-widget-skin="pet"] .widget-reply { border-radius: 13px; }
+
+[data-widget-skin="pet"] .widget-message__scan,
+[data-widget-skin="pet"] .widget-status-line {
+  background: repeating-linear-gradient(90deg, #bde7d5 0 2px, transparent 2px 7px);
+  opacity: 0.76;
+}
+
+[data-widget-skin="pet"] .widget-message__scan::after,
+[data-widget-skin="pet"] .widget-status-line::after {
+  background: #bde7d5;
+  box-shadow: -30px 0 0 #ffb482, -48px 0 0 #bde7d5, -66px 0 0 #ffb482;
+}
+
+/* Cassette recorder: the tape deck and hardware keys stay decorative; square
+   UI controls inherit the deck's dark brown and record-orange materials. */
+[data-widget-skin="recorder"] .widget-info {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+[data-widget-skin="recorder"] .widget-message {
+  top: 18%;
+  right: 4.1%;
+  bottom: 13%;
+  left: 29.8%;
+}
+
+[data-widget-skin="recorder"] .widget-context {
+  border-right-color: color-mix(in srgb, #b99c79 62%, transparent);
+}
+
+[data-widget-skin="recorder"] .widget-return { top: 7.7%; right: 6%; border-radius: 2px; }
+[data-widget-skin="recorder"] .widget-workspace__toggle { border-radius: 2px; }
+[data-widget-skin="recorder"] .widget-new { border-radius: 2px; }
+[data-widget-skin="recorder"] .widget-action,
+[data-widget-skin="recorder"] .widget-reply { border-radius: 2px; }
+
+[data-widget-skin="recorder"] .widget-message__scan,
+[data-widget-skin="recorder"] .widget-status-line {
+  background: repeating-linear-gradient(90deg, #d97845 0 3px, transparent 3px 7px);
+  opacity: 0.88;
+}
+
+[data-widget-skin="recorder"] .widget-message__scan::after,
+[data-widget-skin="recorder"] .widget-status-line::after {
+  background: #d97845;
+  box-shadow: -30px 0 0 #d8c7a8, -48px 0 0 #d97845, -66px 0 0 #d8c7a8;
 }
 
 @media (prefers-reduced-motion: reduce) {
