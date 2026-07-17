@@ -68,6 +68,8 @@ import type {
   QuestionAnswer,
   ServerView,
   SessionMeta,
+  SessionBackgroundImageView,
+  SessionBackgroundSettingsView,
   SettingsView,
   SkillsSettingsView,
   SkillShareDeleteOptions,
@@ -477,6 +479,13 @@ export interface AppBindings {
   SaveDocForTab(tabID: string, path: string, body: string): Promise<string>;
   DesktopStartupSettings(): Promise<DesktopStartupSettingsView>;
   Settings(): Promise<SettingsView>;
+  SessionBackgroundSettings(): Promise<SessionBackgroundSettingsView>;
+  RefreshSessionBackgroundSettings(): Promise<SessionBackgroundSettingsView>;
+  SetSessionBackgroundSettings(settings: SessionBackgroundSettingsView): Promise<void>;
+  PickSessionBackgroundFiles(): Promise<string[]>;
+  PickSessionBackgroundFolder(): Promise<string>;
+  SessionBackground(tabID: string): Promise<SessionBackgroundImageView>;
+  RotateSessionBackground(tabID: string): Promise<SessionBackgroundImageView>;
   TryDeferredConfigRebuild(): Promise<void>;
   HooksSettings(scope: string): Promise<HooksSettingsView>;
   SaveHooksSettings(scope: string, hooks: HookConfigView[]): Promise<void>;
@@ -632,6 +641,7 @@ declare global {
 
 // Must match desktop/app.go's eventChannel constant.
 const EVENT_CHANNEL = "agent:event";
+const SESSION_BACKGROUND_EVENT = "session-background:changed";
 const RECENT_NATIVE_FILE_DRAG_MS = 2000;
 const WAILS_NON_FILE_DRAG_MESSAGE = "additional File object is not a file on the disk";
 const UNCAUGHT_ERROR_PREFIX_RE = /^Uncaught(?:\s+\(in promise\))?(?:\s+\w*Error)?:\s*/i;
@@ -658,6 +668,16 @@ export function onEvent(cb: (e: WireEvent) => void): () => void {
     return window.runtime.EventsOn(EVENT_CHANNEL, (payload) => cb(payload as WireEvent));
   }
   return mockSubscribe(cb);
+}
+
+const mockSessionBackgroundListeners = new Set<() => void>();
+
+export function onSessionBackgroundChanged(cb: () => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn(SESSION_BACKGROUND_EVENT, cb);
+  }
+  mockSessionBackgroundListeners.add(cb);
+  return () => mockSessionBackgroundListeners.delete(cb);
 }
 
 // onUpdaterProgress subscribes to the auto-updater's progress events (a separate
@@ -1616,6 +1636,14 @@ function makeMockApp(): AppBindings {
     providerKinds: ["cli", "openai"],
     autoApproveTools: false,
     bypass: false,
+  };
+  let sessionBackgroundSettings: SessionBackgroundSettingsView = {
+    enabled: false,
+    maskEnabled: true,
+    randomOnOpen: true,
+    rotateSeconds: 0,
+    imageCount: 0,
+    sources: [],
   };
   const mockLocalCLIOptions: LocalCLIOptionView[] = [
     {
@@ -3833,6 +3861,28 @@ function makeMockApp(): AppBindings {
     },
     async Settings() {
       return JSON.parse(JSON.stringify(settings)) as SettingsView;
+    },
+    async SessionBackgroundSettings() {
+      return JSON.parse(JSON.stringify(sessionBackgroundSettings)) as SessionBackgroundSettingsView;
+    },
+    async RefreshSessionBackgroundSettings() {
+      return JSON.parse(JSON.stringify(sessionBackgroundSettings)) as SessionBackgroundSettingsView;
+    },
+    async SetSessionBackgroundSettings(next: SessionBackgroundSettingsView) {
+      sessionBackgroundSettings = JSON.parse(JSON.stringify(next)) as SessionBackgroundSettingsView;
+      mockSessionBackgroundListeners.forEach((listener) => listener());
+    },
+    async PickSessionBackgroundFiles() {
+      return [];
+    },
+    async PickSessionBackgroundFolder() {
+      return "";
+    },
+    async SessionBackground(_tabID: string) {
+      return { path: "", url: "" };
+    },
+    async RotateSessionBackground(_tabID: string) {
+      return { path: "", url: "" };
     },
     async TryDeferredConfigRebuild() {
       // Browser dev mock has no controller rebuild lifecycle.

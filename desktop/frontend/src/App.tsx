@@ -63,6 +63,7 @@ import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
 import { SessionMemoryBar, SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar, AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
+import { SessionBackground } from "./components/SessionBackground";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { CopyButton } from "./components/CopyButton";
@@ -3257,6 +3258,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
             </aside>
 
     <section className="session-workspace" aria-label="Session workspace">
+              <SessionBackground tabId={activeTabId} />
               {/* SessionHeader (104px) */}
               <header className="session-header">
                 <div className="session-header__identity">
@@ -3743,6 +3745,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
         )}
 
         <section className={`chat-pane${sidebarCreation && !sessionHasContent ? " chat-pane--creation-empty" : ""}`}>
+          <SessionBackground tabId={activeTabId} />
           <>
           <header className="topicbar">
             {workbenchChromeHidden && sidebarCollapsed && (

@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, KeyRound, Loader2, Play, QrCode, RefreshCw, Send } from "lucide-react";
+import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, FolderPlus, Images, KeyRound, Loader2, Play, QrCode, RefreshCw, Send, Trash2 } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app } from "../lib/bridge";
@@ -45,7 +45,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -5834,6 +5834,7 @@ function AppearanceSection({
   const availableFontFamilies = useMemo(() => getAvailableFontFamilies(fontFamily), [fontFamily]);
   const availableMonoFontFamilies = useMemo(() => getAvailableMonoFontFamilies(monoFontFamily), [monoFontFamily]);
   return (
+    <>
     <SettingsSection title={t("settings.appearance")}>
       <SettingsField label={t("settings.theme")}>
         <div className="set-seg">
@@ -5975,6 +5976,160 @@ function AppearanceSection({
             onChange={(e) => onCustomMonoFontNameChange(e.target.value)}
           />
         </SettingsField>
+      )}
+    </SettingsSection>
+      <SessionBackgroundSettingsSection />
+    </>
+  );
+}
+
+function SessionBackgroundSettingsSection() {
+  const t = useT();
+  const [view, setView] = useState<SessionBackgroundSettingsView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    setError("");
+    try {
+      setView(await app.RefreshSessionBackgroundSettings());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const save = useCallback(async (next: SessionBackgroundSettingsView) => {
+    const previous = view;
+    setView(next);
+    setBusy(true);
+    setError("");
+    try {
+      await app.SetSessionBackgroundSettings(next);
+      await refresh();
+    } catch (err) {
+      setView(previous);
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh, view]);
+
+  const addSources = useCallback((sources: SessionBackgroundSourceView[]) => {
+    if (!view || sources.length === 0) return;
+    const seen = new Set(view.sources.map((source) => `${source.kind}\0${source.path.toLocaleLowerCase()}`));
+    const unique = sources.filter((source) => {
+      const key = `${source.kind}\0${source.path.toLocaleLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (unique.length > 0) void save({ ...view, sources: [...view.sources, ...unique] });
+  }, [save, view]);
+
+  const addFiles = async () => {
+    setError("");
+    try {
+      const paths = await app.PickSessionBackgroundFiles();
+      addSources(paths.map((path) => ({ kind: "file", path, enabled: true, recursive: false, imageCount: 0 })));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const addFolder = async () => {
+    setError("");
+    try {
+      const path = await app.PickSessionBackgroundFolder();
+      if (path) addSources([{ kind: "folder", path, enabled: true, recursive: false, imageCount: 0 }]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const patchSource = (index: number, patch: Partial<SessionBackgroundSourceView>) => {
+    if (!view) return;
+    void save({ ...view, sources: view.sources.map((source, i) => i === index ? { ...source, ...patch } : source) });
+  };
+
+  const removeSource = (index: number) => {
+    if (!view) return;
+    void save({ ...view, sources: view.sources.filter((_, i) => i !== index) });
+  };
+
+  return (
+    <SettingsSection
+      title={t("settings.sessionBackground")}
+      description={t("settings.sessionBackgroundDesc")}
+      actions={(
+        <>
+          <button className="btn btn--small" type="button" disabled={busy || !view} onClick={() => void addFiles()}><Images size={14} />{t("settings.sessionBackgroundAddImages")}</button>
+          <button className="btn btn--small" type="button" disabled={busy || !view} onClick={() => void addFolder()}><FolderPlus size={14} />{t("settings.sessionBackgroundAddFolder")}</button>
+        </>
+      )}
+    >
+      {!view && !error && <div className="settings-background__loading"><Loader2 className="spin" size={16} />{t("common.loading")}</div>}
+      {error && <div className="settings-background__error">{error}<button className="btn btn--small" type="button" onClick={() => void refresh()}>{t("common.retry")}</button></div>}
+      {view && (
+        <>
+          <SettingsField label={t("settings.sessionBackgroundEnabled")} hint={t("settings.sessionBackgroundCount", { count: view.imageCount })}>
+            <ToggleSegment value={view.enabled} disabled={busy} onChange={(enabled) => void save({ ...view, enabled })} />
+          </SettingsField>
+          <SettingsField label={t("settings.sessionBackgroundMask")} hint={t("settings.sessionBackgroundMaskHint")}>
+            <ToggleSegment value={view.maskEnabled} disabled={busy} onChange={(maskEnabled) => void save({ ...view, maskEnabled })} />
+          </SettingsField>
+          <SettingsField label={t("settings.sessionBackgroundRandom")} hint={t("settings.sessionBackgroundRandomHint")}>
+            <ToggleSegment value={view.randomOnOpen} disabled={busy} onChange={(randomOnOpen) => void save({ ...view, randomOnOpen })} />
+          </SettingsField>
+          <SettingsField label={t("settings.sessionBackgroundRotate")} hint={t("settings.sessionBackgroundRotateHint")}>
+            <div className="settings-background__rotate">
+              <ToggleSegment value={view.rotateSeconds > 0} disabled={busy} onChange={(enabled) => void save({ ...view, rotateSeconds: enabled ? 300 : 0 })} />
+              <label>
+                <input
+                  className="mem-input"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  disabled={busy || view.rotateSeconds === 0}
+                  key={view.rotateSeconds}
+                  defaultValue={view.rotateSeconds > 0 ? Math.max(1, Math.round(view.rotateSeconds / 60)) : 5}
+                  onBlur={(event) => {
+                    const minutes = Math.max(1, Math.min(1440, Number(event.target.value) || 1));
+                    void save({ ...view, rotateSeconds: minutes * 60 });
+                  }}
+                  onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+                />
+                <span>{t("settings.sessionBackgroundMinutes")}</span>
+              </label>
+            </div>
+          </SettingsField>
+          <SettingsField label={t("settings.sessionBackgroundSources")} stacked>
+            <div className="settings-background__sources">
+              {view.sources.length === 0 && <div className="settings-background__empty">{t("settings.sessionBackgroundEmpty")}</div>}
+              {view.sources.map((source, index) => (
+                <div className={`settings-background__source${source.error ? " settings-background__source--error" : ""}`} key={`${source.kind}:${source.path}`}>
+                  <div className="settings-background__source-main">
+                    <span className="settings-background__kind">{source.kind === "folder" ? t("settings.sessionBackgroundFolder") : t("settings.sessionBackgroundImage")}</span>
+                    <span className="settings-background__path" title={source.path}>{source.path}</span>
+                    <span className="settings-background__count">{source.imageCount}</span>
+                  </div>
+                  {source.error && <div className="settings-background__source-error" title={source.error}>{source.error}</div>}
+                  <div className="settings-background__source-actions">
+                    <ToggleSegment value={source.enabled} disabled={busy} onChange={(enabled) => patchSource(index, { enabled })} />
+                    {source.kind === "folder" && (
+                      <label className="settings-background__recursive">
+                        <input type="checkbox" checked={source.recursive} disabled={busy} onChange={(event) => patchSource(index, { recursive: event.target.checked })} />
+                        <span>{t("settings.sessionBackgroundRecursive")}</span>
+                      </label>
+                    )}
+                    <button type="button" className="btn btn--small" disabled={busy} aria-label={t("common.delete")} onClick={() => removeSource(index)}><Trash2 size={14} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </SettingsField>
+        </>
       )}
     </SettingsSection>
   );

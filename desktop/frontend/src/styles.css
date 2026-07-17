@@ -90,6 +90,7 @@
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.28);
 
   /* z-index scale */
+  --z-local-base: 0;
   --z-local-raised: 2;
   --z-local-handle: 4;
   --z-local-handle-active: 5;
@@ -6391,6 +6392,86 @@ body > .mermaid-diagram--fullscreen {
   font-family: var(--mono);
   font-size: 12px;
   white-space: pre-wrap;
+}
+
+/* Session background is an isolated, non-interactive layer. Only the active
+   conversation surface becomes translucent; navigation and workspace panes keep
+   their normal opaque theme surfaces. */
+.chat-pane:has(> .session-background),
+.session-workspace:has(> .session-background) {
+  isolation: isolate;
+  background: transparent;
+}
+
+.chat-pane:has(> .session-background) > :not(.session-background),
+.session-workspace:has(> .session-background) > :not(.session-background) {
+  position: relative;
+  z-index: var(--z-local-raised);
+}
+
+.session-background {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-base);
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.session-background__image,
+.session-background__mask {
+  position: absolute;
+  inset: 0;
+}
+
+.session-background__image {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+.session-background__image--current {
+  opacity: 0;
+  animation: session-background-in 500ms ease-out forwards;
+}
+
+.session-background__image--previous {
+  opacity: 1;
+  animation: session-background-out 500ms ease-out forwards;
+}
+
+.session-background__mask {
+  background:
+    linear-gradient(90deg,
+      color-mix(in srgb, var(--bg) 88%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 68%, transparent) 58%,
+      color-mix(in srgb, var(--bg) 42%, transparent) 100%),
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--bg) 22%, transparent),
+      color-mix(in srgb, var(--bg) 48%, transparent));
+}
+
+.chat-pane:has(> .session-background) .topicbar,
+.chat-pane:has(> .session-background) .footer {
+  background: color-mix(in srgb, var(--chat-bg) 58%, transparent);
+  backdrop-filter: blur(8px);
+}
+
+@keyframes session-background-in {
+  to { opacity: 1; }
+}
+
+@keyframes session-background-out {
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-background__image--current,
+  .session-background__image--previous {
+    animation: none;
+  }
+  .session-background__image--current { opacity: 1; }
+  .session-background__image--previous { opacity: 0; }
 }
 /* ── request_help status card ──────────────────────────────────────── */
 .request-help-wrap {
@@ -32470,6 +32551,7 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   min-width: 0;
   height: 100%;
+  position: relative;
   background: var(--bg);
   overflow: hidden;
 }
@@ -32621,6 +32703,121 @@ body > .mermaid-diagram--fullscreen {
 .session-status-indicator__icon {
   flex-shrink: 0;
   opacity: 0.85;
+}
+
+.settings-background__loading,
+.settings-background__error,
+.settings-background__empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.settings-background__error {
+  justify-content: space-between;
+  color: var(--err);
+}
+
+.settings-background__rotate {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.settings-background__rotate > label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.settings-background__rotate .mem-input {
+  width: 72px;
+}
+
+.settings-background__sources {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-background__source {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+}
+
+.settings-background__source--error {
+  border-color: color-mix(in srgb, var(--err) 38%, var(--border-soft));
+}
+
+.settings-background__source-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-background__kind,
+.settings-background__count {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.settings-background__kind {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg-soft);
+}
+
+.settings-background__path,
+.settings-background__source-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.settings-background__source-error {
+  color: var(--err);
+}
+
+.settings-background__source-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-background__source-actions .set-seg__btn {
+  min-width: 42px;
+  padding: 4px 8px;
+}
+
+.settings-background__recursive {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  .settings-background__rotate,
+  .settings-background__source-actions {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
 }
 
 .session-status-indicator__dot {
@@ -33402,4 +33599,13 @@ body > .mermaid-diagram--fullscreen {
   .welcome-adaptive__primary {
     transition: none;
   }
+}
+
+/* Creation theme paints the chat canvas late in this file. Keep those surfaces
+   transparent when a session background is mounted so the image remains visible. */
+.app--creation .chat-pane:has(> .session-background),
+:root[data-theme-style] .app--creation .chat-pane:has(> .session-background),
+.app--creation .chat-pane:has(> .session-background) .transcript,
+:root[data-theme-style] .app--creation .chat-pane:has(> .session-background) .transcript {
+  background: transparent;
 }
