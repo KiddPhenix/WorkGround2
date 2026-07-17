@@ -233,6 +233,65 @@ func (c *Config) SetDesktopAppearance(theme, style string) error {
 	return nil
 }
 
+// SetDesktopSessionBackground replaces the complete desktop background
+// preference atomically. Missing files remain configured so removable or
+// temporarily unavailable sources can recover on a later scan.
+func (c *Config) SetDesktopSessionBackground(next DesktopSessionBackgroundConfig) error {
+	if next.RotateSeconds != 0 && (next.RotateSeconds < 30 || next.RotateSeconds > 86_400) {
+		return fmt.Errorf("desktop Session background rotate seconds %d: must be 0 or 30..86400", next.RotateSeconds)
+	}
+	mask := true
+	if next.MaskEnabled != nil {
+		mask = *next.MaskEnabled
+	}
+	random := true
+	if next.RandomOnOpen != nil {
+		random = *next.RandomOnOpen
+	}
+	seen := map[string]bool{}
+	sources := make([]DesktopSessionBackgroundSource, 0, len(next.Sources))
+	for _, source := range next.Sources {
+		kind := strings.ToLower(strings.TrimSpace(source.Kind))
+		if kind != SessionBackgroundSourceFile && kind != SessionBackgroundSourceFolder {
+			return fmt.Errorf("desktop Session background source kind %q: must be file|folder", source.Kind)
+		}
+		path := strings.TrimSpace(source.Path)
+		if path == "" {
+			return fmt.Errorf("desktop Session background %s source path is empty", kind)
+		}
+		path, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			return fmt.Errorf("desktop Session background %s source path %q: %w", kind, source.Path, err)
+		}
+		key := kind + "\x00" + path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		enabled := true
+		if source.Enabled != nil {
+			enabled = *source.Enabled
+		}
+		sources = append(sources, DesktopSessionBackgroundSource{
+			Kind:      kind,
+			Path:      path,
+			Enabled:   boolValue(enabled),
+			Recursive: kind == SessionBackgroundSourceFolder && source.Recursive,
+		})
+	}
+	c.Desktop.SessionBackground = DesktopSessionBackgroundConfig{
+		Enabled:       next.Enabled,
+		MaskEnabled:   boolValue(mask),
+		RandomOnOpen:  boolValue(random),
+		RotateSeconds: next.RotateSeconds,
+		Sources:       sources,
+	}
+	return nil
+}
+
 // SetDesktopLayoutStyle sets the desktop layout style. UI-only; it must not
 // affect CLI output or provider-visible request data.
 func (c *Config) SetDesktopLayoutStyle(style string) error {

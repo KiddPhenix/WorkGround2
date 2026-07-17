@@ -145,6 +145,7 @@ type App struct {
 	tray                *desktopTray
 
 	mediaTokens *mediaTokenStore
+	background  *sessionBackgroundService
 	botInstalls map[string]*botInstallSession
 	botRuntime  *desktopBotRuntime
 
@@ -361,6 +362,7 @@ func NewApp() *App {
 		tabs:             map[string]*WorkspaceTab{},
 		detachedSessions: map[string]*WorkspaceTab{},
 		mediaTokens:      newMediaTokenStore(),
+		background:       newSessionBackgroundService(),
 		botInstalls:      map[string]*botInstallSession{},
 		botRuntime:       newDesktopBotRuntime(),
 	}

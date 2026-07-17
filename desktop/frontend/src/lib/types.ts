@@ -1380,6 +1380,29 @@ export interface SettingsView {
   bypass: boolean; // legacy JSON key for live YOLO/full-access tool auto-approval
 }
 
+export interface SessionBackgroundSourceView {
+  kind: "file" | "folder";
+  path: string;
+  enabled: boolean;
+  recursive: boolean;
+  imageCount: number;
+  error?: string;
+}
+
+export interface SessionBackgroundSettingsView {
+  enabled: boolean;
+  maskEnabled: boolean;
+  randomOnOpen: boolean;
+  rotateSeconds: number;
+  imageCount: number;
+  sources: SessionBackgroundSourceView[];
+}
+
+export interface SessionBackgroundImageView {
+  path: string;
+  url: string;
+}
+
 export interface DesktopStartupSettingsView {
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto

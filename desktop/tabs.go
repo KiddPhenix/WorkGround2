@@ -2275,6 +2275,7 @@ func (a *App) CloseTab(tabID string) error {
 	}
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.ensureSessionBackground().forget(tabID)
 
 	// Tear down outside the lock.
 	discardPath, discardTransientBlank := transientBlankSessionArtifactPath(tab)

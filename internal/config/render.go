@@ -121,6 +121,23 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		b.WriteString("\n")
 
+		background := c.DesktopSessionBackground()
+		b.WriteString("[desktop.session_background]\n")
+		fmt.Fprintf(&b, "enabled = %v   # desktop Session background images\n", background.Enabled)
+		fmt.Fprintf(&b, "mask_enabled = %v   # theme-aware translucent readability mask\n", *background.MaskEnabled)
+		fmt.Fprintf(&b, "random_on_open = %v   # choose a random first image for each opened Session tab\n", *background.RandomOnOpen)
+		fmt.Fprintf(&b, "rotate_seconds = %d   # 0 disables rotation; otherwise 30..86400\n", background.RotateSeconds)
+		for _, source := range background.Sources {
+			b.WriteString("\n[[desktop.session_background.sources]]\n")
+			fmt.Fprintf(&b, "kind = %q\n", source.Kind)
+			fmt.Fprintf(&b, "path = %q\n", source.Path)
+			fmt.Fprintf(&b, "enabled = %v\n", source.Enabled == nil || *source.Enabled)
+			if source.Kind == SessionBackgroundSourceFolder {
+				fmt.Fprintf(&b, "recursive = %v\n", source.Recursive)
+			}
+		}
+		b.WriteString("\n")
+
 		b.WriteString("[notifications]\n")
 		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI chat/run; default off\n", c.Notifications.Enabled)
 		fmt.Fprintf(&b, "turn_done = %v   # notify when a turn finishes\n", c.Notifications.TurnDone)
