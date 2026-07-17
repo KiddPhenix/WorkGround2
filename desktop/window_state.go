@@ -52,15 +52,12 @@ func loadWindowState() (DesktopWindowState, bool) {
 	return s, true
 }
 
-// SaveWindowState is the bound method the frontend calls to persist the current
-// window geometry before quit and periodically during use.
-func (a *App) SaveWindowState(state DesktopWindowState) error {
-	if a.IsWidgetMode() {
-		return saveWidgetWindowState(WidgetWindowState{
-			Width: state.Width, Height: state.Height, X: state.X, Y: state.Y,
-		})
-	}
-	return saveMainWindowState(state)
+// SaveWindowState is the bound method the frontend calls before quit and
+// periodically during use. The frontend sample may be stale by the time the
+// IPC call arrives, so the backend re-reads geometry while holding widgetMu
+// and routes that single authoritative snapshot to the current mode.
+func (a *App) SaveWindowState(_ DesktopWindowState) error {
+	return a.saveCurrentWindowState()
 }
 
 func saveMainWindowState(state DesktopWindowState) error {
@@ -71,13 +68,12 @@ func saveMainWindowState(state DesktopWindowState) error {
 	return fileutil.AtomicWriteFile(windowStatePath(), data, 0o644)
 }
 
-// saveWindowStateSync saves the current window geometry from the Go side (called
-// during shutdown so the last-known state is persisted even if the frontend's
-// beforeunload promise hasn't resolved).
-func (a *App) saveWindowStateSync() {
+func (a *App) saveCurrentWindowState() error {
 	if a.ctx == nil {
-		return
+		return nil
 	}
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
 	w, h := runtime.WindowGetSize(a.ctx)
 	x, y := runtime.WindowGetPosition(a.ctx)
 	max := runtime.WindowIsMaximised(a.ctx)
@@ -88,9 +84,15 @@ func (a *App) saveWindowStateSync() {
 		Y:         y,
 		Maximised: max,
 	}
-	if a.IsWidgetMode() {
-		_ = saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y})
-		return
+	if a.widgetMode {
+		return saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y})
 	}
-	_ = saveMainWindowState(state)
+	return saveMainWindowState(state)
+}
+
+// saveWindowStateSync saves the current window geometry from the Go side (called
+// during shutdown so the last-known state is persisted even if the frontend's
+// beforeunload promise hasn't resolved).
+func (a *App) saveWindowStateSync() {
+	_ = a.saveCurrentWindowState()
 }

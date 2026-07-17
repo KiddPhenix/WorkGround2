@@ -726,7 +726,7 @@ func (a *App) domReady(_ context.Context) {
 		// sanity check: ensure the window origin falls within a generous
 		// estimate of the screen area. If the user unplugged an external
 		// display, negative or out-of-bounds coordinates are caught here.
-		valid := state.X >= 0 && state.Y >= 0
+		valid := state.Width > 0 && state.Height > 0 && state.X >= 0 && state.Y >= 0
 		if valid {
 			screens, err := runtime.ScreenGetAll(a.ctx)
 			if err == nil && len(screens) > 0 {
@@ -745,7 +745,10 @@ func (a *App) domReady(_ context.Context) {
 			}
 		}
 		if valid {
-			runtime.WindowSetPosition(a.ctx, state.X, state.Y)
+			if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+				slog.Warn("desktop: restore native window bounds failed", "err", err)
+				runtime.WindowCenter(a.ctx)
+			}
 		} else {
 			runtime.WindowCenter(a.ctx)
 		}

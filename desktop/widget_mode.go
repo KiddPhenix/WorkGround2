@@ -255,6 +255,36 @@ func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) 
 	return cfg.DesktopWidgetEnabled(), cfg.DesktopWidgetAlwaysOnTop(), nil
 }
 
+func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) error {
+	runtime.WindowUnmaximise(a.ctx)
+	runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
+	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
+	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+		return err
+	}
+	return setWidgetWindowRegion(state.Width, state.Height)
+}
+
+func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
+	runtime.WindowSetAlwaysOnTop(a.ctx, false)
+	regionErr := clearWidgetWindowRegion()
+	runtime.WindowSetMinSize(a.ctx, 760, 480)
+	if !ok {
+		runtime.WindowSetSize(a.ctx, 1280, 800)
+		runtime.WindowCenter(a.ctx)
+		return regionErr
+	}
+	runtime.WindowUnmaximise(a.ctx)
+	var boundsErr error
+	if state.Width > 0 && state.Height > 0 {
+		boundsErr = setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y)
+	}
+	if state.Maximised {
+		runtime.WindowMaximise(a.ctx)
+	}
+	return errors.Join(regionErr, boundsErr)
+}
+
 // EnterWidgetMode preserves the main geometry and switches the same Wails
 // window into an always-on-top pager. Repeated calls are harmless.
 func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
@@ -279,17 +309,9 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 		if !ok {
 			state = defaultWidgetWindowState(a.ctx)
 		}
-
-		runtime.WindowUnmaximise(a.ctx)
-		runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
-		runtime.WindowSetAlwaysOnTop(a.ctx, widgetAlwaysOnTop)
-		runtime.WindowSetSize(a.ctx, state.Width, state.Height)
-		runtime.WindowSetPosition(a.ctx, state.X, state.Y)
-
-		// Clip native window corners to match the .widget-shell CSS clip-path so
-		// the four corners are truly transparent instead of showing solid wedges.
-		if err := setWidgetWindowRegion(state.Width, state.Height); err != nil {
-			fmt.Printf("widget: initial window region failed; frontend will retry: %v\n", err)
+		if err := a.applyWidgetGeometry(state, widgetAlwaysOnTop); err != nil {
+			rollbackErr := a.restoreMainGeometry(mainState, true)
+			return errors.Join(fmt.Errorf("apply widget window: %w", err), rollbackErr)
 		}
 		return nil
 	})
@@ -311,37 +333,19 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	changed, err := a.transitionWidgetMode(false, func() error {
 		w, h := runtime.WindowGetSize(a.ctx)
 		x, y := runtime.WindowGetPosition(a.ctx)
-		if err := saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y}); err != nil {
+		widgetState := WidgetWindowState{Width: w, Height: h, X: x, Y: y}
+		if err := saveWidgetWindowState(widgetState); err != nil {
 			return fmt.Errorf("save widget window: %w", err)
 		}
-
-		runtime.WindowSetAlwaysOnTop(a.ctx, false)
-
-		// Restore rectangular window shape before resizing back to main geometry.
-		if err := clearWidgetWindowRegion(); err != nil {
+		state, ok := loadWindowState()
+		if err := a.restoreMainGeometry(state, ok); err != nil {
 			_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
 			if configErr != nil {
 				fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
 				alwaysOnTop = true
 			}
-			runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
-			return fmt.Errorf("restore widget window shape: %w", err)
-		}
-
-		runtime.WindowSetMinSize(a.ctx, 760, 480)
-		state, ok := loadWindowState()
-		if ok {
-			runtime.WindowUnmaximise(a.ctx)
-			if state.Width > 0 && state.Height > 0 {
-				runtime.WindowSetSize(a.ctx, state.Width, state.Height)
-			}
-			runtime.WindowSetPosition(a.ctx, state.X, state.Y)
-			if state.Maximised {
-				runtime.WindowMaximise(a.ctx)
-			}
-		} else {
-			runtime.WindowSetSize(a.ctx, 1280, 800)
-			runtime.WindowCenter(a.ctx)
+			rollbackErr := a.applyWidgetGeometry(widgetState, alwaysOnTop)
+			return errors.Join(fmt.Errorf("restore main window: %w", err), rollbackErr)
 		}
 		return nil
 	})
@@ -361,6 +365,9 @@ func (a *App) ExitWidgetMode(tabID string) error {
 }
 
 func defaultWidgetWindowState(ctx context.Context) WidgetWindowState {
+	if state, ok := nativeDefaultWidgetWindowState(ctx); ok {
+		return state
+	}
 	screens, err := runtime.ScreenGetAll(ctx)
 	if err != nil || len(screens) == 0 {
 		return WidgetWindowState{Width: widgetDefaultWidth, Height: widgetDefaultHeight, X: widgetEdgeGap, Y: widgetBottomGap}

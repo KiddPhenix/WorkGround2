@@ -40,3 +40,21 @@ func TestWidgetRegionPointsRejectSmallWindow(t *testing.T) {
 		t.Fatal("expected height validation error")
 	}
 }
+
+func TestDefaultWidgetWindowStateUsesAbsoluteWorkArea(t *testing.T) {
+	work := w32Rect{Left: -1920, Top: 48, Right: 0, Bottom: 1080}
+	state := defaultWidgetWindowStateForWorkArea(work, 120)
+	want := WidgetWindowState{Width: 590, Height: 176, X: -758, Y: 830}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
+func TestScaleForDPIRoundTrip(t *testing.T) {
+	for _, value := range []int{16, 176, 590, 1536} {
+		physical := scaleForDPI(value, 120)
+		if got := scaleToDefaultDPI(physical, 120); got != value {
+			t.Fatalf("round trip %d -> %d -> %d", value, physical, got)
+		}
+	}
+}
