@@ -178,6 +178,7 @@ func Artifacts(sessionPath, key string) []Artifact {
 		{Src: store.SessionEventIndex(sessionPath), Name: stem + ".event-index.json"},
 		{Src: store.SessionConflictLog(sessionPath), Name: stem + ".conflicts.jsonl"},
 		{Src: TelemetryPath(sessionPath), Name: key + ".telemetry.json"},
+		{Src: store.SessionTaskMemory(sessionPath), Name: stem + ".task-memory.json"},
 		{Src: store.SessionCheckpointDir(sessionPath), Name: stem + ".ckpt"},
 		{Src: store.SessionJobsDir(sessionPath), Name: stem + ".jobs"},
 	}
