@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -173,5 +174,32 @@ func TestSessionBackgroundAppDisabledAndEmptyTabAreExplicit(t *testing.T) {
 	}
 	if _, err := app.SessionBackground("  "); err == nil {
 		t.Fatal("empty tab id succeeded")
+	}
+}
+
+func TestSessionBackgroundSettingsSerializesEmptySourcesAsArray(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	view, err := NewApp().RefreshSessionBackgroundSettings()
+	if err != nil {
+		t.Fatalf("RefreshSessionBackgroundSettings: %v", err)
+	}
+	if view.Sources == nil {
+		t.Fatal("empty sources must be a non-nil slice")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	if string(payload) == "" || !json.Valid(payload) {
+		t.Fatalf("invalid settings JSON: %q", payload)
+	}
+	var decoded struct {
+		Sources []SessionBackgroundSourceView `json:"sources"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if decoded.Sources == nil {
+		t.Fatalf("sources serialized as null: %s", payload)
 	}
 }

@@ -157,7 +157,7 @@ func (a *App) sessionBackgroundSettings(force bool) (SessionBackgroundSettingsVi
 	catalog := a.ensureSessionBackground().load(bg, force)
 	view := sessionBackgroundConfigView(bg)
 	view.ImageCount = len(catalog.images)
-	view.Sources = append([]SessionBackgroundSourceView(nil), catalog.sources...)
+	view.Sources = append(make([]SessionBackgroundSourceView, 0, len(catalog.sources)), catalog.sources...)
 	return view, nil
 }
 

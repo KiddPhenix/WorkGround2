@@ -5992,7 +5992,8 @@ function SessionBackgroundSettingsSection() {
   const refresh = useCallback(async () => {
     setError("");
     try {
-      setView(await app.RefreshSessionBackgroundSettings());
+      const next = await app.RefreshSessionBackgroundSettings();
+      setView({ ...next, sources: Array.isArray(next.sources) ? next.sources : [] });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
