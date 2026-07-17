@@ -55,6 +55,8 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 import { CopyButton } from "./CopyButton";
+import { WIDGET_SKIN_IDS, resolveWidgetSkin, widgetSkinPreview, type WidgetSkinId } from "./widget/widgetSkins";
+import "./widget/widget-settings.css";
 
 const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "widget", "global", "about"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
@@ -299,7 +301,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetSkin={s.widgetSkin} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -6296,15 +6298,26 @@ function AboutSection() {
 export function WidgetSection({
   widgetEnabled,
   widgetAlwaysOnTop,
+  widgetSkin,
   settingsBusy,
   applySettings,
 }: {
   widgetEnabled: boolean;
   widgetAlwaysOnTop: boolean;
+  widgetSkin: string;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
 }) {
   const t = useT();
+  const selectedSkin = resolveWidgetSkin(widgetSkin);
+  const skinCopy: Record<WidgetSkinId, { label: string; desc: string }> = {
+    classic: { label: t("settings.widget.skinClassic"), desc: t("settings.widget.skinClassicDesc") },
+    bp: { label: t("settings.widget.skinBP"), desc: t("settings.widget.skinBPDesc") },
+    instant: { label: t("settings.widget.skinInstant"), desc: t("settings.widget.skinInstantDesc") },
+    pet: { label: t("settings.widget.skinPet"), desc: t("settings.widget.skinPetDesc") },
+    recorder: { label: t("settings.widget.skinRecorder"), desc: t("settings.widget.skinRecorderDesc") },
+  };
+  const skins = WIDGET_SKIN_IDS.map((id) => ({ id, ...skinCopy[id], preview: widgetSkinPreview(id) }));
   return (
     <SettingsSection title={t("settings.tab.widget")}>
       <SettingsField
@@ -6328,6 +6341,31 @@ export function WidgetSection({
           disabled={settingsBusy}
           onChange={(on) => void applySettings(() => app.SetDesktopWidgetAlwaysOnTop(on))}
         />
+      </SettingsField>
+      <SettingsField
+        className="settings-field--wide-copy"
+        label={t("settings.widget.skinLabel")}
+        hint={t("settings.widget.skinHint")}
+      >
+        <div className="settings-widget-skin-grid" role="radiogroup" aria-label={t("settings.widget.skinLabel")}>
+          {skins.map((skin) => (
+            <button
+              key={skin.id}
+              className={`settings-widget-skin-card${selectedSkin === skin.id ? " settings-widget-skin-card--selected" : ""}`}
+              type="button"
+              role="radio"
+              aria-checked={selectedSkin === skin.id}
+              disabled={settingsBusy}
+              onClick={() => void applySettings(() => app.SetDesktopWidgetSkin(skin.id))}
+            >
+              <span className="settings-widget-skin-card__preview" aria-hidden="true">
+                <img src={skin.preview} alt="" />
+              </span>
+              <span className="settings-widget-skin-card__label">{skin.label}</span>
+              <span className="settings-widget-skin-card__desc">{skin.desc}</span>
+            </button>
+          ))}
+        </div>
       </SettingsField>
     </SettingsSection>
   );

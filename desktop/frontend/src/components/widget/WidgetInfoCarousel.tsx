@@ -39,18 +39,20 @@ const PET_FRAME: Record<WidgetPetState, number> = {
   offline: 5,
 };
 
-function readStoredPage(): WidgetInfoPage {
+function readStoredPage(skin?: string): WidgetInfoPage {
+  const fallback: WidgetInfoPage = skin === "pet" ? "pet" : "tokens";
   try {
-    const value = localStorage.getItem(PAGE_KEY) as WidgetInfoPage | null;
-    return value && INFO_PAGES.includes(value) ? value : "tokens";
+    const skinValue = localStorage.getItem(`${PAGE_KEY}.${skin ?? "classic"}`) as WidgetInfoPage | null;
+    const value = skinValue ?? (skin === "classic" || !skin ? localStorage.getItem(PAGE_KEY) as WidgetInfoPage | null : null);
+    return value && INFO_PAGES.includes(value) ? value : fallback;
   } catch {
-    return "tokens";
+    return fallback;
   }
 }
 
-function storePage(page: WidgetInfoPage) {
+function storePage(page: WidgetInfoPage, skin?: string) {
   try {
-    localStorage.setItem(PAGE_KEY, page);
+    localStorage.setItem(`${PAGE_KEY}.${skin ?? "classic"}`, page);
   } catch {
     // Storage may be disabled in an embedded webview. The in-memory selection
     // still works, and a later click can safely retry persistence.
@@ -197,19 +199,24 @@ function ModelPage({ models, index }: { models: WidgetModelInfo[]; index: number
   );
 }
 
-export function WidgetInfoCarousel({ snapshot, message, projectName, taskName }: {
+export function WidgetInfoCarousel({ snapshot, message, projectName, taskName, skin }: {
   snapshot: WidgetSnapshot;
   message?: WidgetMessage;
   projectName?: string;
   taskName?: string;
+  skin?: string;
 }) {
   const pages = useMemo(() => availableWidgetInfoPages(snapshot), [snapshot.info.models.length, snapshot.info.system.available]);
-  const [page, setPage] = useState<WidgetInfoPage>(readStoredPage);
+  const [page, setPage] = useState<WidgetInfoPage>(() => readStoredPage(skin));
   const [showContext, setShowContext] = useState(false);
   const [modelIndex, setModelIndex] = useState(0);
   const seenContext = useRef("");
   const now = useClock();
   const contextKey = message ? `${message.id}:${message.revision}` : projectName || taskName ? `compose:${projectName ?? ""}:${taskName ?? ""}` : "";
+
+  useEffect(() => {
+    setPage(readStoredPage(skin));
+  }, [skin]);
 
   useEffect(() => {
     if (shouldShowWidgetContext(seenContext.current, contextKey)) {
@@ -224,9 +231,9 @@ export function WidgetInfoCarousel({ snapshot, message, projectName, taskName }:
     if (!pages.includes(page)) {
       const fallback = resolveWidgetInfoPage(page, pages);
       setPage(fallback);
-      storePage(fallback);
+      storePage(fallback, skin);
     }
-  }, [page, pages]);
+  }, [page, pages, skin]);
 
   useEffect(() => {
     if (page !== "models" || snapshot.info.models.length < 2 || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
@@ -241,7 +248,7 @@ export function WidgetInfoCarousel({ snapshot, message, projectName, taskName }:
     }
     const nextPage = nextWidgetInfoPage(page, pages);
     setPage(nextPage);
-    storePage(nextPage);
+    storePage(nextPage, skin);
   };
 
   let content;

@@ -2255,6 +2255,18 @@ export const en = {
   "settings.widget.enableHint": "Show the compact widget button in the window frame.",
   "settings.widget.alwaysOnTopLabel": "Keep widget always on top",
   "settings.widget.alwaysOnTopHint": "Widget window stays above other application windows.",
+  "settings.widget.skinLabel": "Widget skin",
+  "settings.widget.skinHint": "Choose a device shell. Messages and controls stay consistent.",
+  "settings.widget.skinClassic": "Classic",
+  "settings.widget.skinClassicDesc": "Original cyber communication shell",
+  "settings.widget.skinBP": "Pager",
+  "settings.widget.skinBPDesc": "Ivory body with a monochrome LCD",
+  "settings.widget.skinInstant": "Instant camera",
+  "settings.widget.skinInstantDesc": "Lens body with a photo exit slot",
+  "settings.widget.skinPet": "Virtual pet",
+  "settings.widget.skinPetDesc": "Pastel dual-screen pixel companion",
+  "settings.widget.skinRecorder": "Cassette recorder",
+  "settings.widget.skinRecorderDesc": "Tape reels with mechanical controls",
 
   // mock / demo seed data (browser dev only)
   "mock.sessionFixLogin": "fix the login bug in auth.go",

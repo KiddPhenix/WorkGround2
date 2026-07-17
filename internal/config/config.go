@@ -105,6 +105,7 @@ type DesktopConfig struct {
 	ExpandThinking          bool                           `toml:"expand_thinking"`            // true = show reasoning text expanded by default; false = collapsed
 	WidgetEnabled           *bool                          `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
 	WidgetAlwaysOnTop       *bool                          `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
+	WidgetSkin              string                         `toml:"widget_skin"`                // widget visual skin: classic|bp|instant|pet|recorder; empty/unknown → classic
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
 
@@ -545,6 +546,20 @@ func (c *Config) DesktopWidgetAlwaysOnTop() bool {
 		return true
 	}
 	return *c.Desktop.WidgetAlwaysOnTop
+}
+
+// DesktopWidgetSkin returns the current widget visual skin. Empty and unknown
+// values fall back to "classic".
+func (c *Config) DesktopWidgetSkin() string {
+	if c == nil {
+		return "classic"
+	}
+	skin := strings.TrimSpace(c.Desktop.WidgetSkin)
+	switch skin {
+	case "classic", "bp", "instant", "pet", "recorder":
+		return skin
+	}
+	return "classic"
 }
 
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,

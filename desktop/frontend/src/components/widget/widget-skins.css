@@ -1,0 +1,130 @@
+/* Device shells share geometry and interaction; these tokens tune the DOM UI
+   to the LCD/material palette baked into each nine-slice shell. */
+
+[data-widget-skin="bp"] {
+  --widget-cyan: #d9f0d2;
+  --widget-yellow: #ffc566;
+  --widget-red: #ff7468;
+  --widget-white: #f8f4df;
+  --widget-muted: #d0d5bd;
+}
+
+[data-widget-skin="instant"] {
+  --widget-cyan: #d7f0e4;
+  --widget-yellow: #f29272;
+  --widget-red: #ff7468;
+  --widget-white: #faf8ef;
+  --widget-muted: #bbbdb5;
+}
+
+[data-widget-skin="pet"] {
+  --widget-cyan: #bde7d5;
+  --widget-yellow: #ffb482;
+  --widget-red: #ff7468;
+  --widget-white: #f4f5d8;
+  --widget-muted: #b8cdbd;
+}
+
+[data-widget-skin="recorder"] {
+  --widget-cyan: #d8c7a8;
+  --widget-yellow: #ef8a54;
+  --widget-red: #ff5a4f;
+  --widget-white: #f5eee2;
+  --widget-muted: #bfae9d;
+}
+
+:is([data-widget-skin="bp"], [data-widget-skin="pet"]) .widget-info__rail {
+  display: none;
+}
+
+[data-widget-skin="pet"] .widget-info {
+  top: 17%;
+  bottom: 20%;
+  left: 3.2%;
+  width: 17.2%;
+  border-right: 0;
+}
+
+[data-widget-skin="pet"] .widget-info__page {
+  padding: 0 10px;
+}
+
+:is([data-widget-skin="instant"], [data-widget-skin="recorder"]) .widget-info {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) .widget-context {
+  border-right-color: color-mix(in srgb, var(--widget-cyan) 72%, transparent);
+}
+
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) .widget-message__scan,
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) .widget-status-line {
+  background: repeating-linear-gradient(90deg, var(--widget-cyan) 0 2px, transparent 2px 6px);
+}
+
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) .widget-message__scan::after,
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) .widget-status-line::after {
+  background: var(--widget-cyan);
+  box-shadow: -30px 0 0 var(--widget-yellow), -48px 0 0 var(--widget-yellow), -66px 0 0 var(--widget-yellow);
+}
+
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) :is(.widget-action::before, .widget-reply, .widget-workspace__toggle::after, .widget-workspace__menu, .widget-return::after) {
+  border-color: var(--widget-cyan);
+}
+
+:is(
+  [data-widget-skin="bp"],
+  [data-widget-skin="instant"],
+  [data-widget-skin="pet"],
+  [data-widget-skin="recorder"]
+) :is(.widget-action--primary, .widget-reply__send, .widget-return__icon, .widget-new) {
+  background: var(--widget-yellow);
+}
+
+[data-widget-skin="recorder"] .widget-action {
+  border-radius: 2px;
+  clip-path: none;
+}
+
+[data-widget-skin="pet"] :is(.widget-action, .widget-reply, .widget-workspace__toggle) {
+  border-radius: 12px;
+  clip-path: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-widget-skin] * {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

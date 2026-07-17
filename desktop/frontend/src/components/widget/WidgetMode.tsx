@@ -14,17 +14,10 @@ import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey
 import { useI18n, useT, type Translator } from "../../lib/i18n";
 import { pickWidgetSuffix, widgetSuffixes } from "./widgetCopy";
 import { startWidgetConversationWithRetry } from "./startWidgetConversation";
-import shellTopLeft from "../../assets/widget-mode/pager-shell.9/top-left.png";
-import shellTop from "../../assets/widget-mode/pager-shell.9/top.png";
-import shellTopRight from "../../assets/widget-mode/pager-shell.9/top-right.png";
-import shellLeft from "../../assets/widget-mode/pager-shell.9/left.png";
-import shellCenter from "../../assets/widget-mode/pager-shell.9/center.png";
-import shellRight from "../../assets/widget-mode/pager-shell.9/right.png";
-import shellBottomLeft from "../../assets/widget-mode/pager-shell.9/bottom-left.png";
-import shellBottom from "../../assets/widget-mode/pager-shell.9/bottom.png";
-import shellBottomRight from "../../assets/widget-mode/pager-shell.9/bottom-right.png";
+import { resolveWidgetSkin, widgetSkinTiles, type WidgetSkinId } from "./widgetSkins";
 import { WidgetInfoCarousel } from "./WidgetInfoCarousel";
 import "./widget-mode.css";
+import "./widget-skins.css";
 
 const EMPTY_SNAPSHOT: WidgetSnapshot = {
   mode: true,
@@ -44,17 +37,14 @@ const EMPTY_SNAPSHOT: WidgetSnapshot = {
   version: "loading",
 };
 
-const shellTiles = [
-  shellTopLeft,
-  shellTop,
-  shellTopRight,
-  shellLeft,
-  shellCenter,
-  shellRight,
-  shellBottomLeft,
-  shellBottom,
-  shellBottomRight,
-];
+function NineSliceShell({ skin }: { skin: string }) {
+  const tiles = widgetSkinTiles(skin);
+  return (
+    <div className="widget-shell__nine-slice" aria-hidden="true">
+      {tiles.map((source, index) => <img key={`${index}:${source}`} src={source} alt="" data-tile={index} />)}
+    </div>
+  );
+}
 
 function requestID(): string {
   return globalThis.crypto?.randomUUID?.() ?? `widget-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -118,14 +108,6 @@ function optionCopy(option: WidgetOption, message: WidgetMessage, t: Translator)
   if (code === "allow") return { ...option, label: t("widget.approvalAllow"), description: t("widget.approvalAllowDesc") };
   if (code === "deny") return { ...option, label: t("widget.approvalDeny"), description: t("widget.approvalDenyDesc") };
   return option;
-}
-
-function NineSliceShell() {
-  return (
-    <div className="widget-shell__nine-slice" aria-hidden="true">
-      {shellTiles.map((source, index) => <img key={source} src={source} alt="" data-tile={index} />)}
-    </div>
-  );
 }
 
 function TickerText({ children }: { children: string }) {
@@ -478,6 +460,7 @@ function RouteNotice({ result, prompt }: { result: WidgetConversationResult; pro
 
 export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKey?: string }) {
   const t = useT();
+  const [skinId, setSkinId] = useState<WidgetSkinId>("classic");
   const [snapshot, setSnapshot] = useState<WidgetSnapshot>(EMPTY_SNAPSHOT);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -489,7 +472,25 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 	const conversationRequest = useRef<{ prompt: string; workspace: string; id: string } | null>(null);
 	const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([AUTO_WORKSPACE]);
 	const [selectedWorkspace, setSelectedWorkspace] = useState("auto");
-	const composerSubmitKey = normalizeComposerSubmitKey(submitKey);
+  const composerSubmitKey = normalizeComposerSubmitKey(submitKey);
+
+  useEffect(() => {
+    let alive = true;
+    void app.DesktopStartupSettings()
+      .then((settings) => {
+        if (alive) setSkinId(resolveWidgetSkin(settings.widgetSkin));
+      })
+      .catch(() => undefined);
+    const unsubscribe = typeof window !== "undefined" && window.runtime
+      ? window.runtime.EventsOn("widget:skin", (payload: unknown) => {
+        setSkinId(resolveWidgetSkin(typeof payload === "string" ? payload : "classic"));
+      })
+      : undefined;
+    return () => {
+      alive = false;
+      unsubscribe?.();
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -722,11 +723,11 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 	const contextTask = composing || routeNotice ? t("widget.newConversation") : undefined;
 
   return (
-    <main className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`}>
+    <main className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`} data-widget-skin={skinId}>
       <div className="widget-shell">
-        <NineSliceShell />
+        <NineSliceShell skin={skinId} />
         <div className="widget-shell__drag" aria-hidden="true" />
-		<WidgetInfoCarousel snapshot={snapshot} message={current} projectName={contextProject} taskName={contextTask} />
+		<WidgetInfoCarousel snapshot={snapshot} message={current} projectName={contextProject} taskName={contextTask} skin={skinId} />
         {body}
         <button className="widget-return" type="button" onClick={() => void exit(current?.kind === "result" ? current.tabId : "")} disabled={busy} aria-label={t("widget.returnMain")}>
           <span className="widget-return__icon"><PanelTopOpen size={18} strokeWidth={1.8} /></span>

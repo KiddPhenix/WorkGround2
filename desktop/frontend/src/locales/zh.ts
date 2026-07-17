@@ -2257,6 +2257,18 @@ export const zh: Record<DictKey, string> = {
   "settings.widget.enableHint": "在窗口标题栏中显示小组件入口按钮。",
   "settings.widget.alwaysOnTopLabel": "小组件保持置顶",
   "settings.widget.alwaysOnTopHint": "小组件窗口始终位于其他应用窗口之上。",
+  "settings.widget.skinLabel": "小组件皮肤",
+  "settings.widget.skinHint": "选择设备外壳，消息和操作方式保持一致。",
+  "settings.widget.skinClassic": "经典通信",
+  "settings.widget.skinClassicDesc": "现有赛博通信界面",
+  "settings.widget.skinBP": "BP机",
+  "settings.widget.skinBPDesc": "象牙白机身与单色液晶",
+  "settings.widget.skinInstant": "拍立得",
+  "settings.widget.skinInstantDesc": "镜头机身与相纸出口",
+  "settings.widget.skinPet": "电子宠物",
+  "settings.widget.skinPetDesc": "浅色双屏像素宠物机",
+  "settings.widget.skinRecorder": "录音机",
+  "settings.widget.skinRecorderDesc": "磁带轮与机械控制键",
 
   // 模拟/演示种子数据（仅浏览器开发模式）
   "mock.sessionFixLogin": "fix the login bug in auth.go",

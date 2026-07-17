@@ -536,6 +536,7 @@ export interface AppBindings {
   SetDesktopMetrics(enabled: boolean): Promise<void>;
   SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
+  SetDesktopWidgetSkin(skin: string): Promise<void>;
   SetMemoryCompilerEnabled(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
@@ -1631,6 +1632,7 @@ function makeMockApp(): AppBindings {
     metrics: true,
     widgetEnabled: true,
     widgetAlwaysOnTop: true,
+    widgetSkin: "classic",
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
     providerKinds: ["cli", "openai"],
@@ -3844,7 +3846,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetSkin } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -3857,6 +3859,7 @@ function makeMockApp(): AppBindings {
         statusBarItems,
         checkUpdates,
         widgetEnabled,
+        widgetSkin,
       })) as DesktopStartupSettingsView;
     },
     async Settings() {
@@ -4137,6 +4140,9 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopWidgetAlwaysOnTop(on: boolean) {
           settings.widgetAlwaysOnTop = on;
+        },
+        async SetDesktopWidgetSkin(skin: string) {
+          settings.widgetSkin = skin;
         },
         async SetMemoryCompilerEnabled(enabled: boolean) {
           settings.memoryCompilerEnabled = enabled;

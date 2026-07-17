@@ -1808,6 +1808,72 @@ func TestDesktopWidgetDefaultsNilConfig(t *testing.T) {
 	if !cfg.DesktopWidgetAlwaysOnTop() {
 		t.Fatal("nil config DesktopWidgetAlwaysOnTop should default to true")
 	}
+	if skin := cfg.DesktopWidgetSkin(); skin != "classic" {
+		t.Fatalf("nil config DesktopWidgetSkin should default to classic, got %q", skin)
+	}
+}
+
+func TestDesktopWidgetSkin(t *testing.T) {
+	cfg := Default()
+	if skin := cfg.DesktopWidgetSkin(); skin != "classic" {
+		t.Fatalf("default DesktopWidgetSkin should be classic, got %q", skin)
+	}
+
+	// Set valid skin
+	if err := cfg.SetDesktopWidgetSkin("bp"); err != nil {
+		t.Fatal(err)
+	}
+	if skin := cfg.DesktopWidgetSkin(); skin != "bp" {
+		t.Fatalf("DesktopWidgetSkin should be bp after set, got %q", skin)
+	}
+
+	// Empty → classic
+	if err := cfg.SetDesktopWidgetSkin(""); err != nil {
+		t.Fatal(err)
+	}
+	if skin := cfg.DesktopWidgetSkin(); skin != "classic" {
+		t.Fatalf("DesktopWidgetSkin should be classic after empty set, got %q", skin)
+	}
+
+	// Unknown → error
+	if err := cfg.SetDesktopWidgetSkin("bogus"); err == nil {
+		t.Fatal("SetDesktopWidgetSkin(bogus) should return error")
+	}
+	// Skin should remain unchanged after failed set
+	if skin := cfg.DesktopWidgetSkin(); skin != "classic" {
+		t.Fatalf("DesktopWidgetSkin should still be classic after failed set, got %q", skin)
+	}
+
+	// White-space trimmed
+	if err := cfg.SetDesktopWidgetSkin("  instant  "); err != nil {
+		t.Fatal(err)
+	}
+	if skin := cfg.DesktopWidgetSkin(); skin != "instant" {
+		t.Fatalf("DesktopWidgetSkin should be instant after trimmed set, got %q", skin)
+	}
+
+	// Round-trip through TOML rendering
+	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, "widget_skin = \"instant\"") {
+		t.Fatalf("rendered user config missing widget_skin = \"instant\":\n%s", rendered)
+	}
+	var got Config
+	if _, err := toml.Decode(rendered, &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v\n---\n%s", err, rendered)
+	}
+	if skin := got.DesktopWidgetSkin(); skin != "instant" {
+		t.Fatalf("DesktopWidgetSkin after round trip should be instant, got %q", skin)
+	}
+
+	// Unknown value in TOML → classic fallback
+	wrongTOML := "[desktop]\nwidget_skin = \"nonexistent\"\n"
+	var wrong Config
+	if _, err := toml.Decode(wrongTOML, &wrong); err != nil {
+		t.Fatalf("wrong TOML does not parse: %v", err)
+	}
+	if skin := wrong.DesktopWidgetSkin(); skin != "classic" {
+		t.Fatalf("DesktopWidgetSkin with unknown TOML value should fall back to classic, got %q", skin)
+	}
 }
 
 func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {

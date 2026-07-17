@@ -439,6 +439,22 @@ func (c *Config) SetDesktopWidgetAlwaysOnTop(on bool) error {
 	return nil
 }
 
+// SetDesktopWidgetSkin sets the widget visual skin. Only known skin IDs are
+// accepted; empty is treated as "classic". Unknown values return an error.
+func (c *Config) SetDesktopWidgetSkin(skin string) error {
+	skin = strings.TrimSpace(skin)
+	if skin == "" {
+		skin = "classic"
+	}
+	switch skin {
+	case "classic", "bp", "instant", "pet", "recorder":
+		c.Desktop.WidgetSkin = skin
+		return nil
+	default:
+		return fmt.Errorf("unknown widget skin %q (valid: classic, bp, instant, pet, recorder)", skin)
+	}
+}
+
 // SetShowReasoning sets the CLI's default verbose-reasoning preference. When
 // true, thinking text is shown in the chat TUI on startup; when false (the
 // default), it stays collapsed until the user toggles it with Ctrl+O or

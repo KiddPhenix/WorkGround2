@@ -192,6 +192,7 @@ type SettingsView struct {
 	Metrics                 bool            `json:"metrics"`
 	WidgetEnabled           bool            `json:"widgetEnabled"`
 	WidgetAlwaysOnTop       bool            `json:"widgetAlwaysOnTop"`
+	WidgetSkin              string          `json:"widgetSkin"`
 	MemoryCompiler          bool            `json:"memoryCompilerEnabled"`
 	ExpandThinking          bool            `json:"expandThinking"`
 	ConfigPath              string          `json:"configPath"`
@@ -222,6 +223,7 @@ type DesktopStartupSettingsView struct {
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
 	WidgetEnabled      bool            `json:"widgetEnabled"`
+	WidgetSkin         string          `json:"widgetSkin"`
 }
 
 func nonNil(s []string) []string {
@@ -501,6 +503,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
 			CheckUpdates:       true,
 			WidgetEnabled:      true,
+			WidgetSkin:         "classic",
 		}
 	}
 	return DesktopStartupSettingsView{
@@ -515,6 +518,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		StatusBarItems:     cfg.DesktopStatusBarItems(),
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
 		WidgetEnabled:      cfg.DesktopWidgetEnabled(),
+		WidgetSkin:         cfg.DesktopWidgetSkin(),
 	}
 }
 
@@ -561,6 +565,7 @@ func (a *App) Settings() SettingsView {
 			Metrics:                 true,
 			WidgetEnabled:           true,
 			WidgetAlwaysOnTop:       true,
+			WidgetSkin:              "classic",
 			MemoryCompiler:          true,
 			ExpandThinking:          false,
 		}
@@ -622,6 +627,7 @@ func (a *App) Settings() SettingsView {
 		Metrics:                 cfg.DesktopMetrics(),
 		WidgetEnabled:           cfg.DesktopWidgetEnabled(),
 		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
+		WidgetSkin:              cfg.DesktopWidgetSkin(),
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
 		ConfigPath:              cfgPath,
@@ -2270,6 +2276,22 @@ func (a *App) SetDesktopWidgetEnabled(enabled bool) error {
 // always-on-top. The change takes effect on the next EnterWidgetMode.
 func (a *App) SetDesktopWidgetAlwaysOnTop(on bool) error {
 	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetAlwaysOnTop(on) })
+}
+
+// SetDesktopWidgetSkin sets the widget visual skin, persists it to config, and
+// broadcasts a "widget:skin" event so the frontend can switch without restart.
+func (a *App) SetDesktopWidgetSkin(skin string) error {
+	skin = strings.TrimSpace(skin)
+	if skin == "" {
+		skin = "classic"
+	}
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetSkin(skin) }); err != nil {
+		return err
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:skin", skin)
+	}
+	return nil
 }
 
 // MigrateDesktopPreferences imports old browser-local desktop preferences into

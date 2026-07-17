@@ -1086,6 +1086,9 @@ status_bar_items = ["cost", "balance"]
 	if err := userCfg.SetDesktopStatusBarItems([]string{"model", "balance", "cache"}); err != nil {
 		t.Fatalf("set desktop status bar items: %v", err)
 	}
+	if err := userCfg.SetDesktopWidgetSkin("pet"); err != nil {
+		t.Fatalf("set desktop widget skin: %v", err)
+	}
 	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save user config: %v", err)
 	}
@@ -1102,6 +1105,9 @@ status_bar_items = ["cost", "balance"]
 	}
 	if want := []string{"model", "balance", "cache"}; !reflect.DeepEqual(got.StatusBarItems, want) {
 		t.Fatalf("desktop status bar items = %v, want user-level %v", got.StatusBarItems, want)
+	}
+	if got.WidgetSkin != "pet" {
+		t.Fatalf("desktop widget skin = %q, want pet", got.WidgetSkin)
 	}
 }
 
@@ -1130,6 +1136,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if err := userCfg.SetDesktopCheckUpdates(false); err != nil {
 		t.Fatalf("set desktop check updates: %v", err)
 	}
+	if err := userCfg.SetDesktopWidgetSkin("recorder"); err != nil {
+		t.Fatalf("set desktop widget skin: %v", err)
+	}
 	userCfg.Bot.Enabled = true
 	userCfg.Bot.Allowlist.Enabled = true
 	userCfg.Bot.Allowlist.QQUsers = []string{"alice"}
@@ -1144,6 +1153,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if want := []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got.StatusBarItems, want) {
 		t.Fatalf("DesktopStartupSettings status bar items = %v, want %v", got.StatusBarItems, want)
 	}
+	if got.WidgetSkin != "recorder" {
+		t.Fatalf("DesktopStartupSettings widget skin = %q, want recorder", got.WidgetSkin)
+	}
 	if !got.Bot.Enabled || !got.Bot.Allowlist.Enabled || !reflect.DeepEqual(got.Bot.Allowlist.QQUsers, []string{"alice"}) {
 		t.Fatalf("DesktopStartupSettings bot settings = %+v, want lightweight bot snapshot", got.Bot)
 	}
@@ -1154,6 +1166,23 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	}
 	if strings.Contains(string(raw), "providers") || strings.Contains(string(raw), "officialProviders") || strings.Contains(string(raw), "providerKinds") {
 		t.Fatalf("DesktopStartupSettings must not include full Settings provider payload: %s", raw)
+	}
+}
+
+func TestSetDesktopWidgetSkinPersistsAndRejectsUnknown(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	if err := app.SetDesktopWidgetSkin("pet"); err != nil {
+		t.Fatalf("SetDesktopWidgetSkin(pet): %v", err)
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetSkin(); got != "pet" {
+		t.Fatalf("persisted widget skin = %q, want pet", got)
+	}
+	if err := app.SetDesktopWidgetSkin("unknown"); err == nil {
+		t.Fatal("SetDesktopWidgetSkin(unknown) should fail")
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetSkin(); got != "pet" {
+		t.Fatalf("failed update changed widget skin to %q, want pet", got)
 	}
 }
 

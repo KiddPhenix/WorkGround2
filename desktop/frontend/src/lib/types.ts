@@ -1373,6 +1373,7 @@ export interface SettingsView {
   metrics: boolean; // aggregate desktop metrics (anonymous signal/bucket counts)
   widgetEnabled: boolean; // show the widget entry in the window frame
   widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
+  widgetSkin: string; // widget visual skin: classic|bp|instant|pet|recorder
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
@@ -1415,6 +1416,7 @@ export interface DesktopStartupSettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   widgetEnabled: boolean; // show the widget entry in the window frame
+  widgetSkin: string; // widget visual skin
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;

@@ -114,6 +114,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "metrics = %v   # desktop: aggregate desktop metrics (anonymous signal/bucket counts); never content\n", c.DesktopMetrics())
 		fmt.Fprintf(&b, "widget_enabled = %v   # desktop: show the compact widget button in the window frame\n", c.DesktopWidgetEnabled())
 		fmt.Fprintf(&b, "widget_always_on_top = %v   # desktop: keep the widget window always-on-top\n", c.DesktopWidgetAlwaysOnTop())
+		if skin := c.DesktopWidgetSkin(); skin != "classic" {
+			fmt.Fprintf(&b, "widget_skin = %q   # desktop: widget visual skin: classic|bp|instant|pet|recorder\n", skin)
+		}
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
