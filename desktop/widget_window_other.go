@@ -18,6 +18,10 @@ func nativeDefaultWidgetWindowState(context.Context) (WidgetWindowState, bool) {
 	return WidgetWindowState{}, false
 }
 
+func normalizeWidgetWindowState(_ context.Context, state WidgetWindowState) (WidgetWindowState, error) {
+	return state, nil
+}
+
 // setWidgetWindowRegion is a no-op on non-Windows platforms.
 func setWidgetWindowRegion(width, height int) error { return nil }
 

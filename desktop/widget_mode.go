@@ -309,6 +309,11 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 		if !ok {
 			state = defaultWidgetWindowState(a.ctx)
 		}
+		normalized, normalizeErr := normalizeWidgetWindowState(a.ctx, state)
+		if normalizeErr != nil {
+			return fmt.Errorf("normalize widget window: %w", normalizeErr)
+		}
+		state = normalized
 		if err := a.applyWidgetGeometry(state, widgetAlwaysOnTop); err != nil {
 			rollbackErr := a.restoreMainGeometry(mainState, true)
 			return errors.Join(fmt.Errorf("apply widget window: %w", err), rollbackErr)
