@@ -82,10 +82,9 @@ assert.ok(
 // ---- CSS font-size contracts ----
 
 function extractFontSize(css: string, selector: string): string | null {
-  // Match a CSS rule block whose selector starts with the given string.
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(escaped + "\\s*\\{[^}]*\\}", "s");
-  const block = css.match(re)?.[0];
+  const block = (css.match(/[^{}]+\{[^}]*\}/gs) ?? []).find((rule) =>
+    rule.slice(0, rule.indexOf("{")).split(",").some((entry) => entry.trim() === selector),
+  );
   if (!block) return null;
   const m = block.match(/font-size:\s*([^;]+);/);
   return m ? m[1].trim() : null;
@@ -103,6 +102,14 @@ const carouselCss = readFileSync(
 );
 const modeCss = readFileSync(
   resolve(import.meta.dirname, "../components/widget/widget-mode.css"),
+  "utf-8",
+);
+const skinsCss = readFileSync(
+  resolve(import.meta.dirname, "../components/widget/widget-skins.css"),
+  "utf-8",
+);
+const carouselSource = readFileSync(
+  resolve(import.meta.dirname, "../components/widget/WidgetInfoCarousel.tsx"),
   "utf-8",
 );
 
@@ -128,18 +135,43 @@ const clampMax = Number(cm![3]);
 assert.equal(clampMin, expectedClamp.min);
 assert.equal(clampPreferred, expectedClamp.preferred);
 assert.equal(clampMax, expectedClamp.max);
-assert.match(carouselCss, /\.widget-info__page--clock\s*\{[^}]*padding-right:\s*12px;[^}]*padding-left:\s*12px;/s);
+assert.match(carouselCss, /\.widget-info__page--clock,\s*\.widget-info__page--timer\s*\{[^}]*padding-right:\s*12px;[^}]*padding-left:\s*12px;/s);
+assert.match(carouselSource, /widget-info__page widget-info__page--timer/, "idle timer must use the compact time safe area");
+assert.match(carouselSource, /widget-info__value widget-info__value--timer/, "idle duration must use the adaptive timer size");
+
+const timerCss = extractFontSize(carouselCss, ".widget-info__value.widget-info__value--timer");
+assert.equal(timerCss, clockCss, "clock and idle duration must share the same safe base size");
+
+// The pet screen is narrower than the pager LCD, so it owns a tighter timer
+// clamp. At the native minimum it must still fit eight Doto glyphs.
+const petTimer = skinsCss.match(/\[data-widget-skin="pet"\]\s+:is\(\.widget-info__value--clock,\s*\.widget-info__value--timer\)\s*\{[^}]*font-size:\s*clamp\(\s*(\d+)px\s*,\s*([\d.]+)vw\s*,\s*(\d+)px\s*\)/s);
+assert.ok(petTimer, "pet skin must define its narrow-screen timer clamp");
+const petTimerAtMin = Math.min(Number(petTimer![3]), Math.max(Number(petTimer![1]), minVw * Number(petTimer![2]) / 100));
+const petUsableAtMin = 0.174 * minVw * 2 - 16;
+assert.ok(clockTextWidth(petTimerAtMin) <= petUsableAtMin, `pet timer overflows at minimum width: ${clockTextWidth(petTimerAtMin).toFixed(1)} > ${petUsableAtMin.toFixed(1)}`);
 
 // ---- Nine-slice seam-free contract ----
 
-// Every tile must bleed 1 px past its grid cell so adjacent tiles overlap
-// and subpixel rounding cannot leave a visible seam.
+// Middle tiles bleed 1 px past each edge so adjacent tiles overlap and
+// subpixel rounding cannot leave a visible seam.
 const nineSliceImg = extractCssRule(modeCss, ".widget-shell__nine-slice img");
 assert.ok(nineSliceImg, "Missing .widget-shell__nine-slice img rule");
 assert.match(nineSliceImg!, /width:\s*calc\(\s*100%\s*\+\s*2px\s*\)/, "nine-slice tiles must bleed horizontally: width: calc(100% + 2px)");
 assert.match(nineSliceImg!, /height:\s*calc\(\s*100%\s*\+\s*2px\s*\)/, "nine-slice tiles must bleed vertically: height: calc(100% + 2px)");
-assert.match(nineSliceImg!, /margin:\s*-1px/, "nine-slice tiles must overlap neighbours: margin: -1px");
+assert.match(nineSliceImg!, /margin-left:\s*-1px/, "nine-slice tiles must overlap horizontal neighbours");
+assert.match(nineSliceImg!, /margin-top:\s*-1px/, "nine-slice tiles must overlap vertical neighbours");
 assert.match(nineSliceImg!, /object-fit:\s*fill/, "nine-slice tiles must still use object-fit: fill");
+
+// Outermost tiles may only bleed toward the interior. This preserves the
+// source image's perimeter pixel, especially the right frame at minimum size.
+const leftEdgeTiles = extractCssRule(modeCss, '.widget-shell__nine-slice img:is([data-tile="0"], [data-tile="3"], [data-tile="6"])');
+const rightEdgeTiles = extractCssRule(modeCss, '.widget-shell__nine-slice img:is([data-tile="2"], [data-tile="5"], [data-tile="8"])');
+const topEdgeTiles = extractCssRule(modeCss, '.widget-shell__nine-slice img:is([data-tile="0"], [data-tile="1"], [data-tile="2"])');
+const bottomEdgeTiles = extractCssRule(modeCss, '.widget-shell__nine-slice img:is([data-tile="6"], [data-tile="7"], [data-tile="8"])');
+assert.match(leftEdgeTiles ?? "", /width:\s*calc\(\s*100%\s*\+\s*1px\s*\)[^}]*margin-left:\s*0/s, "left shell edge must remain inside the grid");
+assert.match(rightEdgeTiles ?? "", /width:\s*calc\(\s*100%\s*\+\s*1px\s*\)/, "right shell edge must remain inside the grid");
+assert.match(topEdgeTiles ?? "", /height:\s*calc\(\s*100%\s*\+\s*1px\s*\)[^}]*margin-top:\s*0/s, "top shell edge must remain inside the grid");
+assert.match(bottomEdgeTiles ?? "", /height:\s*calc\(\s*100%\s*\+\s*1px\s*\)/, "bottom shell edge must remain inside the grid");
 
 // The shell must clip the outer 1 px bleed so tiles never overflow
 // past the shell clip-path.
@@ -151,11 +183,6 @@ assert.ok(nineSliceContainer, "Missing .widget-shell__nine-slice rule");
 assert.match(nineSliceContainer!, /overflow:\s*hidden/, ".widget-shell__nine-slice must have overflow:hidden");
 
 // ---- Per-skin independent component coverage ----
-
-const skinsCss = readFileSync(
-  resolve(import.meta.dirname, "../components/widget/widget-skins.css"),
-  "utf-8",
-);
 
 const SKIN_IDS = ["bp", "instant", "pet", "recorder"] as const;
 
@@ -173,9 +200,10 @@ const REQUIRED_DECLARATIONS = [
 ] as const;
 
 function extractSkinRule(skin: string, component: string): string | null {
-  const selector = `[data-widget-skin="${skin}"] ${component}`;
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return skinsCss.match(new RegExp(`${escaped}[^\\{]*\\{[^}]*\\}`, "s"))?.[0] ?? null;
+  const prefix = `[data-widget-skin="${skin}"]`;
+  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const blocks = skinsCss.match(new RegExp(`${escaped}[^\\{]*\\{[^}]*\\}`, "gs")) ?? [];
+  return blocks.find((block) => block.slice(0, block.indexOf("{")).includes(component)) ?? null;
 }
 
 for (const skin of SKIN_IDS) {
@@ -197,6 +225,17 @@ for (const skin of SKIN_IDS) {
     );
   }
 }
+
+const materialSignatures = new Set<string>();
+for (const skin of SKIN_IDS) {
+  const material = extractSkinRule(skin, ".widget-new");
+  assert.ok(material, `Skin "${skin}" must define its button material`);
+  assert.match(material!, /border:\s*[^;]+/, `Skin "${skin}" button material must define a physical border`);
+  assert.match(material!, /background:\s*[^;]+/, `Skin "${skin}" button material must define its own surface`);
+  assert.match(material!, /box-shadow:\s*[^;]+/, `Skin "${skin}" button material must define depth`);
+  materialSignatures.add(material!.replace(/\s+/g, " "));
+}
+assert.equal(materialSignatures.size, SKIN_IDS.length, "every generated skin must have a distinct button material");
 
 assert.match(
   skinsCss,

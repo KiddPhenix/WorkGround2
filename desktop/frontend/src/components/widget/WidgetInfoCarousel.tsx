@@ -142,9 +142,9 @@ function PetPage({ state }: { state: WidgetPetState }) {
 function IdlePage({ snapshot, now }: { snapshot: WidgetSnapshot; now: number }) {
   const active = snapshot.info.idleSince && snapshot.isIdle;
   return (
-    <span className="widget-info__page">
+    <span className="widget-info__page widget-info__page--timer">
       <Header label={PAGE_LABEL.idle} active="idle" />
-      <strong className="widget-info__value">{formatWidgetDuration(active ? now - snapshot.info.idleSince! : 0)}</strong>
+      <strong className="widget-info__value widget-info__value--timer">{formatWidgetDuration(active ? now - snapshot.info.idleSince! : 0)}</strong>
       <span className="widget-info__caption">{active ? "WG2 IDLE" : "WG2 ACTIVE"}</span>
     </span>
   );

@@ -89,14 +89,16 @@
 
 .widget-info__value--yellow { color: var(--widget-yellow); text-shadow: 0 0 12px rgb(255 230 0 / 0.2); }
 
-/* Doto gives digits and colons the same 0.6 em advance. At the 520 px native
-   minimum, the tighter page padding leaves ~200 px for the 4.96 em clock. */
-.widget-info__page--clock {
+/* Clock and idle duration always contain eight tabular glyphs. Give both the
+   tighter time safe area so the last digit remains visible at minimum size. */
+.widget-info__page--clock,
+.widget-info__page--timer {
   padding-right: 12px;
   padding-left: 12px;
 }
 
-.widget-info__value.widget-info__value--clock {
+.widget-info__value.widget-info__value--clock,
+.widget-info__value.widget-info__value--timer {
   font-size: clamp(38px, 7.4vw, 56px);
 }
 
@@ -204,7 +206,7 @@
   to { opacity: 1; transform: translateX(0); }
 }
 
-@media (max-width: 510px), (max-height: 124px) {
+@media (max-width: 560px), (max-height: 168px) {
   .widget-info__page { padding-right: 12px; padding-left: 12px; }
   .widget-info__value { font-size: 49px; }
   .widget-info__header { font-size: 16px; }

@@ -71,14 +71,31 @@ body:has(.widget-mode) .app {
 
 .widget-shell__nine-slice img {
   display: block;
-  /* Bleed 1 px past the grid cell on every side so adjacent tiles overlap
-     and subpixel rounding cannot leave a transparent seam.  The 1 px
-     overflow at the outer edges is clipped by .widget-shell (overflow:hidden
-     + clip-path). */
+  /* Middle tiles bleed on every side. Edge tiles override the outward bleed
+     below so the source shell's perimeter pixel is never cropped. */
   width: calc(100% + 2px);
   height: calc(100% + 2px);
-  margin: -1px;
+  margin-top: -1px;
+  margin-left: -1px;
   object-fit: fill;
+}
+
+.widget-shell__nine-slice img:is([data-tile="0"], [data-tile="3"], [data-tile="6"]) {
+  width: calc(100% + 1px);
+  margin-left: 0;
+}
+
+.widget-shell__nine-slice img:is([data-tile="2"], [data-tile="5"], [data-tile="8"]) {
+  width: calc(100% + 1px);
+}
+
+.widget-shell__nine-slice img:is([data-tile="0"], [data-tile="1"], [data-tile="2"]) {
+  height: calc(100% + 1px);
+  margin-top: 0;
+}
+
+.widget-shell__nine-slice img:is([data-tile="6"], [data-tile="7"], [data-tile="8"]) {
+  height: calc(100% + 1px);
 }
 
 .widget-shell__drag {
@@ -809,7 +826,7 @@ body:has(.widget-mode) .app {
 	to { opacity: 1; transform: translateX(0); }
 }
 
-@media (max-width: 510px), (max-height: 124px) {
+@media (max-width: 560px), (max-height: 168px) {
   .widget-context__identity { padding-right: 12px; padding-left: 12px; }
   .widget-context__mark { width: 42px; }
   .widget-message { top: 16%; bottom: 12%; gap: 4px; }
