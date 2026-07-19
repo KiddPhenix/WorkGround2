@@ -182,6 +182,17 @@ const petTimerAtMin = Math.min(Number(petTimer![3]), Math.max(Number(petTimer![1
 const petUsableAtMin = 0.174 * minVw * 2 - 16;
 assert.ok(clockTextWidth(petTimerAtMin) <= petUsableAtMin, `pet timer overflows at minimum width: ${clockTextWidth(petTimerAtMin).toFixed(1)} > ${petUsableAtMin.toFixed(1)}`);
 
+// The pet skin's functional info layer must stay inside the dedicated left
+// LCD. Its animated companion also has to shrink with that screen instead of
+// keeping the generic fixed 230px width and crossing the hardware divider.
+const petInfo = extractSkinRule("pet", ".widget-info");
+const petLeft = Number(petInfo?.match(/left:\s*([\d.]+)%/)?.[1]);
+const petWidth = Number(petInfo?.match(/width:\s*([\d.]+)%/)?.[1]);
+assert.ok(Number.isFinite(petLeft) && Number.isFinite(petWidth), "pet info screen needs explicit percentage geometry");
+assert.ok(petLeft + petWidth <= 20.8, `pet info screen crosses the hardware divider at ${petLeft + petWidth}%`);
+const petSprite = extractSkinRule("pet", ".widget-info__pet");
+assert.match(petSprite ?? "", /width:\s*min\(\s*230px\s*,\s*100%\s*\)/, "pet companion must shrink to the mini-screen width");
+
 // ---- Nine-slice seam-free contract ----
 
 // Middle tiles bleed 1 px past each edge so adjacent tiles overlap and

@@ -368,6 +368,8 @@ const snap = (value: number, dpr: number) => Math.round(value * dpr) / dpr;
 
 缩小到 `520 × 160` 可读下限时，时钟和空闲计时使用独立安全字号；宠物屏因宽度更窄，使用自己的计时 clamp。九宫格切片只向内部重叠，外沿切片保留源图最外侧像素，避免右边框被裁掉。
 
+电子宠物皮肤的左侧信息层右沿不得超过外壳宽度的 `20.8%`；角色精灵保持 `230px` 设计上限，同时以左侧小屏内容宽度为硬上限。紧凑窗口下精灵随小屏缩小，不能覆盖机壳分隔带或正文屏。
+
 桌面全局缩放由 WebView2 `ZoomFactor` 实现，会同时缩小 CSS 视口并放大 CSS 像素。Widget 读取同一缩放值，把逻辑画布扩为 `zoom × 100vw/vh`，再对根节点应用 `1 / zoom` 的逆缩放；因此原生窗口、逻辑画布和九宫格外沿在 `50%–200%` 内始终重合。Widget 根节点不得设置 `520px × 160px` 的 CSS `min-width/min-height`，否则 125% 等缩放下会强制横向溢出。
 
 资源发布前运行：
@@ -471,3 +473,4 @@ python .\scripts\validate-widget-skins.py --assets-root .\src\assets\widget-mode
 - 2026-07-16 置顶偏好：`EnterWidgetMode` 使用持久化的 `widget_always_on_top` 代替硬编码 `true`；`ExitWidgetMode` 退出时清除置顶，回滚到小组件模式时恢复配置值而非盲目 `true`。
 - 2026-07-16 Windows DPI 裁切修复：`SetWindowRgn` 的多边形坐标按 `GetDpiForWindow / 96` 换算后再提交，避免 125% 等系统缩放下 Region 只覆盖窗口约 80%，导致右侧按钮和下半部被原生裁掉。96 DPI 保持原坐标，120 DPI 的 `764×225` 窗口有独立回归测试。
 - 2026-07-19 WebView 桌面缩放修复：Widget 根节点读取 `GetDesktopZoomFactor`，用等比逻辑画布和逆 transform 抵消 WebView2 缩放；移除强制 CSS 最小宽高，并保证入场动画不覆盖该 transform。浏览器 mock 支持 `zoom`/`skin` 验收参数；五套皮肤在 50%、100%、125%、150%、200% 共 25 组中，根节点、九宫格外壳和滚动边界均与视口重合。
+- 2026-07-19 电子宠物紧凑态修复：pet 信息层从 `left: 4.4%` 收回 `3.2%`，保持原内容宽度；角色精灵使用 `min(230px, 100%)` 随小屏收缩。125% 缩放对应的 416×128 CSS 视口下，角色右侧保留约 3.6px 屏内边距、距正文约 43.6px，右侧九宫格外沿与视口重合。

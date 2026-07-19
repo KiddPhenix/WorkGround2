@@ -308,7 +308,7 @@
 [data-widget-skin="pet"] .widget-info {
   top: 19%;
   bottom: 21%;
-  left: 4.4%;
+  left: 3.2%;
   width: 17.4%;
   border-right: 0;
   border-radius: 7px;
@@ -317,6 +317,7 @@
 
 [data-widget-skin="pet"] .widget-info__rail { display: none; }
 [data-widget-skin="pet"] .widget-info__page { padding: 0 9px; }
+[data-widget-skin="pet"] .widget-info__pet { width: min(230px, 100%); }
 [data-widget-skin="pet"] :is(.widget-info__page--clock, .widget-info__page--timer) { padding-right: 8px; padding-left: 8px; }
 [data-widget-skin="pet"] :is(.widget-info__value--clock, .widget-info__value--timer) { font-size: clamp(28px, 6.2vw, 38px); }
 
