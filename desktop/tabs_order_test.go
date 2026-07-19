@@ -73,6 +73,16 @@ func (s *snapshotObservingSession) Snapshot() error {
 	return nil
 }
 
+type replayCountingSession struct {
+	control.SessionAPI
+	replays int
+}
+
+func (s *replayCountingSession) ReplayPendingPrompts() {
+	s.replays++
+	s.SessionAPI.ReplayPendingPrompts()
+}
+
 func TestListTabsKeepsExplicitOrderWhenActiveChanges(t *testing.T) {
 	app := testAppWithOrderedTabs(t, "b", "a", "b", "c")
 
@@ -133,7 +143,7 @@ func TestSetDesktopLayoutStyleAppliesPolicyAfterWorkspaceAlias(t *testing.T) {
 	}
 }
 
-func TestKeepOnlyVisibleTabDetachesRunningHiddenTab(t *testing.T) {
+func TestSingleSurfaceSwitchKeepsRunningController(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := config.SessionDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -141,11 +151,15 @@ func TestKeepOnlyVisibleTabDetachesRunningHiddenTab(t *testing.T) {
 	}
 	path := filepath.Join(dir, "running.jsonl")
 	runner := &blockingRunner{started: make(chan struct{}), release: make(chan struct{})}
-	ctrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: path, Label: "running", Sink: event.Discard})
+	baseCtrl := control.New(control.Options{Runner: runner, SessionDir: dir, SessionPath: path, Label: "running", Sink: event.Discard})
+	ctrl := &replayCountingSession{SessionAPI: baseCtrl}
 	running := &WorkspaceTab{
 		ID:            "running",
+		SessionID:     "session_running",
 		Scope:         "global",
 		WorkspaceRoot: globalTabWorkspaceRoot(),
+		TopicID:       "topic_running",
+		TopicTitle:    "Running",
 		SessionPath:   path,
 		Ctrl:          ctrl,
 		Ready:         true,
@@ -174,6 +188,36 @@ func TestKeepOnlyVisibleTabDetachesRunningHiddenTab(t *testing.T) {
 	}
 	if got := loadTabsFile(); len(got.Tabs) != 1 || got.Tabs[0].ID != "target" {
 		t.Fatalf("persisted tabs after pruning = %+v, want only target", got)
+	}
+	meta, err := app.openTopicTabWithActivation("global", "", running.TopicID, path, true)
+	if err != nil {
+		t.Fatalf("reattach running topic: %v", err)
+	}
+	if meta.ID != running.ID || app.tabs[running.ID] != running {
+		t.Fatalf("reattached tab = %+v, want original runtime %q", meta, running.ID)
+	}
+	if meta.SessionID != running.SessionID {
+		t.Fatalf("reattached session ID = %q, want %q", meta.SessionID, running.SessionID)
+	}
+	if app.tabs[running.ID].Ctrl != ctrl || !ctrl.Running() {
+		t.Fatal("reattaching replaced or stopped the running controller")
+	}
+	if ctrl.replays != 1 {
+		t.Fatalf("pending prompt replays = %d, want 1", ctrl.replays)
+	}
+	if _, ok := app.detachedSessions[sessionRuntimeKey(path)]; ok {
+		t.Fatal("reattached runtime remained in detached session registry")
+	}
+	if got := app.tabOrder; len(got) != 2 || got[0] != "target" || got[1] != "running" {
+		t.Fatalf("tab order after reattach = %v, want [target running]", got)
+	}
+
+	if _, err := app.keepOnlyVisibleTab("running"); err != nil {
+		t.Fatalf("keep reattached runtime visible: %v", err)
+	}
+	assertTabIDs(t, app.ListTabs(), "running")
+	if !ctrl.Running() {
+		t.Fatal("second single-surface switch stopped the original controller")
 	}
 
 	close(runner.release)

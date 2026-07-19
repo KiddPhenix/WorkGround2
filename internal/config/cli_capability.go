@@ -2,14 +2,26 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+
+	"workground2/internal/proc"
 )
 
 var cliCapabilityCache sync.Map
+
+const cliCapabilityCacheTTL = 5 * time.Minute
+
+type cliCapabilityCacheEntry struct {
+	capabilities []string
+	err          string
+	expiresAt    time.Time
+}
 
 // ProbeCLICapabilities detects action capabilities exposed by a known local
 // CLI. Explicit provider capabilities disable probing so user intent wins.
@@ -22,21 +34,55 @@ func ProbeCLICapabilities(ctx context.Context, entry *ProviderEntry) ([]string, 
 	if command == "" || name != "codex" {
 		return nil, nil
 	}
-	if cached, ok := cliCapabilityCache.Load(command); ok {
-		return append([]string(nil), cached.([]string)...), nil
+	if capabilities, err, ok := loadCLICapabilityCache(command, time.Now()); ok {
+		return capabilities, err
 	}
 
 	cmd := exec.CommandContext(ctx, command, "features", "list")
+	prepareCLICapabilityProbe(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("probe Codex CLI capabilities: %w", ctx.Err())
 		}
-		return nil, fmt.Errorf("probe Codex CLI capabilities: %w", err)
+		probeErr := fmt.Errorf("probe Codex CLI capabilities: %w", err)
+		storeCLICapabilityCache(command, nil, probeErr, time.Now())
+		return nil, probeErr
 	}
 	capabilities := parseCodexCapabilities(string(out))
-	cliCapabilityCache.Store(command, append([]string{}, capabilities...))
+	storeCLICapabilityCache(command, capabilities, nil, time.Now())
 	return capabilities, nil
+}
+
+func prepareCLICapabilityProbe(cmd *exec.Cmd) {
+	proc.HideWindow(cmd)
+}
+
+func loadCLICapabilityCache(command string, now time.Time) ([]string, error, bool) {
+	value, ok := cliCapabilityCache.Load(command)
+	if !ok {
+		return nil, nil, false
+	}
+	entry, ok := value.(cliCapabilityCacheEntry)
+	if !ok || !now.Before(entry.expiresAt) {
+		cliCapabilityCache.Delete(command)
+		return nil, nil, false
+	}
+	if entry.err != "" {
+		return nil, errors.New(entry.err), true
+	}
+	return append([]string(nil), entry.capabilities...), nil, true
+}
+
+func storeCLICapabilityCache(command string, capabilities []string, err error, now time.Time) {
+	entry := cliCapabilityCacheEntry{
+		capabilities: append([]string(nil), capabilities...),
+		expiresAt:    now.Add(cliCapabilityCacheTTL),
+	}
+	if err != nil {
+		entry.err = err.Error()
+	}
+	cliCapabilityCache.Store(command, entry)
 }
 
 // AddCapabilities merges detected capabilities with the provider's effective

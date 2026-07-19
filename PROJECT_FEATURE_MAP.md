@@ -150,6 +150,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-10
 
+### 会话切换保持后台运行
+- Location: `desktop/tabs.go`, `desktop/tabs_order_test.go`, `internal/config/cli_capability.go`, `internal/config/cli_capability_windows_test.go`
+- Summary: single-surface 会话切换通过 detachedSessions 原地重新挂载同一 Controller 和 SessionID；新 session 的 Codex capability probe 使用 CREATE_NO_WINDOW 并短期缓存失败，避免后台任务失联及 cmd 窗口闪现。
+- Keywords: session switch, detachedSessions, openTopicTabWithActivation, keepOnlyVisibleTab, Controller reuse, ProbeCLICapabilities, CREATE_NO_WINDOW
+- Source: verified-by-search
+- Updated: 2026-07-19
+
 ### 会话控制器
 - Location: `internal/control/controller.go`, `internal/control`, `desktop/tabs.go`, `desktop/frontend/src/lib/useController.ts`
 - Summary: control.Controller 是 transport-agnostic 会话驱动，统一 Send/Cancel/Approve/Plan/Compact/Checkpoint/Goal/MCP 等生命周期；RuntimeStatus 用少量 mode 区分 idle/foreground/waiting_user/background_only/cancelling，并向桌面端导出 foreground/background 派生事实，避免 UI 只靠 running 推断。

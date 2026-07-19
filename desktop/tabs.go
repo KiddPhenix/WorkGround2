@@ -1593,6 +1593,41 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 
 	a.mu.Lock()
 	if targetKey != "" {
+		if tab := a.detachedSessions[targetKey]; tab != nil {
+			delete(a.detachedSessions, targetKey)
+			tab.Scope = scope
+			tab.WorkspaceRoot = actualRoot
+			tab.TopicID = topicID
+			if title := topicTitleForTab(scope, workspaceRoot, topicID); strings.TrimSpace(title) != "" {
+				tab.TopicTitle = title
+			}
+			tab.SessionPath = canonicalTabSessionPath(sessionPath)
+			tab.removed = false
+			a.tabs[tab.ID] = tab
+			a.removeTabOrderLocked(tab.ID)
+			a.tabOrder = append(a.tabOrder, tab.ID)
+			if activate {
+				a.activeTabID = tab.ID
+			}
+			meta := a.tabMeta(tab, tab.ID == a.activeTabID)
+			a.saveTabsLocked()
+			sink := tab.sink
+			ctrl := tab.Ctrl
+			a.mu.Unlock()
+
+			if sink != nil {
+				sink.setContext(a.ctx)
+			}
+			if ctrl != nil {
+				ctrl.ReplayPendingPrompts()
+			}
+			if activate {
+				if err := clearNeedsAttention(sessionPath); err != nil {
+					slog.Warn("desktop: clear reattached topic attention failed", "path", sessionPath, "err", err)
+				}
+			}
+			return enrichTabMeta(meta), nil
+		}
 		for _, tab := range a.tabs {
 			if tab == nil {
 				continue
