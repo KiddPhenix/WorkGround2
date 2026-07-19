@@ -1638,6 +1638,8 @@ export const zh: Record<DictKey, string> = {
   "shortcuts.desc.textSizeReset": "恢复默认字号。",
   "shortcuts.desc.yoloToggle": "在输入时切换 YOLO 工具审批模式。",
   "shortcuts.desc.showShortcuts": "打开这张键盘快捷键帮助表。",
+  "shortcuts.action.widgetModeToggle": "切换小组件模式",
+  "shortcuts.desc.widgetModeToggle": "在主窗口和紧凑小组件之间切换。",
   "shortcuts.action.topicGoto1": "转到聊天 1",
   "shortcuts.action.topicGoto2": "转到聊天 2",
   "shortcuts.action.topicGoto3": "转到聊天 3",

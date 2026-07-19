@@ -770,7 +770,7 @@ installDom();
   const container = render(
     <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="offline" hasQueue={false} onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
   );
-  ok(hasText(container, "保存到本地队列"), "RuntimeConfigBar: shows offline label");
+  ok(hasText(container, "发送"), "RuntimeConfigBar: shows 发送 for offline (startup queue, auto-sent when ready)");
   cleanup();
 }
 
@@ -811,7 +811,7 @@ eq(derivePrimaryActionLabel("foreground", true), "加入队列", "derivePrimaryA
 eq(derivePrimaryActionLabel("waiting_user", false), "加入队列", "derivePrimaryActionLabel: waiting_user → 加入队列");
 eq(derivePrimaryActionLabel("background_only", false), "发送", "derivePrimaryActionLabel: background_only → 发送");
 eq(derivePrimaryActionLabel("cancelling", false), "加入队列", "derivePrimaryActionLabel: cancelling → 加入队列");
-eq(derivePrimaryActionLabel("offline", false), "保存到本地队列", "derivePrimaryActionLabel: offline → 保存到本地队列");
+eq(derivePrimaryActionLabel("offline", false), "发送", "derivePrimaryActionLabel: offline → 发送 (启动队列，就绪后自动发送)");
 eq(connectionStatusFromRuntime("foreground", true), "foreground", "foreground runtime queues replies");
 eq(connectionStatusFromRuntime("waiting_user", true), "waiting_user", "waiting_user runtime queues replies");
 eq(connectionStatusFromRuntime("background_only", false), "background_only", "background_only runtime allows a new send");

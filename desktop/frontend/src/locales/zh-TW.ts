@@ -2098,6 +2098,8 @@ export const zhTW: Record<DictKey, string> = {
   "shortcuts.desc.textSizeReset": "恢復預設字號。",
   "shortcuts.desc.yoloToggle": "在輸入時切換 YOLO 工具審批模式。",
   "shortcuts.desc.showShortcuts": "開啟這張鍵盤快捷鍵幫助表。",
+  "shortcuts.action.widgetModeToggle": "切換小組件模式",
+  "shortcuts.desc.widgetModeToggle": "在主視窗和緊湊小組件之間切換。",
   "shortcuts.action.topicGoto1": "轉到聊天 1",
   "shortcuts.action.topicGoto2": "轉到聊天 2",
   "shortcuts.action.topicGoto3": "轉到聊天 3",

@@ -168,6 +168,7 @@ import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
 import { WidgetMode } from "./components/widget/WidgetMode";
+import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
@@ -249,7 +250,7 @@ type HistoryScopeFilter = { scope: "global" | "project"; workspaceRoot: string }
 type WorkspaceInsertTarget = "composer" | "planRevision";
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
-function WindowsWindowControls({ widgetEnabled }: { widgetEnabled: boolean }) {
+function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
   const { maximised, syncMaximised } = useWindowsMaximisedState();
 
   const toggleMaximise = useCallback(() => {
@@ -266,11 +267,7 @@ function WindowsWindowControls({ widgetEnabled }: { widgetEnabled: boolean }) {
 		type="button"
 		aria-label="进入小组件模式"
 		title="小组件模式"
-		onClick={() => {
-		  void app.EnterWidgetMode().then(() => {
-			window.dispatchEvent(new CustomEvent("widget-mode-change", { detail: true }));
-		  }).catch(() => undefined);
-		}}
+		onClick={() => void onEnterWidgetMode()}
 	  >
 		<RadioTower size={13} strokeWidth={1.8} />
 	  </button>
@@ -977,7 +974,7 @@ function TextSizeHotkeys() {
   return null;
 }
 
-function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
+function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
   const {
     state,
     activeTabId,
@@ -3147,6 +3144,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
         onDoubleClickCapture={handleWindowsTitlebarDoubleClick}
         className={[
         "app",
+        widgetActive ? "app--widget-hidden" : "",
         `app--${desktopPlatform}`,
         windowsFramelessChrome ? "app--windows-frameless" : "",
         browserPreviewChrome ? "app--browser-preview" : "",
@@ -3337,8 +3335,9 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                       loadingOlderHistory={state.historyOlderLoading}
                       onLoadOlderHistory={() => { if (!activeTabId) return; return loadOlderHistory(activeTabId); }}
                       scrollHostRef={conversationViewportRef}
+                      renderTurnFooter={(turn) => <SessionRunStream sessionId={renderSessionId} turnId={`turn:${turn + 1}`} onStop={cancel} />}
                     />
-                    <SessionRunStream sessionId={renderSessionId} onStop={cancel} />
+                    <SessionRunStream sessionId={renderSessionId} unassignedOnly onStop={cancel} />
                   </>
                 )}
               </div>
@@ -3394,6 +3393,8 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
                   submitKey={composerSubmitKey}
                   imageInputEnabled={state.meta?.imageInputEnabled !== false}
                   tabId={activeSessionId}
+                  widgetEnabled={widgetEnabled}
+                  onEnterWidgetMode={onEnterWidgetMode}
                   effort={state.effort}
                   onSend={handleSend}
                   onCancel={cancel}
@@ -4092,6 +4093,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
               tabId={activeSessionId}
               widgetEnabled={widgetEnabled}
+              onEnterWidgetMode={onEnterWidgetMode}
               effort={state.effort}
               onSend={handleSend}
               onCancel={cancel}
@@ -4323,7 +4325,7 @@ function MainApp({ widgetEnabled }: { widgetEnabled: boolean }) {
         void handleOpenTopic(scope, workspaceRoot, topicId);
       }} />
       {windowsFramelessChrome && <WindowsResizeHandles />}
-      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} />}
+      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} />}
     </div>
     </ShellExpandProvider>
   );
@@ -4333,6 +4335,15 @@ export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
   const [composerSubmitKey, setComposerSubmitKey] = useState<ComposerSubmitKey>("enter");
+  const { showToast } = useToast();
+  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode), []);
+  const reportWidgetError = useCallback((cause: unknown) => {
+    showToast(cause instanceof Error ? cause.message : String(cause), "error");
+  }, [showToast]);
+  const enterWidgetMode = useCallback(
+    () => widgetCoordinator.enter().catch(reportWidgetError),
+    [reportWidgetError, widgetCoordinator],
+  );
 
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
@@ -4349,31 +4360,34 @@ export default function App() {
     });
   }, []);
 
+  // Ctrl+M / Cmd+M toggles widget mode bidirectionally.
+  useGlobalShortcut("widgetMode.toggle", () => {
+    void widgetCoordinator.toggle().catch(reportWidgetError);
+  }, [reportWidgetError, widgetCoordinator], widgetEnabled || widgetMode);
+
+  // Widget mode: init from backend, then subscribe to authoritative widget:mode events.
   useEffect(() => {
-	let alive = true;
-	const sync = () => {
-	  void app.IsWidgetMode().then((active) => {
-		if (alive) setWidgetMode(active);
-	  }).catch(() => undefined);
-	};
-	const onChange = (event: Event) => {
-	  const active = (event as CustomEvent<boolean>).detail;
-	  setWidgetMode(Boolean(active));
-	};
-	sync();
-	const timer = window.setInterval(sync, 2000);
-	window.addEventListener("widget-mode-change", onChange);
-	return () => {
-	  alive = false;
-	  window.clearInterval(timer);
-	  window.removeEventListener("widget-mode-change", onChange);
-	};
-  }, []);
+    let alive = true;
+    let nativeEventSeen = false;
+    const unsubscribe = typeof window !== "undefined" && window.runtime
+      ? window.runtime.EventsOn("widget:mode", (payload: unknown) => {
+        nativeEventSeen = true;
+        widgetCoordinator.sync(Boolean(payload));
+      })
+      : undefined;
+    void app.IsWidgetMode().then((active) => {
+      if (alive && !nativeEventSeen) widgetCoordinator.sync(active);
+    }).catch(reportWidgetError);
+    return () => {
+      alive = false;
+      unsubscribe?.();
+    };
+  }, [reportWidgetError, widgetCoordinator]);
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} />
-	  {widgetMode && <WidgetMode onExit={() => setWidgetMode(false)} submitKey={composerSubmitKey} />}
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} />
+	  {widgetMode && <WidgetMode onExit={() => widgetCoordinator.sync(false)} submitKey={composerSubmitKey} />}
 	</>
   );
 }

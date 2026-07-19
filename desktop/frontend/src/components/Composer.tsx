@@ -452,6 +452,7 @@ export function Composer({
   guidanceConsumedText,
   guidanceQueuePreviewItems,
   widgetEnabled = true,
+  onEnterWidgetMode,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -464,6 +465,7 @@ export function Composer({
   imageInputEnabled?: boolean;
   tabId?: string;
   widgetEnabled?: boolean;
+  onEnterWidgetMode?: () => void | Promise<void>;
   effort?: EffortInfo;
   onSend: (displayText: string, submitText?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
@@ -1208,11 +1210,7 @@ export function Composer({
     const currentWorkspaceRefs = workspaceRefsRef.current;
     if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0) {
       if (runningRef.current) {
-        if (widgetEnabled) {
-          void app.EnterWidgetMode().then(() => {
-            window.dispatchEvent(new CustomEvent("widget-mode-change", { detail: true }));
-          }).catch(() => undefined);
-        }
+        if (widgetEnabled) void onEnterWidgetMode?.();
         return;
       }
       if (goalModeOn && !activeGoal) {

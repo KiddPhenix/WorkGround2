@@ -1636,6 +1636,8 @@ export const en = {
   "shortcuts.desc.textSizeReset": "Return text size to the default.",
   "shortcuts.desc.yoloToggle": "Toggle YOLO tool-approval mode while composing.",
   "shortcuts.desc.showShortcuts": "Open this keyboard shortcuts help sheet.",
+  "shortcuts.action.widgetModeToggle": "Toggle widget mode",
+  "shortcuts.desc.widgetModeToggle": "Switch between the main window and the compact widget.",
   "shortcuts.action.topicGoto1": "Go to chat 1",
   "shortcuts.action.topicGoto2": "Go to chat 2",
   "shortcuts.action.topicGoto3": "Go to chat 3",

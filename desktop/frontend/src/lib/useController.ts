@@ -1599,6 +1599,7 @@ export function useController() {
     const needsInitialLoad = !local?.meta;
     const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
     const missedTurnDone = Boolean(local?.running && !foregroundRunning);
+    dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(tab, local?.meta) });
     dispatchTo(tabId, backendStatusFromTab(tab, { finishActiveTurn }));
     // backend_status reconciliation can clear a live prompt from frontend state.
     // If the backend is still blocked, ask it to replay the approval/ask event.
@@ -1693,7 +1694,11 @@ export function useController() {
       const targetTabId = e.tabId || activeTabIdRef.current;
       if (!targetTabId) return;
       if (e.taskMemory) useMemoryStore.getState().applyMemory(targetTabId, e.taskMemory);
-      applyRunWireEvent(targetTabId, e);
+      const runTurn = e.kind === "turn_started"
+        ? statesRef.current.get(targetTabId)?.items.filter((item) => item.kind === "user" && !item.queued).length ?? 0
+        : 0;
+      const runTurnId = runTurn > 0 ? `turn:${runTurn}` : undefined;
+      applyRunWireEvent(targetTabId, e, runTurnId);
       if (
         e.kind === "turn_started" ||
         e.kind === "text" ||

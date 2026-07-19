@@ -15,6 +15,7 @@ export type ShortcutAction =
   | "textSize.reset"
   | "toolApproval.yolo"
   | "shortcuts.show"
+  | "widgetMode.toggle"
   | "topic.goto.1"
   | "topic.goto.2"
   | "topic.goto.3"
@@ -152,6 +153,15 @@ export const SHORTCUT_DEFINITIONS: readonly ShortcutDefinition[] = [
     descriptionKey: "shortcuts.desc.showShortcuts",
     defaults: allPlatforms({ key: "?", shift: true }),
     preventDefault: true,
+  },
+  {
+    action: "widgetMode.toggle",
+    section: "view",
+    labelKey: "shortcuts.action.widgetModeToggle",
+    descriptionKey: "shortcuts.desc.widgetModeToggle",
+    defaults: modCombo("m"),
+    preventDefault: true,
+    allowInEditable: true,
   },
   {
     action: "topic.goto.1",

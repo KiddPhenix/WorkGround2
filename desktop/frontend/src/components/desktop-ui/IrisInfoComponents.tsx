@@ -21,7 +21,7 @@ import { QueueTray } from "../desktop-ui/QueueTray";
 import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type ConnectionStatus } from "../desktop-ui/RuntimeConfigBar";
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
-import { useRunStore } from "../../store/run";
+import { useRunStore, type RunRecord, type RunStatus } from "../../store/run";
 import { Layers } from "lucide-react";
 import { app } from "../../lib/bridge";
 import type { CollaborationMode, RuntimeMode, ToolApprovalMode } from "../../lib/types";
@@ -209,13 +209,29 @@ export function SessionMemoryBar({
 
 // ── SessionRunStream ───────────────────────────────────────────────────────
 
+export function runMatchesStream(
+  run: RunRecord,
+  sessionId: string,
+  statuses?: RunStatus[],
+  turnId?: string,
+  unassignedOnly = false,
+): boolean {
+  if (run.sessionId !== sessionId || (statuses && !statuses.includes(run.status))) return false;
+  if (turnId) return run.turnId === turnId;
+  return !unassignedOnly || !/^turn:[1-9]\d*$/.test(run.turnId);
+}
+
 export function SessionRunStream({
   sessionId,
   statuses,
+  turnId,
+  unassignedOnly = false,
   onStop,
 }: {
   sessionId: string;
-  statuses?: Array<"queued" | "running" | "waiting_user" | "reconnecting" | "completed" | "failed" | "cancelled">;
+  statuses?: RunStatus[];
+  turnId?: string;
+  unassignedOnly?: boolean;
   onStop?: () => void;
 }) {
   const runs = useRunStore((s) => s.runs);
@@ -223,9 +239,9 @@ export function SessionRunStream({
   const setRunSelectedStep = useRunStore((s) => s.setRunSelectedStep);
   const sessionRuns = useMemo(
     () => Object.values(runs)
-      .filter((run) => run.sessionId === sessionId && (!statuses || statuses.includes(run.status)))
+      .filter((run) => runMatchesStream(run, sessionId, statuses, turnId, unassignedOnly))
       .sort((a, b) => a.startedAt - b.startedAt),
-    [runs, sessionId, statuses],
+    [runs, sessionId, statuses, turnId, unassignedOnly],
   );
 
   if (sessionRuns.length === 0) return null;

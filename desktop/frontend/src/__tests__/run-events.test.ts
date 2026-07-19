@@ -14,12 +14,13 @@ resetRunProjection();
 applyRunWireEvent("tab-1", { kind: "notice", text: "background" });
 ok(Object.keys(useRunStore.getState().runs).length === 0, "unrelated background events do not create phantom runs");
 
-applyRunWireEvent("tab-1", { kind: "turn_started" });
+applyRunWireEvent("tab-1", { kind: "turn_started" }, "turn:1");
 applyRunWireEvent("tab-1", { kind: "tool_dispatch", tool: { id: "t1", name: "read_file", args: "a.go", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
 applyRunWireEvent("tab-1", { kind: "tool_result", tool: { id: "t1", name: "read_file", output: "ok", readOnly: true, highSignalNodes: 0, toolResultNodes: 0, decisionNodes: 0, strategyCount: 0, learningCount: 0 } });
 
 let runs = Object.values(useRunStore.getState().runs);
 ok(runs.length === 1, "one controller turn creates one run");
+ok(runs[0]?.turnId === "turn:1", "live run keeps its transcript turn identity");
 ok(runs[0]?.status === "running", "tool events keep the run active");
 ok(runs[0]?.events.some((event) => event.stepLabel?.includes("read_file")) === true, "tool events become run steps");
 
@@ -47,6 +48,7 @@ projectRunHistory("tab-history", [
 ]);
 const historyRuns = Object.values(useRunStore.getState().runs).filter((run) => run.sessionId === "tab-history");
 ok(historyRuns.length === 2, "hydrated history rebuilds one collapsed run per execution turn");
+ok(historyRuns.map((run) => run.turnId).join(",") === "turn:1,turn:2", "hydrated runs keep their transcript turn identities");
 ok(historyRuns.every((run) => !run.expanded), "hydrated runs start as compact tabs");
 ok(historyRuns[1]?.status === "failed", "hydrated tool errors remain visible");
 

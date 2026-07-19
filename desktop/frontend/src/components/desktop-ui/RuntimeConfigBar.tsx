@@ -45,6 +45,9 @@ export interface RuntimeConfigBarProps {
 /**
  * Derive the primary action label.
  *
+ * 启动/暂未就绪（offline）时仍可安全提交到启动队列，controller
+ * 就绪后由 drainStartupSend 自动发送，因此主按钮统一显示“发送”。
+ *
  * | connectionStatus | label |
  * |-----------------|-------|
  * | idle            | 发送  |
@@ -52,7 +55,7 @@ export interface RuntimeConfigBarProps {
  * | waiting_user    | 加入队列 |
  * | background_only | 发送  |
  * | cancelling      | 加入队列 |
- * | offline         | 保存到本地队列 |
+ * | offline         | 发送  |
  */
 export function derivePrimaryActionLabel(
   connectionStatus: ConnectionStatus,
@@ -67,7 +70,7 @@ export function derivePrimaryActionLabel(
     case "cancelling":
       return "加入队列";
     case "offline":
-      return "保存到本地队列";
+      return "发送";
   }
 }
 

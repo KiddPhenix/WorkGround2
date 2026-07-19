@@ -11,6 +11,8 @@ const typesSource = read("../lib/types.ts");
 const bridgeSource = read("../lib/bridge.ts");
 const skinsSource = read("../components/widget/widgetSkins.ts");
 const widgetModeSource = read("../components/widget/WidgetMode.tsx");
+const composerSource = read("../components/Composer.tsx");
+const widgetCSS = read("../components/widget/widget-mode.css");
 
 assert.match(settingsSource, /SETTINGS_TABS[^\n]+"widget"/, "Settings navigation includes the Widget tab");
 assert.match(settingsSource, /tab === "widget"[\s\S]+<WidgetSection/, "Widget tab renders its settings section");
@@ -21,6 +23,11 @@ assert.match(settingsSource, /widgetSkin/, "WidgetSection receives widgetSkin pr
 assert.match(appSource, /DesktopStartupSettings\(\)[\s\S]+setWidgetEnabled\(s\.widgetEnabled\)/, "startup reads widget enabled state");
 assert.match(appSource, /EventsOn\("widget:enabled"/, "widget enabled changes propagate without restart");
 assert.match(appSource, /WindowsWindowControls widgetEnabled=\{widgetEnabled\}/, "window chrome hides the widget entry when disabled");
+assert.match(appSource, /EventsOn\("widget:mode"/, "native widget mode events update React state");
+assert.match(appSource, /createWidgetModeCoordinator\(app, setWidgetMode\)/, "widget transitions share one state coordinator");
+assert.doesNotMatch(appSource + composerSource, /widget-mode-change/, "widget state does not depend on an ad-hoc DOM event");
+assert.match(composerSource, /onEnterWidgetMode/, "Composer delegates widget entry to the shared coordinator");
+assert.match(widgetCSS, /\.app--widget-hidden\s*\{[^}]*visibility:\s*hidden/s, "main content has an explicit widget-mode hiding fallback");
 assert.match(widgetModeSource, /DesktopStartupSettings\(\)[\s\S]+resolveWidgetSkin\(settings\.widgetSkin\)/, "widget mode loads and normalizes startup skin");
 assert.match(widgetModeSource, /EventsOn\("widget:skin"/, "widget skin changes propagate without restart");
 assert.match(typesSource, /widgetAlwaysOnTop: boolean/, "frontend settings contract includes always-on-top state");

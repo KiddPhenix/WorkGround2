@@ -97,5 +97,17 @@ eq(topicShortcutIndexFromEvent(event("1", { metaKey: true, defaultPrevented: tru
 eq(topicShortcutLabel(1, "darwin"), "⌘1", "topic badge uses the macOS command glyph");
 eq(topicShortcutLabel(1, "windows"), "Ctrl+1", "topic badge uses the Windows control modifier");
 
+// widgetMode.toggle shortcut
+console.log("\nwidget mode toggle shortcut");
+eq(matchesShortcut(event("m", { metaKey: true }), "widgetMode.toggle", "darwin"), true, "Cmd+M toggles widget mode on macOS");
+eq(matchesShortcut(event("m", { ctrlKey: true }), "widgetMode.toggle", "windows"), true, "Ctrl+M toggles widget mode on Windows");
+eq(matchesShortcut(event("m", { ctrlKey: true }), "widgetMode.toggle", "linux"), true, "Ctrl+M toggles widget mode on Linux");
+eq(matchesShortcut(event("m", { metaKey: true }), "widgetMode.toggle", "windows"), false, "Meta+M does not toggle widget mode on Windows");
+eq(matchesShortcut(event("m", { ctrlKey: true }), "widgetMode.toggle", "darwin"), false, "Ctrl+M does not toggle widget mode on macOS");
+eq(matchesShortcut(event("M", { metaKey: true }), "widgetMode.toggle", "darwin"), true, "Cmd+Shift+M key value still matches on macOS");
+eq(formatShortcutCombo(defaultShortcutCombo("widgetMode.toggle", "darwin"), "darwin"), "⌘M", "formats mac widget mode shortcut");
+eq(formatShortcutCombo(defaultShortcutCombo("widgetMode.toggle", "windows"), "windows"), "Ctrl+M", "formats Windows widget mode shortcut");
+eq(formatShortcutCombo(defaultShortcutCombo("widgetMode.toggle", "linux"), "linux"), "Ctrl+M", "formats Linux widget mode shortcut");
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

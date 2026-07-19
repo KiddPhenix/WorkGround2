@@ -13,6 +13,10 @@ body:has(.widget-mode) .app {
   visibility: hidden;
 }
 
+.app--widget-hidden {
+  visibility: hidden;
+}
+
 .widget-mode {
   --widget-cyan: #08d7f2;
   --widget-yellow: #ffe600;

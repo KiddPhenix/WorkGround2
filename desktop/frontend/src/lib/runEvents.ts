@@ -30,10 +30,10 @@ export function stripRunAnsi(value: string): string {
     .replace(/\u001B[@-_]/g, "");
 }
 
-function nextRun(sessionId: string): ActiveRun {
+function nextRun(sessionId: string, turnId?: string): ActiveRun {
   const id = `${sessionId}:turn:${Date.now()}:${++runSeq}`;
   useRunStore.getState().collapseSessionRuns(sessionId);
-  const run = { runId: id, turnId: id, seq: 0, toolSteps: new Map<string, ToolStep>() };
+  const run = { runId: id, turnId: turnId ?? id, seq: 0, toolSteps: new Map<string, ToolStep>() };
   activeRuns.set(sessionId, run);
   return run;
 }
@@ -81,11 +81,11 @@ function setStatus(run: ActiveRun, status: RunStatus, errorMessage?: string) {
 }
 
 /** Projects the controller wire stream into the compact Workbench run model. */
-export function applyRunWireEvent(sessionId: string, event: WireEvent): void {
+export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: string): void {
   if (!sessionId) return;
 
   if (event.kind === "turn_started") {
-    const run = nextRun(sessionId);
+    const run = nextRun(sessionId, turnId);
     append(sessionId, run, { content: "开始执行", stepLabel: "开始" }, `${run.runId}:start`);
     return;
   }
@@ -202,7 +202,7 @@ export function projectRunHistory(sessionId: string, items: HistoryRunItem[]): v
   const flush = () => {
     if (events.length === 0) return;
     const runId = `${sessionId}:history:${turn}`;
-    for (const event of events) store.mergeRunEvent(runId, sessionId, `history:${turn}`, event);
+    for (const event of events) store.mergeRunEvent(runId, sessionId, `turn:${turn}`, event);
     const runFailed = failed && !completedStep;
     store.setRunStatus(runId, runFailed ? "failed" : "completed", runFailed ? { errorMessage: "历史工具执行失败" } : undefined);
     store.setRunExpanded(runId, false);

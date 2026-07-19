@@ -33153,9 +33153,7 @@ body > .mermaid-diagram--fullscreen {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px;
   overflow-x: auto;
-  background: var(--bg-soft);
   scrollbar-width: thin;
   scrollbar-color: var(--border-soft) transparent;
 }

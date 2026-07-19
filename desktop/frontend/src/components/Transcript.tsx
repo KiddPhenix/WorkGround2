@@ -1,4 +1,4 @@
-import { createContext, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, Fragment, memo, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Item, LiveStream, PinMemoryRole } from "../lib/useController";
 import type { CheckpointMeta } from "../lib/types";
 import { useT } from "../lib/i18n";
@@ -107,6 +107,7 @@ export function Transcript({
   loadingOlderHistory = false,
   onLoadOlderHistory,
   scrollHostRef,
+  renderTurnFooter,
 }: {
   items: Item[];
   live?: LiveStream;
@@ -135,6 +136,7 @@ export function Transcript({
   loadingOlderHistory?: boolean;
   onLoadOlderHistory?: () => void | Promise<void>;
   scrollHostRef?: RefObject<HTMLElement | null>;
+  renderTurnFooter?: (turn: number) => ReactNode;
 }) {
   const t = useT();
   const {
@@ -436,6 +438,14 @@ export function Transcript({
       actionText = "";
       actionReady = false;
     };
+    const pushTurnFooter = () => {
+      if (activeTurn == null || !renderTurnFooter) return;
+      out.push(<Fragment key={`turn-footer-${activeTurn}`}>{renderTurnFooter(activeTurn)}</Fragment>);
+    };
+    const finishTurn = () => {
+      pushTurnActions();
+      pushTurnFooter();
+    };
 
     // Compact mode: step-based rendering
     // Standard mode: flat rendering (no step groups)
@@ -466,7 +476,7 @@ export function Transcript({
 
         if (first.kind === "user") {
           flushCollapseBatch();
-          pushTurnActions();
+          finishTurn();
           const tn = userTurn.get(first.id);
           const checkpoint = tn == null ? undefined : checkpointsByTurn.get(tn);
           activeTurn = tn;
@@ -561,6 +571,7 @@ export function Transcript({
       }
       flushCollapseBatch();
       if (!running) pushTurnActions();
+      pushTurnFooter();
     } else {
       // Standard mode: flat rendering
       const roBatch: ToolItem[] = [];
@@ -604,7 +615,7 @@ export function Transcript({
         flushRO();
         switch (it.kind) {
           case "user": {
-            pushTurnActions();
+            finishTurn();
             const tn = userTurn.get(it.id);
             const checkpoint = tn == null ? undefined : checkpointsByTurn.get(tn);
             activeTurn = tn;
@@ -648,9 +659,10 @@ export function Transcript({
       flushToolBatch();
       flushRO();
       if (!running) pushTurnActions();
+      pushTurnFooter();
     }
     return out;
-  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, onPinMemory, subcallsByParent, userTurn, checkpointsByTurn, effectiveDisplayMode, stepGroups, tabId, actionHoverMenus, creationMode, informationMode]);
+  }, [hotStartIdx, items, openAction, actionPending, rewindDisabled, running, onEditPrompt, onRewind, onPinMemory, subcallsByParent, userTurn, checkpointsByTurn, effectiveDisplayMode, stepGroups, tabId, actionHoverMenus, creationMode, informationMode, renderTurnFooter]);
 
   // ── Assemble rendered output ──────────────────────────────────────────────
   // Warm/cold zone is a separate memo'd WarmZone component so streaming tokens
@@ -698,6 +710,7 @@ export function Transcript({
                   warmSetOpenAction={setOpenAction}
                   warmOnEdit={onEditPrompt}
                   warmOnPinMemory={onPinMemory}
+                  warmRenderTurnFooter={renderTurnFooter}
                   tabId={tabId}
                   creationMode={creationMode}
                   onToggleColdPage={handleLoadEarlierWarmPage}
@@ -754,6 +767,7 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction,
   warmOnEdit,
   warmOnPinMemory,
+  warmRenderTurnFooter,
   tabId,
   creationMode,
   onToggleColdPage,
@@ -777,6 +791,7 @@ const WarmZone = memo(function WarmZone({
   warmSetOpenAction: (action: OpenTurnAction | null) => void;
   warmOnEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   warmOnPinMemory?: PinMemoryHandler;
+  warmRenderTurnFooter?: (turn: number) => ReactNode;
   tabId?: string;
   creationMode?: boolean;
   onToggleColdPage: () => void;
@@ -834,6 +849,7 @@ const WarmZone = memo(function WarmZone({
               setOpenAction={warmSetOpenAction}
               onEdit={warmOnEdit}
               onPinMemory={warmOnPinMemory}
+              renderTurnFooter={warmRenderTurnFooter}
               tabId={tabId}
               creationMode={creationMode}
             />
@@ -884,6 +900,7 @@ function WarmTurnItems({
   setOpenAction,
   onEdit,
   onPinMemory,
+  renderTurnFooter,
   tabId,
   creationMode = false,
 }: {
@@ -901,6 +918,7 @@ function WarmTurnItems({
   setOpenAction: (action: OpenTurnAction | null) => void;
   onEdit?: (turn: number, displayText: string, submitText?: string) => boolean | void | Promise<boolean | void>;
   onPinMemory?: PinMemoryHandler;
+  renderTurnFooter?: (turn: number) => ReactNode;
   tabId?: string;
   creationMode?: boolean;
 }) {
@@ -932,6 +950,14 @@ function WarmTurnItems({
     );
     actionText = "";
     actionReady = false;
+  };
+  const pushTurnFooter = () => {
+    if (activeTurn == null || !renderTurnFooter) return;
+    nodes.push(<Fragment key={`turn-footer-${activeTurn}`}>{renderTurnFooter(activeTurn)}</Fragment>);
+  };
+  const finishTurn = () => {
+    pushTurnActions();
+    pushTurnFooter();
   };
 
   // Group consecutive completed read-only tools into ReadOnlyBatch
@@ -972,7 +998,7 @@ function WarmTurnItems({
 
     switch (it.kind) {
       case "user": {
-        pushTurnActions();
+        finishTurn();
         const tn = userTurnMap.get(it.id);
         const checkpoint = tn == null ? undefined : checkpoints.get(tn);
         activeTurn = tn;
@@ -1016,7 +1042,7 @@ function WarmTurnItems({
   }
   flushToolBatch();
   flushRO();
-  pushTurnActions();
+  finishTurn();
   return nodes;
 }
 
