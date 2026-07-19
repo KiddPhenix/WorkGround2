@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 // ---- Locale text-length contracts ----
 
 import { en as enT } from "../locales/en.ts";
+import { normalizeWidgetZoom, resolveWidgetZoomFrame } from "../components/widget/widgetZoom.ts";
 
 // Idle state: noTasks must be short enough for the ticker at min width.
 const noTasksLen = [...enT["widget.noTasks"]].length;
@@ -69,6 +70,25 @@ assert.ok(
   `clock breathing room ${breathing.toFixed(1)}px < 8px at ${minVw}px viewport`,
 );
 
+// ---- Desktop WebView zoom contract ----
+//
+// WebView2 zoom shrinks the CSS viewport while enlarging every CSS pixel. The
+// widget must expand its logical frame by the same factor, then apply the
+// inverse transform so the final native footprint remains exactly 520x160.
+for (const zoom of [0.5, 0.8, 1, 1.25, 1.5, 2]) {
+  const frame = resolveWidgetZoomFrame(zoom);
+  const cssViewportWidth = minVw / zoom;
+  const cssViewportHeight = 160 / zoom;
+  const finalWidth = cssViewportWidth * frame.widthVw / 100 * frame.scale * zoom;
+  const finalHeight = cssViewportHeight * frame.heightVh / 100 * frame.scale * zoom;
+  assert.ok(Math.abs(finalWidth - minVw) < 0.001, `${zoom}x zoom changes widget width to ${finalWidth}`);
+  assert.ok(Math.abs(finalHeight - 160) < 0.001, `${zoom}x zoom changes widget height to ${finalHeight}`);
+}
+
+for (const invalid of [undefined, null, Number.NaN, 0.49, 2.01, "1.25"]) {
+  assert.equal(normalizeWidgetZoom(invalid), 1, `invalid zoom ${String(invalid)} must safely fall back to 1`);
+}
+
 // Full-size clock (56px) must fit at ≥760px viewport — the point where the
 // clamp resolves to its upper bound.
 const wideVw = 760;
@@ -112,6 +132,18 @@ const carouselSource = readFileSync(
   resolve(import.meta.dirname, "../components/widget/WidgetInfoCarousel.tsx"),
   "utf-8",
 );
+const modeSource = readFileSync(
+  resolve(import.meta.dirname, "../components/widget/WidgetMode.tsx"),
+  "utf-8",
+);
+
+const modeRoot = extractCssRule(modeCss, ".widget-mode");
+assert.match(modeRoot ?? "", /min-width:\s*0/, "widget root must not force a 520px CSS viewport at desktop zoom");
+assert.match(modeRoot ?? "", /min-height:\s*0/, "widget root must not force a 160px CSS viewport at desktop zoom");
+assert.match(modeSource, /app\.GetDesktopZoomFactor\(\)/, "widget must read the active WebView zoom factor");
+assert.match(modeSource, /resolveWidgetZoomFrame\(desktopZoom\)/, "widget must apply the inverse desktop zoom frame");
+const enterAnimation = modeCss.match(/@keyframes\s+widget-enter\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+assert.doesNotMatch(enterAnimation, /transform:/, "widget entry animation must not override the zoom compensation transform");
 
 // Button strong: must be ≤34px so "New task" fits the 216px button.
 const btnSize = extractFontSize(modeCss, ".widget-new strong");

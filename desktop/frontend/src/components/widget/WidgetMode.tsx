@@ -15,6 +15,7 @@ import { useI18n, useT, type Translator } from "../../lib/i18n";
 import { pickWidgetSuffix, widgetSuffixes } from "./widgetCopy";
 import { startWidgetConversationWithRetry } from "./startWidgetConversation";
 import { resolveWidgetSkin, widgetSkinTiles, type WidgetSkinId } from "./widgetSkins";
+import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { WidgetInfoCarousel } from "./WidgetInfoCarousel";
 import "./widget-mode.css";
 import "./widget-skins.css";
@@ -461,6 +462,7 @@ function RouteNotice({ result, prompt }: { result: WidgetConversationResult; pro
 export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKey?: string }) {
   const t = useT();
   const [skinId, setSkinId] = useState<WidgetSkinId>("classic");
+  const [desktopZoom, setDesktopZoom] = useState(1);
   const [snapshot, setSnapshot] = useState<WidgetSnapshot>(EMPTY_SNAPSHOT);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -489,6 +491,20 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
     return () => {
       alive = false;
       unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void app.GetDesktopZoomFactor()
+      .then((zoom) => {
+        if (alive) setDesktopZoom(resolveWidgetZoomFrame(zoom).zoom);
+      })
+      .catch(() => {
+        if (alive) setDesktopZoom(1);
+      });
+    return () => {
+      alive = false;
     };
   }, []);
 
@@ -721,9 +737,21 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
 
 	const contextProject = routeNotice?.result.workspaceName;
 	const contextTask = composing || routeNotice ? t("widget.newConversation") : undefined;
+  const zoomFrame = resolveWidgetZoomFrame(desktopZoom);
+  const zoomStyle: CSSProperties = {
+    width: `${zoomFrame.widthVw}vw`,
+    height: `${zoomFrame.heightVh}vh`,
+    transform: `scale(${zoomFrame.scale})`,
+    transformOrigin: "left top",
+  };
 
   return (
-    <main className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`} data-widget-skin={skinId}>
+    <main
+      className={`widget-mode${widgetIdle ? " widget-mode--idle" : ""}`}
+      data-widget-skin={skinId}
+      data-widget-zoom={zoomFrame.zoom}
+      style={zoomStyle}
+    >
       <div className="widget-shell">
         <NineSliceShell skin={skinId} />
         <div className="widget-shell__drag" aria-hidden="true" />

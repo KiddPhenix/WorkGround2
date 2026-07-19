@@ -964,6 +964,18 @@ function mockScenario(): "demo" | "fresh" | "running" | "guidance" {
   return "demo";
 }
 
+function mockDesktopZoomFactor(): number {
+  if (typeof window === "undefined") return 1;
+  const value = Number(new URLSearchParams(window.location.search).get("zoom"));
+  return Number.isFinite(value) && value >= 0.5 && value <= 2 ? value : 1;
+}
+
+function mockWidgetSkin(): string {
+  if (typeof window === "undefined") return "classic";
+  const value = new URLSearchParams(window.location.search).get("skin")?.trim().toLowerCase() ?? "";
+  return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
+}
+
 function makeMockApp(): AppBindings {
   const scenario = mockScenario();
   const freshMock = scenario === "fresh";
@@ -972,6 +984,8 @@ function makeMockApp(): AppBindings {
   const widgetScenario = typeof window === "undefined"
     ? ""
     : new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
+  const desktopZoomFactor = mockDesktopZoomFactor();
+  const desktopWidgetSkin = mockWidgetSkin();
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1639,6 +1653,7 @@ function makeMockApp(): AppBindings {
     autoApproveTools: false,
     bypass: false,
   };
+  settings.widgetSkin = desktopWidgetSkin;
   let sessionBackgroundSettings: SessionBackgroundSettingsView = {
     enabled: false,
     maskEnabled: true,
@@ -4121,7 +4136,7 @@ function makeMockApp(): AppBindings {
           // no-op in mock; in production this writes desktop-zoom.json via Go
         },
         async GetDesktopZoomFactor() {
-          return 1.0; // default in mock
+          return desktopZoomFactor;
         },
         async RestartApplication() {
           // no-op in mock
