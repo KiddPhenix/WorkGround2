@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "blueprint:broken",
+      "version": 1,
+      "schemaVersion": 1,
+      "path": "nonexistent.json"
+    }
+  ]
+}

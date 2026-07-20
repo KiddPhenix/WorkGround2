@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "blueprint:my-review",
+      "version": 1,
+      "schemaVersion": 1,
+      "path": "my-review/1.json"
+    },
+    {
+      "id": "blueprint:my-review",
+      "version": 2,
+      "schemaVersion": 1,
+      "path": "my-review/v2/2.json"
+    }
+  ]
+}
