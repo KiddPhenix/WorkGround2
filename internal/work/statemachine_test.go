@@ -13,7 +13,9 @@ func TestWorkStateTransitions_Valid(t *testing.T) {
 	valid := []struct {
 		from, to WorkState
 	}{
+		{WorkDraft, WorkReady},
 		{WorkDraft, WorkRunning},
+		{WorkReady, WorkDraft},
 		{WorkReady, WorkRunning},
 		{WorkRunning, WorkCompleted},
 		{WorkRunning, WorkFailed},
@@ -60,7 +62,9 @@ func TestWorkStateTransitions_Invalid(t *testing.T) {
 		WorkPaused, WorkCompleted, WorkFailed, WorkCancelled,
 	}
 	validSet := map[[2]WorkState]bool{
+		{WorkDraft, WorkReady}:         true,
 		{WorkDraft, WorkRunning}:       true,
+		{WorkReady, WorkDraft}:         true,
 		{WorkReady, WorkRunning}:       true,
 		{WorkRunning, WorkCompleted}:   true,
 		{WorkRunning, WorkFailed}:      true,

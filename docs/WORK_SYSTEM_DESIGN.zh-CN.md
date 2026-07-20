@@ -410,7 +410,10 @@ type SourceRef struct {
 ```mermaid
 stateDiagram-v2
     [*] --> draft : "创建"
+    draft --> ready : "输入和依赖预检通过"
+    ready --> draft : "编辑或依赖变化使预检失效"
     draft --> running : "触发运行"
+    ready --> running : "触发运行"
     running --> completed : "执行成功"
     running --> failed : "执行失败"
     running --> waiting_user : "等待输入/审批"

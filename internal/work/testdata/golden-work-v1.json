@@ -113,7 +113,7 @@
     {
       "id": "run-001",
       "workId": "work-golden-001",
-      "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "definitionDigest": "sha256:5e816b36dc32c6782aed0a96dd750cdf4cffe50fb65758c6ec45e45d91e2656f",
       "state": "completed",
       "stages": [
         {
