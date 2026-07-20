@@ -12,6 +12,7 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/nilutil"
+	"workground2/internal/session"
 	"workground2/internal/work"
 )
 
@@ -297,13 +298,9 @@ func (c *Controller) LookupSession(ctx context.Context, sessionPath string) (wor
 	if root == "" || path == "" {
 		return work.SessionRef{}, false, errors.New("work: Session lookup requires sessionDir and sessionPath")
 	}
-	rootAbs, err := filepath.Abs(root)
+	pathAbs, _, err := session.ValidatePath(root, path)
 	if err != nil {
-		return work.SessionRef{}, false, fmt.Errorf("work: resolve Session directory: %w", err)
-	}
-	pathAbs, err := filepath.Abs(path)
-	if err != nil {
-		return work.SessionRef{}, false, fmt.Errorf("work: resolve Session path: %w", err)
+		return work.SessionRef{}, false, fmt.Errorf("work: Session path is outside SessionDir or invalid: %w", err)
 	}
 	info, err := os.Stat(pathAbs)
 	if err != nil {
@@ -314,18 +311,6 @@ func (c *Controller) LookupSession(ctx context.Context, sessionPath string) (wor
 	}
 	if info.IsDir() {
 		return work.SessionRef{}, false, fmt.Errorf("work: Session path %q is a directory", pathAbs)
-	}
-	realRoot, err := filepath.EvalSymlinks(rootAbs)
-	if err != nil {
-		return work.SessionRef{}, false, fmt.Errorf("work: resolve Session directory links: %w", err)
-	}
-	realPath, err := filepath.EvalSymlinks(pathAbs)
-	if err != nil {
-		return work.SessionRef{}, false, fmt.Errorf("work: resolve Session links: %w", err)
-	}
-	rel, err := filepath.Rel(realRoot, realPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return work.SessionRef{}, false, fmt.Errorf("work: Session path %q is outside SessionDir %q", pathAbs, rootAbs)
 	}
 
 	meta, hasMeta, err := agent.LoadBranchMeta(pathAbs)
