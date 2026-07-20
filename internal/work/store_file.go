@@ -2668,10 +2668,11 @@ func DefaultReducer() WorkEventReducer {
 		switch event.Type {
 		case EventDraftUpdated:
 			var update struct {
-				Name   *string        `json:"name,omitempty"`
-				Prompt *string        `json:"prompt,omitempty"`
-				Inputs map[string]any `json:"inputs,omitempty"`
-				State  WorkState      `json:"state,omitempty"`
+				Name       *string          `json:"name,omitempty"`
+				Prompt     *string          `json:"prompt,omitempty"`
+				Inputs     map[string]any   `json:"inputs,omitempty"`
+				State      WorkState        `json:"state,omitempty"`
+				Placements []BlockPlacement `json:"placements,omitempty"`
 			}
 			if err := json.Unmarshal(event.Payload, &update); err != nil {
 				return nil, fmt.Errorf("work: unmarshal draft update: %w", err)
@@ -2696,6 +2697,9 @@ func DefaultReducer() WorkEventReducer {
 				}
 				current.State = update.State
 			}
+			if update.Placements != nil {
+				current.Placements = sortPlacements(update.Placements)
+			}
 
 		case EventDefinitionFrozen:
 			var def WorkDefinitionSnapshot
@@ -2709,30 +2713,100 @@ func DefaultReducer() WorkEventReducer {
 			if err := json.Unmarshal(event.Payload, &block); err != nil {
 				return nil, fmt.Errorf("work: unmarshal block upsert: %w", err)
 			}
+			if block.ID == "" {
+				return nil, fmt.Errorf("work: block upsert: block id is required")
+			}
+			if block.Revision <= 0 {
+				return nil, fmt.Errorf("work: block upsert: revision must be positive")
+			}
+			digest, err := blockContentDigest(&block)
+			if err != nil {
+				return nil, err
+			}
 			found := false
 			for i, b := range current.Blocks {
 				if b.ID == block.ID {
-					current.Blocks[i] = block
+					result, merged, mergeErr := mergeBlock(&b, &block, digest)
+					if mergeErr != nil {
+						return nil, mergeErr
+					}
+					switch result {
+					case blockMergeConflict:
+						return nil, newBlockConflict(current.ID, block.ID, "same block revision has different content",
+							block.Revision, b.Revision, 0, event.BaseRevision, true, nil)
+					case blockMergeApplied:
+						block = *merged
+						block.CreatedAt = b.CreatedAt
+						block.UpdatedAt = event.CreatedAt
+						current.Blocks[i] = block
+					}
 					found = true
 					break
 				}
 			}
 			if !found {
+				block.CreatedAt = event.CreatedAt
+				block.UpdatedAt = event.CreatedAt
 				current.Blocks = append(current.Blocks, block)
+			}
+			// Keep placements sorted after block changes.
+			if len(current.Placements) > 1 {
+				current.Placements = sortPlacements(current.Placements)
 			}
 
 		case EventBlockRemoved:
-			var payload struct {
-				BlockID string `json:"blockId"`
-			}
+			var payload blockRemovedPayload
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return nil, fmt.Errorf("work: unmarshal block remove: %w", err)
 			}
+			if payload.BlockID == "" {
+				return nil, fmt.Errorf("work: block remove: blockId is required")
+			}
+			found := false
 			for i, b := range current.Blocks {
 				if b.ID == payload.BlockID {
-					current.Blocks = append(current.Blocks[:i], current.Blocks[i+1:]...)
+					found = true
+					tombstone := b
+					tombstone.Tombstone = true
+					if payload.Revision == 0 {
+						// Events written before removal revisions were introduced
+						// remain readable and keep the last known block revision.
+						tombstone.UpdatedAt = event.CreatedAt
+						current.Blocks[i] = tombstone
+						break
+					}
+					tombstone.Revision = payload.Revision
+					digest, digestErr := blockContentDigest(&tombstone)
+					if digestErr != nil {
+						return nil, digestErr
+					}
+					result, merged, mergeErr := mergeBlock(&b, &tombstone, digest)
+					if mergeErr != nil {
+						return nil, mergeErr
+					}
+					switch result {
+					case blockMergeConflict:
+						return nil, newBlockConflict(current.ID, payload.BlockID, "same block revision has different content",
+							payload.Revision, b.Revision, 0, event.BaseRevision, true, nil)
+					case blockMergeApplied:
+						tombstone = *merged
+						tombstone.CreatedAt = b.CreatedAt
+						tombstone.UpdatedAt = event.CreatedAt
+						current.Blocks[i] = tombstone
+					}
 					break
 				}
+			}
+			if !found && payload.Revision > 0 {
+				// Keep an out-of-order removal as a tombstone marker so a
+				// subsequently replayed older upsert cannot revive the block.
+				current.Blocks = append(current.Blocks, BlockInstance{
+					ID:        payload.BlockID,
+					Revision:  payload.Revision,
+					Tombstone: true,
+					CreatedAt: event.CreatedAt,
+					UpdatedAt: event.CreatedAt,
+				})
 			}
 
 		case EventRunStarted:
