@@ -469,16 +469,59 @@ func (s *FileWorkStore) LoadState(workID, requestID string) (value *Work, state 
 	if err != nil {
 		return value, state, err
 	}
+	state, err = eventStateFromReplay(workID, requestID, replay)
+	return value, state, err
+}
+
+// LoadTrashState reads authoritative lifecycle state from Trash without moving
+// or repairing the directory. Service uses it to reject late requests before
+// they repeat an already-superseded filesystem side effect.
+func (s *FileWorkStore) LoadTrashState(workID, requestID string) (value *Work, state WorkEventState, retErr error) {
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, state, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
+
+	tp, err := s.trashPath(workID)
+	if err != nil {
+		return nil, state, err
+	}
+	replay, value, err := ReplayWithReducer(tp, DefaultReducer())
+	if err != nil {
+		return value, state, err
+	}
+	if value == nil {
+		return nil, state, fmt.Errorf("%w: no trashed events for work %s", ErrWorkNotInTrash, workID)
+	}
+	state, err = eventStateFromReplay(workID, requestID, replay)
+	return value, state, err
+}
+
+func eventStateFromReplay(workID, requestID string, replay *WorkEventReplay) (WorkEventState, error) {
+	var state WorkEventState
+	if replay == nil {
+		return state, fmt.Errorf("%w: event replay for %s is unavailable", ErrWorkNeedsRepair, workID)
+	}
 	if replay.ReadOnly {
-		return value, state, fmt.Errorf("work: event log for %s is read-only: %s", workID, replay.ReadOnlyReason)
+		return state, fmt.Errorf("work: event log for %s is read-only: %s", workID, replay.ReadOnlyReason)
 	}
 	if replay.NeedsRepair {
-		return value, state, fmt.Errorf("%w: event log for %s requires repair", ErrWorkNeedsRepair, workID)
+		return state, fmt.Errorf("%w: event log for %s requires repair", ErrWorkNeedsRepair, workID)
 	}
 	if replay.Index == nil {
-		return value, state, fmt.Errorf("%w: event index for %s is unavailable", ErrWorkNeedsRepair, workID)
+		return state, fmt.Errorf("%w: event index for %s is unavailable", ErrWorkNeedsRepair, workID)
 	}
 	state.Revision = replay.Index.Revision
+	for _, event := range replay.Events {
+		switch event.Type {
+		case EventWorkArchived, EventWorkRestored, EventWorkDeleted:
+			state.LifecycleRevision = event.Revision
+		}
+		if requestID != "" && event.RequestID == requestID {
+			state.RequestType = event.Type
+		}
+	}
 	if requestID != "" {
 		entry, ok := replay.Index.RequestIndex[requestID]
 		state.RequestFound = ok
@@ -486,7 +529,7 @@ func (s *FileWorkStore) LoadState(workID, requestID string) (value *Work, state 
 			state.RequestRevision = entry.Revision
 		}
 	}
-	return value, state, nil
+	return state, nil
 }
 
 func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {

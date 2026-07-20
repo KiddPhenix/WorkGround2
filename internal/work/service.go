@@ -256,6 +256,16 @@ func (s *Service) Archive(ctx context.Context, workID, requestID string) (*WorkR
 		return nil, err
 	}
 	if current.ArchiveState == ArchiveArchived {
+		if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkArchived) {
+			record, archiveErr := s.store.LoadArchive(workID)
+			if archiveErr == nil {
+				return record, nil
+			}
+			if !errors.Is(archiveErr, ErrWorkNotFound) {
+				return nil, archiveErr
+			}
+			return nil, lifecycleRequestConflict("Archive", workID, requestID, state)
+		}
 		return s.loadOrRepairArchive(workID, current, state.Revision, requestID)
 	}
 	if current.ArchiveState != ArchiveActive {
@@ -284,8 +294,8 @@ func (s *Service) Archive(ctx context.Context, workID, requestID string) (*WorkR
 	if err != nil {
 		return nil, err
 	}
-	if archived.ArchiveState != ArchiveArchived {
-		return nil, fmt.Errorf("%w: archive request %q was already consumed before Work %s was restored", ErrWorkRequestIDConflict, requestID, workID)
+	if archived.ArchiveState != ArchiveArchived || !lifecycleRequestCurrent(archivedState, EventWorkArchived) {
+		return nil, lifecycleRequestConflict("Archive", workID, requestID, archivedState)
 	}
 	return s.loadOrRepairArchive(workID, archived, archivedState.Revision, requestID)
 }
@@ -310,6 +320,13 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 	eventRequestID := requestID + "/restore"
 	current, state, err := s.store.LoadState(workID, eventRequestID)
 	if errors.Is(err, ErrWorkNotFound) {
+		current, state, err = s.store.LoadTrashState(workID, eventRequestID)
+		if err != nil {
+			return nil, fmt.Errorf("work: Restore: inspect Trash: %w", err)
+		}
+		if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkRestored) {
+			return nil, lifecycleRequestConflict("Restore", workID, requestID, state)
+		}
 		if moveErr := s.store.RestoreFromTrash(workID, requestID+"/move"); moveErr != nil {
 			return nil, fmt.Errorf("work: Restore: %w", moveErr)
 		}
@@ -318,7 +335,10 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 	if err != nil {
 		return nil, err
 	}
-	if current.ArchiveState == ArchiveActive && state.RequestFound {
+	if state.RequestFound {
+		if current.ArchiveState != ArchiveActive || !lifecycleRequestCurrent(state, EventWorkRestored) {
+			return nil, lifecycleRequestConflict("Restore", workID, requestID, state)
+		}
 		return viewFromState(current, state), nil
 	}
 	if err := ValidateArchiveTransition(current.ArchiveState, ArchiveActive); err != nil {
@@ -332,13 +352,14 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 	if _, err := s.store.CommitEvent(workID, event); err != nil {
 		return s.latestOnConflict(workID, err)
 	}
-	view, err := s.loadView(workID)
+	restored, restoredState, err := s.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
 	}
-	if view.Work.ArchiveState != ArchiveActive {
-		return nil, fmt.Errorf("%w: restore request %q did not activate Work %s", ErrWorkRequestIDConflict, requestID, workID)
+	if restored.ArchiveState != ArchiveActive || !lifecycleRequestCurrent(restoredState, EventWorkRestored) {
+		return nil, lifecycleRequestConflict("Restore", workID, requestID, restoredState)
 	}
+	view := viewFromState(restored, restoredState)
 	if err := s.emitSnapshot(view, requestID); err != nil {
 		return nil, committedRecovery("restore-view", workID, requestID, view.Revision, err)
 	}
@@ -365,31 +386,52 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 	}
 	eventRequestID := requestID + "/delete"
 	current, state, loadErr := s.store.LoadState(workID, eventRequestID)
+	inTrash := false
 	if errors.Is(loadErr, ErrWorkNotFound) {
+		current, state, loadErr = s.store.LoadTrashState(workID, eventRequestID)
+		inTrash = true
+	}
+	if loadErr != nil {
+		return loadErr
+	}
+	if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkDeleted) {
+		return nil
+	}
+	if !state.RequestFound && (inTrash || current.ArchiveState == ArchiveDeleted) {
+		return lifecycleRequestConflict("Delete", workID, requestID, state)
+	}
+
+	revision := state.RequestRevision
+	if inTrash {
 		if err := s.store.MoveToTrash(workID, requestID+"/move"); err != nil {
 			return fmt.Errorf("work: Delete: %w", err)
 		}
 		return nil
 	}
-	if loadErr != nil {
-		return loadErr
+	if current.ArchiveState != ArchiveDeleted {
+		if err := ValidateArchiveTransition(current.ArchiveState, ArchiveDeleted); err != nil {
+			return fmt.Errorf("work: Delete: %w", err)
+		}
 	}
-	revision := state.Revision
-	if current.ArchiveState != ArchiveDeleted || state.RequestFound {
-		if current.ArchiveState != ArchiveDeleted {
-			if err := ValidateArchiveTransition(current.ArchiveState, ArchiveDeleted); err != nil {
-				return fmt.Errorf("work: Delete: %w", err)
-			}
-		}
-		event := newServiceEvent(workID, eventRequestID, EventWorkDeleted, json.RawMessage(`{"archiveState":"deleted"}`), time.Now().UTC())
-		if !state.RequestFound {
-			event.BaseRevision = state.Revision
-			event.Revision = state.Revision + 1
-		}
-		revision, err = s.store.CommitEvent(workID, event)
-		if err != nil {
-			return fmt.Errorf("work: Delete: append event: %w", err)
-		}
+	event := newServiceEvent(workID, eventRequestID, EventWorkDeleted, json.RawMessage(`{"archiveState":"deleted"}`), time.Now().UTC())
+	if !state.RequestFound {
+		event.BaseRevision = state.Revision
+		event.Revision = state.Revision + 1
+	}
+	revision, err = s.store.CommitEvent(workID, event)
+	if err != nil {
+		return fmt.Errorf("work: Delete: append event: %w", err)
+	}
+
+	latest, latestState, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return fmt.Errorf("work: Delete: verify committed lifecycle: %w", err)
+	}
+	if !latestState.RequestFound || latestState.RequestRevision != revision {
+		return fmt.Errorf("%w: Delete request %q has inconsistent persisted revision", ErrWorkNeedsRepair, requestID)
+	}
+	if latest.ArchiveState != ArchiveDeleted || !lifecycleRequestCurrent(latestState, EventWorkDeleted) {
+		return nil
 	}
 	if err := s.store.MoveToTrash(workID, requestID+"/move"); err != nil {
 		return fmt.Errorf("work: Delete: %w", err)
@@ -549,6 +591,16 @@ func revisionConflict(workID string, expected, actual int64) error {
 		WorkID: workID,
 		Reason: fmt.Sprintf("expected revision %d, current revision %d", expected, actual),
 	}
+}
+
+func lifecycleRequestCurrent(state WorkEventState, eventType WorkEventType) bool {
+	return state.RequestFound && state.RequestRevision > 0 &&
+		state.RequestRevision == state.LifecycleRevision && state.RequestType == eventType
+}
+
+func lifecycleRequestConflict(operation, workID, requestID string, state WorkEventState) error {
+	return fmt.Errorf("%w: %s request %q for Work %s was superseded at lifecycle revision %d",
+		ErrWorkRequestIDConflict, operation, requestID, workID, state.LifecycleRevision)
 }
 
 func draftTargetState(state WorkState) (WorkState, error) {

@@ -35,6 +35,7 @@ type Store struct {
 	CreateWorkDirFunc   func(work.CreateWorkDirInput) error
 	LoadProjectionFunc  func(string) (*work.Work, error)
 	LoadStateFunc       func(string, string) (*work.Work, work.WorkEventState, error)
+	LoadTrashStateFunc  func(string, string) (*work.Work, work.WorkEventState, error)
 	LoadArchiveFunc     func(string) (*work.WorkRecord, error)
 	AppendFunc          func(string, work.WorkEvent) (int64, error)
 	CommitEventFunc     func(string, work.WorkEvent) (int64, error)
@@ -64,6 +65,13 @@ func (s *Store) LoadState(id, requestID string) (*work.Work, work.WorkEventState
 		return nil, work.WorkEventState{}, ErrUnconfigured
 	}
 	return s.LoadStateFunc(id, requestID)
+}
+
+func (s *Store) LoadTrashState(id, requestID string) (*work.Work, work.WorkEventState, error) {
+	if s.LoadTrashStateFunc == nil {
+		return nil, work.WorkEventState{}, ErrUnconfigured
+	}
+	return s.LoadTrashStateFunc(id, requestID)
 }
 
 func (s *Store) LoadArchive(id string) (*work.WorkRecord, error) {
