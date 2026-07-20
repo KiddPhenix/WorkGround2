@@ -21,6 +21,7 @@ type Service struct {
 	sink        ViewSink
 	actions     *ActionRegistry
 	permissions PermissionChecker
+	actionCfgMu sync.RWMutex
 	actionMu    sync.Mutex
 	actionRuns  map[string]*actionFlight
 }

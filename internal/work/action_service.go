@@ -7,15 +7,32 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"workground2/internal/nilutil"
 )
 
 var errActionTransitionLost = errors.New("work: action transition lost to another executor")
 
 type actionFlight struct{ done chan struct{} }
 
-func (s *Service) SetActionRegistry(reg *ActionRegistry) { s.actions = reg }
+// SetActionRegistry replaces the trusted action definitions. It is safe to call
+// while unrelated actions execute; each resolution observes one registry.
+func (s *Service) SetActionRegistry(reg *ActionRegistry) {
+	s.actionCfgMu.Lock()
+	s.actions = reg
+	s.actionCfgMu.Unlock()
+}
 
-func (s *Service) SetPermissionChecker(checker PermissionChecker) { s.permissions = checker }
+// SetPermissionChecker replaces the action permission adapter. Nil and typed-nil
+// values disable gated execution and are handled fail-closed.
+func (s *Service) SetPermissionChecker(checker PermissionChecker) {
+	if nilutil.IsNil(checker) {
+		checker = nil
+	}
+	s.actionCfgMu.Lock()
+	s.permissions = checker
+	s.actionCfgMu.Unlock()
+}
 
 // ExecuteBlockAction resolves the current block's action ID through the trusted
 // registry, persists a reservation before any approval/side effect, and returns
@@ -187,15 +204,16 @@ func (s *Service) resolveAction(value *Work, blockID, actionID string, input map
 
 func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRecord, resolved *resolvedAction, input map[string]any) (*ActionReceipt, error) {
 	if riskRequiresApproval(resolved.risk) || resolved.confirm {
-		if s.permissions == nil {
-			message := "no permission checker configured"
-			receipt, err := s.finishBeforeRun(ctx, record, ActionRejected, message, true)
+		checker := s.permissionChecker()
+		if nilutil.IsNil(checker) {
+			message := ErrActionPermissionUnavailable.Error()
+			receipt, err := s.finishBeforeRun(context.Background(), record, ActionFailed, message, true)
 			if err != nil {
 				return receipt, err
 			}
-			return receipt, &ErrActionRejected{RequestID: record.RequestID, Message: message}
+			return receipt, ErrActionPermissionUnavailable
 		}
-		decision, err := s.permissions.CheckPermission(ctx, PermissionRequest{
+		decision, err := checker.CheckPermission(ctx, PermissionRequest{
 			WorkID: record.WorkID, BlockID: record.BlockID, ActionID: record.ActionID, RequestID: record.RequestID,
 			Object:   ObjectContext{Kind: ObjectBlock, ID: record.BlockID, ParentID: record.WorkID},
 			ToolName: resolved.registration.Intent, Risk: string(resolved.risk), Summary: resolved.summary,
@@ -229,6 +247,14 @@ func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRec
 			return receipt, &ErrActionRejected{RequestID: record.RequestID, Message: message}
 		}
 	}
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		message := "action cancelled before handler start: " + cancelErr.Error()
+		receipt, persistErr := s.finishBeforeRun(context.Background(), record, ActionFailed, message, true)
+		if persistErr != nil {
+			return receipt, errors.Join(cancelErr, persistErr)
+		}
+		return receipt, cancelErr
+	}
 
 	running, revision, err := s.transitionAction(ctx, record, ActionPending, ActionRunning, "", false, false, nil)
 	if err != nil {
@@ -240,16 +266,47 @@ func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRec
 	if emitErr := s.emitActionSnapshot(record.WorkID, record.RequestID); emitErr != nil {
 		return running.toPublicReceipt(revision), emitErr
 	}
+	if cancelErr := ctx.Err(); cancelErr != nil {
+		message := "action cancelled before handler start: " + cancelErr.Error()
+		final, finalRev, persistErr := s.transitionAction(context.Background(), running, ActionRunning, ActionFailed, message, true, true, nil)
+		if persistErr != nil {
+			return running.toPublicReceipt(revision), errors.Join(cancelErr, persistErr)
+		}
+		if emitErr := s.emitActionSnapshot(record.WorkID, record.RequestID); emitErr != nil {
+			return final.toPublicReceipt(finalRev), errors.Join(cancelErr, emitErr)
+		}
+		return final.toPublicReceipt(finalRev), cancelErr
+	}
 
 	handlerInput, err := cloneJSONMap(input)
 	if err != nil {
 		return running.toPublicReceipt(revision), err
 	}
-	result, handlerErr := resolved.registration.Handler(ctx, ActionHandlerContext{
+	handlerCtx := ActionHandlerContext{
 		WorkID: record.WorkID, BlockID: record.BlockID, ActionID: record.ActionID, RequestID: record.RequestID,
 		Input: handlerInput, Payload: append(json.RawMessage(nil), resolved.registration.Payload...),
 		Fingerprint: record.Fingerprint, Risk: resolved.risk,
-	})
+	}
+	type handlerOutcome struct {
+		result *ActionResult
+		err    error
+	}
+	handlerDone := make(chan handlerOutcome, 1)
+	go func() {
+		result, handlerErr := resolved.registration.Handler(ctx, handlerCtx)
+		handlerDone <- handlerOutcome{result: result, err: handlerErr}
+	}()
+	var result *ActionResult
+	var handlerErr error
+	select {
+	case outcome := <-handlerDone:
+		result, handlerErr = outcome.result, outcome.err
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			handlerErr = errors.Join(handlerErr, cancelErr)
+		}
+	case <-ctx.Done():
+		handlerErr = ctx.Err()
+	}
 
 	status, message, retryable, known := ActionSucceeded, "", false, true
 	var resultData json.RawMessage
@@ -410,10 +467,23 @@ func waitActionFlight(ctx context.Context, flight *actionFlight) error {
 }
 
 func (s *Service) lookupAction(blockKind, actionID string) (ActionRegistration, bool) {
-	if s.actions == nil {
+	s.actionCfgMu.RLock()
+	registry := s.actions
+	s.actionCfgMu.RUnlock()
+	if registry == nil {
 		return ActionRegistration{}, false
 	}
-	return s.actions.Lookup(blockKind, actionID)
+	return registry.Lookup(blockKind, actionID)
+}
+
+func (s *Service) permissionChecker() PermissionChecker {
+	s.actionCfgMu.RLock()
+	checker := s.permissions
+	s.actionCfgMu.RUnlock()
+	if nilutil.IsNil(checker) {
+		return nil
+	}
+	return checker
 }
 
 func findBlock(value *Work, blockID string) *BlockInstance {

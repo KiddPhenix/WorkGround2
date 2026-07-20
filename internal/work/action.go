@@ -271,3 +271,34 @@ func upsertActionReceipt(receipts []ActionReceiptRecord, receipt ActionReceiptRe
 	}
 	return append(receipts, receipt)
 }
+
+func changedActionIdentity(previous, next ActionReceiptRecord) string {
+	switch {
+	case previous.WorkID != next.WorkID:
+		return "workId"
+	case previous.BlockID != next.BlockID:
+		return "blockId"
+	case previous.BlockKind != next.BlockKind:
+		return "blockKind"
+	case previous.ActionID != next.ActionID:
+		return "actionId"
+	case previous.RequestID != next.RequestID:
+		return "requestId"
+	case previous.InputDigest != next.InputDigest:
+		return "inputDigest"
+	case previous.Fingerprint != next.Fingerprint:
+		return "fingerprint"
+	case previous.Intent != next.Intent:
+		return "intent"
+	case previous.Summary != next.Summary:
+		return "summary"
+	case previous.Risk != next.Risk:
+		return "risk"
+	case previous.ConfirmRequired != next.ConfirmRequired:
+		return "confirmRequired"
+	case !previous.CreatedAt.Equal(next.CreatedAt):
+		return "createdAt"
+	default:
+		return ""
+	}
+}

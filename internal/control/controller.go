@@ -178,6 +178,18 @@ type Controller struct {
 	// workViews is the broadcaster that fans out WorkViewEvents to frontend
 	// subscribers. Nil when Work is disabled.
 	workViews *WorkViewBroadcaster
+	// actionRoot owns Block Action lifetimes independently from model turns.
+	// Per-request children preserve caller cancellation; Cancel stops all current
+	// foreground work, while Close closes the root and waits for registered
+	// actions to persist their terminal receipts.
+	actionMu         sync.Mutex
+	actionRoot       context.Context
+	actionRootCancel context.CancelFunc
+	actionRuns       map[string]map[uint64]context.CancelFunc
+	actionNext       uint64
+	actionWG         sync.WaitGroup
+	actionClosed     bool
+	closeOnce        sync.Once
 
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
@@ -431,6 +443,7 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	actionRoot, actionRootCancel := context.WithCancel(context.Background())
 	c := &Controller{
 		runner:                     opts.Runner,
 		executor:                   opts.Executor,
@@ -469,6 +482,9 @@ func New(opts Options) *Controller {
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
 		workViews:                  opts.WorkViews,
+		actionRoot:                 actionRoot,
+		actionRootCancel:           actionRootCancel,
+		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
 	}
 	if !nilutil.IsNil(opts.Work) {
 		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
@@ -1408,8 +1424,9 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	return c.runner.Run(ctx, input)
 }
 
-// Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
-// unblocks via the cancelled context.
+// Cancel aborts the in-flight turn and every currently executing Block Action
+// owned by this Controller. Each Action still has its own request context, so
+// caller cancellation of one Action does not affect another.
 func (c *Controller) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel
@@ -1417,10 +1434,14 @@ func (c *Controller) Cancel() {
 		c.canceling = true
 	}
 	c.mu.Unlock()
+	actionCount := c.cancelBlockActions()
 	if cancel != nil {
 		c.approval.clearAll()
 		cancel()
 		return
+	}
+	if actionCount > 0 {
+		c.approval.clearActionApprovals()
 	}
 	if c.goals.active() {
 		c.stopGoal(GoalStatusStopped)
@@ -3977,23 +3998,29 @@ const (
 )
 
 func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
-	c.mu.Lock()
-	started := c.startedOnce
-	c.mu.Unlock()
-	if fireSessionEnd && started {
-		c.hooks.SessionEnd(context.Background())
+	if c == nil {
+		return
 	}
-	if c.jobs != nil {
-		switch jobsMode {
-		case closeJobsAsync:
-			c.jobs.CloseAsync()
-		default:
-			c.jobs.Close() // cancel any still-running background jobs
+	c.closeOnce.Do(func() {
+		c.closeBlockActions()
+		c.mu.Lock()
+		started := c.startedOnce
+		c.mu.Unlock()
+		if fireSessionEnd && started {
+			c.hooks.SessionEnd(context.Background())
 		}
-	}
-	if c.cleanup != nil {
-		c.cleanup()
-	}
+		if c.jobs != nil {
+			switch jobsMode {
+			case closeJobsAsync:
+				c.jobs.CloseAsync()
+			default:
+				c.jobs.Close() // cancel any still-running background jobs
+			}
+		}
+		if c.cleanup != nil {
+			c.cleanup()
+		}
+	})
 }
 
 // Jobs returns the still-running background jobs for the status bar (nil when
@@ -4677,6 +4704,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	select {
 	case r := <-reply:
+		if err := waitCtx.Err(); err != nil {
+			return approvalReply{}, err
+		}
 		c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
 		return r, nil
 	case <-waitCtx.Done():
