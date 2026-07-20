@@ -178,6 +178,9 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	if err != nil {
 		return nil, err
 	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return nil, fmt.Errorf("work: UpdateDraft: %w", err)
+	}
 	if current.ArchiveState != ArchiveActive {
 		return nil, fmt.Errorf("work: UpdateDraft: Work %s is %s", workID, current.ArchiveState)
 	}
@@ -255,6 +258,9 @@ func (s *Service) Archive(ctx context.Context, workID, requestID string) (*WorkR
 	if err != nil {
 		return nil, err
 	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return nil, fmt.Errorf("work: Archive: %w", err)
+	}
 	if current.ArchiveState == ArchiveArchived {
 		if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkArchived) {
 			record, archiveErr := s.store.LoadArchive(workID)
@@ -324,6 +330,9 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 		if err != nil {
 			return nil, fmt.Errorf("work: Restore: inspect Trash: %w", err)
 		}
+		if err := requireWritableBlockSchemas(current); err != nil {
+			return nil, fmt.Errorf("work: Restore: %w", err)
+		}
 		if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkRestored) {
 			return nil, lifecycleRequestConflict("Restore", workID, requestID, state)
 		}
@@ -334,6 +343,9 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 	}
 	if err != nil {
 		return nil, err
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return nil, fmt.Errorf("work: Restore: %w", err)
 	}
 	if state.RequestFound {
 		if current.ArchiveState != ArchiveActive || !lifecycleRequestCurrent(state, EventWorkRestored) {
@@ -393,6 +405,9 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 	}
 	if loadErr != nil {
 		return loadErr
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return fmt.Errorf("work: Delete: %w", err)
 	}
 	if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkDeleted) {
 		return nil
@@ -590,6 +605,7 @@ func revisionConflict(workID string, expected, actual int64) error {
 	return &ErrWorkEventConflict{
 		WorkID: workID,
 		Reason: fmt.Sprintf("expected revision %d, current revision %d", expected, actual),
+		Kind:   WorkEventRevisionConflict,
 	}
 }
 

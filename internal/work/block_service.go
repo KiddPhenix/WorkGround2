@@ -61,6 +61,9 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 	if err != nil {
 		return nil, err
 	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: UpsertBlock: %w", err)
+	}
 	incoming := inputToBlock(input)
 	incomingDigest, err := blockContentDigest(&incoming)
 	if err != nil {
@@ -100,12 +103,6 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 			break
 		}
 	}
-	if currentBlock != nil {
-		if err := CheckSchemaVersion("BlockInstance", currentBlock.SchemaVersion); err != nil {
-			return viewFromState(current, state), fmt.Errorf("work: UpsertBlock: %w", err)
-		}
-	}
-
 	mergeResult, _, mergeErr := mergeBlock(currentBlock, &incoming, incomingDigest)
 	if mergeErr != nil {
 		return nil, mergeErr
@@ -142,7 +139,7 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 	event.BaseRevision = state.Revision
 	event.Revision = state.Revision + 1
 	if _, err := s.store.CommitEvent(workID, event); err != nil {
-		return s.latestBlockConflict(workID, blockID, input.Revision, input.ExpectedRevision, err, true)
+		return s.reconcileUpsertCommit(ctx, input, event, incoming, incomingDigest, err)
 	}
 	view, err := s.loadView(workID)
 	if err != nil {
@@ -189,6 +186,9 @@ func (s *Service) RemoveBlock(ctx context.Context, input BlockRemoveInput) (*Wor
 	if err != nil {
 		return nil, err
 	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: RemoveBlock: %w", err)
+	}
 	payload, err := json.Marshal(blockRemovedPayload{BlockID: blockID, Revision: input.Revision})
 	if err != nil {
 		return nil, fmt.Errorf("work: RemoveBlock: encode tombstone: %w", err)
@@ -217,10 +217,6 @@ func (s *Service) RemoveBlock(ctx context.Context, input BlockRemoveInput) (*Wor
 	if currentBlock == nil {
 		return nil, fmt.Errorf("work: RemoveBlock: block %s not found in Work %s", blockID, workID)
 	}
-	if err := CheckSchemaVersion("BlockInstance", currentBlock.SchemaVersion); err != nil {
-		return viewFromState(current, state), fmt.Errorf("work: RemoveBlock: %w", err)
-	}
-
 	// RemoveBlock is a user edit and only Blueprint-editable blocks allow it.
 	spec := blockSpecForWork(current, blockID)
 	if !isUserEditable(spec) {
@@ -250,7 +246,7 @@ func (s *Service) RemoveBlock(ctx context.Context, input BlockRemoveInput) (*Wor
 	event.BaseRevision = state.Revision
 	event.Revision = state.Revision + 1
 	if _, err := s.store.CommitEvent(workID, event); err != nil {
-		return s.latestBlockConflict(workID, blockID, input.Revision, input.ExpectedRevision, err, true)
+		return s.reconcileRemoveCommit(ctx, input, event, err)
 	}
 	view, err := s.loadView(workID)
 	if err != nil {
@@ -282,11 +278,7 @@ func (s *Service) UpdatePlacements(ctx context.Context, input BlockPlacementInpu
 	if workID == "" {
 		return nil, errors.New("work: UpdatePlacements: workID is required")
 	}
-	normalized := append([]BlockPlacement(nil), input.Placements...)
-	for i := range normalized {
-		normalized[i].BlockID = strings.TrimSpace(normalized[i].BlockID)
-		normalized[i].Slot = strings.TrimSpace(normalized[i].Slot)
-	}
+	normalized := normalizeBlockPlacements(input.Placements)
 	if err := validatePlacementShape(normalized); err != nil {
 		return nil, fmt.Errorf("work: UpdatePlacements: %w", err)
 	}
@@ -300,6 +292,9 @@ func (s *Service) UpdatePlacements(ctx context.Context, input BlockPlacementInpu
 	current, state, err := s.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: UpdatePlacements: %w", err)
 	}
 	event := newServiceEvent(workID, eventRequestID, EventDraftUpdated, payload, time.Now().UTC())
 	if state.RequestFound {
@@ -315,37 +310,9 @@ func (s *Service) UpdatePlacements(ctx context.Context, input BlockPlacementInpu
 		return nil, fmt.Errorf("work: UpdatePlacements: Work %s is in state %s; placements are immutable", workID, current.State)
 	}
 
-	// Validate placements: every blockID must reference an existing block.
-	blocks := make(map[string]BlockInstance, len(current.Blocks))
-	for _, block := range current.Blocks {
-		blocks[block.ID] = block
-	}
-	for _, placement := range sorted {
-		block, ok := blocks[placement.BlockID]
-		if !ok {
-			return nil, fmt.Errorf("work: UpdatePlacements: placement references unknown block %s", placement.BlockID)
-		}
-		if block.Tombstone {
-			return nil, fmt.Errorf("work: UpdatePlacements: placement references tombstoned block %s", placement.BlockID)
-		}
-	}
-	currentPlacements := make(map[string]BlockPlacement, len(current.Placements))
-	for _, placement := range current.Placements {
-		currentPlacements[placement.BlockID] = placement
-	}
-	nextPlacements := make(map[string]BlockPlacement, len(sorted))
-	for _, placement := range sorted {
-		nextPlacements[placement.BlockID] = placement
-	}
-	for _, block := range current.Blocks {
-		if isUserEditable(blockSpecForWork(current, block.ID)) {
-			continue
-		}
-		before, hadBefore := currentPlacements[block.ID]
-		after, hasAfter := nextPlacements[block.ID]
-		if hadBefore != hasAfter || (hadBefore && !placementEqual(before, after)) {
-			return nil, fmt.Errorf("work: UpdatePlacements: block %s is not user-editable", block.ID)
-		}
+	sorted, err = validateBlockPlacements(current, sorted)
+	if err != nil {
+		return nil, fmt.Errorf("work: UpdatePlacements: %w", err)
 	}
 	if placementSetsEqual(current.Placements, sorted) {
 		return viewFromState(current, state), nil
@@ -359,7 +326,7 @@ func (s *Service) UpdatePlacements(ctx context.Context, input BlockPlacementInpu
 	event.BaseRevision = state.Revision
 	event.Revision = state.Revision + 1
 	if _, err := s.store.CommitEvent(workID, event); err != nil {
-		return s.latestBlockConflict(workID, "", 0, input.ExpectedRevision, err, true)
+		return s.reconcilePlacementCommit(ctx, input, event, sorted, err)
 	}
 	view, err := s.loadView(workID)
 	if err != nil {
@@ -437,5 +404,182 @@ func (s *Service) latestBlockConflict(
 	return latest, newBlockConflict(
 		workID, blockID, cause.Error(), incomingRevision, currentRevision,
 		expectedWorkRevision, latest.Revision, retryable, cause,
+	)
+}
+
+// reconcileUpsertCommit performs one cancellable reload after a persisted
+// revision-chain race. It never retries a write: semantic convergence either
+// proves the incoming block is already applied or returns the latest conflict.
+func (s *Service) reconcileUpsertCommit(
+	ctx context.Context,
+	input BlockUpsertInput,
+	event WorkEvent,
+	incoming BlockInstance,
+	incomingDigest string,
+	cause error,
+) (*WorkView, error) {
+	if !revisionChainConflict(cause) {
+		var conflict *ErrWorkEventConflict
+		if errors.As(cause, &conflict) {
+			return s.latestBlockConflict(input.WorkID, input.BlockID, input.Revision, input.ExpectedRevision, cause, false)
+		}
+		return nil, fmt.Errorf("work: UpsertBlock: commit event: %w", cause)
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, errors.Join(cause, err)
+	}
+	current, state, err := s.store.LoadState(input.WorkID, event.RequestID)
+	if err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("work: reload after block upsert race: %w", err))
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: UpsertBlock: %w", err)
+	}
+	if state.RequestFound {
+		if _, err := s.store.CommitEvent(input.WorkID, event); err != nil {
+			var conflict *ErrWorkEventConflict
+			if errors.As(err, &conflict) {
+				return s.latestBlockConflict(input.WorkID, input.BlockID, input.Revision, input.ExpectedRevision, err, false)
+			}
+			return nil, fmt.Errorf("work: UpsertBlock: verify concurrent request: %w", err)
+		}
+		return viewFromState(current, state), nil
+	}
+	var currentBlock *BlockInstance
+	for i := range current.Blocks {
+		if current.Blocks[i].ID == input.BlockID {
+			currentBlock = &current.Blocks[i]
+			break
+		}
+	}
+	result, _, err := mergeBlock(currentBlock, &incoming, incomingDigest)
+	if err != nil {
+		return nil, err
+	}
+	switch result {
+	case blockMergeSkipOlder, blockMergeIdempotent:
+		return viewFromState(current, state), nil
+	case blockMergeConflict:
+		return viewFromState(current, state), newBlockConflict(
+			input.WorkID, input.BlockID, "same revision has different content", input.Revision,
+			currentBlock.Revision, input.ExpectedRevision, state.Revision, true, cause,
+		)
+	default:
+		currentRevision := int64(0)
+		if currentBlock != nil {
+			currentRevision = currentBlock.Revision
+		}
+		return viewFromState(current, state), newBlockConflict(
+			input.WorkID, input.BlockID, "work revision changed during block upsert", input.Revision,
+			currentRevision, input.ExpectedRevision, state.Revision, true, cause,
+		)
+	}
+}
+
+func (s *Service) reconcileRemoveCommit(
+	ctx context.Context,
+	input BlockRemoveInput,
+	event WorkEvent,
+	cause error,
+) (*WorkView, error) {
+	if !revisionChainConflict(cause) {
+		var conflict *ErrWorkEventConflict
+		if errors.As(cause, &conflict) {
+			return s.latestBlockConflict(input.WorkID, input.BlockID, input.Revision, input.ExpectedRevision, cause, false)
+		}
+		return nil, fmt.Errorf("work: RemoveBlock: commit event: %w", cause)
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, errors.Join(cause, err)
+	}
+	current, state, err := s.store.LoadState(input.WorkID, event.RequestID)
+	if err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("work: reload after block remove race: %w", err))
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: RemoveBlock: %w", err)
+	}
+	if state.RequestFound {
+		if _, err := s.store.CommitEvent(input.WorkID, event); err != nil {
+			var conflict *ErrWorkEventConflict
+			if errors.As(err, &conflict) {
+				return s.latestBlockConflict(input.WorkID, input.BlockID, input.Revision, input.ExpectedRevision, err, false)
+			}
+			return nil, fmt.Errorf("work: RemoveBlock: verify concurrent request: %w", err)
+		}
+		return viewFromState(current, state), nil
+	}
+	for i := range current.Blocks {
+		block := &current.Blocks[i]
+		if block.ID != input.BlockID {
+			continue
+		}
+		if input.Revision < block.Revision || (input.Revision == block.Revision && block.Tombstone) {
+			return viewFromState(current, state), nil
+		}
+		if input.Revision == block.Revision {
+			return viewFromState(current, state), newBlockConflict(
+				input.WorkID, input.BlockID, "same revision is not a tombstone", input.Revision,
+				block.Revision, input.ExpectedRevision, state.Revision, true, cause,
+			)
+		}
+		return viewFromState(current, state), newBlockConflict(
+			input.WorkID, input.BlockID, "work revision changed during block remove", input.Revision,
+			block.Revision, input.ExpectedRevision, state.Revision, true, cause,
+		)
+	}
+	return viewFromState(current, state), newBlockConflict(
+		input.WorkID, input.BlockID, "block disappeared during remove", input.Revision,
+		0, input.ExpectedRevision, state.Revision, true, cause,
+	)
+}
+
+func (s *Service) reconcilePlacementCommit(
+	ctx context.Context,
+	input BlockPlacementInput,
+	event WorkEvent,
+	placements []BlockPlacement,
+	cause error,
+) (*WorkView, error) {
+	if !revisionChainConflict(cause) {
+		var conflict *ErrWorkEventConflict
+		if errors.As(cause, &conflict) {
+			return s.latestBlockConflict(input.WorkID, "", 0, input.ExpectedRevision, cause, false)
+		}
+		return nil, fmt.Errorf("work: UpdatePlacements: commit event: %w", cause)
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, errors.Join(cause, err)
+	}
+	current, state, err := s.store.LoadState(input.WorkID, event.RequestID)
+	if err != nil {
+		return nil, errors.Join(cause, fmt.Errorf("work: reload after placement race: %w", err))
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return viewFromState(current, state), fmt.Errorf("work: UpdatePlacements: %w", err)
+	}
+	if state.RequestFound {
+		if _, err := s.store.CommitEvent(input.WorkID, event); err != nil {
+			var conflict *ErrWorkEventConflict
+			if errors.As(err, &conflict) {
+				return s.latestBlockConflict(input.WorkID, "", 0, input.ExpectedRevision, err, false)
+			}
+			return nil, fmt.Errorf("work: UpdatePlacements: verify concurrent request: %w", err)
+		}
+		return viewFromState(current, state), nil
+	}
+	validated, err := validateBlockPlacements(current, placements)
+	if err != nil {
+		return viewFromState(current, state), newBlockConflict(
+			input.WorkID, "", "placement became invalid after concurrent update: "+err.Error(), 0, 0,
+			input.ExpectedRevision, state.Revision, true, errors.Join(cause, err),
+		)
+	}
+	if placementSetsEqual(current.Placements, validated) {
+		return viewFromState(current, state), nil
+	}
+	return viewFromState(current, state), newBlockConflict(
+		input.WorkID, "", "work revision changed during placement update", 0, 0,
+		input.ExpectedRevision, state.Revision, true, cause,
 	)
 }

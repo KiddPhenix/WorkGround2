@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -883,45 +886,8 @@ func TestBlockMultiUpsertSequence(t *testing.T) {
 func TestBlockFutureSchemaReadOnly(t *testing.T) {
 	f := newServiceFixture(t)
 	value := mustServiceCreate(t, f.svc, "block-future-readonly")
-	future := value.Blocks[0]
-	future.SchemaVersion = SchemaVersion + 1
-	future.Revision = 2
-	future.Data = json.RawMessage(`{"futureField":{"version":2}}`)
-	future.Fallback = BlockFallback{
-		Summary: "future block fallback",
-		Data:    json.RawMessage(`{"plain":"readable"}`),
-	}
-	payload, err := json.Marshal(future)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workDir, err := f.store.workPath(value.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := AcquireWorkLease(workDir); err != nil {
-		t.Fatal(err)
-	}
-	_, appendErr := f.store.Append(value.ID, WorkEvent{
-		SchemaVersion: WorkEventSchemaVersion,
-		ID:            "future-block-event",
-		RequestID:     "future-block-event",
-		WorkID:        value.ID,
-		Type:          EventBlockUpserted,
-		Revision:      3,
-		BaseRevision:  2,
-		Payload:       payload,
-		CreatedAt:     value.UpdatedAt,
-	})
-	if releaseErr := ReleaseWorkLease(workDir); releaseErr != nil {
-		t.Fatal(releaseErr)
-	}
-	if appendErr != nil {
-		t.Fatalf("append future block event: %v", appendErr)
-	}
-
+	view := appendFutureBlock(t, f, value.ID)
 	restarted := f.restart(t)
-	view := mustServiceView(t, restarted, value.ID)
 	block := view.Work.Blocks[0]
 	if block.SchemaVersion != SchemaVersion+1 || block.Fallback.Summary != "future block fallback" {
 		t.Fatalf("future block read fallback lost: %+v", block)
@@ -930,25 +896,76 @@ func TestBlockFutureSchemaReadOnly(t *testing.T) {
 		t.Fatalf("future fallback data = %s", block.Fallback.Data)
 	}
 
-	_, err = restarted.UpsertBlock(context.Background(), BlockUpsertInput{
-		WorkID:           value.ID,
-		BlockID:          block.ID,
-		Kind:             block.Kind,
-		SchemaVersion:    SchemaVersion,
-		Revision:         3,
-		Status:           BlockReady,
-		Data:             json.RawMessage(`{"content":"overwrite"}`),
-		Source:           BlockSource{Provider: "user", Mode: "snapshot"},
-		ExpectedRevision: view.Revision,
-		RequestID:        "future-block-overwrite",
-	})
+	name := "blocked update"
+	writes := []struct {
+		name string
+		run  func() error
+	}{
+		{"upsert", func() error {
+			_, err := restarted.UpsertBlock(context.Background(), BlockUpsertInput{
+				WorkID: value.ID, BlockID: block.ID, Kind: block.Kind, SchemaVersion: SchemaVersion,
+				Revision: 3, Status: BlockReady, Data: json.RawMessage(`{"content":"overwrite"}`),
+				Source: BlockSource{Provider: "user", Mode: "snapshot"}, ExpectedRevision: view.Revision, RequestID: "future-block-overwrite",
+			})
+			return err
+		}},
+		{"remove", func() error {
+			_, err := restarted.RemoveBlock(context.Background(), BlockRemoveInput{
+				WorkID: value.ID, BlockID: block.ID, Revision: 3, ExpectedRevision: view.Revision, RequestID: "future-block-remove",
+			})
+			return err
+		}},
+		{"placements", func() error {
+			_, err := restarted.UpdatePlacements(context.Background(), BlockPlacementInput{
+				WorkID: value.ID, Placements: view.Work.Placements, ExpectedRevision: view.Revision, RequestID: "future-block-placement",
+			})
+			return err
+		}},
+		{"draft", func() error {
+			_, err := restarted.UpdateDraft(context.Background(), UpdateDraftInput{
+				WorkID: value.ID, Name: &name, ExpectedRevision: view.Revision, RequestID: "future-block-draft",
+			})
+			return err
+		}},
+		{"archive", func() error {
+			_, err := restarted.Archive(context.Background(), value.ID, "future-block-archive")
+			return err
+		}},
+		{"delete", func() error {
+			return restarted.Delete(context.Background(), value.ID, "future-block-delete")
+		}},
+	}
+	for _, tc := range writes {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			var futureErr *ErrFutureSchema
+			if !errors.As(err, &futureErr) || !strings.Contains(err.Error(), "read-only") {
+				t.Fatalf("future block %s error = %v, want typed read-only ErrFutureSchema", tc.name, err)
+			}
+			latest := mustServiceView(t, restarted, value.ID)
+			if latest.Revision != view.Revision || latest.Work.Blocks[0].SchemaVersion != SchemaVersion+1 {
+				t.Fatalf("future block %s wrote state: revision=%d block=%+v", tc.name, latest.Revision, latest.Work.Blocks[0])
+			}
+		})
+	}
+}
+
+func TestBlockFutureSchemaRestoreReadOnlyAfterRestart(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "block-future-restore")
+	if _, err := f.svc.Archive(context.Background(), value.ID, "block-future-restore-archive"); err != nil {
+		t.Fatal(err)
+	}
+	view := appendFutureBlock(t, f, value.ID)
+	restarted := f.restart(t)
+	_, err := restarted.Restore(context.Background(), value.ID, "block-future-restore-attempt")
 	var futureErr *ErrFutureSchema
-	if !errors.As(err, &futureErr) {
-		t.Fatalf("future block overwrite error = %v, want ErrFutureSchema", err)
+	if !errors.As(err, &futureErr) || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("future block restore error = %v, want typed read-only ErrFutureSchema", err)
 	}
 	latest := mustServiceView(t, restarted, value.ID)
-	if latest.Revision != view.Revision || latest.Work.Blocks[0].SchemaVersion != SchemaVersion+1 {
-		t.Fatalf("future block was overwritten: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
+	if latest.Revision != view.Revision || latest.Work.ArchiveState != ArchiveArchived {
+		t.Fatalf("future restore wrote state: revision=%d archive=%s", latest.Revision, latest.Work.ArchiveState)
 	}
 }
 
@@ -1006,6 +1023,69 @@ func TestBlockReducerRevisionMerge(t *testing.T) {
 	got, err = reduce(upsertEvent(baseBlock, 5), tombstoned)
 	if err != nil || !got.Blocks[0].Tombstone || got.Blocks[0].Revision != 4 {
 		t.Fatalf("late upsert revived tombstone: block %+v, err %v", got.Blocks[0], err)
+	}
+}
+
+func TestBlockReducerRejectsInvalidPlacements(t *testing.T) {
+	base := Work{
+		SchemaVersion: SchemaVersion,
+		ID:            "work-placement-reducer",
+		Name:          "original",
+		Definition: WorkDefinitionSnapshot{BlockSpecs: []BlockSpec{
+			{ID: "editable", Kind: "markdown", SchemaVersion: 1, Editable: true},
+			{ID: "readonly", Kind: "code", SchemaVersion: 1, Editable: false},
+			{ID: "removed", Kind: "markdown", SchemaVersion: 1, Editable: true},
+		}},
+		Blocks: []BlockInstance{
+			{ID: "editable", Kind: "markdown", SchemaVersion: 1, Revision: 1},
+			{ID: "readonly", Kind: "code", SchemaVersion: 1, Revision: 1},
+			{ID: "removed", Kind: "markdown", SchemaVersion: 1, Revision: 2, Tombstone: true},
+		},
+		Placements: []BlockPlacement{
+			{BlockID: "editable", Slot: "primary", Order: 0},
+			{BlockID: "readonly", Slot: "secondary", Order: 1},
+		},
+	}
+	validReadonly := BlockPlacement{BlockID: "readonly", Slot: "secondary", Order: 1}
+	tests := []struct {
+		name       string
+		placements []BlockPlacement
+		want       string
+	}{
+		{"duplicate", []BlockPlacement{{BlockID: "editable", Slot: "primary"}, {BlockID: "editable", Slot: "result"}, validReadonly}, "duplicate"},
+		{"unknown", []BlockPlacement{{BlockID: "missing", Slot: "primary"}, validReadonly}, "unknown block"},
+		{"empty-slot", []BlockPlacement{{BlockID: "editable", Slot: ""}, validReadonly}, "unsupported slot"},
+		{"illegal-slot", []BlockPlacement{{BlockID: "editable", Slot: "sidebar"}, validReadonly}, "unsupported slot"},
+		{"negative-order", []BlockPlacement{{BlockID: "editable", Slot: "primary", Order: -1}, validReadonly}, "order must be non-negative"},
+		{"negative-span", []BlockPlacement{{BlockID: "editable", Slot: "primary", Span: -1}, validReadonly}, "span must be non-negative"},
+		{"tombstone", []BlockPlacement{{BlockID: "removed", Slot: "primary"}, validReadonly}, "tombstoned block"},
+		{"readonly", []BlockPlacement{{BlockID: "editable", Slot: "primary"}, {BlockID: "readonly", Slot: "primary", Order: 1}}, "not user-editable"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			current := base
+			current.Blocks = append([]BlockInstance(nil), base.Blocks...)
+			current.Placements = append([]BlockPlacement(nil), base.Placements...)
+			before := append([]BlockPlacement(nil), current.Placements...)
+			beforeUpdatedAt := current.UpdatedAt
+			payload, err := json.Marshal(map[string]any{"name": "must-not-apply", "placements": tc.placements})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = DefaultReducer()(WorkEvent{
+				WorkID: current.ID, Type: EventDraftUpdated, Revision: 3, BaseRevision: 2,
+				Payload: payload, CreatedAt: time.Now().UTC(),
+			}, &current)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("reducer error = %v, want %q", err, tc.want)
+			}
+			if !reflect.DeepEqual(current.Placements, before) {
+				t.Fatalf("reducer mutated placements on error: got %+v want %+v", current.Placements, before)
+			}
+			if current.Name != "original" || current.UpdatedAt != beforeUpdatedAt {
+				t.Fatalf("reducer partially mutated projection on placement error: name=%q updatedAt=%s", current.Name, current.UpdatedAt)
+			}
+		})
 	}
 }
 
@@ -1118,4 +1198,291 @@ func TestBlockLateRemoveRetryDoesNotRetombstone(t *testing.T) {
 	if err != nil || retried.Revision != 4 || retried.Work.Blocks[0].Tombstone || retried.Work.Blocks[0].Revision != 3 {
 		t.Fatalf("late remove retry = %+v, err %v", retried, err)
 	}
+}
+
+func TestBlockConcurrentUpsertConverges(t *testing.T) {
+	tests := []struct {
+		name        string
+		sameDigest  bool
+		sameRequest bool
+		wantErrors  int
+	}{
+		{"same-digest-different-request", true, false, 0},
+		{"same-digest-same-request", true, true, 0},
+		{"different-digest-different-request", false, false, 1},
+		{"different-digest-same-request", false, true, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServiceFixture(t)
+			value := mustServiceCreate(t, f.svc, "block-concurrent-"+tc.name)
+			barrier := newBlockCommitBarrier(f.store, EventBlockUpserted, 2)
+			svc := NewService(barrier, NewBlueprintRegistry(), f.sink)
+			left := BlockUpsertInput{
+				WorkID: value.ID, BlockID: "bp-blank-notes", Kind: "markdown", SchemaVersion: 1,
+				Revision: 2, Status: BlockReady, Data: json.RawMessage(`{"content":"left"}`),
+				Source: BlockSource{Provider: "user", Mode: "snapshot"}, ExpectedRevision: 2, RequestID: "concurrent-left",
+			}
+			right := left
+			right.RequestID = "concurrent-right"
+			if !tc.sameDigest {
+				right.Data = json.RawMessage(`{"content":"right"}`)
+			}
+			if tc.sameRequest {
+				right.RequestID = left.RequestID
+			}
+			type result struct {
+				view *WorkView
+				err  error
+			}
+			results := make(chan result, 2)
+			for _, input := range []BlockUpsertInput{left, right} {
+				input := input
+				go func() {
+					view, err := svc.UpsertBlock(context.Background(), input)
+					results <- result{view: view, err: err}
+				}()
+			}
+			errorCount := 0
+			for range 2 {
+				result := <-results
+				if result.err == nil {
+					if result.view == nil || result.view.Revision != 3 {
+						t.Fatalf("successful concurrent view = %+v", result.view)
+					}
+					continue
+				}
+				errorCount++
+				var conflict *ErrBlockConflict
+				if !errors.As(result.err, &conflict) || result.view == nil || result.view.Revision != 3 {
+					t.Fatalf("concurrent conflict = %v, view=%+v", result.err, result.view)
+				}
+				if tc.sameRequest && conflict.Retryable {
+					t.Fatalf("request fingerprint conflict must not be retryable: %+v", conflict)
+				}
+			}
+			if errorCount != tc.wantErrors {
+				t.Fatalf("concurrent errors = %d, want %d", errorCount, tc.wantErrors)
+			}
+			latest := mustServiceView(t, svc, value.ID)
+			if latest.Revision != 3 || latest.Work.Blocks[0].Revision != 2 {
+				t.Fatalf("concurrent upsert appended duplicate event: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
+			}
+		})
+	}
+}
+
+func TestBlockRevisionConflictKindIgnoresRequestIDShape(t *testing.T) {
+	for _, requestID := range []string{"", "different-request", "same-request"} {
+		err := &ErrWorkEventConflict{
+			Kind: WorkEventRevisionConflict, Reason: "forced revision race", RequestID: requestID,
+		}
+		if !revisionChainConflict(err) {
+			t.Fatalf("revision conflict with requestID %q was not retryable", requestID)
+		}
+	}
+	if revisionChainConflict(&ErrWorkEventConflict{
+		Kind: WorkEventRequestConflict, Reason: "request already used", RequestID: "same-request",
+	}) {
+		t.Fatal("request fingerprint conflict must not enter semantic re-merge")
+	}
+}
+
+func TestBlockCommitStorageErrorStaysExplicit(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "block-storage-error")
+	sentinel := errors.New("disk write failed")
+	svc := NewService(&blockFailCommitStore{WorkStore: f.store, err: sentinel}, NewBlueprintRegistry(), f.sink)
+	_, err := svc.UpsertBlock(context.Background(), BlockUpsertInput{
+		WorkID: value.ID, BlockID: "bp-blank-notes", Kind: "markdown", SchemaVersion: 1,
+		Revision: 2, Status: BlockReady, Data: json.RawMessage(`{"content":"write"}`),
+		Source: BlockSource{Provider: "user", Mode: "snapshot"}, ExpectedRevision: 2, RequestID: "block-storage-error-upsert",
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("storage error = %v, want sentinel", err)
+	}
+	var conflict *ErrBlockConflict
+	if errors.As(err, &conflict) {
+		t.Fatalf("storage error was hidden as semantic conflict: %+v", conflict)
+	}
+	if latest := mustServiceView(t, svc, value.ID); latest.Revision != 2 {
+		t.Fatalf("storage error advanced revision to %d", latest.Revision)
+	}
+}
+
+func TestBlockRevisionRaceHonorsCancellation(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "block-race-cancel")
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &blockCancelConflictStore{WorkStore: f.store, cancel: cancel}
+	svc := NewService(store, NewBlueprintRegistry(), f.sink)
+	_, err := svc.UpsertBlock(ctx, BlockUpsertInput{
+		WorkID: value.ID, BlockID: "bp-blank-notes", Kind: "markdown", SchemaVersion: 1,
+		Revision: 2, Status: BlockReady, Data: json.RawMessage(`{"content":"cancel"}`),
+		Source: BlockSource{Provider: "user", Mode: "snapshot"}, ExpectedRevision: 2, RequestID: "block-race-cancel-upsert",
+	})
+	if !errors.Is(err, context.Canceled) || store.calls != 1 {
+		t.Fatalf("cancelled race error=%v commitCalls=%d", err, store.calls)
+	}
+	if latest := mustServiceView(t, svc, value.ID); latest.Revision != 2 {
+		t.Fatalf("cancelled race advanced revision to %d", latest.Revision)
+	}
+}
+
+func TestBlockConcurrentRemoveConverges(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "block-concurrent-remove")
+	svc := NewService(newBlockCommitBarrier(f.store, EventBlockRemoved, 2), NewBlueprintRegistry(), f.sink)
+	results := make(chan error, 2)
+	for _, requestID := range []string{"concurrent-remove-left", "concurrent-remove-right"} {
+		requestID := requestID
+		go func() {
+			_, err := svc.RemoveBlock(context.Background(), BlockRemoveInput{
+				WorkID: value.ID, BlockID: "bp-blank-notes", Revision: 2,
+				ExpectedRevision: 2, RequestID: requestID,
+			})
+			results <- err
+		}()
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent remove: %v", err)
+		}
+	}
+	latest := mustServiceView(t, svc, value.ID)
+	if latest.Revision != 3 || !latest.Work.Blocks[0].Tombstone || latest.Work.Blocks[0].Revision != 2 {
+		t.Fatalf("concurrent remove did not converge: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
+	}
+}
+
+func TestBlockConcurrentPlacementsConverge(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "block-concurrent-placement")
+	svc := NewService(newBlockCommitBarrier(f.store, EventDraftUpdated, 2), NewBlueprintRegistry(), f.sink)
+	placements := []BlockPlacement{{BlockID: "bp-blank-notes", Slot: "primary", Order: 1}}
+	results := make(chan error, 2)
+	for _, requestID := range []string{"concurrent-placement-left", "concurrent-placement-right"} {
+		requestID := requestID
+		go func() {
+			_, err := svc.UpdatePlacements(context.Background(), BlockPlacementInput{
+				WorkID: value.ID, Placements: placements, ExpectedRevision: 2, RequestID: requestID,
+			})
+			results <- err
+		}()
+	}
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("concurrent placements: %v", err)
+		}
+	}
+	latest := mustServiceView(t, svc, value.ID)
+	if latest.Revision != 3 || len(latest.Work.Placements) != 1 || latest.Work.Placements[0].Order != 1 {
+		t.Fatalf("concurrent placements did not converge: revision=%d placements=%+v", latest.Revision, latest.Work.Placements)
+	}
+}
+
+type blockCommitBarrier struct {
+	WorkStore
+	eventType WorkEventType
+	mu        sync.Mutex
+	remaining int
+	release   chan struct{}
+}
+
+type blockFailCommitStore struct {
+	WorkStore
+	err error
+}
+
+func (s *blockFailCommitStore) CommitEvent(workID string, event WorkEvent) (int64, error) {
+	if event.Type == EventBlockUpserted {
+		return 0, s.err
+	}
+	return s.WorkStore.CommitEvent(workID, event)
+}
+
+type blockCancelConflictStore struct {
+	WorkStore
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (s *blockCancelConflictStore) CommitEvent(workID string, event WorkEvent) (int64, error) {
+	s.calls++
+	s.cancel()
+	return 0, &ErrWorkEventConflict{
+		Kind: WorkEventRevisionConflict, WorkID: workID, RequestID: event.RequestID, Reason: "forced revision race",
+	}
+}
+
+func newBlockCommitBarrier(store WorkStore, eventType WorkEventType, count int) *blockCommitBarrier {
+	return &blockCommitBarrier{WorkStore: store, eventType: eventType, remaining: count, release: make(chan struct{})}
+}
+
+func (b *blockCommitBarrier) CommitEvent(workID string, event WorkEvent) (int64, error) {
+	if event.Type != b.eventType {
+		return b.WorkStore.CommitEvent(workID, event)
+	}
+	b.mu.Lock()
+	if b.remaining <= 0 {
+		b.mu.Unlock()
+		return b.WorkStore.CommitEvent(workID, event)
+	}
+	b.remaining--
+	release := b.release
+	if b.remaining == 0 {
+		close(release)
+	}
+	b.mu.Unlock()
+	select {
+	case <-release:
+		return b.WorkStore.CommitEvent(workID, event)
+	case <-time.After(5 * time.Second):
+		return 0, errors.New("block commit barrier timed out")
+	}
+}
+
+func appendFutureBlock(t *testing.T, f *serviceFixture, workID string) *WorkView {
+	t.Helper()
+	current, state, err := f.store.LoadState(workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := current.Blocks[0]
+	future.SchemaVersion = SchemaVersion + 1
+	future.Revision++
+	future.Data = json.RawMessage(`{"futureField":{"version":2}}`)
+	future.Fallback = BlockFallback{
+		Summary: "future block fallback",
+		Data:    json.RawMessage(`{"plain":"readable"}`),
+	}
+	payload, err := json.Marshal(future)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir, err := f.store.workPath(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AcquireWorkLease(workDir); err != nil {
+		t.Fatal(err)
+	}
+	_, appendErr := f.store.Append(workID, WorkEvent{
+		SchemaVersion: WorkEventSchemaVersion,
+		ID:            fmt.Sprintf("future-block-event-%d", state.Revision+1),
+		RequestID:     fmt.Sprintf("future-block-event-%d", state.Revision+1),
+		WorkID:        workID,
+		Type:          EventBlockUpserted,
+		Revision:      state.Revision + 1,
+		BaseRevision:  state.Revision,
+		Payload:       payload,
+		CreatedAt:     time.Now().UTC(),
+	})
+	if releaseErr := ReleaseWorkLease(workDir); releaseErr != nil {
+		t.Fatal(releaseErr)
+	}
+	if appendErr != nil {
+		t.Fatalf("append future block event: %v", appendErr)
+	}
+	return mustServiceView(t, f.svc, workID)
 }

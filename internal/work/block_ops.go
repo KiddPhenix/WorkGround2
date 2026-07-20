@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -222,11 +223,66 @@ func validatePlacementShape(placements []BlockPlacement) error {
 		if placement.Order < 0 {
 			return fmt.Errorf("work: placement[%d]: order must be non-negative", i)
 		}
+		// Span zero is the V1 omitted/default value (the field is omitempty);
+		// explicit negative spans are always invalid.
 		if placement.Span < 0 {
 			return fmt.Errorf("work: placement[%d]: span must be non-negative", i)
 		}
 	}
 	return nil
+}
+
+// validateBlockPlacements is the single online/replay validation path for a
+// complete placement replacement. It returns a normalized, deterministic copy.
+func validateBlockPlacements(w *Work, placements []BlockPlacement) ([]BlockPlacement, error) {
+	if w == nil {
+		return nil, fmt.Errorf("work: placements require a Work projection")
+	}
+	normalized := normalizeBlockPlacements(placements)
+	if err := validatePlacementShape(normalized); err != nil {
+		return nil, err
+	}
+	blocks := make(map[string]BlockInstance, len(w.Blocks))
+	for _, block := range w.Blocks {
+		blocks[block.ID] = block
+	}
+	for _, placement := range normalized {
+		block, ok := blocks[placement.BlockID]
+		if !ok {
+			return nil, fmt.Errorf("work: placement references unknown block %s", placement.BlockID)
+		}
+		if block.Tombstone {
+			return nil, fmt.Errorf("work: placement references tombstoned block %s", placement.BlockID)
+		}
+	}
+	current := make(map[string]BlockPlacement, len(w.Placements))
+	for _, placement := range normalizeBlockPlacements(w.Placements) {
+		current[placement.BlockID] = placement
+	}
+	next := make(map[string]BlockPlacement, len(normalized))
+	for _, placement := range normalized {
+		next[placement.BlockID] = placement
+	}
+	for _, block := range w.Blocks {
+		if isUserEditable(blockSpecForWork(w, block.ID)) {
+			continue
+		}
+		before, hadBefore := current[block.ID]
+		after, hasAfter := next[block.ID]
+		if hadBefore != hasAfter || (hadBefore && !placementEqual(before, after)) {
+			return nil, fmt.Errorf("work: block %s is not user-editable", block.ID)
+		}
+	}
+	return sortPlacements(normalized), nil
+}
+
+func normalizeBlockPlacements(placements []BlockPlacement) []BlockPlacement {
+	normalized := append([]BlockPlacement(nil), placements...)
+	for i := range normalized {
+		normalized[i].BlockID = strings.TrimSpace(normalized[i].BlockID)
+		normalized[i].Slot = strings.TrimSpace(normalized[i].Slot)
+	}
+	return normalized
 }
 
 func validPlacementSlot(slot string) bool {
@@ -255,4 +311,32 @@ func placementSetsEqual(left, right []BlockPlacement) bool {
 		}
 	}
 	return true
+}
+
+// requireWritableBlockSchemas keeps reads available for unknown future block
+// schemas while making every Service mutation explicitly read-only.
+func requireWritableBlockSchemas(w *Work) error {
+	if w == nil {
+		return fmt.Errorf("work: writable block schema check requires a Work projection")
+	}
+	for i := range w.Blocks {
+		block := &w.Blocks[i]
+		if err := CheckSchemaVersion("BlockInstance", block.SchemaVersion); err != nil {
+			return fmt.Errorf("work: Work %s block %s is read-only: %w", w.ID, block.ID, err)
+		}
+	}
+	return nil
+}
+
+func revisionChainConflict(err error) bool {
+	var conflict *ErrWorkEventConflict
+	if !errors.As(err, &conflict) {
+		return false
+	}
+	if conflict.Kind != "" {
+		return conflict.Kind == WorkEventRevisionConflict
+	}
+	// Compatibility for stores that have not populated Kind yet: a same-ID
+	// fingerprint conflict is the only conflict that must not be re-merged.
+	return conflict.RequestID == "" || !strings.Contains(conflict.Reason, "already used")
 }
