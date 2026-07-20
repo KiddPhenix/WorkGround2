@@ -171,6 +171,13 @@ type Controller struct {
 	// image @-references into text descriptions when the main model is non-vision.
 	visionDelegate provider.Provider
 
+	// workSvc is the optional Work lifecycle service. Nil when Work is disabled.
+	// All WorkControl methods delegate to it via workMethods.
+	workSvc WorkService
+	// workViews is the broadcaster that fans out WorkViewEvents to frontend
+	// subscribers. Nil when Work is disabled.
+	workViews *WorkViewBroadcaster
+
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
 	mu                      sync.Mutex
@@ -398,6 +405,14 @@ type Options struct {
 	// VisionDelegateProvider is an optional vision-capable provider used to
 	// describe images when the main model cannot process them directly.
 	VisionDelegateProvider provider.Provider
+	// Work is the optional Work lifecycle service. When nil, the Work feature is
+	// disabled and all WorkControl methods return an error. Boot assembles it
+	// from config when [work].enabled is true.
+	Work WorkService
+	// WorkViews is the broadcaster that fans out WorkViewEvents to frontend
+	// subscribers. It must be non-nil when Work is non-nil; boot creates it and
+	// wires it as the Service's ViewSink.
+	WorkViews *WorkViewBroadcaster
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -450,6 +465,8 @@ func New(opts Options) *Controller {
 		externalFolderToolRefs:     opts.ExternalFolderToolRefs,
 		approval:                   newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 		visionDelegate:             opts.VisionDelegateProvider,
+		workSvc:                    opts.Work,
+		workViews:                  opts.WorkViews,
 	}
 	c.loadTaskMemory(opts.SessionPath)
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {

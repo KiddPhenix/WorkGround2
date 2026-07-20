@@ -48,6 +48,7 @@ import (
 	"workground2/internal/tool"
 	"workground2/internal/tool/builtin"
 	"workground2/internal/tool/sessiontool"
+	"workground2/internal/work"
 )
 
 // ProductName is the user-visible product name used throughout the UI,
@@ -118,6 +119,10 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
+	// WorkDir optionally overrides the per-project Work data directory for hosts
+	// and tests. It is ignored while work.enabled is false. When enabled, a
+	// non-empty path must be writable or Build fails explicitly.
+	WorkDir string
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to WorkGround2.toml.
@@ -1101,6 +1106,37 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 
+	// Work: assemble the structured Work feature when enabled in config.
+	// Disabled (default) keeps the cache-stable prefix untouched and does not
+	// create writable Work directories.
+	var workSvc *work.Service
+	var workViews *control.WorkViewBroadcaster
+	if cfg.Work.Enabled {
+		workDir := strings.TrimSpace(opts.WorkDir)
+		if workDir == "" {
+			workDir = config.ProjectWorkDir(root)
+		}
+		if workDir == "" {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "work: project data directory is unavailable — feature disabled this session"})
+		} else {
+			if err := ensureWorkDir(workDir); err != nil {
+				jm.Close()
+				cleanup()
+				return nil, fmt.Errorf("initialize Work store %q: %w", workDir, err)
+			}
+			store, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+			if err != nil {
+				jm.Close()
+				cleanup()
+				return nil, fmt.Errorf("initialize Work store %q: %w", workDir, err)
+			}
+			bp := work.NewBlueprintRegistry()
+			workViews = control.NewWorkViewBroadcaster()
+			workSvc = work.NewService(store, bp, workViews)
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "work: feature enabled"})
+		}
+	}
+
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1142,6 +1178,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		},
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
+		Work:                workSvc,
+		WorkViews:           workViews,
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
@@ -1188,6 +1226,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	return control.New(ctrlOpts), nil
+}
+
+func ensureWorkDir(path string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(path, ".work-store-probe-*")
+	if err != nil {
+		return err
+	}
+	probePath := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(probePath)
+	return errors.Join(closeErr, removeErr)
 }
 
 func autoDiscoverVisionDelegate(cfg *config.Config, current *config.ProviderEntry) string {

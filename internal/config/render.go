@@ -640,6 +640,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 	}
 
+	// [work] — structured Work feature (default disabled)
+	if c.Work.Enabled {
+		b.WriteString("\n[work]\n")
+		fmt.Fprintf(&b, "enabled = true\n")
+	} else {
+		b.WriteString("\n# [work] — structured Work feature; enable to manage project tasks, runs, and blocks\n")
+		b.WriteString("# [work]\n")
+		b.WriteString("# enabled = true\n")
+	}
+
 	return b.String()
 }
 
