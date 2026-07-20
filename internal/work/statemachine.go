@@ -8,9 +8,11 @@ import "fmt"
 // from the V1 state diagram (§5.3).
 var validWorkTransitions = map[WorkState]map[WorkState]bool{
 	WorkDraft: {
+		WorkReady:   true, // input and dependency preflight passed
 		WorkRunning: true,
 	},
 	WorkReady: {
+		WorkDraft:   true, // edits or dependency changes invalidated preflight
 		WorkRunning: true,
 	},
 	WorkRunning: {

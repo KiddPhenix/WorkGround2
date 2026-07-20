@@ -255,6 +255,12 @@ func TestGoldenWorkV1_DefSnapshotDigest(t *testing.T) {
 	if d != ds.Digest {
 		t.Fatalf("golden digest mismatch: computed %s, fixture %s", d, ds.Digest)
 	}
+	if len(w.Runs) != 1 {
+		t.Fatalf("golden Run count = %d, want 1", len(w.Runs))
+	}
+	if got := w.Runs[0].DefinitionDigest; got != ds.Digest {
+		t.Fatalf("golden Run definition digest = %s, want snapshot digest %s", got, ds.Digest)
+	}
 }
 
 func TestGoldenWorkV1_NoMutation(t *testing.T) {
