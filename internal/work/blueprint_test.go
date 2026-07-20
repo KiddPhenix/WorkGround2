@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -749,6 +750,55 @@ func TestValidateNoSecrets_NestedSecret(t *testing.T) {
 	}
 }
 
+func TestValidateNoSecrets_DescriptionTextIsNotStructuredSecret(t *testing.T) {
+	bp := validTestBlueprint()
+	bp.Description = "Token: budget unit"
+	bp.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"token":{"type":"string","description":"Token: budget unit"}}
+	}`)
+	if err := ValidateNoSecrets(bp); err != nil {
+		t.Fatalf("normal token explanation should be allowed: %v", err)
+	}
+
+	bp.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"properties":{"token":{"type":"string","default":"Token: budget unit"}}
+	}`)
+	if err := ValidateNoSecrets(bp); err == nil || !strings.Contains(err.Error(), "inputSchema.properties.token.default") {
+		t.Fatalf("structured token default must still be rejected, got %v", err)
+	}
+}
+
+func TestValidateNoSecrets_EmbeddedCredentialLiterals(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "authorization header", text: "Request header: Authorization: Bearer opaque-credential-value"},
+		{name: "github token", text: "A leaked URL contains ?auth=ghp_0123456789abcdefghijklmnopqrstuv; remove it"},
+		{name: "private key", text: "Unexpected material: -----BEGIN PRIVATE KEY----- redacted"},
+		{name: "literal after explanation", text: "Token: budget unit; password: hunter2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bp := validTestBlueprint()
+			bp.Description = tt.text
+			if err := ValidateNoSecrets(bp); err == nil {
+				t.Fatalf("embedded credential %q was not rejected", tt.text)
+			}
+		})
+	}
+}
+
+func TestValidateNoSecrets_FreeTextReferencesAllowed(t *testing.T) {
+	bp := validTestBlueprint()
+	bp.Description = "Token: budget unit. Send Authorization: Bearer ${GITHUB_TOKEN}."
+	if err := ValidateNoSecrets(bp); err != nil {
+		t.Fatalf("normal explanation and authorization reference should be allowed: %v", err)
+	}
+}
+
 // ── CreateDefinitionSnapshot ───────────────────────────────────────────────
 
 func TestCreateDefinitionSnapshot_Basic(t *testing.T) {
@@ -1114,6 +1164,39 @@ func TestLoadFromDir_ReloadRefreshesAndRemovesDiskEntries(t *testing.T) {
 	}
 	if _, err := r.LookupExact(v1.ID, v1.Version); err == nil {
 		t.Fatal("definition removed from index remained registered")
+	}
+}
+
+func TestLoadFromDir_RejectsNonObjectIndexWithoutMutation(t *testing.T) {
+	dir := copyBlueprintFixture(t)
+	r := NewBlueprintRegistry()
+	if err := r.LoadFromDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	before := r.List()
+	indexPath := filepath.Join(dir, "index.json")
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "null", data: `null`},
+		{name: "array", data: `[]`},
+		{name: "string", data: `"index"`},
+		{name: "number", data: `1`},
+		{name: "boolean", data: `true`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeTestFile(t, indexPath, []byte(tt.data))
+			err := r.LoadFromDir(dir)
+			if err == nil || !strings.Contains(err.Error(), "JSON object") {
+				t.Fatalf("expected explicit object-shape error, got %v", err)
+			}
+			if after := r.List(); !reflect.DeepEqual(after, before) {
+				t.Fatalf("failed reload mutated registry\nbefore: %#v\nafter:  %#v", before, after)
+			}
+		})
 	}
 }
 
