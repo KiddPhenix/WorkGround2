@@ -15,12 +15,26 @@ var errActionTransitionLost = errors.New("work: action transition lost to anothe
 
 type actionFlight struct{ done chan struct{} }
 
-// SetActionRegistry replaces the trusted action definitions. It is safe to call
-// while unrelated actions execute; each resolution observes one registry.
-func (s *Service) SetActionRegistry(reg *ActionRegistry) {
+// SetActionRegistry replaces the trusted action definitions. It rejects a
+// different registry that reuses an existing action's handler ID and version.
+// It is safe to call while unrelated actions execute; each resolution observes
+// one registry.
+func (s *Service) SetActionRegistry(reg *ActionRegistry) error {
 	s.actionCfgMu.Lock()
+	defer s.actionCfgMu.Unlock()
+	if s.actions != nil && reg != nil && s.actions != reg {
+		previous := s.actions.snapshot()
+		for key, next := range reg.snapshot() {
+			if current, found := previous[key]; found && current.HandlerID == next.HandlerID && current.HandlerVersion == next.HandlerVersion {
+				return &ErrActionHandlerRegistrationConflict{
+					BlockKind: key.blockKind, ActionID: key.actionID,
+					HandlerID: next.HandlerID, HandlerVersion: next.HandlerVersion,
+				}
+			}
+		}
+	}
 	s.actions = reg
-	s.actionCfgMu.Unlock()
+	return nil
 }
 
 // SetPermissionChecker replaces the action permission adapter. Nil and typed-nil
@@ -59,10 +73,6 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 	if err != nil {
 		return nil, fmt.Errorf("work: ExecuteBlockAction: invalid input: %w", err)
 	}
-	inputDigest, err := actionInputDigest(workID, blockID, actionID, inputCopy)
-	if err != nil {
-		return nil, fmt.Errorf("work: ExecuteBlockAction: fingerprint input: %w", err)
-	}
 	flightKey := workID + "\x00" + requestID
 
 	for {
@@ -71,6 +81,10 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 			return nil, fmt.Errorf("work: ExecuteBlockAction: load state: %w", loadErr)
 		}
 		if existing, _, found := findActionReceipt(current.ActionReceipts, requestID); found {
+			inputDigest, digestErr := actionInputDigest(workID, blockID, actionID, existing.HandlerID, existing.HandlerVersion, inputCopy)
+			if digestErr != nil {
+				return nil, fmt.Errorf("work: ExecuteBlockAction: fingerprint input: %w", digestErr)
+			}
 			if existing.InputDigest != inputDigest || existing.WorkID != workID || existing.BlockID != blockID || existing.ActionID != actionID {
 				return nil, &ErrActionFingerprintConflict{RequestID: requestID, ExistingFP: existing.InputDigest, IncomingFP: inputDigest}
 			}
@@ -87,8 +101,13 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 			}
 
 			if existing.Status == ActionRunning {
+				legacyHandler := existing.HandlerIdentityVersion == 0 || existing.HandlerID == "" || existing.HandlerVersion == ""
+				message := "previous executor stopped before recording the outcome; verify external state before retrying"
+				if legacyHandler {
+					message = "legacy running receipt has no trusted handler identity; verify external state before retrying"
+				}
 				unknown, rev, transitionErr := s.transitionAction(ctx, existing, ActionRunning, ActionUnknown,
-					"previous executor stopped before recording the outcome; verify external state before retrying", false, false, nil)
+					message, false, false, nil)
 				if transitionErr != nil {
 					if errors.Is(transitionErr, errActionTransitionLost) && terminalReceipt(unknown.Status) {
 						return receiptResult(unknown, rev)
@@ -98,13 +117,30 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 				if emitErr := s.emitActionSnapshot(workID, requestID); emitErr != nil {
 					return unknown.toPublicReceipt(rev), emitErr
 				}
-				return unknown.toPublicReceipt(rev), &ErrActionOutcomeUnknown{RequestID: requestID, Message: unknown.Message}
+				unknownErr := &ErrActionOutcomeUnknown{RequestID: requestID, Message: unknown.Message}
+				if legacyHandler {
+					versionErr := actionHandlerVersionError(existing, "", "", unknown.toPublicReceipt(rev), "legacy running receipt requires manual verification and upgrade")
+					return unknown.toPublicReceipt(rev), errors.Join(versionErr, unknownErr)
+				}
+				return unknown.toPublicReceipt(rev), unknownErr
+			}
+			if existing.HandlerIdentityVersion == 0 || existing.HandlerID == "" || existing.HandlerVersion == "" {
+				return s.failPendingHandlerVersion(existing, "", "", "legacy pending receipt has no trusted handler identity; upgrade required")
 			}
 
 			resolved, resolveErr := s.resolveAction(current, blockID, actionID, inputCopy)
 			if resolveErr != nil {
+				var unknownIntent *ErrActionUnknownIntent
+				if errors.As(resolveErr, &unknownIntent) {
+					return s.failPendingHandlerVersion(existing, "", "", "registered handler is unavailable; upgrade required")
+				}
 				failed, persistErr := s.finishBeforeRun(context.Background(), existing, ActionFailed, resolveErr.Error(), false)
 				return failed, errors.Join(resolveErr, persistErr)
+			}
+			if existing.HandlerID != resolved.registration.HandlerID || existing.HandlerVersion != resolved.registration.HandlerVersion {
+				reason := fmt.Sprintf("reserved handler %s@%s does not match registered handler %s@%s; upgrade required",
+					existing.HandlerID, existing.HandlerVersion, resolved.registration.HandlerID, resolved.registration.HandlerVersion)
+				return s.failPendingHandlerVersion(existing, resolved.registration.HandlerID, resolved.registration.HandlerVersion, reason)
 			}
 			if existing.Fingerprint != resolved.fingerprint {
 				return nil, &ErrActionFingerprintConflict{RequestID: requestID, ExistingFP: existing.Fingerprint, IncomingFP: resolved.fingerprint}
@@ -125,9 +161,15 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
+		inputDigest, digestErr := actionInputDigest(workID, blockID, actionID, resolved.registration.HandlerID, resolved.registration.HandlerVersion, inputCopy)
+		if digestErr != nil {
+			return nil, fmt.Errorf("work: ExecuteBlockAction: fingerprint input: %w", digestErr)
+		}
 		now := time.Now().UTC()
 		record := ActionReceiptRecord{
 			WorkID: workID, BlockID: blockID, BlockKind: resolved.block.Kind, ActionID: actionID,
+			HandlerIdentityVersion: HandlerIdentityVersion,
+			HandlerID:              resolved.registration.HandlerID, HandlerVersion: resolved.registration.HandlerVersion,
 			Status: ActionPending, RequestID: requestID, InputDigest: inputDigest,
 			Fingerprint: resolved.fingerprint, Intent: resolved.registration.Intent,
 			Summary: resolved.summary, Risk: resolved.risk, ConfirmRequired: resolved.confirm,
@@ -195,7 +237,7 @@ func (s *Service) resolveAction(value *Work, blockID, actionID string, input map
 	if summary == "" {
 		summary = reg.Intent
 	}
-	fingerprint, err := actionFingerprint(value.ID, blockID, actionID, block.Kind, reg.Intent, risk, confirm, reg.Payload, input)
+	fingerprint, err := actionFingerprint(value.ID, blockID, actionID, block.Kind, reg.HandlerID, reg.HandlerVersion, reg.Intent, risk, confirm, reg.Payload, input)
 	if err != nil {
 		return nil, fmt.Errorf("work: ExecuteBlockAction: canonical fingerprint: %w", err)
 	}
@@ -215,6 +257,7 @@ func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRec
 		}
 		decision, err := checker.CheckPermission(ctx, PermissionRequest{
 			WorkID: record.WorkID, BlockID: record.BlockID, ActionID: record.ActionID, RequestID: record.RequestID,
+			HandlerID: record.HandlerID, HandlerVersion: record.HandlerVersion,
 			Object:   ObjectContext{Kind: ObjectBlock, ID: record.BlockID, ParentID: record.WorkID},
 			ToolName: resolved.registration.Intent, Risk: string(resolved.risk), Summary: resolved.summary,
 			ConfirmRequired: resolved.confirm, Input: input,
@@ -284,6 +327,7 @@ func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRec
 	}
 	handlerCtx := ActionHandlerContext{
 		WorkID: record.WorkID, BlockID: record.BlockID, ActionID: record.ActionID, RequestID: record.RequestID,
+		HandlerID: record.HandlerID, HandlerVersion: record.HandlerVersion,
 		Input: handlerInput, Payload: append(json.RawMessage(nil), resolved.registration.Payload...),
 		Fingerprint: record.Fingerprint, Risk: resolved.risk,
 	}
@@ -352,6 +396,24 @@ func (s *Service) runReservedAction(ctx context.Context, record ActionReceiptRec
 		return final.toPublicReceipt(finalRev), fmt.Errorf("work: ExecuteBlockAction: handler: %w", handlerErr)
 	}
 	return final.toPublicReceipt(finalRev), nil
+}
+
+func (s *Service) failPendingHandlerVersion(record ActionReceiptRecord, currentID, currentVersion, reason string) (*ActionReceipt, error) {
+	message := "handler version conflict: " + reason
+	receipt, persistErr := s.finishBeforeRun(context.Background(), record, ActionFailed, message, true)
+	versionErr := actionHandlerVersionError(record, currentID, currentVersion, receipt, reason)
+	if persistErr != nil {
+		return receipt, errors.Join(versionErr, persistErr)
+	}
+	return receipt, versionErr
+}
+
+func actionHandlerVersionError(record ActionReceiptRecord, currentID, currentVersion string, latest *ActionReceipt, reason string) *ErrActionHandlerVersionConflict {
+	retryable := latest != nil && latest.Retryable
+	return &ErrActionHandlerVersionConflict{
+		RequestID: record.RequestID, HandlerID: record.HandlerID, HandlerVersion: record.HandlerVersion,
+		CurrentID: currentID, CurrentVersion: currentVersion, Retryable: retryable, Latest: latest, Reason: reason,
+	}
 }
 
 func (s *Service) finishBeforeRun(ctx context.Context, record ActionReceiptRecord, status ActionReceiptStatus, message string, retryable bool) (*ActionReceipt, error) {

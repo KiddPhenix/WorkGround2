@@ -96,6 +96,8 @@ type PermissionRequest struct {
 	WorkID          string         `json:"workId"`
 	BlockID         string         `json:"blockId"`
 	ActionID        string         `json:"actionId"`
+	HandlerID       string         `json:"handlerId"`
+	HandlerVersion  string         `json:"handlerVersion"`
 	RequestID       string         `json:"requestId"`
 	Object          ObjectContext  `json:"object"`
 	ToolName        string         `json:"toolName"`

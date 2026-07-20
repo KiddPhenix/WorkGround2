@@ -347,7 +347,8 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	subject := fmt.Sprintf("work:%s/block:%s/action:%s", input.WorkID, input.BlockID, input.ActionID)
+	subject := fmt.Sprintf("work:%s/block:%s/action:%s/handler:%s@%s",
+		input.WorkID, input.BlockID, input.ActionID, input.HandlerID, input.HandlerVersion)
 	readOnly := input.Risk == string(work.RiskRead) && !input.ConfirmRequired
 	decision := c.policy.DecideSubject(input.ToolName, readOnly, subject)
 	if decision == permission.Deny {
@@ -361,15 +362,17 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 	if summary == "" {
 		summary = input.ToolName
 	}
-	reason := fmt.Sprintf("%s · risk=%s · work=%s · block=%s · action=%s · request=%s",
-		summary, input.Risk, input.WorkID, input.BlockID, input.ActionID, input.RequestID)
+	reason := fmt.Sprintf("%s · handler=%s@%s · risk=%s · work=%s · block=%s · action=%s · request=%s",
+		summary, input.HandlerID, input.HandlerVersion, input.Risk, input.WorkID, input.BlockID, input.ActionID, input.RequestID)
 	args, _ := json.Marshal(map[string]string{
 		"workId": input.WorkID, "blockId": input.BlockID, "actionId": input.ActionID,
-		"requestId": input.RequestID, "risk": input.Risk, "summary": summary,
+		"requestId": input.RequestID, "handlerId": input.HandlerID, "handlerVersion": input.HandlerVersion,
+		"risk": input.Risk, "summary": summary,
 	})
 	approval := event.Approval{
 		WorkID: input.WorkID, BlockID: input.BlockID, ActionID: input.ActionID,
 		RequestID: input.RequestID, Summary: summary,
+		HandlerID: input.HandlerID, HandlerVersion: input.HandlerVersion,
 	}
 	reply, err := c.requestApprovalDecisionWithOptions(ctx, input.ToolName, subject, args, reason,
 		approvalDecisionOptions{fresh: input.ConfirmRequired, approval: approval})

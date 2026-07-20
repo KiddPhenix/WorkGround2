@@ -33,6 +33,14 @@ func validActionRisk(r ActionRisk) bool {
 type ActionReceiptStatus string
 
 const (
+	// HandlerIdentityVersion marks receipts that bind an explicit trusted handler.
+	// Zero is reserved for legacy receipts created before handler binding existed.
+	HandlerIdentityVersion = 1
+	handlerIDMaxLen        = 128
+	handlerVersionMaxLen   = 64
+)
+
+const (
 	ActionPending   ActionReceiptStatus = "pending"
 	ActionRunning   ActionReceiptStatus = "running"
 	ActionSucceeded ActionReceiptStatus = "succeeded"
@@ -63,14 +71,16 @@ func validActionTransition(from, to ActionReceiptStatus) bool {
 
 // ActionHandlerContext contains only canonical data resolved by Service.
 type ActionHandlerContext struct {
-	WorkID      string
-	BlockID     string
-	ActionID    string
-	RequestID   string
-	Input       map[string]any
-	Payload     json.RawMessage
-	Fingerprint string
-	Risk        ActionRisk
+	WorkID         string
+	BlockID        string
+	ActionID       string
+	RequestID      string
+	HandlerID      string
+	HandlerVersion string
+	Input          map[string]any
+	Payload        json.RawMessage
+	Fingerprint    string
+	Risk           ActionRisk
 }
 
 // ActionResult is a typed handler result. UnknownOutcome is meaningful when
@@ -87,11 +97,14 @@ type ActionResult struct {
 type ActionHandler func(context.Context, ActionHandlerContext) (*ActionResult, error)
 
 // ActionRegistration is the trusted definition for one block-kind/action-ID
-// pair. Intent, risk, payload and handler never come from the frontend or the
-// mutable BlockInstance.
+// pair. HandlerID and HandlerVersion are stable, caller-supplied identities;
+// they are never inferred from the function value. Intent, risk, payload and
+// handler never come from the frontend or the mutable BlockInstance.
 type ActionRegistration struct {
 	BlockKind       string
 	ActionID        string
+	HandlerID       string
+	HandlerVersion  string
 	Intent          string
 	Summary         string
 	Risk            ActionRisk
@@ -120,10 +133,18 @@ func NewActionRegistry() *ActionRegistry {
 func (r *ActionRegistry) Register(reg ActionRegistration) error {
 	reg.BlockKind = strings.TrimSpace(reg.BlockKind)
 	reg.ActionID = strings.TrimSpace(reg.ActionID)
+	reg.HandlerID = strings.TrimSpace(reg.HandlerID)
+	reg.HandlerVersion = strings.TrimSpace(reg.HandlerVersion)
 	reg.Intent = strings.TrimSpace(reg.Intent)
 	reg.Summary = strings.TrimSpace(reg.Summary)
 	if reg.BlockKind == "" || reg.ActionID == "" || reg.Intent == "" {
 		return fmt.Errorf("work: action register: blockKind, actionID and intent are required")
+	}
+	if err := validateHandlerPart("handlerID", reg.HandlerID, handlerIDMaxLen); err != nil {
+		return fmt.Errorf("work: action register: %w", err)
+	}
+	if err := validateHandlerPart("handlerVersion", reg.HandlerVersion, handlerVersionMaxLen); err != nil {
+		return fmt.Errorf("work: action register: %w", err)
 	}
 	if reg.Handler == nil {
 		return fmt.Errorf("work: action register: handler is nil for %s/%s", reg.BlockKind, reg.ActionID)
@@ -144,10 +165,34 @@ func (r *ActionRegistry) Register(reg ActionRegistration) error {
 	if r.handlers == nil {
 		r.handlers = make(map[actionKey]ActionRegistration)
 	}
-	if _, exists := r.handlers[key]; exists {
-		return fmt.Errorf("work: action register: %s/%s is already registered", reg.BlockKind, reg.ActionID)
+	if existing, exists := r.handlers[key]; exists && existing.HandlerID == reg.HandlerID && existing.HandlerVersion == reg.HandlerVersion {
+		return &ErrActionHandlerRegistrationConflict{
+			BlockKind: reg.BlockKind, ActionID: reg.ActionID,
+			HandlerID: reg.HandlerID, HandlerVersion: reg.HandlerVersion,
+		}
 	}
 	r.handlers[key] = reg
+	return nil
+}
+
+func validateHandlerPart(name, value string, max int) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", name)
+	}
+	if len(value) > max {
+		return fmt.Errorf("%s exceeds %d bytes", name, max)
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		switch char {
+		case '.', '_', '-', '/', ':', '+':
+			continue
+		default:
+			return fmt.Errorf("%s contains unsupported character %q", name, char)
+		}
+	}
 	return nil
 }
 
@@ -161,6 +206,20 @@ func (r *ActionRegistry) Lookup(blockKind, actionID string) (ActionRegistration,
 	r.mu.RUnlock()
 	reg.Payload = append(json.RawMessage(nil), reg.Payload...)
 	return reg, ok
+}
+
+func (r *ActionRegistry) snapshot() map[actionKey]ActionRegistration {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make(map[actionKey]ActionRegistration, len(r.handlers))
+	for key, reg := range r.handlers {
+		reg.Payload = append(json.RawMessage(nil), reg.Payload...)
+		result[key] = reg
+	}
+	return result
 }
 
 func effectiveRisk(registered ActionRisk, declared string) (ActionRisk, error) {
@@ -191,27 +250,31 @@ func maxRisk(a, b ActionRisk) ActionRisk {
 
 func riskRequiresApproval(r ActionRisk) bool { return r != RiskRead }
 
-func actionInputDigest(workID, blockID, actionID string, input map[string]any) (string, error) {
+func actionInputDigest(workID, blockID, actionID, handlerID, handlerVersion string, input map[string]any) (string, error) {
 	return digestCanonical(struct {
-		WorkID   string         `json:"workId"`
-		BlockID  string         `json:"blockId"`
-		ActionID string         `json:"actionId"`
-		Input    map[string]any `json:"input,omitempty"`
-	}{workID, blockID, actionID, input})
+		WorkID         string         `json:"workId"`
+		BlockID        string         `json:"blockId"`
+		ActionID       string         `json:"actionId"`
+		HandlerID      string         `json:"handlerId,omitempty"`
+		HandlerVersion string         `json:"handlerVersion,omitempty"`
+		Input          map[string]any `json:"input,omitempty"`
+	}{workID, blockID, actionID, handlerID, handlerVersion, input})
 }
 
-func actionFingerprint(workID, blockID, actionID, blockKind, intent string, risk ActionRisk, confirm bool, payload json.RawMessage, input map[string]any) (string, error) {
+func actionFingerprint(workID, blockID, actionID, blockKind, handlerID, handlerVersion, intent string, risk ActionRisk, confirm bool, payload json.RawMessage, input map[string]any) (string, error) {
 	return digestCanonical(struct {
-		WorkID    string          `json:"workId"`
-		BlockID   string          `json:"blockId"`
-		ActionID  string          `json:"actionId"`
-		BlockKind string          `json:"blockKind"`
-		Intent    string          `json:"intent"`
-		Risk      ActionRisk      `json:"risk"`
-		Confirm   bool            `json:"confirmRequired"`
-		Payload   json.RawMessage `json:"payload,omitempty"`
-		Input     map[string]any  `json:"input,omitempty"`
-	}{workID, blockID, actionID, blockKind, intent, risk, confirm, payload, input})
+		WorkID         string          `json:"workId"`
+		BlockID        string          `json:"blockId"`
+		ActionID       string          `json:"actionId"`
+		BlockKind      string          `json:"blockKind"`
+		HandlerID      string          `json:"handlerId"`
+		HandlerVersion string          `json:"handlerVersion"`
+		Intent         string          `json:"intent"`
+		Risk           ActionRisk      `json:"risk"`
+		Confirm        bool            `json:"confirmRequired"`
+		Payload        json.RawMessage `json:"payload,omitempty"`
+		Input          map[string]any  `json:"input,omitempty"`
+	}{workID, blockID, actionID, blockKind, handlerID, handlerVersion, intent, risk, confirm, payload, input})
 }
 
 func digestCanonical(value any) (string, error) {
@@ -225,29 +288,34 @@ func digestCanonical(value any) (string, error) {
 
 // ActionReceiptRecord is the event-derived, persisted idempotency record.
 type ActionReceiptRecord struct {
-	WorkID          string              `json:"workId"`
-	BlockID         string              `json:"blockId"`
-	BlockKind       string              `json:"blockKind"`
-	ActionID        string              `json:"actionId"`
-	Status          ActionReceiptStatus `json:"status"`
-	Message         string              `json:"message,omitempty"`
-	RequestID       string              `json:"requestId"`
-	InputDigest     string              `json:"inputDigest"`
-	Fingerprint     string              `json:"fingerprint"`
-	Intent          string              `json:"intent"`
-	Summary         string              `json:"summary,omitempty"`
-	Risk            ActionRisk          `json:"risk"`
-	ConfirmRequired bool                `json:"confirmRequired,omitempty"`
-	Result          json.RawMessage     `json:"result,omitempty"`
-	Retryable       bool                `json:"retryable"`
-	OutcomeKnown    bool                `json:"outcomeKnown"`
-	CreatedAt       time.Time           `json:"createdAt"`
-	UpdatedAt       time.Time           `json:"updatedAt"`
+	WorkID                 string              `json:"workId"`
+	BlockID                string              `json:"blockId"`
+	BlockKind              string              `json:"blockKind"`
+	ActionID               string              `json:"actionId"`
+	HandlerIdentityVersion int                 `json:"handlerIdentityVersion,omitempty"`
+	HandlerID              string              `json:"handlerId,omitempty"`
+	HandlerVersion         string              `json:"handlerVersion,omitempty"`
+	Status                 ActionReceiptStatus `json:"status"`
+	Message                string              `json:"message,omitempty"`
+	RequestID              string              `json:"requestId"`
+	InputDigest            string              `json:"inputDigest"`
+	Fingerprint            string              `json:"fingerprint"`
+	Intent                 string              `json:"intent"`
+	Summary                string              `json:"summary,omitempty"`
+	Risk                   ActionRisk          `json:"risk"`
+	ConfirmRequired        bool                `json:"confirmRequired,omitempty"`
+	Result                 json.RawMessage     `json:"result,omitempty"`
+	Retryable              bool                `json:"retryable"`
+	OutcomeKnown           bool                `json:"outcomeKnown"`
+	CreatedAt              time.Time           `json:"createdAt"`
+	UpdatedAt              time.Time           `json:"updatedAt"`
 }
 
 func (r ActionReceiptRecord) toPublicReceipt(revision int64) *ActionReceipt {
 	return &ActionReceipt{
 		WorkID: r.WorkID, BlockID: r.BlockID, ActionID: r.ActionID,
+		HandlerIdentityVersion: r.HandlerIdentityVersion,
+		HandlerID:              r.HandlerID, HandlerVersion: r.HandlerVersion,
 		Status: string(r.Status), Message: r.Message, RequestID: r.RequestID,
 		Fingerprint: r.Fingerprint, Result: append(json.RawMessage(nil), r.Result...),
 		Retryable: r.Retryable, OutcomeKnown: r.OutcomeKnown, Revision: revision,
@@ -282,6 +350,12 @@ func changedActionIdentity(previous, next ActionReceiptRecord) string {
 		return "blockKind"
 	case previous.ActionID != next.ActionID:
 		return "actionId"
+	case previous.HandlerIdentityVersion != next.HandlerIdentityVersion:
+		return "handlerIdentityVersion"
+	case previous.HandlerID != next.HandlerID:
+		return "handlerId"
+	case previous.HandlerVersion != next.HandlerVersion:
+		return "handlerVersion"
 	case previous.RequestID != next.RequestID:
 		return "requestId"
 	case previous.InputDigest != next.InputDigest:
