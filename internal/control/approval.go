@@ -28,11 +28,12 @@ type approvalManager struct {
 
 	// mu guards the prompt maps and posture fields; every critical section under
 	// it is short and non-blocking.
-	mu        sync.Mutex
-	approvals map[string]pendingApproval
-	asks      map[string]pendingAsk
-	granted   map[string]bool
-	nextID    int
+	mu           sync.Mutex
+	approvals    map[string]pendingApproval
+	asks         map[string]pendingAsk
+	granted      map[string]bool
+	actionGrants map[actionSessionGrantKey]bool
+	nextID       int
 	// toolApprovalMode is the runtime approval posture: "ask" prompts, "auto"
 	// lets the policy auto-approve the writer fallback while preserving ask/deny
 	// rules, and "yolo" skips every tool approval prompt except plan approval.
@@ -60,6 +61,7 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 		approvals:        map[string]pendingApproval{},
 		asks:             map[string]pendingAsk{},
 		granted:          map[string]bool{},
+		actionGrants:     map[actionSessionGrantKey]bool{},
 		toolApprovalMode: mode,
 		approvalTimeout:  timeout,
 	}
@@ -77,9 +79,15 @@ func (a *approvalManager) preApproved(tool, subject string) bool {
 // preApprovedForDecision reports whether a prompt can be skipped for a decision
 // class. Fresh user decisions may reuse an explicit session grant, but they are
 // never answered by YOLO/full-access or the approved-plan execution window.
-func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool) bool {
+func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool, action *actionSessionGrantKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if action != nil {
+		if fresh {
+			return a.actionGrants[*action]
+		}
+		return a.bypassAllowsLocked(tool) || a.actionGrants[*action]
+	}
 	if fresh {
 		return a.sessionGrantAllowsLocked(tool, subject)
 	}
@@ -119,6 +127,15 @@ func (a *approvalManager) grantSession(tool, subject string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.granted[permission.SessionGrantRuleForScope(tool, subject)] = true
+}
+
+// grantActionSession records an exact Work Action grant. It deliberately uses
+// a typed key instead of the generic config-rule syntax: ordinary non-file
+// tools collapse to a bare tool name there and would lose the Action identity.
+func (a *approvalManager) grantActionSession(key actionSessionGrantKey) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.actionGrants[key] = true
 }
 
 // cancel drops a pending approval (timeout/abort path).

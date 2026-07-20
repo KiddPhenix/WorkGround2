@@ -347,8 +347,8 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	subject := fmt.Sprintf("work:%s/block:%s/action:%s/handler:%s@%s",
-		input.WorkID, input.BlockID, input.ActionID, input.HandlerID, input.HandlerVersion)
+	grantKey := actionSessionGrantFor(input)
+	subject := actionApprovalSubject(grantKey)
 	readOnly := input.Risk == string(work.RiskRead) && !input.ConfirmRequired
 	decision := c.policy.DecideSubject(input.ToolName, readOnly, subject)
 	if decision == permission.Deny {
@@ -375,7 +375,7 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 		HandlerID: input.HandlerID, HandlerVersion: input.HandlerVersion,
 	}
 	reply, err := c.requestApprovalDecisionWithOptions(ctx, input.ToolName, subject, args, reason,
-		approvalDecisionOptions{fresh: input.ConfirmRequired, approval: approval})
+		approvalDecisionOptions{fresh: input.ConfirmRequired, approval: approval, actionSessionGrant: &grantKey})
 	if err != nil {
 		return work.PermissionDecision{}, err
 	}
@@ -383,12 +383,40 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 		return work.PermissionDecision{Reason: "approval rejected by user"}, nil
 	}
 	if reply.session && !input.ConfirmRequired {
-		c.approval.grantSession(input.ToolName, subject)
+		c.approval.grantActionSession(grantKey)
 	}
 	if reply.persist && !input.ConfirmRequired && c.onRemember != nil {
 		c.emitRememberResult(c.onRemember(permission.RememberRuleForScope(input.ToolName, subject)))
 	}
 	return work.PermissionDecision{Allowed: true}, nil
+}
+
+// actionSessionGrantKey is the exact, in-memory identity for one Work Action
+// session grant. Controller lifetime supplies the user/session boundary. A
+// comparable struct avoids delimiter escaping and wildcard parsing entirely.
+type actionSessionGrantKey struct {
+	ToolName        string
+	WorkID          string
+	BlockID         string
+	ActionID        string
+	HandlerID       string
+	HandlerVersion  string
+	Risk            work.ActionRisk
+	ConfirmRequired bool
+}
+
+func actionSessionGrantFor(input work.PermissionRequest) actionSessionGrantKey {
+	return actionSessionGrantKey{
+		ToolName: strings.TrimSpace(input.ToolName), WorkID: strings.TrimSpace(input.WorkID),
+		BlockID: strings.TrimSpace(input.BlockID), ActionID: strings.TrimSpace(input.ActionID),
+		HandlerID: strings.TrimSpace(input.HandlerID), HandlerVersion: strings.TrimSpace(input.HandlerVersion),
+		Risk: work.ActionRisk(strings.TrimSpace(input.Risk)), ConfirmRequired: input.ConfirmRequired,
+	}
+}
+
+func actionApprovalSubject(key actionSessionGrantKey) string {
+	return fmt.Sprintf("work:%s/block:%s/action:%s/handler:%s@%s",
+		key.WorkID, key.BlockID, key.ActionID, key.HandlerID, key.HandlerVersion)
 }
 
 func (w workMethods) PrepareRerun(ctx context.Context, input work.PrepareRerunInput) (*work.RerunPlan, error) {

@@ -91,6 +91,277 @@ func waitActionApproval(t *testing.T, events <-chan event.Event) event.Approval 
 	}
 }
 
+type actionPermissionResult struct {
+	decision work.PermissionDecision
+	err      error
+}
+
+func actionPermissionRequest() work.PermissionRequest {
+	return work.PermissionRequest{
+		WorkID: "work:one", BlockID: "block:one", ActionID: "publish",
+		HandlerID: "report.publish", HandlerVersion: "v1", RequestID: "request:one",
+		ToolName: "report.publish", Risk: string(work.RiskExternal), Summary: "Publish report",
+	}
+}
+
+func startActionPermission(controller *Controller, input work.PermissionRequest) <-chan actionPermissionResult {
+	done := make(chan actionPermissionResult, 1)
+	go func() {
+		decision, err := controller.CheckPermission(context.Background(), input)
+		done <- actionPermissionResult{decision: decision, err: err}
+	}()
+	return done
+}
+
+func awaitActionPermission(t *testing.T, done <-chan actionPermissionResult) actionPermissionResult {
+	t.Helper()
+	select {
+	case result := <-done:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("Action permission did not complete")
+		return actionPermissionResult{}
+	}
+}
+
+func allowActionSession(t *testing.T, controller *Controller, events <-chan event.Event, input work.PermissionRequest) {
+	t.Helper()
+	done := startActionPermission(controller, input)
+	approval := waitActionApproval(t, events)
+	controller.Approve(approval.ID, true, true, false)
+	result := awaitActionPermission(t, done)
+	if result.err != nil || !result.decision.Allowed {
+		t.Fatalf("session approval result=%+v", result)
+	}
+}
+
+func newActionPermissionController(policy permission.Policy, timeout time.Duration) (*Controller, chan event.Event) {
+	events := make(chan event.Event, 16)
+	controller := New(Options{
+		Sink: event.FuncSink(func(value event.Event) { events <- value }), Policy: policy, ApprovalTimeout: timeout,
+	})
+	return controller, events
+}
+
+func TestReviewFix2ApprovalGrantDoesNotCrossHandlerVersion(t *testing.T) {
+	controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+	base := actionPermissionRequest()
+	allowActionSession(t, controller, events, base)
+
+	next := base
+	next.HandlerVersion = "v2"
+	next.RequestID = "request:v2"
+	done := startActionPermission(controller, next)
+	approval := waitActionApproval(t, events)
+	if approval.HandlerVersion != "v2" || approval.HandlerID != next.HandlerID || approval.WorkID != next.WorkID || approval.BlockID != next.BlockID || approval.ActionID != next.ActionID {
+		t.Fatalf("v2 approval context=%+v", approval)
+	}
+	controller.Approve(approval.ID, true, false, false)
+	result := awaitActionPermission(t, done)
+	if result.err != nil || !result.decision.Allowed {
+		t.Fatalf("v2 approval result=%+v", result)
+	}
+}
+
+func TestActionSessionGrantUsesExactTrustedScope(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*work.PermissionRequest)
+	}{
+		{"work", func(input *work.PermissionRequest) { input.WorkID = "work:two" }},
+		{"block", func(input *work.PermissionRequest) { input.BlockID = "block:two" }},
+		{"action", func(input *work.PermissionRequest) { input.ActionID = "archive" }},
+		{"handler", func(input *work.PermissionRequest) { input.HandlerID = "report.archive" }},
+		{"tool", func(input *work.PermissionRequest) { input.ToolName = "report.archive" }},
+		{"risk", func(input *work.PermissionRequest) { input.Risk = string(work.RiskDestructive) }},
+		{"confirm", func(input *work.PermissionRequest) { input.ConfirmRequired = true }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+			base := actionPermissionRequest()
+			allowActionSession(t, controller, events, base)
+
+			next := base
+			next.RequestID = "request:" + test.name
+			test.mutate(&next)
+			done := startActionPermission(controller, next)
+			approval := waitActionApproval(t, events)
+			controller.Approve(approval.ID, true, false, false)
+			result := awaitActionPermission(t, done)
+			if result.err != nil || !result.decision.Allowed {
+				t.Fatalf("mutated scope approval result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestActionSessionGrantReuseAndOnce(t *testing.T) {
+	t.Run("session reuses exact identity", func(t *testing.T) {
+		controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+		input := actionPermissionRequest()
+		allowActionSession(t, controller, events, input)
+		input.RequestID = "request:second"
+		input.Summary = "A different display summary"
+		done := startActionPermission(controller, input)
+		select {
+		case approval := <-events:
+			t.Fatalf("exact session scope prompted again: %+v", approval)
+		case result := <-done:
+			if result.err != nil || !result.decision.Allowed {
+				t.Fatalf("reused session result=%+v", result)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("exact Action session grant was not reused")
+		}
+	})
+
+	t.Run("once prompts again", func(t *testing.T) {
+		controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+		input := actionPermissionRequest()
+		first := startActionPermission(controller, input)
+		approval := waitActionApproval(t, events)
+		controller.Approve(approval.ID, true, false, false)
+		if result := awaitActionPermission(t, first); result.err != nil || !result.decision.Allowed {
+			t.Fatalf("once result=%+v", result)
+		}
+		input.RequestID = "request:second"
+		second := startActionPermission(controller, input)
+		approval = waitActionApproval(t, events)
+		controller.Approve(approval.ID, true, false, false)
+		if result := awaitActionPermission(t, second); result.err != nil || !result.decision.Allowed {
+			t.Fatalf("second once result=%+v", result)
+		}
+	})
+}
+
+func TestActionSessionGrantIsNotWrittenOnRejectCancelOrTimeout(t *testing.T) {
+	t.Run("reject", func(t *testing.T) {
+		controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+		input := actionPermissionRequest()
+		first := startActionPermission(controller, input)
+		approval := waitActionApproval(t, events)
+		controller.Approve(approval.ID, false, true, false)
+		if result := awaitActionPermission(t, first); result.err != nil || result.decision.Allowed {
+			t.Fatalf("reject result=%+v", result)
+		}
+		input.RequestID = "request:after-reject"
+		second := startActionPermission(controller, input)
+		approval = waitActionApproval(t, events)
+		controller.Approve(approval.ID, true, false, false)
+		if result := awaitActionPermission(t, second); result.err != nil || !result.decision.Allowed {
+			t.Fatalf("post-reject result=%+v", result)
+		}
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+		input := actionPermissionRequest()
+		ctx, cancel := context.WithCancel(context.Background())
+		first := make(chan actionPermissionResult, 1)
+		go func() {
+			decision, err := controller.CheckPermission(ctx, input)
+			first <- actionPermissionResult{decision: decision, err: err}
+		}()
+		approval := waitActionApproval(t, events)
+		cancel()
+		if result := awaitActionPermission(t, first); !errors.Is(result.err, context.Canceled) {
+			t.Fatalf("cancel result=%+v", result)
+		}
+		controller.Approve(approval.ID, true, true, false)
+		input.RequestID = "request:after-cancel"
+		second := startActionPermission(controller, input)
+		approval = waitActionApproval(t, events)
+		controller.Approve(approval.ID, true, false, false)
+		if result := awaitActionPermission(t, second); result.err != nil || !result.decision.Allowed {
+			t.Fatalf("post-cancel result=%+v", result)
+		}
+	})
+
+	t.Run("timeout", func(t *testing.T) {
+		controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 30*time.Millisecond)
+		input := actionPermissionRequest()
+		first := startActionPermission(controller, input)
+		_ = waitActionApproval(t, events)
+		if result := awaitActionPermission(t, first); !errors.Is(result.err, context.DeadlineExceeded) {
+			t.Fatalf("timeout result=%+v", result)
+		}
+		input.RequestID = "request:after-timeout"
+		second := startActionPermission(controller, input)
+		approval := waitActionApproval(t, events)
+		controller.Approve(approval.ID, true, false, false)
+		if result := awaitActionPermission(t, second); result.err != nil || !result.decision.Allowed {
+			t.Fatalf("post-timeout result=%+v", result)
+		}
+	})
+}
+
+func TestActionSessionGrantSeparatesConcurrentVersions(t *testing.T) {
+	controller, events := newActionPermissionController(permission.New("ask", nil, nil, nil), 0)
+	v1 := actionPermissionRequest()
+	first := startActionPermission(controller, v1)
+	approvalV1 := waitActionApproval(t, events)
+	v2 := v1
+	v2.HandlerVersion = "v2"
+	v2.RequestID = "request:v2"
+	second := startActionPermission(controller, v2)
+	controller.Approve(approvalV1.ID, true, true, false)
+	if result := awaitActionPermission(t, first); result.err != nil || !result.decision.Allowed {
+		t.Fatalf("v1 result=%+v", result)
+	}
+	approvalV2 := waitActionApproval(t, events)
+	if approvalV2.HandlerVersion != "v2" {
+		t.Fatalf("second approval=%+v", approvalV2)
+	}
+	controller.Approve(approvalV2.ID, true, false, false)
+	if result := awaitActionPermission(t, second); result.err != nil || !result.decision.Allowed {
+		t.Fatalf("v2 result=%+v", result)
+	}
+}
+
+func TestActionSessionGrantDoesNotCrossControllerOrChangeGenericRules(t *testing.T) {
+	policy := permission.New("ask", nil, nil, nil)
+	first, firstEvents := newActionPermissionController(policy, 0)
+	input := actionPermissionRequest()
+	allowActionSession(t, first, firstEvents, input)
+	if first.approval.preApproved(input.ToolName, "an unrelated generic tool subject") {
+		t.Fatal("Action session grant expanded into the generic tool grant map")
+	}
+
+	second, secondEvents := newActionPermissionController(policy, 0)
+	done := startActionPermission(second, input)
+	approval := waitActionApproval(t, secondEvents)
+	second.Approve(approval.ID, true, false, false)
+	if result := awaitActionPermission(t, done); result.err != nil || !result.decision.Allowed {
+		t.Fatalf("new Controller result=%+v", result)
+	}
+
+	manager := newApprovalManager(policy, ToolApprovalAsk, 0)
+	manager.grantSession("report.publish", "scope:one")
+	if !manager.preApproved("report.publish", "scope:two") {
+		t.Fatal("generic non-file session grant no longer preserves bare-tool matching")
+	}
+	key := actionSessionGrantFor(input)
+	if manager.preApprovedForDecision(input.ToolName, actionApprovalSubject(key), false, &key) {
+		t.Fatal("generic bare-tool grant leaked into Action-specific scope")
+	}
+}
+
+func TestActionSessionGrantNeverOverridesDeny(t *testing.T) {
+	input := actionPermissionRequest()
+	controller, events := newActionPermissionController(permission.New("ask", nil, nil, []string{input.ToolName}), 0)
+	controller.approval.grantActionSession(actionSessionGrantFor(input))
+	decision, err := controller.CheckPermission(context.Background(), input)
+	if err != nil || decision.Allowed {
+		t.Fatalf("deny decision=%+v err=%v", decision, err)
+	}
+	select {
+	case approval := <-events:
+		t.Fatalf("deny unexpectedly prompted: %+v", approval)
+	default:
+	}
+}
+
 func TestActionControllerApprovalAllowsAndCarriesContext(t *testing.T) {
 	fixture := newControlActionFixture(t, permission.New("ask", nil, nil, nil), false, 0)
 	type result struct {

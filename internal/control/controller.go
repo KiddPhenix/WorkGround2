@@ -4656,13 +4656,17 @@ type approvalDecisionOptions struct {
 	fresh bool
 	// approval carries optional domain context retained for reconnect replay.
 	approval event.Approval
+	// actionSessionGrant scopes Work Action session reuse to one exact trusted
+	// action identity. Generic tool approvals leave it nil and retain their
+	// existing permission-rule matching behaviour.
+	actionSessionGrant *actionSessionGrantKey
 }
 
 func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, tool, subject string, args json.RawMessage, reason string, opts approvalDecisionOptions) (approvalReply, error) {
 	// YOLO/full access and the just-approved-plan execution window auto-allow
 	// approval-gated tools without prompting. Plan approval is a user decision,
 	// not a tool permission, so it deliberately stays interactive.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 
@@ -4671,7 +4675,7 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	// Re-check: a session grant may have landed while we queued behind another
 	// prompt for the same subject.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 	var id string
