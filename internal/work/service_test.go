@@ -355,6 +355,122 @@ func TestServiceDeleteRestoreRestart(t *testing.T) {
 	}
 }
 
+func TestServiceDeleteLateRetryAfterRestore(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-delete-late-create")
+	const deleteRequest = "service-delete-late-old"
+	if err := f.svc.Delete(context.Background(), value.ID, deleteRequest); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := f.restart(t).Restore(context.Background(), value.ID, "service-delete-late-restore"); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	if err := f.restart(t).Delete(context.Background(), value.ID, deleteRequest); err != nil {
+		t.Fatalf("late duplicate Delete: %v", err)
+	}
+	view := mustServiceView(t, f.svc, value.ID)
+	if view.Revision != 4 || view.Work.ArchiveState != ArchiveActive {
+		t.Fatalf("late Delete changed restored Work: %+v", view)
+	}
+	if _, err := os.Stat(filepath.Join(f.store.TrashDir(), value.ID)); !os.IsNotExist(err) {
+		t.Fatalf("late Delete recreated trash directory: %v", err)
+	}
+}
+
+func TestServiceDeleteLateRetryAfterPendingCleanupRestore(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-delete-pending-late-create")
+	const deleteRequest = "service-delete-pending-late-old"
+	originalRename := renameWorkDir
+	renameWorkDir = func(_, _ string) error { return errors.New("injected pending move") }
+	t.Cleanup(func() { renameWorkDir = originalRename })
+	err := f.svc.Delete(context.Background(), value.ID, deleteRequest)
+	var cleanup *ErrWorkCleanupRecovery
+	if !errors.As(err, &cleanup) || cleanup.Stage != "move_failed" {
+		t.Fatalf("Delete error = %v, want move_failed cleanup", err)
+	}
+	renameWorkDir = originalRename
+	if _, err := f.restart(t).Restore(context.Background(), value.ID, "service-delete-pending-late-restore"); err != nil {
+		t.Fatalf("Restore over pending Delete: %v", err)
+	}
+
+	if err := f.restart(t).Delete(context.Background(), value.ID, deleteRequest); err != nil {
+		t.Fatalf("late pending Delete: %v", err)
+	}
+	view := mustServiceView(t, f.svc, value.ID)
+	if view.Revision != 4 || view.Work.ArchiveState != ArchiveActive {
+		t.Fatalf("late pending Delete changed restored Work: %+v", view)
+	}
+	pending, err := f.store.LoadCleanupPending(value.ID)
+	if err != nil || pending == nil || pending.Operation != "trash" || pending.RequestID != deleteRequest+"/move" {
+		t.Fatalf("superseded cleanup state = %+v err=%v", pending, err)
+	}
+}
+
+func TestServiceDeleteRetryResumesCommittedMove(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-delete-committed-move-create")
+	const deleteRequest = "service-delete-committed-move"
+	originalWrite := writeDerivedFile
+	failed := false
+	writeDerivedFile = func(path string, data []byte, mode fs.FileMode) error {
+		active := filepath.Join(f.root, value.ID)
+		trashed := filepath.Join(f.store.TrashDir(), value.ID)
+		if !failed && filepath.Clean(path) == filepath.Join(f.root, "index.json") &&
+			!f.store.isDirWithData(active) && f.store.isDirWithData(trashed) {
+			failed = true
+			return errors.New("injected post-move index failure")
+		}
+		return originalWrite(path, data, mode)
+	}
+	t.Cleanup(func() { writeDerivedFile = originalWrite })
+	err := f.svc.Delete(context.Background(), value.ID, deleteRequest)
+	var cleanup *ErrWorkCleanupRecovery
+	if !errors.As(err, &cleanup) || !cleanup.Committed {
+		t.Fatalf("Delete error = %v, want committed cleanup", err)
+	}
+	writeDerivedFile = originalWrite
+
+	if err := f.restart(t).Delete(context.Background(), value.ID, deleteRequest); err != nil {
+		t.Fatalf("Delete committed-move retry: %v", err)
+	}
+	if _, err := f.store.LoadProjection(value.ID); !errors.Is(err, ErrWorkNotFound) {
+		t.Fatalf("active projection after retry = %v, want ErrWorkNotFound", err)
+	}
+	trashDir := filepath.Join(f.store.TrashDir(), value.ID)
+	replay, err := ReplayWorkEventLog(trashDir)
+	if err != nil || replay.Index == nil || replay.Index.Revision != 3 {
+		t.Fatalf("trash replay = %+v err=%v", replay, err)
+	}
+	pending, err := f.store.LoadCleanupPending(value.ID)
+	if err != nil || pending == nil || pending.Stage != "done" {
+		t.Fatalf("completed cleanup = %+v err=%v", pending, err)
+	}
+}
+
+func TestServiceRestoreLateRetryAfterNewDelete(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-restore-late-create")
+	if err := f.svc.Delete(context.Background(), value.ID, "service-restore-late-delete-one"); err != nil {
+		t.Fatalf("first Delete: %v", err)
+	}
+	const restoreRequest = "service-restore-late-old"
+	if _, err := f.restart(t).Restore(context.Background(), value.ID, restoreRequest); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if err := f.restart(t).Delete(context.Background(), value.ID, "service-restore-late-delete-two"); err != nil {
+		t.Fatalf("second Delete: %v", err)
+	}
+
+	if _, err := f.restart(t).Restore(context.Background(), value.ID, restoreRequest); !errors.Is(err, ErrWorkRequestIDConflict) {
+		t.Fatalf("late Restore = %v, want request conflict", err)
+	}
+	if _, err := f.store.LoadProjection(value.ID); !errors.Is(err, ErrWorkNotFound) {
+		t.Fatalf("late Restore moved deleted Work active: %v", err)
+	}
+}
+
 func TestServiceRestoreActiveReservesRequest(t *testing.T) {
 	f := newServiceFixture(t)
 	value := mustServiceCreate(t, f.svc, "service-restore-active-create")
@@ -371,6 +487,17 @@ func TestServiceRestoreActiveReservesRequest(t *testing.T) {
 	}
 	if duplicate.Revision != 3 {
 		t.Fatalf("duplicate active Restore revision = %d, want 3", duplicate.Revision)
+	}
+	name := "edited after restore"
+	updated, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID: value.ID, Name: &name, ExpectedRevision: 3, RequestID: "service-restore-active-edit",
+	})
+	if err != nil || updated.Revision != 4 {
+		t.Fatalf("UpdateDraft after Restore = %+v err=%v", updated, err)
+	}
+	duplicate, err = f.restart(t).Restore(context.Background(), value.ID, "service-restore-active")
+	if err != nil || duplicate.Revision != 4 || duplicate.Work.Name != name {
+		t.Fatalf("Restore retry after non-lifecycle update = %+v err=%v", duplicate, err)
 	}
 	if _, err := f.svc.Archive(context.Background(), value.ID, "service-restore-active-archive"); err != nil {
 		t.Fatalf("Archive after active Restore: %v", err)

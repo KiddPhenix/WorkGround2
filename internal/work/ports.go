@@ -11,6 +11,8 @@ type WorkStore interface {
 	LoadProjection(workID string) (*Work, error)
 	// LoadState 在同一 Work 写锁内加载投影、当前 revision 和可选 requestID 状态。
 	LoadState(workID, requestID string) (*Work, WorkEventState, error)
+	// LoadTrashState 从回收站事件日志加载同样的权威状态，不修改或恢复目录。
+	LoadTrashState(workID, requestID string) (*Work, WorkEventState, error)
 	// LoadArchive 加载已归档的 WorkRecord。
 	LoadArchive(workID string) (*WorkRecord, error)
 	// Append 追加一条持久化 WorkEvent 到事件日志，返回分配 revision。
@@ -33,9 +35,11 @@ type WorkStore interface {
 
 // WorkEventState 是 Service 执行幂等和乐观并发校验所需的持久化状态。
 type WorkEventState struct {
-	Revision        int64 `json:"revision"`
-	RequestRevision int64 `json:"requestRevision,omitempty"`
-	RequestFound    bool  `json:"requestFound"`
+	Revision          int64         `json:"revision"`
+	LifecycleRevision int64         `json:"lifecycleRevision,omitempty"`
+	RequestRevision   int64         `json:"requestRevision,omitempty"`
+	RequestType       WorkEventType `json:"requestType,omitempty"`
+	RequestFound      bool          `json:"requestFound"`
 }
 
 // TaskExecutor 是 WorkRunner 用来执行单个 Task 的窄端口。
