@@ -1153,7 +1153,9 @@ func TestFileWorkStore_MoveToTrashReportsCleanupMarkerFailure(t *testing.T) {
 	if !errors.As(err, &recovery) || !errors.Is(err, removeErr) || !errors.Is(err, markerErr) {
 		t.Fatalf("MoveToTrash lost joined recovery errors: %v", err)
 	}
-	if !recovery.Committed || recovery.MarkerPersisted || recovery.RequestID != "req-marker-failure" || recovery.Stage != "removing_source" {
+	if recovery.Operation != "trash" || recovery.WorkID != workID || recovery.RequestID != "req-marker-failure" ||
+		recovery.Stage != "removing_source" || !samePath(recovery.CleanupPath, wp) ||
+		!recovery.Committed || recovery.MarkerPersisted {
 		t.Fatalf("cleanup recovery evidence = %+v", recovery)
 	}
 
@@ -1164,6 +1166,69 @@ func TestFileWorkStore_MoveToTrashReportsCleanupMarkerFailure(t *testing.T) {
 	}
 	if store.isDirWithData(wp) || !store.isDirWithData(tp) {
 		t.Fatal("marker failure retry did not converge to trash")
+	}
+}
+
+func TestFileWorkStore_RestoreReportsCleanupMarkerFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-restore-marker-failure"
+	createTestWork(t, store, workID)
+	wp, _ := store.workPath(workID)
+	tp, _ := store.trashPath(workID)
+	if err := ReleaseWorkLease(wp); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MoveToTrash(workID, "req-prepare-restore-marker"); err != nil {
+		t.Fatalf("prepare trash: %v", err)
+	}
+
+	originalRename := renameWorkDir
+	originalRemove := removeWorkDir
+	originalWrite := writeDerivedFile
+	t.Cleanup(func() {
+		renameWorkDir = originalRename
+		removeWorkDir = originalRemove
+		writeDerivedFile = originalWrite
+	})
+	renameWorkDir = func(src, dst string) error {
+		if samePath(src, tp) && samePath(dst, wp) {
+			return errors.New("injected cross-volume restore")
+		}
+		return originalRename(src, dst)
+	}
+	removeErr := errors.New("injected trash source removal failure")
+	removeWorkDir = func(path string) error {
+		if samePath(path, tp) {
+			return removeErr
+		}
+		return originalRemove(path)
+	}
+	markerErr := errors.New("injected restore cleanup marker failure")
+	writeDerivedFile = func(path string, data []byte, perm os.FileMode) error {
+		if samePath(filepath.Dir(path), wp) && filepath.Base(path) == "cleanup-pending.json" && strings.Contains(string(data), removeErr.Error()) {
+			return markerErr
+		}
+		return originalWrite(path, data, perm)
+	}
+
+	err := store.RestoreFromTrash(workID, "req-restore-marker-failure")
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, removeErr) || !errors.Is(err, markerErr) {
+		t.Fatalf("RestoreFromTrash lost joined recovery errors: %v", err)
+	}
+	if recovery.Operation != "restore" || recovery.WorkID != workID || recovery.RequestID != "req-restore-marker-failure" ||
+		recovery.Stage != "removing_source" || !samePath(recovery.CleanupPath, tp) ||
+		!recovery.Committed || recovery.MarkerPersisted {
+		t.Fatalf("restore cleanup recovery evidence = %+v", recovery)
+	}
+
+	removeWorkDir = originalRemove
+	writeDerivedFile = originalWrite
+	if err := store.RestoreFromTrash(workID, "req-restore-marker-failure"); err != nil {
+		t.Fatalf("same-request restore after marker failure: %v", err)
+	}
+	if !store.isDirWithData(wp) || store.isDirWithData(tp) {
+		t.Fatal("restore marker failure retry did not converge to active work")
 	}
 }
 
@@ -1789,6 +1854,76 @@ func TestFileWorkStore_CreateWorkDirReportsTempCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestFileWorkStore_CreateWorkDirRetriesMarkerlessTemp(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-create-markerless-cleanup"
+	input := CreateWorkDirInput{
+		RequestID: "req-create-markerless-cleanup",
+		Work: &Work{
+			SchemaVersion: SchemaVersion,
+			ID:            workID,
+			Name:          "Markerless cleanup",
+			State:         WorkDraft,
+			ArchiveState:  ArchiveActive,
+			BlueprintRef:  BlueprintRef{ID: "blueprint:test", SchemaVersion: 1, Version: 1},
+			CreatedAt:     time.Now().UTC(),
+			UpdatedAt:     time.Now().UTC(),
+		},
+		Blobs: map[string][]byte{digestPrefix + strings.Repeat("0", 64): []byte("wrong digest")},
+	}
+
+	originalRemove := removeWorkDir
+	originalWrite := writeDerivedFile
+	t.Cleanup(func() {
+		removeWorkDir = originalRemove
+		writeDerivedFile = originalWrite
+	})
+	removeErr := errors.New("injected markerless create RemoveAll failure")
+	removeWorkDir = func(path string) error {
+		if strings.HasPrefix(filepath.Base(filepath.Clean(path)), ".new-"+workID+"-") {
+			return removeErr
+		}
+		return originalRemove(path)
+	}
+	markerErr := errors.New("injected markerless create marker failure")
+	writeDerivedFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == "cleanup-pending.json" && strings.HasPrefix(filepath.Base(filepath.Dir(path)), ".new-"+workID+"-") {
+			return markerErr
+		}
+		return originalWrite(path, data, perm)
+	}
+
+	err := store.CreateWorkDir(input)
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, ErrWorkDigestMismatch) || !errors.Is(err, removeErr) || !errors.Is(err, markerErr) {
+		t.Fatalf("CreateWorkDir markerless cleanup errors = %v", err)
+	}
+	if recovery.Operation != "create" || recovery.WorkID != workID || recovery.RequestID != input.RequestID ||
+		recovery.Stage != "cleanup_failed" || recovery.CleanupPath == "" || recovery.Committed || recovery.MarkerPersisted {
+		t.Fatalf("markerless cleanup recovery evidence = %+v", recovery)
+	}
+	if _, err := os.Stat(filepath.Join(recovery.CleanupPath, "cleanup-pending.json")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup marker unexpectedly persisted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(recovery.CleanupPath, "manifest.json")); err != nil {
+		t.Fatalf("markerless temp lost request manifest evidence: %v", err)
+	}
+
+	removeWorkDir = originalRemove
+	writeDerivedFile = originalWrite
+	input.Blobs = nil
+	if err := store.CreateWorkDir(input); err != nil {
+		t.Fatalf("same-request markerless cleanup retry: %v", err)
+	}
+	if _, err := os.Stat(recovery.CleanupPath); !os.IsNotExist(err) {
+		t.Fatalf("create retry left markerless temp %s: %v", recovery.CleanupPath, err)
+	}
+	wp, _ := store.workPath(workID)
+	if !store.isDirWithData(wp) {
+		t.Fatal("markerless cleanup retry did not expose final work")
+	}
+}
+
 func TestFileWorkStore_CreateWorkDirReportsLeaseReleaseFailure(t *testing.T) {
 	store := newTestStore(t)
 	workID := "work-create-release-failure"
@@ -1820,8 +1955,17 @@ func TestFileWorkStore_CreateWorkDirReportsLeaseReleaseFailure(t *testing.T) {
 	}
 
 	err := store.CreateWorkDir(input)
-	if !errors.Is(err, releaseErr) || !strings.Contains(err.Error(), input.RequestID) {
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, releaseErr) || !strings.Contains(err.Error(), input.RequestID) {
 		t.Fatalf("CreateWorkDir lease release error lost context: %v", err)
+	}
+	if recovery.Operation != "create" || recovery.WorkID != workID || recovery.RequestID != input.RequestID ||
+		recovery.Stage != "lease_release_failed" || recovery.CleanupPath == "" || recovery.Committed || recovery.MarkerPersisted {
+		t.Fatalf("create lease recovery evidence = %+v", recovery)
+	}
+	if !strings.HasPrefix(filepath.Base(filepath.Clean(recovery.CleanupPath)), ".new-"+workID+"-") ||
+		!samePath(filepath.Dir(recovery.CleanupPath), store.WorkDir()) {
+		t.Fatalf("create lease cleanup path = %q", recovery.CleanupPath)
 	}
 	wp, _ := store.workPath(workID)
 	if store.isDirWithData(wp) {
