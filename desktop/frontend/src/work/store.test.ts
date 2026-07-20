@@ -47,10 +47,10 @@ function makeBlock(id: string, revision: number, patch: Partial<BlockInstance> =
   };
 }
 
-function makeRun(id: string, state: WorkflowRun['state']): WorkflowRun {
+function makeRun(id: string, state: WorkflowRun['state'], workID = 'work-1'): WorkflowRun {
   return {
     id,
-    workId: 'work-1',
+    workId: workID,
     definitionDigest: 'digest',
     state,
     stages: [],
@@ -175,15 +175,20 @@ test('snapshot is event-idempotent and rejects stale/conflicting revisions', () 
   equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'current', 'conflict does not overwrite projection');
 });
 
-test('delta handles duplicate, late and revision gap explicitly', () => {
+test('delta handles duplicate, late and retains the highest revision gap', () => {
   reset();
   applySnapshot(makeView('work-1', 1));
   const update = delta('delta-2', 2, 1, { name: 'updated' });
   equal(applyWorkViewEvent(update).kind, 'applied', 'contiguous delta applies');
   equal(applyWorkViewEvent(update).kind, 'duplicate', 'repeated eventID is duplicate');
   equal(applyWorkViewEvent(delta('late', 1, 0, { name: 'late' })).kind, 'stale', 'late revision is stale');
-  equal(applyWorkViewEvent(delta('gap', 5, 4, { name: 'gap' })).kind, 'gap', 'base mismatch reports gap');
+  equal(applyWorkViewEvent(delta('gap-4', 4, 3, { name: 'gap-4' })).kind, 'gap', 'first base mismatch reports gap');
+  equal(applyWorkViewEvent(delta('gap-5', 5, 4, { name: 'gap-5' })).kind, 'gap', 'consecutive mismatch reports gap');
   equal(useWorkStore.getState().gaps['work-1']?.reason, 'base_revision_mismatch', 'gap remains observable');
+  equal(useWorkStore.getState().gaps['work-1']?.eventRevision, 5, 'highest observed gap revision is retained');
+  applyWorkViewEvent(snapshot(makeView('work-1', 4, { name: 'low-water' }), 'low-water-4'));
+  equal(useWorkStore.getState().gaps['work-1']?.eventRevision, 5, 'lower snapshot cannot clear the high-water gap');
+  equal(useWorkStore.getState().gaps['work-1']?.currentRevision, 4, 'gap records snapshot progress');
 });
 
 test('removed deletes the projection but keeps a revision tombstone', () => {
@@ -217,7 +222,7 @@ test('removedBlockIds creates a retained block tombstone', () => {
   equal(block.revision, 4, 'removedBlockIds advances block revision');
 });
 
-test('terminal Work and Run states do not regress through delta or snapshot', () => {
+test('terminal Run does not regress and invalid Work terminal transition is ignored', () => {
   reset();
   applySnapshot(makeView('work-1', 1, { state: 'completed', runs: [makeRun('run-1', 'completed')] }));
   applyWorkViewEvent(delta('terminal-delta', 2, 1, { state: 'running', runs: [makeRun('run-1', 'running')] }));
@@ -228,6 +233,38 @@ test('terminal Work and Run states do not regress through delta or snapshot', ()
   work = selectWork(useWorkStore.getState().works, 'work-1');
   equal(work?.state, 'completed', 'snapshot cannot replace a Work terminal state');
   equal(work?.runs[0].state, 'completed', 'snapshot cannot replace a Run terminal state');
+});
+
+test('completed Work starts a new Run and ignores a late old completion', () => {
+  reset();
+  applySnapshot(makeView('work-1', 1, { state: 'completed', runs: [makeRun('run-1', 'completed')] }));
+  equal(
+    applyWorkViewEvent(delta('rerun-started', 2, 1, { state: 'running', runs: [makeRun('run-2', 'running')] })).kind,
+    'applied',
+    'legal rerun delta applies',
+  );
+  let work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.state, 'running', 'new Run moves completed Work back to running');
+  equal(work?.runs.length, 2, 'delta upserts the new Run without deleting history');
+  equal(work?.runs.find((run) => run.id === 'run-2')?.state, 'running', 'new Run remains active');
+
+  equal(
+    applyWorkViewEvent(delta('late-old-completion', 3, 2, { state: 'completed', runs: [makeRun('run-1', 'completed')] })).kind,
+    'applied',
+    'late old completion is handled idempotently',
+  );
+  work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.state, 'running', 'old completion cannot complete Work with a newer active Run');
+  equal(work?.runs.find((run) => run.id === 'run-2')?.state, 'running', 'old completion cannot remove the active Run');
+
+  equal(
+    applyWorkViewEvent(snapshot(makeView('work-1', 4, { state: 'completed', runs: [makeRun('run-1', 'completed')] }), 'late-old-snapshot')).kind,
+    'applied',
+    'late old completion snapshot remains recoverable',
+  );
+  work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.state, 'running', 'old completion snapshot cannot regress active rerun state');
+  equal(work?.runs.find((run) => run.id === 'run-2')?.state, 'running', 'old snapshot cannot delete the active Run');
 });
 
 test('UI state is isolated by work and face and survives business snapshots', () => {
@@ -248,13 +285,14 @@ test('UI state is isolated by work and face and survives business snapshots', ()
   equal(second?.faces.front.draft, 'other draft', 'work IDs are isolated');
 });
 
-test('adapter deduplicates automatic gap backfill and preserves draft', async () => {
+test('adapter deduplicates recovery and fetches through the highest gap revision', async () => {
   reset();
   applySnapshot(makeView('work-1', 1));
   useWorkUIStore.getState().setDraft('work-1', 'back', 'keep me');
-  const pending = deferred<WorkView>();
+  const lowWater = deferred<WorkView>();
+  const highWater = deferred<WorkView>();
   const port = new TestPort();
-  port.fetch = () => pending.promise;
+  port.fetch = () => port.fetchCount === 1 ? lowWater.promise : highWater.promise;
   const adapter = new WorkControllerAdapter(port);
   adapter.subscribe('work-1');
   port.emit('work-1', delta('gap-a', 3, 2, { name: 'gap-a' }));
@@ -262,10 +300,42 @@ test('adapter deduplicates automatic gap backfill and preserves draft', async ()
   const joined = adapter.recoverSnapshot('work-1');
   await Promise.resolve();
   equal(port.fetchCount, 1, 'concurrent gap recovery uses one fetch');
-  pending.resolve(makeView('work-1', 5, { name: 'backfilled' }));
+  lowWater.resolve(makeView('work-1', 3, { name: 'low-water' }));
+  await Promise.resolve();
+  await Promise.resolve();
+  equal(port.fetchCount, 2, 'low-water snapshot triggers another fetch');
+  equal(useWorkStore.getState().gaps['work-1']?.eventRevision, 4, 'low-water snapshot keeps highest gap observable');
+  highWater.resolve(makeView('work-1', 4, { name: 'backfilled' }));
   await joined;
   equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'backfilled', 'backfill snapshot applies');
   equal(selectCardState(useWorkUIStore.getState().cardByWork, 'work-1')?.faces.back.draft, 'keep me', 'backfill keeps UI draft');
+  adapter.dispose();
+});
+
+test('failed progressive backfill keeps the gap and retries safely', async () => {
+  reset();
+  applySnapshot(makeView('work-1', 1));
+  applyWorkViewEvent(delta('gap-3', 3, 2, { name: 'gap-3' }));
+  applyWorkViewEvent(delta('gap-4', 4, 3, { name: 'gap-4' }));
+  const port = new TestPort();
+  port.fetch = async () => {
+    if (port.fetchCount === 1) return makeView('work-1', 3, { name: 'partial' });
+    throw new Error('offline after partial snapshot');
+  };
+  const adapter = new WorkControllerAdapter(port);
+  let failed = false;
+  try { await adapter.recoverSnapshot('work-1'); } catch { failed = true; }
+  ok(failed, 'failed follow-up fetch rejects');
+  equal(port.fetchCount, 2, 'progressive recovery attempted the follow-up fetch');
+  equal(useWorkStore.getState().gaps['work-1']?.eventRevision, 4, 'failed follow-up keeps the high-water gap');
+  equal(useWorkStore.getState().gaps['work-1']?.currentRevision, 3, 'failed follow-up preserves applied progress');
+  equal(adapter.getStatus('work-1').snapshotError, 'offline after partial snapshot', 'follow-up failure is observable');
+
+  port.fetch = async () => makeView('work-1', 4, { name: 'recovered' });
+  await adapter.recoverSnapshot('work-1');
+  equal(port.fetchCount, 3, 'retry performs a new fetch');
+  equal(useWorkStore.getState().gaps['work-1'], undefined, 'retry clears the gap at high-water');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'recovered', 'retry applies the complete snapshot');
   adapter.dispose();
 });
 
@@ -344,6 +414,30 @@ test('adapter rejects cross-work subscription events explicitly', () => {
   ok(adapter.getStatus('work-1').eventError?.includes('work-2'), 'cross-work event is observable');
   equal(selectWork(useWorkStore.getState().works, 'work-2'), undefined, 'cross-work event does not mutate another projection');
   adapter.dispose();
+});
+
+test('store rejects cross-work payload ownership and object contexts', () => {
+  reset();
+  applySnapshot(makeView('work-1', 1));
+  equal(
+    applyWorkViewEvent(delta('foreign-run', 2, 1, { runs: [makeRun('run-2', 'running', 'work-2')] })).kind,
+    'conflict',
+    'cross-work Run delta conflicts',
+  );
+  equal(useWorkStore.getState().revisions['work-1'], 1, 'cross-work Run cannot advance work-1');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.runs.length, 0, 'cross-work Run cannot enter work-1');
+
+  equal(
+    applyWorkViewEvent(snapshot(makeView('work-1', 2, { runs: [makeRun('run-3', 'running', 'work-2')] }), 'foreign-snapshot')).kind,
+    'conflict',
+    'cross-work Run snapshot conflicts',
+  );
+  equal(useWorkStore.getState().revisions['work-1'], 1, 'cross-work snapshot cannot advance work-1');
+
+  const wrongContext = delta('foreign-context', 2, 1, { runs: [makeRun('run-4', 'running')] });
+  wrongContext.object = { kind: 'run', id: 'run-4', parentID: 'work-2' };
+  equal(applyWorkViewEvent(wrongContext).kind, 'conflict', 'cross-work object context conflicts');
+  equal(useWorkStore.getState().revisions['work-1'], 1, 'cross-work context cannot mutate work-1');
 });
 
 let passed = 0;
