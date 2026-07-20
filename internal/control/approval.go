@@ -96,6 +96,10 @@ func (a *approvalManager) register(tool, subject, reason string) (string, chan a
 // permission or a fresh user decision. Fresh decisions are not auto-drained when
 // the user switches to auto/yolo tool approval while the prompt is visible.
 func (a *approvalManager) registerDecision(tool, subject, reason string, fresh bool) (string, chan approvalReply) {
+	return a.registerApprovalDecision(event.Approval{Tool: tool, Subject: subject, Reason: reason}, fresh)
+}
+
+func (a *approvalManager) registerApprovalDecision(approval event.Approval, fresh bool) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
@@ -103,9 +107,9 @@ func (a *approvalManager) registerDecision(tool, subject, reason string, fresh b
 	reply := make(chan approvalReply, 1)
 	autoDrain := false
 	if !fresh {
-		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
+		autoDrain = a.autoApprovalWouldAllowLocked(approval.Tool, approval.Subject)
 	}
-	a.approvals[id] = pendingApproval{tool: tool, subject: subject, reason: reason, fresh: fresh, autoDrain: autoDrain, reply: reply}
+	a.approvals[id] = pendingApproval{tool: approval.Tool, subject: approval.Subject, reason: approval.Reason, context: approval, fresh: fresh, autoDrain: autoDrain, reply: reply}
 	return id, reply
 }
 
@@ -222,7 +226,9 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	defer a.mu.Unlock()
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
-		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason})
+		approval := p.context
+		approval.ID, approval.Tool, approval.Subject, approval.Reason = id, p.tool, p.subject, p.reason
+		approvals = append(approvals, approval)
 	}
 	asks := make([]event.Ask, 0, len(a.asks))
 	for id, p := range a.asks {

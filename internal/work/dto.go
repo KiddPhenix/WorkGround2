@@ -156,10 +156,17 @@ type BlockCompatIssue struct {
 
 // ActionReceipt 是 Block action 执行的回执。
 type ActionReceipt struct {
-	ActionID  string `json:"actionId"`
-	Status    string `json:"status"`
-	Message   string `json:"message,omitempty"`
-	RequestID string `json:"requestId"`
+	WorkID       string          `json:"workId"`
+	BlockID      string          `json:"blockId"`
+	ActionID     string          `json:"actionId"`
+	Status       string          `json:"status"`
+	Message      string          `json:"message,omitempty"`
+	RequestID    string          `json:"requestId"`
+	Fingerprint  string          `json:"fingerprint"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Retryable    bool            `json:"retryable"`
+	OutcomeKnown bool            `json:"outcomeKnown"`
+	Revision     int64           `json:"revision"`
 }
 
 // BlockUpsertInput is a request to upsert a BlockInstance with revision-based
