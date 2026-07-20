@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -317,12 +318,42 @@ func TestControllerLookupSessionAdapter(t *testing.T) {
 
 func TestControllerLookupSessionRejectsOutsideDir(t *testing.T) {
 	dir := t.TempDir()
-	outside := filepath.Join(t.TempDir(), "outside.jsonl")
-	if err := agent.NewSession("system").SaveSnapshot(outside); err != nil {
+	outsideDir := t.TempDir()
+	existing := filepath.Join(outsideDir, "outside.jsonl")
+	if err := agent.NewSession("system").SaveSnapshot(existing); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
 	c := New(Options{SessionDir: dir})
-	if _, _, err := c.LookupSession(context.Background(), outside); err == nil || !strings.Contains(err.Error(), "outside SessionDir") {
-		t.Fatalf("outside lookup error = %v", err)
+	for _, path := range []string{existing, filepath.Join(outsideDir, "missing.jsonl")} {
+		ref, found, err := c.LookupSession(context.Background(), path)
+		if err == nil || !strings.Contains(err.Error(), "outside SessionDir") {
+			t.Fatalf("outside lookup %q error = %v", path, err)
+		}
+		if found || ref != (work.SessionRef{}) {
+			t.Fatalf("outside lookup %q = (%+v, %v), want rejected zero result", path, ref, found)
+		}
+	}
+}
+
+func TestControllerLookupSessionMissingInsideDir(t *testing.T) {
+	dir := t.TempDir()
+	c := New(Options{SessionDir: dir})
+	ref, found, err := c.LookupSession(context.Background(), filepath.Join(dir, "missing.jsonl"))
+	if err != nil || found || ref != (work.SessionRef{}) {
+		t.Fatalf("inside missing lookup = (%+v, %v, %v)", ref, found, err)
+	}
+}
+
+func TestControllerLookupSessionCanceledContextWins(t *testing.T) {
+	dir := t.TempDir()
+	c := New(Options{SessionDir: dir})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ref, found, err := c.LookupSession(ctx, filepath.Join(t.TempDir(), "outside.jsonl"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled lookup error = %v, want context.Canceled", err)
+	}
+	if found || ref != (work.SessionRef{}) {
+		t.Fatalf("canceled lookup = (%+v, %v), want zero result", ref, found)
 	}
 }
