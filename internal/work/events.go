@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -369,6 +370,10 @@ type WorkEventReplay struct {
 	LastGoodEnd int64
 	// LogSize is the total log size that was replayed.
 	LogSize int64
+	// LogFingerprint is the SHA-256 of the exact log bytes observed by replay.
+	// Repair compares it after taking the lease so same-size replacements cannot
+	// be mistaken for the previously validated file generation.
+	LogFingerprint string
 	// NeedsRepair is set when replay stopped early on a torn/corrupt record
 	// or a broken append chain.
 	NeedsRepair bool
@@ -677,9 +682,10 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 // unsupported schema/type. The state up to that point is returned; when
 // NeedsRepair is true the writer may repair the tail.
 //
-// Future schema, unknown event types, and a live external lease result in
-// ReadOnly=true. Historical (non-live) external writerIDs do NOT cause
-// ReadOnly — a new process can acquire the lease and write.
+// Future schema, unknown event types, a live external lease, and any historical
+// record from a non-current writer result in ReadOnly=true. A stale OS lock does
+// not itself grant trust in records from another writer; takeover requires an
+// explicit ownership/handoff path outside this append API.
 //
 // If the index is missing or corrupt, it is silently rebuilt from the log.
 func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
@@ -697,7 +703,7 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 			LeaseExternal:  true,
 		}, nil
 	}
-	f, err := os.Open(logPath)
+	info, err := os.Stat(logPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			replay := &WorkEventReplay{}
@@ -707,16 +713,18 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 		}
 		return nil, err
 	}
-	defer f.Close()
-
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
 	if info.IsDir() {
 		return nil, fmt.Errorf("work: event log path is a directory: %s", logPath)
 	}
-	replay := &WorkEventReplay{LogSize: info.Size()}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		return nil, err
+	}
+	fingerprint := sha256.Sum256(data)
+	replay := &WorkEventReplay{
+		LogSize:        int64(len(data)),
+		LogFingerprint: fmt.Sprintf("%x", fingerprint[:]),
+	}
 
 	// Load index. If corrupt, ignore it — log is the source of truth.
 	// The caller (AppendWorkEvent) will try to rebuild on write.
@@ -726,7 +734,7 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 	}
 	replay.Index = diskIndex
 
-	dec := json.NewDecoder(f)
+	dec := json.NewDecoder(bytes.NewReader(data))
 	var lastRevision int64
 	for {
 		var rec workEventRecord
@@ -757,9 +765,18 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 			return replay, nil
 		}
 
-		// writerID must be non-empty.
-		if rec.WriterID == "" {
+		// A record is writable only when its persisted owner is the current
+		// process writer. The OS lease prevents concurrent writes; it does not
+		// implicitly trust history left by another writer.
+		if strings.TrimSpace(rec.WriterID) == "" {
 			replay.NeedsRepair = true
+			return replay, nil
+		}
+		if rec.WriterID != WorkWriterID() {
+			replay.ReadOnly = true
+			replay.ReadOnlyReason = fmt.Sprintf(
+				"historical event revision %d is owned by foreign writer %q; current writer %q is not trusted to mutate it",
+				rec.Revision, rec.WriterID, WorkWriterID())
 			return replay, nil
 		}
 		if strings.TrimSpace(rec.ID) == "" || strings.TrimSpace(rec.WorkID) == "" {
@@ -831,6 +848,58 @@ func workEventIndexesEqual(a, b *WorkEventIndex) bool {
 	return true
 }
 
+func decodeCompactProjection(payload json.RawMessage) (*Work, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if fields == nil {
+		return nil, fmt.Errorf("compact payload must be a JSON object")
+	}
+
+	if _, modern := fields["projection"]; modern {
+		var envelope struct {
+			Projection   json.RawMessage             `json:"projection"`
+			RequestIndex map[string]WorkRequestEntry `json:"requestIndex,omitempty"`
+		}
+		if err := decodeStrictJSON(payload, &envelope); err != nil {
+			return nil, fmt.Errorf("invalid compact envelope: %w", err)
+		}
+		return decodeCompactWork(envelope.Projection, "projection")
+	}
+
+	if _, legacy := fields["id"]; !legacy {
+		return nil, fmt.Errorf("compact payload has neither projection nor legacy work id")
+	}
+	return decodeCompactWork(payload, "legacy projection")
+}
+
+func decodeCompactWork(data json.RawMessage, kind string) (*Work, error) {
+	var projection Work
+	if err := decodeStrictJSON(data, &projection); err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", kind, err)
+	}
+	if strings.TrimSpace(projection.ID) == "" {
+		return nil, fmt.Errorf("%s work id is required", kind)
+	}
+	return &projection, nil
+}
+
+func decodeStrictJSON(data []byte, dst any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return fmt.Errorf("unexpected trailing JSON value: %w", err)
+	}
+	return nil
+}
+
 // ReplayWithReducer replays the event log and applies a reducer to build a
 // projection. It transparently handles internal EventCompact events internally
 // — the reducer never sees them.
@@ -847,20 +916,9 @@ func ReplayWithReducer(workDir string, reducer WorkEventReducer) (*WorkEventRepl
 	var projection *Work
 	for _, e := range replay.Events {
 		if e.Type == eventCompact {
-			// Internal compact event: extract projection from wrapper payload.
-			var cp struct {
-				Projection   Work                        `json:"projection"`
-				RequestIndex map[string]WorkRequestEntry `json:"requestIndex,omitempty"`
-			}
-			if err := json.Unmarshal(e.Payload, &cp); err != nil {
-				// Fall back: legacy compact events had the Work directly.
-				var snap Work
-				if err2 := json.Unmarshal(e.Payload, &snap); err2 != nil {
-					return replay, nil, fmt.Errorf("work: decode compact snapshot at revision %d: %w", e.Revision, err)
-				}
-				projection = &snap
-			} else {
-				projection = &cp.Projection
+			projection, err = decodeCompactProjection(e.Payload)
+			if err != nil {
+				return replay, nil, fmt.Errorf("work: decode compact snapshot at revision %d: %w", e.Revision, err)
 			}
 			continue
 		}
@@ -931,19 +989,10 @@ func CompactWorkEventLog(workDir string, projection *Work, reducer WorkEventRedu
 		var p *Work
 		for _, e := range replay.Events {
 			if e.Type == eventCompact {
-				var cp struct {
-					Projection   Work                        `json:"projection"`
-					RequestIndex map[string]WorkRequestEntry `json:"requestIndex,omitempty"`
-				}
-				if err := json.Unmarshal(e.Payload, &cp); err != nil {
-					// Legacy fallback.
-					var snap Work
-					if err2 := json.Unmarshal(e.Payload, &snap); err2 != nil {
-						return nil, err
-					}
-					p = &snap
-				} else {
-					p = &cp.Projection
+				var decodeErr error
+				p, decodeErr = decodeCompactProjection(e.Payload)
+				if decodeErr != nil {
+					return nil, fmt.Errorf("decode compact snapshot at revision %d: %w", e.Revision, decodeErr)
 				}
 				continue
 			}
@@ -1070,6 +1119,9 @@ func RepairWorkEventLogTail(workDir string, replay *WorkEventReplay) error {
 		return fmt.Errorf("work: stale replay: current size/end/repair=%d/%d/%t, replay=%d/%d/%t",
 			current.LogSize, current.LastGoodEnd, current.NeedsRepair,
 			replay.LogSize, replay.LastGoodEnd, replay.NeedsRepair)
+	}
+	if current.LogFingerprint == "" || replay.LogFingerprint == "" || current.LogFingerprint != replay.LogFingerprint {
+		return fmt.Errorf("work: stale replay: event log content fingerprint changed")
 	}
 	if !current.NeedsRepair {
 		if current.IndexNeedsRebuild {
