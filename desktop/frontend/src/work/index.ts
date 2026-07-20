@@ -7,3 +7,43 @@ export {
   deltaAppliesTo,
 } from './parse';
 export type { ViewParseResult } from './parse';
+export {
+  useWorkStore,
+  useWorkUIStore,
+  applyWorkViewEvent,
+  applySnapshot,
+  applyDelta,
+  removeProjection,
+  defaultCardState,
+  selectWorkView,
+  selectWork,
+  selectWorkRevision,
+  selectWorkIDs,
+  selectWorksByState,
+  selectCardState,
+  selectExpanded,
+} from './store';
+export type {
+  GapReason,
+  WorkGap,
+  WorkConflict,
+  ApplyResult,
+  BlockDeltaItem,
+  WorkDeltaPayload,
+  WorkStoreState,
+  WorkFace,
+  FaceScrollState,
+  WorkFaceLocalState,
+  WorkCardLocalState,
+  WorkUIPreference,
+  WorkUIStoreState,
+} from './store';
+export {
+  useWorkController,
+  WorkControllerAdapter,
+} from './controller';
+export type {
+  WorkControllerPort,
+  WorkController,
+  WorkControllerStatus,
+} from './controller';
