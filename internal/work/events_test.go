@@ -353,6 +353,89 @@ func TestAppendWorkEvent_WriterID_AlwaysOverwritten(t *testing.T) {
 	}
 }
 
+func TestReplayWorkEventLog_HistoricalForeignWriterReadOnly(t *testing.T) {
+	workDir := tempWorkDir(t)
+	acquireLease(t, workDir)
+
+	event := makeEvent(EventWorkCreated, 1, 0, "req-foreign-1", json.RawMessage(`{}`))
+	appendAndCheck(t, workDir, event, 1)
+
+	logPath := WorkEventLogPath(workDir)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec workEventRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	rec.WriterID = "foreign-writer"
+	data, err = json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(logPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := ReplayWorkEventLog(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.ReadOnly || !strings.Contains(replay.ReadOnlyReason, "foreign-writer") {
+		t.Fatalf("foreign historical writer must be observable and read-only: %+v", replay)
+	}
+
+	next := makeEvent(EventDraftUpdated, 2, 1, "req-foreign-2", json.RawMessage(`{}`))
+	if _, err := AppendWorkEvent(workDir, next, true); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("append should preserve foreign-owned evidence: %v", err)
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(data) {
+		t.Fatal("append changed a foreign-owned event log")
+	}
+}
+
+func TestReplayWorkEventLog_MixedWriterReadOnly(t *testing.T) {
+	workDir := tempWorkDir(t)
+	acquireLease(t, workDir)
+
+	appendAndCheck(t, workDir, makeEvent(EventWorkCreated, 1, 0, "req-mixed-1", json.RawMessage(`{}`)), 1)
+	appendAndCheck(t, workDir, makeEvent(EventDraftUpdated, 2, 1, "req-mixed-2", json.RawMessage(`{}`)), 2)
+
+	logPath := WorkEventLogPath(workDir)
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var rec workEventRecord
+	if err := json.Unmarshal([]byte(lines[1]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	rec.WriterID = "mixed-foreign-writer"
+	second, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append([]byte(lines[0]+"\n"), append(second, '\n')...)
+	if err := os.WriteFile(logPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	replay, err := ReplayWorkEventLog(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.ReadOnly || len(replay.Events) != 1 || !strings.Contains(replay.ReadOnlyReason, "mixed-foreign-writer") {
+		t.Fatalf("mixed writer history must stop at the foreign record: %+v", replay)
+	}
+}
+
 func TestWorkEventContentDigest_SelfReferencingFree(t *testing.T) {
 	rec := workEventRecord{
 		ID: "evt-1", RequestID: "req-1", WorkID: "work-1",
@@ -476,6 +559,58 @@ func TestRepairWorkEventLogTail_StaleReplayRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("error should mention stale: %v", err)
+	}
+}
+
+func TestRepairWorkEventLogTail_SameSizeReplacementRejected(t *testing.T) {
+	workDir := tempWorkDir(t)
+	acquireLease(t, workDir)
+
+	event := makeEvent(EventWorkCreated, 1, 0, "req-same-size-1", json.RawMessage(`{}`))
+	appendAndCheck(t, workDir, event, 1)
+
+	logPath := WorkEventLogPath(workDir)
+	original, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original = append(original, []byte("damage-a\n")...)
+	if err := os.WriteFile(logPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := ReplayWorkEventLog(workDir)
+	if err != nil || !replay.NeedsRepair {
+		t.Fatalf("expected damaged replay: replay=%+v err=%v", replay, err)
+	}
+
+	replaced := append([]byte(nil), original...)
+	copy(replaced[len(replaced)-len("damage-a\n"):], []byte("damage-b\n"))
+	if err := os.WriteFile(logPath, replaced, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if fileSize(t, logPath) != replay.LogSize {
+		t.Fatal("test replacement changed log size")
+	}
+
+	err = RepairWorkEventLogTail(workDir, replay)
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("same-size replacement must reject stale replay: %v", err)
+	}
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(replaced) {
+		t.Fatal("stale repair truncated or overwrote replacement evidence")
+	}
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "work.events.recovery-") {
+			t.Fatalf("stale repair should not create recovery output: %s", entry.Name())
+		}
 	}
 }
 
@@ -812,6 +947,78 @@ func TestReplayWithReducer_HandlesEventCompactInternally(t *testing.T) {
 		}
 	}
 	_ = proj2
+}
+
+func TestWorkEventReplayWithReducer_LegacyCompactPayload(t *testing.T) {
+	workDir := tempWorkDir(t)
+	want := Work{SchemaVersion: SchemaVersion, ID: "test-work-1", Name: "legacy projection", State: WorkCompleted}
+	payload, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeCompactRecord(t, workDir, payload)
+
+	_, got, err := ReplayWithReducer(workDir, reducer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != want.ID || got.Name != want.Name || got.State != want.State {
+		t.Fatalf("legacy compact projection mismatch: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestWorkEventCompactPayload_ModernAndMalformed(t *testing.T) {
+	modern := json.RawMessage(`{"projection":{"schemaVersion":1,"id":"test-work-1","name":"modern projection","state":"completed"},"requestIndex":{}}`)
+	workDir := tempWorkDir(t)
+	writeCompactRecord(t, workDir, modern)
+	_, got, err := ReplayWithReducer(workDir, reducer)
+	if err != nil || got == nil || got.ID != "test-work-1" || got.Name != "modern projection" {
+		t.Fatalf("modern compact projection failed: got=%+v err=%v", got, err)
+	}
+
+	for name, payload := range map[string]json.RawMessage{
+		"null":               json.RawMessage(`null`),
+		"empty_object":       json.RawMessage(`{}`),
+		"missing_projection": json.RawMessage(`{"requestIndex":{}}`),
+		"null_projection":    json.RawMessage(`{"projection":null}`),
+		"empty_projection":   json.RawMessage(`{"projection":{}}`),
+		"unknown_envelope":   json.RawMessage(`{"projection":{"id":"test-work-1"},"unexpected":true}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			workDir := tempWorkDir(t)
+			writeCompactRecord(t, workDir, payload)
+			if _, _, err := ReplayWithReducer(workDir, reducer); err == nil || !strings.Contains(err.Error(), "compact snapshot") {
+				t.Fatalf("malformed compact payload should fail explicitly: %v", err)
+			}
+		})
+	}
+}
+
+func writeCompactRecord(t *testing.T, workDir string, payload json.RawMessage) {
+	t.Helper()
+	rec := workEventRecord{
+		SchemaVersion: WorkEventSchemaVersion,
+		ID:            "compact-test",
+		WorkID:        "test-work-1",
+		Type:          eventCompact,
+		Revision:      4,
+		BaseRevision:  3,
+		Payload:       payload,
+		WriterID:      WorkWriterID(),
+		CreatedAt:     time.Now().UTC(),
+	}
+	var err error
+	rec.ContentDigest, err = workEventContentDigest(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(WorkEventLogPath(workDir), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // ── Chain break ────────────────────────────────────────────────────────────
