@@ -2663,8 +2663,6 @@ func DefaultReducer() WorkEventReducer {
 			return &w, nil
 		}
 
-		current.UpdatedAt = event.CreatedAt
-
 		switch event.Type {
 		case EventDraftUpdated:
 			var update struct {
@@ -2676,6 +2674,14 @@ func DefaultReducer() WorkEventReducer {
 			}
 			if err := json.Unmarshal(event.Payload, &update); err != nil {
 				return nil, fmt.Errorf("work: unmarshal draft update: %w", err)
+			}
+			var placements []BlockPlacement
+			if update.Placements != nil {
+				var placementErr error
+				placements, placementErr = validateBlockPlacements(current, update.Placements)
+				if placementErr != nil {
+					return nil, fmt.Errorf("work: validate draft placements: %w", placementErr)
+				}
 			}
 			if update.Name != nil {
 				current.Name = *update.Name
@@ -2698,7 +2704,7 @@ func DefaultReducer() WorkEventReducer {
 				current.State = update.State
 			}
 			if update.Placements != nil {
-				current.Placements = sortPlacements(update.Placements)
+				current.Placements = placements
 			}
 
 		case EventDefinitionFrozen:
@@ -2952,6 +2958,7 @@ func DefaultReducer() WorkEventReducer {
 			current.ArchiveState = ArchiveDeleted
 		}
 
+		current.UpdatedAt = event.CreatedAt
 		return current, nil
 	}
 }

@@ -472,10 +472,18 @@ func workEventContentDigest(r workEventRecord) (string, error) {
 
 // ErrWorkEventConflict is returned when a requestID is reused with different
 // content, or when the revision chain is broken.
+type WorkEventConflictKind string
+
+const (
+	WorkEventRequestConflict  WorkEventConflictKind = "request_id"
+	WorkEventRevisionConflict WorkEventConflictKind = "revision_chain"
+)
+
 type ErrWorkEventConflict struct {
-	Reason    string `json:"reason"`
-	RequestID string `json:"requestId,omitempty"`
-	WorkID    string `json:"workId,omitempty"`
+	Reason    string                `json:"reason"`
+	RequestID string                `json:"requestId,omitempty"`
+	WorkID    string                `json:"workId,omitempty"`
+	Kind      WorkEventConflictKind `json:"kind,omitempty"`
 }
 
 func (e *ErrWorkEventConflict) Error() string {
@@ -573,6 +581,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 				Reason:    fmt.Sprintf("requestID %q already used at revision %d with different content", event.RequestID, entry.Revision),
 				RequestID: event.RequestID,
 				WorkID:    event.WorkID,
+				Kind:      WorkEventRequestConflict,
 			}
 		}
 	}
@@ -590,6 +599,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 			return 0, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("first event must have revision=1 baseRevision=0, got revision=%d baseRevision=%d", event.Revision, event.BaseRevision),
 				WorkID: event.WorkID,
+				Kind:   WorkEventRevisionConflict,
 			}
 		}
 	} else {
@@ -597,12 +607,14 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 			return 0, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("revision chain broken: expected baseRevision=%d, got baseRevision=%d", lastRevision, event.BaseRevision),
 				WorkID: event.WorkID,
+				Kind:   WorkEventRevisionConflict,
 			}
 		}
 		if event.Revision != lastRevision+1 {
 			return 0, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("revision gap: expected revision=%d, got revision=%d", lastRevision+1, event.Revision),
 				WorkID: event.WorkID,
+				Kind:   WorkEventRevisionConflict,
 			}
 		}
 	}
