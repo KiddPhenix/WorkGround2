@@ -52,6 +52,7 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/store"
 	"workground2/internal/tool"
+	"workground2/internal/work"
 )
 
 // ErrTurnRunning reports that a caller tried to start a second foreground turn
@@ -205,6 +206,7 @@ type pendingApproval struct {
 	tool      string
 	subject   string
 	reason    string
+	context   event.Approval
 	fresh     bool
 	autoDrain bool
 	reply     chan approvalReply
@@ -467,6 +469,11 @@ func New(opts Options) *Controller {
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
 		workViews:                  opts.WorkViews,
+	}
+	if !nilutil.IsNil(opts.Work) {
+		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
+			binder.SetPermissionChecker(c)
+		}
 	}
 	c.loadTaskMemory(opts.SessionPath)
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -4620,6 +4627,8 @@ type approvalDecisionOptions struct {
 	// permission. It may reuse an explicit session grant, but YOLO/auto approval
 	// must not answer or drain the prompt.
 	fresh bool
+	// approval carries optional domain context retained for reconnect replay.
+	approval event.Approval
 }
 
 func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, tool, subject string, args json.RawMessage, reason string, opts approvalDecisionOptions) (approvalReply, error) {
@@ -4640,7 +4649,10 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	}
 	var id string
 	var reply chan approvalReply
-	if opts.fresh {
+	if opts.approval.WorkID != "" {
+		opts.approval.Tool, opts.approval.Subject, opts.approval.Reason = tool, subject, reason
+		id, reply = c.approval.registerApprovalDecision(opts.approval, opts.fresh)
+	} else if opts.fresh {
 		id, reply = c.approval.registerDecision(tool, subject, reason, true)
 	} else {
 		id, reply = c.approval.register(tool, subject, reason)
@@ -4650,7 +4662,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 		current: stringPtr("等待批准"), currentSource: stringPtr("approval"),
 		nextStep: stringPtr(strings.TrimSpace(subject)), nextStepSource: stringPtr("approval"),
 	})
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason}})
+	approvalEvent := opts.approval
+	approvalEvent.ID, approvalEvent.Tool, approvalEvent.Subject, approvalEvent.Reason = id, tool, subject, reason
+	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approvalEvent})
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
 		go c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs)
 	}

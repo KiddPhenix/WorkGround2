@@ -2909,6 +2909,42 @@ func DefaultReducer() WorkEventReducer {
 				}
 			}
 
+		case EventBlockActionReserved:
+			var rec ActionReceiptRecord
+			if err := json.Unmarshal(event.Payload, &rec); err != nil {
+				return nil, fmt.Errorf("work: unmarshal action reserved: %w", err)
+			}
+			if rec.RequestID == "" || rec.WorkID != current.ID || rec.BlockID == "" || rec.ActionID == "" || rec.Fingerprint == "" || rec.InputDigest == "" {
+				return nil, fmt.Errorf("work: action reserved: complete identity and fingerprints are required")
+			}
+			if rec.Status != ActionPending {
+				return nil, fmt.Errorf("work: action reserved: initial status must be pending, got %s", rec.Status)
+			}
+			if _, _, found := findActionReceipt(current.ActionReceipts, rec.RequestID); found {
+				return nil, fmt.Errorf("work: action reserved: duplicate requestID %q", rec.RequestID)
+			}
+			current.ActionReceipts = upsertActionReceipt(current.ActionReceipts, rec)
+
+		case EventBlockActionChanged:
+			var rec ActionReceiptRecord
+			if err := json.Unmarshal(event.Payload, &rec); err != nil {
+				return nil, fmt.Errorf("work: unmarshal action changed: %w", err)
+			}
+			if rec.RequestID == "" || rec.WorkID != current.ID || rec.ActionID == "" || rec.Fingerprint == "" {
+				return nil, fmt.Errorf("work: action changed: complete identity and fingerprint are required")
+			}
+			previous, _, found := findActionReceipt(current.ActionReceipts, rec.RequestID)
+			if !found {
+				return nil, fmt.Errorf("work: action changed: requestID %q was not reserved", rec.RequestID)
+			}
+			if previous.Fingerprint != rec.Fingerprint || previous.ActionID != rec.ActionID || previous.BlockID != rec.BlockID {
+				return nil, fmt.Errorf("work: action changed: immutable identity changed for requestID %q", rec.RequestID)
+			}
+			if !validActionTransition(previous.Status, rec.Status) {
+				return nil, fmt.Errorf("work: action changed: invalid transition %s -> %s for requestID %q", previous.Status, rec.Status, rec.RequestID)
+			}
+			current.ActionReceipts = upsertActionReceipt(current.ActionReceipts, rec)
+
 		case EventConclusionUpserted:
 			var c Conclusion
 			if err := json.Unmarshal(event.Payload, &c); err != nil {

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"sync/atomic"
 
 	"workground2/internal/agent"
+	"workground2/internal/event"
 	"workground2/internal/nilutil"
+	"workground2/internal/permission"
 	"workground2/internal/session"
 	"workground2/internal/work"
 )
@@ -38,6 +41,7 @@ type WorkService interface {
 	Archive(context.Context, string, string) (*work.WorkRecord, error)
 	Restore(context.Context, string, string) (*work.WorkView, error)
 	Delete(context.Context, string, string) error
+	ExecuteBlockAction(context.Context, work.BlockActionRequest) (*work.ActionReceipt, error)
 }
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
@@ -240,7 +244,61 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 }
 
 func (w workMethods) ExecuteBlockAction(ctx context.Context, input work.BlockActionRequest) (*work.ActionReceipt, error) {
-	return nil, errWorkNotImplemented("ExecuteBlockAction")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.ExecuteBlockAction(ctx, input)
+}
+
+// CheckPermission adapts Work actions to the same Policy and ApprovalRequest
+// stream used by ordinary tool calls. It blocks until an Ask is answered so the
+// Service can persist the final rejection/cancellation/execution outcome.
+func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionRequest) (work.PermissionDecision, error) {
+	if c == nil {
+		return work.PermissionDecision{Reason: "controller is unavailable"}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	subject := fmt.Sprintf("work:%s/block:%s/action:%s", input.WorkID, input.BlockID, input.ActionID)
+	readOnly := input.Risk == string(work.RiskRead) && !input.ConfirmRequired
+	decision := c.policy.DecideSubject(input.ToolName, readOnly, subject)
+	if decision == permission.Deny {
+		return work.PermissionDecision{Reason: "denied by permission policy"}, nil
+	}
+	if decision == permission.Allow && !input.ConfirmRequired {
+		return work.PermissionDecision{Allowed: true}, nil
+	}
+
+	summary := strings.TrimSpace(input.Summary)
+	if summary == "" {
+		summary = input.ToolName
+	}
+	reason := fmt.Sprintf("%s · risk=%s · work=%s · block=%s · action=%s · request=%s",
+		summary, input.Risk, input.WorkID, input.BlockID, input.ActionID, input.RequestID)
+	args, _ := json.Marshal(map[string]string{
+		"workId": input.WorkID, "blockId": input.BlockID, "actionId": input.ActionID,
+		"requestId": input.RequestID, "risk": input.Risk, "summary": summary,
+	})
+	approval := event.Approval{
+		WorkID: input.WorkID, BlockID: input.BlockID, ActionID: input.ActionID,
+		RequestID: input.RequestID, Summary: summary,
+	}
+	reply, err := c.requestApprovalDecisionWithOptions(ctx, input.ToolName, subject, args, reason,
+		approvalDecisionOptions{fresh: input.ConfirmRequired, approval: approval})
+	if err != nil {
+		return work.PermissionDecision{}, err
+	}
+	if !reply.allow {
+		return work.PermissionDecision{Reason: "approval rejected by user"}, nil
+	}
+	if reply.session && !input.ConfirmRequired {
+		c.approval.grantSession(input.ToolName, subject)
+	}
+	if reply.persist && !input.ConfirmRequired && c.onRemember != nil {
+		c.emitRememberResult(c.onRemember(permission.RememberRuleForScope(input.ToolName, subject)))
+	}
+	return work.PermissionDecision{Allowed: true}, nil
 }
 
 func (w workMethods) PrepareRerun(ctx context.Context, input work.PrepareRerunInput) (*work.RerunPlan, error) {
@@ -348,6 +406,7 @@ func (c *Controller) LookupSession(ctx context.Context, sessionPath string) (wor
 }
 
 var (
-	_ WorkService        = (*work.Service)(nil)
-	_ work.SessionLookup = (*Controller)(nil)
+	_ WorkService            = (*work.Service)(nil)
+	_ work.SessionLookup     = (*Controller)(nil)
+	_ work.PermissionChecker = (*Controller)(nil)
 )
