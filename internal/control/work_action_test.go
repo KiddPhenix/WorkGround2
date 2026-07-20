@@ -195,3 +195,215 @@ func TestActionApprovalReplayKeepsDomainContext(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestActionControllerCancelClearsApprovalAndIgnoresLateReply(t *testing.T) {
+	fixture := newControlActionFixture(t, permission.New("ask", nil, nil, nil), false, 0)
+	done := make(chan struct {
+		receipt *work.ActionReceipt
+		err     error
+	}, 1)
+	go func() {
+		receipt, err := fixture.execute(context.Background(), "control-action-cancel")
+		done <- struct {
+			receipt *work.ActionReceipt
+			err     error
+		}{receipt, err}
+	}()
+	approval := waitActionApproval(t, fixture.events)
+	fixture.controller.Cancel()
+	got := <-done
+	if !errors.Is(got.err, context.Canceled) || got.receipt == nil || got.receipt.Status != string(work.ActionFailed) || fixture.calls.Load() != 0 {
+		t.Fatalf("receipt=%+v err=%v calls=%d", got.receipt, got.err, fixture.calls.Load())
+	}
+	if _, pending := fixture.controller.PendingInteraction(); pending {
+		t.Fatal("cancelled Action approval remained pending")
+	}
+	fixture.controller.Approve(approval.ID, true, false, false)
+	time.Sleep(20 * time.Millisecond)
+	if fixture.calls.Load() != 0 {
+		t.Fatalf("late approval executed handler: calls=%d", fixture.calls.Load())
+	}
+	view, err := fixture.service.Get(context.Background(), fixture.value.ID)
+	if err != nil || view.Work.ActionReceipts[0].Status != work.ActionFailed {
+		t.Fatalf("persisted view=%+v err=%v", view, err)
+	}
+}
+
+func TestActionControllerCloseCancelsApprovalAndIsIdempotent(t *testing.T) {
+	var cleanupCalls atomic.Int32
+	fixture := newControlActionFixture(t, permission.New("ask", nil, nil, nil), false, 0)
+	fixture.controller.cleanup = func() { cleanupCalls.Add(1) }
+	done := make(chan struct {
+		receipt *work.ActionReceipt
+		err     error
+	}, 1)
+	go func() {
+		receipt, err := fixture.execute(context.Background(), "control-action-close")
+		done <- struct {
+			receipt *work.ActionReceipt
+			err     error
+		}{receipt, err}
+	}()
+	approval := waitActionApproval(t, fixture.events)
+	closed := make(chan struct{})
+	go func() {
+		fixture.controller.Close()
+		close(closed)
+	}()
+	got := <-done
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not wait for and reap Action")
+	}
+	fixture.controller.Close()
+	fixture.controller.Approve(approval.ID, true, false, false)
+	if !errors.Is(got.err, context.Canceled) || got.receipt == nil || got.receipt.Status != string(work.ActionFailed) || fixture.calls.Load() != 0 || cleanupCalls.Load() != 1 {
+		t.Fatalf("receipt=%+v err=%v calls=%d cleanup=%d", got.receipt, got.err, fixture.calls.Load(), cleanupCalls.Load())
+	}
+	if _, pending := fixture.controller.PendingInteraction(); pending {
+		t.Fatal("closed Controller retained Action approval")
+	}
+	if _, err := fixture.execute(context.Background(), "control-action-after-close"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("execute after Close err=%v want context.Canceled", err)
+	}
+}
+
+func TestActionControllerCancelStopsRunningHandler(t *testing.T) {
+	fixture := newControlActionFixture(t, permission.New("allow", nil, nil, nil), false, 0)
+	started := make(chan struct{})
+	registry := work.NewActionRegistry()
+	if err := registry.Register(work.ActionRegistration{
+		BlockKind: "markdown", ActionID: "publish", Intent: "report.publish", Risk: work.RiskExternal,
+		Handler: func(ctx context.Context, _ work.ActionHandlerContext) (*work.ActionResult, error) {
+			fixture.calls.Add(1)
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.SetActionRegistry(registry)
+	done := make(chan struct {
+		receipt *work.ActionReceipt
+		err     error
+	}, 1)
+	go func() {
+		receipt, err := fixture.execute(context.Background(), "control-action-handler-cancel")
+		done <- struct {
+			receipt *work.ActionReceipt
+			err     error
+		}{receipt, err}
+	}()
+	<-started
+	fixture.controller.Cancel()
+	got := <-done
+	var unknown *work.ErrActionOutcomeUnknown
+	if !errors.As(got.err, &unknown) || got.receipt == nil || got.receipt.Status != string(work.ActionUnknown) || got.receipt.OutcomeKnown || fixture.calls.Load() != 1 {
+		t.Fatalf("receipt=%+v err=%T %v calls=%d", got.receipt, got.err, got.err, fixture.calls.Load())
+	}
+}
+
+func TestActionControllerCloseIsolatesLateHandlerResult(t *testing.T) {
+	fixture := newControlActionFixture(t, permission.New("allow", nil, nil, nil), false, 0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	registry := work.NewActionRegistry()
+	if err := registry.Register(work.ActionRegistration{
+		BlockKind: "markdown", ActionID: "publish", Intent: "report.publish", Risk: work.RiskExternal,
+		Handler: func(context.Context, work.ActionHandlerContext) (*work.ActionResult, error) {
+			fixture.calls.Add(1)
+			close(started)
+			<-release // deliberately ignore cancellation
+			close(finished)
+			return &work.ActionResult{Message: "too late"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.service.SetActionRegistry(registry)
+	done := make(chan struct {
+		receipt *work.ActionReceipt
+		err     error
+	}, 1)
+	go func() {
+		receipt, err := fixture.execute(context.Background(), "control-action-close-late-handler")
+		done <- struct {
+			receipt *work.ActionReceipt
+			err     error
+		}{receipt, err}
+	}()
+	<-started
+	closed := make(chan struct{})
+	go func() {
+		fixture.controller.Close()
+		close(closed)
+	}()
+	var got struct {
+		receipt *work.ActionReceipt
+		err     error
+	}
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled Action remained attached to late handler")
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close remained blocked by non-cooperative handler")
+	}
+	var unknown *work.ErrActionOutcomeUnknown
+	if !errors.As(got.err, &unknown) || got.receipt == nil || got.receipt.Status != string(work.ActionUnknown) || got.receipt.OutcomeKnown {
+		t.Fatalf("receipt=%+v err=%T %v", got.receipt, got.err, got.err)
+	}
+	close(release)
+	<-finished
+	time.Sleep(20 * time.Millisecond)
+	view, err := fixture.service.Get(context.Background(), fixture.value.ID)
+	if err != nil || view.Work.ActionReceipts[0].Status != work.ActionUnknown {
+		t.Fatalf("late handler changed receipt: view=%+v err=%v", view, err)
+	}
+}
+
+func TestActionControllerCallerCancellationIsRequestScoped(t *testing.T) {
+	controller := New(Options{})
+	firstParent, cancelFirst := context.WithCancel(context.Background())
+	first, finishFirst, ok := controller.beginBlockAction(firstParent, "work:a", "request:a")
+	if !ok {
+		t.Fatal("first Action registration failed")
+	}
+	defer finishFirst()
+	second, finishSecond, ok := controller.beginBlockAction(context.Background(), "work:b", "request:b")
+	if !ok {
+		t.Fatal("second Action registration failed")
+	}
+	defer finishSecond()
+
+	cancelFirst()
+	select {
+	case <-first.Done():
+	case <-time.After(time.Second):
+		t.Fatal("first request context was not cancelled")
+	}
+	select {
+	case <-second.Done():
+		t.Fatal("caller cancellation leaked into unrelated Action request")
+	default:
+	}
+	controller.Cancel()
+	select {
+	case <-second.Done():
+	case <-time.After(time.Second):
+		t.Fatal("Controller.Cancel did not cancel current Action")
+	}
+}

@@ -163,7 +163,8 @@ func (b *WorkViewBroadcaster) SubscriberDrops(id string) int64 {
 // workMethods delegates WorkController calls to the backing WorkService.
 // Nil receiver is safe: every method returns an error.
 type workMethods struct {
-	svc WorkService
+	svc   WorkService
+	owner *Controller
 }
 
 func (w workMethods) CreateWork(ctx context.Context, input work.CreateWorkInput) (*work.Work, error) {
@@ -247,7 +248,93 @@ func (w workMethods) ExecuteBlockAction(ctx context.Context, input work.BlockAct
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
+	if w.owner != nil {
+		return w.owner.executeBlockAction(ctx, w.svc, input)
+	}
 	return w.svc.ExecuteBlockAction(ctx, input)
+}
+
+func (c *Controller) executeBlockAction(ctx context.Context, svc WorkService, input work.BlockActionRequest) (*work.ActionReceipt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	actionCtx, finish, ok := c.beginBlockAction(ctx, input.WorkID, input.RequestID)
+	if !ok {
+		return nil, context.Canceled
+	}
+	defer finish()
+	return svc.ExecuteBlockAction(actionCtx, input)
+}
+
+func (c *Controller) beginBlockAction(ctx context.Context, workID, requestID string) (context.Context, func(), bool) {
+	c.actionMu.Lock()
+	if c.actionClosed {
+		c.actionMu.Unlock()
+		return nil, nil, false
+	}
+	if c.actionRoot == nil {
+		c.actionRoot, c.actionRootCancel = context.WithCancel(context.Background())
+	}
+	if c.actionRuns == nil {
+		c.actionRuns = make(map[string]map[uint64]context.CancelFunc)
+	}
+	actionCtx, cancel := context.WithCancel(ctx)
+	key := strings.TrimSpace(workID) + "\x00" + strings.TrimSpace(requestID)
+	c.actionNext++
+	id := c.actionNext
+	if c.actionRuns[key] == nil {
+		c.actionRuns[key] = make(map[uint64]context.CancelFunc)
+	}
+	c.actionRuns[key][id] = cancel
+	c.actionWG.Add(1)
+	root := c.actionRoot
+	c.actionMu.Unlock()
+
+	stopRoot := context.AfterFunc(root, cancel)
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			stopRoot()
+			cancel()
+			c.actionMu.Lock()
+			delete(c.actionRuns[key], id)
+			if len(c.actionRuns[key]) == 0 {
+				delete(c.actionRuns, key)
+			}
+			c.actionMu.Unlock()
+			c.actionWG.Done()
+		})
+	}
+	return actionCtx, finish, true
+}
+
+func (c *Controller) cancelBlockActions() int {
+	c.actionMu.Lock()
+	cancels := make([]context.CancelFunc, 0)
+	for _, runs := range c.actionRuns {
+		for _, cancel := range runs {
+			cancels = append(cancels, cancel)
+		}
+	}
+	c.actionMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
+func (c *Controller) closeBlockActions() {
+	c.actionMu.Lock()
+	if !c.actionClosed {
+		c.actionClosed = true
+		if c.actionRootCancel != nil {
+			c.actionRootCancel()
+		}
+	}
+	c.actionMu.Unlock()
+	c.cancelBlockActions()
+	c.approval.clearActionApprovals()
+	c.actionWG.Wait()
 }
 
 // CheckPermission adapts Work actions to the same Policy and ApprovalRequest
@@ -324,7 +411,7 @@ func (c *Controller) WorkControl() WorkControl {
 	if c == nil {
 		return workMethods{}
 	}
-	return workMethods{svc: c.workSvc}
+	return workMethods{svc: c.workSvc, owner: c}
 }
 
 // WorkViews returns the WorkViewEvent broadcaster for this session, or nil when

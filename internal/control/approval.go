@@ -174,6 +174,18 @@ func (a *approvalManager) clearAll() {
 	clear(a.asks)
 }
 
+// clearActionApprovals drops only Work Action prompts. Ordinary tool, plan and
+// ask interactions remain pending when a caller cancels Actions without a turn.
+func (a *approvalManager) clearActionApprovals() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, pending := range a.approvals {
+		if pending.context.WorkID != "" {
+			delete(a.approvals, id)
+		}
+	}
+}
+
 // hasPending reports whether any prompt is awaiting a user decision.
 func (a *approvalManager) hasPending() bool {
 	a.mu.Lock()

@@ -356,6 +356,80 @@ func TestActionApprovalCancellationPersistsRetryableFailure(t *testing.T) {
 	}
 }
 
+func TestActionPermissionCheckerNilFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  func(*Service)
+	}{
+		{name: "nil", set: func(s *Service) { s.SetPermissionChecker(nil) }},
+		{name: "typed nil through setter", set: func(s *Service) {
+			var checker *fakeActionPermission
+			s.SetPermissionChecker(checker)
+		}},
+		{name: "typed nil legacy field", set: func(s *Service) {
+			var checker *fakeActionPermission
+			s.actionCfgMu.Lock()
+			s.permissions = checker
+			s.actionCfgMu.Unlock()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newActionHarness(t)
+			var calls atomic.Int32
+			h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+				calls.Add(1)
+				return nil, nil
+			})
+			value := setupActionBlock(t, h.svc, "permission-nil-"+test.name, BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+			test.set(h.svc)
+
+			receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "write", "permission-nil-action-"+test.name))
+			if !errors.Is(err, ErrActionPermissionUnavailable) || receipt == nil || receipt.Status != string(ActionFailed) || !receipt.Retryable || !receipt.OutcomeKnown || calls.Load() != 0 {
+				t.Fatalf("receipt=%+v err=%T %v calls=%d", receipt, err, err, calls.Load())
+			}
+			view, loadErr := h.svc.Get(context.Background(), value.ID)
+			stored, _, found := findActionReceipt(view.Work.ActionReceipts, "permission-nil-action-"+test.name)
+			if loadErr != nil || !found || stored.Status != ActionFailed || stored.Message != ErrActionPermissionUnavailable.Error() {
+				t.Fatalf("stored=%+v found=%v loadErr=%v", stored, found, loadErr)
+			}
+		})
+	}
+}
+
+func TestActionPermissionCheckerConcurrentReplaceAndRead(t *testing.T) {
+	svc := NewService(nil, nil, ViewSinkDiscard)
+	allowed := &fakeActionPermission{decision: PermissionDecision{Allowed: true}}
+	var typedNil *fakeActionPermission
+	const iterations = 1000
+	var wait sync.WaitGroup
+	wait.Add(3)
+	go func() {
+		defer wait.Done()
+		for index := 0; index < iterations; index++ {
+			if index%2 == 0 {
+				svc.SetPermissionChecker(allowed)
+			} else {
+				svc.SetPermissionChecker(typedNil)
+			}
+		}
+	}()
+	for range 2 {
+		go func() {
+			defer wait.Done()
+			for range iterations {
+				checker := svc.permissionChecker()
+				if checker != nil {
+					if _, err := checker.CheckPermission(context.Background(), PermissionRequest{}); err != nil {
+						t.Errorf("CheckPermission: %v", err)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wait.Wait()
+}
+
 func TestActionRestartRecoveryPendingAndRunning(t *testing.T) {
 	t.Run("pending definitely not executed resumes", func(t *testing.T) {
 		h := newActionHarness(t)
@@ -559,6 +633,64 @@ func TestActionReducerRejectsInvalidTransition(t *testing.T) {
 	event.BaseRevision, event.Revision = view.Revision, view.Revision+1
 	if _, err := h.svc.store.CommitEvent(value.ID, event); err == nil {
 		t.Fatal("pending -> succeeded transition accepted")
+	}
+}
+
+func TestActionReducerRejectsEveryImmutableFieldChangeAtomically(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "immutable", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	reserveActionForTest(t, h.svc, value, "run", "immutable-action", ActionPending)
+	view, err := h.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _, found := findActionReceipt(view.Work.ActionReceipts, "immutable-action")
+	if !found {
+		t.Fatal("reserved receipt missing")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ActionReceiptRecord)
+	}{
+		{"workId", func(r *ActionReceiptRecord) { r.WorkID = "work:tampered" }},
+		{"blockId", func(r *ActionReceiptRecord) { r.BlockID = "block:tampered" }},
+		{"blockKind", func(r *ActionReceiptRecord) { r.BlockKind = "tampered" }},
+		{"actionId", func(r *ActionReceiptRecord) { r.ActionID = "tampered" }},
+		{"requestId", func(r *ActionReceiptRecord) { r.RequestID = "tampered" }},
+		{"inputDigest", func(r *ActionReceiptRecord) { r.InputDigest = "sha256:tampered" }},
+		{"fingerprint", func(r *ActionReceiptRecord) { r.Fingerprint = "sha256:tampered" }},
+		{"intent", func(r *ActionReceiptRecord) { r.Intent = "tampered" }},
+		{"summary", func(r *ActionReceiptRecord) { r.Summary = "tampered" }},
+		{"risk", func(r *ActionReceiptRecord) { r.Risk = RiskExternal }},
+		{"confirmRequired", func(r *ActionReceiptRecord) { r.ConfirmRequired = !r.ConfirmRequired }},
+		{"createdAt", func(r *ActionReceiptRecord) { r.CreatedAt = r.CreatedAt.Add(time.Second) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := original
+			record.Status = ActionRunning
+			record.UpdatedAt = original.UpdatedAt.Add(time.Second)
+			test.mutate(&record)
+			payload, marshalErr := json.Marshal(record)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			event := newServiceEvent(value.ID, "immutable/"+test.name, EventBlockActionChanged, payload, record.UpdatedAt)
+			event.BaseRevision, event.Revision = view.Revision, view.Revision+1
+			if _, commitErr := h.svc.store.CommitEvent(value.ID, event); commitErr == nil {
+				t.Fatalf("immutable %s change was accepted", test.name)
+			}
+			current, state, loadErr := h.svc.store.LoadState(value.ID, "")
+			if loadErr != nil || state.Revision != view.Revision {
+				t.Fatalf("bad event was partially appended: revision=%d want=%d err=%v", state.Revision, view.Revision, loadErr)
+			}
+			stored, _, ok := findActionReceipt(current.ActionReceipts, original.RequestID)
+			if !ok || stored.Status != ActionPending || changedActionIdentity(original, stored) != "" {
+				t.Fatalf("projection changed after rejected event: %+v", stored)
+			}
+		})
 	}
 }
 

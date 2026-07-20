@@ -1,6 +1,13 @@
 package work
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrActionPermissionUnavailable reports that a gated action has no usable
+// permission checker. The action is not executed and remains safely retryable.
+var ErrActionPermissionUnavailable = errors.New("work: action permission checker is unavailable")
 
 // ErrActionUnknownIntent reports that no trusted handler owns the requested intent.
 type ErrActionUnknownIntent struct {
