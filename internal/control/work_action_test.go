@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ func newControlActionFixture(t *testing.T, policy permission.Policy, confirm boo
 	registry := work.NewActionRegistry()
 	if err := registry.Register(work.ActionRegistration{
 		BlockKind: "markdown", ActionID: "publish", Intent: "report.publish", Summary: "Publish report",
+		HandlerID: "report.publish", HandlerVersion: "v1",
 		Risk: work.RiskExternal, ConfirmRequired: confirm,
 		Handler: func(context.Context, work.ActionHandlerContext) (*work.ActionResult, error) {
 			fixture.calls.Add(1)
@@ -41,7 +43,9 @@ func newControlActionFixture(t *testing.T, policy permission.Policy, confirm boo
 	}); err != nil {
 		t.Fatal(err)
 	}
-	service.SetActionRegistry(registry)
+	if err := service.SetActionRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
 	fixture.controller = New(Options{
 		Sink:   event.FuncSink(func(value event.Event) { fixture.events <- value }),
 		Policy: policy, ApprovalTimeout: timeout, Work: service, WorkViews: views,
@@ -102,7 +106,10 @@ func TestActionControllerApprovalAllowsAndCarriesContext(t *testing.T) {
 	if approval.WorkID != fixture.value.ID || approval.BlockID != "bp-blank-notes" || approval.ActionID != "publish" || approval.RequestID != "control-action-allow" || approval.Summary != "Publish report" {
 		t.Fatalf("approval context=%+v", approval)
 	}
-	if approval.Tool != "report.publish" || approval.Subject == "" || approval.Reason == "" {
+	if approval.HandlerID != "report.publish" || approval.HandlerVersion != "v1" {
+		t.Fatalf("approval handler identity=%+v", approval)
+	}
+	if approval.Tool != "report.publish" || !strings.Contains(approval.Subject, "handler:report.publish@v1") || !strings.Contains(approval.Reason, "handler=report.publish@v1") {
 		t.Fatalf("approval presentation=%+v", approval)
 	}
 	fixture.controller.Approve(approval.ID, true, false, false)
@@ -274,7 +281,7 @@ func TestActionControllerCancelStopsRunningHandler(t *testing.T) {
 	started := make(chan struct{})
 	registry := work.NewActionRegistry()
 	if err := registry.Register(work.ActionRegistration{
-		BlockKind: "markdown", ActionID: "publish", Intent: "report.publish", Risk: work.RiskExternal,
+		BlockKind: "markdown", ActionID: "publish", HandlerID: "report.publish", HandlerVersion: "v2", Intent: "report.publish", Risk: work.RiskExternal,
 		Handler: func(ctx context.Context, _ work.ActionHandlerContext) (*work.ActionResult, error) {
 			fixture.calls.Add(1)
 			close(started)
@@ -284,7 +291,9 @@ func TestActionControllerCancelStopsRunningHandler(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fixture.service.SetActionRegistry(registry)
+	if err := fixture.service.SetActionRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct {
 		receipt *work.ActionReceipt
 		err     error
@@ -319,7 +328,7 @@ func TestActionControllerCloseIsolatesLateHandlerResult(t *testing.T) {
 	}()
 	registry := work.NewActionRegistry()
 	if err := registry.Register(work.ActionRegistration{
-		BlockKind: "markdown", ActionID: "publish", Intent: "report.publish", Risk: work.RiskExternal,
+		BlockKind: "markdown", ActionID: "publish", HandlerID: "report.publish", HandlerVersion: "v2", Intent: "report.publish", Risk: work.RiskExternal,
 		Handler: func(context.Context, work.ActionHandlerContext) (*work.ActionResult, error) {
 			fixture.calls.Add(1)
 			close(started)
@@ -330,7 +339,9 @@ func TestActionControllerCloseIsolatesLateHandlerResult(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fixture.service.SetActionRegistry(registry)
+	if err := fixture.service.SetActionRegistry(registry); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct {
 		receipt *work.ActionReceipt
 		err     error

@@ -2935,6 +2935,21 @@ func DefaultReducer() WorkEventReducer {
 			if rec.RequestID == "" || rec.WorkID != current.ID || rec.BlockID == "" || rec.BlockKind == "" || rec.ActionID == "" || rec.Fingerprint == "" || rec.InputDigest == "" || rec.Intent == "" || !validActionRisk(rec.Risk) || rec.CreatedAt.IsZero() || rec.UpdatedAt.IsZero() {
 				return nil, fmt.Errorf("work: action reserved: complete identity and fingerprints are required")
 			}
+			switch rec.HandlerIdentityVersion {
+			case 0:
+				if rec.HandlerID != "" || rec.HandlerVersion != "" {
+					return nil, fmt.Errorf("work: action reserved: legacy handler identity must be empty")
+				}
+			case HandlerIdentityVersion:
+				if err := validateHandlerPart("handlerID", rec.HandlerID, handlerIDMaxLen); err != nil {
+					return nil, fmt.Errorf("work: action reserved: %w", err)
+				}
+				if err := validateHandlerPart("handlerVersion", rec.HandlerVersion, handlerVersionMaxLen); err != nil {
+					return nil, fmt.Errorf("work: action reserved: %w", err)
+				}
+			default:
+				return nil, fmt.Errorf("work: action reserved: unsupported handler identity version %d", rec.HandlerIdentityVersion)
+			}
 			if rec.Status != ActionPending {
 				return nil, fmt.Errorf("work: action reserved: initial status must be pending, got %s", rec.Status)
 			}

@@ -9,6 +9,39 @@ import (
 // permission checker. The action is not executed and remains safely retryable.
 var ErrActionPermissionUnavailable = errors.New("work: action permission checker is unavailable")
 
+// ErrActionHandlerRegistrationConflict rejects an in-process replacement that
+// reuses the same stable handler identity/version for an action key.
+type ErrActionHandlerRegistrationConflict struct {
+	BlockKind      string
+	ActionID       string
+	HandlerID      string
+	HandlerVersion string
+}
+
+func (e *ErrActionHandlerRegistrationConflict) Error() string {
+	return fmt.Sprintf("work: action register: %s/%s already uses handler %s@%s", e.BlockKind, e.ActionID, e.HandlerID, e.HandlerVersion)
+}
+
+// ErrActionHandlerVersionConflict reports that a reserved action cannot be
+// resumed by the currently registered handler. Latest is the persisted receipt
+// after the safe failure/unknown transition.
+type ErrActionHandlerVersionConflict struct {
+	RequestID      string
+	HandlerID      string
+	HandlerVersion string
+	CurrentID      string
+	CurrentVersion string
+	Retryable      bool
+	Latest         *ActionReceipt
+	Reason         string
+}
+
+func (e *ErrActionHandlerVersionConflict) Error() string {
+	expected := e.HandlerID + "@" + e.HandlerVersion
+	current := e.CurrentID + "@" + e.CurrentVersion
+	return fmt.Sprintf("work: action: handler version conflict for requestID %q (reserved %s, current %s): %s", e.RequestID, expected, current, e.Reason)
+}
+
 // ErrActionUnknownIntent reports that no trusted handler owns the requested intent.
 type ErrActionUnknownIntent struct {
 	BlockKind string
