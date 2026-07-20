@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -13,6 +14,7 @@ import (
 var sharedFixtureNames = []string{
 	"work-view-event-v1.json",
 	"work-view-event-future.json",
+	"work-dto-fields-v1.json",
 }
 
 const (
@@ -37,6 +39,47 @@ func TestGoTSFixturesEquivalent(t *testing.T) {
 			t.Errorf("Go and TypeScript fixture %q differ", name)
 		}
 	}
+}
+
+func TestGoDTOFieldsMatchContract(t *testing.T) {
+	var want map[string][]string
+	if err := json.Unmarshal(readFixture(t, goFixtureDir, "work-dto-fields-v1.json"), &want); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := map[string]any{
+		"TaskExecuteInput": TaskExecuteInput{},
+		"RetryTaskInput":   RetryTaskInput{},
+	}
+	if len(want) != len(tests) {
+		t.Fatalf("DTO contract count = %d, want %d", len(want), len(tests))
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := jsonFields(reflect.TypeOf(value))
+			fields, ok := want[name]
+			if !ok {
+				t.Fatalf("DTO contract is missing %s", name)
+			}
+			if !reflect.DeepEqual(got, fields) {
+				t.Fatalf("%s JSON fields = %v, want %v", name, got, fields)
+			}
+		})
+	}
+}
+
+func jsonFields(typ reflect.Type) []string {
+	fields := make([]string, 0, typ.NumField())
+	for i := 0; i < typ.NumField(); i++ {
+		name := typ.Field(i).Tag.Get("json")
+		if comma := bytes.IndexByte([]byte(name), ','); comma >= 0 {
+			name = name[:comma]
+		}
+		if name != "" && name != "-" {
+			fields = append(fields, name)
+		}
+	}
+	return fields
 }
 
 func TestParseWorkViewEventV1(t *testing.T) {

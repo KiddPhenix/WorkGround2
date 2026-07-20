@@ -1,0 +1,19 @@
+{
+  "TaskExecuteInput": [
+    "workId",
+    "runId",
+    "stageId",
+    "taskId",
+    "attemptIndex",
+    "requestId",
+    "definitionDigest",
+    "prompt"
+  ],
+  "RetryTaskInput": [
+    "workId",
+    "runId",
+    "stageId",
+    "taskId",
+    "requestId"
+  ]
+}

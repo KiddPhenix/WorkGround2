@@ -10,9 +10,14 @@ import {
   parseWorkViewEvent,
   rejectWorkViewWrite,
 } from '../work/index.js';
+import { dtoFieldGuards, workDTOFields } from '../work/dto-contract.js';
 
 const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), '../work/__fixtures__');
 const fixture = (name: string): string => readFileSync(join(fixtureDir, name), 'utf8');
+
+const dtoFields = JSON.parse(fixture('work-dto-fields-v1.json')) as Record<string, string[]>;
+assert.deepEqual(dtoFieldGuards, [true, true]);
+assert.deepEqual(workDTOFields, dtoFields);
 
 const current = parseWorkViewEvent(fixture('work-view-event-v1.json'));
 assert.equal(current.futureError, null);

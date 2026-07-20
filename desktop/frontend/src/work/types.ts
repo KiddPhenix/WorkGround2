@@ -401,7 +401,6 @@ export interface RetryTaskInput {
   runId: string;
   stageId: string;
   taskId: string;
-  attemptIndex: number;
   requestId: string;
 }
 
@@ -517,6 +516,7 @@ export interface TaskExecuteInput {
   runId: string;
   stageId: string;
   taskId: string;
+  attemptIndex: number;
   requestId: string;
   definitionDigest: string;
   prompt: string;
