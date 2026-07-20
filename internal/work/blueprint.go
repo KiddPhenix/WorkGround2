@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -188,8 +189,20 @@ func (r *BlueprintRegistry) LoadFromDir(dir string) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("work: read blueprint index %s: %w", indexPath, err)
 		}
-	} else if err := json.Unmarshal(data, &index); err != nil {
-		return fmt.Errorf("work: parse blueprint index %s: %w", indexPath, err)
+	} else {
+		var raw any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return fmt.Errorf("work: parse blueprint index %s: %w", indexPath, err)
+		}
+		if raw == nil {
+			return fmt.Errorf("work: blueprint index %s must be a JSON object, got null", indexPath)
+		}
+		if _, ok := raw.(map[string]any); !ok {
+			return fmt.Errorf("work: blueprint index %s must be a JSON object", indexPath)
+		}
+		if err := json.Unmarshal(data, &index); err != nil {
+			return fmt.Errorf("work: parse blueprint index %s: %w", indexPath, err)
+		}
 	}
 	if index.SchemaVersion <= 0 {
 		return fmt.Errorf("work: blueprint index %s has invalid schemaVersion %d (must be >= 1)", indexPath, index.SchemaVersion)
@@ -1201,6 +1214,14 @@ var secretFieldPatterns = []string{
 	"access_key", "accesskey", "access-key",
 }
 
+var (
+	inlineSecretPattern  = regexp.MustCompile(`(?i)(api[_-]?key|secret|token|password|passwd|credential|private[_-]?key|access[_-]?key)[ \t]*([=:])[ \t]*`)
+	authorizationPattern = regexp.MustCompile(`(?i)authorization[ \t]*[:=][ \t]*["']?(bearer|basic)[ \t]+([^ \t\r\n"',;]+)`)
+	longSecretPattern    = regexp.MustCompile(`(?i)(?:^|[^a-z0-9_])(?:sk-|ghp_|github_pat_|xoxb-)[a-z0-9_=-]{12,}`)
+	awsKeyPattern        = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])AKIA[A-Z0-9]{16}(?:$|[^A-Za-z0-9_])`)
+	jwtPattern           = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_=-]+`)
+)
+
 // secretRefPatterns are patterns that indicate a value is a reference, not a plaintext secret.
 var secretRefPatterns = []string{
 	"${",                        // env var / template ref
@@ -1399,52 +1420,64 @@ func isSecretRef(s string) bool {
 	return false
 }
 
-// checkTextField scans a plain string for credential-like value assignments.
+// checkTextField scans free text for credential literals and explicit
+// assignments. Structured JSON secret fields are handled separately by
+// findStringValues; free-text labels such as "Token: budget unit" are not
+// secret values by themselves.
 func checkTextField(text, path string, issues *[]string) {
 	if text == "" {
 		return
 	}
-	if looksLikeSecretLiteral(text) {
+	if containsSecretLiteral(text) {
 		*issues = append(*issues, fmt.Sprintf("%s contains secret-like plaintext", path))
+		return
 	}
-	lower := strings.ToLower(text)
-	for _, pat := range secretFieldPatterns {
-		start := 0
-		for start < len(lower) {
-			rel := strings.Index(lower[start:], pat)
-			if rel < 0 {
-				break
-			}
-			idx := start + rel
-			after := strings.TrimLeft(text[idx+len(pat):], " \t")
-			if len(after) > 0 && (after[0] == '=' || after[0] == ':') {
-				value := strings.TrimSpace(after[1:])
-				if value != "" && !isSecretRef(value) {
-					*issues = append(*issues, fmt.Sprintf("%s contains inline secret-like text for %q", path, pat))
-					break
-				}
-			}
-			start = idx + len(pat)
+	if containsAuthorizationCredential(text) {
+		*issues = append(*issues, fmt.Sprintf("%s contains an inline authorization credential", path))
+		return
+	}
+	matches := inlineSecretPattern.FindAllStringSubmatchIndex(text, -1)
+	for i, match := range matches {
+		end := len(text)
+		if i+1 < len(matches) {
+			end = matches[i+1][0]
+		}
+		value := strings.TrimSpace(strings.SplitN(text[match[1]:end], "\n", 2)[0])
+		value = strings.TrimSpace(strings.SplitN(value, ";", 2)[0])
+		quoted := len(value) >= 2 && (value[0] == '"' && strings.Contains(value[1:], `"`) || value[0] == '\'' && strings.Contains(value[1:], `'`))
+		if quoted {
+			value = strings.TrimSpace(strings.SplitN(value[1:], value[:1], 2)[0])
+		}
+		delimiter := text[match[4]:match[5]]
+		if value != "" && !isSecretRef(value) && (delimiter == "=" || quoted || !strings.ContainsAny(value, " \t")) {
+			field := text[match[2]:match[3]]
+			*issues = append(*issues, fmt.Sprintf("%s contains inline secret-like text for %q", path, field))
+			return
 		}
 	}
 }
 
-func looksLikeSecretLiteral(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	lower := strings.ToLower(trimmed)
-	for _, prefix := range []string{"sk-", "ghp_", "github_pat_", "xoxb-"} {
-		if strings.HasPrefix(lower, prefix) && len(trimmed) >= len(prefix)+12 {
+func containsAuthorizationCredential(text string) bool {
+	for _, match := range authorizationPattern.FindAllStringSubmatch(text, -1) {
+		credential := strings.TrimRight(match[2], `.)]`)
+		if credential != "" && !isSecretRef(credential) {
 			return true
 		}
 	}
-	if strings.HasPrefix(trimmed, "AKIA") && len(trimmed) == 20 {
+	return false
+}
+
+func containsSecretLiteral(text string) bool {
+	if longSecretPattern.MatchString(text) || awsKeyPattern.MatchString(text) {
 		return true
 	}
-	if strings.Contains(trimmed, "-----BEGIN ") && strings.Contains(trimmed, "PRIVATE KEY-----") {
+	if strings.Contains(text, "-----BEGIN ") && strings.Contains(text, "PRIVATE KEY-----") {
 		return true
 	}
-	if strings.HasPrefix(trimmed, "eyJ") && len(trimmed) > 40 && strings.Count(trimmed, ".") == 2 {
-		return true
+	for _, candidate := range jwtPattern.FindAllString(text, -1) {
+		if len(candidate) > 40 {
+			return true
+		}
 	}
 	return false
 }
