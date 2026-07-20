@@ -5,13 +5,20 @@ import "context"
 // WorkStore 是 Work 持久化的窄端口接口。
 // 实现由 control/boot 侧提供适配器并注入。
 type WorkStore interface {
+	// CreateWorkDir 原子创建完整 Work 目录；重复 RequestID 必须校验创建意图。
+	CreateWorkDir(input CreateWorkDirInput) error
 	// LoadProjection 加载 Work 的当前投影。
 	LoadProjection(workID string) (*Work, error)
+	// LoadState 在同一 Work 写锁内加载投影、当前 revision 和可选 requestID 状态。
+	LoadState(workID, requestID string) (*Work, WorkEventState, error)
 	// LoadArchive 加载已归档的 WorkRecord。
 	LoadArchive(workID string) (*WorkRecord, error)
 	// Append 追加一条持久化 WorkEvent 到事件日志，返回分配 revision。
+	// 调用方必须已持有该 Work 的 writer lease；底层维护和测试使用此接口。
 	// 仅接受 WorkEvent，不接受 WorkViewEvent。
 	Append(workID string, event WorkEvent) (int64, error)
+	// CommitEvent 为 Service 获取 writer lease，并原子串行化单条事件提交。
+	CommitEvent(workID string, event WorkEvent) (int64, error)
 	// WriteProjection 以原子方式写入投影快照。
 	WriteProjection(workID string, work *Work, revision int64) error
 	// WriteArchive 以原子方式写入归档 WorkRecord。
@@ -22,6 +29,13 @@ type WorkStore interface {
 	MoveToTrash(workID, requestID string) error
 	// RestoreFromTrash 从回收站恢复 Work。
 	RestoreFromTrash(workID, requestID string) error
+}
+
+// WorkEventState 是 Service 执行幂等和乐观并发校验所需的持久化状态。
+type WorkEventState struct {
+	Revision        int64 `json:"revision"`
+	RequestRevision int64 `json:"requestRevision,omitempty"`
+	RequestFound    bool  `json:"requestFound"`
 }
 
 // TaskExecutor 是 WorkRunner 用来执行单个 Task 的窄端口。

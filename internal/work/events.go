@@ -42,6 +42,7 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventConclusionUpserted:  true,
 	EventArtifactLinked:      true,
 	EventWorkArchived:        true,
+	EventWorkRestored:        true,
 	EventWorkDeleted:         true,
 	eventCompact:             true,
 }
