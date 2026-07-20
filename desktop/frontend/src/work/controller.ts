@@ -93,14 +93,27 @@ export class WorkControllerAdapter {
     if (pending) return pending;
     this.updateStatus(workID, { fetching: true, snapshotError: null });
     const request = Promise.resolve()
-      .then(() => this.port.fetchSnapshot(workID))
-      .then((view) => {
-        if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
-        const result = applySnapshot(view, `fetch:${workID}:${view.revision}`);
-        if (result.kind === 'conflict') throw new Error(result.conflict.reason);
-        if (useWorkStore.getState().gaps[workID]) throw new Error(`snapshot revision ${view.revision} did not repair the projection gap`);
-        this.updateStatus(workID, { snapshotError: null });
-        return result;
+      .then(async () => {
+        let previousRevision = useWorkStore.getState().revisions[workID] ?? -1;
+        for (;;) {
+          const view = await this.port.fetchSnapshot(workID);
+          if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
+          const result = applySnapshot(view, `fetch:${workID}:${view.revision}`);
+          if (result.kind === 'conflict') throw new Error(result.conflict.reason);
+          const state = useWorkStore.getState();
+          const issue = state.gaps[workID];
+          if (!issue) {
+            this.updateStatus(workID, { snapshotError: null });
+            return result;
+          }
+          const currentRevision = state.revisions[workID] ?? -1;
+          if (currentRevision <= previousRevision) {
+            throw new Error(
+              `snapshot revision ${view.revision} did not repair the projection gap through revision ${issue.eventRevision}`,
+            );
+          }
+          previousRevision = currentRevision;
+        }
       })
       .catch((error: unknown) => {
         this.updateStatus(workID, { snapshotError: errorText(error) });

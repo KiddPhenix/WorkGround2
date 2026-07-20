@@ -18,6 +18,16 @@ const WORK_STATES = new Set<WorkState>([
 const WORK_TERMINAL = new Set<WorkState>(['completed', 'failed', 'cancelled']);
 const RUN_STATES = new Set<WorkflowRun['state']>(['running', 'completed', 'failed', 'cancelled']);
 const RUN_TERMINAL = new Set<WorkflowRun['state']>(['completed', 'failed', 'cancelled']);
+const WORK_TRANSITIONS: Record<WorkState, ReadonlySet<WorkState>> = {
+  draft: new Set(['ready', 'running']),
+  ready: new Set(['draft', 'running']),
+  running: new Set(['waiting_user', 'paused', 'completed', 'failed', 'cancelled']),
+  waiting_user: new Set(['running']),
+  paused: new Set(['running']),
+  completed: new Set(['running']),
+  failed: new Set(['running', 'draft']),
+  cancelled: new Set(['draft']),
+};
 
 export type GapReason = 'missing_projection' | 'base_revision_mismatch';
 
@@ -126,6 +136,54 @@ function gap(event: WorkViewEvent, currentRevision: number, reason: GapReason): 
   };
 }
 
+function retainHighestGap(current: WorkGap | undefined, incoming: WorkGap): WorkGap {
+  if (!current || incoming.eventRevision > current.eventRevision) return incoming;
+  return { ...current, currentRevision: Math.max(current.currentRevision, incoming.currentRevision) };
+}
+
+function gapsWith(
+  gaps: Record<string, WorkGap | undefined>,
+  event: WorkViewEvent,
+  currentRevision: number,
+  reason: GapReason,
+): { gaps: Record<string, WorkGap | undefined>; gap: WorkGap } {
+  const issue = retainHighestGap(gaps[event.workID], gap(event, currentRevision, reason));
+  return { gaps: { ...gaps, [event.workID]: issue }, gap: issue };
+}
+
+function gapsAfterRevision(
+  gaps: Record<string, WorkGap | undefined>,
+  workID: string,
+  revision: number,
+): Record<string, WorkGap | undefined> {
+  const current = gaps[workID];
+  if (!current || revision >= current.eventRevision) return clearIssue(gaps, workID);
+  return { ...gaps, [workID]: { ...current, currentRevision: revision } };
+}
+
+function validRun(run: unknown, workID: string): run is WorkflowRun {
+  return isRecord(run) &&
+    typeof run.id === 'string' &&
+    run.workId === workID &&
+    RUN_STATES.has(run.state as WorkflowRun['state']) &&
+    Array.isArray(run.stages);
+}
+
+function validCornerstoneOwner(cornerstone: unknown, workID: string): cornerstone is Cornerstone {
+  return isRecord(cornerstone) && typeof cornerstone.id === 'string' && cornerstone.workId === workID;
+}
+
+function objectContextConflict(event: WorkViewEvent): string | null {
+  if (event.object.kind === 'work') {
+    return event.object.id === event.workID
+      ? null
+      : `work object ${event.object.id} does not belong to ${event.workID}`;
+  }
+  return event.object.parentID === event.workID
+    ? null
+    : `${event.object.kind} object ${event.object.id} does not belong to ${event.workID}`;
+}
+
 function snapshotPayload(event: WorkViewEvent): WorkView | null {
   if (!isRecord(event.payload)) return null;
   if (isRecord(event.payload.work) && Number.isSafeInteger(event.payload.revision)) {
@@ -146,7 +204,9 @@ function validSnapshotWork(work: Work, workID: string): boolean {
     Array.isArray(work.blocks) &&
     Array.isArray(work.placements) &&
     Array.isArray(work.cornerstones) &&
-    Array.isArray(work.runs);
+    work.cornerstones.every((cornerstone) => validCornerstoneOwner(cornerstone, workID)) &&
+    Array.isArray(work.runs) &&
+    work.runs.every((run) => validRun(run, workID));
 }
 
 function patchBlock(current: BlockInstance | undefined, delta: BlockDeltaItem, createdAt: string): BlockInstance {
@@ -221,17 +281,43 @@ function mergeSnapshotBlocks(
   return { blocks: [...blocks.values()] };
 }
 
-function mergeRuns(current: WorkflowRun[], incoming: WorkflowRun[]): WorkflowRun[] {
-  const previous = new Map(current.map((run) => [run.id, run]));
-  return incoming.map((run) => {
-    const existing = previous.get(run.id);
-    const next = structuredClone(run);
-    if (existing && RUN_TERMINAL.has(existing.state)) {
-      next.state = existing.state;
-      next.finishedAt = existing.finishedAt ?? next.finishedAt;
-    }
-    return next;
-  });
+function mergeRun(current: WorkflowRun | undefined, incoming: WorkflowRun): WorkflowRun {
+  const next = structuredClone(incoming);
+  if (current && RUN_TERMINAL.has(current.state)) {
+    next.state = current.state;
+    next.finishedAt = current.finishedAt ?? next.finishedAt;
+  }
+  return next;
+}
+
+function mergeSnapshotRuns(current: WorkflowRun[], incoming: WorkflowRun[]): WorkflowRun[] {
+  return mergeDeltaRuns(current, incoming);
+}
+
+function mergeDeltaRuns(current: WorkflowRun[], incoming: WorkflowRun[]): WorkflowRun[] {
+  const runs = new Map(current.map((run) => [run.id, structuredClone(run)]));
+  for (const run of incoming) runs.set(run.id, mergeRun(runs.get(run.id), run));
+  return [...runs.values()];
+}
+
+function nextWorkState(
+  currentState: WorkState,
+  requestedState: WorkState | undefined,
+  currentRuns: WorkflowRun[],
+  nextRuns: WorkflowRun[],
+): WorkState {
+  if (requestedState === undefined) return currentState;
+  if (requestedState === currentState) return currentState;
+  if (!WORK_TRANSITIONS[currentState].has(requestedState)) return currentState;
+  const currentRunIDs = new Set(currentRuns.map((run) => run.id));
+  const hasNewRunningRun = nextRuns.some((run) => run.state === 'running' && !currentRunIDs.has(run.id));
+  const hasRunningRun = nextRuns.some((run) => run.state === 'running');
+  if (WORK_TERMINAL.has(currentState)) {
+    if (requestedState !== 'running' || hasNewRunningRun) return requestedState;
+    return currentState;
+  }
+  if (WORK_TERMINAL.has(requestedState) && hasRunningRun) return currentState;
+  return requestedState;
 }
 
 function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: Partial<WorkStoreData>; result: ApplyResult } {
@@ -258,14 +344,14 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
 
   const view = cloneView(decoded);
   if (current) {
-    if (WORK_TERMINAL.has(current.work.state)) view.work.state = current.work.state;
     const blocks = mergeSnapshotBlocks(current.work.blocks, view.work.blocks);
     if (blocks.error) {
       const issue = conflict(event, blocks.error);
       return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
     }
     view.work.blocks = blocks.blocks ?? [];
-    view.work.runs = mergeRuns(current.work.runs, view.work.runs);
+    view.work.runs = mergeSnapshotRuns(current.work.runs, view.work.runs);
+    view.work.state = nextWorkState(current.work.state, view.work.state, current.work.runs, view.work.runs);
   }
   view.revision = event.revision;
   return {
@@ -274,7 +360,7 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
       revisions: { ...state.revisions, [event.workID]: event.revision },
       removed: { ...state.removed, [event.workID]: false },
       seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
-      gaps: clearIssue(state.gaps, event.workID),
+      gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
       conflicts: clearIssue(state.conflicts, event.workID),
     },
     result: { kind: 'applied', workID: event.workID, revision: event.revision },
@@ -291,8 +377,8 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
   }
   const currentRevision = knownRevision ?? -1;
   if (event.baseRevision !== currentRevision) {
-    const issue = gap(event, currentRevision, 'base_revision_mismatch');
-    return { patch: { gaps: { ...state.gaps, [event.workID]: issue } }, result: { kind: 'gap', gap: issue } };
+    const issue = gapsWith(state.gaps, event, currentRevision, 'base_revision_mismatch');
+    return { patch: { gaps: issue.gaps }, result: { kind: 'gap', gap: issue.gap } };
   }
 
   if (event.type === 'removed') {
@@ -303,7 +389,7 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
         revisions: { ...state.revisions, [event.workID]: event.revision },
         removed: { ...state.removed, [event.workID]: true },
         seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
-        gaps: clearIssue(state.gaps, event.workID),
+        gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
         conflicts: clearIssue(state.conflicts, event.workID),
       },
       result: { kind: 'applied', workID: event.workID, revision: event.revision },
@@ -312,8 +398,8 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
 
   const current = state.works[event.workID];
   if (!current || state.removed[event.workID]) {
-    const issue = gap(event, currentRevision, 'missing_projection');
-    return { patch: { gaps: { ...state.gaps, [event.workID]: issue } }, result: { kind: 'gap', gap: issue } };
+    const issue = gapsWith(state.gaps, event, currentRevision, 'missing_projection');
+    return { patch: { gaps: issue.gaps }, result: { kind: 'gap', gap: issue.gap } };
   }
   if (!isRecord(event.payload)) {
     const issue = conflict(event, 'delta payload must be an object');
@@ -331,13 +417,14 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
       (payload.cornerstones !== undefined && !Array.isArray(payload.cornerstones)) ||
       (payload.conclusions !== undefined && !Array.isArray(payload.conclusions)) ||
       payload.removedBlockIds?.some((id) => typeof id !== 'string') ||
-      payload.runs?.some((run) => !isRecord(run) || typeof run.id !== 'string' || !RUN_STATES.has(run.state))) {
+      payload.runs?.some((run) => !validRun(run, event.workID)) ||
+      payload.cornerstones?.some((cornerstone) => !validCornerstoneOwner(cornerstone, event.workID))) {
     const issue = conflict(event, 'delta payload contains invalid scalar or collection fields');
     return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
   }
 
   const work = structuredClone(current.work);
-  if (payload.state !== undefined && !WORK_TERMINAL.has(work.state)) work.state = payload.state;
+  const currentRuns = work.runs;
   if (payload.archiveState !== undefined) work.archiveState = payload.archiveState;
   if (payload.name !== undefined) work.name = payload.name;
   if (payload.prompt !== undefined) work.prompt = payload.prompt;
@@ -350,7 +437,8 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
     }
     work.blocks = blocks.blocks ?? work.blocks;
   }
-  if (payload.runs !== undefined) work.runs = mergeRuns(work.runs, payload.runs);
+  if (payload.runs !== undefined) work.runs = mergeDeltaRuns(work.runs, payload.runs);
+  work.state = nextWorkState(work.state, payload.state, currentRuns, work.runs);
   if (payload.cornerstones !== undefined) work.cornerstones = structuredClone(payload.cornerstones);
   if (payload.conclusions !== undefined) work.conclusions = structuredClone(payload.conclusions);
   work.updatedAt = event.createdAt;
@@ -359,7 +447,7 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
       works: { ...state.works, [event.workID]: { ...current, work, revision: event.revision } },
       revisions: { ...state.revisions, [event.workID]: event.revision },
       seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
-      gaps: clearIssue(state.gaps, event.workID),
+      gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
       conflicts: clearIssue(state.conflicts, event.workID),
     },
     result: { kind: 'applied', workID: event.workID, revision: event.revision },
@@ -367,6 +455,11 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
 }
 
 function reduceEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: Partial<WorkStoreData>; result: ApplyResult } {
+  const contextError = objectContextConflict(event);
+  if (contextError) {
+    const issue = conflict(event, contextError);
+    return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
+  }
   if (event.type === 'attention') {
     if (state.seenEventIDs[event.workID]?.includes(event.eventID)) {
       return { result: { kind: 'duplicate', workID: event.workID, eventID: event.eventID } };
