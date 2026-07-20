@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -71,16 +72,59 @@ func committedRecovery(operation, workID, requestID string, revision int64, caus
 	}
 }
 
+// ErrWorkCleanupRecovery reports a failed lifecycle operation together with
+// the durable cleanup state needed to retry it safely.
+type ErrWorkCleanupRecovery struct {
+	Operation       string `json:"operation"`
+	WorkID          string `json:"workId"`
+	RequestID       string `json:"requestId"`
+	Stage           string `json:"stage"`
+	CleanupPath     string `json:"cleanupPath,omitempty"`
+	Committed       bool   `json:"committed"`
+	MarkerPersisted bool   `json:"markerPersisted"`
+	Recoverable     bool   `json:"recoverable"`
+	Cause           string `json:"cause"`
+	cause           error
+}
+
+func (e *ErrWorkCleanupRecovery) Error() string {
+	state := "pending"
+	if e.Committed {
+		state = "committed"
+	}
+	return fmt.Sprintf("work: %s %s for %s request %q at stage %q failed: %s (recoverable)",
+		e.Operation, state, e.WorkID, e.RequestID, e.Stage, e.Cause)
+}
+
+// Unwrap preserves every primary, marker and cleanup failure joined below.
+func (e *ErrWorkCleanupRecovery) Unwrap() error { return e.cause }
+
+func cleanupRecovery(cp *cleanupPending, path string, committed, persisted bool, cause error) error {
+	return &ErrWorkCleanupRecovery{
+		Operation:       cp.Operation,
+		WorkID:          cp.WorkID,
+		RequestID:       cp.RequestID,
+		Stage:           cp.Stage,
+		CleanupPath:     path,
+		Committed:       committed,
+		MarkerPersisted: persisted,
+		Recoverable:     true,
+		Cause:           cause.Error(),
+		cause:           cause,
+	}
+}
+
 // ── Digest validation ──────────────────────────────────────────────────────
 
 var digestRegexp = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 var (
-	writeDerivedFile = fileutil.AtomicWriteFile
-	removeWorkDir    = os.RemoveAll
-	renameWorkDir    = os.Rename
-	storeLocks       sync.Map // absolute works root -> *sync.RWMutex
-	workOpLocks      sync.Map // absolute work path -> *sync.Mutex
+	writeDerivedFile  = fileutil.AtomicWriteFile
+	removeWorkDir     = os.RemoveAll
+	renameWorkDir     = os.Rename
+	releaseStoreLease = ReleaseWorkLease
+	storeLocks        sync.Map // absolute works root -> *sync.RWMutex
+	workOpLocks       sync.Map // absolute work path -> *sync.Mutex
 )
 
 func validateDigest(d string) error {
@@ -160,10 +204,34 @@ func (s *FileWorkStore) withWorkOp(workID string, fn func() error) error {
 	}
 	err = fn()
 	doneErr := done()
+	return errors.Join(err, doneErr)
+}
+
+func (s *FileWorkStore) withCleanupOp(workID, requestID, operation string, fn func() error) error {
+	done, err := s.beginWorkOp(workID)
 	if err != nil {
 		return err
 	}
-	return doneErr
+	opErr := fn()
+	doneErr := done()
+	if doneErr == nil {
+		return opErr
+	}
+	if opErr != nil {
+		return errors.Join(opErr, doneErr)
+	}
+	cp, stateErr := s.loadCleanupPendingAny(workID)
+	if stateErr == nil && cp != nil && cp.RequestID == requestID && cp.Operation == operation {
+		return cleanupRecovery(cp, cp.CleanupPath, true, true, doneErr)
+	}
+	cp = &cleanupPending{
+		RequestID: requestID,
+		Operation: operation,
+		WorkID:    workID,
+		Stage:     "lease_release_failed",
+		Error:     doneErr.Error(),
+	}
+	return cleanupRecovery(cp, "", true, false, errors.Join(doneErr, stateErr))
 }
 
 func (s *FileWorkStore) beginWorkOp(workID string) (func() error, error) {
@@ -178,15 +246,18 @@ func (s *FileWorkStore) beginWorkOp(workID string) (func() error, error) {
 	}
 	releaseOp, err := requireLease(lockDir)
 	if err != nil {
-		_ = ReleaseWorkLease(lockDir)
+		err = errors.Join(err, releaseStoreLease(lockDir))
 		unlock()
 		return nil, err
 	}
 	return func() error {
 		releaseOp()
-		err := ReleaseWorkLease(lockDir)
+		err := releaseStoreLease(lockDir)
 		unlock()
-		return err
+		if err != nil {
+			return fmt.Errorf("work: release lifecycle lease for %s: %w", workID, err)
+		}
+		return nil
 	}, nil
 }
 
@@ -199,15 +270,18 @@ func (s *FileWorkStore) beginIndexOp() (func() error, error) {
 	}
 	releaseOp, err := requireLease(lockDir)
 	if err != nil {
-		_ = ReleaseWorkLease(lockDir)
+		err = errors.Join(err, releaseStoreLease(lockDir))
 		s.indexMu.Unlock()
 		return nil, err
 	}
 	return func() error {
 		releaseOp()
-		err := ReleaseWorkLease(lockDir)
+		err := releaseStoreLease(lockDir)
 		s.indexMu.Unlock()
-		return err
+		if err != nil {
+			return fmt.Errorf("work: release global index lease: %w", err)
+		}
+		return nil
 	}, nil
 }
 
@@ -366,8 +440,7 @@ func (s *FileWorkStore) LoadProjection(workID string) (*Work, error) {
 	}
 	wp, err := s.workPath(workID)
 	if err != nil {
-		_ = done()
-		return nil, err
+		return nil, errors.Join(err, done())
 	}
 	projection, loadErr := s.loadProjection(wp, workID)
 	return projection, errors.Join(loadErr, done())
@@ -391,16 +464,20 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 		}
 		replay, authoritative, replayErr := ReplayWithReducer(workDir, DefaultReducer())
 		if replayErr != nil {
-			return &w, fmt.Errorf("%w: validate projection for %s against event log: %v", ErrWorkNeedsRepair, workID, replayErr)
+			return authoritative, fmt.Errorf("%w: validate projection for %s against event log: %v", ErrWorkNeedsRepair, workID, replayErr)
 		}
 		if replay.ReadOnly || replay.NeedsRepair {
-			return &w, fmt.Errorf("%w: event log for %s is not safely replayable", ErrWorkNeedsRepair, workID)
+			return authoritative, fmt.Errorf("%w: event log for %s is not safely replayable", ErrWorkNeedsRepair, workID)
 		}
 		if authoritative == nil {
 			return nil, fmt.Errorf("%w: no events for work %s", ErrWorkNotFound, workID)
 		}
+		projectionMatches, compareErr := projectionsEqual(&w, authoritative)
+		if compareErr != nil {
+			return authoritative, fmt.Errorf("%w: compare projection for %s with event replay: %v", ErrWorkNeedsRepair, workID, compareErr)
+		}
 		if err := s.repairEventIndex(workDir, replay); err != nil {
-			return &w, fmt.Errorf("%w: projection loaded for %s but event index repair failed: %v", ErrWorkNeedsRepair, workID, err)
+			return authoritative, fmt.Errorf("%w: projection replayed for %s but event index repair failed: %v", ErrWorkNeedsRepair, workID, err)
 		}
 		manifest, manifestErr := loadManifestAt(filepath.Join(workDir, "manifest.json"))
 		manifestStale := manifestErr != nil || manifest.ID != workID || manifest.Revision != replay.Index.Revision
@@ -409,7 +486,7 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 		}
 		// Projection is written before manifest. A revision mismatch therefore
 		// proves that a prior derived-state update stopped part-way through.
-		if manifestStale {
+		if manifestStale || !projectionMatches {
 			if err := s.persistProjection(workDir, workID, authoritative, replay.Index.Revision); err != nil {
 				return authoritative, fmt.Errorf("%w: stale projection rebuilt for %s but derived files could not be repaired: %v", ErrWorkNeedsRepair, workID, err)
 			}
@@ -433,6 +510,18 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 	return s.rebuildProjection(workDir, workID, "no projection snapshot")
 }
 
+func projectionsEqual(a, b *Work) (bool, error) {
+	left, err := json.Marshal(a)
+	if err != nil {
+		return false, err
+	}
+	right, err := json.Marshal(b)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(left, right), nil
+}
+
 func (s *FileWorkStore) repairEventIndex(workDir string, replay *WorkEventReplay) error {
 	if replay == nil || !replay.IndexNeedsRebuild {
 		return nil
@@ -450,7 +539,7 @@ func (s *FileWorkStore) repairEventIndex(workDir string, replay *WorkEventReplay
 	}
 	_, rebuildErr := RebuildWorkEventIndex(workDir)
 	if acquired {
-		rebuildErr = errors.Join(rebuildErr, ReleaseWorkLease(workDir))
+		rebuildErr = errors.Join(rebuildErr, releaseStoreLease(workDir))
 	}
 	return rebuildErr
 }
@@ -780,7 +869,7 @@ func (s *FileWorkStore) MoveToTrash(workID, requestID string) error {
 	if requestID == "" {
 		return fmt.Errorf("%w: MoveToTrash", ErrWorkRequestIDRequired)
 	}
-	return s.withWorkOp(workID, func() error {
+	return s.withCleanupOp(workID, requestID, "trash", func() error {
 		return s.moveToTrashLocked(workID, requestID)
 	})
 }
@@ -820,13 +909,22 @@ func (s *FileWorkStore) moveToTrashLocked(workID, requestID string) error {
 	if !sourceExists && !targetExists {
 		return fmt.Errorf("%w: %s", ErrWorkNotFound, workID)
 	}
+	if cp != nil {
+		markerDir := wp
+		if !sourceExists {
+			markerDir = tp
+		}
+		if err := s.resumeMoveCleanup(markerDir, cp, targetExists); err != nil {
+			return err
+		}
+	}
 	if cp == nil {
 		now := time.Now().UTC()
 		cp = &cleanupPending{RequestID: requestID, Operation: "trash", WorkID: workID, Stage: "moving", TrashedAt: &now, StartedAt: now}
 		if !sourceExists {
 			return fmt.Errorf("%w: trash destination exists without a recoverable intent for %s", ErrWorkNeedsRepair, workID)
 		}
-		if err := s.writeCleanupPendingTo(wp, cp); err != nil {
+		if err := s.writeCleanupState(wp, cp, false); err != nil {
 			return err
 		}
 	} else {
@@ -838,30 +936,28 @@ func (s *FileWorkStore) moveToTrashLocked(workID, requestID string) error {
 		}
 		cp.Stage = "moving"
 		cp.Error = ""
-		if err := s.writeCleanupPendingTo(wp, cp); err != nil {
+		if err := s.writeCleanupState(wp, cp, false); err != nil {
 			return err
 		}
-		if err := atomicMoveWorkDir(wp, tp); err != nil {
-			cp.Stage = "move_failed"
-			cp.Error = err.Error()
-			_ = s.writeCleanupPendingTo(wp, cp)
-			return fmt.Errorf("work: move %s to trash: %w", workID, err)
+		if err := s.atomicMoveWorkDir(wp, tp, cp); err != nil {
+			if cp.CleanupPath == "" {
+				cp.Stage = "move_failed"
+			}
+			return s.failCleanup(wp, cp, false, fmt.Errorf("work: move %s to trash: %w", workID, err))
 		}
 		targetExists = true
 		sourceExists = s.isDirWithData(wp)
 	}
 	if sourceExists {
 		cp.Stage = "removing_source"
-		if err := s.writeCleanupPendingTo(tp, cp); err != nil {
+		if err := s.writeCleanupState(tp, cp, true); err != nil {
 			return err
 		}
 		if err := removeWorkDir(wp); err != nil {
-			cp.Error = err.Error()
-			_ = s.writeCleanupPendingTo(tp, cp)
-			return fmt.Errorf("work: remove source after trash copy: %w", err)
+			return s.failCleanup(tp, cp, true, fmt.Errorf("work: remove source after trash copy: %w", err))
 		}
 		if _, err := os.Stat(wp); !os.IsNotExist(err) {
-			return fmt.Errorf("work: source still exists after trash move: %s", wp)
+			return s.failCleanup(tp, cp, true, fmt.Errorf("work: source still exists after trash move: %s", wp))
 		}
 	}
 	if cp.TrashedAt == nil {
@@ -869,33 +965,29 @@ func (s *FileWorkStore) moveToTrashLocked(workID, requestID string) error {
 		cp.TrashedAt = &now
 	}
 	cp.Stage = "updating_manifest"
-	if err := s.writeCleanupPendingTo(tp, cp); err != nil {
+	if err := s.writeCleanupState(tp, cp, true); err != nil {
 		return err
 	}
 	if err := s.updateManifestDeletedAt(tp, workID, *cp.TrashedAt); err != nil {
-		cp.Error = err.Error()
-		_ = s.writeCleanupPendingTo(tp, cp)
-		return fmt.Errorf("work: mark %s deleted: %w", workID, err)
+		return s.failCleanup(tp, cp, true, fmt.Errorf("work: mark %s deleted: %w", workID, err))
 	}
 	cp.Stage = "updating_index"
-	if err := s.writeCleanupPendingTo(tp, cp); err != nil {
+	if err := s.writeCleanupState(tp, cp, true); err != nil {
 		return err
 	}
 	done, lockErr := s.beginIndexOp()
 	if lockErr != nil {
-		return lockErr
+		return s.failCleanup(tp, cp, true, fmt.Errorf("work: lock index while trashing %s: %w", workID, lockErr))
 	}
 	err = s.removeFromIndexLocked(workID)
 	err = errors.Join(err, done())
 	if err != nil {
-		cp.Error = err.Error()
-		_ = s.writeCleanupPendingTo(tp, cp)
-		return fmt.Errorf("work: remove %s from index: %w", workID, err)
+		return s.failCleanup(tp, cp, true, fmt.Errorf("work: remove %s from index: %w", workID, err))
 	}
 	cp.Stage = "done"
 	cp.Error = ""
 	cp.CompletedAt = ptrTime(time.Now().UTC())
-	return s.writeCleanupPendingTo(tp, cp)
+	return s.writeCleanupState(tp, cp, true)
 }
 
 // ── WorkStore: RestoreFromTrash ────────────────────────────────────────────
@@ -906,7 +998,7 @@ func (s *FileWorkStore) RestoreFromTrash(workID, requestID string) error {
 		return fmt.Errorf("%w: RestoreFromTrash", ErrWorkRequestIDRequired)
 	}
 
-	return s.withWorkOp(workID, func() error {
+	return s.withCleanupOp(workID, requestID, "restore", func() error {
 		return s.restoreFromTrashLocked(workID, requestID)
 	})
 }
@@ -944,13 +1036,22 @@ func (s *FileWorkStore) restoreFromTrashLocked(workID, requestID string) error {
 	if !targetExists && !sourceExists {
 		return fmt.Errorf("%w: %s", ErrWorkNotInTrash, workID)
 	}
+	if cp != nil {
+		markerDir := tp
+		if !sourceExists {
+			markerDir = wp
+		}
+		if err := s.resumeMoveCleanup(markerDir, cp, targetExists); err != nil {
+			return err
+		}
+	}
 	if cp == nil {
 		now := time.Now().UTC()
 		cp = &cleanupPending{RequestID: requestID, Operation: "restore", WorkID: workID, Stage: "moving", StartedAt: now}
 		if !sourceExists {
 			return fmt.Errorf("%w: active and trash copies exist without restore intent for %s", ErrWorkNeedsRepair, workID)
 		}
-		if err := s.writeCleanupPendingTo(tp, cp); err != nil {
+		if err := s.writeCleanupState(tp, cp, false); err != nil {
 			return err
 		}
 	} else {
@@ -962,60 +1063,54 @@ func (s *FileWorkStore) restoreFromTrashLocked(workID, requestID string) error {
 		}
 		cp.Stage = "moving"
 		cp.Error = ""
-		if err := s.writeCleanupPendingTo(tp, cp); err != nil {
+		if err := s.writeCleanupState(tp, cp, false); err != nil {
 			return err
 		}
-		if err := atomicMoveWorkDir(tp, wp); err != nil {
-			cp.Stage = "move_failed"
-			cp.Error = err.Error()
-			_ = s.writeCleanupPendingTo(tp, cp)
-			return fmt.Errorf("work: restore %s: %w", workID, err)
+		if err := s.atomicMoveWorkDir(tp, wp, cp); err != nil {
+			if cp.CleanupPath == "" {
+				cp.Stage = "move_failed"
+			}
+			return s.failCleanup(tp, cp, false, fmt.Errorf("work: restore %s: %w", workID, err))
 		}
 		targetExists = true
 		sourceExists = s.isDirWithData(tp)
 	}
 	if sourceExists {
 		cp.Stage = "removing_source"
-		if err := s.writeCleanupPendingTo(wp, cp); err != nil {
+		if err := s.writeCleanupState(wp, cp, true); err != nil {
 			return err
 		}
 		if err := removeWorkDir(tp); err != nil {
-			cp.Error = err.Error()
-			_ = s.writeCleanupPendingTo(wp, cp)
-			return fmt.Errorf("work: remove trash source after restore: %w", err)
+			return s.failCleanup(wp, cp, true, fmt.Errorf("work: remove trash source after restore: %w", err))
 		}
 		if _, err := os.Stat(tp); !os.IsNotExist(err) {
-			return fmt.Errorf("work: trash source still exists after restore: %s", tp)
+			return s.failCleanup(wp, cp, true, fmt.Errorf("work: trash source still exists after restore: %s", tp))
 		}
 	}
 	cp.Stage = "updating_manifest"
-	if err := s.writeCleanupPendingTo(wp, cp); err != nil {
+	if err := s.writeCleanupState(wp, cp, true); err != nil {
 		return err
 	}
 	if err := s.resetManifestDeletedAt(wp, workID); err != nil {
-		cp.Error = err.Error()
-		_ = s.writeCleanupPendingTo(wp, cp)
-		return fmt.Errorf("work: reset deleted state for %s: %w", workID, err)
+		return s.failCleanup(wp, cp, true, fmt.Errorf("work: reset deleted state for %s: %w", workID, err))
 	}
 	cp.Stage = "updating_index"
-	if err := s.writeCleanupPendingTo(wp, cp); err != nil {
+	if err := s.writeCleanupState(wp, cp, true); err != nil {
 		return err
 	}
 	done, lockErr := s.beginIndexOp()
 	if lockErr != nil {
-		return lockErr
+		return s.failCleanup(wp, cp, true, fmt.Errorf("work: lock index while restoring %s: %w", workID, lockErr))
 	}
 	err = s.upsertIndexLocked(workID)
 	err = errors.Join(err, done())
 	if err != nil {
-		cp.Error = err.Error()
-		_ = s.writeCleanupPendingTo(wp, cp)
-		return fmt.Errorf("work: restore %s index: %w", workID, err)
+		return s.failCleanup(wp, cp, true, fmt.Errorf("work: restore %s index: %w", workID, err))
 	}
 	cp.Stage = "done"
 	cp.Error = ""
 	cp.CompletedAt = ptrTime(time.Now().UTC())
-	return s.writeCleanupPendingTo(wp, cp)
+	return s.writeCleanupState(wp, cp, true)
 }
 
 // ── Definition storage ─────────────────────────────────────────────────────
@@ -1501,6 +1596,7 @@ type cleanupPending struct {
 	Operation   string     `json:"operation"` // "trash" | "restore" | "gc" | "create"
 	WorkID      string     `json:"workId"`
 	Stage       string     `json:"stage"`
+	CleanupPath string     `json:"cleanupPath,omitempty"`
 	TrashedAt   *time.Time `json:"trashedAt,omitempty"`
 	StartedAt   time.Time  `json:"startedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
@@ -1519,6 +1615,92 @@ func (s *FileWorkStore) writeCleanupPendingTo(dir string, cp *cleanupPending) er
 	}
 	data = append(data, '\n')
 	return writeDerivedFile(path, data, 0o644)
+}
+
+func (s *FileWorkStore) writeCleanupState(dir string, cp *cleanupPending, committed bool) error {
+	if err := s.writeCleanupPendingTo(dir, cp); err != nil {
+		cause := fmt.Errorf("work: persist cleanup-pending in %s: %w", dir, err)
+		return cleanupRecovery(cp, cp.CleanupPath, committed, false, cause)
+	}
+	return nil
+}
+
+func (s *FileWorkStore) failCleanup(dir string, cp *cleanupPending, committed bool, cause error) error {
+	cp.Error = cause.Error()
+	markerErr := s.writeCleanupPendingTo(dir, cp)
+	persisted := markerErr == nil
+	if markerErr != nil {
+		markerErr = fmt.Errorf("work: persist cleanup-pending in %s: %w", dir, markerErr)
+	}
+	return cleanupRecovery(cp, cp.CleanupPath, committed, persisted, errors.Join(cause, markerErr))
+}
+
+func (s *FileWorkStore) resumeMoveCleanup(dir string, cp *cleanupPending, committed bool) error {
+	paths, err := s.moveCleanupPaths(cp)
+	if err != nil {
+		return s.failCleanup(dir, cp, committed, err)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	for _, path := range paths {
+		cp.CleanupPath = path
+		if err := removeWorkDir(path); err != nil {
+			cp.Stage = "cleanup_failed"
+			cause := fmt.Errorf("work: remove pending move temp %s: %w", path, err)
+			return s.failCleanup(dir, cp, committed, cause)
+		}
+		if _, err := os.Stat(path); err != nil && !os.IsNotExist(err) {
+			cp.Stage = "cleanup_failed"
+			cause := fmt.Errorf("work: verify pending move temp removal %s: %w", path, err)
+			return s.failCleanup(dir, cp, committed, cause)
+		} else if err == nil {
+			cp.Stage = "cleanup_failed"
+			cause := fmt.Errorf("work: pending move temp still exists after removal: %s", path)
+			return s.failCleanup(dir, cp, committed, cause)
+		}
+	}
+	cp.CleanupPath = ""
+	cp.Stage = "moving"
+	cp.Error = ""
+	return s.writeCleanupState(dir, cp, committed)
+}
+
+func (s *FileWorkStore) moveCleanupPaths(cp *cleanupPending) ([]string, error) {
+	prefix := ".move-" + cp.WorkID + "-"
+	paths := map[string]bool{}
+	if cp.CleanupPath != "" {
+		path := filepath.Clean(cp.CleanupPath)
+		parent := filepath.Clean(filepath.Dir(path))
+		if (!samePath(parent, s.workDir) && !samePath(parent, s.trashDir)) || !strings.HasPrefix(filepath.Base(path), prefix) {
+			return nil, fmt.Errorf("%w: invalid pending move cleanup path %q", ErrWorkNeedsRepair, cp.CleanupPath)
+		}
+		paths[path] = true
+	}
+	for _, root := range []string{s.workDir, s.trashDir} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("work: scan move temp dirs in %s: %w", root, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+				paths[filepath.Join(root, entry.Name())] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(paths))
+	for path := range paths {
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 func cleanupStageRank(stage string) int {
@@ -1817,9 +1999,27 @@ func (s *FileWorkStore) CreateWorkDir(input CreateWorkDirInput) error {
 	if err := validateWorkID(workID); err != nil {
 		return err
 	}
-	return s.withWorkOp(workID, func() error {
-		return s.createWorkDirLocked(input)
-	})
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return err
+	}
+	createErr := s.createWorkDirLocked(input)
+	doneErr := done()
+	if doneErr == nil {
+		return createErr
+	}
+	if createErr != nil {
+		return errors.Join(createErr, doneErr)
+	}
+	wp, pathErr := s.workPath(workID)
+	if pathErr != nil {
+		return errors.Join(doneErr, pathErr)
+	}
+	manifest, manifestErr := loadManifestAt(filepath.Join(wp, "manifest.json"))
+	if manifestErr == nil && manifest.CreateRequestID == input.RequestID {
+		return committedRecovery("create", workID, input.RequestID, manifest.Revision, doneErr)
+	}
+	return errors.Join(doneErr, manifestErr, fmt.Errorf("work: create request %q lease release failed before committed state could be verified", input.RequestID))
 }
 
 func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr error) {
@@ -1854,6 +2054,9 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 	if err := os.MkdirAll(s.workDir, 0o755); err != nil {
 		return err
 	}
+	if err := s.resumeCreateCleanup(workID, input.RequestID); err != nil {
+		return err
+	}
 	tmpDir, err := os.MkdirTemp(s.workDir, ".new-"+workID+"-*")
 	if err != nil {
 		return fmt.Errorf("work: create temp dir for %s: %w", workID, err)
@@ -1864,11 +2067,16 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 			return
 		}
 		if cleanupErr := removeWorkDir(tmpDir); cleanupErr != nil {
-			if _, statErr := os.Stat(tmpDir); statErr == nil {
-				cp := &cleanupPending{RequestID: input.RequestID, Operation: "create", WorkID: workID, Stage: "cleanup_failed", StartedAt: time.Now().UTC(), Error: cleanupErr.Error()}
-				_ = s.writeCleanupPendingTo(tmpDir, cp)
+			cause := fmt.Errorf("work: clean failed create temp %s: %w", tmpDir, cleanupErr)
+			cp := &cleanupPending{RequestID: input.RequestID, Operation: "create", WorkID: workID, Stage: "cleanup_failed", CleanupPath: tmpDir, StartedAt: time.Now().UTC(), Error: cause.Error()}
+			if info, statErr := os.Stat(tmpDir); statErr == nil && info.IsDir() {
+				retErr = errors.Join(retErr, s.failCleanup(tmpDir, cp, false, cause))
+			} else {
+				if statErr != nil && !os.IsNotExist(statErr) {
+					cause = errors.Join(cause, fmt.Errorf("work: inspect failed create temp %s: %w", tmpDir, statErr))
+				}
+				retErr = errors.Join(retErr, cleanupRecovery(cp, "", false, false, cause))
 			}
-			retErr = errors.Join(retErr, fmt.Errorf("work: clean failed create temp %s: %w", tmpDir, cleanupErr))
 		}
 	}()
 
@@ -1891,17 +2099,17 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 	}
 	for i := range events {
 		if events[i].WorkID != workID {
-			_ = ReleaseWorkLease(tmpDir)
-			return fmt.Errorf("work: create event %d workID mismatch", i)
+			cause := fmt.Errorf("work: create event %d workID mismatch", i)
+			return errors.Join(cause, releaseCreateLease(tmpDir, workID, input.RequestID))
 		}
 		events[i].Revision = 0
 		events[i].BaseRevision = 0
 		if _, err := AppendWorkEvent(tmpDir, events[i], true); err != nil {
-			_ = ReleaseWorkLease(tmpDir)
-			return fmt.Errorf("work: append create event %d: %w", i, err)
+			cause := fmt.Errorf("work: append create event %d: %w", i, err)
+			return errors.Join(cause, releaseCreateLease(tmpDir, workID, input.RequestID))
 		}
 	}
-	if err := ReleaseWorkLease(tmpDir); err != nil {
+	if err := releaseCreateLease(tmpDir, workID, input.RequestID); err != nil {
 		return err
 	}
 	replay, projection, err := ReplayWithReducer(tmpDir, DefaultReducer())
@@ -1978,6 +2186,56 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 	return nil
 }
 
+func (s *FileWorkStore) resumeCreateCleanup(workID, requestID string) error {
+	entries, err := os.ReadDir(s.workDir)
+	if err != nil {
+		return fmt.Errorf("work: scan create temp dirs for %s: %w", workID, err)
+	}
+	prefix := ".new-" + workID + "-"
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		dir := filepath.Join(s.workDir, entry.Name())
+		data, readErr := os.ReadFile(filepath.Join(dir, "cleanup-pending.json"))
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			return fmt.Errorf("%w: unreadable create temp marker %s: %v", ErrWorkNeedsRepair, dir, readErr)
+		}
+		var cp cleanupPending
+		if err := json.Unmarshal(data, &cp); err != nil {
+			return fmt.Errorf("%w: corrupt create cleanup marker %s: %v", ErrWorkNeedsRepair, dir, err)
+		}
+		if cp.Operation != "create" || cp.WorkID != workID {
+			continue
+		}
+		if cp.RequestID != requestID {
+			return fmt.Errorf("%w: create temp %s belongs to request %q", ErrWorkRequestIDConflict, dir, cp.RequestID)
+		}
+		if err := removeWorkDir(dir); err != nil {
+			cp.Stage = "cleanup_failed"
+			return s.failCleanup(dir, &cp, false, fmt.Errorf("work: retry create temp cleanup %s: %w", dir, err))
+		}
+		if _, err := os.Stat(dir); err == nil {
+			cp.Stage = "cleanup_failed"
+			return s.failCleanup(dir, &cp, false, fmt.Errorf("work: create temp still exists after cleanup: %s", dir))
+		} else if !os.IsNotExist(err) {
+			cp.Stage = "cleanup_failed"
+			return s.failCleanup(dir, &cp, false, fmt.Errorf("work: verify create temp cleanup %s: %w", dir, err))
+		}
+	}
+	return nil
+}
+
+func releaseCreateLease(dir, workID, requestID string) error {
+	if err := releaseStoreLease(dir); err != nil {
+		return fmt.Errorf("work: release create lease for %s request %q: %w", workID, requestID, err)
+	}
+	return nil
+}
+
 // ── Atomic move ────────────────────────────────────────────────────────────
 
 // atomicMoveWorkDir moves a directory from src to dst atomically. It first
@@ -1985,43 +2243,65 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 // stale remnant), it copies to a sibling temp directory inside the destination
 // parent, validates, then renames into place. The final directory only appears
 // after full validation.
-func atomicMoveWorkDir(src, dst string) error {
+func (s *FileWorkStore) atomicMoveWorkDir(src, dst string, cp *cleanupPending) (retErr error) {
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("%w: move destination %s", ErrWorkAlreadyExists, dst)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("work: stat move destination: %w", err)
 	}
-	if err := renameWorkDir(src, dst); err == nil {
+	renameErr := renameWorkDir(src, dst)
+	if renameErr == nil {
 		return nil
 	}
+	directErr := fmt.Errorf("work: direct move %s to %s: %w", src, dst, renameErr)
 
 	parent := filepath.Dir(dst)
 	if parent == "." || parent == "" {
-		return fmt.Errorf("work: cannot determine parent of %s", dst)
+		return errors.Join(directErr, fmt.Errorf("work: cannot determine parent of %s", dst))
 	}
 
-	tmpDst, err := os.MkdirTemp(parent, ".move-*")
+	tmpDst, err := os.MkdirTemp(parent, ".move-"+cp.WorkID+"-*")
 	if err != nil {
-		return fmt.Errorf("work: create temp move dir: %w", err)
+		return errors.Join(directErr, fmt.Errorf("work: create temp move dir: %w", err))
 	}
 	success := false
 	defer func() {
-		if !success {
-			removeDirBestEffort(tmpDst)
+		if success {
+			return
+		}
+		if cleanupErr := removeWorkDir(tmpDst); cleanupErr != nil {
+			cause := fmt.Errorf("work: remove failed move temp %s: %w", tmpDst, cleanupErr)
+			statInfo, statErr := os.Stat(tmpDst)
+			persisted := false
+			cleanupPath := ""
+			if statErr == nil && statInfo.IsDir() {
+				cleanupPath = tmpDst
+				cp.CleanupPath = tmpDst
+				cp.Stage = "cleanup_failed"
+				cp.Error = errors.Join(retErr, cause).Error()
+				markerErr := s.writeCleanupPendingTo(tmpDst, cp)
+				persisted = markerErr == nil
+				if markerErr != nil {
+					cause = errors.Join(cause, fmt.Errorf("work: persist cleanup-pending in move temp %s: %w", tmpDst, markerErr))
+				}
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				cause = errors.Join(cause, fmt.Errorf("work: inspect failed move temp %s: %w", tmpDst, statErr))
+			}
+			retErr = errors.Join(retErr, cleanupRecovery(cp, cleanupPath, false, persisted, cause))
 		}
 	}()
 
 	if err := copyDirFull(src, tmpDst); err != nil {
-		return fmt.Errorf("work: copy to temp: %w", err)
+		return errors.Join(directErr, fmt.Errorf("work: copy to temp: %w", err))
 	}
 
 	if err := validateCopiedTree(src, tmpDst); err != nil {
-		return err
+		return errors.Join(directErr, err)
 	}
 
 	// Rename temp to final.
 	if err := renameWorkDir(tmpDst, dst); err != nil {
-		return fmt.Errorf("work: rename temp %s → %s: %w", tmpDst, dst, err)
+		return errors.Join(directErr, fmt.Errorf("work: rename temp %s → %s: %w", tmpDst, dst, err))
 	}
 	success = true
 	return nil
@@ -2089,10 +2369,6 @@ func (s *FileWorkStore) isDirWithData(dir string) bool {
 		return false
 	}
 	return dirHasData(dir)
-}
-
-func removeDirBestEffort(dir string) {
-	_ = os.RemoveAll(dir)
 }
 
 func copyDirFull(src, dst string) error {

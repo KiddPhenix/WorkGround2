@@ -515,6 +515,112 @@ func TestFileWorkStore_RebuildProjectionFromEvents(t *testing.T) {
 	}
 }
 
+func TestFileWorkStore_LoadProjectionRepairsTamperSameRevision(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-tampered-projection"
+	createTestWork(t, store, workID)
+
+	projectionPath, err := store.projectionPath(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tampered Work
+	if err := json.Unmarshal(data, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered.Name = "tampered"
+	data, err = json.MarshalIndent(&tampered, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fileutil.AtomicWriteFile(projectionPath, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestBefore, err := store.LoadManifest(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadProjection(workID)
+	if err != nil {
+		t.Fatalf("LoadProjection tamper repair: %v", err)
+	}
+	if loaded.Name != "Test Work" {
+		t.Fatalf("LoadProjection trusted same-revision tamper %q", loaded.Name)
+	}
+
+	repairedData, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repaired Work
+	if err := json.Unmarshal(repairedData, &repaired); err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Name != "Test Work" {
+		t.Fatalf("persisted projection remained tampered: %q", repaired.Name)
+	}
+	manifestAfter, err := store.LoadManifest(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifestAfter.Revision != manifestBefore.Revision {
+		t.Fatalf("tamper repair changed revision: before=%d after=%d", manifestBefore.Revision, manifestAfter.Revision)
+	}
+}
+
+func TestFileWorkStore_DamagedLogDoesNotTrustTamperedProjection(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-tampered-damaged-log"
+	createTestWork(t, store, workID)
+	projectionPath, _ := store.projectionPath(workID)
+	data, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tampered Work
+	if err := json.Unmarshal(data, &tampered); err != nil {
+		t.Fatal(err)
+	}
+	tampered.Name = "tampered"
+	data, err = json.MarshalIndent(&tampered, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := fileutil.AtomicWriteFile(projectionPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir, _ := store.workPath(workID)
+	log, err := os.OpenFile(WorkEventLogPath(workDir), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.WriteString("{torn-tail"); err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := store.LoadProjection(workID)
+	if !errors.Is(err, ErrWorkNeedsRepair) {
+		t.Fatalf("LoadProjection = %v, want ErrWorkNeedsRepair", err)
+	}
+	if loaded == nil || loaded.Name != "Test Work" {
+		t.Fatalf("damaged log returned untrusted snapshot: %+v", loaded)
+	}
+	after, readErr := os.ReadFile(projectionPath)
+	if readErr != nil || string(after) != string(data) {
+		t.Fatalf("damaged log must stay read-only: data=%q err=%v", after, readErr)
+	}
+}
+
 func TestFileWorkStore_DoesNotProjectDamagedEventTail(t *testing.T) {
 	store := newTestStore(t)
 	workID := "work-damaged-event-tail"
@@ -1003,6 +1109,171 @@ func TestFileWorkStore_MoveToTrashRetriesSourceCleanup(t *testing.T) {
 	}
 }
 
+func TestFileWorkStore_MoveToTrashReportsCleanupMarkerFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-trash-marker-failure"
+	createTestWork(t, store, workID)
+	wp, _ := store.workPath(workID)
+	tp, _ := store.trashPath(workID)
+	if err := ReleaseWorkLease(wp); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRename := renameWorkDir
+	originalRemove := removeWorkDir
+	originalWrite := writeDerivedFile
+	t.Cleanup(func() {
+		renameWorkDir = originalRename
+		removeWorkDir = originalRemove
+		writeDerivedFile = originalWrite
+	})
+	renameWorkDir = func(src, dst string) error {
+		if samePath(src, wp) && samePath(dst, tp) {
+			return errors.New("injected cross-volume move")
+		}
+		return originalRename(src, dst)
+	}
+	removeErr := errors.New("injected source removal failure")
+	removeWorkDir = func(path string) error {
+		if samePath(path, wp) {
+			return removeErr
+		}
+		return originalRemove(path)
+	}
+	markerErr := errors.New("injected cleanup marker failure")
+	writeDerivedFile = func(path string, data []byte, perm os.FileMode) error {
+		if samePath(filepath.Dir(path), tp) && filepath.Base(path) == "cleanup-pending.json" && strings.Contains(string(data), removeErr.Error()) {
+			return markerErr
+		}
+		return originalWrite(path, data, perm)
+	}
+
+	err := store.MoveToTrash(workID, "req-marker-failure")
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, removeErr) || !errors.Is(err, markerErr) {
+		t.Fatalf("MoveToTrash lost joined recovery errors: %v", err)
+	}
+	if !recovery.Committed || recovery.MarkerPersisted || recovery.RequestID != "req-marker-failure" || recovery.Stage != "removing_source" {
+		t.Fatalf("cleanup recovery evidence = %+v", recovery)
+	}
+
+	removeWorkDir = originalRemove
+	writeDerivedFile = originalWrite
+	if err := store.MoveToTrash(workID, "req-marker-failure"); err != nil {
+		t.Fatalf("same-request retry after marker failure: %v", err)
+	}
+	if store.isDirWithData(wp) || !store.isDirWithData(tp) {
+		t.Fatal("marker failure retry did not converge to trash")
+	}
+}
+
+func TestFileWorkStore_MoveToTrashReportsLeaseReleaseFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-trash-release-failure"
+	createTestWork(t, store, workID)
+	wp, _ := store.workPath(workID)
+	if err := ReleaseWorkLease(wp); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRelease := releaseStoreLease
+	t.Cleanup(func() { releaseStoreLease = originalRelease })
+	releaseErr := errors.New("injected lifecycle lease release failure")
+	lifecycleLock := filepath.Join(store.WorkDir(), ".locks", workID)
+	failed := false
+	releaseStoreLease = func(path string) error {
+		err := originalRelease(path)
+		if !failed && samePath(path, lifecycleLock) {
+			failed = true
+			return errors.Join(err, releaseErr)
+		}
+		return err
+	}
+
+	err := store.MoveToTrash(workID, "req-release-failure")
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, releaseErr) {
+		t.Fatalf("MoveToTrash lease release error = %v", err)
+	}
+	if !recovery.Committed || !recovery.MarkerPersisted || recovery.RequestID != "req-release-failure" || recovery.Stage != "done" {
+		t.Fatalf("lease release recovery evidence = %+v", recovery)
+	}
+
+	releaseStoreLease = originalRelease
+	if err := store.MoveToTrash(workID, "req-release-failure"); err != nil {
+		t.Fatalf("same-request retry after release failure: %v", err)
+	}
+}
+
+func TestFileWorkStore_AtomicMoveReportsTempCleanupFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-move-temp-cleanup"
+	createTestWork(t, store, workID)
+	wp, _ := store.workPath(workID)
+	tp, _ := store.trashPath(workID)
+	if err := ReleaseWorkLease(wp); err != nil {
+		t.Fatal(err)
+	}
+
+	originalRename := renameWorkDir
+	originalRemove := removeWorkDir
+	originalWrite := writeDerivedFile
+	t.Cleanup(func() {
+		renameWorkDir = originalRename
+		removeWorkDir = originalRemove
+		writeDerivedFile = originalWrite
+	})
+	renameWorkDir = func(src, dst string) error {
+		if samePath(src, wp) && samePath(dst, tp) {
+			return errors.New("injected cross-volume move")
+		}
+		return originalRename(src, dst)
+	}
+	copyErr := errors.New("injected temp copy failure")
+	copyFailed := false
+	writeDerivedFile = func(path string, data []byte, perm os.FileMode) error {
+		if !copyFailed && strings.HasPrefix(filepath.Base(filepath.Dir(path)), ".move-") && filepath.Base(path) != "cleanup-pending.json" {
+			copyFailed = true
+			return copyErr
+		}
+		return originalWrite(path, data, perm)
+	}
+	removeErr := errors.New("injected temp RemoveAll failure")
+	removeFailed := false
+	removeWorkDir = func(path string) error {
+		if !removeFailed && strings.HasPrefix(filepath.Base(filepath.Clean(path)), ".move-") {
+			removeFailed = true
+			return removeErr
+		}
+		return originalRemove(path)
+	}
+
+	err := store.MoveToTrash(workID, "req-temp-cleanup")
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, copyErr) || !errors.Is(err, removeErr) {
+		t.Fatalf("atomic move lost temp cleanup failures: %v", err)
+	}
+	if recovery.CleanupPath == "" || !recovery.MarkerPersisted || recovery.RequestID != "req-temp-cleanup" {
+		t.Fatalf("temp cleanup recovery evidence = %+v", recovery)
+	}
+	markerPath := filepath.Join(recovery.CleanupPath, "cleanup-pending.json")
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("failed move temp marker missing: %v", err)
+	}
+
+	writeDerivedFile = originalWrite
+	removeWorkDir = originalRemove
+	if err := store.MoveToTrash(workID, "req-temp-cleanup"); err != nil {
+		t.Fatalf("same-request temp cleanup retry: %v", err)
+	}
+	if _, err := os.Stat(recovery.CleanupPath); !os.IsNotExist(err) {
+		t.Fatalf("retry left failed move temp %s: %v", recovery.CleanupPath, err)
+	}
+	if store.isDirWithData(wp) || !store.isDirWithData(tp) {
+		t.Fatal("temp cleanup retry did not converge to trash")
+	}
+}
+
 func TestFileWorkStore_MoveToTrashIdempotent(t *testing.T) {
 	store := newTestStore(t)
 	workID := "work-trash-idemp"
@@ -1261,8 +1532,8 @@ func TestFileWorkStore_WriteProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadProjection: %v", err)
 	}
-	if loaded.Name != "Written Projection" {
-		t.Fatalf("loaded Name = %q, want %q", loaded.Name, "Written Projection")
+	if loaded.Name != "Test Work" {
+		t.Fatalf("loaded Name = %q, want event-log truth %q", loaded.Name, "Test Work")
 	}
 }
 
@@ -1459,6 +1730,107 @@ func TestFileWorkStore_CreateWorkDirCleansFailedTemp(t *testing.T) {
 	wp, _ := store.workPath(workID)
 	if _, err := os.Stat(wp); !os.IsNotExist(err) {
 		t.Fatalf("failed create exposed final directory: %v", err)
+	}
+}
+
+func TestFileWorkStore_CreateWorkDirReportsTempCleanupFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-create-cleanup-failure"
+	input := CreateWorkDirInput{
+		RequestID: "req-create-cleanup-failure",
+		Work: &Work{
+			SchemaVersion: SchemaVersion,
+			ID:            workID,
+			Name:          "Cleanup failure",
+			State:         WorkDraft,
+			ArchiveState:  ArchiveActive,
+			BlueprintRef:  BlueprintRef{ID: "blueprint:test", SchemaVersion: 1, Version: 1},
+			CreatedAt:     time.Now().UTC(),
+			UpdatedAt:     time.Now().UTC(),
+		},
+		Blobs: map[string][]byte{digestPrefix + strings.Repeat("0", 64): []byte("wrong digest")},
+	}
+
+	originalRemove := removeWorkDir
+	t.Cleanup(func() { removeWorkDir = originalRemove })
+	removeErr := errors.New("injected create temp RemoveAll failure")
+	failed := false
+	removeWorkDir = func(path string) error {
+		if !failed && strings.HasPrefix(filepath.Base(filepath.Clean(path)), ".new-"+workID+"-") {
+			failed = true
+			return removeErr
+		}
+		return originalRemove(path)
+	}
+
+	err := store.CreateWorkDir(input)
+	var recovery *ErrWorkCleanupRecovery
+	if !errors.As(err, &recovery) || !errors.Is(err, ErrWorkDigestMismatch) || !errors.Is(err, removeErr) {
+		t.Fatalf("CreateWorkDir cleanup failure = %v", err)
+	}
+	if recovery.CleanupPath == "" || !recovery.MarkerPersisted || recovery.RequestID != input.RequestID || recovery.Committed {
+		t.Fatalf("create cleanup recovery evidence = %+v", recovery)
+	}
+	if _, err := os.Stat(filepath.Join(recovery.CleanupPath, "cleanup-pending.json")); err != nil {
+		t.Fatalf("create cleanup marker missing: %v", err)
+	}
+
+	removeWorkDir = originalRemove
+	input.Blobs = nil
+	if err := store.CreateWorkDir(input); err != nil {
+		t.Fatalf("same-request create cleanup retry: %v", err)
+	}
+	if _, err := os.Stat(recovery.CleanupPath); !os.IsNotExist(err) {
+		t.Fatalf("create retry left stale temp %s: %v", recovery.CleanupPath, err)
+	}
+	wp, _ := store.workPath(workID)
+	if !store.isDirWithData(wp) {
+		t.Fatal("create retry did not expose final work")
+	}
+}
+
+func TestFileWorkStore_CreateWorkDirReportsLeaseReleaseFailure(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-create-release-failure"
+	input := CreateWorkDirInput{
+		RequestID: "req-create-release-failure",
+		Work: &Work{
+			SchemaVersion: SchemaVersion,
+			ID:            workID,
+			Name:          "Release failure",
+			State:         WorkDraft,
+			ArchiveState:  ArchiveActive,
+			BlueprintRef:  BlueprintRef{ID: "blueprint:test", SchemaVersion: 1, Version: 1},
+			CreatedAt:     time.Now().UTC(),
+			UpdatedAt:     time.Now().UTC(),
+		},
+	}
+
+	originalRelease := releaseStoreLease
+	t.Cleanup(func() { releaseStoreLease = originalRelease })
+	releaseErr := errors.New("injected create lease release failure")
+	failed := false
+	releaseStoreLease = func(path string) error {
+		err := originalRelease(path)
+		if !failed && strings.HasPrefix(filepath.Base(filepath.Clean(path)), ".new-"+workID+"-") {
+			failed = true
+			return errors.Join(err, releaseErr)
+		}
+		return err
+	}
+
+	err := store.CreateWorkDir(input)
+	if !errors.Is(err, releaseErr) || !strings.Contains(err.Error(), input.RequestID) {
+		t.Fatalf("CreateWorkDir lease release error lost context: %v", err)
+	}
+	wp, _ := store.workPath(workID)
+	if store.isDirWithData(wp) {
+		t.Fatal("create with temp lease release failure exposed final work")
+	}
+
+	releaseStoreLease = originalRelease
+	if err := store.CreateWorkDir(input); err != nil {
+		t.Fatalf("same-request create retry after lease release failure: %v", err)
 	}
 }
 
