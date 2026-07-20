@@ -1,6 +1,9 @@
 package work
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // CreateWorkInput 是创建 Work 的输入参数。
 // RequestID 用于幂等创建：相同 RequestID 的重复调用返回同一结果。
@@ -157,4 +160,41 @@ type ActionReceipt struct {
 	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
 	RequestID string `json:"requestId"`
+}
+
+// BlockUpsertInput is a request to upsert a BlockInstance with revision-based
+// merge semantics. ExpectedRevision is the Work-level optimistic lock.
+type BlockUpsertInput struct {
+	WorkID           string            `json:"workId"`
+	BlockID          string            `json:"blockId"`
+	Kind             string            `json:"kind"`
+	SchemaVersion    int               `json:"schemaVersion"`
+	Revision         int64             `json:"revision"`
+	Title            string            `json:"title,omitempty"`
+	Status           BlockStatus       `json:"status"`
+	Data             json.RawMessage   `json:"data"`
+	Actions          []BlockActionSpec `json:"actions,omitempty"`
+	Source           BlockSource       `json:"source"`
+	Freshness        *BlockFreshness   `json:"freshness,omitempty"`
+	Fallback         BlockFallback     `json:"fallback"`
+	Tombstone        bool              `json:"tombstone,omitempty"`
+	ExpectedRevision int64             `json:"expectedRevision"`
+	RequestID        string            `json:"requestId"`
+}
+
+// BlockRemoveInput is a tombstone marker for a block.
+type BlockRemoveInput struct {
+	WorkID           string `json:"workId"`
+	BlockID          string `json:"blockId"`
+	Revision         int64  `json:"revision"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// BlockPlacementInput carries a complete replacement set of placements.
+type BlockPlacementInput struct {
+	WorkID           string           `json:"workId"`
+	Placements       []BlockPlacement `json:"placements"`
+	ExpectedRevision int64            `json:"expectedRevision"`
+	RequestID        string           `json:"requestId"`
 }

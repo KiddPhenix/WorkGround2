@@ -648,7 +648,7 @@ func buildInitialBlocks(specs []BlockSpec, now time.Time) ([]BlockInstance, []Bl
 		}
 		placements = append(placements, placement)
 	}
-	return blocks, placements
+	return blocks, sortPlacements(placements)
 }
 
 func cloneJSONMap(value map[string]any) (map[string]any, error) {
