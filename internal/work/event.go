@@ -46,6 +46,7 @@ const (
 	EventConclusionUpserted  WorkEventType = "conclusion.upserted"
 	EventArtifactLinked      WorkEventType = "artifact.linked"
 	EventWorkArchived        WorkEventType = "work.archived"
+	EventWorkRestored        WorkEventType = "work.restored"
 	EventWorkDeleted         WorkEventType = "work.deleted"
 )
 

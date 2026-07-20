@@ -32,9 +32,12 @@ func (s *Sink) Events() []work.WorkViewEvent {
 
 // Store delegates every WorkStore method to an explicit function.
 type Store struct {
+	CreateWorkDirFunc   func(work.CreateWorkDirInput) error
 	LoadProjectionFunc  func(string) (*work.Work, error)
+	LoadStateFunc       func(string, string) (*work.Work, work.WorkEventState, error)
 	LoadArchiveFunc     func(string) (*work.WorkRecord, error)
 	AppendFunc          func(string, work.WorkEvent) (int64, error)
+	CommitEventFunc     func(string, work.WorkEvent) (int64, error)
 	WriteProjectionFunc func(string, *work.Work, int64) error
 	WriteArchiveFunc    func(string, *work.WorkRecord) error
 	ListFunc            func(work.WorkFilter) ([]work.WorkSummary, error)
@@ -42,11 +45,25 @@ type Store struct {
 	RestoreFunc         func(string, string) error
 }
 
+func (s *Store) CreateWorkDir(input work.CreateWorkDirInput) error {
+	if s.CreateWorkDirFunc == nil {
+		return ErrUnconfigured
+	}
+	return s.CreateWorkDirFunc(input)
+}
+
 func (s *Store) LoadProjection(id string) (*work.Work, error) {
 	if s.LoadProjectionFunc == nil {
 		return nil, ErrUnconfigured
 	}
 	return s.LoadProjectionFunc(id)
+}
+
+func (s *Store) LoadState(id, requestID string) (*work.Work, work.WorkEventState, error) {
+	if s.LoadStateFunc == nil {
+		return nil, work.WorkEventState{}, ErrUnconfigured
+	}
+	return s.LoadStateFunc(id, requestID)
 }
 
 func (s *Store) LoadArchive(id string) (*work.WorkRecord, error) {
@@ -61,6 +78,13 @@ func (s *Store) Append(id string, event work.WorkEvent) (int64, error) {
 		return 0, ErrUnconfigured
 	}
 	return s.AppendFunc(id, event)
+}
+
+func (s *Store) CommitEvent(id string, event work.WorkEvent) (int64, error) {
+	if s.CommitEventFunc == nil {
+		return 0, ErrUnconfigured
+	}
+	return s.CommitEventFunc(id, event)
 }
 
 func (s *Store) WriteProjection(id string, value *work.Work, revision int64) error {

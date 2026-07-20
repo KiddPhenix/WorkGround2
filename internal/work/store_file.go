@@ -446,6 +446,49 @@ func (s *FileWorkStore) LoadProjection(workID string) (*Work, error) {
 	return projection, errors.Join(loadErr, done())
 }
 
+// LoadState returns a projection and its authoritative event-log state while
+// holding the per-Work lifecycle lock. Service uses it to make requestID
+// idempotency and expectedRevision checks survive restarts and concurrent
+// Service instances.
+func (s *FileWorkStore) LoadState(workID, requestID string) (value *Work, state WorkEventState, retErr error) {
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, state, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
+
+	wp, err := s.workPath(workID)
+	if err != nil {
+		return nil, state, err
+	}
+	value, err = s.loadProjection(wp, workID)
+	if err != nil {
+		return value, state, err
+	}
+	replay, err := ReplayWorkEventLog(wp)
+	if err != nil {
+		return value, state, err
+	}
+	if replay.ReadOnly {
+		return value, state, fmt.Errorf("work: event log for %s is read-only: %s", workID, replay.ReadOnlyReason)
+	}
+	if replay.NeedsRepair {
+		return value, state, fmt.Errorf("%w: event log for %s requires repair", ErrWorkNeedsRepair, workID)
+	}
+	if replay.Index == nil {
+		return value, state, fmt.Errorf("%w: event index for %s is unavailable", ErrWorkNeedsRepair, workID)
+	}
+	state.Revision = replay.Index.Revision
+	if requestID != "" {
+		entry, ok := replay.Index.RequestIndex[requestID]
+		state.RequestFound = ok
+		if ok {
+			state.RequestRevision = entry.Revision
+		}
+	}
+	return value, state, nil
+}
+
 func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 	projPath := filepath.Join(workDir, "projection.json")
 
@@ -622,7 +665,53 @@ func (s *FileWorkStore) Append(workID string, event WorkEvent) (revision int64, 
 	if err := os.MkdirAll(wp, 0o755); err != nil {
 		return 0, fmt.Errorf("work: create work dir %s: %w", workID, err)
 	}
+	return s.appendLocked(workID, wp, event)
+}
 
+// CommitEvent serializes a Service event under both the lifecycle lock and the
+// event-log writer lease. Append intentionally retains its lower-level contract
+// that callers already hold the writer lease.
+func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision int64, retErr error) {
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := done(); closeErr != nil {
+			if retErr == nil && revision > 0 {
+				retErr = committedRecovery("commit-event", workID, event.RequestID, revision, closeErr)
+			} else {
+				retErr = errors.Join(retErr, closeErr)
+			}
+		}
+	}()
+
+	wp, err := s.workPath(workID)
+	if err != nil {
+		return 0, err
+	}
+	if !s.isDirWithData(wp) {
+		return 0, fmt.Errorf("%w: %s", ErrWorkNotFound, workID)
+	}
+	if held, _, writer := probeWorkLease(wp); held {
+		return 0, fmt.Errorf("%w: cannot commit %s while writer %q is active", ErrWorkLeaseHeld, workID, writer)
+	}
+	if err := AcquireWorkLease(wp); err != nil {
+		return 0, fmt.Errorf("work: acquire event writer lease for %s: %w", workID, err)
+	}
+	defer func() {
+		if releaseErr := releaseStoreLease(wp); releaseErr != nil {
+			if retErr == nil && revision > 0 {
+				retErr = committedRecovery("commit-event", workID, event.RequestID, revision, releaseErr)
+			} else {
+				retErr = errors.Join(retErr, releaseErr)
+			}
+		}
+	}()
+	return s.appendLocked(workID, wp, event)
+}
+
+func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64, error) {
 	rev, err := AppendWorkEvent(wp, event, true)
 	if err != nil {
 		if rev > 0 {
@@ -674,6 +763,7 @@ func (s *FileWorkStore) persistProjection(workDir, workID string, value *Work, r
 		var current workManifest
 		if json.Unmarshal(currentData, &current) == nil && current.ID == workID {
 			manifest.CreateRequestID = current.CreateRequestID
+			manifest.CreateDigest = current.CreateDigest
 			manifest.DeletedAt = current.DeletedAt
 		}
 	}
@@ -1294,6 +1384,7 @@ type workManifest struct {
 	DeletedAt       *time.Time       `json:"deletedAt,omitempty"`
 	Revision        int64            `json:"revision"`
 	CreateRequestID string           `json:"createRequestId,omitempty"`
+	CreateDigest    string           `json:"createDigest,omitempty"`
 }
 
 func manifestFromWork(value *Work, revision int64) *workManifest {
@@ -2058,6 +2149,11 @@ func (s *FileWorkStore) CreateWorkDir(input CreateWorkDirInput) error {
 func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr error) {
 	workID := input.Work.ID
 	wp, _ := s.workPath(workID)
+	tp, _ := s.trashPath(workID)
+	intentDigest, err := workCreateDigest(input.Work)
+	if err != nil {
+		return fmt.Errorf("work: digest create intent for %s: %w", workID, err)
+	}
 	if s.isDirWithData(wp) {
 		manifest, err := s.LoadManifest(workID)
 		if err != nil {
@@ -2065,6 +2161,15 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 		}
 		if manifest.CreateRequestID != input.RequestID {
 			return fmt.Errorf("%w: %s was created by request %q", ErrWorkRequestIDConflict, workID, manifest.CreateRequestID)
+		}
+		if manifest.CreateDigest != "" && manifest.CreateDigest != intentDigest {
+			return fmt.Errorf("%w: create request %q was reused with different content", ErrWorkRequestIDConflict, input.RequestID)
+		}
+		if manifest.CreateDigest == "" {
+			manifest.CreateDigest = intentDigest
+			if err := s.writeManifestLocked(workID, manifest); err != nil {
+				return fmt.Errorf("work: persist create digest for %s: %w", workID, err)
+			}
 		}
 		if err := s.resumeCreateCleanup(workID, input.RequestID, true); err != nil {
 			return err
@@ -2078,6 +2183,9 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 		}
 		err = s.upsertIndexLocked(workID)
 		return errors.Join(err, done())
+	}
+	if s.isDirWithData(tp) {
+		return fmt.Errorf("%w: %s", ErrWorkTrashExists, workID)
 	}
 	if _, err := os.Stat(wp); err == nil {
 		return fmt.Errorf("%w: incomplete final directory already exists for %s", ErrWorkNeedsRepair, workID)
@@ -2169,6 +2277,7 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 	}
 	manifest := manifestFromWork(projection, revision)
 	manifest.CreateRequestID = input.RequestID
+	manifest.CreateDigest = intentDigest
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return err
@@ -2220,6 +2329,22 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 		return committedRecovery("create", workID, input.RequestID, revision, err)
 	}
 	return nil
+}
+
+func workCreateDigest(value *Work) (string, error) {
+	if value == nil {
+		return "", ErrWorkNilInput
+	}
+	copyValue := *value
+	copyValue.CreatedAt = time.Time{}
+	copyValue.UpdatedAt = time.Time{}
+	copyValue.ArchivedAt = nil
+	copyValue.Blocks = append([]BlockInstance(nil), value.Blocks...)
+	for i := range copyValue.Blocks {
+		copyValue.Blocks[i].CreatedAt = time.Time{}
+		copyValue.Blocks[i].UpdatedAt = time.Time{}
+	}
+	return hashCanonical(copyValue)
 }
 
 func (s *FileWorkStore) resumeCreateCleanup(workID, requestID string, committed bool) error {
@@ -2503,6 +2628,7 @@ func DefaultReducer() WorkEventReducer {
 				Name   *string        `json:"name,omitempty"`
 				Prompt *string        `json:"prompt,omitempty"`
 				Inputs map[string]any `json:"inputs,omitempty"`
+				State  WorkState      `json:"state,omitempty"`
 			}
 			if err := json.Unmarshal(event.Payload, &update); err != nil {
 				return nil, fmt.Errorf("work: unmarshal draft update: %w", err)
@@ -2520,6 +2646,12 @@ func DefaultReducer() WorkEventReducer {
 				for k, v := range update.Inputs {
 					current.Inputs[k] = v
 				}
+			}
+			if update.State != "" {
+				if err := ValidateWorkTransition(current.State, update.State); err != nil {
+					return nil, err
+				}
+				current.State = update.State
 			}
 
 		case EventDefinitionFrozen:
@@ -2682,11 +2814,24 @@ func DefaultReducer() WorkEventReducer {
 			// No state change — intentionally.
 
 		case EventWorkArchived:
+			if err := ValidateArchiveTransition(current.ArchiveState, ArchiveArchived); err != nil {
+				return nil, err
+			}
 			current.ArchiveState = ArchiveArchived
 			now := event.CreatedAt
 			current.ArchivedAt = &now
 
+		case EventWorkRestored:
+			if err := ValidateArchiveTransition(current.ArchiveState, ArchiveActive); err != nil {
+				return nil, err
+			}
+			current.ArchiveState = ArchiveActive
+			current.ArchivedAt = nil
+
 		case EventWorkDeleted:
+			if err := ValidateArchiveTransition(current.ArchiveState, ArchiveDeleted); err != nil {
+				return nil, err
+			}
 			current.ArchiveState = ArchiveDeleted
 		}
 
