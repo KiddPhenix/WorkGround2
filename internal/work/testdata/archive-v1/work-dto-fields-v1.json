@@ -15,5 +15,17 @@
     "stageId",
     "taskId",
     "requestId"
+  ],
+  "ResumeRunInput": [
+    "workId",
+    "runId",
+    "requestId",
+    "gateResolutions"
+  ],
+  "GateResolution": [
+    "stageId",
+    "outcome",
+    "input",
+    "note"
   ]
 }

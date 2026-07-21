@@ -11,7 +11,15 @@ import React, {
 
 import { WorkControllerAdapter, type WorkControllerPort, type WorkControllerStatus } from '../../work/controller';
 import { useWorkStore, useWorkUIStore, type FaceScrollState, type WorkFace } from '../../work/store';
-import type { BlockUpdateRequest } from '../../work/types';
+import type {
+  BlockUpdateRequest,
+  DeepLinkTarget,
+  RetryHandler,
+  RetryIntent,
+  RunSelection,
+  SessionRef,
+  SessionSurfaceContext,
+} from '../../work/types';
 import type { BlockActionHandler } from './blocks/types';
 import { WorkCardBack, type WorkCardBackSlots } from './WorkCardBack';
 import { WorkCardFront } from './WorkCardFront';
@@ -21,6 +29,8 @@ import { WorkWorkspace } from './WorkWorkspace';
 export interface WorkDeepLink {
   face: WorkFace;
   targetID?: string;
+  /** Structured deep-link target; takes precedence over flat targetID for run/attempt resolution. */
+  target?: DeepLinkTarget;
 }
 
 export interface WorkCardProps {
@@ -33,6 +43,8 @@ export interface WorkCardProps {
   workspaceActions?: ReactNode;
   onBlockAction?: BlockActionHandler;
   onBlockUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
+  onRetry?: RetryHandler;
+  resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
 }
 
 type DeepLinkState =
@@ -55,6 +67,20 @@ function focusTarget(target: HTMLElement): void {
   target.scrollIntoView?.({ block: 'center', inline: 'nearest' });
 }
 
+function structuredTargetID(target: DeepLinkTarget | undefined): string | undefined {
+  if (!target) return undefined;
+  if (target.targetID) return target.targetID;
+  if (!target.runId) return undefined;
+  if (!target.stageId) return `run:${target.runId}`;
+  if (!target.taskId) return `stage:${target.runId}:${target.stageId}`;
+  if (!target.attemptId && target.attemptIndex === undefined) return `task:${target.runId}:${target.stageId}:${target.taskId}`;
+  return `attempt:${target.runId}:${target.stageId}:${target.taskId}:${target.attemptId ?? target.attemptIndex}`;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export const WorkCard: React.FC<WorkCardProps> = ({
   workID,
   port,
@@ -65,13 +91,21 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   workspaceActions,
   onBlockAction,
   onBlockUpdate,
+  onRetry,
+  resolveSessionSurface,
 }) => {
   const view = useWorkStore((state) => state.works[workID]);
   const cardState = useWorkUIStore((state) => state.cardByWork[workID]);
+  const selection = useWorkUIStore((state) => state.selectionByWork[workID]);
+  const retryByTarget = useWorkUIStore((state) => state.retryByTarget);
   const ensureCard = useWorkUIStore((state) => state.ensureCard);
   const setScroll = useWorkUIStore((state) => state.setScroll);
   const setExpanded = useWorkUIStore((state) => state.setExpanded);
   const setDraft = useWorkUIStore((state) => state.setDraft);
+  const setSelection = useWorkUIStore((state) => state.setSelection);
+  const beginRetry = useWorkUIStore((state) => state.beginRetry);
+  const failRetry = useWorkUIStore((state) => state.failRetry);
+  const clearRetry = useWorkUIStore((state) => state.clearRetry);
 
   const adapter = useMemo(() => new WorkControllerAdapter(port), [port]);
   const [statuses, setStatuses] = useState<Record<string, WorkControllerStatus>>({});
@@ -117,14 +151,26 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   }, [adapter, ensureCard, workID]);
 
   const deepFace = deepLink?.face;
-  const deepTargetID = deepLink?.targetID;
+  const deepTarget = deepLink?.target;
+  const deepTargetID = deepLink?.targetID ?? structuredTargetID(deepTarget);
   useEffect(() => {
     if (!preferenceReady || !deepFace) return;
-    setDeepLinkState({ kind: deepTargetID ? 'resolving' : 'resolved' });
+    setDeepLinkState({ kind: deepTargetID || deepTarget ? 'resolving' : 'resolved' });
     void adapter.setActiveFace(workID, deepFace).catch(() => {
       setDeepLinkState({ kind: 'missing', reason: `无法切换到${FACE_NAMES[deepFace]}面，请重试。` });
     });
-  }, [adapter, deepFace, deepTargetID, preferenceReady, workID]);
+    // Resolve structured deep-link target into selection.
+    if (deepTarget && deepTarget.runId) {
+      const sel: RunSelection = {
+        runId: deepTarget.runId,
+        stageId: deepTarget.stageId,
+        taskId: deepTarget.taskId,
+        attemptId: deepTarget.attemptId,
+        attemptIndex: deepTarget.attemptIndex,
+      };
+      setSelection(workID, sel);
+    }
+  }, [adapter, deepFace, deepTargetID, deepTarget, preferenceReady, setSelection, workID]);
 
   useLayoutEffect(() => {
     if (!preferenceReady || deepLinkState.kind !== 'resolving' || !deepFace || !deepTargetID || activeFace !== deepFace) return;
@@ -206,6 +252,37 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleDraftChange = useCallback((draft: string) => {
     setDraft(workID, 'back', draft);
   }, [setDraft, workID]);
+  const handleRunSelect = useCallback((sel: RunSelection) => {
+    setSelection(workID, sel);
+  }, [setSelection, workID]);
+  const handleRetry = useCallback(async (intent: RetryIntent) => {
+    const existing = useWorkUIStore.getState().retryByTarget;
+    const pending = Object.values(existing).some((retry) =>
+      retry.state === 'pending' &&
+      retry.intent.workId === intent.workId && retry.intent.runId === intent.runId &&
+      retry.intent.stageId === intent.stageId && retry.intent.taskId === intent.taskId,
+    );
+    if (pending) return;
+    beginRetry(intent);
+    try {
+      if (onRetry) await onRetry(intent);
+      else await adapter.retryTask(intent);
+      await adapter.recoverSnapshot(workID);
+    } catch (error) {
+      failRetry(intent, errorText(error));
+    }
+  }, [adapter, beginRetry, failRetry, onRetry, workID]);
+
+  useEffect(() => {
+    if (!view) return;
+    for (const retry of Object.values(retryByTarget)) {
+      if (retry.state !== 'pending' || retry.intent.workId !== workID) continue;
+      const run = view.work.runs.find((item) => item.id === retry.intent.runId);
+      const stage = run?.stages.find((item) => (item.id || item.name) === retry.intent.stageId);
+      const task = stage?.tasks.find((item) => (item.id || item.name) === retry.intent.taskId);
+      if (task?.attempts.some((attempt) => attempt.index > retry.intent.attemptIndex)) clearRetry(retry.intent);
+    }
+  }, [clearRetry, retryByTarget, view, workID]);
   const retrySnapshot = useCallback(() => {
     void adapter.recoverSnapshot(workID).catch(() => undefined);
   }, [adapter, workID]);
@@ -301,6 +378,10 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onUpdate={onBlockUpdate}
               readonly={readonly}
               archived={archived}
+              runSelection={selection}
+              onRunSelect={handleRunSelect}
+              onRetry={handleRetry}
+              retryByTarget={retryByTarget}
             />
           </div>
           <div
@@ -320,6 +401,8 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               readonly={readonly}
               archived={archived}
               slots={backSlots}
+              selection={selection}
+              resolveSessionSurface={resolveSessionSurface}
             />
           </div>
         </div>

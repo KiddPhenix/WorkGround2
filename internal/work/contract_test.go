@@ -50,6 +50,8 @@ func TestGoDTOFieldsMatchContract(t *testing.T) {
 	tests := map[string]any{
 		"TaskExecuteInput": TaskExecuteInput{},
 		"RetryTaskInput":   RetryTaskInput{},
+		"ResumeRunInput":    ResumeRunInput{},
+		"GateResolution":    GateResolution{},
 	}
 	if len(want) != len(tests) {
 		t.Fatalf("DTO contract count = %d, want %d", len(want), len(tests))

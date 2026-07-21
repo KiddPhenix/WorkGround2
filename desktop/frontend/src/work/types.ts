@@ -14,7 +14,14 @@ export type WorkState =
   | 'failed'
   | 'cancelled';
 export type WorkArchiveState = 'active' | 'archived' | 'deleted';
-export type RunState = 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunState =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_confirmation';
 export type BlueprintSource = 'system' | 'user' | `addon:${string}`;
 
 export interface BlueprintRef {
@@ -128,35 +135,72 @@ export interface WorkRecord {
 export interface WorkflowRun {
   id: string;
   workId: string;
+  requestId?: string;
   definitionDigest: string;
   state: RunState;
   stages: Stage[];
   startedAt: string;
   finishedAt?: string;
   conclusion?: Conclusion;
+  cancel?: RunCancelReceipt;
+  pause?: RunPauseReceipt;
+}
+
+export type CancelDelivery = 'pending' | 'delivered' | 'failed';
+
+export interface RunCancelReceipt {
+  requestId: string;
+  status: CancelDelivery;
+  error?: string;
+  attempts: number;
+  updatedAt: string;
+}
+
+export interface RunPauseReceipt {
+  requestId: string;
+  pausedAt: string;
+  notice: string;
 }
 
 export interface Stage {
+  id?: string;
   name: string;
+  gate?: string;
   state: RunState;
   tasks: Task[];
   startedAt: string;
   finishedAt?: string;
+  resolution?: GateResolution;
 }
 
 export interface Task {
+  id?: string;
   name: string;
   state: RunState;
   attempts: Attempt[];
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface Attempt {
+  id?: string;
+  requestId?: string;
   index: number;
   state: RunState;
   sessionRef: SessionRef;
   startedAt: string;
   finishedAt?: string;
   error?: string;
+  receipt?: AttemptReceipt;
+  sideEffectClass?: string;
+}
+
+export interface AttemptReceipt {
+  requestId: string;
+  outcome: string;
+  evidence?: string;
+  sideEffectClass?: string;
+  confirmedAt: string;
 }
 
 export type ConclusionKind = 'fact' | 'finding' | 'decision' | 'outcome' | 'lesson';
@@ -405,6 +449,20 @@ export interface RetryTaskInput {
   requestId: string;
 }
 
+export interface ResumeRunInput {
+  workId: string;
+  runId: string;
+  requestId: string;
+  gateResolutions?: Record<string, GateResolution>;
+}
+
+export interface GateResolution {
+  stageId: string;
+  outcome: 'approved' | 'input_provided';
+  input?: Record<string, unknown>;
+  note?: string;
+}
+
 export interface BlockActionRequest {
   workId: string;
   /** Explicit workflow owner; interactive renderers never infer it from the active tab. */
@@ -559,6 +617,52 @@ export interface TaskExecuteInput {
   requestId: string;
   definitionDigest: string;
   prompt: string;
+}
+
+// ── Run progress & selection ──────────────────────────────────────────────
+
+export interface RunSelection {
+  runId: string;
+  stageId?: string;
+  taskId?: string;
+  attemptId?: string;
+  attemptIndex?: number;
+}
+
+export interface RetryIntent extends RetryTaskInput {
+  /** The failed attempt that initiated this retry; the backend retries the owning Task. */
+  attemptId?: string;
+  attemptIndex: number;
+}
+
+export type RetryHandler = (intent: RetryIntent) => void | Promise<void>;
+
+export interface RetryStatus {
+  intent: RetryIntent;
+  state: 'pending' | 'failed';
+  error?: string;
+}
+
+export interface SessionSurfaceContext {
+  workId: string;
+  runId: string;
+  stageId: string;
+  taskId: string;
+  attemptId?: string;
+  attemptIndex: number;
+  sessionRef: SessionRef;
+}
+
+// ── Deep link extensions ──────────────────────────────────────────────────
+
+export interface DeepLinkTarget {
+  runId?: string;
+  stageId?: string;
+  taskId?: string;
+  attemptId?: string;
+  attemptIndex?: number;
+  /** Legacy flat targetID; resolved to a structured target when possible. */
+  targetID?: string;
 }
 
 export interface ToolCapability {

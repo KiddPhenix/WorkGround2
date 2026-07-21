@@ -9,13 +9,14 @@ import {
   type WorkFace,
   type WorkUIPreference,
 } from './store';
-import type { WorkView, WorkViewEvent } from './types';
+import type { Attempt, RetryTaskInput, WorkView, WorkViewEvent } from './types';
 
 export interface WorkControllerPort {
   subscribe: (workID: string, onEvent: (event: WorkViewEvent) => void) => () => void;
   fetchSnapshot: (workID: string) => Promise<WorkView>;
   readUIPreference: (workID: string) => Promise<WorkUIPreference | null>;
   writeUIPreference: (workID: string, preference: WorkUIPreference) => Promise<void>;
+  retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
 }
 
 export interface WorkControllerStatus {
@@ -39,6 +40,7 @@ function errorText(error: unknown): string {
 export class WorkControllerAdapter {
   private readonly subscriptions = new Map<string, () => void>();
   private readonly pendingSnapshots = new Map<string, Promise<ApplyResult>>();
+  private readonly pendingRetries = new Map<string, Promise<Attempt>>();
   private readonly statusByWork: Record<string, WorkControllerStatus> = {};
   private readonly statusListeners = new Set<() => void>();
   private disposed = false;
@@ -149,6 +151,17 @@ export class WorkControllerAdapter {
     }
   };
 
+  retryTask = (input: RetryTaskInput): Promise<Attempt> => {
+    const pending = this.pendingRetries.get(input.requestId);
+    if (pending) return pending;
+    if (!this.port.retryTask) return Promise.reject(new Error('Work Task 重试能力尚未连接。'));
+    const request = Promise.resolve()
+      .then(() => this.port.retryTask!(input))
+      .finally(() => this.pendingRetries.delete(input.requestId));
+    this.pendingRetries.set(input.requestId, request);
+    return request;
+  };
+
   clearErrors = (workID: string): void => {
     this.updateStatus(workID, { snapshotError: null, preferenceError: null, eventError: null });
   };
@@ -169,6 +182,7 @@ export interface WorkController {
   recoverSnapshot: (workID: string) => Promise<ApplyResult>;
   restoreUIPreference: (workID: string) => Promise<void>;
   setActiveFace: (workID: string, activeFace: WorkFace) => Promise<void>;
+  retryTask: (input: RetryTaskInput) => Promise<Attempt>;
   clearErrors: (workID: string) => void;
 }
 
@@ -189,6 +203,7 @@ export function useWorkController(port: WorkControllerPort): WorkController {
     recoverSnapshot: adapter.recoverSnapshot,
     restoreUIPreference: adapter.restoreUIPreference,
     setActiveFace: adapter.setActiveFace,
+    retryTask: adapter.retryTask,
     clearErrors: adapter.clearErrors,
   };
 }

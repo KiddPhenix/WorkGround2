@@ -10,7 +10,15 @@ import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
 import type { WorkControllerPort, WorkUIPreference } from '../work/controller';
 import { useWorkStore, useWorkUIStore } from '../work/store';
-import type { BlockInstance, WorkView, WorkViewEvent } from '../work/types';
+import type {
+  Attempt,
+  BlockInstance,
+  RetryTaskInput,
+  SessionSurfaceContext,
+  WorkView,
+  WorkViewEvent,
+  WorkflowRun,
+} from '../work/types';
 
 let passed = 0;
 let failed = 0;
@@ -95,6 +103,8 @@ class TestPort implements WorkControllerPort {
   readonly operations: string[] = [];
   preferenceFailures = 0;
   snapshotFailures = 0;
+  retryFailures = 0;
+  readonly retryInputs: RetryTaskInput[] = [];
 
   subscribe(workID: string, onEvent: (event: WorkViewEvent) => void): () => void {
     this.listeners.set(workID, onEvent);
@@ -118,6 +128,18 @@ class TestPort implements WorkControllerPort {
     this.operations.push(`write:${preference.activeFace}`);
     if (this.preferenceFailures-- > 0) throw new Error('preference unavailable');
     this.preferences.set(workID, preference);
+  }
+
+  async retryTask(input: RetryTaskInput): Promise<Attempt> {
+    this.retryInputs.push(input);
+    if (this.retryFailures-- > 0) throw new Error('retry unavailable');
+    return {
+      id: 'attempt-1',
+      index: 1,
+      state: 'pending',
+      sessionRef: { sessionPath: '/sessions/retry', branchId: 'main', modelRef: 'test', turnCount: 0, preview: '', startedAt: '2026-07-20T10:02:00Z' },
+      startedAt: '2026-07-20T10:02:00Z',
+    };
   }
 }
 
@@ -168,6 +190,38 @@ function makeView(workID: string, overrides: Partial<WorkView['work']> = {}): Wo
       updatedAt: '2026-07-20T10:00:00Z',
       ...overrides,
     },
+  };
+}
+
+function makeFailedRun(workID: string): WorkflowRun {
+  return {
+    id: 'run-1',
+    workId: workID,
+    definitionDigest: 'digest',
+    state: 'failed',
+    startedAt: '2026-07-20T10:00:00Z',
+    finishedAt: '2026-07-20T10:01:00Z',
+    stages: [{
+      id: 'stage-review',
+      name: 'review',
+      state: 'failed',
+      startedAt: '2026-07-20T10:00:00Z',
+      finishedAt: '2026-07-20T10:01:00Z',
+      tasks: [{
+        id: 'task-lint',
+        name: 'lint',
+        state: 'failed',
+        attempts: [{
+          id: 'attempt-0',
+          index: 0,
+          state: 'failed',
+          error: 'timeout',
+          sessionRef: { sessionPath: '/sessions/failed', branchId: 'branch-a', modelRef: 'test', turnCount: 2, preview: 'failed attempt', startedAt: '2026-07-20T10:00:00Z' },
+          startedAt: '2026-07-20T10:00:00Z',
+          finishedAt: '2026-07-20T10:01:00Z',
+        }],
+      }],
+    }],
   };
 }
 
@@ -334,6 +388,58 @@ async function testDeepLinkOrderAndMissingReason(): Promise<void> {
   await missing.cleanup();
 }
 
+async function testStructuredAttemptDeepLinkUsesExplicitSessionOwner(): Promise<void> {
+  reset();
+  const workID = 'work-attempt-link';
+  useWorkStore.getState().applySnapshot(makeView(workID, { state: 'failed', runs: [makeFailedRun(workID)] }));
+  let resolved: SessionSurfaceContext | undefined;
+  const mounted = await mount(
+    <WorkCard
+      workID={workID}
+      port={new TestPort()}
+      deepLink={{
+        face: 'back',
+        target: { runId: 'run-1', stageId: 'stage-review', taskId: 'task-lint', attemptId: 'attempt-0', attemptIndex: 0 },
+      }}
+      resolveSessionSurface={(_sessionRef, context) => {
+        resolved = context;
+        return <div data-testid="real-session-surface">session</div>;
+      }}
+    />,
+  );
+  await settle();
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'structured attempt link opens the back face');
+  ok(Boolean(mounted.host.querySelector('[data-testid="real-session-surface"]')), 'selected SessionRef resolves a real React surface');
+  eq(resolved?.workId, workID, 'session resolver receives explicit Work owner');
+  eq(resolved?.runId, 'run-1', 'session resolver receives explicit Run owner');
+  eq(resolved?.stageId, 'stage-review', 'session resolver receives explicit Stage owner');
+  eq(resolved?.taskId, 'task-lint', 'session resolver receives explicit Task owner');
+  eq(resolved?.attemptId, 'attempt-0', 'session resolver receives explicit Attempt owner');
+  eq((document.activeElement as HTMLElement | null)?.dataset.workTargetId, 'attempt:run-1:stage-review:task-lint:attempt-0', 'structured link focuses the selected Session surface');
+  await mounted.cleanup();
+}
+
+async function testRetryFailureIsVisibleAndReusesRequestID(): Promise<void> {
+  reset();
+  const workID = 'work-retry';
+  useWorkStore.getState().applySnapshot(makeView(workID, { state: 'failed', runs: [makeFailedRun(workID)] }));
+  const port = new TestPort();
+  port.retryFailures = 1;
+  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+  const retry = mounted.host.querySelector<HTMLButtonElement>('.wg2-run-retry-button')!;
+  await interact(() => retry.click());
+  ok(mounted.host.textContent?.includes('重试失败：retry unavailable') ?? false, 'retry failure is explicit and observable');
+  eq(port.retryInputs.length, 1, 'failed retry dispatches once');
+  const requestID = port.retryInputs[0].requestId;
+  await interact(() => retry.click());
+  eq(port.retryInputs.length, 2, 'explicit retry dispatches again after failure');
+  eq(port.retryInputs[1].requestId, requestID, 'safe retry reuses the same requestId');
+  eq(port.retryInputs[1].stageId, 'stage-review', 'retry uses stable Stage ID');
+  eq(port.retryInputs[1].taskId, 'task-lint', 'retry uses stable Task ID');
+  ok(retry.disabled, 'successful dispatch remains pending until a newer Attempt enters the projection');
+  await mounted.cleanup();
+}
+
 async function testPreferenceFailureRetry(): Promise<void> {
   reset();
   useWorkStore.getState().applySnapshot(makeView('work-pref'));
@@ -425,6 +531,8 @@ async function main(): Promise<void> {
   await testFacesAndFixedWorkspace();
   await testScrollExpandedAndDraft();
   await testDeepLinkOrderAndMissingReason();
+  await testStructuredAttemptDeepLinkUsesExplicitSessionOwner();
+  await testRetryFailureIsVisibleAndReusesRequestID();
   await testPreferenceFailureRetry();
   await testArchiveAndUnavailableSession();
   await testPlacementAndFlipAccessibility();
