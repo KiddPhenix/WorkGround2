@@ -110,6 +110,60 @@ func CanTransitionArchive(from, to WorkArchiveState) bool {
 	return ValidateArchiveTransition(from, to) == nil
 }
 
+// ── RunState transitions ──────────────────────────────────────────────────
+
+// validRunTransitions is the closed set of allowed RunState changes.
+// Terminal states (completed, failed, cancelled) must not regress.
+var validRunTransitions = map[RunState]map[RunState]bool{
+	RunPending: {
+		RunRunning:   true,
+		RunWaiting:   true,
+		RunCancelled: true,
+	},
+	RunRunning: {
+		RunCompleted: true,
+		RunFailed:    true,
+		RunCancelled: true,
+		RunWaiting:   true,
+	},
+	RunWaiting: {
+		RunRunning:   true,
+		RunCancelled: true,
+		RunFailed:    true,
+	},
+	RunCompleted: {},
+	RunFailed:    {},
+	RunCancelled: {},
+}
+
+// ValidateRunTransition returns nil if the RunState transition is legal.
+func ValidateRunTransition(from, to RunState) error {
+	if !isRunState(from) {
+		return fmt.Errorf("work: unknown RunState in transition %q → %q", from, to)
+	}
+	if !isRunState(to) {
+		return fmt.Errorf("work: unknown RunState in transition %q → %q", from, to)
+	}
+	if from == to {
+		return nil
+	}
+	dests, ok := validRunTransitions[from]
+	if !ok || !dests[to] {
+		return fmt.Errorf("work: invalid RunState transition %s → %s", from, to)
+	}
+	return nil
+}
+
+func isRunState(state RunState) bool {
+	_, ok := validRunTransitions[state]
+	return ok
+}
+
+// IsTerminalRunState reports whether the state is terminal (cannot transition further).
+func IsTerminalRunState(state RunState) bool {
+	return state == RunCompleted || state == RunFailed || state == RunCancelled
+}
+
 // ── Future schema protection ───────────────────────────────────────────────
 
 // ErrFutureSchema is returned when a Work, WorkRecord, or WorkEvent carries a

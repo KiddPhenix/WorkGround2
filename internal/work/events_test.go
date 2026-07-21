@@ -1083,7 +1083,7 @@ func TestReplayWorkEventLog_DigestMismatch_NeedsRepair(t *testing.T) {
 func TestEventCompact_NotInPublicTypes(t *testing.T) {
 	types := []WorkEventType{
 		EventWorkCreated, EventDefinitionFrozen, EventDraftUpdated,
-		EventRunStarted, EventStageChanged, EventTaskChanged,
+		EventRunStarted, EventRunChanged, EventStageChanged, EventTaskChanged,
 		EventAttemptChanged, EventBlockUpserted, EventBlockRemoved,
 		EventCornerstoneUpserted, EventCornerstoneRemoved,
 		EventConclusionUpserted, EventArtifactLinked,

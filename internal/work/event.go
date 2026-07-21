@@ -36,6 +36,7 @@ const (
 	EventDefinitionFrozen    WorkEventType = "definition.frozen"
 	EventDraftUpdated        WorkEventType = "draft.updated"
 	EventRunStarted          WorkEventType = "run.started"
+	EventRunChanged          WorkEventType = "run.changed"
 	EventStageChanged        WorkEventType = "stage.changed"
 	EventTaskChanged         WorkEventType = "task.changed"
 	EventAttemptChanged      WorkEventType = "attempt.changed"
