@@ -9,9 +9,13 @@ const MAX_KEY_CHARS = 128;
 const MAX_SCAN_BYTES = 48 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
-const SECRET_PARTS = new Set([
-  'auth', 'authorization', 'bearer', 'cookie', 'credential', 'key', 'password',
-  'secret', 'session', 'token',
+const SECRET_TOKEN_PARTS = new Set([
+  'auth', 'authorization', 'bearer', 'cookie', 'credential', 'password', 'secret',
+]);
+const SECRET_EXACT = new Set(['key', 'session', 'token']);
+const SECRET_COMPACT = new Set([
+  'accesstoken', 'accesskey', 'apikey', 'apitoken', 'authcookie', 'clientkey',
+  'clientsecret', 'password', 'privatekey', 'refreshtoken', 'sessionkey',
 ]);
 const BEARER_VALUE = /\bbearer\s+[^\s,;]+/gi;
 
@@ -72,7 +76,11 @@ export function normalizeSecretKey(key: string): string[] {
 }
 
 export function isSecretKey(key: string): boolean {
-  return normalizeSecretKey(key).some((part) => SECRET_PARTS.has(part));
+  const tokens = normalizeSecretKey(key);
+  const compact = key.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return SECRET_COMPACT.has(compact) ||
+    (tokens.length === 1 && SECRET_EXACT.has(tokens[0])) ||
+    tokens.some((part) => SECRET_TOKEN_PARTS.has(part));
 }
 
 function redactString(value: string, budget: Budget): string {
@@ -115,7 +123,7 @@ function safeValue(input: unknown, budget: Budget): unknown {
     if (typeof value === 'string') return redactString(value, budget);
     if (typeof value === 'number') return Number.isFinite(value) ? value : `[${String(value)}]`;
     if (typeof value === 'boolean') return value;
-    if (typeof value === 'bigint') return `[BigInt ${takeChars(String(value), 40, budget)}]`;
+    if (typeof value === 'bigint') return `[integer ${takeChars(String(value), 40, budget)}]`;
     if (typeof value === 'function') {
       mark(budget, 'function_value');
       return '[function omitted]';

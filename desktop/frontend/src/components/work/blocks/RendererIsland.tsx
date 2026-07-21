@@ -278,7 +278,6 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
     if (!root) {
       try {
         root = createRoot(container, {
-          identifierPrefix: `wg2-${identity.key}-`,
           onCaughtError: () => failureRef.current('renderer_caught_error'),
           onRecoverableError: () => failureRef.current('renderer_recoverable_error'),
           onUncaughtError: () => failureRef.current('renderer_uncaught_error'),
@@ -324,7 +323,7 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
     }
   }, [Component, identity, onFailure, rendererProps]);
 
-  return <div ref={containerRef} className="wg2-renderer-island" data-block-identity={identity.key} />;
+  return <div ref={containerRef} className="wg2-renderer-island" />;
 };
 
 RendererIsland.displayName = 'RendererIsland';
