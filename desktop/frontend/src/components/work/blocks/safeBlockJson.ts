@@ -38,8 +38,7 @@ interface Budget {
 }
 
 const encoder = new TextEncoder();
-const objectIDs = new WeakMap<object, number>();
-let nextObjectID = 1;
+let nextIdentityID = 1n;
 
 function byteLength(value: string): number {
   return encoder.encode(value).byteLength;
@@ -241,32 +240,7 @@ export function buildSafeJson(value: unknown): string {
   return output;
 }
 
-function hashText(value: string): string {
-  let hash = 0x811c9dc5;
-  const bytes = encoder.encode(value);
-  for (const byte of bytes) {
-    hash ^= byte;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
-function objectID(value: unknown): string {
-  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return typeof value;
-  const object = value as object;
-  let id = objectIDs.get(object);
-  if (!id) {
-    id = nextObjectID++;
-    objectIDs.set(object, id);
-  }
-  return String(id);
-}
-
-export function dataIdentity(value: unknown): string {
-  return `${objectID(value)}:${hashText(buildSafeJson(value))}`;
-}
-
-export function blockRenderIdentity(block: {
+interface IdentityBlock {
   id: unknown;
   kind: unknown;
   schemaVersion: unknown;
@@ -277,16 +251,47 @@ export function blockRenderIdentity(block: {
   tombstone?: unknown;
   data: unknown;
   source?: { ref?: unknown };
-}): string {
-  const fields = buildSafeJson({
+}
+
+export interface BlockRenderIdentity {
+  readonly key: string;
+  readonly blockID: unknown;
+  readonly kind: unknown;
+  readonly schemaVersion: unknown;
+  readonly revision: unknown;
+  readonly digest: unknown;
+  readonly status: unknown;
+  readonly tombstone: boolean;
+  readonly dataRef: unknown;
+}
+
+function blockDigest(block: IdentityBlock): unknown {
+  return block.digest ?? block.contentDigest ?? block.source?.ref ?? null;
+}
+
+export function createBlockRenderIdentity(block: IdentityBlock): BlockRenderIdentity {
+  const key = `block-${nextIdentityID}`;
+  nextIdentityID += 1n;
+  return Object.freeze({
+    key,
     blockID: block.id,
     kind: block.kind,
     schemaVersion: block.schemaVersion,
     revision: block.revision,
-    digest: block.digest ?? block.contentDigest ?? block.source?.ref ?? null,
+    digest: blockDigest(block),
     status: block.status,
     tombstone: Boolean(block.tombstone),
-    data: dataIdentity(block.data),
+    dataRef: block.data,
   });
-  return `block:${hashText(fields)}`;
+}
+
+export function matchesBlockRenderIdentity(identity: BlockRenderIdentity, block: IdentityBlock): boolean {
+  return Object.is(identity.blockID, block.id) &&
+    Object.is(identity.kind, block.kind) &&
+    Object.is(identity.schemaVersion, block.schemaVersion) &&
+    Object.is(identity.revision, block.revision) &&
+    Object.is(identity.digest, blockDigest(block)) &&
+    Object.is(identity.status, block.status) &&
+    identity.tombstone === Boolean(block.tombstone) &&
+    Object.is(identity.dataRef, block.data);
 }

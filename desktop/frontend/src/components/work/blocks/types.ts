@@ -1,6 +1,7 @@
 // Shared contracts for the block rendering boundary.
 
 import type { BlockActionRequest, BlockInstance, BlockPlacement } from '../../../work/types';
+import type { BlockRenderIdentity } from './safeBlockJson';
 
 export interface ValidationResult {
   valid: boolean;
@@ -71,14 +72,14 @@ export interface BlockHostProps {
 }
 
 export type BlockHostState =
-  | { identity: string; stage: 'validating' }
-  | { identity: string; stage: 'loading_module' }
-  | { identity: string; stage: 'status'; status: BlockInstance['status'] | 'removed' }
-  | { identity: string; stage: 'future_schema'; maxSupported: number }
-  | { identity: string; stage: 'unsupported_schema' }
-  | { identity: string; stage: 'unknown_kind' }
-  | { identity: string; stage: 'invalid_block'; code: 'invalid_kind' | 'invalid_schema' | 'invalid_status' }
-  | { identity: string; stage: 'invalid_data' }
-  | { identity: string; stage: 'import_failed' }
-  | { identity: string; stage: 'renderer_failed'; code: RendererFailureCode }
-  | { identity: string; stage: 'rendering'; module: RendererModule };
+  | { identity: BlockRenderIdentity; stage: 'validating' }
+  | { identity: BlockRenderIdentity; stage: 'loading_module' }
+  | { identity: BlockRenderIdentity; stage: 'status'; status: BlockInstance['status'] | 'removed' }
+  | { identity: BlockRenderIdentity; stage: 'future_schema'; maxSupported: number }
+  | { identity: BlockRenderIdentity; stage: 'unsupported_schema' }
+  | { identity: BlockRenderIdentity; stage: 'unknown_kind' }
+  | { identity: BlockRenderIdentity; stage: 'invalid_block'; code: 'invalid_kind' | 'invalid_schema' | 'invalid_status' }
+  | { identity: BlockRenderIdentity; stage: 'invalid_data' }
+  | { identity: BlockRenderIdentity; stage: 'import_failed' }
+  | { identity: BlockRenderIdentity; stage: 'renderer_failed'; code: RendererFailureCode }
+  | { identity: BlockRenderIdentity; stage: 'rendering'; module: RendererModule };
