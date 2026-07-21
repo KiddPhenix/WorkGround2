@@ -520,6 +520,7 @@ func eventStateFromReplay(workID, requestID string, replay *WorkEventReplay) (Wo
 		}
 		if requestID != "" && event.RequestID == requestID {
 			state.RequestType = event.Type
+			state.RequestEventID = event.ID
 		}
 	}
 	if requestID != "" {
@@ -527,6 +528,12 @@ func eventStateFromReplay(workID, requestID string, replay *WorkEventReplay) (Wo
 		state.RequestFound = ok
 		if ok {
 			state.RequestRevision = entry.Revision
+			if entry.Type != "" {
+				state.RequestType = entry.Type
+			}
+			if entry.EventID != "" {
+				state.RequestEventID = entry.EventID
+			}
 		}
 	}
 	return state, nil

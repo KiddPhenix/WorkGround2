@@ -153,10 +153,91 @@ type UndoCornerstoneInput struct {
 
 // CornerstoneResult is the unified result of a Cornerstone mutation.
 type CornerstoneResult struct {
+	Cornerstone *Cornerstone           `json:"cornerstone"`
+	WorkView    *WorkView              `json:"workView,omitempty"`
+	Duplicate   bool                   `json:"duplicate"`
+	Revision    int64                  `json:"revision"`
+	Resolution  *CornerstoneResolution `json:"resolution,omitempty"`
+	Assessment  CornerstoneAssessment  `json:"assessment"`
+}
+
+// CornerstoneResolution is the transient, reviewable result of resolving a
+// source. CandidateContent and Diff are never written to Work events.
+type CornerstoneResolution struct {
+	CandidateContent string           `json:"candidateContent,omitempty"`
+	CandidateDigest  string           `json:"candidateDigest,omitempty"`
+	Diff             string           `json:"diff,omitempty"`
+	ErrorKind        ResolveErrorKind `json:"errorKind,omitempty"`
+	Retryable        bool             `json:"retryable"`
+}
+
+// CornerstoneUseState describes whether a Work may consume its Cornerstones.
+type CornerstoneUseState string
+
+const (
+	CornerstoneUseReady    CornerstoneUseState = "ready"
+	CornerstoneUseDegraded CornerstoneUseState = "degraded"
+	CornerstoneUseBlocked  CornerstoneUseState = "blocked"
+)
+
+// CornerstoneAssessment is shared by open/run/preflight callers. Required
+// failures block; optional failures remain explicit degraded warnings.
+type CornerstoneAssessment struct {
+	State    CornerstoneUseState `json:"state"`
+	Blocking bool                `json:"blocking"`
+	Degraded bool                `json:"degraded"`
+	Issues   []CornerstoneIssue  `json:"issues,omitempty"`
+}
+
+// AcceptCornerstoneInput carries the intent to accept a stale live_ref
+// Cornerstone's newly resolved content. The Content and Digest fields are
+// replaced with the candidate values; status transitions back to active.
+type AcceptCornerstoneInput struct {
+	CornerstoneID    string `json:"cornerstoneId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// FreezeCornerstoneInput carries the intent to freeze a live_ref Cornerstone
+// into a snapshot. The current content is resolved, written as a snapshot
+// (possibly to blob store), and the Mode is changed to snapshot.
+type FreezeCornerstoneInput struct {
+	CornerstoneID string `json:"cornerstoneId"`
+	// UseLastKnown explicitly freezes the last accepted content when the source
+	// is currently unreachable. Without it, Freeze re-resolves and verifies the
+	// reviewed candidate/current digest before writing a snapshot.
+	UseLastKnown     bool   `json:"useLastKnown,omitempty"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// RepairCornerstoneInput carries the intent to repair a Cornerstone that is
+// in missing, denied, invalid, or stale status. For live_ref cornerstones,
+// this re-resolves the source. For snapshot cornerstones with blob references,
+// this attempts to recover the blob.
+type RepairCornerstoneInput struct {
+	CornerstoneID string `json:"cornerstoneId"`
+	// Ref replaces a broken live reference. A nil Ref retries the current one.
+	Ref *CornerstoneRef `json:"ref,omitempty"`
+	// Content rematerializes a missing snapshot blob and must match the already
+	// accepted snapshot digest.
+	Content          *string `json:"content,omitempty"`
+	ExpectedRevision int64   `json:"expectedRevision"`
+	RequestID        string  `json:"requestId"`
+}
+
+// RepairResult reports the outcome of a Cornerstone repair attempt.
+type RepairResult struct {
 	Cornerstone *Cornerstone `json:"cornerstone"`
 	WorkView    *WorkView    `json:"workView,omitempty"`
-	Duplicate   bool         `json:"duplicate"`
-	Revision    int64        `json:"revision"`
+	// Repaired is true when the cornerstone status is now active.
+	Repaired  bool  `json:"repaired"`
+	Duplicate bool  `json:"duplicate"`
+	Revision  int64 `json:"revision"`
+	// FailedRefs lists any refs within a compound repair that could not be fixed.
+	FailedRefs []string               `json:"failedRefs,omitempty"`
+	Resolution *CornerstoneResolution `json:"resolution,omitempty"`
+	Assessment CornerstoneAssessment  `json:"assessment"`
 }
 
 // GCInput carries the intent to garbage-collect unreferenced blobs.

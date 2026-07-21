@@ -885,6 +885,9 @@ func TestCompactWorkEventLog_ProjectionEquivalence(t *testing.T) {
 	if idx.RequestIndex["req-cmp-1"].Revision != 1 {
 		t.Fatalf("requestIndex lost req-cmp-1: %+v", idx.RequestIndex)
 	}
+	if entry := idx.RequestIndex["req-cmp-1"]; entry.EventID != e1.ID || entry.Type != e1.Type {
+		t.Fatalf("requestIndex identity lost req-cmp-1: %+v", entry)
+	}
 	if idx.RequestIndex["req-cmp-2"].Revision != 2 {
 		t.Fatalf("requestIndex lost req-cmp-2: %+v", idx.RequestIndex)
 	}
@@ -897,6 +900,9 @@ func TestCompactWorkEventLog_ProjectionEquivalence(t *testing.T) {
 	idx2, _ := RebuildWorkEventIndex(workDir)
 	if idx2.RequestIndex["req-cmp-1"].Revision != 1 {
 		t.Fatal("rebuild lost req-cmp-1")
+	}
+	if entry := idx2.RequestIndex["req-cmp-1"]; entry.EventID != e1.ID || entry.Type != e1.Type {
+		t.Fatalf("rebuild lost req-cmp-1 identity: %+v", entry)
 	}
 }
 
