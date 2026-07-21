@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -726,6 +727,169 @@ func (s *runControlStore) CommitEvent(workID string, event WorkEvent) (int64, er
 		return 0, errors.New("injected cancel commit failure")
 	}
 	return s.WorkStore.CommitEvent(workID, event)
+}
+
+type runControlDualFailureStore struct {
+	WorkStore
+	mu sync.Mutex
+
+	failCommitType WorkEventType
+	commitErr      error
+	commitFailed   bool
+	loadsOnFailure []error
+
+	armCompletedRun bool
+	completedArmed  bool
+	loadsOnComplete []error
+	loadErrors      []error
+}
+
+func (s *runControlDualFailureStore) LoadState(workID, requestID string) (*Work, WorkEventState, error) {
+	s.mu.Lock()
+	if len(s.loadErrors) > 0 {
+		err := s.loadErrors[0]
+		s.loadErrors = s.loadErrors[1:]
+		s.mu.Unlock()
+		return nil, WorkEventState{}, err
+	}
+	s.mu.Unlock()
+	return s.WorkStore.LoadState(workID, requestID)
+}
+
+func (s *runControlDualFailureStore) CommitEvent(workID string, event WorkEvent) (int64, error) {
+	s.mu.Lock()
+	if !s.commitFailed && s.commitErr != nil && event.Type == s.failCommitType {
+		s.commitFailed = true
+		s.loadErrors = append([]error(nil), s.loadsOnFailure...)
+		err := s.commitErr
+		s.mu.Unlock()
+		return 0, err
+	}
+	s.mu.Unlock()
+
+	revision, err := s.WorkStore.CommitEvent(workID, event)
+	if err != nil || !s.armCompletedRun || event.Type != EventRunChanged {
+		return revision, err
+	}
+	var payload runEventPayload
+	if json.Unmarshal(event.Payload, &payload) != nil || payload.Run.State != RunCompleted {
+		return revision, nil
+	}
+	s.mu.Lock()
+	if !s.completedArmed {
+		s.completedArmed = true
+		s.loadErrors = append([]error(nil), s.loadsOnComplete...)
+	}
+	s.mu.Unlock()
+	return revision, nil
+}
+
+func TestRetryTaskRunnerReloadJoinsErrors(t *testing.T) {
+	f := newRunnerFixture(t)
+	bp := testBlueprint("blueprint:test-retry-dual-failure", 1, testWorkflow("main", "run"))
+	f.registerBlueprint(t, bp)
+	value := f.createWork(t, BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1}, "create-retry-dual-failure")
+	f.executor.ExecuteFunc = func(context.Context, TaskExecuteInput) (*Attempt, error) {
+		return nil, errors.New("initial task failure")
+	}
+	run, err := f.svc.RunWork(context.Background(), value.ID, "run-retry-dual-failure")
+	if err != nil || run.State != RunFailed {
+		t.Fatalf("RunWork = (%+v, %v), want failed projection", run, err)
+	}
+
+	primaryErr := errors.New("injected retry runner failure")
+	reloadErr := errors.New("injected retry reload failure")
+	f.svc.store = &runControlDualFailureStore{
+		WorkStore: f.svc.store, failCommitType: EventTaskChanged, commitErr: primaryErr,
+		loadsOnFailure: []error{reloadErr},
+	}
+	f.executor.ExecuteFunc = func(context.Context, TaskExecuteInput) (*Attempt, error) {
+		now := time.Now().UTC()
+		return &Attempt{State: RunCompleted, FinishedAt: &now}, nil
+	}
+	task := run.Stages[0].Tasks[0]
+	attempt, err := f.svc.RetryTask(context.Background(), RetryTaskInput{
+		WorkID: value.ID, RunID: run.ID, StageID: run.Stages[0].ID, TaskID: task.ID, RequestID: "retry-dual-failure",
+	})
+	if attempt == nil || attempt.State != RunCompleted {
+		t.Fatalf("RetryTask attempt = %+v, want committed completed attempt", attempt)
+	}
+	assertJoinedRunControlErrors(t, err, primaryErr, reloadErr, "RetryTask", "retry-runner-reload", value.ID)
+}
+
+func TestResumeRunRunnerReloadJoinsErrors(t *testing.T) {
+	f, value, run := newWaitingRunFixture(t, "resume-runner-dual-failure")
+	primaryErr := errors.New("injected resume runner failure")
+	reloadErr := errors.New("injected resume runner reload failure")
+	f.svc.store = &runControlDualFailureStore{
+		WorkStore: f.svc.store, failCommitType: EventTaskChanged, commitErr: primaryErr,
+		loadsOnFailure: []error{reloadErr},
+	}
+
+	latest, err := f.svc.ResumeRun(context.Background(), ResumeRunInput{
+		WorkID: value.ID, RunID: run.ID, RequestID: "resume-runner-dual-failure",
+		GateResolutions: map[string]GateResolution{"approval": {Outcome: "approved"}},
+	})
+	if latest == nil || latest.ID != run.ID || latest.State != RunRunning {
+		t.Fatalf("ResumeRun latest = %+v, want last known running projection", latest)
+	}
+	assertJoinedRunControlErrors(t, err, primaryErr, reloadErr, "ResumeRun", "resume-runner-reload", value.ID)
+}
+
+func TestResumeRunViewReloadJoinsErrors(t *testing.T) {
+	f, value, run := newWaitingRunFixture(t, "resume-view-dual-failure")
+	viewErr := errors.New("injected resume view failure")
+	reloadErr := errors.New("injected resume view reload failure")
+	f.svc.store = &runControlDualFailureStore{
+		WorkStore: f.svc.store, armCompletedRun: true,
+		loadsOnComplete: []error{viewErr, reloadErr},
+	}
+
+	latest, err := f.svc.ResumeRun(context.Background(), ResumeRunInput{
+		WorkID: value.ID, RunID: run.ID, RequestID: "resume-view-dual-failure",
+		GateResolutions: map[string]GateResolution{"approval": {Outcome: "approved"}},
+	})
+	if latest == nil || latest.ID != run.ID {
+		t.Fatalf("ResumeRun latest = %+v, want last known run", latest)
+	}
+	assertJoinedRunControlErrors(t, err, viewErr, reloadErr, "resume-view", "resume-view-reload", value.ID)
+}
+
+func TestRunControlNoIgnoredSecondaryLoadStateErrors(t *testing.T) {
+	source, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatalf("read service.go: %v", err)
+	}
+	for _, ignored := range []string{"_, _ = s.store.LoadState", "_ = s.store.LoadState"} {
+		if strings.Contains(string(source), ignored) {
+			t.Errorf("service.go still ignores a secondary LoadState error via %q", ignored)
+		}
+	}
+}
+
+func newWaitingRunFixture(t *testing.T, suffix string) (*runnerFixture, *Work, *WorkflowRun) {
+	t.Helper()
+	f := newRunnerFixture(t)
+	bp := testBlueprint("blueprint:test-"+suffix, 1, testWorkflowWithGate("approval", "run", "approval"))
+	f.registerBlueprint(t, bp)
+	value := f.createWork(t, BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1}, "create-"+suffix)
+	run, err := f.svc.RunWork(context.Background(), value.ID, "run-"+suffix)
+	if err != nil || run.State != RunWaiting {
+		t.Fatalf("RunWork = (%+v, %v), want waiting projection", run, err)
+	}
+	return f, value, run
+}
+
+func assertJoinedRunControlErrors(t *testing.T, err, primaryErr, reloadErr error, contexts ...string) {
+	t.Helper()
+	if err == nil || !errors.Is(err, primaryErr) || !errors.Is(err, reloadErr) {
+		t.Fatalf("joined error = %v; primary=%v secondary=%v", err, errors.Is(err, primaryErr), errors.Is(err, reloadErr))
+	}
+	for _, context := range contexts {
+		if !strings.Contains(err.Error(), context) {
+			t.Errorf("joined error %q lacks context %q", err, context)
+		}
+	}
 }
 
 func TestCancelCommitFailurePreventsSideEffect(t *testing.T) {
