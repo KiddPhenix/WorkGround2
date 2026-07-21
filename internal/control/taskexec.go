@@ -348,8 +348,8 @@ func firstLine(text string, maxRunes int) string {
 
 func taskSessionSource(input work.TaskExecuteInput) string {
 	return fmt.Sprintf(
-		"work:%s/run:%s/stage:%s/task:%s/attempt:%d",
-		input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptIndex,
+		"work:%s/run:%s/stage:%s/task:%s/attempt:%d/request:%s",
+		input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptIndex, input.RequestID,
 	)
 }
 

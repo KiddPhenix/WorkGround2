@@ -461,6 +461,10 @@ func New(opts Options) *Controller {
 	if nilutil.IsNil(classifier) {
 		classifier = nil
 	}
+	taskExec := opts.TaskExecutor
+	if nilutil.IsNil(taskExec) {
+		taskExec = nil
+	}
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
@@ -504,7 +508,7 @@ func New(opts Options) *Controller {
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
 		workViews:                  opts.WorkViews,
-		taskExec:                   opts.TaskExecutor,
+		taskExec:                   taskExec,
 		actionRoot:                 actionRoot,
 		actionRootCancel:           actionRootCancel,
 		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
@@ -512,6 +516,9 @@ func New(opts Options) *Controller {
 	if !nilutil.IsNil(opts.Work) {
 		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
 			binder.SetPermissionChecker(c)
+		}
+		if binder, ok := opts.Work.(interface{ SetTaskExecutor(work.TaskExecutor) }); ok {
+			binder.SetTaskExecutor(taskExec)
 		}
 	}
 	c.loadTaskMemory(opts.SessionPath)

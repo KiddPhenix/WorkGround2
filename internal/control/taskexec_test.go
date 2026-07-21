@@ -24,6 +24,15 @@ type taskProvider struct {
 	calls   atomic.Int32
 }
 
+type taskExecutorWork struct {
+	WorkService
+	executor work.TaskExecutor
+}
+
+func (w *taskExecutorWork) SetTaskExecutor(executor work.TaskExecutor) {
+	w.executor = executor
+}
+
 func (p *taskProvider) Name() string { return p.name }
 
 func (p *taskProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
@@ -114,7 +123,7 @@ func TestTaskExecutorPersistsLightweightSessionRef(t *testing.T) {
 	if metaErr != nil || !ok {
 		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, metaErr)
 	}
-	if meta.Model != "fake/model-v1" || meta.SessionSource != "work:work-1/run:run-1/stage:stage-1/task:task-1/attempt:2" {
+	if meta.Model != "fake/model-v1" || meta.SessionSource != "work:work-1/run:run-1/stage:stage-1/task:task-1/attempt:2/request:request-1" {
 		t.Fatalf("branch metadata = %+v", meta)
 	}
 	if !cleaned.Load() {
@@ -260,6 +269,130 @@ func TestTaskExecutorNilCancelIsExplicit(t *testing.T) {
 	err := exec.CancelTask(context.Background(), work.SessionRef{SessionPath: "session.jsonl"}, "cancel-1")
 	if err == nil || !strings.Contains(err.Error(), "Task executor") {
 		t.Fatalf("nil CancelTask error = %v", err)
+	}
+}
+
+func TestControllerBindsTaskExecutorToWork(t *testing.T) {
+	target := &taskExecutorWork{}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		nil,
+	)
+	ctrl := New(Options{Work: target, TaskExecutor: exec})
+	defer ctrl.Close()
+	if target.executor != exec || ctrl.TaskExecutor() != exec {
+		t.Fatalf("TaskExecutor binding = (%T, %T), want %T", target.executor, ctrl.TaskExecutor(), exec)
+	}
+}
+
+func TestControllerNormalizesTypedNilTaskExecutor(t *testing.T) {
+	target := &taskExecutorWork{}
+	var exec *TaskExecutorAdapter
+	ctrl := New(Options{Work: target, TaskExecutor: exec})
+	defer ctrl.Close()
+	if target.executor != nil || ctrl.TaskExecutor() != nil {
+		t.Fatalf("typed-nil TaskExecutor binding = (%T, %T), want nil", target.executor, ctrl.TaskExecutor())
+	}
+}
+
+func TestTaskExecutorRequestIDInProvenance(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "ok"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	input := taskInput()
+	input.RequestID = "req-provenance-42"
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	meta, ok, metaErr := agent.LoadBranchMeta(attempt.SessionRef.SessionPath)
+	if metaErr != nil || !ok {
+		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, metaErr)
+	}
+	if !strings.Contains(meta.SessionSource, "/request:req-provenance-42") {
+		t.Fatalf("SessionSource %q missing RequestID", meta.SessionSource)
+	}
+}
+
+func TestTaskExecutorCancelRaceWithCompletion(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", started: make(chan struct{})}
+	paths := make(chan string, 1)
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", paths, nil),
+	)
+	type result struct {
+		attempt *work.Attempt
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+		done <- result{attempt: attempt, err: err}
+	}()
+
+	path := <-paths
+	<-prov.started
+	ref := work.SessionRef{SessionPath: path, BranchID: agent.BranchID(path)}
+
+	// Cancel while running — must succeed.
+	if err := exec.CancelTask(context.Background(), ref, "cancel-race-1"); err != nil {
+		t.Fatalf("CancelTask during run: %v", err)
+	}
+	// Wait for ExecuteTask to finish (cancelled).
+	select {
+	case got := <-done:
+		if got.attempt == nil || got.attempt.State != work.RunCancelled {
+			t.Fatalf("expected RunCancelled after cancel: %+v", got.attempt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ExecuteTask did not finish after CancelTask")
+	}
+
+	// Cancel after completion: session no longer active, same requestID is idempotent.
+	if err := exec.CancelTask(context.Background(), ref, "cancel-race-1"); err != nil {
+		t.Fatalf("idempotent CancelTask after completion: %v", err)
+	}
+	// New requestID after completion: must report session not running.
+	if err := exec.CancelTask(context.Background(), ref, "cancel-race-2"); !errors.Is(err, ErrTaskSessionNotRunning) {
+		t.Fatalf("new CancelTask after completion error = %v", err)
+	}
+}
+
+func TestTaskExecutorFactoryReturnsControllerAndError(t *testing.T) {
+	rootErr := errors.New("partial factory failure with secret-detail")
+	var cleaned atomic.Bool
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+			dir := t.TempDir()
+			path := agent.NewSessionPath(dir, "work-partial")
+			session := agent.NewSession("stable system prompt")
+			prov := &taskProvider{name: "fake-provider", text: "ok"}
+			agent := agent.New(prov, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+			ctrl := New(Options{
+				Runner:       agent,
+				Executor:     agent,
+				ModelRef:     "fake/model-v1",
+				SessionDir:   dir,
+				SessionPath:  path,
+				SystemPrompt: "stable system prompt",
+			})
+			return ctrl, func() { cleaned.Store(true) }, rootErr
+		},
+	)
+	_, err := exec.ExecuteTask(context.Background(), taskInput())
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || !errors.Is(err, rootErr) || taskErr.Operation != "create_session" {
+		t.Fatalf("partial factory error = %#v", err)
+	}
+	if strings.Contains(err.Error(), "secret-detail") {
+		t.Fatalf("partial factory error leaked cause: %v", err)
+	}
+	if !cleaned.Load() {
+		t.Fatal("cleanup was not called after factory returned error")
 	}
 }
 
