@@ -324,7 +324,7 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 		err = func() error {
 			w.owner.workRefreshLifeMu.Lock()
 			defer w.owner.workRefreshLifeMu.Unlock()
-			if w.owner.workRefreshGen[workID] != generation {
+			if w.owner.workRefreshGen[workID] != generation || w.owner.workRefreshStopPendingLocked(workID, generation) {
 				return work.ErrBlockRefreshStopped
 			}
 			current, currentErr := w.svc.Get(ctx, workID)

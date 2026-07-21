@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,6 +149,45 @@ type typedNilRefreshService struct{}
 
 func (*typedNilRefreshService) RefreshBlock(context.Context, RefreshBlockInput, BlockSourceAdapter) (*BlockInstance, error) {
 	panic("typed-nil service must not be called")
+}
+
+type cancelGateSource struct {
+	startOnce  sync.Once
+	cancelOnce sync.Once
+	started    chan struct{}
+	canceled   chan struct{}
+	release    chan struct{}
+	calls      atomic.Int32
+}
+
+type joinObserveContext struct {
+	context.Context
+	joined chan struct{}
+	once   sync.Once
+}
+
+func newJoinObserveContext() *joinObserveContext {
+	return &joinObserveContext{Context: context.Background(), joined: make(chan struct{})}
+}
+
+func (c *joinObserveContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.joined) })
+	return c.Context.Done()
+}
+
+func newCancelGateSource() *cancelGateSource {
+	return &cancelGateSource{
+		started: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{}),
+	}
+}
+
+func (s *cancelGateSource) FetchBlock(ctx context.Context, _ string, _ BlockInstance) (BlockRefreshResult, error) {
+	s.calls.Add(1)
+	s.startOnce.Do(func() { close(s.started) })
+	<-ctx.Done()
+	s.cancelOnce.Do(func() { close(s.canceled) })
+	<-s.release // Ignore cancellation after observing it; Close must still wait.
+	return blockResult(), nil
 }
 
 func newFakeBlockSource(results ...BlockRefreshResult) *fakeBlockSource {
@@ -747,6 +787,85 @@ func TestRefreshManagerManualOnlyNeverAutoRefreshes(t *testing.T) {
 	}
 }
 
+func TestRefreshManagerManualFailureAttemptsOnceRegardlessOfRequestID(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		requestID string
+	}{
+		{name: "empty"},
+		{name: "explicit", requestID: "manual-failure-explicit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServiceFixture(t)
+			value := createWorkWithBlock(t, f, "manual-failure-"+tc.name)
+			blockID := value.Blocks[0].ID
+			clock := newFakeClock()
+			adapter := newFakeBlockSource()
+			adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) {
+				return BlockRefreshResult{}, errors.New("manual source failure")
+			}
+			mgr := NewBlockRefreshManager(f.svc, clock)
+			defer mgr.Close()
+			if err := mgr.Subscribe(value.ID, blockID, adapter, RefreshSchedule{
+				Interval: 0, Backoff: controlBackoffForWorkTest(5 * time.Second),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			failed, err := mgr.RefreshRequest(context.Background(), value.ID, blockID, tc.requestID)
+			if err == nil || failed == nil || adapter.Calls() != 1 {
+				t.Fatalf("manual failure = (%+v, %v), calls=%d; want one persisted attempt", failed, err, adapter.Calls())
+			}
+			state := mgr.State(value.ID, blockID)
+			if state.Failures != 1 || state.RetryAt == nil || !state.Subscribed {
+				t.Fatalf("manual failure state = %+v", state)
+			}
+			mgr.SetOnline(false)
+			mgr.SetOnline(true)
+			clock.advance(24 * time.Hour)
+			if adapter.Calls() != 1 || clock.pending() != 0 {
+				t.Fatalf("manual failure retried without a new explicit call: calls=%d timers=%d", adapter.Calls(), clock.pending())
+			}
+		})
+	}
+}
+
+func TestRefreshManagerAutoFailureAttemptsOncePerBackoff(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "auto-backoff-once")
+	blockID := value.Blocks[0].ID
+	clock := newFakeClock()
+	adapter := newFakeBlockSource()
+	adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) {
+		return BlockRefreshResult{}, errors.New("auto source failure")
+	}
+	mgr := NewBlockRefreshManager(f.svc, clock)
+	defer mgr.Close()
+	if err := mgr.Subscribe(value.ID, blockID, adapter, RefreshSchedule{
+		Interval: time.Hour, Backoff: controlBackoffForWorkTest(5 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
+	waitForTimer(t, clock)
+	if adapter.Calls() != 1 {
+		t.Fatalf("initial auto failure calls=%d, want 1", adapter.Calls())
+	}
+	clock.advance(4 * time.Second)
+	if adapter.Calls() != 1 {
+		t.Fatalf("auto failure retried before backoff: calls=%d", adapter.Calls())
+	}
+	clock.advance(time.Second)
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
+	waitForTimer(t, clock)
+	if adapter.Calls() != 2 {
+		t.Fatalf("first backoff produced %d calls, want exactly 2 total", adapter.Calls())
+	}
+}
+
 func TestRefreshManagerRejectsNegativeScheduleAndTypedNil(t *testing.T) {
 	f := newServiceFixture(t)
 	value := createWorkWithBlock(t, f, "mgr-invalid-contract")
@@ -916,27 +1035,39 @@ func TestRefreshManagerSingleFlight(t *testing.T) {
 	defer mgr.Close()
 
 	mgr.Subscribe(value.ID, blockID, adapter, RefreshSchedule{
-		Interval: 10 * time.Second,
+		Interval: 0,
 		Backoff:  NewExponentialBackoff(),
 	})
 
-	// After subscribe, the first refresh starts immediately.
-	clock.advance(0)
+	type refreshResult struct {
+		block *BlockInstance
+		err   error
+	}
+	results := make(chan refreshResult, 10)
+	go func() {
+		block, err := mgr.RefreshRequest(context.Background(), value.ID, blockID, "")
+		results <- refreshResult{block: block, err: err}
+	}()
 	<-fetched
 
-	// Concurrent callers while the first refresh is in-flight join that flight.
-	for range 2 {
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
+	// Ten manual callers share one adapter flight even though their request IDs
+	// differ.
+	joined := make([]<-chan struct{}, 0, 9)
+	for i := range 9 {
+		requestID := ""
+		if i%2 == 0 {
+			requestID = fmt.Sprintf("singleflight-%d", i)
+		}
+		ctx := newJoinObserveContext()
+		joined = append(joined, ctx.joined)
 		go func() {
-			done <- mgr.RefreshNow(ctx, value.ID, blockID)
+			block, err := mgr.RefreshRequest(ctx, value.ID, blockID, requestID)
+			results <- refreshResult{block: block, err: err}
 		}()
-		cancel()
+	}
+	for _, waiter := range joined {
 		select {
-		case err := <-done:
-			if !errors.Is(err, context.Canceled) {
-				t.Fatalf("joined refresh error = %v, want context canceled", err)
-			}
+		case <-waiter:
 		case <-time.After(3 * time.Second):
 			t.Fatal("concurrent refresh did not join the in-flight fetch")
 		}
@@ -945,8 +1076,24 @@ func TestRefreshManagerSingleFlight(t *testing.T) {
 	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
 		return event.WorkID == value.ID && event.Object.ID == blockID
 	})
+	var revision int64
+	for range 10 {
+		select {
+		case result := <-results:
+			if result.err != nil || result.block == nil {
+				t.Fatalf("joined refresh result = (%+v, %v)", result.block, result.err)
+			}
+			if revision == 0 {
+				revision = result.block.Revision
+			} else if result.block.Revision != revision {
+				t.Fatalf("joined result revision=%d, want %d", result.block.Revision, revision)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("joined refresh did not receive the owner receipt")
+		}
+	}
 	if adapter.Calls() != 1 {
-		t.Fatalf("fetch count = %d, want 1 (single-flight)", adapter.Calls())
+		t.Fatalf("fetch count = %d, want 1 for ten triggers", adapter.Calls())
 	}
 }
 
@@ -1060,8 +1207,9 @@ func TestRefreshManagerOfflineReconnect(t *testing.T) {
 
 	// Wait for first (failing) attempt.
 	waitForCalls(t, adapter, 1, 3*time.Second)
+	waitForTimer(t, clock) // failure receipt is stable before a new manual trigger
 
-	// Reconnect.
+	// Make the source healthy, then issue one new explicit manual trigger.
 	state.mu.Lock()
 	state.offline = false
 	state.mu.Unlock()
@@ -1115,6 +1263,175 @@ func TestRefreshManagerClose(t *testing.T) {
 	mgr.Subscribe(value.ID, blockID, adapter, DefaultRefreshSchedule())
 	if mgr.SubscriberCount() != 0 {
 		t.Fatal("Subscribe after Close should be no-op")
+	}
+}
+
+func TestRefreshManagerCloseWaitsForManualAndAutoFlights(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		schedule RefreshSchedule
+		manual   bool
+	}{
+		{name: "manual", schedule: RefreshSchedule{Interval: 0}, manual: true},
+		{name: "auto", schedule: RefreshSchedule{Interval: time.Hour}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServiceFixture(t)
+			value := createWorkWithBlock(t, f, "close-gated-"+tc.name)
+			blockID := value.Blocks[0].ID
+			before, err := f.svc.Get(context.Background(), value.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := newCancelGateSource()
+			mgr := NewBlockRefreshManager(f.svc, newFakeClock())
+			if err := mgr.Subscribe(value.ID, blockID, adapter, tc.schedule); err != nil {
+				t.Fatal(err)
+			}
+			refreshDone := make(chan error, 1)
+			if tc.manual {
+				go func() {
+					_, refreshErr := mgr.RefreshRequest(context.Background(), value.ID, blockID, "")
+					refreshDone <- refreshErr
+				}()
+			}
+			select {
+			case <-adapter.started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("adapter flight did not start")
+			}
+			closeDone := make(chan error, 1)
+			go func() { closeDone <- mgr.Close() }()
+			select {
+			case <-adapter.canceled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("Close did not cancel the adapter context")
+			}
+			select {
+			case err := <-closeDone:
+				t.Fatalf("Close returned before the adapter exited: %v", err)
+			default:
+			}
+			close(adapter.release)
+			select {
+			case err := <-closeDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("Close did not return after the adapter exited")
+			}
+			if tc.manual {
+				select {
+				case err := <-refreshDone:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("manual flight error = %v, want canceled", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("manual caller did not receive the stable receipt")
+				}
+			}
+			after, err := f.svc.Get(context.Background(), value.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Revision != before.Revision || mgr.InflightCount() != 0 || mgr.SubscriberCount() != 0 {
+				t.Fatalf("late success committed or manager retained state: revision=%d/%d inflight=%d subs=%d",
+					before.Revision, after.Revision, mgr.InflightCount(), mgr.SubscriberCount())
+			}
+		})
+	}
+}
+
+func TestRefreshManagerConcurrentCloseSubscribeRefresh(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "close-race")
+	blockID := value.Blocks[0].ID
+	for iteration := range 20 {
+		adapter := newFakeBlockSource()
+		adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) { return blockResult(), nil }
+		mgr := NewBlockRefreshManager(f.svc, newFakeClock())
+		if err := mgr.Subscribe(value.ID, blockID, adapter, RefreshSchedule{}); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range 10 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if i%2 == 0 {
+					_ = mgr.RefreshNow(context.Background(), value.ID, blockID)
+					return
+				}
+				_, _ = mgr.RefreshRequest(context.Background(), value.ID, blockID, fmt.Sprintf("close-race-%d-%d", iteration, i))
+			}()
+		}
+		for i := range 6 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				schedule := RefreshSchedule{}
+				if i%2 == 0 {
+					schedule.Interval = time.Hour
+				}
+				_ = mgr.Subscribe(value.ID, blockID, adapter, schedule)
+			}()
+		}
+		for range 6 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = mgr.Close()
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if err := mgr.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if mgr.InflightCount() != 0 || mgr.SubscriberCount() != 0 {
+			t.Fatalf("iteration %d retained state: inflight=%d subs=%d", iteration, mgr.InflightCount(), mgr.SubscriberCount())
+		}
+	}
+}
+
+func TestRefreshManagerAutoManualLoopGeneration(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "auto-manual-generation")
+	blockID := value.Blocks[0].ID
+	clock := newFakeClock()
+	adapter := newFakeBlockSource()
+	adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) { return blockResult(), nil }
+	mgr := NewBlockRefreshManager(f.svc, clock)
+	defer mgr.Close()
+	auto := RefreshSchedule{Interval: time.Hour}
+	if err := mgr.SubscribeAfter(value.ID, blockID, adapter, BlockSource{}, auto, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SubscribeAfter(value.ID, blockID, adapter, BlockSource{}, RefreshSchedule{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(2 * time.Hour)
+	if adapter.Calls() != 0 {
+		t.Fatalf("canceled auto generation fetched %d times", adapter.Calls())
+	}
+	if err := mgr.SubscribeAfter(value.ID, blockID, adapter, BlockSource{}, auto, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
+	if err := mgr.SubscribeAfter(value.ID, blockID, adapter, BlockSource{}, RefreshSchedule{}, 0); err != nil {
+		t.Fatal(err)
+	}
+	calls := adapter.Calls()
+	clock.advance(2 * time.Hour)
+	if adapter.Calls() != calls {
+		t.Fatalf("old auto generation survived manual transition: %d -> %d", calls, adapter.Calls())
 	}
 }
 

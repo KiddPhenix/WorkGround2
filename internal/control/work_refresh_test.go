@@ -72,14 +72,19 @@ func (s *gatedWorkService) Delete(ctx context.Context, workID, requestID string)
 }
 
 type blockingControlSource struct {
-	started chan struct{}
-	release chan struct{}
-	calls   atomic.Int32
+	started  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+	calls    atomic.Int32
 }
 
-func (s *blockingControlSource) FetchBlock(context.Context, string, work.BlockInstance) (work.BlockRefreshResult, error) {
+func (s *blockingControlSource) FetchBlock(ctx context.Context, _ string, _ work.BlockInstance) (work.BlockRefreshResult, error) {
 	s.calls.Add(1)
 	close(s.started)
+	if s.canceled != nil {
+		<-ctx.Done()
+		close(s.canceled)
+	}
 	<-s.release // deliberately ignores cancellation to exercise the late response path
 	return work.BlockRefreshResult{
 		Kind: "markdown", SchemaVersion: 1, Status: work.BlockReady,
@@ -355,6 +360,98 @@ func TestControllerDeleteCancelsLateRefreshWithoutResurrection(t *testing.T) {
 	}
 	if state := c.WorkRefreshState(value.ID, value.Blocks[0].ID); state.Subscribed || state.Inflight {
 		t.Fatalf("delete retained refresh state: %+v", state)
+	}
+}
+
+func TestControllerCancelWaitsLateRefreshBeforePersistingIntentRemoval(t *testing.T) {
+	root := t.TempDir()
+	views := NewWorkViewBroadcaster()
+	store, err := work.NewFileWorkStore(filepath.Join(root, "works"), 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := work.NewService(store, work.NewBlueprintRegistry(), views)
+	value, err := base.Create(context.Background(), work.CreateWorkInput{
+		BlueprintRef: work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
+		Name:         "late cancel", RequestID: "late-cancel-create",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockID := value.Blocks[0].ID
+	initial := &controlBlockSource{}
+	if _, err := base.RefreshBlock(context.Background(), work.RefreshBlockInput{
+		WorkID: value.ID, BlockID: blockID, RequestID: "late-cancel-intent",
+		Source: work.BlockSource{Provider: "addon:cancel", Mode: "query", Verified: true}, CheckedAt: time.Now().UTC(),
+	}, initial); err != nil {
+		t.Fatal(err)
+	}
+	source := &blockingControlSource{
+		started: make(chan struct{}), canceled: make(chan struct{}), release: make(chan struct{}),
+	}
+	c := New(Options{
+		Work: base, WorkViews: views,
+		WorkBlockSources: []WorkBlockSource{{
+			Source: work.BlockSource{Provider: "addon:cancel", Mode: "query"}, Kind: "markdown", Adapter: source,
+			Schedule: work.RefreshSchedule{Interval: 0},
+		}},
+	})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(source.release) }) }
+	t.Cleanup(func() {
+		release()
+		c.Close()
+	})
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, refreshErr := c.WorkControl().RefreshBlock(context.Background(), value.ID, blockID, "late-cancel-refresh")
+		refreshDone <- refreshErr
+	}()
+	<-source.started
+	cancelDone := make(chan error, 1)
+	go func() {
+		cancelDone <- c.CancelBlockRefresh(context.Background(), value.ID, blockID, "late-cancel-remove")
+	}()
+	select {
+	case <-source.canceled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not reach the non-cooperative adapter")
+	}
+	beforeRelease, err := base.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeRelease.Work.Blocks[0].Freshness == nil {
+		t.Fatal("intent removal persisted before the late adapter receipt stabilized")
+	}
+	select {
+	case err := <-cancelDone:
+		t.Fatalf("cancel returned before late adapter release: %v", err)
+	default:
+	}
+	release()
+	if err := <-refreshDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("late refresh error = %v, want context canceled", err)
+	}
+	if err := <-cancelDone; err != nil {
+		t.Fatal(err)
+	}
+	after, err := base.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Work.Blocks[0].Freshness != nil {
+		t.Fatalf("late success resurrected canceled intent: %+v", after.Work.Blocks[0].Freshness)
+	}
+	if state := c.WorkRefreshState(value.ID, blockID); state.Subscribed || state.Inflight {
+		t.Fatalf("cancel retained runtime refresh state: %+v", state)
+	}
+	c.Close()
+
+	c2, _ := newRefreshController(t, root, &controlBlockSource{}, NewWorkViewBroadcaster())
+	defer c2.Close()
+	if state := c2.WorkRefreshState(value.ID, blockID); state.Subscribed {
+		t.Fatalf("reopen restored canceled intent after late adapter: %+v", state)
 	}
 }
 
