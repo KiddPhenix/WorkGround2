@@ -7,7 +7,7 @@ import type { BlockActionRequest, BlockInstance, BlockStatus, BlockUpdateRequest
 import { FallbackBlock } from './FallbackBlock';
 import { RendererIsland } from './RendererIsland';
 import { blockRegistry, isRendererKind } from './registry';
-import { registerCoreRenderers } from './register';
+import { registerBuiltinBlocks } from './register';
 import { createBlockRenderIdentity, matchesBlockRenderIdentity } from './safeBlockJson';
 import type { BlockRenderIdentity } from './safeBlockJson';
 import type {
@@ -20,9 +20,9 @@ import type {
 const MAX_RETRIES = 3;
 const BLOCK_STATUSES = new Set<BlockStatus>(['loading', 'ready', 'empty', 'stale', 'blocked', 'failed']);
 
-// BlockHost is the production entry point. Core renderers must not depend on a
-// caller remembering a fragile setup step; exact registration is idempotent.
-registerCoreRenderers();
+// Core renderers are code-owned and available wherever BlockHost is used.
+// Stable registrations make this safe across duplicate imports and test setup.
+registerBuiltinBlocks();
 
 interface ActionGate {
   active: boolean;
