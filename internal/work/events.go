@@ -170,11 +170,14 @@ func eventFromRecord(r workEventRecord) WorkEvent {
 	}
 }
 
-// WorkRequestEntry stores the revision and digest for a requestID so
-// idempotency checks can compare semantic content, not just revision numbers.
+// WorkRequestEntry stores semantic and event identity for a requestID. EventID
+// and Type let intent-level APIs validate replay after restart or compaction;
+// legacy indexes omit them and are rebuilt when source events remain.
 type WorkRequestEntry struct {
-	Revision int64  `json:"revision"`
-	Digest   string `json:"digest"`
+	Revision int64         `json:"revision"`
+	Digest   string        `json:"digest"`
+	EventID  string        `json:"eventId,omitempty"`
+	Type     WorkEventType `json:"type,omitempty"`
 }
 
 // WorkEventIndex is the persisted sidecar that summarises the event log for
@@ -684,7 +687,12 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 	}
 	if rec.RequestID != "" {
 		idDigest, _ := workEventIdempotentDigest(rec)
-		newIdx.RequestIndex[rec.RequestID] = WorkRequestEntry{Revision: rec.Revision, Digest: idDigest}
+		newIdx.RequestIndex[rec.RequestID] = WorkRequestEntry{
+			Revision: rec.Revision,
+			Digest:   idDigest,
+			EventID:  rec.ID,
+			Type:     rec.Type,
+		}
 	}
 	if err := writeWorkEventIndexAfterAppend(workDir, newIdx); err != nil {
 		return rec.Revision, fmt.Errorf("work: event appended at revision %d but index update failed: %w", rec.Revision, err)
@@ -1307,7 +1315,12 @@ func buildIndexFromReplay(revision int64, digest string, logSize int64, eventCou
 				// Use the idempotent digest for the requestIndex entry.
 				rec := recordFromEvent(e)
 				idDigest, _ := workEventIdempotentDigest(rec)
-				idx.RequestIndex[e.RequestID] = WorkRequestEntry{Revision: e.Revision, Digest: idDigest}
+				idx.RequestIndex[e.RequestID] = WorkRequestEntry{
+					Revision: e.Revision,
+					Digest:   idDigest,
+					EventID:  e.ID,
+					Type:     e.Type,
+				}
 			}
 			if e.Type == eventCompact {
 				// Extract embedded requestIndex from compact payload.

@@ -24,6 +24,17 @@ type Cornerstone struct {
 	PinnedAt       time.Time         `json:"pinnedAt"`
 	UpdatedAt      time.Time         `json:"updatedAt"`
 	Error          string            `json:"error,omitempty"`
+	// ResolveErrorKind classifies the latest resolution failure without relying
+	// on parsing Error text. Network failures use stale + network because the
+	// last accepted content remains readable but could not be verified.
+	ResolveErrorKind ResolveErrorKind `json:"resolveErrorKind,omitempty"`
+	// CandidateDigest identifies the reviewed source version while stale. The
+	// candidate body stays transient so large or secret-like resolver output is
+	// never copied into the Work event log before explicit acceptance.
+	CandidateDigest string `json:"candidateDigest,omitempty"`
+	// CandidateContent is returned transiently by Resolve/Repair for review. It
+	// is intentionally excluded from persisted events and projections.
+	CandidateContent string `json:"-"`
 	// Tombstone marks a logically removed Cornerstone. Removed cornerstones
 	// retain their event history and can be restored via Undo.
 	Tombstone bool `json:"tombstone,omitempty"`

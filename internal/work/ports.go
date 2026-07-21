@@ -45,7 +45,11 @@ type WorkEventState struct {
 	LifecycleRevision int64         `json:"lifecycleRevision,omitempty"`
 	RequestRevision   int64         `json:"requestRevision,omitempty"`
 	RequestType       WorkEventType `json:"requestType,omitempty"`
-	RequestFound      bool          `json:"requestFound"`
+	// RequestEventID binds an idempotent replay to the original operation,
+	// object, and caller intent encoded by the event producer. It is sourced
+	// from the authoritative request index and survives log compaction.
+	RequestEventID string `json:"requestEventId,omitempty"`
+	RequestFound   bool   `json:"requestFound"`
 }
 
 // TaskExecutor 是 WorkRunner 用来执行单个 Task 的窄端口。

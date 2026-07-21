@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -9,28 +10,53 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 // ── CornerstoneManager ──────────────────────────────────────────────────────
 
 // CornerstoneManager coordinates Cornerstone lifecycle operations: Pin,
-// Refresh, Remove, Undo, and blob GC. It owns no state; it reads the
-// authoritative Work event log and writes typed mutation events through
-// the WorkStore.
+// Refresh, Remove, Undo, blob GC, Resolve, Accept, Freeze, and Repair.
+// It owns no state; it reads the authoritative Work event log and writes
+// typed mutation events through the WorkStore.
 type CornerstoneManager struct {
 	store     WorkStore
 	blobStore BlobStore
 	clock     Clock
+	resolver  CornerstoneResolver
+
+	inflightMu sync.Mutex
+	inflight   map[string]*resolveCall
+}
+
+type resolveCall struct {
+	done    chan struct{}
+	result  ResolveResult
+	err     error
+	waiters int
 }
 
 // NewCornerstoneManager creates a CornerstoneManager. A nil blobStore disables
 // large-content blob storage — content above the inline threshold is rejected.
+// A nil resolver disables live_ref resolution for Refresh/Resolve — callers
+// must provide one to use those features.
 func NewCornerstoneManager(store WorkStore, blobStore BlobStore, clock Clock) *CornerstoneManager {
 	if clock == nil {
 		clock = RealClock{}
 	}
-	return &CornerstoneManager{store: store, blobStore: blobStore, clock: clock}
+	return &CornerstoneManager{
+		store:     store,
+		blobStore: blobStore,
+		clock:     clock,
+		inflight:  make(map[string]*resolveCall),
+	}
+}
+
+// SetResolver sets the CornerstoneResolver used by Resolve, Accept, Freeze,
+// and Repair. Callers configure it before concurrent resolve operations.
+func (m *CornerstoneManager) SetResolver(r CornerstoneResolver) {
+	m.resolver = r
 }
 
 // ── Pin ─────────────────────────────────────────────────────────────────────
@@ -82,11 +108,15 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 	contentDigest := ContentDigest([]byte(input.Content))
 
 	eventRequestID := requestID + "/cs"
+	eventID := cornerstoneEventID("cs", eventRequestID, stableID)
 	current, state, err := m.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
 	}
 	if state.RequestFound {
+		if err := validateCornerstoneReplay("Pin", workID, requestID, state, EventCornerstoneUpserted, eventID); err != nil {
+			return nil, err
+		}
 		cs := findCornerstone(current, stableID)
 		if cs == nil {
 			return nil, fmt.Errorf("%w: cornerstone: Pin request %q committed for a different object", ErrWorkRequestIDConflict, requestID)
@@ -152,7 +182,7 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 
 	event := WorkEvent{
 		SchemaVersion: WorkEventSchemaVersion,
-		ID:            cornerstoneEventID("cs", eventRequestID, stableID),
+		ID:            eventID,
 		RequestID:     eventRequestID,
 		WorkID:        workID,
 		Type:          EventCornerstoneUpserted,
@@ -184,6 +214,7 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 
 func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, content string, duplicate bool) (*CornerstoneResult, error) {
 	finalRequestID := requestID + "/cs-blob"
+	finalEventID := cornerstoneEventID("cs-blob", finalRequestID, stableID)
 	current, state, err := m.store.LoadState(workID, finalRequestID)
 	if err != nil {
 		return nil, err
@@ -211,6 +242,9 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 		return result, committedRecovery("cornerstone-pin-blob", workID, requestID, state.Revision, mismatch)
 	}
 	if state.RequestFound {
+		if err := validateCornerstoneReplay("Pin", workID, requestID, state, EventCornerstoneUpserted, finalEventID); err != nil {
+			return nil, err
+		}
 		return &CornerstoneResult{Cornerstone: cs, WorkView: viewFromState(current, state), Duplicate: true, Revision: state.Revision}, nil
 	}
 
@@ -221,6 +255,9 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 		return nil, err
 	}
 	if state.RequestFound {
+		if err := validateCornerstoneReplay("Pin", workID, requestID, state, EventCornerstoneUpserted, finalEventID); err != nil {
+			return nil, err
+		}
 		cs = findCornerstone(current, stableID)
 		return &CornerstoneResult{Cornerstone: cs, WorkView: viewFromState(current, state), Duplicate: true, Revision: state.Revision}, nil
 	}
@@ -239,6 +276,9 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 	if _, err := m.store.CommitEvent(workID, event); err != nil {
 		latest, latestState, loadErr := m.store.LoadState(workID, finalRequestID)
 		if loadErr == nil && latestState.RequestFound {
+			if replayErr := validateCornerstoneReplay("Pin", workID, requestID, latestState, EventCornerstoneUpserted, finalEventID); replayErr != nil {
+				return nil, replayErr
+			}
 			result := findCornerstone(latest, stableID)
 			return &CornerstoneResult{Cornerstone: result, WorkView: viewFromState(latest, latestState), Duplicate: true, Revision: latestState.Revision}, nil
 		}
@@ -253,96 +293,11 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 
 // ── Refresh ─────────────────────────────────────────────────────────────────
 
-// Refresh updates a Cornerstone's status and verification timestamp. For
-// snapshot cornerstones, it verifies blob integrity if a BlobDigest is set.
-// For live_ref cornerstones, it marks the cornerstone for external resolution
-// (status transitions are applied by the caller via the returned result).
+// Refresh re-resolves live references and verifies snapshot blobs. It is the
+// context-free convenience entry point; context-aware callers should use
+// Resolve.
 func (m *CornerstoneManager) Refresh(workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error) {
-	workID = strings.TrimSpace(workID)
-	if workID == "" {
-		return nil, errors.New("cornerstone: Refresh: workID is required")
-	}
-	requestID := strings.TrimSpace(input.RequestID)
-	if requestID == "" {
-		return nil, errors.New("cornerstone: Refresh: requestID is required")
-	}
-	csID := strings.TrimSpace(input.CornerstoneID)
-	if csID == "" {
-		return nil, errors.New("cornerstone: Refresh: cornerstoneId is required")
-	}
-
-	eventRequestID := requestID + "/cs-refresh"
-	current, state, err := m.store.LoadState(workID, eventRequestID)
-	if err != nil {
-		return nil, err
-	}
-	if state.RequestFound {
-		cs := findCornerstone(current, csID)
-		if cs != nil {
-			return &CornerstoneResult{Cornerstone: cs, WorkView: viewFromState(current, state), Duplicate: true, Revision: state.Revision}, nil
-		}
-		return nil, fmt.Errorf("cornerstone: Refresh: request %q committed but cornerstone %q missing", requestID, csID)
-	}
-	if current.ArchiveState != ArchiveActive {
-		return nil, fmt.Errorf("cornerstone: Refresh: Work %s is %s", workID, current.ArchiveState)
-	}
-
-	if input.ExpectedRevision != state.Revision {
-		return nil, revisionConflict(workID, input.ExpectedRevision, state.Revision)
-	}
-
-	cs := findCornerstone(current, csID)
-	if cs == nil || cs.Tombstone {
-		return nil, fmt.Errorf("cornerstone: Refresh: cornerstone %q not found or is removed", csID)
-	}
-
-	now := m.clock.Now().UTC()
-	updated := *cs
-
-	// Verify blob integrity for snapshot cornerstones.
-	if cs.Mode == CornerstoneSnapshot && cs.Ref.BlobDigest != "" {
-		if err := m.verifyBlobIntegrity(workID, cs.Ref.BlobDigest); err != nil {
-			updated.Status = CornerstoneInvalid
-			updated.Error = fmt.Sprintf("blob verification failed: %v", err)
-		} else {
-			updated.Status = CornerstoneActive
-			updated.Error = ""
-		}
-	}
-	updated.LastVerifiedAt = &now
-	updated.UpdatedAt = now
-
-	payload, err := json.Marshal(updated)
-	if err != nil {
-		return nil, fmt.Errorf("cornerstone: Refresh: marshal: %w", err)
-	}
-
-	event := WorkEvent{
-		SchemaVersion: WorkEventSchemaVersion,
-		ID:            cornerstoneEventID("cs-refresh", eventRequestID, csID),
-		RequestID:     eventRequestID,
-		WorkID:        workID,
-		Type:          EventCornerstoneUpserted,
-		BaseRevision:  state.Revision,
-		Revision:      state.Revision + 1,
-		Payload:       json.RawMessage(payload),
-		WriterID:      WorkWriterID(),
-		CreatedAt:     now,
-	}
-
-	if _, err := m.store.CommitEvent(workID, event); err != nil {
-		return nil, fmt.Errorf("cornerstone: Refresh: commit: %w", err)
-	}
-
-	view, err := m.loadView(workID)
-	if err != nil {
-		return nil, committedRecovery("cornerstone-refresh-view", workID, requestID, event.Revision, err)
-	}
-	result := findCornerstone(view.Work, csID)
-	if result == nil {
-		return nil, fmt.Errorf("cornerstone: Refresh: cornerstone %q disappeared", csID)
-	}
-	return &CornerstoneResult{Cornerstone: result, WorkView: view, Revision: view.Revision}, nil
+	return m.Resolve(context.Background(), workID, input)
 }
 
 // ── Remove ──────────────────────────────────────────────────────────────────
@@ -365,11 +320,15 @@ func (m *CornerstoneManager) Remove(workID string, input RemoveCornerstoneInput)
 	}
 
 	eventRequestID := requestID + "/cs-remove"
+	eventID := cornerstoneEventID("cs-remove", eventRequestID, csID)
 	current, state, err := m.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
 	}
 	if state.RequestFound {
+		if err := validateCornerstoneReplay("Remove", workID, requestID, state, EventCornerstoneRemoved, eventID); err != nil {
+			return nil, err
+		}
 		cs := findCornerstone(current, csID)
 		if cs != nil {
 			return &CornerstoneResult{Cornerstone: cs, WorkView: viewFromState(current, state), Duplicate: true, Revision: state.Revision}, nil
@@ -401,7 +360,7 @@ func (m *CornerstoneManager) Remove(workID string, input RemoveCornerstoneInput)
 
 	event := WorkEvent{
 		SchemaVersion: WorkEventSchemaVersion,
-		ID:            cornerstoneEventID("cs-remove", eventRequestID, csID),
+		ID:            eventID,
 		RequestID:     eventRequestID,
 		WorkID:        workID,
 		Type:          EventCornerstoneRemoved,
@@ -442,11 +401,15 @@ func (m *CornerstoneManager) Undo(workID string, input UndoCornerstoneInput) (*C
 	}
 
 	eventRequestID := requestID + "/cs-undo"
+	eventID := cornerstoneEventID("cs-restore", eventRequestID, csID)
 	current, state, err := m.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
 	}
 	if state.RequestFound {
+		if err := validateCornerstoneReplay("Undo", workID, requestID, state, EventCornerstoneRestored, eventID); err != nil {
+			return nil, err
+		}
 		cs := findCornerstone(current, csID)
 		if cs != nil {
 			return &CornerstoneResult{Cornerstone: cs, WorkView: viewFromState(current, state), Duplicate: true, Revision: state.Revision}, nil
@@ -496,7 +459,7 @@ func (m *CornerstoneManager) Undo(workID string, input UndoCornerstoneInput) (*C
 
 	event := WorkEvent{
 		SchemaVersion: WorkEventSchemaVersion,
-		ID:            cornerstoneEventID("cs-restore", eventRequestID, csID),
+		ID:            eventID,
 		RequestID:     eventRequestID,
 		WorkID:        workID,
 		Type:          EventCornerstoneRestored,
@@ -536,11 +499,17 @@ func (m *CornerstoneManager) GC(workID string, input GCInput) (*GCResult, error)
 	}
 
 	eventRequestID := requestID + "/cs-gc"
+	eventID := cornerstoneEventID("cs-gc", eventRequestID, workID)
 	_, state, err := m.store.LoadState(workID, eventRequestID)
 	if err != nil {
 		return nil, err
 	}
 	duplicate := state.RequestFound
+	if duplicate {
+		if err := validateCornerstoneReplay("GC", workID, requestID, state, EventCornerstoneGC, eventID); err != nil {
+			return nil, err
+		}
+	}
 	if !duplicate && input.ExpectedRevision != state.Revision {
 		return nil, revisionConflict(workID, input.ExpectedRevision, state.Revision)
 	}
@@ -575,7 +544,7 @@ func (m *CornerstoneManager) GC(workID string, input GCInput) (*GCResult, error)
 		}
 		event := WorkEvent{
 			SchemaVersion: WorkEventSchemaVersion,
-			ID:            cornerstoneEventID("cs-gc", eventRequestID, workID),
+			ID:            eventID,
 			RequestID:     eventRequestID,
 			WorkID:        workID,
 			Type:          EventCornerstoneGC,
