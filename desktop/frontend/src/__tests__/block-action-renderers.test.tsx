@@ -1,5 +1,6 @@
 // Run: tsx src/__tests__/block-action-renderers.test.tsx
 
+import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -37,9 +38,13 @@ Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.
 Object.defineProperty(globalThis, 'crypto', {
   configurable: true,
   value: {
-    randomUUID: () => '11111111-2222-4333-8444-555555555555',
-    getRandomValues: (values: Uint32Array) => values.fill(7),
+    randomUUID: () => { throw new Error('entropy API disabled'); },
+    getRandomValues: () => { throw new Error('entropy API disabled'); },
   },
+});
+Object.defineProperty(dom.window, 'sessionStorage', {
+  configurable: true,
+  get: () => { throw new Error('browser storage disabled'); },
 });
 
 function ok(condition: unknown, label: string): void {
@@ -76,6 +81,19 @@ async function remount(element: React.ReactElement): Promise<void> {
 async function click(element: Element): Promise<void> {
   await act(async () => {
     element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  });
+  await flush();
+}
+
+async function fillInput(value: string): Promise<void> {
+  const input = host().querySelector('input') as HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!;
+  const previous = input.value;
+  await act(async () => {
+    setter.call(input, value);
+    (input as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+    input.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   });
   await flush();
 }
@@ -133,6 +151,10 @@ async function run(): Promise<void> {
     ok(blockRegistry.validate(kind, 1, fixtures[kind])?.valid, `${kind} valid fixture accepted`);
     ok(!blockRegistry.validate(kind, 1, {})?.valid, `${kind} empty object rejected`);
   }
+  const actionIntentSource = readFileSync(new URL('../components/work/blocks/actionIntent.tsx', import.meta.url), 'utf8');
+  for (const forbidden of ['randomUUID', 'getRandomValues', 'Math.random', 'Date.now', 'sessionStorage', 'localStorage']) {
+    ok(!actionIntentSource.includes(forbidden), `action intent runtime does not use ${forbidden}`);
+  }
 
   process.stdout.write('\n# action context, duplicate delivery, and replay\n');
   const entry = block({ actions: [action('run', 'Run')] });
@@ -157,6 +179,31 @@ async function run(): Promise<void> {
   equal(requests.length, 2, 'page recovery may safely replay transport intent');
   equal(requests[1].requestId, requests[0].requestId, 'page recovery reuses idempotency requestId');
   equal(new Set(requests.map((request) => request.requestId)).size, 1, 'replay represents one business action');
+  ok(/^work-action-v1-sha256-[0-9a-f]{64}$/.test(requests[0].requestId), 'requestId is a deterministic SHA-256 digest');
+  equal(requests[0].requestId,
+    'work-action-v1-sha256-b6661a66b930b95014322cc56b450c64bc46289dd6ac058f9e093921152c9971',
+    'requestId digest matches the canonical intent vector');
+
+  const distinctRequests: BlockActionRequest[] = [];
+  const intentCases: Array<[BlockInstance, typeof context]> = [
+    [entry, context],
+    [entry, { ...context, workId: 'work-2' }],
+    [entry, { ...context, runId: 'run-2' }],
+    [entry, { ...context, taskId: 'task-2' }],
+    [block({ id: 'block-2', actions: [action('run', 'Run')] }), context],
+    [block({ revision: 8, actions: [action('run', 'Run')] }), context],
+    [block({ actions: [action('inspect', 'Inspect')] }), context],
+  ];
+  for (const [intentBlock, intentContext] of intentCases) {
+    await remount(<BlockHost
+      block={intentBlock}
+      context={intentContext}
+      onAction={(request) => { distinctRequests.push(request); }}
+    />);
+    await click(host().querySelector('.wg2-action-block__btn')!);
+  }
+  equal(new Set(distinctRequests.map((request) => request.requestId)).size, intentCases.length,
+    'work/run/task/block/action/revision changes cannot merge request IDs');
 
   process.stdout.write('\n# explicit receipt states and safe retry\n');
   const projectedID = 'receipt-failed';
@@ -243,18 +290,46 @@ async function run(): Promise<void> {
   const submit = host().querySelector('.prompt-action')!;
   await click(submit);
   ok(host().textContent?.includes('Name is required'), 'required input failure is explicit');
-  const input = host().querySelector('input') as HTMLInputElement;
-  const setter = Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')!.set!;
-  const previous = input.value;
-  await act(async () => {
-    setter.call(input, 'Ada');
-    (input as HTMLInputElement & { _valueTracker?: { setValue: (value: string) => void } })._valueTracker?.setValue(previous);
-    input.dispatchEvent(new dom.window.InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Ada' }));
-    input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-  });
-  await flush();
+  await fillInput('Ada');
   await click(submit);
   equal((inputRequest?.input?.values as Record<string, string>)?.name, 'Ada', 'input sends typed values');
+  const adaRequestID = inputRequest!.requestId;
+  ok(!adaRequestID.includes('Ada'), 'requestId never exposes raw input');
+
+  let graceRequest: BlockActionRequest | undefined;
+  await remount(<BlockHost block={inputBlock} context={context} onAction={(request) => { graceRequest = request; }} />);
+  await fillInput('Grace');
+  await click(host().querySelector('.prompt-action')!);
+  ok(graceRequest?.requestId !== adaRequestID, 'different effective input gets a different requestId');
+
+  const conflictRequests: BlockActionRequest[] = [];
+  const failedInput = receipt({
+    actionId: 'submit_input',
+    requestId: adaRequestID,
+    status: 'failed',
+    message: 'temporary controller failure',
+    retryable: true,
+    outcomeKnown: true,
+  });
+  await remount(<BlockHost
+    block={inputBlock}
+    context={{ ...context, actionReceipts: [failedInput] }}
+    onAction={(request) => { conflictRequests.push(request); }}
+  />);
+  await fillInput('Grace');
+  await click(host().querySelector('.prompt-action')!);
+  equal(conflictRequests.length, 0, 'failed input cannot replay with conflicting effective payload');
+  ok(host().textContent?.includes('Retry input does not match'), 'input replay conflict is explicit');
+
+  await remount(<BlockHost
+    block={inputBlock}
+    context={{ ...context, actionReceipts: [failedInput] }}
+    onAction={(request) => { conflictRequests.push(request); }}
+  />);
+  await fillInput('Ada');
+  await click(host().querySelector('.prompt-action')!);
+  equal(conflictRequests.length, 1, 'same failed input can replay after page recovery');
+  equal(conflictRequests[0].requestId, adaRequestID, 'failed input replay preserves its original requestId');
 
   process.stdout.write('\n# notice and artifact intents\n');
   let noticeRequest: BlockActionRequest | undefined;
