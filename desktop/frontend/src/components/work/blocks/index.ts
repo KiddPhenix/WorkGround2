@@ -13,7 +13,7 @@
 
 export { BlockHost } from './BlockHost';
 export { FallbackBlock } from './FallbackBlock';
-export { blockRegistry, createRegistry } from './registry';
+export { blockRegistry, createRegistry, isRendererKind } from './registry';
 export type { FallbackBlockProps } from './FallbackBlock';
 export type {
   BlockHostProps,
@@ -24,6 +24,7 @@ export type {
   SchemaVersionSpec,
   RendererValidator,
   RendererSupport,
+  RendererFailureCode,
   BlockRendererRegistry,
   LazyLoader,
   ValidationResult,

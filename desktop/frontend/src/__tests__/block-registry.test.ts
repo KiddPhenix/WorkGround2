@@ -67,7 +67,9 @@ async function run(): Promise<void> {
   for (const [kind, versions] of [
     ['', 1], [' list', 1], ['list ', 1], ['list', 0], ['list', -1], ['list', 1.5],
     ['list', Number.MAX_SAFE_INTEGER + 1], ['list', { min: 2, max: 1 }],
-    ['list', { min: 1, max: Infinity }], ['list', null],
+    ['list', { min: 1, max: Infinity }], ['list', null], ['path/escape', 1],
+    ['module.name', 1], ['bad-kind', 1], ['BadKind', 1], ['bad\nkind', 1],
+    [`a${'b'.repeat(64)}`, 1],
   ] as Array<[string, SchemaVersionSpec]>) {
     throws(() => createRegistry().register(kind, versions, valid, loader('bad')), `rejects invalid registration ${JSON.stringify([kind, versions])}`);
   }
