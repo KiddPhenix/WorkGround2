@@ -154,6 +154,12 @@ type App struct {
 
 	runtimeEvents asyncRuntimeEmitter
 
+	// workWatchMu owns transient Wails WorkView subscriptions. The durable
+	// source remains control.WorkViewBroadcaster; these entries only bridge a
+	// mounted WorkCard to its owning tab without teaching the UI to poll.
+	workWatchMu sync.Mutex
+	workWatches map[string]*workViewWatch
+
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is
 	// reached by ↑ navigation. See ScanPromptHistory.
@@ -366,6 +372,7 @@ func NewApp() *App {
 	a := &App{
 		tabs:             map[string]*WorkspaceTab{},
 		detachedSessions: map[string]*WorkspaceTab{},
+		workWatches:      map[string]*workViewWatch{},
 		mediaTokens:      newMediaTokenStore(),
 		background:       newSessionBackgroundService(),
 		botInstalls:      map[string]*botInstallSession{},

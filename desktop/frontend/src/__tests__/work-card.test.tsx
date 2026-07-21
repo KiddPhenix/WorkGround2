@@ -8,7 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { WorkCard } from '../components/work/WorkCard';
 import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
-import type { WorkControllerPort, WorkUIPreference } from '../work/controller';
+import type { WorkControllerPort, WorkPortSubscription, WorkUIPreference } from '../work/controller';
 import { useWorkStore, useWorkUIStore } from '../work/store';
 import type {
   Attempt,
@@ -106,9 +106,9 @@ class TestPort implements WorkControllerPort {
   retryFailures = 0;
   readonly retryInputs: RetryTaskInput[] = [];
 
-  subscribe(workID: string, onEvent: (event: WorkViewEvent) => void): () => void {
+  subscribe(workID: string, onEvent: (event: WorkViewEvent) => void): WorkPortSubscription {
     this.listeners.set(workID, onEvent);
-    return () => this.listeners.delete(workID);
+    return { ready: Promise.resolve(), unsubscribe: () => { this.listeners.delete(workID); } };
   }
 
   async fetchSnapshot(workID: string): Promise<WorkView> {

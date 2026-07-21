@@ -1123,6 +1123,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var workSvc *work.Service
 	var workViews *control.WorkViewBroadcaster
 	var taskExec work.TaskExecutor
+	var cornerstoneManager *work.CornerstoneManager
+	var cornerstoneStore work.WorkStore
+	var cornerstoneBlobs work.BlobStore
 	if cfg.Work.Enabled {
 		if opts.SessionRefsErr != nil {
 			jm.Close()
@@ -1150,6 +1153,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bp := work.NewBlueprintRegistry()
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
+			// Wire CornerstoneManager for T5 transport-alignment. FileWorkStore
+			// implements both WorkStore and BlobStore, enabling >4096-byte
+			// cornerstone content via content-addressed blob storage.
+			cornerstoneManager = work.NewCornerstoneManager(store, store, nil)
+			cornerstoneStore = store
+			cornerstoneBlobs = store
+			workSvc.SetCornerstoneManager(cornerstoneManager)
 			workSvc.SetCornerstoneResolver(opts.CornerstoneResolver)
 			if opts.SessionRefs != nil {
 				if err := workSvc.SetSessionRefStore(opts.SessionRefs, work.SessionRefScopeID(workDir)); err != nil {
@@ -1292,7 +1302,23 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 	}
-	return control.New(ctrlOpts), nil
+	ctrl := control.New(ctrlOpts)
+	// Post-init: wire every live Cornerstone source through production adapters.
+	// URL resolution reuses the configured web_fetch tool, including its proxy,
+	// timeout, response cap, and SSRF policy. If web_fetch is disabled, URL refs
+	// fail explicitly as denied without creating a second network path.
+	if cornerstoneManager != nil && opts.CornerstoneResolver == nil {
+		webFetch, _ := reg.Get("web_fetch")
+		resolver := control.NewLiveCornerstoneResolver(control.LiveCornerstoneResolverOptions{
+			WorkspaceRoot: root,
+			SessionTurns:  ctrl,
+			WorkStore:     cornerstoneStore,
+			BlobStore:     cornerstoneBlobs,
+			URLTool:       webFetch,
+		})
+		cornerstoneManager.SetResolver(resolver)
+	}
+	return ctrl, nil
 }
 
 func ensureWorkDir(path string) error {

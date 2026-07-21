@@ -44,14 +44,31 @@ type WorkController interface {
 	// DeleteWork 将 Work 移入回收站。
 	DeleteWork(ctx context.Context, workID, requestID string) error
 
-	// PinCornerstone 将类型化长期基石绑定到 Work。
-	PinCornerstone(ctx context.Context, workID string, input CornerstoneInput) (*Cornerstone, error)
+	// PinCornerstone 将类型化长期基石绑定到 Work。RequestID 和 ExpectedRevision
+	// 用于幂等和乐观并发控制。返回 CornerstoneResult 包含基石、WorkView 和评估。
+	PinCornerstone(ctx context.Context, workID string, input PinCornerstoneInput) (*CornerstoneResult, error)
 
-	// RefreshCornerstone 重新解析 live_ref 并更新其可观察状态。
-	RefreshCornerstone(ctx context.Context, workID, cornerstoneID, requestID string) (*Cornerstone, error)
+	// RefreshCornerstone 重新解析 live_ref 的源状态或校验 snapshot blob 完整性。
+	// 对于 live_ref，解析源并与保存的 digest 比较；状态可变为 stale/missing/denied。
+	RefreshCornerstone(ctx context.Context, workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error)
 
-	// RemoveCornerstone 以 tombstone 方式移除基石。
-	RemoveCornerstone(ctx context.Context, workID, cornerstoneID, requestID string) error
+	// RemoveCornerstone 以 tombstone 方式移除基石，可通过 UndoCornerstone 恢复。
+	RemoveCornerstone(ctx context.Context, workID string, input RemoveCornerstoneInput) (*CornerstoneResult, error)
+
+	// UndoCornerstone 恢复已 tombstone 的基石。对于 snapshot 基石会校验 blob 完整性。
+	UndoCornerstone(ctx context.Context, workID string, input UndoCornerstoneInput) (*CornerstoneResult, error)
+
+	// AcceptCornerstone 接受 stale live_ref 基石的新解析内容，将状态切回 active。
+	// 仅在精确 candidate digest 匹配时接受，防止 TOCTOU。
+	AcceptCornerstone(ctx context.Context, workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error)
+
+	// FreezeCornerstone 将 live_ref 基石冻结为 snapshot，使其内容不再随源变化。
+	// UseLastKnown 模式可在源不可达时冻结最后已知内容。
+	FreezeCornerstone(ctx context.Context, workID string, input FreezeCornerstoneInput) (*CornerstoneResult, error)
+
+	// RepairCornerstone 修复处于 missing/denied/invalid/stale 状态的基石。
+	// live_ref 可替换 Ref 重新解析；snapshot 可 rematerialize blob。
+	RepairCornerstone(ctx context.Context, workID string, input RepairCornerstoneInput) (*RepairResult, error)
 
 	// RefreshBlock 刷新指定 Block 的数据。
 	RefreshBlock(ctx context.Context, workID, blockID, requestID string) (*BlockInstance, error)

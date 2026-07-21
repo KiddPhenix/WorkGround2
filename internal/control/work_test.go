@@ -288,6 +288,8 @@ func TestControllerLookupSessionAdapter(t *testing.T) {
 	path := filepath.Join(dir, "session.jsonl")
 	session := agent.NewSession("system")
 	session.Add(provider.Message{Role: provider.RoleUser, Content: "inspect this Session"})
+	session.Add(provider.Message{Role: provider.RoleAssistant, Content: "metadata preview must not be returned as a turn"})
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "actual second user turn"})
 	if err := session.SaveSnapshot(path); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
 	}
@@ -303,11 +305,19 @@ func TestControllerLookupSessionAdapter(t *testing.T) {
 	if ref.SessionPath != path || ref.BranchID != agent.BranchID(path) {
 		t.Fatalf("Session identity = %+v", ref)
 	}
-	if ref.ModelRef != "provider/model" || ref.TurnCount != 1 || !strings.Contains(ref.Preview, "inspect this Session") {
+	if ref.ModelRef != "provider/model" || ref.TurnCount != 2 || !strings.Contains(ref.Preview, "inspect this Session") {
 		t.Fatalf("Session projection = %+v", ref)
 	}
 	if ref.StartedAt.IsZero() {
 		t.Fatal("Session StartedAt must be observable")
+	}
+	turn, found, err := c.LookupSessionTurn(context.Background(), path, 1)
+	if err != nil || !found || turn != "actual second user turn" {
+		t.Fatalf("LookupSessionTurn = (%q, %v, %v)", turn, found, err)
+	}
+	turn, found, err = c.LookupSessionTurn(context.Background(), path, 2)
+	if err != nil || found || turn != "" {
+		t.Fatalf("out-of-range LookupSessionTurn = (%q, %v, %v)", turn, found, err)
 	}
 
 	missing, found, err := c.LookupSession(context.Background(), filepath.Join(dir, "missing.jsonl"))

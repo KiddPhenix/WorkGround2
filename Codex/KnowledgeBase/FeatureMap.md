@@ -1,5 +1,7 @@
 # Feature Map
 
+> 2026-07-22 Stage 6 Wave 2 / T5：WorkCard 已接入固定外层 CornerstoneDrawer；正反面复用同一实例，pin、校验/刷新、冻结、接受、修复、tombstone 移除/撤销均携带 requestId 与 expectedRevision。冲突加载最新 WorkView 并保留草稿，网络失败复用请求标识重试；WorkCard 与运行入口共用 required Attention。Desktop 生产入口通过 Wails 组合完整 WorkControllerPort、类型化 WorkView 订阅和 RunWork 薄绑定；Run/Resume 与 Drawer mutation 共用同一 live-ref resolver、FileWorkStore 和 BlobStore。
+
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
 | Work 系统 V1 | `in_progress` | `developping/work-system-v1+2026-07-20` | `codex-work-v1-impl` | `internal/work`, `internal/control/work.go`, `desktop/app.go`, `desktop/tabs.go`, `desktop/frontend/src/work`, `desktop/frontend/src/components/work`, `docs/WORK_SYSTEM_DESIGN.zh-CN.md` | 2026-07-22 已推进到 Stage 6 Wave 1：Cornerstone Manager 以 Work events + 内容寻址 blob 管理 pin/refresh/tombstone/undo/GC；Session Owner/Ref 则作为从 Work/Attempt 投影派生的独立可重建索引，两者不互建业务状态源。进程级原子 SessionRef store 由 Desktop 统一注入 Boot/Service，所有 production `boot.Build`（含 Settings rebuild）均静态强制复用同一实例及初始化错误，按 Work store scope 对账 active+trash；Work/Attempt 生命周期收敛协调。普通 Session purge 强制零活跃引用并满足 Session/owner retention；force purge 先持久化 cleanup-pending，失败保留 stage/error/impact 并可同 request 重试，ledger 写失败不会物理删除。root focused/race/full、Boot 注入、desktop focused/race、root/desktop vet 与 Go build 通过；Desktop 全包的 Darwin 路径、Topic Tree/runtime detach/lease 既有失败已在不含 SessionRef 的 `e022a8c` 基线复现。Feature 继续后续阶段，不在此标记完成。 |

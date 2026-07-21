@@ -1,10 +1,10 @@
 import React, { useMemo } from 'react';
 
+import { deriveCornerstoneAttention } from '../../work/cornerstoneStore';
 import type {
   BlockPlacement,
   BlockUpdateRequest,
   Conclusion,
-  Cornerstone,
   RetryIntent,
   RetryStatus,
   RunSelection,
@@ -15,6 +15,7 @@ import type {
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { RunProgressIndicator } from './RunProgressIndicator';
+import { WorkRunEntry } from './WorkRunEntry';
 
 export interface WorkCardFrontProps {
   view: WorkView;
@@ -28,6 +29,7 @@ export interface WorkCardFrontProps {
   onRunSelect: (selection: RunSelection) => void;
   onRetry?: (intent: RetryIntent) => void;
   retryByTarget: Record<string, RetryStatus>;
+  onRun?: (input: { workId: string; requestId: string }) => void | Promise<void>;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -45,12 +47,12 @@ function runStateLabel(state: string): string {
 }
 
 const AttentionBadge: React.FC<{ work: Work }> = ({ work }) => {
-  const attentionCount = work.conclusions?.length ?? 0;
+  const attentionCount = deriveCornerstoneAttention(work).items.length;
   if (attentionCount === 0) return null;
   return (
-    <div className="wg2-work-attention" role="status" aria-live="polite" data-testid="work-attention">
+    <div className="wg2-work-attention" role="alert" aria-live="polite" data-testid="work-attention">
       <span className="wg2-work-attention-count">{attentionCount}</span>
-      <span className="wg2-work-attention-label">条结论</span>
+      <span className="wg2-work-attention-label">个必需基石需处理</span>
     </div>
   );
 };
@@ -105,22 +107,6 @@ const ArtifactSummary: React.FC<{ work: Work }> = ({ work }) => {
   );
 };
 
-const CornerstoneSummary: React.FC<{ cornerstones: Cornerstone[] }> = ({ cornerstones }) => {
-  if (cornerstones.length === 0) return null;
-  return (
-    <div className="wg2-work-cornerstones" data-testid="work-cornerstones">
-      <h4 className="wg2-work-section-title">Cornerstone</h4>
-      <ul className="wg2-work-cornerstone-list">
-        {cornerstones.map((cornerstone) => (
-          <li key={cornerstone.id} className="wg2-work-cornerstone-item" data-cornerstone-state={cornerstone.status}>
-            {cornerstone.title ?? cornerstone.id}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-};
-
 export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   view,
   expanded,
@@ -133,6 +119,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onRunSelect,
   onRetry,
   retryByTarget,
+  onRun,
 }) => {
   const { work } = view;
   const hostContext = useMemo<BlockHostContext>(() => ({
@@ -202,8 +189,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         <h2 className="wg2-work-name">{work.name}</h2>
         <WorkflowSummary work={work} />
         <AttentionBadge work={work} />
+        <WorkRunEntry workId={work.id} onRun={onRun} disabled={readonly || archived} />
       </div>
-      <CornerstoneSummary cornerstones={work.cornerstones} />
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
       <RunProgressIndicator

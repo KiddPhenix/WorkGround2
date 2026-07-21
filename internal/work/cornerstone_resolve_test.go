@@ -213,7 +213,7 @@ func TestCornerstoneRefresh_LiveRefUsesResolver(t *testing.T) {
 	cs := f.pinLiveRef(t, ref, "accepted", "req-refresh-live-pin")
 	f.resolver.SetContent(ref, "changed")
 
-	result, err := f.mgr.Refresh(f.workID, RefreshCornerstoneInput{
+	result, err := f.mgr.Refresh(context.Background(), f.workID, RefreshCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: currentRevision(t, f),
 		RequestID:        "req-refresh-live",
@@ -272,7 +272,7 @@ func TestCornerstoneResolve_StaleDetectAndAccept(t *testing.T) {
 
 	// Accept the new version.
 	rev2 := currentRevision(t, f)
-	acceptResult, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	acceptResult, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev2,
 		RequestID:        "req-stale-accept",
@@ -444,7 +444,7 @@ func TestCornerstoneResolve_FreezeLiveRef(t *testing.T) {
 	}
 
 	rev := currentRevision(t, f)
-	result, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	result, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev,
 		RequestID:        "req-freeze-action",
@@ -484,7 +484,7 @@ func TestCornerstoneResolve_FreezeStaleThenFreeze(t *testing.T) {
 
 	// Now freeze — should use candidate content.
 	rev2 := currentRevision(t, f)
-	result, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	result, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev2,
 		RequestID:        "req-freeze-stale-action",
@@ -522,7 +522,7 @@ func TestCornerstoneRepair_MissingLiveRef(t *testing.T) {
 
 	// Now repair — fault was exhausted so resolve should succeed.
 	rev2 := currentRevision(t, f)
-	repairResult, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	repairResult, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev2,
 		RequestID:        "req-repair-fix",
@@ -544,7 +544,7 @@ func TestCornerstoneRepair_ActiveInlineSnapshot(t *testing.T) {
 
 	// Repair also verifies an inline snapshot that is already healthy.
 	rev := currentRevision(t, f)
-	repairResult, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	repairResult, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev,
 		RequestID:        "req-repair-snap",
@@ -577,7 +577,7 @@ func TestCornerstoneRepair_PartialFailureRetryable(t *testing.T) {
 
 	// Now try to repair — fault is permanent so repair should fail.
 	rev2 := currentRevision(t, f)
-	repairResult, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	repairResult, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev2,
 		RequestID:        "req-repair-partial",
@@ -680,12 +680,12 @@ func TestCornerstoneMutationReplay_RejectsObjectRepoint(t *testing.T) {
 			}
 		}
 		requestID := "req-accept-repoint"
-		if _, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+		if _, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 			CornerstoneID: csA.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Accept A: %v", err)
 		}
-		_, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+		_, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 			CornerstoneID: csB.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -700,12 +700,12 @@ func TestCornerstoneMutationReplay_RejectsObjectRepoint(t *testing.T) {
 		csA := f.pinLiveRef(t, refA, "a", "req-freeze-repoint-pin-a")
 		csB := f.pinLiveRef(t, refB, "b", "req-freeze-repoint-pin-b")
 		requestID := "req-freeze-repoint"
-		if _, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+		if _, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 			CornerstoneID: csA.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Freeze A: %v", err)
 		}
-		_, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+		_, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 			CornerstoneID: csB.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -729,12 +729,12 @@ func TestCornerstoneMutationReplay_RejectsObjectRepoint(t *testing.T) {
 			}
 		}
 		requestID := "req-repair-repoint"
-		if _, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		if _, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: csA.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Repair A: %v", err)
 		}
-		_, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		_, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: csB.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -752,7 +752,7 @@ func TestCornerstoneMutationReplay_RejectsOperationChange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	_, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	_, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID: cs.ID, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 	})
 	requireCornerstoneRequestConflict(t, err)
@@ -765,12 +765,12 @@ func TestCornerstoneMutationReplay_RejectsIntentChange(t *testing.T) {
 		f.resolver.SetContent(ref, "content")
 		cs := f.pinLiveRef(t, ref, "content", "req-freeze-intent-pin")
 		requestID := "req-freeze-intent"
-		if _, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+		if _, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 			CornerstoneID: cs.ID, UseLastKnown: true, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Freeze: %v", err)
 		}
-		_, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+		_, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 			CornerstoneID: cs.ID, UseLastKnown: false, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -792,12 +792,12 @@ func TestCornerstoneMutationReplay_RejectsIntentChange(t *testing.T) {
 			t.Fatalf("mark missing: %v", err)
 		}
 		requestID := "req-repair-intent-ref"
-		if _, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		if _, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: cs.ID, Ref: &newRefA, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Repair ref A: %v", err)
 		}
-		_, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		_, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: cs.ID, Ref: &newRefB, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -811,13 +811,13 @@ func TestCornerstoneMutationReplay_RejectsIntentChange(t *testing.T) {
 			t.Fatalf("delete blob: %v", err)
 		}
 		requestID := "req-repair-intent-content"
-		if _, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		if _, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: cs.ID, Content: &content, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		}); err != nil {
 			t.Fatalf("Repair content: %v", err)
 		}
 		changed := content + "changed"
-		_, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+		_, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 			CornerstoneID: cs.ID, Content: &changed, ExpectedRevision: currentRevision(t, f), RequestID: requestID,
 		})
 		requireCornerstoneRequestConflict(t, err)
@@ -867,7 +867,7 @@ func TestCornerstoneMutationReplay_ConcurrentIntentRace(t *testing.T) {
 		wg.Add(1)
 		go func(index int, lastKnown bool) {
 			defer wg.Done()
-			_, errs[index] = f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+			_, errs[index] = f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 				CornerstoneID: cs.ID, UseLastKnown: lastKnown, ExpectedRevision: revision, RequestID: requestID,
 			})
 		}(i, useLastKnown)
@@ -915,7 +915,7 @@ func TestCornerstoneMutationReplay_ObjectBindingSurvivesRestartAndCompact(t *tes
 		t.Fatalf("Resolve A: %v", err)
 	}
 	freezeRequestID := "req-compact-freeze"
-	if _, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	if _, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID: freezeCS.ID, UseLastKnown: true, ExpectedRevision: currentRevision(t, f), RequestID: freezeRequestID,
 	}); err != nil {
 		t.Fatalf("Freeze: %v", err)
@@ -947,13 +947,13 @@ func TestCornerstoneMutationReplay_ObjectBindingSurvivesRestartAndCompact(t *tes
 		CornerstoneID: csB.ID, ExpectedRevision: view.Revision, RequestID: requestID,
 	})
 	requireCornerstoneRequestConflict(t, err)
-	freezeReplay, err := f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	freezeReplay, err := f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID: freezeCS.ID, UseLastKnown: true, ExpectedRevision: view.Revision, RequestID: freezeRequestID,
 	})
 	if err != nil || !freezeReplay.Duplicate {
 		t.Fatalf("same Freeze replay after compact = (%#v, %v)", freezeReplay, err)
 	}
-	_, err = f.mgr.Freeze(f.workID, FreezeCornerstoneInput{
+	_, err = f.mgr.Freeze(context.Background(), f.workID, FreezeCornerstoneInput{
 		CornerstoneID: freezeCS.ID, UseLastKnown: false, ExpectedRevision: view.Revision, RequestID: freezeRequestID,
 	})
 	requireCornerstoneRequestConflict(t, err)
@@ -1028,7 +1028,7 @@ func TestCornerstoneAccept_ExpectedRevisionConflict(t *testing.T) {
 	})
 
 	// Accept with wrong revision.
-	_, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	_, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: 999,
 		RequestID:        "req-accept-conflict-bad",
@@ -1071,7 +1071,7 @@ func TestCornerstoneResolve_SingleFlight(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		f.mgr.inflightMu.Lock()
-		call := f.mgr.inflight[refIdentity(ref)]
+		call := f.mgr.inflight[f.workID+"\x00"+refIdentity(ref)]
 		waiters := 0
 		if call != nil {
 			waiters = call.waiters
@@ -1223,7 +1223,7 @@ func TestCornerstoneResolve_RestartRecovery(t *testing.T) {
 
 	// Accept after restart.
 	rev2 := currentRevision(t, f)
-	acceptResult, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	acceptResult, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev2,
 		RequestID:        "req-restart-accept",
@@ -1311,7 +1311,7 @@ func TestCornerstoneRepair_AlreadyActive(t *testing.T) {
 	cs := f.pinLiveRef(t, ref, "content", "req-active-1")
 
 	rev := currentRevision(t, f)
-	result, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	result, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev,
 		RequestID:        "req-active-repair",
@@ -1335,7 +1335,7 @@ func TestCornerstoneAccept_NotStale(t *testing.T) {
 
 	// Cornerstone is active — Accept should fail.
 	rev := currentRevision(t, f)
-	_, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	_, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: rev,
 		RequestID:        "req-notstale-accept",
@@ -1402,7 +1402,7 @@ func TestCornerstoneResolve_WithoutResolverFallsBack(t *testing.T) {
 	cs := pinResult.Cornerstone
 
 	view, _ = f.svc.Get(t.Context(), f.workID)
-	result, err := f.mgr.Refresh(f.workID, RefreshCornerstoneInput{
+	result, err := f.mgr.Refresh(context.Background(), f.workID, RefreshCornerstoneInput{
 		CornerstoneID:    cs.ID,
 		ExpectedRevision: view.Revision,
 		RequestID:        "req-nor-refresh",
@@ -1439,7 +1439,7 @@ func TestCornerstoneResolve_ConcurrentAcceptRace(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, err1 = f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+		_, err1 = f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 			CornerstoneID:    cs.ID,
 			ExpectedRevision: rev2,
 			RequestID:        "req-race-accept-1",
@@ -1447,7 +1447,7 @@ func TestCornerstoneResolve_ConcurrentAcceptRace(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		_, err2 = f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+		_, err2 = f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 			CornerstoneID:    cs.ID,
 			ExpectedRevision: rev2,
 			RequestID:        "req-race-accept-2",
@@ -1552,7 +1552,7 @@ func TestCornerstoneAccept_RejectsCandidateThatChangedAfterReview(t *testing.T) 
 	}
 	before := currentRevision(t, f)
 	f.resolver.SetContent(ref, "v3")
-	_, err = f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	_, err = f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID: cs.ID, ExpectedRevision: before, RequestID: "req-toctou-accept",
 	})
 	if !errors.Is(err, ErrCornerstoneCandidateChanged) {
@@ -1587,7 +1587,7 @@ func TestCornerstoneAccept_LargeCandidateUsesBlobAndDoesNotPersistPendingBody(t 
 	if strings.Contains(string(events), "END-UNIQUE-CANDIDATE") {
 		t.Fatal("unaccepted candidate body entered the event log")
 	}
-	accepted, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	accepted, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID: cs.ID, ExpectedRevision: currentRevision(t, f), RequestID: "req-large-accept",
 	})
 	if err != nil {
@@ -1639,7 +1639,7 @@ func TestCornerstoneRepair_RefChangePreservesAcceptedContentUntilAccept(t *testi
 	if err != nil {
 		t.Fatalf("mark missing: %v", err)
 	}
-	repaired, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	repaired, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID: cs.ID, Ref: &newRef, ExpectedRevision: currentRevision(t, f), RequestID: "req-ref-repair",
 	})
 	if err != nil {
@@ -1651,7 +1651,7 @@ func TestCornerstoneRepair_RefChangePreservesAcceptedContentUntilAccept(t *testi
 	if repaired.Cornerstone.Ref.Path != normalizeCornerstonePath(newRef.Path) || repaired.Resolution == nil || repaired.Resolution.Diff == "" {
 		t.Fatalf("repair ref/resolution = (%#v, %#v)", repaired.Cornerstone.Ref, repaired.Resolution)
 	}
-	accepted, err := f.mgr.Accept(f.workID, AcceptCornerstoneInput{
+	accepted, err := f.mgr.Accept(context.Background(), f.workID, AcceptCornerstoneInput{
 		CornerstoneID: cs.ID, ExpectedRevision: currentRevision(t, f), RequestID: "req-ref-repair-accept",
 	})
 	if err != nil || accepted.Cornerstone.Content != "candidate-v2" {
@@ -1675,20 +1675,20 @@ func TestCornerstoneRepair_MissingBlobRequiresMatchingReplacementAndSurvivesRest
 	if err != nil || invalid.Cornerstone.Status != CornerstoneInvalid {
 		t.Fatalf("detect missing blob = (%#v, %v)", invalid, err)
 	}
-	failed, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	failed, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID: cs.ID, ExpectedRevision: currentRevision(t, f), RequestID: "req-blob-repair-empty",
 	})
 	if err != nil || failed.Repaired || len(failed.FailedRefs) == 0 {
 		t.Fatalf("empty repair = (%#v, %v)", failed, err)
 	}
 	wrong := content + "changed"
-	failed, err = f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	failed, err = f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID: cs.ID, Content: &wrong, ExpectedRevision: currentRevision(t, f), RequestID: "req-blob-repair-wrong",
 	})
 	if err != nil || failed.Repaired {
 		t.Fatalf("mismatched repair = (%#v, %v)", failed, err)
 	}
-	repaired, err := f.mgr.Repair(f.workID, RepairCornerstoneInput{
+	repaired, err := f.mgr.Repair(context.Background(), f.workID, RepairCornerstoneInput{
 		CornerstoneID: cs.ID, Content: &content, ExpectedRevision: currentRevision(t, f), RequestID: "req-blob-repair-good",
 	})
 	if err != nil || !repaired.Repaired || repaired.Cornerstone.Status != CornerstoneActive {
