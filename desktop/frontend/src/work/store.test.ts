@@ -617,6 +617,105 @@ test('partial nested run delta preserves untouched stages and tasks', () => {
   equal(stages[0].tasks[1].state, 'waiting', 'waiting RunState from the backend contract is accepted');
 });
 
+test('RetryTask reopens one failed Run path only when a new Attempt is reserved', () => {
+  reset();
+  const failedAttempt = makeAttempt(0, 'failed', { requestId: 'run-1/execute/0', error: 'temporary failure' });
+  const failedTask = makeTask('lint', 'failed', [failedAttempt]);
+  const failedStage = makeStage('review', 'failed', [failedTask]);
+  applySnapshot(makeView('work-1', 1, {
+    state: 'failed',
+    runs: [makeRunWithStages('run-1', 'failed', [failedStage])],
+  }));
+
+  const retryAttempt = makeAttempt(1, 'running', { requestId: 'retry-1/execute' });
+  const reopenedTask = makeTask('lint', 'running', [makeAttempt(0, 'running'), retryAttempt]);
+  const result = applyWorkViewEvent(delta('retry-reserved', 2, 1, {
+    state: 'running',
+    runs: [makeRunWithStages('run-1', 'running', [makeStage('review', 'running', [reopenedTask])])],
+  }));
+
+  equal(result.kind, 'applied', 'RetryTask reservation projection is accepted');
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.state, 'running', 'failed Work reopens for the same retried Run');
+  equal(work?.runs[0].state, 'running', 'failed Run reopens when a new Attempt exists');
+  equal(work?.runs[0].stages[0].state, 'running', 'failed Stage reopens on the retry path');
+  equal(work?.runs[0].stages[0].tasks[0].state, 'running', 'failed Task reopens on the retry path');
+  equal(work?.runs[0].stages[0].tasks[0].attempts[0].state, 'failed', 'source Attempt remains terminal history');
+  equal(work?.runs[0].stages[0].tasks[0].attempts[1].requestId, 'retry-1/execute', 'reserved retry Attempt is visible');
+});
+
+test('late running payload without a new Attempt on the same owner cannot reopen a failed path', () => {
+  reset();
+  const failed = makeAttempt(0, 'failed');
+  applySnapshot(makeView('work-1', 1, {
+    state: 'failed',
+    runs: [makeRunWithStages('run-1', 'failed', [makeStage('review', 'failed', [makeTask('lint', 'failed', [failed])])])],
+  }));
+  applyWorkViewEvent(delta('late-running', 2, 1, {
+    state: 'running',
+    runs: [makeRunWithStages('run-1', 'running', [
+      makeStage('review', 'running', [
+        makeTask('lint', 'running', [makeAttempt(0, 'running')]),
+        makeTask('foreign', 'running', [makeAttempt(1, 'running', { id: 'foreign-attempt' })]),
+      ]),
+      makeStage('foreign', 'running', [makeTask('foreign', 'running', [makeAttempt(0, 'running')])]),
+    ])],
+  }));
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.state, 'failed', 'late same-Attempt payload cannot reopen Work');
+  equal(work?.runs[0].state, 'failed', 'late same-Attempt payload cannot reopen Run');
+  equal(work?.runs[0].stages[0].tasks[0].state, 'failed', 'late same-Attempt payload cannot reopen Task');
+});
+
+test('needs_confirmation and execution evidence survive projection validation', () => {
+  reset();
+  applySnapshot(makeView('work-1', 1, {
+    state: 'running',
+    runs: [makeRunWithStages('run-1', 'running', [makeStage('approval', 'running', [makeTask('deploy', 'running', [makeAttempt(0, 'running')])])])],
+  }));
+  const uncertain = makeAttempt(0, 'needs_confirmation', {
+    requestId: 'deploy/execute',
+    sideEffectClass: 'external_write',
+    error: 'external outcome has no matching receipt',
+    receipt: {
+      requestId: '',
+      outcome: 'observed',
+      evidence: 'remote response was ambiguous',
+      sideEffectClass: 'external_write',
+      confirmedAt: '2026-07-20T10:01:00Z',
+    },
+  });
+  const stage = makeStage('approval', 'needs_confirmation', [makeTask('deploy', 'needs_confirmation', [uncertain])], {
+    gate: 'approval',
+    resolution: { stageId: 'stage-approval', outcome: 'approved', note: 'reviewed' },
+  });
+  const result = applyWorkViewEvent(delta('needs-confirmation', 2, 1, {
+    state: 'waiting_user',
+    runs: [makeRunWithStages('run-1', 'needs_confirmation', [stage])],
+  }));
+  equal(result.kind, 'applied', 'needs_confirmation is a valid non-terminal RunState');
+  const projected = selectWork(useWorkStore.getState().works, 'work-1')?.runs[0];
+  equal(projected?.state, 'needs_confirmation', 'Run keeps needs_confirmation');
+  equal(projected?.stages[0].resolution?.outcome, 'approved', 'GateResolution remains in the Stage projection');
+  equal(projected?.stages[0].tasks[0].attempts[0].receipt?.requestId, '', 'mismatched AttemptReceipt remains visible for diagnosis');
+  equal(projected?.stages[0].tasks[0].attempts[0].sideEffectClass, 'external_write', 'side-effect evidence remains visible');
+});
+
+test('terminal cancel receipt never regresses on a late delivery snapshot', () => {
+  reset();
+  const cancelled = makeRunWithStages('run-1', 'cancelled', [makeStage('review', 'cancelled', [makeTask('lint', 'cancelled', [makeAttempt(0, 'cancelled')])])]);
+  cancelled.cancel = { requestId: 'cancel-1', status: 'delivered', attempts: 2, updatedAt: '2026-07-20T10:02:00Z' };
+  applySnapshot(makeView('work-1', 1, { state: 'cancelled', runs: [cancelled] }));
+  const late = makeRunWithStages('run-1', 'cancelled', [makeStage('review', 'running', [makeTask('lint', 'running', [makeAttempt(0, 'running')])])]);
+  late.cancel = { requestId: 'cancel-1', status: 'pending', attempts: 1, updatedAt: '2026-07-20T10:01:00Z' };
+  applyWorkViewEvent(delta('late-cancel-delivery', 2, 1, { runs: [late] }));
+  const run = selectWork(useWorkStore.getState().works, 'work-1')?.runs[0];
+  equal(run?.state, 'cancelled', 'cancelled Run remains terminal');
+  equal(run?.cancel?.status, 'delivered', 'late pending receipt cannot regress delivered cancel');
+  equal(run?.cancel?.attempts, 2, 'cancel delivery attempt counter is monotonic');
+  equal(run?.stages[0].tasks[0].attempts[0].state, 'cancelled', 'late Task result cannot regress cancelled history');
+});
+
 test('selection state isolates by workID', () => {
   reset();
   const ui = useWorkUIStore.getState();

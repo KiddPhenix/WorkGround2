@@ -14,7 +14,14 @@ export type WorkState =
   | 'failed'
   | 'cancelled';
 export type WorkArchiveState = 'active' | 'archived' | 'deleted';
-export type RunState = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
+export type RunState =
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_confirmation';
 export type BlueprintSource = 'system' | 'user' | `addon:${string}`;
 
 export interface BlueprintRef {
@@ -135,6 +142,24 @@ export interface WorkflowRun {
   startedAt: string;
   finishedAt?: string;
   conclusion?: Conclusion;
+  cancel?: RunCancelReceipt;
+  pause?: RunPauseReceipt;
+}
+
+export type CancelDelivery = 'pending' | 'delivered' | 'failed';
+
+export interface RunCancelReceipt {
+  requestId: string;
+  status: CancelDelivery;
+  error?: string;
+  attempts: number;
+  updatedAt: string;
+}
+
+export interface RunPauseReceipt {
+  requestId: string;
+  pausedAt: string;
+  notice: string;
 }
 
 export interface Stage {
@@ -145,6 +170,7 @@ export interface Stage {
   tasks: Task[];
   startedAt: string;
   finishedAt?: string;
+  resolution?: GateResolution;
 }
 
 export interface Task {
@@ -158,12 +184,23 @@ export interface Task {
 
 export interface Attempt {
   id?: string;
+  requestId?: string;
   index: number;
   state: RunState;
   sessionRef: SessionRef;
   startedAt: string;
   finishedAt?: string;
   error?: string;
+  receipt?: AttemptReceipt;
+  sideEffectClass?: string;
+}
+
+export interface AttemptReceipt {
+  requestId: string;
+  outcome: string;
+  evidence?: string;
+  sideEffectClass?: string;
+  confirmedAt: string;
 }
 
 export type ConclusionKind = 'fact' | 'finding' | 'decision' | 'outcome' | 'lesson';
@@ -410,6 +447,20 @@ export interface RetryTaskInput {
   stageId: string;
   taskId: string;
   requestId: string;
+}
+
+export interface ResumeRunInput {
+  workId: string;
+  runId: string;
+  requestId: string;
+  gateResolutions?: Record<string, GateResolution>;
+}
+
+export interface GateResolution {
+  stageId: string;
+  outcome: 'approved' | 'input_provided';
+  input?: Record<string, unknown>;
+  note?: string;
 }
 
 export interface BlockActionRequest {

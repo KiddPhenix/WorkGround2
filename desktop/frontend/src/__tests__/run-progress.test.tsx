@@ -449,6 +449,57 @@ async function testRetryOnlyTargetsLatestFailedAttempt(): Promise<void> {
   await mounted.cleanup();
 }
 
+async function testConfirmationReceiptGateAndCancelEvidence(): Promise<void> {
+  reset();
+  const uncertain = makeAttempt(0, 'needs_confirmation', {
+    requestId: 'deploy/execute',
+    sideEffectClass: 'external_write',
+    error: 'external outcome has no matching receipt',
+    receipt: {
+      requestId: 'deploy/execute',
+      outcome: 'observed',
+      evidence: 'remote result was ambiguous',
+      sideEffectClass: 'external_write',
+      confirmedAt: '2026-07-20T10:01:00Z',
+    },
+  });
+  const gate = makeStage('approval', 'needs_confirmation', [makeTask('deploy', 'needs_confirmation', [uncertain])]);
+  gate.gate = 'approval';
+  gate.resolution = { stageId: 'stage-approval', outcome: 'approved', note: 'reviewed' };
+  const reviewRun = makeRun('run-review', 'needs_confirmation', [gate]);
+  const cancelledRun = makeRun('run-cancelled', 'cancelled', []);
+  cancelledRun.cancel = {
+    requestId: 'cancel-1',
+    status: 'failed',
+    error: 'session unavailable',
+    attempts: 1,
+    updatedAt: '2026-07-20T10:02:00Z',
+  };
+  const retries: RetryIntent[] = [];
+  const mounted = await mount(
+    <RunProgressIndicator
+      work={makeWork({ runs: [reviewRun, cancelledRun] }) as any}
+      onSelect={() => {}}
+      onRetry={(intent) => retries.push(intent)}
+      retryByTarget={{}}
+      readonly={false}
+      archived={false}
+    />,
+  );
+
+  ok(mounted.host.textContent?.includes('需人工确认') ?? false, 'needs_confirmation has an explicit state label');
+  ok(mounted.host.textContent?.includes('外部结果尚未确认') ?? false, 'unsafe external outcome requires visible human verification');
+  ok(mounted.host.textContent?.includes('执行凭据：observed') ?? false, 'AttemptReceipt evidence is visible');
+  ok(mounted.host.textContent?.includes('门控已解决：approved') ?? false, 'GateResolution is visible');
+  ok(mounted.host.textContent?.includes('取消指令：送达失败（session unavailable）') ?? false, 'failed cancel delivery is observable');
+  const button = mounted.host.querySelector<HTMLButtonElement>('.wg2-run-retry-button');
+  eq(button?.textContent?.trim(), '确认并重试', 'needs_confirmation requires an explicit retry decision');
+  await interact(() => button!.click());
+  eq(retries.length, 1, 'confirmed retry emits one explicit intent');
+  eq(retries[0].requestId, 'retry:work-1:run-review:stage-approval:task-deploy:attempt-0', 'confirmed retry keeps deterministic source Attempt identity');
+  await mounted.cleanup();
+}
+
 async function testKeyboardNavigation(): Promise<void> {
   reset();
   const task = makeTask('lint', 'running', [makeAttempt(0, 'running')]);
@@ -583,6 +634,7 @@ async function main(): Promise<void> {
   await testRetryHiddenInArchivedMode();
   await testRetryHiddenForNonTerminalTargets();
   await testRetryOnlyTargetsLatestFailedAttempt();
+  await testConfirmationReceiptGateAndCancelEvidence();
   await testKeyboardNavigation();
   await testAccessibilityRoles();
   await testDeepLinkTargetResolution();

@@ -7,6 +7,7 @@ import type {
   Conclusion,
   RetryIntent,
   RetryStatus,
+  RunCancelReceipt,
   RunSelection,
   Stage,
   Task,
@@ -22,7 +23,7 @@ const WORK_STATES = new Set<WorkState>([
   'draft', 'ready', 'running', 'waiting_user', 'paused', 'completed', 'failed', 'cancelled',
 ]);
 const WORK_TERMINAL = new Set<WorkState>(['completed', 'failed', 'cancelled']);
-const RUN_STATES = new Set<WorkflowRun['state']>(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
+const RUN_STATES = new Set<WorkflowRun['state']>(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled', 'needs_confirmation']);
 const RUN_TERMINAL = new Set<WorkflowRun['state']>(['completed', 'failed', 'cancelled']);
 const WORK_TRANSITIONS: Record<WorkState, ReadonlySet<WorkState>> = {
   draft: new Set(['ready', 'running']),
@@ -171,13 +172,51 @@ function validID(value: unknown): boolean {
   return value === undefined || (typeof value === 'string' && value.length > 0);
 }
 
+function validSessionRef(value: unknown): boolean {
+  return isRecord(value) &&
+    typeof value.sessionPath === 'string' && typeof value.branchId === 'string' &&
+    typeof value.modelRef === 'string' && Number.isSafeInteger(value.turnCount) && Number(value.turnCount) >= 0 &&
+    typeof value.preview === 'string' && typeof value.startedAt === 'string';
+}
+
+function validAttemptReceipt(value: unknown): boolean {
+  // A missing/mismatched receipt ID is itself evidence for
+  // needs_confirmation; keep the receipt visible instead of rejecting the
+  // whole projection.
+  return isRecord(value) && typeof value.requestId === 'string' &&
+    typeof value.outcome === 'string' && typeof value.confirmedAt === 'string' &&
+    (value.evidence === undefined || typeof value.evidence === 'string') &&
+    (value.sideEffectClass === undefined || typeof value.sideEffectClass === 'string');
+}
+
+function validGateResolution(value: unknown): boolean {
+  return isRecord(value) && typeof value.stageId === 'string' &&
+    (value.outcome === 'approved' || value.outcome === 'input_provided') &&
+    (value.input === undefined || isRecord(value.input)) &&
+    (value.note === undefined || typeof value.note === 'string');
+}
+
+function validCancelReceipt(value: unknown): boolean {
+  return isRecord(value) && typeof value.requestId === 'string' && value.requestId.length > 0 &&
+    (value.status === 'pending' || value.status === 'delivered' || value.status === 'failed') &&
+    Number.isSafeInteger(value.attempts) && Number(value.attempts) >= 0 && typeof value.updatedAt === 'string' &&
+    (value.error === undefined || typeof value.error === 'string');
+}
+
+function validPauseReceipt(value: unknown): boolean {
+  return isRecord(value) && typeof value.requestId === 'string' && value.requestId.length > 0 &&
+    typeof value.pausedAt === 'string' && typeof value.notice === 'string';
+}
+
 function validAttempt(value: unknown): value is Attempt {
   return isRecord(value) &&
     validID(value.id) &&
+    validID(value.requestId) &&
     Number.isSafeInteger(value.index) && Number(value.index) >= 0 &&
     RUN_STATES.has(value.state as WorkflowRun['state']) &&
-    isRecord(value.sessionRef) && typeof value.sessionRef.sessionPath === 'string' &&
-    typeof value.startedAt === 'string';
+    validSessionRef(value.sessionRef) && typeof value.startedAt === 'string' &&
+    (value.receipt === undefined || validAttemptReceipt(value.receipt)) &&
+    (value.sideEffectClass === undefined || typeof value.sideEffectClass === 'string');
 }
 
 function validTask(value: unknown): value is Task {
@@ -192,7 +231,9 @@ function validStage(value: unknown): value is Stage {
     validID(value.id) && typeof value.name === 'string' && value.name.length > 0 &&
     RUN_STATES.has(value.state as WorkflowRun['state']) &&
     Array.isArray(value.tasks) && value.tasks.every(validTask) &&
-    typeof value.startedAt === 'string';
+    typeof value.startedAt === 'string' &&
+    (value.gate === undefined || typeof value.gate === 'string') &&
+    (value.resolution === undefined || validGateResolution(value.resolution));
 }
 
 function validRun(run: unknown, workID: string): run is WorkflowRun {
@@ -200,7 +241,10 @@ function validRun(run: unknown, workID: string): run is WorkflowRun {
     typeof run.id === 'string' && run.id.length > 0 &&
     run.workId === workID &&
     RUN_STATES.has(run.state as WorkflowRun['state']) &&
-    Array.isArray(run.stages) && run.stages.every(validStage);
+    Array.isArray(run.stages) && run.stages.every(validStage) &&
+    validID(run.requestId) &&
+    (run.cancel === undefined || validCancelReceipt(run.cancel)) &&
+    (run.pause === undefined || validPauseReceipt(run.pause));
 }
 
 function validCornerstoneOwner(cornerstone: unknown, workID: string): cornerstone is Cornerstone {
@@ -319,15 +363,38 @@ function mergeRun(current: WorkflowRun | undefined, incoming: WorkflowRun): Work
   const next = structuredClone(incoming);
   if (!current) return next;
 
-  // Top-level Run terminal guard.
-  if (RUN_TERMINAL.has(current.state)) {
+  // A failed path may reopen only when the newer projection reserves a new
+  // Attempt. This matches RetryTask while still rejecting late "running"
+  // payloads for completed/cancelled Runs or the same failed Attempt.
+  const retryReopen = current.state === 'failed' && incoming.state === 'running' && runHasNewAttempt(current, incoming);
+  if (RUN_TERMINAL.has(current.state) && !retryReopen) {
     next.state = current.state;
     next.finishedAt = current.finishedAt ?? next.finishedAt;
   }
+  next.requestId = next.requestId ?? current.requestId;
+  next.conclusion = next.conclusion ?? current.conclusion;
+  next.cancel = mergeCancelReceipt(current.cancel, next.cancel);
+  next.pause = next.pause ?? current.pause;
 
   next.stages = mergeStages(current.stages, next.stages);
 
   return next;
+}
+
+const CANCEL_STATUS_RANK: Record<RunCancelReceipt['status'], number> = {
+  pending: 0,
+  failed: 1,
+  delivered: 2,
+};
+
+function mergeCancelReceipt(current: RunCancelReceipt | undefined, incoming: RunCancelReceipt | undefined): RunCancelReceipt | undefined {
+  if (!current) return incoming ? structuredClone(incoming) : undefined;
+  if (!incoming || current.requestId !== incoming.requestId) return structuredClone(current);
+  if (incoming.attempts < current.attempts) return structuredClone(current);
+  if (incoming.attempts === current.attempts && CANCEL_STATUS_RANK[incoming.status] < CANCEL_STATUS_RANK[current.status]) {
+    return structuredClone(current);
+  }
+  return structuredClone(incoming);
 }
 
 function sameStage(left: Stage, right: Stage): boolean {
@@ -345,6 +412,24 @@ function sameAttempt(left: Attempt, right: Attempt): boolean {
   return left.index === right.index;
 }
 
+function taskHasNewAttempt(current: Task, incoming: Task): boolean {
+  return incoming.attempts.some((attempt) => !current.attempts.some((existing) => sameAttempt(existing, attempt)));
+}
+
+function stageHasNewAttempt(current: Stage, incoming: Stage): boolean {
+  return incoming.tasks.some((task) => {
+    const previous = current.tasks.find((existing) => sameTask(existing, task));
+    return previous ? taskHasNewAttempt(previous, task) : false;
+  });
+}
+
+function runHasNewAttempt(current: WorkflowRun, incoming: WorkflowRun): boolean {
+  return incoming.stages.some((stage) => {
+    const previous = current.stages.find((existing) => sameStage(existing, stage));
+    return previous ? stageHasNewAttempt(previous, stage) : false;
+  });
+}
+
 function mergeOrdered<T>(current: T[], incoming: T[], same: (left: T, right: T) => boolean, merge: (left: T, right: T) => T): T[] {
   const result = current.map((value) => structuredClone(value));
   for (const value of incoming) {
@@ -358,10 +443,13 @@ function mergeOrdered<T>(current: T[], incoming: T[], same: (left: T, right: T) 
 function mergeStages(current: Stage[], incoming: Stage[]): Stage[] {
   return mergeOrdered(current, incoming, sameStage, (previous, value) => {
     const next = structuredClone(value);
-    if (RUN_TERMINAL.has(previous.state)) {
+    const retryReopen = previous.state === 'failed' && value.state === 'running' && stageHasNewAttempt(previous, value);
+    if (RUN_TERMINAL.has(previous.state) && !retryReopen) {
       next.state = previous.state;
       next.finishedAt = previous.finishedAt ?? next.finishedAt;
     }
+    next.gate = next.gate ?? previous.gate;
+    next.resolution = next.resolution ?? previous.resolution;
     next.tasks = mergeTasks(previous.tasks, next.tasks);
     return next;
   });
@@ -370,10 +458,12 @@ function mergeStages(current: Stage[], incoming: Stage[]): Stage[] {
 function mergeTasks(current: Task[], incoming: Task[]): Task[] {
   return mergeOrdered(current, incoming, sameTask, (previous, value) => {
     const next = structuredClone(value);
-    if (RUN_TERMINAL.has(previous.state)) {
+    const retryReopen = previous.state === 'failed' && value.state === 'running' && taskHasNewAttempt(previous, value);
+    if (RUN_TERMINAL.has(previous.state) && !retryReopen) {
       next.state = previous.state;
       next.finishedAt = previous.finishedAt ?? next.finishedAt;
     }
+    next.startedAt = next.startedAt ?? previous.startedAt;
     next.attempts = mergeAttempts(previous.attempts, next.attempts);
     return next;
   });
@@ -385,6 +475,9 @@ function mergeAttempts(current: Attempt[], incoming: Attempt[]): Attempt[] {
     if (RUN_TERMINAL.has(previous.state)) {
       return structuredClone(previous);
     }
+    next.requestId = next.requestId ?? previous.requestId;
+    next.receipt = next.receipt ?? previous.receipt;
+    next.sideEffectClass = next.sideEffectClass ?? previous.sideEffectClass;
     return next;
   }).sort((left, right) => left.index - right.index);
 }
@@ -410,9 +503,13 @@ function nextWorkState(
   if (!WORK_TRANSITIONS[currentState].has(requestedState)) return currentState;
   const currentRunIDs = new Set(currentRuns.map((run) => run.id));
   const hasNewRunningRun = nextRuns.some((run) => run.state === 'running' && !currentRunIDs.has(run.id));
+  const hasRetriedRun = nextRuns.some((run) => {
+    const previous = currentRuns.find((candidate) => candidate.id === run.id);
+    return previous?.state === 'failed' && run.state === 'running' && runHasNewAttempt(previous, run);
+  });
   const hasRunningRun = nextRuns.some((run) => run.state === 'running');
   if (WORK_TERMINAL.has(currentState)) {
-    if (requestedState !== 'running' || hasNewRunningRun) return requestedState;
+    if (requestedState !== 'running' || hasNewRunningRun || (currentState === 'failed' && hasRetriedRun)) return requestedState;
     return currentState;
   }
   if (WORK_TERMINAL.has(requestedState) && hasRunningRun) return currentState;

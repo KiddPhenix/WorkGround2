@@ -35644,6 +35644,11 @@ body > .mermaid-diagram--fullscreen {
   color: #fff;
 }
 
+.wg2-run-state-badge[data-run-state="needs_confirmation"] {
+  background: var(--warning, #d49a2a);
+  color: #18130a;
+}
+
 .wg2-run-state-badge[data-run-state="cancelled"] {
   background: var(--bg-tertiary, #555);
   color: #ccc;
@@ -35783,6 +35788,22 @@ body > .mermaid-diagram--fullscreen {
   padding: 2px 0 2px 32px;
   line-height: 1.4;
   word-break: break-word;
+}
+
+.wg2-run-confirmation,
+.wg2-run-cancel[data-cancel-status="failed"] {
+  display: block;
+  flex-basis: 100%;
+  color: var(--warning, #d49a2a);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.wg2-run-receipt,
+.wg2-run-gate,
+.wg2-run-cancel {
+  color: var(--fg-secondary, #888);
+  font-size: 10px;
 }
 
 .wg2-run-session {

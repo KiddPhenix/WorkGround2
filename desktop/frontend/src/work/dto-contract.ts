@@ -1,4 +1,4 @@
-import type { RetryTaskInput, TaskExecuteInput } from './types.js';
+import type { GateResolution, ResumeRunInput, RetryTaskInput, TaskExecuteInput } from './types.js';
 
 export const workDTOFields = {
   TaskExecuteInput: [
@@ -12,6 +12,8 @@ export const workDTOFields = {
     'prompt',
   ],
   RetryTaskInput: ['workId', 'runId', 'stageId', 'taskId', 'requestId'],
+  ResumeRunInput: ['workId', 'runId', 'requestId', 'gateResolutions'],
+  GateResolution: ['stageId', 'outcome', 'input', 'note'],
 } as const;
 
 type SameKeys<Left, Right> =
@@ -28,5 +30,16 @@ type TaskExecuteInputKeysMatch = Assert<
 type RetryTaskInputKeysMatch = Assert<
   SameKeys<keyof RetryTaskInput, (typeof workDTOFields.RetryTaskInput)[number]>
 >;
+type ResumeRunInputKeysMatch = Assert<
+  SameKeys<keyof ResumeRunInput, (typeof workDTOFields.ResumeRunInput)[number]>
+>;
+type GateResolutionKeysMatch = Assert<
+  SameKeys<keyof GateResolution, (typeof workDTOFields.GateResolution)[number]>
+>;
 
-export const dtoFieldGuards: [TaskExecuteInputKeysMatch, RetryTaskInputKeysMatch] = [true, true];
+export const dtoFieldGuards: [
+  TaskExecuteInputKeysMatch,
+  RetryTaskInputKeysMatch,
+  ResumeRunInputKeysMatch,
+  GateResolutionKeysMatch,
+] = [true, true, true, true];

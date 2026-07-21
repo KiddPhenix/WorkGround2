@@ -42,6 +42,7 @@ function stateLabel(state: string): string {
     case 'completed': return '已完成';
     case 'failed': return '失败';
     case 'cancelled': return '已取消';
+    case 'needs_confirmation': return '需人工确认';
     default: return state;
   }
 }
@@ -97,7 +98,8 @@ const AttemptDetail: React.FC<{
   const currentAttemptId = attemptKey(attempt);
   const selected = isSelected(selection, runId, stageId, taskId, currentAttemptId, attempt.index);
   const terminal = isAttemptTerminal(attempt);
-  const canRetry = latest && terminal && attempt.state === 'failed' && onRetry && !readonly && !archived;
+  const needsConfirmation = attempt.state === 'needs_confirmation';
+  const canRetry = latest && (attempt.state === 'failed' || needsConfirmation) && onRetry && !readonly && !archived;
   const target = { workId, runId, stageId, taskId };
   const retry = selectRetry(retryByTarget, target);
   const hasPending = selectHasPendingRetry(retryByTarget, target);
@@ -141,6 +143,16 @@ const AttemptDetail: React.FC<{
           {attempt.error.slice(0, 120)}{attempt.error.length > 120 ? '…' : ''}
         </span>
       )}
+      {needsConfirmation && (
+        <span className="wg2-run-confirmation" role="alert">
+          外部结果尚未确认，请核实实际结果后再决定是否重试。
+        </span>
+      )}
+      {attempt.receipt && (
+        <span className="wg2-run-receipt" data-attempt-receipt={attempt.receipt.outcome}>
+          执行凭据：{attempt.receipt.outcome}
+        </span>
+      )}
       {retry?.state === 'failed' && retry.error && (
         <span className="wg2-run-retry-error" role="alert">重试失败：{retry.error}</span>
       )}
@@ -155,9 +167,9 @@ const AttemptDetail: React.FC<{
           className="wg2-run-retry-button"
           disabled={hasPending}
           onClick={handleRetry}
-          aria-label={`重试 ${taskName} 尝试 #${attempt.index + 1}`}
+          aria-label={`${needsConfirmation ? '确认结果并重试' : '重试'} ${taskName} 尝试 #${attempt.index + 1}`}
         >
-          {hasPending ? '重试中…' : '重试'}
+          {hasPending ? '重试中…' : needsConfirmation ? '确认并重试' : '重试'}
         </button>
       )}
     </li>
@@ -274,6 +286,11 @@ const StageDetail: React.FC<{
         {timeLabel(stage.startedAt)}
         {stage.finishedAt && ` → ${timeLabel(stage.finishedAt)}`}
       </span>
+      {stage.gate && (
+        <span className="wg2-run-gate" data-stage-gate={stage.gate}>
+          {stage.resolution ? `门控已解决：${stage.resolution.outcome}` : `等待${stage.gate === 'approval' ? '审批' : '输入'}`}
+        </span>
+      )}
       {stage.tasks.length > 0 && (
         <ul className="wg2-run-tasks" role="group" aria-label={`${stage.name} 任务列表`}>
           {stage.tasks.map((task) => (
@@ -337,6 +354,11 @@ const RunDetail: React.FC<{
         {run.conclusion && (
           <span className="wg2-run-conclusion" title={run.conclusion.summary}>
             {run.conclusion.title}
+          </span>
+        )}
+        {run.cancel && (
+          <span className="wg2-run-cancel" data-cancel-status={run.cancel.status} role={run.cancel.status === 'failed' ? 'alert' : undefined}>
+            取消指令：{run.cancel.status === 'delivered' ? '已送达' : run.cancel.status === 'failed' ? `送达失败${run.cancel.error ? `（${run.cancel.error}）` : ''}` : '待送达'}
           </span>
         )}
       </div>
