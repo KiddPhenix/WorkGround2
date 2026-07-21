@@ -215,7 +215,15 @@ func (w workMethods) ArchiveWork(ctx context.Context, workID, requestID string) 
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
+	if w.owner == nil {
+		return w.svc.Archive(ctx, workID, requestID)
+	}
+	w.owner.workRefreshLifeMu.Lock()
 	record, err := w.svc.Archive(ctx, workID, requestID)
+	if err == nil && record != nil {
+		w.owner.advanceWorkRefreshLocked(record.WorkID)
+	}
+	w.owner.workRefreshLifeMu.Unlock()
 	if err == nil && record != nil && w.refresh != nil {
 		w.refresh.UnsubscribeWork(record.WorkID)
 	}
@@ -226,9 +234,23 @@ func (w workMethods) RestoreWork(ctx context.Context, workID, requestID string) 
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
+	if w.owner == nil {
+		return w.svc.Restore(ctx, workID, requestID)
+	}
+	w.owner.workRefreshLifeMu.Lock()
 	view, err := w.svc.Restore(ctx, workID, requestID)
-	if err == nil && w.refresh != nil && w.sources != nil {
-		w.refresh.RecoverFromProjection(view, w.sources.resolve)
+	var generation uint64
+	if err == nil {
+		generation = w.owner.advanceWorkRefreshLocked(workID)
+	}
+	w.owner.workRefreshLifeMu.Unlock()
+	if err == nil && w.refresh != nil {
+		w.refresh.UnsubscribeWork(workID)
+		if w.sources != nil {
+			if recoverErr := w.owner.recoverWorkRefreshView(ctx, view, generation); recoverErr != nil {
+				w.sources.setRecoverError(fmt.Errorf("work: restore refresh intents: %w", recoverErr))
+			}
+		}
 	}
 	return view, err
 }
@@ -237,9 +259,16 @@ func (w workMethods) DeleteWork(ctx context.Context, workID, requestID string) e
 	if nilutil.IsNil(w.svc) {
 		return errWorkDisabled
 	}
+	if w.owner == nil {
+		return w.svc.Delete(ctx, workID, requestID)
+	}
+	w.owner.workRefreshLifeMu.Lock()
 	if err := w.svc.Delete(ctx, workID, requestID); err != nil {
+		w.owner.workRefreshLifeMu.Unlock()
 		return err
 	}
+	w.owner.advanceWorkRefreshLocked(workID)
+	w.owner.workRefreshLifeMu.Unlock()
 	if w.refresh != nil {
 		w.refresh.UnsubscribeWork(workID)
 	}
@@ -265,7 +294,12 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 	if w.refresh == nil || w.sources == nil {
 		return nil, work.ErrBlockNotRefreshable
 	}
-	view, err := w.svc.Get(ctx, strings.TrimSpace(workID))
+	workID, blockID = strings.TrimSpace(workID), strings.TrimSpace(blockID)
+	generation := uint64(0)
+	if w.owner != nil {
+		generation = w.owner.workRefreshGeneration(workID)
+	}
+	view, err := w.svc.Get(ctx, workID)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +308,7 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 	}
 	var block *work.BlockInstance
 	for i := range view.Work.Blocks {
-		if view.Work.Blocks[i].ID == strings.TrimSpace(blockID) {
+		if view.Work.Blocks[i].ID == blockID {
 			block = &view.Work.Blocks[i]
 			break
 		}
@@ -286,12 +320,43 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 	if !ok {
 		return nil, fmt.Errorf("%w: no source for %s/%s (%s)", work.ErrBlockNotRefreshable, workID, blockID, block.Kind)
 	}
-	delay := schedule.Interval
-	if delay <= 0 {
-		delay = work.DefaultRefreshSchedule().Interval
+	if w.owner != nil {
+		err = func() error {
+			w.owner.workRefreshLifeMu.Lock()
+			defer w.owner.workRefreshLifeMu.Unlock()
+			if w.owner.workRefreshGen[workID] != generation {
+				return work.ErrBlockRefreshStopped
+			}
+			current, currentErr := w.svc.Get(ctx, workID)
+			if currentErr != nil {
+				return currentErr
+			}
+			if current == nil || current.Work == nil || current.Work.ArchiveState != work.ArchiveActive {
+				return work.ErrBlockRefreshStopped
+			}
+			block = nil
+			for i := range current.Work.Blocks {
+				if current.Work.Blocks[i].ID == blockID {
+					block = &current.Work.Blocks[i]
+					break
+				}
+			}
+			if block == nil || block.Tombstone {
+				return fmt.Errorf("%w: %w: block %s not found or removed", work.ErrBlockRefreshStopped, work.ErrBlockNotFound, blockID)
+			}
+			adapter, source, schedule, ok = w.sources.resolve(*block)
+			if !ok {
+				return fmt.Errorf("%w: no source for %s/%s (%s)", work.ErrBlockNotRefreshable, workID, blockID, block.Kind)
+			}
+			return w.refresh.SubscribeAfter(workID, blockID, adapter, source, schedule, schedule.Interval)
+		}()
+	} else {
+		err = w.refresh.SubscribeAfter(workID, blockID, adapter, source, schedule, schedule.Interval)
 	}
-	w.refresh.SubscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay)
-	return w.refresh.RefreshRequest(ctx, view.Work.ID, block.ID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	return w.refresh.RefreshRequest(ctx, workID, blockID, requestID)
 }
 
 func (w workMethods) ExecuteBlockAction(ctx context.Context, input work.BlockActionRequest) (*work.ActionReceipt, error) {

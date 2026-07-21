@@ -15,12 +15,19 @@ import (
 type serviceSink struct {
 	mu     sync.Mutex
 	events []WorkViewEvent
+	next   chan WorkViewEvent
 }
 
 func (s *serviceSink) EmitWorkView(event WorkViewEvent) {
 	s.mu.Lock()
 	s.events = append(s.events, event)
 	s.mu.Unlock()
+	if s.next != nil {
+		select {
+		case s.next <- event:
+		default:
+		}
+	}
 }
 
 func (s *serviceSink) Events() []WorkViewEvent {
@@ -43,7 +50,7 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	if err != nil {
 		t.Fatalf("NewFileWorkStore: %v", err)
 	}
-	sink := &serviceSink{}
+	sink := &serviceSink{next: make(chan WorkViewEvent, 256)}
 	return &serviceFixture{
 		root:  root,
 		store: store,
