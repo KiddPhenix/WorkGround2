@@ -58,12 +58,11 @@ func (r *workSourceRegistry) register(binding WorkBlockSource) error {
 		return fmt.Errorf("work: invalid source mode %q", binding.Source.Mode)
 	}
 	binding.Source.Verified = true
-	if binding.Schedule.Interval <= 0 {
-		binding.Schedule.Interval = work.DefaultRefreshSchedule().Interval
+	schedule, err := work.ValidateRefreshSchedule(binding.Schedule)
+	if err != nil {
+		return err
 	}
-	if binding.Schedule.Backoff == nil {
-		binding.Schedule.Backoff = work.NewExponentialBackoff()
-	}
+	binding.Schedule = schedule
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if binding.Source.Provider != "" {
@@ -191,13 +190,17 @@ func (c *Controller) recoverWorkRefreshes(ctx context.Context) {
 			return
 		}
 		for _, item := range page.Items {
+			generation := c.workRefreshGeneration(item.ID)
 			view, getErr := c.workSvc.Get(ctx, item.ID)
 			if getErr != nil {
 				recoverFailed = true
 				c.workSources.setRecoverError(fmt.Errorf("work: recover block refresh %s: %w", item.ID, getErr))
 				continue
 			}
-			c.workRefresh.RecoverFromProjection(view, c.workSources.resolve)
+			if recoverErr := c.recoverWorkRefreshView(ctx, view, generation); recoverErr != nil {
+				recoverFailed = true
+				c.workSources.setRecoverError(fmt.Errorf("work: recover block refresh %s: %w", item.ID, recoverErr))
+			}
 		}
 		if len(page.Items) < filter.Limit {
 			break
@@ -214,8 +217,51 @@ func (c *Controller) recoverWorkRefreshes(ctx context.Context) {
 	}
 }
 
-// SetWorkOnline gates source traffic. Reconnect keeps subscriptions and wakes
-// them for immediate retry.
+func (c *Controller) workRefreshGeneration(workID string) uint64 {
+	if c == nil {
+		return 0
+	}
+	c.workRefreshLifeMu.Lock()
+	defer c.workRefreshLifeMu.Unlock()
+	return c.workRefreshGen[strings.TrimSpace(workID)]
+}
+
+func (c *Controller) advanceWorkRefreshLocked(workID string) uint64 {
+	if c.workRefreshGen == nil {
+		c.workRefreshGen = make(map[string]uint64)
+	}
+	workID = strings.TrimSpace(workID)
+	c.workRefreshGen[workID]++
+	return c.workRefreshGen[workID]
+}
+
+// recoverWorkRefreshView performs the final persisted-state check and the
+// subscription atomically with respect to lifecycle changes.
+func (c *Controller) recoverWorkRefreshView(ctx context.Context, captured *work.WorkView, generation uint64) error {
+	if c == nil || captured == nil || captured.Work == nil || c.workRefresh == nil || c.workSources == nil || nilutil.IsNil(c.workSvc) {
+		return nil
+	}
+	workID := strings.TrimSpace(captured.Work.ID)
+	c.workRefreshLifeMu.Lock()
+	defer c.workRefreshLifeMu.Unlock()
+	if c.workRefreshGen[workID] != generation {
+		return nil
+	}
+	current, err := c.workSvc.Get(ctx, workID)
+	if errors.Is(err, work.ErrWorkNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current == nil || current.Work == nil || current.Work.ArchiveState != work.ArchiveActive || c.workRefreshGen[workID] != generation {
+		return nil
+	}
+	return c.workRefresh.RecoverFromProjection(current, c.workSources.resolve)
+}
+
+// SetWorkOnline gates source traffic. Reconnect keeps all subscriptions and
+// wakes automatic schedules for immediate retry; manual-only intents stay idle.
 func (c *Controller) SetWorkOnline(online bool) {
 	if c != nil && c.workRefresh != nil {
 		c.workRefresh.SetOnline(online)
@@ -228,10 +274,15 @@ func (c *Controller) CancelBlockRefresh(ctx context.Context, workID, blockID, re
 	if c == nil || nilutil.IsNil(c.workSvc) {
 		return errWorkDisabled
 	}
-	if c.workRefresh != nil {
+	c.workRefreshLifeMu.Lock()
+	_, err := c.workSvc.CancelBlockRefresh(ctx, workID, blockID, requestID)
+	if err == nil {
+		c.advanceWorkRefreshLocked(workID)
+	}
+	c.workRefreshLifeMu.Unlock()
+	if err == nil && c.workRefresh != nil {
 		c.workRefresh.Unsubscribe(workID, blockID)
 	}
-	_, err := c.workSvc.CancelBlockRefresh(ctx, workID, blockID, requestID)
 	return err
 }
 

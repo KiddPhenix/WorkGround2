@@ -241,7 +241,8 @@ func (b *ExponentialBackoff) Delay(n int) time.Duration {
 
 // RefreshSchedule controls how often a block source is polled.
 type RefreshSchedule struct {
-	// Interval is the base polling interval. Zero means no automatic refresh.
+	// Interval is the base polling interval. Zero retains the intent for manual
+	// refreshes without creating an automatic timer. Negative values are invalid.
 	Interval    time.Duration
 	Backoff     BackoffStrategy
 	MaxFailures int // 0 = unlimited retries
@@ -269,6 +270,13 @@ var ErrBlockNotRefreshable = errors.New("work: block is not refreshable")
 
 // ErrBlockRefreshStopped means the Work lifecycle no longer permits refresh.
 var ErrBlockRefreshStopped = errors.New("work: block refresh stopped")
+
+// ErrBlockNotFound identifies a terminal refresh target that no longer exists.
+var ErrBlockNotFound = errors.New("work: block not found")
+
+// ErrBlockSourcePanic identifies an adapter panic converted at the source
+// boundary into an observable, retryable refresh failure.
+var ErrBlockSourcePanic = errors.New("work: block source adapter panic")
 
 // ErrBlockRefreshFailed identifies an idempotently replayed failed attempt
 // when the original adapter error type is no longer available in memory.

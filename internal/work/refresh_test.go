@@ -18,6 +18,7 @@ type fakeClock struct {
 	now      time.Time
 	triggers map[time.Time][]chan time.Time
 	epoch    time.Time
+	added    chan struct{}
 }
 
 func newFakeClock() *fakeClock {
@@ -25,6 +26,7 @@ func newFakeClock() *fakeClock {
 		now:      time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		triggers: make(map[time.Time][]chan time.Time),
 		epoch:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		added:    make(chan struct{}, 64),
 	}
 }
 
@@ -46,6 +48,10 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	target := c.now.Add(d)
 	ch := make(chan time.Time, 1)
 	c.triggers[target] = append(c.triggers[target], ch)
+	select {
+	case c.added <- struct{}{}:
+	default:
+	}
 	return ch
 }
 
@@ -102,14 +108,19 @@ func (c *fakeClock) pending() int {
 
 func waitForTimer(t *testing.T, clock *fakeClock) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
 		if clock.pending() > 0 {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-clock.added:
+			continue
+		case <-timer.C:
+			t.Fatal("refresh loop did not register a timer")
+		}
 	}
-	t.Fatal("refresh loop did not register a timer")
 }
 
 // ── FakeBlockSource ─────────────────────────────────────────────────────────
@@ -121,17 +132,36 @@ type fakeBlockSource struct {
 	calls    int32
 	lastWork string
 	lastKind string
+	called   chan struct{}
 
 	// Dynamic control.
 	onFetch func(workID string, block BlockInstance) (BlockRefreshResult, error)
 }
 
+type typedNilBlockSource struct{}
+
+func (*typedNilBlockSource) FetchBlock(context.Context, string, BlockInstance) (BlockRefreshResult, error) {
+	panic("typed-nil adapter must not be called")
+}
+
+type typedNilRefreshService struct{}
+
+func (*typedNilRefreshService) RefreshBlock(context.Context, RefreshBlockInput, BlockSourceAdapter) (*BlockInstance, error) {
+	panic("typed-nil service must not be called")
+}
+
 func newFakeBlockSource(results ...BlockRefreshResult) *fakeBlockSource {
-	return &fakeBlockSource{results: results}
+	return &fakeBlockSource{results: results, called: make(chan struct{}, 128)}
 }
 
 func (s *fakeBlockSource) FetchBlock(ctx context.Context, workID string, block BlockInstance) (BlockRefreshResult, error) {
 	atomic.AddInt32(&s.calls, 1)
+	if s.called != nil {
+		select {
+		case s.called <- struct{}{}:
+		default:
+		}
+	}
 	s.mu.Lock()
 	s.lastWork = workID
 	s.lastKind = block.Kind
@@ -228,14 +258,34 @@ func refreshInput(workID, blockID, requestID string) RefreshBlockInput {
 // or the timeout expires. It fails the test on timeout.
 func waitForCalls(t *testing.T, s *fakeBlockSource, want int32, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
 		if atomic.LoadInt32(&s.calls) >= want {
 			return
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-s.called:
+		case <-timer.C:
+			t.Fatalf("adapter calls = %d, want >= %d after %v", atomic.LoadInt32(&s.calls), want, timeout)
+		}
 	}
-	t.Fatalf("adapter calls = %d, want >= %d after %v", atomic.LoadInt32(&s.calls), want, timeout)
+}
+
+func waitForSinkEvent(t *testing.T, sink *serviceSink, match func(WorkViewEvent) bool) WorkViewEvent {
+	t.Helper()
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-sink.next:
+			if match(event) {
+				return event
+			}
+		case <-timer.C:
+			t.Fatal("timed out waiting for WorkView event")
+		}
+	}
 }
 
 // ── Service.RefreshBlock tests ──────────────────────────────────────────────
@@ -291,6 +341,118 @@ func TestRefreshBlockIdempotent(t *testing.T) {
 	// Second adapter should not have been called because the requestID was idempotent.
 	if secondAdapter.Calls() != 0 {
 		t.Fatalf("adapter called %d times on idempotent retry, want 0", secondAdapter.Calls())
+	}
+}
+
+func TestRefreshBlockSemanticNoOpAcrossRequestsAndRestart(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "refresh-semantic-noop")
+	blockID := value.Blocks[0].ID
+	firstInput := refreshInput(value.ID, blockID, "refresh-semantic-noop-1")
+	first, err := f.svc.RefreshBlock(context.Background(), firstInput, newFakeBlockSource(blockResult()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstView, err := f.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventCount := len(f.sink.Events())
+
+	secondInput := refreshInput(value.ID, blockID, "refresh-semantic-noop-2")
+	secondInput.CheckedAt = firstInput.CheckedAt.Add(time.Hour)
+	secondAdapter := newFakeBlockSource(blockResult())
+	second, err := f.svc.RefreshBlock(context.Background(), secondInput, secondAdapter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondView, _ := f.svc.Get(context.Background(), value.ID)
+	if secondAdapter.Calls() != 1 || second.Revision != first.Revision || secondView.Revision != firstView.Revision || len(f.sink.Events()) != eventCount {
+		t.Fatalf("different request semantic no-op changed state: calls=%d block=%d/%d work=%d/%d events=%d/%d",
+			secondAdapter.Calls(), first.Revision, second.Revision, firstView.Revision, secondView.Revision, eventCount, len(f.sink.Events()))
+	}
+
+	restarted := f.restart(t)
+	thirdInput := refreshInput(value.ID, blockID, "refresh-semantic-noop-3")
+	thirdInput.CheckedAt = firstInput.CheckedAt.Add(2 * time.Hour)
+	third, err := restarted.RefreshBlock(context.Background(), thirdInput, newFakeBlockSource(blockResult()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdView, _ := restarted.Get(context.Background(), value.ID)
+	if third.Revision != first.Revision || thirdView.Revision != firstView.Revision || len(f.sink.Events()) != eventCount {
+		t.Fatalf("restart semantic no-op changed state: block=%d/%d work=%d/%d events=%d/%d",
+			first.Revision, third.Revision, firstView.Revision, thirdView.Revision, eventCount, len(f.sink.Events()))
+	}
+
+	changedResult := blockResult()
+	changedResult.Data = json.RawMessage(`{"content":"changed"}`)
+	changed, err := restarted.RefreshBlock(context.Background(), refreshInput(value.ID, blockID, "refresh-semantic-change"), newFakeBlockSource(changedResult))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedView, _ := restarted.Get(context.Background(), value.ID)
+	if changed.Revision != first.Revision+1 || changedView.Revision != firstView.Revision+1 || len(f.sink.Events()) != eventCount+1 {
+		t.Fatalf("semantic change did not commit exactly once: block=%d work=%d events=%d", changed.Revision, changedView.Revision, len(f.sink.Events()))
+	}
+}
+
+func TestRefreshBlockTypedNilAndPanicBoundary(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "refresh-panic-boundary")
+	blockID := value.Blocks[0].ID
+	before, _ := f.svc.Get(context.Background(), value.ID)
+	var typedNil *typedNilBlockSource
+	if _, err := f.svc.RefreshBlock(context.Background(), refreshInput(value.ID, blockID, "refresh-typed-nil"), typedNil); err == nil {
+		t.Fatal("typed-nil adapter was accepted")
+	}
+	afterTypedNil, _ := f.svc.Get(context.Background(), value.ID)
+	if afterTypedNil.Revision != before.Revision {
+		t.Fatalf("typed-nil adapter persisted state: %d -> %d", before.Revision, afterTypedNil.Revision)
+	}
+
+	retryAt := time.Date(2026, 1, 1, 0, 0, 5, 0, time.UTC)
+	input := refreshInput(value.ID, blockID, "refresh-panic")
+	input.Source = BlockSource{Provider: "addon:panic", Ref: "secret-ref", Mode: "query", Verified: true}
+	input.RetryAt = &retryAt
+	adapter := newFakeBlockSource()
+	adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) {
+		panic("super-secret-panic-value")
+	}
+	failed, err := f.svc.RefreshBlock(nil, input, adapter)
+	if !errors.Is(err, ErrBlockSourcePanic) || failed == nil || failed.Freshness == nil || failed.Freshness.RetryAt == nil {
+		t.Fatalf("panic result = (%+v, %v)", failed, err)
+	}
+	if strings.Contains(err.Error(), "super-secret") || strings.Contains(err.Error(), "secret-ref") {
+		t.Fatalf("panic error leaked secret data: %v", err)
+	}
+	for _, part := range []string{"source=addon:panic", "work=" + value.ID, "block=" + blockID, "request=refresh-panic"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Fatalf("panic error %q missing %q", err, part)
+		}
+	}
+	persisted, _ := f.svc.Get(context.Background(), value.ID)
+	if got := findBlock(persisted.Work, blockID); got == nil || got.Revision != failed.Revision || got.Freshness == nil || got.Freshness.StaleReason == "" {
+		t.Fatalf("panic failure was not persisted: %+v", got)
+	}
+}
+
+func TestRefreshBlockPanicHonorsCancellation(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "refresh-panic-cancel")
+	ctx, cancel := context.WithCancel(context.Background())
+	adapter := newFakeBlockSource()
+	adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) {
+		cancel()
+		panic("must be hidden")
+	}
+	before, _ := f.svc.Get(context.Background(), value.ID)
+	if _, err := f.svc.RefreshBlock(ctx, refreshInput(value.ID, value.Blocks[0].ID, "refresh-panic-cancel-req"), adapter); !errors.Is(err, context.Canceled) {
+		t.Fatalf("panic cancellation error = %v", err)
+	}
+	after, _ := f.svc.Get(context.Background(), value.ID)
+	if after.Revision != before.Revision {
+		t.Fatalf("canceled panic persisted revision %d -> %d", before.Revision, after.Revision)
 	}
 }
 
@@ -547,6 +709,142 @@ func TestRefreshBlockNilAdapter(t *testing.T) {
 	}
 }
 
+func TestRefreshManagerManualOnlyNeverAutoRefreshes(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "mgr-manual-only")
+	blockID := value.Blocks[0].ID
+	clock := newFakeClock()
+	adapter := newFakeBlockSource(blockResult(), blockResult())
+	mgr := NewBlockRefreshManager(f.svc, clock)
+	defer mgr.Close()
+	schedule := RefreshSchedule{Interval: 0, Backoff: controlBackoffForWorkTest(time.Second)}
+	if err := mgr.Subscribe(value.ID, blockID, adapter, schedule); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Subscribe(value.ID, blockID, adapter, schedule); err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(24 * time.Hour)
+	mgr.SetOnline(false)
+	mgr.SetOnline(true)
+	clock.advance(24 * time.Hour)
+	if adapter.Calls() != 0 || clock.pending() != 0 || mgr.SubscriberCount() != 1 {
+		t.Fatalf("manual-only intent auto-ran: calls=%d timers=%d subs=%d", adapter.Calls(), clock.pending(), mgr.SubscriberCount())
+	}
+	first, err := mgr.RefreshRequest(context.Background(), value.ID, blockID, "")
+	if err != nil || first == nil || adapter.Calls() != 1 {
+		t.Fatalf("manual RefreshRequest = (%+v, %v), calls=%d", first, err, adapter.Calls())
+	}
+	view, _ := f.svc.Get(context.Background(), value.ID)
+	events := len(f.sink.Events())
+	second, err := mgr.RefreshRequest(context.Background(), value.ID, blockID, "")
+	if err != nil || second == nil || second.Revision != first.Revision || adapter.Calls() != 2 {
+		t.Fatalf("second manual semantic no-op = (%+v, %v), calls=%d", second, err, adapter.Calls())
+	}
+	after, _ := f.svc.Get(context.Background(), value.ID)
+	if after.Revision != view.Revision || len(f.sink.Events()) != events || clock.pending() != 0 {
+		t.Fatalf("manual semantic no-op changed state: work=%d/%d events=%d/%d timers=%d", view.Revision, after.Revision, events, len(f.sink.Events()), clock.pending())
+	}
+}
+
+func TestRefreshManagerRejectsNegativeScheduleAndTypedNil(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "mgr-invalid-contract")
+	mgr := NewBlockRefreshManager(f.svc, newFakeClock())
+	defer mgr.Close()
+	if err := mgr.Subscribe(value.ID, value.Blocks[0].ID, newFakeBlockSource(blockResult()), RefreshSchedule{Interval: -time.Second}); err == nil {
+		t.Fatal("negative refresh interval was accepted")
+	}
+	var typedNilAdapter *typedNilBlockSource
+	if err := mgr.Subscribe(value.ID, value.Blocks[0].ID, typedNilAdapter, RefreshSchedule{}); err == nil {
+		t.Fatal("typed-nil adapter was accepted")
+	}
+	var typedNilService *typedNilRefreshService
+	typedNilManager := NewBlockRefreshManager(typedNilService, newFakeClock())
+	defer typedNilManager.Close()
+	if err := typedNilManager.Subscribe(value.ID, value.Blocks[0].ID, newFakeBlockSource(blockResult()), RefreshSchedule{}); err == nil {
+		t.Fatal("typed-nil refresh service was accepted")
+	}
+	if mgr.SubscriberCount() != 0 || typedNilManager.SubscriberCount() != 0 {
+		t.Fatal("invalid subscription changed manager state")
+	}
+}
+
+func TestRefreshManagerPanicPersistsAndBacksOff(t *testing.T) {
+	f := newServiceFixture(t)
+	value := createWorkWithBlock(t, f, "mgr-panic-backoff")
+	blockID := value.Blocks[0].ID
+	clock := newFakeClock()
+	adapter := newFakeBlockSource()
+	adapter.onFetch = func(string, BlockInstance) (BlockRefreshResult, error) {
+		panic("hidden")
+	}
+	mgr := NewBlockRefreshManager(f.svc, clock)
+	defer mgr.Close()
+	if err := mgr.Subscribe(value.ID, blockID, adapter, RefreshSchedule{
+		Interval: time.Hour,
+		Backoff:  controlBackoffForWorkTest(7 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
+	waitForTimer(t, clock)
+	state := mgr.State(value.ID, blockID)
+	if !state.Subscribed || state.Failures != 1 || state.RetryAt == nil || state.LastError == "" {
+		t.Fatalf("panic scheduler state = %+v", state)
+	}
+	if got := state.RetryAt.Sub(clock.Now()); got != 7*time.Second {
+		t.Fatalf("panic retry delay = %v, want 7s", got)
+	}
+	clock.advance(7 * time.Second)
+	waitForCalls(t, adapter, 2, 3*time.Second)
+}
+
+func TestRefreshManagerTerminalErrorsUnsubscribeWithoutRetryState(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		offline bool
+		stop    func(*serviceFixture, string) error
+	}{
+		{name: "deleted", stop: func(f *serviceFixture, workID string) error {
+			return f.svc.Delete(context.Background(), workID, "terminal-delete")
+		}},
+		{name: "archived", stop: func(f *serviceFixture, workID string) error {
+			_, err := f.svc.Archive(context.Background(), workID, "terminal-archive")
+			return err
+		}},
+		{name: "deleted-offline", offline: true, stop: func(f *serviceFixture, workID string) error {
+			return f.svc.Delete(context.Background(), workID, "terminal-delete-offline")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newServiceFixture(t)
+			value := createWorkWithBlock(t, f, "terminal-"+tc.name)
+			blockID := value.Blocks[0].ID
+			mgr := NewBlockRefreshManager(f.svc, newFakeClock())
+			defer mgr.Close()
+			if err := mgr.Subscribe(value.ID, blockID, newFakeBlockSource(blockResult()), RefreshSchedule{}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.offline {
+				mgr.SetOnline(false)
+			}
+			if err := tc.stop(f, value.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := mgr.RefreshRequest(context.Background(), value.ID, blockID, "terminal-refresh-"+tc.name); err == nil {
+				t.Fatal("terminal refresh unexpectedly succeeded")
+			}
+			state := mgr.State(value.ID, blockID)
+			if state.Subscribed || state.Failures != 0 || state.RetryAt != nil {
+				t.Fatalf("terminal error retained retry state: %+v", state)
+			}
+		})
+	}
+}
+
 // ── BlockRefreshManager tests ───────────────────────────────────────────────
 
 func TestRefreshManagerSubscribeRefresh(t *testing.T) {
@@ -570,8 +868,10 @@ func TestRefreshManagerSubscribeRefresh(t *testing.T) {
 	})
 
 	// First refresh runs immediately.
-	clock.advance(0)                   // trigger immediate tick
-	time.Sleep(100 * time.Millisecond) // let goroutine run
+	clock.advance(0)
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
 
 	if adapter.Calls() == 0 {
 		t.Fatal("expected at least one adapter call after subscribe")
@@ -604,11 +904,11 @@ func TestRefreshManagerSingleFlight(t *testing.T) {
 
 	clock := newFakeClock()
 	adapter := newFakeBlockSource()
-	fetched := make(chan struct{}, 3)
+	fetched := make(chan struct{})
+	release := make(chan struct{})
 	adapter.onFetch = func(workID string, block BlockInstance) (BlockRefreshResult, error) {
-		fetched <- struct{}{}
-		// Slow fetch.
-		time.Sleep(200 * time.Millisecond)
+		close(fetched)
+		<-release
 		return blockResult(), nil
 	}
 
@@ -622,27 +922,31 @@ func TestRefreshManagerSingleFlight(t *testing.T) {
 
 	// After subscribe, the first refresh starts immediately.
 	clock.advance(0)
-	time.Sleep(50 * time.Millisecond)
+	<-fetched
 
 	// Concurrent callers while the first refresh is in-flight join that flight.
-	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
 		go func() {
-			defer wg.Done()
-			_ = mgr.RefreshNow(context.Background(), value.ID, blockID)
+			done <- mgr.RefreshNow(ctx, value.ID, blockID)
 		}()
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("joined refresh error = %v, want context canceled", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("concurrent refresh did not join the in-flight fetch")
+		}
 	}
-	wg.Wait()
-
-	// Count actual fetches (not calls — calls counts all queued results).
-	close(fetched)
-	count := 0
-	for range fetched {
-		count++
-	}
-	if count != 1 {
-		t.Fatalf("fetch count = %d, want 1 (single-flight)", count)
+	close(release)
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
+	if adapter.Calls() != 1 {
+		t.Fatalf("fetch count = %d, want 1 (single-flight)", adapter.Calls())
 	}
 }
 
@@ -665,7 +969,9 @@ func TestRefreshManagerUnsubscribe(t *testing.T) {
 	}
 
 	clock.advance(0)
-	time.Sleep(100 * time.Millisecond)
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
 
 	mgr.Unsubscribe(value.ID, blockID)
 	if mgr.SubscriberCount() != 0 {
@@ -698,9 +1004,11 @@ func TestRefreshManagerCancelStopsLoop(t *testing.T) {
 
 	// Let a couple ticks run.
 	clock.advance(0)
-	time.Sleep(50 * time.Millisecond)
+	waitForCalls(t, adapter, 1, 3*time.Second)
+	waitForTimer(t, clock)
 	clock.advance(200 * time.Millisecond)
-	time.Sleep(50 * time.Millisecond)
+	waitForCalls(t, adapter, 2, 3*time.Second)
+	waitForTimer(t, clock)
 
 	ca := atomic.LoadInt32(&callsBefore)
 	if ca < 1 {
@@ -712,7 +1020,6 @@ func TestRefreshManagerCancelStopsLoop(t *testing.T) {
 
 	// Advance clock to trigger more ticks.
 	clock.advance(5 * time.Second)
-	time.Sleep(200 * time.Millisecond)
 
 	after2 := atomic.LoadInt32(&callsBefore)
 	if after2 != after1 {
@@ -763,7 +1070,6 @@ func TestRefreshManagerOfflineReconnect(t *testing.T) {
 	if err := mgr.RefreshNow(context.Background(), value.ID, blockID); err != nil {
 		t.Fatalf("RefreshNow after reconnect: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
 
 	// Verify block is now ready.
 	view, err := f.svc.Get(context.Background(), value.ID)
@@ -790,7 +1096,9 @@ func TestRefreshManagerClose(t *testing.T) {
 	mgr.Subscribe(value.ID, blockID, adapter, DefaultRefreshSchedule())
 
 	clock.advance(0)
-	time.Sleep(50 * time.Millisecond)
+	waitForSinkEvent(t, f.sink, func(event WorkViewEvent) bool {
+		return event.WorkID == value.ID && event.Object.ID == blockID
+	})
 
 	err := mgr.Close()
 	if err != nil {
@@ -844,7 +1152,7 @@ func TestRefreshManagerRecoverFromProjection(t *testing.T) {
 
 	// Let the recovered subscription run once.
 	clock.advance(0)
-	time.Sleep(100 * time.Millisecond)
+	waitForCalls(t, adapter2, 1, 3*time.Second)
 
 	if adapter2.Calls() < 1 {
 		t.Fatal("recovered subscription did not trigger refresh")
@@ -887,8 +1195,7 @@ func TestRefreshManagerReopen(t *testing.T) {
 	}
 
 	// The subscription triggers an immediate refresh (delay=0).
-	// Wait for the goroutine to complete the async refresh.
-	time.Sleep(500 * time.Millisecond)
+	waitForCalls(t, adapter2, 1, 3*time.Second)
 
 	if adapter2.Calls() < 1 {
 		t.Fatalf("reopened subscription did not trigger refresh (calls=%d)", adapter2.Calls())
@@ -954,13 +1261,10 @@ func TestRefreshManagerBackoffOnFailure(t *testing.T) {
 	waitForTimer(t, clock)
 	clock.advance(time.Second)
 	waitForCalls(t, adapter, 3, 3*time.Second)
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		view, _ := f.svc.Get(context.Background(), value.ID)
-		if block := findBlock(view.Work, blockID); block != nil && block.Status == BlockReady {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	waitForTimer(t, clock)
+	view, _ := f.svc.Get(context.Background(), value.ID)
+	if block := findBlock(view.Work, blockID); block != nil && block.Status == BlockReady {
+		return
 	}
 	t.Fatal("block did not reach ready status after backoff")
 }

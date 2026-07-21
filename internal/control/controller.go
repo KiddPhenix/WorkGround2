@@ -182,6 +182,11 @@ type Controller struct {
 	// scheduling state. They never leak network callbacks into frontend code.
 	workRefresh *work.BlockRefreshManager
 	workSources *workSourceRegistry
+	// workRefreshLifeMu serializes the final refresh subscription check with
+	// Work lifecycle changes. Generations invalidate projections captured before
+	// an archive, delete, restore, or explicit refresh-intent cancellation.
+	workRefreshLifeMu sync.Mutex
+	workRefreshGen    map[string]uint64
 	// actionRoot owns Block Action lifetimes independently from model turns.
 	// Per-request children preserve caller cancellation; Cancel stops all current
 	// foreground work, while Close closes the root and waits for registered

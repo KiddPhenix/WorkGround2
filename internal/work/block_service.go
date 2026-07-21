@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"workground2/internal/nilutil"
 )
 
 // ── UpsertBlock ─────────────────────────────────────────────────────────────
@@ -625,6 +627,9 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 	if err := checkServiceContext(ctx); err != nil {
 		return nil, err
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := s.requireStore(); err != nil {
 		return nil, err
 	}
@@ -637,7 +642,7 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 	if input.WorkID == "" || input.BlockID == "" {
 		return nil, errors.New("work: RefreshBlock: workID and blockID are required")
 	}
-	if adapter == nil {
+	if nilutil.IsNil(adapter) {
 		return nil, errors.New("work: RefreshBlock: BlockSourceAdapter is required")
 	}
 	if input.CheckedAt.IsZero() {
@@ -664,7 +669,7 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 	}
 	currentBlock := findBlock(current, input.BlockID)
 	if currentBlock == nil || currentBlock.Tombstone {
-		return nil, fmt.Errorf("%w: block %s not found or removed in Work %s", ErrBlockRefreshStopped, input.BlockID, input.WorkID)
+		return nil, fmt.Errorf("%w: %w: block %s not found or removed in Work %s", ErrBlockRefreshStopped, ErrBlockNotFound, input.BlockID, input.WorkID)
 	}
 	if state.RequestFound {
 		block := cloneBlock(currentBlock)
@@ -679,7 +684,7 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 		return block, nil
 	}
 
-	result, sourceErr := adapter.FetchBlock(ctx, input.WorkID, *cloneBlock(currentBlock))
+	result, sourceErr := fetchRefreshBlock(ctx, input, adapter, currentBlock)
 	if sourceErr != nil && (errors.Is(sourceErr, context.Canceled) || errors.Is(sourceErr, context.DeadlineExceeded)) {
 		return nil, sourceErr
 	}
@@ -690,8 +695,6 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 		sourceErr = validateRefreshResult(currentBlock, result)
 	}
 	next := cloneBlock(currentBlock)
-	next.Revision++
-	next.UpdatedAt = input.CheckedAt
 	if sourceErr == nil {
 		next.Status = result.Status
 		next.Data = append(json.RawMessage(nil), result.Data...)
@@ -702,6 +705,13 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 			next.Freshness.ExpiresAt = &expiresAt
 		}
 		next.Fallback = cloneBlockFallback(result.Fallback)
+		equal, digestErr := refreshSemanticallyEqual(currentBlock, next)
+		if digestErr != nil {
+			return nil, fmt.Errorf("work: RefreshBlock: compare result: %w", digestErr)
+		}
+		if equal {
+			return cloneBlock(currentBlock), nil
+		}
 	} else {
 		next.Status = BlockFailed
 		if errors.Is(sourceErr, ErrSourceUnavailable) && len(currentBlock.Data) > 0 && currentBlock.Status != BlockLoading && currentBlock.Status != BlockFailed {
@@ -713,6 +723,8 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 			StaleReason: clipBlockError(sourceErr.Error()),
 		}
 	}
+	next.Revision++
+	next.UpdatedAt = input.CheckedAt
 
 	committed, commitErr := s.commitRefreshedBlock(ctx, current, state, next, eventRequestID, requestID)
 	if commitErr != nil {
@@ -725,6 +737,48 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 		return committed, fmt.Errorf("work: RefreshBlock: source: %w", sourceErr)
 	}
 	return committed, nil
+}
+
+// fetchRefreshBlock is the only recovery boundary around untrusted adapter
+// code. Panics become ordinary retryable failures without exposing panic data
+// or a stack trace; cancellation always has priority.
+func fetchRefreshBlock(ctx context.Context, input RefreshBlockInput, adapter BlockSourceAdapter, current *BlockInstance) (result BlockRefreshResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+				return
+			}
+			err = fmt.Errorf("%w: source=%s work=%s block=%s request=%s",
+				ErrBlockSourcePanic, normalizeRefreshSource(input.Source).Provider,
+				input.WorkID, input.BlockID, input.RequestID)
+		}
+	}()
+	return adapter.FetchBlock(ctx, input.WorkID, *cloneBlock(current))
+}
+
+// refreshSemanticallyEqual ignores CheckedAt, the observation timestamp that
+// changes on every fetch, while retaining all persisted fields that affect
+// business or rendering semantics. It remains stable across request IDs and
+// restarts.
+func refreshSemanticallyEqual(current, next *BlockInstance) (bool, error) {
+	currentDigest, err := refreshSemanticDigest(current)
+	if err != nil {
+		return false, err
+	}
+	nextDigest, err := refreshSemanticDigest(next)
+	if err != nil {
+		return false, err
+	}
+	return currentDigest == nextDigest, nil
+}
+
+func refreshSemanticDigest(block *BlockInstance) (string, error) {
+	semantic := cloneBlock(block)
+	if semantic != nil && semantic.Freshness != nil {
+		semantic.Freshness.CheckedAt = nil
+	}
+	return blockContentDigest(semantic)
 }
 
 // CancelBlockRefresh persists removal of the polling intent by clearing

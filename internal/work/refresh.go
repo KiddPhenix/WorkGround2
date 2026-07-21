@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"workground2/internal/nilutil"
 )
 
 // BlockRefreshService is the narrow state-writing port used by the controller-
@@ -56,18 +58,19 @@ type refreshFlight struct {
 }
 
 type refreshSub struct {
-	workID    string
-	blockID   string
-	adapter   BlockSourceAdapter
-	source    BlockSource
-	schedule  RefreshSchedule
-	failures  int
-	nextDelay time.Duration
-	retryAt   *time.Time
-	lastError string
-	wake      chan struct{}
-	ctx       context.Context
-	cancel    context.CancelFunc
+	workID     string
+	blockID    string
+	adapter    BlockSourceAdapter
+	source     BlockSource
+	schedule   RefreshSchedule
+	failures   int
+	nextDelay  time.Duration
+	retryAt    *time.Time
+	lastError  string
+	wake       chan struct{}
+	loopCtx    context.Context
+	loopCancel context.CancelFunc
+	loopGen    uint64
 }
 
 func subKey(workID, blockID string) string { return workID + "/" + blockID }
@@ -84,49 +87,83 @@ func NewBlockRefreshManager(svc BlockRefreshService, clock Clock) *BlockRefreshM
 	}
 }
 
-// Subscribe registers one intent and performs the first refresh immediately.
-// Repeating the same key is a no-op and never creates another loop.
-func (m *BlockRefreshManager) Subscribe(workID, blockID string, adapter BlockSourceAdapter, schedule RefreshSchedule) {
-	m.SubscribeAfter(workID, blockID, adapter, BlockSource{}, schedule, 0)
+// Subscribe registers one intent. Positive intervals perform the first refresh
+// immediately; a zero interval is manual-only and creates no automatic loop.
+func (m *BlockRefreshManager) Subscribe(workID, blockID string, adapter BlockSourceAdapter, schedule RefreshSchedule) error {
+	return m.SubscribeAfter(workID, blockID, adapter, BlockSource{}, schedule, 0)
 }
 
 // SubscribeAfter registers one intent with trusted source metadata and an
 // initial delay. It is used after a manual refresh and during reopen recovery.
-func (m *BlockRefreshManager) SubscribeAfter(workID, blockID string, adapter BlockSourceAdapter, source BlockSource, schedule RefreshSchedule, delay time.Duration) {
-	if m == nil || adapter == nil {
-		return
+func (m *BlockRefreshManager) SubscribeAfter(workID, blockID string, adapter BlockSourceAdapter, source BlockSource, schedule RefreshSchedule, delay time.Duration) error {
+	if m == nil {
+		return errors.New("work: BlockRefreshManager is nil")
+	}
+	if nilutil.IsNil(m.svc) {
+		return errors.New("work: block refresh service is unavailable")
+	}
+	if nilutil.IsNil(adapter) {
+		return errors.New("work: block source adapter is required")
 	}
 	workID, blockID = strings.TrimSpace(workID), strings.TrimSpace(blockID)
 	if workID == "" || blockID == "" {
-		return
+		return errors.New("work: refresh subscription requires workID and blockID")
 	}
-	schedule = normalizeRefreshSchedule(schedule)
+	var err error
+	schedule, err = ValidateRefreshSchedule(schedule)
+	if err != nil {
+		return err
+	}
 	if delay < 0 {
 		delay = 0
 	}
 	key := subKey(workID, blockID)
+	var startCtx context.Context
+	var startSub *refreshSub
+	var startGen uint64
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return
+		return ErrBlockRefreshStopped
 	}
 	if existing := m.subs[key]; existing != nil {
+		wasAutomatic := existing.schedule.Interval > 0
 		existing.adapter = adapter
 		existing.source = normalizeRefreshSource(source)
 		existing.schedule = schedule
+		isAutomatic := schedule.Interval > 0
+		if wasAutomatic != isAutomatic {
+			existing.loopGen++
+			existing.loopCancel()
+			existing.loopCtx, existing.loopCancel = context.WithCancel(m.ctx)
+			existing.nextDelay = delay
+			if isAutomatic {
+				startSub, startCtx, startGen = existing, existing.loopCtx, existing.loopGen
+				m.wg.Add(1)
+			}
+		}
 		m.mu.Unlock()
-		return
+		if startSub != nil {
+			go m.loop(key, startSub, startCtx, startGen)
+		}
+		return nil
 	}
 	ctx, cancel := context.WithCancel(m.ctx)
 	sub := &refreshSub{
 		workID: workID, blockID: blockID, adapter: adapter,
 		source: normalizeRefreshSource(source), schedule: schedule,
-		nextDelay: delay, wake: make(chan struct{}, 1), ctx: ctx, cancel: cancel,
+		nextDelay: delay, wake: make(chan struct{}, 1), loopCtx: ctx, loopCancel: cancel, loopGen: 1,
 	}
 	m.subs[key] = sub
-	m.wg.Add(1)
+	if schedule.Interval > 0 {
+		startSub, startCtx, startGen = sub, ctx, sub.loopGen
+		m.wg.Add(1)
+	}
 	m.mu.Unlock()
-	go m.loop(key, sub)
+	if startSub != nil {
+		go m.loop(key, startSub, startCtx, startGen)
+	}
+	return nil
 }
 
 // Unsubscribe cancels an intent and its current fetch. It is idempotent.
@@ -143,7 +180,7 @@ func (m *BlockRefreshManager) unsubscribeKey(key string, wait bool) {
 	sub := m.subs[key]
 	if sub != nil {
 		delete(m.subs, key)
-		sub.cancel()
+		sub.loopCancel()
 	}
 	if flight := m.inflight[key]; flight != nil {
 		flight.cancel()
@@ -168,7 +205,7 @@ func (m *BlockRefreshManager) UnsubscribeWork(workID string) {
 			continue
 		}
 		delete(m.subs, key)
-		sub.cancel()
+		sub.loopCancel()
 		if flight := m.inflight[key]; flight != nil {
 			flight.cancel()
 			waits = append(waits, flight.done)
@@ -220,6 +257,9 @@ func (offlineBlockSource) FetchBlock(context.Context, string, BlockInstance) (Bl
 }
 
 func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID string) (block *BlockInstance, err error) {
+	if m == nil || nilutil.IsNil(m.svc) {
+		return nil, errors.New("work: block refresh service is unavailable")
+	}
 	m.mu.Lock()
 	if flight := m.inflight[key]; flight != nil {
 		done := flight.done
@@ -262,6 +302,10 @@ func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID
 		Source: source, CheckedAt: now, RetryAt: &retryAt,
 	}, offlineBlockSource{})
 	if err != nil {
+		if isTerminalRefreshError(err) {
+			m.unsubscribeKey(key, false)
+			return block, err
+		}
 		m.finishOfflineAttempt(key, err, delay, &retryAt)
 	}
 	return block, err
@@ -287,7 +331,8 @@ func (m *BlockRefreshManager) finishOfflineAttempt(key string, err error, delay 
 }
 
 // SetOnline applies a connectivity transition. Going offline cancels current
-// fetches; reconnect wakes every retained intent for an immediate retry.
+// fetches; reconnect wakes automatic intents only. Manual-only intents remain
+// subscribed and are refreshed exclusively through RefreshNow/RefreshRequest.
 func (m *BlockRefreshManager) SetOnline(online bool) {
 	if m == nil {
 		return
@@ -303,11 +348,13 @@ func (m *BlockRefreshManager) SetOnline(online bool) {
 			if flight := m.inflight[key]; flight != nil {
 				flight.cancel()
 			}
-		} else {
+		} else if sub.schedule.Interval > 0 {
 			sub.nextDelay = 0
 			sub.retryAt = nil
 		}
-		signalRefresh(sub.wake)
+		if sub.schedule.Interval > 0 {
+			signalRefresh(sub.wake)
+		}
 	}
 	m.mu.Unlock()
 }
@@ -374,7 +421,7 @@ func (m *BlockRefreshManager) Close() error {
 	m.closed = true
 	m.cancel()
 	for _, sub := range m.subs {
-		sub.cancel()
+		sub.loopCancel()
 	}
 	for _, flight := range m.inflight {
 		flight.cancel()
@@ -386,16 +433,16 @@ func (m *BlockRefreshManager) Close() error {
 	return nil
 }
 
-func (m *BlockRefreshManager) loop(key string, sub *refreshSub) {
+func (m *BlockRefreshManager) loop(key string, sub *refreshSub, loopCtx context.Context, loopGen uint64) {
 	defer m.wg.Done()
 	for {
-		delay, online, ok := m.nextWait(key)
+		delay, online, ok := m.nextWait(key, sub, loopGen)
 		if !ok {
 			return
 		}
 		if !online {
 			select {
-			case <-sub.ctx.Done():
+			case <-loopCtx.Done():
 				return
 			case <-sub.wake:
 				continue
@@ -403,22 +450,22 @@ func (m *BlockRefreshManager) loop(key string, sub *refreshSub) {
 		}
 		if delay > 0 {
 			select {
-			case <-sub.ctx.Done():
+			case <-loopCtx.Done():
 				return
 			case <-sub.wake:
 				continue
 			case <-m.clock.After(delay):
 			}
 		}
-		_, _ = m.runRefresh(sub.ctx, key, "")
+		_, _ = m.runRefresh(loopCtx, key, "")
 	}
 }
 
-func (m *BlockRefreshManager) nextWait(key string) (time.Duration, bool, bool) {
+func (m *BlockRefreshManager) nextWait(key string, expected *refreshSub, loopGen uint64) (time.Duration, bool, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sub := m.subs[key]
-	if sub == nil || m.closed {
+	if sub == nil || sub != expected || sub.loopGen != loopGen || sub.schedule.Interval <= 0 || m.closed {
 		return 0, false, false
 	}
 	delay := sub.nextDelay
@@ -427,6 +474,9 @@ func (m *BlockRefreshManager) nextWait(key string) (time.Duration, bool, bool) {
 }
 
 func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID string) (*BlockInstance, error) {
+	if m == nil || nilutil.IsNil(m.svc) {
+		return nil, errors.New("work: block refresh service is unavailable")
+	}
 	m.mu.Lock()
 	if m.closed || !m.online {
 		m.mu.Unlock()
@@ -447,10 +497,14 @@ func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID 
 		m.mu.Unlock()
 		return nil, ErrBlockNotRefreshable
 	}
+	adapter, source, schedule := sub.adapter, sub.source, sub.schedule
+	if nilutil.IsNil(adapter) {
+		m.mu.Unlock()
+		return nil, errors.New("work: block source adapter is unavailable")
+	}
 	attemptCtx, cancel := context.WithCancel(parent)
 	flight := &refreshFlight{cancel: cancel, done: make(chan struct{})}
 	m.inflight[key] = flight
-	adapter, source, schedule := sub.adapter, sub.source, sub.schedule
 	failureAttempt := sub.failures + 1
 	m.mu.Unlock()
 
@@ -482,7 +536,7 @@ func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID 
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return block, err
 	}
-	if errors.Is(err, ErrBlockRefreshStopped) {
+	if isTerminalRefreshError(err) {
 		m.unsubscribeKey(key, false)
 		return block, err
 	}
@@ -516,35 +570,46 @@ func (m *BlockRefreshManager) finishAttempt(key string, err error, delay time.Du
 
 // RecoverFromProjection restores only persisted refresh intents. RetryAt is
 // honoured, so restart cannot turn a backoff window into an immediate storm.
-func (m *BlockRefreshManager) RecoverFromProjection(view *WorkView, resolve BlockSourceResolver) {
+func (m *BlockRefreshManager) RecoverFromProjection(view *WorkView, resolve BlockSourceResolver) error {
 	if m == nil || view == nil || view.Work == nil || resolve == nil || view.Work.ArchiveState != ArchiveActive {
-		return
+		return nil
 	}
+	var recoverErr error
 	for i := range view.Work.Blocks {
 		block := view.Work.Blocks[i]
 		if block.Tombstone || block.Freshness == nil {
 			continue
 		}
 		adapter, source, schedule, ok := resolve(block)
-		if !ok || adapter == nil {
+		if !ok || nilutil.IsNil(adapter) {
 			continue
 		}
 		delay := time.Duration(0)
 		if block.Freshness.RetryAt != nil && block.Freshness.RetryAt.After(m.clock.Now()) {
 			delay = block.Freshness.RetryAt.Sub(m.clock.Now())
 		}
-		m.SubscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay)
+		if err := m.SubscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay); err != nil {
+			recoverErr = errors.Join(recoverErr, err)
+		}
 	}
+	return recoverErr
 }
 
-func normalizeRefreshSchedule(schedule RefreshSchedule) RefreshSchedule {
-	if schedule.Interval <= 0 {
-		schedule.Interval = DefaultRefreshSchedule().Interval
+// ValidateRefreshSchedule applies safe defaults without changing the meaning
+// of Interval=0, which is the explicit manual-only mode.
+func ValidateRefreshSchedule(schedule RefreshSchedule) (RefreshSchedule, error) {
+	if schedule.Interval < 0 {
+		return RefreshSchedule{}, errors.New("work: refresh interval must be non-negative")
 	}
 	if schedule.Backoff == nil {
 		schedule.Backoff = NewExponentialBackoff()
 	}
-	return schedule
+	return schedule, nil
+}
+
+func isTerminalRefreshError(err error) bool {
+	return errors.Is(err, ErrBlockRefreshStopped) || errors.Is(err, ErrBlockNotRefreshable) ||
+		errors.Is(err, ErrBlockNotFound) || errors.Is(err, ErrWorkNotFound)
 }
 
 func signalRefresh(ch chan struct{}) {
