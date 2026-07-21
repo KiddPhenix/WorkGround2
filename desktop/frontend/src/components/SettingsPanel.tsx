@@ -6233,7 +6233,15 @@ function AICollaborationSection() {
     setResult("");
     try {
       const res = await app.InjectAICollaborationPrompt();
-      setResult(res.path ? t("settings.ai.injectedPath", { path: res.path }) : t("settings.ai.injected"));
+      const installed = res.skillPath
+        ? t("settings.ai.installedPaths", { skillPath: res.skillPath, path: res.path })
+        : res.path
+          ? t("settings.ai.injectedPath", { path: res.path })
+          : t("settings.ai.injected");
+      const backups = res.backups?.length
+        ? ` ${t("settings.ai.backups", { n: res.backups.length })}`
+        : "";
+      setResult(installed + backups);
     } catch (e) {
       setError(String((e as Error)?.message ?? e));
     } finally {

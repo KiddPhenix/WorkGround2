@@ -1069,6 +1069,8 @@ export type SettingsTab = "general" | "models" | "providers" | "bots" | "ai" | "
 export interface AICollaborationInjectResult {
   ok: boolean;
   path: string;
+  skillPath?: string;
+  backups?: string[];
 }
 
 // Settings panel payloads (desktop/settings_app.go).

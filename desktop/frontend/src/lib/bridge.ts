@@ -4197,11 +4197,11 @@ function makeMockApp(): AppBindings {
       return "v1.0.0 (browser dev)";
     },
     async AICollaborationPrompt() {
-      return "# WorkGround2 AI Collaboration\n\nUse WorkGround2 Desktop as a bounded implementation worker. Codex owns planning, review, and final verification.\n\nEvery `desktop new` call creates one new Session and returns its SessionID. Capture that ID; session names are display labels and never deduplication keys.\n\nAll later operations must pass the explicit ID. Poll `desktop status --session <id> --json` until `foregroundActive=false` and `pendingPrompt=false`; `backgroundOnly` does not block completion. UI tab selection must not affect external status, submit, approve, or answer calls.\n\n```powershell\n$wg = 'workground2'\n$output = & $wg desktop new --workspace \"<current Codex repo/workspace root>\" --yolo --no-wait $prompt\n$sessionID = (($output | Select-String '^SessionID:\\s*(.+)$').Matches[0].Groups[1].Value)\n& $wg desktop status --session $sessionID --json\n```";
+      return "The deterministic WorkGround2 Worker Skill Bundle is embedded in WorkGround2 Desktop. Launch the Desktop build to export the exact versioned SKILL.md, references/cli.md, scripts/dispatch.ps1, manifest, and SHA-256 values; browser development mode does not fabricate installable bundle bytes.";
     },
     async InjectAICollaborationPrompt() {
       await delay(200);
-      return { ok: true, path: "~/.codex/AGENTS.md" };
+      return { ok: true, path: "~/.codex/AGENTS.md", skillPath: "~/.codex/skills/workground2-worker", backups: [] };
     },
     async GetGlobalAgentsMD() {
       await delay(100);
