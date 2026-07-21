@@ -1179,6 +1179,179 @@ func TestCornerstone_StableIdentityUsesOnlyDeclaredFields(t *testing.T) {
 	}
 }
 
+func TestCornerstone_NormalizePathGolden(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"windows drive", `C:\Repo\.\Docs\..\README.md`, "c:/repo/readme.md"},
+		{"windows drive relative", `C:Repo\..\README.md`, "c:readme.md"},
+		{"windows drive root", `C:\`, "c:/"},
+		{"windows extended drive", `\\?\C:\Repo\File.md`, "c:/repo/file.md"},
+		{"unc", `\\Server\Share\Folder\..\File.md`, "//server/share/file.md"},
+		{"unc root clamp", `//SERVER/Share/Folder/../../../File.md`, "//server/share/file.md"},
+		{"unc extended", `\\?\UNC\Server\Share\Dir\.\File.md`, "//server/share/dir/file.md"},
+		{"unc root", `\\Server\Share\`, "//server/share"},
+		{"posix case", "/Users/Alice/../Bob/File.md", "/Users/Bob/File.md"},
+		{"posix repeated slash", "///var//log/./app", "/var/log/app"},
+		{"relative slash", `./Docs\A/../B.md`, "Docs/B.md"},
+		{"relative parent", "../Docs/./A.md", "../Docs/A.md"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeCornerstonePath(tt.input); got != tt.want {
+				t.Fatalf("normalizeCornerstonePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCornerstone_PathIdentityCrossOSAndDistinctRefs(t *testing.T) {
+	stableID := func(refPath string) string {
+		t.Helper()
+		id, err := computeStableCornerstoneID("work-path-golden", PinCornerstoneInput{
+			Type:    CornerstoneSource,
+			Content: "same content",
+			Ref:     CornerstoneRef{Kind: "workspace_file", Path: refPath},
+		})
+		if err != nil {
+			t.Fatalf("compute ID for %q: %v", refPath, err)
+		}
+		return id
+	}
+	equivalent := [][2]string{
+		{`C:\REPO\docs\..\A.md`, "c:/repo/a.md"},
+		{`\\Server\Share\Folder\File.md`, "//server/share/folder/file.md"},
+		{`\\?\UNC\SERVER\SHARE\Folder\.\File.md`, "//server/share/folder/file.md"},
+		{`./docs\A/../b.md`, "docs/b.md"},
+	}
+	for _, pair := range equivalent {
+		if left, right := stableID(pair[0]), stableID(pair[1]); left != right {
+			t.Errorf("equivalent refs %q and %q produced %s and %s", pair[0], pair[1], left, right)
+		}
+	}
+	distinct := [][2]string{
+		{"C:foo/bar", "C:/foo/bar"},
+		{"C:/repo/file", "D:/repo/file"},
+		{"//server/share/file", "/server/share/file"},
+		{"//server/share/file", "//server/other/file"},
+		{"/Repo/File", "/repo/file"},
+		{"docs/file", "/docs/file"},
+	}
+	for _, pair := range distinct {
+		if left, right := stableID(pair[0]), stableID(pair[1]); left == right {
+			t.Errorf("distinct refs %q and %q merged into %s", pair[0], pair[1], left)
+		}
+	}
+}
+
+func TestCornerstone_SecretDetectorMatchesWorkPolicy(t *testing.T) {
+	positives := []string{
+		"sk-proj-abcdefghijklmnopqrstuvwxyz",
+		"REDACTED_TEST_SLACK_TOKEN",
+		"github_pat_1234567890abcdefghijklmnop",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123456",
+		"api_key=shortvalue",
+		"password: hunter2",
+		"Authorization: Bearer abc123",
+		"-----BEGIN PRIVATE KEY-----",
+		"AKIA1234567890ABCDEF",
+	}
+	for _, value := range positives {
+		if !IsSecretLike([]byte(value)) {
+			t.Errorf("secret detector missed %q", value)
+		}
+	}
+	negatives := []string{
+		"Use a risk-based token budget",
+		"sketch-based rendering",
+		"REDACTED_TEST_SLACK_TOKEN is a label",
+		"eyJ.one.two",
+		"token: budget unit",
+		"api_key=${OPENAI_API_KEY}",
+		"vault:secret/project/provider",
+	}
+	for _, value := range negatives {
+		if IsSecretLike([]byte(value)) {
+			t.Errorf("secret detector false-positive for %q", value)
+		}
+	}
+}
+
+func TestCornerstone_SecretInEveryPersistedFieldRejectedBeforeWrite(t *testing.T) {
+	f := newCMFixture(t)
+	view, _ := f.svc.Get(t.Context(), f.workID)
+	const secret = "sk-proj-abcdefghijklmnopqrstuvwxyz"
+	base := pinInput("", view.Revision)
+	base.Title = "Safe title"
+	base.Content = "safe content"
+	base.Tags = []string{"safe"}
+	tests := []struct {
+		name   string
+		mutate func(*PinCornerstoneInput)
+	}{
+		{"title", func(in *PinCornerstoneInput) { in.Title = secret }},
+		{"content", func(in *PinCornerstoneInput) { in.Content = secret }},
+		{"tag", func(in *PinCornerstoneInput) { in.Tags = []string{"safe", secret} }},
+		{"ref kind", func(in *PinCornerstoneInput) { in.Ref.Kind = secret }},
+		{"ref path", func(in *PinCornerstoneInput) {
+			in.Type = CornerstoneFileSnapshot
+			in.Ref = CornerstoneRef{Kind: "workspace_file", Path: "docs/" + secret}
+		}},
+		{"ref session", func(in *PinCornerstoneInput) {
+			in.Type = CornerstoneSource
+			in.Mode = CornerstoneLiveRef
+			in.Ref = CornerstoneRef{Kind: "session_turn", SessionID: secret, Turn: 1}
+		}},
+		{"ref artifact", func(in *PinCornerstoneInput) {
+			in.Type = CornerstoneSource
+			in.Mode = CornerstoneLiveRef
+			in.Ref = CornerstoneRef{Kind: "artifact", ArtifactID: secret}
+		}},
+		{"ref url", func(in *PinCornerstoneInput) {
+			in.Type = CornerstoneSource
+			in.Mode = CornerstoneLiveRef
+			in.Ref = CornerstoneRef{Kind: "url", URL: "https://example.test/source?token=" + secret}
+		}},
+		{"ref blob digest", func(in *PinCornerstoneInput) { in.Ref.BlobDigest = secret }},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := base
+			input.Tags = cloneTags(base.Tags)
+			input.RequestID = fmt.Sprintf("req-secret-field-%d", i)
+			tt.mutate(&input)
+			_, err := f.mgr.Pin(f.workID, input)
+			if !errors.Is(err, ErrSecretRejected) {
+				t.Fatalf("Pin error = %v, want ErrSecretRejected", err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatal("secret value was reflected in the error")
+			}
+		})
+	}
+	viewAfter, err := f.svc.Get(t.Context(), f.workID)
+	if err != nil {
+		t.Fatalf("Get after rejection: %v", err)
+	}
+	if viewAfter.Revision != view.Revision || len(viewAfter.Work.Cornerstones) != 0 {
+		t.Fatalf("secret rejection mutated Work: revision=%d cornerstones=%d", viewAfter.Revision, len(viewAfter.Work.Cornerstones))
+	}
+	workDir, _ := f.store.workPath(f.workID)
+	events, err := os.ReadFile(WorkEventLogPath(workDir))
+	if err != nil {
+		t.Fatalf("read Work events: %v", err)
+	}
+	if strings.Contains(string(events), secret) {
+		t.Fatal("secret leaked into Work event log")
+	}
+	digests, err := f.store.ListDigests(f.workID)
+	if err != nil || len(digests) != 0 {
+		t.Fatalf("secret rejection blobs = (%v, %v), want none", digests, err)
+	}
+}
+
 func TestCornerstone_SecretRefRejectedWithoutPersistence(t *testing.T) {
 	f := newCMFixture(t)
 	view, _ := f.svc.Get(t.Context(), f.workID)

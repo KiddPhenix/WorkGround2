@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -55,11 +55,11 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = normalizeCornerstoneContent(input.Content)
 	input.Ref = normalizedCornerstoneRef(input.Ref)
-	if err := validateCornerstoneInput(input); err != nil {
-		return nil, err
-	}
 	if cornerstoneInputSecretLike(input) {
 		return nil, ErrSecretRejected
+	}
+	if err := validateCornerstoneInput(input); err != nil {
+		return nil, err
 	}
 
 	// Compute stable ID from identity fields.
@@ -816,7 +816,7 @@ func normalizedCornerstoneRef(ref CornerstoneRef) CornerstoneRef {
 	ref.URL = strings.TrimSpace(ref.URL)
 	ref.BlobDigest = strings.TrimSpace(ref.BlobDigest)
 	if ref.Kind == "workspace_file" && ref.Path != "" {
-		ref.Path = filepath.ToSlash(filepath.Clean(ref.Path))
+		ref.Path = normalizeCornerstonePath(ref.Path)
 	}
 	if ref.Kind == "url" && ref.URL != "" {
 		if parsed, err := url.Parse(ref.URL); err == nil {
@@ -827,6 +827,78 @@ func normalizedCornerstoneRef(ref CornerstoneRef) CornerstoneRef {
 		}
 	}
 	return ref
+}
+
+// normalizeCornerstonePath canonicalizes workspace refs without consulting the
+// host OS. Slash-relative and POSIX paths remain case-sensitive; explicit
+// Windows drive and UNC paths use Windows case-insensitive identity rules.
+func normalizeCornerstonePath(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, `\`, "/")
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "//?/unc/"):
+		value = "//" + value[len("//?/UNC/"):]
+	case strings.HasPrefix(lower, "//?/") && isDrivePath(value[len("//?/"):]):
+		value = value[len("//?/"):]
+	}
+	if isDrivePath(value) {
+		return normalizeDrivePath(value)
+	}
+	if strings.HasPrefix(value, "//") && !strings.HasPrefix(value, "///") {
+		return normalizeUNCPath(value)
+	}
+	return path.Clean(value)
+}
+
+func isDrivePath(value string) bool {
+	if len(value) < 2 || value[1] != ':' {
+		return false
+	}
+	c := value[0]
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z'
+}
+
+func normalizeDrivePath(value string) string {
+	drive := strings.ToLower(value[:2])
+	rest := value[2:]
+	if strings.HasPrefix(rest, "/") {
+		cleaned := path.Clean("/" + strings.TrimLeft(rest, "/"))
+		if cleaned == "/" {
+			return drive + "/"
+		}
+		return strings.ToLower(drive + cleaned)
+	}
+	cleaned := path.Clean(rest)
+	if cleaned == "." {
+		return drive
+	}
+	return strings.ToLower(drive + cleaned)
+}
+
+func normalizeUNCPath(value string) string {
+	parts := strings.FieldsFunc(strings.TrimLeft(value, "/"), func(r rune) bool { return r == '/' })
+	if len(parts) == 0 {
+		return "//"
+	}
+	rootLen := min(2, len(parts))
+	stack := append([]string(nil), parts[:rootLen]...)
+	for _, part := range parts[rootLen:] {
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(stack) > rootLen {
+				stack = stack[:len(stack)-1]
+			}
+		default:
+			stack = append(stack, part)
+		}
+	}
+	return "//" + strings.ToLower(strings.Join(stack, "/"))
 }
 
 func validateCornerstoneInput(input PinCornerstoneInput) error {
@@ -899,45 +971,23 @@ func validateCornerstoneInput(input PinCornerstoneInput) error {
 }
 
 func cornerstoneInputSecretLike(input PinCornerstoneInput) bool {
-	values := []string{input.Title, input.Content, input.Ref.SessionID, input.Ref.Path, input.Ref.ArtifactID, input.Ref.URL}
+	values := []string{
+		string(input.Type), input.Title, input.Content, string(input.Mode), input.RequestID,
+		input.Ref.Kind, input.Ref.SessionID, input.Ref.Path, input.Ref.ArtifactID, input.Ref.URL, input.Ref.BlobDigest,
+	}
 	values = append(values, input.Tags...)
 	for _, value := range values {
-		if IsSecretLike([]byte(value)) || secretAssignmentLike(value) {
+		if IsSecretLike([]byte(value)) {
 			return true
 		}
 	}
 	if input.Ref.Kind == "url" {
 		u, err := url.Parse(input.Ref.URL)
-		if err == nil {
-			if u.User != nil {
-				return true
-			}
-			for key := range u.Query() {
-				if secretAssignmentLike(key + "=") {
-					return true
-				}
-			}
+		if err == nil && u.User != nil {
+			return true
 		}
 	}
 	return false
-}
-
-func secretAssignmentLike(value string) bool {
-	lower := strings.ToLower(value)
-	for _, name := range []string{"api_key", "api-key", "apikey", "access_key", "access-key", "accesskey", "password", "passwd", "secret", "token", "private_key"} {
-		for offset := 0; offset < len(lower); {
-			index := strings.Index(lower[offset:], name)
-			if index < 0 {
-				break
-			}
-			rest := strings.TrimLeft(lower[offset+index+len(name):], " \t")
-			if len(rest) > 1 && (rest[0] == '=' || rest[0] == ':') && strings.TrimSpace(rest[1:]) != "" {
-				return true
-			}
-			offset += index + len(name)
-		}
-	}
-	return strings.Contains(lower, "bearer ")
 }
 
 func cornerstoneUpsertEvent(workID, requestID string, revision int64, cs Cornerstone, now time.Time, prefix string) (WorkEvent, error) {

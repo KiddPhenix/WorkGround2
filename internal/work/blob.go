@@ -57,17 +57,9 @@ func ContentDigest(data []byte) string {
 // checks (structured type markers, source flags) and never log or persist
 // confirmed secret content.
 func IsSecretLike(data []byte) bool {
-	value := string(data)
-	if secretAssignmentLike(value) {
-		return true
-	}
-	lower := strings.ToLower(value)
-	for _, marker := range []string{"authorization: bearer ", "-----begin private key-----", "-----begin rsa private key-----", "ghp_", "github_pat_"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return strings.Contains(value, "AKIA") && len(value) >= 20
+	var issues []string
+	checkTextField(string(data), "cornerstone", &issues)
+	return len(issues) > 0
 }
 
 // ErrSecretRejected is returned when an operation attempts to persist, log, or
