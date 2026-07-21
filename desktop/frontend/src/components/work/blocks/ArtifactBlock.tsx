@@ -4,6 +4,10 @@
 // Never opens payload path or calls bridge directly.
 
 import React from 'react';
+import { ArtifactItem } from '../../desktop-ui/ArtifactShelf';
+import type { ArtifactRecord } from '../../../store/artifacts';
+import type { BlockActionSpec } from '../../../work/types';
+import { ActionFeedback, useActionIntent } from './actionIntent';
 import type { BlockRendererProps } from './types';
 import { validateArtifactData } from './schemaHelpers';
 import type { SafeArtifactData } from './schemaHelpers';
@@ -28,11 +32,43 @@ const STATUS_LABELS: Record<string, string> = {
   failed: 'Failed',
 };
 
-const ArtifactBlock: React.FC<BlockRendererProps> = ({ block }) => {
+function safeArtifactError(value: string): string {
+  return value.length <= 320 && !/(?:bearer\s+|token\s*=|password\s*=|secret\s*=|[a-z]:\\|\/(?:users|home|etc)\/)/i.test(value)
+    ? value
+    : 'Artifact operation failed safely';
+}
+
+function ArtifactAction({ action, renderer }: { action: BlockActionSpec; renderer: BlockRendererProps }) {
+  const state = useActionIntent(renderer, action.id);
+  return (
+    <div className="wg2-artifact-block__intent">
+      <button type="button" className="wg2-artifact-block__action" disabled={state.disabled} onClick={() => state.dispatch()}>
+        {action.label}
+      </button>
+      <ActionFeedback state={state} />
+    </div>
+  );
+}
+
+const ArtifactBlock: React.FC<BlockRendererProps> = (props) => {
+  const { block } = props;
   const data = block.data as SafeArtifactData;
   const ref = data.artifactRef;
   const status = ref.status;
   const isError = status === 'failed' || status === 'missing';
+  const verifiedAt = ref.lastVerifiedAt ? Date.parse(ref.lastVerifiedAt) : undefined;
+  const artifact: ArtifactRecord = {
+    artifactId: ref.id,
+    name: ref.name,
+    type: ref.type,
+    status: ref.status,
+    sessionId: props.context.taskId ?? '',
+    path: ref.path,
+    relativePath: ref.relativePath,
+    sourceRunId: ref.sourceRunId,
+    lastVerifiedAt: Number.isFinite(verifiedAt) ? verifiedAt : undefined,
+    errorMessage: ref.error,
+  };
 
   return (
     <div
@@ -40,6 +76,9 @@ const ArtifactBlock: React.FC<BlockRendererProps> = ({ block }) => {
       role="region"
       aria-label={block.title ?? `Artifact: ${ref.name}`}
     >
+      <div className="wg2-artifact-block__shelf" role="list">
+        <ArtifactItem artifact={artifact} />
+      </div>
       <div className="wg2-artifact-block__header">
         <span className="wg2-artifact-block__icon" aria-hidden="true">{STATUS_ICONS[status] ?? '?'}</span>
         <span className="wg2-artifact-block__name">{ref.name}</span>
@@ -60,7 +99,7 @@ const ArtifactBlock: React.FC<BlockRendererProps> = ({ block }) => {
 
       {isError && ref.error && (
         <div className="wg2-artifact-block__error" role="alert">
-          {ref.error}
+          {safeArtifactError(ref.error)}
         </div>
       )}
 
@@ -70,6 +109,11 @@ const ArtifactBlock: React.FC<BlockRendererProps> = ({ block }) => {
         {status === 'missing' && <span className="wg2-artifact-block__badge wg2-artifact-block__badge--err">Not found</span>}
         {status === 'failed' && <span className="wg2-artifact-block__badge wg2-artifact-block__badge--err">Generation failed</span>}
       </div>
+      {block.actions?.length ? (
+        <div className="wg2-artifact-block__actions" role="group" aria-label="Artifact actions">
+          {block.actions.map((action) => <ArtifactAction key={action.id} action={action} renderer={props} />)}
+        </div>
+      ) : null}
     </div>
   );
 };

@@ -13,11 +13,16 @@ import {
   validateProgress,
 } from './schemas';
 import {
+  validateActionEntryData,
+  validateApprovalData,
   validateArtifactData,
   validateChartData,
   validateCodeData,
+  validateDecisionData,
   validateGraphData,
+  validateInputData,
   validateMarkdownData,
+  validateNoticeData,
   validateTableData,
 } from './schemaHelpers';
 
@@ -46,6 +51,11 @@ const graphValidator = (_schema: number, data: unknown) => ({ valid: validateGra
 const codeValidator = (_schema: number, data: unknown) => ({ valid: validateCodeData(data) });
 const markdownValidator = (_schema: number, data: unknown) => ({ valid: validateMarkdownData(data) });
 const artifactValidator = (_schema: number, data: unknown) => ({ valid: validateArtifactData(data) });
+const actionEntryValidator = (_schema: number, data: unknown) => ({ valid: validateActionEntryData(data) });
+const decisionValidator = (_schema: number, data: unknown) => ({ valid: validateDecisionData(data) });
+const approvalValidator = (_schema: number, data: unknown) => ({ valid: validateApprovalData(data) });
+const inputValidator = (_schema: number, data: unknown) => ({ valid: validateInputData(data) });
+const noticeValidator = (_schema: number, data: unknown) => ({ valid: validateNoticeData(data) });
 
 const loadItemList = lazy(() => import('./ItemListBlock').then((module) => ({ component: module.ItemListBlock })));
 const loadChecklist = lazy(() => import('./ChecklistBlock').then((module) => ({ component: module.ChecklistBlock })));
@@ -59,6 +69,11 @@ const loadGraph = lazy(() => import('./GraphBlock').then((module) => ({ componen
 const loadCode = lazy(() => import('./CodeBlock').then((module) => ({ component: module.default })));
 const loadMarkdown = lazy(() => import('./MarkdownBlock').then((module) => ({ component: module.default })));
 const loadArtifact = lazy(() => import('./ArtifactBlock').then((module) => ({ component: module.default })));
+const loadActionEntry = lazy(() => import('./ActionEntryBlock').then((module) => ({ component: module.default })));
+const loadDecision = lazy(() => import('./DecisionBlock').then((module) => ({ component: module.default })));
+const loadApproval = lazy(() => import('./ApprovalBlock').then((module) => ({ component: module.default })));
+const loadInput = lazy(() => import('./InputBlock').then((module) => ({ component: module.default })));
+const loadNotice = lazy(() => import('./NoticeBlock').then((module) => ({ component: module.default })));
 
 export function registerBuiltinBlocks(): void {
   blockRegistry.register('item', 1, validateItemList, loadItemList);
@@ -76,4 +91,9 @@ export function registerBuiltinBlocks(): void {
   blockRegistry.register('code', 1, codeValidator, loadCode);
   blockRegistry.register('markdown', 1, markdownValidator, loadMarkdown);
   blockRegistry.register('artifact', 1, artifactValidator, loadArtifact);
+  blockRegistry.register('action_entry', 1, actionEntryValidator, loadActionEntry);
+  blockRegistry.register('decision', 1, decisionValidator, loadDecision);
+  blockRegistry.register('approval', 1, approvalValidator, loadApproval);
+  blockRegistry.register('input', 1, inputValidator, loadInput);
+  blockRegistry.register('notice', 1, noticeValidator, loadNotice);
 }

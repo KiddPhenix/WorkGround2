@@ -103,6 +103,7 @@ export interface Work {
   prompt: string;
   cornerstones: Cornerstone[];
   runs: WorkflowRun[];
+  actionReceipts?: ActionReceipt[];
   conclusions?: Conclusion[];
   rerunOf?: string;
   copiedFrom?: string;
@@ -406,6 +407,10 @@ export interface RetryTaskInput {
 
 export interface BlockActionRequest {
   workId: string;
+  /** Explicit workflow owner; interactive renderers never infer it from the active tab. */
+  runId?: string;
+  /** Explicit task owner; interactive renderers never infer it from the active tab. */
+  taskId?: string;
   blockId: string;
   actionId: string;
   input?: Record<string, unknown>;
@@ -512,11 +517,37 @@ export interface RerunPlan {
   expiresAt: string;
 }
 
+export type ActionReceiptStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'rejected'
+  | 'unknown';
+
 export interface ActionReceipt {
+  workId: string;
+  blockId: string;
+  blockKind?: string;
   actionId: string;
-  status: string;
+  handlerIdentityVersion?: number;
+  handlerId?: string;
+  handlerVersion?: string;
+  status: ActionReceiptStatus;
   message?: string;
   requestId: string;
+  inputDigest?: string;
+  fingerprint?: string;
+  intent?: string;
+  summary?: string;
+  risk?: BlockActionSpec['risk'];
+  confirmRequired?: boolean;
+  result?: unknown;
+  retryable: boolean;
+  outcomeKnown: boolean;
+  revision?: number;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface TaskExecuteInput {

@@ -258,3 +258,169 @@ export function safeCellText(value: unknown): string {
   if (typeof value === 'bigint') return String(value).slice(0, MAX_CELL_STR_LEN);
   return '';
 }
+
+// ── Action Entry ─────────────────────────────────────────────────────────────
+
+const MAX_DESCRIPTION_LEN = 2000;
+const MAX_LAST_RESULT_LEN = 2000;
+
+export interface SafeActionEntryData {
+  description: string;
+  lastResult?: string;
+}
+
+export function validateActionEntryData(data: unknown): data is SafeActionEntryData {
+  if (!isRecord(data) || !hasOnlyKeys(data, ['description', 'lastResult'])) return false;
+  const d = data;
+  if (!isBoundedString(d.description, MAX_DESCRIPTION_LEN, false)) return false;
+  if (d.lastResult !== undefined && !isBoundedString(d.lastResult, MAX_LAST_RESULT_LEN)) return false;
+  return true;
+}
+
+// ── Decision ─────────────────────────────────────────────────────────────────
+
+const MAX_QUESTION_LEN = 500;
+const MAX_OPTION_LABEL_LEN = 200;
+const MAX_OPTION_DESC_LEN = 2000;
+const MAX_OPTIONS = 20;
+const MAX_CONTEXT_LEN = 4000;
+
+export interface SafeDecisionData {
+  question: string;
+  options: Array<{ id: string; label: string; description?: string }>;
+  context?: string;
+  multiSelect?: boolean;
+}
+
+export function validateDecisionData(data: unknown): data is SafeDecisionData {
+  if (!isRecord(data) || !hasOnlyKeys(data, ['question', 'options', 'context', 'multiSelect'])) return false;
+  const d = data;
+  if (!isBoundedString(d.question, MAX_QUESTION_LEN, false)) return false;
+  if (!Array.isArray(d.options) || d.options.length === 0 || d.options.length > MAX_OPTIONS) return false;
+  const seen = new Set<string>();
+  for (const opt of d.options) {
+    if (!isRecord(opt) || !hasOnlyKeys(opt, ['id', 'label', 'description'])) return false;
+    const o = opt;
+    if (typeof o.id !== 'string' || o.id.length === 0 || o.id.length > MAX_COL_KEY_LEN || !VALID_COL_KEY.test(o.id)) return false;
+    if (!isBoundedString(o.label, MAX_OPTION_LABEL_LEN, false)) return false;
+    if (o.description !== undefined && !isBoundedString(o.description, MAX_OPTION_DESC_LEN)) return false;
+    if (seen.has(o.id)) return false;
+    seen.add(o.id);
+  }
+  if (d.context !== undefined && !isBoundedString(d.context, MAX_CONTEXT_LEN)) return false;
+  if (d.multiSelect !== undefined && typeof d.multiSelect !== 'boolean') return false;
+  return true;
+}
+
+// ── Approval ─────────────────────────────────────────────────────────────────
+
+const MAX_APPROVAL_TITLE_LEN = 256;
+const MAX_APPROVAL_ITEM_LABEL_LEN = 200;
+const MAX_APPROVAL_ITEM_DETAIL_LEN = 2000;
+const MAX_APPROVAL_ITEMS = 50;
+const VALID_RISKS = new Set(['read', 'write', 'destructive', 'external']);
+
+export interface SafeApprovalData {
+  title: string;
+  description?: string;
+  items: Array<{ id: string; label: string; detail?: string; risk?: 'read' | 'write' | 'destructive' | 'external' }>;
+  context?: string;
+}
+
+export function validateApprovalData(data: unknown): data is SafeApprovalData {
+  if (!isRecord(data) || !hasOnlyKeys(data, ['title', 'description', 'items', 'context'])) return false;
+  const d = data;
+  if (!isBoundedString(d.title, MAX_APPROVAL_TITLE_LEN, false)) return false;
+  if (d.description !== undefined && !isBoundedString(d.description, MAX_DESCRIPTION_LEN)) return false;
+  if (!Array.isArray(d.items) || d.items.length === 0 || d.items.length > MAX_APPROVAL_ITEMS) return false;
+  const seen = new Set<string>();
+  for (const item of d.items) {
+    if (!isRecord(item) || !hasOnlyKeys(item, ['id', 'label', 'detail', 'risk'])) return false;
+    const it = item;
+    if (typeof it.id !== 'string' || it.id.length === 0 || it.id.length > MAX_COL_KEY_LEN || !VALID_COL_KEY.test(it.id)) return false;
+    if (!isBoundedString(it.label, MAX_APPROVAL_ITEM_LABEL_LEN, false)) return false;
+    if (it.detail !== undefined && !isBoundedString(it.detail, MAX_APPROVAL_ITEM_DETAIL_LEN)) return false;
+    if (it.risk !== undefined && (typeof it.risk !== 'string' || !VALID_RISKS.has(it.risk))) return false;
+    if (seen.has(it.id)) return false;
+    seen.add(it.id);
+  }
+  if (d.context !== undefined && !isBoundedString(d.context, MAX_CONTEXT_LEN)) return false;
+  return true;
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+
+const MAX_INPUT_PROMPT_LEN = 1000;
+const MAX_FIELDS = 20;
+const MAX_FIELD_LABEL_LEN = 200;
+const MAX_FIELD_PLACEHOLDER_LEN = 200;
+const MAX_INPUT_OPTIONS = 100;
+const VALID_FIELD_TYPES = new Set(['text', 'textarea', 'select']);
+
+export interface SafeInputData {
+  prompt: string;
+  fields: Array<{
+    id: string;
+    label: string;
+    type?: 'text' | 'textarea' | 'select';
+    required?: boolean;
+    placeholder?: string;
+    options?: Array<{ value: string; label: string }>;
+  }>;
+  context?: string;
+}
+
+export function validateInputData(data: unknown): data is SafeInputData {
+  if (!isRecord(data) || !hasOnlyKeys(data, ['prompt', 'fields', 'context'])) return false;
+  const d = data;
+  if (!isBoundedString(d.prompt, MAX_INPUT_PROMPT_LEN, false)) return false;
+  if (!Array.isArray(d.fields) || d.fields.length === 0 || d.fields.length > MAX_FIELDS) return false;
+  const seen = new Set<string>();
+  for (const field of d.fields) {
+    if (!isRecord(field) || !hasOnlyKeys(field, ['id', 'label', 'type', 'required', 'placeholder', 'options'])) return false;
+    const f = field;
+    if (typeof f.id !== 'string' || f.id.length === 0 || f.id.length > MAX_COL_KEY_LEN || !VALID_COL_KEY.test(f.id)) return false;
+    if (!isBoundedString(f.label, MAX_FIELD_LABEL_LEN, false)) return false;
+    if (f.type !== undefined && (typeof f.type !== 'string' || !VALID_FIELD_TYPES.has(f.type))) return false;
+    if (f.required !== undefined && typeof f.required !== 'boolean') return false;
+    if (f.placeholder !== undefined && !isBoundedString(f.placeholder, MAX_FIELD_PLACEHOLDER_LEN)) return false;
+    if (f.options !== undefined) {
+      if (!Array.isArray(f.options) || f.options.length === 0 || f.options.length > MAX_INPUT_OPTIONS) return false;
+      const optSeen = new Set<string>();
+      for (const opt of f.options) {
+        if (!isRecord(opt) || !hasOnlyKeys(opt, ['value', 'label'])) return false;
+        if (typeof opt.value !== 'string' || opt.value.length === 0 || opt.value.length > 128) return false;
+        if (!isBoundedString(opt.label, 256, false)) return false;
+        if (optSeen.has(opt.value)) return false;
+        optSeen.add(opt.value);
+      }
+    }
+    if (seen.has(f.id)) return false;
+    seen.add(f.id);
+  }
+  if (d.context !== undefined && !isBoundedString(d.context, MAX_CONTEXT_LEN)) return false;
+  return true;
+}
+
+// ── Notice ───────────────────────────────────────────────────────────────────
+
+const MAX_NOTICE_CONTENT_LEN = 4000;
+const MAX_NOTICE_ACTION_LABEL_LEN = 64;
+const VALID_NOTICE_LEVELS = new Set(['info', 'warning', 'error', 'success']);
+
+export interface SafeNoticeData {
+  level: 'info' | 'warning' | 'error' | 'success';
+  content: string;
+  retryable?: boolean;
+  actionLabel?: string;
+}
+
+export function validateNoticeData(data: unknown): data is SafeNoticeData {
+  if (!isRecord(data) || !hasOnlyKeys(data, ['level', 'content', 'retryable', 'actionLabel'])) return false;
+  const d = data;
+  if (typeof d.level !== 'string' || !VALID_NOTICE_LEVELS.has(d.level)) return false;
+  if (!isBoundedString(d.content, MAX_NOTICE_CONTENT_LEN, false)) return false;
+  if (d.retryable !== undefined && typeof d.retryable !== 'boolean') return false;
+  if (d.actionLabel !== undefined && !isBoundedString(d.actionLabel, MAX_NOTICE_ACTION_LABEL_LEN, false)) return false;
+  return true;
+}

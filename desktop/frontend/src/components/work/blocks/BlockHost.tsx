@@ -3,7 +3,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent } from 'react';
-import type { BlockActionRequest, BlockInstance, BlockStatus, BlockUpdateRequest } from '../../../work/types';
+import type { BlockInstance, BlockStatus, BlockUpdateRequest } from '../../../work/types';
 import { FallbackBlock } from './FallbackBlock';
 import { RendererIsland } from './RendererIsland';
 import { blockRegistry, isRendererKind } from './registry';
@@ -11,6 +11,7 @@ import { registerBuiltinBlocks } from './register';
 import { createBlockRenderIdentity, matchesBlockRenderIdentity } from './safeBlockJson';
 import type { BlockRenderIdentity } from './safeBlockJson';
 import type {
+  BlockActionHandler,
   BlockHostProps,
   BlockHostState,
   BlockRendererProps,
@@ -30,11 +31,13 @@ interface ActionGate {
   block: BlockInstance;
   blockID: string;
   identity: BlockRenderIdentity;
-  onAction?: (request: BlockActionRequest) => void;
+  onAction?: BlockActionHandler;
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   readonly: boolean;
   revision: number;
   status: BlockInstance['status'];
+  runID?: string;
+  taskID?: string;
   tombstone: boolean;
   workID: string;
 }
@@ -133,6 +136,8 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     readonly,
     revision: block.revision,
     status: block.status,
+    runID: context.runId,
+    taskID: context.taskId,
     tombstone: Boolean(block.tombstone),
     workID: context.workId,
   });
@@ -154,6 +159,8 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     readonly,
     revision: block.revision,
     status: block.status,
+    runID: context.runId,
+    taskID: context.taskId,
     tombstone: Boolean(block.tombstone),
     workID: context.workId,
   };
@@ -257,17 +264,24 @@ export const BlockHost: React.FC<BlockHostProps> = ({
         if (!gate.active || gate.identity !== actionIdentity || gate.readonly || gate.archived ||
             gate.tombstone || gate.status !== 'ready' || typeof gate.onAction !== 'function' ||
             !request || request.blockId !== gate.blockID || request.workId !== gate.workID ||
+            (gate.runID !== undefined && request.runId !== gate.runID) ||
+            (gate.taskID !== undefined && request.taskId !== gate.taskID) ||
             request.expectedRevision !== gate.revision) return;
       } catch {
         return;
       }
       try {
-        const result = gate.onAction(request) as unknown;
+        const result = gate.onAction(request);
         if (isThenable(result)) {
-          void Promise.resolve(result).catch(() => failRenderer(actionIdentity, 'action_callback_error'));
+          return Promise.resolve(result).catch(() => {
+            failRenderer(actionIdentity, 'action_callback_error');
+            return undefined;
+          });
         }
+        return result;
       } catch {
         failRenderer(actionIdentity, 'action_callback_error');
+        return undefined;
       }
     };
   }, [failRenderer, identity]);
