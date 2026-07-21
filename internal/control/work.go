@@ -569,6 +569,14 @@ func (c *Controller) WorkViews() *WorkViewBroadcaster {
 	return c.workViews
 }
 
+// TaskExecutor returns the Work Task executor, or nil when Work is disabled.
+func (c *Controller) TaskExecutor() work.TaskExecutor {
+	if c == nil {
+		return nil
+	}
+	return c.taskExec
+}
+
 // LookupSession adapts Controller's persisted Session capability to the narrow
 // work.SessionLookup port. It is read-only, context-aware, and confines lookups
 // to this Controller's SessionDir so a persisted Work reference cannot become

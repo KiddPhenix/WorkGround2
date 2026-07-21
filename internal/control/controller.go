@@ -188,6 +188,8 @@ type Controller struct {
 	workRefreshLifeMu sync.Mutex
 	workRefreshGen    map[string]uint64
 	workRefreshStops  map[string]uint64
+	// taskExec is the optional Work Task executor; nil when Work is disabled.
+	taskExec work.TaskExecutor
 	// actionRoot owns Block Action lifetimes independently from model turns.
 	// Per-request children preserve caller cancellation; Cancel stops all current
 	// foreground work, while Close closes the root and waits for registered
@@ -443,6 +445,10 @@ type Options struct {
 	WorkRefreshClock work.Clock
 	// WorkOffline starts source scheduling paused while retaining recovery intent.
 	WorkOffline bool
+	// TaskExecutor is the optional Work Task executor. When non-nil, the
+	// Controller exposes it so a future WorkRunner can dispatch Task
+	// execution into Controller sessions.
+	TaskExecutor work.TaskExecutor
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -498,6 +504,7 @@ func New(opts Options) *Controller {
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
 		workViews:                  opts.WorkViews,
+		taskExec:                   opts.TaskExecutor,
 		actionRoot:                 actionRoot,
 		actionRootCancel:           actionRootCancel,
 		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
