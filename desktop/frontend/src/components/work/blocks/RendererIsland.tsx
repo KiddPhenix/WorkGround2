@@ -1,21 +1,53 @@
 // Each renderer runs in its own React root. Render/effect failures use React 19
-// root callbacks; synchronous event failures are attributed by a tiny native
-// event broker because React reports event-handler exceptions globally.
+// root callbacks; a generation-scoped event-frame stack attributes synchronous
+// browser event failures without claiming unrelated global errors.
 
 import React, { useEffect, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import type { BlockRenderIdentity } from './safeBlockJson';
 import type { BlockRendererProps, RendererFailureCode, RendererModule } from './types';
 
+interface EventOwner {
+  active: boolean;
+  generation: number;
+  identity: BlockRenderIdentity;
+  onFailure: (code: RendererFailureCode) => void;
+  token: symbol;
+}
+
+interface EventFrame {
+  event: Event;
+  generation: number;
+  owner: EventOwner;
+  ownerIdentity: BlockRenderIdentity;
+  ownerToken: symbol;
+  removed: boolean;
+}
+
 interface Broker {
-  active: symbol | null;
-  handlers: Map<symbol, (code: RendererFailureCode) => void>;
+  frames: EventFrame[];
   onError: (event: ErrorEvent) => void;
+  refs: number;
+}
+
+interface EventScope {
+  activate(generation: number, onFailure: (code: RendererFailureCode) => void): void;
+  attachCleanup(): void;
+  deactivate(generation: number): void;
+  dispose(): void;
 }
 
 const EVENT_TYPES = [
-  'beforeinput', 'change', 'click', 'contextmenu', 'dblclick', 'dragend', 'drop',
-  'input', 'keydown', 'keyup', 'mousedown', 'mouseup', 'pointerdown', 'pointerup',
-  'submit', 'touchend', 'touchstart',
+  'auxclick', 'beforeinput', 'blur', 'change', 'click', 'compositionend',
+  'compositionstart', 'compositionupdate', 'contextmenu', 'copy', 'cut',
+  'dblclick', 'drag', 'dragend', 'dragenter', 'dragleave', 'dragover',
+  'dragstart', 'drop', 'focus', 'focusin', 'focusout', 'gotpointercapture',
+  'input', 'invalid', 'keydown', 'keypress', 'keyup', 'lostpointercapture',
+  'mousedown', 'mouseenter', 'mouseleave', 'mousemove', 'mouseout', 'mouseover',
+  'mouseup', 'paste', 'pointercancel', 'pointerdown', 'pointerenter',
+  'pointerleave', 'pointermove', 'pointerout', 'pointerover', 'pointerup',
+  'pointerrawupdate', 'reset', 'select', 'submit', 'touchcancel', 'touchend',
+  'touchmove', 'touchstart', 'wheel',
 ] as const;
 const brokers = new WeakMap<Window, Broker>();
 
@@ -52,68 +84,163 @@ function safeCall(callback: ((code: RendererFailureCode) => void) | undefined, c
   try {
     callback?.(code);
   } catch {
-    // Root/error callbacks must never become a second uncaught error.
+    // Broker, root, and logger callbacks cannot become a second uncaught error.
   }
 }
 
-function getBroker(owner: Window): Broker {
-  const existing = brokers.get(owner);
-  if (existing) return existing;
-  const broker: Broker = {
-    active: null,
-    handlers: new Map(),
-    onError: () => undefined,
-  };
-  broker.onError = (event) => {
-    const callback = broker.active ? broker.handlers.get(broker.active) : undefined;
-    if (!callback) return;
-    try {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    } catch {
-      // Reporting still proceeds when the host ErrorEvent is unusual.
-    }
-    safeCall(callback, 'renderer_event_error');
-  };
-  owner.addEventListener('error', broker.onError, true);
-  brokers.set(owner, broker);
+function removeFrame(broker: Broker, frame: EventFrame): void {
+  if (frame.removed) return;
+  frame.removed = true;
+  const index = broker.frames.lastIndexOf(frame);
+  if (index >= 0) broker.frames.splice(index, 1);
+}
+
+function removeOwnerFrames(broker: Broker, owner: EventOwner, generation?: number): void {
+  for (let index = broker.frames.length - 1; index >= 0; index--) {
+    const frame = broker.frames[index];
+    if (frame.owner !== owner || (generation !== undefined && frame.generation !== generation)) continue;
+    frame.removed = true;
+    broker.frames.splice(index, 1);
+  }
+}
+
+function currentFrame(broker: Broker): EventFrame | undefined {
+  for (let index = broker.frames.length - 1; index >= 0; index--) {
+    const frame = broker.frames[index];
+    if (frame.removed || !frame.owner.active || frame.owner.generation !== frame.generation ||
+        frame.owner.identity !== frame.ownerIdentity || frame.owner.token !== frame.ownerToken) continue;
+    // eventPhase becomes NONE (0) as soon as dispatch returns. A residual frame
+    // waiting for bubble/microtask cleanup must never own a later global error.
+    if (frame.event.eventPhase === 0) continue;
+    return frame;
+  }
+  return undefined;
+}
+
+function acquireBroker(owner: Window): Broker {
+  let broker = brokers.get(owner);
+  if (!broker) {
+    const created: Broker = { frames: [], refs: 0, onError: () => undefined };
+    created.onError = (event) => {
+      const frame = currentFrame(created);
+      if (!frame) return;
+      try {
+        event.preventDefault();
+      } catch {
+        // Failure attribution still proceeds for unusual ErrorEvent objects.
+      }
+      safeCall(frame.owner.onFailure, 'renderer_event_error');
+    };
+    broker = created;
+    brokers.set(owner, created);
+  }
+  broker.refs += 1;
+  if (broker.refs === 1) owner.addEventListener('error', broker.onError, true);
   return broker;
 }
 
-function registerEventScope(
-  container: HTMLElement,
-  token: symbol,
-  onFailure: (code: RendererFailureCode) => void,
-): () => void {
-  const owner = container.ownerDocument.defaultView;
-  if (!owner) return () => undefined;
-  const broker = getBroker(owner);
-  broker.handlers.set(token, onFailure);
+function releaseBroker(owner: Window, broker: Broker): void {
+  if (broker.refs <= 0) return;
+  broker.refs -= 1;
+  if (broker.refs !== 0) return;
+  try {
+    owner.removeEventListener('error', broker.onError, true);
+  } catch {
+    // Bookkeeping still completes when a host window is being torn down.
+  }
+  broker.frames.length = 0;
+  brokers.delete(owner);
+}
 
-  const activate = () => {
-    broker.active = token;
-    queueMicrotask(() => {
-      if (broker.active === token) broker.active = null;
-    });
-  };
-  for (const type of EVENT_TYPES) container.addEventListener(type, activate, true);
+function createEventScope(container: HTMLElement, identity: BlockRenderIdentity): EventScope {
+  const windowOwner = container.ownerDocument.defaultView;
+  if (!windowOwner) {
+    return {
+      activate: () => undefined,
+      attachCleanup: () => undefined,
+      deactivate: () => undefined,
+      dispose: () => undefined,
+    };
+  }
 
-  return () => {
-    for (const type of EVENT_TYPES) container.removeEventListener(type, activate, true);
-    if (broker.active === token) broker.active = null;
-    broker.handlers.delete(token);
-    if (broker.handlers.size === 0) {
-      owner.removeEventListener('error', broker.onError, true);
-      brokers.delete(owner);
-    }
+  const broker = acquireBroker(windowOwner);
+  const owner: EventOwner = {
+    active: false,
+    generation: 0,
+    identity,
+    onFailure: () => undefined,
+    token: Symbol(identity.key),
   };
+  const captureListeners = new Map<string, EventListener>();
+  const cleanupListeners = new Map<string, EventListener>();
+  let cleanupAttached = false;
+  let disposed = false;
+
+  for (const type of EVENT_TYPES) {
+    const capture: EventListener = (event) => {
+      if (disposed || !owner.active) return;
+      const frame: EventFrame = {
+        event,
+        generation: owner.generation,
+        owner,
+        ownerIdentity: owner.identity,
+        ownerToken: owner.token,
+        removed: false,
+      };
+      broker.frames.push(frame);
+      queueMicrotask(() => removeFrame(broker, frame));
+    };
+    captureListeners.set(type, capture);
+    container.addEventListener(type, capture, true);
+  }
+
+  const scope: EventScope = {
+    activate(generation, onFailure) {
+      if (disposed) return;
+      owner.generation = generation;
+      owner.onFailure = onFailure;
+      owner.active = true;
+    },
+    attachCleanup() {
+      if (disposed || cleanupAttached) return;
+      cleanupAttached = true;
+      for (const type of EVENT_TYPES) {
+        const cleanup: EventListener = (event) => {
+          for (let index = broker.frames.length - 1; index >= 0; index--) {
+            const frame = broker.frames[index];
+            if (frame.owner === owner && frame.generation === owner.generation && frame.event === event) {
+              removeFrame(broker, frame);
+            }
+          }
+        };
+        cleanupListeners.set(type, cleanup);
+        // Added after createRoot so React's root bubble listener runs first.
+        container.addEventListener(type, cleanup, false);
+      }
+    },
+    deactivate(generation) {
+      if (disposed || owner.generation !== generation) return;
+      owner.active = false;
+      removeOwnerFrames(broker, owner, generation);
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      owner.active = false;
+      removeOwnerFrames(broker, owner);
+      for (const [type, capture] of captureListeners) container.removeEventListener(type, capture, true);
+      for (const [type, cleanup] of cleanupListeners) container.removeEventListener(type, cleanup, false);
+      releaseBroker(windowOwner, broker);
+    },
+  };
+  return scope;
 }
 
 export interface RendererIslandProps {
-  identity: string;
+  identity: BlockRenderIdentity;
   module: RendererModule;
   rendererProps: BlockRendererProps;
-  onFailure: (identity: string, code: RendererFailureCode) => void;
+  onFailure: (identity: BlockRenderIdentity, code: RendererFailureCode) => void;
 }
 
 export const RendererIsland: React.FC<RendererIslandProps> = ({
@@ -124,6 +251,7 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<Root | null>(null);
+  const scopeRef = useRef<EventScope | null>(null);
   const activeRef = useRef(false);
   const lifecycleRef = useRef(0);
   const failureRef = useRef<(code: RendererFailureCode) => void>(() => undefined);
@@ -137,14 +265,20 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
     if (!container) return;
     const lifecycle = ++lifecycleRef.current;
     activeRef.current = true;
-    let root = rootRef.current;
-    const token = Symbol(identity);
-    const unregister = registerEventScope(container, token, (code) => failureRef.current(code));
 
+    let scope = scopeRef.current;
+    if (!scope) {
+      // Capture listeners must precede React's root capture listeners.
+      scope = createEventScope(container, identity);
+      scopeRef.current = scope;
+    }
+    scope.activate(lifecycle, (code) => failureRef.current(code));
+
+    let root = rootRef.current;
     if (!root) {
       try {
         root = createRoot(container, {
-          identifierPrefix: `wg2-${identity.replace(/[^a-zA-Z0-9_-]/g, '-')}-`,
+          identifierPrefix: `wg2-${identity.key}-`,
           onCaughtError: () => failureRef.current('renderer_caught_error'),
           onRecoverableError: () => failureRef.current('renderer_recoverable_error'),
           onUncaughtError: () => failureRef.current('renderer_uncaught_error'),
@@ -154,15 +288,18 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
         failureRef.current('renderer_root_error');
       }
     }
+    scope.attachCleanup();
 
     return () => {
       activeRef.current = false;
-      unregister();
-      // Parent-effect cleanup runs during another React commit. Defer the nested
-      // root unmount so React never unmounts one root while another is rendering.
-      // StrictMode's immediate setup cancels this disposal and reuses the root.
+      scope!.deactivate(lifecycle);
+      // Parent-effect cleanup runs during another React commit. Defer disposal;
+      // StrictMode's immediate setup increments lifecycle and reuses both scope
+      // and root, cancelling this queued teardown.
       queueMicrotask(() => {
         if (lifecycleRef.current !== lifecycle) return;
+        if (scopeRef.current === scope) scopeRef.current = null;
+        scope!.dispose();
         if (rootRef.current === root) rootRef.current = null;
         try {
           root?.unmount();
@@ -171,7 +308,7 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
         }
       });
     };
-  }, [Component, identity, onFailure]);
+  }, [identity, onFailure]);
 
   useEffect(() => {
     const current = rootRef.current;
@@ -187,7 +324,7 @@ export const RendererIsland: React.FC<RendererIslandProps> = ({
     }
   }, [Component, identity, onFailure, rendererProps]);
 
-  return <div ref={containerRef} className="wg2-renderer-island" data-block-identity={identity} />;
+  return <div ref={containerRef} className="wg2-renderer-island" data-block-identity={identity.key} />;
 };
 
 RendererIsland.displayName = 'RendererIsland';

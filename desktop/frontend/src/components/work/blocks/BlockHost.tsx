@@ -7,7 +7,8 @@ import type { BlockActionRequest, BlockInstance, BlockStatus } from '../../../wo
 import { FallbackBlock } from './FallbackBlock';
 import { RendererIsland } from './RendererIsland';
 import { blockRegistry, isRendererKind } from './registry';
-import { blockRenderIdentity } from './safeBlockJson';
+import { createBlockRenderIdentity, matchesBlockRenderIdentity } from './safeBlockJson';
+import type { BlockRenderIdentity } from './safeBlockJson';
 import type {
   BlockHostProps,
   BlockHostState,
@@ -23,7 +24,7 @@ interface ActionGate {
   archived: boolean;
   block: BlockInstance;
   blockID: string;
-  identity: string;
+  identity: BlockRenderIdentity;
   onAction?: (request: BlockActionRequest) => void;
   readonly: boolean;
   revision: number;
@@ -104,7 +105,11 @@ export const BlockHost: React.FC<BlockHostProps> = ({
   context,
   onAction,
 }) => {
-  const identity = blockRenderIdentity(block);
+  const identityRef = useRef<BlockRenderIdentity | null>(null);
+  if (!identityRef.current || !matchesBlockRenderIdentity(identityRef.current, block)) {
+    identityRef.current = createBlockRenderIdentity(block);
+  }
+  const identity = identityRef.current;
   const disabled = readonly || archived;
   const [attempt, setAttempt] = useState({ identity, count: 0 });
   const [state, setState] = useState<BlockHostState>({ identity, stage: 'validating' });
@@ -146,7 +151,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
 
   const retries = attempt.identity === identity ? attempt.count : 0;
 
-  const failRenderer = useCallback((failedIdentity: string, code: RendererFailureCode) => {
+  const failRenderer = useCallback((failedIdentity: BlockRenderIdentity, code: RendererFailureCode) => {
     const gate = gateRef.current;
     if (!gate.active || gate.identity !== failedIdentity) return;
     generation.current += 1;
@@ -339,7 +344,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
       onPointerDownCapture={stopInteraction}
     >
       <RendererIsland
-        key={`${identity}:${retries}`}
+        key={`${identity.key}:${retries}`}
         identity={identity}
         module={state.module}
         rendererProps={rendererProps}
