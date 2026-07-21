@@ -5,6 +5,7 @@
 //   FallbackBlock      — last-resort safe text renderer
 //   blockRegistry      — shared production singleton
 //   createRegistry     — isolated instance for tests
+//   registerBuiltinBlocks — register all V1 core block kinds
 //
 // Types:
 //   BlockHostProps, BlockHostContext, BlockRendererProps,
@@ -31,3 +32,30 @@ export type {
   ValidationResult,
   BlockHostState,
 } from './types';
+export {
+  validateChecklist,
+  validateFileList,
+  validateGitStatus,
+  validateItemList,
+  validateKeyValue,
+  validateProgress,
+} from './schemas';
+export type {
+  ItemState,
+  ListItem,
+  ItemListData,
+  ChecklistItem,
+  ChecklistData,
+  FileStatus,
+  FileEntry,
+  FileListData,
+  ChangeType,
+  GitChange,
+  GitStatusData,
+  KVState,
+  KVItem,
+  KeyValueData,
+  ProgressState,
+  ProgressItem,
+  ProgressData,
+} from './schemas';

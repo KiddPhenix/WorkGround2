@@ -158,12 +158,16 @@ async function run(): Promise<void> {
 
   // ── Registration ─────────────────────────────────────────────────────────
 
-  console.log('\n-- registration: all six kinds registered');
-  for (const kind of ['table', 'chart', 'graph', 'code', 'markdown', 'artifact']) {
+  console.log('\n-- registration: all builtin kinds share one production chain');
+  const builtinKinds = [
+    'item', 'list', 'checklist', 'file_list', 'git_status', 'key_value', 'status',
+    'progress', 'timeline', 'table', 'chart', 'graph', 'code', 'markdown', 'artifact',
+  ];
+  for (const kind of builtinKinds) {
     ok(blockRegistry.has(kind, 1), `${kind} registered by production BlockHost`);
   }
   registerBuiltinBlocks();
-  ok(blockRegistry.has('table', 1), 'repeated registration is idempotent');
+  ok(builtinKinds.every((kind) => blockRegistry.has(kind, 1)), 'repeated registration is idempotent for the complete chain');
 
   // ── Table: validation ────────────────────────────────────────────────────
 
