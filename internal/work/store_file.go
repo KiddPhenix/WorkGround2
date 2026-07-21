@@ -2833,68 +2833,152 @@ func DefaultReducer() WorkEventReducer {
 				})
 			}
 
-		case EventRunStarted:
-			var run WorkflowRun
-			if err := json.Unmarshal(event.Payload, &run); err != nil {
-				return nil, fmt.Errorf("work: unmarshal run started: %w", err)
+		case EventRunStarted, EventRunChanged:
+			payload, legacy, err := decodeRunEventPayload(event.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("work: unmarshal %s: %w", event.Type, err)
 			}
-			found := false
-			for i, r := range current.Runs {
-				if r.ID == run.ID {
-					current.Runs[i] = run
-					found = true
+			run := payload.Run
+			index := -1
+			for i := range current.Runs {
+				if current.Runs[i].ID == run.ID {
+					index = i
 					break
 				}
 			}
-			if !found {
+			if event.Type == EventRunChanged && index < 0 {
+				return nil, fmt.Errorf("work: run changed: run %q not found", run.ID)
+			}
+			if index >= 0 {
+				if err := ValidateRunTransition(current.Runs[index].State, run.State); err != nil {
+					return nil, err
+				}
+				current.Runs[index] = run
+			} else {
+				if run.State != RunPending && !legacy {
+					return nil, fmt.Errorf("work: run started: initial state must be %s, got %s", RunPending, run.State)
+				}
 				current.Runs = append(current.Runs, run)
+			}
+			if !legacy {
+				if err := ValidateWorkTransition(current.State, payload.WorkState); err != nil {
+					return nil, err
+				}
+				current.State = payload.WorkState
 			}
 
 		case EventStageChanged:
-			var stage Stage
-			if err := json.Unmarshal(event.Payload, &stage); err != nil {
+			payload, legacy, err := decodeStageEventPayload(event.Payload)
+			if err != nil {
 				return nil, fmt.Errorf("work: unmarshal stage changed: %w", err)
 			}
-			for i := range current.Runs {
-				for j := range current.Runs[i].Stages {
-					if current.Runs[i].Stages[j].Name == stage.Name {
-						current.Runs[i].Stages[j] = stage
-						break
-					}
-				}
-			}
-
-		case EventTaskChanged:
-			var task Task
-			if err := json.Unmarshal(event.Payload, &task); err != nil {
-				return nil, fmt.Errorf("work: unmarshal task changed: %w", err)
-			}
-			for i := range current.Runs {
-				for j := range current.Runs[i].Stages {
-					for k := range current.Runs[i].Stages[j].Tasks {
-						if current.Runs[i].Stages[j].Tasks[k].Name == task.Name {
-							current.Runs[i].Stages[j].Tasks[k] = task
+			if legacy {
+				for i := range current.Runs {
+					for j := range current.Runs[i].Stages {
+						if current.Runs[i].Stages[j].Name == payload.Stage.Name {
+							if err := ValidateRunTransition(current.Runs[i].Stages[j].State, payload.Stage.State); err != nil {
+								return nil, err
+							}
+							current.Runs[i].Stages[j] = payload.Stage
 						}
 					}
 				}
+				break
 			}
+			run := findWorkflowRun(current, payload.RunID)
+			if run == nil {
+				return nil, fmt.Errorf("work: stage changed: run %q not found", payload.RunID)
+			}
+			stageID := payload.Stage.ID
+			if stageID == "" {
+				stageID = payload.Stage.Name
+			}
+			stage := findRunStage(run, stageID)
+			if stage == nil {
+				return nil, fmt.Errorf("work: stage changed: stage %q not found in run %q", stageID, payload.RunID)
+			}
+			if err := ValidateRunTransition(stage.State, payload.Stage.State); err != nil {
+				return nil, err
+			}
+			*stage = payload.Stage
 
-		case EventAttemptChanged:
-			var attempt Attempt
-			if err := json.Unmarshal(event.Payload, &attempt); err != nil {
-				return nil, fmt.Errorf("work: unmarshal attempt changed: %w", err)
+		case EventTaskChanged:
+			payload, legacy, err := decodeTaskEventPayload(event.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("work: unmarshal task changed: %w", err)
 			}
-			for i := range current.Runs {
-				for j := range current.Runs[i].Stages {
-					for k := range current.Runs[i].Stages[j].Tasks {
-						for l := range current.Runs[i].Stages[j].Tasks[k].Attempts {
-							if current.Runs[i].Stages[j].Tasks[k].Attempts[l].Index == attempt.Index {
-								current.Runs[i].Stages[j].Tasks[k].Attempts[l] = attempt
+			if legacy {
+				for i := range current.Runs {
+					for j := range current.Runs[i].Stages {
+						for k := range current.Runs[i].Stages[j].Tasks {
+							if current.Runs[i].Stages[j].Tasks[k].Name == payload.Task.Name {
+								if err := ValidateRunTransition(current.Runs[i].Stages[j].Tasks[k].State, payload.Task.State); err != nil {
+									return nil, err
+								}
+								current.Runs[i].Stages[j].Tasks[k] = payload.Task
 							}
 						}
 					}
 				}
+				break
 			}
+			run := findWorkflowRun(current, payload.RunID)
+			stage := findRunStage(run, payload.StageID)
+			if stage == nil {
+				return nil, fmt.Errorf("work: task changed: stage %q not found in run %q", payload.StageID, payload.RunID)
+			}
+			task := findStageTask(stage, payload.Task.ID)
+			if task == nil {
+				return nil, fmt.Errorf("work: task changed: task %q not found in stage %q", payload.Task.ID, payload.StageID)
+			}
+			if err := ValidateRunTransition(task.State, payload.Task.State); err != nil {
+				return nil, err
+			}
+			*task = payload.Task
+
+		case EventAttemptChanged:
+			payload, legacy, err := decodeAttemptEventPayload(event.Payload)
+			if err != nil {
+				return nil, fmt.Errorf("work: unmarshal attempt changed: %w", err)
+			}
+			if legacy {
+				for i := range current.Runs {
+					for j := range current.Runs[i].Stages {
+						for k := range current.Runs[i].Stages[j].Tasks {
+							for l := range current.Runs[i].Stages[j].Tasks[k].Attempts {
+								if current.Runs[i].Stages[j].Tasks[k].Attempts[l].Index == payload.Attempt.Index {
+									if err := ValidateRunTransition(current.Runs[i].Stages[j].Tasks[k].Attempts[l].State, payload.Attempt.State); err != nil {
+										return nil, err
+									}
+									current.Runs[i].Stages[j].Tasks[k].Attempts[l] = payload.Attempt
+								}
+							}
+						}
+					}
+				}
+				break
+			}
+			run := findWorkflowRun(current, payload.RunID)
+			stage := findRunStage(run, payload.StageID)
+			task := findStageTask(stage, payload.TaskID)
+			if task == nil {
+				return nil, fmt.Errorf("work: attempt changed: task %q not found in stage %q", payload.TaskID, payload.StageID)
+			}
+			attempt := findTaskAttempt(task, payload.Attempt.ID)
+			if attempt == nil {
+				if payload.Attempt.ID == "" || payload.Attempt.State != RunRunning || payload.Attempt.Index != len(task.Attempts) {
+					return nil, fmt.Errorf("work: attempt changed: invalid new attempt %q index=%d state=%s", payload.Attempt.ID, payload.Attempt.Index, payload.Attempt.State)
+				}
+				task.Attempts = append(task.Attempts, payload.Attempt)
+				break
+			}
+			if attempt.Index != payload.Attempt.Index {
+				return nil, fmt.Errorf("work: attempt changed: immutable index changed for %q", payload.Attempt.ID)
+			}
+			if err := ValidateRunTransition(attempt.State, payload.Attempt.State); err != nil {
+				return nil, err
+			}
+			*attempt = payload.Attempt
 
 		case EventCornerstoneUpserted:
 			var cs Cornerstone

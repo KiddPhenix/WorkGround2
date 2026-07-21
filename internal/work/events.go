@@ -32,6 +32,7 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventDefinitionFrozen:    true,
 	EventDraftUpdated:        true,
 	EventRunStarted:          true,
+	EventRunChanged:          true,
 	EventStageChanged:        true,
 	EventTaskChanged:         true,
 	EventAttemptChanged:      true,
