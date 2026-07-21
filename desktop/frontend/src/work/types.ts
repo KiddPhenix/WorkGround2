@@ -413,6 +413,14 @@ export interface BlockActionRequest {
   expectedRevision: number;
 }
 
+export interface BlockUpdateRequest {
+  workId: string;
+  blockId: string;
+  data: Record<string, unknown>;
+  requestId: string;
+  expectedRevision: number;
+}
+
 export interface WorkFilter {
   state?: WorkState;
   archiveState?: WorkArchiveState;
