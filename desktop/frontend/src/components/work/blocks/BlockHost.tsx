@@ -238,7 +238,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     );
 
     return () => { generation.current += 1; };
-  }, [block, identity, retries]);
+  }, [identity, retries, blockRegistry]);
 
   const guardedAction = useMemo<BlockRendererProps['onAction']>(() => {
     const actionIdentity = identity;
