@@ -35014,3 +35014,553 @@ body > .mermaid-diagram--fullscreen {
     flex-wrap: wrap;
   }
 }
+
+/* ============================================================
+   WorkCard — M1 double-sided card system
+   ============================================================ */
+
+/* --- Outer fixed workspace header (never remounts) --- */
+
+.wg2-work-outer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #333);
+  background: var(--bg-surface, #1a1a1a);
+  flex-shrink: 0;
+}
+
+.wg2-work-outer-header-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.wg2-work-outer-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wg2-work-outer-state {
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--badge-bg, #333);
+  color: var(--badge-fg, #ccc);
+  white-space: nowrap;
+}
+
+.wg2-work-outer-state[data-state="running"] { background: var(--accent, #4a9eff); color: #fff; }
+.wg2-work-outer-state[data-state="failed"] { background: var(--danger, #e05555); color: #fff; }
+.wg2-work-outer-state[data-state="completed"] { background: var(--success, #4caf50); color: #fff; }
+
+.wg2-work-outer-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.wg2-work-status-fetching {
+  font-size: 0.75rem;
+  color: var(--fg-muted, #999);
+}
+
+.wg2-work-status-error {
+  font-size: 0.75rem;
+  color: var(--danger, #e05555);
+}
+
+/* --- Cornerstone entry & AddOn area (fixed in outer, never remounts) --- */
+
+.wg2-work-cornerstone-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.wg2-work-cornerstone-count {
+  font-size: 0.75rem;
+  color: var(--fg-muted, #999);
+}
+
+.wg2-work-addon-area {
+  flex-shrink: 0;
+}
+
+/* --- Deep link missing target --- */
+
+.wg2-work-deeplink-missing {
+  padding: 8px 16px;
+  background: var(--warning-bg, #3a3520);
+  color: var(--warning-fg, #ffd54f);
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.wg2-work-deeplink-missing p {
+  margin: 0;
+}
+
+/* --- Error banner --- */
+
+.wg2-work-error-banner {
+  padding: 8px 16px;
+  background: var(--danger-bg, #3a2020);
+  color: var(--danger, #e05555);
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.wg2-work-error-banner p {
+  margin: 0 0 4px;
+}
+
+.wg2-work-error-banner p:last-child {
+  margin-bottom: 0;
+}
+
+/* --- Card body — CSS 3D flip container --- */
+
+.wg2-work-card-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  perspective: 1200px;
+}
+
+/* Narrow: no 3D, just show/hide */
+@media (max-width: 480px) {
+  .wg2-work-card-body {
+    perspective: none;
+  }
+}
+
+/* Reduced motion: fade instead of 3D flip */
+@media (prefers-reduced-motion: reduce) {
+  .wg2-work-card-body {
+    perspective: none;
+  }
+}
+
+/* --- Faces --- */
+
+.wg2-work-face {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transition: transform 240ms ease;
+}
+
+.wg2-work-face-front {
+  z-index: var(--z-local-raised);
+  transform: rotateY(0deg);
+  opacity: 1;
+}
+
+.wg2-work-face-back {
+  z-index: var(--z-local-base);
+  transform: rotateY(180deg);
+  opacity: 1;
+}
+
+.wg2-work-face-active.wg2-work-face-front,
+.wg2-work-face-active.wg2-work-face-back {
+  z-index: var(--z-local-handle);
+}
+
+/* Show the other face without remounting either surface. */
+.wg2-work-card [data-active-face="back"] .wg2-work-face-front {
+  transform: rotateY(-180deg);
+}
+
+.wg2-work-card [data-active-face="back"] .wg2-work-face-back {
+  transform: rotateY(0deg);
+}
+
+.wg2-work-face:not(.wg2-work-face-active) {
+  pointer-events: none;
+}
+
+/* Narrow + reduced-motion: flat visibility toggle */
+@media (max-width: 480px), (prefers-reduced-motion: reduce) {
+  .wg2-work-card-body {
+    transform: none !important;
+  }
+
+  .wg2-work-face {
+    transition: opacity 150ms ease;
+  }
+
+  .wg2-work-face:not(.wg2-work-face-active) {
+    opacity: 0;
+    pointer-events: none;
+    z-index: var(--z-local-base);
+  }
+
+  .wg2-work-face.wg2-work-face-active {
+    opacity: 1;
+    pointer-events: auto;
+    z-index: var(--z-local-raised);
+    transform: none;
+  }
+
+  .wg2-work-face-front,
+  .wg2-work-face-back {
+    transform: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .wg2-work-face {
+    transition: none;
+  }
+}
+
+/* --- Flip control --- */
+
+.wg2-work-flip-control {
+  display: inline-flex;
+  align-items: center;
+}
+
+.wg2-work-flip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--button-border, #444);
+  border-radius: 6px;
+  background: var(--button-bg, #2a2a2a);
+  color: var(--button-fg, #ddd);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms;
+}
+
+.wg2-work-flip-button:hover:not(:disabled) {
+  background: var(--button-hover-bg, #3a3a3a);
+}
+
+.wg2-work-flip-button:focus-visible {
+  outline: 2px solid var(--focus-ring, #4a9eff);
+  outline-offset: 2px;
+}
+
+.wg2-work-flip-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.wg2-work-flip-icon {
+  display: flex;
+  align-items: center;
+}
+
+.wg2-work-flip-label {
+  font-weight: 500;
+}
+
+/* --- Front face --- */
+
+.wg2-work-card-front {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wg2-work-front-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.wg2-work-name {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wg2-work-workflow-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.wg2-work-workflow-state {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  background: var(--badge-bg, #333);
+  color: var(--badge-fg, #ccc);
+}
+
+.wg2-work-workflow-state[data-run-state="running"] { background: var(--accent, #4a9eff); color: #fff; }
+.wg2-work-workflow-state[data-run-state="failed"] { background: var(--danger, #e05555); color: #fff; }
+.wg2-work-workflow-state[data-run-state="completed"] { background: var(--success, #4caf50); color: #fff; }
+
+.wg2-work-attention {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+}
+
+.wg2-work-attention-count {
+  background: var(--accent, #4a9eff);
+  color: #fff;
+  border-radius: 50%;
+  min-width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.wg2-work-section-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--fg-muted, #999);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.wg2-work-conclusions,
+.wg2-work-artifacts,
+.wg2-work-cornerstones {
+  margin: 0;
+}
+
+.wg2-work-conclusion-list,
+.wg2-work-artifact-list,
+.wg2-work-cornerstone-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wg2-work-conclusion-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--surface-raised, #2a2a2a);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.wg2-work-conclusion-kind {
+  font-weight: 600;
+  text-transform: capitalize;
+  color: var(--accent, #4a9eff);
+}
+
+.wg2-work-artifact-item {
+  padding: 4px 8px;
+  background: var(--surface-raised, #2a2a2a);
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-family: var(--font-mono, monospace);
+}
+
+.wg2-work-cornerstone-item {
+  padding: 4px 8px;
+  background: var(--surface-raised, #2a2a2a);
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+
+.wg2-work-block-host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+}
+
+.wg2-work-block-host-wrapper {
+  position: relative;
+}
+
+.wg2-work-block-collapsed > .wg2-block-host {
+  max-height: 96px;
+  overflow: hidden;
+}
+
+.wg2-work-block-expand-toggle {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-top: 1px solid var(--border, #333);
+  background: var(--bg-surface, #1a1a1a);
+  color: var(--fg-muted, #999);
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-align: center;
+}
+
+.wg2-work-block-expand-toggle:hover {
+  background: var(--surface-raised, #2a2a2a);
+}
+
+.wg2-work-front-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted, #999);
+}
+
+/* --- Back face --- */
+
+.wg2-work-card-back {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+
+.wg2-work-back-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wg2-work-back-prompt-preview {
+  font-size: 0.85rem;
+  color: var(--fg-muted, #999);
+  border-left: 3px solid var(--accent, #4a9eff);
+  padding-left: 10px;
+}
+
+.wg2-work-back-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.wg2-work-back-slot {
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.wg2-work-back-transcript {
+  flex: 2 1 auto;
+  min-height: 120px;
+}
+
+.wg2-work-back-composer {
+  flex-shrink: 0;
+}
+
+.wg2-work-back-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  color: var(--fg-muted, #999);
+  font-size: 0.85rem;
+  background: var(--bg-surface, #1a1a1a);
+}
+
+.wg2-work-session-unavailable {
+  padding: 24px 16px;
+  color: var(--fg-muted, #999);
+  text-align: center;
+  border: 1px dashed var(--border, #333);
+  border-radius: 6px;
+}
+
+.wg2-work-back-readonly-notice {
+  padding: 12px 16px;
+  background: var(--warning-bg, #3a3520);
+  color: var(--warning-fg, #ffd54f);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+/* --- Unknown / recovery state --- */
+
+.wg2-work-card-unknown {
+  padding: 24px 16px;
+}
+
+.wg2-work-unknown-notice {
+  text-align: center;
+  color: var(--fg-muted, #999);
+}
+
+.wg2-work-unknown-notice h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--danger, #e05555);
+}
+
+.wg2-work-error {
+  font-size: 0.8rem;
+  color: var(--danger, #e05555);
+}
+
+/* --- Archived / readonly states --- */
+
+.wg2-work-archived .wg2-work-face,
+.wg2-work-readonly .wg2-work-face {
+  pointer-events: auto;
+}
+
+.wg2-work-archived .wg2-work-face button:not(.wg2-work-flip-button),
+.wg2-work-readonly .wg2-work-face button:not(.wg2-work-flip-button) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --- Card root --- */
+
+.wg2-work-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg, #111);
+  color: var(--fg, #eee);
+  border: 1px solid var(--border, #333);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.wg2-work-card-inner {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.wg2-work-card[data-readonly="true"] {
+  --card-overlay: rgba(0, 0, 0, 0.02);
+}
