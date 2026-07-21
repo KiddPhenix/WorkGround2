@@ -1,6 +1,6 @@
 // Shared contracts for the block rendering boundary.
 
-import type { BlockActionRequest, BlockInstance, BlockPlacement } from '../../../work/types';
+import type { BlockActionRequest, BlockInstance, BlockPlacement, BlockUpdateRequest } from '../../../work/types';
 import type { BlockRenderIdentity } from './safeBlockJson';
 
 export interface ValidationResult {
@@ -20,6 +20,7 @@ export interface BlockRendererProps {
   archived: boolean;
   context: BlockHostContext;
   onAction?: (request: BlockActionRequest) => void;
+  onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
 }
 
 export interface RendererModule {
@@ -69,6 +70,7 @@ export interface BlockHostProps {
   archived?: boolean;
   context: BlockHostContext;
   onAction?: (request: BlockActionRequest) => void;
+  onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
 }
 
 export type BlockHostState =

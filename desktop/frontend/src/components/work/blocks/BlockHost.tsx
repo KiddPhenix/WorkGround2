@@ -3,10 +3,11 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent } from 'react';
-import type { BlockActionRequest, BlockInstance, BlockStatus } from '../../../work/types';
+import type { BlockActionRequest, BlockInstance, BlockStatus, BlockUpdateRequest } from '../../../work/types';
 import { FallbackBlock } from './FallbackBlock';
 import { RendererIsland } from './RendererIsland';
 import { blockRegistry, isRendererKind } from './registry';
+import { registerCoreRenderers } from './register';
 import { createBlockRenderIdentity, matchesBlockRenderIdentity } from './safeBlockJson';
 import type { BlockRenderIdentity } from './safeBlockJson';
 import type {
@@ -19,6 +20,10 @@ import type {
 const MAX_RETRIES = 3;
 const BLOCK_STATUSES = new Set<BlockStatus>(['loading', 'ready', 'empty', 'stale', 'blocked', 'failed']);
 
+// BlockHost is the production entry point. Core renderers must not depend on a
+// caller remembering a fragile setup step; exact registration is idempotent.
+registerCoreRenderers();
+
 interface ActionGate {
   active: boolean;
   archived: boolean;
@@ -26,6 +31,7 @@ interface ActionGate {
   blockID: string;
   identity: BlockRenderIdentity;
   onAction?: (request: BlockActionRequest) => void;
+  onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   readonly: boolean;
   revision: number;
   status: BlockInstance['status'];
@@ -104,6 +110,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
   archived = false,
   context,
   onAction,
+  onUpdate,
 }) => {
   const identityRef = useRef<BlockRenderIdentity | null>(null);
   if (!identityRef.current || !matchesBlockRenderIdentity(identityRef.current, block)) {
@@ -122,6 +129,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     blockID: block.id,
     identity,
     onAction,
+    onUpdate,
     readonly,
     revision: block.revision,
     status: block.status,
@@ -142,6 +150,7 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     blockID: block.id,
     identity,
     onAction,
+    onUpdate,
     readonly,
     revision: block.revision,
     status: block.status,
@@ -263,6 +272,27 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     };
   }, [failRenderer, identity]);
 
+  const guardedUpdate = useMemo<NonNullable<BlockRendererProps['onUpdate']>>(() => {
+    const updateIdentity = identity;
+    return async (request) => {
+      const gate = gateRef.current;
+      const callback = gate.onUpdate;
+      try {
+        if (!gate.active || gate.identity !== updateIdentity || gate.readonly || gate.archived ||
+            gate.tombstone || gate.status !== 'ready' || typeof callback !== 'function' ||
+            !request || request.blockId !== gate.blockID || request.workId !== gate.workID ||
+            request.expectedRevision !== gate.revision) {
+          throw new Error('work block update is no longer current');
+        }
+      } catch {
+        throw new Error('work block update was rejected');
+      }
+      // Update errors intentionally return to the renderer so it can preserve
+      // the user's draft and expose a safe retry path.
+      await callback(request);
+    };
+  }, [identity]);
+
   const retry = useCallback(() => {
     const gate = gateRef.current;
     if (!gate.active || gate.identity !== identity || gate.readonly || gate.archived ||
@@ -280,7 +310,8 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     archived,
     context,
     onAction: guardedAction,
-  }), [archived, block, context, disabled, guardedAction, placement]);
+    onUpdate: typeof onUpdate === 'function' ? guardedUpdate : undefined,
+  }), [archived, block, context, disabled, guardedAction, guardedUpdate, onUpdate, placement]);
 
   const stopInteraction = useCallback((event: SyntheticEvent) => {
     if (!disabled) return;
