@@ -23,10 +23,12 @@ var validWorkTransitions = map[WorkState]map[WorkState]bool{
 		WorkCancelled:   true,
 	},
 	WorkWaitingUser: {
-		WorkRunning: true,
+		WorkRunning:   true,
+		WorkCancelled: true,
 	},
 	WorkPaused: {
-		WorkRunning: true,
+		WorkRunning:   true,
+		WorkCancelled: true,
 	},
 	WorkCompleted: {
 		WorkRunning: true,
@@ -112,8 +114,9 @@ func CanTransitionArchive(from, to WorkArchiveState) bool {
 
 // ── RunState transitions ──────────────────────────────────────────────────
 
-// validRunTransitions is the closed set of allowed RunState changes.
-// Terminal states (completed, failed, cancelled) must not regress.
+// validRunTransitions is the closed set of allowed RunState changes. Failed is
+// recoverable only through an explicit Task retry; completed/cancelled stay
+// irreversible.
 var validRunTransitions = map[RunState]map[RunState]bool{
 	RunPending: {
 		RunRunning:   true,
@@ -121,18 +124,26 @@ var validRunTransitions = map[RunState]map[RunState]bool{
 		RunCancelled: true,
 	},
 	RunRunning: {
-		RunCompleted: true,
-		RunFailed:    true,
-		RunCancelled: true,
-		RunWaiting:   true,
+		RunCompleted:         true,
+		RunFailed:            true,
+		RunCancelled:         true,
+		RunWaiting:           true,
+		RunNeedsConfirmation: true,
 	},
 	RunWaiting: {
 		RunRunning:   true,
 		RunCancelled: true,
 		RunFailed:    true,
 	},
+	RunNeedsConfirmation: {
+		RunRunning:   true,
+		RunCancelled: true,
+		RunFailed:    true,
+	},
 	RunCompleted: {},
-	RunFailed:    {},
+	RunFailed: {
+		RunRunning: true,
+	},
 	RunCancelled: {},
 }
 

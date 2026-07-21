@@ -40,12 +40,13 @@ const (
 type RunState string
 
 const (
-	RunPending   RunState = "pending"
-	RunRunning   RunState = "running"
-	RunWaiting   RunState = "waiting"
-	RunCompleted RunState = "completed"
-	RunFailed    RunState = "failed"
-	RunCancelled RunState = "cancelled"
+	RunPending             RunState = "pending"
+	RunRunning             RunState = "running"
+	RunWaiting             RunState = "waiting"
+	RunCompleted           RunState = "completed"
+	RunFailed              RunState = "failed"
+	RunCancelled           RunState = "cancelled"
+	RunNeedsConfirmation   RunState = "needs_confirmation"
 )
 
 // ── Blueprint / source ─────────────────────────────────────────────────────

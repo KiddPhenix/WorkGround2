@@ -133,7 +133,7 @@ func (s *Store) RestoreFromTrash(id, requestID string) error {
 // TaskExecutor is a configurable TaskExecutor fake.
 type TaskExecutor struct {
 	ExecuteFunc func(context.Context, work.TaskExecuteInput) (*work.Attempt, error)
-	CancelFunc  func(context.Context, work.SessionRef, string) error
+	CancelFunc  func(context.Context, work.TaskCancelInput) error
 }
 
 func (f *TaskExecutor) ExecuteTask(ctx context.Context, input work.TaskExecuteInput) (*work.Attempt, error) {
@@ -143,11 +143,11 @@ func (f *TaskExecutor) ExecuteTask(ctx context.Context, input work.TaskExecuteIn
 	return f.ExecuteFunc(ctx, input)
 }
 
-func (f *TaskExecutor) CancelTask(ctx context.Context, session work.SessionRef, requestID string) error {
+func (f *TaskExecutor) CancelTask(ctx context.Context, input work.TaskCancelInput) error {
 	if f.CancelFunc == nil {
 		return ErrUnconfigured
 	}
-	return f.CancelFunc(ctx, session, requestID)
+	return f.CancelFunc(ctx, input)
 }
 
 // SessionLookup is a configurable SessionLookup fake.

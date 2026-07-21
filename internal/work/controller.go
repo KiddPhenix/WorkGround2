@@ -29,6 +29,12 @@ type WorkController interface {
 	// CancelRun 取消正在运行的 WorkflowRun。
 	CancelRun(ctx context.Context, workID, runID, requestID string) error
 
+	// PauseRun 暂停正在运行的 WorkflowRun。
+	PauseRun(ctx context.Context, workID, runID, requestID string) error
+
+	// ResumeRun 恢复暂停/等待用户的 WorkflowRun，可选附带 gate resolution 上下文。
+	ResumeRun(ctx context.Context, input ResumeRunInput) (*WorkflowRun, error)
+
 	// ArchiveWork 归档 Work，生成不可变 WorkRecord。
 	ArchiveWork(ctx context.Context, workID, requestID string) (*WorkRecord, error)
 
