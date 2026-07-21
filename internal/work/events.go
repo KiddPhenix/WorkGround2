@@ -40,6 +40,8 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventBlockRemoved:        true,
 	EventCornerstoneUpserted: true,
 	EventCornerstoneRemoved:  true,
+	EventCornerstoneRestored: true,
+	EventCornerstoneGC:       true,
 	EventConclusionUpserted:  true,
 	EventArtifactLinked:      true,
 	EventWorkArchived:        true,

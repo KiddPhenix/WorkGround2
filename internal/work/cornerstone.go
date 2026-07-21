@@ -24,6 +24,9 @@ type Cornerstone struct {
 	PinnedAt       time.Time         `json:"pinnedAt"`
 	UpdatedAt      time.Time         `json:"updatedAt"`
 	Error          string            `json:"error,omitempty"`
+	// Tombstone marks a logically removed Cornerstone. Removed cornerstones
+	// retain their event history and can be restored via Undo.
+	Tombstone bool `json:"tombstone,omitempty"`
 }
 
 // CornerstoneType classifies what a Cornerstone represents.
