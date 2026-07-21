@@ -582,11 +582,15 @@ func (s *Service) retryTask(ctx context.Context, workID, runID, stageID, taskID,
 		return &finished, fmt.Errorf("work: RetryTask: run %q disappeared after result", runID)
 	}
 	if _, runErr := runner.Run(ctx, current, persistedRun, resultEmitter); runErr != nil {
-		current, _, _ = s.store.LoadState(workID, "")
-		latest := findWorkflowRun(current, runID)
-		if latest == nil || (latest.State != RunWaiting && !IsTerminalRunState(latest.State)) {
-			return &finished, fmt.Errorf("work: RetryTask: advance retried task: %w", runErr)
+		primaryErr := fmt.Errorf("work: RetryTask: advance retried task: %w", runErr)
+		latestState, _, reloadErr := s.store.LoadState(workID, "")
+		if reloadErr != nil {
+			return &finished, errors.Join(primaryErr, committedRecovery("retry-runner-reload", workID, requestID, 0, reloadErr))
 		}
+		if latest := findAttempt(latestState, runID, stageID, taskID, attemptID); latest != nil {
+			finished = *latest
+		}
+		return &finished, primaryErr
 	}
 
 	view, viewErr := s.loadView(workID)
@@ -968,21 +972,30 @@ func (s *Service) resumeRun(ctx context.Context, workID, runID, requestID string
 
 	emit := s.runEmitter(workID, runID, "ResumeRun")
 	if _, runErr := runner.Run(ctx, current, persisted, emit); runErr != nil {
-		current, _, _ = s.store.LoadState(workID, "")
-		persisted = findWorkflowRun(current, runID)
+		primaryErr := fmt.Errorf("work: ResumeRun: runner: %w", runErr)
+		latestState, _, reloadErr := s.store.LoadState(workID, "")
+		if reloadErr != nil {
+			return persisted, errors.Join(primaryErr, committedRecovery("resume-runner-reload", workID, requestID, 0, reloadErr))
+		}
+		persisted = findWorkflowRun(latestState, runID)
 		if persisted == nil {
-			return nil, fmt.Errorf("work: ResumeRun: run %q disappeared after runner error", runID)
+			return nil, errors.Join(primaryErr, fmt.Errorf("work: ResumeRun: run %q disappeared after runner error", runID))
 		}
-		if persisted.State != RunWaiting && !IsTerminalRunState(persisted.State) {
-			return persisted, fmt.Errorf("work: ResumeRun: %w", runErr)
-		}
+		return persisted, primaryErr
 	}
 
 	view, viewErr := s.loadView(workID)
 	if viewErr != nil {
-		current, _, _ = s.store.LoadState(workID, "")
-		persisted = findWorkflowRun(current, runID)
-		return persisted, committedRecovery("resume-view", workID, requestID, 0, viewErr)
+		primaryErr := committedRecovery("resume-view", workID, requestID, 0, viewErr)
+		latestState, _, reloadErr := s.store.LoadState(workID, "")
+		if reloadErr != nil {
+			return persisted, errors.Join(primaryErr, committedRecovery("resume-view-reload", workID, requestID, 0, reloadErr))
+		}
+		persisted = findWorkflowRun(latestState, runID)
+		if persisted == nil {
+			return nil, errors.Join(primaryErr, fmt.Errorf("work: ResumeRun: run %q disappeared after view error", runID))
+		}
+		return persisted, primaryErr
 	}
 	if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
 		return findWorkflowRun(view.Work, runID), committedRecovery("resume-view", workID, requestID, view.Revision, emitErr)
