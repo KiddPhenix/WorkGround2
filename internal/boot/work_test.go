@@ -55,6 +55,9 @@ default_model = "deepseek-flash"
 	if v := ctrl.WorkViews(); v != nil {
 		t.Fatal("WorkViews should be nil when Work is disabled")
 	}
+	if executor := ctrl.TaskExecutor(); executor != nil {
+		t.Fatal("TaskExecutor should be nil when Work is disabled")
+	}
 
 	// No project Work dir should have been created.
 	workDir := config.ProjectWorkDir(dir)
@@ -126,6 +129,9 @@ enabled = true
 	v := ctrl.WorkViews()
 	if v == nil {
 		t.Fatal("WorkViews should be non-nil when Work is enabled")
+	}
+	if executor := ctrl.TaskExecutor(); executor == nil {
+		t.Fatal("TaskExecutor should be non-nil when Work is enabled")
 	}
 
 	// Verify the info notice was emitted.

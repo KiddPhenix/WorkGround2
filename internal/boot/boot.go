@@ -1028,31 +1028,34 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if cfg.MemoryCompilerEnabled() {
 		memCompiler = memorycompiler.New(config.MemoryCompilerDir(root))
 	}
-	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:                           maxSteps,
-		Temperature:                        cfg.Agent.Temperature,
-		Pricing:                            entry.Price,
-		Gate:                               headlessGate,
-		Hooks:                              hookRunner,
-		Jobs:                               jm,
-		ProjectChecks:                      projectChecks,
-		ContextWindow:                      entry.ContextWindow,
-		SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
-		ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,
-		CompactRatio:                       cfg.Agent.CompactRatio,
-		CompactForceRatio:                  cfg.Agent.CompactForceRatio,
-		RecentKeep:                         cfg.Agent.RecentKeep,
-		ArchiveDir:                         config.ArchiveDir(),
-		KeepPolicy:                         keepPolicy,
-		ResponseLanguage:                   cfg.ResponseLanguage(),
-		ReasoningLanguage:                  cfg.ReasoningLanguage(),
-		PlanModeAllowedTools:               cfg.Agent.PlanModeAllowedTools,
-		SubagentDepth:                      0,
-		MaxSubagentDepth:                   maxSubagentDepth,
-		MemoryCompiler:                     memCompiler,
-		MemoryCompilerVerbosity:            cfg.MemoryCompilerVerbosity(),
-		UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("WorkGround2_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
-	}, sink)
+	newAgentOptions := func(sessionJobs *jobs.Manager) agent.Options {
+		return agent.Options{
+			MaxSteps:                           maxSteps,
+			Temperature:                        cfg.Agent.Temperature,
+			Pricing:                            entry.Price,
+			Gate:                               headlessGate,
+			Hooks:                              hookRunner,
+			Jobs:                               sessionJobs,
+			ProjectChecks:                      projectChecks,
+			ContextWindow:                      entry.ContextWindow,
+			SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
+			ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,
+			CompactRatio:                       cfg.Agent.CompactRatio,
+			CompactForceRatio:                  cfg.Agent.CompactForceRatio,
+			RecentKeep:                         cfg.Agent.RecentKeep,
+			ArchiveDir:                         config.ArchiveDir(),
+			KeepPolicy:                         keepPolicy,
+			ResponseLanguage:                   cfg.ResponseLanguage(),
+			ReasoningLanguage:                  cfg.ReasoningLanguage(),
+			PlanModeAllowedTools:               cfg.Agent.PlanModeAllowedTools,
+			SubagentDepth:                      0,
+			MaxSubagentDepth:                   maxSubagentDepth,
+			MemoryCompiler:                     memCompiler,
+			MemoryCompilerVerbosity:            cfg.MemoryCompilerVerbosity(),
+			UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("WorkGround2_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
+		}
+	}
+	executor := agent.New(execProv, reg, execSess, newAgentOptions(jm), sink)
 
 	var runner agent.Runner = executor
 	label := entry.Model
@@ -1111,6 +1114,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// create writable Work directories.
 	var workSvc *work.Service
 	var workViews *control.WorkViewBroadcaster
+	var taskExec work.TaskExecutor
 	if cfg.Work.Enabled {
 		workDir := strings.TrimSpace(opts.WorkDir)
 		if workDir == "" {
@@ -1133,6 +1137,40 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bp := work.NewBlueprintRegistry()
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
+			taskExec = control.NewTaskExecutorAdapter(
+				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
+				func(_ context.Context, _ work.TaskExecuteInput) (*control.Controller, func(), error) {
+					taskPath := agent.NewSessionPath(sessionDir, "work-"+label)
+					taskJobs := jobs.NewManager(event.Discard, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
+					taskSession := agent.NewSession(sysPrompt)
+					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), event.Discard)
+					taskCtrl := control.New(control.Options{
+						Runner:               taskAgent,
+						Executor:             taskAgent,
+						Sink:                 event.Discard,
+						Policy:               policy,
+						Label:                label,
+						ModelRef:             modelRef,
+						SystemPrompt:         sysPrompt,
+						SessionDir:           sessionDir,
+						SessionPath:          taskPath,
+						Hooks:                hookRunner,
+						WorkspaceRoot:        root,
+						AutoPlan:             "off",
+						ResponseLanguage:     cfg.ResponseLanguage(),
+						ReasoningLanguage:    cfg.ReasoningLanguage(),
+						Shell:                shell,
+						ApprovalTimeout:      opts.ApprovalTimeout,
+						PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
+						BalanceURL:           entry.BalanceURL,
+						BalanceKey:           entry.APIKey(),
+						BalanceClient:        balanceClient,
+						Jobs:                 taskJobs,
+						Registry:             reg,
+					})
+					return taskCtrl, func() {}, nil
+				},
+			)
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "work: feature enabled"})
 		}
 	}
@@ -1180,6 +1218,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		OnSessionRecovered:  opts.OnSessionRecovered,
 		Work:                workSvc,
 		WorkViews:           workViews,
+		TaskExecutor:        taskExec,
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
