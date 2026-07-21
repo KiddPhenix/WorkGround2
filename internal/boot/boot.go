@@ -123,6 +123,12 @@ type Options struct {
 	// and tests. It is ignored while work.enabled is false. When enabled, a
 	// non-empty path must be writable or Build fails explicitly.
 	WorkDir string
+	// SessionRefs is a process-wide reverse index shared by every Desktop tab.
+	// Nil keeps non-Desktop hosts independent from Desktop session cleanup.
+	SessionRefs work.SessionRefStore
+	// SessionRefsErr carries host initialization failure into Work boot so the
+	// feature cannot run while its cleanup guard is unavailable.
+	SessionRefsErr error
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to WorkGround2.toml.
@@ -1116,6 +1122,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var workViews *control.WorkViewBroadcaster
 	var taskExec work.TaskExecutor
 	if cfg.Work.Enabled {
+		if opts.SessionRefsErr != nil {
+			jm.Close()
+			cleanup()
+			return nil, fmt.Errorf("initialize Work Session refs: %w", opts.SessionRefsErr)
+		}
 		workDir := strings.TrimSpace(opts.WorkDir)
 		if workDir == "" {
 			workDir = config.ProjectWorkDir(root)
@@ -1137,6 +1148,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bp := work.NewBlueprintRegistry()
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
+			if opts.SessionRefs != nil {
+				if err := workSvc.SetSessionRefStore(opts.SessionRefs, work.SessionRefScopeID(workDir)); err != nil {
+					jm.Close()
+					cleanup()
+					return nil, fmt.Errorf("initialize Work Session refs: %w", err)
+				}
+				if err := workSvc.RebuildSessionRefs(ctx); err != nil {
+					jm.Close()
+					cleanup()
+					return nil, err
+				}
+			}
 			taskExec = control.NewTaskExecutorAdapter(
 				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
 				func(_ context.Context, _ work.TaskExecuteInput) (*control.Controller, func(), error) {

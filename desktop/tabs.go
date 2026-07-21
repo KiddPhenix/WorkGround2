@@ -2776,6 +2776,8 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),

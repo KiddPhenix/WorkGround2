@@ -2,6 +2,7 @@ package boot
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"workground2/internal/config"
 	"workground2/internal/event"
+	"workground2/internal/work"
 )
 
 // TestWorkDisabledDoesNotTouchWorkDir verifies that when Work is disabled
@@ -105,6 +107,7 @@ enabled = true
 		Sink:          sink,
 		WorkspaceRoot: dir,
 		WorkDir:       workDir,
+		SessionRefs:   work.NewMemorySessionRefStore(work.WithRetention(0)),
 	})
 	if err != nil {
 		t.Fatalf("Build with work enabled: %v", err)
@@ -144,6 +147,29 @@ enabled = true
 	}
 	if !found {
 		t.Fatal("expected 'work: feature enabled' info notice")
+	}
+}
+
+func TestWorkEnabledSessionRefInitFailureIsExplicit(t *testing.T) {
+	isolateConfigHome(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "WorkGround2.toml"), []byte("config_version = 3\ndefault_model = \"deepseek-flash\"\n\n[work]\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctrl, err := Build(context.Background(), Options{
+		WorkspaceRoot:  dir,
+		WorkDir:        filepath.Join(t.TempDir(), "works"),
+		SessionRefsErr: errors.New("injected Session ref failure"),
+		Sink:           event.Discard,
+	})
+	if err == nil {
+		if ctrl != nil {
+			ctrl.Close()
+		}
+		t.Fatal("Build succeeded without its Session cleanup guard")
+	}
+	if !strings.Contains(err.Error(), "initialize Work Session refs") {
+		t.Fatalf("Build error = %v", err)
 	}
 }
 

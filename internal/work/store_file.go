@@ -1003,6 +1003,43 @@ func (s *FileWorkStore) List(filter WorkFilter) ([]WorkSummary, error) {
 	return results, nil
 }
 
+// ListTrash enumerates trashed Work manifests for cache/index recovery. The
+// event log remains authoritative; callers load each projection separately.
+func (s *FileWorkStore) ListTrash() ([]WorkSummary, error) {
+	entries, err := os.ReadDir(s.trashDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("work: read trash dir: %w", err)
+	}
+	items := make([]WorkSummary, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		workID := entry.Name()
+		if err := validateWorkID(workID); err != nil {
+			return nil, fmt.Errorf("%w: invalid Work trash entry %q", ErrWorkNeedsRepair, workID)
+		}
+		manifest, err := loadManifestAt(filepath.Join(s.trashDir, workID, "manifest.json"))
+		if err != nil {
+			return nil, fmt.Errorf("%w: load trashed Work manifest %s: %v", ErrWorkNeedsRepair, workID, err)
+		}
+		if manifest.ID != workID || manifest.ArchiveState != ArchiveDeleted {
+			return nil, fmt.Errorf("%w: inconsistent trashed Work manifest %s", ErrWorkNeedsRepair, workID)
+		}
+		items = append(items, summaryFromManifest(manifest))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt.Equal(items[j].UpdatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	return items, nil
+}
+
 func (f WorkFilter) Matches(s *WorkSummary) bool {
 	if f.State != nil && s.State != *f.State {
 		return false
