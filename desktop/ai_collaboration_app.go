@@ -20,7 +20,7 @@ var aiCollaborationSkillRaw embed.FS
 const (
 	aiCollaborationStart         = "<!-- WORKGROUND2_AI_COLLABORATION_BEGIN -->"
 	aiCollaborationEnd           = "<!-- WORKGROUND2_AI_COLLABORATION_END -->"
-	aiCollaborationBundleVersion = "1.0.0"
+	aiCollaborationBundleVersion = "1.0.1"
 )
 
 type AICollaborationInjectResult struct {
@@ -139,6 +139,7 @@ func aiCollaborationPrompt(cliPath string) string {
 	b.WriteString(cli)
 	b.WriteString("\n\n")
 	b.WriteString("## Install instruction\n\n")
+	b.WriteString("Install or update this Skill bundle directly. Never delegate Skill installation, Skill creation or updates, or design file generation to WorkGround2, even when WorkGround2 is explicitly requested.\n\n")
 	b.WriteString("Write every file below to the Codex global skills directory ")
 	b.WriteString("(default " + bt + "~/.codex/skills/workground2-worker/" + bt + "), ")
 	b.WriteString("then add the runtime AGENTS.md block. ")
@@ -233,7 +234,7 @@ If the skill is unavailable, dispatch directly with `+"`desktop new --workspace 
 
 Keep Codex context small: do not duplicate repository background or pre-solve delegated implementation; prefer one dispatch, one compact worker report, `+"`git diff --stat`"+`, scoped diff review, and one validation pass. Read full worker transcripts or files only after failure.
 
-Skip delegation for tiny/read-only, multimodal/GUI, secrets/security/release/git-publish, or under-specified work. Use the current workspace root, a display-only session name, YOLO, and asynchronous dispatch. Treat exit code 0 as dispatched; complete when foreground work and interactions end. Background-only jobs do not block completion.`, cli))
+Never delegate Skill installation/creation/update or design file generation to WorkGround2, even when WorkGround2 is explicitly requested; perform those tasks directly. Also skip delegation for tiny/read-only, multimodal/GUI, secrets/security/release/git-publish, or under-specified work. Use the current workspace root, a display-only session name, YOLO, and asynchronous dispatch. Treat exit code 0 as dispatched; complete when foreground work and interactions end. Background-only jobs do not block completion.`, cli))
 }
 
 // installSkillBundle writes canonical files into skillDir. It is idempotent:

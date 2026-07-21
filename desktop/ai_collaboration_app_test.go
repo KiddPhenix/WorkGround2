@@ -91,6 +91,14 @@ func TestAICollaborationPromptContainsExactAssets(t *testing.T) {
 	if !strings.Contains(prompt, "Write every file below") {
 		t.Fatalf("prompt missing install instruction")
 	}
+	for _, want := range []string{
+		"Never delegate Skill installation, Skill creation or updates, or design file generation to WorkGround2",
+		"even when WorkGround2 is explicitly requested",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing direct-execution rule %q", want)
+		}
+	}
 
 	// Must contain the runtime AGENTS.md block.
 	if !strings.Contains(prompt, aiCollaborationStart) {
@@ -191,6 +199,9 @@ func TestRuntimePromptStaysCompact(t *testing.T) {
 		"Background-only jobs do not block completion",
 		"display-only session name",
 		"every desktop new creates a fresh SessionID",
+		"Never delegate Skill installation/creation/update",
+		"design file generation",
+		"even when WorkGround2 is explicitly requested; perform those tasks directly",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("runtime prompt missing %q:\n%s", want, prompt)
@@ -204,6 +215,20 @@ func TestRuntimePromptStaysCompact(t *testing.T) {
 		strings.Contains(prompt, "dispatch.ps1 responsibilities") ||
 		strings.Contains(prompt, "meta-contract") {
 		t.Fatalf("runtime prompt contains installation details:\n%s", prompt)
+	}
+}
+
+func TestBundledSkillSkipsSkillManagementAndDesignFiles(t *testing.T) {
+	skill := bundleFile(t, "SKILL.md").content
+	for _, want := range []string{
+		"Never use it for Skill installation, creation, or updates or for design file generation",
+		"Even when WorkGround2 is explicitly requested",
+		"install, create, or update Skills directly and generate design files directly",
+		"Never delegate either category to WorkGround2",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("bundled skill missing direct-execution rule %q", want)
+		}
 	}
 }
 

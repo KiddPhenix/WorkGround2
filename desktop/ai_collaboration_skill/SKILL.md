@@ -1,11 +1,13 @@
 ---
 name: workground2-worker
-description: Delegate bounded implementation to WorkGround2 Desktop while Codex plans, handles interactions, reviews, and verifies. Use when explicitly requested or for code, documentation, configuration, or test changes spanning 2+ files, about 100+ lines, 10+ minutes, or repeated build/test loops. Skip read-only or tiny work, GUI or multimodal tasks, secrets, security, releases, commits, staging, pushes, and under-specified tasks.
+description: Delegate bounded implementation to WorkGround2 Desktop while Codex plans, handles interactions, reviews, and verifies. Use when explicitly requested or for code, documentation, configuration, or test changes spanning 2+ files, about 100+ lines, 10+ minutes, or repeated build/test loops. Never use it for Skill installation, creation, or updates or for design file generation, even when WorkGround2 is explicitly requested. Also skip read-only or tiny work, GUI or multimodal tasks, secrets, security, releases, commits, staging, pushes, and under-specified tasks.
 ---
 
 # WorkGround2 Worker
 
 Use WorkGround2 only as an implementation worker. Codex owns planning, scope, interaction decisions, diff review, validation, recovery, and the final result.
+
+Even when WorkGround2 is explicitly requested, install, create, or update Skills directly and generate design files directly. Never delegate either category to WorkGround2.
 
 ## Dispatch
 

@@ -47,7 +47,7 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ### Desktop AI 协作导出
 - Location: `desktop/ai_collaboration_app.go`, `desktop/ai_collaboration_app_test.go`, `desktop/ai_collaboration_skill/`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
-- Summary: Desktop 内嵌版本化 `workground2-worker` Skill Bundle；复制提示词导出逐字节一致的 `SKILL.md`、`references/cli.md`、完整 `scripts/dispatch.ps1`、manifest 与 SHA-256，自动安装复用同一份内容并只向全局 `AGENTS.md` 写入精简运行规则。更新过程原子落盘、manifest 最后写入，未知或用户修改内容先保存 `.bak.N`，重复执行安全。
+- Summary: Desktop 内嵌版本化 `workground2-worker` Skill Bundle；复制提示词导出逐字节一致的 `SKILL.md`、`references/cli.md`、完整 `scripts/dispatch.ps1`、manifest 与 SHA-256，自动安装复用同一份内容并只向全局 `AGENTS.md` 写入精简运行规则。更新过程原子落盘、manifest 最后写入，未知或用户修改内容先保存 `.bak.N`，重复执行安全。安装/创建/更新 Skill 和生成设计文件必须由 Codex 直接完成，导出提示词和 Skill 均明确禁止调度 WorkGround2。
 - Keywords: AI Collaboration, deterministic skill bundle, workground2-worker, SKILL.md, dispatch.ps1, manifest.json, SHA-256, AICollaborationPrompt, InjectAICollaborationPrompt, SessionID, pendingInteraction, foregroundActive, backgroundOnly
 - Source: verified-by-search
 - Updated: 2026-07-21
