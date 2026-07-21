@@ -29,6 +29,8 @@ type Service struct {
 	actionCfgMu sync.RWMutex
 	actionMu    sync.Mutex
 	actionRuns  map[string]*actionFlight
+	sessionRefs *SessionRefCoordinator
+	refScope    string
 }
 
 type runFlight struct{ done chan struct{} }
@@ -65,6 +67,79 @@ func (s *Service) SetTaskExecutor(executor TaskExecutor) {
 	s.runMu.Lock()
 	s.runner = NewWorkRunner(executor)
 	s.runMu.Unlock()
+}
+
+// SetSessionRefStore connects Work lifecycle writes to the process-wide
+// Session owner index. Call it during boot before serving requests.
+func (s *Service) SetSessionRefStore(store SessionRefStore, scopeID string) error {
+	if nilutil.IsNil(store) {
+		return errors.New("work: SessionRefStore is required")
+	}
+	scopeID = strings.TrimSpace(scopeID)
+	if scopeID == "" {
+		return errors.New("work: SessionRef scope is required")
+	}
+	s.sessionRefs = NewSessionRefCoordinator(store)
+	s.refScope = scopeID
+	return nil
+}
+
+// RebuildSessionRefs repairs this Work store's slice of the shared reverse
+// index from authoritative projections, including Work trash.
+func (s *Service) RebuildSessionRefs(ctx context.Context) error {
+	if s.sessionRefs == nil {
+		return nil
+	}
+	if err := s.requireStore(); err != nil {
+		return err
+	}
+	var summaries []WorkProjectionSummary
+	filter := WorkFilter{Limit: 500}
+	for {
+		if err := checkServiceContext(ctx); err != nil {
+			return err
+		}
+		items, err := s.store.List(filter)
+		if err != nil {
+			return fmt.Errorf("work: rebuild Session refs: list projections: %w", err)
+		}
+		for _, item := range items {
+			var value *Work
+			if item.ArchiveState == ArchiveDeleted {
+				value, _, err = s.store.LoadTrashState(item.ID, "")
+			} else {
+				value, _, err = s.store.LoadState(item.ID, "")
+			}
+			if err != nil {
+				return fmt.Errorf("work: rebuild Session refs for Work %s: %w", item.ID, err)
+			}
+			summaries = append(summaries, WorkSessionRefSummary(s.refScope, value))
+		}
+		if len(items) < filter.Limit {
+			break
+		}
+		filter.Cursor = items[len(items)-1].ID
+	}
+	if trash, ok := s.store.(WorkTrashLister); ok {
+		items, err := trash.ListTrash()
+		if err != nil {
+			return fmt.Errorf("work: rebuild Session refs: list trash: %w", err)
+		}
+		for _, item := range items {
+			if err := checkServiceContext(ctx); err != nil {
+				return err
+			}
+			value, _, err := s.store.LoadTrashState(item.ID, "")
+			if err != nil {
+				return fmt.Errorf("work: rebuild Session refs for trashed Work %s: %w", item.ID, err)
+			}
+			summaries = append(summaries, WorkSessionRefSummary(s.refScope, value))
+		}
+	}
+	if err := s.sessionRefs.ReconcileScope(s.refScope, summaries); err != nil {
+		return fmt.Errorf("work: rebuild Session refs: %w", err)
+	}
+	return nil
 }
 
 // Create atomically creates a complete Work from an exact Blueprint version.
@@ -150,6 +225,9 @@ func (s *Service) Create(ctx context.Context, input CreateWorkInput) (*Work, err
 	if err != nil {
 		return nil, fmt.Errorf("work: Create: reload committed Work: %w", err)
 	}
+	if err := s.syncSessionRefs(view.Work, requestID+"/session-refs"); err != nil {
+		return nil, committedRecovery("create-session-refs", workID, requestID, view.Revision, err)
+	}
 	if err := s.emitSnapshot(view, requestID); err != nil {
 		return nil, committedRecovery("create-view", workID, requestID, view.Revision, err)
 	}
@@ -167,7 +245,14 @@ func (s *Service) Get(ctx context.Context, workID string) (*WorkView, error) {
 	if strings.TrimSpace(workID) == "" {
 		return nil, errors.New("work: Get: workID is required")
 	}
-	return s.loadView(workID)
+	view, err := s.loadView(workID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.syncSessionRefs(view.Work, "get:"+workID); err != nil {
+		return nil, fmt.Errorf("work: Get: reconcile Session refs: %w", err)
+	}
+	return view, nil
 }
 
 // List returns filtered active/archived summaries from the Store index.
@@ -1030,7 +1115,21 @@ func (s *Service) runEmitter(workID, runID, operation string) eventEmitter {
 		}
 		event := newServiceEvent(workID, input.RequestID, input.Type, input.Payload, time.Now().UTC())
 		event.BaseRevision, event.Revision = state.Revision, state.Revision+1
-		return s.store.CommitEvent(workID, event)
+		revision, err := s.store.CommitEvent(workID, event)
+		if err != nil {
+			return revision, err
+		}
+		if s.sessionRefs == nil {
+			return revision, nil
+		}
+		latest, _, loadErr := s.store.LoadState(workID, "")
+		if loadErr != nil {
+			return revision, committedRecovery("run-session-refs", workID, input.RequestID, revision, loadErr)
+		}
+		if refErr := s.syncSessionRefs(latest, input.RequestID+"/session-refs"); refErr != nil {
+			return revision, committedRecovery("run-session-refs", workID, input.RequestID, revision, refErr)
+		}
+		return revision, nil
 	}
 }
 
@@ -1273,7 +1372,11 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 		if current.ArchiveState != ArchiveActive || !lifecycleRequestCurrent(state, EventWorkRestored) {
 			return nil, lifecycleRequestConflict("Restore", workID, requestID, state)
 		}
-		return viewFromState(current, state), nil
+		view := viewFromState(current, state)
+		if err := s.syncSessionRefs(view.Work, requestID+"/session-refs"); err != nil {
+			return nil, committedRecovery("restore-session-refs", workID, requestID, view.Revision, err)
+		}
+		return view, nil
 	}
 	if err := ValidateArchiveTransition(current.ArchiveState, ArchiveActive); err != nil {
 		return nil, fmt.Errorf("work: Restore: %w", err)
@@ -1294,6 +1397,9 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 		return nil, lifecycleRequestConflict("Restore", workID, requestID, restoredState)
 	}
 	view := viewFromState(restored, restoredState)
+	if err := s.syncSessionRefs(view.Work, requestID+"/session-refs"); err != nil {
+		return nil, committedRecovery("restore-session-refs", workID, requestID, view.Revision, err)
+	}
 	if err := s.emitSnapshot(view, requestID); err != nil {
 		return nil, committedRecovery("restore-view", workID, requestID, view.Revision, err)
 	}
@@ -1340,6 +1446,9 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 
 	revision := state.RequestRevision
 	if inTrash {
+		if err := s.syncSessionRefs(current, requestID+"/session-refs"); err != nil {
+			return committedRecovery("delete-session-refs", workID, requestID, revision, err)
+		}
 		if err := s.store.MoveToTrash(workID, requestID+"/move"); err != nil {
 			return fmt.Errorf("work: Delete: %w", err)
 		}
@@ -1370,6 +1479,9 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 	if latest.ArchiveState != ArchiveDeleted || !lifecycleRequestCurrent(latestState, EventWorkDeleted) {
 		return nil
 	}
+	if err := s.syncSessionRefs(latest, requestID+"/session-refs"); err != nil {
+		return committedRecovery("delete-session-refs", workID, requestID, revision, err)
+	}
 	if err := s.store.MoveToTrash(workID, requestID+"/move"); err != nil {
 		return fmt.Errorf("work: Delete: %w", err)
 	}
@@ -1382,6 +1494,13 @@ func (s *Service) requireStore() error {
 		return errors.New("work: Service requires a WorkStore")
 	}
 	return nil
+}
+
+func (s *Service) syncSessionRefs(value *Work, requestID string) error {
+	if s.sessionRefs == nil {
+		return nil
+	}
+	return s.sessionRefs.ReconcileWork(s.refScope, value, requestID)
 }
 
 func (s *Service) loadView(workID string) (*WorkView, error) {
@@ -1409,6 +1528,9 @@ func (s *Service) latestOnConflict(workID string, cause error) (*WorkView, error
 }
 
 func (s *Service) loadOrRepairArchive(workID string, archived *Work, revision int64, requestID string) (*WorkRecord, error) {
+	if err := s.syncSessionRefs(archived, requestID+"/session-refs"); err != nil {
+		return nil, committedRecovery("archive-session-refs", workID, requestID, revision, err)
+	}
 	record, err := s.store.LoadArchive(workID)
 	if err == nil {
 		return record, nil
