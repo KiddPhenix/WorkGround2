@@ -3,6 +3,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { BlockUpdateRequest } from '../../../work/types';
+import { digestIntent } from './intentDigest';
 import type { ChecklistData, ChecklistItem } from './schemas';
 import type { BlockRendererProps } from './types';
 
@@ -25,7 +26,6 @@ interface UpdateError {
 const EMPTY_DRAFT = new Map<string, boolean>();
 const MAX_CACHED_DRAFTS = 128;
 const draftCache = new Map<string, Map<string, boolean>>();
-let requestSequence = 0;
 
 function cacheKey(workID: string, blockID: string): string {
   return `${workID.length}:${workID}${blockID}`;
@@ -54,13 +54,6 @@ function safeError(error: unknown): string {
   return error instanceof Error
     ? 'Server rejected the update. Your changes are preserved and can be retried.'
     : 'Update failed. Your changes are preserved and can be retried.';
-}
-
-function nextRequestID(revision: number): string {
-  requestSequence += 1;
-  const randomUUID = globalThis.crypto?.randomUUID?.bind(globalThis.crypto);
-  const nonce = randomUUID ? randomUUID() : `${Date.now()}-${requestSequence}`;
-  return `checklist-update/${revision}/${nonce}`;
 }
 
 function sameDraft(left: Map<string, boolean>, right: Map<string, boolean>): boolean {
@@ -139,6 +132,14 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
         checked: submitted.get(item.id) ?? item.checked,
         ...(item.detail !== undefined ? { detail: item.detail } : {}),
       }));
+      const updateIntent = {
+        workId: context.workId,
+        runId: context.runId,
+        taskId: context.taskId,
+        blockId: block.id,
+        revision: block.revision,
+        data: { items: newItems },
+      };
       return {
         blockID: block.id,
         submitted,
@@ -146,7 +147,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
           workId: context.workId,
           blockId: block.id,
           data: { items: newItems },
-          requestId: nextRequestID(block.revision),
+          requestId: `checklist-update-v1-sha256-${digestIntent(updateIntent)}`,
           expectedRevision: block.revision,
         },
       } satisfies UpdateAttempt;
@@ -178,7 +179,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
         setPending((current) => current === attempt ? null : current);
       }
     }
-  }, [block.id, block.revision, context.workId, disabled, draft, items, key, onUpdate]);
+  }, [block.id, block.revision, context.runId, context.taskId, context.workId, disabled, draft, items, key, onUpdate]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent, item: ChecklistItem) => {
     if (disabled) return;

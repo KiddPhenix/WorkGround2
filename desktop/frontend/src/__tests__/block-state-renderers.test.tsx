@@ -6,6 +6,7 @@
 // keyboard/ARIA, checklist revision conflicts, draft preservation, retry,
 // and file/git zero host side effects.
 
+import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -13,7 +14,7 @@ import { BlockHost } from '../components/work/blocks/BlockHost';
 import { FallbackBlock } from '../components/work/blocks/FallbackBlock';
 import { blockRegistry, createRegistry } from '../components/work/blocks/registry';
 import type { BlockRendererProps, RendererModule } from '../components/work/blocks/types';
-import type { BlockInstance } from '../work/types';
+import type { BlockInstance, BlockUpdateRequest } from '../work/types';
 import {
   validateChecklist,
   validateFileList,
@@ -70,6 +71,17 @@ function setupDom(): void {
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
   });
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
+  Object.defineProperty(globalThis, 'crypto', {
+    configurable: true,
+    value: {
+      randomUUID: () => { throw new Error('entropy API disabled'); },
+      getRandomValues: () => { throw new Error('entropy API disabled'); },
+    },
+  });
+  Object.defineProperty(dom.window, 'sessionStorage', {
+    configurable: true,
+    get: () => { throw new Error('browser storage disabled'); },
+  });
 }
 
 function container(): HTMLElement {
@@ -84,6 +96,13 @@ async function render(element: React.ReactElement): Promise<void> {
   if (!root) root = createRoot(container(), { onCaughtError: () => undefined });
   await act(async () => { root!.render(element); });
   await flush();
+}
+
+async function remount(element: React.ReactElement): Promise<void> {
+  if (root) await act(async () => { root!.unmount(); });
+  root = null;
+  container().replaceChildren();
+  await render(element);
 }
 
 async function waitFor(predicate: () => boolean, label: string, ticks = 40): Promise<void> {
@@ -115,7 +134,12 @@ async function change(element: HTMLInputElement): Promise<void> {
   await flush();
 }
 
-const context = { workId: 'work-test', workSchemaVersion: 1 };
+const context = {
+  workId: 'work-test',
+  workSchemaVersion: 1,
+  runId: 'run-test',
+  taskId: 'task-test',
+};
 
 function block(patch: Partial<BlockInstance> = {}): BlockInstance {
   return {
@@ -490,6 +514,9 @@ async function testChecklistUpdate(): Promise<void> {
   ok(updateCalls[0].expectedRevision === 1, 'onUpdate carries expectedRevision');
   ok(updateCalls[0].blockId === 'block-1', 'onUpdate carries blockId');
   ok(updateCalls[0].workId === 'work-test', 'onUpdate carries workId');
+  ok(/^checklist-update-v1-sha256-[0-9a-f]{64}$/.test(updateCalls[0].requestId),
+    'checklist requestId is a fixed-size intent digest');
+  notContains(updateCalls[0].requestId, 'Task', 'checklist requestId hides raw item payload');
 
   console.log('\n-- checklist onUpdate: revision conflict preserves draft');
   updateCalls = [];
@@ -540,6 +567,94 @@ async function testChecklistUpdate(): Promise<void> {
   equal(updateCalls[0]?.expectedRevision, 2, 'same revision retry keeps expectedRevision');
   // After success, save button should be gone (draft cleared)
   ok(container().querySelector('.wg2-checklist-save') === null, 'save button gone after successful retry');
+
+  console.log('\n-- checklist update: in-flight intent survives remount with the same requestId');
+  let releasePending!: () => void;
+  const pendingUpdate = new Promise<void>((resolve) => { releasePending = resolve; });
+  const pendingRequests: BlockUpdateRequest[] = [];
+  const pendingBlock = block({
+    id: 'pending-replay-checklist',
+    kind: 'checklist',
+    revision: 7,
+    data: { items: [{ id: 'pending-item', text: 'Pending task', checked: false }] },
+  });
+  const pendingHandler = async (request: BlockUpdateRequest) => {
+    pendingRequests.push(request);
+    if (pendingRequests.length === 1) await pendingUpdate;
+  };
+  await remount(<BlockHost block={pendingBlock} context={context} onUpdate={pendingHandler} />);
+  await waitFor(() => container().querySelector('input[type="checkbox"]') !== null, 'pending replay checklist rendered');
+  await click(container().querySelector('input[type="checkbox"]')!);
+  await click(container().querySelector('.wg2-checklist-save')!);
+  await remount(<BlockHost block={pendingBlock} context={context} onUpdate={pendingHandler} />);
+  await waitFor(() => container().querySelector('.wg2-checklist-save') !== null, 'pending draft recovers after remount');
+  await click(container().querySelector('.wg2-checklist-save')!);
+  equal(pendingRequests.length, 2, 'in-flight update can be replayed after remount');
+  equal(pendingRequests[1]?.requestId, pendingRequests[0]?.requestId, 'remounted in-flight intent reuses requestId');
+  await act(async () => { releasePending(); await flush(); });
+
+  console.log('\n-- checklist update: failed intent survives remount with the same requestId');
+  updateCalls = [];
+  updateResult = 'error';
+  const replayBlock = block({
+    id: 'replay-checklist',
+    kind: 'checklist',
+    revision: 8,
+    data: { items: [{ id: 'private-item', text: 'token=must-not-leak', checked: false }] },
+  });
+  await remount(<BlockHost block={replayBlock} context={context} onUpdate={onUpdate} />);
+  await waitFor(() => container().querySelector('input[type="checkbox"]') !== null, 'replay checklist rendered');
+  await click(container().querySelector('input[type="checkbox"]')!);
+  await click(container().querySelector('.wg2-checklist-save')!);
+  const firstReplayID = updateCalls[0]?.requestId;
+  await remount(<BlockHost block={replayBlock} context={context} onUpdate={onUpdate} />);
+  await waitFor(() => container().querySelector('.wg2-checklist-save') !== null, 'recovered draft remains saveable');
+  await click(container().querySelector('.wg2-checklist-save')!);
+  equal(updateCalls.length, 2, 'failed update can be replayed after remount');
+  equal(updateCalls[1]?.requestId, firstReplayID, 'remounted failed intent reuses requestId');
+  notContains(firstReplayID ?? '', 'private-item', 'requestId does not expose item ID');
+  notContains(firstReplayID ?? '', 'must-not-leak', 'requestId does not expose item text');
+
+  console.log('\n-- checklist update: intent dimensions stay isolated');
+  const captureID = async (
+    candidateBlock: BlockInstance,
+    candidateContext: typeof context,
+  ): Promise<string> => {
+    let captured: BlockUpdateRequest | undefined;
+    await remount(<BlockHost
+      block={candidateBlock}
+      context={candidateContext}
+      onUpdate={(request) => { captured = request; }}
+    />);
+    await waitFor(() => container().querySelector('input[type="checkbox"]') !== null, 'dimension checklist rendered');
+    await click(container().querySelector('input[type="checkbox"]')!);
+    await click(container().querySelector('.wg2-checklist-save')!);
+    return captured!.requestId;
+  };
+  const dimensionBlock = (patch: Partial<BlockInstance> = {}) => block({
+    id: 'dimension-checklist',
+    kind: 'checklist',
+    revision: 20,
+    data: { items: [{ id: 'item-a', text: 'Dimension task', checked: false }] },
+    ...patch,
+  });
+  const dimensionIDs = [
+    await captureID(dimensionBlock(), context),
+    await captureID(dimensionBlock(), { ...context, workId: 'work-other' }),
+    await captureID(dimensionBlock(), { ...context, runId: 'run-other' }),
+    await captureID(dimensionBlock(), { ...context, taskId: 'task-other' }),
+    await captureID(dimensionBlock({ id: 'dimension-checklist-other' }), context),
+    await captureID(dimensionBlock({ revision: 21 }), context),
+    await captureID(dimensionBlock({
+      data: { items: [{ id: 'item-b', text: 'Dimension task', checked: false }] },
+    }), context),
+    await captureID(dimensionBlock({
+      data: { items: [{ id: 'item-a', text: 'Dimension task', checked: true }] },
+    }), context),
+  ];
+  equal(new Set(dimensionIDs).size, dimensionIDs.length,
+    'work/run/task/block/revision/item/effective checked changes get distinct requestIds');
+  ok(dimensionIDs[0] !== dimensionIDs[5], 'new revision always gets a new requestId');
 
   console.log('\n-- checklist onUpdate: network error is sanitized');
   updateCalls = [];
@@ -671,6 +786,18 @@ async function testChecklistUpdate(): Promise<void> {
 
 async function run(): Promise<void> {
   testSchemas();
+
+  console.log('\n-- checklist requestId production scan');
+  const requestSources = [
+    '../components/work/blocks/ChecklistBlock.tsx',
+    '../components/work/blocks/intentDigest.ts',
+  ].map((path) => readFileSync(new URL(path, import.meta.url), 'utf8')).join('\n');
+  for (const forbidden of [
+    'randomUUID', 'getRandomValues', 'Math.random', 'Date.now', 'performance.now',
+    'sessionStorage', 'localStorage', 'requestSequence',
+  ]) {
+    ok(!requestSources.includes(forbidden), `checklist update requestId does not use ${forbidden}`);
+  }
 
   setupDom();
   await testRenderers();
