@@ -5,12 +5,16 @@ import type {
   BlockUpdateRequest,
   Conclusion,
   Cornerstone,
+  RetryIntent,
+  RetryStatus,
+  RunSelection,
   Work,
   WorkflowRun,
   WorkView,
 } from '../../work/types';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
+import { RunProgressIndicator } from './RunProgressIndicator';
 
 export interface WorkCardFrontProps {
   view: WorkView;
@@ -20,6 +24,10 @@ export interface WorkCardFrontProps {
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   readonly: boolean;
   archived: boolean;
+  runSelection?: RunSelection;
+  onRunSelect: (selection: RunSelection) => void;
+  onRetry?: (intent: RetryIntent) => void;
+  retryByTarget: Record<string, RetryStatus>;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -121,6 +129,10 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onUpdate,
   readonly,
   archived,
+  runSelection,
+  onRunSelect,
+  onRetry,
+  retryByTarget,
 }) => {
   const { work } = view;
   const hostContext = useMemo<BlockHostContext>(() => ({
@@ -194,6 +206,15 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       <CornerstoneSummary cornerstones={work.cornerstones} />
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
+      <RunProgressIndicator
+        work={work}
+        selection={runSelection}
+        onSelect={onRunSelect}
+        onRetry={onRetry}
+        retryByTarget={retryByTarget}
+        readonly={readonly}
+        archived={archived}
+      />
       <div className="wg2-work-block-host-list" role="list">
         {orderedBlocks.map(renderBlock)}
         {orderedBlocks.length === 0 && (

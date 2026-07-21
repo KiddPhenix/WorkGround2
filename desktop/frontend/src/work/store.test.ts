@@ -2,6 +2,7 @@ import { WorkControllerAdapter, type WorkControllerPort } from './controller';
 import {
   applySnapshot,
   applyWorkViewEvent,
+  resolveSelection,
   selectCardState,
   selectWork,
   useWorkStore,
@@ -9,7 +10,7 @@ import {
   type WorkDeltaPayload,
   type WorkUIPreference,
 } from './store';
-import type { BlockInstance, Work, WorkView, WorkViewEvent, WorkflowRun } from './types';
+import type { Attempt, BlockInstance, RetryTaskInput, Work, WorkView, WorkViewEvent, WorkflowRun } from './types';
 
 type Test = { name: string; run: () => void | Promise<void> };
 const tests: Test[] = [];
@@ -127,7 +128,9 @@ class TestPort implements WorkControllerPort {
   readonly listeners = new Map<string, Set<(event: WorkViewEvent) => void>>();
   readonly writes: Array<{ workID: string; preference: WorkUIPreference }> = [];
   fetchCount = 0;
+  retryCount = 0;
   fetch: (workID: string) => Promise<WorkView> = async () => { throw new Error('snapshot not configured'); };
+  retry: (input: RetryTaskInput) => Promise<Attempt> = async () => { throw new Error('retry not configured'); };
   preference: WorkUIPreference | null = null;
 
   subscribe(workID: string, listener: (event: WorkViewEvent) => void): () => void {
@@ -151,6 +154,11 @@ class TestPort implements WorkControllerPort {
 
   async writeUIPreference(workID: string, preference: WorkUIPreference): Promise<void> {
     this.writes.push({ workID, preference });
+  }
+
+  retryTask(input: RetryTaskInput): Promise<Attempt> {
+    this.retryCount++;
+    return this.retry(input);
   }
 
   emit(workID: string, value: WorkViewEvent): void {
@@ -405,6 +413,23 @@ test('adapter persists only activeFace and preference restore keeps face drafts'
   adapter.dispose();
 });
 
+test('adapter deduplicates RetryTask by stable requestId', async () => {
+  const pending = deferred<Attempt>();
+  const port = new TestPort();
+  port.retry = () => pending.promise;
+  const adapter = new WorkControllerAdapter(port);
+  const input: RetryTaskInput = { workId: 'work-1', runId: 'run-1', stageId: 'stage-1', taskId: 'task-1', requestId: 'retry-1' };
+  const first = adapter.retryTask(input);
+  const joined = adapter.retryTask(input);
+  await Promise.resolve();
+  equal(port.retryCount, 1, 'same requestId joins one backend RetryTask call');
+  const attempt = makeAttempt(1, 'pending');
+  pending.resolve(attempt);
+  equal(await first, attempt, 'first caller receives the created Attempt');
+  equal(await joined, attempt, 'joined caller receives the same Attempt');
+  adapter.dispose();
+});
+
 test('adapter rejects cross-work subscription events explicitly', () => {
   reset();
   const port = new TestPort();
@@ -438,6 +463,222 @@ test('store rejects cross-work payload ownership and object contexts', () => {
   wrongContext.object = { kind: 'run', id: 'run-4', parentID: 'work-2' };
   equal(applyWorkViewEvent(wrongContext).kind, 'conflict', 'cross-work object context conflicts');
   equal(useWorkStore.getState().revisions['work-1'], 1, 'cross-work context cannot mutate work-1');
+});
+
+// ── Nested terminal guards ───────────────────────────────────────────────
+
+function makeAttempt(index: number, state: WorkflowRun['state'], patch: Partial<import('./types').Attempt> = {}): import('./types').Attempt {
+  return {
+    id: `attempt-${index}`,
+    index,
+    state,
+    sessionRef: { sessionPath: `/sessions/${index}`, branchId: 'main', modelRef: 'test-model', turnCount: index + 1, preview: `attempt ${index}`, startedAt: '2026-07-20T10:00:00Z' },
+    startedAt: '2026-07-20T10:00:00Z',
+    ...(state === 'running' ? {} : { finishedAt: '2026-07-20T10:01:00Z' }),
+    ...patch,
+  };
+}
+
+function makeTask(name: string, state: WorkflowRun['state'], attempts: import('./types').Attempt[] = [], patch: Partial<import('./types').Task> = {}): import('./types').Task {
+  return { id: `task-${name}`, name, state, attempts, ...patch };
+}
+
+function makeStage(name: string, state: WorkflowRun['state'], tasks: import('./types').Task[] = [], patch: Partial<import('./types').Stage> = {}): import('./types').Stage {
+  return { id: `stage-${name}`, name, state, tasks, startedAt: '2026-07-20T10:00:00Z', ...(state === 'running' ? {} : { finishedAt: '2026-07-20T10:01:00Z' }), ...patch };
+}
+
+function makeRunWithStages(id: string, state: WorkflowRun['state'], stages: import('./types').Stage[], workID = 'work-1'): WorkflowRun {
+  return {
+    id,
+    workId: workID,
+    definitionDigest: 'digest',
+    state,
+    stages,
+    startedAt: '2026-07-20T10:00:00Z',
+    ...(state === 'running' ? {} : { finishedAt: '2026-07-20T10:01:00Z' }),
+  };
+}
+
+test('nested Stage terminal guard blocks regression from completed to running', () => {
+  reset();
+  const stage = makeStage('review', 'completed', [makeTask('lint', 'completed', [makeAttempt(0, 'completed')])]);
+  applySnapshot(makeView('work-1', 1, {
+    state: 'running',
+    runs: [makeRunWithStages('run-1', 'running', [stage])],
+  }));
+  // Try to regress stage back to running.
+  const regressedStage = makeStage('review', 'running', [makeTask('lint', 'running', [makeAttempt(0, 'running')])]);
+  applyWorkViewEvent(delta('stage-regress', 2, 1, {
+    runs: [makeRunWithStages('run-1', 'running', [regressedStage])],
+  }));
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.runs[0].stages[0].state, 'completed', 'stage terminal state is preserved');
+  equal(work?.runs[0].stages[0].tasks[0].state, 'completed', 'task under completed stage is preserved');
+  equal(work?.runs[0].stages[0].tasks[0].attempts[0].state, 'completed', 'attempt under completed task is preserved');
+});
+
+test('nested Task terminal guard blocks regression, but new task appears', () => {
+  reset();
+  const lintTask = makeTask('lint', 'completed', [makeAttempt(0, 'completed')]);
+  const stage = makeStage('review', 'running', [lintTask]);
+  applySnapshot(makeView('work-1', 1, {
+    state: 'running',
+    runs: [makeRunWithStages('run-1', 'running', [stage])],
+  }));
+  // Incoming has lint regressed but adds a new 'test' task.
+  const regressedLint = makeTask('lint', 'running', [makeAttempt(0, 'running')]);
+  const newTest = makeTask('test', 'running', [makeAttempt(0, 'running')]);
+  applyWorkViewEvent(delta('task-regress', 2, 1, {
+    runs: [makeRunWithStages('run-1', 'running', [makeStage('review', 'running', [regressedLint, newTest])])],
+  }));
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  const tasks = work?.runs[0].stages[0].tasks ?? [];
+  const lint = tasks.find((t) => t.name === 'lint');
+  const test = tasks.find((t) => t.name === 'test');
+  equal(lint?.state, 'completed', 'completed task state is preserved');
+  equal(lint?.attempts[0].state, 'completed', 'completed attempt state is preserved');
+  equal(test?.state, 'running', 'new task appears alongside preserved terminal task');
+});
+
+test('nested Attempt terminal guard preserves completed attempt, new retry attempt visible', () => {
+  reset();
+  const att0 = makeAttempt(0, 'completed', { finishedAt: '2026-07-20T10:01:00Z' });
+  const task = makeTask('lint', 'completed', [att0]);
+  const stage = makeStage('review', 'completed', [task]);
+  applySnapshot(makeView('work-1', 1, {
+    state: 'completed',
+    runs: [makeRunWithStages('run-1', 'completed', [stage])],
+  }));
+  // Incoming: attempt 0 regressed to running, attempt 1 (retry) is running.
+  const att0Regressed = makeAttempt(0, 'running');
+  const att1 = makeAttempt(1, 'running');
+  const retryTask = makeTask('lint', 'running', [att0Regressed, att1]);
+  applyWorkViewEvent(delta('attempt-retry', 2, 1, {
+    runs: [makeRunWithStages('run-1', 'running', [makeStage('review', 'running', [retryTask])])],
+  }));
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  const attempts = work?.runs[0].stages[0].tasks[0].attempts ?? [];
+  const a0 = attempts.find((a) => a.index === 0);
+  const a1 = attempts.find((a) => a.index === 1);
+  equal(a0?.state, 'completed', 'completed attempt 0 is preserved in history');
+  ok(a1 !== undefined, 'new retry attempt 1 is visible');
+});
+
+test('duplicate and late attempts do not corrupt attempt list', () => {
+  reset();
+  const att0 = makeAttempt(0, 'completed');
+  const task = makeTask('lint', 'completed', [att0]);
+  const stage = makeStage('review', 'completed', [task]);
+  applySnapshot(makeView('work-1', 1, {
+    state: 'completed',
+    runs: [makeRunWithStages('run-1', 'completed', [stage])],
+  }));
+  // Late duplicate: same index 0, same state.
+  applyWorkViewEvent(delta('late-dup', 2, 1, {
+    runs: [makeRunWithStages('run-1', 'completed', [makeStage('review', 'completed', [makeTask('lint', 'completed', [makeAttempt(0, 'completed')])])])],
+  }));
+  const work = selectWork(useWorkStore.getState().works, 'work-1');
+  equal(work?.runs[0].stages[0].tasks[0].attempts.length, 1, 'duplicate attempt does not duplicate');
+});
+
+test('stable IDs survive renamed labels and preserve terminal Attempt identity', () => {
+  reset();
+  const original = makeStage('old stage', 'running', [
+    makeTask('old task', 'running', [makeAttempt(0, 'completed', { id: 'attempt-stable' })], { id: 'task-stable' }),
+  ], { id: 'stage-stable' });
+  applySnapshot(makeView('work-1', 1, { state: 'running', runs: [makeRunWithStages('run-1', 'running', [original])] }));
+  const renamed = makeStage('new stage label', 'running', [
+    makeTask('new task label', 'running', [
+      makeAttempt(99, 'running', { id: 'attempt-stable' }),
+      makeAttempt(1, 'running', { id: 'attempt-retry' }),
+    ], { id: 'task-stable' }),
+  ], { id: 'stage-stable' });
+  applyWorkViewEvent(delta('stable-ids', 2, 1, { runs: [makeRunWithStages('run-1', 'running', [renamed])] }));
+  const stage = selectWork(useWorkStore.getState().works, 'work-1')?.runs[0].stages[0];
+  equal(stage?.id, 'stage-stable', 'Stage is merged by stable ID');
+  equal(stage?.tasks.length, 1, 'renamed Task does not duplicate');
+  equal(stage?.tasks[0].id, 'task-stable', 'Task is merged by stable ID');
+  equal(stage?.tasks[0].attempts[0].index, 0, 'terminal Attempt keeps its committed identity and index');
+  equal(stage?.tasks[0].attempts[0].state, 'completed', 'terminal Attempt cannot regress');
+  equal(stage?.tasks[0].attempts[1].id, 'attempt-retry', 'new retry Attempt remains visible');
+});
+
+test('partial nested run delta preserves untouched stages and tasks', () => {
+  reset();
+  const first = makeStage('first', 'running', [makeTask('kept', 'running', [makeAttempt(0, 'running')])]);
+  const second = makeStage('second', 'pending', [makeTask('later', 'pending')]);
+  applySnapshot(makeView('work-1', 1, { state: 'running', runs: [makeRunWithStages('run-1', 'running', [first, second])] }));
+  const changedFirst = makeStage('first', 'running', [makeTask('added', 'waiting')]);
+  applyWorkViewEvent(delta('partial-nested', 2, 1, { runs: [makeRunWithStages('run-1', 'running', [changedFirst])] }));
+  const stages = selectWork(useWorkStore.getState().works, 'work-1')?.runs[0].stages ?? [];
+  equal(stages.length, 2, 'partial delta does not drop an untouched Stage');
+  equal(stages[0].tasks.length, 2, 'partial delta does not drop an untouched Task');
+  equal(stages[1].state, 'pending', 'pending RunState from the backend contract is accepted');
+  equal(stages[0].tasks[1].state, 'waiting', 'waiting RunState from the backend contract is accepted');
+});
+
+test('selection state isolates by workID', () => {
+  reset();
+  const ui = useWorkUIStore.getState();
+  ui.setSelection('work-1', { runId: 'run-a', stageId: 'stage-review' });
+  ui.setSelection('work-2', { runId: 'run-b', taskId: 'task-lint' });
+  const state = useWorkUIStore.getState();
+  equal(state.selectionByWork['work-1']?.runId, 'run-a', 'selection is per-work');
+  equal(state.selectionByWork['work-1']?.stageId, 'stage-review', 'stageId is preserved');
+  equal(state.selectionByWork['work-2']?.taskId, 'task-lint', 'taskId is per-work isolated');
+  state.removeCard('work-1');
+  const after = useWorkUIStore.getState();
+  equal(after.selectionByWork['work-1'], undefined, 'removeCard clears selection');
+  ok(after.selectionByWork['work-2'] !== undefined, 'other work selection survives removeCard');
+});
+
+test('retry tracking prevents duplicate dispatch', () => {
+  reset();
+  const ui = useWorkUIStore.getState();
+  const intent = { workId: 'work-1', runId: 'run-1', stageId: 'stage-review', taskId: 'task-lint', attemptId: 'attempt-0', attemptIndex: 0, requestId: 'retry-1' };
+  ui.beginRetry(intent);
+  let state = useWorkUIStore.getState();
+  equal(Object.values(state.retryByTarget)[0]?.state, 'pending', 'retry intent is tracked');
+  // Second begin with the same target and requestId is idempotent.
+  state.beginRetry(intent);
+  state = useWorkUIStore.getState();
+  equal(Object.keys(state.retryByTarget).length, 1, 'duplicate requestId does not create duplicate');
+  state.failRetry(intent, 'network unavailable');
+  state = useWorkUIStore.getState();
+  equal(Object.values(state.retryByTarget)[0]?.error, 'network unavailable', 'retry failure stays observable');
+  state.beginRetry({ ...intent, requestId: 'retry-2' });
+  state = useWorkUIStore.getState();
+  equal(Object.values(state.retryByTarget)[0]?.intent.requestId, 'retry-1', 'retrying a failed target reuses its original requestId');
+  state.clearRetry(intent);
+  state = useWorkUIStore.getState();
+  equal(Object.keys(state.retryByTarget).length, 0, 'clearRetry removes tracking');
+  // clearRetry on an unknown target is a no-op.
+  state.clearRetry({ ...intent, taskId: 'missing' });
+  state = useWorkUIStore.getState();
+  equal(Object.keys(state.retryByTarget).length, 0, 'clearRetry on unknown target is safe');
+});
+
+test('resolveSelection navigates nested structure correctly', () => {
+  const att0 = makeAttempt(0, 'completed');
+  const att1 = makeAttempt(1, 'failed', { error: 'timeout' });
+  const task = makeTask('lint', 'completed', [att0, att1]);
+  const stage = makeStage('review', 'completed', [task]);
+  const run = makeRunWithStages('run-1', 'completed', [stage]);
+
+  // Resolve to run level.
+  equal(resolveSelection({ runs: [run] } as any, { runId: 'run-1' })?.run.id, 'run-1', 'resolves run');
+  // Resolve to stage.
+  equal(resolveSelection({ runs: [run] } as any, { runId: 'run-1', stageId: 'stage-review' })?.stage?.name, 'review', 'resolves stage');
+  // Resolve to task.
+  equal(resolveSelection({ runs: [run] } as any, { runId: 'run-1', stageId: 'stage-review', taskId: 'task-lint' })?.task?.name, 'lint', 'resolves task');
+  // Resolve to attempt.
+  const resolved = resolveSelection({ runs: [run] } as any, { runId: 'run-1', stageId: 'stage-review', taskId: 'task-lint', attemptId: 'attempt-1', attemptIndex: 1 });
+  equal(resolved?.attempt?.index, 1, 'resolves attempt by index');
+  equal(resolved?.attempt?.error, 'timeout', 'resolved attempt preserves error');
+  // Missing run.
+  equal(resolveSelection({ runs: [run] } as any, { runId: 'run-missing' }), null, 'missing run returns null');
+  // Missing stage returns run only.
+  equal(resolveSelection({ runs: [run] } as any, { runId: 'run-1', stageId: 'missing' })?.stage, undefined, 'missing stage returns run with no stage');
 });
 
 let passed = 0;

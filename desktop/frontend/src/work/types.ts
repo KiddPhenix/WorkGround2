@@ -14,7 +14,7 @@ export type WorkState =
   | 'failed'
   | 'cancelled';
 export type WorkArchiveState = 'active' | 'archived' | 'deleted';
-export type RunState = 'running' | 'completed' | 'failed' | 'cancelled';
+export type RunState = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
 export type BlueprintSource = 'system' | 'user' | `addon:${string}`;
 
 export interface BlueprintRef {
@@ -128,6 +128,7 @@ export interface WorkRecord {
 export interface WorkflowRun {
   id: string;
   workId: string;
+  requestId?: string;
   definitionDigest: string;
   state: RunState;
   stages: Stage[];
@@ -137,7 +138,9 @@ export interface WorkflowRun {
 }
 
 export interface Stage {
+  id?: string;
   name: string;
+  gate?: string;
   state: RunState;
   tasks: Task[];
   startedAt: string;
@@ -145,12 +148,16 @@ export interface Stage {
 }
 
 export interface Task {
+  id?: string;
   name: string;
   state: RunState;
   attempts: Attempt[];
+  startedAt?: string;
+  finishedAt?: string;
 }
 
 export interface Attempt {
+  id?: string;
   index: number;
   state: RunState;
   sessionRef: SessionRef;
@@ -559,6 +566,52 @@ export interface TaskExecuteInput {
   requestId: string;
   definitionDigest: string;
   prompt: string;
+}
+
+// ── Run progress & selection ──────────────────────────────────────────────
+
+export interface RunSelection {
+  runId: string;
+  stageId?: string;
+  taskId?: string;
+  attemptId?: string;
+  attemptIndex?: number;
+}
+
+export interface RetryIntent extends RetryTaskInput {
+  /** The failed attempt that initiated this retry; the backend retries the owning Task. */
+  attemptId?: string;
+  attemptIndex: number;
+}
+
+export type RetryHandler = (intent: RetryIntent) => void | Promise<void>;
+
+export interface RetryStatus {
+  intent: RetryIntent;
+  state: 'pending' | 'failed';
+  error?: string;
+}
+
+export interface SessionSurfaceContext {
+  workId: string;
+  runId: string;
+  stageId: string;
+  taskId: string;
+  attemptId?: string;
+  attemptIndex: number;
+  sessionRef: SessionRef;
+}
+
+// ── Deep link extensions ──────────────────────────────────────────────────
+
+export interface DeepLinkTarget {
+  runId?: string;
+  stageId?: string;
+  taskId?: string;
+  attemptId?: string;
+  attemptIndex?: number;
+  /** Legacy flat targetID; resolved to a structured target when possible. */
+  targetID?: string;
 }
 
 export interface ToolCapability {

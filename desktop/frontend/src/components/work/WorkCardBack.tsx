@@ -1,6 +1,7 @@
 import React, { useMemo, type ReactNode } from 'react';
 
-import type { WorkView } from '../../work/types';
+import type { RunSelection, SessionRef, SessionSurfaceContext, WorkView } from '../../work/types';
+import { attemptKey, resolveSelection, stageKey, taskKey } from '../../work/store';
 
 export interface WorkCardBackSlotProps {
   workID: string;
@@ -33,6 +34,8 @@ export interface WorkCardBackProps {
   readonly: boolean;
   archived: boolean;
   slots?: WorkCardBackSlots;
+  selection?: RunSelection;
+  resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
 }
 
 function renderSlot(slot: WorkCardBackSlot | undefined, props: WorkCardBackSlotProps): ReactNode {
@@ -46,6 +49,8 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   readonly,
   archived,
   slots,
+  selection,
+  resolveSessionSurface,
 }) => {
   const { work } = view;
   const slotProps = useMemo<WorkCardBackSlotProps>(() => ({
@@ -56,6 +61,28 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     draft,
     onDraftChange,
   }), [archived, draft, onDraftChange, readonly, work.id, work.prompt]);
+
+  // Resolve the selected attempt's session surface.
+  const selectedSession = useMemo(() => {
+    if (!selection || !resolveSessionSurface) return null;
+    const resolved = resolveSelection(work, selection);
+    if (!resolved?.stage || !resolved.task || !resolved.attempt?.sessionRef) return null;
+    const sessionRef = resolved.attempt.sessionRef;
+    const context: SessionSurfaceContext = {
+      workId: work.id,
+      runId: resolved.run.id,
+      stageId: stageKey(resolved.stage),
+      taskId: taskKey(resolved.task),
+      attemptId: resolved.attempt.id,
+      attemptIndex: resolved.attempt.index,
+      sessionRef,
+    };
+    return {
+      key: `${sessionRef.sessionPath}\u0000${sessionRef.branchId}`,
+      targetID: `attempt:${context.runId}:${context.stageId}:${context.taskId}:${attemptKey(resolved.attempt)}`,
+      node: resolveSessionSurface(sessionRef, context),
+    };
+  }, [selection, resolveSessionSurface, work]);
 
   return (
     <div
@@ -74,7 +101,18 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         )}
       </div>
 
-      {slots ? (
+      {selectedSession !== null ? (
+        <div
+          key={selectedSession.key}
+          className="wg2-work-back-selected-session"
+          data-testid="work-back-selected-session"
+          data-work-target-id={selectedSession.targetID}
+        >
+          {selectedSession.node ?? (
+            <div className="wg2-work-session-unavailable" role="alert">目标 Session 暂不可用。</div>
+          )}
+        </div>
+      ) : slots ? (
         <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
           <div className="wg2-work-back-slot wg2-work-back-transcript" data-testid="work-back-slot-transcript">
             {renderSlot(slots.transcript, slotProps)}

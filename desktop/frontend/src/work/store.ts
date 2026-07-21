@@ -1,9 +1,15 @@
 import { create } from 'zustand';
 
 import type {
+  Attempt,
   BlockInstance,
   Cornerstone,
   Conclusion,
+  RetryIntent,
+  RetryStatus,
+  RunSelection,
+  Stage,
+  Task,
   Work,
   WorkState,
   WorkflowRun,
@@ -16,7 +22,7 @@ const WORK_STATES = new Set<WorkState>([
   'draft', 'ready', 'running', 'waiting_user', 'paused', 'completed', 'failed', 'cancelled',
 ]);
 const WORK_TERMINAL = new Set<WorkState>(['completed', 'failed', 'cancelled']);
-const RUN_STATES = new Set<WorkflowRun['state']>(['running', 'completed', 'failed', 'cancelled']);
+const RUN_STATES = new Set<WorkflowRun['state']>(['pending', 'running', 'waiting', 'completed', 'failed', 'cancelled']);
 const RUN_TERMINAL = new Set<WorkflowRun['state']>(['completed', 'failed', 'cancelled']);
 const WORK_TRANSITIONS: Record<WorkState, ReadonlySet<WorkState>> = {
   draft: new Set(['ready', 'running']),
@@ -161,12 +167,40 @@ function gapsAfterRevision(
   return { ...gaps, [workID]: { ...current, currentRevision: revision } };
 }
 
+function validID(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length > 0);
+}
+
+function validAttempt(value: unknown): value is Attempt {
+  return isRecord(value) &&
+    validID(value.id) &&
+    Number.isSafeInteger(value.index) && Number(value.index) >= 0 &&
+    RUN_STATES.has(value.state as WorkflowRun['state']) &&
+    isRecord(value.sessionRef) && typeof value.sessionRef.sessionPath === 'string' &&
+    typeof value.startedAt === 'string';
+}
+
+function validTask(value: unknown): value is Task {
+  return isRecord(value) &&
+    validID(value.id) && typeof value.name === 'string' && value.name.length > 0 &&
+    RUN_STATES.has(value.state as WorkflowRun['state']) &&
+    Array.isArray(value.attempts) && value.attempts.every(validAttempt);
+}
+
+function validStage(value: unknown): value is Stage {
+  return isRecord(value) &&
+    validID(value.id) && typeof value.name === 'string' && value.name.length > 0 &&
+    RUN_STATES.has(value.state as WorkflowRun['state']) &&
+    Array.isArray(value.tasks) && value.tasks.every(validTask) &&
+    typeof value.startedAt === 'string';
+}
+
 function validRun(run: unknown, workID: string): run is WorkflowRun {
   return isRecord(run) &&
-    typeof run.id === 'string' &&
+    typeof run.id === 'string' && run.id.length > 0 &&
     run.workId === workID &&
     RUN_STATES.has(run.state as WorkflowRun['state']) &&
-    Array.isArray(run.stages);
+    Array.isArray(run.stages) && run.stages.every(validStage);
 }
 
 function validCornerstoneOwner(cornerstone: unknown, workID: string): cornerstone is Cornerstone {
@@ -283,11 +317,76 @@ function mergeSnapshotBlocks(
 
 function mergeRun(current: WorkflowRun | undefined, incoming: WorkflowRun): WorkflowRun {
   const next = structuredClone(incoming);
-  if (current && RUN_TERMINAL.has(current.state)) {
+  if (!current) return next;
+
+  // Top-level Run terminal guard.
+  if (RUN_TERMINAL.has(current.state)) {
     next.state = current.state;
     next.finishedAt = current.finishedAt ?? next.finishedAt;
   }
+
+  next.stages = mergeStages(current.stages, next.stages);
+
   return next;
+}
+
+function sameStage(left: Stage, right: Stage): boolean {
+  if (left.id && right.id) return left.id === right.id;
+  return left.name === right.name;
+}
+
+function sameTask(left: Task, right: Task): boolean {
+  if (left.id && right.id) return left.id === right.id;
+  return left.name === right.name;
+}
+
+function sameAttempt(left: Attempt, right: Attempt): boolean {
+  if (left.id && right.id) return left.id === right.id;
+  return left.index === right.index;
+}
+
+function mergeOrdered<T>(current: T[], incoming: T[], same: (left: T, right: T) => boolean, merge: (left: T, right: T) => T): T[] {
+  const result = current.map((value) => structuredClone(value));
+  for (const value of incoming) {
+    const index = result.findIndex((existing) => same(existing, value));
+    if (index < 0) result.push(structuredClone(value));
+    else result[index] = merge(result[index], value);
+  }
+  return result;
+}
+
+function mergeStages(current: Stage[], incoming: Stage[]): Stage[] {
+  return mergeOrdered(current, incoming, sameStage, (previous, value) => {
+    const next = structuredClone(value);
+    if (RUN_TERMINAL.has(previous.state)) {
+      next.state = previous.state;
+      next.finishedAt = previous.finishedAt ?? next.finishedAt;
+    }
+    next.tasks = mergeTasks(previous.tasks, next.tasks);
+    return next;
+  });
+}
+
+function mergeTasks(current: Task[], incoming: Task[]): Task[] {
+  return mergeOrdered(current, incoming, sameTask, (previous, value) => {
+    const next = structuredClone(value);
+    if (RUN_TERMINAL.has(previous.state)) {
+      next.state = previous.state;
+      next.finishedAt = previous.finishedAt ?? next.finishedAt;
+    }
+    next.attempts = mergeAttempts(previous.attempts, next.attempts);
+    return next;
+  });
+}
+
+function mergeAttempts(current: Attempt[], incoming: Attempt[]): Attempt[] {
+  return mergeOrdered(current, incoming, sameAttempt, (previous, value) => {
+    const next = structuredClone(value);
+    if (RUN_TERMINAL.has(previous.state)) {
+      return structuredClone(previous);
+    }
+    return next;
+  }).sort((left, right) => left.index - right.index);
 }
 
 function mergeSnapshotRuns(current: WorkflowRun[], incoming: WorkflowRun[]): WorkflowRun[] {
@@ -579,11 +678,17 @@ export function defaultCardState(): WorkCardLocalState {
 
 export interface WorkUIStoreState {
   cardByWork: Record<string, WorkCardLocalState>;
+  selectionByWork: Record<string, RunSelection>;
+  retryByTarget: Record<string, RetryStatus>;
   ensureCard: (workID: string) => void;
   setActiveFace: (workID: string, face: WorkFace) => void;
   setScroll: (workID: string, face: WorkFace, scroll: Partial<FaceScrollState>) => void;
   setExpanded: (workID: string, face: WorkFace, targetID: string, expanded: boolean) => void;
   setDraft: (workID: string, face: WorkFace, draft: string) => void;
+  setSelection: (workID: string, selection: RunSelection) => void;
+  beginRetry: (intent: RetryIntent) => void;
+  failRetry: (intent: RetryIntent, error: string) => void;
+  clearRetry: (intent: RetryIntent) => void;
   removeCard: (workID: string) => void;
   clearAll: () => void;
 }
@@ -594,6 +699,8 @@ function cardFor(state: WorkUIStoreState, workID: string): WorkCardLocalState {
 
 export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
   cardByWork: {},
+  selectionByWork: {},
+  retryByTarget: {},
   ensureCard: (workID) => set((state) => state.cardByWork[workID] ? state : { cardByWork: { ...state.cardByWork, [workID]: defaultCardState() } }),
   setActiveFace: (workID, activeFace) => set((state) => {
     const card = cardFor(state, workID);
@@ -622,12 +729,37 @@ export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
       faces: { ...card.faces, [face]: { ...card.faces[face], draft } },
     } } };
   }),
-  removeCard: (workID) => set((state) => {
-    if (!(workID in state.cardByWork)) return state;
-    const { [workID]: _, ...cardByWork } = state.cardByWork;
-    return { cardByWork };
+  setSelection: (workID, selection) => set((state) => ({
+    selectionByWork: { ...state.selectionByWork, [workID]: selection },
+  })),
+  beginRetry: (intent) => set((state) => {
+    const key = retryTargetKey(intent);
+    const existing = state.retryByTarget[key];
+    if (existing?.state === 'pending') return state;
+    return { retryByTarget: { ...state.retryByTarget, [key]: { intent: existing?.intent ?? intent, state: 'pending' } } };
   }),
-  clearAll: () => set({ cardByWork: {} }),
+  failRetry: (intent, error) => set((state) => {
+    const key = retryTargetKey(intent);
+    const existing = state.retryByTarget[key];
+    if (existing && existing.intent.requestId !== intent.requestId) return state;
+    return { retryByTarget: { ...state.retryByTarget, [key]: { intent, state: 'failed', error } } };
+  }),
+  clearRetry: (intent) => set((state) => {
+    const key = retryTargetKey(intent);
+    const existing = state.retryByTarget[key];
+    if (!existing || existing.intent.requestId !== intent.requestId) return state;
+    const { [key]: _, ...retryByTarget } = state.retryByTarget;
+    return { retryByTarget };
+  }),
+  removeCard: (workID) => set((state) => {
+    const hasRetry = Object.values(state.retryByTarget).some((retry) => retry.intent.workId === workID);
+    if (!(workID in state.cardByWork) && !(workID in state.selectionByWork) && !hasRetry) return state;
+    const { [workID]: _card, ...cardByWork } = state.cardByWork;
+    const { [workID]: _sel, ...selectionByWork } = state.selectionByWork;
+    const retryByTarget = Object.fromEntries(Object.entries(state.retryByTarget).filter(([, retry]) => retry.intent.workId !== workID));
+    return { cardByWork, selectionByWork, retryByTarget };
+  }),
+  clearAll: () => set({ cardByWork: {}, selectionByWork: {}, retryByTarget: {} }),
 }));
 
 export const selectWorkView = (works: Record<string, WorkView>, workID: string): WorkView | undefined => works[workID];
@@ -637,3 +769,78 @@ export const selectWorkIDs = (works: Record<string, WorkView>): string[] => Obje
 export const selectWorksByState = (works: Record<string, WorkView>, state: WorkState): WorkView[] => Object.values(works).filter((view) => view.work.state === state);
 export const selectCardState = (cards: Record<string, WorkCardLocalState>, workID: string): WorkCardLocalState | undefined => cards[workID];
 export const selectExpanded = (cards: Record<string, WorkCardLocalState>, workID: string, face: WorkFace, targetID: string): boolean => cards[workID]?.faces[face].expanded[targetID] ?? false;
+export const selectSelection = (selections: Record<string, RunSelection>, workID: string): RunSelection | undefined => selections[workID];
+export const retryTargetKey = (intent: Pick<RetryIntent, 'workId' | 'runId' | 'stageId' | 'taskId'>): string =>
+  `${intent.workId}\u0000${intent.runId}\u0000${intent.stageId}\u0000${intent.taskId}`;
+export const selectRetry = (retries: Record<string, RetryStatus>, intent: Pick<RetryIntent, 'workId' | 'runId' | 'stageId' | 'taskId'>): RetryStatus | undefined =>
+  retries[retryTargetKey(intent)];
+export const selectHasPendingRetry = (retries: Record<string, RetryStatus>, intent: Pick<RetryIntent, 'workId' | 'runId' | 'stageId' | 'taskId'>): boolean =>
+  selectRetry(retries, intent)?.state === 'pending';
+
+// ── Run navigation helpers ────────────────────────────────────────────────
+
+export function findRun(work: Work, runId: string): WorkflowRun | undefined {
+  return work.runs.find((r) => r.id === runId);
+}
+
+export function stageKey(stage: Stage): string {
+  return stage.id || stage.name;
+}
+
+export function taskKey(task: Task): string {
+  return task.id || task.name;
+}
+
+export function attemptKey(attempt: Attempt): string {
+  return attempt.id || String(attempt.index);
+}
+
+export function findStage(run: WorkflowRun, stageId: string): Stage | undefined {
+  return run.stages.find((stage) => stageKey(stage) === stageId);
+}
+
+export function findTask(stage: Stage, taskId: string): Task | undefined {
+  return stage.tasks.find((task) => taskKey(task) === taskId);
+}
+
+export function findAttempt(task: Task, attemptId: string | undefined, attemptIndex: number | undefined): Attempt | undefined {
+  if (attemptId) return task.attempts.find((attempt) => attemptKey(attempt) === attemptId);
+  return attemptIndex === undefined ? undefined : task.attempts.find((attempt) => attempt.index === attemptIndex);
+}
+
+export function isRunTerminal(run: WorkflowRun): boolean {
+  return RUN_TERMINAL.has(run.state);
+}
+
+export function isStageTerminal(stage: Stage): boolean {
+  return RUN_TERMINAL.has(stage.state);
+}
+
+export function isTaskTerminal(task: Task): boolean {
+  return RUN_TERMINAL.has(task.state);
+}
+
+export function isAttemptTerminal(attempt: Attempt): boolean {
+  return RUN_TERMINAL.has(attempt.state);
+}
+
+export interface ResolvedSelection {
+  run: WorkflowRun;
+  stage?: Stage;
+  task?: Task;
+  attempt?: Attempt;
+}
+
+export function resolveSelection(work: Work, selection: RunSelection): ResolvedSelection | null {
+  const run = findRun(work, selection.runId);
+  if (!run) return null;
+  if (!selection.stageId) return { run };
+  const stage = findStage(run, selection.stageId);
+  if (!stage) return { run };
+  if (!selection.taskId) return { run, stage };
+  const task = findTask(stage, selection.taskId);
+  if (!task) return { run, stage };
+  if (!selection.attemptId && selection.attemptIndex === undefined) return { run, stage, task };
+  const attempt = findAttempt(task, selection.attemptId, selection.attemptIndex);
+  return { run, stage, task, attempt: attempt ?? undefined };
+}
