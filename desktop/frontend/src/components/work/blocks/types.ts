@@ -1,6 +1,12 @@
 // Shared contracts for the block rendering boundary.
 
-import type { BlockActionRequest, BlockInstance, BlockPlacement, BlockUpdateRequest } from '../../../work/types';
+import type {
+  ActionReceipt,
+  BlockActionRequest,
+  BlockInstance,
+  BlockPlacement,
+  BlockUpdateRequest,
+} from '../../../work/types';
 import type { BlockRenderIdentity } from './safeBlockJson';
 
 export interface ValidationResult {
@@ -11,7 +17,14 @@ export interface ValidationResult {
 export interface BlockHostContext {
   workId: string;
   workSchemaVersion: number;
+  runId?: string;
+  taskId?: string;
+  actionReceipts?: readonly ActionReceipt[];
 }
+
+export type BlockActionHandler = (
+  request: BlockActionRequest,
+) => ActionReceipt | void | Promise<ActionReceipt | void>;
 
 export interface BlockRendererProps {
   block: BlockInstance;
@@ -19,7 +32,7 @@ export interface BlockRendererProps {
   readonly: boolean;
   archived: boolean;
   context: BlockHostContext;
-  onAction?: (request: BlockActionRequest) => void;
+  onAction?: BlockActionHandler;
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
 }
 
@@ -69,7 +82,7 @@ export interface BlockHostProps {
   readonly?: boolean;
   archived?: boolean;
   context: BlockHostContext;
-  onAction?: (request: BlockActionRequest) => void;
+  onAction?: BlockActionHandler;
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
 }
 

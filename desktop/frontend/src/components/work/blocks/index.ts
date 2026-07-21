@@ -27,6 +27,7 @@ export type {
   RendererValidator,
   RendererSupport,
   RendererFailureCode,
+  BlockActionHandler,
   BlockRendererRegistry,
   LazyLoader,
   ValidationResult,
@@ -40,6 +41,19 @@ export {
   validateKeyValue,
   validateProgress,
 } from './schemas';
+export {
+  validateActionEntryData,
+  validateApprovalData,
+  validateArtifactData,
+  validateChartData,
+  validateCodeData,
+  validateDecisionData,
+  validateGraphData,
+  validateInputData,
+  validateMarkdownData,
+  validateNoticeData,
+  validateTableData,
+} from './schemaHelpers';
 export type {
   ItemState,
   ListItem,
@@ -59,3 +73,17 @@ export type {
   ProgressItem,
   ProgressData,
 } from './schemas';
+export type {
+  SafeActionEntryData,
+  SafeApprovalData,
+  SafeArtifactData,
+  SafeChartData,
+  SafeCodeData,
+  SafeDecisionData,
+  SafeGraphData,
+  SafeInputData,
+  SafeMarkdownData,
+  SafeNoticeData,
+  SafeTableData,
+  SafeColumn,
+} from './schemaHelpers';
