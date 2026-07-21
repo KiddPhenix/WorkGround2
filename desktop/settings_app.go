@@ -1088,6 +1088,8 @@ func (a *App) rebuild() error {
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
