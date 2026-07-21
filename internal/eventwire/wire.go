@@ -92,7 +92,12 @@ func ToWire(e event.Event) Event {
 			}
 		}
 	case event.ApprovalRequest:
-		w.Approval = &Approval{ID: e.Approval.ID, Tool: e.Approval.Tool, Subject: e.Approval.Subject, Reason: e.Approval.Reason}
+		w.Approval = &Approval{
+			ID: e.Approval.ID, Tool: e.Approval.Tool, Subject: e.Approval.Subject, Reason: e.Approval.Reason,
+			WorkID: e.Approval.WorkID, BlockID: e.Approval.BlockID, ActionID: e.Approval.ActionID,
+			RequestID: e.Approval.RequestID, Summary: e.Approval.Summary,
+			HandlerID: e.Approval.HandlerID, HandlerVersion: e.Approval.HandlerVersion,
+		}
 	case event.AskRequest:
 		w.Ask = ToWireAsk(e.Ask)
 	case event.CompactionStarted, event.CompactionDone:
@@ -250,10 +255,17 @@ type CacheDiagnostics struct {
 
 // Approval is the JSON form of an event.Approval.
 type Approval struct {
-	ID      string `json:"id"`
-	Tool    string `json:"tool"`
-	Subject string `json:"subject"`
-	Reason  string `json:"reason,omitempty"`
+	ID             string `json:"id"`
+	Tool           string `json:"tool"`
+	Subject        string `json:"subject"`
+	Reason         string `json:"reason,omitempty"`
+	WorkID         string `json:"workId,omitempty"`
+	BlockID        string `json:"blockId,omitempty"`
+	ActionID       string `json:"actionId,omitempty"`
+	RequestID      string `json:"requestId,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	HandlerID      string `json:"handlerId,omitempty"`
+	HandlerVersion string `json:"handlerVersion,omitempty"`
 }
 
 // Guardian is the JSON form of an event.GuardianResult.

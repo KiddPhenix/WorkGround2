@@ -146,6 +146,7 @@ type Work struct {
 	Prompt          string                 `json:"prompt"`
 	Cornerstones    []Cornerstone          `json:"cornerstones"`
 	Runs            []WorkflowRun          `json:"runs"`
+	ActionReceipts  []ActionReceiptRecord  `json:"actionReceipts,omitempty"`
 	Conclusions     []Conclusion           `json:"conclusions,omitempty"`
 	RerunOf         string                 `json:"rerunOf,omitempty"`
 	CopiedFrom      string                 `json:"copiedFrom,omitempty"`

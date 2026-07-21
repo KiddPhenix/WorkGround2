@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,10 +15,15 @@ import (
 // projections, manifests, indexes and archive files are derived side effects
 // repaired by WorkStore on retry or reload.
 type Service struct {
-	store     WorkStore
-	blueprint *BlueprintRegistry
-	tools     ToolCatalog
-	sink      ViewSink
+	store       WorkStore
+	blueprint   *BlueprintRegistry
+	tools       ToolCatalog
+	sink        ViewSink
+	actions     *ActionRegistry
+	permissions PermissionChecker
+	actionCfgMu sync.RWMutex
+	actionMu    sync.Mutex
+	actionRuns  map[string]*actionFlight
 }
 
 // NewService creates a Work lifecycle service. A nil sink discards view events.
@@ -32,7 +38,7 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	if IsNilViewSink(sink) {
 		sink = ViewSinkDiscard
 	}
-	return &Service{store: store, blueprint: blueprint, tools: tools, sink: sink}
+	return &Service{store: store, blueprint: blueprint, tools: tools, sink: sink, actionRuns: make(map[string]*actionFlight)}
 }
 
 // Create atomically creates a complete Work from an exact Blueprint version.

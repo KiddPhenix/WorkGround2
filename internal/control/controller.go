@@ -182,6 +182,18 @@ type Controller struct {
 	// scheduling state. They never leak network callbacks into frontend code.
 	workRefresh *work.BlockRefreshManager
 	workSources *workSourceRegistry
+	// actionRoot owns Block Action lifetimes independently from model turns.
+	// Per-request children preserve caller cancellation; Cancel stops all current
+	// foreground work, while Close closes the root and waits for registered
+	// actions to persist their terminal receipts.
+	actionMu         sync.Mutex
+	actionRoot       context.Context
+	actionRootCancel context.CancelFunc
+	actionRuns       map[string]map[uint64]context.CancelFunc
+	actionNext       uint64
+	actionWG         sync.WaitGroup
+	actionClosed     bool
+	closeOnce        sync.Once
 
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
@@ -210,6 +222,7 @@ type pendingApproval struct {
 	tool      string
 	subject   string
 	reason    string
+	context   event.Approval
 	fresh     bool
 	autoDrain bool
 	reply     chan approvalReply
@@ -440,6 +453,7 @@ func New(opts Options) *Controller {
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	actionRoot, actionRootCancel := context.WithCancel(context.Background())
 	c := &Controller{
 		runner:                     opts.Runner,
 		executor:                   opts.Executor,
@@ -478,6 +492,14 @@ func New(opts Options) *Controller {
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
 		workViews:                  opts.WorkViews,
+		actionRoot:                 actionRoot,
+		actionRootCancel:           actionRootCancel,
+		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
+	}
+	if !nilutil.IsNil(opts.Work) {
+		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
+			binder.SetPermissionChecker(c)
+		}
 	}
 	c.loadTaskMemory(opts.SessionPath)
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -1413,8 +1435,9 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	return c.runner.Run(ctx, input)
 }
 
-// Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
-// unblocks via the cancelled context.
+// Cancel aborts the in-flight turn and every currently executing Block Action
+// owned by this Controller. Each Action still has its own request context, so
+// caller cancellation of one Action does not affect another.
 func (c *Controller) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel
@@ -1422,10 +1445,14 @@ func (c *Controller) Cancel() {
 		c.canceling = true
 	}
 	c.mu.Unlock()
+	actionCount := c.cancelBlockActions()
 	if cancel != nil {
 		c.approval.clearAll()
 		cancel()
 		return
+	}
+	if actionCount > 0 {
+		c.approval.clearActionApprovals()
 	}
 	if c.goals.active() {
 		c.stopGoal(GoalStatusStopped)
@@ -3982,26 +4009,32 @@ const (
 )
 
 func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
-	if c.workRefresh != nil {
-		_ = c.workRefresh.Close()
+	if c == nil {
+		return
 	}
-	c.mu.Lock()
-	started := c.startedOnce
-	c.mu.Unlock()
-	if fireSessionEnd && started {
-		c.hooks.SessionEnd(context.Background())
-	}
-	if c.jobs != nil {
-		switch jobsMode {
-		case closeJobsAsync:
-			c.jobs.CloseAsync()
-		default:
-			c.jobs.Close() // cancel any still-running background jobs
+	c.closeOnce.Do(func() {
+		c.closeBlockActions()
+		if c.workRefresh != nil {
+			_ = c.workRefresh.Close()
 		}
-	}
-	if c.cleanup != nil {
-		c.cleanup()
-	}
+		c.mu.Lock()
+		started := c.startedOnce
+		c.mu.Unlock()
+		if fireSessionEnd && started {
+			c.hooks.SessionEnd(context.Background())
+		}
+		if c.jobs != nil {
+			switch jobsMode {
+			case closeJobsAsync:
+				c.jobs.CloseAsync()
+			default:
+				c.jobs.Close() // cancel any still-running background jobs
+			}
+		}
+		if c.cleanup != nil {
+			c.cleanup()
+		}
+	})
 }
 
 // Jobs returns the still-running background jobs for the status bar (nil when
@@ -4635,13 +4668,19 @@ type approvalDecisionOptions struct {
 	// permission. It may reuse an explicit session grant, but YOLO/auto approval
 	// must not answer or drain the prompt.
 	fresh bool
+	// approval carries optional domain context retained for reconnect replay.
+	approval event.Approval
+	// actionSessionGrant scopes Work Action session reuse to one exact trusted
+	// action identity. Generic tool approvals leave it nil and retain their
+	// existing permission-rule matching behaviour.
+	actionSessionGrant *actionSessionGrantKey
 }
 
 func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, tool, subject string, args json.RawMessage, reason string, opts approvalDecisionOptions) (approvalReply, error) {
 	// YOLO/full access and the just-approved-plan execution window auto-allow
 	// approval-gated tools without prompting. Plan approval is a user decision,
 	// not a tool permission, so it deliberately stays interactive.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 
@@ -4650,12 +4689,15 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	// Re-check: a session grant may have landed while we queued behind another
 	// prompt for the same subject.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 	var id string
 	var reply chan approvalReply
-	if opts.fresh {
+	if opts.approval.WorkID != "" {
+		opts.approval.Tool, opts.approval.Subject, opts.approval.Reason = tool, subject, reason
+		id, reply = c.approval.registerApprovalDecision(opts.approval, opts.fresh)
+	} else if opts.fresh {
 		id, reply = c.approval.registerDecision(tool, subject, reason, true)
 	} else {
 		id, reply = c.approval.register(tool, subject, reason)
@@ -4665,7 +4707,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 		current: stringPtr("等待批准"), currentSource: stringPtr("approval"),
 		nextStep: stringPtr(strings.TrimSpace(subject)), nextStepSource: stringPtr("approval"),
 	})
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason}})
+	approvalEvent := opts.approval
+	approvalEvent.ID, approvalEvent.Tool, approvalEvent.Subject, approvalEvent.Reason = id, tool, subject, reason
+	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approvalEvent})
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
 		go c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs)
 	}
@@ -4678,6 +4722,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	select {
 	case r := <-reply:
+		if err := waitCtx.Err(); err != nil {
+			return approvalReply{}, err
+		}
 		c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
 		return r, nil
 	case <-waitCtx.Done():

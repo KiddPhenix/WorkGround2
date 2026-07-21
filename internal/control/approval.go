@@ -28,11 +28,12 @@ type approvalManager struct {
 
 	// mu guards the prompt maps and posture fields; every critical section under
 	// it is short and non-blocking.
-	mu        sync.Mutex
-	approvals map[string]pendingApproval
-	asks      map[string]pendingAsk
-	granted   map[string]bool
-	nextID    int
+	mu           sync.Mutex
+	approvals    map[string]pendingApproval
+	asks         map[string]pendingAsk
+	granted      map[string]bool
+	actionGrants map[actionSessionGrantKey]bool
+	nextID       int
 	// toolApprovalMode is the runtime approval posture: "ask" prompts, "auto"
 	// lets the policy auto-approve the writer fallback while preserving ask/deny
 	// rules, and "yolo" skips every tool approval prompt except plan approval.
@@ -60,6 +61,7 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 		approvals:        map[string]pendingApproval{},
 		asks:             map[string]pendingAsk{},
 		granted:          map[string]bool{},
+		actionGrants:     map[actionSessionGrantKey]bool{},
 		toolApprovalMode: mode,
 		approvalTimeout:  timeout,
 	}
@@ -77,9 +79,15 @@ func (a *approvalManager) preApproved(tool, subject string) bool {
 // preApprovedForDecision reports whether a prompt can be skipped for a decision
 // class. Fresh user decisions may reuse an explicit session grant, but they are
 // never answered by YOLO/full-access or the approved-plan execution window.
-func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool) bool {
+func (a *approvalManager) preApprovedForDecision(tool, subject string, fresh bool, action *actionSessionGrantKey) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if action != nil {
+		if fresh {
+			return a.actionGrants[*action]
+		}
+		return a.bypassAllowsLocked(tool) || a.actionGrants[*action]
+	}
 	if fresh {
 		return a.sessionGrantAllowsLocked(tool, subject)
 	}
@@ -96,6 +104,10 @@ func (a *approvalManager) register(tool, subject, reason string) (string, chan a
 // permission or a fresh user decision. Fresh decisions are not auto-drained when
 // the user switches to auto/yolo tool approval while the prompt is visible.
 func (a *approvalManager) registerDecision(tool, subject, reason string, fresh bool) (string, chan approvalReply) {
+	return a.registerApprovalDecision(event.Approval{Tool: tool, Subject: subject, Reason: reason}, fresh)
+}
+
+func (a *approvalManager) registerApprovalDecision(approval event.Approval, fresh bool) (string, chan approvalReply) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.nextID++
@@ -103,9 +115,9 @@ func (a *approvalManager) registerDecision(tool, subject, reason string, fresh b
 	reply := make(chan approvalReply, 1)
 	autoDrain := false
 	if !fresh {
-		autoDrain = a.autoApprovalWouldAllowLocked(tool, subject)
+		autoDrain = a.autoApprovalWouldAllowLocked(approval.Tool, approval.Subject)
 	}
-	a.approvals[id] = pendingApproval{tool: tool, subject: subject, reason: reason, fresh: fresh, autoDrain: autoDrain, reply: reply}
+	a.approvals[id] = pendingApproval{tool: approval.Tool, subject: approval.Subject, reason: approval.Reason, context: approval, fresh: fresh, autoDrain: autoDrain, reply: reply}
 	return id, reply
 }
 
@@ -115,6 +127,15 @@ func (a *approvalManager) grantSession(tool, subject string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.granted[permission.SessionGrantRuleForScope(tool, subject)] = true
+}
+
+// grantActionSession records an exact Work Action grant. It deliberately uses
+// a typed key instead of the generic config-rule syntax: ordinary non-file
+// tools collapse to a bare tool name there and would lose the Action identity.
+func (a *approvalManager) grantActionSession(key actionSessionGrantKey) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.actionGrants[key] = true
 }
 
 // cancel drops a pending approval (timeout/abort path).
@@ -170,6 +191,18 @@ func (a *approvalManager) clearAll() {
 	clear(a.asks)
 }
 
+// clearActionApprovals drops only Work Action prompts. Ordinary tool, plan and
+// ask interactions remain pending when a caller cancels Actions without a turn.
+func (a *approvalManager) clearActionApprovals() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, pending := range a.approvals {
+		if pending.context.WorkID != "" {
+			delete(a.approvals, id)
+		}
+	}
+}
+
 // hasPending reports whether any prompt is awaiting a user decision.
 func (a *approvalManager) hasPending() bool {
 	a.mu.Lock()
@@ -222,7 +255,9 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	defer a.mu.Unlock()
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
-		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason})
+		approval := p.context
+		approval.ID, approval.Tool, approval.Subject, approval.Reason = id, p.tool, p.subject, p.reason
+		approvals = append(approvals, approval)
 	}
 	asks := make([]event.Ask, 0, len(a.asks))
 	for id, p := range a.asks {

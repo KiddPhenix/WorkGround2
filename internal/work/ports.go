@@ -99,12 +99,18 @@ type PermissionChecker interface {
 
 // PermissionRequest contains only the action context relevant to policy.
 type PermissionRequest struct {
-	WorkID    string         `json:"workId"`
-	RequestID string         `json:"requestId"`
-	Object    ObjectContext  `json:"object"`
-	ToolName  string         `json:"toolName"`
-	Risk      string         `json:"risk"`
-	Input     map[string]any `json:"input,omitempty"`
+	WorkID          string         `json:"workId"`
+	BlockID         string         `json:"blockId"`
+	ActionID        string         `json:"actionId"`
+	HandlerID       string         `json:"handlerId"`
+	HandlerVersion  string         `json:"handlerVersion"`
+	RequestID       string         `json:"requestId"`
+	Object          ObjectContext  `json:"object"`
+	ToolName        string         `json:"toolName"`
+	Risk            string         `json:"risk"`
+	Summary         string         `json:"summary"`
+	ConfirmRequired bool           `json:"confirmRequired"`
+	Input           map[string]any `json:"input,omitempty"`
 }
 
 // PermissionDecision distinguishes direct allow, required approval, and deny.

@@ -755,6 +755,24 @@ func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision in
 }
 
 func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64, error) {
+	// Action receipt events carry the idempotency and external-side-effect audit
+	// trail. Reject malformed transitions before append so a bad event cannot
+	// poison the authoritative log and leave a half-committed Work.
+	if event.Type == EventBlockActionReserved || event.Type == EventBlockActionChanged {
+		replay, current, replayErr := ReplayWithReducer(wp, DefaultReducer())
+		if replayErr != nil {
+			return 0, fmt.Errorf("work: preflight action event: %w", replayErr)
+		}
+		existingRequest := false
+		if replay.Index != nil {
+			_, existingRequest = replay.Index.RequestIndex[event.RequestID]
+		}
+		if !existingRequest {
+			if _, reduceErr := DefaultReducer()(event, current); reduceErr != nil {
+				return 0, fmt.Errorf("work: reject action event before append: %w", reduceErr)
+			}
+		}
+	}
 	rev, err := AppendWorkEvent(wp, event, true)
 	if err != nil {
 		if rev > 0 {
@@ -2908,6 +2926,60 @@ func DefaultReducer() WorkEventReducer {
 					break
 				}
 			}
+
+		case EventBlockActionReserved:
+			var rec ActionReceiptRecord
+			if err := json.Unmarshal(event.Payload, &rec); err != nil {
+				return nil, fmt.Errorf("work: unmarshal action reserved: %w", err)
+			}
+			if rec.RequestID == "" || rec.WorkID != current.ID || rec.BlockID == "" || rec.BlockKind == "" || rec.ActionID == "" || rec.Fingerprint == "" || rec.InputDigest == "" || rec.Intent == "" || !validActionRisk(rec.Risk) || rec.CreatedAt.IsZero() || rec.UpdatedAt.IsZero() {
+				return nil, fmt.Errorf("work: action reserved: complete identity and fingerprints are required")
+			}
+			switch rec.HandlerIdentityVersion {
+			case 0:
+				if rec.HandlerID != "" || rec.HandlerVersion != "" {
+					return nil, fmt.Errorf("work: action reserved: legacy handler identity must be empty")
+				}
+			case HandlerIdentityVersion:
+				if err := validateHandlerPart("handlerID", rec.HandlerID, handlerIDMaxLen); err != nil {
+					return nil, fmt.Errorf("work: action reserved: %w", err)
+				}
+				if err := validateHandlerPart("handlerVersion", rec.HandlerVersion, handlerVersionMaxLen); err != nil {
+					return nil, fmt.Errorf("work: action reserved: %w", err)
+				}
+			default:
+				return nil, fmt.Errorf("work: action reserved: unsupported handler identity version %d", rec.HandlerIdentityVersion)
+			}
+			if rec.Status != ActionPending {
+				return nil, fmt.Errorf("work: action reserved: initial status must be pending, got %s", rec.Status)
+			}
+			if _, _, found := findActionReceipt(current.ActionReceipts, rec.RequestID); found {
+				return nil, fmt.Errorf("work: action reserved: duplicate requestID %q", rec.RequestID)
+			}
+			current.ActionReceipts = upsertActionReceipt(current.ActionReceipts, rec)
+
+		case EventBlockActionChanged:
+			var rec ActionReceiptRecord
+			if err := json.Unmarshal(event.Payload, &rec); err != nil {
+				return nil, fmt.Errorf("work: unmarshal action changed: %w", err)
+			}
+			if rec.RequestID == "" || rec.WorkID != current.ID || rec.ActionID == "" || rec.Fingerprint == "" {
+				return nil, fmt.Errorf("work: action changed: complete identity and fingerprint are required")
+			}
+			previous, _, found := findActionReceipt(current.ActionReceipts, rec.RequestID)
+			if !found {
+				return nil, fmt.Errorf("work: action changed: requestID %q was not reserved", rec.RequestID)
+			}
+			if field := changedActionIdentity(previous, rec); field != "" {
+				return nil, fmt.Errorf("work: action changed: immutable field %s changed for requestID %q", field, rec.RequestID)
+			}
+			if !validActionTransition(previous.Status, rec.Status) {
+				return nil, fmt.Errorf("work: action changed: invalid transition %s -> %s for requestID %q", previous.Status, rec.Status, rec.RequestID)
+			}
+			if rec.UpdatedAt.IsZero() || rec.UpdatedAt.Before(previous.UpdatedAt) {
+				return nil, fmt.Errorf("work: action changed: updatedAt moved backwards for requestID %q", rec.RequestID)
+			}
+			current.ActionReceipts = upsertActionReceipt(current.ActionReceipts, rec)
 
 		case EventConclusionUpserted:
 			var c Conclusion

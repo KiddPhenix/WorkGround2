@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"sync/atomic"
 
 	"workground2/internal/agent"
+	"workground2/internal/event"
 	"workground2/internal/nilutil"
+	"workground2/internal/permission"
 	"workground2/internal/session"
 	"workground2/internal/work"
 )
@@ -40,6 +43,7 @@ type WorkService interface {
 	Delete(context.Context, string, string) error
 	RefreshBlock(context.Context, work.RefreshBlockInput, work.BlockSourceAdapter) (*work.BlockInstance, error)
 	CancelBlockRefresh(context.Context, string, string, string) (*work.BlockInstance, error)
+	ExecuteBlockAction(context.Context, work.BlockActionRequest) (*work.ActionReceipt, error)
 }
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
@@ -162,6 +166,7 @@ func (b *WorkViewBroadcaster) SubscriberDrops(id string) int64 {
 // Nil receiver is safe: every method returns an error.
 type workMethods struct {
 	svc     WorkService
+	owner   *Controller
 	refresh *work.BlockRefreshManager
 	sources *workSourceRegistry
 }
@@ -290,7 +295,178 @@ func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestI
 }
 
 func (w workMethods) ExecuteBlockAction(ctx context.Context, input work.BlockActionRequest) (*work.ActionReceipt, error) {
-	return nil, errWorkNotImplemented("ExecuteBlockAction")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	if w.owner != nil {
+		return w.owner.executeBlockAction(ctx, w.svc, input)
+	}
+	return w.svc.ExecuteBlockAction(ctx, input)
+}
+
+func (c *Controller) executeBlockAction(ctx context.Context, svc WorkService, input work.BlockActionRequest) (*work.ActionReceipt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	actionCtx, finish, ok := c.beginBlockAction(ctx, input.WorkID, input.RequestID)
+	if !ok {
+		return nil, context.Canceled
+	}
+	defer finish()
+	return svc.ExecuteBlockAction(actionCtx, input)
+}
+
+func (c *Controller) beginBlockAction(ctx context.Context, workID, requestID string) (context.Context, func(), bool) {
+	c.actionMu.Lock()
+	if c.actionClosed {
+		c.actionMu.Unlock()
+		return nil, nil, false
+	}
+	if c.actionRoot == nil {
+		c.actionRoot, c.actionRootCancel = context.WithCancel(context.Background())
+	}
+	if c.actionRuns == nil {
+		c.actionRuns = make(map[string]map[uint64]context.CancelFunc)
+	}
+	actionCtx, cancel := context.WithCancel(ctx)
+	key := strings.TrimSpace(workID) + "\x00" + strings.TrimSpace(requestID)
+	c.actionNext++
+	id := c.actionNext
+	if c.actionRuns[key] == nil {
+		c.actionRuns[key] = make(map[uint64]context.CancelFunc)
+	}
+	c.actionRuns[key][id] = cancel
+	c.actionWG.Add(1)
+	root := c.actionRoot
+	c.actionMu.Unlock()
+
+	stopRoot := context.AfterFunc(root, cancel)
+	var once sync.Once
+	finish := func() {
+		once.Do(func() {
+			stopRoot()
+			cancel()
+			c.actionMu.Lock()
+			delete(c.actionRuns[key], id)
+			if len(c.actionRuns[key]) == 0 {
+				delete(c.actionRuns, key)
+			}
+			c.actionMu.Unlock()
+			c.actionWG.Done()
+		})
+	}
+	return actionCtx, finish, true
+}
+
+func (c *Controller) cancelBlockActions() int {
+	c.actionMu.Lock()
+	cancels := make([]context.CancelFunc, 0)
+	for _, runs := range c.actionRuns {
+		for _, cancel := range runs {
+			cancels = append(cancels, cancel)
+		}
+	}
+	c.actionMu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
+	return len(cancels)
+}
+
+func (c *Controller) closeBlockActions() {
+	c.actionMu.Lock()
+	if !c.actionClosed {
+		c.actionClosed = true
+		if c.actionRootCancel != nil {
+			c.actionRootCancel()
+		}
+	}
+	c.actionMu.Unlock()
+	c.cancelBlockActions()
+	c.approval.clearActionApprovals()
+	c.actionWG.Wait()
+}
+
+// CheckPermission adapts Work actions to the same Policy and ApprovalRequest
+// stream used by ordinary tool calls. It blocks until an Ask is answered so the
+// Service can persist the final rejection/cancellation/execution outcome.
+func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionRequest) (work.PermissionDecision, error) {
+	if c == nil {
+		return work.PermissionDecision{Reason: "controller is unavailable"}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	grantKey := actionSessionGrantFor(input)
+	subject := actionApprovalSubject(grantKey)
+	readOnly := input.Risk == string(work.RiskRead) && !input.ConfirmRequired
+	decision := c.policy.DecideSubject(input.ToolName, readOnly, subject)
+	if decision == permission.Deny {
+		return work.PermissionDecision{Reason: "denied by permission policy"}, nil
+	}
+	if decision == permission.Allow && !input.ConfirmRequired {
+		return work.PermissionDecision{Allowed: true}, nil
+	}
+
+	summary := strings.TrimSpace(input.Summary)
+	if summary == "" {
+		summary = input.ToolName
+	}
+	reason := fmt.Sprintf("%s · handler=%s@%s · risk=%s · work=%s · block=%s · action=%s · request=%s",
+		summary, input.HandlerID, input.HandlerVersion, input.Risk, input.WorkID, input.BlockID, input.ActionID, input.RequestID)
+	args, _ := json.Marshal(map[string]string{
+		"workId": input.WorkID, "blockId": input.BlockID, "actionId": input.ActionID,
+		"requestId": input.RequestID, "handlerId": input.HandlerID, "handlerVersion": input.HandlerVersion,
+		"risk": input.Risk, "summary": summary,
+	})
+	approval := event.Approval{
+		WorkID: input.WorkID, BlockID: input.BlockID, ActionID: input.ActionID,
+		RequestID: input.RequestID, Summary: summary,
+		HandlerID: input.HandlerID, HandlerVersion: input.HandlerVersion,
+	}
+	reply, err := c.requestApprovalDecisionWithOptions(ctx, input.ToolName, subject, args, reason,
+		approvalDecisionOptions{fresh: input.ConfirmRequired, approval: approval, actionSessionGrant: &grantKey})
+	if err != nil {
+		return work.PermissionDecision{}, err
+	}
+	if !reply.allow {
+		return work.PermissionDecision{Reason: "approval rejected by user"}, nil
+	}
+	if reply.session && !input.ConfirmRequired {
+		c.approval.grantActionSession(grantKey)
+	}
+	if reply.persist && !input.ConfirmRequired && c.onRemember != nil {
+		c.emitRememberResult(c.onRemember(permission.RememberRuleForScope(input.ToolName, subject)))
+	}
+	return work.PermissionDecision{Allowed: true}, nil
+}
+
+// actionSessionGrantKey is the exact, in-memory identity for one Work Action
+// session grant. Controller lifetime supplies the user/session boundary. A
+// comparable struct avoids delimiter escaping and wildcard parsing entirely.
+type actionSessionGrantKey struct {
+	ToolName        string
+	WorkID          string
+	BlockID         string
+	ActionID        string
+	HandlerID       string
+	HandlerVersion  string
+	Risk            work.ActionRisk
+	ConfirmRequired bool
+}
+
+func actionSessionGrantFor(input work.PermissionRequest) actionSessionGrantKey {
+	return actionSessionGrantKey{
+		ToolName: strings.TrimSpace(input.ToolName), WorkID: strings.TrimSpace(input.WorkID),
+		BlockID: strings.TrimSpace(input.BlockID), ActionID: strings.TrimSpace(input.ActionID),
+		HandlerID: strings.TrimSpace(input.HandlerID), HandlerVersion: strings.TrimSpace(input.HandlerVersion),
+		Risk: work.ActionRisk(strings.TrimSpace(input.Risk)), ConfirmRequired: input.ConfirmRequired,
+	}
+}
+
+func actionApprovalSubject(key actionSessionGrantKey) string {
+	return fmt.Sprintf("work:%s/block:%s/action:%s/handler:%s@%s",
+		key.WorkID, key.BlockID, key.ActionID, key.HandlerID, key.HandlerVersion)
 }
 
 func (w workMethods) PrepareRerun(ctx context.Context, input work.PrepareRerunInput) (*work.RerunPlan, error) {
@@ -316,7 +492,7 @@ func (c *Controller) WorkControl() WorkControl {
 	if c == nil {
 		return workMethods{}
 	}
-	return workMethods{svc: c.workSvc, refresh: c.workRefresh, sources: c.workSources}
+	return workMethods{svc: c.workSvc, owner: c, refresh: c.workRefresh, sources: c.workSources}
 }
 
 // WorkViews returns the WorkViewEvent broadcaster for this session, or nil when
@@ -398,6 +574,7 @@ func (c *Controller) LookupSession(ctx context.Context, sessionPath string) (wor
 }
 
 var (
-	_ WorkService        = (*work.Service)(nil)
-	_ work.SessionLookup = (*Controller)(nil)
+	_ WorkService            = (*work.Service)(nil)
+	_ work.SessionLookup     = (*Controller)(nil)
+	_ work.PermissionChecker = (*Controller)(nil)
 )

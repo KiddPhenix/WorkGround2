@@ -44,6 +44,8 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventWorkArchived:        true,
 	EventWorkRestored:        true,
 	EventWorkDeleted:         true,
+	EventBlockActionReserved: true,
+	EventBlockActionChanged:  true,
 	eventCompact:             true,
 }
 

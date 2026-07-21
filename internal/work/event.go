@@ -48,6 +48,8 @@ const (
 	EventWorkArchived        WorkEventType = "work.archived"
 	EventWorkRestored        WorkEventType = "work.restored"
 	EventWorkDeleted         WorkEventType = "work.deleted"
+	EventBlockActionReserved WorkEventType = "block.action.reserved"
+	EventBlockActionChanged  WorkEventType = "block.action.changed"
 )
 
 // ViewEventType identifies a transport projection update.
