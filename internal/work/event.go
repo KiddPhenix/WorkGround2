@@ -31,6 +31,13 @@ type WorkEvent struct {
 // WorkEventType identifies a persisted domain fact.
 type WorkEventType string
 
+type cornerstoneRestorePayload struct {
+	CornerstoneID  string            `json:"cornerstoneId"`
+	Status         CornerstoneStatus `json:"status,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	LastVerifiedAt *time.Time        `json:"lastVerifiedAt,omitempty"`
+}
+
 const (
 	EventWorkCreated         WorkEventType = "work.created"
 	EventDefinitionFrozen    WorkEventType = "definition.frozen"
@@ -44,6 +51,8 @@ const (
 	EventBlockRemoved        WorkEventType = "block.removed"
 	EventCornerstoneUpserted WorkEventType = "cornerstone.upserted"
 	EventCornerstoneRemoved  WorkEventType = "cornerstone.removed"
+	EventCornerstoneRestored WorkEventType = "cornerstone.restored"
+	EventCornerstoneGC       WorkEventType = "cornerstone.gc.requested"
 	EventConclusionUpserted  WorkEventType = "conclusion.upserted"
 	EventArtifactLinked      WorkEventType = "artifact.linked"
 	EventWorkArchived        WorkEventType = "work.archived"

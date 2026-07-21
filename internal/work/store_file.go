@@ -1440,6 +1440,96 @@ func (s *FileWorkStore) ReadBlob(workID, digest string) ([]byte, error) {
 	return data, nil
 }
 
+// Put computes the content digest and writes data to the blob store atomically.
+// It is idempotent: repeated writes of identical content return the same digest.
+func (s *FileWorkStore) Put(workID string, data []byte) (string, error) {
+	digest := ContentDigest(data)
+	return digest, s.WriteBlob(workID, digest, data)
+}
+
+// BlobExists reports whether a blob exists and passes integrity verification.
+func (s *FileWorkStore) BlobExists(workID, digest string) (bool, error) {
+	_, err := s.ReadBlob(workID, digest)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, ErrWorkNotFound) || os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// Exists is an alias for BlobExists to satisfy the BlobStore interface.
+func (s *FileWorkStore) Exists(workID, digest string) (bool, error) {
+	return s.BlobExists(workID, digest)
+}
+
+// DeleteBlob removes a blob by digest. Idempotent: returns nil if already absent.
+func (s *FileWorkStore) DeleteBlob(workID, digest string) error {
+	return s.withWorkOp(workID, func() error {
+		path, err := s.blobPath(workID, digest)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("work: delete blob %s for %s: %w", digest, workID, err)
+		}
+		return nil
+	})
+}
+
+// Delete is an alias for DeleteBlob to satisfy the BlobStore interface.
+func (s *FileWorkStore) Delete(workID, digest string) error {
+	return s.DeleteBlob(workID, digest)
+}
+
+// ListBlobDigests returns every blob digest stored under a work directory.
+func (s *FileWorkStore) ListBlobDigests(workID string) ([]string, error) {
+	blobDir, err := s.blobDir(workID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(blobDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("work: list blobs for %s: %w", workID, err)
+	}
+	var digests []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Only include files that look like hex digest file names.
+		if len(name) == 64 && isHexString(name) {
+			digests = append(digests, digestPrefix+name)
+		}
+	}
+	return digests, nil
+}
+
+// ListDigests is an alias for ListBlobDigests to satisfy the BlobStore interface.
+func (s *FileWorkStore) ListDigests(workID string) ([]string, error) {
+	return s.ListBlobDigests(workID)
+}
+
+func isHexString(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// Get is an alias for ReadBlob to satisfy the BlobStore interface.
+func (s *FileWorkStore) Get(workID, digest string) ([]byte, error) {
+	return s.ReadBlob(workID, digest)
+}
+
 // ── Manifest ───────────────────────────────────────────────────────────────
 
 type workManifest struct {
@@ -3023,10 +3113,62 @@ func DefaultReducer() WorkEventReducer {
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return nil, fmt.Errorf("work: unmarshal cornerstone remove: %w", err)
 			}
+			found := false
 			for i, c := range current.Cornerstones {
 				if c.ID == payload.CornerstoneID {
-					current.Cornerstones = append(current.Cornerstones[:i], current.Cornerstones[i+1:]...)
+					c.Tombstone = true
+					c.UpdatedAt = event.CreatedAt
+					current.Cornerstones[i] = c
+					found = true
 					break
+				}
+			}
+			if !found {
+				// Out-of-order removal: create a tombstone marker so a
+				// subsequently replayed earlier upsert cannot revive it.
+				current.Cornerstones = append(current.Cornerstones, Cornerstone{
+					ID:        payload.CornerstoneID,
+					WorkID:    current.ID,
+					Tombstone: true,
+					PinnedAt:  event.CreatedAt,
+					UpdatedAt: event.CreatedAt,
+				})
+			}
+
+		case EventCornerstoneRestored:
+			var payload cornerstoneRestorePayload
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return nil, fmt.Errorf("work: unmarshal cornerstone restore: %w", err)
+			}
+			found := false
+			for i, c := range current.Cornerstones {
+				if c.ID == payload.CornerstoneID {
+					c.Tombstone = false
+					if payload.Status != "" {
+						c.Status = payload.Status
+						c.Error = payload.Error
+						c.LastVerifiedAt = payload.LastVerifiedAt
+					}
+					c.UpdatedAt = event.CreatedAt
+					current.Cornerstones[i] = c
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("work: cornerstone restore: cornerstone %q not found", payload.CornerstoneID)
+			}
+
+		case EventCornerstoneGC:
+			var payload struct {
+				Targets []string `json:"targets"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				return nil, fmt.Errorf("work: unmarshal cornerstone GC: %w", err)
+			}
+			for _, digest := range payload.Targets {
+				if err := validateDigest(digest); err != nil {
+					return nil, fmt.Errorf("work: cornerstone GC target: %w", err)
 				}
 			}
 

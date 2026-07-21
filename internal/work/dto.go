@@ -110,6 +110,73 @@ type CornerstoneInput struct {
 	RequestID string          `json:"requestId"`
 }
 
+// PinCornerstoneInput is a typed mutation DTO for pinning a Cornerstone.
+// ExpectedRevision is the Work-level optimistic lock. Repeated calls with the
+// same RequestID are idempotent and return the same stable Cornerstone ID.
+type PinCornerstoneInput struct {
+	Type             CornerstoneType `json:"type"`
+	Title            string          `json:"title"`
+	Content          string          `json:"content"`
+	Ref              CornerstoneRef  `json:"ref"`
+	Mode             CornerstoneMode `json:"mode"`
+	Required         bool            `json:"required"`
+	Tags             []string        `json:"tags,omitempty"`
+	ExpectedRevision int64           `json:"expectedRevision"`
+	RequestID        string          `json:"requestId"`
+}
+
+// RefreshCornerstoneInput is a typed mutation DTO for refreshing a live_ref
+// Cornerstone's source status. For snapshot cornerstones, this verifies blob
+// integrity.
+type RefreshCornerstoneInput struct {
+	CornerstoneID    string `json:"cornerstoneId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// RemoveCornerstoneInput is a typed mutation DTO for removing a Cornerstone.
+// The operation writes a tombstone event; the cornerstone is not physically
+// deleted from the projection.
+type RemoveCornerstoneInput struct {
+	CornerstoneID    string `json:"cornerstoneId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// UndoCornerstoneInput is a typed mutation DTO for restoring a tombstoned
+// Cornerstone.
+type UndoCornerstoneInput struct {
+	CornerstoneID    string `json:"cornerstoneId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// CornerstoneResult is the unified result of a Cornerstone mutation.
+type CornerstoneResult struct {
+	Cornerstone *Cornerstone `json:"cornerstone"`
+	WorkView    *WorkView    `json:"workView,omitempty"`
+	Duplicate   bool         `json:"duplicate"`
+	Revision    int64        `json:"revision"`
+}
+
+// GCInput carries the intent to garbage-collect unreferenced blobs.
+type GCInput struct {
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// GCResult reports the outcome of a blob GC pass.
+type GCResult struct {
+	WorkID        string   `json:"workId"`
+	TotalBlobs    int      `json:"totalBlobs"`
+	Referenced    int      `json:"referenced"`
+	Reclaimed     int      `json:"reclaimed"`
+	ReclaimedKeys []string `json:"reclaimedKeys,omitempty"`
+	Errors        []string `json:"errors,omitempty"`
+	Duplicate     bool     `json:"duplicate"`
+	Revision      int64    `json:"revision"`
+}
+
 // PrepareRerunInput 是重执行预检的输入。
 type PrepareRerunInput struct {
 	RecordID string    `json:"recordId"`
