@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"workground2/internal/nilutil"
 )
 
 // Service owns every Work lifecycle write. The event log is authoritative;
@@ -21,10 +23,15 @@ type Service struct {
 	sink        ViewSink
 	actions     *ActionRegistry
 	permissions PermissionChecker
+	runner      *WorkRunner
+	runMu       sync.Mutex
+	runFlights  map[string]*runFlight
 	actionCfgMu sync.RWMutex
 	actionMu    sync.Mutex
 	actionRuns  map[string]*actionFlight
 }
+
+type runFlight struct{ done chan struct{} }
 
 // NewService creates a Work lifecycle service. A nil sink discards view events.
 func NewService(store WorkStore, blueprint *BlueprintRegistry, sink ViewSink) *Service {
@@ -38,7 +45,22 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	if IsNilViewSink(sink) {
 		sink = ViewSinkDiscard
 	}
-	return &Service{store: store, blueprint: blueprint, tools: tools, sink: sink, actionRuns: make(map[string]*actionFlight)}
+	return &Service{
+		store: store, blueprint: blueprint, tools: tools, sink: sink,
+		actionRuns: make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
+	}
+}
+
+// SetTaskExecutor replaces the narrow task execution adapter. Nil and typed-nil
+// values disable execution. An active run keeps the adapter snapshot it began
+// with; later calls observe the replacement.
+func (s *Service) SetTaskExecutor(executor TaskExecutor) {
+	if nilutil.IsNil(executor) {
+		executor = nil
+	}
+	s.runMu.Lock()
+	s.runner = NewWorkRunner(executor)
+	s.runMu.Unlock()
 }
 
 // Create atomically creates a complete Work from an exact Blueprint version.
@@ -239,6 +261,223 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 		return nil, committedRecovery("draft-view", workID, requestID, view.Revision, err)
 	}
 	return view, nil
+}
+
+// RunWork starts or resumes execution of a Work's frozen WorkflowDef. It is
+// idempotent by requestID: repeated calls with the same requestID return the
+// already-created run. Already-terminal runs are a safe no-op.
+//
+// The Work must have a frozen definition. Empty stages, unknown gates, and
+// definition drift are hard failures.
+func (s *Service) RunWork(ctx context.Context, workID, requestID string) (*WorkflowRun, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("RunWork", requestID)
+	if err != nil {
+		return nil, err
+	}
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return nil, errors.New("work: RunWork: workID is required")
+	}
+	for {
+		flight, owner := s.beginRunFlight(workID)
+		if owner {
+			defer s.finishRunFlight(workID, flight)
+			return s.runWork(ctx, workID, requestID)
+		}
+		if err := waitRunFlight(ctx, flight); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (s *Service) runWork(ctx context.Context, workID, requestID string) (*WorkflowRun, error) {
+	runner := s.taskRunner()
+	if runner == nil || runner.executor == nil {
+		return nil, errors.New("work: RunWork: TaskExecutor is not configured; call SetTaskExecutor first")
+	}
+	eventRequestID := requestID + "/run"
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if current.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: RunWork: Work %s is %s", workID, current.ArchiveState)
+	}
+
+	if err := validateDefForRun(current.Definition.Workflow); err != nil {
+		return nil, fmt.Errorf("work: RunWork: %w", err)
+	}
+	if current.Definition.Digest == "" {
+		return nil, fmt.Errorf("work: RunWork: Work %s has no frozen definition digest", workID)
+	}
+	computedDigest, err := ComputeDigest(&current.Definition)
+	if err != nil {
+		return nil, fmt.Errorf("work: RunWork: compute frozen definition digest: %w", err)
+	}
+	if computedDigest != current.Definition.Digest {
+		return nil, fmt.Errorf("work: RunWork: definition drift: stored %s, computed %s", current.Definition.Digest, computedDigest)
+	}
+
+	runID := workflowRunID(workID, requestID)
+	if state.RequestFound {
+		if state.RequestType != EventRunStarted {
+			return nil, fmt.Errorf("work: RunWork: request %q was already used by %s", requestID, state.RequestType)
+		}
+		run := findWorkflowRun(current, runID)
+		if run == nil {
+			return nil, fmt.Errorf("work: RunWork: committed request %q has no run %q", requestID, runID)
+		}
+		if run.RequestID != "" && run.RequestID != requestID {
+			return nil, fmt.Errorf("work: RunWork: run %q belongs to request %q", run.ID, run.RequestID)
+		}
+	} else {
+		for i := range current.Runs {
+			if !IsTerminalRunState(current.Runs[i].State) {
+				return nil, fmt.Errorf("work: RunWork: Work %s already has active run %s in state %s", workID, current.Runs[i].ID, current.Runs[i].State)
+			}
+		}
+		now := time.Now().UTC()
+		run := newPendingRun(current, requestID)
+		payload, marshalErr := json.Marshal(runEventPayload{Run: run, WorkState: WorkRunning})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("work: RunWork: encode initial run: %w", marshalErr)
+		}
+		event := newServiceEvent(workID, eventRequestID, EventRunStarted, payload, now)
+		event.BaseRevision = state.Revision
+		event.Revision = state.Revision + 1
+		if _, commitErr := s.store.CommitEvent(workID, event); commitErr != nil {
+			return nil, fmt.Errorf("work: RunWork: commit run reservation: %w", commitErr)
+		}
+		current, _, err = s.store.LoadState(workID, "")
+		if err != nil {
+			return nil, committedRecovery("run-load", workID, requestID, event.Revision, err)
+		}
+	}
+
+	run := findWorkflowRun(current, runID)
+	if run == nil {
+		return nil, fmt.Errorf("work: RunWork: run %q disappeared from projection", runID)
+	}
+	emit := func(input WorkEvent) (int64, error) {
+		if strings.TrimSpace(input.RequestID) == "" {
+			return 0, errors.New("work: RunWork: runner emitted an event without requestID")
+		}
+		event := newServiceEvent(workID, input.RequestID, input.Type, input.Payload, time.Now().UTC())
+		// Revision zero delegates allocation to the authoritative event log. If
+		// another process already used the deterministic request ID, CommitEvent
+		// verifies the semantic payload before returning idempotently. Skipping
+		// that comparison could let two processes both reach the executor.
+		return s.store.CommitEvent(workID, event)
+	}
+	_, runErr := runner.Run(ctx, current, run, emit)
+
+	view, err := s.loadView(workID)
+	if err != nil {
+		return nil, committedRecovery("run-view", workID, requestID, 0, err)
+	}
+	if err := s.emitSnapshot(view, requestID); err != nil {
+		return nil, committedRecovery("run-view", workID, requestID, view.Revision, err)
+	}
+	persisted := findWorkflowRun(view.Work, runID)
+	if persisted == nil {
+		return nil, committedRecovery("run-view", workID, requestID, view.Revision, fmt.Errorf("run %q missing", runID))
+	}
+	result := *persisted
+	if runErr != nil {
+		return &result, fmt.Errorf("work: RunWork: %w", runErr)
+	}
+	return &result, nil
+}
+
+func (s *Service) taskRunner() *WorkRunner {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	return s.runner
+}
+
+func (s *Service) beginRunFlight(workID string) (*runFlight, bool) {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+	if flight := s.runFlights[workID]; flight != nil {
+		return flight, false
+	}
+	flight := &runFlight{done: make(chan struct{})}
+	if s.runFlights == nil {
+		s.runFlights = make(map[string]*runFlight)
+	}
+	s.runFlights[workID] = flight
+	return flight, true
+}
+
+func (s *Service) finishRunFlight(workID string, flight *runFlight) {
+	s.runMu.Lock()
+	if s.runFlights[workID] == flight {
+		delete(s.runFlights, workID)
+		close(flight.done)
+	}
+	s.runMu.Unlock()
+}
+
+func waitRunFlight(ctx context.Context, flight *runFlight) error {
+	select {
+	case <-flight.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func workflowRunID(workID, requestID string) string {
+	digest := sha256.Sum256([]byte(workID + "\x00" + requestID))
+	return fmt.Sprintf("run-%x", digest[:12])
+}
+
+func newPendingRun(value *Work, requestID string) WorkflowRun {
+	run := WorkflowRun{
+		ID:               workflowRunID(value.ID, requestID),
+		WorkID:           value.ID,
+		RequestID:        requestID,
+		DefinitionDigest: value.Definition.Digest,
+		State:            RunPending,
+		Stages:           make([]Stage, 0, len(value.Definition.Workflow.Stages)),
+	}
+	for _, stageSpec := range value.Definition.Workflow.Stages {
+		stage := Stage{
+			ID:    runChildID(run.ID, "stage", stageSpec.ID),
+			Name:  stageSpec.ID,
+			Gate:  stageSpec.Gate,
+			State: RunPending,
+			Tasks: make([]Task, 0, len(stageSpec.Tasks)),
+		}
+		for _, taskSpec := range stageSpec.Tasks {
+			stage.Tasks = append(stage.Tasks, Task{
+				ID:       runChildID(stage.ID, "task", taskSpec.ID),
+				Name:     taskSpec.ID,
+				State:    RunPending,
+				Attempts: []Attempt{},
+			})
+		}
+		run.Stages = append(run.Stages, stage)
+	}
+	return run
+}
+
+func findWorkflowRun(value *Work, runID string) *WorkflowRun {
+	if value == nil {
+		return nil
+	}
+	for i := range value.Runs {
+		if value.Runs[i].ID == runID {
+			return &value.Runs[i]
+		}
+	}
+	return nil
 }
 
 // Archive appends the lifecycle fact first, then materializes an immutable

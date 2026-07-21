@@ -40,7 +40,9 @@ const (
 type RunState string
 
 const (
+	RunPending   RunState = "pending"
 	RunRunning   RunState = "running"
+	RunWaiting   RunState = "waiting"
 	RunCompleted RunState = "completed"
 	RunFailed    RunState = "failed"
 	RunCancelled RunState = "cancelled"
