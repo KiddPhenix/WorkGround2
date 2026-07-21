@@ -58,10 +58,19 @@ func taskInput() work.TaskExecuteInput {
 		RunID:            "run-1",
 		StageID:          "stage-1",
 		TaskID:           "task-1",
+		AttemptID:        "attempt-2",
 		AttemptIndex:     2,
 		RequestID:        "request-1",
 		DefinitionDigest: "sha256:definition",
 		Prompt:           "private prompt with secret-token",
+	}
+}
+
+func taskCancel(ref work.SessionRef, requestID string) work.TaskCancelInput {
+	input := taskInput()
+	return work.TaskCancelInput{
+		WorkID: input.WorkID, RunID: input.RunID, StageID: input.StageID,
+		TaskID: input.TaskID, AttemptID: input.AttemptID, Session: ref, RequestID: requestID,
 	}
 }
 
@@ -227,10 +236,10 @@ func TestTaskExecutorCancelIsRealAndIdempotent(t *testing.T) {
 	path := <-paths
 	<-prov.started
 	ref := work.SessionRef{SessionPath: path, BranchID: agent.BranchID(path)}
-	if err := exec.CancelTask(context.Background(), ref, "cancel-1"); err != nil {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-1")); err != nil {
 		t.Fatalf("CancelTask: %v", err)
 	}
-	if err := exec.CancelTask(context.Background(), ref, "cancel-1"); err != nil {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-1")); err != nil {
 		t.Fatalf("repeated CancelTask: %v", err)
 	}
 	select {
@@ -241,11 +250,13 @@ func TestTaskExecutorCancelIsRealAndIdempotent(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("ExecuteTask did not stop after CancelTask")
 	}
-	if err := exec.CancelTask(context.Background(), ref, "cancel-2"); !errors.Is(err, ErrTaskSessionNotRunning) {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-2")); !errors.Is(err, ErrTaskSessionNotRunning) {
 		t.Fatalf("cancel completed Session error = %v", err)
 	}
 	other := work.SessionRef{SessionPath: agent.NewSessionPath(t.TempDir(), "other")}
-	if err := exec.CancelTask(context.Background(), other, "cancel-1"); !errors.Is(err, ErrTaskCancelConflict) {
+	otherInput := taskCancel(other, "cancel-1")
+	otherInput.AttemptID = "other-attempt"
+	if err := exec.CancelTask(context.Background(), otherInput); !errors.Is(err, ErrTaskCancelConflict) {
 		t.Fatalf("request conflict error = %v", err)
 	}
 }
@@ -266,7 +277,7 @@ func TestTaskExecutorValidationDoesNotEchoPrompt(t *testing.T) {
 
 func TestTaskExecutorNilCancelIsExplicit(t *testing.T) {
 	var exec *TaskExecutorAdapter
-	err := exec.CancelTask(context.Background(), work.SessionRef{SessionPath: "session.jsonl"}, "cancel-1")
+	err := exec.CancelTask(context.Background(), taskCancel(work.SessionRef{SessionPath: "session.jsonl"}, "cancel-1"))
 	if err == nil || !strings.Contains(err.Error(), "Task executor") {
 		t.Fatalf("nil CancelTask error = %v", err)
 	}
@@ -338,7 +349,7 @@ func TestTaskExecutorCancelRaceWithCompletion(t *testing.T) {
 	ref := work.SessionRef{SessionPath: path, BranchID: agent.BranchID(path)}
 
 	// Cancel while running — must succeed.
-	if err := exec.CancelTask(context.Background(), ref, "cancel-race-1"); err != nil {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-1")); err != nil {
 		t.Fatalf("CancelTask during run: %v", err)
 	}
 	// Wait for ExecuteTask to finish (cancelled).
@@ -352,11 +363,11 @@ func TestTaskExecutorCancelRaceWithCompletion(t *testing.T) {
 	}
 
 	// Cancel after completion: session no longer active, same requestID is idempotent.
-	if err := exec.CancelTask(context.Background(), ref, "cancel-race-1"); err != nil {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-1")); err != nil {
 		t.Fatalf("idempotent CancelTask after completion: %v", err)
 	}
 	// New requestID after completion: must report session not running.
-	if err := exec.CancelTask(context.Background(), ref, "cancel-race-2"); !errors.Is(err, ErrTaskSessionNotRunning) {
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-2")); !errors.Is(err, ErrTaskSessionNotRunning) {
 		t.Fatalf("new CancelTask after completion error = %v", err)
 	}
 }
@@ -402,5 +413,36 @@ func TestFirstLine(t *testing.T) {
 	}
 	if got := firstLine("一二三四五", 4); got != "一二三…" {
 		t.Fatalf("firstLine truncated = %q", got)
+	}
+}
+
+func TestTaskExecutorPendingCancelBeforeSession(t *testing.T) {
+	var factoryCalls atomic.Int32
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		func(context.Context, work.TaskExecuteInput) (*Controller, func(), error) {
+			factoryCalls.Add(1)
+			return nil, nil, errors.New("factory must not run after pending cancel")
+		},
+	)
+	input := taskInput()
+	cancel := taskCancel(work.SessionRef{}, "cancel-before-session")
+	if err := exec.CancelTask(context.Background(), cancel); err != nil {
+		t.Fatalf("CancelTask before ExecuteTask: %v", err)
+	}
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if attempt == nil || attempt.State != work.RunCancelled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pending-cancel ExecuteTask = (%+v, %v)", attempt, err)
+	}
+	if got := factoryCalls.Load(); got != 0 {
+		t.Fatalf("factory ran %d times after pending cancel", got)
+	}
+	if err := exec.CancelTask(context.Background(), cancel); err != nil {
+		t.Fatalf("repeated pending cancel: %v", err)
+	}
+	newRequest := cancel
+	newRequest.RequestID = "cancel-after-finished"
+	if err := exec.CancelTask(context.Background(), newRequest); !errors.Is(err, ErrTaskSessionNotRunning) {
+		t.Fatalf("new cancel after finished error = %v", err)
 	}
 }

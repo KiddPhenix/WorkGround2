@@ -9,26 +9,58 @@ import (
 // WorkflowRun is one execution of a Work. It records stage/task/attempt
 // hierarchy, the definition digest it ran against, and an optional Conclusion.
 type WorkflowRun struct {
-	ID               string      `json:"id"`
-	WorkID           string      `json:"workId"`
-	RequestID        string      `json:"requestId,omitempty"`
-	DefinitionDigest string      `json:"definitionDigest"`
-	State            RunState    `json:"state"`
-	Stages           []Stage     `json:"stages"`
-	StartedAt        time.Time   `json:"startedAt"`
-	FinishedAt       *time.Time  `json:"finishedAt,omitempty"`
-	Conclusion       *Conclusion `json:"conclusion,omitempty"`
+	ID               string            `json:"id"`
+	WorkID           string            `json:"workId"`
+	RequestID        string            `json:"requestId,omitempty"`
+	DefinitionDigest string            `json:"definitionDigest"`
+	State            RunState          `json:"state"`
+	Stages           []Stage           `json:"stages"`
+	StartedAt        time.Time         `json:"startedAt"`
+	FinishedAt       *time.Time        `json:"finishedAt,omitempty"`
+	Conclusion       *Conclusion       `json:"conclusion,omitempty"`
+	Cancel           *RunCancelReceipt `json:"cancel,omitempty"`
+	Pause            *RunPauseReceipt  `json:"pause,omitempty"`
+}
+
+// CancelDelivery is the persisted delivery state of a run cancel intent.
+type CancelDelivery string
+
+const (
+	CancelPending   CancelDelivery = "pending"
+	CancelDelivered CancelDelivery = "delivered"
+	CancelFailed    CancelDelivery = "failed"
+)
+
+// RunCancelReceipt makes the event-first cancellation side effect observable
+// and retryable after the Run has already entered its terminal state.
+type RunCancelReceipt struct {
+	RequestID string         `json:"requestId"`
+	Status    CancelDelivery `json:"status"`
+	Error     string         `json:"error,omitempty"`
+	Attempts  int            `json:"attempts"`
+	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+// RunPauseReceipt records the cooperative pause boundary and its recovery
+// limitation. Session checkpoints restore local code/conversation state only;
+// they never claim to roll back network, database, deployment, or other
+// external effects.
+type RunPauseReceipt struct {
+	RequestID string    `json:"requestId"`
+	PausedAt  time.Time `json:"pausedAt"`
+	Notice    string    `json:"notice"`
 }
 
 // Stage is one phase inside a WorkflowRun.
 type Stage struct {
-	ID         string     `json:"id,omitempty"`
-	Name       string     `json:"name"`
-	Gate       string     `json:"gate,omitempty"`
-	State      RunState   `json:"state"`
-	Tasks      []Task     `json:"tasks"`
-	StartedAt  time.Time  `json:"startedAt"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	ID         string          `json:"id,omitempty"`
+	Name       string          `json:"name"`
+	Gate       string          `json:"gate,omitempty"`
+	State      RunState        `json:"state"`
+	Tasks      []Task          `json:"tasks"`
+	StartedAt  time.Time       `json:"startedAt"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+	Resolution *GateResolution `json:"resolution,omitempty"`
 }
 
 // Task is one task inside a Stage.
@@ -43,13 +75,31 @@ type Task struct {
 
 // Attempt is one try of a Task, linked to a SessionRef.
 type Attempt struct {
-	ID         string     `json:"id,omitempty"`
-	Index      int        `json:"index"`
-	State      RunState   `json:"state"`
-	SessionRef SessionRef `json:"sessionRef"`
-	StartedAt  time.Time  `json:"startedAt"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	ID              string          `json:"id,omitempty"`
+	RequestID       string          `json:"requestId,omitempty"`
+	Index           int             `json:"index"`
+	State           RunState        `json:"state"`
+	SessionRef      SessionRef      `json:"sessionRef"`
+	StartedAt       time.Time       `json:"startedAt"`
+	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Receipt         *AttemptReceipt `json:"receipt,omitempty"`
+	SideEffectClass string          `json:"sideEffectClass,omitempty"`
+}
+
+// AttemptReceipt records execution or human-confirmed evidence for an attempt.
+// External/destructive attempts without a matching receipt must enter
+// needs_confirmation and must never be replayed automatically.
+type AttemptReceipt struct {
+	// RequestID is the idempotency key for the resolution action.
+	RequestID string `json:"requestId"`
+	// Outcome records the user-confirmed outcome: retry | accept | skip | cancel.
+	Outcome string `json:"outcome"`
+	// Evidence is an optional human-readable note about the resolution.
+	Evidence        string `json:"evidence,omitempty"`
+	SideEffectClass string `json:"sideEffectClass,omitempty"`
+	// ConfirmedAt is when the evidence was recorded.
+	ConfirmedAt time.Time `json:"confirmedAt"`
 }
 
 // ── Event payload wrappers ────────────────────────────────────────────────
@@ -65,8 +115,9 @@ type runEventPayload struct {
 
 // stageEventPayload wraps a Stage with its parent Run ID.
 type stageEventPayload struct {
-	RunID string `json:"runId"`
-	Stage Stage  `json:"stage"`
+	RunID      string          `json:"runId"`
+	Stage      Stage           `json:"stage"`
+	Resolution *GateResolution `json:"resolution,omitempty"`
 }
 
 // taskEventPayload wraps a Task with its parent Run and Stage context.

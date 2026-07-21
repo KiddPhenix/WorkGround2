@@ -34,6 +34,24 @@ type RetryTaskInput struct {
 	RequestID string `json:"requestId"`
 }
 
+// ResumeRunInput 是恢复暂停/等待 Run 的输入参数。
+// GateResolutions 可附带 gate 已解决上下文（approval accepted / input provided）。
+type ResumeRunInput struct {
+	WorkID    string `json:"workId"`
+	RunID     string `json:"runId"`
+	RequestID string `json:"requestId"`
+	// GateResolutions maps stage ID → resolution outcome.
+	GateResolutions map[string]GateResolution `json:"gateResolutions,omitempty"`
+}
+
+// GateResolution records the outcome of an approval or input gate.
+type GateResolution struct {
+	StageID string         `json:"stageId"`
+	Outcome string         `json:"outcome"` // "approved" | "input_provided"
+	Input   map[string]any `json:"input,omitempty"`
+	Note    string         `json:"note,omitempty"`
+}
+
 // BlockActionRequest 是执行 Block action 的输入。
 type BlockActionRequest struct {
 	WorkID           string         `json:"workId"`

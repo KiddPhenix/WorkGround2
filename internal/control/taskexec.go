@@ -16,7 +16,7 @@ import (
 var (
 	// ErrTaskSessionNotRunning reports a cancellation request for a Session that
 	// is no longer owned by this executor.
-	ErrTaskSessionNotRunning = errors.New("work task session is not running")
+	ErrTaskSessionNotRunning = work.ErrTaskNotRunning
 	// ErrTaskCancelConflict reports reuse of one cancellation request ID for a
 	// different Session.
 	ErrTaskCancelConflict = errors.New("work task cancellation request conflict")
@@ -67,8 +67,14 @@ func (e *TaskRunError) Unwrap() error {
 }
 
 type taskCancelResult struct {
-	sessionKey string
-	err        error
+	targetKey string
+}
+
+type activeTask struct {
+	ctrl            *Controller
+	cancel          context.CancelFunc
+	begun           bool
+	cancelRequested bool
 }
 
 // TaskExecutorAdapter maps the narrow work.TaskExecutor port to isolated
@@ -78,18 +84,20 @@ type TaskExecutorAdapter struct {
 	profile TaskExecutorProfile
 	factory TaskSessionFactory
 
-	mu      sync.Mutex
-	active  map[string]*Controller
-	cancels map[string]taskCancelResult
+	mu       sync.Mutex
+	active   map[string]*activeTask
+	finished map[string]bool
+	cancels  map[string]taskCancelResult
 }
 
 // NewTaskExecutorAdapter returns a Task executor for one provider/model profile.
 func NewTaskExecutorAdapter(profile TaskExecutorProfile, factory TaskSessionFactory) *TaskExecutorAdapter {
 	return &TaskExecutorAdapter{
-		profile: profile,
-		factory: factory,
-		active:  make(map[string]*Controller),
-		cancels: make(map[string]taskCancelResult),
+		profile:  profile,
+		factory:  factory,
+		active:   make(map[string]*activeTask),
+		finished: make(map[string]bool),
+		cancels:  make(map[string]taskCancelResult),
 	}
 }
 
@@ -108,9 +116,23 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	if err := ctx.Err(); err != nil {
 		return nil, a.taskError(input, "create_session", false, err)
 	}
-
+	targetKey := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	cancelled, err := a.beginTask(targetKey)
+	if err != nil {
+		return nil, a.taskError(input, "register_attempt", false, err)
+	}
+	defer a.finishTask(targetKey)
 	startedAt := time.Now().UTC()
-	ctrl, cleanup, err := a.factory(ctx, input)
+	if cancelled {
+		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
+	}
+	taskCtx, taskCancel := context.WithCancel(ctx)
+	defer taskCancel()
+	if a.attachCancel(targetKey, taskCancel) {
+		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
+	}
+
+	ctrl, cleanup, err := a.factory(taskCtx, input)
 	if err != nil {
 		if ctrl != nil {
 			ctrl.Close()
@@ -138,10 +160,11 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	if sessionKey == "" {
 		return nil, a.taskError(input, "create_session", false, errors.New("Task Session path is empty"))
 	}
-	a.setActive(sessionKey, ctrl)
-	defer a.clearActive(sessionKey, ctrl)
+	if a.attachController(targetKey, ctrl) {
+		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
+	}
 
-	runErr := ctrl.RunTurn(ctx, input.Prompt)
+	runErr := ctrl.RunTurn(taskCtx, input.Prompt)
 	snapshotErr := ctrl.Snapshot()
 	metaErr := agent.SetBranchSource(sessionPath, taskSessionSource(input))
 	cause := errors.Join(runErr, snapshotErr, metaErr)
@@ -157,11 +180,13 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		StartedAt:   startedAt,
 	}
 	attempt := &work.Attempt{
-		Index:      input.AttemptIndex,
-		State:      work.RunCompleted,
-		SessionRef: ref,
-		StartedAt:  startedAt,
-		FinishedAt: &finishedAt,
+		ID:              input.AttemptID,
+		Index:           input.AttemptIndex,
+		State:           work.RunCompleted,
+		SessionRef:      ref,
+		StartedAt:       startedAt,
+		FinishedAt:      &finishedAt,
+		SideEffectClass: input.SideEffectClass,
 	}
 	if cause == nil {
 		return attempt, nil
@@ -186,58 +211,123 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	return attempt, taskErr
 }
 
-// CancelTask cancels an active Controller turn. Repeating the same request ID
-// for the same Session returns the original result without another side effect.
-func (a *TaskExecutorAdapter) CancelTask(ctx context.Context, session work.SessionRef, requestID string) error {
+// CancelTask records cancellation by stable Attempt ownership before consulting
+// Session state. A cancellation that arrives before Session creation is held
+// and consumed by ExecuteTask, so the empty-SessionRef window is safe.
+func (a *TaskExecutorAdapter) CancelTask(ctx context.Context, input work.TaskCancelInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if a == nil {
 		return errors.New("work task cancellation requires a Task executor")
 	}
-	requestID = strings.TrimSpace(requestID)
+	requestID := strings.TrimSpace(input.RequestID)
 	if requestID == "" {
 		return errors.New("work task cancellation requires requestID")
 	}
-	sessionKey := agent.CanonicalSessionPath(session.SessionPath)
-	if sessionKey == "" {
-		return errors.New("work task cancellation requires sessionPath")
+	targetKey := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	if err := validateTaskTarget(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID); err != nil {
+		return fmt.Errorf("work task cancellation: %w", err)
 	}
 
 	a.mu.Lock()
 	if previous, ok := a.cancels[requestID]; ok {
 		a.mu.Unlock()
-		if previous.sessionKey != sessionKey {
+		if previous.targetKey != targetKey {
 			return fmt.Errorf("%w: requestID=%q", ErrTaskCancelConflict, requestID)
 		}
-		return previous.err
+		return nil
 	}
-	ctrl := a.active[sessionKey]
-	var result error
-	if ctrl == nil {
-		result = fmt.Errorf("%w: session=%q", ErrTaskSessionNotRunning, session.BranchID)
+	if a.finished[targetKey] {
+		a.mu.Unlock()
+		return fmt.Errorf("%w: attempt=%q", ErrTaskSessionNotRunning, input.AttemptID)
 	}
-	a.cancels[requestID] = taskCancelResult{sessionKey: sessionKey, err: result}
+	active := a.active[targetKey]
+	if active == nil {
+		active = &activeTask{}
+		a.active[targetKey] = active
+	}
+	active.cancelRequested = true
+	ctrl := active.ctrl
+	cancel := active.cancel
+	a.cancels[requestID] = taskCancelResult{targetKey: targetKey}
 	a.mu.Unlock()
-	if result != nil {
-		return result
+	if cancel != nil {
+		cancel()
 	}
-	ctrl.Cancel()
+	if ctrl != nil {
+		ctrl.Cancel()
+	}
 	return nil
 }
 
-func (a *TaskExecutorAdapter) setActive(key string, ctrl *Controller) {
+func (a *TaskExecutorAdapter) attachCancel(key string, cancel context.CancelFunc) bool {
 	a.mu.Lock()
-	a.active[key] = ctrl
+	defer a.mu.Unlock()
+	active := a.active[key]
+	if active == nil {
+		return true
+	}
+	active.cancel = cancel
+	return active.cancelRequested
+}
+
+func (a *TaskExecutorAdapter) beginTask(key string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	active := a.active[key]
+	if active == nil {
+		active = &activeTask{}
+		a.active[key] = active
+	}
+	if active.begun {
+		return false, fmt.Errorf("attempt %q is already executing", key)
+	}
+	active.begun = true
+	delete(a.finished, key)
+	return active.cancelRequested, nil
+}
+
+func (a *TaskExecutorAdapter) attachController(key string, ctrl *Controller) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	active := a.active[key]
+	if active == nil {
+		return true
+	}
+	active.ctrl = ctrl
+	return active.cancelRequested
+}
+
+func (a *TaskExecutorAdapter) finishTask(key string) {
+	a.mu.Lock()
+	delete(a.active, key)
+	a.finished[key] = true
 	a.mu.Unlock()
 }
 
-func (a *TaskExecutorAdapter) clearActive(key string, ctrl *Controller) {
-	a.mu.Lock()
-	if a.active[key] == ctrl {
-		delete(a.active, key)
+func cancelledAttempt(input work.TaskExecuteInput, startedAt time.Time) *work.Attempt {
+	finishedAt := time.Now().UTC()
+	return &work.Attempt{
+		ID: input.AttemptID, Index: input.AttemptIndex, State: work.RunCancelled,
+		StartedAt: startedAt, FinishedAt: &finishedAt, SideEffectClass: input.SideEffectClass,
 	}
-	a.mu.Unlock()
+}
+
+func taskAttemptKey(workID, runID, stageID, taskID, attemptID string) string {
+	return strings.Join([]string{workID, runID, stageID, taskID, attemptID}, "\x00")
+}
+
+func validateTaskTarget(workID, runID, stageID, taskID, attemptID string) error {
+	for _, field := range []struct{ name, value string }{
+		{"workID", workID}, {"runID", runID}, {"stageID", stageID},
+		{"taskID", taskID}, {"attemptID", attemptID},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("%s is required", field.name)
+		}
+	}
+	return nil
 }
 
 func (a *TaskExecutorAdapter) taskError(input work.TaskExecuteInput, operation string, retryable bool, cause error) *TaskRunError {
@@ -268,6 +358,7 @@ func validateTaskInput(input work.TaskExecuteInput) error {
 		{"runID", input.RunID},
 		{"stageID", input.StageID},
 		{"taskID", input.TaskID},
+		{"attemptID", input.AttemptID},
 		{"requestID", input.RequestID},
 		{"definitionDigest", input.DefinitionDigest},
 		{"prompt", input.Prompt},

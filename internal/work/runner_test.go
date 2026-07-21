@@ -75,7 +75,7 @@ type runnerFixture struct {
 // fakeRunnerExecutor is a TaskExecutor with configurable behavior per task.
 type fakeRunnerExecutor struct {
 	ExecuteFunc func(ctx context.Context, input TaskExecuteInput) (*Attempt, error)
-	CancelFunc  func(ctx context.Context, session SessionRef, requestID string) error
+	CancelFunc  func(ctx context.Context, input TaskCancelInput) error
 }
 
 func (f *fakeRunnerExecutor) ExecuteTask(ctx context.Context, input TaskExecuteInput) (*Attempt, error) {
@@ -86,11 +86,11 @@ func (f *fakeRunnerExecutor) ExecuteTask(ctx context.Context, input TaskExecuteI
 	return f.ExecuteFunc(ctx, input)
 }
 
-func (f *fakeRunnerExecutor) CancelTask(ctx context.Context, session SessionRef, requestID string) error {
+func (f *fakeRunnerExecutor) CancelTask(ctx context.Context, input TaskCancelInput) error {
 	if f.CancelFunc == nil {
 		return nil
 	}
-	return f.CancelFunc(ctx, session, requestID)
+	return f.CancelFunc(ctx, input)
 }
 
 func newRunnerFixture(t *testing.T) *runnerFixture {
@@ -789,14 +789,14 @@ func TestRunnerRunWorkValidation(t *testing.T) {
 }
 
 func TestRunnerStateTransitionsEnforced(t *testing.T) {
-	// Verify that terminal states cannot regress through the RunState transition table.
-	// Terminal: RunCompleted, RunFailed, RunCancelled.
+	// Completed and cancelled are irreversible. Failed can reopen only through
+	// an explicit RetryTask reservation.
 
 	if err := ValidateRunTransition(RunCompleted, RunRunning); err == nil {
 		t.Error("expected error for completed → running transition")
 	}
-	if err := ValidateRunTransition(RunFailed, RunRunning); err == nil {
-		t.Error("expected error for failed → running transition")
+	if err := ValidateRunTransition(RunFailed, RunRunning); err != nil {
+		t.Errorf("unexpected error for explicit retry failed → running transition: %v", err)
 	}
 	if err := ValidateRunTransition(RunCancelled, RunRunning); err == nil {
 		t.Error("expected error for cancelled → running transition")

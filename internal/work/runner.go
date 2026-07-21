@@ -80,9 +80,16 @@ func (r *WorkRunner) Run(ctx context.Context, value *Work, run *WorkflowRun, emi
 				}
 			}
 			return run, nil
+		case RunNeedsConfirmation:
+			if run.State != RunNeedsConfirmation {
+				if err := r.setRunState(run, RunNeedsConfirmation, emit); err != nil {
+					return nil, err
+				}
+			}
+			return run, nil
 		}
 
-		if stageSpec.Gate != "" {
+		if stage.State == RunPending && stageSpec.Gate != "" {
 			if err := r.setStageState(run, stage, RunWaiting, emit); err != nil {
 				return nil, err
 			}
@@ -127,12 +134,20 @@ func (r *WorkRunner) executeStage(ctx context.Context, value *Work, run *Workflo
 			return r.failStage(run, stage, task.State, emit)
 		case RunWaiting:
 			return false, nil
+		case RunNeedsConfirmation:
+			return r.failStage(run, stage, RunNeedsConfirmation, emit)
 		}
 
 		if task.State == RunRunning && len(task.Attempts) > 0 {
 			last := task.Attempts[len(task.Attempts)-1]
 			if last.State == RunRunning {
 				return false, nil
+			}
+			if last.State == RunNeedsConfirmation {
+				if err := r.setTaskState(run, stage, task, RunNeedsConfirmation, emit); err != nil {
+					return false, err
+				}
+				return r.failStage(run, stage, RunNeedsConfirmation, emit)
 			}
 			if IsTerminalRunState(last.State) {
 				if err := r.setTaskState(run, stage, task, last.State, emit); err != nil {
@@ -166,11 +181,15 @@ func (r *WorkRunner) executeTask(ctx context.Context, value *Work, run *Workflow
 		}
 	}
 
+	attemptID := runChildID(task.ID, "attempt", fmt.Sprintf("%d", len(task.Attempts)))
+	executeRequestID := runEventRequest(run, "execute", attemptID)
 	attempt := Attempt{
-		ID:        runChildID(task.ID, "attempt", fmt.Sprintf("%d", len(task.Attempts))),
-		Index:     len(task.Attempts),
-		State:     RunRunning,
-		StartedAt: r.clock.Now().UTC(),
+		ID:              attemptID,
+		RequestID:       executeRequestID,
+		Index:           len(task.Attempts),
+		State:           RunRunning,
+		StartedAt:       r.clock.Now().UTC(),
+		SideEffectClass: workSideEffectClass(value.Definition.ToolContracts),
 	}
 	payload, err := json.Marshal(attemptEventPayload{RunID: run.ID, StageID: stage.ID, TaskID: task.ID, Attempt: attempt})
 	if err != nil {
@@ -191,9 +210,11 @@ func (r *WorkRunner) executeTask(ctx context.Context, value *Work, run *Workflow
 		RunID:            run.ID,
 		StageID:          stage.ID,
 		TaskID:           task.ID,
+		AttemptID:        attempt.ID,
 		AttemptIndex:     attempt.Index,
-		RequestID:        runEventRequest(run, "execute", attempt.ID),
+		RequestID:        executeRequestID,
 		DefinitionDigest: run.DefinitionDigest,
+		SideEffectClass:  attempt.SideEffectClass,
 		Prompt:           value.Prompt,
 	})
 
@@ -208,6 +229,10 @@ func (r *WorkRunner) executeTask(ctx context.Context, value *Work, run *Workflow
 	default:
 		next.SessionRef = result.SessionRef
 		next.Error = result.Error
+		next.Receipt = result.Receipt
+		if strings.TrimSpace(result.SideEffectClass) != "" {
+			next.SideEffectClass = result.SideEffectClass
+		}
 		if result.FinishedAt != nil {
 			next.FinishedAt = result.FinishedAt
 		}
@@ -216,11 +241,17 @@ func (r *WorkRunner) executeTask(ctx context.Context, value *Work, run *Workflow
 			next.State = RunCompleted
 		case RunFailed, RunCancelled:
 			next.State = result.State
+		case RunNeedsConfirmation:
+			next.State = RunNeedsConfirmation
 		default:
 			next.State = RunFailed
 			next.Error = fmt.Sprintf("work: executor returned non-terminal Attempt state %q", result.State)
 		}
 	}
+	applyReceiptGuard(&next, TaskExecuteInput{
+		RequestID:       executeRequestID,
+		SideEffectClass: attempt.SideEffectClass,
+	})
 
 	payload, err = json.Marshal(attemptEventPayload{RunID: run.ID, StageID: stage.ID, TaskID: task.ID, Attempt: next})
 	if err != nil {
@@ -238,7 +269,7 @@ func (r *WorkRunner) executeTask(ctx context.Context, value *Work, run *Workflow
 }
 
 func (r *WorkRunner) failStage(run *WorkflowRun, stage *Stage, state RunState, emit eventEmitter) (bool, error) {
-	if state != RunCancelled {
+	if state != RunCancelled && state != RunNeedsConfirmation {
 		state = RunFailed
 	}
 	if !IsTerminalRunState(stage.State) {
@@ -275,7 +306,7 @@ func (r *WorkRunner) setRunState(run *WorkflowRun, state RunState, emit eventEmi
 	}
 	if _, err := emit(WorkEvent{
 		Type:      EventRunChanged,
-		RequestID: runEventRequest(run, "run", run.ID, string(state)),
+		RequestID: runEventRequest(run, "run", run.ID, string(state), payloadRequestPart(payload)),
 		Payload:   payload,
 	}); err != nil {
 		return err
@@ -305,7 +336,7 @@ func (r *WorkRunner) setStageState(run *WorkflowRun, stage *Stage, state RunStat
 	}
 	if _, err := emit(WorkEvent{
 		Type:      EventStageChanged,
-		RequestID: runEventRequest(run, "stage", next.ID, string(state)),
+		RequestID: runEventRequest(run, "stage", next.ID, string(state), payloadRequestPart(payload)),
 		Payload:   payload,
 	}); err != nil {
 		return err
@@ -335,7 +366,7 @@ func (r *WorkRunner) setTaskState(run *WorkflowRun, stage *Stage, task *Task, st
 	}
 	if _, err := emit(WorkEvent{
 		Type:      EventTaskChanged,
-		RequestID: runEventRequest(run, "task", next.ID, string(state)),
+		RequestID: runEventRequest(run, "task", next.ID, string(state), payloadRequestPart(payload)),
 		Payload:   payload,
 	}); err != nil {
 		return err
@@ -483,7 +514,7 @@ func hasRunningAttempt(run *WorkflowRun) bool {
 	for _, stage := range run.Stages {
 		for _, task := range stage.Tasks {
 			for _, attempt := range task.Attempts {
-				if attempt.State == RunRunning {
+				if attempt.State == RunRunning || attempt.State == RunNeedsConfirmation {
 					return true
 				}
 			}
@@ -496,6 +527,8 @@ func workStateForRun(state RunState) WorkState {
 	switch state {
 	case RunWaiting:
 		return WorkWaitingUser
+	case RunNeedsConfirmation:
+		return WorkWaitingUser
 	case RunCompleted:
 		return WorkCompleted
 	case RunFailed:
@@ -505,6 +538,44 @@ func workStateForRun(state RunState) WorkState {
 	default:
 		return WorkRunning
 	}
+}
+
+func payloadRequestPart(payload []byte) string {
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:10])
+}
+
+func workSideEffectClass(contracts []ToolContractRef) string {
+	rank := map[string]int{"read": 1, "workspace_write": 2, "external_write": 3, "destructive": 4}
+	class, maxRank := "read", 1
+	for _, contract := range contracts {
+		candidate := strings.TrimSpace(contract.SideEffectClass)
+		if rank[candidate] > maxRank {
+			class, maxRank = candidate, rank[candidate]
+		}
+	}
+	return class
+}
+
+func receiptRequired(class string) bool {
+	switch strings.TrimSpace(class) {
+	case "external_write", "destructive":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyReceiptGuard(attempt *Attempt, input TaskExecuteInput) {
+	if attempt == nil || !receiptRequired(input.SideEffectClass) {
+		return
+	}
+	receipt := attempt.Receipt
+	if receipt != nil && strings.TrimSpace(receipt.RequestID) == strings.TrimSpace(input.RequestID) {
+		return
+	}
+	attempt.State = RunNeedsConfirmation
+	attempt.Error = "external outcome has no matching receipt; human confirmation is required before retry"
 }
 
 func runEventRequest(run *WorkflowRun, parts ...string) string {

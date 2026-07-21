@@ -755,13 +755,13 @@ func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision in
 }
 
 func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64, error) {
-	// Action receipt events carry the idempotency and external-side-effect audit
-	// trail. Reject malformed transitions before append so a bad event cannot
+	// State-machine and action receipt events carry terminal/idempotency facts.
+	// Reject malformed transitions before append so a bad or late event cannot
 	// poison the authoritative log and leave a half-committed Work.
-	if event.Type == EventBlockActionReserved || event.Type == EventBlockActionChanged {
+	if eventNeedsReducerPreflight(event.Type) {
 		replay, current, replayErr := ReplayWithReducer(wp, DefaultReducer())
 		if replayErr != nil {
-			return 0, fmt.Errorf("work: preflight action event: %w", replayErr)
+			return 0, fmt.Errorf("work: preflight state event: %w", replayErr)
 		}
 		existingRequest := false
 		if replay.Index != nil {
@@ -769,7 +769,7 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 		}
 		if !existingRequest {
 			if _, reduceErr := DefaultReducer()(event, current); reduceErr != nil {
-				return 0, fmt.Errorf("work: reject action event before append: %w", reduceErr)
+				return 0, fmt.Errorf("work: reject state event before append: %w", reduceErr)
 			}
 		}
 	}
@@ -796,6 +796,16 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 	}
 
 	return rev, nil
+}
+
+func eventNeedsReducerPreflight(eventType WorkEventType) bool {
+	switch eventType {
+	case EventBlockActionReserved, EventBlockActionChanged,
+		EventRunStarted, EventRunChanged, EventStageChanged, EventTaskChanged, EventAttemptChanged:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *FileWorkStore) persistProjection(workDir, workID string, value *Work, revision int64) error {
@@ -2889,6 +2899,9 @@ func DefaultReducer() WorkEventReducer {
 			if run == nil {
 				return nil, fmt.Errorf("work: stage changed: run %q not found", payload.RunID)
 			}
+			if IsTerminalRunState(run.State) {
+				return nil, fmt.Errorf("work: stage changed: run %q is terminal (%s)", payload.RunID, run.State)
+			}
 			stageID := payload.Stage.ID
 			if stageID == "" {
 				stageID = payload.Stage.Name
@@ -2923,6 +2936,9 @@ func DefaultReducer() WorkEventReducer {
 				break
 			}
 			run := findWorkflowRun(current, payload.RunID)
+			if run != nil && IsTerminalRunState(run.State) {
+				return nil, fmt.Errorf("work: task changed: run %q is terminal (%s)", payload.RunID, run.State)
+			}
 			stage := findRunStage(run, payload.StageID)
 			if stage == nil {
 				return nil, fmt.Errorf("work: task changed: stage %q not found in run %q", payload.StageID, payload.RunID)
@@ -2959,6 +2975,9 @@ func DefaultReducer() WorkEventReducer {
 				break
 			}
 			run := findWorkflowRun(current, payload.RunID)
+			if run != nil && IsTerminalRunState(run.State) {
+				return nil, fmt.Errorf("work: attempt changed: run %q is terminal (%s)", payload.RunID, run.State)
+			}
 			stage := findRunStage(run, payload.StageID)
 			task := findStageTask(stage, payload.TaskID)
 			if task == nil {
