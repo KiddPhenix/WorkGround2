@@ -33,6 +33,10 @@ type Service struct {
 
 type runFlight struct{ done chan struct{} }
 
+var errRunSuspended = errors.New("work: run was suspended or superseded")
+
+const pauseRecoveryNotice = "pause/checkpoint restores local run and Session context only; it does not roll back network, database, deployment, or other external side effects"
+
 // NewService creates a Work lifecycle service. A nil sink discards view events.
 func NewService(store WorkStore, blueprint *BlueprintRegistry, sink ViewSink) *Service {
 	return NewServiceWithTools(store, blueprint, nil, sink)
@@ -364,17 +368,7 @@ func (s *Service) runWork(ctx context.Context, workID, requestID string) (*Workf
 	if run == nil {
 		return nil, fmt.Errorf("work: RunWork: run %q disappeared from projection", runID)
 	}
-	emit := func(input WorkEvent) (int64, error) {
-		if strings.TrimSpace(input.RequestID) == "" {
-			return 0, errors.New("work: RunWork: runner emitted an event without requestID")
-		}
-		event := newServiceEvent(workID, input.RequestID, input.Type, input.Payload, time.Now().UTC())
-		// Revision zero delegates allocation to the authoritative event log. If
-		// another process already used the deterministic request ID, CommitEvent
-		// verifies the semantic payload before returning idempotently. Skipping
-		// that comparison could let two processes both reach the executor.
-		return s.store.CommitEvent(workID, event)
-	}
+	emit := s.runEmitter(workID, runID, "RunWork")
 	_, runErr := runner.Run(ctx, current, run, emit)
 
 	view, err := s.loadView(workID)
@@ -389,16 +383,679 @@ func (s *Service) runWork(ctx context.Context, workID, requestID string) (*Workf
 		return nil, committedRecovery("run-view", workID, requestID, view.Revision, fmt.Errorf("run %q missing", runID))
 	}
 	result := *persisted
-	if runErr != nil {
+	if runErr != nil && persisted.State != RunWaiting && !IsTerminalRunState(persisted.State) {
 		return &result, fmt.Errorf("work: RunWork: %w", runErr)
 	}
 	return &result, nil
+}
+
+// RetryTask adds a new Attempt to a failed or needs_confirmation Task and
+// executes it through the TaskExecutor. Same requestID returns the same
+// Attempt idempotently; different requestID creates a new Attempt.
+func (s *Service) RetryTask(ctx context.Context, input RetryTaskInput) (*Attempt, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("RetryTask", input.RequestID)
+	if err != nil {
+		return nil, err
+	}
+	workID := strings.TrimSpace(input.WorkID)
+	if workID == "" {
+		return nil, errors.New("work: RetryTask: workID is required")
+	}
+	runID := strings.TrimSpace(input.RunID)
+	stageID := strings.TrimSpace(input.StageID)
+	taskID := strings.TrimSpace(input.TaskID)
+	if runID == "" || stageID == "" || taskID == "" {
+		return nil, errors.New("work: RetryTask: runID, stageID, and taskID are required")
+	}
+
+	for {
+		flight, owner := s.beginRunFlight(workID)
+		if owner {
+			defer s.finishRunFlight(workID, flight)
+			return s.retryTask(ctx, workID, runID, stageID, taskID, requestID)
+		}
+		if err := waitRunFlight(ctx, flight); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (s *Service) retryTask(ctx context.Context, workID, runID, stageID, taskID, requestID string) (*Attempt, error) {
+	eventRequestID := requestID + "/retry"
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if current.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: RetryTask: Work %s is %s", workID, current.ArchiveState)
+	}
+
+	run := findWorkflowRun(current, runID)
+	if run == nil {
+		return nil, fmt.Errorf("work: RetryTask: run %q not found", runID)
+	}
+	var stage *Stage
+	for i := range run.Stages {
+		if run.Stages[i].ID == stageID || (run.Stages[i].ID == "" && run.Stages[i].Name == stageID) {
+			stage = &run.Stages[i]
+			break
+		}
+	}
+	if stage == nil {
+		return nil, fmt.Errorf("work: RetryTask: stage %q not found in run %q", stageID, runID)
+	}
+
+	var task *Task
+	for i := range stage.Tasks {
+		if stage.Tasks[i].ID == taskID || (stage.Tasks[i].ID == "" && stage.Tasks[i].Name == taskID) {
+			task = &stage.Tasks[i]
+			break
+		}
+	}
+	if task == nil {
+		return nil, fmt.Errorf("work: RetryTask: task %q not found in stage %q", taskID, stageID)
+	}
+
+	runner := s.taskRunner()
+	if runner == nil || runner.executor == nil {
+		return nil, errors.New("work: RetryTask: TaskExecutor is not configured")
+	}
+
+	// Idempotent: same requestID returns the same attempt.
+	if state.RequestFound {
+		for i := range task.Attempts {
+			if task.Attempts[i].RequestID == requestID+"/execute" {
+				return &task.Attempts[i], nil
+			}
+		}
+		return nil, fmt.Errorf("work: RetryTask: committed request %q has no traceable attempt", requestID)
+	}
+	if run.State == RunCancelled || run.State == RunCompleted {
+		return nil, fmt.Errorf("work: RetryTask: run %q is %s; cancelled and completed runs cannot be retried", runID, run.State)
+	}
+	if task.State != RunFailed && task.State != RunNeedsConfirmation {
+		return nil, fmt.Errorf("work: RetryTask: task %q is %s; only failed or needs_confirmation tasks can be retried", taskID, task.State)
+	}
+
+	attemptIndex := len(task.Attempts)
+	attemptID := runChildID(task.ID, "attempt", requestID)
+	executeRequestID := requestID + "/execute"
+	attempt := Attempt{
+		ID:              attemptID,
+		RequestID:       executeRequestID,
+		Index:           attemptIndex,
+		State:           RunRunning,
+		StartedAt:       time.Now().UTC(),
+		SideEffectClass: workSideEffectClass(current.Definition.ToolContracts),
+	}
+
+	// Reopen the failed/uncertain path and reserve the new Attempt in one event,
+	// before the executor can produce another side effect.
+	nextRun := *run
+	nextRun.Stages = append([]Stage(nil), run.Stages...)
+	nextStage := findRunStage(&nextRun, stage.ID)
+	nextStage.Tasks = append([]Task(nil), stage.Tasks...)
+	nextTask := findStageTask(nextStage, task.ID)
+	nextTask.Attempts = append(append([]Attempt(nil), task.Attempts...), attempt)
+	nextTask.State, nextTask.FinishedAt = RunRunning, nil
+	nextStage.State, nextStage.FinishedAt = RunRunning, nil
+	nextRun.State, nextRun.FinishedAt = RunRunning, nil
+	payload, marshalErr := json.Marshal(runEventPayload{Run: nextRun, WorkState: WorkRunning})
+	if marshalErr != nil {
+		return nil, fmt.Errorf("work: RetryTask: encode attempt: %w", marshalErr)
+	}
+	event := newServiceEvent(workID, eventRequestID, EventRunChanged, payload, time.Now().UTC())
+	event.BaseRevision = state.Revision
+	event.Revision = state.Revision + 1
+	if _, commitErr := s.store.CommitEvent(workID, event); commitErr != nil {
+		return nil, fmt.Errorf("work: RetryTask: commit attempt reservation: %w", commitErr)
+	}
+
+	result, execErr := safeExecuteTask(runner.executor, ctx, TaskExecuteInput{
+		WorkID:           current.ID,
+		RunID:            run.ID,
+		StageID:          stage.ID,
+		TaskID:           task.ID,
+		AttemptID:        attemptID,
+		AttemptIndex:     attemptIndex,
+		RequestID:        executeRequestID,
+		DefinitionDigest: run.DefinitionDigest,
+		SideEffectClass:  attempt.SideEffectClass,
+		Prompt:           current.Prompt,
+	})
+
+	finished := attempt
+	finished.FinishedAt = timePtr(time.Now().UTC())
+	switch {
+	case execErr != nil:
+		finished.State = RunFailed
+		finished.Error = execErr.Error()
+	case result == nil:
+		finished.State = RunCompleted
+	default:
+		finished.SessionRef = result.SessionRef
+		finished.Error = result.Error
+		finished.Receipt = result.Receipt
+		if strings.TrimSpace(result.SideEffectClass) != "" {
+			finished.SideEffectClass = result.SideEffectClass
+		}
+		if result.FinishedAt != nil {
+			finished.FinishedAt = result.FinishedAt
+		}
+		switch result.State {
+		case "", RunCompleted:
+			finished.State = RunCompleted
+		case RunFailed, RunCancelled:
+			finished.State = result.State
+		case RunNeedsConfirmation:
+			finished.State = RunNeedsConfirmation
+		default:
+			finished.State = RunFailed
+			finished.Error = fmt.Sprintf("work: executor returned non-terminal Attempt state %q", result.State)
+		}
+	}
+	applyReceiptGuard(&finished, TaskExecuteInput{RequestID: executeRequestID, SideEffectClass: attempt.SideEffectClass})
+
+	resultPayload, marshalErr := json.Marshal(attemptEventPayload{RunID: run.ID, StageID: stage.ID, TaskID: task.ID, Attempt: finished})
+	if marshalErr != nil {
+		return nil, fmt.Errorf("work: RetryTask: encode attempt result: %w", marshalErr)
+	}
+	resultEmitter := s.runEmitter(workID, runID, "RetryTask")
+	if _, commitErr := resultEmitter(WorkEvent{
+		RequestID: requestID + "/result", Type: EventAttemptChanged, Payload: resultPayload,
+	}); commitErr != nil {
+		return nil, fmt.Errorf("work: RetryTask: commit attempt result: %w", commitErr)
+	}
+
+	current, _, err = s.store.LoadState(workID, "")
+	if err != nil {
+		return &finished, committedRecovery("retry-result-load", workID, requestID, 0, err)
+	}
+	persistedRun := findWorkflowRun(current, runID)
+	if persistedRun == nil {
+		return &finished, fmt.Errorf("work: RetryTask: run %q disappeared after result", runID)
+	}
+	if _, runErr := runner.Run(ctx, current, persistedRun, resultEmitter); runErr != nil {
+		current, _, _ = s.store.LoadState(workID, "")
+		latest := findWorkflowRun(current, runID)
+		if latest == nil || (latest.State != RunWaiting && !IsTerminalRunState(latest.State)) {
+			return &finished, fmt.Errorf("work: RetryTask: advance retried task: %w", runErr)
+		}
+	}
+
+	view, viewErr := s.loadView(workID)
+	if viewErr != nil {
+		return &finished, committedRecovery("retry-view", workID, requestID, 0, viewErr)
+	}
+	if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
+		return &finished, committedRecovery("retry-view", workID, requestID, view.Revision, emitErr)
+	}
+	if persisted := findAttempt(view.Work, runID, stageID, taskID, attemptID); persisted != nil {
+		finished = *persisted
+	}
+	if execErr != nil {
+		return &finished, fmt.Errorf("work: RetryTask: %w", execErr)
+	}
+	return &finished, nil
+}
+
+// CancelRun persists a cancel intent and cancels any active Task Session.
+// Terminal runs are a safe no-op. Repeated requestIDs return the same result.
+func (s *Service) CancelRun(ctx context.Context, workID, runID, requestID string) error {
+	if err := checkServiceContext(ctx); err != nil {
+		return err
+	}
+	if err := s.requireStore(); err != nil {
+		return err
+	}
+	requestID, err := requireRequestID("CancelRun", requestID)
+	if err != nil {
+		return err
+	}
+	workID = strings.TrimSpace(workID)
+	runID = strings.TrimSpace(runID)
+	if workID == "" || runID == "" {
+		return errors.New("work: CancelRun: workID and runID are required")
+	}
+
+	return s.cancelRun(ctx, workID, runID, requestID)
+}
+
+func (s *Service) cancelRun(ctx context.Context, workID, runID, requestID string) error {
+	eventRequestID := requestID + "/cancel"
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return err
+	}
+	if current.ArchiveState != ArchiveActive {
+		return fmt.Errorf("work: CancelRun: Work %s is %s", workID, current.ArchiveState)
+	}
+
+	run := findWorkflowRun(current, runID)
+	if run == nil {
+		return fmt.Errorf("work: CancelRun: run %q not found", runID)
+	}
+
+	if state.RequestFound {
+		if state.RequestType != EventRunChanged {
+			return fmt.Errorf("work: CancelRun: request %q was already used by %s", requestID, state.RequestType)
+		}
+		if run.Cancel == nil || run.Cancel.RequestID != requestID {
+			return fmt.Errorf("work: CancelRun: committed request %q has no matching cancel receipt", requestID)
+		}
+		if run.Cancel.Status == CancelDelivered {
+			return nil
+		}
+		return s.deliverRunCancel(ctx, workID, run, requestID)
+	}
+
+	if IsTerminalRunState(run.State) {
+		return nil
+	}
+
+	// Persist the terminal cancel intent before touching any Session.
+	now := time.Now().UTC()
+	next := *run
+	next.State = RunCancelled
+	next.FinishedAt = timePtr(now)
+	next.Cancel = &RunCancelReceipt{RequestID: requestID, Status: CancelPending, UpdatedAt: now}
+	workState := WorkCancelled
+	payload, marshalErr := json.Marshal(runEventPayload{Run: next, WorkState: workState})
+	if marshalErr != nil {
+		return fmt.Errorf("work: CancelRun: encode run: %w", marshalErr)
+	}
+	event := newServiceEvent(workID, eventRequestID, EventRunChanged, payload, now)
+	event.BaseRevision = state.Revision
+	event.Revision = state.Revision + 1
+	if _, commitErr := s.store.CommitEvent(workID, event); commitErr != nil {
+		return fmt.Errorf("work: CancelRun: commit cancel: %w", commitErr)
+	}
+
+	return s.deliverRunCancel(ctx, workID, &next, requestID)
+}
+
+func (s *Service) deliverRunCancel(ctx context.Context, workID string, run *WorkflowRun, requestID string) error {
+	cancelErr := s.cancelRunActiveAttempts(ctx, workID, run, requestID)
+	current, state, loadErr := s.store.LoadState(workID, "")
+	if loadErr != nil {
+		return errors.Join(cancelErr, committedRecovery("cancel-delivery-load", workID, requestID, 0, loadErr))
+	}
+	persisted := findWorkflowRun(current, run.ID)
+	if persisted == nil {
+		return errors.Join(cancelErr, fmt.Errorf("work: CancelRun: run %q disappeared after cancel intent", run.ID))
+	}
+	next := *persisted
+	receipt := RunCancelReceipt{RequestID: requestID, Status: CancelDelivered, UpdatedAt: time.Now().UTC()}
+	if persisted.Cancel != nil && persisted.Cancel.RequestID == requestID {
+		receipt.Attempts = persisted.Cancel.Attempts
+	}
+	receipt.Attempts++
+	if cancelErr != nil {
+		receipt.Status = CancelFailed
+		receipt.Error = cancelErr.Error()
+	}
+	next.Cancel = &receipt
+	payload, err := json.Marshal(runEventPayload{Run: next, WorkState: WorkCancelled})
+	if err != nil {
+		return errors.Join(cancelErr, fmt.Errorf("work: CancelRun: encode delivery receipt: %w", err))
+	}
+	deliveryID := fmt.Sprintf("%s/cancel/delivery/%d", requestID, receipt.Attempts)
+	event := newServiceEvent(workID, deliveryID, EventRunChanged, payload, receipt.UpdatedAt)
+	event.BaseRevision, event.Revision = state.Revision, state.Revision+1
+	if _, err := s.store.CommitEvent(workID, event); err != nil {
+		return errors.Join(cancelErr, committedRecovery("cancel-delivery", workID, requestID, state.Revision, err))
+	}
+	view, err := s.loadView(workID)
+	if err != nil {
+		return errors.Join(cancelErr, committedRecovery("cancel-view", workID, requestID, event.Revision, err))
+	}
+	if err := s.emitSnapshot(view, requestID); err != nil {
+		return errors.Join(cancelErr, committedRecovery("cancel-view", workID, requestID, view.Revision, err))
+	}
+	if cancelErr != nil {
+		return fmt.Errorf("work: CancelRun: cancel delivery failed and can be retried with request %q: %w", requestID, cancelErr)
+	}
+	return nil
+}
+
+func (s *Service) cancelRunActiveAttempts(ctx context.Context, workID string, run *WorkflowRun, requestID string) error {
+	var targets []TaskCancelInput
+	for si := range run.Stages {
+		for ti := range run.Stages[si].Tasks {
+			for ai := range run.Stages[si].Tasks[ti].Attempts {
+				a := &run.Stages[si].Tasks[ti].Attempts[ai]
+				if a.State == RunRunning {
+					targets = append(targets, TaskCancelInput{
+						WorkID: workID, RunID: run.ID, StageID: run.Stages[si].ID,
+						TaskID: run.Stages[si].Tasks[ti].ID, AttemptID: a.ID,
+						Session: a.SessionRef, RequestID: requestID + "/attempt/" + a.ID,
+					})
+				}
+			}
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	runner := s.taskRunner()
+	if runner == nil || runner.executor == nil {
+		return errors.New("work: CancelRun: TaskExecutor is not configured")
+	}
+	var cancelErr error
+	for _, target := range targets {
+		err := runner.executor.CancelTask(ctx, target)
+		if err != nil && !errors.Is(err, ErrTaskNotRunning) {
+			cancelErr = errors.Join(cancelErr, fmt.Errorf("attempt %s: %w", target.AttemptID, err))
+		}
+	}
+	return cancelErr
+}
+
+// PauseRun persists a pause intent, transitioning the run to RunWaiting and
+// Work to WorkPaused. Only running runs can be paused.
+func (s *Service) PauseRun(ctx context.Context, workID, runID, requestID string) error {
+	if err := checkServiceContext(ctx); err != nil {
+		return err
+	}
+	if err := s.requireStore(); err != nil {
+		return err
+	}
+	requestID, err := requireRequestID("PauseRun", requestID)
+	if err != nil {
+		return err
+	}
+	workID = strings.TrimSpace(workID)
+	runID = strings.TrimSpace(runID)
+	if workID == "" || runID == "" {
+		return errors.New("work: PauseRun: workID and runID are required")
+	}
+
+	return s.pauseRun(ctx, workID, runID, requestID)
+}
+
+func (s *Service) pauseRun(ctx context.Context, workID, runID, requestID string) error {
+	eventRequestID := requestID + "/pause"
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return err
+	}
+	if current.ArchiveState != ArchiveActive {
+		return fmt.Errorf("work: PauseRun: Work %s is %s", workID, current.ArchiveState)
+	}
+
+	run := findWorkflowRun(current, runID)
+	if run == nil {
+		return fmt.Errorf("work: PauseRun: run %q not found", runID)
+	}
+
+	if state.RequestFound {
+		if state.RequestType != EventRunChanged {
+			return fmt.Errorf("work: PauseRun: request %q was already used by %s", requestID, state.RequestType)
+		}
+		return nil
+	}
+
+	if run.State != RunRunning {
+		return fmt.Errorf("work: PauseRun: run %q is %s; only running runs can be paused", runID, run.State)
+	}
+
+	next := *run
+	next.State = RunWaiting
+	next.Pause = &RunPauseReceipt{RequestID: requestID, PausedAt: time.Now().UTC(), Notice: pauseRecoveryNotice}
+	workState := WorkPaused
+	payload, marshalErr := json.Marshal(runEventPayload{Run: next, WorkState: workState})
+	if marshalErr != nil {
+		return fmt.Errorf("work: PauseRun: encode run: %w", marshalErr)
+	}
+	event := newServiceEvent(workID, eventRequestID, EventRunChanged, payload, time.Now().UTC())
+	event.BaseRevision = state.Revision
+	event.Revision = state.Revision + 1
+	if _, commitErr := s.store.CommitEvent(workID, event); commitErr != nil {
+		return fmt.Errorf("work: PauseRun: commit pause: %w", commitErr)
+	}
+
+	view, viewErr := s.loadView(workID)
+	if viewErr != nil {
+		return committedRecovery("pause-view", workID, requestID, 0, viewErr)
+	}
+	if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
+		return committedRecovery("pause-view", workID, requestID, view.Revision, emitErr)
+	}
+	return nil
+}
+
+// ResumeRun transitions a paused or waiting run back to running and continues
+// execution through the runner. Gate resolutions are persisted before resuming.
+func (s *Service) ResumeRun(ctx context.Context, input ResumeRunInput) (*WorkflowRun, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("ResumeRun", input.RequestID)
+	if err != nil {
+		return nil, err
+	}
+	workID := strings.TrimSpace(input.WorkID)
+	runID := strings.TrimSpace(input.RunID)
+	if workID == "" || runID == "" {
+		return nil, errors.New("work: ResumeRun: workID and runID are required")
+	}
+
+	for {
+		flight, owner := s.beginRunFlight(workID)
+		if owner {
+			defer s.finishRunFlight(workID, flight)
+			return s.resumeRun(ctx, workID, runID, requestID, input.GateResolutions)
+		}
+		if err := waitRunFlight(ctx, flight); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func (s *Service) resumeRun(ctx context.Context, workID, runID, requestID string, resolutions map[string]GateResolution) (*WorkflowRun, error) {
+	runner := s.taskRunner()
+	if runner == nil || runner.executor == nil {
+		return nil, errors.New("work: ResumeRun: TaskExecutor is not configured")
+	}
+	eventRequestID := requestID + "/resume"
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if current.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: ResumeRun: Work %s is %s", workID, current.ArchiveState)
+	}
+
+	run := findWorkflowRun(current, runID)
+	if run == nil {
+		return nil, fmt.Errorf("work: ResumeRun: run %q not found", runID)
+	}
+
+	alreadyResumed := state.RequestFound
+	if alreadyResumed {
+		if state.RequestType != EventRunChanged {
+			return nil, fmt.Errorf("work: ResumeRun: request %q was already used by %s", requestID, state.RequestType)
+		}
+		if IsTerminalRunState(run.State) || run.State == RunNeedsConfirmation {
+			return run, nil
+		}
+	}
+
+	if !alreadyResumed && run.State != RunWaiting {
+		return nil, fmt.Errorf("work: ResumeRun: run %q is %s; only waiting runs can be resumed", runID, run.State)
+	}
+
+	if !alreadyResumed {
+		// Resolve gates: persist the full decision context before resuming.
+		for si := range run.Stages {
+			stage := &run.Stages[si]
+			if stage.State != RunWaiting || stage.Gate == "" {
+				continue
+			}
+			resolution, ok := resolutions[stage.ID]
+			if !ok {
+				resolution, ok = resolutions[stage.Name]
+			}
+			if !ok {
+				return nil, fmt.Errorf("work: ResumeRun: gate resolution is required for stage %q", stage.ID)
+			}
+			if err := validateGateResolution(stage, resolution); err != nil {
+				return nil, fmt.Errorf("work: ResumeRun: %w", err)
+			}
+			resolution.StageID = stage.ID
+			inputCopy, copyErr := cloneJSONMap(resolution.Input)
+			if copyErr != nil {
+				return nil, fmt.Errorf("work: ResumeRun: copy gate input: %w", copyErr)
+			}
+			resolution.Input = inputCopy
+			nextStage := *stage
+			nextStage.State = RunRunning
+			nextStage.Resolution = &resolution
+			stagePayload, marshalErr := json.Marshal(stageEventPayload{RunID: run.ID, Stage: nextStage, Resolution: &resolution})
+			if marshalErr != nil {
+				return nil, fmt.Errorf("work: ResumeRun: encode gate resolution: %w", marshalErr)
+			}
+			gateEvent := newServiceEvent(workID, requestID+"/gate/"+stage.ID, EventStageChanged, stagePayload, time.Now().UTC())
+			if _, commitErr := s.store.CommitEvent(workID, gateEvent); commitErr != nil {
+				return nil, fmt.Errorf("work: ResumeRun: commit gate resolution: %w", commitErr)
+			}
+		}
+
+		// Reload to get gate-resolved stages before building the resume event.
+		current, _, err = s.store.LoadState(workID, "")
+		if err != nil {
+			return nil, committedRecovery("resume-gate-reload", workID, requestID, 0, err)
+		}
+		run = findWorkflowRun(current, runID)
+		if run == nil {
+			return nil, fmt.Errorf("work: ResumeRun: run %q disappeared after gate resolution", runID)
+		}
+
+		// Transition run from waiting back to running.
+		next := *run
+		next.State = RunRunning
+		if next.StartedAt.IsZero() {
+			next.StartedAt = time.Now().UTC()
+		}
+		payload, marshalErr := json.Marshal(runEventPayload{Run: next, WorkState: WorkRunning})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("work: ResumeRun: encode run: %w", marshalErr)
+		}
+		event := newServiceEvent(workID, eventRequestID, EventRunChanged, payload, time.Now().UTC())
+		if _, commitErr := s.store.CommitEvent(workID, event); commitErr != nil {
+			return nil, fmt.Errorf("work: ResumeRun: commit resume: %w", commitErr)
+		}
+	}
+
+	// Reload to get the committed state.
+	current, _, err = s.store.LoadState(workID, "")
+	if err != nil {
+		return nil, committedRecovery("resume-load", workID, requestID, 0, err)
+	}
+	persisted := findWorkflowRun(current, runID)
+	if persisted == nil {
+		return nil, fmt.Errorf("work: ResumeRun: run %q disappeared from projection", runID)
+	}
+
+	emit := s.runEmitter(workID, runID, "ResumeRun")
+	if _, runErr := runner.Run(ctx, current, persisted, emit); runErr != nil {
+		current, _, _ = s.store.LoadState(workID, "")
+		persisted = findWorkflowRun(current, runID)
+		if persisted == nil {
+			return nil, fmt.Errorf("work: ResumeRun: run %q disappeared after runner error", runID)
+		}
+		if persisted.State != RunWaiting && !IsTerminalRunState(persisted.State) {
+			return persisted, fmt.Errorf("work: ResumeRun: %w", runErr)
+		}
+	}
+
+	view, viewErr := s.loadView(workID)
+	if viewErr != nil {
+		current, _, _ = s.store.LoadState(workID, "")
+		persisted = findWorkflowRun(current, runID)
+		return persisted, committedRecovery("resume-view", workID, requestID, 0, viewErr)
+	}
+	if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
+		return findWorkflowRun(view.Work, runID), committedRecovery("resume-view", workID, requestID, view.Revision, emitErr)
+	}
+	return findWorkflowRun(view.Work, runID), nil
 }
 
 func (s *Service) taskRunner() *WorkRunner {
 	s.runMu.Lock()
 	defer s.runMu.Unlock()
 	return s.runner
+}
+
+func (s *Service) runEmitter(workID, runID, operation string) eventEmitter {
+	return func(input WorkEvent) (int64, error) {
+		if strings.TrimSpace(input.RequestID) == "" {
+			return 0, fmt.Errorf("work: %s: runner emitted an event without requestID", operation)
+		}
+		current, state, err := s.store.LoadState(workID, "")
+		if err != nil {
+			return 0, err
+		}
+		run := findWorkflowRun(current, runID)
+		if run == nil {
+			return 0, fmt.Errorf("work: %s: run %q disappeared", operation, runID)
+		}
+		if IsTerminalRunState(run.State) || run.State == RunNeedsConfirmation {
+			return state.Revision, fmt.Errorf("%w: run %q is %s", errRunSuspended, runID, run.State)
+		}
+		if run.State == RunWaiting && !pausedAttemptResult(run, input) {
+			return state.Revision, fmt.Errorf("%w: run %q is waiting", errRunSuspended, runID)
+		}
+		event := newServiceEvent(workID, input.RequestID, input.Type, input.Payload, time.Now().UTC())
+		event.BaseRevision, event.Revision = state.Revision, state.Revision+1
+		return s.store.CommitEvent(workID, event)
+	}
+}
+
+func pausedAttemptResult(run *WorkflowRun, event WorkEvent) bool {
+	if run == nil || event.Type != EventAttemptChanged {
+		return false
+	}
+	payload, legacy, err := decodeAttemptEventPayload(event.Payload)
+	if err != nil || legacy || payload.RunID != run.ID || payload.Attempt.State == RunRunning {
+		return false
+	}
+	stage := findRunStage(run, payload.StageID)
+	task := findStageTask(stage, payload.TaskID)
+	current := findTaskAttempt(task, payload.Attempt.ID)
+	return current != nil && current.State == RunRunning
+}
+
+func validateGateResolution(stage *Stage, resolution GateResolution) error {
+	if stage == nil {
+		return errors.New("gate stage is required")
+	}
+	outcome := strings.TrimSpace(resolution.Outcome)
+	switch stage.Gate {
+	case "approval":
+		if outcome != "approved" {
+			return fmt.Errorf("stage %q approval outcome must be approved", stage.ID)
+		}
+	case "input":
+		if outcome != "input_provided" {
+			return fmt.Errorf("stage %q input outcome must be input_provided", stage.ID)
+		}
+		if len(resolution.Input) == 0 {
+			return fmt.Errorf("stage %q input is required", stage.ID)
+		}
+	default:
+		return fmt.Errorf("stage %q has unsupported gate %q", stage.ID, stage.Gate)
+	}
+	return nil
 }
 
 func (s *Service) beginRunFlight(workID string) (*runFlight, bool) {
@@ -478,6 +1135,13 @@ func findWorkflowRun(value *Work, runID string) *WorkflowRun {
 		}
 	}
 	return nil
+}
+
+func findAttempt(value *Work, runID, stageID, taskID, attemptID string) *Attempt {
+	run := findWorkflowRun(value, runID)
+	stage := findRunStage(run, stageID)
+	task := findStageTask(stage, taskID)
+	return findTaskAttempt(task, attemptID)
 }
 
 // Archive appends the lifecycle fact first, then materializes an immutable

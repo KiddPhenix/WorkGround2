@@ -53,8 +53,9 @@ type WorkEventState struct {
 type TaskExecutor interface {
 	// ExecuteTask 执行一个 Task 并返回 Attempt 结果。
 	ExecuteTask(ctx context.Context, input TaskExecuteInput) (*Attempt, error)
-	// CancelTask 请求取消关联 Session。重复 request ID 必须安全。
-	CancelTask(ctx context.Context, session SessionRef, requestID string) error
+	// CancelTask 按稳定 Attempt 上下文取消关联 Session。SessionRef 允许为空，
+	// 因为 cancel intent 可能早于 Session 创建完成；重复 request ID 必须安全。
+	CancelTask(ctx context.Context, input TaskCancelInput) error
 }
 
 // TaskExecuteInput carries stable object and request context into the session
@@ -64,10 +65,24 @@ type TaskExecuteInput struct {
 	RunID            string `json:"runId"`
 	StageID          string `json:"stageId"`
 	TaskID           string `json:"taskId"`
+	AttemptID        string `json:"-"`
 	AttemptIndex     int    `json:"attemptIndex"`
 	RequestID        string `json:"requestId"`
 	DefinitionDigest string `json:"definitionDigest"`
+	SideEffectClass  string `json:"-"`
 	Prompt           string `json:"prompt"`
+}
+
+// TaskCancelInput identifies one attempt independently of Session creation.
+// Stable object IDs are the owner key; SessionRef is supplemental evidence.
+type TaskCancelInput struct {
+	WorkID    string     `json:"workId"`
+	RunID     string     `json:"runId"`
+	StageID   string     `json:"stageId"`
+	TaskID    string     `json:"taskId"`
+	AttemptID string     `json:"attemptId"`
+	Session   SessionRef `json:"sessionRef,omitempty"`
+	RequestID string     `json:"requestId"`
 }
 
 // SessionLookup 是 Work 查找关联 Session 的窄端口。
@@ -281,3 +296,7 @@ var ErrBlockSourcePanic = errors.New("work: block source adapter panic")
 // ErrBlockRefreshFailed identifies an idempotently replayed failed attempt
 // when the original adapter error type is no longer available in memory.
 var ErrBlockRefreshFailed = errors.New("work: block refresh failed")
+
+// ErrTaskNotRunning means a cancellation target has already stopped. Callers
+// may treat it as successful delivery because no active side effect remains.
+var ErrTaskNotRunning = errors.New("work: task attempt is not running")

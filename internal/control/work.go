@@ -38,6 +38,11 @@ type WorkService interface {
 	Get(context.Context, string) (*work.WorkView, error)
 	List(context.Context, work.WorkFilter) (work.WorkPage, error)
 	UpdateDraft(context.Context, work.UpdateDraftInput) (*work.WorkView, error)
+	RunWork(context.Context, string, string) (*work.WorkflowRun, error)
+	RetryTask(context.Context, work.RetryTaskInput) (*work.Attempt, error)
+	CancelRun(context.Context, string, string, string) error
+	PauseRun(context.Context, string, string, string) error
+	ResumeRun(context.Context, work.ResumeRunInput) (*work.WorkflowRun, error)
 	Archive(context.Context, string, string) (*work.WorkRecord, error)
 	Restore(context.Context, string, string) (*work.WorkView, error)
 	Delete(context.Context, string, string) error
@@ -200,15 +205,38 @@ func (w workMethods) UpdateDraft(ctx context.Context, input work.UpdateDraftInpu
 }
 
 func (w workMethods) RunWork(ctx context.Context, workID, requestID string) (*work.WorkflowRun, error) {
-	return nil, errWorkNotImplemented("RunWork")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RunWork(ctx, workID, requestID)
 }
 
 func (w workMethods) RetryTask(ctx context.Context, input work.RetryTaskInput) (*work.Attempt, error) {
-	return nil, errWorkNotImplemented("RetryTask")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RetryTask(ctx, input)
 }
 
 func (w workMethods) CancelRun(ctx context.Context, workID, runID, requestID string) error {
-	return errWorkNotImplemented("CancelRun")
+	if nilutil.IsNil(w.svc) {
+		return errWorkDisabled
+	}
+	return w.svc.CancelRun(ctx, workID, runID, requestID)
+}
+
+func (w workMethods) PauseRun(ctx context.Context, workID, runID, requestID string) error {
+	if nilutil.IsNil(w.svc) {
+		return errWorkDisabled
+	}
+	return w.svc.PauseRun(ctx, workID, runID, requestID)
+}
+
+func (w workMethods) ResumeRun(ctx context.Context, input work.ResumeRunInput) (*work.WorkflowRun, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.ResumeRun(ctx, input)
 }
 
 func (w workMethods) ArchiveWork(ctx context.Context, workID, requestID string) (*work.WorkRecord, error) {
