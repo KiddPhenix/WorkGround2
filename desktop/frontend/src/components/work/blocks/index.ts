@@ -14,6 +14,7 @@
 export { BlockHost } from './BlockHost';
 export { FallbackBlock } from './FallbackBlock';
 export { blockRegistry, createRegistry, isRendererKind } from './registry';
+export { registerBuiltinBlocks } from './register';
 export type { FallbackBlockProps } from './FallbackBlock';
 export type {
   BlockHostProps,

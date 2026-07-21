@@ -7,6 +7,7 @@ import type { BlockActionRequest, BlockInstance, BlockStatus } from '../../../wo
 import { FallbackBlock } from './FallbackBlock';
 import { RendererIsland } from './RendererIsland';
 import { blockRegistry, isRendererKind } from './registry';
+import { registerBuiltinBlocks } from './register';
 import { createBlockRenderIdentity, matchesBlockRenderIdentity } from './safeBlockJson';
 import type { BlockRenderIdentity } from './safeBlockJson';
 import type {
@@ -18,6 +19,10 @@ import type {
 
 const MAX_RETRIES = 3;
 const BLOCK_STATUSES = new Set<BlockStatus>(['loading', 'ready', 'empty', 'stale', 'blocked', 'failed']);
+
+// Core renderers are code-owned and available wherever BlockHost is used.
+// Stable registrations make this safe across duplicate imports and test setup.
+registerBuiltinBlocks();
 
 interface ActionGate {
   active: boolean;
