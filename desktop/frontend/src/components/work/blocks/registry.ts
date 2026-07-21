@@ -20,6 +20,15 @@ interface RegistryEntry {
   inflight: Promise<RendererModule> | null;
 }
 
+const MAX_KIND_LENGTH = 64;
+const KIND_SYNTAX = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+export function isRendererKind(value: unknown): value is string {
+  return typeof value === 'string' &&
+    value.length <= MAX_KIND_LENGTH &&
+    KIND_SYNTAX.test(value);
+}
+
 function isSchemaVersion(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
 }
@@ -54,8 +63,8 @@ class Registry implements BlockRendererRegistry {
     validate: RendererValidator,
     load: LazyLoader,
   ): void {
-    if (typeof kind !== 'string' || kind.length === 0 || kind !== kind.trim()) {
-      throw new TypeError('renderer kind must be a non-empty, trimmed string');
+    if (!isRendererKind(kind)) {
+      throw new TypeError('renderer kind must be lower_snake_case and at most 64 characters');
     }
     const range = normalizeRange(versions);
     if (typeof validate !== 'function') throw new TypeError(`renderer validator is required for kind "${kind}"`);
@@ -78,6 +87,7 @@ class Registry implements BlockRendererRegistry {
   }
 
   support(kind: string, schemaVersion: number): RendererSupport {
+    if (!isRendererKind(kind)) return { status: 'unknown_kind' };
     if (!isSchemaVersion(schemaVersion)) return { status: 'unsupported_schema' };
     const entries = this.entries.get(kind);
     if (!entries?.length) return { status: 'unknown_kind' };
@@ -118,7 +128,7 @@ class Registry implements BlockRendererRegistry {
   }
 
   private find(kind: string, schemaVersion: number): RegistryEntry | undefined {
-    if (!isSchemaVersion(schemaVersion)) return undefined;
+    if (!isRendererKind(kind) || !isSchemaVersion(schemaVersion)) return undefined;
     return this.entries.get(kind)?.find((entry) => this.matches(entry, schemaVersion));
   }
 

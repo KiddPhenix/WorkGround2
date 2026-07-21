@@ -3,101 +3,19 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BlockFallback, BlockInstance } from '../../../work/types';
+import { buildSafeJson } from './safeBlockJson';
 
-const SECRET_KEY = /(?:^|[_-])(?:auth(?:orization)?|cookie|credential|password|secret|session|token|api[_-]?key|client[_-]?secret|private[_-]?key|access[_-]?key)(?:$|[_-])/i;
-const MAX_DEPTH = 10;
-const MAX_ITEMS = 200;
 const MAX_STRING = 512;
-const MAX_BYTES = 64 * 1024;
+const BEARER_VALUE = /\bbearer\s+[^\s,;]+/gi;
 
 function shortText(value: unknown, fallback = ''): string {
   if (typeof value !== 'string') return fallback;
-  const clean = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  const clean = value
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(BEARER_VALUE, 'Bearer [redacted]')
+    .trim();
   const chars = Array.from(clean);
   return chars.length > MAX_STRING ? `${chars.slice(0, MAX_STRING).join('')}…` : clean;
-}
-
-function safeValue(value: unknown): unknown {
-  const active = new WeakSet<object>();
-
-  const walk = (current: unknown, depth: number): unknown => {
-    if (depth > MAX_DEPTH) return '[max depth]';
-    if (current === null) return null;
-    if (current === undefined) return '[undefined]';
-    if (typeof current === 'string') return shortText(current);
-    if (typeof current === 'number') return Number.isFinite(current) ? current : `[${String(current)}]`;
-    if (typeof current === 'boolean') return current;
-    if (typeof current === 'bigint') return `[BigInt ${String(current).slice(0, 40)}]`;
-    if (typeof current === 'function') return '[function omitted]';
-    if (typeof current === 'symbol') return '[symbol omitted]';
-    if (typeof current !== 'object') return String(current);
-    if (active.has(current)) return '[circular]';
-
-    active.add(current);
-    try {
-      if (Array.isArray(current)) {
-        const result = current.slice(0, MAX_ITEMS).map((item) => walk(item, depth + 1));
-        if (current.length > MAX_ITEMS) result.push(`[${current.length - MAX_ITEMS} items omitted]`);
-        return result;
-      }
-
-      const result: Record<string, unknown> = {};
-      let keys: string[];
-      try {
-        keys = Object.keys(current);
-      } catch {
-        return '[object keys unavailable]';
-      }
-      for (const key of keys.slice(0, MAX_ITEMS)) {
-        if (SECRET_KEY.test(key)) {
-          result[key] = '[redacted]';
-          continue;
-        }
-        try {
-          const descriptor = Object.getOwnPropertyDescriptor(current, key);
-          result[key] = descriptor && 'value' in descriptor
-            ? walk(descriptor.value, depth + 1)
-            : '[accessor omitted]';
-        } catch {
-          result[key] = '[property unavailable]';
-        }
-      }
-      if (keys.length > MAX_ITEMS) result['…'] = `[${keys.length - MAX_ITEMS} properties omitted]`;
-      return result;
-    } finally {
-      active.delete(current);
-    }
-  };
-
-  return walk(value, 0);
-}
-
-function byteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
-}
-
-function boundedJson(value: unknown): string {
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(safeValue(value), null, 2) ?? 'null';
-  } catch {
-    serialized = JSON.stringify('[serialization failed]');
-  }
-  const originalBytes = byteLength(serialized);
-  if (originalBytes <= MAX_BYTES) return serialized;
-
-  const chars = Array.from(serialized);
-  let length = Math.min(chars.length, 32 * 1024);
-  let result = '';
-  do {
-    result = JSON.stringify({
-      truncated: true,
-      originalBytes,
-      preview: chars.slice(0, length).join(''),
-    }, null, 2);
-    length = Math.floor(length * 0.75);
-  } while (byteLength(result) > MAX_BYTES && length > 0);
-  return result;
 }
 
 export interface FallbackBlockProps {
@@ -117,7 +35,7 @@ export const FallbackBlock: React.FC<FallbackBlockProps> = ({
   const timeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyGeneration = useRef(0);
   const mounted = useRef(true);
-  const json = useMemo(() => boundedJson(block), [block]);
+  const json = useMemo(() => buildSafeJson(block), [block]);
 
   useEffect(() => {
     mounted.current = true;

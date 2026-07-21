@@ -1,111 +1,100 @@
 // BlockHost validates code-owned renderer contracts before loading a module and
-// confines every failure to the current block.
+// confines every async, render, effect, event, and action failure to one block.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SyntheticEvent } from 'react';
-import type { BlockInstance, BlockStatus } from '../../../work/types';
+import type { BlockActionRequest, BlockInstance, BlockStatus } from '../../../work/types';
 import { FallbackBlock } from './FallbackBlock';
-import { blockRegistry } from './registry';
-import type { BlockHostProps, BlockHostState, BlockRendererProps, RendererModule } from './types';
+import { RendererIsland } from './RendererIsland';
+import { blockRegistry, isRendererKind } from './registry';
+import { blockRenderIdentity } from './safeBlockJson';
+import type {
+  BlockHostProps,
+  BlockHostState,
+  BlockRendererProps,
+  RendererFailureCode,
+} from './types';
 
 const MAX_RETRIES = 3;
 const BLOCK_STATUSES = new Set<BlockStatus>(['loading', 'ready', 'empty', 'stale', 'blocked', 'failed']);
-const SECRET_ASSIGNMENT = /\b(secret|token|password|authorization|cookie|api[_-]?key)\b\s*[:=]\s*\S+/gi;
 
-function safeMessage(value: unknown, fallback: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) return fallback;
-  return value
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(SECRET_ASSIGNMENT, '$1=[redacted]')
-    .trim()
-    .slice(0, 240);
+interface ActionGate {
+  active: boolean;
+  archived: boolean;
+  block: BlockInstance;
+  blockID: string;
+  identity: string;
+  onAction?: (request: BlockActionRequest) => void;
+  readonly: boolean;
+  revision: number;
+  status: BlockInstance['status'];
+  tombstone: boolean;
+  workID: string;
 }
 
-function safeLogValue(value: unknown, fallback: string): string {
-  return typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value) ? value : fallback;
+type TelemetryCode =
+  | 'renderer_import_error'
+  | 'renderer_validation_error'
+  | RendererFailureCode;
+type ShellError = 'invalid_kind' | 'invalid_schema' | 'invalid_status';
+
+function safeLogText(value: unknown): string {
+  return typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value)
+    ? value
+    : '[invalid]';
 }
 
-function validateShell(block: BlockInstance): string | null {
-  if (typeof block.kind !== 'string' || block.kind.length === 0 || block.kind !== block.kind.trim()) {
-    return 'Block kind is invalid';
+function reportFailure(block: BlockInstance, code: TelemetryCode): void {
+  try {
+    console.error('[BlockHost]', {
+      blockID: safeLogText(block.id),
+      code,
+      kind: isRendererKind(block.kind) ? block.kind : '[invalid]',
+      revision: Number.isSafeInteger(block.revision) ? block.revision : -1,
+    });
+  } catch {
+    // Telemetry is best-effort and must never escape into the host tree.
   }
-  if (!Number.isSafeInteger(block.schemaVersion) || block.schemaVersion <= 0) {
-    return 'Block schema version is invalid';
-  }
-  if (!BLOCK_STATUSES.has(block.status)) return 'Block status is invalid';
+}
+
+function validateShell(block: BlockInstance): ShellError | null {
+  if (!isRendererKind(block.kind)) return 'invalid_kind';
+  if (!Number.isSafeInteger(block.schemaVersion) || block.schemaVersion <= 0) return 'invalid_schema';
+  if (!BLOCK_STATUSES.has(block.status)) return 'invalid_status';
   return null;
 }
 
-function statusReason(block: BlockInstance): string {
-  switch (block.status) {
+function statusMessage(status: BlockInstance['status'] | 'removed'): string {
+  switch (status) {
+    case 'removed': return 'Block was removed';
     case 'empty': return 'Block has no content';
     case 'stale': return 'Block data may be outdated';
     case 'blocked': return 'Block is blocked';
     case 'failed': return 'Block generation failed';
-    default: return `Block status: ${block.status}`;
+    case 'loading': return 'Block is loading';
+    default: return 'Renderer unavailable';
+  }
+}
+
+function invalidMessage(code: 'invalid_kind' | 'invalid_schema' | 'invalid_status'): string {
+  switch (code) {
+    case 'invalid_kind': return 'Block kind is invalid';
+    case 'invalid_schema': return 'Block schema version is invalid';
+    case 'invalid_status': return 'Block status is invalid';
   }
 }
 
 const LoadingBlock: React.FC<{ block: BlockInstance }> = ({ block }) => (
   <div className="wg2-block-loading" role="status" aria-live="polite">
     <span aria-hidden="true">⏳</span>
-    <span>Loading {typeof block.kind === 'string' ? block.kind : 'block'}…</span>
+    <span>Loading {isRendererKind(block.kind) ? block.kind : 'block'}…</span>
   </div>
 );
 
-interface BoundaryProps {
-  block: BlockInstance;
-  children: React.ReactNode;
-  disabled: boolean;
-  retries: number;
-  onRetry: () => void;
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return Boolean(value && (typeof value === 'object' || typeof value === 'function') &&
+    typeof (value as PromiseLike<unknown>).then === 'function');
 }
-
-interface BoundaryState {
-  crashed: boolean;
-}
-
-class BlockErrorBoundary extends React.Component<BoundaryProps, BoundaryState> {
-  state: BoundaryState = { crashed: false };
-
-  static getDerivedStateFromError(): BoundaryState {
-    return { crashed: true };
-  }
-
-  componentDidCatch(error: Error) {
-    // Keep payloads, error messages, paths, and stacks out of logs.
-    console.error('[BlockHost] renderer crashed', {
-      blockId: safeLogValue(this.props.block.id, '[invalid]'),
-      kind: safeLogValue(this.props.block.kind, '[invalid]'),
-      revision: this.props.block.revision,
-      errorType: safeLogValue(error?.name, 'Error'),
-    });
-  }
-
-  render() {
-    if (!this.state.crashed) return this.props.children;
-    const canRetry = !this.props.disabled && this.props.retries < MAX_RETRIES;
-    return (
-      <div className="wg2-block-error" role="alert">
-        <FallbackBlock
-          block={this.props.block}
-          reason="Renderer crashed"
-          interactiveDisabled={this.props.disabled}
-        />
-        {canRetry && (
-          <button type="button" className="wg2-block-retry" onClick={this.props.onRetry}>
-            Retry renderer ({this.props.retries + 1}/{MAX_RETRIES})
-          </button>
-        )}
-      </div>
-    );
-  }
-}
-
-const Renderer: React.FC<{ module: RendererModule; props: BlockRendererProps }> = ({
-  module: { component: Component },
-  props,
-}) => <Component {...props} />;
 
 export const BlockHost: React.FC<BlockHostProps> = ({
   block,
@@ -115,95 +104,164 @@ export const BlockHost: React.FC<BlockHostProps> = ({
   context,
   onAction,
 }) => {
+  const identity = blockRenderIdentity(block);
   const disabled = readonly || archived;
-  const identity = JSON.stringify([block.id, block.kind, block.schemaVersion, block.revision]);
   const [attempt, setAttempt] = useState({ identity, count: 0 });
-  const [state, setState] = useState<BlockHostState>({ stage: 'validating' });
+  const [state, setState] = useState<BlockHostState>({ identity, stage: 'validating' });
   const generation = useRef(0);
+  const renderedIdentity = useRef(identity);
+  const gateRef = useRef<ActionGate>({
+    active: true,
+    archived,
+    block,
+    blockID: block.id,
+    identity,
+    onAction,
+    readonly,
+    revision: block.revision,
+    status: block.status,
+    tombstone: Boolean(block.tombstone),
+    workID: context.workId,
+  });
+
+  // Invalidate old async work during render. An old import/crash can otherwise
+  // settle between this render and the next effect cleanup.
+  if (renderedIdentity.current !== identity) {
+    renderedIdentity.current = identity;
+    generation.current += 1;
+  }
+  gateRef.current = {
+    active: true,
+    archived,
+    block,
+    blockID: block.id,
+    identity,
+    onAction,
+    readonly,
+    revision: block.revision,
+    status: block.status,
+    tombstone: Boolean(block.tombstone),
+    workID: context.workId,
+  };
+
   const retries = attempt.identity === identity ? attempt.count : 0;
+
+  const failRenderer = useCallback((failedIdentity: string, code: RendererFailureCode) => {
+    const gate = gateRef.current;
+    if (!gate.active || gate.identity !== failedIdentity) return;
+    generation.current += 1;
+    reportFailure(gate.block, code);
+    setState({ identity: failedIdentity, stage: 'renderer_failed', code });
+  }, []);
+
+  useEffect(() => {
+    gateRef.current.active = true;
+    return () => {
+      gateRef.current.active = false;
+      generation.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     generation.current += 1;
     const current = generation.current;
-    const commit = (next: BlockHostState) => {
-      if (current === generation.current) setState(next);
+    const isCurrent = () => current === generation.current && renderedIdentity.current === identity;
+    const commit = (next: BlockHostState): boolean => {
+      if (!isCurrent() || next.identity !== identity) return false;
+      setState(next);
+      return true;
     };
 
-    commit({ stage: 'validating' });
+    commit({ identity, stage: 'validating' });
     const shellError = validateShell(block);
     if (shellError) {
-      commit({ stage: 'invalid_block', reason: shellError });
+      commit({ identity, stage: 'invalid_block', code: shellError });
       return () => { generation.current += 1; };
     }
 
     if (block.tombstone) {
-      commit({ stage: 'status', status: 'Block was removed' });
+      commit({ identity, stage: 'status', status: 'removed' });
       return () => { generation.current += 1; };
     }
     if (block.status === 'loading') {
-      commit({ stage: 'status', status: 'loading' });
+      commit({ identity, stage: 'status', status: 'loading' });
       return () => { generation.current += 1; };
     }
     if (block.status !== 'ready') {
-      commit({ stage: 'status', status: statusReason(block) });
+      commit({ identity, stage: 'status', status: block.status });
       return () => { generation.current += 1; };
     }
 
     const support = blockRegistry.support(block.kind, block.schemaVersion);
     if (support.status === 'unknown_kind') {
-      commit({ stage: 'unknown_kind' });
+      commit({ identity, stage: 'unknown_kind' });
       return () => { generation.current += 1; };
     }
     if (support.status === 'future_schema') {
-      commit({ stage: 'future_schema', maxSupported: support.maxSupported });
+      commit({ identity, stage: 'future_schema', maxSupported: support.maxSupported });
       return () => { generation.current += 1; };
     }
     if (support.status === 'unsupported_schema') {
-      commit({ stage: 'unsupported_schema' });
+      commit({ identity, stage: 'unsupported_schema' });
       return () => { generation.current += 1; };
     }
 
     try {
       const result = blockRegistry.validate(block.kind, block.schemaVersion, block.data);
       if (!result?.valid) {
-        commit({
-          stage: 'invalid_data',
-          reason: safeMessage(result?.reason, 'Data does not match the renderer schema'),
-        });
+        commit({ identity, stage: 'invalid_data' });
         return () => { generation.current += 1; };
       }
-    } catch (error) {
-      console.error('[BlockHost] renderer validation failed', {
-        blockId: safeLogValue(block.id, '[invalid]'),
-        kind: safeLogValue(block.kind, '[invalid]'),
-        revision: block.revision,
-        errorType: safeLogValue(error instanceof Error ? error.name : '', 'Error'),
-      });
-      commit({ stage: 'invalid_data', reason: 'Renderer data validation failed' });
+    } catch {
+      reportFailure(block, 'renderer_validation_error');
+      commit({ identity, stage: 'invalid_data' });
       return () => { generation.current += 1; };
     }
 
-    commit({ stage: 'loading_module' });
+    commit({ identity, stage: 'loading_module' });
     void blockRegistry.resolve(block.kind, block.schemaVersion).then(
       (module) => {
-        if (module) commit({ stage: 'rendering', module });
-        else commit({ stage: 'unsupported_schema' });
+        if (module) commit({ identity, stage: 'rendering', module });
+        else commit({ identity, stage: 'unsupported_schema' });
       },
-      (error) => {
-        console.error('[BlockHost] renderer import failed', {
-          blockId: safeLogValue(block.id, '[invalid]'),
-          kind: safeLogValue(block.kind, '[invalid]'),
-          revision: block.revision,
-          errorType: safeLogValue(error instanceof Error ? error.name : '', 'Error'),
-        });
-        commit({ stage: 'import_failed' });
+      () => {
+        if (isCurrent()) {
+          reportFailure(block, 'renderer_import_error');
+          commit({ identity, stage: 'import_failed' });
+        }
       },
     );
 
     return () => { generation.current += 1; };
   }, [block, identity, retries]);
 
+  const guardedAction = useMemo<BlockRendererProps['onAction']>(() => {
+    const actionIdentity = identity;
+    return (request) => {
+      const gate = gateRef.current;
+      try {
+        if (!gate.active || gate.identity !== actionIdentity || gate.readonly || gate.archived ||
+            gate.tombstone || gate.status !== 'ready' || typeof gate.onAction !== 'function' ||
+            !request || request.blockId !== gate.blockID || request.workId !== gate.workID ||
+            request.expectedRevision !== gate.revision) return;
+      } catch {
+        return;
+      }
+      try {
+        const result = gate.onAction(request) as unknown;
+        if (isThenable(result)) {
+          void Promise.resolve(result).catch(() => failRenderer(actionIdentity, 'action_callback_error'));
+        }
+      } catch {
+        failRenderer(actionIdentity, 'action_callback_error');
+      }
+    };
+  }, [failRenderer, identity]);
+
   const retry = useCallback(() => {
+    const gate = gateRef.current;
+    if (!gate.active || gate.identity !== identity || gate.readonly || gate.archived ||
+        gate.tombstone || gate.status !== 'ready') return;
     setAttempt((current) => ({
       identity,
       count: current.identity === identity ? Math.min(current.count + 1, MAX_RETRIES) : 1,
@@ -216,8 +274,8 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     readonly: disabled,
     archived,
     context,
-    onAction: disabled ? undefined : onAction,
-  }), [archived, block, context, disabled, onAction, placement]);
+    onAction: guardedAction,
+  }), [archived, block, context, disabled, guardedAction, placement]);
 
   const stopInteraction = useCallback((event: SyntheticEvent) => {
     if (!disabled) return;
@@ -225,18 +283,19 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     event.stopPropagation();
   }, [disabled]);
 
-  if (state.stage === 'validating' || state.stage === 'loading_module' ||
+  // Never paint state that belongs to an older status/data/module identity.
+  if (state.identity !== identity || state.stage === 'validating' || state.stage === 'loading_module' ||
       (state.stage === 'status' && state.status === 'loading')) {
     return <LoadingBlock block={block} />;
   }
   if (state.stage === 'status') {
-    return <FallbackBlock block={block} reason={state.status} interactiveDisabled={disabled} />;
+    return <FallbackBlock block={block} reason={statusMessage(state.status)} interactiveDisabled={disabled} />;
   }
   if (state.stage === 'invalid_block') {
-    return <FallbackBlock block={block} reason={state.reason} interactiveDisabled={disabled} />;
+    return <FallbackBlock block={block} reason={invalidMessage(state.code)} interactiveDisabled={disabled} />;
   }
   if (state.stage === 'unknown_kind') {
-    return <FallbackBlock block={block} reason={`Unknown kind: ${safeMessage(block.kind, 'unknown')}`} interactiveDisabled={disabled} />;
+    return <FallbackBlock block={block} reason="Unknown renderer kind" interactiveDisabled={disabled} />;
   }
   if (state.stage === 'future_schema') {
     return (
@@ -248,16 +307,17 @@ export const BlockHost: React.FC<BlockHostProps> = ({
     );
   }
   if (state.stage === 'unsupported_schema') {
-    return <FallbackBlock block={block} reason={`Unsupported schema v${block.schemaVersion}`} interactiveDisabled={disabled} />;
+    return <FallbackBlock block={block} reason="Unsupported renderer schema" interactiveDisabled={disabled} />;
   }
   if (state.stage === 'invalid_data') {
-    return <FallbackBlock block={block} reason={`Invalid data: ${state.reason}`} interactiveDisabled={disabled} />;
+    return <FallbackBlock block={block} reason="Invalid data for renderer" interactiveDisabled={disabled} />;
   }
-  if (state.stage === 'import_failed') {
-    const canRetry = !disabled && retries < MAX_RETRIES;
+  if (state.stage === 'import_failed' || state.stage === 'renderer_failed') {
+    const canRetry = !disabled && !block.tombstone && block.status === 'ready' && retries < MAX_RETRIES;
+    const reason = state.stage === 'import_failed' ? 'Renderer failed to load' : 'Renderer failed safely';
     return (
-      <div className="wg2-block-error" role="alert">
-        <FallbackBlock block={block} reason="Renderer failed to load" interactiveDisabled={disabled} />
+      <div className="wg2-block-error" role="alert" data-error-code={state.stage === 'renderer_failed' ? state.code : 'renderer_import_error'}>
+        <FallbackBlock block={block} reason={reason} interactiveDisabled={disabled} />
         {canRetry && (
           <button type="button" className="wg2-block-retry" onClick={retry}>
             Retry renderer ({retries + 1}/{MAX_RETRIES})
@@ -278,15 +338,13 @@ export const BlockHost: React.FC<BlockHostProps> = ({
       onSubmitCapture={stopInteraction}
       onPointerDownCapture={stopInteraction}
     >
-      <BlockErrorBoundary
+      <RendererIsland
         key={`${identity}:${retries}`}
-        block={block}
-        disabled={disabled}
-        retries={retries}
-        onRetry={retry}
-      >
-        <Renderer module={state.module} props={rendererProps} />
-      </BlockErrorBoundary>
+        identity={identity}
+        module={state.module}
+        rendererProps={rendererProps}
+        onFailure={failRenderer}
+      />
     </div>
   );
 };

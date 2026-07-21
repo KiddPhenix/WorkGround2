@@ -81,7 +81,7 @@ const context = { workId: 'work-test', workSchemaVersion: 1 };
 function block(patch: Partial<BlockInstance> = {}): BlockInstance {
   return {
     id: 'block-1',
-    kind: 'test-unknown',
+    kind: 'test_unknown',
     schemaVersion: 1,
     revision: 1,
     status: 'ready',
@@ -131,8 +131,8 @@ async function run(): Promise<void> {
   await render(<FallbackBlock block={block({ data: circular })} reason="Copy" />);
   await click(container().querySelector('.wg2-fallback-copy')!);
   await waitFor(() => copied.length > 0, 'clipboard write');
-  const parsed = JSON.parse(copied) as Record<string, unknown>;
-  const copiedData = parsed.data as Record<string, unknown>;
+  const parsed = JSON.parse(copied) as { meta: { redacted: boolean; truncated: boolean }; value: Record<string, unknown> };
+  const copiedData = parsed.value.data as Record<string, unknown>;
   ok(copiedData.apiKey === '[redacted]' && copiedData.authorization === '[redacted]', 'secret-like fields are redacted');
   ok(copiedData.normal === 'visible' && copiedData.self === '[circular]', 'normal and circular values serialize safely');
   ok(copiedData.danger === '[accessor omitted]' && getterReads === 0, 'accessors are not executed');
@@ -144,8 +144,8 @@ async function run(): Promise<void> {
   await render(<FallbackBlock block={block({ data: large })} reason="Large" />);
   await click(container().querySelector('.wg2-fallback-copy')!);
   await waitFor(() => copied.length > 0, 'large clipboard write');
-  const largeJson = JSON.parse(copied) as { truncated?: boolean; originalBytes?: number };
-  ok(largeJson.truncated === true && (largeJson.originalBytes ?? 0) > 64 * 1024, 'oversized payload becomes valid bounded JSON envelope');
+  const largeJson = JSON.parse(copied) as { meta: { truncated: boolean; reasons: string[] } };
+  ok(largeJson.meta.truncated && largeJson.meta.reasons.length > 0, 'oversized payload becomes valid bounded JSON envelope');
   ok(new TextEncoder().encode(copied).byteLength <= 64 * 1024, 'oversized envelope remains within byte limit');
 
   Object.defineProperty(navigator, 'clipboard', {
@@ -176,12 +176,12 @@ async function run(): Promise<void> {
     <div data-testid="ready" data-readonly={String(readonly)}>
       ready renderer
       <button type="button" onClick={() => onAction?.({
-        workId: 'work-test', blockId: 'ready', actionId: 'act', requestId: 'req', expectedRevision: 1,
+        workId: 'work-test', blockId: 'block-1', actionId: 'act', requestId: 'req', expectedRevision: 25,
       })}>act</button>
     </div>
   );
   blockRegistry.register(
-    'test-ready',
+    'test_ready',
     1,
     (_schema, data) => {
       validations++;
@@ -190,37 +190,37 @@ async function run(): Promise<void> {
     async () => { loads++; return { component: Ready }; },
   );
 
-  await render(<BlockHost block={block({ kind: 'test-ready', status: 'loading' })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_ready', status: 'loading' })} context={context} />);
   ok(container().querySelector('[role="status"]') !== null, 'loading status renders accessible loading state');
   ok(validations === 0 && loads === 0, 'loading status neither validates data nor imports renderer');
 
-  await render(<BlockHost block={block({ kind: 'test-ready', data: { ok: false }, revision: 2 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_ready', data: { ok: false }, revision: 2 })} context={context} />);
   await waitFor(() => (container().textContent ?? '').includes('Invalid data'), 'invalid data fallback');
   ok(validations === 1 && loads === 0, 'invalid data is rejected before lazy import');
   ok(!(container().textContent ?? '').includes('private'), 'validator reason is redacted');
 
-  await render(<BlockHost block={block({ kind: 'test-ready', data: { ok: true }, revision: 3 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_ready', data: { ok: true }, revision: 3 })} context={context} />);
   await waitFor(() => (container().textContent ?? '').includes('ready renderer'), 'ready renderer');
   ok(validations === 2 && loads === 1, 'valid data loads renderer exactly once');
 
   for (const [status, expected] of [
     ['empty', 'no content'], ['stale', 'outdated'], ['blocked', 'blocked'], ['failed', 'failed'],
   ] as const) {
-    await render(<BlockHost block={block({ kind: 'test-ready', status, revision: block().revision + expected.length })} context={context} />);
+    await render(<BlockHost block={block({ kind: 'test_ready', status, revision: block().revision + expected.length })} context={context} />);
     contains((container().textContent ?? '').toLowerCase(), expected, `${status} has a distinct degraded state`);
   }
   ok(loads === 1, 'degraded statuses do not import renderer');
 
-  await render(<BlockHost block={block({ kind: 'test-ready', schemaVersion: 0, revision: 20 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_ready', schemaVersion: 0, revision: 20 })} context={context} />);
   contains(container().textContent ?? '', 'schema version is invalid', 'invalid schema is explicit');
 
   console.log('\n-- unknown, unsupported, and future schema');
-  blockRegistry.register('test-versioned', { min: 2, max: 3 }, () => ({ valid: true }), async () => ({ component: Ready }));
-  await render(<BlockHost block={block({ kind: 'missing-kind', revision: 21 })} context={context} />);
-  contains(container().textContent ?? '', 'Unknown kind', 'unknown kind degrades locally');
-  await render(<BlockHost block={block({ kind: 'test-versioned', schemaVersion: 1, revision: 22 })} context={context} />);
-  contains(container().textContent ?? '', 'Unsupported schema', 'old unsupported schema is distinct');
-  await render(<BlockHost block={block({ kind: 'test-versioned', schemaVersion: 99, revision: 23 })} context={context} />);
+  blockRegistry.register('test_versioned', { min: 2, max: 3 }, () => ({ valid: true }), async () => ({ component: Ready }));
+  await render(<BlockHost block={block({ kind: 'missing_kind', revision: 21 })} context={context} />);
+  contains(container().textContent ?? '', 'Unknown renderer kind', 'unknown kind degrades locally');
+  await render(<BlockHost block={block({ kind: 'test_versioned', schemaVersion: 1, revision: 22 })} context={context} />);
+  contains(container().textContent ?? '', 'Unsupported renderer schema', 'old unsupported schema is distinct');
+  await render(<BlockHost block={block({ kind: 'test_versioned', schemaVersion: 99, revision: 23 })} context={context} />);
   contains(container().textContent ?? '', 'Future schema', 'future schema is explicit');
   ok((container().querySelector('.wg2-fallback-copy') as HTMLButtonElement).disabled, 'future schema fallback is forced readonly');
 
@@ -228,7 +228,7 @@ async function run(): Promise<void> {
   let actions = 0;
   await render(
     <BlockHost
-      block={block({ kind: 'test-ready', data: { ok: true }, revision: 24 })}
+      block={block({ kind: 'test_ready', data: { ok: true }, revision: 24 })}
       context={context}
       archived
       onAction={() => { actions++; }}
@@ -243,7 +243,7 @@ async function run(): Promise<void> {
 
   await render(
     <BlockHost
-      block={block({ kind: 'test-ready', data: { ok: true }, revision: 25 })}
+      block={block({ kind: 'test_ready', data: { ok: true }, revision: 25 })}
       context={context}
       onAction={() => { actions++; }}
     />,
@@ -256,12 +256,12 @@ async function run(): Promise<void> {
   const loggedErrors: unknown[][] = [];
   console.error = (...args: unknown[]) => { loggedErrors.push(args); };
   let flakyLoads = 0;
-  blockRegistry.register('test-flaky', 1, () => ({ valid: true }), async () => {
+  blockRegistry.register('test_flaky', 1, () => ({ valid: true }), async () => {
     flakyLoads++;
     if (flakyLoads === 1) throw new Error('token=private C:\\secret-path');
     return { component: Ready };
   });
-  await render(<BlockHost block={block({ kind: 'test-flaky', revision: 30 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_flaky', revision: 30 })} context={context} />);
   await waitFor(() => (container().textContent ?? '').includes('failed to load'), 'import failure fallback');
   ok(!(container().textContent ?? '').includes('secret-path'), 'import failure hides raw error');
   await click(container().querySelector('.wg2-block-retry')!);
@@ -270,12 +270,12 @@ async function run(): Promise<void> {
 
   let releaseSlow!: (module: RendererModule) => void;
   const slow = new Promise<RendererModule>((resolve) => { releaseSlow = resolve; });
-  blockRegistry.register('test-slow', 1, () => ({ valid: true }), () => slow);
-  blockRegistry.register('test-fast', 1, () => ({ valid: true }), async () => ({
+  blockRegistry.register('test_slow', 1, () => ({ valid: true }), () => slow);
+  blockRegistry.register('test_fast', 1, () => ({ valid: true }), async () => ({
     component: () => <div>fast renderer wins</div>,
   }));
-  await render(<BlockHost block={block({ kind: 'test-slow', revision: 31 })} context={context} />);
-  await render(<BlockHost block={block({ kind: 'test-fast', revision: 32 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_slow', revision: 31 })} context={context} />);
+  await render(<BlockHost block={block({ kind: 'test_fast', revision: 32 })} context={context} />);
   await waitFor(() => (container().textContent ?? '').includes('fast renderer wins'), 'fast replacement renderer');
   await act(async () => { releaseSlow({ component: () => <div>stale slow renderer</div> }); });
   await flush();
@@ -284,37 +284,37 @@ async function run(): Promise<void> {
 
   console.log('\n-- renderer crash isolation and bounded retry');
   const Crash: React.FC = () => { throw new Error('password=private renderer detail'); };
-  blockRegistry.register('test-crash', 1, () => ({ valid: true }), async () => ({ component: Crash }));
-  blockRegistry.register('test-sibling', 1, () => ({ valid: true }), async () => ({
+  blockRegistry.register('test_crash', 1, () => ({ valid: true }), async () => ({ component: Crash }));
+  blockRegistry.register('test_sibling', 1, () => ({ valid: true }), async () => ({
     component: () => <div>sibling survives</div>,
   }));
   await render(
     <div>
-      <BlockHost block={block({ id: 'crash', kind: 'test-crash', revision: 40 })} context={context} />
-      <BlockHost block={block({ id: 'sibling', kind: 'test-sibling', revision: 40 })} context={context} />
+      <BlockHost block={block({ id: 'crash', kind: 'test_crash', revision: 40 })} context={context} />
+      <BlockHost block={block({ id: 'sibling', kind: 'test_sibling', revision: 40 })} context={context} />
     </div>,
   );
-  await waitFor(() => (container().textContent ?? '').includes('Renderer crashed'), 'renderer crash fallback');
+  await waitFor(() => (container().textContent ?? '').includes('Renderer failed safely'), 'renderer crash fallback');
   contains(container().textContent ?? '', 'sibling survives', 'crash only degrades one block');
   ok(!(container().textContent ?? '').includes('private'), 'renderer error message is absent from UI');
   for (let attempt = 0; attempt < 3; attempt++) {
     const retry = container().querySelector('.wg2-block-retry');
     ok(retry !== null, `crash retry ${attempt + 1} is available`);
     if (retry) await click(retry);
-    await waitFor(() => (container().textContent ?? '').includes('Renderer crashed'), `crash retry ${attempt + 1}`);
+    await waitFor(() => (container().textContent ?? '').includes('Renderer failed safely'), `crash retry ${attempt + 1}`);
   }
   ok(container().querySelector('.wg2-block-retry') === null, 'renderer retries stop after the configured bound');
   contains(container().textContent ?? '', 'sibling survives', 'sibling remains mounted after retries');
   console.error = reportError;
   const safeLogs = JSON.stringify(loggedErrors);
   ok(!safeLogs.includes('private') && !safeLogs.includes('secret-path'), 'renderer logs omit raw messages, paths, and secrets');
-  ok(safeLogs.includes('blockId') && safeLogs.includes('revision'), 'renderer failures retain safe diagnostic context');
+  ok(safeLogs.includes('blockID') && safeLogs.includes('revision'), 'renderer failures retain safe diagnostic context');
 
   console.log('\n-- unmount during lazy load');
   let releaseUnmount!: (module: RendererModule) => void;
   const pendingUnmount = new Promise<RendererModule>((resolve) => { releaseUnmount = resolve; });
-  blockRegistry.register('test-unmount', 1, () => ({ valid: true }), () => pendingUnmount);
-  await render(<BlockHost block={block({ kind: 'test-unmount', revision: 50 })} context={context} />);
+  blockRegistry.register('test_unmount', 1, () => ({ valid: true }), () => pendingUnmount);
+  await render(<BlockHost block={block({ kind: 'test_unmount', revision: 50 })} context={context} />);
   await act(async () => { root!.unmount(); root = null; });
   await act(async () => { releaseUnmount({ component: () => <div>must not mount</div> }); });
   await flush();

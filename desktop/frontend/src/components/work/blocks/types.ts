@@ -34,6 +34,14 @@ export type SchemaVersionSpec = number | SchemaRange;
 export type RendererValidator = (schemaVersion: number, data: unknown) => ValidationResult;
 export type LazyLoader = () => Promise<RendererModule>;
 
+export type RendererFailureCode =
+  | 'action_callback_error'
+  | 'renderer_caught_error'
+  | 'renderer_event_error'
+  | 'renderer_recoverable_error'
+  | 'renderer_root_error'
+  | 'renderer_uncaught_error';
+
 export type RendererSupport =
   | { status: 'supported' }
   | { status: 'unknown_kind' }
@@ -63,13 +71,14 @@ export interface BlockHostProps {
 }
 
 export type BlockHostState =
-  | { stage: 'validating' }
-  | { stage: 'loading_module' }
-  | { stage: 'status'; status: string }
-  | { stage: 'future_schema'; maxSupported: number }
-  | { stage: 'unsupported_schema' }
-  | { stage: 'unknown_kind' }
-  | { stage: 'invalid_block'; reason: string }
-  | { stage: 'invalid_data'; reason: string }
-  | { stage: 'import_failed' }
-  | { stage: 'rendering'; module: RendererModule };
+  | { identity: string; stage: 'validating' }
+  | { identity: string; stage: 'loading_module' }
+  | { identity: string; stage: 'status'; status: BlockInstance['status'] | 'removed' }
+  | { identity: string; stage: 'future_schema'; maxSupported: number }
+  | { identity: string; stage: 'unsupported_schema' }
+  | { identity: string; stage: 'unknown_kind' }
+  | { identity: string; stage: 'invalid_block'; code: 'invalid_kind' | 'invalid_schema' | 'invalid_status' }
+  | { identity: string; stage: 'invalid_data' }
+  | { identity: string; stage: 'import_failed' }
+  | { identity: string; stage: 'renderer_failed'; code: RendererFailureCode }
+  | { identity: string; stage: 'rendering'; module: RendererModule };
