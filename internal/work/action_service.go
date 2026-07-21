@@ -548,15 +548,6 @@ func (s *Service) permissionChecker() PermissionChecker {
 	return checker
 }
 
-func findBlock(value *Work, blockID string) *BlockInstance {
-	for index := range value.Blocks {
-		if value.Blocks[index].ID == blockID {
-			return &value.Blocks[index]
-		}
-	}
-	return nil
-}
-
 func findActionSpec(block *BlockInstance, actionID string) *BlockActionSpec {
 	for index := range block.Actions {
 		if block.Actions[index].ID == actionID {

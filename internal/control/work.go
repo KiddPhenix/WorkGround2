@@ -41,6 +41,8 @@ type WorkService interface {
 	Archive(context.Context, string, string) (*work.WorkRecord, error)
 	Restore(context.Context, string, string) (*work.WorkView, error)
 	Delete(context.Context, string, string) error
+	RefreshBlock(context.Context, work.RefreshBlockInput, work.BlockSourceAdapter) (*work.BlockInstance, error)
+	CancelBlockRefresh(context.Context, string, string, string) (*work.BlockInstance, error)
 	ExecuteBlockAction(context.Context, work.BlockActionRequest) (*work.ActionReceipt, error)
 }
 
@@ -163,8 +165,10 @@ func (b *WorkViewBroadcaster) SubscriberDrops(id string) int64 {
 // workMethods delegates WorkController calls to the backing WorkService.
 // Nil receiver is safe: every method returns an error.
 type workMethods struct {
-	svc   WorkService
-	owner *Controller
+	svc     WorkService
+	owner   *Controller
+	refresh *work.BlockRefreshManager
+	sources *workSourceRegistry
 }
 
 func (w workMethods) CreateWork(ctx context.Context, input work.CreateWorkInput) (*work.Work, error) {
@@ -211,21 +215,35 @@ func (w workMethods) ArchiveWork(ctx context.Context, workID, requestID string) 
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
-	return w.svc.Archive(ctx, workID, requestID)
+	record, err := w.svc.Archive(ctx, workID, requestID)
+	if err == nil && record != nil && w.refresh != nil {
+		w.refresh.UnsubscribeWork(record.WorkID)
+	}
+	return record, err
 }
 
 func (w workMethods) RestoreWork(ctx context.Context, workID, requestID string) (*work.WorkView, error) {
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
-	return w.svc.Restore(ctx, workID, requestID)
+	view, err := w.svc.Restore(ctx, workID, requestID)
+	if err == nil && w.refresh != nil && w.sources != nil {
+		w.refresh.RecoverFromProjection(view, w.sources.resolve)
+	}
+	return view, err
 }
 
 func (w workMethods) DeleteWork(ctx context.Context, workID, requestID string) error {
 	if nilutil.IsNil(w.svc) {
 		return errWorkDisabled
 	}
-	return w.svc.Delete(ctx, workID, requestID)
+	if err := w.svc.Delete(ctx, workID, requestID); err != nil {
+		return err
+	}
+	if w.refresh != nil {
+		w.refresh.UnsubscribeWork(workID)
+	}
+	return nil
 }
 
 func (w workMethods) PinCornerstone(ctx context.Context, workID string, input work.CornerstoneInput) (*work.Cornerstone, error) {
@@ -241,7 +259,39 @@ func (w workMethods) RemoveCornerstone(ctx context.Context, workID, cornerstoneI
 }
 
 func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestID string) (*work.BlockInstance, error) {
-	return nil, errWorkNotImplemented("RefreshBlock")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	if w.refresh == nil || w.sources == nil {
+		return nil, work.ErrBlockNotRefreshable
+	}
+	view, err := w.svc.Get(ctx, strings.TrimSpace(workID))
+	if err != nil {
+		return nil, err
+	}
+	if view == nil || view.Work == nil {
+		return nil, errors.New("work: RefreshBlock: Work projection is unavailable")
+	}
+	var block *work.BlockInstance
+	for i := range view.Work.Blocks {
+		if view.Work.Blocks[i].ID == strings.TrimSpace(blockID) {
+			block = &view.Work.Blocks[i]
+			break
+		}
+	}
+	if block == nil || block.Tombstone {
+		return nil, fmt.Errorf("%w: block %s not found or removed", work.ErrBlockRefreshStopped, blockID)
+	}
+	adapter, source, schedule, ok := w.sources.resolve(*block)
+	if !ok {
+		return nil, fmt.Errorf("%w: no source for %s/%s (%s)", work.ErrBlockNotRefreshable, workID, blockID, block.Kind)
+	}
+	delay := schedule.Interval
+	if delay <= 0 {
+		delay = work.DefaultRefreshSchedule().Interval
+	}
+	w.refresh.SubscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay)
+	return w.refresh.RefreshRequest(ctx, view.Work.ID, block.ID, requestID)
 }
 
 func (w workMethods) ExecuteBlockAction(ctx context.Context, input work.BlockActionRequest) (*work.ActionReceipt, error) {
@@ -442,7 +492,7 @@ func (c *Controller) WorkControl() WorkControl {
 	if c == nil {
 		return workMethods{}
 	}
-	return workMethods{svc: c.workSvc, owner: c}
+	return workMethods{svc: c.workSvc, owner: c, refresh: c.workRefresh, sources: c.workSources}
 }
 
 // WorkViews returns the WorkViewEvent broadcaster for this session, or nil when

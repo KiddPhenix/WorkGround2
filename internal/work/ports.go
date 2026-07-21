@@ -1,6 +1,12 @@
 package work
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math/rand/v2"
+	"time"
+)
 
 // WorkStore 是 Work 持久化的窄端口接口。
 // 实现由 control/boot 侧提供适配器并注入。
@@ -113,3 +119,157 @@ type PermissionDecision struct {
 	ApprovalRequired bool   `json:"approvalRequired"`
 	Reason           string `json:"reason,omitempty"`
 }
+
+// ── Block source adapter ─────────────────────────────────────────────────
+
+// BlockSourceAdapter fetches fresh data for a BlockInstance from an external
+// source. Implementations must be safe for concurrent use and honour context
+// cancellation.
+//
+// When the source is temporarily unreachable the adapter should return
+// ErrSourceUnavailable. The caller uses this to trigger backoff without
+// marking the block permanently failed.
+type BlockSourceAdapter interface {
+	FetchBlock(ctx context.Context, workID string, block BlockInstance) (BlockRefreshResult, error)
+}
+
+// BlockRefreshResult is the validated output of a BlockSourceAdapter.FetchBlock
+// call. Only Kind, SchemaVersion, Data, Status, Freshness, and Fallback are
+// accepted; Actions, Source, Title, and Tombstone are rejected for refresh
+// because they carry execution/UI intent.
+type BlockRefreshResult struct {
+	Kind          string          `json:"kind"`
+	SchemaVersion int             `json:"schemaVersion"`
+	Data          json.RawMessage `json:"data"`
+	Status        BlockStatus     `json:"status"`
+	Freshness     *BlockFreshness `json:"freshness,omitempty"`
+	Fallback      BlockFallback   `json:"fallback"`
+}
+
+// RefreshBlockInput carries controller-owned request and scheduling context.
+// Source is trusted registration metadata; adapters cannot replace it.
+type RefreshBlockInput struct {
+	WorkID    string
+	BlockID   string
+	RequestID string
+	Source    BlockSource
+	CheckedAt time.Time
+	RetryAt   *time.Time
+}
+
+// ── Clock ─────────────────────────────────────────────────────────────────
+
+// Clock abstracts time for deterministic scheduling tests.
+type Clock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+}
+
+// RealClock delegates to the time package.
+type RealClock struct{}
+
+func (RealClock) Now() time.Time                         { return time.Now() }
+func (RealClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// JitterFunc returns a retry delay in [0, limit]. It is injectable so retry
+// schedules remain deterministic in tests and observable in production.
+type JitterFunc func(limit time.Duration) time.Duration
+
+// FullJitter returns a process-safe random delay in [0, limit].
+func FullJitter(limit time.Duration) time.Duration {
+	if limit <= 0 {
+		return 0
+	}
+	if limit == time.Duration(1<<63-1) {
+		return time.Duration(rand.Int64N(int64(limit)))
+	}
+	return time.Duration(rand.Int64N(int64(limit) + 1))
+}
+
+// ── Backoff ───────────────────────────────────────────────────────────────
+
+// BackoffStrategy computes the delay before the next retry after n consecutive
+// failures. Implementations must be safe for concurrent use.
+type BackoffStrategy interface {
+	// Delay returns the wait duration after n consecutive failures, where n≥1.
+	Delay(n int) time.Duration
+}
+
+// ExponentialBackoff implements capped exponential backoff with full jitter.
+type ExponentialBackoff struct {
+	Base   time.Duration
+	Max    time.Duration
+	Jitter JitterFunc
+}
+
+// NewExponentialBackoff returns a backoff with sensible defaults.
+func NewExponentialBackoff() *ExponentialBackoff {
+	return &ExponentialBackoff{Base: 200 * time.Millisecond, Max: 30 * time.Second, Jitter: FullJitter}
+}
+
+func (b *ExponentialBackoff) Delay(n int) time.Duration {
+	if b == nil || n < 1 {
+		return 0
+	}
+	base := b.Base
+	if base <= 0 {
+		base = 200 * time.Millisecond
+	}
+	maxDelay := b.Max
+	if maxDelay <= 0 {
+		maxDelay = 30 * time.Second
+	}
+	factor := time.Duration(int64(1) << min(n-1, 10))
+	d := maxDelay
+	if base <= maxDelay/factor {
+		d = base * factor
+	}
+	if b.Jitter == nil {
+		return d
+	}
+	jitter := b.Jitter(d)
+	if jitter < 0 {
+		return 0
+	}
+	if jitter > d {
+		return d
+	}
+	return jitter
+}
+
+// ── Refresh schedule ─────────────────────────────────────────────────────
+
+// RefreshSchedule controls how often a block source is polled.
+type RefreshSchedule struct {
+	// Interval is the base polling interval. Zero means no automatic refresh.
+	Interval    time.Duration
+	Backoff     BackoffStrategy
+	MaxFailures int // 0 = unlimited retries
+}
+
+// DefaultRefreshSchedule returns a schedule with a 90-second interval and
+// exponential backoff capped at 30 seconds.
+func DefaultRefreshSchedule() RefreshSchedule {
+	return RefreshSchedule{
+		Interval:    90 * time.Second,
+		Backoff:     NewExponentialBackoff(),
+		MaxFailures: 0,
+	}
+}
+
+// ── Sentinel errors ──────────────────────────────────────────────────────
+
+// ErrSourceUnavailable signals a transient source failure. Callers should
+// back off and retry rather than marking the block permanently failed.
+var ErrSourceUnavailable = errors.New("work: block source is temporarily unavailable")
+
+// ErrBlockNotRefreshable signals that the given block cannot be refreshed
+// (e.g. user-editable blocks that have no source adapter).
+var ErrBlockNotRefreshable = errors.New("work: block is not refreshable")
+
+// ErrBlockRefreshStopped means the Work lifecycle no longer permits refresh.
+var ErrBlockRefreshStopped = errors.New("work: block refresh stopped")
+
+// ErrBlockRefreshFailed identifies an idempotently replayed failed attempt
+// when the original adapter error type is no longer available in memory.
+var ErrBlockRefreshFailed = errors.New("work: block refresh failed")

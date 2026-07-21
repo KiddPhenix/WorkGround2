@@ -178,6 +178,10 @@ type Controller struct {
 	// workViews is the broadcaster that fans out WorkViewEvents to frontend
 	// subscribers. Nil when Work is disabled.
 	workViews *WorkViewBroadcaster
+	// workRefresh and workSources are controller-owned source routing and
+	// scheduling state. They never leak network callbacks into frontend code.
+	workRefresh *work.BlockRefreshManager
+	workSources *workSourceRegistry
 	// actionRoot owns Block Action lifetimes independently from model turns.
 	// Per-request children preserve caller cancellation; Cancel stops all current
 	// foreground work, while Close closes the root and waits for registered
@@ -427,6 +431,12 @@ type Options struct {
 	// subscribers. It must be non-nil when Work is non-nil; boot creates it and
 	// wires it as the Service's ViewSink.
 	WorkViews *WorkViewBroadcaster
+	// WorkBlockSources are trusted source adapters available to this Controller.
+	WorkBlockSources []WorkBlockSource
+	// WorkRefreshClock is injectable for deterministic retry/reconnect tests.
+	WorkRefreshClock work.Clock
+	// WorkOffline starts source scheduling paused while retaining recovery intent.
+	WorkOffline bool
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -507,6 +517,7 @@ func New(opts Options) *Controller {
 		})
 		c.executor.SetMemoryQueue(c)
 	}
+	c.initWorkRefresh(opts.WorkBlockSources, opts.WorkRefreshClock, opts.WorkOffline)
 	return c
 }
 
@@ -4003,6 +4014,9 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 	}
 	c.closeOnce.Do(func() {
 		c.closeBlockActions()
+		if c.workRefresh != nil {
+			_ = c.workRefresh.Close()
+		}
 		c.mu.Lock()
 		started := c.startedOnce
 		c.mu.Unlock()

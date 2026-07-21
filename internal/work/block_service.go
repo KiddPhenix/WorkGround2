@@ -15,6 +15,10 @@ import (
 // Idempotent by requestID; conflicts return the latest WorkView alongside a
 // reason that carries the current block revision and Work revision.
 func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*WorkView, error) {
+	return s.upsertBlock(ctx, input, true)
+}
+
+func (s *Service) upsertBlock(ctx context.Context, input BlockUpsertInput, requireEditable bool) (*WorkView, error) {
 	if err := checkServiceContext(ctx); err != nil {
 		return nil, err
 	}
@@ -83,7 +87,7 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 	if current.ArchiveState != ArchiveActive {
 		return nil, fmt.Errorf("work: UpsertBlock: Work %s is %s", workID, current.ArchiveState)
 	}
-	if !canEditBlocks(current.State) {
+	if requireEditable && !canEditBlocks(current.State) {
 		return nil, fmt.Errorf("work: UpsertBlock: Work %s is in state %s; blocks are immutable", workID, current.State)
 	}
 
@@ -92,7 +96,7 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 	if err := validateBlockSpecMatch(spec, input.Kind, input.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("work: UpsertBlock: %w", err)
 	}
-	if !isUserEditable(spec) {
+	if requireEditable && !isUserEditable(spec) {
 		return nil, fmt.Errorf("work: UpsertBlock: block %s is not user-editable", blockID)
 	}
 
@@ -149,6 +153,29 @@ func (s *Service) UpsertBlock(ctx context.Context, input BlockUpsertInput) (*Wor
 		return nil, committedRecovery("block-upsert-view", workID, requestID, view.Revision, err)
 	}
 	return view, nil
+}
+
+func (s *Service) emitBlockSnapshot(view *WorkView, blockID, requestID string, createdAt time.Time) error {
+	if view == nil || view.Work == nil {
+		return errors.New("work: cannot emit a nil block snapshot")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		return fmt.Errorf("work: encode block WorkView snapshot: %w", err)
+	}
+	s.sink.EmitWorkView(WorkViewEvent{
+		SchemaVersion: WorkViewSchemaVersion,
+		Type:          ViewSnapshot,
+		WorkID:        view.Work.ID,
+		EventID:       fmt.Sprintf("work-view-%s-%d", view.Work.ID, view.Revision),
+		Revision:      view.Revision,
+		BaseRevision:  0,
+		RequestID:     requestID,
+		Object:        ObjectContext{Kind: ObjectBlock, ID: blockID, ParentID: view.Work.ID},
+		Payload:       payload,
+		CreatedAt:     createdAt,
+	})
+	return nil
 }
 
 // ── RemoveBlock ─────────────────────────────────────────────────────────────
@@ -583,3 +610,383 @@ func (s *Service) reconcilePlacementCommit(
 		input.ExpectedRevision, state.Revision, true, cause,
 	)
 }
+
+// ── RefreshBlock ────────────────────────────────────────────────────────────
+
+const (
+	BlockInlineMaxBytes = 64 * 1024
+	blockErrorMaxBytes  = 1024
+)
+
+// RefreshBlock fetches one source snapshot and persists either its validated
+// result or an observable stale/failed state through block.upserted. The
+// request, source and retry timestamps are controller-owned context.
+func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, adapter BlockSourceAdapter) (*BlockInstance, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("RefreshBlock", input.RequestID)
+	if err != nil {
+		return nil, err
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.BlockID = strings.TrimSpace(input.BlockID)
+	if input.WorkID == "" || input.BlockID == "" {
+		return nil, errors.New("work: RefreshBlock: workID and blockID are required")
+	}
+	if adapter == nil {
+		return nil, errors.New("work: RefreshBlock: BlockSourceAdapter is required")
+	}
+	if input.CheckedAt.IsZero() {
+		input.CheckedAt = time.Now().UTC()
+	} else {
+		input.CheckedAt = input.CheckedAt.UTC()
+	}
+	if input.RetryAt != nil {
+		retryAt := input.RetryAt.UTC()
+		input.RetryAt = &retryAt
+	}
+	input.RequestID = requestID
+	eventRequestID := requestID + "/block-refresh/" + input.BlockID
+
+	current, state, err := s.store.LoadState(input.WorkID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireWritableBlockSchemas(current); err != nil {
+		return nil, fmt.Errorf("work: RefreshBlock: %w", err)
+	}
+	if current.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("%w: Work %s is %s", ErrBlockRefreshStopped, input.WorkID, current.ArchiveState)
+	}
+	currentBlock := findBlock(current, input.BlockID)
+	if currentBlock == nil || currentBlock.Tombstone {
+		return nil, fmt.Errorf("%w: block %s not found or removed in Work %s", ErrBlockRefreshStopped, input.BlockID, input.WorkID)
+	}
+	if state.RequestFound {
+		block := cloneBlock(currentBlock)
+		if block.Freshness != nil && block.Freshness.StaleReason != "" &&
+			(block.Status == BlockStale || block.Status == BlockFailed) {
+			replayErr := fmt.Errorf("%w: %s", ErrBlockRefreshFailed, block.Freshness.StaleReason)
+			if block.Status == BlockStale {
+				replayErr = errors.Join(replayErr, ErrSourceUnavailable)
+			}
+			return block, replayErr
+		}
+		return block, nil
+	}
+
+	result, sourceErr := adapter.FetchBlock(ctx, input.WorkID, *cloneBlock(currentBlock))
+	if sourceErr != nil && (errors.Is(sourceErr, context.Canceled) || errors.Is(sourceErr, context.DeadlineExceeded)) {
+		return nil, sourceErr
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if sourceErr == nil {
+		sourceErr = validateRefreshResult(currentBlock, result)
+	}
+	next := cloneBlock(currentBlock)
+	next.Revision++
+	next.UpdatedAt = input.CheckedAt
+	if sourceErr == nil {
+		next.Status = result.Status
+		next.Data = append(json.RawMessage(nil), result.Data...)
+		next.Source = normalizeRefreshSource(input.Source)
+		next.Freshness = &BlockFreshness{CheckedAt: timePtr(input.CheckedAt)}
+		if result.Freshness != nil && result.Freshness.ExpiresAt != nil {
+			expiresAt := result.Freshness.ExpiresAt.UTC()
+			next.Freshness.ExpiresAt = &expiresAt
+		}
+		next.Fallback = cloneBlockFallback(result.Fallback)
+	} else {
+		next.Status = BlockFailed
+		if errors.Is(sourceErr, ErrSourceUnavailable) && len(currentBlock.Data) > 0 && currentBlock.Status != BlockLoading && currentBlock.Status != BlockFailed {
+			next.Status = BlockStale
+		}
+		next.Freshness = &BlockFreshness{
+			CheckedAt:   timePtr(input.CheckedAt),
+			RetryAt:     input.RetryAt,
+			StaleReason: clipBlockError(sourceErr.Error()),
+		}
+	}
+
+	committed, commitErr := s.commitRefreshedBlock(ctx, current, state, next, eventRequestID, requestID)
+	if commitErr != nil {
+		if sourceErr != nil {
+			return committed, errors.Join(fmt.Errorf("work: RefreshBlock: source: %w", sourceErr), commitErr)
+		}
+		return committed, commitErr
+	}
+	if sourceErr != nil {
+		return committed, fmt.Errorf("work: RefreshBlock: source: %w", sourceErr)
+	}
+	return committed, nil
+}
+
+// CancelBlockRefresh persists removal of the polling intent by clearing
+// Freshness. Reopen recovery therefore cannot resurrect an explicitly canceled
+// subscription. The current data and status remain available to the user.
+func (s *Service) CancelBlockRefresh(ctx context.Context, workID, blockID, requestID string) (*BlockInstance, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("CancelBlockRefresh", requestID)
+	if err != nil {
+		return nil, err
+	}
+	workID, blockID = strings.TrimSpace(workID), strings.TrimSpace(blockID)
+	if workID == "" || blockID == "" {
+		return nil, errors.New("work: CancelBlockRefresh: workID and blockID are required")
+	}
+	eventRequestID := requestID + "/block-refresh-cancel/" + blockID
+	current, state, err := s.store.LoadState(workID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	block := findBlock(current, blockID)
+	if block == nil || block.Tombstone {
+		return nil, fmt.Errorf("%w: block %s not found or removed", ErrBlockRefreshStopped, blockID)
+	}
+	if state.RequestFound || block.Freshness == nil {
+		return cloneBlock(block), nil
+	}
+	if current.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("%w: Work %s is %s", ErrBlockRefreshStopped, workID, current.ArchiveState)
+	}
+	next := cloneBlock(block)
+	next.Revision++
+	next.Freshness = nil
+	next.UpdatedAt = time.Now().UTC()
+	return s.commitRefreshedBlock(ctx, current, state, next, eventRequestID, requestID)
+}
+
+func (s *Service) commitRefreshedBlock(ctx context.Context, current *Work, state WorkEventState, next *BlockInstance, eventRequestID, requestID string) (*BlockInstance, error) {
+	if err := validateBlockSpecMatch(blockSpecForWork(current, next.ID), next.Kind, next.SchemaVersion); err != nil {
+		return nil, fmt.Errorf("work: RefreshBlock: %w", err)
+	}
+	payload, err := json.Marshal(next)
+	if err != nil {
+		return nil, fmt.Errorf("work: RefreshBlock: encode block: %w", err)
+	}
+	event := newServiceEvent(current.ID, eventRequestID, EventBlockUpserted, payload, next.UpdatedAt)
+	event.BaseRevision = state.Revision
+	event.Revision = state.Revision + 1
+	if _, err := s.store.CommitEvent(current.ID, event); err != nil {
+		view, conflictErr := s.latestBlockConflict(current.ID, next.ID, next.Revision, state.Revision, err, true)
+		if view != nil && view.Work != nil {
+			return cloneBlock(findBlock(view.Work, next.ID)), conflictErr
+		}
+		return nil, conflictErr
+	}
+	view, err := s.loadView(current.ID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.emitBlockSnapshot(view, next.ID, requestID, next.UpdatedAt); err != nil {
+		return cloneBlock(findBlock(view.Work, next.ID)), committedRecovery("block-refresh-view", current.ID, requestID, view.Revision, err)
+	}
+	return cloneBlock(findBlock(view.Work, next.ID)), nil
+}
+
+// validateRefreshResult rejects over-sized, wrong-schema and UI/execution
+// shaped adapter data before it can enter the persisted projection.
+func validateRefreshResult(block *BlockInstance, result BlockRefreshResult) error {
+	if result.Kind != block.Kind {
+		return fmt.Errorf("adapter returned kind %q, block expects %q", result.Kind, block.Kind)
+	}
+	if result.SchemaVersion != block.SchemaVersion {
+		return fmt.Errorf("adapter returned schemaVersion %d, block expects %d", result.SchemaVersion, block.SchemaVersion)
+	}
+	if !coreBlockKinds[result.Kind] {
+		return fmt.Errorf("adapter returned unknown block kind %q", result.Kind)
+	}
+	if err := CheckSchemaVersion("BlockInstance", result.SchemaVersion); err != nil {
+		return err
+	}
+	if !validBlockStatus(result.Status) {
+		return fmt.Errorf("adapter returned invalid status %q", result.Status)
+	}
+	if len(result.Data) == 0 || len(result.Data) > BlockInlineMaxBytes {
+		return fmt.Errorf("adapter data size %d is outside 1..%d bytes", len(result.Data), BlockInlineMaxBytes)
+	}
+	if len(result.Fallback.Data) > BlockInlineMaxBytes || len(result.Fallback.Summary) > 4096 {
+		return errors.New("adapter fallback exceeds the safe inline limit")
+	}
+	var data map[string]any
+	if err := json.Unmarshal(result.Data, &data); err != nil || data == nil {
+		return errors.New("adapter data must be a JSON object")
+	}
+	if err := rejectRefreshInjection(data, "data"); err != nil {
+		return err
+	}
+	if len(result.Fallback.Data) > 0 {
+		var fallback any
+		if err := json.Unmarshal(result.Fallback.Data, &fallback); err != nil {
+			return errors.New("adapter fallback data is invalid JSON")
+		}
+		if err := rejectRefreshInjection(fallback, "fallback.data"); err != nil {
+			return err
+		}
+	}
+	return validateCoreBlockData(result.Kind, data)
+}
+
+var forbiddenRefreshKeys = map[string]bool{
+	"action": true, "actions": true, "command": true, "component": true,
+	"css": true, "exec": true, "executable": true, "html": true,
+	"intent": true, "react": true, "renderer": true, "script": true, "style": true,
+}
+
+func rejectRefreshInjection(value any, path string) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			if forbiddenRefreshKeys[strings.ToLower(strings.TrimSpace(key))] {
+				return fmt.Errorf("adapter data contains forbidden UI/execution field %s.%s", path, key)
+			}
+			if err := rejectRefreshInjection(child, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for i, child := range typed {
+			if err := rejectRefreshInjection(child, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCoreBlockData(kind string, data map[string]any) error {
+	requireString := func(key string) error {
+		if _, ok := data[key].(string); !ok {
+			return fmt.Errorf("adapter %s data requires string %q", kind, key)
+		}
+		return nil
+	}
+	requireArray := func(key string) error {
+		if _, ok := data[key].([]any); !ok {
+			return fmt.Errorf("adapter %s data requires array %q", kind, key)
+		}
+		return nil
+	}
+	switch kind {
+	case "markdown", "notice":
+		return requireString("content")
+	case "code":
+		return requireString("content")
+	case "graph":
+		if data["format"] != "mermaid" {
+			return errors.New("adapter graph data requires format=mermaid")
+		}
+		return requireString("source")
+	case "item", "list", "checklist", "file_list", "status", "key_value", "progress", "timeline":
+		key := "items"
+		if kind == "file_list" {
+			key = "files"
+		}
+		return requireArray(key)
+	case "git_status":
+		if err := requireString("branch"); err != nil {
+			return err
+		}
+		return requireArray("changes")
+	case "table":
+		if err := requireArray("columns"); err != nil {
+			return err
+		}
+		return requireArray("rows")
+	case "chart":
+		typ, ok := data["type"].(string)
+		if !ok || (typ != "bar" && typ != "line" && typ != "pie") {
+			return errors.New("adapter chart data requires type bar, line, or pie")
+		}
+		return requireArray("series")
+	case "artifact":
+		return requireString("artifactRef")
+	case "action_entry":
+		return requireString("description")
+	case "decision", "approval", "input":
+		return nil
+	default:
+		return fmt.Errorf("adapter returned unsupported core block kind %q", kind)
+	}
+}
+
+func normalizeRefreshSource(source BlockSource) BlockSource {
+	source.Provider = strings.TrimSpace(source.Provider)
+	source.Ref = strings.TrimSpace(source.Ref)
+	source.Mode = strings.TrimSpace(source.Mode)
+	if source.Provider == "" {
+		source.Provider = "controller"
+	}
+	if source.Mode == "" {
+		source.Mode = "snapshot"
+	}
+	source.Verified = true
+	return source
+}
+
+func findBlock(value *Work, blockID string) *BlockInstance {
+	if value == nil {
+		return nil
+	}
+	for i := range value.Blocks {
+		if value.Blocks[i].ID == blockID {
+			return &value.Blocks[i]
+		}
+	}
+	return nil
+}
+
+func cloneBlock(value *BlockInstance) *BlockInstance {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Data = append(json.RawMessage(nil), value.Data...)
+	clone.Actions = append([]BlockActionSpec(nil), value.Actions...)
+	for i := range clone.Actions {
+		clone.Actions[i].Payload = append(json.RawMessage(nil), value.Actions[i].Payload...)
+	}
+	clone.Fallback = cloneBlockFallback(value.Fallback)
+	if value.Freshness != nil {
+		freshness := *value.Freshness
+		if value.Freshness.CheckedAt != nil {
+			checkedAt := *value.Freshness.CheckedAt
+			freshness.CheckedAt = &checkedAt
+		}
+		if value.Freshness.ExpiresAt != nil {
+			expiresAt := *value.Freshness.ExpiresAt
+			freshness.ExpiresAt = &expiresAt
+		}
+		if value.Freshness.RetryAt != nil {
+			retryAt := *value.Freshness.RetryAt
+			freshness.RetryAt = &retryAt
+		}
+		clone.Freshness = &freshness
+	}
+	return &clone
+}
+
+func cloneBlockFallback(value BlockFallback) BlockFallback {
+	value.Data = append(json.RawMessage(nil), value.Data...)
+	return value
+}
+
+func clipBlockError(value string) string {
+	if len(value) <= blockErrorMaxBytes {
+		return value
+	}
+	return value[:blockErrorMaxBytes]
+}
+
+func timePtr(value time.Time) *time.Time { return &value }
