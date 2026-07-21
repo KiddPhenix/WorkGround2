@@ -232,7 +232,23 @@ func (c *Controller) advanceWorkRefreshLocked(workID string) uint64 {
 	}
 	workID = strings.TrimSpace(workID)
 	c.workRefreshGen[workID]++
+	delete(c.workRefreshStops, workID)
 	return c.workRefreshGen[workID]
+}
+
+func (c *Controller) beginWorkRefreshStopLocked(workID string) uint64 {
+	workID = strings.TrimSpace(workID)
+	generation := c.advanceWorkRefreshLocked(workID)
+	if c.workRefreshStops == nil {
+		c.workRefreshStops = make(map[string]uint64)
+	}
+	c.workRefreshStops[workID] = generation
+	return generation
+}
+
+func (c *Controller) workRefreshStopPendingLocked(workID string, generation uint64) bool {
+	pending, ok := c.workRefreshStops[strings.TrimSpace(workID)]
+	return ok && pending == generation
 }
 
 // recoverWorkRefreshView performs the final persisted-state check and the
@@ -244,7 +260,7 @@ func (c *Controller) recoverWorkRefreshView(ctx context.Context, captured *work.
 	workID := strings.TrimSpace(captured.Work.ID)
 	c.workRefreshLifeMu.Lock()
 	defer c.workRefreshLifeMu.Unlock()
-	if c.workRefreshGen[workID] != generation {
+	if c.workRefreshGen[workID] != generation || c.workRefreshStopPendingLocked(workID, generation) {
 		return nil
 	}
 	current, err := c.workSvc.Get(ctx, workID)
@@ -254,7 +270,8 @@ func (c *Controller) recoverWorkRefreshView(ctx context.Context, captured *work.
 	if err != nil {
 		return err
 	}
-	if current == nil || current.Work == nil || current.Work.ArchiveState != work.ArchiveActive || c.workRefreshGen[workID] != generation {
+	if current == nil || current.Work == nil || current.Work.ArchiveState != work.ArchiveActive ||
+		c.workRefreshGen[workID] != generation || c.workRefreshStopPendingLocked(workID, generation) {
 		return nil
 	}
 	return c.workRefresh.RecoverFromProjection(current, c.workSources.resolve)
@@ -268,21 +285,30 @@ func (c *Controller) SetWorkOnline(online bool) {
 	}
 }
 
-// CancelBlockRefresh persists removal of one polling intent before stopping its
-// loop. The request is idempotent and safe to retry after a partial failure.
+// CancelBlockRefresh stops the current owner before persisting intent removal.
+// The request is idempotent and safe to retry after a partial failure.
 func (c *Controller) CancelBlockRefresh(ctx context.Context, workID, blockID, requestID string) error {
 	if c == nil || nilutil.IsNil(c.workSvc) {
 		return errWorkDisabled
 	}
 	c.workRefreshLifeMu.Lock()
-	_, err := c.workSvc.CancelBlockRefresh(ctx, workID, blockID, requestID)
-	if err == nil {
-		c.advanceWorkRefreshLocked(workID)
+	generation := c.beginWorkRefreshStopLocked(workID)
+	var done <-chan struct{}
+	if c.workRefresh != nil {
+		done = c.workRefresh.BeginUnsubscribe(workID, blockID)
 	}
 	c.workRefreshLifeMu.Unlock()
-	if err == nil && c.workRefresh != nil {
-		c.workRefresh.Unsubscribe(workID, blockID)
+	if done != nil {
+		<-done
 	}
+	c.workRefreshLifeMu.Lock()
+	if c.workRefreshGen[strings.TrimSpace(workID)] != generation || !c.workRefreshStopPendingLocked(workID, generation) {
+		c.workRefreshLifeMu.Unlock()
+		return work.ErrBlockRefreshStopped
+	}
+	_, err := c.workSvc.CancelBlockRefresh(ctx, workID, blockID, requestID)
+	delete(c.workRefreshStops, strings.TrimSpace(workID))
+	c.workRefreshLifeMu.Unlock()
 	return err
 }
 

@@ -32,6 +32,34 @@ type BlockRefreshState struct {
 // BlockSourceResolver resolves trusted source metadata and policy for a block.
 type BlockSourceResolver func(BlockInstance) (BlockSourceAdapter, BlockSource, RefreshSchedule, bool)
 
+// refreshTrigger is internal scheduling context. Request IDs are deliberately
+// absent: they identify an attempt for persistence but never decide whether or
+// when another adapter call is allowed.
+type refreshTrigger uint8
+
+const (
+	refreshTriggerManual refreshTrigger = iota + 1
+	refreshTriggerSchedule
+	refreshTriggerReconnect
+	refreshTriggerRecover
+	refreshTriggerRetry
+)
+
+func (trigger refreshTrigger) requestPrefix() string {
+	switch trigger {
+	case refreshTriggerManual:
+		return "manual"
+	case refreshTriggerReconnect:
+		return "reconnect"
+	case refreshTriggerRecover:
+		return "recover"
+	case refreshTriggerRetry:
+		return "retry"
+	default:
+		return "auto"
+	}
+}
+
 // BlockRefreshManager runs controller-owned polling with one goroutine and at
 // most one in-flight fetch per work/block key.
 type BlockRefreshManager struct {
@@ -47,7 +75,8 @@ type BlockRefreshManager struct {
 	online    bool
 	closed    bool
 	closeDone chan struct{}
-	wg        sync.WaitGroup
+	loopWG    sync.WaitGroup
+	flightWG  sync.WaitGroup
 }
 
 type refreshFlight struct {
@@ -58,19 +87,20 @@ type refreshFlight struct {
 }
 
 type refreshSub struct {
-	workID     string
-	blockID    string
-	adapter    BlockSourceAdapter
-	source     BlockSource
-	schedule   RefreshSchedule
-	failures   int
-	nextDelay  time.Duration
-	retryAt    *time.Time
-	lastError  string
-	wake       chan struct{}
-	loopCtx    context.Context
-	loopCancel context.CancelFunc
-	loopGen    uint64
+	workID      string
+	blockID     string
+	adapter     BlockSourceAdapter
+	source      BlockSource
+	schedule    RefreshSchedule
+	failures    int
+	nextDelay   time.Duration
+	nextTrigger refreshTrigger
+	retryAt     *time.Time
+	lastError   string
+	wake        chan struct{}
+	loopCtx     context.Context
+	loopCancel  context.CancelFunc
+	loopGen     uint64
 }
 
 func subKey(workID, blockID string) string { return workID + "/" + blockID }
@@ -90,12 +120,16 @@ func NewBlockRefreshManager(svc BlockRefreshService, clock Clock) *BlockRefreshM
 // Subscribe registers one intent. Positive intervals perform the first refresh
 // immediately; a zero interval is manual-only and creates no automatic loop.
 func (m *BlockRefreshManager) Subscribe(workID, blockID string, adapter BlockSourceAdapter, schedule RefreshSchedule) error {
-	return m.SubscribeAfter(workID, blockID, adapter, BlockSource{}, schedule, 0)
+	return m.subscribeAfter(workID, blockID, adapter, BlockSource{}, schedule, 0, refreshTriggerSchedule)
 }
 
 // SubscribeAfter registers one intent with trusted source metadata and an
 // initial delay. It is used after a manual refresh and during reopen recovery.
 func (m *BlockRefreshManager) SubscribeAfter(workID, blockID string, adapter BlockSourceAdapter, source BlockSource, schedule RefreshSchedule, delay time.Duration) error {
+	return m.subscribeAfter(workID, blockID, adapter, source, schedule, delay, refreshTriggerSchedule)
+}
+
+func (m *BlockRefreshManager) subscribeAfter(workID, blockID string, adapter BlockSourceAdapter, source BlockSource, schedule RefreshSchedule, delay time.Duration, trigger refreshTrigger) error {
 	if m == nil {
 		return errors.New("work: BlockRefreshManager is nil")
 	}
@@ -137,9 +171,10 @@ func (m *BlockRefreshManager) SubscribeAfter(workID, blockID string, adapter Blo
 			existing.loopCancel()
 			existing.loopCtx, existing.loopCancel = context.WithCancel(m.ctx)
 			existing.nextDelay = delay
+			existing.nextTrigger = trigger
 			if isAutomatic {
 				startSub, startCtx, startGen = existing, existing.loopCtx, existing.loopGen
-				m.wg.Add(1)
+				m.loopWG.Add(1)
 			}
 		}
 		m.mu.Unlock()
@@ -152,12 +187,12 @@ func (m *BlockRefreshManager) SubscribeAfter(workID, blockID string, adapter Blo
 	sub := &refreshSub{
 		workID: workID, blockID: blockID, adapter: adapter,
 		source: normalizeRefreshSource(source), schedule: schedule,
-		nextDelay: delay, wake: make(chan struct{}, 1), loopCtx: ctx, loopCancel: cancel, loopGen: 1,
+		nextDelay: delay, nextTrigger: trigger, wake: make(chan struct{}, 1), loopCtx: ctx, loopCancel: cancel, loopGen: 1,
 	}
 	m.subs[key] = sub
 	if schedule.Interval > 0 {
 		startSub, startCtx, startGen = sub, ctx, sub.loopGen
-		m.wg.Add(1)
+		m.loopWG.Add(1)
 	}
 	m.mu.Unlock()
 	if startSub != nil {
@@ -171,10 +206,24 @@ func (m *BlockRefreshManager) Unsubscribe(workID, blockID string) {
 	if m == nil {
 		return
 	}
-	m.unsubscribeKey(subKey(workID, blockID), true)
+	done := m.BeginUnsubscribe(workID, blockID)
+	if done != nil {
+		<-done
+	}
 }
 
-func (m *BlockRefreshManager) unsubscribeKey(key string, wait bool) {
+// BeginUnsubscribe atomically removes one intent and cancels its current owner
+// flight, returning the stable-receipt barrier. Controller lifecycle code uses
+// the two phases to persist cancellation without holding its lock while an
+// adapter that ignores context finishes.
+func (m *BlockRefreshManager) BeginUnsubscribe(workID, blockID string) <-chan struct{} {
+	if m == nil {
+		return nil
+	}
+	return m.unsubscribeKey(subKey(workID, blockID))
+}
+
+func (m *BlockRefreshManager) unsubscribeKey(key string) <-chan struct{} {
 	var done <-chan struct{}
 	m.mu.Lock()
 	sub := m.subs[key]
@@ -187,9 +236,7 @@ func (m *BlockRefreshManager) unsubscribeKey(key string, wait bool) {
 		done = flight.done
 	}
 	m.mu.Unlock()
-	if wait && done != nil {
-		<-done
-	}
+	return done
 }
 
 // UnsubscribeWork cancels every intent owned by one Work.
@@ -235,19 +282,18 @@ func (m *BlockRefreshManager) RefreshRequest(ctx context.Context, workID, blockI
 	m.mu.Lock()
 	_, exists := m.subs[key]
 	online := m.online
+	closed := m.closed
 	m.mu.Unlock()
+	if closed {
+		return nil, ErrBlockRefreshStopped
+	}
 	if !exists {
 		return nil, fmt.Errorf("work: block %s/%s is not subscribed", workID, blockID)
 	}
 	if !online {
-		return m.persistOffline(ctx, key, requestID)
+		return m.persistOffline(ctx, key, requestID, refreshTriggerManual)
 	}
-	explicit := strings.TrimSpace(requestID) != ""
-	block, err := m.runRefresh(ctx, key, requestID)
-	if err != nil && !explicit && m.Online() {
-		block, err = m.runRefresh(ctx, key, "")
-	}
-	return block, err
+	return m.runRefresh(ctx, key, requestID, refreshTriggerManual)
 }
 
 type offlineBlockSource struct{}
@@ -256,7 +302,7 @@ func (offlineBlockSource) FetchBlock(context.Context, string, BlockInstance) (Bl
 	return BlockRefreshResult{}, ErrSourceUnavailable
 }
 
-func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID string) (block *BlockInstance, err error) {
+func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID string, trigger refreshTrigger) (block *BlockInstance, err error) {
 	if m == nil || nilutil.IsNil(m.svc) {
 		return nil, errors.New("work: block refresh service is unavailable")
 	}
@@ -268,17 +314,22 @@ func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-done:
-			return m.persistOffline(ctx, key, requestID)
+			return cloneBlock(flight.block), flight.err
 		}
 	}
 	sub := m.subs[key]
-	if sub == nil || m.closed {
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrBlockRefreshStopped
+	}
+	if sub == nil {
 		m.mu.Unlock()
 		return nil, ErrBlockNotRefreshable
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)
 	flight := &refreshFlight{cancel: cancel, done: make(chan struct{})}
 	m.inflight[key] = flight
+	m.flightWG.Add(1)
 	failureAttempt := sub.failures + 1
 	source, schedule, workID, blockID := sub.source, sub.schedule, sub.workID, sub.blockID
 	m.mu.Unlock()
@@ -290,12 +341,13 @@ func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID
 		delete(m.inflight, key)
 		close(flight.done)
 		m.mu.Unlock()
+		m.flightWG.Done()
 	}()
 	now := m.clock.Now().UTC()
 	delay := schedule.Backoff.Delay(failureAttempt)
 	retryAt := now.Add(delay)
 	if strings.TrimSpace(requestID) == "" {
-		requestID = fmt.Sprintf("offline-block-refresh/%s/%d/%d", key, now.UnixNano(), m.seq.Add(1))
+		requestID = fmt.Sprintf("%s-offline-block-refresh/%s/%d/%d", trigger.requestPrefix(), key, now.UnixNano(), m.seq.Add(1))
 	}
 	block, err = m.svc.RefreshBlock(attemptCtx, RefreshBlockInput{
 		WorkID: workID, BlockID: blockID, RequestID: requestID,
@@ -303,7 +355,7 @@ func (m *BlockRefreshManager) persistOffline(ctx context.Context, key, requestID
 	}, offlineBlockSource{})
 	if err != nil {
 		if isTerminalRefreshError(err) {
-			m.unsubscribeKey(key, false)
+			m.unsubscribeKey(key)
 			return block, err
 		}
 		m.finishOfflineAttempt(key, err, delay, &retryAt)
@@ -322,9 +374,10 @@ func (m *BlockRefreshManager) finishOfflineAttempt(key string, err error, delay 
 	sub.lastError = clipBlockError(err.Error())
 	sub.retryAt = cloneTimePtr(retryAt)
 	sub.nextDelay = delay
-	if m.online {
+	if m.online && sub.schedule.Interval > 0 {
 		sub.nextDelay = 0
 		sub.retryAt = nil
+		sub.nextTrigger = refreshTriggerReconnect
 		signalRefresh(sub.wake)
 	}
 	m.mu.Unlock()
@@ -351,6 +404,7 @@ func (m *BlockRefreshManager) SetOnline(online bool) {
 		} else if sub.schedule.Interval > 0 {
 			sub.nextDelay = 0
 			sub.retryAt = nil
+			sub.nextTrigger = refreshTriggerReconnect
 		}
 		if sub.schedule.Interval > 0 {
 			signalRefresh(sub.wake)
@@ -428,15 +482,16 @@ func (m *BlockRefreshManager) Close() error {
 	}
 	m.subs = make(map[string]*refreshSub)
 	m.mu.Unlock()
-	m.wg.Wait()
+	m.flightWG.Wait()
+	m.loopWG.Wait()
 	close(m.closeDone)
 	return nil
 }
 
 func (m *BlockRefreshManager) loop(key string, sub *refreshSub, loopCtx context.Context, loopGen uint64) {
-	defer m.wg.Done()
+	defer m.loopWG.Done()
 	for {
-		delay, online, ok := m.nextWait(key, sub, loopGen)
+		delay, online, trigger, ok := m.nextWait(key, sub, loopGen)
 		if !ok {
 			return
 		}
@@ -457,28 +512,34 @@ func (m *BlockRefreshManager) loop(key string, sub *refreshSub, loopCtx context.
 			case <-m.clock.After(delay):
 			}
 		}
-		_, _ = m.runRefresh(loopCtx, key, "")
+		_, _ = m.runRefresh(loopCtx, key, "", trigger)
 	}
 }
 
-func (m *BlockRefreshManager) nextWait(key string, expected *refreshSub, loopGen uint64) (time.Duration, bool, bool) {
+func (m *BlockRefreshManager) nextWait(key string, expected *refreshSub, loopGen uint64) (time.Duration, bool, refreshTrigger, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	sub := m.subs[key]
 	if sub == nil || sub != expected || sub.loopGen != loopGen || sub.schedule.Interval <= 0 || m.closed {
-		return 0, false, false
+		return 0, false, 0, false
 	}
 	delay := sub.nextDelay
+	trigger := sub.nextTrigger
 	sub.nextDelay = sub.schedule.Interval
-	return delay, m.online, true
+	sub.nextTrigger = refreshTriggerSchedule
+	return delay, m.online, trigger, true
 }
 
-func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID string) (*BlockInstance, error) {
+func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID string, trigger refreshTrigger) (*BlockInstance, error) {
 	if m == nil || nilutil.IsNil(m.svc) {
 		return nil, errors.New("work: block refresh service is unavailable")
 	}
 	m.mu.Lock()
-	if m.closed || !m.online {
+	if m.closed {
+		m.mu.Unlock()
+		return nil, ErrBlockRefreshStopped
+	}
+	if !m.online {
 		m.mu.Unlock()
 		return nil, ErrSourceUnavailable
 	}
@@ -505,6 +566,7 @@ func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID 
 	attemptCtx, cancel := context.WithCancel(parent)
 	flight := &refreshFlight{cancel: cancel, done: make(chan struct{})}
 	m.inflight[key] = flight
+	m.flightWG.Add(1)
 	failureAttempt := sub.failures + 1
 	m.mu.Unlock()
 
@@ -518,12 +580,13 @@ func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID 
 		delete(m.inflight, key)
 		close(flight.done)
 		m.mu.Unlock()
+		m.flightWG.Done()
 	}()
 	now := m.clock.Now().UTC()
 	delay := schedule.Backoff.Delay(failureAttempt)
 	retryAt := now.Add(delay)
 	if strings.TrimSpace(requestID) == "" {
-		requestID = fmt.Sprintf("auto-block-refresh/%s/%d/%d", key, now.UnixNano(), m.seq.Add(1))
+		requestID = fmt.Sprintf("%s-block-refresh/%s/%d/%d", trigger.requestPrefix(), key, now.UnixNano(), m.seq.Add(1))
 	}
 	block, err = m.svc.RefreshBlock(attemptCtx, RefreshBlockInput{
 		WorkID: sub.workID, BlockID: sub.blockID, RequestID: requestID,
@@ -537,7 +600,7 @@ func (m *BlockRefreshManager) runRefresh(parent context.Context, key, requestID 
 		return block, err
 	}
 	if isTerminalRefreshError(err) {
-		m.unsubscribeKey(key, false)
+		m.unsubscribeKey(key)
 		return block, err
 	}
 	if errors.Is(err, ErrBlockRefreshFailed) {
@@ -557,14 +620,17 @@ func (m *BlockRefreshManager) finishAttempt(key string, err error, delay time.Du
 	if err == nil {
 		sub.failures, sub.lastError, sub.retryAt = 0, "", nil
 		sub.nextDelay = sub.schedule.Interval
+		sub.nextTrigger = refreshTriggerSchedule
 		return
 	}
 	sub.failures++
 	sub.lastError = clipBlockError(err.Error())
 	sub.retryAt = cloneTimePtr(retryAt)
 	sub.nextDelay = delay
+	sub.nextTrigger = refreshTriggerRetry
 	if sub.schedule.MaxFailures > 0 && sub.failures >= sub.schedule.MaxFailures {
 		sub.nextDelay = sub.schedule.Interval
+		sub.nextTrigger = refreshTriggerSchedule
 	}
 }
 
@@ -588,7 +654,7 @@ func (m *BlockRefreshManager) RecoverFromProjection(view *WorkView, resolve Bloc
 		if block.Freshness.RetryAt != nil && block.Freshness.RetryAt.After(m.clock.Now()) {
 			delay = block.Freshness.RetryAt.Sub(m.clock.Now())
 		}
-		if err := m.SubscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay); err != nil {
+		if err := m.subscribeAfter(view.Work.ID, block.ID, adapter, source, schedule, delay, refreshTriggerRecover); err != nil {
 			recoverErr = errors.Join(recoverErr, err)
 		}
 	}
