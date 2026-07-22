@@ -18,6 +18,7 @@ import type {
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  ResumeRunInput,
   RetryTaskInput,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
@@ -53,6 +54,7 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   writeUIPreference: (workID: string, preference: WorkUIPreference) => Promise<void>;
   retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
   runWork?: (input: { workId: string; requestId: string }) => Promise<WorkflowRun>;
+  resumeRun?: (input: ResumeRunInput) => Promise<WorkflowRun>;
 }
 
 export type WorkStreamHealth =
@@ -374,6 +376,11 @@ export class WorkControllerAdapter {
     return this.port.runWork(input);
   };
 
+  resumeRun = (input: ResumeRunInput): Promise<WorkflowRun> => {
+    if (!this.port.resumeRun) return Promise.reject(new Error('Work 继续运行能力尚未连接。'));
+    return this.port.resumeRun(input);
+  };
+
   clearErrors = (workID: string): void => {
     this.updateStatus(workID, { snapshotError: null, preferenceError: null, eventError: null });
   };
@@ -439,6 +446,7 @@ export interface WorkController {
   setActiveFace: (workID: string, activeFace: WorkFace) => Promise<void>;
   retryTask: (input: RetryTaskInput) => Promise<Attempt>;
   clearErrors: (workID: string) => void;
+  resumeRun: (input: ResumeRunInput) => Promise<WorkflowRun>;
 }
 
 export function useWorkController(port: WorkControllerPort): WorkController {
@@ -460,5 +468,6 @@ export function useWorkController(port: WorkControllerPort): WorkController {
     setActiveFace: adapter.setActiveFace,
     retryTask: adapter.retryTask,
     clearErrors: adapter.clearErrors,
+    resumeRun: adapter.resumeRun,
   };
 }

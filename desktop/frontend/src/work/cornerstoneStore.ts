@@ -10,7 +10,8 @@ import type {
   CornerstoneType,
   CornerstoneUIAction,
   CornerstoneUIState,
-  Work,
+  RunBlockCode,
+  WorkView,
 } from './types';
 
 const emptyDrawer = (): CornerstoneDrawerUI => ({
@@ -105,30 +106,53 @@ export const useCornerstoneUIStore = create<CornerstoneUIState & CornerstoneUISt
   clearAll: () => set({ byWork: {} }),
 }));
 
-function attentionReason(cornerstone: Cornerstone): string {
-  // candidateDigest present means a stale live_ref has been resolved and is waiting for accept.
-  if (cornerstone.candidateDigest) return '来源内容已变化，请审核新版本后确认或冻结。';
-  switch (cornerstone.status) {
-    case 'stale': return '来源版本已变化，需要确认。';
-    case 'missing': return '来源不可达，需要修复引用。';
-    case 'denied': return '来源权限不足。';
-    case 'invalid': return '内容或引用无效。';
-    default: return '需要处理。';
+const RUN_BLOCK_REASONS: Record<RunBlockCode, string> = {
+  blob_missing: '快照内容缺失，请提供匹配 digest 的原始内容。',
+  budget_exhausted: 'Token 预算已耗尽。',
+  resolver_unavailable: '来源解析器不可用。',
+  cornerstone_stale: '基石来源已变化，请审核后确认。',
+  cornerstone_missing: '基石来源不可达，请修复引用。',
+  cornerstone_denied: '基石来源权限不足。',
+  cornerstone_invalid: '基石内容或引用无效，请修复。',
+  waiting_user: '等待用户操作后继续。',
+  failed: '运行失败。',
+  archived: '已归档。',
+};
+
+function assessmentReason(issue: { blocking: boolean }): string {
+  return issue.blocking ? '权威评估阻止运行。' : '可选基石降级可用，不阻止运行。';
+}
+
+export function deriveCornerstoneAttention(view: WorkView): CornerstoneAttention {
+  // Derive attention SOLELY from the authoritative assessment/runBlock.
+  // Never scan cornerstone statuses directly — the backend owns blockage.
+  const items: CornerstoneAttentionItem[] = [];
+  if (view.runBlock?.items) {
+    for (const item of view.runBlock.items) {
+      const reason = RUN_BLOCK_REASONS[item.code] ?? item.code;
+      items.push({
+        cornerstoneId: item.cornerstoneId ?? '',
+        title: item.status ?? item.code,
+        status: item.status ?? 'invalid',
+        reason,
+      });
+    }
   }
+  // Also surface assessment issues that may not appear in runBlock (e.g. optional degraded)
+  if (view.assessment?.issues) {
+    for (const issue of view.assessment.issues) {
+      if (items.some((existing) => existing.cornerstoneId === issue.cornerstoneId)) continue;
+      items.push({
+        cornerstoneId: issue.cornerstoneId,
+        title: issue.title || '基石',
+        status: 'invalid',
+        reason: assessmentReason(issue),
+      });
+    }
+  }
+  return { workId: view.work.id, items };
 }
 
-export function deriveCornerstoneAttention(work: Work): CornerstoneAttention {
-  const items: CornerstoneAttentionItem[] = work.cornerstones
-    .filter((cornerstone) => cornerstone.required && !cornerstone.tombstone && cornerstone.status !== 'active')
-    .map((cornerstone) => ({
-      cornerstoneId: cornerstone.id,
-      title: cornerstone.title,
-      status: cornerstone.status,
-      reason: attentionReason(cornerstone),
-    }));
-  return { workId: work.id, items };
-}
-
-export function hasCornerstoneAttention(work: Work): boolean {
-  return deriveCornerstoneAttention(work).items.length > 0;
+export function hasCornerstoneAttention(view: WorkView): boolean {
+  return Boolean(view.runBlock?.blocked || view.assessment?.blocking || view.assessment?.degraded);
 }

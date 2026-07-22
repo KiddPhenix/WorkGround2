@@ -20,6 +20,7 @@ import type {
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  ResumeRunInput,
   RetryTaskInput,
   RevisionConflict,
   UndoCornerstoneInput,
@@ -45,6 +46,7 @@ interface WailsApp {
   AcceptCornerstone(tabID: string, workID: string, input: GoRefreshInput): Promise<GoCornerstoneResult>;
   FreezeCornerstone(tabID: string, workID: string, input: GoFreezeInput): Promise<GoCornerstoneResult>;
   RepairCornerstone(tabID: string, workID: string, input: GoRepairInput): Promise<GoRepairResult>;
+  ResumeRun(tabID: string, input: ResumeRunInput): Promise<WorkflowRun>;
 }
 
 // --- Go DTO shapes (PascalCase JSON tags as returned by Wails) ---
@@ -311,6 +313,8 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
 
     retryTask: (input) => app.RetryWorkTask(tabID, input),
     runWork: (input) => app.RunWork(tabID, input.workId, input.requestId),
+
+    resumeRun: (input) => app.ResumeRun(tabID, input),
 
     pinCornerstone: async (input: PinCornerstoneInput) => {
       const goInput: GoCornerstoneInput = {

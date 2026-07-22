@@ -8,10 +8,12 @@ import type {
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  ResumeRunInput,
   SourceRef,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
   Work,
+  WorkflowRun,
   WorkView,
 } from './types';
 
@@ -43,6 +45,10 @@ export class FakeWorkController implements CornerstoneControllerPort {
       revision,
       assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
     });
+  }
+
+  seedView(view: WorkView): void {
+    this.views.set(view.work.id, structuredClone(view));
   }
 
   async getWork(workId: string): Promise<WorkView> {
@@ -132,6 +138,25 @@ export class FakeWorkController implements CornerstoneControllerPort {
     'undo',
     (cornerstone) => ({ ...cornerstone, tombstone: false }),
   );
+
+  resumeRun = (input: ResumeRunInput): Promise<WorkflowRun> => {
+    const view = this.requireView(input.workId);
+    const run = view.work.runs.find((r) => r.id === input.runId);
+    if (!run) return Promise.reject(new Error(`run ${input.runId} not found`));
+    const resumed: WorkflowRun = {
+      ...run,
+      state: 'running',
+      stages: run.stages.map((s) => {
+        if (s.state === 'waiting') return { ...s, state: 'running' as const };
+        return s;
+      }),
+    };
+    const updatedRuns = view.work.runs.map((r) => r.id === run.id ? resumed : r);
+    view.work = { ...view.work, runs: updatedRuns, state: 'running', updatedAt: new Date().toISOString() };
+    view.revision += 1;
+    this.views.set(input.workId, view);
+    return Promise.resolve(resumed);
+  };
 
   private mutateItem(
     input: RefreshCornerstoneInput,

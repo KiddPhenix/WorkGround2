@@ -410,13 +410,9 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onRunSelect={handleRunSelect}
               onRetry={handleRetry}
               retryByTarget={retryByTarget}
-              onRun={async (input) => {
-                await adapter.runWork(input);
-                // Do not consider the intent confirmed until the authoritative
-                // Work projection is visible. If this fetch fails, WorkRunEntry
-                // retries the same requestID and the backend replays safely.
-                await adapter.recoverSnapshot(workID);
-              }}
+              onRun={adapter.runWork}
+              onResumeRun={adapter.resumeRun}
+              onRecoverProjection={async () => { await adapter.recoverSnapshot(workID); }}
             />
           </div>
           <div
