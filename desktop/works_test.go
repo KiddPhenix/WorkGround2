@@ -302,10 +302,39 @@ func TestRecoverWorkViewRejectsInvalidIntent(t *testing.T) {
 		{name: "unsafe generation", workID: "work-1", intent: work.ViewRecoveryIntent{Reason: work.ViewResyncRetry, Generation: 1 << 53}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := app.RecoverWorkView("test", tc.workID, tc.intent); err == nil || !strings.Contains(err.Error(), "valid retry recovery intent") {
+			if _, err := app.RecoverWorkView("test", tc.workID, tc.intent); err == nil || !strings.Contains(err.Error(), "valid recovery intent") {
 				t.Fatalf("RecoverWorkView error = %v", err)
 			}
 		})
+	}
+}
+
+func TestRecoverWorkViewAcceptsHydrateIntent(t *testing.T) {
+	store := &worktest.Store{LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+		return &work.Work{
+			ID: workID, Name: "hydrate work", State: work.WorkReady, ArchiveState: work.ArchiveActive,
+		}, work.WorkEventState{Revision: 42}, nil
+	}}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+
+	event, err := app.RecoverWorkView("test", "work-hydrate", work.ViewRecoveryIntent{
+		Reason: work.ViewResyncHydrate, Generation: 3,
+	})
+	if err != nil {
+		t.Fatalf("RecoverWorkView hydrate: %v", err)
+	}
+	if event.Resync == nil || event.Resync.Reason != work.ViewResyncHydrate || !event.Resync.Authoritative || event.Resync.Generation != 3 {
+		t.Fatalf("hydrate resync = %+v", event)
+	}
+	wantID := work.ResyncEventID("work-hydrate", 42, work.ViewResyncHydrate, 3)
+	if event.EventID != wantID {
+		t.Fatalf("hydrate EventID = %q, want %q", event.EventID, wantID)
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("hydrate contract: %v", err)
 	}
 }
 

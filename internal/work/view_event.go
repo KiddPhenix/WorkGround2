@@ -95,7 +95,7 @@ func (e WorkViewEvent) Validate() error {
 		if e.Type != ViewSnapshot || e.Object.Kind != ObjectWork || e.Object.ID != e.WorkID {
 			return fmt.Errorf("work: authoritative resync requires a matching Work snapshot")
 		}
-		if (e.Resync.Reason != ViewResyncOverflow && e.Resync.Reason != ViewResyncRetry) || !e.Resync.Authoritative {
+		if (e.Resync.Reason != ViewResyncOverflow && e.Resync.Reason != ViewResyncRetry && e.Resync.Reason != ViewResyncHydrate) || !e.Resync.Authoritative {
 			return fmt.Errorf("work: unsupported or non-authoritative WorkView resync")
 		}
 		if e.Resync.Generation == 0 || e.Resync.Generation > maxSafeJSONInteger {

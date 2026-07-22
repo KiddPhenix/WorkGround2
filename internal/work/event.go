@@ -111,6 +111,12 @@ const (
 	// ViewResyncRetry follows an explicit frontend re-subscribe. Desktop first
 	// installs the new Watch, then returns a fresh authoritative GetWork event.
 	ViewResyncRetry ViewResyncReason = "retry"
+	// ViewResyncHydrate follows an automatic remount hydration. When a
+	// WorkCard remounts and the store already holds a projection, Desktop
+	// requests a typed authoritative snapshot that only accepts I/O-derived
+	// assessment/runBlock changes at the same revision; content changes are
+	// still rejected as conflicts.
+	ViewResyncHydrate ViewResyncReason = "hydrate"
 )
 
 // ViewResync marks an authoritative transport resynchronization. Generation
@@ -122,8 +128,10 @@ type ViewResync struct {
 	Generation    uint64           `json:"generation"`
 }
 
-// ViewRecoveryIntent is sent by the frontend only for an explicit retry after
-// installing a fresh Watch generation. Desktop returns a validated ViewResync.
+// ViewRecoveryIntent is sent by the frontend for a typed authoritative
+// resynchronization after installing a fresh Watch generation. Acceptable
+// reasons: ViewResyncRetry (explicit user retry) and ViewResyncHydrate
+// (automatic remount hydration). Overflow is emitted only by the backend.
 type ViewRecoveryIntent struct {
 	Reason     ViewResyncReason `json:"reason"`
 	Generation uint64           `json:"generation"`

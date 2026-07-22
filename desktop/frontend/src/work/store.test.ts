@@ -131,11 +131,11 @@ function overflowResync(view: WorkView, generation: number): WorkViewEvent {
 }
 
 function retryResync(view: WorkView, intent: ViewRecoveryIntent): WorkViewEvent {
-  const eventID = `wv-resync-${view.work.id}-rev-${view.revision}-retry-${intent.generation}`;
+  const eventID = `wv-resync-${view.work.id}-rev-${view.revision}-${intent.reason}-${intent.generation}`;
   return {
     ...snapshot(view, eventID),
-    requestID: 'retry-recovery',
-    resync: { reason: 'retry', authoritative: true, generation: intent.generation },
+    requestID: intent.reason + '-recovery',
+    resync: { reason: intent.reason, authoritative: true, generation: intent.generation },
   };
 }
 

@@ -133,13 +133,19 @@ function conflict(event: WorkViewEvent, reason: string): WorkConflict {
   return { workID: event.workID, eventID: event.eventID, revision: event.revision, reason };
 }
 
-function resyncEventID(workID: string, revision: number, reason: 'overflow' | 'retry', generation: number): string {
+function onlyIODerivedDiffers(current: WorkView, incoming: WorkView): boolean {
+  const { assessment: _a1, runBlock: _r1, ...currentRest } = current;
+  const { assessment: _a2, runBlock: _r2, ...incomingRest } = incoming;
+  return sameValue(currentRest, incomingRest);
+}
+
+function resyncEventID(workID: string, revision: number, reason: string, generation: number): string {
   return `wv-resync-${workID}-rev-${revision}-${reason}-${generation}`;
 }
 
 function authoritativeResyncGeneration(event: WorkViewEvent): number | null {
   const resync = event.resync as unknown;
-  if (!isRecord(resync) || event.type !== 'snapshot' || (resync.reason !== 'overflow' && resync.reason !== 'retry') || resync.authoritative !== true ||
+  if (!isRecord(resync) || event.type !== 'snapshot' || (resync.reason !== 'overflow' && resync.reason !== 'retry' && resync.reason !== 'hydrate') || resync.authoritative !== true ||
       !Number.isSafeInteger(resync.generation) || Number(resync.generation) <= 0) return null;
   const generation = Number(resync.generation);
   return event.eventID === resyncEventID(event.workID, event.revision, resync.reason, generation) ? generation : null;
@@ -571,6 +577,29 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
           result: { kind: 'duplicate', workID: event.workID, eventID: event.eventID },
         };
       }
+      // hydrate: narrow acceptance — only I/O-derived assessment/runBlock may
+      // differ at the same revision. Any content change (blocks, cornerstones,
+      // runs, name, prompt, etc.) is still a conflict.
+      if (event.resync?.reason === 'hydrate') {
+        if (current && onlyIODerivedDiffers(current, decoded)) {
+          const view = cloneView(current);
+          view.assessment = structuredClone(decoded.assessment);
+          view.runBlock = decoded.runBlock ? structuredClone(decoded.runBlock) : undefined;
+          return {
+            patch: {
+              works: { ...state.works, [event.workID]: view },
+              seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
+              resyncGenerations: { ...state.resyncGenerations, [event.workID]: resyncGeneration },
+              gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
+              conflicts: clearIssue(state.conflicts, event.workID),
+            },
+            result: { kind: 'applied', workID: event.workID, revision: event.revision },
+          };
+        }
+        const issue = conflict(event, 'hydrate snapshot conflicts with current content at the same revision');
+        return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
+      }
+      // retry / overflow: full authoritative overwrite.
       const view = cloneView(decoded);
       return {
         patch: {

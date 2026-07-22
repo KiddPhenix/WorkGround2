@@ -83,7 +83,7 @@ const idleStatus = (): WorkControllerStatus => ({
 interface WorkSubscriptionState {
   token: symbol;
   generation: number;
-  recovery: boolean;
+  recoveryReason: ViewRecoveryIntent['reason'] | null;
   port: WorkPortSubscription | null;
   watchReady: boolean;
   settling: boolean;
@@ -132,10 +132,16 @@ export class WorkControllerAdapter {
   );
 
   subscribe = (workID: string): void => {
-    this.startSubscription(workID, false);
+    // When the store already holds a projection (typical unmount/remount),
+    // request a backend-issued typed hydrate resync. Hydrate only accepts
+    // I/O-derived assessment/runBlock changes at the same revision; content
+    // changes are still rejected as conflicts.
+    // First-mount (empty store) uses a plain GetWork snapshot.
+    const hasProjection = useWorkStore.getState().works[workID] !== undefined;
+    this.startSubscription(workID, hasProjection ? 'hydrate' : null);
   };
 
-  private startSubscription(workID: string, recovery: boolean): void {
+  private startSubscription(workID: string, reason: ViewRecoveryIntent['reason'] | null): void {
     if (this.disposed || this.subscriptions.has(workID)) return;
     if (this.getStatus(workID).stream.kind !== 'offline') {
       this.updateStatus(workID, { stream: { kind: 'connecting' } });
@@ -146,7 +152,7 @@ export class WorkControllerAdapter {
     const state: WorkSubscriptionState = {
       token,
       generation,
-      recovery,
+      recoveryReason: reason,
       port: null,
       watchReady: false,
       settling: true,
@@ -186,7 +192,7 @@ export class WorkControllerAdapter {
         // The Watch must exist before either snapshot is requested. Initial
         // hydration keeps ordinary revision conflict rules; explicit retry
         // requests a backend-issued typed authoritative resync.
-        if (state.recovery) await this.recoverSubscriptionSnapshot(workID, state);
+        if (state.recoveryReason) await this.recoverSubscriptionSnapshot(workID, state);
         else await this.recoverSnapshot(workID);
         if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
@@ -243,7 +249,7 @@ export class WorkControllerAdapter {
     if (state && (!state.watchReady || state.settling)) return;
     state?.port?.unsubscribe();
     this.subscriptions.delete(workID);
-    this.startSubscription(workID, true);
+    this.startSubscription(workID, 'retry');
   };
 
   private flushBuffered(workID: string, state: WorkSubscriptionState): { needsRecovery: boolean; retryableFailure: boolean } {
@@ -264,16 +270,17 @@ export class WorkControllerAdapter {
 
   private async recoverSubscriptionSnapshot(workID: string, state: WorkSubscriptionState): Promise<ApplyResult> {
     this.updateStatus(workID, { fetching: true });
-    const event = await this.port.fetchRecoverySnapshot(workID, { reason: 'retry', generation: state.generation });
+    const reason = state.recoveryReason!;
+    const event = await this.port.fetchRecoverySnapshot(workID, { reason, generation: state.generation });
     if (!this.isCurrentSubscription(workID, state)) throw new Error('stale recovery generation');
-    if (event.workID !== workID || event.type !== 'snapshot' || event.resync?.reason !== 'retry' ||
-        !event.resync.authoritative || event.resync.generation < state.generation) {
-      throw new Error('backend returned an invalid authoritative retry snapshot');
+    if (event.workID !== workID || event.type !== 'snapshot' || event.resync?.reason !== reason ||
+        !event.resync?.authoritative || (event.resync?.generation ?? 0) < state.generation) {
+      throw new Error(`backend returned an invalid authoritative ${reason} snapshot`);
     }
     const result = applyWorkViewEvent(event);
     if (result.kind !== 'applied' && result.kind !== 'duplicate') {
       const detail = result.kind === 'conflict' ? result.conflict.reason : result.kind;
-      throw new Error(`authoritative retry snapshot was not applied: ${detail}`);
+      throw new Error(`authoritative ${reason} snapshot was not applied: ${detail}`);
     }
     return result;
   }

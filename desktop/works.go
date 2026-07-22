@@ -60,14 +60,14 @@ func (a *App) GetWork(tabID, workID string) (*work.WorkView, error) {
 }
 
 // RecoverWorkView performs the authoritative snapshot step of an explicit
-// frontend retry. The frontend must first install a fresh Watch generation;
-// this method then returns a typed resync event with a backend-global
-// generation and EventID, never a plain same-revision snapshot.
+// frontend retry or automatic remount hydration. The frontend must first
+// install a fresh Watch generation; this method then returns a typed resync
+// event with a backend-global generation and EventID.
 func (a *App) RecoverWorkView(tabID, workID string, input work.ViewRecoveryIntent) (*work.WorkViewEvent, error) {
 	const maxSafeJSONInteger = uint64(1<<53 - 1)
 	workID = strings.TrimSpace(workID)
-	if workID == "" || input.Reason != work.ViewResyncRetry || input.Generation == 0 || input.Generation > maxSafeJSONInteger {
-		return nil, fmt.Errorf("work: valid retry recovery intent is required")
+	if workID == "" || (input.Reason != work.ViewResyncRetry && input.Reason != work.ViewResyncHydrate) || input.Generation == 0 || input.Generation > maxSafeJSONInteger {
+		return nil, fmt.Errorf("work: valid recovery intent is required")
 	}
 	wc, err := a.resolveWorkController(tabID)
 	if err != nil {
