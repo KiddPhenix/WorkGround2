@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,6 +44,11 @@ function ok(condition: boolean, label: string): void {
 
 function eq<T>(actual: T, expected: T, label: string): void {
   ok(actual === expected, `${label}${actual === expected ? '' : ` (got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)})`}`);
+}
+
+function contentDigest(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  return `sha256:${createHash('sha256').update(normalized, 'utf8').digest('hex')}`;
 }
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', {
@@ -562,6 +568,61 @@ async function testWailsConflictLoadsLatestProjection(): Promise<void> {
   delete (dom.window as unknown as { go?: unknown }).go;
 }
 
+async function testWailsSnapshotRepairContentRoundTrip(): Promise<void> {
+  reset();
+  const replacement = 'production-adapter-content';
+  const missing = makeCornerstone('cs-wails-blob', {
+    mode: 'snapshot',
+    ref: { kind: 'inline', blobDigest: contentDigest(replacement) },
+    digest: contentDigest(replacement),
+    status: 'invalid',
+    resolveErrorKind: 'invalid',
+  });
+  let persisted = makeView([missing], 4);
+  let received: Record<string, unknown> | null = null;
+  (dom.window as unknown as { go: unknown }).go = {
+    main: { App: {
+      RepairCornerstone: async (_tabID: string, workID: string, input: Record<string, unknown>) => {
+        received = structuredClone(input);
+        if (workID !== persisted.work.id || input.content !== replacement || input.ref !== undefined) {
+          throw new Error('snapshot repair rejected');
+        }
+        const active = { ...missing, content: replacement, status: 'active' as const, error: undefined, resolveErrorKind: undefined };
+        persisted = { ...persisted, revision: 5, work: { ...persisted.work, cornerstones: [active] } };
+        return {
+          cornerstone: active,
+          workView: structuredClone(persisted),
+          repaired: true,
+          duplicate: false,
+          revision: persisted.revision,
+          assessment: { state: 'ready', blocking: false, degraded: false },
+        };
+      },
+      GetWork: async () => structuredClone(persisted),
+    } },
+  };
+
+  const port = createWailsWorkControllerPort('tab-content-roundtrip')!;
+  const result = await port.repairCornerstone!({
+    workId: persisted.work.id,
+    cornerstoneId: missing.id,
+    content: replacement,
+    expectedRevision: persisted.revision,
+    requestId: 'repair-content-roundtrip',
+  });
+  ok(result.ok, 'production Wails adapter 接受 snapshot replacement content');
+  eq(received?.content, replacement, 'production Wails input 贯通 content');
+  ok(received?.ref === undefined, 'production Wails snapshot repair 不携带 ref');
+
+  // Recreate the production port to model a Desktop refresh/restart. Its
+  // authoritative GetWork projection must still expose the repaired state.
+  const restarted = createWailsWorkControllerPort('tab-content-roundtrip-restart')!;
+  const refreshed = await restarted.fetchSnapshot(persisted.work.id);
+  eq(refreshed.revision, 5, '重建 production adapter 后读取持久 revision');
+  eq(refreshed.work.cornerstones[0].status, 'active', '重建/刷新后 snapshot 仍为 active');
+  delete (dom.window as unknown as { go?: unknown }).go;
+}
+
 function workDelta(workId: string, eventId: string, revision: number, baseRevision: number, name: string): WorkViewEvent {
   return {
     schemaVersion: 1,
@@ -977,6 +1038,232 @@ async function testWatchHealthIsolation(): Promise<void> {
   delete (dom.window as unknown as { runtime?: unknown }).runtime;
 }
 
+async function testSnapshotBlobRepairContentPath(): Promise<void> {
+  reset();
+  const replacement = 'correct-replacement-content\r\nwith-normalized-lines';
+  const view = makeView([
+    makeCornerstone('cs-blob-missing', {
+      mode: 'snapshot',
+      ref: { kind: 'inline', blobDigest: contentDigest(replacement) },
+      digest: contentDigest(replacement),
+      status: 'invalid',
+      error: 'blob missing',
+      resolveErrorKind: 'invalid',
+    }),
+  ]);
+  useWorkStore.getState().applySnapshot(view);
+  const port = new TestPort(view);
+  const mounted = await mount(<WorkCard workID={view.work.id} port={port} />);
+  await click(mounted.host.querySelector('[data-testid="cornerstone-drawer"] > button'));
+
+  const item = mounted.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-blob-missing"]')!;
+  // Snapshot blob repair shows content textarea, not ref editing
+  ok(!!item.querySelector('textarea[aria-label="修复 cs-blob-missing 的快照内容"]'), 'snapshot blob 修复显示 content textarea');
+  ok(!item.querySelector('select[aria-label*="引用类型"]'), 'snapshot blob 修复不显示 ref 编辑');
+  ok(!!item.querySelector('.cornerstone-item__repair-meta'), 'snapshot blob 修复显示 digest/provenance 元数据');
+  ok(!!item.querySelector('.cornerstone-item__repair-risk'), 'snapshot blob 修复显示风险提示');
+
+  // Repair button disabled with empty content
+  const repairBtn = button(item, '修复快照');
+  ok(repairBtn.disabled, '空内容时修复快照按钮禁用');
+
+  // Wrong content, secret-like input, and oversized payload all fail closed
+  // before crossing the production port. Errors never echo the raw input.
+  const textarea = item.querySelector<HTMLTextAreaElement>('textarea[aria-label="修复 cs-blob-missing 的快照内容"]')!;
+  await change(textarea, 'wrong-content');
+  ok(!button(item, '修复快照').disabled, '内容填写后修复按钮可用');
+  await click(button(item, '修复快照'));
+  eq(port.calls.filter((call) => call.action === 'repair').length, 0, '错误 digest 不调用 repair port');
+  ok(item.textContent?.includes('digest 与已接受快照不匹配') ?? false, '错误 digest 显式且不回显正文');
+
+  const secret = 'api_key=sk-1234567890abcdef';
+  await change(textarea, secret);
+  await click(button(item, '修复快照'));
+  eq(port.calls.filter((call) => call.action === 'repair').length, 0, 'Secret-like 内容不调用 repair port');
+  ok(item.textContent?.includes('疑似包含敏感凭据') ?? false, 'Secret-like 内容显式拒绝');
+  ok(!item.querySelector('.cornerstone-item__error')?.textContent?.includes(secret), '错误提示不回显 Secret');
+
+  await change(textarea, 'token: budget unit');
+  await click(button(item, '修复快照'));
+  ok(item.textContent?.includes('digest 与已接受快照不匹配') ?? false, '普通 token budget 文本不被误判为 Secret');
+
+  await change(textarea, 'x'.repeat(8 * 1024 * 1024 + 1));
+  await click(button(item, '修复快照'));
+  eq(port.calls.filter((call) => call.action === 'repair').length, 0, '过大内容不调用 repair port');
+  ok(item.textContent?.includes('超过 8 MiB') ?? false, '过大内容显式拒绝');
+
+  await change(textarea, replacement);
+
+  // Click repair — verify content is sent, ref is NOT sent
+  await click(button(item, '修复快照'));
+  const repairCalls = port.calls.filter((call) => call.action === 'repair');
+  eq(repairCalls.length, 1, 'repair 调用一次');
+  const call = repairCalls[0].input as RepairCornerstoneInput;
+  ok(call.content !== undefined && call.content !== null, 'snapshot repair 传 content');
+  eq(call.content, 'correct-replacement-content\nwith-normalized-lines', 'content 规范化后真实进入 repair input');
+  ok(call.ref === undefined || call.ref === null, 'snapshot repair 不传 ref');
+
+  // Verify the cornerstone became active
+  const updatedView = useWorkStore.getState().works[view.work.id]!;
+  const updated = updatedView.work.cornerstones.find((cs) => cs.id === 'cs-blob-missing')!;
+  eq(updated.status, 'active', '修复后 cornerstone 变为 active');
+  eq(updated.content, 'correct-replacement-content\nwith-normalized-lines', 'content 已更新');
+  eq(useCornerstoneUIStore.getState().byWork[view.work.id]?.byId['cs-blob-missing']?.draftContent, null, '成功后才清理 repair 草稿');
+
+  await mounted.cleanup();
+}
+
+async function testSnapshotRepairDraftSurvivesFlip(): Promise<void> {
+  reset();
+  const view = makeView([
+    makeCornerstone('cs-blob-flip', {
+      mode: 'snapshot',
+      ref: { kind: 'inline', blobDigest: 'blob-sha256-fliptest' },
+      digest: 'digest-flip',
+      status: 'invalid',
+      resolveErrorKind: 'invalid',
+    }),
+  ]);
+  useWorkStore.getState().applySnapshot(view);
+  const port = new TestPort(view);
+  const mounted = await mount(<WorkCard workID={view.work.id} port={port} />);
+  await click(mounted.host.querySelector('[data-testid="cornerstone-drawer"] > button'));
+
+  const textarea = mounted.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="修复 cs-blob-flip 的快照内容"]')!;
+  await change(textarea, 'draft-across-flip');
+
+  // Flip to back
+  await act(async () => {
+    mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click();
+    await Promise.resolve();
+  });
+  await settle();
+
+  // Draft persists after flip
+  const afterFlip = mounted.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="修复 cs-blob-flip 的快照内容"]')!;
+  eq(afterFlip.value, 'draft-across-flip', '翻面后草稿保持不变');
+
+  // Flip back to front
+  await act(async () => {
+    mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click();
+    await Promise.resolve();
+  });
+  await settle();
+
+  const afterFlipBack = mounted.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="修复 cs-blob-flip 的快照内容"]')!;
+  eq(afterFlipBack.value, 'draft-across-flip', '再次翻回正面后草稿保持');
+
+  await mounted.cleanup();
+}
+
+async function testSnapshotRepairConflictPreservesDraft(): Promise<void> {
+  reset();
+  const replacement = 'my-content';
+  const view = makeView([
+    makeCornerstone('cs-blob-conflict', {
+      mode: 'snapshot',
+      ref: { kind: 'inline', blobDigest: 'blob-conflict' },
+      digest: contentDigest(replacement),
+      status: 'invalid',
+      resolveErrorKind: 'invalid',
+    }),
+  ]);
+  useWorkStore.getState().applySnapshot(view);
+  const port = new TestPort(view, { revisionConflictOn: new Set(['repair']) });
+  const mounted = await mount(<WorkCard workID={view.work.id} port={port} />);
+  await click(mounted.host.querySelector('[data-testid="cornerstone-drawer"] > button'));
+
+  const item = mounted.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-blob-conflict"]')!;
+  await change(item.querySelector<HTMLTextAreaElement>('textarea')!, replacement);
+  await click(button(item, '修复快照'));
+
+  ok(item.textContent?.includes('版本冲突') ?? false, 'snapshot repair 冲突显式显示');
+  // Draft should survive conflict
+  eq((item.querySelector<HTMLTextAreaElement>('textarea')!).value, 'my-content', '冲突后草稿保留');
+  ok(!!item.querySelector('.cornerstone-item__conflict'), '冲突展示最新状态');
+
+  // Retry generates new requestID
+  await click(button(item.querySelector('.cornerstone-item__error')!, '重试'));
+  const repairCalls = port.calls.filter((call) => call.action === 'repair');
+  eq(repairCalls.length, 2, 'conflict 后可重试');
+  ok(repairCalls[0].input.requestId !== repairCalls[1].input.requestId, '冲突重试使用新 requestId');
+  const secondCall = repairCalls[1].input as RepairCornerstoneInput;
+  ok(secondCall.content !== undefined, '重试仍传 content 而非 ref');
+
+  await mounted.cleanup();
+}
+
+async function testSnapshotRepairNetworkRetrySameRequestID(): Promise<void> {
+  reset();
+  const replacement = 'network-content';
+  const view = makeView([
+    makeCornerstone('cs-blob-network', {
+      mode: 'snapshot',
+      ref: { kind: 'inline', blobDigest: 'blob-network' },
+      digest: contentDigest(replacement),
+      status: 'invalid',
+      resolveErrorKind: 'invalid',
+    }),
+  ]);
+  useWorkStore.getState().applySnapshot(view);
+  const network = new Set(['repair']);
+  const port = new TestPort(view, { networkErrorOn: network });
+  const mounted = await mount(<WorkCard workID={view.work.id} port={port} />);
+  await click(mounted.host.querySelector('[data-testid="cornerstone-drawer"] > button'));
+
+  const item = mounted.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-blob-network"]')!;
+  await change(item.querySelector<HTMLTextAreaElement>('textarea')!, replacement);
+  await click(button(item, '修复快照'));
+
+  ok(item.textContent?.includes('网络请求失败') ?? false, 'snapshot repair 网络失败显式显示');
+  ok(!!item.querySelector('.cornerstone-item__error'), '网络错误可重试');
+
+  // Retry with same requestID
+  network.delete('repair');
+  await click(button(item.querySelector('.cornerstone-item__error')!, '重试'));
+  const repairCalls = port.calls.filter((call) => call.action === 'repair');
+  eq(repairCalls.length, 2, '网络失败后可重试');
+  eq(repairCalls[0].input.requestId, repairCalls[1].input.requestId, '网络重试复用 requestId');
+  const retryCall = repairCalls[1].input as RepairCornerstoneInput;
+  eq(retryCall.content, 'network-content', '重试保持 content');
+  ok(retryCall.ref === undefined || retryCall.ref === null, '网络重试不换成 ref');
+
+  await mounted.cleanup();
+}
+
+async function testLiveRefRepairStillWorksWithRef(): Promise<void> {
+  reset();
+  const view = makeView([
+    makeCornerstone('cs-liveref-missing', {
+      mode: 'live_ref',
+      ref: { kind: 'workspace_file', path: 'missing.txt' },
+      status: 'missing',
+      resolveErrorKind: 'missing',
+    }),
+  ]);
+  useWorkStore.getState().applySnapshot(view);
+  const port = new TestPort(view);
+  const mounted = await mount(<WorkCard workID={view.work.id} port={port} />);
+  await click(mounted.host.querySelector('[data-testid="cornerstone-drawer"] > button'));
+
+  const item = mounted.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-liveref-missing"]')!;
+  // live_ref still shows ref editing, NOT content textarea
+  ok(!!item.querySelector('select[aria-label*="修复"]'), 'live_ref 修复显示 ref 类型选择');
+  ok(!!item.querySelector('input[aria-label*="修复"]'), 'live_ref 修复显示 ref 值输入');
+  ok(!item.querySelector('textarea[aria-label*="快照内容"]'), 'live_ref 修复不显示 content textarea');
+  ok(!!button(item, '修复引用'), 'live_ref 显示修复引用按钮');
+
+  await change(item.querySelector('input[aria-label*="修复"]')!, 'new-file.txt');
+  await click(button(item, '修复引用'));
+
+  const repairCall = port.calls.find((call) => call.action === 'repair')!.input as RepairCornerstoneInput;
+  ok(repairCall.ref !== undefined && repairCall.ref !== null, 'live_ref repair 传 ref');
+  eq(repairCall.ref?.path, 'new-file.txt', 'live_ref repair ref 正确');
+  ok(repairCall.content === undefined || repairCall.content === null, 'live_ref repair 不传 content');
+
+  await mounted.cleanup();
+}
+
 console.log('\ncornerstone drawer — T5');
 await testFixedOuterIdentity();
 await testTypedMutations();
@@ -985,8 +1272,14 @@ await testUnifiedAttentionAndRunGate();
 await testRunRetryReusesRequestID();
 await testProductionWorkCardAssembly();
 await testWailsConflictLoadsLatestProjection();
+await testWailsSnapshotRepairContentRoundTrip();
 await testWailsWatchHandshakeAndRecovery();
 await testWatchHealthIsolation();
+await testSnapshotBlobRepairContentPath();
+await testSnapshotRepairDraftSurvivesFlip();
+await testSnapshotRepairConflictPreservesDraft();
+await testSnapshotRepairNetworkRetrySameRequestID();
+await testLiveRefRepairStillWorksWithRef();
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -16,6 +16,20 @@ import (
 	"workground2/internal/work/worktest"
 )
 
+type repairBlobStore struct {
+	content string
+}
+
+func (s *repairBlobStore) Put(_ string, data []byte) (string, error) {
+	s.content = string(data)
+	return work.ContentDigest(data), nil
+}
+
+func (*repairBlobStore) Get(string, string) ([]byte, error)   { return nil, work.ErrWorkNotFound }
+func (*repairBlobStore) Exists(string, string) (bool, error)  { return false, nil }
+func (*repairBlobStore) Delete(string, string) error          { return nil }
+func (*repairBlobStore) ListDigests(string) ([]string, error) { return nil, nil }
+
 func TestWorkViewWailsWatchRoutesOwningProjection(t *testing.T) {
 	views := control.NewWorkViewBroadcaster()
 	ctrl := control.New(control.Options{
@@ -518,6 +532,57 @@ func TestCornerstoneWailsBindingRoutesRemove(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("RemoveCornerstone returned nil result")
+	}
+}
+
+func TestCornerstoneWailsBindingRoutesSnapshotRepairContent(t *testing.T) {
+	const replacement = "replacement-content"
+	digest := work.ContentDigest([]byte(replacement))
+	missing := work.Cornerstone{
+		ID: "cs-blob", WorkID: "work-cs-repair", Mode: work.CornerstoneSnapshot,
+		Ref: work.CornerstoneRef{Kind: "inline", BlobDigest: digest}, Digest: digest,
+		Status: work.CornerstoneInvalid, ResolveErrorKind: work.ResolveErrorInvalid,
+	}
+	blobs := &repairBlobStore{}
+	var committed *work.WorkEvent
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			if committed != nil {
+				active := missing
+				active.Status = work.CornerstoneActive
+				active.ResolveErrorKind = ""
+				return &work.Work{ID: workID, Cornerstones: []work.Cornerstone{active}, ArchiveState: work.ArchiveActive}, work.WorkEventState{
+					Revision: 2, RequestRevision: 2, RequestType: committed.Type,
+					RequestEventID: committed.ID, RequestFound: true,
+				}, nil
+			}
+			return &work.Work{ID: workID, Cornerstones: []work.Cornerstone{missing}, ArchiveState: work.ArchiveActive}, work.WorkEventState{Revision: 1}, nil
+		},
+		CommitEventFunc: func(workID string, event work.WorkEvent) (int64, error) {
+			copy := event
+			committed = &copy
+			return 2, nil
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	svc.SetCornerstoneManager(work.NewCornerstoneManager(store, blobs, nil))
+	ctrl := control.New(control.Options{Work: svc, WorkViews: views})
+	app := &App{}
+	app.setTestCtrl(ctrl, "test")
+
+	content := replacement
+	result, err := app.RepairCornerstone("test", "work-cs-repair", work.RepairCornerstoneInput{
+		CornerstoneID: "cs-blob", Content: &content, ExpectedRevision: 1, RequestID: "repair-content-1",
+	})
+	if err != nil {
+		t.Fatalf("RepairCornerstone Wails binding: %v", err)
+	}
+	if blobs.content != replacement {
+		t.Fatal("RepairCornerstone did not route replacement content to BlobStore")
+	}
+	if result == nil || !result.Repaired || result.Cornerstone == nil || result.Cornerstone.Status != work.CornerstoneActive {
+		t.Fatalf("RepairCornerstone result = %+v, want active", result)
 	}
 }
 

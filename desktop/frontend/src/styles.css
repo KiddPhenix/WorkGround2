@@ -36204,6 +36204,33 @@ body > .mermaid-diagram--fullscreen {
   margin-top: 6px;
 }
 
+.cornerstone-item__repair-content {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 48px;
+  padding: 4px 6px;
+  border: 1px solid var(--border, #555);
+  border-radius: 3px;
+  background: var(--input-bg, #1e1e1e);
+  color: var(--fg, #ddd);
+  font-size: 11px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.cornerstone-item__repair-meta {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--dim, #999);
+}
+
+.cornerstone-item__repair-risk {
+  color: var(--warning-fg, #ffd54f);
+}
+
 .cornerstone-item--removed {
   opacity: 0.72;
 }

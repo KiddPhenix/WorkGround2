@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 
+import { sha256 } from '../../lib/attachDedup';
 import type { CornerstoneControllerPort } from '../../work/controller';
 import { deriveCornerstoneAttention, useCornerstoneUIStore } from '../../work/cornerstoneStore';
 import type {
@@ -41,6 +42,60 @@ const EMPTY_DRAWER: CornerstoneDrawerUI = {
 };
 
 const REF_KINDS: CornerstoneRef['kind'][] = ['inline', 'session_turn', 'workspace_file', 'artifact', 'url'];
+const SNAPSHOT_REPAIR_MAX_BYTES = 8 * 1024 * 1024;
+
+type RepairContentCheck =
+  | { ok: true; content: string }
+  | { ok: false; message: string };
+
+function normalizeRepairContent(content: string): string {
+  return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function secretRef(value: string): boolean {
+  const lower = value.trim().toLowerCase();
+  return lower.startsWith('${') || lower.startsWith('{{') || lower.startsWith('vault:')
+    || lower.startsWith('secretref:') || lower.startsWith('secret-ref:')
+    || lower.startsWith('$secret.') || lower.startsWith('ref:');
+}
+
+function hasSecretLikeContent(content: string): boolean {
+  if (/(?:^|[^a-z0-9_])(?:sk-|ghp_|github_pat_|xoxb-)[a-z0-9_=-]{12,}/i.test(content)) return true;
+  if (/(?:^|[^A-Za-z0-9_])AKIA[A-Z0-9]{16}(?:$|[^A-Za-z0-9_])/.test(content)) return true;
+  if (/-----BEGIN [^-\r\n]*PRIVATE KEY-----/.test(content)) return true;
+  if (/(?:^|[^A-Za-z0-9_])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_=-]{12,}/.test(content)) return true;
+  const auth = content.match(/authorization[ \t]*[:=][ \t]*["']?(?:bearer|basic)[ \t]+([^ \t\r\n"',;]+)/i);
+  if (auth?.[1] && !secretRef(auth[1])) return true;
+  const assignment = /(?:api[_-]?key|secret|token|password|passwd|credential|private[_-]?key|access[_-]?key)[ \t]*([=:])[ \t]*/ig;
+  for (let match = assignment.exec(content); match; match = assignment.exec(content)) {
+    let value = content.slice(assignment.lastIndex).split(/[;\r\n]/, 1)[0].trim();
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
+    if (quote) value = value.slice(1).split(quote, 1)[0].trim();
+    if (value && !secretRef(value) && (match[1] === '=' || !!quote || !/[ \t]/.test(value))) return true;
+  }
+  return false;
+}
+
+async function checkRepairContent(content: string, acceptedDigest: string): Promise<RepairContentCheck> {
+  const normalized = normalizeRepairContent(content);
+  const byteLength = new TextEncoder().encode(normalized).byteLength;
+  if (byteLength === 0) return { ok: false, message: '请输入快照原始内容。' };
+  if (byteLength > SNAPSHOT_REPAIR_MAX_BYTES) {
+    return { ok: false, message: '快照内容超过 8 MiB 单次修复上限，未发送。' };
+  }
+  if (hasSecretLikeContent(normalized)) {
+    return { ok: false, message: '输入疑似包含敏感凭据，未发送；请改用 Secret 引用。' };
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(acceptedDigest)) {
+    return { ok: false, message: '已接受的 digest 格式无效，请刷新 Work 后重试。' };
+  }
+  const digest = await sha256(new Blob([normalized], { type: 'text/plain;charset=utf-8' }));
+  if (!digest) return { ok: false, message: '当前环境无法校验内容 digest，未发送。' };
+  if (`sha256:${digest}` !== acceptedDigest) {
+    return { ok: false, message: '内容 digest 与已接受快照不匹配，未发送。' };
+  }
+  return { ok: true, content: normalized };
+}
 
 function requestId(action: CornerstoneUIAction): string {
   const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -253,9 +308,29 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
       case 'accept':
         await execute(cornerstone.id, action, port.acceptCornerstone && ((context) => port.acceptCornerstone!(base(context))), retry);
         break;
-      case 'repair':
-        await execute(cornerstone.id, action, port.repairCornerstone && ((context) => port.repairCornerstone!({ ...base(context), ref })), retry);
+      case 'repair': {
+        const itemUI = ui.getState().byWork[workId]?.byId[cornerstone.id];
+        const isSnapshotBlobRepair = cornerstone.mode === 'snapshot' && !!cornerstone.ref.blobDigest;
+        let repairContent: string | undefined;
+        if (isSnapshotBlobRepair) {
+          const checked = await checkRepairContent(itemUI?.draftContent ?? '', cornerstone.digest);
+          if (!checked.ok) {
+            const store = ui.getState();
+            store.setError(workId, cornerstone.id, checked.message);
+            store.setRetry(workId, cornerstone.id, null);
+            return;
+          }
+          repairContent = checked.content;
+        }
+        const repairRef = isSnapshotBlobRepair ? undefined : (ref || undefined);
+        const succeeded = await execute(cornerstone.id, action, port.repairCornerstone && ((context) => port.repairCornerstone!({
+          ...base(context),
+          ref: repairRef,
+          content: repairContent,
+        })), retry);
+        if (succeeded && isSnapshotBlobRepair) ui.getState().setDraft(workId, cornerstone.id, { content: null });
         break;
+      }
       case 'remove':
         await execute(cornerstone.id, action, port.removeCornerstone && ((context) => port.removeCornerstone!(base(context))), retry);
         break;
@@ -386,10 +461,13 @@ const CornerstoneItem: React.FC<CornerstoneItemProps> = ({ cornerstone, uiState,
   const hint = statusHint(cornerstone);
   const needsRepair = ['stale', 'missing', 'denied', 'invalid'].includes(cornerstone.status);
   const retry = uiState?.retry;
+  const snapshotBlobRepair = cornerstone.mode === 'snapshot' && !!cornerstone.ref.blobDigest && !cornerstone.tombstone;
+  const repairDraftContent = uiState?.draftContent ?? '';
+  const canRepair = snapshotBlobRepair ? !!repairDraftContent.trim() : !!repairRef;
 
   const retryAction = () => {
     if (!retry || retry.action === 'pin') return;
-    void onAction(cornerstone, retry.action, retry.action === 'repair' ? repairRef ?? undefined : undefined, retry);
+    void onAction(cornerstone, retry.action, retry.action === 'repair' && !snapshotBlobRepair ? repairRef ?? undefined : undefined, retry);
   };
 
   return (
@@ -415,10 +493,31 @@ const CornerstoneItem: React.FC<CornerstoneItemProps> = ({ cornerstone, uiState,
       )}
       {needsRepair && !cornerstone.tombstone && !readonly && (
         <div className="cornerstone-item__repair">
-          <select aria-label={`修复 ${cornerstone.title} 的引用类型`} value={repairKind} onChange={(event) => onDraft({ title: event.target.value })}>
-            {REF_KINDS.map((kind) => <option key={kind} value={kind}>{refLabel({ kind })}</option>)}
-          </select>
-          {repairKind !== 'inline' && <input aria-label={`修复 ${cornerstone.title} 的引用值`} value={repairValue} onChange={(event) => onDraft({ content: event.target.value })} />}
+          {snapshotBlobRepair ? (
+            <>
+              <textarea
+                aria-label={`修复 ${cornerstone.title} 的快照内容`}
+                value={repairDraftContent}
+                onChange={(event) => onDraft({ content: event.target.value })}
+                placeholder="输入与当前 digest 匹配的快照原始内容以修复"
+                rows={3}
+                className="cornerstone-item__repair-content"
+                spellCheck={false}
+              />
+              <div className="cornerstone-item__repair-meta">
+                <span title="内容摘要">digest {shortDigest(cornerstone.digest)}</span>
+                <span>来源 {cornerstone.provenance.kind}</span>
+                <span className="cornerstone-item__repair-risk">内容会先在本地校验，正文不会写入日志；必须与已接受 digest 匹配。</span>
+              </div>
+            </>
+          ) : (
+            <>
+              <select aria-label={`修复 ${cornerstone.title} 的引用类型`} value={repairKind} onChange={(event) => onDraft({ title: event.target.value })}>
+                {REF_KINDS.map((kind) => <option key={kind} value={kind}>{refLabel({ kind })}</option>)}
+              </select>
+              {repairKind !== 'inline' && <input aria-label={`修复 ${cornerstone.title} 的引用值`} value={repairValue} onChange={(event) => onDraft({ content: event.target.value })} />}
+            </>
+          )}
         </div>
       )}
       {pending && <p className="cornerstone-item__pending" role="status">正在{pending}…</p>}
@@ -433,7 +532,7 @@ const CornerstoneItem: React.FC<CornerstoneItemProps> = ({ cornerstone, uiState,
               {cornerstone.mode === 'live_ref' && <button type="button" disabled={!!pending} onClick={() => void onAction(cornerstone, 'refresh')}>刷新</button>}
               {cornerstone.mode === 'live_ref' && <button type="button" disabled={!!pending} onClick={() => void onAction(cornerstone, 'freeze')}>冻结</button>}
               {cornerstone.status === 'stale' && <button type="button" disabled={!!pending} onClick={() => void onAction(cornerstone, 'accept')}>接受新版本</button>}
-              {needsRepair && <button type="button" disabled={!!pending || !repairRef} onClick={() => void onAction(cornerstone, 'repair', repairRef ?? undefined)}>修复引用</button>}
+              {needsRepair && <button type="button" disabled={!!pending || !canRepair} onClick={() => void onAction(cornerstone, 'repair', snapshotBlobRepair ? undefined : (repairRef ?? undefined))}>{snapshotBlobRepair ? '修复快照' : '修复引用'}</button>}
               <button type="button" className="cornerstone-item__action--danger" disabled={!!pending} onClick={() => void onAction(cornerstone, 'remove')}>移除</button>
             </>
           )}
