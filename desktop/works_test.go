@@ -371,6 +371,38 @@ func TestResolveWorkControllerDisabledWork(t *testing.T) {
 	}
 }
 
+func TestWorkCapableUsesTypedControllerAvailability(t *testing.T) {
+	disabled := control.New(control.Options{})
+	disabledApp := &App{}
+	disabledApp.setTestCtrl(disabled, "disabled")
+	if disabledApp.WorkCapable("test") {
+		t.Fatal("WorkCapable = true for disabled Work controller")
+	}
+	var typedNil *work.Service
+	typedNilApp := &App{}
+	typedNilApp.setTestCtrl(control.New(control.Options{
+		Work:      typedNil,
+		WorkViews: control.NewWorkViewBroadcaster(),
+	}), "typed-nil")
+	if typedNilApp.WorkCapable("test") {
+		t.Fatal("WorkCapable = true for typed-nil Work service")
+	}
+
+	views := control.NewWorkViewBroadcaster()
+	enabled := control.New(control.Options{
+		Work:      work.NewService(&worktest.Store{}, work.NewBlueprintRegistry(), views),
+		WorkViews: views,
+	})
+	enabledApp := &App{}
+	enabledApp.setTestCtrl(enabled, "enabled")
+	if !enabledApp.WorkCapable("test") {
+		t.Fatal("WorkCapable = false for enabled Work controller")
+	}
+	if enabledApp.WorkCapable("missing") {
+		t.Fatal("WorkCapable = true for missing tab")
+	}
+}
+
 // TestWorkMethodsNilService verifies the nil-safe delegation.
 func TestWorkMethodsNilService(t *testing.T) {
 	c := control.New(control.Options{})

@@ -221,6 +221,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### Work 系统 V1 — Stage 6 生产 Desktop 入口
+- Location: `desktop/works.go`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
+- Summary: `WorkCapable` 类型化 bool 检查禁止解析错误字符串；flag off 时 sidebar 不显示入口且零 Work API 调用；flag on 时在 production Workspace sidebar 提供"工作"入口；WorkPage 有加载/空态/显式重试/active Work 列表/新建 Work；Create 使用 blank blueprint、稳定 requestID、幂等重试和迟到 ACK 保护；List 绑定 tab+request 上下文切 tab 不串状态；打开 Work 渲染 WorkCard；Stage7 归档历史/重执行待后续实现。
+- Keywords: WorkCapable, WorkPage, CreateWork, blank blueprint, request ID idempotent, tab isolation, production Wails port
+- Source: Stage6 implementation
+- Updated: 2026-07-22
+
 ### 项目说明与工程约定
 - Location: `README.md`, `README.zh-CN.md`, `docs/SPEC.md`, `WorkGround2.md`
 - Summary: README 说明产品定位和用法，SPEC 是工程合同，WorkGround2.md 是本项目会话常驻工程记忆。

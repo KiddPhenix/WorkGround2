@@ -2324,4 +2324,19 @@ export const zh: Record<DictKey, string> = {
   "mock.changedFile2Prompt": "记录项目上下文",
   "mock.changedFile1Path": "docs/dev-standard.md",
   "mock.changedFile2Path": ".WorkGround2/project.md",
+
+  // ── Work ─────────────────────────────────────────────────────────────
+  "work.title": "工作",
+  "work.newWork": "新建工作",
+  "work.backToSession": "返回会话",
+  "work.backToList": "返回工作列表",
+  "work.loading": "正在加载…",
+  "work.empty": "暂无工作。点击「新建工作」创建第一个。",
+  "work.retry": "重试",
+  "work.createTitle": "新建工作",
+  "work.nameLabel": "名称",
+  "work.namePlaceholder": "输入工作名称…",
+  "work.cancel": "取消",
+  "work.create": "创建",
+  "work.creating": "创建中…",
 };

@@ -2322,6 +2322,21 @@ export const en = {
   "mock.changedFile2Prompt": "Record project context",
   "mock.changedFile1Path": "docs/dev-standard.md",
   "mock.changedFile2Path": ".WorkGround2/project.md",
+
+  // ── Work ─────────────────────────────────────────────────────────────
+  "work.title": "Work",
+  "work.newWork": "New Work",
+  "work.backToSession": "Back to Session",
+  "work.backToList": "Back to Work list",
+  "work.loading": "Loading…",
+  "work.empty": "No Work yet. Click \"New Work\" to create one.",
+  "work.retry": "Retry",
+  "work.createTitle": "New Work",
+  "work.nameLabel": "Name",
+  "work.namePlaceholder": "Enter work name…",
+  "work.cancel": "Cancel",
+  "work.create": "Create",
+  "work.creating": "Creating…",
 };
 
 export type DictKey = keyof typeof en;

@@ -36388,3 +36388,232 @@ body > .mermaid-diagram--fullscreen {
     transition: none;
   }
 }
+
+/* ── WorkPage ────────────────────────────────────────────────────────── */
+
+.work-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.work-page__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.work-page__back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+.work-page__back-btn:hover {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.work-page__title {
+  font-size: 16px;
+  font-weight: 600;
+  flex: 1;
+  margin: 0;
+}
+
+.work-page__new-btn {
+  padding: 6px 16px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.work-page__new-btn:hover:not(:disabled) {
+  background: var(--color-bg-hover);
+}
+
+.work-page__new-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.work-page__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.work-page__loading,
+.work-page__empty,
+.work-page__error {
+  text-align: center;
+  padding: 48px 16px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+
+.work-page__retry-btn {
+  margin-top: 12px;
+  padding: 6px 20px;
+  font-size: 13px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.work-page__retry-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.work-page__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.work-page__item-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--color-text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.work-page__item-btn:hover {
+  background: var(--color-bg-hover);
+}
+
+.work-page__item-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+.work-page__item-state {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+
+/* ── CreateWorkDialog ────────────────────────────────────────────────── */
+
+.work-page__dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.work-page__dialog {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 24px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.work-page__dialog-title {
+  margin: 0 0 16px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.work-page__dialog-label {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+
+.work-page__dialog-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 12px;
+  font-size: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-sizing: border-box;
+}
+
+.work-page__dialog-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.work-page__dialog-error {
+  color: var(--color-error, #e53e3e);
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+
+.work-page__dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.work-page__dialog-btn {
+  padding: 6px 20px;
+  font-size: 13px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+}
+
+.work-page__dialog-btn--cancel {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.work-page__dialog-btn--create {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+
+.work-page__dialog-btn--create:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Active state for sidebar Work button */
+.workspace-sidebar__new-session--active {
+  background: var(--color-bg-hover);
+  color: var(--color-accent);
+}

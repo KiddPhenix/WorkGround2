@@ -8,6 +8,7 @@ import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 gsap.registerPlugin(useGSAP, Flip, ScrollToPlugin);
 import {
   Activity,
+  Briefcase,
   CircleHelp,
   Command,
   Copy as RestoreIcon,
@@ -66,6 +67,8 @@ import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { SessionBackground } from "./components/SessionBackground";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
+import { WorkPage } from "./components/work/WorkPage";
+import { WorkCard } from "./components/work/WorkCard";
 import { CopyButton } from "./components/CopyButton";
 import { parseTodos } from "./lib/tools";
 import {
@@ -1088,6 +1091,66 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     } catch { /* localStorage unavailable */ }
     return "all";
   });
+
+  // ── Work navigation state (per-tab ownership) ───────────────────────
+  // workViewOpen / activeWorkId are owned by the tab that opened them.
+  // ownerTabID is frozen at view-open time; it never tracks activeTabId.
+  // workGenRef invalidates all in-flight ACKs from previous tabs.
+  const workGenRef = useRef(0);
+  const workControllerReady = state.meta?.ready === true && !state.backendActivationPending;
+  const [workViewOpen, setWorkViewOpen] = useState(false);
+  const [workCapable, setWorkCapable] = useState<boolean | null>(null);
+  const [activeWorkId, setActiveWorkId] = useState<string | null>(null);
+  const [ownerTabID, setOwnerTabID] = useState<string | null>(null);
+
+  // On tab switch: immediately close any Work view from the old tab,
+  // then re-check capability for the new tab.
+  useEffect(() => {
+    // Always close old Work view first — unconditionally.
+    setWorkViewOpen(false);
+    setActiveWorkId(null);
+    setOwnerTabID(null);
+    workGenRef.current++;
+    if (!activeTabId || !workControllerReady) {
+      setWorkCapable(false);
+      return;
+    }
+    const gen = workGenRef.current;
+    setWorkCapable(null);
+    app.WorkCapable(activeTabId)
+      .then((capable) => { if (workGenRef.current === gen) setWorkCapable(capable); })
+      .catch(() => { if (workGenRef.current === gen) setWorkCapable(false); });
+  }, [activeTabId, workControllerReady]);
+
+  // When work is disabled after being enabled, close the Work view.
+  useEffect(() => {
+    if (workCapable === false && workViewOpen) {
+      setWorkViewOpen(false);
+      setActiveWorkId(null);
+      setOwnerTabID(null);
+    }
+  }, [workCapable, workViewOpen]);
+
+  const handleOpenWorkView = useCallback(() => {
+    if (!activeTabId) return;
+    setWorkViewOpen(true);
+    setActiveWorkId(null);
+    setOwnerTabID(activeTabId);
+  }, [activeTabId]);
+
+  const handleOpenWork = useCallback((workID: string) => {
+    setActiveWorkId(workID);
+  }, []);
+
+  const handleBackToWorkList = useCallback(() => {
+    setActiveWorkId(null);
+  }, []);
+
+  const handleBackToSession = useCallback(() => {
+    setWorkViewOpen(false);
+    setActiveWorkId(null);
+    setOwnerTabID(null);
+  }, []);
   useEffect(() => {
     try { localStorage.setItem("projectTree:timeFilter", topicTimeFilter); } catch { /* ignore */ }
   }, [topicTimeFilter]);
@@ -1445,7 +1508,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const collaborationMode = displayedComposerProfileCollaborationMode(composerProfile);
   const toolApprovalMode = composerProfile.toolApprovalMode;
   const tokenMode: TokenMode = composerProfile.tokenMode;
-  const controllerReady = state.meta?.ready === true && !state.backendActivationPending;
+  const controllerReady = workControllerReady;
   const patchActiveComposerProfile = useCallback(
     (patch: Partial<Omit<ComposerProfile, "pending">>, pendingFields: ComposerProfileField[]) => {
       if (!activeTabId) return;
@@ -3203,6 +3266,19 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{t("topbar.newSession")}</span>
               </button>
 
+              {workCapable === true && (
+                <button
+                  type="button"
+                  className={`workspace-sidebar__new-session${workViewOpen ? ' workspace-sidebar__new-session--active' : ''}`}
+                  aria-label={t("work.title")}
+                  onClick={handleOpenWorkView}
+                  data-testid="work-sidebar-btn"
+                >
+                  <Briefcase size={18} aria-hidden="true" />
+                  <span>{t("work.title")}</span>
+                </button>
+              )}
+
               <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
                 {irisFixtureActive ? (
                   <nav className="iris-fixture-tree" aria-label="工作区与会话">
@@ -3258,6 +3334,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
+            {!workViewOpen ? (
     <section className="session-workspace" aria-label="Session workspace">
               <SessionBackground tabId={activeTabId} />
               {/* SessionHeader (104px) */}
@@ -3442,6 +3519,31 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 />
               </div>
             </section>
+            ) : (
+              activeWorkId && ownerTabID ? (
+                <WorkCard
+                  workID={activeWorkId}
+                  tabID={ownerTabID}
+                  workspaceActions={
+                    <button
+                      type="button"
+                      className="work-page__back-btn"
+                      data-testid="work-view-back"
+                      onClick={handleBackToWorkList}
+                      style={{ marginRight: 8 }}
+                    >
+                      ← {t("work.backToList")}
+                    </button>
+                  }
+                />
+              ) : (
+                <WorkPage
+                  tabID={ownerTabID || ''}
+                  onBack={handleBackToSession}
+                  onOpenWork={handleOpenWork}
+                />
+              )
+            )}
 
             {/* AddOnWorkbench overlay */}
             <AddOnWorkbenchOverlay />

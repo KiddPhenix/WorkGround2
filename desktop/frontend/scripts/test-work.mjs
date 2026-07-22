@@ -16,6 +16,7 @@ const tests = [
   'src/__tests__/block-renderers.test.tsx',
   'src/__tests__/block-action-renderers.test.tsx',
   'src/__tests__/work-card.test.tsx',
+  'src/__tests__/work-page.test.tsx',
   'src/__tests__/cornerstone-drawer.test.tsx',
   'src/__tests__/run-progress.test.tsx',
 ];
