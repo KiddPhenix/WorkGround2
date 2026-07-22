@@ -17,12 +17,16 @@ const tests = [
   'src/__tests__/block-action-renderers.test.tsx',
   'src/__tests__/work-card.test.tsx',
   'src/__tests__/work-page.test.tsx',
+  'src/__tests__/app-work-integration.test.tsx',
   'src/__tests__/cornerstone-drawer.test.tsx',
   'src/__tests__/run-progress.test.tsx',
 ];
 
 for (const test of tests) {
-  const result = spawnSync(process.execPath, [tsx, test], {
+  const args = test.endsWith('app-work-integration.test.tsx')
+    ? ['--import', 'tsx', '--import', new URL('./test-asset-hook.mjs', import.meta.url).href, test]
+    : [tsx, test];
+  const result = spawnSync(process.execPath, args, {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,

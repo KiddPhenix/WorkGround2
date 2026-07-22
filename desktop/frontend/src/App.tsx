@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { type CSSProperties, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
@@ -62,13 +62,15 @@ import { OnboardingOverlay } from "./components/OnboardingOverlay";
 import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
-import { SessionMemoryBar, SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar, AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
-import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { SessionBackground } from "./components/SessionBackground";
+import { AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { WorkPage } from "./components/work/WorkPage";
 import { WorkCard } from "./components/work/WorkCard";
+import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
+import { SessionSurface, type SessionSurfaceProps } from "./components/SessionSurface";
+import type { SessionRef, SessionSurfaceContext } from "./work/types";
 import { CopyButton } from "./components/CopyButton";
 import { parseTodos } from "./lib/tools";
 import {
@@ -362,7 +364,7 @@ type DesktopNavigationInput =
   | { kind: "topic"; scope: string; workspaceRoot: string; topicId: string; sessionPath?: string; runtimeHint?: ProjectTopicRuntimeHint }
   | { kind: "blank"; scope: string; workspaceRoot: string }
   | { kind: "sidebar-im"; connection: SidebarImConnection }
-  | { kind: "resume-session"; session: SessionMeta };
+  | { kind: "resume-session"; session: SessionMeta; onFailure?: (error: unknown) => void };
 type PendingDesktopNavigationRequest = PendingNavigationRequest<DesktopNavigationInput>;
 type SidebarImTopicSource = {
   platform: SidebarImPlatform;
@@ -977,6 +979,11 @@ function TextSizeHotkeys() {
   return null;
 }
 
+function comparableSessionPath(path: string | undefined): string {
+  const normalized = (path ?? "").trim().replace(/\\/g, "/");
+  return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
 function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
   const {
     state,
@@ -1151,6 +1158,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     setActiveWorkId(null);
     setOwnerTabID(null);
   }, []);
+
   useEffect(() => {
     try { localStorage.setItem("projectTree:timeFilter", topicTimeFilter); } catch { /* ignore */ }
   }, [topicTimeFilter]);
@@ -2774,6 +2782,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       setTranscriptRevealSignal((value) => value + 1);
     } catch (err: any) {
       if (!latest()) return;
+      if (request.kind === "resume-session") request.onFailure?.(err);
       if (request.kind === "topic" || request.kind === "blank") {
         console.warn("desktop navigation failed", err);
         showToast(t("history.failedOpenSession"), "error");
@@ -3116,6 +3125,161 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     ? Math.min(100, Math.round((state.context.used / state.context.window) * 100))
     : 0;
 
+  const sessionSurfaceProps: SessionSurfaceProps = {
+    activeTabId: activeTabId || "",
+    activeSessionId,
+    renderSessionId,
+    runtimeTabMetas,
+    displayItems,
+    live: state.live,
+    running: state.running || rewindCommitting,
+    memoryRunning: state.running,
+    controllerReady,
+    footerHeight,
+    transcriptHydrating,
+    transcriptRevealSignal,
+    hasOlderHistory: state.historyHasOlder && !rewindState,
+    historyStartTurn: state.historyStartTurn,
+    historyOlderLoading: state.historyOlderLoading,
+    welcomeTarget,
+    actionPending: state.messageAction != null,
+    rewindDisabled: Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
+    rewindSignal,
+    checkpoints: state.checkpoints,
+    approval: state.approval,
+    ask: state.ask,
+    clearContextPending,
+    composerInsertRequest,
+    planRevisionInsertRequest,
+    composerSubmitKey,
+    collaborationMode,
+    toolApprovalMode,
+    tokenMode,
+    goal,
+    cwd: state.meta?.cwd,
+    modelLabel: state.meta?.label ?? t("status.connecting"),
+    configModelLabel: irisFixtureActive ? "DeepSeek-R1" : state.meta?.label ?? t("status.connecting"),
+    imageInputEnabled: state.meta?.imageInputEnabled !== false,
+    effort: state.effort,
+    turnStartAt: state.turnStartAt,
+    turnTokens: state.turnTokens,
+    retry: state.retry,
+    activityStage: state.activityStage,
+    activityStageSeed: state.activityStageSeed,
+    transientOverlayDismissSignal,
+    composerSessionKey,
+    latestGuidanceKey: latestGuidanceConsumed?.key,
+    latestGuidanceText: latestGuidanceConsumed?.text,
+    guidanceQueueMockItems,
+    submitDisabled: false,
+    decisionPending: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
+    ready: controllerReady,
+    readOnly: Boolean(activeTab?.readOnly),
+    composerDisabled: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
+    sidebarCollapsed,
+    sidebarToggleTitle,
+    sidebarTogglePressed,
+    headerTitle: irisFixtureActive
+      ? "桌面信息架构重构"
+      : sidebarImDetailConnection
+        ? t("botDetail.title", { name: sidebarImDetailConnection.title })
+        : tabSessionDisplayTitle(activeTab),
+    irisFixtureActive,
+    sidebarImDetailConnection,
+    contextPercent: irisFixtureActive ? 33 : contextPercent,
+    runtimeMode: state.runtimeMode,
+    foregroundActive: irisFixtureActive || state.running,
+    onSend: handleSend,
+    onCancel: cancel,
+    onApprove: (id, allow, session, persist) => approve(id, allow, session, persist),
+    onAnswerQuestion: answerQuestion,
+    onTranscriptPrompt: handleTranscriptPrompt,
+    onWelcomeDraft: handleWelcomeDraft,
+    onEditPrompt: handleEditPrompt,
+    onRewind: handleMessageAction,
+    onPinMemory: handlePinMemory,
+    onLoadOlderHistory: () => { if (!activeTabId) return; return loadOlderHistory(activeTabId); },
+    onCycleMode: cycleMode,
+    onSetMode: applyMode,
+    onSetCollaborationMode: applyCollaborationMode,
+    onSetToolApprovalMode: applyToolApprovalMode,
+    onToggleYoloApprovalMode: toggleYoloApprovalMode,
+    onClearGoal: () => applyGoal(""),
+    onSwitchModel: switchModel,
+    onSetEffort: setEffort,
+    onSetTokenMode: applyTokenMode,
+    onCancelClearContext: cancelClearContext,
+    onConfirmClearContext: () => { void confirmClearContext(); },
+    onToggleSidebar: toggleSidebar,
+    onOpenPalette: () => { void openPalette(); },
+    onEnterWidgetMode,
+    onSwitchTab: (tab) => { void handleOpenRuntimeTab(tab); },
+    onSetInsertTarget: setWorkspaceInsertTarget,
+    onRevisePlan: setPendingPlanRevision,
+    onExitPlan: async () => { await applyCollaborationMode("normal"); },
+    onComposerInsert: setComposerInsertRequest,
+    conversationViewportRef,
+    scrollHostRef: conversationViewportRef,
+    t,
+    widgetEnabled,
+  };
+
+  // ── Linked session navigation (for WorkCardBack resolveSessionSurface) ─
+  const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
+    const targetPath = comparableSessionPath(sessionRef.sessionPath);
+    const existingTab = tabMetas.find((tab) => comparableSessionPath(tab.sessionPath) === targetPath);
+    if (existingTab) {
+      await handleOpenRuntimeTab(existingTab);
+      return;
+    }
+    const topicTarget = runtimeTabMetas.find((tab) => comparableSessionPath(tab.sessionPath) === targetPath);
+    if (topicTarget?.topicId) {
+      await handleOpenTopic(topicTarget.scope, topicTarget.workspaceRoot || "", topicTarget.topicId, sessionRef.sessionPath);
+      return;
+    }
+    const noFailure = Symbol("no linked navigation failure");
+    let failure: unknown | typeof noFailure = noFailure;
+    await enqueueNavigation({
+      kind: "resume-session",
+      onFailure: (error) => { failure = error; },
+      session: {
+        path: sessionRef.sessionPath,
+        preview: sessionRef.preview || "",
+        turns: sessionRef.turnCount,
+        createdAt: 0,
+        lastActivityAt: 0,
+        modTime: 0,
+        current: false,
+        open: false,
+        scope: activeTab?.scope || (state.meta?.workspaceRoot ? "project" : "global"),
+        workspaceRoot: activeTab?.workspaceRoot || state.meta?.workspaceRoot || "",
+      },
+    });
+    if (failure !== noFailure) throw failure;
+  }, [activeTab?.scope, activeTab?.workspaceRoot, enqueueNavigation, handleOpenRuntimeTab, handleOpenTopic, runtimeTabMetas, state.meta?.workspaceRoot, tabMetas]);
+
+  const resolveSessionSurface = useCallback((sessionRef: SessionRef, context: SessionSurfaceContext): ReactNode => {
+    const targetPath = comparableSessionPath(sessionRef.sessionPath);
+    const loaded = targetPath !== "" && (
+      targetPath === comparableSessionPath(state.historyResolvedPath) ||
+      targetPath === comparableSessionPath(activeTab?.sessionPath)
+    );
+    if (!loaded) {
+      return <LinkedSessionCard sessionRef={sessionRef} context={context} onNavigate={handleNavigateToLinkedSession} />;
+    }
+    return (
+      <div className="wg2-work-back-real-session" data-testid="work-back-real-session">
+        <SessionSurface
+          {...sessionSurfaceProps}
+          variant="work"
+          readOnly={sessionSurfaceProps.readOnly || Boolean(context.readonly || context.archived)}
+        />
+      </div>
+    );
+  }, [activeTab?.sessionPath, handleNavigateToLinkedSession, sessionSurfaceProps, state.historyResolvedPath]);
+
+  const showWorkView = workViewOpen && ownerTabID !== null && ownerTabID === activeTabId && workCapable === true;
+
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3269,7 +3433,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               {workCapable === true && (
                 <button
                   type="button"
-                  className={`workspace-sidebar__new-session${workViewOpen ? ' workspace-sidebar__new-session--active' : ''}`}
+                  className={`workspace-sidebar__new-session${showWorkView ? ' workspace-sidebar__new-session--active' : ''}`}
                   aria-label={t("work.title")}
                   onClick={handleOpenWorkView}
                   data-testid="work-sidebar-btn"
@@ -3334,215 +3498,42 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {!workViewOpen ? (
-    <section className="session-workspace" aria-label="Session workspace">
-              <SessionBackground tabId={activeTabId} />
-              {/* SessionHeader (104px) */}
-              <header className="session-header">
-                <div className="session-header__identity">
-                  {sidebarCollapsed && (
-                    <Tooltip label={sidebarToggleTitle}>
+            {showWorkView ? (
+                activeWorkId && ownerTabID ? (
+                  <WorkCard
+                    workID={activeWorkId}
+                    tabID={ownerTabID}
+                    resolveSessionSurface={resolveSessionSurface}
+                    backSlots={{
+                      surface: ({ readonly, archived }) => (
+                        <SessionSurface
+                          {...sessionSurfaceProps}
+                          variant="work"
+                          readOnly={sessionSurfaceProps.readOnly || readonly || archived}
+                        />
+                      ),
+                    }}
+                    workspaceActions={
                       <button
-                        className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}
                         type="button"
-                        onClick={toggleSidebar}
-                        aria-label={sidebarToggleTitle}
-                        aria-pressed={!sidebarCollapsed}
+                        className="work-page__back-btn"
+                        data-testid="work-view-back"
+                        onClick={handleBackToWorkList}
+                        style={{ marginRight: 8 }}
                       >
-                        <PanelRight size={15} aria-hidden="true" />
+                        ← {t("work.backToList")}
                       </button>
-                    </Tooltip>
-                  )}
-                  <h1 className="session-header__title" title={irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}>
-                    {irisFixtureActive ? "桌面信息架构重构" : sidebarImDetailConnection ? topicbarTitle : tabSessionDisplayTitle(activeTab)}
-                  </h1>
-                </div>
-                <div className="session-header__actions">
-                  <SessionStatusIndicators tabs={runtimeTabMetas} activeTabId={activeTabId} onSwitchTab={(tab) => void handleOpenRuntimeTab(tab)} t={t} />
-                  <AddOnLauncherButton />
-                  <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => void openPalette()}>
-                    <Command size={16} />
-                  </button>
-                </div>
-              </header>
-
-              {/* TaskMemoryBar (reactive) */}
-              <SessionMemoryBar sessionId={renderSessionId} items={displayItems} running={state.running} />
-
-              {/* ConversationViewport */}
-              <div className="conversation-viewport" ref={conversationViewportRef}>
-                {irisFixtureActive ? (
-                  <div className="iris-fixture-conversation">
-                    <p className="iris-fixture-conversation__message">已调整为两级导航结构，核心路径保持不变。</p>
-                    <SessionRunStream sessionId={renderSessionId} statuses={["completed", "failed", "cancelled"]} onStop={cancel} />
-                    <div className="iris-fixture-conversation__message iris-fixture-conversation__message--long">
-                      <p>好的，已制定持久化方案并完成 PoC 验证。</p>
-                      <p>将采用本地存储并预留云端同步接口，确保数据一致性与恢复能力。</p>
-                      <p>后续会输出设计文档与实现计划。</p>
-                    </div>
-                    <SessionRunStream sessionId={renderSessionId} statuses={["queued", "running", "waiting_user", "reconnecting"]} onStop={cancel} />
-                  </div>
-                ) : sidebarImDetailConnection ? (
-                  <div>{t("botDetail.title", { name: sidebarImDetailConnection.title })}</div>
+                    }
+                  />
                 ) : (
-                  <>
-                    <Transcript
-                      items={displayItems}
-                      live={state.live}
-                      tabId={activeTabId}
-                      footerHeight={footerHeight}
-                      onPrompt={handleTranscriptPrompt}
-                      onWelcomeDraft={handleWelcomeDraft}
-                      welcomeTarget={welcomeTarget}
-                      onEditPrompt={handleEditPrompt}
-                      onRewind={handleMessageAction}
-                      onPinMemory={handlePinMemory}
-                      checkpoints={state.checkpoints}
-                      actionPending={state.messageAction != null}
-                      rewindDisabled={Boolean(activeTab?.readOnly) || !controllerReady || hydratePlaceholderActive || rewindState != null || rewindCommitting || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                      running={state.running || rewindCommitting}
-                      welcomeVariant="default"
-                      informationMode
-                      actionHoverMenus={false}
-                      rewindSignal={rewindSignal}
-                      revealSignal={transcriptRevealSignal}
-                      hydrating={transcriptHydrating}
-                      hasOlderHistory={state.historyHasOlder && !rewindState}
-                      olderHistoryCount={state.historyStartTurn}
-                      loadingOlderHistory={state.historyOlderLoading}
-                      onLoadOlderHistory={() => { if (!activeTabId) return; return loadOlderHistory(activeTabId); }}
-                      scrollHostRef={conversationViewportRef}
-                      renderTurnFooter={(turn) => <SessionRunStream sessionId={renderSessionId} turnId={`turn:${turn + 1}`} onStop={cancel} />}
-                    />
-                    <SessionRunStream sessionId={renderSessionId} unassignedOnly onStop={cancel} />
-                  </>
-                )}
-              </div>
-
-              {/* SessionFooterDock */}
-              <div className="session-footer-dock">
-                {/* DecisionSurface */}
-                {state.approval && (
-                  <div className="decision-surface">
-                    <ApprovalModal
-                      key={state.approval.id}
-                      approval={state.approval}
-                      cwd={state.meta?.cwd}
-                      tabId={activeSessionId}
-                      insertRequest={planRevisionInsertRequest}
-                      onRevisionActiveChange={(active) => setWorkspaceInsertTarget(active ? "planRevision" : "composer")}
-                      onAnswer={async (allow, session, persist) => {
-                        if (state.approval!.tool === "exit_plan_mode" && allow) await applyCollaborationMode("normal");
-                        approve(state.approval!.id, allow, session, persist);
-                      }}
-                      onRevisePlan={(text) => { setPendingPlanRevision(text); approve(state.approval!.id, false, false, false); }}
-                      onExitPlan={async () => { await applyCollaborationMode("normal"); approve(state.approval!.id, false, false, false); }}
-                      onStop={() => { cancel(); }}
-                    />
-                  </div>
-                )}
-                {state.ask && (
-                  <div className="decision-surface">
-                    <AskCard ask={state.ask} onAnswer={answerQuestion} onDismiss={() => answerQuestion(state.ask!.id, [])} onStop={() => { cancel(); }} />
-                  </div>
-                )}
-                {clearContextPending && (
-                  <div className="decision-surface">
-                    <ClearContextCard onCancel={cancelClearContext} onConfirm={() => { void confirmClearContext(); }} />
-                  </div>
-                )}
-
-                {/* ArtifactShelf (reactive) */}
-                <SessionArtifactShelf sessionId={renderSessionId} />
-
-                {/* QueueTray (reactive) */}
-                <SessionQueueTray onEditContent={(text) => setComposerInsertRequest({ id: Date.now(), text, mode: "replace" })} />
-
-                {/* Composer + RuntimeConfigBar */}
-                <Composer
-                  running={state.running || rewindCommitting}
-                  collaborationMode={collaborationMode}
-                  toolApprovalMode={toolApprovalMode}
-                  tokenMode={tokenMode}
-                  goal={goal}
-                  cwd={state.meta?.cwd}
-                  modelLabel={state.meta?.label ?? t("status.connecting")}
-                  submitKey={composerSubmitKey}
-                  imageInputEnabled={state.meta?.imageInputEnabled !== false}
-                  tabId={activeSessionId}
-                  widgetEnabled={widgetEnabled}
-                  onEnterWidgetMode={onEnterWidgetMode}
-                  effort={state.effort}
-                  onSend={handleSend}
-                  onCancel={cancel}
-                  onCycleMode={cycleMode}
-                  onSetMode={applyMode}
-                  onSetCollaborationMode={applyCollaborationMode}
-                  onSetToolApprovalMode={applyToolApprovalMode}
-                  onToggleYoloApprovalMode={toggleYoloApprovalMode}
-                  onClearGoal={() => applyGoal("")}
-                  onSwitchModel={switchModel}
-                  onSetEffort={setEffort}
-                  onSetTokenMode={applyTokenMode}
-                  insertRequest={composerInsertRequest}
-                  readOnly={Boolean(activeTab?.readOnly)}
-                  disabled={rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                  submitDisabled={false}
-                  decisionPending={rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
-                  ready={controllerReady}
-                  turnStartAt={state.turnStartAt}
-                  turnTokens={state.turnTokens}
-                  retry={state.retry}
-                  activityStage={state.activityStage}
-                  activityStageSeed={state.activityStageSeed}
-                  transientDismissSignal={transientOverlayDismissSignal}
-                  sessionKey={composerSessionKey}
-                  guidanceConsumedKey={latestGuidanceConsumed?.key}
-                  guidanceConsumedText={latestGuidanceConsumed?.text}
-                  guidanceQueuePreviewItems={guidanceQueueMockItems}
-                />
-                <SessionConfigBar
-                  modelLabel={irisFixtureActive ? "DeepSeek-R1" : state.meta?.label ?? t("status.connecting")}
-                  contextPercent={irisFixtureActive ? 33 : contextPercent}
-                  runtimeMode={state.runtimeMode}
-                  foregroundActive={irisFixtureActive || state.running}
-                  collaborationMode={collaborationMode}
-                  toolApprovalMode={toolApprovalMode}
-                  controllerReady={controllerReady}
-                  tabId={activeSessionId}
-                  onPrimaryAction={() => {
-                    document.querySelector<HTMLButtonElement>(".session-footer-dock .composer__btn--send")?.click();
-                  }}
-                  onSwitchModel={switchModel}
-                  onCycleCollaboration={cycleMode}
-                  onSetApprovalMode={applyToolApprovalMode}
-                />
-              </div>
-            </section>
+                  <WorkPage
+                    tabID={ownerTabID || ''}
+                    onBack={handleBackToSession}
+                    onOpenWork={handleOpenWork}
+                  />
+                )
             ) : (
-              activeWorkId && ownerTabID ? (
-                <WorkCard
-                  workID={activeWorkId}
-                  tabID={ownerTabID}
-                  workspaceActions={
-                    <button
-                      type="button"
-                      className="work-page__back-btn"
-                      data-testid="work-view-back"
-                      onClick={handleBackToWorkList}
-                      style={{ marginRight: 8 }}
-                    >
-                      ← {t("work.backToList")}
-                    </button>
-                  }
-                />
-              ) : (
-                <WorkPage
-                  tabID={ownerTabID || ''}
-                  onBack={handleBackToSession}
-                  onOpenWork={handleOpenWork}
-                />
-              )
+              <SessionSurface {...sessionSurfaceProps} />
             )}
 
             {/* AddOnWorkbench overlay */}

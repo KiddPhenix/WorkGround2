@@ -1,6 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
 import { JSDOM } from 'jsdom';
 import React, { act, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -315,19 +312,22 @@ await test('same-instance tab switch ignores a late post-create refresh', async 
   check(host.querySelector('[data-testid="work-empty"]') !== null, 'new tab did not settle');
 });
 
-await test('production App gates and mounts the real WorkCard/Wails chain', () => {
-  const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
-  const cardSource = readFileSync(resolve(process.cwd(), 'src/components/work/WorkCard.tsx'), 'utf8');
-  const adapterSource = readFileSync(resolve(process.cwd(), 'src/work/wailsAdapter.ts'), 'utf8');
-  check(appSource.includes('app.WorkCapable(activeTabId)'), 'typed Work capability check missing');
-  check(appSource.includes('!activeTabId || !workControllerReady'), 'Work capability is not retried after controller startup');
-  check(appSource.includes('workCapable === true'), 'Work entry is not capability-gated');
-  check(appSource.includes('data-testid="work-sidebar-btn"'), 'Work sidebar entry missing');
-  check(appSource.includes('workID={activeWorkId}') && appSource.includes('tabID={ownerTabID}'), 'real WorkCard owner binding missing');
-  check(!appSource.includes('import { WorkWorkspace }'), 'App still double-wraps WorkWorkspace');
-  check(cardSource.includes('createWailsWorkControllerPort(tabID)') && cardSource.includes('<CornerstoneDrawer'), 'WorkCard production port/Drawer missing');
-  check(adapterSource.includes('app.RunWork(tabID, input.workId, input.requestId)'), 'RunWork production binding missing');
-  check(adapterSource.includes('app.PinCornerstone(tabID, input.workId, goInput)'), 'Cornerstone production binding missing');
+await test('successful create refreshes the list and opens exactly once', async () => {
+  const opened: string[] = [];
+  const { host } = await mount(<WorkPage tabID="tab-1" onBack={() => undefined} onOpenWork={(id) => { opened.push(id); }} />);
+  listDeferreds[0].resolve(page());
+  await settle();
+  click(host, 'work-new-btn');
+  await setName(host, 'Created');
+  click(host, 'work-create-submit');
+  createDeferreds[0].resolve({ id: 'work-created', name: 'Created' });
+  await settle();
+  equal(listDeferreds.length, 2, 'post-create ListWorks call count');
+  listDeferreds[1].resolve(page([summary('work-created', 'Created')]));
+  await settle();
+  equal(opened.length, 1, 'successful create open count');
+  equal(opened[0], 'work-created', 'successful create target');
+  check(host.querySelector('[data-testid="work-create-dialog"]') === null, 'successful create kept the dialog open');
 });
 
 process.stdout.write(`\nWorkPage: ${passed} passed, ${failed} failed\n`);

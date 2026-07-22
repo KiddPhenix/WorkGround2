@@ -20,7 +20,9 @@ export type WorkCardBackSlot = ReactNode | ((props: WorkCardBackSlotProps) => Re
  * Composer nodes instead of creating a second conversation implementation.
  */
 export interface WorkCardBackSlots {
-  transcript: WorkCardBackSlot;
+  /** Full production Session surface for attempts without a SessionRef. */
+  surface?: WorkCardBackSlot;
+  transcript?: WorkCardBackSlot;
   runApproval?: WorkCardBackSlot;
   artifactShelf?: WorkCardBackSlot;
   queue?: WorkCardBackSlot;
@@ -76,13 +78,15 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       attemptId: resolved.attempt.id,
       attemptIndex: resolved.attempt.index,
       sessionRef,
+      readonly,
+      archived,
     };
     return {
       key: `${sessionRef.sessionPath}\u0000${sessionRef.branchId}`,
       targetID: `attempt:${context.runId}:${context.stageId}:${context.taskId}:${attemptKey(resolved.attempt)}`,
       node: resolveSessionSurface(sessionRef, context),
     };
-  }, [selection, resolveSessionSurface, work]);
+  }, [archived, readonly, resolveSessionSurface, selection, work]);
 
   return (
     <div
@@ -112,7 +116,11 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
             <div className="wg2-work-session-unavailable" role="alert">目标 Session 暂不可用。</div>
           )}
         </div>
-      ) : slots ? (
+      ) : slots?.surface ? (
+        <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
+          {renderSlot(slots.surface, slotProps)}
+        </div>
+      ) : slots?.transcript ? (
         <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
           <div className="wg2-work-back-slot wg2-work-back-transcript" data-testid="work-back-slot-transcript">
             {renderSlot(slots.transcript, slotProps)}
