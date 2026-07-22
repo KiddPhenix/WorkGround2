@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"workground2/internal/control"
@@ -19,6 +20,48 @@ type workViewWatch struct {
 	broadcaster *control.WorkViewBroadcaster
 	streamID    string
 	cancel      context.CancelFunc
+}
+
+// workResyncGates serializes authoritativeWorkViewResync per workID so that
+// snapshot linearization order matches generation order. Only same-workID
+// callers block each other; different workIDs proceed independently.
+// Idle entries (refs == 0) are deleted on release so the map does not leak.
+type workResyncGates struct {
+	mu    sync.Mutex
+	gates map[string]*workResyncGate
+}
+
+type workResyncGate struct {
+	mu   sync.Mutex
+	refs int // protected by workResyncGates.mu
+}
+
+func (g *workResyncGates) lock(workID string) *workResyncGate {
+	g.mu.Lock()
+	if g.gates == nil {
+		g.gates = map[string]*workResyncGate{}
+	}
+	gate, ok := g.gates[workID]
+	if !ok {
+		gate = &workResyncGate{}
+		g.gates[workID] = gate
+	}
+	gate.refs++
+	g.mu.Unlock()
+	gate.mu.Lock()
+	return gate
+}
+
+func (g *workResyncGates) unlock(gate *workResyncGate, workID string) {
+	gate.mu.Unlock()
+	g.mu.Lock()
+	if g.gates != nil {
+		gate.refs--
+		if gate.refs == 0 {
+			delete(g.gates, workID)
+		}
+	}
+	g.mu.Unlock()
 }
 
 // workController is the local narrow port the desktop needs from a Controller.
@@ -198,6 +241,13 @@ func (a *App) recoverWorkViewFromOverflow(ctx context.Context, wc control.WorkCo
 }
 
 func (a *App) authoritativeWorkViewResync(ctx context.Context, wc control.WorkControl, workID string, reason work.ViewResyncReason, minGeneration uint64) (*work.WorkViewEvent, error) {
+	return a.authoritativeWorkViewResyncWithMarshal(ctx, wc, workID, reason, minGeneration, json.Marshal)
+}
+
+func (a *App) authoritativeWorkViewResyncWithMarshal(ctx context.Context, wc control.WorkControl, workID string, reason work.ViewResyncReason, minGeneration uint64, marshal func(any) ([]byte, error)) (*work.WorkViewEvent, error) {
+	gate := a.workResyncGates.lock(workID)
+	defer func() { a.workResyncGates.unlock(gate, workID) }()
+
 	view, err := wc.GetWork(ctx, workID)
 	if err != nil || view == nil {
 		if err != nil {
@@ -205,7 +255,7 @@ func (a *App) authoritativeWorkViewResync(ctx context.Context, wc control.WorkCo
 		}
 		return nil, fmt.Errorf("work: recover authoritative snapshot: empty projection")
 	}
-	payload, err := json.Marshal(view)
+	payload, err := marshal(view)
 	if err != nil {
 		return nil, fmt.Errorf("work: encode authoritative snapshot: %w", err)
 	}

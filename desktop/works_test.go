@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -695,6 +696,456 @@ func TestCornerstoneWailsBindingConflict(t *testing.T) {
 		t.Fatal("expected revision conflict error")
 	}
 	t.Logf("conflict error (expected): %v", err)
+}
+
+// ── Per-work resync gate linearization tests ─────────────────────────────────
+
+// encBarrier returns a marshal func that signals once on entered when the
+// encoder is first reached, then blocks on unblock before encoding with
+// json.Marshal. After unblock, all subsequent calls pass through immediately.
+func encBarrier() (marshal func(any) ([]byte, error), entered <-chan struct{}, unblock func()) {
+	ready := make(chan struct{})
+	done := make(chan struct{})
+	var once sync.Once
+	return func(v any) ([]byte, error) {
+			once.Do(func() { close(ready) })
+			<-done
+			return json.Marshal(v)
+		}, ready, func() {
+			close(done)
+		}
+}
+
+// makeWork returns a minimal ready Work for test projection.
+func makeWork(id, name string, state work.WorkState, revision int64) (*work.Work, work.WorkEventState, error) {
+	return &work.Work{ID: id, Name: name, State: state, ArchiveState: work.ArchiveActive}, work.WorkEventState{Revision: revision}, nil
+}
+
+func makeAssessmentWork(id string, blocked bool, revision int64) (*work.Work, work.WorkEventState, error) {
+	status := work.CornerstoneActive
+	if blocked {
+		status = work.CornerstoneInvalid
+	}
+	return &work.Work{
+		ID: id, Name: "assessment", State: work.WorkReady, ArchiveState: work.ArchiveActive,
+		Cornerstones: []work.Cornerstone{{
+			ID: "cs-required", WorkID: id, Type: work.CornerstonePolicy, Title: "required",
+			Ref: work.CornerstoneRef{Kind: "inline"}, Mode: work.CornerstoneSnapshot,
+			Required: true, Status: status,
+		}},
+	}, work.WorkEventState{Revision: revision}, nil
+}
+
+func waitForResyncGateRefs(t *testing.T, app *App, workID string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		app.workResyncGates.mu.Lock()
+		gate := app.workResyncGates.gates[workID]
+		got := 0
+		if gate != nil {
+			got = gate.refs
+		}
+		app.workResyncGates.mu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("gate refs for %s = %d, want %d", workID, got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func mustDecodePayload(t *testing.T, event *work.WorkViewEvent) work.WorkView {
+	t.Helper()
+	var v work.WorkView
+	if err := json.Unmarshal(event.Payload, &v); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	return v
+}
+
+func TestAuthoritativeResyncLinearizesSameWorkConcurrent(t *testing.T) {
+	type step struct {
+		name          string
+		firstBlocked  bool
+		secondBlocked bool
+	}
+	for _, tc := range []step{
+		{name: "ready→blocked", firstBlocked: false, secondBlocked: true},
+		{name: "blocked→ready", firstBlocked: true, secondBlocked: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Store returns firstState then secondState on successive calls.
+			var callCount atomic.Int32
+			store := &worktest.Store{
+				LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+					n := callCount.Add(1)
+					if n == 1 {
+						return makeAssessmentWork(workID, tc.firstBlocked, 10)
+					}
+					return makeAssessmentWork(workID, tc.secondBlocked, 10)
+				},
+			}
+			views := control.NewWorkViewBroadcaster()
+			ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+			wc := ctrl.WorkControl()
+
+			marshal, entered, unblock := encBarrier()
+			app := &App{ctx: context.Background()}
+
+			// A enters gate, calls GetWork (gets firstState), then blocks in encoder.
+			// B tries to enter gate but is blocked behind A.
+			var wg sync.WaitGroup
+			var events [2]*work.WorkViewEvent
+			var errs [2]error
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				events[0], errs[0] = app.authoritativeWorkViewResyncWithMarshal(
+					t.Context(), wc, "work-linear", work.ViewResyncOverflow, 0, marshal)
+			}()
+
+			// Wait until A reaches the encoder barrier.
+			<-entered
+
+			// Launch B — must block at per-work gate (A still holds it).
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				events[1], errs[1] = app.authoritativeWorkViewResyncWithMarshal(
+					t.Context(), wc, "work-linear", work.ViewResyncOverflow, 0, marshal)
+			}()
+
+			waitForResyncGateRefs(t, app, "work-linear", 2)
+
+			// Unblock A's encoder — A finishes with firstState + low generation.
+			unblock()
+			wg.Wait()
+
+			for i, err := range errs {
+				if err != nil {
+					t.Fatalf("resync %d: %v", i, err)
+				}
+			}
+
+			genA := events[0].Resync.Generation
+			genB := events[1].Resync.Generation
+			if genA == genB {
+				t.Fatalf("generations must differ: both %d", genA)
+			}
+			if genA >= genB {
+				t.Fatalf("A generation %d must be < B generation %d", genA, genB)
+			}
+
+			viewA := mustDecodePayload(t, events[0])
+			viewB := mustDecodePayload(t, events[1])
+			if viewA.Assessment.Blocking != tc.firstBlocked || (viewA.RunBlock != nil) != tc.firstBlocked {
+				t.Fatalf("A assessment = %#v, runBlock=%#v, want blocked=%v", viewA.Assessment, viewA.RunBlock, tc.firstBlocked)
+			}
+			if viewB.Assessment.Blocking != tc.secondBlocked || (viewB.RunBlock != nil) != tc.secondBlocked {
+				t.Fatalf("B assessment = %#v, runBlock=%#v, want blocked=%v", viewB.Assessment, viewB.RunBlock, tc.secondBlocked)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeResyncHydrateOverflowSharePerWorkGate(t *testing.T) {
+	// Store returns "ready" then "blocked" on successive calls.
+	var callCount atomic.Int32
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			n := callCount.Add(1)
+			if n == 1 {
+				return makeWork(workID, "ready-state", work.WorkReady, 10)
+			}
+			return makeWork(workID, "blocked-state", work.WorkReady, 10)
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+
+	marshal, entered, unblock := encBarrier()
+	app := &App{ctx: context.Background()}
+
+	// Hydrate enters first, blocks in encoder.
+	var wg sync.WaitGroup
+	var evHydrate, evOverflow *work.WorkViewEvent
+	var errHydrate, errOverflow error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		evHydrate, errHydrate = app.authoritativeWorkViewResyncWithMarshal(
+			t.Context(), wc, "work-shared", work.ViewResyncHydrate, 3, marshal)
+	}()
+
+	<-entered // hydrate is in encoder
+
+	// Overflow starts, blocked behind hydrate's gate.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		evOverflow, errOverflow = app.authoritativeWorkViewResyncWithMarshal(
+			t.Context(), wc, "work-shared", work.ViewResyncOverflow, 0, marshal)
+	}()
+
+	waitForResyncGateRefs(t, app, "work-shared", 2)
+	unblock()
+	wg.Wait()
+
+	if errHydrate != nil {
+		t.Fatalf("hydrate: %v", errHydrate)
+	}
+	if errOverflow != nil {
+		t.Fatalf("overflow: %v", errOverflow)
+	}
+
+	// Hydrate got in first → lower generation, first state.
+	// Overflow got in second → higher generation, second state.
+	if evHydrate.Resync.Generation >= evOverflow.Resync.Generation {
+		t.Fatalf("hydrate gen %d must be < overflow gen %d", evHydrate.Resync.Generation, evOverflow.Resync.Generation)
+	}
+	if evHydrate.Resync.Reason != work.ViewResyncHydrate {
+		t.Fatalf("hydrate reason = %q", evHydrate.Resync.Reason)
+	}
+	if evOverflow.Resync.Reason != work.ViewResyncOverflow {
+		t.Fatalf("overflow reason = %q", evOverflow.Resync.Reason)
+	}
+	if evHydrate.Resync.Generation < 3 {
+		t.Fatalf("hydrate minGeneration 3 not honored: gen=%d", evHydrate.Resync.Generation)
+	}
+
+	viewHydrate := mustDecodePayload(t, evHydrate)
+	viewOverflow := mustDecodePayload(t, evOverflow)
+	if viewHydrate.Work.Name != "ready-state" {
+		t.Fatalf("hydrate payload = %q, want ready-state", viewHydrate.Work.Name)
+	}
+	if viewOverflow.Work.Name != "blocked-state" {
+		t.Fatalf("overflow payload = %q, want blocked-state", viewOverflow.Work.Name)
+	}
+}
+
+func TestAuthoritativeResyncEncoderErrorReleasesGate(t *testing.T) {
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			return makeWork(workID, "ok", work.WorkReady, 1)
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+
+	injected := errors.New("encoder exploded")
+	app := &App{ctx: context.Background()}
+
+	// First call: encoder error → gate must be released.
+	_, err := app.authoritativeWorkViewResyncWithMarshal(t.Context(), wc, "work-enc-err", work.ViewResyncOverflow, 0, func(any) ([]byte, error) {
+		return nil, injected
+	})
+	if err == nil || !strings.Contains(err.Error(), "encoder exploded") {
+		t.Fatalf("expected encoder error, got %v", err)
+	}
+
+	// Second call with real encoder must succeed — gate was released.
+	event, err := app.authoritativeWorkViewResync(t.Context(), wc, "work-enc-err", work.ViewResyncRetry, 0)
+	if err != nil {
+		t.Fatalf("second resync after encoder error release: %v", err)
+	}
+	if event.Resync == nil || event.Resync.Generation == 0 {
+		t.Fatalf("second resync event = %+v", event)
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("second event contract: %v", err)
+	}
+	t.Logf("encoder error released gate, second call gen=%d", event.Resync.Generation)
+}
+
+func TestAuthoritativeResyncEncoderPanicReleasesGate(t *testing.T) {
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			return makeWork(workID, "ok", work.WorkReady, 1)
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+
+	app := &App{ctx: context.Background()}
+
+	// Run the resync in a goroutine, recover the panic.
+	panicCaught := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				close(panicCaught)
+			}
+		}()
+		_, _ = app.authoritativeWorkViewResyncWithMarshal(t.Context(), wc, "work-panic", work.ViewResyncOverflow, 0, func(any) ([]byte, error) {
+			panic("encoder kaboom")
+		})
+	}()
+	select {
+	case <-panicCaught:
+	case <-time.After(2 * time.Second):
+		t.Fatal("encoder panic was not recovered in time")
+	}
+
+	// Second call with real encoder must succeed — gate was released by defer.
+	event, err := app.authoritativeWorkViewResync(t.Context(), wc, "work-panic", work.ViewResyncRetry, 0)
+	if err != nil {
+		t.Fatalf("second resync after panic release: %v", err)
+	}
+	if event.Resync == nil || event.Resync.Generation == 0 {
+		t.Fatalf("second resync after panic = %+v", event)
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("second event contract: %v", err)
+	}
+	t.Logf("encoder panic released gate, second call gen=%d", event.Resync.Generation)
+}
+
+func TestAuthoritativeResyncGetWorkErrorReleasesGate(t *testing.T) {
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			return nil, work.WorkEventState{}, errors.New("injected GetWork failure")
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+	app := &App{ctx: context.Background()}
+
+	_, err1 := app.authoritativeWorkViewResync(t.Context(), wc, "work-gwerr", work.ViewResyncOverflow, 0)
+	if err1 == nil || !strings.Contains(err1.Error(), "injected GetWork failure") {
+		t.Fatalf("first resync: expected injected error, got %v", err1)
+	}
+
+	store.LoadStateFunc = func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+		return makeWork(workID, "recovered", work.WorkReady, 1)
+	}
+	event, err2 := app.authoritativeWorkViewResync(t.Context(), wc, "work-gwerr", work.ViewResyncOverflow, 0)
+	if err2 != nil {
+		t.Fatalf("second resync after GetWork error: %v", err2)
+	}
+	if event.Resync == nil || event.Resync.Generation == 0 {
+		t.Fatalf("second resync event = %+v", event)
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("second event contract: %v", err)
+	}
+}
+
+func TestAuthoritativeResyncDifferentWorkNoCrossBlock(t *testing.T) {
+	ready := make(chan struct{})
+	entered := make(chan string, 2)
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			entered <- workID
+			<-ready
+			return makeWork(workID, "work-"+workID, work.WorkReady, 1)
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+	app := &App{ctx: context.Background()}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	for _, wid := range []string{"work-A", "work-B"} {
+		wg.Add(1)
+		go func(workID string) {
+			defer wg.Done()
+			_, err := app.authoritativeWorkViewResync(t.Context(), wc, workID, work.ViewResyncOverflow, 0)
+			errCh <- err
+		}(wid)
+	}
+
+	// Both must enter their gates — different workIDs, no cross-block.
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case id := <-entered:
+			seen[id] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timeout waiting for work gates: saw %v", seen)
+		}
+	}
+	if !seen["work-A"] || !seen["work-B"] {
+		t.Fatalf("both workIDs must enter: %v", seen)
+	}
+	close(ready)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("different workID resync: %v", err)
+		}
+	}
+}
+
+func TestAuthoritativeResyncGateRefsWaiterRace(t *testing.T) {
+	// Stress test: N goroutines on same workID, held behind a barrier.
+	// The holder releases; waiters acquire in order; map must be empty after.
+	const N = 8
+	ready := make(chan struct{})
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			<-ready
+			return makeWork(workID, "ok", work.WorkReady, 1)
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	wc := ctrl.WorkControl()
+	app := &App{ctx: context.Background()}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, N)
+	for range N {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := app.authoritativeWorkViewResync(t.Context(), wc, "work-refs", work.ViewResyncOverflow, 0)
+			errCh <- err
+		}()
+
+	}
+	waitForResyncGateRefs(t, app, "work-refs", N)
+	// Before release, gate must exist with refs=N.
+	app.workResyncGates.mu.Lock()
+	gate, exists := app.workResyncGates.gates["work-refs"]
+	refsBefore := 0
+	if exists {
+		refsBefore = gate.refs
+	}
+	app.workResyncGates.mu.Unlock()
+	if !exists {
+		t.Fatal("gate must exist while waiters are pending")
+	}
+	if refsBefore != N {
+		t.Fatalf("refs before release = %d, want %d", refsBefore, N)
+	}
+
+	close(ready)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("waiter error: %v", err)
+		}
+	}
+
+	// After all done, map must be empty.
+	app.workResyncGates.mu.Lock()
+	_, leftover := app.workResyncGates.gates["work-refs"]
+	app.workResyncGates.mu.Unlock()
+	if leftover {
+		t.Fatal("gate entry was not cleaned up after all waiters finished")
+	}
 }
 
 // TestCornerstoneWithoutManager returns ErrCornerstoneDisabled.
