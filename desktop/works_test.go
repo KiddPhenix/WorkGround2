@@ -700,16 +700,18 @@ func TestCornerstoneWailsBindingConflict(t *testing.T) {
 
 // ── Per-work resync gate linearization tests ─────────────────────────────────
 
-// encBarrier returns a marshal func that signals once on entered when the
-// encoder is first reached, then blocks on unblock before encoding with
-// json.Marshal. After unblock, all subsequent calls pass through immediately.
+// encBarrier blocks only the first marshal call. Later calls pass immediately,
+// allowing a missing/narrowed per-work gate to sign the newer snapshot before
+// the deliberately stalled older snapshot.
 func encBarrier() (marshal func(any) ([]byte, error), entered <-chan struct{}, unblock func()) {
 	ready := make(chan struct{})
 	done := make(chan struct{})
-	var once sync.Once
+	var calls atomic.Int32
 	return func(v any) ([]byte, error) {
-			once.Do(func() { close(ready) })
-			<-done
+			if calls.Add(1) == 1 {
+				close(ready)
+				<-done
+			}
 			return json.Marshal(v)
 		}, ready, func() {
 			close(done)
@@ -740,13 +742,7 @@ func waitForResyncGateRefs(t *testing.T, app *App, workID string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		app.workResyncGates.mu.Lock()
-		gate := app.workResyncGates.gates[workID]
-		got := 0
-		if gate != nil {
-			got = gate.refs
-		}
-		app.workResyncGates.mu.Unlock()
+		got := resyncGateRefs(app, workID)
 		if got == want {
 			return
 		}
@@ -754,6 +750,51 @@ func waitForResyncGateRefs(t *testing.T, app *App, workID string, want int) {
 			t.Fatalf("gate refs for %s = %d, want %d", workID, got, want)
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func resyncGateRefs(app *App, workID string) int {
+	app.workResyncGates.mu.Lock()
+	defer app.workResyncGates.mu.Unlock()
+	if gate := app.workResyncGates.gates[workID]; gate != nil {
+		return gate.refs
+	}
+	return 0
+}
+
+// coordinateResyncPair releases the first marshal only after the second call
+// is observably scheduled. With the correct gate, refs == 2 while LoadState is
+// still 1. Without the gate (or with a gate narrowed past GetWork), the second
+// call loads and signs its snapshot first; waiting for secondDone makes that
+// broken ordering deterministic before the old snapshot is released.
+func coordinateResyncPair(app *App, workID string, loads *atomic.Int32, secondDone <-chan struct{}, releaseFirst func()) (enteredEarly bool, err error) {
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		refs := resyncGateRefs(app, workID)
+		loadCount := loads.Load()
+		if refs >= 2 {
+			releaseFirst()
+			return loadCount >= 2, nil
+		}
+		if loadCount >= 2 {
+			select {
+			case <-secondDone:
+				releaseFirst()
+				return true, nil
+			default:
+			}
+		}
+
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			releaseFirst()
+			return false, fmt.Errorf("second resync was not observable: loads=%d refs=%d", loadCount, refs)
+		}
 	}
 }
 
@@ -812,31 +853,36 @@ func TestAuthoritativeResyncLinearizesSameWorkConcurrent(t *testing.T) {
 
 			// Launch B — must block at per-work gate (A still holds it).
 			wg.Add(1)
+			secondDone := make(chan struct{})
 			go func() {
 				defer wg.Done()
+				defer close(secondDone)
 				events[1], errs[1] = app.authoritativeWorkViewResyncWithMarshal(
 					t.Context(), wc, "work-linear", work.ViewResyncOverflow, 0, marshal)
 			}()
 
-			waitForResyncGateRefs(t, app, "work-linear", 2)
-
-			// Unblock A's encoder — A finishes with firstState + low generation.
-			unblock()
+			enteredEarly, coordinateErr := coordinateResyncPair(app, "work-linear", &callCount, secondDone, unblock)
 			wg.Wait()
+			if coordinateErr != nil {
+				t.Fatal(coordinateErr)
+			}
 
 			for i, err := range errs {
 				if err != nil {
 					t.Fatalf("resync %d: %v", i, err)
 				}
 			}
+			if enteredEarly {
+				t.Errorf("B entered GetWork before A released the same-work gate")
+			}
 
 			genA := events[0].Resync.Generation
 			genB := events[1].Resync.Generation
 			if genA == genB {
-				t.Fatalf("generations must differ: both %d", genA)
+				t.Errorf("generations must differ: both %d", genA)
 			}
 			if genA >= genB {
-				t.Fatalf("A generation %d must be < B generation %d", genA, genB)
+				t.Errorf("A generation %d must be < B generation %d", genA, genB)
 			}
 
 			viewA := mustDecodePayload(t, events[0])
@@ -846,6 +892,13 @@ func TestAuthoritativeResyncLinearizesSameWorkConcurrent(t *testing.T) {
 			}
 			if viewB.Assessment.Blocking != tc.secondBlocked || (viewB.RunBlock != nil) != tc.secondBlocked {
 				t.Fatalf("B assessment = %#v, runBlock=%#v, want blocked=%v", viewB.Assessment, viewB.RunBlock, tc.secondBlocked)
+			}
+			latest := viewA
+			if genB > genA {
+				latest = viewB
+			}
+			if latest.Assessment.Blocking != tc.secondBlocked || (latest.RunBlock != nil) != tc.secondBlocked {
+				t.Fatalf("highest generation retained blocked=%v, want newest blocked=%v", latest.Assessment.Blocking, tc.secondBlocked)
 			}
 		})
 	}
@@ -858,9 +911,9 @@ func TestAuthoritativeResyncHydrateOverflowSharePerWorkGate(t *testing.T) {
 		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
 			n := callCount.Add(1)
 			if n == 1 {
-				return makeWork(workID, "ready-state", work.WorkReady, 10)
+				return makeAssessmentWork(workID, false, 10)
 			}
-			return makeWork(workID, "blocked-state", work.WorkReady, 10)
+			return makeAssessmentWork(workID, true, 10)
 		},
 	}
 	views := control.NewWorkViewBroadcaster()
@@ -885,15 +938,19 @@ func TestAuthoritativeResyncHydrateOverflowSharePerWorkGate(t *testing.T) {
 
 	// Overflow starts, blocked behind hydrate's gate.
 	wg.Add(1)
+	secondDone := make(chan struct{})
 	go func() {
 		defer wg.Done()
+		defer close(secondDone)
 		evOverflow, errOverflow = app.authoritativeWorkViewResyncWithMarshal(
 			t.Context(), wc, "work-shared", work.ViewResyncOverflow, 0, marshal)
 	}()
 
-	waitForResyncGateRefs(t, app, "work-shared", 2)
-	unblock()
+	enteredEarly, coordinateErr := coordinateResyncPair(app, "work-shared", &callCount, secondDone, unblock)
 	wg.Wait()
+	if coordinateErr != nil {
+		t.Fatal(coordinateErr)
+	}
 
 	if errHydrate != nil {
 		t.Fatalf("hydrate: %v", errHydrate)
@@ -901,11 +958,14 @@ func TestAuthoritativeResyncHydrateOverflowSharePerWorkGate(t *testing.T) {
 	if errOverflow != nil {
 		t.Fatalf("overflow: %v", errOverflow)
 	}
+	if enteredEarly {
+		t.Errorf("overflow entered GetWork before hydrate released the same-work gate")
+	}
 
 	// Hydrate got in first → lower generation, first state.
 	// Overflow got in second → higher generation, second state.
 	if evHydrate.Resync.Generation >= evOverflow.Resync.Generation {
-		t.Fatalf("hydrate gen %d must be < overflow gen %d", evHydrate.Resync.Generation, evOverflow.Resync.Generation)
+		t.Errorf("hydrate gen %d must be < overflow gen %d", evHydrate.Resync.Generation, evOverflow.Resync.Generation)
 	}
 	if evHydrate.Resync.Reason != work.ViewResyncHydrate {
 		t.Fatalf("hydrate reason = %q", evHydrate.Resync.Reason)
@@ -919,11 +979,18 @@ func TestAuthoritativeResyncHydrateOverflowSharePerWorkGate(t *testing.T) {
 
 	viewHydrate := mustDecodePayload(t, evHydrate)
 	viewOverflow := mustDecodePayload(t, evOverflow)
-	if viewHydrate.Work.Name != "ready-state" {
-		t.Fatalf("hydrate payload = %q, want ready-state", viewHydrate.Work.Name)
+	if viewHydrate.Assessment.Blocking || viewHydrate.RunBlock != nil {
+		t.Fatalf("hydrate payload = assessment %#v, runBlock %#v, want ready", viewHydrate.Assessment, viewHydrate.RunBlock)
 	}
-	if viewOverflow.Work.Name != "blocked-state" {
-		t.Fatalf("overflow payload = %q, want blocked-state", viewOverflow.Work.Name)
+	if !viewOverflow.Assessment.Blocking || viewOverflow.RunBlock == nil {
+		t.Fatalf("overflow payload = assessment %#v, runBlock %#v, want blocked", viewOverflow.Assessment, viewOverflow.RunBlock)
+	}
+	latest := viewHydrate
+	if evOverflow.Resync.Generation > evHydrate.Resync.Generation {
+		latest = viewOverflow
+	}
+	if !latest.Assessment.Blocking || latest.RunBlock == nil {
+		t.Fatalf("highest generation must retain newest blocked projection: assessment %#v, runBlock %#v", latest.Assessment, latest.RunBlock)
 	}
 }
 
