@@ -10,7 +10,7 @@ import {
   type WorkDeltaPayload,
   type WorkUIPreference,
 } from './store';
-import type { Attempt, BlockInstance, RetryTaskInput, Work, WorkView, WorkViewEvent, WorkflowRun } from './types';
+import type { Attempt, BlockInstance, RetryTaskInput, ViewRecoveryIntent, Work, WorkView, WorkViewEvent, WorkflowRun } from './types';
 
 type Test = { name: string; run: () => void | Promise<void> };
 const tests: Test[] = [];
@@ -65,6 +65,7 @@ function makeView(id: string, revision: number, patch: Partial<Work> = {}): Work
   return {
     schemaVersion: 1,
     revision,
+    assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
     work: {
       schemaVersion: 1,
       id,
@@ -120,6 +121,24 @@ function snapshot(view: WorkView, eventID = `snapshot:${view.revision}`): WorkVi
   return event('snapshot', eventID, view.revision, 0, view, view.work.id);
 }
 
+function overflowResync(view: WorkView, generation: number): WorkViewEvent {
+  const eventID = `wv-resync-${view.work.id}-rev-${view.revision}-overflow-${generation}`;
+  return {
+    ...snapshot(view, eventID),
+    requestID: 'overflow-recovery',
+    resync: { reason: 'overflow', authoritative: true, generation },
+  };
+}
+
+function retryResync(view: WorkView, intent: ViewRecoveryIntent): WorkViewEvent {
+  const eventID = `wv-resync-${view.work.id}-rev-${view.revision}-retry-${intent.generation}`;
+  return {
+    ...snapshot(view, eventID),
+    requestID: 'retry-recovery',
+    resync: { reason: 'retry', authoritative: true, generation: intent.generation },
+  };
+}
+
 function delta(eventID: string, revision: number, baseRevision: number, payload: WorkDeltaPayload): WorkViewEvent {
   return event('delta', eventID, revision, baseRevision, payload);
 }
@@ -149,6 +168,10 @@ class TestPort implements WorkControllerPort {
   fetchSnapshot(workID: string): Promise<WorkView> {
     this.fetchCount++;
     return this.fetch(workID);
+  }
+
+  async fetchRecoverySnapshot(workID: string, intent: ViewRecoveryIntent): Promise<WorkViewEvent> {
+    return retryResync(await this.fetchSnapshot(workID), intent);
   }
 
   async readUIPreference(): Promise<WorkUIPreference | null> {
@@ -184,6 +207,75 @@ test('snapshot is event-idempotent and rejects stale/conflicting revisions', () 
   equal(applyWorkViewEvent(snapshot(makeView('work-1', 4, { name: 'old' }), 'snapshot-4')).kind, 'stale', 'older snapshot is stale');
   equal(applyWorkViewEvent(snapshot(makeView('work-1', 5, { name: 'conflict' }), 'snapshot-5b')).kind, 'conflict', 'same revision with different data conflicts');
   equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'current', 'conflict does not overwrite projection');
+});
+
+test('authoritative overflow resync has bounded revision and generation semantics', () => {
+  const cases: Array<{
+    name: string;
+    incoming: WorkView;
+    event: (view: WorkView) => WorkViewEvent;
+    expected: ReturnType<typeof applyWorkViewEvent>['kind'];
+    expectedName: string;
+    expectedBlocked?: boolean;
+  }> = [
+    {
+      name: 'same revision ordinary conflict',
+      incoming: makeView('work-1', 5, { name: 'ordinary-conflict' }),
+      event: (view) => snapshot(view, 'ordinary-conflict-5'),
+      expected: 'conflict', expectedName: 'current',
+    },
+    {
+      name: 'same revision authoritative accepted',
+      incoming: { ...makeView('work-1', 5, { name: 'authoritative' }), assessment: { state: 'blocked', blocking: true, degraded: false, issues: [] } },
+      event: (view) => overflowResync(view, 1),
+      expected: 'applied', expectedName: 'authoritative', expectedBlocked: true,
+    },
+    {
+      name: 'lower authoritative rejected',
+      incoming: makeView('work-1', 4, { name: 'lower' }),
+      event: (view) => overflowResync(view, 1),
+      expected: 'stale', expectedName: 'current',
+    },
+    {
+      name: 'higher authoritative follows normal merge',
+      incoming: makeView('work-1', 6, { name: 'higher', state: 'running' }),
+      event: (view) => overflowResync(view, 1),
+      expected: 'applied', expectedName: 'higher',
+    },
+  ];
+
+  for (const testCase of cases) {
+    reset();
+    const current = makeView('work-1', 5, { name: 'current', ...(testCase.name.includes('higher') ? { state: 'completed' as const } : {}) });
+    applyWorkViewEvent(snapshot(current, `initial:${testCase.name}`));
+    useWorkUIStore.getState().setDraft('work-1', 'front', 'local draft');
+    const result = applyWorkViewEvent(testCase.event(testCase.incoming));
+    equal(result.kind, testCase.expected, testCase.name);
+    equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, testCase.expectedName, `${testCase.name} business projection`);
+    if (testCase.name.includes('higher')) {
+      equal(selectWork(useWorkStore.getState().works, 'work-1')?.state, 'completed', 'higher resync uses normal terminal merge');
+    }
+    if (testCase.expectedBlocked !== undefined) {
+      equal(useWorkStore.getState().works['work-1']?.assessment.blocking, testCase.expectedBlocked, `${testCase.name} derived projection`);
+    }
+    equal(selectCardState(useWorkUIStore.getState().cardByWork, 'work-1')?.faces.front.draft, 'local draft', `${testCase.name} keeps UI draft`);
+  }
+
+  reset();
+  applyWorkViewEvent(snapshot(makeView('work-1', 5), 'initial-duplicate'));
+  const blocked = { ...makeView('work-1', 5), assessment: { state: 'blocked' as const, blocking: true, degraded: false, issues: [] } };
+  const authoritative = overflowResync(blocked, 2);
+  equal(applyWorkViewEvent(authoritative).kind, 'applied', 'first authoritative resync applies');
+  equal(applyWorkViewEvent(authoritative).kind, 'duplicate', 'duplicate authoritative EventID is idempotent');
+  equal(applyWorkViewEvent(overflowResync(makeView('work-1', 5), 1)).kind, 'ignored', 'older overflow generation is ignored');
+  equal(useWorkStore.getState().works['work-1']?.assessment.blocking, true, 'older overflow cannot replace newer assessment');
+
+  reset();
+  const identical = makeView('work-1', 5);
+  applyWorkViewEvent(snapshot(identical, 'initial-generation-watermark'));
+  equal(applyWorkViewEvent(overflowResync(identical, 4)).kind, 'duplicate', 'identical authoritative resync stays data-idempotent');
+  equal(applyWorkViewEvent(overflowResync(blocked, 3)).kind, 'ignored', 'identical resync still advances overflow generation watermark');
+  equal(useWorkStore.getState().works['work-1']?.assessment.blocking, false, 'older changed overflow cannot bypass identical generation watermark');
 });
 
 test('delta handles duplicate, late and retains the highest revision gap', () => {
@@ -362,6 +454,22 @@ test('snapshot backfill failure is visible and safely retryable', async () => {
   equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'retry applies snapshot');
   equal(port.fetchCount, 2, 'retry performs a new fetch');
   equal(adapter.getStatus('work-1').snapshotError, null, 'successful retry clears error');
+  adapter.dispose();
+});
+
+test('ordinary same-revision refetch keeps conflict semantics and uses a fresh event identity', async () => {
+  reset();
+  let authoritative = makeView('work-1', 77, { name: 'ready assessment' });
+  const port = new TestPort();
+  port.fetch = async () => structuredClone(authoritative);
+  const adapter = new WorkControllerAdapter(port);
+  equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'initial ordinary snapshot applies');
+  authoritative = makeView('work-1', 77, { name: 'same revision changed' });
+  let failed = false;
+  try { await adapter.recoverSnapshot('work-1'); } catch { failed = true; }
+  ok(failed, 'different ordinary snapshot at the same revision conflicts instead of looking duplicate');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'ready assessment', 'ordinary conflict does not overwrite projection');
+  ok(adapter.getStatus('work-1').snapshotError?.includes('different snapshot'), 'ordinary same-revision conflict remains observable');
   adapter.dispose();
 });
 

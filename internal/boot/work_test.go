@@ -83,6 +83,12 @@ default_model = "deepseek-flash"
 	if after := systemMessage(ctrl.History()); after != before {
 		t.Fatalf("Work-disabled NewSession changed cache-stable prefix\n--- before ---\n%s\n--- after ---\n%s", before, after)
 	}
+	if err := ctrl.Compact(context.Background(), ""); err != nil {
+		t.Fatalf("Work-disabled Compact called typed-nil Work service: %v", err)
+	}
+	if err := ctrl.ForgetMemory("work-disabled-regression-missing"); err != nil {
+		t.Fatalf("Work-disabled ForgetMemory called typed-nil Work service: %v", err)
+	}
 }
 
 // TestWorkEnabledWiresService verifies that enabling [work] in config assembles

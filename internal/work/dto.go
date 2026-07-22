@@ -80,10 +80,45 @@ type WorkPage struct {
 }
 
 // WorkView 是 Work 的前端视图投影，由 WorkViewEvent snapshot 携带。
+// Assessment 和 RunBlock 是权威阻断投影：UI 不得据此猜测 status，
+// 必须将 WorkView 作为单一可信源派生 Attention、RunEntry 和 blocked 指示。
 type WorkView struct {
-	SchemaVersion int   `json:"schemaVersion"`
-	Work          *Work `json:"work"`
-	Revision      int64 `json:"revision"`
+	SchemaVersion int                   `json:"schemaVersion"`
+	Work          *Work                 `json:"work"`
+	Revision      int64                 `json:"revision"`
+	Assessment    CornerstoneAssessment `json:"assessment"`
+	RunBlock      *RunBlockReason       `json:"runBlock,omitempty"`
+}
+
+// RunBlockCode 是权威阻断原因的稳定机器可读编码。UI 据此映射图标和文案，
+// 不得解析 Detail 英文文本做逻辑分支。
+type RunBlockCode string
+
+const (
+	RunBlockBlobMissing         RunBlockCode = "blob_missing"
+	RunBlockBudgetExhausted     RunBlockCode = "budget_exhausted"
+	RunBlockResolverUnavailable RunBlockCode = "resolver_unavailable"
+	RunBlockCornerstoneStale    RunBlockCode = "cornerstone_stale"
+	RunBlockCornerstoneMissing  RunBlockCode = "cornerstone_missing"
+	RunBlockCornerstoneDenied   RunBlockCode = "cornerstone_denied"
+	RunBlockCornerstoneInvalid  RunBlockCode = "cornerstone_invalid"
+	RunBlockWaitingUser         RunBlockCode = "waiting_user"
+	RunBlockFailed              RunBlockCode = "failed"
+	RunBlockArchived            RunBlockCode = "archived"
+)
+
+// RunBlockItem 携带单个阻断原因的稳定编码与关联上下文。
+type RunBlockItem struct {
+	Code          RunBlockCode      `json:"code"`
+	CornerstoneID string            `json:"cornerstoneId,omitempty"`
+	Status        CornerstoneStatus `json:"status,omitempty"`
+	Detail        string            `json:"detail,omitempty"`
+}
+
+// RunBlockReason 解释为何当前 Work 无法运行。nil 或空 Items 表示可运行。
+type RunBlockReason struct {
+	Blocked bool           `json:"blocked"`
+	Items   []RunBlockItem `json:"items,omitempty"`
 }
 
 // WorkSummary 是 Work 列表中的摘要条目。

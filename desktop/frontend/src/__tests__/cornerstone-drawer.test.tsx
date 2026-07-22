@@ -26,6 +26,7 @@ import type {
   RetryTaskInput,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
+  ViewRecoveryIntent,
   WorkView,
   WorkViewEvent,
   WorkflowRun,
@@ -234,6 +235,11 @@ class TestPort implements WorkControllerPort, CornerstoneControllerPort {
 
   fetchSnapshot(workId: string): Promise<WorkView> {
     return this.fake.getWork(workId);
+  }
+
+  async fetchRecoverySnapshot(workId: string, intent: ViewRecoveryIntent): Promise<WorkViewEvent> {
+    const view = await this.fetchSnapshot(workId);
+    return retryResync(view, intent.generation);
   }
 
   async readUIPreference(workId: string): Promise<WorkUIPreference | null> {
@@ -571,6 +577,22 @@ function workDelta(workId: string, eventId: string, revision: number, baseRevisi
   };
 }
 
+function retryResync(view: WorkView, generation: number): WorkViewEvent {
+  return {
+    schemaVersion: 1,
+    type: 'snapshot',
+    workID: view.work.id,
+    eventID: `wv-resync-${view.work.id}-rev-${view.revision}-retry-${generation}`,
+    revision: view.revision,
+    baseRevision: 0,
+    requestID: 'retry-recovery',
+    object: { kind: 'work', id: view.work.id },
+    resync: { reason: 'retry', authoritative: true, generation },
+    payload: structuredClone(view),
+    createdAt: '2026-07-22T00:00:00Z',
+  };
+}
+
 async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   reset();
   const view = makeView([]);
@@ -588,6 +610,7 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
 
   let watchCalls = 0;
   let getWorkCalls = 0;
+  let recoveryCalls = 0;
   const retryWatchReady = deferred<void>();
   const unwatched: string[] = [];
   (dom.window as unknown as { go: unknown }).go = {
@@ -595,6 +618,10 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
       GetWork: async () => {
         getWorkCalls++;
         return structuredClone(view);
+      },
+      RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+        recoveryCalls++;
+        return retryResync(view, intent.generation);
       },
       WatchWork: async () => {
         watchCalls++;
@@ -622,7 +649,8 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   eq(getWorkCalls, 0, 'Watch 握手完成前不读取 snapshot');
   retryWatchReady.resolve();
   await settle();
-  eq(getWorkCalls, 1, 'Watch 握手后只读取一次权威 snapshot');
+  eq(getWorkCalls, 0, '显式 retry 不退化为普通 GetWork snapshot');
+  eq(recoveryCalls, 1, 'Watch 握手后只请求一次 typed 权威 recovery');
   ok(!card.host.querySelector('[data-testid="work-error-banner"]')?.textContent?.includes('watch transport unavailable'), '成功重订阅清除 Watch 错误');
   await card.cleanup();
   ok(unwatched.length >= 2, '失败 generation 与卸载 generation 均执行 Unwatch');
@@ -655,19 +683,132 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   eq(useWorkStore.getState().works[view.work.id]?.work.name, 'event-wins', '窗口事件不被旧 snapshot 覆盖');
   windowAdapter.dispose();
 
-  // A snapshot failure after a successful watch keeps the buffered event and
-  // a safe retry reconciles it without opening another subscription.
+  // Real Wails runtime -> adapter -> Zustand chain: overflow GetWork fails,
+  // then an external blob deletion changes assessment at the same persisted
+  // revision. Explicit retry must install a new Watch and apply a fresh typed
+  // authoritative event without losing local UI state.
+  reset();
+  eventListeners.clear();
+  const readyView = { ...makeView([], 77), assessment: { state: 'ready' as const, blocking: false, degraded: false, issues: [] } };
+  const blobMissingView: WorkView = {
+    ...structuredClone(readyView),
+    assessment: {
+      state: 'blocked', blocking: true, degraded: false,
+      issues: [{ cornerstoneId: 'cs-required', title: 'required blob', problem: 'blob_missing', blocking: true }],
+    },
+    runBlock: {
+      blocked: true,
+      items: [{ code: 'blob_missing', cornerstoneId: 'cs-required', status: 'active' }],
+    },
+  };
+  let overflowSubscription = '';
+  const overflowSubscriptions: string[] = [];
+  const recoveryEvents: WorkViewEvent[] = [];
+  let recoveryMode: 'blocked' | 'delayed' | 'failed' = 'blocked';
+  let delayedRecovery = deferred<WorkViewEvent>();
+  (dom.window as unknown as { go: unknown }).go = {
+    main: { App: {
+      GetWork: async () => structuredClone(readyView),
+      RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+        if (recoveryMode === 'failed') throw new Error('retry GetWork still unavailable');
+        if (recoveryMode === 'delayed') return delayedRecovery.promise;
+        const event = retryResync(blobMissingView, intent.generation);
+        recoveryEvents.push(event);
+        return event;
+      },
+      WatchWork: async (_tab: string, _work: string, id: string) => {
+        overflowSubscription = id;
+        overflowSubscriptions.push(id);
+      },
+      UnwatchWork: async () => undefined,
+      RunWork: async () => { throw new Error('unused'); },
+      RetryWorkTask: async () => { throw new Error('unused'); },
+    } },
+  };
+  const overflowPort = createWailsWorkControllerPort('tab-overflow-store')!;
+  const overflowAdapter = new WorkControllerAdapter(overflowPort);
+  overflowAdapter.subscribe(readyView.work.id);
+  await settle();
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.state, 'ready', '普通初始 snapshot 落入 ready 投影');
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'online', '初始 Watch/GetWork 握手完成后 online');
+  useWorkUIStore.getState().setDraft(readyView.work.id, 'front', 'keep local draft');
+  eventListeners.get(`work:view:${overflowSubscription}`)?.({
+    schemaVersion: 1,
+    type: 'attention',
+    workID: readyView.work.id,
+    eventID: 'wv-recover-failed-work-cornerstone-1',
+    revision: 0,
+    baseRevision: 0,
+    requestID: 'overflow-recovery-failed',
+    object: { kind: 'work', id: readyView.work.id },
+    payload: { overflow: true, recovery: 'failed', retryable: true },
+    createdAt: '2026-07-22T00:00:01Z',
+  } satisfies WorkViewEvent);
+  await settle();
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'offline', 'overflow GetWork 失败 attention 保持 offline');
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.state, 'ready', '失败 attention 不发伪 recovery');
+
+  overflowAdapter.retrySubscription(readyView.work.id);
+  overflowAdapter.retrySubscription(readyView.work.id);
+  await settle();
+  eq(overflowSubscriptions.length, 2, '双 retry 只创建一个新 Watch generation');
+  ok(overflowSubscriptions[1] !== overflowSubscriptions[0], '显式 retry 使用新的 Wails subscriptionID');
+  eq(recoveryEvents.length, 1, '新 Watch 握手后只执行一次 typed recovery GetWork');
+  ok(recoveryEvents[0].eventID !== `fetch:${readyView.work.id}:77`, 'retry EventID 不复用固定 work+revision fetch ID');
+  eq(recoveryEvents[0].resync?.reason, 'retry', 'retry recovery 携带 typed reason');
+  eq(useWorkStore.getState().revisions[readyView.work.id], 77, 'retry resync 保持 persisted revision');
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, '同 revision blocked assessment 经 retry 落入 store');
+  eq(useWorkStore.getState().works[readyView.work.id]?.runBlock?.items?.[0]?.code, 'blob_missing', 'typed runBlock 经 retry 落入 store');
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'online', 'typed snapshot 成功应用后才恢复 online');
+  eq(overflowAdapter.getStatus(readyView.work.id).snapshotError, null, '完整 handshake 成功后清除 snapshotError');
+  eq(useWorkUIStore.getState().cardByWork[readyView.work.id]?.faces.front.draft, 'keep local draft', 'retry resync 保留 UI draft');
+
+  // Cancel a delayed generation, complete a newer retry, then release the old
+  // response. The old generation must not replace or pollute the new state.
+  recoveryMode = 'delayed';
+  delayedRecovery = deferred<WorkViewEvent>();
+  overflowAdapter.retrySubscription(readyView.work.id);
+  await Promise.resolve();
+  await Promise.resolve();
+  const lateGeneration = overflowSubscriptions.length;
+  overflowAdapter.unsubscribe(readyView.work.id);
+  recoveryMode = 'blocked';
+  overflowAdapter.retrySubscription(readyView.work.id);
+  await settle();
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'online', '较新 retry generation 完成后 online');
+  delayedRecovery.resolve(retryResync(readyView, lateGeneration));
+  await settle();
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, '迟到旧 generation 不覆盖较新 blocked 投影');
+  eq(overflowAdapter.getStatus(readyView.work.id).snapshotError, null, '迟到旧 generation 不污染较新健康状态');
+
+  recoveryMode = 'failed';
+  overflowAdapter.retrySubscription(readyView.work.id);
+  await settle();
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'offline', '再次 retry GetWork 失败保持 offline');
+  ok(overflowAdapter.getStatus(readyView.work.id).snapshotError?.includes('still unavailable'), '再次失败保留可重试错误');
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, '再次失败不制造伪成功投影');
+  eq(useWorkUIStore.getState().cardByWork[readyView.work.id]?.faces.front.draft, 'keep local draft', '再次失败仍保留 UI draft');
+  overflowAdapter.dispose();
+
+  // A snapshot failure after a successful Watch is recovered through a whole
+  // new Watch + typed snapshot handshake. Events on the new Watch are buffered
+  // until that authoritative snapshot has applied.
   reset();
   eventListeners.clear();
   let retryFetches = 0;
   let retryWatches = 0;
   let retrySubscription = '';
+  let retryIntent: ViewRecoveryIntent | undefined;
+  const retryRecovery = deferred<WorkViewEvent>();
   (dom.window as unknown as { go: unknown }).go = {
     main: { App: {
       GetWork: async () => {
         retryFetches++;
-        if (retryFetches === 1) throw new Error('snapshot temporarily unavailable');
-        return makeView([], 1);
+        throw new Error('snapshot temporarily unavailable');
+      },
+      RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+        retryIntent = intent;
+        return retryRecovery.promise;
       },
       WatchWork: async (_tab: string, _work: string, id: string) => {
         retryWatches++;
@@ -682,11 +823,18 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   const retryAdapter = new WorkControllerAdapter(retryPort);
   retryAdapter.subscribe(view.work.id);
   await settle();
-  eventListeners.get(`work:view:${retrySubscription}`)?.(workDelta(view.work.id, 'buffered-after-fetch-failure', 2, 1, 'retry-event'));
   ok(retryAdapter.getStatus(view.work.id).snapshotError?.includes('temporarily unavailable'), 'Watch 成功后的 snapshot 失败可观察');
+  const failedSubscription = retrySubscription;
   retryAdapter.retrySubscription(view.work.id);
   await settle();
-  eq(retryWatches, 1, 'snapshot retry 复用已握手 Watch');
+  eq(retryWatches, 2, 'snapshot retry 安装新的 Watch');
+  ok(retrySubscription !== failedSubscription, 'snapshot retry 使用新的 subscriptionID');
+  ok(!!retryIntent, 'snapshot retry 在新 Watch ready 后携带 typed recovery intent');
+  eq(retryAdapter.getStatus(view.work.id).stream.kind, 'offline', '新 Watch ready 但 typed snapshot 未完成时仍 offline');
+  ok(retryAdapter.getStatus(view.work.id).snapshotError?.includes('temporarily unavailable'), '进行中的 retry 不提前清除旧错误');
+  eventListeners.get(`work:view:${retrySubscription}`)?.(workDelta(view.work.id, 'buffered-after-fetch-failure', 2, 1, 'retry-event'));
+  retryRecovery.resolve(retryResync(makeView([], 1), retryIntent!.generation));
+  await settle();
   eq(useWorkStore.getState().revisions[view.work.id], 2, 'snapshot retry 后回放保留的窗口事件');
   eq(retryAdapter.getStatus(view.work.id).snapshotError, null, 'snapshot retry 成功后清除错误');
   retryAdapter.dispose();
@@ -789,6 +937,7 @@ async function testWatchHealthIsolation(): Promise<void> {
   (dom.window as unknown as { go: unknown }).go = {
     main: { App: {
       GetWork: async () => structuredClone(view),
+      RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => retryResync(view, intent.generation),
       WatchWork: async () => {
         watchCalls++;
         if (watchCalls === 1) return oldReady.promise;

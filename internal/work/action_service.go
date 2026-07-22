@@ -154,7 +154,7 @@ func (s *Service) ExecuteBlockAction(ctx context.Context, input BlockActionReque
 		if input.ExpectedRevision != state.Revision {
 			return nil, &ErrActionRevisionConflict{
 				WorkID: workID, Expected: input.ExpectedRevision, Current: state.Revision,
-				Latest: &WorkView{SchemaVersion: WorkViewSchemaVersion, Work: current, Revision: state.Revision},
+				Latest: viewFromState(current, state),
 			}
 		}
 		resolved, resolveErr := s.resolveAction(current, blockID, actionID, inputCopy)

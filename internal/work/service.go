@@ -1694,11 +1694,171 @@ func (s *Service) loadView(workID string) (*WorkView, error) {
 	if err != nil {
 		return nil, err
 	}
-	return viewFromState(value, state), nil
+	view := viewFromState(value, state)
+	s.assessView(view)
+	return view, nil
 }
 
 func viewFromState(value *Work, state WorkEventState) *WorkView {
-	return &WorkView{SchemaVersion: SchemaVersion, Work: value, Revision: state.Revision}
+	var cornerstones []Cornerstone
+	if value != nil {
+		cornerstones = value.Cornerstones
+	}
+	assessment := AssessCornerstones(cornerstones)
+	return &WorkView{
+		SchemaVersion: SchemaVersion,
+		Work:          value,
+		Revision:      state.Revision,
+		Assessment:    assessment,
+		RunBlock:      computeRunBlockReason(assessment, value),
+	}
+}
+
+// assessView enriches a WorkView with authoritative blob-integrity checks and
+// budget validation that a pure-function AssessCornerstones cannot perform.
+// Must be called after viewFromState by callers that hold a BlobStore.
+func (s *Service) assessView(view *WorkView) {
+	if view == nil || view.Work == nil {
+		return
+	}
+	// Rebuild from persisted facts on every call so Get/snapshot/retry are
+	// idempotent and never accumulate synthetic issues.
+	view.Assessment = AssessCornerstones(view.Work.Cornerstones)
+	blobs, _ := s.store.(BlobStore)
+	s.enrichBlobAssessment(view, blobs)
+
+	// Blob integrity is checked above. Build without a BlobStore here to apply
+	// the exact production context budgets without doing the same I/O twice.
+	config := productionCornerstoneContextConfig()
+	block, err := BuildCornerstoneContext(view.Work.Cornerstones, config)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "budget") {
+		view.Assessment.Issues = append(view.Assessment.Issues, CornerstoneIssue{
+			Problem: "budget_exhausted", Blocking: true,
+		})
+		view.Assessment.Blocking = true
+		view.Assessment.State = CornerstoneUseBlocked
+	} else if err == nil && block.Degraded {
+		view.Assessment.Degraded = true
+		if view.Assessment.State == CornerstoneUseReady {
+			view.Assessment.State = CornerstoneUseDegraded
+		}
+	}
+	view.RunBlock = computeRunBlockReason(view.Assessment, view.Work)
+}
+
+// enrichBlobAssessment verifies snapshot blob integrity through the BlobStore.
+// Required active cornerstones whose blobs are missing/invalid are downgraded
+// to blocked in the assessment.
+func (s *Service) enrichBlobAssessment(view *WorkView, blobs BlobStore) {
+	if blobs == nil {
+		return
+	}
+	for _, cs := range view.Work.Cornerstones {
+		if cs.Tombstone || cs.Status != CornerstoneActive || cs.Mode != CornerstoneSnapshot {
+			continue
+		}
+		if cs.Ref.BlobDigest == "" {
+			continue
+		}
+		workID := cs.WorkID
+		if workID == "" {
+			workID = view.Work.ID
+		}
+		exists, err := blobs.Exists(workID, cs.Ref.BlobDigest)
+		if err != nil || !exists {
+			issue := CornerstoneIssue{
+				CornerstoneID: cs.ID,
+				Title:         cs.Title,
+				Problem:       "blob_missing",
+				Blocking:      cs.Required,
+			}
+			view.Assessment.Issues = append(view.Assessment.Issues, issue)
+			if cs.Required {
+				view.Assessment.Blocking = true
+				view.Assessment.State = CornerstoneUseBlocked
+			} else {
+				view.Assessment.Degraded = true
+				if view.Assessment.State == CornerstoneUseReady {
+					view.Assessment.State = CornerstoneUseDegraded
+				}
+			}
+		}
+	}
+}
+
+// computeRunBlockReason builds the authoritative run-block projection from the
+// Cornerstone assessment and Work state. It uses stable codes so the UI can map
+// each item to icons/labels without parsing English detail strings.
+func computeRunBlockReason(assessment CornerstoneAssessment, w *Work) *RunBlockReason {
+	if w == nil {
+		return nil
+	}
+	var items []RunBlockItem
+
+	// waiting_user is the authoritative terminal blocked state.
+	if w.State == WorkWaitingUser {
+		items = append(items, RunBlockItem{
+			Code:   RunBlockWaitingUser,
+			Detail: "work is waiting for user input",
+		})
+	}
+
+	// Required cornerstone failures from the assessment.
+	for _, issue := range assessment.Issues {
+		if !issue.Blocking {
+			continue
+		}
+		code, detail := mapCornerstoneIssueToCode(issue.Problem)
+		var status CornerstoneStatus
+		for _, cs := range w.Cornerstones {
+			if cs.ID == issue.CornerstoneID {
+				status = cs.Status
+				break
+			}
+		}
+		items = append(items, RunBlockItem{
+			Code:          code,
+			CornerstoneID: issue.CornerstoneID,
+			Status:        status,
+			Detail:        detail,
+		})
+	}
+
+	// Failed Work cannot run without retry.
+	if w.State == WorkFailed {
+		items = append(items, RunBlockItem{Code: RunBlockFailed, Detail: "work has failed"})
+	}
+	// Archived or deleted Work cannot run.
+	if w.ArchiveState != ArchiveActive {
+		items = append(items, RunBlockItem{Code: RunBlockArchived, Detail: "work is " + string(w.ArchiveState)})
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+	return &RunBlockReason{Blocked: true, Items: items}
+}
+
+// mapCornerstoneIssueToCode converts an issue problem string to a stable code.
+func mapCornerstoneIssueToCode(problem string) (RunBlockCode, string) {
+	switch {
+	case problem == "blob_missing":
+		return RunBlockBlobMissing, "snapshot blob is missing or invalid"
+	case problem == "budget_exhausted":
+		return RunBlockBudgetExhausted, "required cornerstone context exceeds the production budget"
+	case strings.Contains(problem, ":network"):
+		return RunBlockResolverUnavailable, "cornerstone resolver is temporarily unavailable"
+	case strings.Contains(problem, "missing"):
+		return RunBlockCornerstoneMissing, "required cornerstone source is missing"
+	case strings.Contains(problem, "denied"):
+		return RunBlockCornerstoneDenied, "required cornerstone source is denied"
+	case strings.Contains(problem, "invalid"):
+		return RunBlockCornerstoneInvalid, "required cornerstone is invalid"
+	case strings.Contains(problem, "stale"):
+		return RunBlockCornerstoneStale, "required cornerstone is stale"
+	default:
+		return RunBlockCornerstoneInvalid, "required cornerstone is unavailable"
+	}
 }
 
 func (s *Service) latestOnConflict(workID string, cause error) (*WorkView, error) {
@@ -1731,7 +1891,7 @@ func (s *Service) loadOrRepairArchive(workID string, archived *Work, revision in
 	if err := s.store.WriteArchive(workID, record); err != nil {
 		return nil, committedRecovery("archive", workID, requestID, revision, err)
 	}
-	view := &WorkView{SchemaVersion: SchemaVersion, Work: archived, Revision: revision}
+	view := viewFromState(archived, WorkEventState{Revision: revision})
 	if err := s.emitSnapshot(view, requestID); err != nil {
 		return nil, committedRecovery("archive-view", workID, requestID, revision, err)
 	}
@@ -1764,6 +1924,7 @@ func (s *Service) emitSnapshot(view *WorkView, requestID string) error {
 	if view == nil || view.Work == nil {
 		return errors.New("work: cannot emit a nil Work snapshot")
 	}
+	s.assessView(view)
 	payload, err := json.Marshal(view)
 	if err != nil {
 		return fmt.Errorf("work: encode WorkView snapshot: %w", err)
@@ -1818,7 +1979,7 @@ func (s *Service) PinCornerstone(ctx context.Context, workID string, input PinCo
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Pin(workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Pin(workID, input))
 }
 
 func (s *Service) RefreshCornerstone(ctx context.Context, workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error) {
@@ -1828,7 +1989,7 @@ func (s *Service) RefreshCornerstone(ctx context.Context, workID string, input R
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Refresh(ctx, workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Refresh(ctx, workID, input))
 }
 
 func (s *Service) RemoveCornerstone(ctx context.Context, workID string, input RemoveCornerstoneInput) (*CornerstoneResult, error) {
@@ -1838,7 +1999,7 @@ func (s *Service) RemoveCornerstone(ctx context.Context, workID string, input Re
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Remove(workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Remove(workID, input))
 }
 
 func (s *Service) UndoCornerstone(ctx context.Context, workID string, input UndoCornerstoneInput) (*CornerstoneResult, error) {
@@ -1848,7 +2009,7 @@ func (s *Service) UndoCornerstone(ctx context.Context, workID string, input Undo
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Undo(workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Undo(workID, input))
 }
 
 func (s *Service) AcceptCornerstone(ctx context.Context, workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error) {
@@ -1858,7 +2019,7 @@ func (s *Service) AcceptCornerstone(ctx context.Context, workID string, input Ac
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Accept(ctx, workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Accept(ctx, workID, input))
 }
 
 func (s *Service) FreezeCornerstone(ctx context.Context, workID string, input FreezeCornerstoneInput) (*CornerstoneResult, error) {
@@ -1868,7 +2029,7 @@ func (s *Service) FreezeCornerstone(ctx context.Context, workID string, input Fr
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Freeze(ctx, workID, input)
+	return s.finishCornerstoneMutation(s.cornerstones.Freeze(ctx, workID, input))
 }
 
 func (s *Service) RepairCornerstone(ctx context.Context, workID string, input RepairCornerstoneInput) (*RepairResult, error) {
@@ -1878,7 +2039,31 @@ func (s *Service) RepairCornerstone(ctx context.Context, workID string, input Re
 	if err := s.requireCornerstone(); err != nil {
 		return nil, err
 	}
-	return s.cornerstones.Repair(ctx, workID, input)
+	return s.finishCornerstoneRepair(s.cornerstones.Repair(ctx, workID, input))
+}
+
+// finishCornerstoneMutation is the single production boundary for mutation
+// projections returned by CornerstoneManager. Manager views intentionally
+// contain persisted facts only; Service owns authoritative I/O-backed
+// assessment (blob integrity and production context budget). Enrich partial
+// results even when err is non-nil so retryable recovery never exposes a view
+// that disagrees with Get at the same revision.
+func (s *Service) finishCornerstoneMutation(result *CornerstoneResult, err error) (*CornerstoneResult, error) {
+	if result != nil && result.WorkView != nil {
+		s.assessView(result.WorkView)
+		result.Revision = result.WorkView.Revision
+		result.Assessment = result.WorkView.Assessment
+	}
+	return result, err
+}
+
+func (s *Service) finishCornerstoneRepair(result *RepairResult, err error) (*RepairResult, error) {
+	if result != nil && result.WorkView != nil {
+		s.assessView(result.WorkView)
+		result.Revision = result.WorkView.Revision
+		result.Assessment = result.WorkView.Assessment
+	}
+	return result, err
 }
 
 func newServiceEvent(workID, requestID string, eventType WorkEventType, payload []byte, createdAt time.Time) WorkEvent {

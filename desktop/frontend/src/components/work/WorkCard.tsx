@@ -55,6 +55,7 @@ export interface WorkCardProps {
 const unavailablePort: WorkControllerPort = {
   subscribe: () => ({ ready: Promise.reject(new Error('Work Controller 尚未连接。')), unsubscribe: () => undefined }),
   fetchSnapshot: async () => { throw new Error('Work Controller 尚未连接。'); },
+  fetchRecoverySnapshot: async () => { throw new Error('Work Controller 尚未连接。'); },
   readUIPreference: async () => null,
   writeUIPreference: async () => { throw new Error('Work UI 偏好存储尚未连接。'); },
 };
