@@ -8,6 +8,7 @@
 // @ts-ignore `wails generate module` creates this locally; fresh checkouts keep
 // typecheck green by falling back to a disabled drift check below.
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
+import type { WailsWorkBindings } from "../work/wailsAdapter";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
@@ -251,7 +252,7 @@ export interface WidgetConversationResult {
 // added or renamed, the generated types shift, and a key present in GeneratedApp
 // but missing from AppBindings causes a type error here. Fix: add the new method
 // to AppBindings, then run `pnpm typecheck` to verify.
-export interface AppBindings {
+export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
 	EnterWidgetMode(): Promise<WidgetSnapshot>;
 	ExitWidgetMode(tabID: string): Promise<void>;
@@ -2157,6 +2158,11 @@ function makeMockApp(): AppBindings {
       mockTabs = mockTabs.map((tab, index) => (index === 0 ? { ...tab, label } : tab));
     }
   };
+  const workUnavailableError = () =>
+    new Error(
+      "Work features are not available in the browser dev mock. " +
+      "Run the desktop app (wails dev / wails build) to use Work.",
+    );
   return {
     async EnterWidgetMode() {
       widgetMode = true;
@@ -4656,5 +4662,37 @@ function makeMockApp(): AppBindings {
         ],
       };
     },
+
+    // ── Work surface ─────────────────────────────────────────────────────
+    // Work features require the Go backend and are not available in the
+    // browser dev mock. Every method returns a rejected Promise so the UI
+    // can render error / unavailable states without faking successful side
+    // effects. Callers that need a safe no-op for layout dev can wrap with
+    // .catch(() => undefined).
+
+    CreateWork: () => Promise.reject(workUnavailableError()),
+    GetWork: () => Promise.reject(workUnavailableError()),
+    ListWorks: () => Promise.reject(workUnavailableError()),
+    UpdateDraft: () => Promise.reject(workUnavailableError()),
+    RecoverWorkView: () => Promise.reject(workUnavailableError()),
+    RunWork: () => Promise.reject(workUnavailableError()),
+    ResumeRun: () => Promise.reject(workUnavailableError()),
+    RetryWorkTask: () => Promise.reject(workUnavailableError()),
+    ArchiveWork: () => Promise.reject(workUnavailableError()),
+    RestoreWork: () => Promise.reject(workUnavailableError()),
+    DeleteWork: () => Promise.reject(workUnavailableError()),
+    WatchWork: () => Promise.reject(workUnavailableError()),
+    UnwatchWork: () => Promise.reject(workUnavailableError()),
+    PinCornerstone: () => Promise.reject(workUnavailableError()),
+    RefreshCornerstone: () => Promise.reject(workUnavailableError()),
+    RemoveCornerstone: () => Promise.reject(workUnavailableError()),
+    UndoCornerstone: () => Promise.reject(workUnavailableError()),
+    AcceptCornerstone: () => Promise.reject(workUnavailableError()),
+    FreezeCornerstone: () => Promise.reject(workUnavailableError()),
+    RepairCornerstone: () => Promise.reject(workUnavailableError()),
+    SessionPurgeImpact: () => Promise.reject(workUnavailableError()),
+    ForcePurgeTrashedSession: () => Promise.reject(workUnavailableError()),
+    RetryCleanupPending: () => Promise.reject(workUnavailableError()),
+    ListSessionCleanupPending: () => Promise.reject(workUnavailableError()),
   };
 }

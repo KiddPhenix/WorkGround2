@@ -68,7 +68,7 @@ func TestSettingsRebuildKeepsAppSessionRefStore(t *testing.T) {
 	app := NewApp()
 	app.ctx = context.Background()
 	app.readyHook = func() {}
-	app.SetSessionRefStore(refs)
+	app.setSessionRefStore(refs)
 	old := control.New(control.Options{
 		WorkspaceRoot: projectRoot,
 		SessionDir:    desktopSessionDir(projectRoot),

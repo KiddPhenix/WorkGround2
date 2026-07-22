@@ -15,6 +15,7 @@ import type {
   Attempt,
   Cornerstone,
   CornerstoneMutationResult,
+  CreateWorkInput,
   FreezeCornerstoneInput,
   PinCornerstoneInput,
   RefreshCornerstoneInput,
@@ -24,19 +25,35 @@ import type {
   RetryTaskInput,
   RevisionConflict,
   UndoCornerstoneInput,
+  UpdateDraftInput,
   ValidateCornerstoneInput,
   ViewRecoveryIntent,
+  Work,
+  WorkFilter,
+  WorkPage,
+  WorkRecord,
   WorkView,
   WorkViewEvent,
   WorkflowRun,
 } from './types';
 
-// --- Wails-generated App type (available at runtime) ---
-interface WailsApp {
+// Single local contract for every Work-owned method exposed by Wails. The
+// application bridge extends this interface while the production Work adapter
+// consumes it directly, so the protocol cannot drift into two hand-written
+// copies. Generated model classes are deliberately kept outside application
+// code; these DTOs mirror their JSON shapes.
+export interface WailsWorkBindings {
+  CreateWork(tabID: string, input: CreateWorkInput): Promise<Work>;
   GetWork(tabID: string, workID: string): Promise<WorkView>;
+  ListWorks(tabID: string, filter: WorkFilter): Promise<WorkPage>;
+  UpdateDraft(tabID: string, input: UpdateDraftInput): Promise<WorkView>;
   RecoverWorkView(tabID: string, workID: string, input: ViewRecoveryIntent): Promise<WorkViewEvent>;
   RunWork(tabID: string, workID: string, requestID: string): Promise<WorkflowRun>;
+  ResumeRun(tabID: string, input: ResumeRunInput): Promise<WorkflowRun>;
   RetryWorkTask(tabID: string, input: RetryTaskInput): Promise<Attempt>;
+  ArchiveWork(tabID: string, workID: string, requestID: string): Promise<WorkRecord>;
+  RestoreWork(tabID: string, workID: string, requestID: string): Promise<WorkView>;
+  DeleteWork(tabID: string, workID: string, requestID: string): Promise<void>;
   WatchWork(tabID: string, workID: string, subscriptionID: string): Promise<void>;
   UnwatchWork(subscriptionID: string): Promise<void>;
   PinCornerstone(tabID: string, workID: string, input: GoCornerstoneInput): Promise<GoCornerstoneResult>;
@@ -46,7 +63,10 @@ interface WailsApp {
   AcceptCornerstone(tabID: string, workID: string, input: GoRefreshInput): Promise<GoCornerstoneResult>;
   FreezeCornerstone(tabID: string, workID: string, input: GoFreezeInput): Promise<GoCornerstoneResult>;
   RepairCornerstone(tabID: string, workID: string, input: GoRepairInput): Promise<GoRepairResult>;
-  ResumeRun(tabID: string, input: ResumeRunInput): Promise<WorkflowRun>;
+  SessionPurgeImpact(path: string): Promise<GoForcePurgeImpact>;
+  ForcePurgeTrashedSession(path: string): Promise<GoForcePurgeImpact>;
+  RetryCleanupPending(path: string, requestID: string): Promise<void>;
+  ListSessionCleanupPending(): Promise<GoCleanupPendingRecord[]>;
 }
 
 // --- Go DTO shapes (PascalCase JSON tags as returned by Wails) ---
@@ -125,13 +145,42 @@ interface GoRepairResult {
   };
 }
 
+interface GoSessionOwner {
+  ownerType: 'work' | 'branch';
+  ownerId: string;
+  scopeId?: string;
+  workId?: string;
+  state: 'active' | 'trashed';
+  trashedAt?: number;
+  restoredAt?: number;
+}
+
+interface GoForcePurgeImpact {
+  sessionPath: string;
+  affectedOwners: GoSessionOwner[];
+  affectedWorkIDs: string[];
+  affectedBranchIDs?: string[];
+}
+
+interface GoCleanupPendingRecord {
+  sessionPath: string;
+  reason: string;
+  requestId: string;
+  stage?: string;
+  error?: string;
+  attempts?: number;
+  impact?: GoForcePurgeImpact;
+  createdAt: number;
+  updatedAt?: number;
+}
+
 // --- Helpers ---
 
-function getWailsApp(): WailsApp | undefined {
+function getWailsApp(): WailsWorkBindings | undefined {
   if (typeof window === 'undefined') return undefined;
   const go = (window as unknown as Record<string, unknown>).go as Record<string, unknown> | undefined;
   const main = go?.main as Record<string, unknown> | undefined;
-  return main?.App as WailsApp | undefined;
+  return main?.App as WailsWorkBindings | undefined;
 }
 
 function subscriptionID(): string {
@@ -211,7 +260,7 @@ function revisionConflictError(
 }
 
 async function errorResult(
-  app: WailsApp,
+  app: WailsWorkBindings,
   tabID: string,
   err: unknown,
   workId: string,

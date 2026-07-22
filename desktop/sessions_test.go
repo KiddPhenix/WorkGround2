@@ -1008,7 +1008,7 @@ func TestPurgeTrashedSessionBlockedByWorkRef(t *testing.T) {
 	sessionPath := writeSessionFile(t, dir, "blocked.jsonl")
 	store := work.NewMemorySessionRefStore(work.WithRetention(0))
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-1"}, "req-1")
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -1039,7 +1039,7 @@ func TestPurgeTrashedSessionAllowedWhenUnreferenced(t *testing.T) {
 
 	sessionPath := writeSessionFile(t, dir, "free.jsonl")
 	store := work.NewMemorySessionRefStore(work.WithRetention(0))
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -1085,7 +1085,7 @@ func TestPurgeTrashedSessionHonorsRetention(t *testing.T) {
 	trashPath := filepath.Join(dir, sessionTrashDir, "retained.jsonl", "retained.jsonl")
 	deletedAt := trashedSessionDeletedAt(trashPath)
 	now := time.UnixMilli(deletedAt)
-	app.SetSessionRefStore(work.NewMemorySessionRefStore(
+	app.setSessionRefStore(work.NewMemorySessionRefStore(
 		work.WithClock(func() time.Time { return now }),
 		work.WithRetention(time.Hour),
 	))
@@ -1107,7 +1107,7 @@ func TestForcePurgeTrashedSessionSucceedsAndReturnsImpact(t *testing.T) {
 	store := work.NewMemorySessionRefStore()
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-A"}, "req-1")
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-B"}, "req-2")
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -1144,7 +1144,7 @@ func TestForcePurgeTrashedSessionCleanupPendingLifecycle(t *testing.T) {
 	sessionPath := writeSessionFile(t, dir, "lifecycle.jsonl")
 	store := work.NewMemorySessionRefStore()
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-X"}, "req-1")
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -1187,7 +1187,7 @@ func TestForcePurgeFailureRemainsRetryable(t *testing.T) {
 	if err := store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-F"}, "req-1"); err != nil {
 		t.Fatal(err)
 	}
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
 	}
@@ -1230,7 +1230,7 @@ func TestForcePurgeStopsBeforePhysicalDeleteWhenLedgerFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open fake store: %v", err)
 	}
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 	physicalCalled := false
 	app.purgeSession = func(string, string) error {
 		physicalCalled = true
@@ -1254,7 +1254,7 @@ func TestRetryCleanupPendingAfterFailure(t *testing.T) {
 
 	sessionPath := writeSessionFile(t, dir, "retry.jsonl")
 	store := work.NewMemorySessionRefStore()
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	requestID := "force-purge:" + sessionPath
 	impact := &work.ForcePurgeImpact{SessionPath: sessionPath, AffectedWorkIDs: []string{"w1"}}
@@ -1290,7 +1290,7 @@ func TestSessionPurgeImpactReturnsCorrectData(t *testing.T) {
 	sessionPath := writeSessionFile(t, dir, "impact.jsonl")
 	store := work.NewMemorySessionRefStore()
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-X"}, "req-1")
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)
@@ -1332,7 +1332,7 @@ func TestDeleteSessionThenPurgeNoTabDependency(t *testing.T) {
 	sessionPath := writeSessionFile(t, dir, "no-tab.jsonl")
 	store := work.NewMemorySessionRefStore()
 	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "w-no-tab"}, "req-1")
-	app.SetSessionRefStore(store)
+	app.setSessionRefStore(store)
 
 	if err := deleteSessionFile(dir, sessionPath); err != nil {
 		t.Fatalf("trash: %v", err)

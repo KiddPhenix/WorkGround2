@@ -3346,9 +3346,10 @@ func (a *App) ListSessionCleanupPending() ([]work.CleanupPendingRecord, error) {
 	return a.sessionRefs.ListCleanupPending()
 }
 
-// SetSessionRefStore injects a SessionRefStore for production use.
-// Must be called during startup before any session purge operations.
-func (a *App) SetSessionRefStore(store work.SessionRefStore) {
+// setSessionRefStore injects a SessionRefStore for tests. Production creates
+// the store in NewApp; keeping this helper unexported prevents Wails from
+// exposing a non-serializable Go interface as a frontend binding.
+func (a *App) setSessionRefStore(store work.SessionRefStore) {
 	a.sessionRefs = store
 	a.sessionRefsErr = nil
 }
