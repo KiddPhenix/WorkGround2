@@ -221,6 +221,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### Work 系统 V1 — Stage 6 生产 Desktop 入口
+- Location: `desktop/works.go`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/LinkedSessionCard.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
+- Summary: `WorkCapable` 类型化 bool 检查禁止解析错误字符串；flag off 时 sidebar 不显示入口且零 Work API 调用；flag on 时在 production Workspace sidebar 提供"工作"入口；WorkPage 有加载/空态/显式重试/active Work 列表/新建 Work；Create 使用 blank blueprint、稳定 requestID、幂等重试和迟到 ACK 保护；List/Get 绑定 tab+owner 上下文，迟到 ACK 不串状态；正常 Session 与 Work 背面互斥复用同一 SessionSurface 组件树；attempt SessionRef 按已有 tab、topic metadata、blank+resume 三层导航，失败保留 Work 上下文并可重试；Stage7 归档历史/复制/重执行待后续实现。
+- Keywords: WorkCapable, WorkPage, CreateWork, SessionSurface, LinkedSessionCard, blank blueprint, request ID idempotent, tab isolation, late ACK, production Wails port
+- Source: Stage6 implementation
+- Updated: 2026-07-23
+
 ### 项目说明与工程约定
 - Location: `README.md`, `README.zh-CN.md`, `docs/SPEC.md`, `WorkGround2.md`
 - Summary: README 说明产品定位和用法，SPEC 是工程合同，WorkGround2.md 是本项目会话常驻工程记忆。

@@ -4670,6 +4670,7 @@ function makeMockApp(): AppBindings {
     // effects. Callers that need a safe no-op for layout dev can wrap with
     // .catch(() => undefined).
 
+    WorkCapable: () => Promise.resolve(false),
     CreateWork: () => Promise.reject(workUnavailableError()),
     GetWork: () => Promise.reject(workUnavailableError()),
     ListWorks: () => Promise.reject(workUnavailableError()),

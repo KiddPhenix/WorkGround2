@@ -701,6 +701,8 @@ export interface SessionSurfaceContext {
   attemptId?: string;
   attemptIndex: number;
   sessionRef: SessionRef;
+  readonly?: boolean;
+  archived?: boolean;
 }
 
 // ── Deep link extensions ──────────────────────────────────────────────────

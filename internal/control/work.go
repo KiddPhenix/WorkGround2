@@ -26,6 +26,13 @@ type WorkControl interface {
 	work.WorkController
 }
 
+// WorkEnabled reports whether this Controller owns a complete writable Work
+// surface. Frontends use this typed capability instead of probing operation
+// errors or guessing configuration state.
+func (c *Controller) WorkEnabled() bool {
+	return c != nil && !nilutil.IsNil(c.workSvc) && c.workViews != nil
+}
+
 // WorkViewSink is the controller-side transport sink. Persisted WorkEvent
 // values never pass through this boundary.
 type WorkViewSink = work.ViewSink

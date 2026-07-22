@@ -317,6 +317,9 @@ export class WorkControllerAdapter {
         let previousRevision = useWorkStore.getState().revisions[workID] ?? -1;
         for (;;) {
           const view = await this.port.fetchSnapshot(workID);
+          if (this.disposed) {
+            return { kind: 'ignored' as const, workID, eventID: `fetch:${workID}:disposed` };
+          }
           if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
           const eventGeneration = ++this.snapshotEventGeneration;
           const result = applySnapshot(view, `fetch:${workID}:${view.revision}:${eventGeneration}`);

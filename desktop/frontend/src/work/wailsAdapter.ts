@@ -43,6 +43,7 @@ import type {
 // copies. Generated model classes are deliberately kept outside application
 // code; these DTOs mirror their JSON shapes.
 export interface WailsWorkBindings {
+  WorkCapable(tabID: string): Promise<boolean>;
   CreateWork(tabID: string, input: CreateWorkInput): Promise<Work>;
   GetWork(tabID: string, workID: string): Promise<WorkView>;
   ListWorks(tabID: string, filter: WorkFilter): Promise<WorkPage>;

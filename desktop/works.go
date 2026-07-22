@@ -67,8 +67,18 @@ func (g *workResyncGates) unlock(gate *workResyncGate, workID string) {
 // workController is the local narrow port the desktop needs from a Controller.
 // The concrete *control.Controller implements both WorkControl() and WorkViews().
 type workController interface {
+	WorkEnabled() bool
 	WorkControl() control.WorkControl
 	WorkViews() *control.WorkViewBroadcaster
+}
+
+// WorkCapable reports whether the owning controller for tabID supports the
+// typed Work feature. Callers must use this boolean instead of probing errors
+// to decide whether to show Work UI entry points.
+func (a *App) WorkCapable(tabID string) bool {
+	_, ctrl := a.tabAndCtrlByID(tabID)
+	owner, ok := ctrl.(workController)
+	return ok && owner.WorkEnabled()
 }
 
 func (a *App) resolveWorkController(tabID string) (control.WorkControl, error) {
