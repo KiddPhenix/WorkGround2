@@ -97,6 +97,8 @@ var English = Messages{
 	CompactionAuto:    "auto",
 	CompactionManual:  "manual",
 
+	CornerstoneCleanupPreserved: "%d Work cornerstone(s) will not be cleaned by this operation",
+
 	SlashCompactDone:   "session compacted — older middle replaced by a summary, recent turns kept",
 	SlashCompactFailed: "compaction failed",
 	SlashNewDone:       "new session started — previous transcript saved",

@@ -127,6 +127,9 @@ type Messages struct {
 	CompactionAuto    string // trigger label: reached the window threshold
 	CompactionManual  string // trigger label: user ran /compact
 
+	// Cornerstone preservation during compaction / cleanup.
+	CornerstoneCleanupPreserved string // "本次不会清理 N 个 Work 基石"
+
 	// chat TUI slash commands.
 	SlashCompactDone    string // "/compact" succeeded
 	SlashCompactFailed  string // "/compact" errored, prefixed before the underlying error

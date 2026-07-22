@@ -216,6 +216,11 @@ func (c *Controller) compose(text string, includeHookContext bool) string {
 			text = block + "\n\n" + text
 		}
 	}
+	// Work Cornerstone context rides the turn as a transient block so it is
+	// always re-injected and never touches the cache-stable system prefix.
+	if block := c.drainCornerstoneBlock(); block != "" {
+		text = block + "\n\n" + text
+	}
 	return text
 }
 
@@ -266,6 +271,17 @@ func (c *Controller) drainHookContextBlock() string {
 	}
 	b.WriteString(`</hook-context>`)
 	return b.String()
+}
+
+func (c *Controller) drainCornerstoneBlock() string {
+	c.mu.Lock()
+	block := ""
+	if c.cornerstoneTurn != nil {
+		block = c.cornerstoneTurn.block
+		c.cornerstoneTurn.block = ""
+	}
+	c.mu.Unlock()
+	return block
 }
 
 func clipHookContext(s string, max int) (string, bool) {

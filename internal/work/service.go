@@ -17,20 +17,21 @@ import (
 // projections, manifests, indexes and archive files are derived side effects
 // repaired by WorkStore on retry or reload.
 type Service struct {
-	store       WorkStore
-	blueprint   *BlueprintRegistry
-	tools       ToolCatalog
-	sink        ViewSink
-	actions     *ActionRegistry
-	permissions PermissionChecker
-	runner      *WorkRunner
-	runMu       sync.Mutex
-	runFlights  map[string]*runFlight
-	actionCfgMu sync.RWMutex
-	actionMu    sync.Mutex
-	actionRuns  map[string]*actionFlight
-	sessionRefs *SessionRefCoordinator
-	refScope    string
+	store        WorkStore
+	blueprint    *BlueprintRegistry
+	tools        ToolCatalog
+	sink         ViewSink
+	actions      *ActionRegistry
+	permissions  PermissionChecker
+	runner       *WorkRunner
+	runMu        sync.Mutex
+	runFlights   map[string]*runFlight
+	cornerstones *CornerstoneManager
+	actionCfgMu  sync.RWMutex
+	actionMu     sync.Mutex
+	actionRuns   map[string]*actionFlight
+	sessionRefs  *SessionRefCoordinator
+	refScope     string
 }
 
 type runFlight struct{ done chan struct{} }
@@ -51,9 +52,28 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	if IsNilViewSink(sink) {
 		sink = ViewSinkDiscard
 	}
+	var blobs BlobStore
+	if value, ok := store.(BlobStore); ok {
+		blobs = value
+	}
+	cornerstones := NewCornerstoneManager(store, blobs, RealClock{})
+	cornerstones.SetResolver(unavailableCornerstoneResolver{})
 	return &Service{
 		store: store, blueprint: blueprint, tools: tools, sink: sink,
-		actionRuns: make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
+		cornerstones: cornerstones,
+		actionRuns:   make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
+	}
+}
+
+// SetCornerstoneResolver configures the authoritative live-ref source used by
+// every RunWork preflight. Configure it during boot before serving requests.
+// Nil remains fail-closed and is persisted as a retryable stale result.
+func (s *Service) SetCornerstoneResolver(resolver CornerstoneResolver) {
+	if resolver == nil {
+		resolver = unavailableCornerstoneResolver{}
+	}
+	if s.cornerstones != nil {
+		s.cornerstones.SetResolver(resolver)
 	}
 }
 
@@ -255,6 +275,116 @@ func (s *Service) Get(ctx context.Context, workID string) (*WorkView, error) {
 	return view, nil
 }
 
+// BuildCornerstoneContext loads a fresh Work projection and validates snapshot
+// blobs through the Service-owned store before returning transient context.
+func (s *Service) BuildCornerstoneContext(ctx context.Context, workID string, config CornerstoneContextConfig) (CornerstoneContextBlock, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return CornerstoneContextBlock{}, err
+	}
+	if err := s.requireStore(); err != nil {
+		return CornerstoneContextBlock{}, err
+	}
+	view, err := s.loadView(workID)
+	if err != nil {
+		return CornerstoneContextBlock{}, err
+	}
+	if config.BlobStore == nil {
+		if blobs, ok := s.store.(BlobStore); ok {
+			config.BlobStore = blobs
+		}
+	}
+	return BuildCornerstoneContext(view.Work.Cornerstones, config)
+}
+
+// SessionCornerstoneCount derives cleanup notices from authoritative Work
+// projections. A Session may belong to several Works; every matching Work is
+// included and duplicate attempts/cornerstones are counted once.
+func (s *Service) SessionCornerstoneCount(ctx context.Context, sessionPath string) (count int, associated bool, err error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return 0, false, err
+	}
+	if err := s.requireStore(); err != nil {
+		return 0, false, err
+	}
+	target := normSessionPath(sessionPath)
+	if target == "" {
+		return 0, false, nil
+	}
+	seenWorks := make(map[string]struct{})
+	seenCornerstones := make(map[string]struct{})
+	visit := func(value *Work) {
+		if value == nil || !workReferencesSession(value, target) {
+			return
+		}
+		if _, ok := seenWorks[value.ID]; ok {
+			return
+		}
+		seenWorks[value.ID] = struct{}{}
+		associated = true
+		for _, cs := range activeCornerstonesDeduped(value.Cornerstones) {
+			key := value.ID + "\x00" + cs.ID
+			if _, ok := seenCornerstones[key]; ok {
+				continue
+			}
+			seenCornerstones[key] = struct{}{}
+			count++
+		}
+	}
+
+	filter := WorkFilter{Limit: 500}
+	for {
+		if err := checkServiceContext(ctx); err != nil {
+			return 0, false, err
+		}
+		items, listErr := s.store.List(filter)
+		if listErr != nil {
+			return 0, false, fmt.Errorf("work: count Session cornerstones: list projections: %w", listErr)
+		}
+		for _, item := range items {
+			value, _, loadErr := s.store.LoadState(item.ID, "")
+			if loadErr != nil {
+				return 0, false, fmt.Errorf("work: count Session cornerstones for Work %s: %w", item.ID, loadErr)
+			}
+			visit(value)
+		}
+		if len(items) < filter.Limit {
+			break
+		}
+		filter.Cursor = items[len(items)-1].ID
+	}
+	if trash, ok := s.store.(WorkTrashLister); ok {
+		items, listErr := trash.ListTrash()
+		if listErr != nil {
+			return 0, false, fmt.Errorf("work: count Session cornerstones: list trash: %w", listErr)
+		}
+		for _, item := range items {
+			if err := checkServiceContext(ctx); err != nil {
+				return 0, false, err
+			}
+			value, _, loadErr := s.store.LoadTrashState(item.ID, "")
+			if loadErr != nil {
+				return 0, false, fmt.Errorf("work: count Session cornerstones for trashed Work %s: %w", item.ID, loadErr)
+			}
+			visit(value)
+		}
+	}
+	return count, associated, nil
+}
+
+func workReferencesSession(value *Work, target string) bool {
+	for _, cs := range activeCornerstonesDeduped(value.Cornerstones) {
+		if cs.Ref.Kind == "session_turn" && normSessionPath(cs.Ref.SessionID) == target {
+			return true
+		}
+	}
+	for _, path := range WorkSessionRefSummary("", value).SessionPaths {
+		if normSessionPath(path) == target {
+			return true
+		}
+	}
+	return false
+}
+
 // List returns filtered active/archived summaries from the Store index.
 func (s *Service) List(ctx context.Context, filter WorkFilter) (WorkPage, error) {
 	if err := checkServiceContext(ctx); err != nil {
@@ -454,6 +584,27 @@ func (s *Service) runWork(ctx context.Context, workID, requestID string) (*Workf
 		return nil, fmt.Errorf("work: RunWork: run %q disappeared from projection", runID)
 	}
 	emit := s.runEmitter(workID, runID, "RunWork")
+
+	// Pre-flight cornerstone check: required cornerstones that are missing,
+	// denied, stale, or invalid must block before any Task Session is created.
+	current, err = s.resolveRunCornerstones(ctx, current, requestID)
+	if err != nil {
+		return nil, fmt.Errorf("work: RunWork: resolve cornerstones: %w", err)
+	}
+	if blocked := s.checkRunCornerstones(current); blocked != nil {
+		if emitErr := s.emitCornerstoneBlockedRun(workID, runID, requestID, blocked.Assessment, cornerstoneBlockInitialRun); emitErr != nil {
+			return nil, errors.Join(blocked, fmt.Errorf("work: RunWork: commit cornerstone blocked state: %w", emitErr))
+		}
+		view, loadErr := s.loadView(workID)
+		if loadErr != nil {
+			return nil, errors.Join(blocked, committedRecovery("run-cornerstone-view", workID, requestID, 0, loadErr))
+		}
+		if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
+			return nil, errors.Join(blocked, committedRecovery("run-cornerstone-view", workID, requestID, view.Revision, emitErr))
+		}
+		return nil, blocked
+	}
+
 	_, runErr := runner.Run(ctx, current, run, emit)
 
 	view, err := s.loadView(workID)
@@ -984,6 +1135,31 @@ func (s *Service) resumeRun(ctx context.Context, workID, runID, requestID string
 	}
 
 	if !alreadyResumed {
+		current, err = s.resolveRunCornerstones(ctx, current, requestID)
+		if err != nil {
+			return nil, fmt.Errorf("work: ResumeRun: resolve cornerstones: %w", err)
+		}
+		if blocked := s.checkRunCornerstones(current); blocked != nil {
+			if emitErr := s.emitCornerstoneBlockedRun(workID, runID, requestID, blocked.Assessment, cornerstoneBlockResume); emitErr != nil {
+				return nil, errors.Join(blocked, fmt.Errorf("work: ResumeRun: commit cornerstone blocked state: %w", emitErr))
+			}
+			view, loadErr := s.loadView(workID)
+			if loadErr != nil {
+				return nil, errors.Join(blocked, committedRecovery("resume-cornerstone-view", workID, requestID, 0, loadErr))
+			}
+			if emitErr := s.emitSnapshot(view, requestID); emitErr != nil {
+				return nil, errors.Join(blocked, committedRecovery("resume-cornerstone-view", workID, requestID, view.Revision, emitErr))
+			}
+			return nil, blocked
+		}
+		run = findWorkflowRun(current, runID)
+		if run == nil {
+			return nil, fmt.Errorf("work: ResumeRun: run %q disappeared after cornerstone preflight", runID)
+		}
+		if err := ensureRunShape(current, run); err != nil {
+			return nil, fmt.Errorf("work: ResumeRun: restore run shape after cornerstone preflight: %w", err)
+		}
+
 		// Resolve gates: persist the full decision context before resuming.
 		for si := range run.Stages {
 			stage := &run.Stages[si]
@@ -1027,6 +1203,9 @@ func (s *Service) resumeRun(ctx context.Context, workID, runID, requestID string
 		run = findWorkflowRun(current, runID)
 		if run == nil {
 			return nil, fmt.Errorf("work: ResumeRun: run %q disappeared after gate resolution", runID)
+		}
+		if err := ensureRunShape(current, run); err != nil {
+			return nil, fmt.Errorf("work: ResumeRun: persist restored run shape: %w", err)
 		}
 
 		// Transition run from waiting back to running.
