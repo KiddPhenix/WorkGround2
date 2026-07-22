@@ -24,6 +24,7 @@ import type {
   RevisionConflict,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
+  ViewRecoveryIntent,
   WorkView,
   WorkViewEvent,
   WorkflowRun,
@@ -32,6 +33,7 @@ import type {
 // --- Wails-generated App type (available at runtime) ---
 interface WailsApp {
   GetWork(tabID: string, workID: string): Promise<WorkView>;
+  RecoverWorkView(tabID: string, workID: string, input: ViewRecoveryIntent): Promise<WorkViewEvent>;
   RunWork(tabID: string, workID: string, requestID: string): Promise<WorkflowRun>;
   RetryWorkTask(tabID: string, input: RetryTaskInput): Promise<Attempt>;
   WatchWork(tabID: string, workID: string, subscriptionID: string): Promise<void>;
@@ -292,6 +294,7 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
     },
 
     fetchSnapshot: (workID) => app.GetWork(tabID, workID),
+    fetchRecoverySnapshot: (workID, intent) => app.RecoverWorkView(tabID, workID, intent),
 
     readUIPreference: async (workID) => {
       const raw = window.localStorage.getItem(preferenceKey(tabID, workID));

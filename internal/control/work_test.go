@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,6 +53,15 @@ func TestOptionsTypedNilWorkSafe(t *testing.T) {
 	}
 	if err.Error() == "" {
 		t.Fatal("error message should not be empty")
+	}
+}
+
+func TestOptionsTypedNilWorkSessionCornerstoneCountSafe(t *testing.T) {
+	var svc *work.Service
+	c := New(Options{Work: svc})
+	count, associated, err := c.sessionCornerstoneCount(context.Background())
+	if err != nil || count != 0 || associated {
+		t.Fatalf("typed-nil cornerstone count = (%d, %v, %v), want (0, false, nil)", count, associated, err)
 	}
 }
 
@@ -187,6 +197,87 @@ func TestBroadcasterSlowSubscriberDoesNotBlock(t *testing.T) {
 	}
 
 	_ = chSlow
+}
+
+func TestBroadcasterWorkFilterPrecedesBuffer(t *testing.T) {
+	b := NewWorkViewBroadcaster()
+	id, events, overflows := b.SubscribeWorkReliable("target", 1)
+	defer b.Unsubscribe(id)
+
+	for i := 0; i < 64; i++ {
+		b.EmitWorkView(work.WorkViewEvent{WorkID: "other", EventID: fmt.Sprintf("other-%d", i)})
+	}
+	if got := b.OverflowCount(); got != 0 {
+		t.Fatalf("unrelated Work overflow count = %d, want 0", got)
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("unrelated Work entered target buffer: %+v", event)
+	default:
+	}
+	select {
+	case <-overflows:
+		t.Fatal("unrelated Work raised overflow signal")
+	default:
+	}
+
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "target", EventID: "target-1"})
+	if got := <-events; got.EventID != "target-1" {
+		t.Fatalf("target event = %+v", got)
+	}
+}
+
+func TestBroadcasterOverflowSignalNeedsNoSuccessor(t *testing.T) {
+	b := NewWorkViewBroadcaster()
+	id, events, overflows := b.SubscribeWorkReliable("target", 32)
+	defer b.Unsubscribe(id)
+
+	started := time.Now()
+	for i := 0; i < 33; i++ {
+		b.EmitWorkView(work.WorkViewEvent{WorkID: "target", EventID: fmt.Sprintf("event-%d", i)})
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("non-blocking publish took %v", elapsed)
+	}
+	select {
+	case <-overflows:
+	case <-time.After(time.Second):
+		t.Fatal("terminal overflow had no independent recovery signal")
+	}
+	if got := len(events); got != 32 {
+		t.Fatalf("buffered events = %d, want 32", got)
+	}
+	if got := b.OverflowCount(); got != 1 {
+		t.Fatalf("OverflowCount = %d, want 1", got)
+	}
+	if got := b.SubscriberDrops(id); got != 1 {
+		t.Fatalf("SubscriberDrops = %d, want 1", got)
+	}
+}
+
+func TestBroadcasterReliableCloseAndResubscribe(t *testing.T) {
+	b := NewWorkViewBroadcaster()
+	id, events, overflows := b.SubscribeWorkReliable("target", 1)
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "target", EventID: "one"})
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "target", EventID: "two"})
+	b.Unsubscribe(id)
+	for range events {
+	}
+	for range overflows {
+	}
+	if b.SubscriberCount() != 0 {
+		t.Fatalf("subscriber count after close = %d", b.SubscriberCount())
+	}
+
+	id2, events2, _ := b.SubscribeWorkReliable("target", 1)
+	defer b.Unsubscribe(id2)
+	b.EmitWorkView(work.WorkViewEvent{WorkID: "target", EventID: "fresh"})
+	if got := <-events2; got.EventID != "fresh" {
+		t.Fatalf("resubscribed event = %+v", got)
+	}
+	if got := b.SubscriberDrops(id2); got != 0 {
+		t.Fatalf("new subscriber inherited %d drops", got)
+	}
 }
 
 func TestBroadcasterConcurrencySafe(t *testing.T) {

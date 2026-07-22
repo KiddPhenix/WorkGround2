@@ -415,6 +415,17 @@ export interface ObjectContext {
   parentID?: string;
 }
 
+export interface ViewResync {
+  reason: 'overflow' | 'retry';
+  authoritative: true;
+  generation: number;
+}
+
+export interface ViewRecoveryIntent {
+  reason: 'retry';
+  generation: number;
+}
+
 export interface WorkViewEvent {
   schemaVersion: number;
   type: ViewEventType;
@@ -424,6 +435,7 @@ export interface WorkViewEvent {
   baseRevision: number;
   requestID: string;
   object: ObjectContext;
+  resync?: ViewResync;
   payload: unknown;
   createdAt: string;
 }
@@ -516,6 +528,41 @@ export interface WorkView {
   schemaVersion: number;
   work: Work;
   revision: number;
+  assessment: CornerstoneAssessment;
+  runBlock?: RunBlockReason;
+}
+
+export type CornerstoneUseState = 'ready' | 'degraded' | 'blocked';
+
+export interface CornerstoneAssessment {
+  state: CornerstoneUseState;
+  blocking: boolean;
+  degraded: boolean;
+  issues?: CornerstoneIssue[];
+}
+
+export type RunBlockCode =
+  | 'blob_missing'
+  | 'budget_exhausted'
+  | 'resolver_unavailable'
+  | 'cornerstone_stale'
+  | 'cornerstone_missing'
+  | 'cornerstone_denied'
+  | 'cornerstone_invalid'
+  | 'waiting_user'
+  | 'failed'
+  | 'archived';
+
+export interface RunBlockItem {
+  code: RunBlockCode;
+  cornerstoneId?: string;
+  status?: CornerstoneStatus;
+  detail?: string;
+}
+
+export interface RunBlockReason {
+  blocked: boolean;
+  items?: RunBlockItem[];
 }
 
 export interface CornerstoneInput {

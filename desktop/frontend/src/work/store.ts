@@ -85,6 +85,7 @@ interface WorkStoreData {
   revisions: Record<string, number>;
   removed: Record<string, boolean>;
   seenEventIDs: Record<string, readonly string[]>;
+  resyncGenerations: Record<string, number>;
   gaps: Record<string, WorkGap | undefined>;
   conflicts: Record<string, WorkConflict | undefined>;
 }
@@ -130,6 +131,18 @@ function clearIssue<T>(values: Record<string, T | undefined>, workID: string): R
 
 function conflict(event: WorkViewEvent, reason: string): WorkConflict {
   return { workID: event.workID, eventID: event.eventID, revision: event.revision, reason };
+}
+
+function resyncEventID(workID: string, revision: number, reason: 'overflow' | 'retry', generation: number): string {
+  return `wv-resync-${workID}-rev-${revision}-${reason}-${generation}`;
+}
+
+function authoritativeResyncGeneration(event: WorkViewEvent): number | null {
+  const resync = event.resync as unknown;
+  if (!isRecord(resync) || event.type !== 'snapshot' || (resync.reason !== 'overflow' && resync.reason !== 'retry') || resync.authoritative !== true ||
+      !Number.isSafeInteger(resync.generation) || Number(resync.generation) <= 0) return null;
+  const generation = Number(resync.generation);
+  return event.eventID === resyncEventID(event.workID, event.revision, resync.reason, generation) ? generation : null;
 }
 
 function gap(event: WorkViewEvent, currentRevision: number, reason: GapReason): WorkGap {
@@ -271,7 +284,12 @@ function snapshotPayload(event: WorkViewEvent): WorkView | null {
   }
   const work = event.payload as unknown as Work;
   if (!validSnapshotWork(work, event.workID)) return null;
-  return { schemaVersion: work.schemaVersion, work, revision: event.revision };
+  return {
+    schemaVersion: work.schemaVersion,
+    work,
+    revision: event.revision,
+    assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+  };
 }
 
 function validSnapshotWork(work: Work, workID: string): boolean {
@@ -524,6 +542,11 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
   if (knownRevision !== undefined && event.revision < knownRevision) {
     return { result: { kind: 'stale', workID: event.workID, eventID: event.eventID, currentRevision: knownRevision, eventRevision: event.revision } };
   }
+  const resyncGeneration = event.resync === undefined ? null : authoritativeResyncGeneration(event);
+  if (event.resync !== undefined && resyncGeneration === null) {
+    const issue = conflict(event, 'snapshot contains an invalid authoritative resync marker');
+    return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
+  }
   const decoded = snapshotPayload(event);
   if (!decoded) {
     const issue = conflict(event, 'snapshot payload must be a matching Work or WorkView at the event revision');
@@ -531,6 +554,37 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
   }
   const current = state.works[event.workID];
   if (knownRevision !== undefined && event.revision === knownRevision) {
+    if (resyncGeneration !== null) {
+      const currentGeneration = state.resyncGenerations[event.workID] ?? 0;
+      if (resyncGeneration <= currentGeneration) {
+        return {
+          patch: { seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID) },
+          result: { kind: 'ignored', workID: event.workID, eventID: event.eventID },
+        };
+      }
+      if (current && sameValue(current, decoded)) {
+        return {
+          patch: {
+            seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
+            resyncGenerations: { ...state.resyncGenerations, [event.workID]: resyncGeneration },
+          },
+          result: { kind: 'duplicate', workID: event.workID, eventID: event.eventID },
+        };
+      }
+      const view = cloneView(decoded);
+      return {
+        patch: {
+          works: { ...state.works, [event.workID]: view },
+          revisions: { ...state.revisions, [event.workID]: event.revision },
+          removed: { ...state.removed, [event.workID]: false },
+          seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
+          resyncGenerations: { ...state.resyncGenerations, [event.workID]: resyncGeneration },
+          gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
+          conflicts: clearIssue(state.conflicts, event.workID),
+        },
+        result: { kind: 'applied', workID: event.workID, revision: event.revision },
+      };
+    }
     if (current && sameValue(current, decoded)) {
       return { result: { kind: 'duplicate', workID: event.workID, eventID: event.eventID } };
     }
@@ -556,6 +610,9 @@ function applySnapshotEvent(state: WorkStoreData, event: WorkViewEvent): { patch
       revisions: { ...state.revisions, [event.workID]: event.revision },
       removed: { ...state.removed, [event.workID]: false },
       seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
+      resyncGenerations: resyncGeneration === null
+        ? state.resyncGenerations
+        : { ...state.resyncGenerations, [event.workID]: Math.max(state.resyncGenerations[event.workID] ?? 0, resyncGeneration) },
       gaps: gapsAfterRevision(state.gaps, event.workID, event.revision),
       conflicts: clearIssue(state.conflicts, event.workID),
     },
@@ -674,6 +731,7 @@ const emptyWorkState = (): WorkStoreData => ({
   revisions: {},
   removed: {},
   seenEventIDs: {},
+  resyncGenerations: {},
   gaps: {},
   conflicts: {},
 });
@@ -720,6 +778,7 @@ export const useWorkStore = create<WorkStoreState>((set, get) => ({
       revisions: omit(state.revisions),
       removed: omit(state.removed),
       seenEventIDs: omit(state.seenEventIDs),
+      resyncGenerations: omit(state.resyncGenerations),
       gaps: omit(state.gaps),
       conflicts: omit(state.conflicts),
     };

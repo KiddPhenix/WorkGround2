@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"workground2/internal/control"
 	"workground2/internal/work"
@@ -57,6 +59,23 @@ func (a *App) GetWork(tabID, workID string) (*work.WorkView, error) {
 	return wc.GetWork(a.bootContext(), workID)
 }
 
+// RecoverWorkView performs the authoritative snapshot step of an explicit
+// frontend retry. The frontend must first install a fresh Watch generation;
+// this method then returns a typed resync event with a backend-global
+// generation and EventID, never a plain same-revision snapshot.
+func (a *App) RecoverWorkView(tabID, workID string, input work.ViewRecoveryIntent) (*work.WorkViewEvent, error) {
+	const maxSafeJSONInteger = uint64(1<<53 - 1)
+	workID = strings.TrimSpace(workID)
+	if workID == "" || input.Reason != work.ViewResyncRetry || input.Generation == 0 || input.Generation > maxSafeJSONInteger {
+		return nil, fmt.Errorf("work: valid retry recovery intent is required")
+	}
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return a.authoritativeWorkViewResync(a.bootContext(), wc, workID, input.Reason, input.Generation)
+}
+
 // ListWorks returns a filtered summary page.
 func (a *App) ListWorks(tabID string, filter work.WorkFilter) (work.WorkPage, error) {
 	wc, err := a.resolveWorkController(tabID)
@@ -96,6 +115,8 @@ func (a *App) RetryWorkTask(tabID string, input work.RetryTaskInput) (*work.Atte
 
 // WatchWork bridges the owning Controller's typed WorkView stream to one Wails
 // event channel. subscriptionID is opaque UI identity, never business state.
+// On overflow recovery signals, an authoritative GetWork snapshot is requested
+// and emitted so the frontend never stays stale after a dropped terminal event.
 func (a *App) WatchWork(tabID, workID, subscriptionID string) error {
 	tabID = strings.TrimSpace(tabID)
 	workID = strings.TrimSpace(workID)
@@ -111,6 +132,7 @@ func (a *App) WatchWork(tabID, workID, subscriptionID string) error {
 	if !ok || owner.WorkViews() == nil {
 		return fmt.Errorf("work: event stream not available on this controller")
 	}
+	wctl := owner.WorkControl()
 
 	a.workWatchMu.Lock()
 	if existing := a.workWatches[subscriptionID]; existing != nil {
@@ -121,7 +143,7 @@ func (a *App) WatchWork(tabID, workID, subscriptionID string) error {
 		return fmt.Errorf("work: subscription ID is already in use")
 	}
 	broadcaster := owner.WorkViews()
-	streamID, events := broadcaster.Subscribe(32)
+	streamID, events, overflows := broadcaster.SubscribeWorkReliable(workID, 32)
 	ctx, cancel := context.WithCancel(a.bootContext())
 	watch := &workViewWatch{
 		tabID: tabID, workID: workID,
@@ -139,17 +161,88 @@ func (a *App) WatchWork(tabID, workID, subscriptionID string) error {
 			select {
 			case <-ctx.Done():
 				return
+			case _, open := <-overflows:
+				if !open {
+					return
+				}
+				if err := a.recoverWorkViewFromOverflow(ctx, wctl, workID, subscriptionID); err != nil {
+					a.runtimeEvents.Emit(a.bootContext(), workViewEventPrefix+subscriptionID, work.WorkViewEvent{
+						SchemaVersion: work.WorkViewSchemaVersion,
+						Type:          work.ViewAttention,
+						WorkID:        workID,
+						EventID:       fmt.Sprintf("wv-recover-failed-%s-%d", workID, time.Now().UnixNano()),
+						RequestID:     "overflow-recovery-failed",
+						Object:        work.ObjectContext{Kind: work.ObjectWork, ID: workID},
+						Payload:       json.RawMessage(`{"overflow":true,"recovery":"failed","retryable":true}`),
+						CreatedAt:     time.Now().UTC(),
+					})
+				}
 			case event, open := <-events:
 				if !open {
 					return
 				}
-				if event.WorkID == workID {
-					a.runtimeEvents.Emit(a.bootContext(), workViewEventPrefix+subscriptionID, event)
-				}
+				a.runtimeEvents.Emit(a.bootContext(), workViewEventPrefix+subscriptionID, event)
 			}
 		}
 	}()
 	return nil
+}
+
+func (a *App) recoverWorkViewFromOverflow(ctx context.Context, wc control.WorkControl, workID, subscriptionID string) error {
+	event, err := a.authoritativeWorkViewResync(ctx, wc, workID, work.ViewResyncOverflow, 0)
+	if err != nil {
+		return err
+	}
+	a.runtimeEvents.Emit(a.bootContext(), workViewEventPrefix+subscriptionID, *event)
+	return nil
+}
+
+func (a *App) authoritativeWorkViewResync(ctx context.Context, wc control.WorkControl, workID string, reason work.ViewResyncReason, minGeneration uint64) (*work.WorkViewEvent, error) {
+	view, err := wc.GetWork(ctx, workID)
+	if err != nil || view == nil {
+		if err != nil {
+			return nil, fmt.Errorf("work: recover authoritative snapshot: %w", err)
+		}
+		return nil, fmt.Errorf("work: recover authoritative snapshot: empty projection")
+	}
+	payload, err := json.Marshal(view)
+	if err != nil {
+		return nil, fmt.Errorf("work: encode authoritative snapshot: %w", err)
+	}
+	generation := a.nextWorkResyncGeneration(minGeneration)
+	event := &work.WorkViewEvent{
+		SchemaVersion: work.WorkViewSchemaVersion,
+		Type:          work.ViewSnapshot,
+		WorkID:        workID,
+		EventID:       work.ResyncEventID(workID, view.Revision, reason, generation),
+		Revision:      view.Revision,
+		RequestID:     string(reason) + "-recovery",
+		Object:        work.ObjectContext{Kind: work.ObjectWork, ID: workID},
+		Resync: &work.ViewResync{
+			Reason:        reason,
+			Authoritative: true,
+			Generation:    generation,
+		},
+		Payload:   json.RawMessage(payload),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := event.Validate(); err != nil {
+		return nil, fmt.Errorf("work: build authoritative resync: %w", err)
+	}
+	return event, nil
+}
+
+func (a *App) nextWorkResyncGeneration(min uint64) uint64 {
+	for {
+		current := a.workResyncGeneration.Load()
+		next := current + 1
+		if min > next {
+			next = min
+		}
+		if a.workResyncGeneration.CompareAndSwap(current, next) {
+			return next
+		}
+	}
 }
 
 // UnwatchWork idempotently removes a transient Wails WorkView subscription.

@@ -90,6 +90,21 @@ func (e WorkViewEvent) Validate() error {
 	if !e.Object.Kind.Valid() || e.Object.ID == "" {
 		return fmt.Errorf("work: WorkViewEvent requires valid object kind and id")
 	}
+	if e.Resync != nil {
+		const maxSafeJSONInteger = uint64(1<<53 - 1)
+		if e.Type != ViewSnapshot || e.Object.Kind != ObjectWork || e.Object.ID != e.WorkID {
+			return fmt.Errorf("work: authoritative resync requires a matching Work snapshot")
+		}
+		if (e.Resync.Reason != ViewResyncOverflow && e.Resync.Reason != ViewResyncRetry) || !e.Resync.Authoritative {
+			return fmt.Errorf("work: unsupported or non-authoritative WorkView resync")
+		}
+		if e.Resync.Generation == 0 || e.Resync.Generation > maxSafeJSONInteger {
+			return fmt.Errorf("work: WorkView resync generation must be a positive JSON-safe integer")
+		}
+		if want := ResyncEventID(e.WorkID, e.Revision, e.Resync.Reason, e.Resync.Generation); e.EventID != want {
+			return fmt.Errorf("work: WorkView resync eventID %q does not match %q", e.EventID, want)
+		}
+	}
 	if e.CreatedAt.IsZero() {
 		return fmt.Errorf("work: WorkViewEvent requires createdAt")
 	}

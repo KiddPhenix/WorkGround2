@@ -1213,6 +1213,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 
+	// Prevent typed-nil injection: workSvc is *work.Service; assigning a nil
+	// concrete pointer to the WorkService interface creates a non-nil interface
+	// holding nil, which defeats plain == nil checks. Only assign when non-nil.
+	var workSvcIface control.WorkService
+	if workSvc != nil {
+		workSvcIface = workSvc
+	}
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1254,7 +1261,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		},
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
-		Work:                workSvc,
+		Work:                workSvcIface,
 		WorkViews:           workViews,
 		TaskExecutor:        taskExec,
 	}

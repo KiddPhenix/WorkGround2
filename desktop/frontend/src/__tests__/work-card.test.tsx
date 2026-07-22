@@ -15,6 +15,7 @@ import type {
   BlockInstance,
   RetryTaskInput,
   SessionSurfaceContext,
+  ViewRecoveryIntent,
   WorkView,
   WorkViewEvent,
   WorkflowRun,
@@ -117,6 +118,23 @@ class TestPort implements WorkControllerPort {
     const view = useWorkStore.getState().works[workID];
     if (!view) throw new Error(`no projection for ${workID}`);
     return view;
+  }
+
+  async fetchRecoverySnapshot(workID: string, intent: ViewRecoveryIntent): Promise<WorkViewEvent> {
+    const view = await this.fetchSnapshot(workID);
+    return {
+      schemaVersion: 1,
+      type: 'snapshot',
+      workID,
+      eventID: `wv-resync-${workID}-rev-${view.revision}-retry-${intent.generation}`,
+      revision: view.revision,
+      baseRevision: 0,
+      requestID: 'retry-recovery',
+      object: { kind: 'work', id: workID },
+      resync: { reason: 'retry', authoritative: true, generation: intent.generation },
+      payload: view,
+      createdAt: view.work.updatedAt,
+    };
   }
 
   async readUIPreference(workID: string): Promise<WorkUIPreference | null> {

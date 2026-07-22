@@ -21,6 +21,7 @@ import type {
   RetryTaskInput,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
+  ViewRecoveryIntent,
   WorkView,
   WorkViewEvent,
   WorkflowRun,
@@ -47,6 +48,7 @@ export interface WorkPortSubscription {
 export interface WorkControllerPort extends CornerstoneControllerPort {
   subscribe: (workID: string, onEvent: (event: WorkViewEvent) => void) => WorkPortSubscription;
   fetchSnapshot: (workID: string) => Promise<WorkView>;
+  fetchRecoverySnapshot: (workID: string, intent: ViewRecoveryIntent) => Promise<WorkViewEvent>;
   readUIPreference: (workID: string) => Promise<WorkUIPreference | null>;
   writeUIPreference: (workID: string, preference: WorkUIPreference) => Promise<void>;
   retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
@@ -78,8 +80,11 @@ const idleStatus = (): WorkControllerStatus => ({
 
 interface WorkSubscriptionState {
   token: symbol;
+  generation: number;
+  recovery: boolean;
   port: WorkPortSubscription | null;
   watchReady: boolean;
+  settling: boolean;
   buffering: boolean;
   events: WorkViewEvent[];
 }
@@ -88,12 +93,20 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isOverflowRecoveryFailure(event: WorkViewEvent): boolean {
+  if (event.type !== 'attention' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return false;
+  const payload = event.payload as Record<string, unknown>;
+  return payload.overflow === true && payload.recovery === 'failed' && payload.retryable === true;
+}
+
 export class WorkControllerAdapter {
   private readonly subscriptions = new Map<string, WorkSubscriptionState>();
   private readonly pendingSnapshots = new Map<string, Promise<ApplyResult>>();
   private readonly pendingRetries = new Map<string, Promise<Attempt>>();
   private readonly statusByWork: Record<string, WorkControllerStatus> = {};
   private readonly statusListeners = new Set<() => void>();
+  private readonly subscriptionGenerations = new Map<string, number>();
+  private snapshotEventGeneration = 0;
   private disposed = false;
 
   constructor(private readonly port: WorkControllerPort) {}
@@ -117,15 +130,24 @@ export class WorkControllerAdapter {
   );
 
   subscribe = (workID: string): void => {
+    this.startSubscription(workID, false);
+  };
+
+  private startSubscription(workID: string, recovery: boolean): void {
     if (this.disposed || this.subscriptions.has(workID)) return;
     if (this.getStatus(workID).stream.kind !== 'offline') {
       this.updateStatus(workID, { stream: { kind: 'connecting' } });
     }
-    const token = Symbol(workID);
+    const generation = (this.subscriptionGenerations.get(workID) ?? 0) + 1;
+    this.subscriptionGenerations.set(workID, generation);
+    const token = Symbol(`${workID}:${generation}`);
     const state: WorkSubscriptionState = {
       token,
+      generation,
+      recovery,
       port: null,
       watchReady: false,
+      settling: true,
       buffering: true,
       events: [] as WorkViewEvent[],
     };
@@ -153,35 +175,57 @@ export class WorkControllerAdapter {
     this.subscriptions.set(workID, state);
     void Promise.resolve(subscription.ready)
       .then(async () => {
-        if (this.disposed || this.subscriptions.get(workID)?.token !== token) {
+        if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
           return;
         }
         state.watchReady = true;
 
-        // The listener is installed before WatchWork. Once the backend confirms
-        // that watch, an authoritative snapshot closes the subscription/snapshot
-        // window. Events received meanwhile are replayed through the same
-        // revision-aware reducer after the snapshot.
-        this.updateStatus(workID, { stream: { kind: 'online' } });
-        await this.recoverSnapshot(workID);
-        if (this.disposed || this.subscriptions.get(workID)?.token !== token) {
+        // The Watch must exist before either snapshot is requested. Initial
+        // hydration keeps ordinary revision conflict rules; explicit retry
+        // requests a backend-issued typed authoritative resync.
+        if (state.recovery) await this.recoverSubscriptionSnapshot(workID, state);
+        else await this.recoverSnapshot(workID);
+        if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
           return;
         }
-        if (this.flushBuffered(workID, state)) await this.recoverSnapshot(workID);
+        const buffered = this.flushBuffered(workID, state);
+        if (buffered.retryableFailure) throw new Error('authoritative overflow recovery failed; retry synchronization');
+        if (buffered.needsRecovery) await this.recoverSnapshot(workID);
+        if (!this.isCurrentSubscription(workID, state)) {
+          subscription.unsubscribe();
+          return;
+        }
+        state.settling = false;
+        this.updateStatus(workID, {
+          stream: { kind: 'online' },
+          snapshotError: null,
+          eventError: null,
+          fetching: false,
+        });
       })
       .catch((error: unknown) => {
-        if (this.disposed || this.subscriptions.get(workID)?.token !== token) return;
-        // Snapshot failures already have an observable status and keep a valid
-        // watch alive. A failed watch is removed so retry creates a fresh
-        // listener/subscription generation.
-        if (state.watchReady) return;
-        subscription.unsubscribe();
-        this.subscriptions.delete(workID);
-        this.updateStatus(workID, { stream: { kind: 'offline', message: errorText(error) } });
+        if (!this.isCurrentSubscription(workID, state)) return;
+        state.settling = false;
+        const message = errorText(error);
+        this.updateStatus(workID, {
+          stream: { kind: 'offline', message },
+          snapshotError: message,
+          fetching: false,
+        });
+        // A failed Watch was never installed. Snapshot/apply failures keep the
+        // installed Watch until explicit retry replaces its whole generation.
+        if (!state.watchReady) {
+          subscription.unsubscribe();
+          this.subscriptions.delete(workID);
+        }
       });
-  };
+  }
+
+  private isCurrentSubscription(workID: string, state: WorkSubscriptionState): boolean {
+    return !this.disposed && this.subscriptions.get(workID)?.token === state.token;
+  }
 
   unsubscribe = (workID: string): void => {
     this.subscriptions.get(workID)?.port?.unsubscribe();
@@ -191,50 +235,79 @@ export class WorkControllerAdapter {
   retrySubscription = (workID: string): void => {
     if (this.disposed) return;
     const state = this.subscriptions.get(workID);
-    if (!state) {
-      this.subscribe(workID);
-      return;
-    }
-    if (!state.watchReady) return;
-    void this.recoverSnapshot(workID)
-      .then(async () => {
-        if (state.buffering && this.flushBuffered(workID, state)) await this.recoverSnapshot(workID);
-      })
-      .catch(() => undefined);
+    // One retry owns the complete Watch -> authoritative snapshot handshake.
+    // Repeated clicks while either half is still settling must not create a
+    // competing generation or let a late response overwrite newer state.
+    if (state && (!state.watchReady || state.settling)) return;
+    state?.port?.unsubscribe();
+    this.subscriptions.delete(workID);
+    this.startSubscription(workID, true);
   };
 
-  private flushBuffered(workID: string, state: WorkSubscriptionState): boolean {
-    if (this.disposed || this.subscriptions.get(workID)?.token !== state.token) return false;
+  private flushBuffered(workID: string, state: WorkSubscriptionState): { needsRecovery: boolean; retryableFailure: boolean } {
+    if (!this.isCurrentSubscription(workID, state)) return { needsRecovery: false, retryableFailure: false };
     let needsRecovery = false;
+    let retryableFailure = false;
     while (state.events.length > 0) {
       const pending = state.events.splice(0);
       for (const event of pending) {
         const result = this.applyEvent(event);
         if (result.kind === 'gap') needsRecovery = true;
+        if (isOverflowRecoveryFailure(event)) retryableFailure = true;
       }
     }
     state.buffering = false;
-    return needsRecovery;
+    return { needsRecovery, retryableFailure };
+  }
+
+  private async recoverSubscriptionSnapshot(workID: string, state: WorkSubscriptionState): Promise<ApplyResult> {
+    this.updateStatus(workID, { fetching: true });
+    const event = await this.port.fetchRecoverySnapshot(workID, { reason: 'retry', generation: state.generation });
+    if (!this.isCurrentSubscription(workID, state)) throw new Error('stale recovery generation');
+    if (event.workID !== workID || event.type !== 'snapshot' || event.resync?.reason !== 'retry' ||
+        !event.resync.authoritative || event.resync.generation < state.generation) {
+      throw new Error('backend returned an invalid authoritative retry snapshot');
+    }
+    const result = applyWorkViewEvent(event);
+    if (result.kind !== 'applied' && result.kind !== 'duplicate') {
+      const detail = result.kind === 'conflict' ? result.conflict.reason : result.kind;
+      throw new Error(`authoritative retry snapshot was not applied: ${detail}`);
+    }
+    return result;
   }
 
   applyEvent = (event: WorkViewEvent): ApplyResult => {
     const result = applyWorkViewEvent(event);
-    if (result.kind === 'conflict') this.updateStatus(event.workID, { eventError: result.conflict.reason });
-    else if (result.kind === 'applied') this.updateStatus(event.workID, { eventError: null });
+    if (isOverflowRecoveryFailure(event)) {
+      this.updateStatus(event.workID, {
+        stream: { kind: 'offline', message: 'authoritative overflow recovery failed; retry synchronization' },
+        snapshotError: 'authoritative overflow recovery failed; retry synchronization',
+      });
+    } else if (result.kind === 'conflict') {
+      this.updateStatus(event.workID, { eventError: result.conflict.reason });
+    } else if (result.kind === 'applied') {
+      this.updateStatus(event.workID, {
+        eventError: null,
+        ...(event.resync?.reason === 'overflow' && event.resync.authoritative
+          ? { stream: { kind: 'online' as const }, snapshotError: null }
+          : {}),
+      });
+    }
     return result;
   };
 
   recoverSnapshot = (workID: string): Promise<ApplyResult> => {
     const pending = this.pendingSnapshots.get(workID);
     if (pending) return pending;
-    this.updateStatus(workID, { fetching: true, snapshotError: null });
+    this.updateStatus(workID, { fetching: true });
     const request = Promise.resolve()
       .then(async () => {
         let previousRevision = useWorkStore.getState().revisions[workID] ?? -1;
         for (;;) {
           const view = await this.port.fetchSnapshot(workID);
           if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
-          const result = applySnapshot(view, `fetch:${workID}:${view.revision}`);
+          const eventGeneration = ++this.snapshotEventGeneration;
+          const result = applySnapshot(view, `fetch:${workID}:${view.revision}:${eventGeneration}`);
           if (result.kind === 'conflict') throw new Error(result.conflict.reason);
           const state = useWorkStore.getState();
           const issue = state.gaps[workID];

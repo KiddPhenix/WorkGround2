@@ -4017,7 +4017,7 @@ type sessionCornerstoneCounter interface {
 }
 
 func (c *Controller) sessionCornerstoneCount(ctx context.Context) (int, bool, error) {
-	if c == nil || c.workSvc == nil {
+	if c == nil || nilutil.IsNil(c.workSvc) {
 		return 0, false, nil
 	}
 	counter, ok := c.workSvc.(sessionCornerstoneCounter)

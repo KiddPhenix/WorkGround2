@@ -2,7 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +51,248 @@ func TestWorkViewWailsWatchRoutesOwningProjection(t *testing.T) {
 
 	app.UnwatchWork("subscription-1")
 	app.UnwatchWork("subscription-1")
+}
+
+func TestWorkViewWailsWatchOverflowRecoversWithoutSuccessor(t *testing.T) {
+	var loads atomic.Int64
+	store := &worktest.Store{
+		LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+			loads.Add(1)
+			return &work.Work{ID: workID, Name: "authoritative", State: work.WorkReady, ArchiveState: work.ArchiveActive}, work.WorkEventState{Revision: 77}, nil
+		},
+	}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+
+	recovered := make(chan work.WorkViewEvent, 1)
+	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
+		if name != workViewEventPrefix+"subscription-overflow" || len(payload) != 1 {
+			return
+		}
+		event, ok := payload[0].(work.WorkViewEvent)
+		if !ok {
+			return
+		}
+		if event.RequestID == "overflow-recovery" {
+			select {
+			case recovered <- event:
+			default:
+			}
+		}
+	}
+	if err := app.WatchWork("test", "work-1", "subscription-overflow"); err != nil {
+		t.Fatalf("WatchWork: %v", err)
+	}
+	t.Cleanup(func() { app.UnwatchWork("subscription-overflow") })
+
+	// A tight publisher burst outpaces the watcher and fills its fixed buffer.
+	// Stop immediately after the first observed drop: the overflow signal must
+	// recover without relying on any successor event.
+	for i := 0; i < 100000 && views.OverflowCount() == 0; i++ {
+		views.EmitWorkView(work.WorkViewEvent{Type: work.ViewDelta, WorkID: "work-1", EventID: fmt.Sprintf("burst-%d", i), Revision: int64(i + 1)})
+	}
+	if views.OverflowCount() == 0 {
+		t.Fatal("burst did not exercise watcher overflow")
+	}
+
+	select {
+	case event := <-recovered:
+		if event.Revision != 77 || event.Resync == nil || event.Resync.Generation != 1 ||
+			event.EventID != work.OverflowResyncEventID("work-1", 77, 1) {
+			t.Fatalf("recovery event = %+v", event)
+		}
+		if err := event.Validate(); err != nil {
+			t.Fatalf("recovery event contract: %v", err)
+		}
+		var snapshot work.WorkView
+		if err := json.Unmarshal(event.Payload, &snapshot); err != nil || snapshot.Work == nil || snapshot.Work.Name != "authoritative" {
+			t.Fatalf("recovery snapshot = %#v, err=%v", snapshot, err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("overflow with no successor did not trigger authoritative snapshot")
+	}
+	if loads.Load() == 0 || views.OverflowCount() == 0 {
+		t.Fatalf("recovery evidence = loads %d, overflow %d", loads.Load(), views.OverflowCount())
+	}
+}
+
+func TestWorkViewWailsOverflowResyncsExternalBlobAssessmentAtSameRevision(t *testing.T) {
+	store, err := work.NewFileWorkStore(filepath.Join(t.TempDir(), "works"), 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewFileWorkStore: %v", err)
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	created, err := svc.Create(t.Context(), work.CreateWorkInput{
+		BlueprintRef: work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: work.SchemaVersion, Version: 1},
+		Name:         "same revision assessment", RequestID: "create-same-revision",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	beforePin, err := svc.Get(t.Context(), created.ID)
+	if err != nil {
+		t.Fatalf("Get before Pin: %v", err)
+	}
+	pinned, err := svc.PinCornerstone(t.Context(), created.ID, work.PinCornerstoneInput{
+		Type: work.CornerstonePolicy, Title: "required blob",
+		Content: strings.Repeat("authoritative external input ", 220),
+		Ref:     work.CornerstoneRef{Kind: "inline"}, Mode: work.CornerstoneSnapshot, Required: true,
+		ExpectedRevision: beforePin.Revision, RequestID: "pin-required-blob",
+	})
+	if err != nil || pinned == nil || pinned.Cornerstone == nil || pinned.Cornerstone.Ref.BlobDigest == "" {
+		t.Fatalf("PinCornerstone = (%#v, %v)", pinned, err)
+	}
+	ready, err := svc.Get(t.Context(), created.ID)
+	if err != nil || ready.Assessment.Blocking {
+		t.Fatalf("ready projection = (%#v, %v)", ready, err)
+	}
+	if err := store.Delete(created.ID, pinned.Cornerstone.Ref.BlobDigest); err != nil {
+		t.Fatalf("external blob delete: %v", err)
+	}
+	blocked, err := svc.Get(t.Context(), created.ID)
+	if err != nil || blocked.Revision != ready.Revision || !blocked.Assessment.Blocking || blocked.RunBlock == nil {
+		t.Fatalf("same-revision blocked projection = (%#v, %v), ready revision %d", blocked, err, ready.Revision)
+	}
+
+	ctrl := control.New(control.Options{Work: svc, WorkViews: views})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+	recovered := make(chan work.WorkViewEvent, 1)
+	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
+		if name != workViewEventPrefix+"subscription-blob" || len(payload) != 1 {
+			return
+		}
+		event, ok := payload[0].(work.WorkViewEvent)
+		if ok && event.Resync != nil {
+			select {
+			case recovered <- event:
+			default:
+			}
+		}
+	}
+	if err := app.WatchWork("test", created.ID, "subscription-blob"); err != nil {
+		t.Fatalf("WatchWork: %v", err)
+	}
+	t.Cleanup(func() { app.UnwatchWork("subscription-blob") })
+	for i := 0; i < 100000 && views.OverflowCount() == 0; i++ {
+		views.EmitWorkView(work.WorkViewEvent{Type: work.ViewDelta, WorkID: created.ID, EventID: fmt.Sprintf("blob-burst-%d", i), Revision: int64(i + 1)})
+	}
+	if views.OverflowCount() == 0 {
+		t.Fatal("burst did not exercise watcher overflow")
+	}
+	select {
+	case event := <-recovered:
+		var snapshot work.WorkView
+		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+			t.Fatalf("decode recovery: %v", err)
+		}
+		if event.Revision != ready.Revision || snapshot.Revision != ready.Revision || !snapshot.Assessment.Blocking || snapshot.RunBlock == nil {
+			t.Fatalf("overflow recovery did not carry same-revision blocked assessment: event=%+v snapshot=%#v", event, snapshot)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for same-revision authoritative resync")
+	}
+}
+
+func TestWorkViewWailsOverflowGetFailureEmitsRetryableAttentionOnly(t *testing.T) {
+	store := &worktest.Store{LoadStateFunc: func(string, string) (*work.Work, work.WorkEventState, error) {
+		return nil, work.WorkEventState{}, errors.New("offline")
+	}}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+	events := make(chan work.WorkViewEvent, 4)
+	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
+		if name == workViewEventPrefix+"subscription-failure" && len(payload) == 1 {
+			if event, ok := payload[0].(work.WorkViewEvent); ok && (event.Type == work.ViewAttention || event.Resync != nil) {
+				events <- event
+			}
+		}
+	}
+	if err := app.WatchWork("test", "work-1", "subscription-failure"); err != nil {
+		t.Fatalf("WatchWork: %v", err)
+	}
+	t.Cleanup(func() { app.UnwatchWork("subscription-failure") })
+	for i := 0; i < 100000 && views.OverflowCount() == 0; i++ {
+		views.EmitWorkView(work.WorkViewEvent{Type: work.ViewDelta, WorkID: "work-1", EventID: fmt.Sprintf("failure-burst-%d", i), Revision: int64(i + 1)})
+	}
+	select {
+	case event := <-events:
+		if event.Type != work.ViewAttention || event.Resync != nil || !strings.Contains(string(event.Payload), `"retryable":true`) {
+			t.Fatalf("failure event = %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for retryable recovery attention")
+	}
+}
+
+func TestRecoverWorkViewReturnsFreshTypedRetryResync(t *testing.T) {
+	store := &worktest.Store{LoadStateFunc: func(workID, requestID string) (*work.Work, work.WorkEventState, error) {
+		return &work.Work{
+			ID: workID, Name: "same revision blocked", State: work.WorkReady, ArchiveState: work.ArchiveActive,
+		}, work.WorkEventState{Revision: 77}, nil
+	}}
+	views := control.NewWorkViewBroadcaster()
+	ctrl := control.New(control.Options{Work: work.NewService(store, work.NewBlueprintRegistry(), views), WorkViews: views})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+
+	first, err := app.RecoverWorkView("test", "work-1", work.ViewRecoveryIntent{
+		Reason: work.ViewResyncRetry, Generation: 8,
+	})
+	if err != nil {
+		t.Fatalf("RecoverWorkView first: %v", err)
+	}
+	second, err := app.RecoverWorkView("test", "work-1", work.ViewRecoveryIntent{
+		Reason: work.ViewResyncRetry, Generation: 8,
+	})
+	if err != nil {
+		t.Fatalf("RecoverWorkView second: %v", err)
+	}
+	if first.Resync == nil || first.Resync.Reason != work.ViewResyncRetry || !first.Resync.Authoritative || first.Resync.Generation != 8 {
+		t.Fatalf("first retry resync = %+v", first)
+	}
+	if second.Resync == nil || second.Resync.Generation != 9 || second.EventID == first.EventID {
+		t.Fatalf("second retry resync = %+v; first EventID %q", second, first.EventID)
+	}
+	if first.EventID != work.ResyncEventID("work-1", 77, work.ViewResyncRetry, 8) ||
+		second.EventID != work.ResyncEventID("work-1", 77, work.ViewResyncRetry, 9) {
+		t.Fatalf("retry EventIDs = (%q, %q)", first.EventID, second.EventID)
+	}
+	if err := first.Validate(); err != nil {
+		t.Fatalf("first retry contract: %v", err)
+	}
+	if err := second.Validate(); err != nil {
+		t.Fatalf("second retry contract: %v", err)
+	}
+	var snapshot work.WorkView
+	if err := json.Unmarshal(first.Payload, &snapshot); err != nil || snapshot.Revision != 77 || snapshot.Work == nil || snapshot.Work.Name != "same revision blocked" {
+		t.Fatalf("retry snapshot = %#v, err=%v", snapshot, err)
+	}
+}
+
+func TestRecoverWorkViewRejectsInvalidIntent(t *testing.T) {
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	for _, tc := range []struct {
+		name   string
+		workID string
+		intent work.ViewRecoveryIntent
+	}{
+		{name: "empty work", intent: work.ViewRecoveryIntent{Reason: work.ViewResyncRetry, Generation: 1}},
+		{name: "wrong reason", workID: "work-1", intent: work.ViewRecoveryIntent{Reason: work.ViewResyncOverflow, Generation: 1}},
+		{name: "zero generation", workID: "work-1", intent: work.ViewRecoveryIntent{Reason: work.ViewResyncRetry}},
+		{name: "unsafe generation", workID: "work-1", intent: work.ViewRecoveryIntent{Reason: work.ViewResyncRetry, Generation: 1 << 53}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := app.RecoverWorkView("test", tc.workID, tc.intent); err == nil || !strings.Contains(err.Error(), "valid retry recovery intent") {
+				t.Fatalf("RecoverWorkView error = %v", err)
+			}
+		})
+	}
 }
 
 func TestWorkViewWailsWatchRejectsUnsafeSubscriptionID(t *testing.T) {

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "type": "snapshot",
+  "workID": "work-abc123",
+  "eventID": "wv-resync-work-abc123-rev-5-overflow-3",
+  "revision": 5,
+  "baseRevision": 0,
+  "requestID": "overflow-recovery",
+  "object": {
+    "kind": "work",
+    "id": "work-abc123"
+  },
+  "resync": {
+    "reason": "overflow",
+    "authoritative": true,
+    "generation": 3
+  },
+  "createdAt": "2026-07-20T10:00:00Z",
+  "payload": {
+    "revision": 5,
+    "assessment": {
+      "state": "blocked",
+      "blocking": true,
+      "degraded": false
+    }
+  }
+}

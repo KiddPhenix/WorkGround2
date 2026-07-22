@@ -13,6 +13,7 @@ import (
 
 var sharedFixtureNames = []string{
 	"work-view-event-v1.json",
+	"work-view-event-resync-v1.json",
 	"work-view-event-future.json",
 	"work-dto-fields-v1.json",
 }
@@ -48,10 +49,16 @@ func TestGoDTOFieldsMatchContract(t *testing.T) {
 	}
 
 	tests := map[string]any{
-		"TaskExecuteInput": TaskExecuteInput{},
-		"RetryTaskInput":   RetryTaskInput{},
-		"ResumeRunInput":    ResumeRunInput{},
-		"GateResolution":    GateResolution{},
+		"TaskExecuteInput":   TaskExecuteInput{},
+		"RetryTaskInput":     RetryTaskInput{},
+		"ResumeRunInput":     ResumeRunInput{},
+		"GateResolution":     GateResolution{},
+		"WorkView":           WorkView{},
+		"RunBlockReason":     RunBlockReason{},
+		"RunBlockItem":       RunBlockItem{},
+		"WorkViewEvent":      WorkViewEvent{},
+		"ViewResync":         ViewResync{},
+		"ViewRecoveryIntent": ViewRecoveryIntent{},
 	}
 	if len(want) != len(tests) {
 		t.Fatalf("DTO contract count = %d, want %d", len(want), len(tests))
@@ -102,6 +109,18 @@ func TestParseWorkViewEventV1(t *testing.T) {
 	}
 	if err := result.RejectWrite(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParseWorkViewResyncV1(t *testing.T) {
+	result, err := ParseWorkViewEvent(readFixture(t, goFixtureDir, "work-view-event-resync-v1.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := result.Event
+	if event == nil || event.Resync == nil || event.Resync.Reason != ViewResyncOverflow ||
+		!event.Resync.Authoritative || event.Resync.Generation != 3 {
+		t.Fatalf("resync fixture fields drifted: %+v", event)
 	}
 }
 
@@ -161,6 +180,53 @@ func TestWorkViewEventValidation(t *testing.T) {
 			event := valid
 			test.edit(&event)
 			if err := event.Validate(); err == nil {
+				t.Fatal("Validate succeeded")
+			}
+		})
+	}
+}
+
+func TestWorkViewOverflowResyncValidation(t *testing.T) {
+	event := WorkViewEvent{
+		SchemaVersion: WorkViewSchemaVersion,
+		Type:          ViewSnapshot,
+		WorkID:        "work-1",
+		EventID:       OverflowResyncEventID("work-1", 7, 3),
+		Revision:      7,
+		RequestID:     "overflow-recovery",
+		Object:        ObjectContext{Kind: ObjectWork, ID: "work-1"},
+		Resync:        &ViewResync{Reason: ViewResyncOverflow, Authoritative: true, Generation: 3},
+		Payload:       json.RawMessage(`{"revision":7}`),
+		CreatedAt:     mustTime(t, "2026-07-20T10:00:00Z"),
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("valid overflow resync: %v", err)
+	}
+	retry := event
+	retry.Resync = &ViewResync{Reason: ViewResyncRetry, Authoritative: true, Generation: 4}
+	retry.EventID = ResyncEventID(retry.WorkID, retry.Revision, ViewResyncRetry, 4)
+	if err := retry.Validate(); err != nil {
+		t.Fatalf("valid retry resync: %v", err)
+	}
+	tests := []struct {
+		name string
+		edit func(*WorkViewEvent)
+	}{
+		{"delta", func(e *WorkViewEvent) { e.Type = ViewDelta; e.BaseRevision = 6 }},
+		{"other reason", func(e *WorkViewEvent) { e.Resync.Reason = "manual" }},
+		{"not authoritative", func(e *WorkViewEvent) { e.Resync.Authoritative = false }},
+		{"zero generation", func(e *WorkViewEvent) { e.Resync.Generation = 0 }},
+		{"unsafe generation", func(e *WorkViewEvent) { e.Resync.Generation = 1 << 53 }},
+		{"wrong event ID", func(e *WorkViewEvent) { e.EventID = "resync-spoofed" }},
+		{"cross Work", func(e *WorkViewEvent) { e.Object.ID = "work-2" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := event
+			resync := *event.Resync
+			candidate.Resync = &resync
+			test.edit(&candidate)
+			if err := candidate.Validate(); err == nil {
 				t.Fatal("Validate succeeded")
 			}
 		})

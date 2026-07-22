@@ -715,6 +715,11 @@ func attachCornerstoneResult(result *CornerstoneResult, resolution *CornerstoneR
 	if result == nil || result.Cornerstone == nil {
 		return
 	}
+	// Cornerstone commonly points into WorkView.Work. CandidateContent is a
+	// transient review payload and must not leak into the authoritative WorkView
+	// projection, so detach the result object before attaching it.
+	cornerstone := *result.Cornerstone
+	result.Cornerstone = &cornerstone
 	result.Resolution = resolution
 	if resolution != nil {
 		result.Cornerstone.CandidateContent = resolution.CandidateContent

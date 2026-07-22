@@ -37,7 +37,12 @@ export class FakeWorkController implements CornerstoneControllerPort {
   constructor(private readonly options: FakeWorkControllerOptions = {}) {}
 
   seedWork(work: Work, revision = 1): void {
-    this.views.set(work.id, { schemaVersion: work.schemaVersion, work: structuredClone(work), revision });
+    this.views.set(work.id, {
+      schemaVersion: work.schemaVersion,
+      work: structuredClone(work),
+      revision,
+      assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+    });
   }
 
   async getWork(workId: string): Promise<WorkView> {

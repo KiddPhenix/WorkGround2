@@ -60,7 +60,9 @@ type WorkService interface {
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
 // EmitWorkView never blocks; events for slow subscribers are dropped and the
-// overflow count is observable via OverflowCount. Safe for concurrent use.
+// overflow count is observable via OverflowCount. Per-work subscriptions
+// (SubscribeWork) filter at emission time so unrelated Work traffic cannot
+// squeeze a subscriber's buffer. Safe for concurrent use.
 type WorkViewBroadcaster struct {
 	mu            sync.RWMutex
 	subs          map[string]*workViewSub
@@ -69,8 +71,10 @@ type WorkViewBroadcaster struct {
 }
 
 type workViewSub struct {
-	ch    chan work.WorkViewEvent
-	drops atomic.Int64
+	ch       chan work.WorkViewEvent
+	overflow chan struct{}
+	workID   string // non-empty → only receive events for this Work (filtered at emit)
+	drops    atomic.Int64
 }
 
 // NewWorkViewBroadcaster returns a ready-to-use broadcaster with no subscribers.
@@ -86,16 +90,42 @@ func NewWorkViewBroadcaster() *WorkViewBroadcaster {
 // on the broadcaster (OverflowCount) and per-subscriber (SubscriberDrops).
 // Call Unsubscribe with the returned ID to release the subscription.
 func (b *WorkViewBroadcaster) Subscribe(bufSize int) (id string, ch <-chan work.WorkViewEvent) {
+	id, ch, _ = b.subscribeWork("", bufSize)
+	return id, ch
+}
+
+// SubscribeWork adds a subscriber that only receives events for the given
+// workID. Filtering happens at EmitWorkView time — before the channel buffer —
+// so cross-Work traffic cannot squeeze a focused subscriber.
+func (b *WorkViewBroadcaster) SubscribeWork(workID string, bufSize int) (id string, ch <-chan work.WorkViewEvent) {
+	id, ch, _ = b.subscribeWork(workID, bufSize)
+	return id, ch
+}
+
+// SubscribeWorkReliable adds a per-Work subscriber plus an independent sticky
+// overflow signal. A slow subscriber can lose deltas, but cannot lose the
+// resync request when the dropped event is terminal and has no successor.
+func (b *WorkViewBroadcaster) SubscribeWorkReliable(workID string, bufSize int) (id string, ch <-chan work.WorkViewEvent, overflow <-chan struct{}) {
+	return b.subscribeWork(workID, bufSize)
+}
+
+func (b *WorkViewBroadcaster) subscribeWork(workID string, bufSize int) (id string, ch <-chan work.WorkViewEvent, overflow <-chan struct{}) {
 	if b == nil {
 		closed := make(chan work.WorkViewEvent)
 		close(closed)
-		return "", closed
+		closedOverflow := make(chan struct{})
+		close(closedOverflow)
+		return "", closed, closedOverflow
 	}
 	if bufSize < 1 {
 		bufSize = 64
 	}
 	c := make(chan work.WorkViewEvent, bufSize)
-	sub := &workViewSub{ch: c}
+	o := make(chan struct{}, 1)
+	sub := &workViewSub{ch: c, overflow: o}
+	if workID != "" {
+		sub.workID = workID
+	}
 	id = fmt.Sprintf("wv-%d", b.nextID.Add(1))
 	b.mu.Lock()
 	if b.subs == nil {
@@ -103,7 +133,7 @@ func (b *WorkViewBroadcaster) Subscribe(bufSize int) (id string, ch <-chan work.
 	}
 	b.subs[id] = sub
 	b.mu.Unlock()
-	return id, c
+	return id, c, o
 }
 
 // Unsubscribe removes a subscriber. Idempotent: calling with an unknown or
@@ -117,13 +147,16 @@ func (b *WorkViewBroadcaster) Unsubscribe(id string) {
 	if ok {
 		delete(b.subs, id)
 		close(sub.ch)
+		close(sub.overflow)
 	}
 	b.mu.Unlock()
 }
 
 // EmitWorkView fans out the event to all subscribers. It implements work.ViewSink.
-// Sends are non-blocking: if a subscriber's buffer is full the event is dropped
-// and both the per-subscriber and broadcaster overflow counters are incremented.
+// Per-work subscriptions are filtered here (before the channel buffer). Sends
+// are non-blocking. When a subscriber's data buffer is full, a sticky token is
+// written to its independent overflow channel so recovery never depends on a
+// successor data event.
 func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 	if b == nil {
 		return
@@ -131,9 +164,16 @@ func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, sub := range b.subs {
+		if sub.workID != "" && e.WorkID != sub.workID {
+			continue
+		}
 		select {
 		case sub.ch <- e:
 		default:
+			select {
+			case sub.overflow <- struct{}{}:
+			default:
+			}
 			sub.drops.Add(1)
 			b.overflowCount.Add(1)
 		}

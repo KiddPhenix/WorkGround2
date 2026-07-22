@@ -27,5 +27,44 @@
     "outcome",
     "input",
     "note"
+  ],
+  "WorkView": [
+    "schemaVersion",
+    "work",
+    "revision",
+    "assessment",
+    "runBlock"
+  ],
+  "RunBlockReason": [
+    "blocked",
+    "items"
+  ],
+  "RunBlockItem": [
+    "code",
+    "cornerstoneId",
+    "status",
+    "detail"
+  ],
+  "WorkViewEvent": [
+    "schemaVersion",
+    "type",
+    "workID",
+    "eventID",
+    "revision",
+    "baseRevision",
+    "requestID",
+    "object",
+    "resync",
+    "payload",
+    "createdAt"
+  ],
+  "ViewResync": [
+    "reason",
+    "authoritative",
+    "generation"
+  ],
+  "ViewRecoveryIntent": [
+    "reason",
+    "generation"
   ]
 }

@@ -159,6 +159,9 @@ type App struct {
 	// mounted WorkCard to its owning tab without teaching the UI to poll.
 	workWatchMu sync.Mutex
 	workWatches map[string]*workViewWatch
+	// workResyncGeneration uniquely orders authoritative overflow/retry snapshots
+	// even when persisted Work revision and I/O-backed assessment diverge.
+	workResyncGeneration atomic.Uint64
 
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is
