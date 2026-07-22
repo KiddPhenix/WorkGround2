@@ -162,6 +162,10 @@ type App struct {
 	// workResyncGeneration uniquely orders authoritative overflow/retry snapshots
 	// even when persisted Work revision and I/O-backed assessment diverge.
 	workResyncGeneration atomic.Uint64
+	// workResyncGates serializes authoritativeWorkViewResync per workID so the
+	// GetWork→generation window is linearized for the same Work. Different
+	// workIDs proceed independently; idle entries are deleted on release.
+	workResyncGates workResyncGates
 
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is

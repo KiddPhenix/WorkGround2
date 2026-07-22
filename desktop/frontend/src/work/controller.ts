@@ -278,7 +278,10 @@ export class WorkControllerAdapter {
       throw new Error(`backend returned an invalid authoritative ${reason} snapshot`);
     }
     const result = applyWorkViewEvent(event);
-    if (result.kind !== 'applied' && result.kind !== 'duplicate') {
+    // Another adapter may have already applied a newer backend-global
+    // generation while this valid response was in flight. That makes the
+    // response harmlessly ignored, not a failed subscription handshake.
+    if (result.kind !== 'applied' && result.kind !== 'duplicate' && result.kind !== 'ignored') {
       const detail = result.kind === 'conflict' ? result.conflict.reason : result.kind;
       throw new Error(`authoritative ${reason} snapshot was not applied: ${detail}`);
     }

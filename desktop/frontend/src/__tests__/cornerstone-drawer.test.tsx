@@ -2098,6 +2098,77 @@ async function testRemountAuthoritativeHydration(): Promise<void> {
   delete (dom.window as unknown as { runtime?: unknown }).runtime;
 }
 
+async function testProductionAdaptersIgnoreLateLowerGeneration(): Promise<void> {
+  reset();
+  const ready = { ...makeView([], 91), assessment: { state: 'ready' as const, blocking: false, degraded: false, issues: [] } };
+  const blocked: WorkView = {
+    ...structuredClone(ready),
+    assessment: {
+      state: 'blocked', blocking: true, degraded: false,
+      issues: [{ cornerstoneId: 'cs-required', title: 'required', problem: 'blob_missing', blocking: true }],
+    },
+    runBlock: { blocked: true, items: [{ code: 'blob_missing', cornerstoneId: 'cs-required' }] },
+  };
+  useWorkStore.getState().applySnapshot(structuredClone(ready));
+
+  const recoveries = [deferred<WorkViewEvent>(), deferred<WorkViewEvent>()];
+  const intents: ViewRecoveryIntent[] = [];
+  const subscriptionIDs: string[] = [];
+  const listeners = new Map<string, (payload: unknown) => void>();
+  (dom.window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, callback: (payload: unknown) => void) => {
+      listeners.set(name, callback);
+      return () => { listeners.delete(name); };
+    },
+  };
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(ready),
+    RecoverWorkView: async (_tabID: string, _workID: string, intent: ViewRecoveryIntent) => {
+      const index = intents.length;
+      intents.push({ ...intent });
+      return recoveries[index].promise;
+    },
+    WatchWork: async (_tabID: string, _workID: string, subscriptionID: string) => {
+      subscriptionIDs.push(subscriptionID);
+    },
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  const adapterA = new WorkControllerAdapter(createWailsWorkControllerPort('tab-linear-a')!);
+  const adapterB = new WorkControllerAdapter(createWailsWorkControllerPort('tab-linear-b')!);
+  adapterA.subscribe(ready.work.id);
+  adapterB.subscribe(ready.work.id);
+  for (let i = 0; i < 20 && intents.length < 2; i++) await settle(5);
+  eq(intents.length, 2, 'G1: 两个 production adapter 都请求权威 hydrate');
+  eq(subscriptionIDs.length, 2, 'G1: 两个 production adapter 都安装 Watch');
+  ok(subscriptionIDs[0] !== subscriptionIDs[1], 'G1: 两个 production adapter 使用独立 subscriptionID');
+  ok(intents.every((intent) => intent.reason === 'hydrate'), 'G1: 两个独立订阅都使用 hydrate reason');
+
+  // Backend linearized the second snapshot later and assigned it the higher
+  // global generation, but its response reaches the frontend first.
+  recoveries[1].resolve(hydrateResync(blocked, 102));
+  await settle();
+  eq(useWorkStore.getState().works[ready.work.id]?.assessment.blocking, true, 'G2: 新 blocked 高 generation 先应用');
+  eq(useWorkStore.getState().resyncGenerations[ready.work.id], 102, 'G2: Store 记录 backend 高水位');
+  eq(adapterB.getStatus(ready.work.id).stream.kind, 'online', 'G2: 新 generation adapter online');
+
+  // The older ready response arrives later. It is a valid hydrate handshake,
+  // but the Store ignores its lower generation and keeps blocked authoritative.
+  recoveries[0].resolve(hydrateResync(ready, 101));
+  await settle();
+  eq(useWorkStore.getState().works[ready.work.id]?.assessment.blocking, true, 'G3: 迟到低 generation 不覆盖新 blocked');
+  eq(useWorkStore.getState().resyncGenerations[ready.work.id], 102, 'G3: 迟到响应不回退水位');
+  eq(adapterA.getStatus(ready.work.id).stream.kind, 'online', 'G3: 合法但过时的响应不误报 offline');
+  ok(!adapterA.getStatus(ready.work.id).snapshotError, 'G3: 低 generation ignored 不产生 snapshotError');
+
+  adapterA.dispose();
+  adapterB.dispose();
+  delete (dom.window as unknown as { go?: unknown }).go;
+  delete (dom.window as unknown as { runtime?: unknown }).runtime;
+}
+
 async function testLiveRefRepairStillWorksWithRef(): Promise<void> {
   reset();
   const view = makeView([
@@ -2157,6 +2228,7 @@ await testSnapshotRepairConflictPreservesDraft();
 await testSnapshotRepairNetworkRetrySameRequestID();
 await testLargeSnapshotReplacementPassesProductionChain();
 await testRemountAuthoritativeHydration();
+await testProductionAdaptersIgnoreLateLowerGeneration();
 await testLiveRefRepairStillWorksWithRef();
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
