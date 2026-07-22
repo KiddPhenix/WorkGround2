@@ -416,13 +416,13 @@ export interface ObjectContext {
 }
 
 export interface ViewResync {
-  reason: 'overflow' | 'retry';
+  reason: 'overflow' | 'retry' | 'hydrate';
   authoritative: true;
   generation: number;
 }
 
 export interface ViewRecoveryIntent {
-  reason: 'retry';
+  reason: 'retry' | 'hydrate';
   generation: number;
 }
 

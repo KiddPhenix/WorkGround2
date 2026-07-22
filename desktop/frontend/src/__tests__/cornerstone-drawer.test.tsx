@@ -12,7 +12,7 @@ import { WorkRunEntry } from '../components/work/WorkRunEntry';
 import { WorkControllerAdapter, type CornerstoneControllerPort, type WorkControllerPort, type WorkPortSubscription } from '../work/controller';
 import { deriveCornerstoneAttention, useCornerstoneUIStore } from '../work/cornerstoneStore';
 import { FakeWorkController, type FakeWorkControllerOptions } from '../work/fakeController';
-import { useWorkStore, useWorkUIStore, type WorkUIPreference } from '../work/store';
+import { useWorkStore, useWorkUIStore, applyWorkViewEvent, applySnapshot, type WorkUIPreference } from '../work/store';
 import { createWailsCornerstoneAdapter, createWailsWorkControllerPort } from '../work/wailsAdapter';
 import type {
   AcceptCornerstoneInput,
@@ -1191,6 +1191,22 @@ function retryResync(view: WorkView, generation: number): WorkViewEvent {
   };
 }
 
+function hydrateResync(view: WorkView, generation: number): WorkViewEvent {
+  return {
+    schemaVersion: 1,
+    type: 'snapshot',
+    workID: view.work.id,
+    eventID: `wv-resync-${view.work.id}-rev-${view.revision}-hydrate-${generation}`,
+    revision: view.revision,
+    baseRevision: 0,
+    requestID: 'hydrate-recovery',
+    object: { kind: 'work', id: view.work.id },
+    resync: { reason: 'hydrate', authoritative: true, generation },
+    payload: structuredClone(view),
+    createdAt: '2026-07-22T00:00:00Z',
+  };
+}
+
 async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   reset();
   const view = makeView([]);
@@ -1624,10 +1640,13 @@ async function testSnapshotBlobRepairContentPath(): Promise<void> {
   await click(button(item, '修复快照'));
   ok(item.textContent?.includes('digest 与已接受快照不匹配') ?? false, '普通 token budget 文本不被误判为 Secret');
 
+  // Oversized content with wrong digest is still rejected (digest mismatch, not size).
+  // The 8 MiB UI-only hard limit has been removed per design review —
+  // the original design does not authorize a snapshot repair size limit.
   await change(textarea, 'x'.repeat(8 * 1024 * 1024 + 1));
   await click(button(item, '修复快照'));
-  eq(port.calls.filter((call) => call.action === 'repair').length, 0, '过大内容不调用 repair port');
-  ok(item.textContent?.includes('超过 8 MiB') ?? false, '过大内容显式拒绝');
+  eq(port.calls.filter((call) => call.action === 'repair').length, 0, '过大错误内容不调用 repair port（digest mismatch）');
+  ok(item.textContent?.includes('digest 与已接受快照不匹配') ?? false, '过大错误内容因 digest 不匹配被拒绝，非尺寸原因');
 
   await change(textarea, replacement);
 
@@ -1768,6 +1787,317 @@ async function testSnapshotRepairNetworkRetrySameRequestID(): Promise<void> {
   await mounted.cleanup();
 }
 
+async function testLargeSnapshotReplacementPassesProductionChain(): Promise<void> {
+  reset();
+  // >8 MiB valid replacement content with a known digest.
+  const largeContent = 'L'.repeat(8 * 1024 * 1024 + 1024); // ~8 MiB + 1 KiB
+  const largeDigest = contentDigest(largeContent);
+  const snapshot = makeCornerstone('cs-large-blob', {
+    mode: 'snapshot',
+    required: true,
+    status: 'invalid',
+    resolveErrorKind: 'invalid',
+    ref: { kind: 'inline', blobDigest: largeDigest },
+    digest: largeDigest,
+  });
+  let persisted = makeView([snapshot]);
+  persisted.assessment = {
+    state: 'blocked', blocking: true, degraded: false,
+    issues: [{ cornerstoneId: snapshot.id, title: snapshot.title, problem: 'blob_missing', blocking: true }],
+  };
+  persisted.runBlock = { blocked: true, items: [{ code: 'blob_missing', cornerstoneId: snapshot.id }] };
+
+  const repairCalls: Record<string, unknown>[] = [];
+  (dom.window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: () => () => undefined,
+  };
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(persisted),
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RepairCornerstone: async (_tabID: string, workId: string, input: Record<string, unknown>) => {
+      repairCalls.push(structuredClone(input));
+      if (workId !== persisted.work.id || input.content !== largeContent) throw new Error('repair rejected');
+      const active = { ...snapshot, content: largeContent, status: 'active' as const, resolveErrorKind: undefined };
+      persisted = {
+        ...persisted,
+        revision: persisted.revision + 1,
+        work: { ...persisted.work, cornerstones: [active] },
+        assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+        runBlock: undefined,
+      };
+      return {
+        cornerstone: active, workView: structuredClone(persisted), repaired: true, duplicate: false,
+        revision: persisted.revision, assessment: persisted.assessment,
+      };
+    },
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  const card = await mount(<WorkCard workID={persisted.work.id} tabID="tab-large-repair" />);
+  await click(button(card.host, '查看基石'));
+  const item = card.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-large-blob"]')!;
+  const editor = item.querySelector<HTMLTextAreaElement>('textarea')!;
+
+  // Wrong content rejected by digest check (not size).
+  await change(editor, 'wrong');
+  await click(button(item, '修复快照'));
+  eq(repairCalls.length, 0, '错误内容 digest 不匹配，不调用 Wails Repair');
+  ok(item.textContent?.includes('digest 与已接受快照不匹配') ?? false, 'digest 不匹配显式拒绝');
+
+  // Valid >8 MiB replacement passes frontend checks and reaches production Wails.
+  await change(editor, largeContent);
+  await click(button(item, '修复快照'));
+  eq(repairCalls.length, 1, '>8 MiB 正确内容通过 production Wails Repair');
+  eq(repairCalls[0].content, largeContent, '>8 MiB 完整内容传递到 Go backend');
+
+  // Verify projection updated.
+  const updatedView = useWorkStore.getState().works[persisted.work.id]!;
+  const updated = updatedView.work.cornerstones.find((cs) => cs.id === 'cs-large-blob')!;
+  eq(updated.status, 'active', '>8 MiB 修复后 cornerstone 变为 active');
+  eq(updatedView.assessment.blocking, false, '>8 MiB 修复后 blocking 解除');
+  ok(!updatedView.runBlock, '>8 MiB 修复后 runBlock 清除');
+
+  await card.cleanup();
+  delete (dom.window as unknown as { go?: unknown }).go;
+  delete (dom.window as unknown as { runtime?: unknown }).runtime;
+}
+
+async function testRemountAuthoritativeHydration(): Promise<void> {
+  // ── Scenario A: ready → unmount → blob goes missing (same revision) → remount → blocked ──
+  reset();
+  let backendAssessment: 'ready' | 'blocked' = 'ready';
+  const readyView: WorkView = { ...makeView([], 77), assessment: { state: 'ready', blocking: false, degraded: false, issues: [] } };
+  const blockedView: WorkView = {
+    ...structuredClone(readyView),
+    assessment: { state: 'blocked', blocking: true, degraded: false, issues: [{ cornerstoneId: 'cs-req', title: 'req', problem: 'blob_missing', blocking: true }] },
+    runBlock: { blocked: true, items: [{ code: 'blob_missing', cornerstoneId: 'cs-req' }] },
+  };
+
+  const eventListeners = new Map<string, (payload: unknown) => void>();
+  (dom.window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, callback: (payload: unknown) => void) => {
+      eventListeners.set(name, callback);
+      return () => { eventListeners.delete(name); };
+    },
+  };
+  let recoverCalls = 0;
+  let lastRecoverIntent: ViewRecoveryIntent | undefined;
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(readyView),
+    RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+      recoverCalls++;
+      lastRecoverIntent = { ...intent };
+      const view = backendAssessment === 'blocked' ? blockedView : readyView;
+      if (intent.reason === 'hydrate') return hydrateResync(view, intent.generation);
+      return retryResync(view, intent.generation);
+    },
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  // First mount: store empty → plain GetWork → ready
+  let card = await mount(<WorkCard workID={readyView.work.id} tabID="tab-remount-hydrate" />);
+  await settle();
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, false, 'A1: 首次挂载 ready');
+  ok(!card.host.querySelector('[data-testid="work-attention"]'), 'A1: 首次挂载无 Attention');
+  eq(recoverCalls, 0, 'A1: 首次挂载不走 RecoverWorkView');
+
+  useWorkUIStore.getState().setDraft(readyView.work.id, 'front', 'surviving draft');
+  const genBeforeUnmount = useWorkStore.getState().resyncGenerations[readyView.work.id] ?? 0;
+  await card.cleanup();
+
+  // External blob deletion: backend now returns blocked at same revision.
+  backendAssessment = 'blocked';
+
+  // Remount: store has projection → subscribe → hydrate reason.
+  card = await mount(<WorkCard workID={readyView.work.id} tabID="tab-remount-hydrate" />);
+  await settle();
+  eq(recoverCalls, 1, 'A2: 重挂调用 RecoverWorkView 一次');
+  ok(lastRecoverIntent?.reason === 'hydrate', 'A2: RecoverWorkView intent.reason = hydrate');
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, 'A2: 同 revision assessment 变 blocked');
+  eq(useWorkStore.getState().works[readyView.work.id]?.runBlock?.items?.[0]?.code, 'blob_missing', 'A2: typed runBlock 落入 store');
+  ok(!!card.host.querySelector('[data-testid="work-attention"]'), 'A2: 重挂后显示 Attention');
+  ok(button(card.host, '运行').disabled, 'A2: 重挂后 Run 禁用');
+  eq(useWorkUIStore.getState().cardByWork[readyView.work.id]?.faces.front.draft, 'surviving draft', 'A2: draft 保留');
+  const genAfterRemount = useWorkStore.getState().resyncGenerations[readyView.work.id] ?? 0;
+  ok(genAfterRemount > genBeforeUnmount, 'A2: resync generation 已推进');
+  await card.cleanup();
+
+  // ── Scenario B: blocked → unmount → blob restored (same revision) → remount → ready ──
+  reset();
+  eventListeners.clear();
+  backendAssessment = 'blocked';
+  recoverCalls = 0;
+  lastRecoverIntent = undefined;
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(readyView),
+    RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+      recoverCalls++;
+      lastRecoverIntent = { ...intent };
+      const view = backendAssessment === 'blocked' ? blockedView : readyView;
+      if (intent.reason === 'hydrate') return hydrateResync(view, intent.generation);
+      return retryResync(view, intent.generation);
+    },
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  useWorkStore.getState().applySnapshot(structuredClone(blockedView));
+  eq(useWorkStore.getState().works[blockedView.work.id]?.assessment.blocking, true, 'B1: store 预置 blocked');
+
+  backendAssessment = 'ready';
+  card = await mount(<WorkCard workID={blockedView.work.id} tabID="tab-remount-ready" />);
+  await settle();
+  eq(recoverCalls, 1, 'B2: RecoverWorkView 被调用');
+  ok(lastRecoverIntent?.reason === 'hydrate', 'B2: 自动 remount 使用 hydrate reason');
+  eq(useWorkStore.getState().works[blockedView.work.id]?.assessment.blocking, false, 'B2: 同 revision 恢复为 ready');
+  ok(!useWorkStore.getState().works[blockedView.work.id]?.runBlock, 'B2: runBlock 已清除');
+  ok(!card.host.querySelector('[data-testid="work-attention"]'), 'B2: Attention 消失');
+  ok(!button(card.host, '运行').disabled, 'B2: Run 按钮可用');
+  await card.cleanup();
+
+  // ── Scenario C: duplicate subscribe during settling does not race ──
+  reset();
+  eventListeners.clear();
+  const settleWait = deferred<void>();
+  let watches = 0;
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(readyView),
+    RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+      await settleWait.promise;
+      return hydrateResync(readyView, intent.generation);
+    },
+    WatchWork: async () => { watches++; },
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  useWorkStore.getState().applySnapshot(structuredClone(readyView));
+  const port1 = createWailsWorkControllerPort('tab-race')!;
+  const adapter1 = new WorkControllerAdapter(port1);
+  adapter1.subscribe(readyView.work.id);
+  await Promise.resolve(); await Promise.resolve();
+  adapter1.subscribe(readyView.work.id);
+  eq(watches, 1, 'C1: 仅创建一个 Watch');
+  eq(adapter1.getStatus(readyView.work.id).stream.kind, 'connecting', 'C2: 仍处于 connecting');
+  settleWait.resolve();
+  await settle();
+  eq(adapter1.getStatus(readyView.work.id).stream.kind, 'online', 'C3: 完成后 online');
+  adapter1.dispose();
+
+  // ── Scenario D: stale hydrate generation does not overwrite ──
+  reset();
+  eventListeners.clear();
+  useWorkStore.getState().applySnapshot(structuredClone(readyView));
+  const delayedRecovery = deferred<WorkViewEvent>();
+  let recoveryGen = 0;
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(readyView),
+    RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+      recoveryGen = intent.generation;
+      return delayedRecovery.promise;
+    },
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  const portD = createWailsWorkControllerPort('tab-stale')!;
+  const adapterD = new WorkControllerAdapter(portD);
+  adapterD.subscribe(readyView.work.id);
+  await settle();
+  const firstGen = recoveryGen;
+  ok(firstGen > 0, 'D1: 第一个 subscribe generation > 0');
+
+  adapterD.unsubscribe(readyView.work.id);
+  adapterD.subscribe(readyView.work.id);
+  await settle();
+  ok(recoveryGen > firstGen, 'D2: 新 subscribe 使用更高 generation');
+
+  // Complete new generation with hydrate → blocked.
+  delayedRecovery.resolve(hydrateResync(blockedView, recoveryGen));
+  await settle();
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, 'D3: 新 generation blocked 生效');
+
+  // Old generation's hydrate event must not overwrite.
+  const oldEvent = hydrateResync(readyView, firstGen);
+  const oldResult = applyWorkViewEvent(oldEvent);
+  ok(oldResult.kind === 'ignored' || oldResult.kind === 'stale', `D4: 旧 hydrate generation 被拒绝: ${oldResult.kind}`);
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, 'D4: 旧 generation 未覆盖较新 blocked 投影');
+  adapterD.dispose();
+
+  // ── Scenario E: hydrate handshake failure → offline → explicit retry works ──
+  reset();
+  eventListeners.clear();
+  useWorkStore.getState().applySnapshot(structuredClone(readyView));
+  let failHydrate = true;
+  let retryIntent: ViewRecoveryIntent | undefined;
+  let retryWatches = 0;
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(readyView),
+    RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
+      if (failHydrate && intent.reason === 'hydrate') throw new Error('hydrate unavailable');
+      retryIntent = { ...intent };
+      return retryResync(readyView, intent.generation);
+    },
+    WatchWork: async () => { retryWatches++; },
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  const portE = createWailsWorkControllerPort('tab-fail-hydrate')!;
+  const adapterE = new WorkControllerAdapter(portE);
+  adapterE.subscribe(readyView.work.id);
+  await settle();
+  eq(adapterE.getStatus(readyView.work.id).stream.kind, 'offline', 'E1: hydrate 失败保持 offline');
+  ok(adapterE.getStatus(readyView.work.id).snapshotError?.includes('hydrate unavailable') ?? false, 'E1: 错误可观察');
+
+  // User clicks retry → retrySubscription → explicit retry reason.
+  failHydrate = false;
+  adapterE.retrySubscription(readyView.work.id);
+  await settle();
+  ok(retryIntent?.reason === 'retry', 'E2: explicit retrySubscription sends reason=retry');
+  eq(adapterE.getStatus(readyView.work.id).stream.kind, 'online', 'E2: retry 成功后 online');
+  eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, false, 'E2: retry 恢复 ready projection');
+  adapterE.dispose();
+
+  // ── Scenario F: hydrate with content difference → conflict, old projection preserved ──
+  reset();
+  const baseView = makeView([], 42);
+  useWorkStore.getState().applySnapshot(structuredClone(baseView));
+  const conflictHydrateView = structuredClone(baseView);
+  conflictHydrateView.work.name = 'conflicting name from hydrate';
+  // Same assessment — only the Work name differs.
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(conflictHydrateView),
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RunWork: async () => { throw new Error('unused'); },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+  // Simulate a hydrate resync at same revision with different name.
+  const hydrateConflictEvent = hydrateResync(conflictHydrateView, 7);
+  const fResult = applyWorkViewEvent(hydrateConflictEvent);
+  eq(fResult.kind, 'conflict', 'F1: hydrate 内容差异 → conflict');
+  if (fResult.kind === 'conflict') {
+    ok(fResult.conflict.reason.includes('hydrate snapshot conflicts'), 'F1: conflict reason 提及 hydrate');
+  }
+  eq(useWorkStore.getState().works[baseView.work.id]?.work.name, 'Cornerstone Work', 'F1: 旧投影未被 hydrate 覆盖');
+
+  // Cleanup.
+  delete (dom.window as unknown as { go?: unknown }).go;
+  delete (dom.window as unknown as { runtime?: unknown }).runtime;
+}
+
 async function testLiveRefRepairStillWorksWithRef(): Promise<void> {
   reset();
   const view = makeView([
@@ -1825,6 +2155,8 @@ await testSnapshotBlobRepairContentPath();
 await testSnapshotRepairDraftSurvivesFlip();
 await testSnapshotRepairConflictPreservesDraft();
 await testSnapshotRepairNetworkRetrySameRequestID();
+await testLargeSnapshotReplacementPassesProductionChain();
+await testRemountAuthoritativeHydration();
 await testLiveRefRepairStillWorksWithRef();
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

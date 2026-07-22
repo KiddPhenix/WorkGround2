@@ -208,6 +208,12 @@ func TestWorkViewOverflowResyncValidation(t *testing.T) {
 	if err := retry.Validate(); err != nil {
 		t.Fatalf("valid retry resync: %v", err)
 	}
+	hydrate := event
+	hydrate.Resync = &ViewResync{Reason: ViewResyncHydrate, Authoritative: true, Generation: 5}
+	hydrate.EventID = ResyncEventID(hydrate.WorkID, hydrate.Revision, ViewResyncHydrate, 5)
+	if err := hydrate.Validate(); err != nil {
+		t.Fatalf("valid hydrate resync: %v", err)
+	}
 	tests := []struct {
 		name string
 		edit func(*WorkViewEvent)

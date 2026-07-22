@@ -42,7 +42,6 @@ const EMPTY_DRAWER: CornerstoneDrawerUI = {
 };
 
 const REF_KINDS: CornerstoneRef['kind'][] = ['inline', 'session_turn', 'workspace_file', 'artifact', 'url'];
-const SNAPSHOT_REPAIR_MAX_BYTES = 8 * 1024 * 1024;
 
 type RepairContentCheck =
   | { ok: true; content: string }
@@ -78,11 +77,7 @@ function hasSecretLikeContent(content: string): boolean {
 
 async function checkRepairContent(content: string, acceptedDigest: string): Promise<RepairContentCheck> {
   const normalized = normalizeRepairContent(content);
-  const byteLength = new TextEncoder().encode(normalized).byteLength;
-  if (byteLength === 0) return { ok: false, message: '请输入快照原始内容。' };
-  if (byteLength > SNAPSHOT_REPAIR_MAX_BYTES) {
-    return { ok: false, message: '快照内容超过 8 MiB 单次修复上限，未发送。' };
-  }
+  if (normalized.length === 0) return { ok: false, message: '请输入快照原始内容。' };
   if (hasSecretLikeContent(normalized)) {
     return { ok: false, message: '输入疑似包含敏感凭据，未发送；请改用 Secret 引用。' };
   }
