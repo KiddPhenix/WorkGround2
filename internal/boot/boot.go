@@ -1117,8 +1117,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 
-	// Work: assemble the structured Work feature when enabled in config.
-	// Disabled (default) keeps the cache-stable prefix untouched and does not
+	// Work: assemble the structured Work feature by default. An explicit
+	// [work].enabled=false keeps the cache-stable prefix untouched and does not
 	// create writable Work directories.
 	var workSvc *work.Service
 	var workViews *control.WorkViewBroadcaster

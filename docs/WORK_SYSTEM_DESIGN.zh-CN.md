@@ -1684,12 +1684,13 @@ interface WorkUIStoreState {
 
 ```toml
 # WorkGround2.toml 或 %AppData%\WorkGround2\config.toml
+# 缺少 [work] 或 enabled 时默认开启；只有以下显式配置会关闭。
 [work]
 enabled = false
 ```
 
-- **Owner**：`internal/config/config.go` — 规划新增 `WorkConfig.Enabled` 字段。
-- **默认值**：`false`。M4 验收后仍保持 default-off；发布环境显式开启并分批验证。修改默认值必须另行更新 ADR。
+- **Owner**：`internal/config/config.go` — `WorkConfig.Enabled` 由共享配置加载链路解析。
+- **默认值**：`true`。缺少 `[work]` 或缺少 `enabled` 均保持开启；只有显式 `enabled = false` 才关闭。该默认语义由 2026-07-23 用户决策覆盖此前 default-off 约束。
 - **运行时修改**：flag 在 Controller 启动时读取，运行期间不变。修改配置后需重启 WorkGround2。
 
 #### 18.5.2 启用行为（`enabled = true`）
@@ -1713,7 +1714,7 @@ enabled = false
 | 启用后发现严重 bug → 关闭 flag | Work 数据原地保留。UI 回到纯 Session 模式；只读引用保护继续生效。下次启用时从事件日志校验并重建 projection。 |
 | 启用后创建了 Work 再关闭 | Work 投影和事件日志保留在磁盘。关闭期间不会被修改或清理。 |
 | 关闭期间用户手动删除 Work 文件 | 下次启用时 LoadProjection 返回 ErrNotExist，该 Work 从索引中移除（不崩溃）。 |
-| M0 中途回滚（flag 从未设为 true） | `internal/work` 代码存在但不加载；`go build` 和既有 Session 测试全部通过。 |
+| M0 中途回滚（显式设置 `enabled = false`） | `internal/work` 代码存在但不加载；`go build` 和既有 Session 测试全部通过。 |
 
 #### 18.5.5 只读降级与导出
 
@@ -1860,7 +1861,7 @@ enabled = false
 - `go vet ./...` 全仓零告警。
 - 桌面 E2E 覆盖完整用户流程。
 - 故障注入恢复全部通过。
-- `work.enabled` 仍默认 `false`；发布环境显式开启并分批验证。任何把默认值改为 `true` 的决定必须另行更新 ADR，并先证明关闭/回滚与只读引用保护可用。
+- `work.enabled` 缺省为 `true`；显式 `false` 的关闭/回滚与只读引用保护门禁全部通过。
 
 ### 19.4 测试环境与 opt-in 策略
 
@@ -1957,7 +1958,7 @@ control → work（单向）
 |---|---|---|
 | CC-01 | §1.3 ADR 清单与对应章节一致（ADR-1↔§14.1 依赖方向，ADR-4↔§4.3.3 翻面等） | ✅ |
 | CC-02 | §18.3 七个参数均有精确默认值、选择依据、owner 和未来修改位置 | ✅ |
-| CC-03 | §18.5 feature flag 默认值 `false` 与 §1.3 ADR-8 一致 | ✅ |
+| CC-03 | §18.5 feature flag 缺省 `true`、仅显式 `false` 关闭；关闭时仍遵守 §1.3 ADR-8 | ✅ |
 | CC-04 | §19.3 M0-M4 矩阵与 §16 各阶段范围匹配（M0 类型/存储→M1 Block/翻面→M2 执行/Cornerstone→M3 重执行→M4 打磨） | ✅ |
 | CC-05 | §19.4 opt-in 策略与仓库 AGENTS.md 测试策略一致 | ✅ |
 | CC-06 | §20.2 可复用路径与 §15.1 复用项一致 | ✅ |

@@ -221,10 +221,11 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Work 系统 V1 — Stage 6 生产 Desktop 入口
-- Location: `desktop/works.go`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/LinkedSessionCard.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
-- Summary: `WorkCapable` 类型化 bool 检查禁止解析错误字符串；flag off 时 sidebar 不显示入口且零 Work API 调用；flag on 时在 production Workspace sidebar 提供"工作"入口；WorkPage 有加载/空态/显式重试/active Work 列表/新建 Work；Create 使用 blank blueprint、稳定 requestID、幂等重试和迟到 ACK 保护；List/Get 绑定 tab+owner 上下文，迟到 ACK 不串状态；正常 Session 与 Work 背面互斥复用同一 SessionSurface 组件树；attempt SessionRef 按已有 tab、topic metadata、blank+resume 三层导航，失败保留 Work 上下文并可重试；Stage7 归档历史/复制/重执行待后续实现。
-- Keywords: WorkCapable, WorkPage, CreateWork, SessionSurface, LinkedSessionCard, blank blueprint, request ID idempotent, tab isolation, late ACK, production Wails port
+### Work 系统 V1 — 默认开启与 Stage 6 生产 Desktop 入口
+- Status: in_progress
+- Location: `internal/config/config.go`, `internal/config/load.go`, `internal/config/render.go`, `internal/boot/boot.go`, `internal/control/work.go`, `desktop/works.go`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/LinkedSessionCard.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
+- Summary: `work.enabled` 缺省为 true，缺少 `[work]` 或 `enabled` 时由共享 config→boot→control 链路装配 Work；只有显式 false 才关闭且保存/优先级加载不会回填覆盖。`WorkCapable` 仍按真实 service+view typed capability 判定，typed-nil/flag off 无入口且零 Work API 调用；Stage 6 生产 WorkPage、SessionSurface 和迟到 ACK 防护保持不变，Stage 7 归档历史/复制/重执行仍为 todo、未实现。
+- Keywords: work.enabled, default on, explicit false, WorkCapable, WorkPage, CreateWork, SessionSurface, LinkedSessionCard, typed nil, request ID idempotent, tab isolation, late ACK, production Wails port, Stage7 todo
 - Source: Stage6 implementation
 - Updated: 2026-07-23
 
