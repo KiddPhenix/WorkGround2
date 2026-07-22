@@ -68,6 +68,11 @@ func TestStripTransientUserBlocksUnwrapsMemoryCompilerExecution(t *testing.T) {
 			in:   "<hook-context event=\"SessionStart\">\nLoad conventions.\n</hook-context>\n\nship it",
 			want: "ship it",
 		},
+		{
+			name: "cornerstone context prefix is stripped",
+			in:   "<cornerstone-context>\n<cornerstone id=\"cs-1\">keep</cornerstone>\n</cornerstone-context>\n\nship it",
+			want: "ship it",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

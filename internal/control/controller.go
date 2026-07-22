@@ -175,6 +175,11 @@ type Controller struct {
 	// workSvc is the optional Work lifecycle service. Nil when Work is disabled.
 	// All WorkControl methods delegate to it via workMethods.
 	workSvc WorkService
+	// cornerstoneTurn is a single-use Work context bound to one RunTurn. A
+	// second Work may not overwrite it while active; finishCornerstoneTurn uses
+	// the token to avoid a late cleanup clearing a newer turn.
+	cornerstoneTurn *cornerstoneTurn
+	cornerstoneSeq  uint64
 	// workViews is the broadcaster that fans out WorkViewEvents to frontend
 	// subscribers. Nil when Work is disabled.
 	workViews *WorkViewBroadcaster
@@ -2231,7 +2236,15 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
-	return c.executor.CompactNow(ctx, instructions)
+	count, associated, err := c.sessionCornerstoneCount(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.executor.CompactNow(ctx, instructions); err != nil {
+		return err
+	}
+	c.noticeCornerstonesPreserved(count, associated)
+	return nil
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
@@ -3956,6 +3969,70 @@ func (c *Controller) Label() string { return c.label }
 // Empty means no scoping is in effect.
 func (c *Controller) WorkspaceRoot() string { return c.workspaceRoot }
 
+type cornerstoneTurn struct {
+	token       uint64
+	workID      string
+	block       string
+	activeCount int
+}
+
+// beginCornerstoneTurn binds one precomputed Work context to the next RunTurn.
+// It fails closed if a caller tries to overlap Work turns on one Controller;
+// otherwise a later Work could consume the earlier Work's transient block.
+func (c *Controller) beginCornerstoneTurn(workID, block string, activeCount int) (uint64, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return 0, errors.New("cornerstone context: workID is required")
+	}
+	if activeCount < 0 {
+		return 0, errors.New("cornerstone context: active count cannot be negative")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cornerstoneTurn != nil {
+		return 0, fmt.Errorf("cornerstone context: controller already belongs to Work %q", c.cornerstoneTurn.workID)
+	}
+	c.cornerstoneSeq++
+	c.cornerstoneTurn = &cornerstoneTurn{
+		token:       c.cornerstoneSeq,
+		workID:      workID,
+		block:       block,
+		activeCount: activeCount,
+	}
+	return c.cornerstoneSeq, nil
+}
+
+// finishCornerstoneTurn clears only the turn that owns token. This makes a
+// deferred cleanup harmless if a future implementation reuses Controllers.
+func (c *Controller) finishCornerstoneTurn(token uint64) {
+	c.mu.Lock()
+	if c.cornerstoneTurn != nil && c.cornerstoneTurn.token == token {
+		c.cornerstoneTurn = nil
+	}
+	c.mu.Unlock()
+}
+
+type sessionCornerstoneCounter interface {
+	SessionCornerstoneCount(context.Context, string) (count int, associated bool, err error)
+}
+
+func (c *Controller) sessionCornerstoneCount(ctx context.Context) (int, bool, error) {
+	if c == nil || c.workSvc == nil {
+		return 0, false, nil
+	}
+	counter, ok := c.workSvc.(sessionCornerstoneCounter)
+	if !ok {
+		return 0, false, nil
+	}
+	return counter.SessionCornerstoneCount(ctx, c.SessionPath())
+}
+
+func (c *Controller) noticeCornerstonesPreserved(count int, associated bool) {
+	if associated {
+		c.notice(fmt.Sprintf(i18n.M.CornerstoneCleanupPreserved, count))
+	}
+}
+
 func (c *Controller) imageInputEnabled() bool {
 	return c.directImageInputEnabled() || c.visionDelegate != nil
 }
@@ -4156,7 +4233,15 @@ func (c *Controller) SaveMemory(m memory.Memory) (string, error) {
 // ForgetMemory removes a saved auto-memory by name — the panel/TUI forget action,
 // the manual counterpart to the model's `forget` tool.
 func (c *Controller) ForgetMemory(name string) error {
-	return c.memory.forget(name)
+	count, associated, err := c.sessionCornerstoneCount(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := c.memory.forget(name); err != nil {
+		return err
+	}
+	c.noticeCornerstonesPreserved(count, associated)
+	return nil
 }
 
 // QueueMemory implements memory.Queue: when the model runs the remember/forget

@@ -126,6 +126,8 @@ type Options struct {
 	// SessionRefs is a process-wide reverse index shared by every Desktop tab.
 	// Nil keeps non-Desktop hosts independent from Desktop session cleanup.
 	SessionRefs work.SessionRefStore
+	// CornerstoneResolver revalidates live Work cornerstone sources before each Run.
+	CornerstoneResolver work.CornerstoneResolver
 	// SessionRefsErr carries host initialization failure into Work boot so the
 	// feature cannot run while its cleanup guard is unavailable.
 	SessionRefsErr error
@@ -1148,6 +1150,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bp := work.NewBlueprintRegistry()
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
+			workSvc.SetCornerstoneResolver(opts.CornerstoneResolver)
 			if opts.SessionRefs != nil {
 				if err := workSvc.SetSessionRefStore(opts.SessionRefs, work.SessionRefScopeID(workDir)); err != nil {
 					jm.Close()
@@ -1160,7 +1163,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					return nil, err
 				}
 			}
-			taskExec = control.NewTaskExecutorAdapter(
+			taskAdapter := control.NewTaskExecutorAdapter(
 				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
 				func(_ context.Context, _ work.TaskExecuteInput) (*control.Controller, func(), error) {
 					taskPath := agent.NewSessionPath(sessionDir, "work-"+label)
@@ -1194,6 +1197,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					return taskCtrl, func() {}, nil
 				},
 			)
+			taskAdapter.SetWorkService(workSvc)
+			taskExec = taskAdapter
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "work: feature enabled"})
 		}
 	}

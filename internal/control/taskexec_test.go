@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,11 +23,23 @@ type taskProvider struct {
 	err     error
 	started chan struct{}
 	calls   atomic.Int32
+	mu      sync.Mutex
+	reqs    []provider.Request
 }
 
 type taskExecutorWork struct {
 	WorkService
 	executor work.TaskExecutor
+}
+
+type taskCornerstoneWork struct {
+	WorkService
+	view *work.WorkView
+	err  error
+}
+
+func (w *taskCornerstoneWork) Get(context.Context, string) (*work.WorkView, error) {
+	return w.view, w.err
 }
 
 func (w *taskExecutorWork) SetTaskExecutor(executor work.TaskExecutor) {
@@ -35,8 +48,11 @@ func (w *taskExecutorWork) SetTaskExecutor(executor work.TaskExecutor) {
 
 func (p *taskProvider) Name() string { return p.name }
 
-func (p *taskProvider) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+func (p *taskProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	p.calls.Add(1)
+	p.mu.Lock()
+	p.reqs = append(p.reqs, req)
+	p.mu.Unlock()
 	if p.started != nil {
 		close(p.started)
 		<-ctx.Done()
@@ -50,6 +66,15 @@ func (p *taskProvider) Stream(ctx context.Context, _ provider.Request) (<-chan p
 	chunks <- provider.Chunk{Type: provider.ChunkDone}
 	close(chunks)
 	return chunks, nil
+}
+
+func (p *taskProvider) lastRequest() provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.reqs) == 0 {
+		return provider.Request{}
+	}
+	return p.reqs[len(p.reqs)-1]
 }
 
 func taskInput() work.TaskExecuteInput {
@@ -138,6 +163,99 @@ func TestTaskExecutorPersistsLightweightSessionRef(t *testing.T) {
 	if !cleaned.Load() {
 		t.Fatal("factory cleanup was not called")
 	}
+}
+
+func TestTaskExecutorCornerstoneContextKeepsSystemPromptGolden(t *testing.T) {
+	const systemPromptGolden = "stable system prompt"
+	prov := &taskProvider{name: "fake-provider", text: "ok"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{Work: &work.Work{
+		ID: "work-1",
+		Cornerstones: []work.Cornerstone{{
+			ID:       "cs-1",
+			WorkID:   "work-1",
+			Type:     work.CornerstoneInstruction,
+			Title:    "Pinned rule",
+			Content:  "keep these exact instructions",
+			Mode:     work.CornerstoneSnapshot,
+			Status:   work.CornerstoneActive,
+			PinnedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		}},
+	}}})
+
+	if _, err := exec.ExecuteTask(context.Background(), taskInput()); err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	req := prov.lastRequest()
+	if len(req.Messages) < 2 {
+		t.Fatalf("provider messages = %d, want system and user", len(req.Messages))
+	}
+	if got := req.Messages[0]; got.Role != provider.RoleSystem || got.Content != systemPromptGolden {
+		t.Fatalf("system prompt bytes changed: role=%q content=%q", got.Role, got.Content)
+	}
+	user := req.Messages[len(req.Messages)-1].Content
+	for _, want := range []string{"<cornerstone-context>", `id="cs-1"`, "keep these exact instructions", taskInput().Prompt} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("composed user turn missing %q: %q", want, user)
+		}
+	}
+}
+
+func TestTaskExecutorCornerstoneFailureDoesNotRunTurn(t *testing.T) {
+	tests := []struct {
+		name string
+		work *taskCornerstoneWork
+	}{
+		{name: "get failure", work: &taskCornerstoneWork{err: errors.New("store unavailable")}},
+		{name: "required missing", work: &taskCornerstoneWork{view: &work.WorkView{Work: &work.Work{
+			ID: "work-1",
+			Cornerstones: []work.Cornerstone{{
+				ID: "cs-required", WorkID: "work-1", Type: work.CornerstonePolicy,
+				Required: true, Status: work.CornerstoneMissing,
+			}},
+		}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := &taskProvider{name: "fake-provider", text: "must not run"}
+			exec := NewTaskExecutorAdapter(
+				TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+				taskFactory(t, prov, "fake/model-v1", nil, nil),
+			)
+			exec.SetWorkService(tt.work)
+			attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+			if err == nil || attempt == nil || attempt.State != work.RunFailed {
+				t.Fatalf("ExecuteTask = (%+v, %v), want failed before RunTurn", attempt, err)
+			}
+			if got := prov.calls.Load(); got != 0 {
+				t.Fatalf("provider called %d times after cornerstone failure", got)
+			}
+		})
+	}
+}
+
+func TestCornerstoneTurnRejectsOverlapAndTokenizesCleanup(t *testing.T) {
+	c := New(Options{})
+	first, err := c.beginCornerstoneTurn("work-a", "<cornerstone-context/>\n", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2); err == nil {
+		t.Fatal("overlapping Work context should fail closed")
+	}
+	c.finishCornerstoneTurn(first + 1)
+	if _, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2); err == nil {
+		t.Fatal("late cleanup token cleared the active Work context")
+	}
+	c.finishCornerstoneTurn(first)
+	second, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2)
+	if err != nil {
+		t.Fatalf("new Work context after cleanup: %v", err)
+	}
+	c.finishCornerstoneTurn(second)
 }
 
 func TestTaskExecutorReturnsSanitizedRetryableError(t *testing.T) {

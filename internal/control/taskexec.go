@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,7 @@ type activeTask struct {
 type TaskExecutorAdapter struct {
 	profile TaskExecutorProfile
 	factory TaskSessionFactory
+	workSvc WorkService
 
 	mu       sync.Mutex
 	active   map[string]*activeTask
@@ -99,6 +101,15 @@ func NewTaskExecutorAdapter(profile TaskExecutorProfile, factory TaskSessionFact
 		finished: make(map[string]bool),
 		cancels:  make(map[string]taskCancelResult),
 	}
+}
+
+// SetWorkService attaches the optional Work service for Cornerstone context
+// injection during task execution. Nil is safe and disables injection.
+func (a *TaskExecutorAdapter) SetWorkService(svc WorkService) {
+	if a == nil {
+		return
+	}
+	a.workSvc = svc
 }
 
 // ExecuteTask runs one synchronous Controller turn and persists its Session
@@ -162,6 +173,29 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	}
 	if a.attachController(targetKey, ctrl) {
 		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
+	}
+
+	// Inject Work Cornerstone context as a transient block before the turn.
+	// Fail-closed: any Get/BuildCornerstoneContext failure blocks execution
+	// before RunTurn to prevent running with missing or broken context.
+	if a.workSvc != nil && input.WorkID != "" {
+		finishContext, contextErr := a.injectCornerstoneBlock(taskCtx, ctrl, input)
+		if contextErr != nil {
+			finishedAt := time.Now().UTC()
+			taskErr := a.taskError(input, "cornerstone_context", true, contextErr)
+			attempt := &work.Attempt{
+				ID:              input.AttemptID,
+				Index:           input.AttemptIndex,
+				State:           work.RunFailed,
+				SessionRef:      work.SessionRef{},
+				StartedAt:       startedAt,
+				FinishedAt:      &finishedAt,
+				SideEffectClass: input.SideEffectClass,
+				Error:           taskErr.Error(),
+			}
+			return attempt, taskErr
+		}
+		defer finishContext()
 	}
 
 	runErr := ctrl.RunTurn(taskCtx, input.Prompt)
@@ -445,3 +479,50 @@ func taskSessionSource(input work.TaskExecuteInput) string {
 }
 
 var _ work.TaskExecutor = (*TaskExecutorAdapter)(nil)
+
+// injectCornerstoneBlock fetches the Work and builds the cornerstone context
+// block, sets it on the Controller for Compose to inject. Returns an error
+// when cornerstone fetch or context building fails — callers must block
+// execution before RunTurn to avoid running with missing context.
+func (a *TaskExecutorAdapter) injectCornerstoneBlock(ctx context.Context, ctrl *Controller, input work.TaskExecuteInput) (func(), error) {
+	view, err := a.workSvc.Get(ctx, input.WorkID)
+	if err != nil {
+		return nil, fmt.Errorf("cornerstone context: get work %q: %w", input.WorkID, err)
+	}
+	if view == nil || view.Work == nil {
+		return nil, fmt.Errorf("cornerstone context: work %q not found", input.WorkID)
+	}
+
+	config := work.CornerstoneContextConfig{
+		MaxTokens:  work.DefaultCornerstoneContextMaxTokens,
+		MaxPerItem: work.DefaultCornerstoneContextMaxPerItem,
+	}
+	var block work.CornerstoneContextBlock
+	if builder, ok := a.workSvc.(interface {
+		BuildCornerstoneContext(context.Context, string, work.CornerstoneContextConfig) (work.CornerstoneContextBlock, error)
+	}); ok {
+		block, err = builder.BuildCornerstoneContext(ctx, input.WorkID, config)
+	} else {
+		block, err = work.BuildCornerstoneContext(view.Work.Cornerstones, config)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cornerstone context: build: %w", err)
+	}
+	// Blocking should never happen here because the Service already checked
+	// before creating this task. If it does, fail closed.
+	if block.Blocking {
+		return nil, fmt.Errorf("cornerstone context: required cornerstones not ready (Service pre-flight bypassed)")
+	}
+	if block.Degraded {
+		slog.Warn("work: cornerstone context degraded",
+			"work_id", input.WorkID,
+			"skipped_ids", block.SkippedIDs,
+			"issue_count", len(block.Assessment.Issues),
+		)
+	}
+	token, err := ctrl.beginCornerstoneTurn(input.WorkID, block.XML, block.ActiveCount)
+	if err != nil {
+		return nil, err
+	}
+	return func() { ctrl.finishCornerstoneTurn(token) }, nil
+}
