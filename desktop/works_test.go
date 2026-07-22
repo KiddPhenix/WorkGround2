@@ -359,7 +359,7 @@ func TestResolveWorkControllerMissingTab(t *testing.T) {
 // TestResolveWorkControllerDisabledWork verifies that a controller without
 // Work service returns a clear error.
 func TestResolveWorkControllerDisabledWork(t *testing.T) {
-	// A Controller built without Work (default) return errors from WorkControl.
+	// A Controller explicitly built without a Work service returns errors from WorkControl.
 	c := control.New(control.Options{})
 	if c == nil {
 		t.Fatal("New returned nil")

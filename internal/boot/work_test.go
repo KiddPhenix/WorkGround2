@@ -3,6 +3,7 @@ package boot
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,17 +16,20 @@ import (
 	"workground2/internal/work"
 )
 
-// TestWorkDisabledDoesNotTouchWorkDir verifies that when Work is disabled
-// (default), boot does not create any Work data directories and the Controller
-// has no Work service.
+// TestWorkDisabledDoesNotTouchWorkDir verifies that explicitly disabling Work
+// does not create any Work data directories and leaves the Controller without
+// a Work service.
 func TestWorkDisabledDoesNotTouchWorkDir(t *testing.T) {
 	isolateConfigHome(t)
 	dir := t.TempDir()
 
-	// Write a minimal config with no [work] section (default disabled).
+	// Only an explicit false disables the default-on Work feature.
 	cfgContent := `
 config_version = 3
 default_model = "deepseek-flash"
+
+[work]
+enabled = false
 `
 	if err := os.WriteFile(filepath.Join(dir, "WorkGround2.toml"), []byte(cfgContent), 0o644); err != nil {
 		t.Fatal(err)
@@ -62,6 +66,9 @@ default_model = "deepseek-flash"
 	if executor := ctrl.TaskExecutor(); executor != nil {
 		t.Fatal("TaskExecutor should be nil when Work is disabled")
 	}
+	if ctrl.WorkEnabled() {
+		t.Fatal("WorkEnabled should be false after explicit flag-off")
+	}
 
 	// No project Work dir should have been created.
 	workDir := config.ProjectWorkDir(dir)
@@ -91,20 +98,17 @@ default_model = "deepseek-flash"
 	}
 }
 
-// TestWorkEnabledWiresService verifies that enabling [work] in config assembles
+// TestWorkDefaultOnWiresService verifies that an absent [work] section assembles
 // the Service and injects it into the Controller.
-func TestWorkEnabledWiresService(t *testing.T) {
+func TestWorkDefaultOnWiresService(t *testing.T) {
 	isolateConfigHome(t)
 	dir := t.TempDir()
 	workDir := filepath.Join(t.TempDir(), "works")
 
-	// Write config with [work] enabled.
+	// No [work] section: Work is enabled by default.
 	cfgContent := `
 config_version = 3
 default_model = "deepseek-flash"
-
-[work]
-enabled = true
 `
 	if err := os.WriteFile(filepath.Join(dir, "WorkGround2.toml"), []byte(cfgContent), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,6 +147,9 @@ enabled = true
 	}
 	if executor := ctrl.TaskExecutor(); executor == nil {
 		t.Fatal("TaskExecutor should be non-nil when Work is enabled")
+	}
+	if !ctrl.WorkEnabled() {
+		t.Fatal("WorkEnabled should report the default-on assembled capability")
 	}
 
 	// Verify the info notice was emitted.
@@ -210,7 +217,7 @@ func TestWorkEnabledUnavailableStoreFailsBuild(t *testing.T) {
 func TestWorkDisabledIgnoresUnavailableStoreOverride(t *testing.T) {
 	isolateConfigHome(t)
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "WorkGround2.toml"), []byte("config_version = 3\ndefault_model = \"deepseek-flash\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "WorkGround2.toml"), []byte("config_version = 3\ndefault_model = \"deepseek-flash\"\n\n[work]\nenabled = false\n"), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	badPath := filepath.Join(t.TempDir(), "not-a-directory")
@@ -237,9 +244,7 @@ func TestWorkFlagKeepsSystemPromptPrefix(t *testing.T) {
 	configPath := filepath.Join(dir, "WorkGround2.toml")
 	writeConfig := func(enabled bool) {
 		body := "config_version = 3\ndefault_model = \"deepseek-flash\"\n"
-		if enabled {
-			body += "\n[work]\nenabled = true\n"
-		}
+		body += fmt.Sprintf("\n[work]\nenabled = %v\n", enabled)
 		if err := os.WriteFile(configPath, []byte(body), 0o644); err != nil {
 			t.Fatalf("write config: %v", err)
 		}
