@@ -436,6 +436,54 @@ func TestCornerstoneMethodsDisabledWork(t *testing.T) {
 	if _, err := wc.RepairCornerstone(nil, "w-1", work.RepairCornerstoneInput{RequestID: "r-1"}); err == nil {
 		t.Fatal("RepairCornerstone: expected errWorkDisabled")
 	}
+	if _, err := wc.ResumeRun(nil, work.ResumeRunInput{WorkID: "w-1", RunID: "run-1", RequestID: "r-1"}); err == nil {
+		t.Fatal("ResumeRun: expected errWorkDisabled")
+	}
+}
+
+func TestResumeRunWailsBindingRoutesToController(t *testing.T) {
+	app := &App{}
+	app.setTestCtrl(control.New(control.Options{}), "resume-binding")
+	_, err := app.ResumeRun("test", work.ResumeRunInput{WorkID: "w-1", RunID: "run-1", RequestID: "resume-1"})
+	if err == nil || !strings.Contains(err.Error(), "feature is disabled") {
+		t.Fatalf("ResumeRun binding error = %v, want disabled controller error", err)
+	}
+}
+
+func TestResumeRunWailsBindingRejectsNeedsConfirmation(t *testing.T) {
+	const workID = "work-needs-confirmation"
+	const runID = "run-needs-confirmation"
+	var executeCalls atomic.Int32
+	store := &worktest.Store{LoadStateFunc: func(gotWorkID, requestID string) (*work.Work, work.WorkEventState, error) {
+		if gotWorkID != workID || requestID != "resume-needs-confirmation/resume" {
+			t.Fatalf("LoadState context = (%q, %q)", gotWorkID, requestID)
+		}
+		return &work.Work{
+			ID:           workID,
+			State:        work.WorkWaitingUser,
+			ArchiveState: work.ArchiveActive,
+			Runs: []work.WorkflowRun{{
+				ID: runID, WorkID: workID, State: work.RunNeedsConfirmation,
+			}},
+		}, work.WorkEventState{}, nil
+	}}
+	svc := work.NewService(store, work.NewBlueprintRegistry(), control.NewWorkViewBroadcaster())
+	executor := &worktest.TaskExecutor{ExecuteFunc: func(context.Context, work.TaskExecuteInput) (*work.Attempt, error) {
+		executeCalls.Add(1)
+		return nil, errors.New("unexpected execution")
+	}}
+	app := &App{}
+	app.setTestCtrl(control.New(control.Options{Work: svc, TaskExecutor: executor}), "resume-confirmation-binding")
+
+	_, err := app.ResumeRun("test", work.ResumeRunInput{
+		WorkID: workID, RunID: runID, RequestID: "resume-needs-confirmation",
+	})
+	if err == nil || !strings.Contains(err.Error(), "only waiting runs can be resumed") {
+		t.Fatalf("ResumeRun needs_confirmation error = %v, want waiting-only rejection", err)
+	}
+	if executeCalls.Load() != 0 {
+		t.Fatalf("ResumeRun needs_confirmation executed %d tasks", executeCalls.Load())
+	}
 }
 
 // TestCornerstoneWailsBindingRoutesPin verifies the PinCornerstone Wails binding

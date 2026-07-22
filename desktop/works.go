@@ -294,6 +294,15 @@ func (a *App) RestoreWork(tabID, workID, requestID string) (*work.WorkView, erro
 	return wc.RestoreWork(a.bootContext(), workID, requestID)
 }
 
+// ResumeRun resumes a paused or waiting WorkflowRun.
+func (a *App) ResumeRun(tabID string, input work.ResumeRunInput) (*work.WorkflowRun, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.ResumeRun(a.bootContext(), input)
+}
+
 // DeleteWork moves a Work to trash.
 func (a *App) DeleteWork(tabID, workID, requestID string) error {
 	wc, err := a.resolveWorkController(tabID)

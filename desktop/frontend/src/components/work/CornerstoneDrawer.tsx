@@ -183,7 +183,7 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
   const [newTags, setNewTags] = useState('');
 
   const work = view.work;
-  const attention = useMemo(() => deriveCornerstoneAttention(work), [work]);
+  const attention = useMemo(() => deriveCornerstoneAttention(view), [view]);
   const filtered = useMemo(() => work.cornerstones.filter((cornerstone) => {
     if (drawer.filterType !== 'all' && cornerstone.type !== drawer.filterType) return false;
     if (drawer.filterRequired !== null && cornerstone.required !== drawer.filterRequired) return false;
@@ -341,7 +341,9 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
   }, [execute, port, workId]);
 
   const newItem = drawer.byId.__new__;
-  const hasAttention = (attention?.items.length ?? 0) > 0;
+  const blocked = Boolean(view.runBlock?.blocked || view.assessment?.blocking);
+  const degraded = Boolean(view.assessment?.degraded);
+  const hasAttention = blocked || degraded;
 
   return (
     <div className={`cornerstone-drawer${drawer.open ? ' cornerstone-drawer--open' : ''}`} role="complementary" aria-label="Cornerstone Drawer" data-testid="cornerstone-drawer">
@@ -355,7 +357,7 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
         <span aria-hidden="true">◆</span>
         <span>基石</span>
         <span className="cornerstone-drawer__count">{work.cornerstones.filter((item) => !item.tombstone).length}</span>
-        {hasAttention && <span className="cornerstone-drawer__attention-badge" aria-label={`${attention!.items.length} 个必需基石需处理`}>!</span>}
+        {hasAttention && <span className="cornerstone-drawer__attention-badge" aria-label={blocked ? '存在运行阻断' : '存在降级基石'}>!</span>}
       </button>
 
       {drawer.open && (
@@ -423,8 +425,8 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
 
           {hasAttention && (
             <div className="cornerstone-drawer__attention-summary" role="alert" data-testid="cornerstone-attention-summary">
-              <strong>{attention!.items.length} 个必需基石阻止运行。</strong>
-              <ul>{attention!.items.map((item) => <li key={item.cornerstoneId}>{item.title}：{item.reason}</li>)}</ul>
+              <strong>{blocked ? '权威评估阻止运行。' : '部分可选基石降级可用，不阻止运行。'}</strong>
+              <ul>{attention.items.map((item, index) => <li key={`${item.cornerstoneId}:${index}`}>{item.title}：{item.reason}</li>)}</ul>
             </div>
           )}
         </section>

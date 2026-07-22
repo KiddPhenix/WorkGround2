@@ -24,6 +24,7 @@ import type {
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  ResumeRunInput,
   RetryTaskInput,
   UndoCornerstoneInput,
   ValidateCornerstoneInput,
@@ -209,6 +210,19 @@ function makeView(cornerstones: Cornerstone[], revision = 1): WorkView {
       createdAt: '2026-07-20T10:00:00Z',
       updatedAt: '2026-07-20T10:00:00Z',
     },
+    assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+  };
+}
+
+function runAck(workId: string, requestId: string, id = `run-${requestId}`): WorkflowRun {
+  return {
+    id,
+    workId,
+    requestId,
+    definitionDigest: 'definition-digest',
+    state: 'running',
+    stages: [],
+    startedAt: '2026-07-22T00:00:00Z',
   };
 }
 
@@ -231,7 +245,7 @@ class TestPort implements WorkControllerPort, CornerstoneControllerPort {
 
   constructor(view: WorkView, options: FakeWorkControllerOptions = {}) {
     this.fake = new FakeWorkController(options);
-    this.fake.seedWork(view.work, view.revision);
+    this.fake.seedView(view);
   }
 
   subscribe(workId: string, onEvent: (event: WorkViewEvent) => void): WorkPortSubscription {
@@ -421,8 +435,21 @@ async function testUnifiedAttentionAndRunGate(): Promise<void> {
     makeCornerstone('cs-optional', { required: false, status: 'missing' }),
     makeCornerstone('cs-removed-required', { required: true, status: 'missing', tombstone: true }),
   ]);
+  // Set authoritative assessment + runBlock (backend owns blockage)
+  view.assessment = {
+    state: 'blocked',
+    blocking: true,
+    degraded: false,
+    issues: [
+      { cornerstoneId: 'cs-required', title: 'cs-required', problem: 'invalid', blocking: true },
+    ],
+  };
+  view.runBlock = {
+    blocked: true,
+    items: [{ code: 'cornerstone_invalid', cornerstoneId: 'cs-required', status: 'invalid' }],
+  };
   useWorkStore.getState().applySnapshot(view);
-  const attention = deriveCornerstoneAttention(view.work);
+  const attention = deriveCornerstoneAttention(view);
   eq(attention.items.length, 1, 'Attention 只包含未移除的 required 失效基石');
 
   const port = new TestPort(view);
@@ -431,13 +458,16 @@ async function testUnifiedAttentionAndRunGate(): Promise<void> {
   ok(!!card.host.querySelector('.cornerstone-drawer__attention-badge'), 'Drawer 入口显示同一 Attention');
   ok(!card.host.querySelector('[data-testid="work-cornerstones"]'), '正面不保留重复 CornerstoneSummary 入口');
 
-  await click(button(card.host, '运行'));
+  ok(button(card.host, '运行').disabled, 'required 权威阻断禁用运行按钮');
   eq(port.runCalls.length, 0, 'required 失效阻止生产运行请求');
-  ok(useCornerstoneUIStore.getState().byWork[view.work.id]?.open === true, '运行阻塞打开同一 Drawer');
+  await click(button(card.host, '查看基石'));
+  ok(useCornerstoneUIStore.getState().byWork[view.work.id]?.open === true, '阻断原因可打开同一 Drawer');
 
   const active = structuredClone(view);
   active.revision = 2;
   active.work.cornerstones[0].status = 'active';
+  active.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  active.runBlock = undefined;
   await act(async () => {
     useWorkStore.getState().applySnapshot(active, 'attention-resolved');
     await Promise.resolve();
@@ -457,19 +487,526 @@ async function testRunRetryReusesRequestID(): Promise<void> {
   const view = makeView([]);
   useWorkStore.getState().applySnapshot(view);
   const requestIds: string[] = [];
+  const acks: WorkflowRun[] = [];
   let attempts = 0;
-  const run = await mount(<WorkRunEntry workId={view.work.id} onRun={({ requestId }) => {
+  const run = await mount(<WorkRunEntry workId={view.work.id} onRun={({ workId, requestId }) => {
     requestIds.push(requestId);
     attempts++;
     if (attempts === 1) throw new Error('network');
+    const ack = runAck(workId, requestId, `run-retry-${attempts}`);
+    acks.push(ack);
+    return ack;
   }} />);
   await click(button(run.host, '运行'));
   await click(button(run.host, '运行'));
   eq(requestIds.length, 2, '失败后运行请求可重试');
   eq(requestIds[1], requestIds[0], '失败重试复用原 requestID');
+  const confirmed = structuredClone(view);
+  confirmed.revision = 2;
+  confirmed.work = { ...confirmed.work, state: 'completed', runs: [{ ...acks[0], state: 'completed', finishedAt: '2026-07-22T00:01:00Z' }] };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(confirmed, 'run-retry-confirmed');
+    await Promise.resolve();
+  });
   await click(button(run.host, '运行'));
   ok(requestIds[2] !== requestIds[1], '成功后的新运行意图使用新 requestID');
   await run.cleanup();
+}
+
+async function testRunAckWaitsForAuthoritativeConfirmation(): Promise<void> {
+  reset();
+  const view = makeView([]);
+  useWorkStore.getState().applySnapshot(view);
+  const calls: Array<{ workId: string; requestId: string }> = [];
+  const acks: WorkflowRun[] = [];
+  let syncAttempts = 0;
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => {
+      calls.push(structuredClone(input));
+      const ack: WorkflowRun = {
+        id: `acked-run-${calls.length}`,
+        workId: input.workId,
+        requestId: input.requestId,
+        definitionDigest: 'definition-digest',
+        state: 'running',
+        stages: [],
+        startedAt: '2026-07-22T00:00:00Z',
+      };
+      acks.push(ack);
+      return ack;
+    }}
+    onRecoverProjection={() => {
+      syncAttempts++;
+      if (syncAttempts <= 2) throw new Error('snapshot unavailable');
+    }}
+  />);
+
+  await click(button(entry.host, '运行'));
+  eq(calls.length, 1, 'Run ACK 后 snapshot 失败只派发一次 RunWork');
+  ok(!!button(entry.host, '重试同步'), 'Run ACK 后进入等待权威确认状态');
+  await click(button(entry.host, '重试同步'));
+  eq(calls.length, 1, '权威确认前重试只同步，不重复 RunWork');
+  eq(syncAttempts, 2, '确认前允许显式重试同步');
+
+  const confirmed = structuredClone(view);
+  confirmed.revision = 2;
+  confirmed.work = { ...confirmed.work, state: 'completed', runs: [{ ...acks[0], state: 'completed', finishedAt: '2026-07-22T00:01:00Z' }] };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(confirmed, 'run-acked-confirmed');
+    await Promise.resolve();
+  });
+  ok(!!button(entry.host, '运行'), '权威投影确认终态后清除旧 Run intent');
+  await click(button(entry.host, '运行'));
+  eq(calls.length, 2, '权威确认后再次运行创建新 intent');
+  ok(calls[1].requestId !== calls[0].requestId, '再次运行使用新的 requestID');
+  await entry.cleanup();
+}
+
+async function testAuthoritativeReasonsAndOptionalDegraded(): Promise<void> {
+  reset();
+  const blocked = makeView([makeCornerstone('cs-safe-reason', { required: true, status: 'active' })]);
+  blocked.assessment = {
+    state: 'blocked',
+    blocking: true,
+    degraded: false,
+    issues: [{ cornerstoneId: 'cs-safe-reason', title: '安全标题', problem: 'C:\\private\\secret.txt', blocking: true }],
+  };
+  blocked.runBlock = {
+    blocked: true,
+    items: [
+      { code: 'blob_missing', cornerstoneId: 'cs-safe-reason', detail: 'C:\\private\\secret.txt' },
+      { code: 'budget_exhausted', detail: 'prompt with secret' },
+      { code: 'resolver_unavailable', detail: 'token=do-not-render' },
+    ],
+  };
+  useWorkStore.getState().applySnapshot(blocked);
+  const blockedCalls: string[] = [];
+  const blockedEntry = await mount(<WorkRunEntry workId={blocked.work.id} onRun={({ workId, requestId }) => {
+    blockedCalls.push(requestId);
+    return runAck(workId, requestId);
+  }} />);
+  ok(button(blockedEntry.host, '运行').disabled, 'authoritative runBlock 真正禁用运行按钮');
+  ok(!!blockedEntry.host.querySelector('[data-testid="run-block-blob_missing"]'), 'blob_missing 显示安全 typed 原因');
+  ok(!!blockedEntry.host.querySelector('[data-testid="run-block-budget_exhausted"]'), 'budget_exhausted 显示安全 typed 原因');
+  ok(!!blockedEntry.host.querySelector('[data-testid="run-block-resolver_unavailable"]'), 'resolver_unavailable 显示安全 typed 原因');
+  ok(!blockedEntry.host.textContent?.includes('private') && !blockedEntry.host.textContent?.includes('do-not-render'), '不渲染 detail 或 raw assessment problem');
+  eq(blockedCalls.length, 0, '禁用态不派发 Run');
+  await blockedEntry.cleanup();
+
+  const degraded = makeView([makeCornerstone('cs-optional-degraded', { required: false, status: 'active' })], 2);
+  degraded.assessment = {
+    state: 'degraded',
+    blocking: false,
+    degraded: true,
+    issues: [{ cornerstoneId: 'cs-optional-degraded', title: '可选基石', problem: 'missing:network', blocking: false }],
+  };
+  useWorkStore.getState().applySnapshot(degraded, 'optional-degraded');
+  const degradedCalls: string[] = [];
+  const degradedEntry = await mount(<WorkRunEntry workId={degraded.work.id} onRun={({ workId, requestId }) => {
+    degradedCalls.push(requestId);
+    return runAck(workId, requestId);
+  }} />);
+  ok(!!degradedEntry.host.querySelector('[data-testid="work-run-degraded"]'), 'optional degraded 显示 warning');
+  ok(!button(degradedEntry.host, '运行').disabled, 'optional degraded 允许运行');
+  await click(button(degradedEntry.host, '运行'));
+  eq(degradedCalls.length, 1, 'optional degraded 正常派发 Run');
+  await degradedEntry.cleanup();
+}
+
+async function testResumeRetryUsesLatestWaitingRun(): Promise<void> {
+  reset();
+  const waiting = makeView([], 5);
+  const oldWaiting: WorkflowRun = {
+    id: 'run-old-waiting', workId: waiting.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-21T00:00:00Z',
+  };
+  const latestWaiting: WorkflowRun = {
+    id: 'run-latest-waiting', workId: waiting.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+  };
+  waiting.work = { ...waiting.work, state: 'waiting_user', runs: [oldWaiting, latestWaiting] };
+  waiting.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  waiting.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+  useWorkStore.getState().applySnapshot(waiting);
+  const calls: ResumeRunInput[] = [];
+  let attempts = 0;
+  const entry = await mount(<WorkRunEntry workId={waiting.work.id} onResumeRun={(input) => {
+    calls.push(structuredClone(input));
+    attempts++;
+    if (attempts === 1) throw new Error('network');
+    return { ...latestWaiting, state: 'running' };
+  }} />);
+  await click(button(entry.host, '继续运行'));
+  await click(button(entry.host, '继续运行'));
+  eq(calls.length, 2, 'Resume 失败后可安全重试');
+  eq(calls[0].runId, latestWaiting.id, 'Resume 选择最新 waiting run');
+  eq(calls[1].runId, latestWaiting.id, 'Resume 重试保持同一 run');
+  eq(calls[1].requestId, calls[0].requestId, 'Resume 网络重试复用 requestID');
+  await entry.cleanup();
+}
+
+async function testResumeRequiresStrictReadyAssessment(): Promise<void> {
+  reset();
+  const degraded = makeView([], 10);
+  const waitingRun: WorkflowRun = {
+    id: 'run-degraded-waiting', workId: degraded.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+  };
+  degraded.work = { ...degraded.work, state: 'waiting_user', runs: [waitingRun] };
+  degraded.assessment = {
+    state: 'degraded', blocking: false, degraded: true,
+    issues: [{ cornerstoneId: 'optional', title: 'optional', problem: 'missing', blocking: false }],
+  };
+  degraded.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+  useWorkStore.getState().applySnapshot(degraded);
+  const entry = await mount(<WorkRunEntry workId={degraded.work.id} onResumeRun={() => ({ ...waitingRun, state: 'running' })} />);
+  ok(![...entry.host.querySelectorAll('button')].some((candidate) => candidate.textContent?.includes('继续运行')), 'degraded + waiting_user 不开放 Resume');
+  ok(button(entry.host, '运行').disabled, 'degraded + waiting_user 保持运行阻断');
+
+  const ready = structuredClone(degraded);
+  ready.revision = 11;
+  ready.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(ready, 'resume-assessment-ready');
+    await Promise.resolve();
+  });
+  ok(!!button(entry.host, '继续运行'), 'ready + only waiting_user 正常开放 Resume');
+  await entry.cleanup();
+}
+
+async function testRunAndResumeRetryIntentsAreIsolated(): Promise<void> {
+  reset();
+  const ready = makeView([], 15);
+  useWorkStore.getState().applySnapshot(ready);
+  const runInputs: Array<{ workId: string; requestId: string }> = [];
+  const resumeInputs: ResumeRunInput[] = [];
+  const entry = await mount(<WorkRunEntry
+    workId={ready.work.id}
+    onRun={(input) => {
+      runInputs.push(structuredClone(input));
+      throw new Error('unknown run outcome');
+    }}
+    onResumeRun={(input) => {
+      resumeInputs.push(structuredClone(input));
+      return { ...waitingRun, state: 'running' };
+    }}
+  />);
+  await click(button(entry.host, '运行'));
+  eq(runInputs.length, 1, 'Run 未确认失败保留独立 retry intent');
+
+  const waitingRun: WorkflowRun = {
+    id: 'run-isolated-resume', workId: ready.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+  };
+  const waiting = structuredClone(ready);
+  waiting.revision = 16;
+  waiting.work = { ...waiting.work, state: 'waiting_user', runs: [waitingRun] };
+  waiting.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  waiting.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(waiting, 'run-resume-intent-isolation');
+    await Promise.resolve();
+  });
+  await click(button(entry.host, '继续运行'));
+  eq(resumeInputs.length, 1, 'Resume 使用独立 intent 派发');
+  ok(resumeInputs[0].requestId !== runInputs[0].requestId, 'Run 与 Resume 绝不共享 requestID');
+  ok(runInputs[0].requestId.startsWith('work-run-') && resumeInputs[0].requestId.startsWith('work-resume-'), 'Run/Resume requestID 命名空间隔离');
+  await entry.cleanup();
+}
+
+async function testWaitingRunSwitchIgnoresLateResumeAck(): Promise<void> {
+  reset();
+  const initial = makeView([], 20);
+  const runA: WorkflowRun = {
+    id: 'run-wait-a', workId: initial.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+  };
+  initial.work = { ...initial.work, state: 'waiting_user', runs: [runA] };
+  initial.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  initial.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+  useWorkStore.getState().applySnapshot(initial);
+
+  const lateAck = deferred<WorkflowRun>();
+  const calls: ResumeRunInput[] = [];
+  const entry = await mount(<WorkRunEntry workId={initial.work.id} onResumeRun={(input) => {
+    calls.push(structuredClone(input));
+    if (input.runId === runA.id) return lateAck.promise;
+    return { ...runB, state: 'running' };
+  }} />);
+  await click(button(entry.host, '继续运行'));
+  eq(calls.length, 1, '旧 waiting Run Resume 已派发');
+
+  const runB: WorkflowRun = {
+    id: 'run-wait-b', workId: initial.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:01:00Z',
+  };
+  const switched = structuredClone(initial);
+  switched.revision = 21;
+  switched.work = { ...switched.work, runs: [{ ...runA, state: 'completed', finishedAt: '2026-07-22T00:01:00Z' }, runB] };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(switched, 'waiting-run-switched');
+    await Promise.resolve();
+  });
+  lateAck.resolve({ ...runA, state: 'running' });
+  await settle();
+  await click(button(entry.host, '继续运行'));
+  eq(calls.length, 2, '最新 waiting Run 可创建新的 Resume intent');
+  eq(calls[1].runId, runB.id, '旧 RunID 不用于新的 Resume');
+  ok(calls[1].requestId !== calls[0].requestId, 'waiting Run 切换后不复用旧 requestID');
+  await entry.cleanup();
+}
+
+async function testNeedsConfirmationNeverRoutesToResume(): Promise<void> {
+  reset();
+  const view = makeView([], 30);
+  const olderWaiting: WorkflowRun = {
+    id: 'run-older-waiting', workId: view.work.id, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+  };
+  const newerConfirmation: WorkflowRun = {
+    id: 'run-newer-confirmation', workId: view.work.id, definitionDigest: 'definition-digest', state: 'needs_confirmation', stages: [], startedAt: '2026-07-22T00:01:00Z',
+  };
+  view.work = { ...view.work, state: 'waiting_user', runs: [olderWaiting, newerConfirmation] };
+  view.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  view.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+  useWorkStore.getState().applySnapshot(view);
+  const resumeCalls: ResumeRunInput[] = [];
+  const entry = await mount(<WorkRunEntry workId={view.work.id} onResumeRun={(input) => {
+    resumeCalls.push(structuredClone(input));
+    return { ...olderWaiting, state: 'running' };
+  }} />);
+
+  await click(button(entry.host, '继续运行'));
+  eq(resumeCalls.length, 1, 'newer needs_confirmation 不遮挡仍为 waiting 的 Run');
+  eq(resumeCalls[0].runId, olderWaiting.id, 'Resume 严格选择最新 RunWaiting');
+
+  const confirmationOnly = structuredClone(view);
+  confirmationOnly.revision = 31;
+  confirmationOnly.work = {
+    ...confirmationOnly.work,
+    runs: [{ ...olderWaiting, state: 'completed', finishedAt: '2026-07-22T00:02:00Z' }, newerConfirmation],
+  };
+  await act(async () => {
+    useWorkStore.getState().applySnapshot(confirmationOnly, 'needs-confirmation-only');
+    await Promise.resolve();
+  });
+  ok(![...entry.host.querySelectorAll('button')].some((candidate) => candidate.textContent?.includes('继续运行')), 'needs_confirmation only 绝不显示 Resume');
+  ok(button(entry.host, '运行').disabled, 'waiting_user block 不把 needs_confirmation 改写为 Run/Resume');
+  eq(resumeCalls.length, 1, 'needs_confirmation projection 不调用 ResumeRun');
+  await entry.cleanup();
+}
+
+async function testProductionNeedsConfirmationRoutesRetryTask(): Promise<void> {
+  reset();
+  let persisted = makeView([], 40);
+  const attempt: Attempt = {
+    id: 'attempt-confirm-0', requestId: 'execute-confirm-0', index: 0, state: 'needs_confirmation',
+    sessionRef: { sessionPath: '/sessions/confirm-0', branchId: 'branch-confirm', modelRef: 'test-model', turnCount: 1, preview: 'unconfirmed side effect', startedAt: '2026-07-22T00:00:00Z' },
+    startedAt: '2026-07-22T00:00:00Z', finishedAt: '2026-07-22T00:01:00Z',
+  };
+  const run: WorkflowRun = {
+    id: 'run-confirmation', workId: persisted.work.id, definitionDigest: 'definition-digest', state: 'needs_confirmation',
+    stages: [{
+      id: 'stage-confirmation', name: '确认外部结果', state: 'needs_confirmation', startedAt: '2026-07-22T00:00:00Z',
+      tasks: [{ id: 'task-confirmation', name: '核实部署', state: 'needs_confirmation', attempts: [attempt] }],
+    }],
+    startedAt: '2026-07-22T00:00:00Z',
+  };
+  persisted.work = { ...persisted.work, state: 'waiting_user', runs: [run] };
+  persisted.assessment = { state: 'ready', blocking: false, degraded: false, issues: [] };
+  persisted.runBlock = { blocked: true, items: [{ code: 'waiting_user' }] };
+
+  const retryCalls: RetryTaskInput[] = [];
+  const resumeCalls: ResumeRunInput[] = [];
+  const eventListeners = new Map<string, (payload: unknown) => void>();
+  (dom.window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, callback: (payload: unknown) => void) => {
+      eventListeners.set(name, callback);
+      return () => { eventListeners.delete(name); };
+    },
+  };
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => structuredClone(persisted),
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    ResumeRun: async (_tabID: string, input: ResumeRunInput) => {
+      resumeCalls.push(structuredClone(input));
+      throw new Error('needs_confirmation must not resume');
+    },
+    RetryWorkTask: async (_tabID: string, input: RetryTaskInput) => {
+      retryCalls.push(structuredClone(input));
+      if (retryCalls.length === 1) throw new Error('network');
+      const next: Attempt = {
+        ...attempt,
+        id: `attempt-confirm-${retryCalls.length - 1}`,
+        requestId: `${input.requestId}/execute`,
+        index: retryCalls.length - 1,
+      };
+      const nextState = retryCalls.length === 2 ? 'needs_confirmation' as const : 'completed' as const;
+      next.state = nextState;
+      persisted = {
+        ...persisted,
+        revision: persisted.revision + 1,
+        work: {
+          ...persisted.work,
+          state: nextState === 'completed' ? 'completed' : 'waiting_user',
+          runs: [{
+            ...run,
+            state: nextState,
+            stages: [{
+              ...run.stages[0],
+              state: nextState,
+              tasks: [{ ...run.stages[0].tasks[0], state: nextState, attempts: [...run.stages[0].tasks[0].attempts, next] }],
+            }],
+          }],
+        },
+        runBlock: nextState === 'completed' ? undefined : persisted.runBlock,
+      };
+      return structuredClone(next);
+    },
+  } } };
+
+  const card = await mount(<WorkCard workID={persisted.work.id} tabID="tab-confirmation-retry" />);
+  ok(![...card.host.querySelectorAll('button')].some((candidate) => candidate.textContent?.includes('继续运行')), 'production needs_confirmation 不暴露 Resume');
+  ok(card.host.textContent?.includes('外部结果尚未确认') ?? false, 'production UI 显示待确认说明');
+  await click(button(card.host, '确认并重试'));
+  await click(button(card.host, '确认并重试'));
+  eq(retryCalls.length, 2, 'network 失败后通过 production Wails RetryWorkTask 重试');
+  eq(retryCalls[0].taskId, 'task-confirmation', 'RetryWorkTask 携带明确 taskId');
+  eq(retryCalls[1].requestId, retryCalls[0].requestId, 'RetryWorkTask 网络重试复用独立 intent requestID');
+  eq(resumeCalls.length, 0, 'needs_confirmation production 路径从未调用 ResumeRun');
+
+  await click(button(card.host, '确认并重试'));
+  eq(retryCalls.length, 3, '权威投影确认新 Attempt 后允许下一次 Retry intent');
+  ok(retryCalls[2].requestId !== retryCalls[1].requestId, '新 Attempt 使用新的 RetryTask requestID');
+  eq(resumeCalls.length, 0, '后续 needs_confirmation 仍不调用 ResumeRun');
+
+  await card.cleanup();
+  delete (dom.window as unknown as { go?: unknown }).go;
+  delete (dom.window as unknown as { runtime?: unknown }).runtime;
+}
+
+async function testProductionRepairRestartResumeJourney(): Promise<void> {
+  reset();
+  const replacement = 'authoritative replacement content';
+  const snapshot = makeCornerstone('cs-journey-blob', {
+    mode: 'snapshot',
+    required: true,
+    status: 'invalid',
+    resolveErrorKind: 'invalid',
+    ref: { kind: 'inline', blobDigest: contentDigest(replacement) },
+    digest: contentDigest(replacement),
+  });
+  let persisted = makeView([snapshot]);
+  const oldRun: WorkflowRun = {
+    id: 'run-history', workId: persisted.work.id, definitionDigest: 'definition-digest', state: 'completed', stages: [],
+    startedAt: '2026-07-20T00:00:00Z', finishedAt: '2026-07-20T01:00:00Z',
+  };
+  persisted.work = { ...persisted.work, runs: [oldRun] };
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const repairCalls: Array<Record<string, unknown>> = [];
+  const resumeCalls: ResumeRunInput[] = [];
+  let getCalls = 0;
+  const eventListeners = new Map<string, (payload: unknown) => void>();
+  (dom.window as unknown as { runtime: unknown }).runtime = {
+    EventsOn: (name: string, callback: (payload: unknown) => void) => {
+      eventListeners.set(name, callback);
+      return () => { eventListeners.delete(name); };
+    },
+  };
+  (dom.window as unknown as { go: unknown }).go = { main: { App: {
+    GetWork: async () => {
+      getCalls++;
+      return structuredClone(persisted);
+    },
+    WatchWork: async () => undefined,
+    UnwatchWork: async () => undefined,
+    RunWork: async (_tabID: string, workId: string, requestId: string) => {
+      runCalls.push({ workId, requestId });
+      const waitingRun: WorkflowRun = {
+        id: 'run-waiting', workId, requestId, definitionDigest: 'definition-digest', state: 'waiting', stages: [], startedAt: '2026-07-22T00:00:00Z',
+      };
+      persisted = {
+        ...persisted,
+        revision: 2,
+        work: { ...persisted.work, state: 'waiting_user', runs: [oldRun, waitingRun] },
+        assessment: {
+          state: 'blocked', blocking: true, degraded: false,
+          issues: [{ cornerstoneId: snapshot.id, title: snapshot.title, problem: 'blob_missing', blocking: true }],
+        },
+        runBlock: { blocked: true, items: [{ code: 'waiting_user' }, { code: 'blob_missing', cornerstoneId: snapshot.id }] },
+      };
+      return structuredClone(waitingRun);
+    },
+    RepairCornerstone: async (_tabID: string, workId: string, input: Record<string, unknown>) => {
+      repairCalls.push(structuredClone(input));
+      if (workId !== persisted.work.id || input.content !== replacement) throw new Error('repair rejected');
+      const active = { ...snapshot, content: replacement, status: 'active' as const, resolveErrorKind: undefined };
+      persisted = {
+        ...persisted,
+        revision: 3,
+        work: { ...persisted.work, cornerstones: [active] },
+        assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+        runBlock: { blocked: true, items: [{ code: 'waiting_user' }] },
+      };
+      return {
+        cornerstone: active, workView: structuredClone(persisted), repaired: true, duplicate: false,
+        revision: persisted.revision, assessment: persisted.assessment,
+      };
+    },
+    ResumeRun: async (_tabID: string, input: ResumeRunInput) => {
+      resumeCalls.push(structuredClone(input));
+      const current = persisted.work.runs.find((run) => run.id === input.runId);
+      if (!current) throw new Error('run not found');
+      const resumed = { ...current, state: 'running' as const };
+      persisted = {
+        ...persisted,
+        revision: 4,
+        work: {
+          ...persisted.work,
+          state: 'running',
+          runs: persisted.work.runs.map((run) => run.id === resumed.id ? resumed : run),
+        },
+        assessment: { state: 'ready', blocking: false, degraded: false, issues: [] },
+        runBlock: undefined,
+      };
+      return structuredClone(resumed);
+    },
+    RetryWorkTask: async () => { throw new Error('unused'); },
+  } } };
+
+  let card = await mount(<WorkCard workID={persisted.work.id} tabID="tab-repair-resume" />);
+  await click(button(card.host, '运行'));
+  eq(runCalls.length, 1, 'production journey 首次 Run 只创建一个运行');
+  ok(button(card.host, '运行').disabled, 'waiting_user 与 blob_missing 混合阻断时仍禁 Run/Resume');
+  ok(![...card.host.querySelectorAll('button')].some((candidate) => candidate.textContent?.includes('继续运行')), '修复前不提前暴露 Resume');
+
+  await click(button(card.host, '查看基石'));
+  const item = card.host.querySelector<HTMLElement>('[data-testid="cornerstone-item-cs-journey-blob"]')!;
+  const editor = item.querySelector<HTMLTextAreaElement>('textarea')!;
+  await change(editor, 'wrong content');
+  await click(button(item, '修复快照'));
+  eq(repairCalls.length, 0, '错误 replacement content 在前端 digest 校验拒绝');
+  await change(editor, replacement);
+  await click(button(item, '修复快照'));
+  eq(repairCalls.length, 1, '正确 replacement content 进入 production Wails Repair');
+  ok(!!button(card.host, '继续运行'), '权威 repair projection 清除 blob block 后显示 Resume');
+
+  await card.cleanup();
+  useWorkStore.getState().clearAll();
+  useWorkUIStore.getState().clearAll();
+  useCornerstoneUIStore.getState().clearAll();
+  const getsBeforeRestart = getCalls;
+  card = await mount(<WorkCard workID={persisted.work.id} tabID="tab-repair-resume-restart" />);
+  ok(getCalls > getsBeforeRestart, '重挂 production WorkCard 通过 GetWork 恢复权威快照');
+  await click(button(card.host, '继续运行'));
+  eq(resumeCalls.length, 1, 'production Wails ResumeRun 只派发一次');
+  eq(resumeCalls[0].runId, 'run-waiting', 'Resume 使用原 waiting runId');
+  eq(runCalls.length, 1, 'Resume 未新建第二个 Run');
+  const storedRuns = useWorkStore.getState().works[persisted.work.id]!.work.runs;
+  eq(storedRuns.length, 2, 'Resume 保留完整 Run 历史');
+  eq(storedRuns[0].id, oldRun.id, '历史 Run 身份保持');
+  eq(storedRuns[0].state, 'completed', '历史 Run 状态保持');
+  eq(storedRuns[1].id, 'run-waiting', '当前 Run 身份保持');
+  eq(storedRuns[1].state, 'running', '同一 waiting Run 恢复运行');
+  ok(!card.host.querySelector('[data-testid="work-attention"]'), 'Resume 权威快照清除 Attention');
+  await card.cleanup();
+  delete (dom.window as unknown as { go?: unknown }).go;
+  delete (dom.window as unknown as { runtime?: unknown }).runtime;
 }
 
 async function testProductionWorkCardAssembly(): Promise<void> {
@@ -1270,7 +1807,16 @@ await testTypedMutations();
 await testConflictAndNetworkRetry();
 await testUnifiedAttentionAndRunGate();
 await testRunRetryReusesRequestID();
+await testRunAckWaitsForAuthoritativeConfirmation();
+await testAuthoritativeReasonsAndOptionalDegraded();
+await testResumeRetryUsesLatestWaitingRun();
+await testResumeRequiresStrictReadyAssessment();
+await testRunAndResumeRetryIntentsAreIsolated();
+await testWaitingRunSwitchIgnoresLateResumeAck();
+await testNeedsConfirmationNeverRoutesToResume();
+await testProductionNeedsConfirmationRoutesRetryTask();
 await testProductionWorkCardAssembly();
+await testProductionRepairRestartResumeJourney();
 await testWailsConflictLoadsLatestProjection();
 await testWailsSnapshotRepairContentRoundTrip();
 await testWailsWatchHandshakeAndRecovery();

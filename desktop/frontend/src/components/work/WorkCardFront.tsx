@@ -1,12 +1,12 @@
 import React, { useMemo } from 'react';
 
-import { deriveCornerstoneAttention } from '../../work/cornerstoneStore';
 import type {
   BlockPlacement,
   BlockUpdateRequest,
   Conclusion,
   RetryIntent,
   RetryStatus,
+  ResumeRunInput,
   RunSelection,
   Work,
   WorkflowRun,
@@ -29,7 +29,9 @@ export interface WorkCardFrontProps {
   onRunSelect: (selection: RunSelection) => void;
   onRetry?: (intent: RetryIntent) => void;
   retryByTarget: Record<string, RetryStatus>;
-  onRun?: (input: { workId: string; requestId: string }) => void | Promise<void>;
+  onRun?: (input: { workId: string; requestId: string }) => WorkflowRun | Promise<WorkflowRun>;
+  onResumeRun?: (input: ResumeRunInput) => WorkflowRun | Promise<WorkflowRun>;
+  onRecoverProjection?: () => void | Promise<void>;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -46,13 +48,15 @@ function runStateLabel(state: string): string {
   }
 }
 
-const AttentionBadge: React.FC<{ work: Work }> = ({ work }) => {
-  const attentionCount = deriveCornerstoneAttention(work).items.length;
-  if (attentionCount === 0) return null;
+const AttentionBadge: React.FC<{ view: WorkView }> = ({ view }) => {
+  const blocked = Boolean(view.runBlock?.blocked || view.assessment?.blocking);
+  const degraded = view.assessment?.degraded ?? false;
+  if (!blocked && !degraded) return null;
+  const count = Math.max(view.runBlock?.items?.length ?? 0, view.assessment?.issues?.length ?? 0, 1);
   return (
     <div className="wg2-work-attention" role="alert" aria-live="polite" data-testid="work-attention">
-      <span className="wg2-work-attention-count">{attentionCount}</span>
-      <span className="wg2-work-attention-label">个必需基石需处理</span>
+      <span className="wg2-work-attention-count">{blocked ? count : '⚠'}</span>
+      <span className="wg2-work-attention-label">{blocked ? '个阻断阻止运行' : '降级可用'}</span>
     </div>
   );
 };
@@ -120,6 +124,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onRetry,
   retryByTarget,
   onRun,
+  onResumeRun,
+  onRecoverProjection,
 }) => {
   const { work } = view;
   const hostContext = useMemo<BlockHostContext>(() => ({
@@ -188,8 +194,14 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       <div className="wg2-work-front-header">
         <h2 className="wg2-work-name">{work.name}</h2>
         <WorkflowSummary work={work} />
-        <AttentionBadge work={work} />
-        <WorkRunEntry workId={work.id} onRun={onRun} disabled={readonly || archived} />
+        <AttentionBadge view={view} />
+        <WorkRunEntry
+          workId={work.id}
+          onRun={onRun}
+          onResumeRun={onResumeRun}
+          onRecoverProjection={onRecoverProjection}
+          disabled={readonly || archived}
+        />
       </div>
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
