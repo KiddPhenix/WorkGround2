@@ -104,6 +104,13 @@ func (s *Service) SetSessionRefStore(store SessionRefStore, scopeID string) erro
 	return nil
 }
 
+// SetCornerstoneManager wires the CornerstoneManager into this Service.
+// A nil manager disables Cornerstone operations — all cornerstone methods
+// return ErrCornerstoneDisabled. Call during boot before serving requests.
+func (s *Service) SetCornerstoneManager(cm *CornerstoneManager) {
+	s.cornerstones = cm
+}
+
 // RebuildSessionRefs repairs this Work store's slice of the shared reverse
 // index from authoritative projections, including Work trash.
 func (s *Service) RebuildSessionRefs(ctx context.Context) error {
@@ -1789,6 +1796,89 @@ func (s *Service) emitRemoved(workID string, revision int64, requestID string) {
 		Payload:       json.RawMessage(`{"archiveState":"deleted"}`),
 		CreatedAt:     time.Now().UTC(),
 	})
+}
+
+// ── Cornerstone delegate methods ─────────────────────────────────────────────
+
+// ErrCornerstoneDisabled is returned by cornerstone methods when no
+// CornerstoneManager is wired into the Service.
+var ErrCornerstoneDisabled = errors.New("work: Cornerstone feature is disabled; wire a CornerstoneManager via SetCornerstoneManager")
+
+func (s *Service) requireCornerstone() error {
+	if s == nil || s.cornerstones == nil {
+		return ErrCornerstoneDisabled
+	}
+	return nil
+}
+
+func (s *Service) PinCornerstone(ctx context.Context, workID string, input PinCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Pin(workID, input)
+}
+
+func (s *Service) RefreshCornerstone(ctx context.Context, workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Refresh(ctx, workID, input)
+}
+
+func (s *Service) RemoveCornerstone(ctx context.Context, workID string, input RemoveCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Remove(workID, input)
+}
+
+func (s *Service) UndoCornerstone(ctx context.Context, workID string, input UndoCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Undo(workID, input)
+}
+
+func (s *Service) AcceptCornerstone(ctx context.Context, workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Accept(ctx, workID, input)
+}
+
+func (s *Service) FreezeCornerstone(ctx context.Context, workID string, input FreezeCornerstoneInput) (*CornerstoneResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Freeze(ctx, workID, input)
+}
+
+func (s *Service) RepairCornerstone(ctx context.Context, workID string, input RepairCornerstoneInput) (*RepairResult, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireCornerstone(); err != nil {
+		return nil, err
+	}
+	return s.cornerstones.Repair(ctx, workID, input)
 }
 
 func newServiceEvent(workID, requestID string, eventType WorkEventType, payload []byte, createdAt time.Time) WorkEvent {

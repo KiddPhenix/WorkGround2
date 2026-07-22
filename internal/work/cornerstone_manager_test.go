@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -438,7 +439,7 @@ func TestCornerstone_RefreshSnapshotBlobIntegrity(t *testing.T) {
 		ExpectedRevision: view2.Revision,
 		RequestID:        "req-refresh",
 	}
-	refreshResult, err := f.mgr.Refresh(f.workID, refreshInput)
+	refreshResult, err := f.mgr.Refresh(context.Background(), f.workID, refreshInput)
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
@@ -462,7 +463,7 @@ func TestCornerstone_RefreshSnapshotBlobIntegrity(t *testing.T) {
 		ExpectedRevision: view3.Revision,
 		RequestID:        "req-refresh-2",
 	}
-	refreshResult2, err := f.mgr.Refresh(f.workID, refreshInput2)
+	refreshResult2, err := f.mgr.Refresh(context.Background(), f.workID, refreshInput2)
 	if err != nil {
 		t.Fatalf("Refresh after corruption: %v", err)
 	}
@@ -929,7 +930,7 @@ func TestCornerstone_BlobMissingMarksInvalid(t *testing.T) {
 		ExpectedRevision: view2.Revision,
 		RequestID:        "req-missing-refresh",
 	}
-	refreshResult, err := f.mgr.Refresh(f.workID, refreshInput)
+	refreshResult, err := f.mgr.Refresh(context.Background(), f.workID, refreshInput)
 	if err != nil {
 		t.Fatalf("Refresh on missing blob: %v", err)
 	}

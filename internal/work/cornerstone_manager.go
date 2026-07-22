@@ -293,11 +293,10 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 
 // ── Refresh ─────────────────────────────────────────────────────────────────
 
-// Refresh re-resolves live references and verifies snapshot blobs. It is the
-// context-free convenience entry point; context-aware callers should use
-// Resolve.
-func (m *CornerstoneManager) Refresh(workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error) {
-	return m.Resolve(context.Background(), workID, input)
+// Refresh re-resolves live references and verifies snapshot blobs. The ctx is
+// propagated to the resolver for cancellation and timeout control.
+func (m *CornerstoneManager) Refresh(ctx context.Context, workID string, input RefreshCornerstoneInput) (*CornerstoneResult, error) {
+	return m.Resolve(ctx, workID, input)
 }
 
 // ── Remove ──────────────────────────────────────────────────────────────────

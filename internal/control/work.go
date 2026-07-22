@@ -49,6 +49,13 @@ type WorkService interface {
 	RefreshBlock(context.Context, work.RefreshBlockInput, work.BlockSourceAdapter) (*work.BlockInstance, error)
 	CancelBlockRefresh(context.Context, string, string, string) (*work.BlockInstance, error)
 	ExecuteBlockAction(context.Context, work.BlockActionRequest) (*work.ActionReceipt, error)
+	PinCornerstone(context.Context, string, work.PinCornerstoneInput) (*work.CornerstoneResult, error)
+	RefreshCornerstone(context.Context, string, work.RefreshCornerstoneInput) (*work.CornerstoneResult, error)
+	RemoveCornerstone(context.Context, string, work.RemoveCornerstoneInput) (*work.CornerstoneResult, error)
+	UndoCornerstone(context.Context, string, work.UndoCornerstoneInput) (*work.CornerstoneResult, error)
+	AcceptCornerstone(context.Context, string, work.AcceptCornerstoneInput) (*work.CornerstoneResult, error)
+	FreezeCornerstone(context.Context, string, work.FreezeCornerstoneInput) (*work.CornerstoneResult, error)
+	RepairCornerstone(context.Context, string, work.RepairCornerstoneInput) (*work.RepairResult, error)
 }
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
@@ -303,16 +310,53 @@ func (w workMethods) DeleteWork(ctx context.Context, workID, requestID string) e
 	return nil
 }
 
-func (w workMethods) PinCornerstone(ctx context.Context, workID string, input work.CornerstoneInput) (*work.Cornerstone, error) {
-	return nil, errWorkNotImplemented("PinCornerstone")
+func (w workMethods) PinCornerstone(ctx context.Context, workID string, input work.PinCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.PinCornerstone(ctx, workID, input)
 }
 
-func (w workMethods) RefreshCornerstone(ctx context.Context, workID, cornerstoneID, requestID string) (*work.Cornerstone, error) {
-	return nil, errWorkNotImplemented("RefreshCornerstone")
+func (w workMethods) RefreshCornerstone(ctx context.Context, workID string, input work.RefreshCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RefreshCornerstone(ctx, workID, input)
 }
 
-func (w workMethods) RemoveCornerstone(ctx context.Context, workID, cornerstoneID, requestID string) error {
-	return errWorkNotImplemented("RemoveCornerstone")
+func (w workMethods) RemoveCornerstone(ctx context.Context, workID string, input work.RemoveCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RemoveCornerstone(ctx, workID, input)
+}
+
+func (w workMethods) UndoCornerstone(ctx context.Context, workID string, input work.UndoCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.UndoCornerstone(ctx, workID, input)
+}
+
+func (w workMethods) AcceptCornerstone(ctx context.Context, workID string, input work.AcceptCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.AcceptCornerstone(ctx, workID, input)
+}
+
+func (w workMethods) FreezeCornerstone(ctx context.Context, workID string, input work.FreezeCornerstoneInput) (*work.CornerstoneResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.FreezeCornerstone(ctx, workID, input)
+}
+
+func (w workMethods) RepairCornerstone(ctx context.Context, workID string, input work.RepairCornerstoneInput) (*work.RepairResult, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RepairCornerstone(ctx, workID, input)
 }
 
 func (w workMethods) RefreshBlock(ctx context.Context, workID, blockID, requestID string) (*work.BlockInstance, error) {
@@ -674,8 +718,30 @@ func (c *Controller) LookupSession(ctx context.Context, sessionPath string) (wor
 	}, true, nil
 }
 
+// LookupSessionTurn returns the actual zero-based user turn from a persisted
+// Session. LookupSession performs the authoritative SessionDir confinement
+// first; metadata previews are never used as turn content.
+func (c *Controller) LookupSessionTurn(ctx context.Context, sessionID string, turn int) (string, bool, error) {
+	if turn < 0 {
+		return "", false, nil
+	}
+	ref, found, err := c.LookupSession(ctx, sessionID)
+	if err != nil || !found {
+		return "", found, err
+	}
+	messages, err := agent.LoadSessionUserMessages(ref.SessionPath)
+	if err != nil {
+		return "", false, errors.New("work: load Session turn failed")
+	}
+	if turn >= len(messages) {
+		return "", false, nil
+	}
+	return messages[turn].Text, true, nil
+}
+
 var (
 	_ WorkService            = (*work.Service)(nil)
 	_ work.SessionLookup     = (*Controller)(nil)
+	_ SessionTurnLookup      = (*Controller)(nil)
 	_ work.PermissionChecker = (*Controller)(nil)
 )

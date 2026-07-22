@@ -289,6 +289,9 @@ export interface Cornerstone {
   pinnedAt: string;
   updatedAt: string;
   error?: string;
+  resolveErrorKind?: 'missing' | 'denied' | 'invalid' | 'network';
+  candidateDigest?: string;
+  tombstone?: boolean;
 }
 
 export interface CornerstoneReq {
@@ -685,3 +688,136 @@ export interface PermissionDecision {
   approvalRequired: boolean;
   reason?: string;
 }
+
+// CornerstoneDrawer keeps drafts and in-flight state outside the Work
+// projection. Controller results still re-enter through WorkView snapshots or
+// events; components never patch Cornerstones directly.
+
+export type CornerstoneUIAction =
+  | 'pin'
+  | 'refresh'
+  | 'validate'
+  | 'freeze'
+  | 'accept'
+  | 'repair'
+  | 'remove'
+  | 'undo';
+
+export interface CornerstoneRetry {
+  action: CornerstoneUIAction;
+  requestId: string;
+  expectedRevision: number;
+}
+
+export interface CornerstoneItemUI {
+  draftTitle: string | null;
+  draftContent: string | null;
+  pendingAction: CornerstoneUIAction | null;
+  pendingRequestId: string | null;
+  error: string | null;
+  conflictSnapshot: Cornerstone | null;
+  retry: CornerstoneRetry | null;
+}
+
+export interface CornerstoneDrawerUI {
+  byId: Record<string, CornerstoneItemUI>;
+  open: boolean;
+  filterType: CornerstoneType | 'all';
+  filterRequired: boolean | null;
+}
+
+export interface CornerstoneUIState {
+  byWork: Record<string, CornerstoneDrawerUI>;
+}
+
+export interface CornerstoneMutationContext {
+  workId: string;
+  requestId: string;
+  expectedRevision: number;
+}
+
+export interface PinCornerstoneInput extends CornerstoneMutationContext {
+  type: CornerstoneType;
+  title: string;
+  content: string;
+  ref: CornerstoneRef;
+  mode: CornerstoneMode;
+  required: boolean;
+  tags: string[];
+}
+
+export interface RefreshCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+}
+
+export interface ValidateCornerstoneInput extends RefreshCornerstoneInput {}
+
+export interface FreezeCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+  useLastKnown?: boolean;
+}
+
+export interface AcceptCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+}
+
+export interface RepairCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+  ref?: CornerstoneRef;
+  content?: string;
+}
+
+export interface RemoveCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+}
+
+export interface UndoCornerstoneInput extends CornerstoneMutationContext {
+  cornerstoneId: string;
+}
+
+// Compatibility names for callers created against the first Drawer draft.
+export type AcceptCornerstoneVersionInput = AcceptCornerstoneInput;
+export type RepairCornerstoneRefInput = RepairCornerstoneInput;
+export type UndoRemoveCornerstoneInput = UndoCornerstoneInput;
+
+export interface CornerstoneAttention {
+  workId: string;
+  items: CornerstoneAttentionItem[];
+}
+
+export interface CornerstoneAttentionItem {
+  cornerstoneId: string;
+  title: string;
+  status: CornerstoneStatus;
+  reason: string;
+}
+
+export interface RevisionConflict {
+  kind: 'revision_conflict';
+  workId: string;
+  cornerstoneId: string;
+  expectedRevision: number;
+  actualRevision: number;
+  latestSnapshot?: Cornerstone;
+  latestView?: WorkView;
+  message: string;
+}
+
+export interface NetworkError {
+  kind: 'network_error';
+  requestId: string;
+  message: string;
+  retryable: boolean;
+}
+
+export type CornerstoneMutationError = RevisionConflict | NetworkError;
+
+export type CornerstoneMutationResult =
+  | {
+      ok: true;
+      cornerstone: Cornerstone;
+      workView?: WorkView;
+      revision?: number;
+      duplicate?: boolean;
+    }
+  | { ok: false; error: CornerstoneMutationError };

@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 
 import { WorkControllerAdapter, type WorkControllerPort, type WorkControllerStatus } from '../../work/controller';
+import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
 import { useWorkStore, useWorkUIStore, type FaceScrollState, type WorkFace } from '../../work/store';
 import type {
   BlockUpdateRequest,
@@ -21,6 +22,7 @@ import type {
   SessionSurfaceContext,
 } from '../../work/types';
 import type { BlockActionHandler } from './blocks/types';
+import { CornerstoneDrawer } from './CornerstoneDrawer';
 import { WorkCardBack, type WorkCardBackSlots } from './WorkCardBack';
 import { WorkCardFront } from './WorkCardFront';
 import { WorkFlipControl } from './WorkFlipControl';
@@ -35,7 +37,10 @@ export interface WorkDeepLink {
 
 export interface WorkCardProps {
   workID: string;
-  port: WorkControllerPort;
+  /** Tests/embedders may inject a complete port. Desktop production passes the
+   * owning tabID and the WorkCard assembles the real Wails port itself. */
+  port?: WorkControllerPort;
+  tabID?: string;
   deepLink?: WorkDeepLink;
   backSlots?: WorkCardBackSlots;
   cornerstoneEntry?: ReactNode;
@@ -46,6 +51,13 @@ export interface WorkCardProps {
   onRetry?: RetryHandler;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
 }
+
+const unavailablePort: WorkControllerPort = {
+  subscribe: () => ({ ready: Promise.reject(new Error('Work Controller 尚未连接。')), unsubscribe: () => undefined }),
+  fetchSnapshot: async () => { throw new Error('Work Controller 尚未连接。'); },
+  readUIPreference: async () => null,
+  writeUIPreference: async () => { throw new Error('Work UI 偏好存储尚未连接。'); },
+};
 
 type DeepLinkState =
   | { kind: 'idle' | 'resolving' | 'resolved' }
@@ -84,6 +96,7 @@ function errorText(error: unknown): string {
 export const WorkCard: React.FC<WorkCardProps> = ({
   workID,
   port,
+  tabID,
   deepLink,
   backSlots,
   cornerstoneEntry,
@@ -107,7 +120,11 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const failRetry = useWorkUIStore((state) => state.failRetry);
   const clearRetry = useWorkUIStore((state) => state.clearRetry);
 
-  const adapter = useMemo(() => new WorkControllerAdapter(port), [port]);
+  const resolvedPort = useMemo(
+    () => port ?? (tabID ? createWailsWorkControllerPort(tabID) : undefined) ?? unavailablePort,
+    [port, tabID],
+  );
+  const adapter = useMemo(() => new WorkControllerAdapter(resolvedPort), [resolvedPort]);
   const [statuses, setStatuses] = useState<Record<string, WorkControllerStatus>>({});
   const [preferenceReady, setPreferenceReady] = useState(false);
   const [deepLinkState, setDeepLinkState] = useState<DeepLinkState>({ kind: 'idle' });
@@ -118,6 +135,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const frontState = cardState?.faces.front;
   const backState = cardState?.faces.back;
   const status = statuses[workID];
+  const streamError = status?.stream.kind === 'offline' ? status.stream.message : null;
   const readonly = !view || view.work.archiveState !== 'active';
   const archived = view?.work.archiveState === 'archived';
   const faceIDs = useMemo<Record<WorkFace, string>>(() => ({
@@ -138,7 +156,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     restoredScroll.current = {};
     ensureCard(workID);
     adapter.subscribe(workID);
-    void adapter.recoverSnapshot(workID).catch(() => undefined);
     void adapter.restoreUIPreference(workID)
       .catch(() => undefined)
       .finally(() => {
@@ -283,8 +300,8 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       if (task?.attempts.some((attempt) => attempt.index > retry.intent.attemptIndex)) clearRetry(retry.intent);
     }
   }, [clearRetry, retryByTarget, view, workID]);
-  const retrySnapshot = useCallback(() => {
-    void adapter.recoverSnapshot(workID).catch(() => undefined);
+  const retrySync = useCallback(() => {
+    adapter.retrySubscription(workID);
   }, [adapter, workID]);
   const retryPreference = useCallback(() => {
     void adapter.setActiveFace(workID, activeFace).catch(() => undefined);
@@ -296,8 +313,9 @@ export const WorkCard: React.FC<WorkCardProps> = ({
         <div className="wg2-work-unknown-notice" role="alert">
           <h3>Work 不可用</h3>
           {status?.snapshotError && <p className="wg2-work-error">{status.snapshotError}</p>}
+          {streamError && <p className="wg2-work-error">事件订阅错误：{streamError}</p>}
           <p>Work ID: {workID}</p>
-          <button type="button" onClick={retrySnapshot}>重试载入</button>
+          <button type="button" onClick={retrySync}>{streamError ? '重试订阅' : '重试载入'}</button>
         </div>
       </div>
     );
@@ -332,7 +350,15 @@ export const WorkCard: React.FC<WorkCardProps> = ({
           />
         </>
       )}
-      cornerstoneEntry={cornerstoneEntry}
+      cornerstoneEntry={cornerstoneEntry ?? (
+        <CornerstoneDrawer
+          workId={workID}
+          view={view}
+          port={resolvedPort}
+          readonly={readonly}
+          onApplyMutationResult={(result) => adapter.applyMutationResult(workID, result)}
+        />
+      )}
       cornerstoneCount={view.work.cornerstones.length}
       addonPanel={addonPanel}
     >
@@ -349,11 +375,12 @@ export const WorkCard: React.FC<WorkCardProps> = ({
             <p>{deepLinkState.reason}</p>
           </div>
         )}
-        {(status?.snapshotError || status?.eventError) && (
+        {(status?.snapshotError || status?.eventError || streamError) && (
           <div className="wg2-work-error-banner" role="alert" data-testid="work-error-banner">
             {status.snapshotError && <p>快照错误：{status.snapshotError}</p>}
             {status.eventError && <p>事件错误：{status.eventError}</p>}
-            <button type="button" onClick={retrySnapshot}>重试同步</button>
+            {streamError && <p>事件订阅错误：{streamError}</p>}
+            <button type="button" onClick={retrySync}>重试同步</button>
           </div>
         )}
         <div
@@ -382,6 +409,13 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onRunSelect={handleRunSelect}
               onRetry={handleRetry}
               retryByTarget={retryByTarget}
+              onRun={async (input) => {
+                await adapter.runWork(input);
+                // Do not consider the intent confirmed until the authoritative
+                // Work projection is visible. If this fetch fails, WorkRunEntry
+                // retries the same requestID and the backend replays safely.
+                await adapter.recoverSnapshot(workID);
+              }}
             />
           </div>
           <div

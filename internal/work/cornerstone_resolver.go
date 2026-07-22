@@ -14,6 +14,13 @@ type CornerstoneResolver interface {
 	Resolve(ctx context.Context, ref CornerstoneRef) (ResolveResult, error)
 }
 
+// ScopedCornerstoneResolver is implemented by adapters whose source identity
+// is scoped to a Work. Artifact IDs are only authoritative inside their owning
+// Work, so CornerstoneManager prefers this port when it is available.
+type ScopedCornerstoneResolver interface {
+	ResolveForWork(ctx context.Context, workID string, ref CornerstoneRef) (ResolveResult, error)
+}
+
 // ResolveErrorKind is a stable classification used by retry and readiness
 // policy. It must not contain source paths, URLs, or content.
 type ResolveErrorKind string

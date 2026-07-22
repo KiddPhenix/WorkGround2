@@ -28,8 +28,8 @@ func (m *CornerstoneManager) ResolveAndRefresh(workID string, input RefreshCorne
 	return m.resolveAndRefresh(context.Background(), workID, input)
 }
 
-func (m *CornerstoneManager) resolveRef(ctx context.Context, ref CornerstoneRef) (ResolveResult, error) {
-	key := refIdentity(ref)
+func (m *CornerstoneManager) resolveRef(ctx context.Context, workID string, ref CornerstoneRef) (ResolveResult, error) {
+	key := workID + "\x00" + refIdentity(ref)
 	m.inflightMu.Lock()
 	if call, ok := m.inflight[key]; ok {
 		call.waiters++
@@ -51,7 +51,11 @@ func (m *CornerstoneManager) resolveRef(ctx context.Context, ref CornerstoneRef)
 		close(call.done)
 		m.inflightMu.Unlock()
 	}()
-	call.result, call.err = m.resolver.Resolve(ctx, ref)
+	if scoped, ok := m.resolver.(ScopedCornerstoneResolver); ok {
+		call.result, call.err = scoped.ResolveForWork(ctx, workID, ref)
+	} else {
+		call.result, call.err = m.resolver.Resolve(ctx, ref)
+	}
 	call.result, call.err = classifyResolveResult(call.result, call.err)
 	return call.result, call.err
 }
@@ -133,7 +137,7 @@ func (m *CornerstoneManager) resolveAndRefreshLocked(ctx context.Context, workID
 			return nil, ErrCornerstoneResolverUnavailable
 		}
 		identity := refIdentity(cs.Ref)
-		resolved, err := m.resolveRef(ctx, cs.Ref)
+		resolved, err := m.resolveRef(ctx, workID, cs.Ref)
 		if err != nil {
 			return nil, err
 		}
@@ -250,8 +254,8 @@ func cornerstoneDiff(before, after string) string {
 
 // Accept re-resolves the source and accepts only the exact candidate digest
 // previously persisted by Refresh. This closes the review/commit TOCTOU gap.
-func (m *CornerstoneManager) Accept(workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error) {
-	return m.accept(context.Background(), workID, input)
+func (m *CornerstoneManager) Accept(ctx context.Context, workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error) {
+	return m.accept(ctx, workID, input)
 }
 
 func (m *CornerstoneManager) accept(ctx context.Context, workID string, input AcceptCornerstoneInput) (*CornerstoneResult, error) {
@@ -279,7 +283,7 @@ func (m *CornerstoneManager) accept(ctx context.Context, workID string, input Ac
 		return nil, ErrCornerstoneResolverUnavailable
 	}
 	identity, candidateDigest := refIdentity(cs.Ref), cs.CandidateDigest
-	resolved, err := m.resolveRef(ctx, cs.Ref)
+	resolved, err := m.resolveRef(ctx, workID, cs.Ref)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +330,7 @@ func (m *CornerstoneManager) accept(ctx context.Context, workID string, input Ac
 
 // Freeze converts a live reference to a snapshot. A changed source must match
 // the reviewed CandidateDigest unless UseLastKnown is explicit.
-func (m *CornerstoneManager) Freeze(workID string, input FreezeCornerstoneInput) (*CornerstoneResult, error) {
+func (m *CornerstoneManager) Freeze(ctx context.Context, workID string, input FreezeCornerstoneInput) (*CornerstoneResult, error) {
 	workID, csID, requestID, err := normalizeCornerstoneMutation("Freeze", workID, input.CornerstoneID, input.RequestID)
 	if err != nil {
 		return nil, err
@@ -363,7 +367,7 @@ func (m *CornerstoneManager) Freeze(workID string, input FreezeCornerstoneInput)
 		if m.resolver == nil {
 			return nil, ErrCornerstoneResolverUnavailable
 		}
-		resolved, resolveErr := m.resolveRef(context.Background(), cs.Ref)
+		resolved, resolveErr := m.resolveRef(ctx, workID, cs.Ref)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}
@@ -423,7 +427,7 @@ func (m *CornerstoneManager) Freeze(workID string, input FreezeCornerstoneInput)
 
 // Repair retries a source, replaces a broken live Ref, or rematerializes a
 // snapshot blob. Changed live content remains stale and still requires Accept.
-func (m *CornerstoneManager) Repair(workID string, input RepairCornerstoneInput) (*RepairResult, error) {
+func (m *CornerstoneManager) Repair(ctx context.Context, workID string, input RepairCornerstoneInput) (*RepairResult, error) {
 	workID, csID, requestID, err := normalizeCornerstoneMutation("Repair", workID, input.CornerstoneID, input.RequestID)
 	if err != nil {
 		return nil, err
@@ -468,7 +472,7 @@ func (m *CornerstoneManager) Repair(workID string, input RepairCornerstoneInput)
 				return nil, err
 			}
 		}
-		resolved, resolveErr := m.resolveRef(context.Background(), ref)
+		resolved, resolveErr := m.resolveRef(ctx, workID, ref)
 		if resolveErr != nil {
 			return nil, resolveErr
 		}

@@ -1,4 +1,4 @@
-import { WorkControllerAdapter, type WorkControllerPort } from './controller';
+import { WorkControllerAdapter, type WorkControllerPort, type WorkPortSubscription } from './controller';
 import {
   applySnapshot,
   applyWorkViewEvent,
@@ -133,13 +133,16 @@ class TestPort implements WorkControllerPort {
   retry: (input: RetryTaskInput) => Promise<Attempt> = async () => { throw new Error('retry not configured'); };
   preference: WorkUIPreference | null = null;
 
-  subscribe(workID: string, listener: (event: WorkViewEvent) => void): () => void {
+  subscribe(workID: string, listener: (event: WorkViewEvent) => void): WorkPortSubscription {
     const listeners = this.listeners.get(workID) ?? new Set();
     listeners.add(listener);
     this.listeners.set(workID, listeners);
-    return () => {
-      listeners.delete(listener);
-      if (listeners.size === 0) this.listeners.delete(workID);
+    return {
+      ready: Promise.resolve(),
+      unsubscribe: () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) this.listeners.delete(workID);
+      },
     };
   }
 
@@ -302,9 +305,8 @@ test('adapter deduplicates recovery and fetches through the highest gap revision
   const port = new TestPort();
   port.fetch = () => port.fetchCount === 1 ? lowWater.promise : highWater.promise;
   const adapter = new WorkControllerAdapter(port);
-  adapter.subscribe('work-1');
-  port.emit('work-1', delta('gap-a', 3, 2, { name: 'gap-a' }));
-  port.emit('work-1', delta('gap-b', 4, 3, { name: 'gap-b' }));
+  adapter.applyEvent(delta('gap-a', 3, 2, { name: 'gap-a' }));
+  adapter.applyEvent(delta('gap-b', 4, 3, { name: 'gap-b' }));
   const joined = adapter.recoverSnapshot('work-1');
   await Promise.resolve();
   equal(port.fetchCount, 1, 'concurrent gap recovery uses one fetch');
@@ -381,12 +383,14 @@ test('stale snapshot cannot silently satisfy a gap and a newer retry recovers', 
   adapter.dispose();
 });
 
-test('adapter unsubscribe stops event delivery', () => {
+test('adapter unsubscribe stops event delivery', async () => {
   reset();
   applySnapshot(makeView('work-1', 1));
   const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 1);
   const adapter = new WorkControllerAdapter(port);
   adapter.subscribe('work-1');
+  await new Promise<void>((resolveWait) => setTimeout(resolveWait, 0));
   port.emit('work-1', delta('before-unsubscribe', 2, 1, { name: 'before' }));
   adapter.unsubscribe('work-1');
   port.emit('work-1', delta('after-unsubscribe', 3, 2, { name: 'after' }));
