@@ -575,33 +575,53 @@ await waitFor("pending initial Work capability", () => workCapableCalls.includes
 ok(workEnabledCalls.includes(tab.id), "真实 <App/> 先查询 tab 配置是否显示 Work 入口");
 const pendingWorkEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
 ok(pendingWorkEntry != null, "WorkCapable pending 时 Work 按钮已在 DOM");
-ok(pendingWorkEntry?.disabled === true && pendingWorkEntry.getAttribute("aria-busy") === "true", "WorkCapable pending 时按钮 busy 且 disabled");
+ok(
+  pendingWorkEntry?.disabled === false
+    && pendingWorkEntry.getAttribute("aria-disabled") !== "true"
+    && pendingWorkEntry.getAttribute("aria-busy") === "true",
+  "WorkCapable pending 时按钮 busy 且保持可点击语义",
+);
 const pendingSessionSurface = document.querySelector<HTMLElement>('[data-testid="session-surface"]');
 ok(pendingSessionSurface != null, "WorkCapable pending 时仍显示当前 Session 页面");
 await act(async () => {
   pendingWorkEntry?.click();
   await Promise.resolve();
 });
+const pendingWorkSurface = document.querySelector<HTMLElement>('[data-testid="work-availability"]');
 ok(
-  document.querySelector('[data-testid="session-surface"]') === pendingSessionSurface
+  pendingWorkSurface?.dataset.workStatus === "initializing"
+    && document.querySelector('[data-testid="session-surface"]') == null
     && document.querySelector('[data-testid="work-page"]') == null,
-  "实际点击 pending Work 入口后仍停留在同一 Session 页面",
+  "实际点击 pending Work 入口后立即进入初始化页并卸载 Session 中心区",
 );
+ok(document.activeElement?.id === "work-availability-title", "初始化页将焦点移到状态标题");
+ok(document.querySelector('[data-testid="work-availability-back"]') != null, "初始化页提供返回会话入口");
 ok(listCalls === 0, "实际点击 pending Work 入口不触发 ListWorks");
 ok(
   workDataAPICalls.length === 0 && workEventListeners.size === 0,
   "实际点击 pending Work 入口时 Watch/Get/Create/Recover/Run/Pin、listener 等 Work 数据 API 均为零调用",
 );
+await act(async () => {
+  document.querySelector<HTMLButtonElement>('[data-testid="work-availability-back"]')?.click();
+});
+ok(
+  document.querySelector('[data-testid="work-availability"]') == null
+    && document.querySelector('[data-testid="session-surface"]') != null,
+  "初始化页返回后第一帧卸载 Work surface 并恢复 Session",
+);
+await act(async () => {
+  pendingWorkEntry?.click();
+  await Promise.resolve();
+});
+ok(document.querySelector('[data-work-status="initializing"]') != null, "pending Work surface 可重复安全打开");
 initialWorkCapabilitySettled = true;
 initialWorkCapability.resolve(true);
-await waitFor("Work entry", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);
+await waitFor("automatic Work page", () => document.querySelector('[data-testid="work-page"]') != null);
 const workEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
 ok(workEntry != null, "真实 <App/> 渲染 Work 入口");
 ok(workEntry === pendingWorkEntry && workEntry?.disabled === false && workEntry.getAttribute("aria-busy") !== "true", "WorkCapable 成功后同一按钮原位变为可用");
-await act(async () => { workEntry?.click(); });
-await waitFor("Work page", () => document.querySelector('[data-testid="work-page"]') != null);
-ok(document.querySelector('[data-testid="work-page"]') != null, "点击入口打开真实 WorkPage");
-ok(listCalls > 0, "真实 App 边界调用 ListWorks");
+ok(document.querySelector('[data-testid="work-page"]') != null, "capability 成功后已打开 surface 自动切换真实 WorkPage");
+ok(listCalls === 1, "自动进入 WorkPage 恰好一次 ListWorks");
 
 const workItem = document.querySelector<HTMLButtonElement>('[data-testid="work-item-work-same"] button');
 await act(async () => { workItem?.click(); });
@@ -762,7 +782,7 @@ useCornerstoneUIStore.getState().clearAll();
 localStorage.clear();
 document.body.innerHTML = '<div id="race-root"></div>';
 
-const raceTabs = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map((suffix, index): TabMeta => ({
+const raceTabs = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"].map((suffix, index): TabMeta => ({
   ...tab,
   id: `race-${suffix}`,
   topicId: `race-topic-${suffix}`,
@@ -777,6 +797,8 @@ const capableC = deferred<boolean>();
 let capableCSettled = false;
 let enabledHAttempts = 0;
 let capableIAttempts = 0;
+let enabledJAttempts = 0;
+let capableKAttempts = 0;
 const listC = deferred<Awaited<ReturnType<AppBindings["ListWorks"]>>>();
 const createD = deferred<Awaited<ReturnType<AppBindings["CreateWork"]>>>();
 const getE = deferred<WorkView>();
@@ -811,6 +833,10 @@ const raceMethods: Partial<AppBindings> & { WorkEnabled(tabID: string): Promise<
     raceEnabledCalls.push(tabID);
     if (tabID === "race-a") return enabledA.promise;
     if (tabID === "race-h" && ++enabledHAttempts === 1) throw new Error("config unavailable");
+    if (tabID === "race-j") {
+      if (++enabledJAttempts === 1) throw new Error("config unavailable");
+      return false;
+    }
     return tabID !== "race-b" && tabID !== "race-g";
   },
   WorkCapable: async (tabID) => {
@@ -820,6 +846,7 @@ const raceMethods: Partial<AppBindings> & { WorkEnabled(tabID: string): Promise<
     if (tabID === "race-c" && !capableCSettled) return capableC.promise;
     if (tabID === "race-g") return false;
     if (tabID === "race-i") return ++capableIAttempts > 1;
+    if (tabID === "race-k" && ++capableKAttempts === 1) throw new Error("capability unavailable");
     return true;
   },
   ListWorks: async (tabID) => {
@@ -890,31 +917,69 @@ ok(!raceListCalls.includes("race-b"), "flag off 的 B 零 ListWorks 调用");
 await activateRaceTab("race-c");
 await waitFor("race-c pending capability", () => raceCapableCalls.includes("race-c"));
 const pendingRaceCEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
-ok(pendingRaceCEntry?.disabled === true && pendingRaceCEntry.getAttribute("aria-busy") === "true", "tab C capability pending 时入口稳定占位");
+ok(pendingRaceCEntry?.disabled === false && pendingRaceCEntry.getAttribute("aria-busy") === "true", "tab C capability pending 时入口稳定可点击");
+await act(async () => { pendingRaceCEntry?.click(); });
+ok(document.querySelector('[data-work-status="initializing"]') != null, "tab C pending 点击后进入所属 tab 初始化页");
 await activateRaceTab("race-g");
+ok(document.querySelector('[data-testid="work-availability"]') == null, "切 tab 第一帧卸载旧 tab pending Work surface");
 capableCSettled = true;
 capableC.resolve(true);
 await act(async () => { await Promise.resolve(); });
 ok(document.querySelector('[data-testid="work-sidebar-btn"]') == null, "late WorkCapable(C) 不污染显式关闭的 tab G");
-ok(!raceListCalls.includes("race-c") && !raceListCalls.includes("race-g"), "pending/flag-off 点击路径零 ListWorks");
+ok(!raceListCalls.includes("race-c") && !raceListCalls.includes("race-g"), "pending/flag-off/late ACK 路径零 ListWorks");
 
 await activateRaceTab("race-h");
 await waitFor("race-h observable config failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
 const failedConfigEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
-ok(failedConfigEntry?.disabled === false, "WorkEnabled 加载失败保留可观察、可重试入口");
+ok(failedConfigEntry?.disabled === false, "WorkEnabled 加载失败保留可点击入口");
 await act(async () => { failedConfigEntry?.click(); });
-await waitFor("race-h config retry ready", () => document.querySelector('[data-work-state="ready"]') != null);
-ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedConfigEntry && enabledHAttempts === 2, "WorkEnabled 失败点击后同一入口原位重试成功");
-ok(!raceListCalls.includes("race-h"), "WorkEnabled 重试不打开 Work 或调用 ListWorks");
+ok(document.querySelector('[data-work-status="unavailable"]') != null, "WorkEnabled 加载失败点击后进入暂不可用页");
+ok(document.activeElement?.id === "work-availability-title", "WorkEnabled 错误页将焦点移到错误标题");
+ok(!raceListCalls.includes("race-h"), "WorkEnabled 错误页不调用 ListWorks");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
+await waitFor("race-h config retry Work page", () => document.querySelector('[data-testid="work-page"]') != null);
+ok(
+  document.querySelector('[data-testid="work-sidebar-btn"]') === failedConfigEntry
+    && enabledHAttempts === 2
+    && raceCapableCalls.includes("race-h"),
+  "WorkEnabled 错误页重试成功后继续 capability 并原地进入 WorkPage",
+);
+ok(raceListCalls.filter((tabID) => tabID === "race-h").length === 1, "WorkEnabled 重试成功后恰好一次 ListWorks");
 
 await activateRaceTab("race-i");
 await waitFor("race-i observable capability failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
 const failedCapabilityEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
-ok(failedCapabilityEntry?.disabled === false, "WorkCapable 失败保留可观察、可重试入口");
+ok(failedCapabilityEntry?.disabled === false, "WorkCapable false 保留可点击入口");
 await act(async () => { failedCapabilityEntry?.click(); });
-await waitFor("race-i capability retry ready", () => document.querySelector('[data-work-state="ready"]') != null);
-ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedCapabilityEntry && capableIAttempts === 2, "WorkCapable 失败点击后同一入口原位重试成功");
-ok(!raceListCalls.includes("race-i"), "WorkCapable 重试不打开 Work 或调用 ListWorks");
+ok(document.querySelector('[data-work-status="unavailable"]') != null, "WorkCapable false 点击后进入可重试错误页");
+ok(!raceListCalls.includes("race-i"), "WorkCapable false 错误页不调用 ListWorks");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
+await waitFor("race-i capability retry Work page", () => document.querySelector('[data-testid="work-page"]') != null);
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedCapabilityEntry && capableIAttempts === 2, "WorkCapable false 重试成功后原地进入 WorkPage");
+ok(raceListCalls.filter((tabID) => tabID === "race-i").length === 1, "WorkCapable false 重试成功后恰好一次 ListWorks");
+
+await activateRaceTab("race-j");
+await waitFor("race-j observable config failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]')?.click(); });
+ok(document.querySelector('[data-work-status="unavailable"]') != null, "config error 可进入错误页");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
+await waitFor("race-j disabled after config retry", () => document.querySelector('[data-testid="work-sidebar-btn"]') == null);
+ok(
+  document.querySelector('[data-testid="work-availability"]') == null
+    && document.querySelector('[data-testid="session-surface"]') != null,
+  "config 重试返回 false 后立即返回 Session、隐藏入口且无幽灵 Work surface",
+);
+ok(!raceCapableCalls.includes("race-j") && !raceListCalls.includes("race-j"), "config 重试 false 保持零 WorkCapable/Work API");
+
+await activateRaceTab("race-k");
+await waitFor("race-k observable capability error", () => document.querySelector('[data-work-state="unavailable"]') != null);
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]')?.click(); });
+ok(document.querySelector('[data-work-status="unavailable"]') != null, "WorkCapable reject 点击后进入可重试错误页");
+ok(!raceListCalls.includes("race-k"), "WorkCapable reject 错误页不调用 ListWorks");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
+await waitFor("race-k capability retry Work page", () => document.querySelector('[data-testid="work-page"]') != null);
+ok(capableKAttempts === 2, "WorkCapable reject 可安全重试");
+ok(raceListCalls.filter((tabID) => tabID === "race-k").length === 1, "WorkCapable reject 重试成功后恰好一次 ListWorks");
 
 await activateRaceTab("race-c");
 await waitFor("race-c Work entry", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);

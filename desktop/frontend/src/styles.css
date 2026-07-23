@@ -36483,6 +36483,12 @@ body > .mermaid-diagram--fullscreen {
   background: var(--color-bg-hover);
 }
 
+.work-page__back-btn:focus-visible,
+.work-page__retry-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .work-page__title {
   font-size: 16px;
   font-weight: 600;
@@ -36573,6 +36579,68 @@ body > .mermaid-diagram--fullscreen {
 
 .work-page__retry-btn:hover {
   background: var(--color-bg-hover);
+}
+
+.work-availability__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  padding: 40px 24px max(40px, env(safe-area-inset-bottom));
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.work-availability__icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 18px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+}
+
+.work-availability[data-work-status="initializing"] .work-availability__icon {
+  animation: work-availability-spin 0.9s linear infinite;
+}
+
+.work-availability[data-work-status="unavailable"] .work-availability__icon {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.work-availability__title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.work-availability__title:focus {
+  outline: none;
+}
+
+.work-availability__detail {
+  max-width: 480px;
+  margin: 10px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.work-availability__retry {
+  margin-top: 22px;
+}
+
+@keyframes work-availability-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-availability[data-work-status="initializing"] .work-availability__icon {
+    animation: none;
+  }
 }
 
 .work-page__list {
