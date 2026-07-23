@@ -169,6 +169,9 @@ const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
 let listCalls = 0;
 let getCalls = 0;
+let retryWatchCalls = 0;
+let retryRecoverCalls = 0;
+let retryWatchFailures = 1;
 let created = false;
 let emptyBeforeCreate = false;
 let createFailures = 1;
@@ -276,6 +279,18 @@ function workView(
   };
 }
 
+function retryWorkView(): WorkView {
+  const view = workView("", "work-retry", [], []);
+  view.revision = 2;
+  view.work.name = "订阅恢复 Work";
+  view.work.state = "ready";
+  return view;
+}
+
+function rawMessage(value: unknown): number[] {
+  return Array.from(new TextEncoder().encode(JSON.stringify(value)));
+}
+
 const methods: Partial<AppBindings> = {
   ListTabs: async () => currentTabs(),
   ListRuntimeTabs: async () => [tab, tabB, topicTab],
@@ -373,6 +388,14 @@ const methods: Partial<AppBindings> = {
       blueprintRef: { id: "blueprint:blank", schemaVersion: 1, version: 1 },
       createdAt: "2026-07-23T10:00:00Z",
       updatedAt: "2026-07-23T10:01:00Z",
+    }, {
+      id: "work-retry",
+      name: "订阅恢复 Work",
+      state: "ready" as const,
+      archiveState: "active" as const,
+      blueprintRef: { id: "blueprint:blank", schemaVersion: 1, version: 1 },
+      createdAt: "2026-07-23T10:00:00Z",
+      updatedAt: "2026-07-23T10:01:00Z",
     }];
     if (created) items.push({
       id: "work-created",
@@ -400,9 +423,36 @@ const methods: Partial<AppBindings> = {
   },
   GetWork: async (_tabID, workID) => {
     getCalls += 1;
+    if (workID === "work-retry") return retryWorkView();
     return workView(tab.sessionPath || "", workID);
   },
-  WatchWork: async () => {},
+  RecoverWorkView: async (_tabID, workID, intent) => {
+    if (workID === "work-retry") retryRecoverCalls += 1;
+    const view = workID === "work-retry"
+      ? retryWorkView()
+      : workView(tab.sessionPath || "", workID);
+    return {
+      schemaVersion: 1,
+      type: "snapshot",
+      workID,
+      eventID: `wv-resync-${workID}-rev-${view.revision}-${intent.reason}-${intent.generation}`,
+      revision: view.revision,
+      baseRevision: 0,
+      requestID: `${intent.reason}-recovery`,
+      object: { kind: "work", id: workID },
+      resync: { reason: intent.reason, authoritative: true, generation: intent.generation },
+      payload: rawMessage(view),
+      createdAt: "2026-07-23T10:02:00Z",
+    };
+  },
+  WatchWork: async (_tabID, workID) => {
+    if (workID !== "work-retry") return;
+    retryWatchCalls += 1;
+    if (retryWatchFailures > 0) {
+      retryWatchFailures -= 1;
+      throw new Error("authoritative retry snapshot was not applied: snapshot payload must be a matching Work or WorkView at the event revision");
+    }
+  },
   UnwatchWork: async () => {},
   RunWork: async (tabID, workID, requestID) => {
     runCalls.push({ tabID, workID, requestID });
@@ -454,8 +504,12 @@ const app = new Proxy(methods as AppBindings, {
   },
 });
 
+const workEventListeners = new Set<string>();
 window.runtime = {
-  EventsOn: () => () => {},
+  EventsOn: (name) => {
+    if (name.startsWith("work:view:")) workEventListeners.add(name);
+    return () => { workEventListeners.delete(name); };
+  },
   BrowserOpenURL: () => {},
 };
 window.go = { main: { App: app } };
@@ -596,7 +650,26 @@ ok(pinCalls[0].workID === "work-created" && pinCalls[0].title === "生产基石"
 await waitFor("pinned Cornerstone projection", () => document.querySelector('[data-testid="cornerstone-item-cs-created"]') != null);
 ok(document.querySelector('[data-testid="cornerstone-item-cs-created"]') != null, "Pin ACK 回写权威 WorkView");
 
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-view-back"]')?.click(); });
+await waitFor("retry Work list", () => document.querySelector('[data-testid="work-item-work-retry"]') != null);
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-item-work-retry"] button')?.click(); });
+await waitFor("retry Work unavailable", () => document.querySelector('[data-testid="work-card-unknown"]') != null);
+ok(document.body.textContent?.includes("Work 不可用") === true, "真实 <App/> 复现 Work 不可用");
+ok(document.body.textContent?.includes("事件订阅错误") === true, "真实 <App/> 显示订阅错误");
+const retrySubscriptionButton = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="work-card-unknown"] button')]
+  .find((button) => button.textContent?.trim() === "重试订阅");
+if (!retrySubscriptionButton) throw new Error("missing retry subscription button");
+await act(async () => { retrySubscriptionButton.click(); });
+await waitFor("retry Work recovered", () => document.querySelector('[data-testid="work-card"][data-work-id="work-retry"]') != null);
+ok(retryWatchCalls === 2, "真实 <App/> 重试只安装一份新 Watch");
+ok(retryRecoverCalls === 1, "真实 <App/> 只请求一次 authoritative RecoverWorkView");
+ok(workEventListeners.size === 1, "真实 <App/> 恢复后只有一份 Work listener");
+ok(document.body.textContent?.includes("Work 不可用") === false, "真实 <App/> 恢复后渲染 WorkCard");
+ok(document.body.textContent?.includes("事件订阅错误") === false, "真实 <App/> 恢复后清除订阅错误");
+ok(document.body.textContent?.includes("authoritative retry snapshot was not applied") === false, "真实 <App/> 恢复后清除快照错误");
+
 await act(async () => { root.unmount(); });
+ok(workEventListeners.size === 0, "真实 <App/> 卸载后无 Work listener 泄漏");
 
 // Same-App tab race harness: every ACK is released only after the owner tab
 // has changed through the real session:activated runtime path.

@@ -1,7 +1,9 @@
 package work
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -11,6 +13,64 @@ import (
 	"testing"
 	"time"
 )
+
+func TestViewFromStateNormalizesRequiredCollections(t *testing.T) {
+	value := &Work{
+		SchemaVersion: SchemaVersion,
+		ID:            "work-wails-empty-collections",
+		State:         WorkDraft,
+		ArchiveState:  ArchiveActive,
+	}
+	view := viewFromState(value, WorkEventState{Revision: 2})
+	if view.Work.Definition.Workflow.Stages == nil || view.Work.Definition.BlockSpecs == nil ||
+		view.Work.Blocks == nil || view.Work.Placements == nil || view.Work.Cornerstones == nil || view.Work.Runs == nil {
+		t.Fatalf("required WorkView collections must be arrays: stages=%v blockSpecs=%v blocks=%v placements=%v cornerstones=%v runs=%v",
+			view.Work.Definition.Workflow.Stages, view.Work.Definition.BlockSpecs,
+			view.Work.Blocks, view.Work.Placements, view.Work.Cornerstones, view.Work.Runs)
+	}
+	if value.Definition.Workflow.Stages != nil || value.Definition.BlockSpecs != nil ||
+		value.Blocks != nil || value.Placements != nil || value.Cornerstones != nil || value.Runs != nil {
+		t.Fatal("view normalization mutated the persisted Work projection")
+	}
+	raw, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"workflow":{"stages":[]}`, `"blockSpecs":[]`, `"blocks":[]`, `"placements":[]`, `"cornerstones":[]`, `"runs":[]`} {
+		if !bytes.Contains(raw, []byte(field)) {
+			t.Fatalf("WorkView JSON %s missing %s", raw, field)
+		}
+	}
+}
+
+func TestViewFromStateNormalizesNestedDefinitionCollections(t *testing.T) {
+	value := &Work{
+		SchemaVersion: SchemaVersion,
+		ID:            "work-wails-nested-definition",
+		State:         WorkDraft,
+		ArchiveState:  ArchiveActive,
+		Definition: WorkDefinitionSnapshot{
+			Workflow: WorkflowDef{Stages: []StageSpec{
+				{ID: "stage-empty", Title: "Empty"},
+				{ID: "stage-with-task", Title: "With task", Tasks: []TaskSpec{{ID: "task-1", Title: "Task"}}},
+			}},
+		},
+	}
+
+	view := viewFromState(value, WorkEventState{Revision: 3})
+	stages := view.Work.Definition.Workflow.Stages
+	if len(stages) != 2 || stages[0].Tasks == nil || len(stages[1].Tasks) != 1 {
+		t.Fatalf("nested DefinitionSnapshot collections not normalized: %+v", stages)
+	}
+	if value.Definition.Workflow.Stages[0].Tasks != nil {
+		t.Fatal("view normalization mutated persisted StageSpec tasks")
+	}
+
+	stages[1].Tasks[0].Title = "Changed in view"
+	if value.Definition.Workflow.Stages[1].Tasks[0].Title != "Task" {
+		t.Fatal("view normalization did not copy nested StageSpec tasks")
+	}
+}
 
 type serviceSink struct {
 	mu     sync.Mutex

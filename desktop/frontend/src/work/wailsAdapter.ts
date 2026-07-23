@@ -193,6 +193,24 @@ function preferenceKey(tabID: string, workID: string): string {
   return `work-card-ui:${tabID}:${workID}`;
 }
 
+function decodeWailsRawMessage(payload: unknown): unknown {
+  if (!Array.isArray(payload) || !payload.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
+    return payload;
+  }
+  try {
+    const json = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(payload));
+    return JSON.parse(json) as unknown;
+  } catch {
+    // Preserve malformed bytes so the shared Work reducer rejects the event
+    // with its normal observable conflict instead of accepting partial data.
+    return payload;
+  }
+}
+
+function decodeWailsWorkViewEvent(event: WorkViewEvent): WorkViewEvent {
+  return { ...event, payload: decodeWailsRawMessage(event.payload) };
+}
+
 function okResult(go: GoCornerstoneResult): CornerstoneMutationResult {
   return {
     ok: true,
@@ -315,7 +333,7 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
       if (!window.runtime?.EventsOn) throw new Error('Wails Work event runtime is unavailable');
       const id = subscriptionID();
       const eventName = `work:view:${id}`;
-      const off = window.runtime.EventsOn(eventName, (payload) => onEvent(payload as WorkViewEvent));
+      const off = window.runtime.EventsOn(eventName, (payload) => onEvent(decodeWailsWorkViewEvent(payload as WorkViewEvent)));
       let active = true;
       let offCalled = false;
       const removeListener = (): void => {
@@ -346,7 +364,7 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
     },
 
     fetchSnapshot: (workID) => app.GetWork(tabID, workID),
-    fetchRecoverySnapshot: (workID, intent) => app.RecoverWorkView(tabID, workID, intent),
+    fetchRecoverySnapshot: async (workID, intent) => decodeWailsWorkViewEvent(await app.RecoverWorkView(tabID, workID, intent)),
 
     readUIPreference: async (workID) => {
       const raw = window.localStorage.getItem(preferenceKey(tabID, workID));
