@@ -237,9 +237,10 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
   }, []);
 
   const handleOpenDialog = useCallback(() => {
+    if (pageState !== 'ready' || creating) return;
     setShowCreate(true);
     setCreateError(null);
-  }, []);
+  }, [creating, pageState]);
 
   return (
     <div className="work-page" data-testid="work-page">
@@ -258,7 +259,7 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
           className="work-page__new-btn"
           data-testid="work-new-btn"
           onClick={handleOpenDialog}
-          disabled={pageState === 'loading'}
+          disabled={pageState !== 'ready' || creating}
         >
           {t('work.newWork')}
         </button>
@@ -308,6 +309,15 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
         {pageState === 'ready' && works.length === 0 && (
           <div className="work-page__empty" data-testid="work-empty">
             <p>{t('work.empty')}</p>
+            <button
+              type="button"
+              className="work-page__empty-cta"
+              data-testid="work-empty-new-btn"
+              onClick={handleOpenDialog}
+              disabled={creating}
+            >
+              {t('work.newWork')}
+            </button>
           </div>
         )}
 

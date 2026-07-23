@@ -224,8 +224,8 @@ Concise, incremental index of confirmed feature locations in this repository.
 ### Work 系统 V1 — 默认开启与 Stage 6 生产 Desktop 入口
 - Status: in_progress
 - Location: `internal/config/config.go`, `internal/config/load.go`, `internal/config/render.go`, `internal/boot/boot.go`, `internal/control/work.go`, `desktop/works.go`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/LinkedSessionCard.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
-- Summary: `work.enabled` 缺省为 true，缺少 `[work]` 或 `enabled` 时由共享 config→boot→control 链路装配 Work；只有显式 false 才关闭且保存/优先级加载不会回填覆盖。`WorkCapable` 仍按真实 service+view typed capability 判定，typed-nil/flag off 无入口且零 Work API 调用；Stage 6 生产 WorkPage、SessionSurface 和迟到 ACK 防护保持不变，Stage 7 归档历史/复制/重执行仍为 todo、未实现。
-- Keywords: work.enabled, default on, explicit false, WorkCapable, WorkPage, CreateWork, SessionSurface, LinkedSessionCard, typed nil, request ID idempotent, tab isolation, late ACK, production Wails port, Stage7 todo
+- Summary: `work.enabled` 缺省为 true，缺少 `[work]` 或 `enabled` 时由共享 config→boot→control 链路装配 Work；只有显式 false 才关闭且保存/优先级加载不会回填覆盖。`WorkCapable` 仍按真实 service+view typed capability 判定，typed-nil/flag off 无入口且零 Work API 调用；Stage 6 生产 WorkPage 的 header 与空态 CTA 共用空白 Blueprint 创建状态机，Windows header 避开原生窗口控件，创建失败保留稳定 request ID 重试；SessionSurface 和迟到 ACK 防护保持不变，Stage 7 归档历史/复制/重执行仍为 todo、未实现。
+- Keywords: work.enabled, default on, explicit false, WorkCapable, WorkPage, empty CTA, New Work, CreateWork, blank Blueprint, Windows controls safe area, SessionSurface, LinkedSessionCard, typed nil, request ID idempotent, tab isolation, late ACK, production Wails port, Stage7 todo
 - Source: Stage6 implementation
 - Updated: 2026-07-23
 
