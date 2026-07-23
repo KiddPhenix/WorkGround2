@@ -69,6 +69,7 @@ import "./custom/features/heartbeat/heartbeat.css";
 import { WorkPage } from "./components/work/WorkPage";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
+import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
 import { SessionSurface, type SessionSurfaceProps } from "./components/SessionSurface";
 import type { SessionRef, SessionSurfaceContext } from "./work/types";
 import { CopyButton } from "./components/CopyButton";
@@ -1151,8 +1152,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       });
   }, [activeTabId]);
 
-  // Runtime capability only controls whether the stable, configured entry can
-  // be clicked. It never owns whether that entry exists in the sidebar.
+  // Runtime capability controls which Work surface is mounted. It never owns
+  // whether the configured navigation entry exists or can be clicked.
   useEffect(() => {
     if (!activeTabId || workEnabled !== true || workConfigFailed) return;
     const gen = workGenRef.current;
@@ -1169,21 +1170,22 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       });
   }, [activeTabId, workConfigFailed, workControllerReady, workEnabled]);
 
-  // When work is disabled after being enabled, close the Work view.
+  // Configuration is the sole owner of whether Work exists in this tab. A
+  // capability failure keeps the lightweight Work error surface open.
   useEffect(() => {
-    if ((workEnabled === false || workCapable === false) && workViewOpen) {
+    if (workEnabled === false && workViewOpen) {
       setWorkViewOpen(false);
       setActiveWorkId(null);
       setOwnerTabID(null);
     }
-  }, [workCapable, workEnabled, workViewOpen]);
+  }, [workEnabled, workViewOpen]);
 
   const handleOpenWorkView = useCallback(() => {
-    if (!activeTabId || workEnabled !== true || workCapable !== true) return;
+    if (!activeTabId || workEnabled !== true) return;
     setWorkViewOpen(true);
     setActiveWorkId(null);
     setOwnerTabID(activeTabId);
-  }, [activeTabId, workCapable, workEnabled]);
+  }, [activeTabId, workEnabled]);
 
   const handleRetryWorkConfig = useCallback(() => {
     if (!activeTabId || !workConfigFailed) return;
@@ -1220,16 +1222,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [activeTabId, workCapabilityFailed, workConfigFailed, workControllerReady]);
 
   const handleWorkEntry = useCallback(() => {
-    if (workConfigFailed) {
-      handleRetryWorkConfig();
-      return;
-    }
-    if (workCapabilityFailed) {
-      handleRetryWorkCapability();
-      return;
-    }
     handleOpenWorkView();
-  }, [handleOpenWorkView, handleRetryWorkCapability, handleRetryWorkConfig, workCapabilityFailed, workConfigFailed]);
+  }, [handleOpenWorkView]);
 
   const handleOpenWork = useCallback((workID: string) => {
     setActiveWorkId(workID);
@@ -3364,7 +3358,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     );
   }, [activeTab?.sessionPath, handleNavigateToLinkedSession, sessionSurfaceProps, state.historyResolvedPath]);
 
-  const showWorkView = workViewOpen && ownerTabID !== null && ownerTabID === activeTabId && workCapable === true;
+  const showWorkSurface = workViewOpen
+    && ownerTabID !== null
+    && ownerTabID === activeTabId
+    && workEnabled === true;
+  const showReadyWork = showWorkSurface && !workConfigFailed && workCapable === true;
 
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
   useEffect(() => {
@@ -3519,14 +3517,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               {workEnabled === true && (
                 <button
                   type="button"
-                  className={`workspace-sidebar__new-session${showWorkView ? ' workspace-sidebar__new-session--active' : ''}`}
-                  aria-label={workCapabilityFailed ? t("work.retryUnavailable") : workCapable === null ? t("work.initializing") : t("work.title")}
+                  className={`workspace-sidebar__new-session${showWorkSurface ? ' workspace-sidebar__new-session--active' : ''}`}
+                  aria-label={workConfigFailed || workCapabilityFailed ? t("work.unavailable") : workCapable === null ? t("work.initializing") : t("work.title")}
                   aria-busy={workCapable === null}
-                  disabled={workCapable === null}
-                  title={workCapabilityFailed ? t("work.retryUnavailable") : workCapable === null ? t("work.initializing") : undefined}
+                  title={workConfigFailed || workCapabilityFailed ? t("work.unavailable") : workCapable === null ? t("work.initializing") : undefined}
                   onClick={handleWorkEntry}
                   data-testid="work-sidebar-btn"
-                  data-work-state={workCapabilityFailed ? "unavailable" : workCapable === null ? "initializing" : "ready"}
+                  data-work-state={workConfigFailed || workCapabilityFailed ? "unavailable" : workCapable === null ? "initializing" : "ready"}
                 >
                   <Briefcase size={18} aria-hidden="true" />
                   <span>{t("work.title")}</span>
@@ -3588,7 +3585,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {showWorkView ? (
+            {showWorkSurface ? (
+              showReadyWork ? (
                 activeWorkId && ownerTabID ? (
                   <WorkCard
                     workID={activeWorkId}
@@ -3622,6 +3620,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     onOpenWork={handleOpenWork}
                   />
                 )
+              ) : (
+                <WorkAvailabilitySurface
+                  state={workConfigFailed || workCapabilityFailed ? "unavailable" : "initializing"}
+                  onBack={handleBackToSession}
+                  onRetry={workConfigFailed ? handleRetryWorkConfig : handleRetryWorkCapability}
+                />
+              )
             ) : (
               <SessionSurface {...sessionSurfaceProps} />
             )}
