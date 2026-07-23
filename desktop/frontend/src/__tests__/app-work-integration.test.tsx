@@ -170,6 +170,7 @@ const checkpoints: CheckpointMeta[] = [];
 let listCalls = 0;
 let getCalls = 0;
 let created = false;
+let emptyBeforeCreate = false;
 let createFailures = 1;
 let createdRun: WorkflowRun | undefined;
 let pinnedCornerstone: Cornerstone | undefined;
@@ -361,6 +362,9 @@ const methods: Partial<AppBindings> = {
   },
   ListWorks: async () => {
     listCalls += 1;
+    if (emptyBeforeCreate && !created) {
+      return { items: [], total: 0, nextCursor: "" };
+    }
     const items = [{
       id: "work-same",
       name: "同会话 Work",
@@ -550,10 +554,13 @@ const resumeIndex = navigationOps.indexOf("resume:D:/repo/a/path-only.jsonl");
 ok(blankIndex >= 0 && resumeIndex > blankIndex, "linked 第三级执行 blank + resume 链");
 ok(document.querySelector('[data-testid="linked-session-error"]') == null, "linked 同一卡片重试成功后清除错误");
 
+emptyBeforeCreate = true;
 await waitFor("Work entry for create", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]')?.click(); });
 await waitFor("Work page for create", () => document.querySelector('[data-testid="work-page"]') != null);
-await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-new-btn"]')?.click(); });
+await waitFor("empty Work CTA", () => document.querySelector('[data-testid="work-empty-new-btn"]') != null);
+ok(document.querySelector('[data-testid="work-empty-new-btn"]') != null, "真实 <App/> 空 ListWorks 显示新建工作 CTA");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-empty-new-btn"]')?.click(); });
 const createName = document.querySelector<HTMLInputElement>('[data-testid="work-create-name"]');
 if (!createName) throw new Error("missing create name input");
 await setControlValue(createName, "创建的 Work");

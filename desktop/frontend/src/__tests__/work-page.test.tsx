@@ -184,12 +184,20 @@ async function test(name: string, body: () => Promise<void> | void): Promise<voi
   }
 }
 
-await test('loading resolves to the empty state', async () => {
+await test('empty state exposes a focusable create CTA that opens the real form', async () => {
   const { host } = await mount(<WorkPage tabID="tab-1" onBack={() => undefined} onOpenWork={() => undefined} />);
   check(host.querySelector('[data-testid="work-loading"]') !== null, 'loading state missing');
   listDeferreds[0].resolve(page());
   await settle();
   check(host.querySelector('[data-testid="work-empty"]') !== null, 'empty state missing');
+  const emptyCTA = host.querySelector('[data-testid="work-empty-new-btn"]') as HTMLButtonElement | null;
+  check(emptyCTA !== null, 'empty create CTA missing');
+  equal(emptyCTA?.textContent?.trim(), 'New Work', 'empty create CTA label');
+  equal(emptyCTA?.disabled, false, 'empty create CTA disabled');
+  emptyCTA?.focus();
+  equal(document.activeElement, emptyCTA, 'empty create CTA focus');
+  click(host, 'work-empty-new-btn');
+  check(host.querySelector('[data-testid="work-create-form"]') !== null, 'empty CTA did not open create form');
 });
 
 await test('load failure is explicit and retryable', async () => {
