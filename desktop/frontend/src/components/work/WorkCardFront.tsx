@@ -131,9 +131,10 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   const hostContext = useMemo<BlockHostContext>(() => ({
     workId: work.id,
     workSchemaVersion: work.schemaVersion,
+    workRevision: view.revision,
     runId: latestRun(work.runs)?.id,
     actionReceipts: work.actionReceipts,
-  }), [work.actionReceipts, work.id, work.runs, work.schemaVersion]);
+  }), [view.revision, work.actionReceipts, work.id, work.runs, work.schemaVersion]);
 
   const placementByBlock = useMemo(
     () => new Map(work.placements.map((placement) => [placement.blockId, placement])),

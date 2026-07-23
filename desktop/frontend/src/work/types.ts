@@ -447,6 +447,12 @@ export interface CreateWorkInput {
   requestId: string;
 }
 
+export interface CopyWorkInput {
+  sourceWorkId: string;
+  name?: string;
+  requestId: string;
+}
+
 export interface UpdateDraftInput {
   workId: string;
   name?: string;
@@ -497,6 +503,23 @@ export interface BlockUpdateRequest {
   data: Record<string, unknown>;
   requestId: string;
   expectedRevision: number;
+}
+
+export interface BlockUpsertInput {
+  workId: string;
+  blockId: string;
+  kind: string;
+  schemaVersion: number;
+  revision: number;
+  title?: string;
+  status: BlockStatus;
+  data: unknown;
+  actions?: BlockActionSpec[];
+  source: BlockSource;
+  freshness?: BlockFreshness;
+  fallback: BlockFallback;
+  expectedRevision: number;
+  requestId: string;
 }
 
 export interface WorkFilter {

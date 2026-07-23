@@ -73,6 +73,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
 }) => {
   const data = block.data as ChecklistData;
   const items = data?.items ?? [];
+  const workRevision = context.workRevision ?? block.revision;
   const disabled = readonly || archived || typeof onUpdate !== 'function';
   const key = cacheKey(context.workId, block.id);
   const [draftState, setDraftState] = useState<DraftState>(() => ({
@@ -123,7 +124,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
     const submitted = new Map(draft);
     const reuse = retry &&
       retry.blockID === block.id &&
-      retry.request.expectedRevision === block.revision &&
+      retry.request.expectedRevision === workRevision &&
       sameDraft(retry.submitted, submitted);
     const attempt = reuse ? retry : (() => {
       const newItems = items.map((item) => ({
@@ -148,7 +149,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
           blockId: block.id,
           data: { items: newItems },
           requestId: `checklist-update-v1-sha256-${digestIntent(updateIntent)}`,
-          expectedRevision: block.revision,
+          expectedRevision: workRevision,
         },
       } satisfies UpdateAttempt;
     })();
@@ -179,7 +180,7 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
         setPending((current) => current === attempt ? null : current);
       }
     }
-  }, [block.id, block.revision, context.runId, context.taskId, context.workId, disabled, draft, items, key, onUpdate]);
+  }, [block.id, block.revision, context.runId, context.taskId, context.workId, disabled, draft, items, key, onUpdate, workRevision]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent, item: ChecklistItem) => {
     if (disabled) return;

@@ -60,6 +60,7 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   const blocked = Boolean(runBlock?.blocked || assessment?.blocking);
   const degraded = assessment?.degraded ?? false;
   const running = view?.work.state === 'running';
+  const promptMissing = Boolean(view && !view.work.prompt.trim());
   const waitingRun = useMemo(() => {
     if (!view) return undefined;
     return [...view.work.runs].reverse().find((run) => run.state === 'waiting');
@@ -125,6 +126,10 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   }, [onOpenDrawer, workId]);
 
   const handleRun = useCallback(async () => {
+    if (promptMissing) {
+      setError('请先在背面填写并保存 Prompt。');
+      return;
+    }
     if (blocked) {
       openDrawer();
       return;
@@ -177,7 +182,7 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
     } finally {
       setPending(false);
     }
-  }, [blocked, disabled, onRecoverProjection, onRun, openDrawer, pending, running, setRunIntent, workId]);
+  }, [blocked, disabled, onRecoverProjection, onRun, openDrawer, pending, promptMissing, running, setRunIntent, workId]);
 
   const handleResume = useCallback(async () => {
     if (!onResumeRun || !waitingRun || disabled || pending) return;
@@ -249,12 +254,14 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
           type="button"
           className="work-run-entry__btn"
           onClick={() => void handleRun()}
-          disabled={disabled || running || pending || !view || blocked}
+          disabled={disabled || running || pending || !view || blocked || promptMissing}
           aria-describedby={blocked ? `work-run-blocked-${workId}` : undefined}
         >
           {running ? '运行中…' : pending ? (runIntent?.ackedRunId ? '正在同步…' : '正在启动…') : (runIntent?.ackedRunId ? '重试同步' : '运行')}
         </button>
       )}
+
+      {promptMissing && <p className="work-run-entry__error" role="alert">请先在背面填写并保存 Prompt。</p>}
 
       {blocked && (
         <div id={`work-run-blocked-${workId}`} className="work-run-entry__attention work-run-entry__blocked" role="alert" data-testid="work-run-blocked">

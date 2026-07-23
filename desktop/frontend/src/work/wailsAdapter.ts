@@ -13,8 +13,10 @@ import type { WorkUIPreference } from './store';
 import type {
   AcceptCornerstoneInput,
   Attempt,
+  BlockUpsertInput,
   Cornerstone,
   CornerstoneMutationResult,
+  CopyWorkInput,
   CreateWorkInput,
   FreezeCornerstoneInput,
   PinCornerstoneInput,
@@ -30,6 +32,7 @@ import type {
   ViewRecoveryIntent,
   Work,
   WorkFilter,
+  WorkBlueprint,
   WorkPage,
   WorkRecord,
   WorkView,
@@ -48,7 +51,10 @@ export interface WailsWorkBindings {
   CreateWork(tabID: string, input: CreateWorkInput): Promise<Work>;
   GetWork(tabID: string, workID: string): Promise<WorkView>;
   ListWorks(tabID: string, filter: WorkFilter): Promise<WorkPage>;
+  ListWorkBlueprints(tabID: string): Promise<WorkBlueprint[]>;
+  CopyWork(tabID: string, input: CopyWorkInput): Promise<Work>;
   UpdateDraft(tabID: string, input: UpdateDraftInput): Promise<WorkView>;
+  UpsertWorkBlock(tabID: string, input: BlockUpsertInput): Promise<WorkView>;
   RecoverWorkView(tabID: string, workID: string, input: ViewRecoveryIntent): Promise<WorkViewEvent>;
   RunWork(tabID: string, workID: string, requestID: string): Promise<WorkflowRun>;
   ResumeRun(tabID: string, input: ResumeRunInput): Promise<WorkflowRun>;
@@ -56,6 +62,8 @@ export interface WailsWorkBindings {
   ArchiveWork(tabID: string, workID: string, requestID: string): Promise<WorkRecord>;
   RestoreWork(tabID: string, workID: string, requestID: string): Promise<WorkView>;
   DeleteWork(tabID: string, workID: string, requestID: string): Promise<void>;
+  PrepareWorkRerun(tabID: string, input: import('./types').PrepareRerunInput): Promise<import('./types').RerunPlan>;
+  ExecuteWorkRerun(tabID: string, planToken: string, requestID: string): Promise<Work>;
   WatchWork(tabID: string, workID: string, subscriptionID: string): Promise<void>;
   UnwatchWork(subscriptionID: string): Promise<void>;
   PinCornerstone(tabID: string, workID: string, input: GoCornerstoneInput): Promise<GoCornerstoneResult>;
@@ -384,6 +392,8 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
     runWork: (input) => app.RunWork(tabID, input.workId, input.requestId),
 
     resumeRun: (input) => app.ResumeRun(tabID, input),
+    updateDraft: (input) => app.UpdateDraft(tabID, input),
+    upsertBlock: (input) => app.UpsertWorkBlock(tabID, input),
 
     pinCornerstone: async (input: PinCornerstoneInput) => {
       const goInput: GoCornerstoneInput = {

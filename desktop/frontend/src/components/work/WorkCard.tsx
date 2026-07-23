@@ -131,6 +131,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const [deepLinkState, setDeepLinkState] = useState<DeepLinkState>({ kind: 'idle' });
   const faceRefs = useRef<Partial<Record<WorkFace, HTMLDivElement>>>({});
   const restoredScroll = useRef<Partial<Record<WorkFace, string>>>({});
+  const draftIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
 
   const activeFace = cardState?.activeFace ?? 'front';
   const frontState = cardState?.faces.front;
@@ -270,6 +271,49 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleDraftChange = useCallback((draft: string) => {
     setDraft(workID, 'back', draft);
   }, [setDraft, workID]);
+  const saveDraft = useCallback(async (input: { name: string; prompt: string; inputs: Record<string, unknown> }) => {
+    const current = useWorkStore.getState().works[workID];
+    if (!current) throw new Error('Work 投影尚未载入。');
+    const signature = JSON.stringify(input);
+    if (draftIntentRef.current?.signature !== signature) {
+      draftIntentRef.current = {
+        signature,
+        requestId: `work-draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      };
+    }
+    await adapter.updateDraft({
+      workId: workID,
+      ...input,
+      expectedRevision: current.revision,
+      requestId: draftIntentRef.current.requestId,
+    });
+    draftIntentRef.current = null;
+  }, [adapter, workID]);
+  const updateBlock = useCallback(async (request: BlockUpdateRequest) => {
+    if (onBlockUpdate) {
+      await onBlockUpdate(request);
+      return;
+    }
+    const current = useWorkStore.getState().works[workID];
+    const block = current?.work.blocks.find((item) => item.id === request.blockId);
+    if (!current || !block) throw new Error('Block 投影尚未载入。');
+    await adapter.upsertBlock({
+      workId: workID,
+      blockId: block.id,
+      kind: block.kind,
+      schemaVersion: block.schemaVersion,
+      revision: block.revision + 1,
+      title: block.title,
+      status: block.status,
+      data: request.data,
+      actions: block.actions,
+      source: block.source,
+      freshness: block.freshness,
+      fallback: block.fallback,
+      expectedRevision: current.revision,
+      requestId: request.requestId,
+    });
+  }, [adapter, onBlockUpdate, workID]);
   const handleRunSelect = useCallback((sel: RunSelection) => {
     setSelection(workID, sel);
   }, [setSelection, workID]);
@@ -403,7 +447,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               expanded={frontState?.expanded ?? {}}
               onToggleExpand={handleToggleExpand}
               onAction={onBlockAction}
-              onUpdate={onBlockUpdate}
+              onUpdate={updateBlock}
               readonly={readonly}
               archived={archived}
               runSelection={selection}
@@ -434,6 +478,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               slots={backSlots}
               selection={selection}
               resolveSessionSurface={resolveSessionSurface}
+              onSaveDraft={saveDraft}
             />
           </div>
         </div>

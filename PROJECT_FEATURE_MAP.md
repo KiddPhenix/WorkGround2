@@ -221,12 +221,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Work 系统 V1 — 默认开启与 Stage 6 生产 Desktop 入口
-- Status: in_progress
-- Location: `internal/config/config.go`, `internal/config/load.go`, `internal/config/render.go`, `internal/boot/boot.go`, `internal/control/work.go`, `internal/work/service.go`, `desktop/works.go`, `desktop/frontend/src/components/work/WorkAvailabilitySurface.tsx`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/work/WorkCard.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/LinkedSessionCard.tsx`, `desktop/frontend/src/components/work/CornerstoneDrawer.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/store.ts`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/locales`
-- Summary: `work.enabled` 缺省为 true，仅显式 false 关闭；Stage 6 的 per-tab Work 入口在 capability pending/false/error 时始终可点击，先进入零 Work API 的初始化/错误 surface，能力成功后原地自动挂载生产 WorkPage；配置与 capability 重试、迟到 ACK 按 tab/generation 隔离。Cornerstone Drawer 在失败/空态/Pin 表单中均可返回或 Esc 关闭并恢复焦点。Stage 7 归档历史/复用仍为 todo、未实现。
-- Keywords: work.enabled, WorkEnabled, WorkCapable, WorkAvailabilitySurface, WorkPage, WorkView, capability pending, retry, CornerstoneDrawer, drawer return, focus restore, Stage7 todo
-- Source: Stage6 implementation+verified-by-search
+### Work 系统 V1 — Desktop 产品闭环
+- Status: done
+- Location: `internal/config/config.go`, `internal/boot/boot.go`, `internal/control/work.go`, `internal/work/service.go`, `internal/work/copy_rerun.go`, `desktop/works.go`, `desktop/frontend/src/components/work/WorkAvailabilitySurface.tsx`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/work/WorkCard.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/WorkRunEntry.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/store.ts`, `desktop/frontend/src/lib/bridge.ts`
+- Summary: `work.enabled` 缺省开启；生产 WorkPage 从 Registry 读取 Blueprint 并填写 inputs。空 Prompt 在 UI 与 Service 提交事件前双重阻断；Draft 与可编辑 Block 使用 request ID 和 Work revision 持久化。列表覆盖进行中、历史、回收站，支持归档、恢复、删除、复制及原定义重执行；最新定义需要迁移且迁移器缺失时 RerunPlan 显式阻断。事件重放允许历史 writer，当前并发写仍由 OS lease 串行。
+- Keywords: WorkPage, Blueprint, UpdateDraft, UpsertBlock, Archive, Restore, Trash, CopyWork, PrepareRerun, ExecuteRerun, request ID, writer lease
+- Source: implementation+focused tests+frontend Work suite
 - Updated: 2026-07-23
 
 ### 项目说明与工程约定

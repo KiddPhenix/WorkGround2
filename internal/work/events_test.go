@@ -353,7 +353,7 @@ func TestAppendWorkEvent_WriterID_AlwaysOverwritten(t *testing.T) {
 	}
 }
 
-func TestReplayWorkEventLog_HistoricalForeignWriterReadOnly(t *testing.T) {
+func TestReplayWorkEventLog_HistoricalWriterContinuesAfterRestart(t *testing.T) {
 	workDir := tempWorkDir(t)
 	acquireLease(t, workDir)
 
@@ -370,6 +370,11 @@ func TestReplayWorkEventLog_HistoricalForeignWriterReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.WriterID = "foreign-writer"
+	rec.ContentDigest = ""
+	rec.ContentDigest, err = workEventContentDigest(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err = json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -383,24 +388,24 @@ func TestReplayWorkEventLog_HistoricalForeignWriterReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !replay.ReadOnly || !strings.Contains(replay.ReadOnlyReason, "foreign-writer") {
-		t.Fatalf("foreign historical writer must be observable and read-only: %+v", replay)
+	if replay.ReadOnly || replay.NeedsRepair || len(replay.Events) != 1 {
+		t.Fatalf("verified historical writer should replay after restart: %+v", replay)
 	}
 
 	next := makeEvent(EventDraftUpdated, 2, 1, "req-foreign-2", json.RawMessage(`{}`))
-	if _, err := AppendWorkEvent(workDir, next, true); err == nil || !strings.Contains(err.Error(), "read-only") {
-		t.Fatalf("append should preserve foreign-owned evidence: %v", err)
+	if revision, err := AppendWorkEvent(workDir, next, true); err != nil || revision != 2 {
+		t.Fatalf("append should continue verified history: revision=%d err=%v", revision, err)
 	}
 	got, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(data) {
-		t.Fatal("append changed a foreign-owned event log")
+	if !strings.HasPrefix(string(got), string(data)) {
+		t.Fatal("append replaced historical evidence")
 	}
 }
 
-func TestReplayWorkEventLog_MixedWriterReadOnly(t *testing.T) {
+func TestReplayWorkEventLog_MixedHistoricalWritersReplay(t *testing.T) {
 	workDir := tempWorkDir(t)
 	acquireLease(t, workDir)
 
@@ -418,6 +423,11 @@ func TestReplayWorkEventLog_MixedWriterReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec.WriterID = "mixed-foreign-writer"
+	rec.ContentDigest = ""
+	rec.ContentDigest, err = workEventContentDigest(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
 	second, err := json.Marshal(rec)
 	if err != nil {
 		t.Fatal(err)
@@ -431,8 +441,8 @@ func TestReplayWorkEventLog_MixedWriterReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !replay.ReadOnly || len(replay.Events) != 1 || !strings.Contains(replay.ReadOnlyReason, "mixed-foreign-writer") {
-		t.Fatalf("mixed writer history must stop at the foreign record: %+v", replay)
+	if replay.ReadOnly || replay.NeedsRepair || len(replay.Events) != 2 {
+		t.Fatalf("verified mixed-writer history should replay: %+v", replay)
 	}
 }
 

@@ -97,7 +97,8 @@ func init() {
 
 // WorkWriterID returns the stable writer identity for this process. It is
 // embedded in every persisted record and index so that another process (or
-// another build) can detect foreign ownership and refuse writes.
+// another build) can identify the producer. Cross-process exclusion is enforced
+// by the OS lease; completed history from an earlier process remains replayable.
 func WorkWriterID() string {
 	return workWriterID
 }
@@ -708,10 +709,10 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 // unsupported schema/type. The state up to that point is returned; when
 // NeedsRepair is true the writer may repair the tail.
 //
-// Future schema, unknown event types, a live external lease, and any historical
-// record from a non-current writer result in ReadOnly=true. A stale OS lock does
-// not itself grant trust in records from another writer; takeover requires an
-// explicit ownership/handoff path outside this append API.
+// Future schema, unknown event types, and a live external lease result in
+// ReadOnly=true. Historical writer IDs are audit metadata: after the previous
+// process releases its OS lease, a new process may verify and continue the
+// digest-protected revision chain.
 //
 // If the index is missing or corrupt, it is silently rebuilt from the log.
 func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
@@ -791,18 +792,12 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 			return replay, nil
 		}
 
-		// A record is writable only when its persisted owner is the current
-		// process writer. The OS lease prevents concurrent writes; it does not
-		// implicitly trust history left by another writer.
+		// WriterID is required audit evidence. It is intentionally not required
+		// to match this process: the OS lease above is the concurrency boundary,
+		// while the content digest below authenticates completed history across
+		// normal application restarts.
 		if strings.TrimSpace(rec.WriterID) == "" {
 			replay.NeedsRepair = true
-			return replay, nil
-		}
-		if rec.WriterID != WorkWriterID() {
-			replay.ReadOnly = true
-			replay.ReadOnlyReason = fmt.Sprintf(
-				"historical event revision %d is owned by foreign writer %q; current writer %q is not trusted to mutate it",
-				rec.Revision, rec.WriterID, WorkWriterID())
 			return replay, nil
 		}
 		if strings.TrimSpace(rec.ID) == "" || strings.TrimSpace(rec.WorkID) == "" {

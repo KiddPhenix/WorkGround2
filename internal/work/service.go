@@ -32,9 +32,16 @@ type Service struct {
 	actionRuns   map[string]*actionFlight
 	sessionRefs  *SessionRefCoordinator
 	refScope     string
+	rerunMu      sync.Mutex
+	rerunPlans   map[string]preparedRerun
 }
 
 type runFlight struct{ done chan struct{} }
+
+type preparedRerun struct {
+	record *WorkRecord
+	plan   RerunPlan
+}
 
 var errRunSuspended = errors.New("work: run was suspended or superseded")
 
@@ -62,6 +69,7 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 		store: store, blueprint: blueprint, tools: tools, sink: sink,
 		cornerstones: cornerstones,
 		actionRuns:   make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
+		rerunPlans: make(map[string]preparedRerun),
 	}
 }
 
@@ -261,6 +269,24 @@ func (s *Service) Create(ctx context.Context, input CreateWorkInput) (*Work, err
 	return view.Work, nil
 }
 
+// ListBlueprints returns immutable registry copies for frontend selection.
+func (s *Service) ListBlueprints(ctx context.Context) ([]WorkBlueprint, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if s == nil || s.blueprint == nil {
+		return nil, errors.New("work: ListBlueprints: BlueprintRegistry is required")
+	}
+	items := s.blueprint.List()
+	result := make([]WorkBlueprint, 0, len(items))
+	for _, item := range items {
+		if item != nil {
+			result = append(result, *item)
+		}
+	}
+	return result, nil
+}
+
 // Get returns one coherent projection/revision pair.
 func (s *Service) Get(ctx context.Context, workID string) (*WorkView, error) {
 	if err := checkServiceContext(ctx); err != nil {
@@ -400,7 +426,47 @@ func (s *Service) List(ctx context.Context, filter WorkFilter) (WorkPage, error)
 	if err := s.requireStore(); err != nil {
 		return WorkPage{}, err
 	}
-	items, err := s.store.List(filter)
+	var items []WorkSummary
+	var err error
+	if filter.ArchiveState != nil && *filter.ArchiveState == ArchiveDeleted {
+		trash, ok := s.store.(WorkTrashLister)
+		if !ok {
+			return WorkPage{}, errors.New("work: List: Store does not support Trash listing")
+		}
+		items, err = trash.ListTrash()
+		if err == nil {
+			filtered := items[:0]
+			for i := range items {
+				if filter.Matches(&items[i]) {
+					filtered = append(filtered, items[i])
+				}
+			}
+			items = filtered
+			if filter.Cursor != "" {
+				start := -1
+				for i := range items {
+					if items[i].ID == filter.Cursor {
+						start = i + 1
+						break
+					}
+				}
+				if start < 0 {
+					items = nil
+				} else {
+					items = items[start:]
+				}
+			}
+			limit := filter.Limit
+			if limit <= 0 || limit > 500 {
+				limit = 100
+			}
+			if len(items) > limit {
+				items = items[:limit]
+			}
+		}
+	} else {
+		items, err = s.store.List(filter)
+	}
 	if err != nil {
 		return WorkPage{}, err
 	}
@@ -534,6 +600,9 @@ func (s *Service) runWork(ctx context.Context, workID, requestID string) (*Workf
 	}
 	if current.ArchiveState != ArchiveActive {
 		return nil, fmt.Errorf("work: RunWork: Work %s is %s", workID, current.ArchiveState)
+	}
+	if strings.TrimSpace(current.Prompt) == "" {
+		return nil, errors.New("work: RunWork: prompt is required; edit and save the Work prompt before running")
 	}
 
 	if err := validateDefForRun(current.Definition.Workflow); err != nil {

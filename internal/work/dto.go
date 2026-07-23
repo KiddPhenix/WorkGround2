@@ -14,6 +14,14 @@ type CreateWorkInput struct {
 	RequestID    string         `json:"requestId"`
 }
 
+// CopyWorkInput creates an independent Draft from an existing active or
+// archived Work. RequestID makes retries resolve to the same destination.
+type CopyWorkInput struct {
+	SourceWorkID string `json:"sourceWorkId"`
+	Name         string `json:"name,omitempty"`
+	RequestID    string `json:"requestId"`
+}
+
 // UpdateDraftInput 是更新草稿 Work 的输入参数。
 // ExpectedRevision 用于乐观并发控制。
 type UpdateDraftInput struct {
