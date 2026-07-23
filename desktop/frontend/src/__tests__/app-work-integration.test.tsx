@@ -169,6 +169,11 @@ const jobs: JobView[] = [];
 const checkpoints: CheckpointMeta[] = [];
 let listCalls = 0;
 let getCalls = 0;
+const initialWorkCapability = deferred<boolean>();
+let initialWorkCapabilitySettled = false;
+const workEnabledCalls: string[] = [];
+const workCapableCalls: string[] = [];
+const workDataAPICalls: string[] = [];
 let retryWatchCalls = 0;
 let retryRecoverCalls = 0;
 let retryWatchFailures = 1;
@@ -180,6 +185,7 @@ let pinnedCornerstone: Cornerstone | undefined;
 const createRequestIDs: string[] = [];
 const runCalls: Array<{ tabID: string; workID: string; requestID: string }> = [];
 const pinCalls: Array<{ tabID: string; workID: string; title: string; requestID: string }> = [];
+const cornerstoneMutationCalls: string[] = [];
 
 function runWithSession(sessionPath: string): WorkflowRun {
   return {
@@ -291,7 +297,7 @@ function rawMessage(value: unknown): number[] {
   return Array.from(new TextEncoder().encode(JSON.stringify(value)));
 }
 
-const methods: Partial<AppBindings> = {
+const methods: Partial<AppBindings> & { WorkEnabled(tabID: string): Promise<boolean> } = {
   ListTabs: async () => currentTabs(),
   ListRuntimeTabs: async () => [tab, tabB, topicTab],
   MetaForTab: async (tabID) => metaFor([tab, tabB, topicTab, blankTab].find((item) => item.id === tabID) || tab),
@@ -346,7 +352,15 @@ const methods: Partial<AppBindings> = {
   Platform: async () => "windows",
   IsMainWindowMaximised: async () => false,
   ListProjectTree: async () => [],
-  WorkCapable: async () => true,
+  WorkEnabled: async (tabID) => {
+    workEnabledCalls.push(tabID);
+    return true;
+  },
+  WorkCapable: async (tabID) => {
+    workCapableCalls.push(tabID);
+    if (tabID === tab.id && !initialWorkCapabilitySettled) return initialWorkCapability.promise;
+    return true;
+  },
   SetActiveTab: async (tabID) => {
     navigationOps.push(`existing:${tabID}`);
     setActiveCalls.push(tabID);
@@ -376,6 +390,7 @@ const methods: Partial<AppBindings> = {
     return { messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false, sessionPath: path };
   },
   ListWorks: async () => {
+    workDataAPICalls.push("ListWorks");
     listCalls += 1;
     if (emptyBeforeCreate && !created) {
       return { items: [], total: 0, nextCursor: "" };
@@ -413,6 +428,7 @@ const methods: Partial<AppBindings> = {
     };
   },
   CreateWork: async (_tabID, input) => {
+    workDataAPICalls.push("CreateWork");
     createRequestIDs.push(input.requestId);
     if (createFailures > 0) {
       createFailures -= 1;
@@ -422,11 +438,13 @@ const methods: Partial<AppBindings> = {
     return workView(tab.sessionPath || "", "work-created").work;
   },
   GetWork: async (_tabID, workID) => {
+    workDataAPICalls.push("GetWork");
     getCalls += 1;
     if (workID === "work-retry") return retryWorkView();
     return workView(tab.sessionPath || "", workID);
   },
   RecoverWorkView: async (_tabID, workID, intent) => {
+    workDataAPICalls.push("RecoverWorkView");
     if (workID === "work-retry") retryRecoverCalls += 1;
     const view = workID === "work-retry"
       ? retryWorkView()
@@ -446,6 +464,7 @@ const methods: Partial<AppBindings> = {
     };
   },
   WatchWork: async (_tabID, workID) => {
+    workDataAPICalls.push("WatchWork");
     if (workID !== "work-retry") return;
     retryWatchCalls += 1;
     if (retryWatchFailures > 0) {
@@ -453,8 +472,11 @@ const methods: Partial<AppBindings> = {
       throw new Error("authoritative retry snapshot was not applied: snapshot payload must be a matching Work or WorkView at the event revision");
     }
   },
-  UnwatchWork: async () => {},
+  UnwatchWork: async () => {
+    workDataAPICalls.push("UnwatchWork");
+  },
   RunWork: async (tabID, workID, requestID) => {
+    workDataAPICalls.push("RunWork");
     runCalls.push({ tabID, workID, requestID });
     createdRun = {
       id: "run-created",
@@ -468,6 +490,8 @@ const methods: Partial<AppBindings> = {
     return createdRun;
   },
   PinCornerstone: async (tabID, workID, input) => {
+    workDataAPICalls.push("PinCornerstone");
+    cornerstoneMutationCalls.push("pin");
     pinCalls.push({ tabID, workID, title: input.title, requestID: input.requestId });
     pinnedCornerstone = {
       id: "cs-created",
@@ -487,13 +511,27 @@ const methods: Partial<AppBindings> = {
     };
     const pinnedView = workView(tab.sessionPath || "", workID);
     pinnedView.revision = 2;
+    pinnedView.assessment = {
+      state: "blocked",
+      blocking: true,
+      degraded: false,
+      issues: [{
+        code: "required_cornerstone_failed",
+        cornerstoneId: pinnedCornerstone.id,
+        title: pinnedCornerstone.title,
+        status: "invalid",
+        required: true,
+        blocking: true,
+        reason: "failed: 运行失败。",
+      }],
+    };
     return {
       cornerstone: pinnedCornerstone,
       workView: pinnedView,
       duplicate: false,
       revision: 2,
       resolution: null,
-      assessment: { state: "ready", blocking: false, degraded: false, issues: [] },
+      assessment: pinnedView.assessment,
     };
   },
 };
@@ -533,9 +571,33 @@ await act(async () => {
     </LocaleProvider>,
   );
 });
+await waitFor("pending initial Work capability", () => workCapableCalls.includes(tab.id));
+ok(workEnabledCalls.includes(tab.id), "真实 <App/> 先查询 tab 配置是否显示 Work 入口");
+const pendingWorkEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
+ok(pendingWorkEntry != null, "WorkCapable pending 时 Work 按钮已在 DOM");
+ok(pendingWorkEntry?.disabled === true && pendingWorkEntry.getAttribute("aria-busy") === "true", "WorkCapable pending 时按钮 busy 且 disabled");
+const pendingSessionSurface = document.querySelector<HTMLElement>('[data-testid="session-surface"]');
+ok(pendingSessionSurface != null, "WorkCapable pending 时仍显示当前 Session 页面");
+await act(async () => {
+  pendingWorkEntry?.click();
+  await Promise.resolve();
+});
+ok(
+  document.querySelector('[data-testid="session-surface"]') === pendingSessionSurface
+    && document.querySelector('[data-testid="work-page"]') == null,
+  "实际点击 pending Work 入口后仍停留在同一 Session 页面",
+);
+ok(listCalls === 0, "实际点击 pending Work 入口不触发 ListWorks");
+ok(
+  workDataAPICalls.length === 0 && workEventListeners.size === 0,
+  "实际点击 pending Work 入口时 Watch/Get/Create/Recover/Run/Pin、listener 等 Work 数据 API 均为零调用",
+);
+initialWorkCapabilitySettled = true;
+initialWorkCapability.resolve(true);
 await waitFor("Work entry", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);
 const workEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
 ok(workEntry != null, "真实 <App/> 渲染 Work 入口");
+ok(workEntry === pendingWorkEntry && workEntry?.disabled === false && workEntry.getAttribute("aria-busy") !== "true", "WorkCapable 成功后同一按钮原位变为可用");
 await act(async () => { workEntry?.click(); });
 await waitFor("Work page", () => document.querySelector('[data-testid="work-page"]') != null);
 ok(document.querySelector('[data-testid="work-page"]') != null, "点击入口打开真实 WorkPage");
@@ -649,6 +711,23 @@ await waitFor("PinCornerstone call", () => pinCalls.length === 1);
 ok(pinCalls[0].workID === "work-created" && pinCalls[0].title === "生产基石", "Cornerstone Drawer 调用生产 PinCornerstone");
 await waitFor("pinned Cornerstone projection", () => document.querySelector('[data-testid="cornerstone-item-cs-created"]') != null);
 ok(document.querySelector('[data-testid="cornerstone-item-cs-created"]') != null, "Pin ACK 回写权威 WorkView");
+await waitFor("Cornerstone authority failure", () => document.querySelector('[data-testid="cornerstone-attention-summary"]') != null);
+const mutationCountBeforeClose = cornerstoneMutationCalls.length;
+const drawerBack = document.querySelector<HTMLButtonElement>('[data-testid="cornerstone-drawer-back"]');
+ok(drawerBack != null, "authority failure 下 Drawer 仍有语义返回按钮");
+await act(async () => { drawerBack?.click(); });
+await waitFor("Cornerstone Drawer closed by back", () => document.querySelector('[data-testid="cornerstone-drawer-body"]') == null);
+ok(document.querySelector('[data-testid="work-card"][data-work-id="work-created"]') != null, "点击返回关闭 Drawer 并恢复原 WorkCard");
+ok(document.activeElement === drawerToggle, "点击返回后焦点恢复到 Drawer 打开按钮");
+ok(cornerstoneMutationCalls.length === mutationCountBeforeClose, "返回只关闭视图且不发送 Wails mutation");
+await act(async () => { drawerToggle?.click(); });
+await waitFor("Cornerstone Drawer reopened", () => document.querySelector('[data-testid="cornerstone-drawer-body"]') != null);
+await act(async () => {
+  document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+});
+await waitFor("Cornerstone Drawer closed by Escape", () => document.querySelector('[data-testid="cornerstone-drawer-body"]') == null);
+ok(document.activeElement === drawerToggle, "Esc 关闭 Drawer 后焦点恢复到打开按钮");
+ok(cornerstoneMutationCalls.length === mutationCountBeforeClose, "Esc 关闭不发送 Wails mutation");
 
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-view-back"]')?.click(); });
 await waitFor("retry Work list", () => document.querySelector('[data-testid="work-item-work-retry"]') != null);
@@ -683,7 +762,7 @@ useCornerstoneUIStore.getState().clearAll();
 localStorage.clear();
 document.body.innerHTML = '<div id="race-root"></div>';
 
-const raceTabs = ["a", "b", "c", "d", "e", "f"].map((suffix, index): TabMeta => ({
+const raceTabs = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map((suffix, index): TabMeta => ({
   ...tab,
   id: `race-${suffix}`,
   topicId: `race-topic-${suffix}`,
@@ -693,10 +772,16 @@ const raceTabs = ["a", "b", "c", "d", "e", "f"].map((suffix, index): TabMeta => 
 }));
 let raceActiveID = raceTabs[0].id;
 const capableA = deferred<boolean>();
+const enabledA = deferred<boolean>();
+const capableC = deferred<boolean>();
+let capableCSettled = false;
+let enabledHAttempts = 0;
+let capableIAttempts = 0;
 const listC = deferred<Awaited<ReturnType<AppBindings["ListWorks"]>>>();
 const createD = deferred<Awaited<ReturnType<AppBindings["CreateWork"]>>>();
 const getE = deferred<WorkView>();
 const raceCapableCalls: string[] = [];
+const raceEnabledCalls: string[] = [];
 const raceListCalls: string[] = [];
 const raceCreateCalls: string[] = [];
 const raceGetCalls: string[] = [];
@@ -716,16 +801,25 @@ function currentRaceTabs(): TabMeta[] {
   return raceTabs.map((item) => ({ ...item, active: item.id === raceActiveID }));
 }
 
-const raceMethods: Partial<AppBindings> = {
+const raceMethods: Partial<AppBindings> & { WorkEnabled(tabID: string): Promise<boolean> } = {
   ...methods,
   ListTabs: async () => currentRaceTabs(),
   ListRuntimeTabs: async () => currentRaceTabs(),
   MetaForTab: async (tabID) => metaFor(raceTabs.find((item) => item.id === tabID) || raceTabs[0]),
   HistoryPageForTab: async (tabID) => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false, sessionPath: raceTabs.find((item) => item.id === tabID)?.sessionPath }),
+  WorkEnabled: async (tabID) => {
+    raceEnabledCalls.push(tabID);
+    if (tabID === "race-a") return enabledA.promise;
+    if (tabID === "race-h" && ++enabledHAttempts === 1) throw new Error("config unavailable");
+    return tabID !== "race-b" && tabID !== "race-g";
+  },
   WorkCapable: async (tabID) => {
     raceCapableCalls.push(tabID);
     if (tabID === "race-a") return capableA.promise;
-    if (tabID === "race-b") return false;
+    if (tabID === "race-b") return true;
+    if (tabID === "race-c" && !capableCSettled) return capableC.promise;
+    if (tabID === "race-g") return false;
+    if (tabID === "race-i") return ++capableIAttempts > 1;
     return true;
   },
   ListWorks: async (tabID) => {
@@ -770,7 +864,7 @@ await act(async () => {
     </LocaleProvider>,
   );
 });
-await waitFor("pending race-a capability", () => raceCapableCalls.includes("race-a"));
+await waitFor("pending race-a config or capability", () => raceEnabledCalls.includes("race-a") || raceCapableCalls.includes("race-a"));
 
 async function activateRaceTab(tabID: string): Promise<void> {
   raceActiveID = tabID;
@@ -778,15 +872,49 @@ async function activateRaceTab(tabID: string): Promise<void> {
     for (const handler of raceSessionHandlers) handler({ reason: "test", tabId: tabID });
     await Promise.resolve();
   });
-  await waitFor(`${tabID} capability`, () => raceCapableCalls.includes(tabID));
+  await waitFor(`${tabID} Work startup query`, () => raceEnabledCalls.includes(tabID) || raceCapableCalls.includes(tabID));
+  await act(async () => { await Promise.resolve(); });
 }
 
 await activateRaceTab("race-b");
-await waitFor("race-b capability off", () => document.querySelector('[data-testid="work-sidebar-btn"]') == null);
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') == null, "显式 work.enabled=false 从稳定 render 起无 Work 入口");
+ok(!raceCapableCalls.includes("race-b"), "显式 work.enabled=false 不探测 controller capability");
+enabledA.resolve(true);
+await act(async () => { await Promise.resolve(); });
+ok(!raceCapableCalls.includes("race-a"), "late WorkEnabled(A) 不触发旧 tab capability 查询");
 capableA.resolve(true);
 await act(async () => { await Promise.resolve(); });
-ok(document.querySelector('[data-testid="work-sidebar-btn"]') == null, "late WorkCapable(A) 不开启 B 的 Work 入口");
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') == null, "late WorkEnabled/WorkCapable(A) 不开启 B 的 Work 入口");
 ok(!raceListCalls.includes("race-b"), "flag off 的 B 零 ListWorks 调用");
+
+await activateRaceTab("race-c");
+await waitFor("race-c pending capability", () => raceCapableCalls.includes("race-c"));
+const pendingRaceCEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
+ok(pendingRaceCEntry?.disabled === true && pendingRaceCEntry.getAttribute("aria-busy") === "true", "tab C capability pending 时入口稳定占位");
+await activateRaceTab("race-g");
+capableCSettled = true;
+capableC.resolve(true);
+await act(async () => { await Promise.resolve(); });
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') == null, "late WorkCapable(C) 不污染显式关闭的 tab G");
+ok(!raceListCalls.includes("race-c") && !raceListCalls.includes("race-g"), "pending/flag-off 点击路径零 ListWorks");
+
+await activateRaceTab("race-h");
+await waitFor("race-h observable config failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
+const failedConfigEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
+ok(failedConfigEntry?.disabled === false, "WorkEnabled 加载失败保留可观察、可重试入口");
+await act(async () => { failedConfigEntry?.click(); });
+await waitFor("race-h config retry ready", () => document.querySelector('[data-work-state="ready"]') != null);
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedConfigEntry && enabledHAttempts === 2, "WorkEnabled 失败点击后同一入口原位重试成功");
+ok(!raceListCalls.includes("race-h"), "WorkEnabled 重试不打开 Work 或调用 ListWorks");
+
+await activateRaceTab("race-i");
+await waitFor("race-i observable capability failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
+const failedCapabilityEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
+ok(failedCapabilityEntry?.disabled === false, "WorkCapable 失败保留可观察、可重试入口");
+await act(async () => { failedCapabilityEntry?.click(); });
+await waitFor("race-i capability retry ready", () => document.querySelector('[data-work-state="ready"]') != null);
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedCapabilityEntry && capableIAttempts === 2, "WorkCapable 失败点击后同一入口原位重试成功");
+ok(!raceListCalls.includes("race-i"), "WorkCapable 重试不打开 Work 或调用 ListWorks");
 
 await activateRaceTab("race-c");
 await waitFor("race-c Work entry", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);
