@@ -1,0 +1,968 @@
+package work
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+const actionBlockID = "bp-blank-notes"
+
+type actionHarness struct {
+	fixture *serviceFixture
+	svc     *Service
+	reg     *ActionRegistry
+	perm    *fakeActionPermission
+}
+
+type fakeActionPermission struct {
+	mu       sync.Mutex
+	decision PermissionDecision
+	err      error
+	check    func(context.Context, PermissionRequest) (PermissionDecision, error)
+	requests []PermissionRequest
+}
+
+func (f *fakeActionPermission) CheckPermission(ctx context.Context, request PermissionRequest) (PermissionDecision, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, request)
+	check, decision, err := f.check, f.decision, f.err
+	f.mu.Unlock()
+	if check != nil {
+		return check(ctx, request)
+	}
+	return decision, err
+}
+
+func (f *fakeActionPermission) last() PermissionRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requests[len(f.requests)-1]
+}
+
+func newActionHarness(t *testing.T) *actionHarness {
+	t.Helper()
+	fixture := newServiceFixture(t)
+	reg := NewActionRegistry()
+	perm := &fakeActionPermission{decision: PermissionDecision{Allowed: true}}
+	if err := fixture.svc.SetActionRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	fixture.svc.SetPermissionChecker(perm)
+	return &actionHarness{fixture: fixture, svc: fixture.svc, reg: reg, perm: perm}
+}
+
+func (h *actionHarness) restart(t *testing.T) {
+	t.Helper()
+	h.fixture.restart(t)
+	h.svc = h.fixture.svc
+	if err := h.svc.SetActionRegistry(h.reg); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.SetPermissionChecker(h.perm)
+}
+
+func (h *actionHarness) register(t *testing.T, actionID, intent string, risk ActionRisk, handler ActionHandler) {
+	t.Helper()
+	if err := h.reg.Register(ActionRegistration{
+		BlockKind: "markdown", ActionID: actionID, Intent: intent, Summary: "Test " + actionID,
+		HandlerID: intent, HandlerVersion: "v1", Risk: risk, Handler: handler,
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+func setupActionBlock(t *testing.T, svc *Service, requestID string, actions ...BlockActionSpec) *Work {
+	t.Helper()
+	value := mustServiceCreate(t, svc, requestID+"-create")
+	_, err := svc.UpsertBlock(context.Background(), BlockUpsertInput{
+		WorkID: value.ID, BlockID: actionBlockID, Kind: "markdown", SchemaVersion: SchemaVersion,
+		Revision: 2, Title: "Actions", Status: BlockReady, Data: json.RawMessage(`{"content":"test"}`),
+		Actions: actions, Source: BlockSource{Provider: "user", Mode: "snapshot"},
+		ExpectedRevision: 2, RequestID: requestID + "-block",
+	})
+	if err != nil {
+		t.Fatalf("UpsertBlock: %v", err)
+	}
+	return value
+}
+
+func actionRequest(value *Work, actionID, requestID string) BlockActionRequest {
+	return BlockActionRequest{WorkID: value.ID, BlockID: actionBlockID, ActionID: actionID, RequestID: requestID, ExpectedRevision: 3}
+}
+
+func TestActionRiskAndCanonicalResolution(t *testing.T) {
+	h := newActionHarness(t)
+	var calls atomic.Int32
+	var got ActionHandlerContext
+	if err := h.reg.Register(ActionRegistration{
+		BlockKind: "markdown", ActionID: "publish", Intent: "trusted.publish", Summary: "Publish report",
+		HandlerID: "trusted.publish", HandlerVersion: "v1",
+		Risk: RiskExternal, Payload: json.RawMessage(`{"target":"trusted"}`),
+		Handler: func(_ context.Context, input ActionHandlerContext) (*ActionResult, error) {
+			calls.Add(1)
+			got = input
+			return &ActionResult{Message: "done"}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value := setupActionBlock(t, h.svc, "risk", BlockActionSpec{
+		ID: "publish", Intent: "trusted.publish", Risk: "read", Payload: json.RawMessage(`{"command":"rm -rf *"}`),
+	})
+	receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "publish", "risk-action"))
+	if err != nil || receipt.Status != string(ActionSucceeded) || calls.Load() != 1 {
+		t.Fatalf("receipt=%+v calls=%d err=%v", receipt, calls.Load(), err)
+	}
+	permission := h.perm.last()
+	if permission.Risk != string(RiskExternal) || permission.ToolName != "trusted.publish" || permission.Summary != "Publish report" || permission.HandlerID != "trusted.publish" || permission.HandlerVersion != "v1" {
+		t.Fatalf("permission used untrusted metadata: %+v", permission)
+	}
+	if got.HandlerID != "trusted.publish" || got.HandlerVersion != "v1" {
+		t.Fatalf("handler context missing stable identity: %+v", got)
+	}
+	if string(got.Payload) != `{"target":"trusted"}` {
+		t.Fatalf("handler payload = %s", got.Payload)
+	}
+}
+
+func TestActionRejectsIntentMismatchAndUnknownHandler(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "safe", "trusted.safe", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "mismatch", BlockActionSpec{ID: "safe", Intent: "trusted.danger", Risk: "read"})
+	_, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "safe", "mismatch-action"))
+	var mismatch *ErrActionDefinitionMismatch
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ErrActionDefinitionMismatch, got %T %v", err, err)
+	}
+
+	value2 := setupActionBlock(t, h.svc, "unknown", BlockActionSpec{ID: "missing", Intent: "anything", Risk: "read"})
+	_, err = h.svc.ExecuteBlockAction(context.Background(), actionRequest(value2, "missing", "unknown-action"))
+	var unknown *ErrActionUnknownIntent
+	if !errors.As(err, &unknown) {
+		t.Fatalf("want ErrActionUnknownIntent, got %T %v", err, err)
+	}
+}
+
+func TestActionApprovalRiskMatrix(t *testing.T) {
+	tests := []struct {
+		name    string
+		risk    ActionRisk
+		confirm bool
+		checks  int
+	}{
+		{"read", RiskRead, false, 0},
+		{"read-confirm", RiskRead, true, 1},
+		{"write", RiskWrite, false, 1},
+		{"destructive", RiskDestructive, false, 1},
+		{"external", RiskExternal, false, 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			h := newActionHarness(t)
+			var calls atomic.Int32
+			h.register(t, "run", "trusted."+test.name, test.risk, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+				calls.Add(1)
+				return nil, nil
+			})
+			value := setupActionBlock(t, h.svc, "matrix-"+test.name, BlockActionSpec{ID: "run", Intent: "trusted." + test.name, Risk: string(test.risk), ConfirmRequired: test.confirm})
+			receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "run", "matrix-action-"+test.name))
+			if err != nil || receipt.Status != string(ActionSucceeded) || calls.Load() != 1 {
+				t.Fatalf("receipt=%+v calls=%d err=%v", receipt, calls.Load(), err)
+			}
+			h.perm.mu.Lock()
+			checks := len(h.perm.requests)
+			h.perm.mu.Unlock()
+			if checks != test.checks {
+				t.Fatalf("permission checks=%d want=%d", checks, test.checks)
+			}
+		})
+	}
+}
+
+func TestActionConcurrentDuplicateReturnsSameReceipt(t *testing.T) {
+	h := newActionHarness(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var calls atomic.Int32
+	h.register(t, "slow", "trusted.slow", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		calls.Add(1)
+		once.Do(func() { close(started) })
+		<-release
+		return &ActionResult{Message: "same", Data: json.RawMessage(`{"ok":true}`)}, nil
+	})
+	value := setupActionBlock(t, h.svc, "concurrent", BlockActionSpec{ID: "slow", Intent: "trusted.slow", Risk: "read"})
+	req := actionRequest(value, "slow", "concurrent-action")
+
+	const count = 12
+	receipts := make([]*ActionReceipt, count)
+	errs := make([]error, count)
+	var wait sync.WaitGroup
+	for index := range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			receipts[index], errs[index] = h.svc.ExecuteBlockAction(context.Background(), req)
+		}()
+	}
+	<-started
+	close(release)
+	wait.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("handler calls=%d want=1", calls.Load())
+	}
+	for index := range count {
+		if errs[index] != nil || receipts[index] == nil || receipts[index].Status != string(ActionSucceeded) || receipts[index].Fingerprint != receipts[0].Fingerprint || !sameJSON(receipts[index].Result, json.RawMessage(`{"ok":true}`)) {
+			t.Fatalf("result[%d]=%+v err=%v", index, receipts[index], errs[index])
+		}
+	}
+}
+
+func TestActionCompetingExecutorCannotRunAfterRejection(t *testing.T) {
+	h := newActionHarness(t)
+	var calls atomic.Int32
+	h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		calls.Add(1)
+		return nil, nil
+	})
+	value := setupActionBlock(t, h.svc, "competing", BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+	entered, release := make(chan struct{}), make(chan struct{})
+	firstPermission := &fakeActionPermission{check: func(context.Context, PermissionRequest) (PermissionDecision, error) {
+		close(entered)
+		<-release
+		return PermissionDecision{Allowed: true}, nil
+	}}
+	h.svc.SetPermissionChecker(firstPermission)
+	second := NewService(h.svc.store, NewBlueprintRegistry(), ViewSinkDiscard)
+	if err := second.SetActionRegistry(h.reg); err != nil {
+		t.Fatal(err)
+	}
+	second.SetPermissionChecker(&fakeActionPermission{decision: PermissionDecision{Reason: "denied elsewhere"}})
+	req := actionRequest(value, "write", "competing-action")
+	type result struct {
+		receipt *ActionReceipt
+		err     error
+	}
+	firstDone := make(chan result, 1)
+	go func() {
+		receipt, err := h.svc.ExecuteBlockAction(context.Background(), req)
+		firstDone <- result{receipt, err}
+	}()
+	<-entered
+	secondReceipt, secondErr := second.ExecuteBlockAction(context.Background(), req)
+	var rejected *ErrActionRejected
+	if !errors.As(secondErr, &rejected) || secondReceipt.Status != string(ActionRejected) {
+		t.Fatalf("second receipt=%+v err=%T %v", secondReceipt, secondErr, secondErr)
+	}
+	close(release)
+	first := <-firstDone
+	if first.err != nil || first.receipt.Status != string(ActionRejected) || calls.Load() != 0 {
+		t.Fatalf("first receipt=%+v err=%v calls=%d", first.receipt, first.err, calls.Load())
+	}
+}
+
+func TestActionFingerprintConflict(t *testing.T) {
+	h := newActionHarness(t)
+	var calls atomic.Int32
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		calls.Add(1)
+		return nil, nil
+	})
+	value := setupActionBlock(t, h.svc, "fingerprint", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	req := actionRequest(value, "run", "fingerprint-action")
+	req.Input = map[string]any{"value": 1}
+	if _, err := h.svc.ExecuteBlockAction(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	req.Input = map[string]any{"value": 2}
+	_, err := h.svc.ExecuteBlockAction(context.Background(), req)
+	var conflict *ErrActionFingerprintConflict
+	if !errors.As(err, &conflict) || calls.Load() != 1 {
+		t.Fatalf("err=%T %v calls=%d", err, err, calls.Load())
+	}
+}
+
+func TestActionStaleRevisionIncludesLatestSnapshot(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "stale", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	req := actionRequest(value, "run", "stale-action")
+	req.ExpectedRevision = 2
+	_, err := h.svc.ExecuteBlockAction(context.Background(), req)
+	var conflict *ErrActionRevisionConflict
+	if !errors.As(err, &conflict) || conflict.Current != 3 || conflict.Latest == nil || conflict.Latest.Revision != 3 || conflict.Latest.Work.ID != value.ID {
+		t.Fatalf("conflict=%+v err=%v", conflict, err)
+	}
+}
+
+func TestActionHandlerFailureAndDenialPersist(t *testing.T) {
+	t.Run("handler", func(t *testing.T) {
+		h := newActionHarness(t)
+		var calls atomic.Int32
+		h.register(t, "fail", "trusted.fail", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+			calls.Add(1)
+			return &ActionResult{Retryable: true}, errors.New("boom")
+		})
+		value := setupActionBlock(t, h.svc, "handler-fail", BlockActionSpec{ID: "fail", Intent: "trusted.fail", Risk: "read"})
+		receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "fail", "handler-fail-action"))
+		if err == nil || receipt.Status != string(ActionFailed) || !receipt.Retryable || !receipt.OutcomeKnown {
+			t.Fatalf("receipt=%+v err=%v", receipt, err)
+		}
+		h.restart(t)
+		replay, replayErr := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{WorkID: value.ID, BlockID: actionBlockID, ActionID: "fail", RequestID: "handler-fail-action"})
+		if replayErr != nil || replay.Status != string(ActionFailed) || calls.Load() != 1 {
+			t.Fatalf("replay=%+v err=%v calls=%d", replay, replayErr, calls.Load())
+		}
+	})
+
+	t.Run("denied", func(t *testing.T) {
+		h := newActionHarness(t)
+		h.perm.decision = PermissionDecision{Reason: "user denied"}
+		var calls atomic.Int32
+		h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+			calls.Add(1)
+			return nil, nil
+		})
+		value := setupActionBlock(t, h.svc, "denied", BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+		receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "write", "denied-action"))
+		var rejected *ErrActionRejected
+		if !errors.As(err, &rejected) || receipt.Status != string(ActionRejected) || !receipt.Retryable || calls.Load() != 0 {
+			t.Fatalf("receipt=%+v err=%T %v calls=%d", receipt, err, err, calls.Load())
+		}
+		view, _ := h.svc.Get(context.Background(), value.ID)
+		stored, _, _ := findActionReceipt(view.Work.ActionReceipts, "denied-action")
+		if stored.Status != ActionRejected || stored.Message != "user denied" {
+			t.Fatalf("stored=%+v", stored)
+		}
+	})
+}
+
+func TestActionApprovalCancellationPersistsRetryableFailure(t *testing.T) {
+	h := newActionHarness(t)
+	h.perm.check = func(ctx context.Context, _ PermissionRequest) (PermissionDecision, error) {
+		<-ctx.Done()
+		return PermissionDecision{}, ctx.Err()
+	}
+	h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		t.Fatal("handler must not run")
+		return nil, nil
+	})
+	value := setupActionBlock(t, h.svc, "cancel", BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	receipt, err := h.svc.ExecuteBlockAction(ctx, actionRequest(value, "write", "cancel-action"))
+	if !errors.Is(err, context.DeadlineExceeded) || receipt.Status != string(ActionFailed) || !receipt.Retryable || !receipt.OutcomeKnown {
+		t.Fatalf("receipt=%+v err=%v", receipt, err)
+	}
+	view, _ := h.svc.Get(context.Background(), value.ID)
+	stored, _, _ := findActionReceipt(view.Work.ActionReceipts, "cancel-action")
+	if stored.Status != ActionFailed || !stored.Retryable {
+		t.Fatalf("stored=%+v", stored)
+	}
+}
+
+func TestActionPermissionCheckerNilFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  func(*Service)
+	}{
+		{name: "nil", set: func(s *Service) { s.SetPermissionChecker(nil) }},
+		{name: "typed nil through setter", set: func(s *Service) {
+			var checker *fakeActionPermission
+			s.SetPermissionChecker(checker)
+		}},
+		{name: "typed nil legacy field", set: func(s *Service) {
+			var checker *fakeActionPermission
+			s.actionCfgMu.Lock()
+			s.permissions = checker
+			s.actionCfgMu.Unlock()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newActionHarness(t)
+			var calls atomic.Int32
+			h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+				calls.Add(1)
+				return nil, nil
+			})
+			value := setupActionBlock(t, h.svc, "permission-nil-"+test.name, BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+			test.set(h.svc)
+
+			receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "write", "permission-nil-action-"+test.name))
+			if !errors.Is(err, ErrActionPermissionUnavailable) || receipt == nil || receipt.Status != string(ActionFailed) || !receipt.Retryable || !receipt.OutcomeKnown || calls.Load() != 0 {
+				t.Fatalf("receipt=%+v err=%T %v calls=%d", receipt, err, err, calls.Load())
+			}
+			view, loadErr := h.svc.Get(context.Background(), value.ID)
+			stored, _, found := findActionReceipt(view.Work.ActionReceipts, "permission-nil-action-"+test.name)
+			if loadErr != nil || !found || stored.Status != ActionFailed || stored.Message != ErrActionPermissionUnavailable.Error() {
+				t.Fatalf("stored=%+v found=%v loadErr=%v", stored, found, loadErr)
+			}
+		})
+	}
+}
+
+func TestActionPermissionCheckerConcurrentReplaceAndRead(t *testing.T) {
+	svc := NewService(nil, nil, ViewSinkDiscard)
+	allowed := &fakeActionPermission{decision: PermissionDecision{Allowed: true}}
+	var typedNil *fakeActionPermission
+	const iterations = 1000
+	var wait sync.WaitGroup
+	wait.Add(3)
+	go func() {
+		defer wait.Done()
+		for index := 0; index < iterations; index++ {
+			if index%2 == 0 {
+				svc.SetPermissionChecker(allowed)
+			} else {
+				svc.SetPermissionChecker(typedNil)
+			}
+		}
+	}()
+	for range 2 {
+		go func() {
+			defer wait.Done()
+			for range iterations {
+				checker := svc.permissionChecker()
+				if checker != nil {
+					if _, err := checker.CheckPermission(context.Background(), PermissionRequest{}); err != nil {
+						t.Errorf("CheckPermission: %v", err)
+						return
+					}
+				}
+			}
+		}()
+	}
+	wait.Wait()
+}
+
+func TestActionRestartRecoveryPendingAndRunning(t *testing.T) {
+	t.Run("pending definitely not executed resumes", func(t *testing.T) {
+		h := newActionHarness(t)
+		var calls atomic.Int32
+		h.register(t, "write", "trusted.write", RiskWrite, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+			calls.Add(1)
+			return &ActionResult{Message: "resumed"}, nil
+		})
+		value := setupActionBlock(t, h.svc, "pending-recovery", BlockActionSpec{ID: "write", Intent: "trusted.write", Risk: "write"})
+		reserveActionForTest(t, h.svc, value, "write", "pending-recovery-action", ActionPending)
+		h.restart(t)
+		receipt, err := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{WorkID: value.ID, BlockID: actionBlockID, ActionID: "write", RequestID: "pending-recovery-action"})
+		if err != nil || receipt.Status != string(ActionSucceeded) || receipt.HandlerID != "trusted.write" || receipt.HandlerVersion != "v1" || calls.Load() != 1 {
+			t.Fatalf("receipt=%+v err=%v calls=%d", receipt, err, calls.Load())
+		}
+	})
+
+	t.Run("running becomes persisted unknown", func(t *testing.T) {
+		h := newActionHarness(t)
+		var calls atomic.Int32
+		h.register(t, "external", "trusted.external", RiskExternal, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+			calls.Add(1)
+			return nil, nil
+		})
+		value := setupActionBlock(t, h.svc, "running-recovery", BlockActionSpec{ID: "external", Intent: "trusted.external", Risk: "external"})
+		reserveActionForTest(t, h.svc, value, "external", "running-recovery-action", ActionRunning)
+		h.restart(t)
+		receipt, err := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{WorkID: value.ID, BlockID: actionBlockID, ActionID: "external", RequestID: "running-recovery-action"})
+		var unknown *ErrActionOutcomeUnknown
+		if !errors.As(err, &unknown) || receipt.Status != string(ActionUnknown) || receipt.OutcomeKnown || receipt.Retryable || calls.Load() != 0 {
+			t.Fatalf("receipt=%+v err=%T %v calls=%d", receipt, err, err, calls.Load())
+		}
+		h.restart(t)
+		replay, replayErr := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{WorkID: value.ID, BlockID: actionBlockID, ActionID: "external", RequestID: "running-recovery-action"})
+		if !errors.As(replayErr, &unknown) || replay.Status != string(ActionUnknown) || calls.Load() != 0 {
+			t.Fatalf("replay=%+v err=%v calls=%d", replay, replayErr, calls.Load())
+		}
+	})
+}
+
+func TestActionPendingRecoveryFailureIsPersisted(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		t.Fatal("handler must not run")
+		return nil, nil
+	})
+	value := setupActionBlock(t, h.svc, "pending-invalid", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	reserveActionForTest(t, h.svc, value, "run", "pending-invalid-action", ActionPending)
+	h.reg = NewActionRegistry()
+	h.restart(t)
+	receipt, err := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{
+		WorkID: value.ID, BlockID: actionBlockID, ActionID: "run", RequestID: "pending-invalid-action",
+	})
+	var conflict *ErrActionHandlerVersionConflict
+	if !errors.As(err, &conflict) || receipt.Status != string(ActionFailed) || !receipt.Retryable || conflict.Latest == nil {
+		t.Fatalf("receipt=%+v err=%T %v", receipt, err, err)
+	}
+	view, _ := h.svc.Get(context.Background(), value.ID)
+	stored, _, _ := findActionReceipt(view.Work.ActionReceipts, "pending-invalid-action")
+	if stored.Status != ActionFailed {
+		t.Fatalf("stored=%+v", stored)
+	}
+}
+
+func reserveActionForTest(t *testing.T, svc *Service, value *Work, actionID, requestID string, target ActionReceiptStatus) {
+	t.Helper()
+	view, err := svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := svc.resolveAction(view.Work, actionBlockID, actionID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputDigest, _ := actionInputDigest(value.ID, actionBlockID, actionID, resolved.registration.HandlerID, resolved.registration.HandlerVersion, nil)
+	now := time.Now().UTC()
+	record := ActionReceiptRecord{
+		WorkID: value.ID, BlockID: actionBlockID, BlockKind: resolved.block.Kind, ActionID: actionID,
+		HandlerIdentityVersion: HandlerIdentityVersion,
+		HandlerID:              resolved.registration.HandlerID, HandlerVersion: resolved.registration.HandlerVersion,
+		Status: ActionPending, RequestID: requestID, InputDigest: inputDigest, Fingerprint: resolved.fingerprint,
+		Intent: resolved.registration.Intent, Summary: resolved.summary, Risk: resolved.risk,
+		ConfirmRequired: resolved.confirm, Retryable: true, OutcomeKnown: true, CreatedAt: now, UpdatedAt: now,
+	}
+	revision, err := svc.commitActionRecord(value.ID, requestID+"/action/reserved", EventBlockActionReserved, record, view.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target == ActionRunning {
+		if _, _, err := svc.transitionAction(context.Background(), record, ActionPending, ActionRunning, "", false, false, nil); err != nil {
+			t.Fatal(err)
+		}
+		_ = revision
+	}
+}
+
+func reserveLegacyActionForTest(t *testing.T, svc *Service, value *Work, actionID, requestID string, target ActionReceiptStatus) {
+	t.Helper()
+	view, err := svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := svc.resolveAction(view.Work, actionBlockID, actionID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputDigest, _ := actionInputDigest(value.ID, actionBlockID, actionID, "", "", nil)
+	now := time.Now().UTC()
+	record := ActionReceiptRecord{
+		WorkID: value.ID, BlockID: actionBlockID, BlockKind: resolved.block.Kind, ActionID: actionID,
+		Status: ActionPending, RequestID: requestID, InputDigest: inputDigest, Fingerprint: "sha256:legacy-" + requestID,
+		Intent: resolved.registration.Intent, Summary: resolved.summary, Risk: resolved.risk,
+		ConfirmRequired: resolved.confirm, Retryable: true, OutcomeKnown: true, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := svc.commitActionRecord(value.ID, requestID+"/action/reserved", EventBlockActionReserved, record, view.Revision); err != nil {
+		t.Fatal(err)
+	}
+	switch target {
+	case ActionPending:
+		return
+	case ActionRunning, ActionSucceeded:
+		running, _, transitionErr := svc.transitionAction(context.Background(), record, ActionPending, ActionRunning, "", false, false, nil)
+		if transitionErr != nil {
+			t.Fatal(transitionErr)
+		}
+		if target == ActionSucceeded {
+			if _, _, transitionErr = svc.transitionAction(context.Background(), running, ActionRunning, ActionSucceeded, "legacy success", false, true, nil); transitionErr != nil {
+				t.Fatal(transitionErr)
+			}
+		}
+	case ActionFailed:
+		if _, _, err := svc.transitionAction(context.Background(), record, ActionPending, ActionFailed, "legacy failure", true, true, nil); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatalf("unsupported legacy target %s", target)
+	}
+}
+
+func TestActionExternalUnknownOutcome(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "external", "trusted.external", RiskExternal, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		return &ActionResult{UnknownOutcome: true, Message: "remote timeout"}, context.DeadlineExceeded
+	})
+	value := setupActionBlock(t, h.svc, "unknown-outcome", BlockActionSpec{ID: "external", Intent: "trusted.external", Risk: "external"})
+	receipt, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "external", "unknown-outcome-action"))
+	var unknown *ErrActionOutcomeUnknown
+	if !errors.As(err, &unknown) || receipt.Status != string(ActionUnknown) || receipt.OutcomeKnown || receipt.Retryable {
+		t.Fatalf("receipt=%+v err=%T %v", receipt, err, err)
+	}
+}
+
+type failReserveStore struct {
+	WorkStore
+	err error
+}
+
+func (s *failReserveStore) CommitEvent(workID string, event WorkEvent) (int64, error) {
+	if event.Type == EventBlockActionReserved {
+		return 0, s.err
+	}
+	return s.WorkStore.CommitEvent(workID, event)
+}
+
+func TestActionReservationFailurePreventsSideEffect(t *testing.T) {
+	h := newActionHarness(t)
+	var calls atomic.Int32
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		calls.Add(1)
+		return nil, nil
+	})
+	value := setupActionBlock(t, h.svc, "reserve-fail", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	sentinel := errors.New("disk unavailable")
+	h.svc.store = &failReserveStore{WorkStore: h.svc.store, err: sentinel}
+	_, err := h.svc.ExecuteBlockAction(context.Background(), actionRequest(value, "run", "reserve-fail-action"))
+	if !errors.Is(err, sentinel) || calls.Load() != 0 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+}
+
+func TestActionEventReplayAndFingerprintCanonical(t *testing.T) {
+	h := newActionHarness(t)
+	var calls atomic.Int32
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		calls.Add(1)
+		return &ActionResult{Data: json.RawMessage(`{"answer":42}`)}, nil
+	})
+	value := setupActionBlock(t, h.svc, "replay", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	req := actionRequest(value, "run", "replay-action")
+	req.Input = map[string]any{"a": 1, "b": 2}
+	receipt, err := h.svc.ExecuteBlockAction(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.restart(t)
+	req.Input = map[string]any{"b": 2, "a": 1}
+	replay, err := h.svc.ExecuteBlockAction(context.Background(), req)
+	if err != nil || replay.Fingerprint != receipt.Fingerprint || !sameJSON(replay.Result, json.RawMessage(`{"answer":42}`)) || calls.Load() != 1 {
+		t.Fatalf("replay=%+v err=%v calls=%d", replay, err, calls.Load())
+	}
+	view, _ := h.svc.Get(context.Background(), value.ID)
+	stored, _, found := findActionReceipt(view.Work.ActionReceipts, "replay-action")
+	if !found || stored.Status != ActionSucceeded || stored.Fingerprint == "" {
+		t.Fatalf("stored=%+v found=%v", stored, found)
+	}
+}
+
+func TestActionRegistryValidation(t *testing.T) {
+	registry := NewActionRegistry()
+	handler := func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil }
+	for _, registration := range []ActionRegistration{
+		{ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "bad value", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "bad value", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: strings.Repeat("h", 129), HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: strings.Repeat("v", 65), Intent: "i", Risk: RiskRead, Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: "bad", Handler: handler},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: RiskRead},
+		{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Payload: json.RawMessage(`{`), Handler: handler},
+	} {
+		if err := registry.Register(registration); err == nil {
+			t.Fatalf("invalid registration accepted: %+v", registration)
+		}
+	}
+	valid := ActionRegistration{BlockKind: "k", ActionID: "a", HandlerID: "h", HandlerVersion: "v1", Intent: "i", Risk: RiskRead, Handler: handler}
+	if err := registry.Register(valid); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(valid); err == nil {
+		t.Fatal("duplicate registration accepted")
+	}
+	got, ok := registry.Lookup("k", "a")
+	if !ok || got.Intent != "i" {
+		t.Fatalf("lookup=%+v ok=%v", got, ok)
+	}
+}
+
+func TestActionRegistryVersionReplacementAndIdentityConflict(t *testing.T) {
+	registry := NewActionRegistry()
+	var firstCalls, secondCalls atomic.Int32
+	first := ActionRegistration{
+		BlockKind: "k", ActionID: "a", HandlerID: "handler", HandlerVersion: "v1", Intent: "intent", Risk: RiskRead,
+		Handler: func(context.Context, ActionHandlerContext) (*ActionResult, error) { firstCalls.Add(1); return nil, nil },
+	}
+	if err := registry.Register(first); err != nil {
+		t.Fatal(err)
+	}
+	sameVersion := first
+	sameVersion.Handler = func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		secondCalls.Add(1)
+		return nil, nil
+	}
+	var registrationConflict *ErrActionHandlerRegistrationConflict
+	if err := registry.Register(sameVersion); !errors.As(err, &registrationConflict) {
+		t.Fatalf("same identity/version replacement err=%T %v", err, err)
+	}
+	got, _ := registry.Lookup("k", "a")
+	_, _ = got.Handler(context.Background(), ActionHandlerContext{})
+	if firstCalls.Load() != 1 || secondCalls.Load() != 0 {
+		t.Fatalf("same version silently replaced handler: first=%d second=%d", firstCalls.Load(), secondCalls.Load())
+	}
+
+	second := sameVersion
+	second.HandlerVersion = "v2"
+	if err := registry.Register(second); err != nil {
+		t.Fatalf("new version replacement: %v", err)
+	}
+	got, _ = registry.Lookup("k", "a")
+	_, _ = got.Handler(context.Background(), ActionHandlerContext{})
+	if got.HandlerVersion != "v2" || secondCalls.Load() != 1 {
+		t.Fatalf("lookup=%+v secondCalls=%d", got, secondCalls.Load())
+	}
+}
+
+func TestActionServiceRejectsSameVersionRegistrySwap(t *testing.T) {
+	firstCalls := atomic.Int32{}
+	registration := ActionRegistration{
+		BlockKind: "k", ActionID: "a", HandlerID: "handler", HandlerVersion: "v1", Intent: "intent", Risk: RiskRead,
+		Handler: func(context.Context, ActionHandlerContext) (*ActionResult, error) { firstCalls.Add(1); return nil, nil },
+	}
+	first := NewActionRegistry()
+	if err := first.Register(registration); err != nil {
+		t.Fatal(err)
+	}
+	second := NewActionRegistry()
+	replacement := registration
+	replacement.Handler = func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil }
+	if err := second.Register(replacement); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(nil, nil, ViewSinkDiscard)
+	if err := svc.SetActionRegistry(first); err != nil {
+		t.Fatal(err)
+	}
+	var conflict *ErrActionHandlerRegistrationConflict
+	if err := svc.SetActionRegistry(second); !errors.As(err, &conflict) {
+		t.Fatalf("same version registry swap err=%T %v", err, err)
+	}
+	got, ok := svc.lookupAction("k", "a")
+	if !ok {
+		t.Fatal("original registry disappeared")
+	}
+	_, _ = got.Handler(context.Background(), ActionHandlerContext{})
+	if firstCalls.Load() != 1 {
+		t.Fatal("same version registry swap replaced original handler")
+	}
+
+	replacement.HandlerVersion = "v2"
+	third := NewActionRegistry()
+	if err := third.Register(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetActionRegistry(third); err != nil {
+		t.Fatalf("new version registry swap: %v", err)
+	}
+	got, _ = svc.lookupAction("k", "a")
+	if got.HandlerVersion != "v2" {
+		t.Fatalf("handler version=%q want v2", got.HandlerVersion)
+	}
+}
+
+func TestActionPendingReceiptBindsTrustedHandlerVersion(t *testing.T) {
+	h := newActionHarness(t)
+	var firstCalls, secondCalls atomic.Int32
+	registration := ActionRegistration{
+		BlockKind: "markdown", ActionID: "publish", HandlerID: "report.publish", HandlerVersion: "v1",
+		Intent: "report.publish", Summary: "Publish report", Risk: RiskRead, Payload: json.RawMessage(`{"target":"same"}`),
+		Handler: func(context.Context, ActionHandlerContext) (*ActionResult, error) { firstCalls.Add(1); return nil, nil },
+	}
+	if err := h.reg.Register(registration); err != nil {
+		t.Fatal(err)
+	}
+	value := setupActionBlock(t, h.svc, "handler-version", BlockActionSpec{ID: "publish", Intent: "report.publish", Risk: "read"})
+	reserveActionForTest(t, h.svc, value, "publish", "handler-version-old", ActionPending)
+	before, err := h.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRecord, _, _ := findActionReceipt(before.Work.ActionReceipts, "handler-version-old")
+
+	replacement := registration
+	replacement.HandlerVersion = "v2"
+	replacement.Handler = func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+		secondCalls.Add(1)
+		return nil, nil
+	}
+	if err := h.reg.Register(replacement); err != nil {
+		t.Fatal(err)
+	}
+	h.restart(t)
+	receipt, executeErr := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{
+		WorkID: value.ID, BlockID: actionBlockID, ActionID: "publish", RequestID: "handler-version-old",
+	})
+	var versionConflict *ErrActionHandlerVersionConflict
+	if !errors.As(executeErr, &versionConflict) || receipt == nil || receipt.Status != string(ActionFailed) || !receipt.Retryable || firstCalls.Load() != 0 || secondCalls.Load() != 0 {
+		t.Fatalf("receipt=%+v err=%T %v first=%d second=%d", receipt, executeErr, executeErr, firstCalls.Load(), secondCalls.Load())
+	}
+	if versionConflict.HandlerVersion != "v1" || versionConflict.CurrentVersion != "v2" || versionConflict.Latest == nil || versionConflict.Latest.Status != string(ActionFailed) || !versionConflict.Retryable {
+		t.Fatalf("version conflict=%+v", versionConflict)
+	}
+
+	current, err := h.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRequest := actionRequest(value, "publish", "handler-version-new")
+	newRequest.ExpectedRevision = current.Revision
+	newReceipt, err := h.svc.ExecuteBlockAction(context.Background(), newRequest)
+	if err != nil || newReceipt.Status != string(ActionSucceeded) || newReceipt.HandlerID != "report.publish" || newReceipt.HandlerVersion != "v2" || secondCalls.Load() != 1 {
+		t.Fatalf("new receipt=%+v err=%v second=%d", newReceipt, err, secondCalls.Load())
+	}
+	latest, _ := h.svc.Get(context.Background(), value.ID)
+	newRecord, _, _ := findActionReceipt(latest.Work.ActionReceipts, "handler-version-new")
+	if oldRecord.InputDigest == newRecord.InputDigest || oldRecord.Fingerprint == newRecord.Fingerprint {
+		t.Fatalf("handler version missing from digests: old=%+v new=%+v", oldRecord, newRecord)
+	}
+}
+
+func TestActionLegacyReceiptsNeverInvokeUnknownHandler(t *testing.T) {
+	for _, target := range []ActionReceiptStatus{ActionPending, ActionRunning, ActionSucceeded, ActionFailed} {
+		t.Run(string(target), func(t *testing.T) {
+			h := newActionHarness(t)
+			var calls atomic.Int32
+			h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) {
+				calls.Add(1)
+				return nil, nil
+			})
+			value := setupActionBlock(t, h.svc, "legacy-"+string(target), BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+			requestID := "legacy-action-" + string(target)
+			reserveLegacyActionForTest(t, h.svc, value, "run", requestID, target)
+			h.restart(t)
+			receipt, err := h.svc.ExecuteBlockAction(context.Background(), BlockActionRequest{
+				WorkID: value.ID, BlockID: actionBlockID, ActionID: "run", RequestID: requestID,
+			})
+			if calls.Load() != 0 || receipt == nil || receipt.HandlerIdentityVersion != 0 || receipt.HandlerID != "" || receipt.HandlerVersion != "" {
+				t.Fatalf("receipt=%+v err=%v calls=%d", receipt, err, calls.Load())
+			}
+			switch target {
+			case ActionPending:
+				var conflict *ErrActionHandlerVersionConflict
+				if !errors.As(err, &conflict) || receipt.Status != string(ActionFailed) || !receipt.Retryable {
+					t.Fatalf("pending receipt=%+v err=%T %v", receipt, err, err)
+				}
+			case ActionRunning:
+				var conflict *ErrActionHandlerVersionConflict
+				var unknown *ErrActionOutcomeUnknown
+				if !errors.As(err, &conflict) || !errors.As(err, &unknown) || receipt.Status != string(ActionUnknown) || receipt.OutcomeKnown || receipt.Retryable {
+					t.Fatalf("running receipt=%+v err=%T %v", receipt, err, err)
+				}
+			default:
+				if err != nil || receipt.Status != string(target) {
+					t.Fatalf("terminal receipt=%+v err=%v", receipt, err)
+				}
+			}
+		})
+	}
+}
+
+func TestActionReducerRejectsInvalidTransition(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "bad-transition", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	reserveActionForTest(t, h.svc, value, "run", "bad-transition-action", ActionPending)
+	view, _ := h.svc.Get(context.Background(), value.ID)
+	record, _, _ := findActionReceipt(view.Work.ActionReceipts, "bad-transition-action")
+	record.Status, record.UpdatedAt = ActionSucceeded, time.Now().UTC()
+	payload, _ := json.Marshal(record)
+	event := newServiceEvent(value.ID, "bad-transition/succeeded", EventBlockActionChanged, payload, record.UpdatedAt)
+	event.BaseRevision, event.Revision = view.Revision, view.Revision+1
+	if _, err := h.svc.store.CommitEvent(value.ID, event); err == nil {
+		t.Fatal("pending -> succeeded transition accepted")
+	}
+}
+
+func TestActionReducerRejectsEveryImmutableFieldChangeAtomically(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "immutable", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	reserveActionForTest(t, h.svc, value, "run", "immutable-action", ActionPending)
+	view, err := h.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _, found := findActionReceipt(view.Work.ActionReceipts, "immutable-action")
+	if !found {
+		t.Fatal("reserved receipt missing")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ActionReceiptRecord)
+	}{
+		{"workId", func(r *ActionReceiptRecord) { r.WorkID = "work:tampered" }},
+		{"blockId", func(r *ActionReceiptRecord) { r.BlockID = "block:tampered" }},
+		{"blockKind", func(r *ActionReceiptRecord) { r.BlockKind = "tampered" }},
+		{"actionId", func(r *ActionReceiptRecord) { r.ActionID = "tampered" }},
+		{"handlerIdentityVersion", func(r *ActionReceiptRecord) { r.HandlerIdentityVersion++ }},
+		{"handlerId", func(r *ActionReceiptRecord) { r.HandlerID = "tampered" }},
+		{"handlerVersion", func(r *ActionReceiptRecord) { r.HandlerVersion = "v999" }},
+		{"requestId", func(r *ActionReceiptRecord) { r.RequestID = "tampered" }},
+		{"inputDigest", func(r *ActionReceiptRecord) { r.InputDigest = "sha256:tampered" }},
+		{"fingerprint", func(r *ActionReceiptRecord) { r.Fingerprint = "sha256:tampered" }},
+		{"intent", func(r *ActionReceiptRecord) { r.Intent = "tampered" }},
+		{"summary", func(r *ActionReceiptRecord) { r.Summary = "tampered" }},
+		{"risk", func(r *ActionReceiptRecord) { r.Risk = RiskExternal }},
+		{"confirmRequired", func(r *ActionReceiptRecord) { r.ConfirmRequired = !r.ConfirmRequired }},
+		{"createdAt", func(r *ActionReceiptRecord) { r.CreatedAt = r.CreatedAt.Add(time.Second) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := original
+			record.Status = ActionRunning
+			record.UpdatedAt = original.UpdatedAt.Add(time.Second)
+			test.mutate(&record)
+			payload, marshalErr := json.Marshal(record)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			event := newServiceEvent(value.ID, "immutable/"+test.name, EventBlockActionChanged, payload, record.UpdatedAt)
+			event.BaseRevision, event.Revision = view.Revision, view.Revision+1
+			if _, commitErr := h.svc.store.CommitEvent(value.ID, event); commitErr == nil {
+				t.Fatalf("immutable %s change was accepted", test.name)
+			}
+			current, state, loadErr := h.svc.store.LoadState(value.ID, "")
+			if loadErr != nil || state.Revision != view.Revision {
+				t.Fatalf("bad event was partially appended: revision=%d want=%d err=%v", state.Revision, view.Revision, loadErr)
+			}
+			stored, _, ok := findActionReceipt(current.ActionReceipts, original.RequestID)
+			if !ok || stored.Status != ActionPending || changedActionIdentity(original, stored) != "" {
+				t.Fatalf("projection changed after rejected event: %+v", stored)
+			}
+		})
+	}
+}
+
+func TestActionInputRejectsNonJSONValues(t *testing.T) {
+	h := newActionHarness(t)
+	h.register(t, "run", "trusted.run", RiskRead, func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil })
+	value := setupActionBlock(t, h.svc, "bad-input", BlockActionSpec{ID: "run", Intent: "trusted.run", Risk: "read"})
+	req := actionRequest(value, "run", "bad-input-action")
+	req.Input = map[string]any{"bad": func() {}}
+	if _, err := h.svc.ExecuteBlockAction(context.Background(), req); err == nil {
+		t.Fatal("non-JSON input accepted")
+	}
+}
+
+func sameJSON(left, right json.RawMessage) bool {
+	leftCanonical, leftErr := canonicalJSON(left)
+	rightCanonical, rightErr := canonicalJSON(right)
+	return leftErr == nil && rightErr == nil && string(leftCanonical) == string(rightCanonical)
+}
+
+func ExampleActionRegistry_Register() {
+	registry := NewActionRegistry()
+	err := registry.Register(ActionRegistration{
+		BlockKind: "action_entry", ActionID: "publish", HandlerID: "report.publish", HandlerVersion: "v1", Intent: "report.publish", Risk: RiskExternal,
+		Handler: func(context.Context, ActionHandlerContext) (*ActionResult, error) { return nil, nil },
+	})
+	fmt.Println(err)
+	// Output: <nil>
+}

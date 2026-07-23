@@ -287,6 +287,22 @@ func SessionDir() string {
 	return filepath.Join(dir, "sessions")
 }
 
+// ProjectWorkDir is the per-workspace Work data directory:
+// <state root>/projects/<slug>/works. Empty when either the state root or
+// workspaceRoot doesn't resolve. This is the root under which FileWorkStore
+// creates per-Work subdirectories and the global index.
+func ProjectWorkDir(workspaceRoot string) string {
+	base := MemoryUserDir()
+	root := strings.TrimSpace(workspaceRoot)
+	if base == "" || root == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return filepath.Join(base, "projects", WorkspaceSlug(root), "works")
+}
+
 // ProjectSessionDir is the per-workspace session directory the desktop sidebar
 // lists: <state root>/projects/<slug>/sessions. Empty when either the state root
 // or workspaceRoot doesn't resolve.

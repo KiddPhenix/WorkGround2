@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 999,
+  "type": "delta",
+  "workID": "work-future-001",
+  "eventID": "evt-future-001",
+  "revision": 42,
+  "baseRevision": 41,
+  "requestID": "req-future-001",
+  "object": {
+    "kind": "block",
+    "id": "blk-future",
+    "parentID": "work-future-001"
+  },
+  "createdAt": "2027-01-01T00:00:00Z",
+  "payload": {
+    "futureField": "this field is from a future schema version"
+  }
+}

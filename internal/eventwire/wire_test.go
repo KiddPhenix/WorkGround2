@@ -232,8 +232,11 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 	}{
 		{
 			name: "approval",
-			in:   event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "rm"}},
-			want: []string{`"kind":"approval_request"`, `"approval":{"id":"a1","tool":"bash","subject":"rm"}`},
+			in: event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{
+				ID: "a1", Tool: "report.publish", Subject: "work:w/block:b/action:a",
+				HandlerID: "report.publish", HandlerVersion: "v2",
+			}},
+			want: []string{`"kind":"approval_request"`, `"handlerId":"report.publish"`, `"handlerVersion":"v2"`},
 		},
 		{
 			name: "ask",

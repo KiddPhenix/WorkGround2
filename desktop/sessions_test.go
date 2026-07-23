@@ -2,14 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/config"
+	"workground2/internal/control"
 	"workground2/internal/jobs"
 	"workground2/internal/store"
+	"workground2/internal/work"
 )
 
 func occupyReadFileWithTimeoutSlots(t *testing.T) func() {
@@ -964,5 +969,401 @@ func TestRecordSessionDisplaySkipsNoop(t *testing.T) {
 	}
 	if _, err := os.Stat(sessionDisplayPath(dir)); !os.IsNotExist(err) {
 		t.Fatalf("noop display should not create sidecar, stat err = %v", err)
+	}
+}
+
+// ── Session ref / Work owner coordination tests ────────────────────────────
+//
+// These tests use real App methods (PurgeTrashedSession, ForcePurgeTrashedSession,
+// etc.) with an isolated state directory and an injected fake SessionRefStore.
+// No active/current-tab inference is used.
+
+func setupSessionRefApp(t *testing.T) (*App, string, func()) {
+	t.Helper()
+	home := isolateDesktopUserDirs(t)
+	sessionDir := config.SessionDir()
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	app := &App{}
+	// Create a minimal tab so knownSessionDirs includes this directory.
+	ctrl := control.New(control.Options{SessionDir: sessionDir})
+	app.setTestCtrl(ctrl, "")
+	return app, sessionDir, func() { _ = home }
+}
+
+func writeSessionFile(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("data"), 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	return p
+}
+
+func TestPurgeTrashedSessionBlockedByWorkRef(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "blocked.jsonl")
+	store := work.NewMemorySessionRefStore(work.WithRetention(0))
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-1"}, "req-1")
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "blocked.jsonl", "blocked.jsonl")
+	if _, err := os.Stat(trashPath); os.IsNotExist(err) {
+		t.Fatal("trash item should exist before purge")
+	}
+
+	// PurgeTrashedSession should block because work-1 is referencing.
+	err := app.PurgeTrashedSession(trashPath)
+	if err == nil {
+		t.Fatal("expected purge to be blocked by work reference")
+	}
+	if !strings.Contains(err.Error(), "work-1") {
+		t.Fatalf("error should mention work-1, got: %v", err)
+	}
+
+	// Trash item should still exist.
+	if _, err := os.Stat(trashPath); os.IsNotExist(err) {
+		t.Fatal("trash item should still exist after blocked purge")
+	}
+}
+
+func TestPurgeTrashedSessionAllowedWhenUnreferenced(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "free.jsonl")
+	store := work.NewMemorySessionRefStore(work.WithRetention(0))
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "free.jsonl", "free.jsonl")
+
+	if err := app.PurgeTrashedSession(trashPath); err != nil {
+		t.Fatalf("unreferenced purge should succeed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(trashPath)); !os.IsNotExist(err) {
+		t.Fatal("trash item should be removed after purge")
+	}
+}
+
+func TestPurgeTrashedSessionNilStoreBlocksFailClosed(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "nil-store.jsonl")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "nil-store.jsonl", "nil-store.jsonl")
+
+	// sessionRefs is nil — must block purge (fail-closed, not silent skip).
+	err := app.PurgeTrashedSession(trashPath)
+	if err == nil {
+		t.Fatal("expected nil store to block purge")
+	}
+	if !strings.Contains(err.Error(), "not initialized") {
+		t.Fatalf("error should mention not initialized, got: %v", err)
+	}
+}
+
+func TestPurgeTrashedSessionHonorsRetention(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "retained.jsonl")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "retained.jsonl", "retained.jsonl")
+	deletedAt := trashedSessionDeletedAt(trashPath)
+	now := time.UnixMilli(deletedAt)
+	app.setSessionRefStore(work.NewMemorySessionRefStore(
+		work.WithClock(func() time.Time { return now }),
+		work.WithRetention(time.Hour),
+	))
+
+	if err := app.PurgeTrashedSession(trashPath); err == nil || !strings.Contains(err.Error(), "retention") {
+		t.Fatalf("expected retention block, got %v", err)
+	}
+	now = now.Add(2 * time.Hour)
+	if err := app.PurgeTrashedSession(trashPath); err != nil {
+		t.Fatalf("purge after retention: %v", err)
+	}
+}
+
+func TestForcePurgeTrashedSessionSucceedsAndReturnsImpact(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "force.jsonl")
+	store := work.NewMemorySessionRefStore()
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-A"}, "req-1")
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-B"}, "req-2")
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "force.jsonl", "force.jsonl")
+
+	impact, err := app.ForcePurgeTrashedSession(trashPath)
+	if err != nil {
+		t.Fatalf("force purge: %v", err)
+	}
+	if impact == nil {
+		t.Fatal("expected non-nil impact")
+	}
+	if len(impact.AffectedWorkIDs) != 2 {
+		t.Fatalf("expected 2 affected Work IDs, got %v", impact.AffectedWorkIDs)
+	}
+
+	// Trash item should be gone.
+	if _, err := os.Stat(filepath.Dir(trashPath)); !os.IsNotExist(err) {
+		t.Fatal("trash item should be removed after force purge")
+	}
+
+	// Cleanup-pending should be cleared after success.
+	pending, _ := app.ListSessionCleanupPending()
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending after successful force purge, got %d", len(pending))
+	}
+}
+
+func TestForcePurgeTrashedSessionCleanupPendingLifecycle(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "lifecycle.jsonl")
+	store := work.NewMemorySessionRefStore()
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-X"}, "req-1")
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "lifecycle.jsonl", "lifecycle.jsonl")
+
+	// Before force purge: no cleanup-pending.
+	pending, _ := app.ListSessionCleanupPending()
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending before force purge, got %d", len(pending))
+	}
+
+	// Force purge — should succeed and leave no cleanup-pending.
+	impact, err := app.ForcePurgeTrashedSession(trashPath)
+	if err != nil {
+		t.Fatalf("force purge: %v", err)
+	}
+	if impact == nil || len(impact.AffectedWorkIDs) != 1 {
+		t.Fatalf("impact = %+v", impact)
+	}
+
+	// After success: cleanup-pending cleared.
+	pending, _ = app.ListSessionCleanupPending()
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending after successful force purge, got %d", len(pending))
+	}
+
+	// Trash item should be gone.
+	if _, err := os.Stat(filepath.Dir(trashPath)); !os.IsNotExist(err) {
+		t.Fatal("trash item should be removed after force purge")
+	}
+}
+
+func TestForcePurgeFailureRemainsRetryable(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "force-failure.jsonl")
+	store := work.NewMemorySessionRefStore()
+	if err := store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-F"}, "req-1"); err != nil {
+		t.Fatal(err)
+	}
+	app.setSessionRefStore(store)
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "force-failure.jsonl", "force-failure.jsonl")
+	app.purgeSession = func(string, string) error { return errors.New("injected purge failure") }
+
+	impact, err := app.ForcePurgeTrashedSession(trashPath)
+	if err == nil || impact == nil {
+		t.Fatalf("force purge impact=%+v err=%v", impact, err)
+	}
+	pending, listErr := app.ListSessionCleanupPending()
+	if listErr != nil || len(pending) != 1 || pending[0].Stage != "failed" {
+		t.Fatalf("cleanup pending=%+v err=%v", pending, listErr)
+	}
+	requestID := pending[0].RequestID
+	app.purgeSession = nil
+	if err := app.RetryCleanupPending(trashPath, requestID); err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+	pending, _ = app.ListSessionCleanupPending()
+	if len(pending) != 0 {
+		t.Fatalf("pending after retry=%+v", pending)
+	}
+}
+
+func TestForcePurgeStopsBeforePhysicalDeleteWhenLedgerFails(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "ledger-failure.jsonl")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "ledger-failure.jsonl", "ledger-failure.jsonl")
+	blocker := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.NewFileSessionRefStore(filepath.Join(blocker, "refs.json"), work.WithRetention(0))
+	if err != nil {
+		t.Fatalf("open fake store: %v", err)
+	}
+	app.setSessionRefStore(store)
+	physicalCalled := false
+	app.purgeSession = func(string, string) error {
+		physicalCalled = true
+		return nil
+	}
+
+	if _, err := app.ForcePurgeTrashedSession(trashPath); err == nil {
+		t.Fatal("expected durable ledger failure")
+	}
+	if physicalCalled {
+		t.Fatal("physical purge must not run before cleanup intent is durable")
+	}
+	if _, err := os.Stat(trashPath); err != nil {
+		t.Fatalf("trash item should remain retryable: %v", err)
+	}
+}
+
+func TestRetryCleanupPendingAfterFailure(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "retry.jsonl")
+	store := work.NewMemorySessionRefStore()
+	app.setSessionRefStore(store)
+
+	requestID := "force-purge:" + sessionPath
+	impact := &work.ForcePurgeImpact{SessionPath: sessionPath, AffectedWorkIDs: []string{"w1"}}
+	store.RecordCleanupPending(sessionPath, "force purge", requestID)
+	store.UpdateCleanupPending(sessionPath, requestID, "failed", "disk full", impact)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "retry.jsonl", "retry.jsonl")
+
+	// Retry should succeed.
+	if err := app.RetryCleanupPending(trashPath, requestID); err != nil {
+		t.Fatalf("retry cleanup: %v", err)
+	}
+
+	// Trash item should be gone.
+	if _, err := os.Stat(filepath.Dir(trashPath)); !os.IsNotExist(err) {
+		t.Fatal("trash item should be removed after retry")
+	}
+
+	// Cleanup-pending should be cleared.
+	pending, _ := app.ListSessionCleanupPending()
+	if len(pending) != 0 {
+		t.Fatalf("expected 0 pending after retry, got %d", len(pending))
+	}
+}
+
+func TestSessionPurgeImpactReturnsCorrectData(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "impact.jsonl")
+	store := work.NewMemorySessionRefStore()
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "work-X"}, "req-1")
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "impact.jsonl", "impact.jsonl")
+
+	impact, err := app.SessionPurgeImpact(trashPath)
+	if err != nil {
+		t.Fatalf("SessionPurgeImpact: %v", err)
+	}
+	if impact == nil || len(impact.AffectedWorkIDs) != 1 || impact.AffectedWorkIDs[0] != "work-X" {
+		t.Fatalf("impact = %+v", impact)
+	}
+}
+
+func TestSessionPurgeImpactNilStore(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "nil-impact.jsonl")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "nil-impact.jsonl", "nil-impact.jsonl")
+
+	impact, err := app.SessionPurgeImpact(trashPath)
+	if err == nil || impact != nil {
+		t.Fatalf("expected fail-closed impact, impact=%+v err=%v", impact, err)
+	}
+}
+
+func TestDeleteSessionThenPurgeNoTabDependency(t *testing.T) {
+	// Verify that session ref checks do not depend on active/current tab.
+	// The App has a tab (via setTestCtrl) but the ref check uses explicit
+	// session identity from the trash path, not tab state.
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "no-tab.jsonl")
+	store := work.NewMemorySessionRefStore()
+	store.AcquireRef(sessionPath, work.SessionOwner{OwnerType: work.OwnerWork, OwnerID: "w-no-tab"}, "req-1")
+	app.setSessionRefStore(store)
+
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "no-tab.jsonl", "no-tab.jsonl")
+
+	// The ref check resolves the live path from the trash path, not from any tab.
+	err := app.PurgeTrashedSession(trashPath)
+	if err == nil || !strings.Contains(err.Error(), "w-no-tab") {
+		t.Fatalf("expected block by w-no-tab, got: %v", err)
+	}
+}
+
+func TestResolveTrashedSessionIdentity(t *testing.T) {
+	app, dir, cleanup := setupSessionRefApp(t)
+	defer cleanup()
+
+	sessionPath := writeSessionFile(t, dir, "resolve.jsonl")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, "resolve.jsonl", "resolve.jsonl")
+
+	resolvedDir, livePath, err := app.resolveTrashedSessionIdentity(trashPath)
+	if err != nil {
+		t.Fatalf("resolveTrashedSessionIdentity: %v", err)
+	}
+	if resolvedDir != dir {
+		t.Fatalf("dir = %s, want %s", resolvedDir, dir)
+	}
+	if livePath != sessionPath {
+		t.Fatalf("livePath = %s, want %s", livePath, sessionPath)
 	}
 }

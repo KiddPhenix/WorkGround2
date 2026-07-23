@@ -1,0 +1,566 @@
+package control
+
+import (
+	"context"
+	"errors"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"workground2/internal/agent"
+	"workground2/internal/event"
+	"workground2/internal/provider"
+	"workground2/internal/tool"
+	"workground2/internal/work"
+)
+
+type taskProvider struct {
+	name    string
+	text    string
+	err     error
+	started chan struct{}
+	calls   atomic.Int32
+	mu      sync.Mutex
+	reqs    []provider.Request
+}
+
+type taskExecutorWork struct {
+	WorkService
+	executor work.TaskExecutor
+}
+
+type taskCornerstoneWork struct {
+	WorkService
+	view *work.WorkView
+	err  error
+}
+
+func (w *taskCornerstoneWork) Get(context.Context, string) (*work.WorkView, error) {
+	return w.view, w.err
+}
+
+func (w *taskExecutorWork) SetTaskExecutor(executor work.TaskExecutor) {
+	w.executor = executor
+}
+
+func (p *taskProvider) Name() string { return p.name }
+
+func (p *taskProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
+	p.calls.Add(1)
+	p.mu.Lock()
+	p.reqs = append(p.reqs, req)
+	p.mu.Unlock()
+	if p.started != nil {
+		close(p.started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if p.err != nil {
+		return nil, p.err
+	}
+	chunks := make(chan provider.Chunk, 2)
+	chunks <- provider.Chunk{Type: provider.ChunkText, Text: p.text}
+	chunks <- provider.Chunk{Type: provider.ChunkDone}
+	close(chunks)
+	return chunks, nil
+}
+
+func (p *taskProvider) lastRequest() provider.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.reqs) == 0 {
+		return provider.Request{}
+	}
+	return p.reqs[len(p.reqs)-1]
+}
+
+func taskInput() work.TaskExecuteInput {
+	return work.TaskExecuteInput{
+		WorkID:           "work-1",
+		RunID:            "run-1",
+		StageID:          "stage-1",
+		TaskID:           "task-1",
+		AttemptID:        "attempt-2",
+		AttemptIndex:     2,
+		RequestID:        "request-1",
+		DefinitionDigest: "sha256:definition",
+		Prompt:           "private prompt with secret-token",
+	}
+}
+
+func taskCancel(ref work.SessionRef, requestID string) work.TaskCancelInput {
+	input := taskInput()
+	return work.TaskCancelInput{
+		WorkID: input.WorkID, RunID: input.RunID, StageID: input.StageID,
+		TaskID: input.TaskID, AttemptID: input.AttemptID, Session: ref, RequestID: requestID,
+	}
+}
+
+func taskFactory(t *testing.T, prov provider.Provider, modelRef string, paths chan<- string, cleaned *atomic.Bool) TaskSessionFactory {
+	t.Helper()
+	dir := t.TempDir()
+	return func(context.Context, work.TaskExecuteInput) (*Controller, func(), error) {
+		path := agent.NewSessionPath(dir, "work-task")
+		if paths != nil {
+			paths <- path
+		}
+		session := agent.NewSession("stable system prompt")
+		executor := agent.New(prov, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+		ctrl := New(Options{
+			Runner:       executor,
+			Executor:     executor,
+			ModelRef:     modelRef,
+			SessionDir:   dir,
+			SessionPath:  path,
+			SystemPrompt: "stable system prompt",
+		})
+		return ctrl, func() {
+			if cleaned != nil {
+				cleaned.Store(true)
+			}
+		}, nil
+	}
+}
+
+func TestTaskExecutorPersistsLightweightSessionRef(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "concise result\nprivate detail"}
+	var cleaned atomic.Bool
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, &cleaned),
+	)
+
+	attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted || attempt.Index != 2 {
+		t.Fatalf("attempt = %+v", attempt)
+	}
+	ref := attempt.SessionRef
+	if ref.SessionPath == "" || ref.BranchID != agent.BranchID(ref.SessionPath) {
+		t.Fatalf("SessionRef path/branch = %+v", ref)
+	}
+	if ref.ModelRef != "fake/model-v1" || ref.TurnCount != 1 || ref.Preview != "concise result" {
+		t.Fatalf("SessionRef metadata = %+v", ref)
+	}
+	if strings.Contains(ref.Preview, "private prompt") || strings.Contains(ref.Preview, "secret-token") {
+		t.Fatalf("SessionRef preview leaked prompt: %q", ref.Preview)
+	}
+	if _, statErr := os.Stat(ref.SessionPath); statErr != nil {
+		t.Fatalf("persisted Session missing after ExecuteTask: %v", statErr)
+	}
+	meta, ok, metaErr := agent.LoadBranchMeta(ref.SessionPath)
+	if metaErr != nil || !ok {
+		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, metaErr)
+	}
+	if meta.Model != "fake/model-v1" || meta.SessionSource != "work:work-1/run:run-1/stage:stage-1/task:task-1/attempt:2/request:request-1" {
+		t.Fatalf("branch metadata = %+v", meta)
+	}
+	if !cleaned.Load() {
+		t.Fatal("factory cleanup was not called")
+	}
+}
+
+func TestTaskExecutorCornerstoneContextKeepsSystemPromptGolden(t *testing.T) {
+	const systemPromptGolden = "stable system prompt"
+	prov := &taskProvider{name: "fake-provider", text: "ok"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{Work: &work.Work{
+		ID: "work-1",
+		Cornerstones: []work.Cornerstone{{
+			ID:       "cs-1",
+			WorkID:   "work-1",
+			Type:     work.CornerstoneInstruction,
+			Title:    "Pinned rule",
+			Content:  "keep these exact instructions",
+			Mode:     work.CornerstoneSnapshot,
+			Status:   work.CornerstoneActive,
+			PinnedAt: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+		}},
+	}}})
+
+	if _, err := exec.ExecuteTask(context.Background(), taskInput()); err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	req := prov.lastRequest()
+	if len(req.Messages) < 2 {
+		t.Fatalf("provider messages = %d, want system and user", len(req.Messages))
+	}
+	if got := req.Messages[0]; got.Role != provider.RoleSystem || got.Content != systemPromptGolden {
+		t.Fatalf("system prompt bytes changed: role=%q content=%q", got.Role, got.Content)
+	}
+	user := req.Messages[len(req.Messages)-1].Content
+	for _, want := range []string{"<cornerstone-context>", `id="cs-1"`, "keep these exact instructions", taskInput().Prompt} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("composed user turn missing %q: %q", want, user)
+		}
+	}
+}
+
+func TestTaskExecutorCornerstoneFailureDoesNotRunTurn(t *testing.T) {
+	tests := []struct {
+		name string
+		work *taskCornerstoneWork
+	}{
+		{name: "get failure", work: &taskCornerstoneWork{err: errors.New("store unavailable")}},
+		{name: "required missing", work: &taskCornerstoneWork{view: &work.WorkView{Work: &work.Work{
+			ID: "work-1",
+			Cornerstones: []work.Cornerstone{{
+				ID: "cs-required", WorkID: "work-1", Type: work.CornerstonePolicy,
+				Required: true, Status: work.CornerstoneMissing,
+			}},
+		}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov := &taskProvider{name: "fake-provider", text: "must not run"}
+			exec := NewTaskExecutorAdapter(
+				TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+				taskFactory(t, prov, "fake/model-v1", nil, nil),
+			)
+			exec.SetWorkService(tt.work)
+			attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+			if err == nil || attempt == nil || attempt.State != work.RunFailed {
+				t.Fatalf("ExecuteTask = (%+v, %v), want failed before RunTurn", attempt, err)
+			}
+			if got := prov.calls.Load(); got != 0 {
+				t.Fatalf("provider called %d times after cornerstone failure", got)
+			}
+		})
+	}
+}
+
+func TestCornerstoneTurnRejectsOverlapAndTokenizesCleanup(t *testing.T) {
+	c := New(Options{})
+	first, err := c.beginCornerstoneTurn("work-a", "<cornerstone-context/>\n", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2); err == nil {
+		t.Fatal("overlapping Work context should fail closed")
+	}
+	c.finishCornerstoneTurn(first + 1)
+	if _, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2); err == nil {
+		t.Fatal("late cleanup token cleared the active Work context")
+	}
+	c.finishCornerstoneTurn(first)
+	second, err := c.beginCornerstoneTurn("work-b", "<cornerstone-context/>\n", 2)
+	if err != nil {
+		t.Fatalf("new Work context after cleanup: %v", err)
+	}
+	c.finishCornerstoneTurn(second)
+}
+
+func TestTaskExecutorReturnsSanitizedRetryableError(t *testing.T) {
+	rootErr := &provider.APIError{
+		Provider: "fake-provider",
+		Status:   503,
+		Body:     "upstream echoed secret-token and private prompt",
+	}
+	prov := &taskProvider{name: "fake-provider", err: rootErr}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+
+	attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+	if attempt == nil || err == nil {
+		t.Fatalf("ExecuteTask = (%+v, %v), want failed Attempt and error", attempt, err)
+	}
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || !errors.Is(err, rootErr) {
+		t.Fatalf("error does not preserve typed context/cause: %T %v", err, err)
+	}
+	if !taskErr.Retryable || taskErr.Provider != "fake-provider" || taskErr.Model != "fake/model-v1" || taskErr.TaskID != "task-1" || taskErr.Attempt != 2 {
+		t.Fatalf("TaskRunError = %+v", taskErr)
+	}
+	if attempt.State != work.RunFailed || attempt.Error != taskErr.Error() {
+		t.Fatalf("failed Attempt = %+v", attempt)
+	}
+	for _, text := range []string{err.Error(), attempt.Error} {
+		for _, secret := range []string{"secret-token", "private prompt", rootErr.Body} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("sanitized error leaked %q: %q", secret, text)
+			}
+		}
+		for _, contextValue := range []string{"fake-provider", "fake/model-v1", "task-1", "attempt=2", "retryable=true"} {
+			if !strings.Contains(text, contextValue) {
+				t.Fatalf("error %q missing context %q", text, contextValue)
+			}
+		}
+	}
+}
+
+func TestTaskExecutorClassifiesNonRetryableProviderError(t *testing.T) {
+	rootErr := &provider.APIError{Provider: "fake-provider", Status: 400, Body: "invalid request"}
+	prov := &taskProvider{name: "fake-provider", err: rootErr}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	_, err := exec.ExecuteTask(context.Background(), taskInput())
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || taskErr.Retryable {
+		t.Fatalf("TaskRunError = %+v, want non-retryable", taskErr)
+	}
+}
+
+func TestTaskExecutorFactoryFailureCleansUpAndKeepsCause(t *testing.T) {
+	rootErr := errors.New("temporary Session factory failure with secret-token")
+	var cleaned atomic.Bool
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		func(context.Context, work.TaskExecuteInput) (*Controller, func(), error) {
+			return nil, func() { cleaned.Store(true) }, rootErr
+		},
+	)
+	_, err := exec.ExecuteTask(context.Background(), taskInput())
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || !errors.Is(err, rootErr) || !taskErr.Retryable || taskErr.Operation != "create_session" {
+		t.Fatalf("factory error = %#v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("factory error leaked cause: %v", err)
+	}
+	if !cleaned.Load() {
+		t.Fatal("factory cleanup was not called after partial failure")
+	}
+}
+
+func TestTaskExecutorCancelIsRealAndIdempotent(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", started: make(chan struct{})}
+	paths := make(chan string, 1)
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", paths, nil),
+	)
+	type result struct {
+		attempt *work.Attempt
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+		done <- result{attempt: attempt, err: err}
+	}()
+
+	path := <-paths
+	<-prov.started
+	ref := work.SessionRef{SessionPath: path, BranchID: agent.BranchID(path)}
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-1")); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-1")); err != nil {
+		t.Fatalf("repeated CancelTask: %v", err)
+	}
+	select {
+	case got := <-done:
+		if got.attempt == nil || got.attempt.State != work.RunCancelled || !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("cancelled ExecuteTask = (%+v, %v)", got.attempt, got.err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ExecuteTask did not stop after CancelTask")
+	}
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-2")); !errors.Is(err, ErrTaskSessionNotRunning) {
+		t.Fatalf("cancel completed Session error = %v", err)
+	}
+	other := work.SessionRef{SessionPath: agent.NewSessionPath(t.TempDir(), "other")}
+	otherInput := taskCancel(other, "cancel-1")
+	otherInput.AttemptID = "other-attempt"
+	if err := exec.CancelTask(context.Background(), otherInput); !errors.Is(err, ErrTaskCancelConflict) {
+		t.Fatalf("request conflict error = %v", err)
+	}
+}
+
+func TestTaskExecutorValidationDoesNotEchoPrompt(t *testing.T) {
+	input := taskInput()
+	input.TaskID = ""
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{}, nil)
+	_, err := exec.ExecuteTask(context.Background(), input)
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || taskErr.Operation != "validate" || taskErr.Retryable {
+		t.Fatalf("validation error = %#v", err)
+	}
+	if strings.Contains(err.Error(), input.Prompt) || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("validation error leaked prompt: %v", err)
+	}
+}
+
+func TestTaskExecutorNilCancelIsExplicit(t *testing.T) {
+	var exec *TaskExecutorAdapter
+	err := exec.CancelTask(context.Background(), taskCancel(work.SessionRef{SessionPath: "session.jsonl"}, "cancel-1"))
+	if err == nil || !strings.Contains(err.Error(), "Task executor") {
+		t.Fatalf("nil CancelTask error = %v", err)
+	}
+}
+
+func TestControllerBindsTaskExecutorToWork(t *testing.T) {
+	target := &taskExecutorWork{}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		nil,
+	)
+	ctrl := New(Options{Work: target, TaskExecutor: exec})
+	defer ctrl.Close()
+	if target.executor != exec || ctrl.TaskExecutor() != exec {
+		t.Fatalf("TaskExecutor binding = (%T, %T), want %T", target.executor, ctrl.TaskExecutor(), exec)
+	}
+}
+
+func TestControllerNormalizesTypedNilTaskExecutor(t *testing.T) {
+	target := &taskExecutorWork{}
+	var exec *TaskExecutorAdapter
+	ctrl := New(Options{Work: target, TaskExecutor: exec})
+	defer ctrl.Close()
+	if target.executor != nil || ctrl.TaskExecutor() != nil {
+		t.Fatalf("typed-nil TaskExecutor binding = (%T, %T), want nil", target.executor, ctrl.TaskExecutor())
+	}
+}
+
+func TestTaskExecutorRequestIDInProvenance(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "ok"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	input := taskInput()
+	input.RequestID = "req-provenance-42"
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	meta, ok, metaErr := agent.LoadBranchMeta(attempt.SessionRef.SessionPath)
+	if metaErr != nil || !ok {
+		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, metaErr)
+	}
+	if !strings.Contains(meta.SessionSource, "/request:req-provenance-42") {
+		t.Fatalf("SessionSource %q missing RequestID", meta.SessionSource)
+	}
+}
+
+func TestTaskExecutorCancelRaceWithCompletion(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", started: make(chan struct{})}
+	paths := make(chan string, 1)
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", paths, nil),
+	)
+	type result struct {
+		attempt *work.Attempt
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		attempt, err := exec.ExecuteTask(context.Background(), taskInput())
+		done <- result{attempt: attempt, err: err}
+	}()
+
+	path := <-paths
+	<-prov.started
+	ref := work.SessionRef{SessionPath: path, BranchID: agent.BranchID(path)}
+
+	// Cancel while running — must succeed.
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-1")); err != nil {
+		t.Fatalf("CancelTask during run: %v", err)
+	}
+	// Wait for ExecuteTask to finish (cancelled).
+	select {
+	case got := <-done:
+		if got.attempt == nil || got.attempt.State != work.RunCancelled {
+			t.Fatalf("expected RunCancelled after cancel: %+v", got.attempt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ExecuteTask did not finish after CancelTask")
+	}
+
+	// Cancel after completion: session no longer active, same requestID is idempotent.
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-1")); err != nil {
+		t.Fatalf("idempotent CancelTask after completion: %v", err)
+	}
+	// New requestID after completion: must report session not running.
+	if err := exec.CancelTask(context.Background(), taskCancel(ref, "cancel-race-2")); !errors.Is(err, ErrTaskSessionNotRunning) {
+		t.Fatalf("new CancelTask after completion error = %v", err)
+	}
+}
+
+func TestTaskExecutorFactoryReturnsControllerAndError(t *testing.T) {
+	rootErr := errors.New("partial factory failure with secret-detail")
+	var cleaned atomic.Bool
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+			dir := t.TempDir()
+			path := agent.NewSessionPath(dir, "work-partial")
+			session := agent.NewSession("stable system prompt")
+			prov := &taskProvider{name: "fake-provider", text: "ok"}
+			agent := agent.New(prov, tool.NewRegistry(), session, agent.Options{}, event.Discard)
+			ctrl := New(Options{
+				Runner:       agent,
+				Executor:     agent,
+				ModelRef:     "fake/model-v1",
+				SessionDir:   dir,
+				SessionPath:  path,
+				SystemPrompt: "stable system prompt",
+			})
+			return ctrl, func() { cleaned.Store(true) }, rootErr
+		},
+	)
+	_, err := exec.ExecuteTask(context.Background(), taskInput())
+	var taskErr *TaskRunError
+	if !errors.As(err, &taskErr) || !errors.Is(err, rootErr) || taskErr.Operation != "create_session" {
+		t.Fatalf("partial factory error = %#v", err)
+	}
+	if strings.Contains(err.Error(), "secret-detail") {
+		t.Fatalf("partial factory error leaked cause: %v", err)
+	}
+	if !cleaned.Load() {
+		t.Fatal("cleanup was not called after factory returned error")
+	}
+}
+
+func TestFirstLine(t *testing.T) {
+	if got := firstLine("  一二三四\nprivate", 4); got != "一二三四" {
+		t.Fatalf("firstLine exact = %q", got)
+	}
+	if got := firstLine("一二三四五", 4); got != "一二三…" {
+		t.Fatalf("firstLine truncated = %q", got)
+	}
+}
+
+func TestTaskExecutorPendingCancelBeforeSession(t *testing.T) {
+	var factoryCalls atomic.Int32
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake/model-v1"},
+		func(context.Context, work.TaskExecuteInput) (*Controller, func(), error) {
+			factoryCalls.Add(1)
+			return nil, nil, errors.New("factory must not run after pending cancel")
+		},
+	)
+	input := taskInput()
+	cancel := taskCancel(work.SessionRef{}, "cancel-before-session")
+	if err := exec.CancelTask(context.Background(), cancel); err != nil {
+		t.Fatalf("CancelTask before ExecuteTask: %v", err)
+	}
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if attempt == nil || attempt.State != work.RunCancelled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pending-cancel ExecuteTask = (%+v, %v)", attempt, err)
+	}
+	if got := factoryCalls.Load(); got != 0 {
+		t.Fatalf("factory ran %d times after pending cancel", got)
+	}
+	if err := exec.CancelTask(context.Background(), cancel); err != nil {
+		t.Fatalf("repeated pending cancel: %v", err)
+	}
+	newRequest := cancel
+	newRequest.RequestID = "cancel-after-finished"
+	if err := exec.CancelTask(context.Background(), newRequest); !errors.Is(err, ErrTaskSessionNotRunning) {
+		t.Fatalf("new cancel after finished error = %v", err)
+	}
+}

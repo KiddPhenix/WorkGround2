@@ -119,6 +119,11 @@ enabled = true   # inject a stable startup summary of OS, shell, and common tool
 # [environment.tools]
 # go = "/opt/homebrew/bin/go"   # optional trusted executable path; workspace-local paths are not auto-executed
 
+# Structured Work is enabled when [work] or enabled is absent.
+# Uncomment only when this workspace must opt out; existing Work data is retained.
+# [work]
+# enabled = false
+
 [tools]
 enabled = []   # empty = all built-in tools
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap

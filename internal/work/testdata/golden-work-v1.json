@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "id": "work-golden-001",
+  "name": "代码审查：PR #4512",
+  "state": "completed",
+  "archiveState": "active",
+  "blueprintRef": {
+    "id": "blueprint:code-review",
+    "schemaVersion": 1,
+    "version": 2
+  },
+  "definitionSnapshot": {
+    "schemaVersion": 1,
+    "revision": 1,
+    "blueprintRef": {
+      "id": "blueprint:code-review",
+      "schemaVersion": 1,
+      "version": 2
+    },
+    "promptTemplate": "审查 PR #{{.PRNumber}}，重点关注类型安全、错误处理和并发安全。",
+    "workflow": {
+      "stages": [
+        {
+          "id": "prepare",
+          "title": "准备",
+          "tasks": [
+            {"id": "fetch_diff", "title": "获取变更"},
+            {"id": "load_context", "title": "加载相关上下文"}
+          ]
+        },
+        {
+          "id": "review",
+          "title": "审查",
+          "tasks": [
+            {"id": "static_check", "title": "静态检查"},
+            {"id": "logic_review", "title": "逻辑审查"}
+          ]
+        },
+        {
+          "id": "report",
+          "title": "报告",
+          "tasks": [
+            {"id": "summarize", "title": "生成报告"}
+          ]
+        }
+      ]
+    },
+    "blockSpecs": [
+      {
+        "id": "blk-checklist",
+        "kind": "checklist",
+        "schemaVersion": 1,
+        "label": "审查清单",
+        "placement": {"blockId":"blk-checklist","slot":"primary","order":0},
+        "editable": true
+      },
+      {
+        "id": "blk-files",
+        "kind": "file_list",
+        "schemaVersion": 1,
+        "label": "变更文件",
+        "placement": {"blockId":"blk-files","slot":"secondary","order":1},
+        "editable": false
+      }
+    ],
+    "conclusionKinds": ["finding", "decision"],
+    "digest": "sha256:5e816b36dc32c6782aed0a96dd750cdf4cffe50fb65758c6ec45e45d91e2656f"
+  },
+  "blocks": [
+    {
+      "id": "blk-checklist",
+      "kind": "checklist",
+      "schemaVersion": 1,
+      "revision": 5,
+      "status": "ready",
+      "data": {
+        "items": [
+          {"id":"1","text":"检查类型安全","checked":true},
+          {"id":"2","text":"检查错误处理","checked":true},
+          {"id":"3","text":"检查并发安全","checked":false}
+        ]
+      },
+      "source": {"provider":"ai","mode":"snapshot","verified":false},
+      "fallback": {"summary":"检查项：2/3 已完成"},
+      "createdAt": "2026-07-20T10:00:00Z",
+      "updatedAt": "2026-07-20T10:30:00Z"
+    },
+    {
+      "id": "blk-files",
+      "kind": "file_list",
+      "schemaVersion": 1,
+      "revision": 3,
+      "status": "ready",
+      "data": {
+        "files": [
+          {"path":"src/auth/login.go","status":"modified","desc":"登录逻辑优化"},
+          {"path":"src/api/handler.go","status":"added","desc":"新接口"}
+        ]
+      },
+      "source": {"provider":"tool:git","ref":"abc123","mode":"snapshot","verified":true},
+      "fallback": {"summary":"2 个变更文件"},
+      "createdAt": "2026-07-20T10:05:00Z",
+      "updatedAt": "2026-07-20T10:15:00Z"
+    }
+  ],
+  "placements": [
+    {"blockId":"blk-checklist","slot":"primary","order":0},
+    {"blockId":"blk-files","slot":"secondary","order":1}
+  ],
+  "prompt": "审查 PR #4512，重点关注类型安全和并发安全。",
+  "cornerstones": [],
+  "runs": [
+    {
+      "id": "run-001",
+      "workId": "work-golden-001",
+      "definitionDigest": "sha256:5e816b36dc32c6782aed0a96dd750cdf4cffe50fb65758c6ec45e45d91e2656f",
+      "state": "completed",
+      "stages": [
+        {
+          "name": "准备",
+          "state": "completed",
+          "tasks": [
+            {
+              "name": "获取变更",
+              "state": "completed",
+              "attempts": [
+                {
+                  "index": 1,
+                  "state": "completed",
+                  "sessionRef": {
+                    "sessionPath": "sessions/sess-001.jsonl",
+                    "branchId": "branch-001",
+                    "modelRef": "deepseek-v3",
+                    "turnCount": 3,
+                    "preview": "获取 PR #4512 diff…",
+                    "startedAt": "2026-07-20T10:01:00Z"
+                  },
+                  "startedAt": "2026-07-20T10:01:00Z",
+                  "finishedAt": "2026-07-20T10:02:30Z"
+                }
+              ]
+            }
+          ],
+          "startedAt": "2026-07-20T10:01:00Z",
+          "finishedAt": "2026-07-20T10:02:30Z"
+        }
+      ],
+      "startedAt": "2026-07-20T10:01:00Z",
+      "finishedAt": "2026-07-20T10:30:00Z"
+    }
+  ],
+  "conclusions": [
+    {
+      "id": "conc-001",
+      "kind": "finding",
+      "status": "confirmed",
+      "title": "login.go 存在潜在的 race condition",
+      "summary": "第 42 行的 userCache 在没有锁保护的情况下被多个 goroutine 读写。",
+      "evidence": [
+        {"kind":"file","path":"src/auth/login.go","digest":"sha256:aaa"}
+      ],
+      "generatedAt": "2026-07-20T10:25:00Z"
+    }
+  ],
+  "createdWith": {
+    "workSchemaVersion": 1,
+    "eventSchemaVersion": 1,
+    "rendererSetVersion": 1,
+    "toolContracts": [
+      {"name":"git_diff","contractVersion":1,"sideEffectClass":"read","required":true}
+    ],
+    "provider": "deepseek",
+    "model": "deepseek-v3"
+  },
+  "createdAt": "2026-07-20T10:00:00Z",
+  "updatedAt": "2026-07-20T10:30:00Z"
+}

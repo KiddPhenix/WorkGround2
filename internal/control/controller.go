@@ -52,6 +52,7 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/store"
 	"workground2/internal/tool"
+	"workground2/internal/work"
 )
 
 // ErrTurnRunning reports that a caller tried to start a second foreground turn
@@ -171,6 +172,42 @@ type Controller struct {
 	// image @-references into text descriptions when the main model is non-vision.
 	visionDelegate provider.Provider
 
+	// workSvc is the optional Work lifecycle service. Nil when Work is disabled.
+	// All WorkControl methods delegate to it via workMethods.
+	workSvc WorkService
+	// cornerstoneTurn is a single-use Work context bound to one RunTurn. A
+	// second Work may not overwrite it while active; finishCornerstoneTurn uses
+	// the token to avoid a late cleanup clearing a newer turn.
+	cornerstoneTurn *cornerstoneTurn
+	cornerstoneSeq  uint64
+	// workViews is the broadcaster that fans out WorkViewEvents to frontend
+	// subscribers. Nil when Work is disabled.
+	workViews *WorkViewBroadcaster
+	// workRefresh and workSources are controller-owned source routing and
+	// scheduling state. They never leak network callbacks into frontend code.
+	workRefresh *work.BlockRefreshManager
+	workSources *workSourceRegistry
+	// workRefreshLifeMu serializes the final refresh subscription check with
+	// Work lifecycle changes. Generations invalidate projections captured before
+	// an archive, delete, restore, or explicit refresh-intent cancellation.
+	workRefreshLifeMu sync.Mutex
+	workRefreshGen    map[string]uint64
+	workRefreshStops  map[string]uint64
+	// taskExec is the optional Work Task executor; nil when Work is disabled.
+	taskExec work.TaskExecutor
+	// actionRoot owns Block Action lifetimes independently from model turns.
+	// Per-request children preserve caller cancellation; Cancel stops all current
+	// foreground work, while Close closes the root and waits for registered
+	// actions to persist their terminal receipts.
+	actionMu         sync.Mutex
+	actionRoot       context.Context
+	actionRootCancel context.CancelFunc
+	actionRuns       map[string]map[uint64]context.CancelFunc
+	actionNext       uint64
+	actionWG         sync.WaitGroup
+	actionClosed     bool
+	closeOnce        sync.Once
+
 	// mu guards the run state; every critical section under it is short and
 	// non-blocking.
 	mu                      sync.Mutex
@@ -198,6 +235,7 @@ type pendingApproval struct {
 	tool      string
 	subject   string
 	reason    string
+	context   event.Approval
 	fresh     bool
 	autoDrain bool
 	reply     chan approvalReply
@@ -398,6 +436,24 @@ type Options struct {
 	// VisionDelegateProvider is an optional vision-capable provider used to
 	// describe images when the main model cannot process them directly.
 	VisionDelegateProvider provider.Provider
+	// Work is the optional Work lifecycle service. When nil, the Work feature is
+	// disabled and all WorkControl methods return an error. Boot assembles it
+	// from config when [work].enabled is true.
+	Work WorkService
+	// WorkViews is the broadcaster that fans out WorkViewEvents to frontend
+	// subscribers. It must be non-nil when Work is non-nil; boot creates it and
+	// wires it as the Service's ViewSink.
+	WorkViews *WorkViewBroadcaster
+	// WorkBlockSources are trusted source adapters available to this Controller.
+	WorkBlockSources []WorkBlockSource
+	// WorkRefreshClock is injectable for deterministic retry/reconnect tests.
+	WorkRefreshClock work.Clock
+	// WorkOffline starts source scheduling paused while retaining recovery intent.
+	WorkOffline bool
+	// TaskExecutor is the optional Work Task executor. When non-nil, the
+	// Controller exposes it so a future WorkRunner can dispatch Task
+	// execution into Controller sessions.
+	TaskExecutor work.TaskExecutor
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -410,10 +466,15 @@ func New(opts Options) *Controller {
 	if nilutil.IsNil(classifier) {
 		classifier = nil
 	}
+	taskExec := opts.TaskExecutor
+	if nilutil.IsNil(taskExec) {
+		taskExec = nil
+	}
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
 	}
+	actionRoot, actionRootCancel := context.WithCancel(context.Background())
 	c := &Controller{
 		runner:                     opts.Runner,
 		executor:                   opts.Executor,
@@ -450,6 +511,20 @@ func New(opts Options) *Controller {
 		externalFolderToolRefs:     opts.ExternalFolderToolRefs,
 		approval:                   newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 		visionDelegate:             opts.VisionDelegateProvider,
+		workSvc:                    opts.Work,
+		workViews:                  opts.WorkViews,
+		taskExec:                   taskExec,
+		actionRoot:                 actionRoot,
+		actionRootCancel:           actionRootCancel,
+		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
+	}
+	if !nilutil.IsNil(opts.Work) {
+		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
+			binder.SetPermissionChecker(c)
+		}
+		if binder, ok := opts.Work.(interface{ SetTaskExecutor(work.TaskExecutor) }); ok {
+			binder.SetTaskExecutor(taskExec)
+		}
 	}
 	c.loadTaskMemory(opts.SessionPath)
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -467,6 +542,7 @@ func New(opts Options) *Controller {
 		})
 		c.executor.SetMemoryQueue(c)
 	}
+	c.initWorkRefresh(opts.WorkBlockSources, opts.WorkRefreshClock, opts.WorkOffline)
 	return c
 }
 
@@ -1384,8 +1460,9 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 	return c.runner.Run(ctx, input)
 }
 
-// Cancel aborts the in-flight turn. A goroutine blocked awaiting approval
-// unblocks via the cancelled context.
+// Cancel aborts the in-flight turn and every currently executing Block Action
+// owned by this Controller. Each Action still has its own request context, so
+// caller cancellation of one Action does not affect another.
 func (c *Controller) Cancel() {
 	c.mu.Lock()
 	cancel := c.cancel
@@ -1393,10 +1470,14 @@ func (c *Controller) Cancel() {
 		c.canceling = true
 	}
 	c.mu.Unlock()
+	actionCount := c.cancelBlockActions()
 	if cancel != nil {
 		c.approval.clearAll()
 		cancel()
 		return
+	}
+	if actionCount > 0 {
+		c.approval.clearActionApprovals()
 	}
 	if c.goals.active() {
 		c.stopGoal(GoalStatusStopped)
@@ -2155,7 +2236,15 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 	if c.executor == nil {
 		return nil
 	}
-	return c.executor.CompactNow(ctx, instructions)
+	count, associated, err := c.sessionCornerstoneCount(ctx)
+	if err != nil {
+		return err
+	}
+	if err := c.executor.CompactNow(ctx, instructions); err != nil {
+		return err
+	}
+	c.noticeCornerstonesPreserved(count, associated)
+	return nil
 }
 
 // maybeSessionStart fires the SessionStart hook exactly once per session, lazily
@@ -3880,6 +3969,70 @@ func (c *Controller) Label() string { return c.label }
 // Empty means no scoping is in effect.
 func (c *Controller) WorkspaceRoot() string { return c.workspaceRoot }
 
+type cornerstoneTurn struct {
+	token       uint64
+	workID      string
+	block       string
+	activeCount int
+}
+
+// beginCornerstoneTurn binds one precomputed Work context to the next RunTurn.
+// It fails closed if a caller tries to overlap Work turns on one Controller;
+// otherwise a later Work could consume the earlier Work's transient block.
+func (c *Controller) beginCornerstoneTurn(workID, block string, activeCount int) (uint64, error) {
+	workID = strings.TrimSpace(workID)
+	if workID == "" {
+		return 0, errors.New("cornerstone context: workID is required")
+	}
+	if activeCount < 0 {
+		return 0, errors.New("cornerstone context: active count cannot be negative")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cornerstoneTurn != nil {
+		return 0, fmt.Errorf("cornerstone context: controller already belongs to Work %q", c.cornerstoneTurn.workID)
+	}
+	c.cornerstoneSeq++
+	c.cornerstoneTurn = &cornerstoneTurn{
+		token:       c.cornerstoneSeq,
+		workID:      workID,
+		block:       block,
+		activeCount: activeCount,
+	}
+	return c.cornerstoneSeq, nil
+}
+
+// finishCornerstoneTurn clears only the turn that owns token. This makes a
+// deferred cleanup harmless if a future implementation reuses Controllers.
+func (c *Controller) finishCornerstoneTurn(token uint64) {
+	c.mu.Lock()
+	if c.cornerstoneTurn != nil && c.cornerstoneTurn.token == token {
+		c.cornerstoneTurn = nil
+	}
+	c.mu.Unlock()
+}
+
+type sessionCornerstoneCounter interface {
+	SessionCornerstoneCount(context.Context, string) (count int, associated bool, err error)
+}
+
+func (c *Controller) sessionCornerstoneCount(ctx context.Context) (int, bool, error) {
+	if c == nil || nilutil.IsNil(c.workSvc) {
+		return 0, false, nil
+	}
+	counter, ok := c.workSvc.(sessionCornerstoneCounter)
+	if !ok {
+		return 0, false, nil
+	}
+	return counter.SessionCornerstoneCount(ctx, c.SessionPath())
+}
+
+func (c *Controller) noticeCornerstonesPreserved(count int, associated bool) {
+	if associated {
+		c.notice(fmt.Sprintf(i18n.M.CornerstoneCleanupPreserved, count))
+	}
+}
+
 func (c *Controller) imageInputEnabled() bool {
 	return c.directImageInputEnabled() || c.visionDelegate != nil
 }
@@ -3953,23 +4106,32 @@ const (
 )
 
 func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
-	c.mu.Lock()
-	started := c.startedOnce
-	c.mu.Unlock()
-	if fireSessionEnd && started {
-		c.hooks.SessionEnd(context.Background())
+	if c == nil {
+		return
 	}
-	if c.jobs != nil {
-		switch jobsMode {
-		case closeJobsAsync:
-			c.jobs.CloseAsync()
-		default:
-			c.jobs.Close() // cancel any still-running background jobs
+	c.closeOnce.Do(func() {
+		c.closeBlockActions()
+		if c.workRefresh != nil {
+			_ = c.workRefresh.Close()
 		}
-	}
-	if c.cleanup != nil {
-		c.cleanup()
-	}
+		c.mu.Lock()
+		started := c.startedOnce
+		c.mu.Unlock()
+		if fireSessionEnd && started {
+			c.hooks.SessionEnd(context.Background())
+		}
+		if c.jobs != nil {
+			switch jobsMode {
+			case closeJobsAsync:
+				c.jobs.CloseAsync()
+			default:
+				c.jobs.Close() // cancel any still-running background jobs
+			}
+		}
+		if c.cleanup != nil {
+			c.cleanup()
+		}
+	})
 }
 
 // Jobs returns the still-running background jobs for the status bar (nil when
@@ -4071,7 +4233,15 @@ func (c *Controller) SaveMemory(m memory.Memory) (string, error) {
 // ForgetMemory removes a saved auto-memory by name — the panel/TUI forget action,
 // the manual counterpart to the model's `forget` tool.
 func (c *Controller) ForgetMemory(name string) error {
-	return c.memory.forget(name)
+	count, associated, err := c.sessionCornerstoneCount(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := c.memory.forget(name); err != nil {
+		return err
+	}
+	c.noticeCornerstonesPreserved(count, associated)
+	return nil
 }
 
 // QueueMemory implements memory.Queue: when the model runs the remember/forget
@@ -4603,13 +4773,19 @@ type approvalDecisionOptions struct {
 	// permission. It may reuse an explicit session grant, but YOLO/auto approval
 	// must not answer or drain the prompt.
 	fresh bool
+	// approval carries optional domain context retained for reconnect replay.
+	approval event.Approval
+	// actionSessionGrant scopes Work Action session reuse to one exact trusted
+	// action identity. Generic tool approvals leave it nil and retain their
+	// existing permission-rule matching behaviour.
+	actionSessionGrant *actionSessionGrantKey
 }
 
 func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, tool, subject string, args json.RawMessage, reason string, opts approvalDecisionOptions) (approvalReply, error) {
 	// YOLO/full access and the just-approved-plan execution window auto-allow
 	// approval-gated tools without prompting. Plan approval is a user decision,
 	// not a tool permission, so it deliberately stays interactive.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 
@@ -4618,12 +4794,15 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	// Re-check: a session grant may have landed while we queued behind another
 	// prompt for the same subject.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if c.approval.preApprovedForDecision(tool, subject, opts.fresh, opts.actionSessionGrant) {
 		return approvalReply{allow: true}, nil
 	}
 	var id string
 	var reply chan approvalReply
-	if opts.fresh {
+	if opts.approval.WorkID != "" {
+		opts.approval.Tool, opts.approval.Subject, opts.approval.Reason = tool, subject, reason
+		id, reply = c.approval.registerApprovalDecision(opts.approval, opts.fresh)
+	} else if opts.fresh {
 		id, reply = c.approval.registerDecision(tool, subject, reason, true)
 	} else {
 		id, reply = c.approval.register(tool, subject, reason)
@@ -4633,7 +4812,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 		current: stringPtr("等待批准"), currentSource: stringPtr("approval"),
 		nextStep: stringPtr(strings.TrimSpace(subject)), nextStepSource: stringPtr("approval"),
 	})
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason}})
+	approvalEvent := opts.approval
+	approvalEvent.ID, approvalEvent.Tool, approvalEvent.Subject, approvalEvent.Reason = id, tool, subject, reason
+	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: approvalEvent})
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
 		go c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs)
 	}
@@ -4646,6 +4827,9 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	select {
 	case r := <-reply:
+		if err := waitCtx.Err(); err != nil {
+			return approvalReply{}, err
+		}
 		c.updateTaskMemory(taskMemoryPatch{current: stringPtr("执行中"), currentSource: stringPtr("runtime"), nextStep: stringPtr(""), nextStepSource: stringPtr("")})
 		return r, nil
 	case <-waitCtx.Done():

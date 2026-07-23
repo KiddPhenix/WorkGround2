@@ -1111,3 +1111,56 @@ func TestIsSyntheticUserMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestComposeInjectsCornerstoneBlock(t *testing.T) {
+	c := New(Options{})
+	setTestCornerstoneTurn(t, c, "<cornerstone type=\"instruction\" id=\"cs-1\" title=\"Test\">\ncontext\n</cornerstone>\n")
+
+	got := c.Compose("hello")
+	if !strings.Contains(got, `<cornerstone type="instruction"`) {
+		t.Fatalf("Compose should inject cornerstone block, got %q", got)
+	}
+	if !strings.Contains(got, "hello") {
+		t.Fatal("Compose should preserve user input after cornerstone block")
+	}
+	// Cornerstone block should appear before user input.
+	csIdx := strings.Index(got, "<cornerstone")
+	userIdx := strings.Index(got, "hello")
+	if csIdx < 0 || userIdx < 0 || csIdx >= userIdx {
+		t.Fatalf("cornerstone block should appear before user input: cs=%d user=%d", csIdx, userIdx)
+	}
+}
+
+func TestComposeDrainsCornerstoneBlockOnce(t *testing.T) {
+	c := New(Options{})
+	setTestCornerstoneTurn(t, c, "<cornerstone type=\"instruction\" id=\"cs-1\" title=\"Test\">\nctx\n</cornerstone>\n")
+
+	got1 := c.Compose("one")
+	if !strings.Contains(got1, "<cornerstone") {
+		t.Fatal("first Compose should inject cornerstone")
+	}
+	got2 := c.Compose("two")
+	if strings.Contains(got2, "<cornerstone") {
+		t.Fatal("second Compose should NOT inject cornerstone (drained)")
+	}
+}
+
+func TestComposeNoCornerstoneBlockWhenEmpty(t *testing.T) {
+	c := New(Options{})
+	got := c.Compose("hello")
+	if strings.Contains(got, "<cornerstone") {
+		t.Fatal("Compose should not inject cornerstone when none set")
+	}
+	if !strings.HasSuffix(got, "hello") {
+		t.Fatalf("Compose should preserve user input: %q", got)
+	}
+}
+
+func setTestCornerstoneTurn(t *testing.T, c *Controller, block string) {
+	t.Helper()
+	token, err := c.beginCornerstoneTurn("work-test", block, 1)
+	if err != nil {
+		t.Fatalf("beginCornerstoneTurn: %v", err)
+	}
+	t.Cleanup(func() { c.finishCornerstoneTurn(token) })
+}

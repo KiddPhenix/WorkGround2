@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "id": "blueprint:my-review",
+  "version": 2,
+  "name": "我的审查 v2",
+  "description": "自定义代码审查模板 v2 — 新增安全审查阶段",
+  "source": "user",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "target": {"type": "string", "description": "审查目标"},
+      "strictness": {"type": "string", "enum": ["loose", "normal", "strict"]},
+      "securityOnly": {"type": "boolean", "description": "仅安全检查"}
+    },
+    "required": ["target"]
+  },
+  "promptTemplate": "审查 {{.target}}，严格程度 {{.strictness}}{{if .securityOnly}}（仅安全审查）{{end}}",
+  "workflow": {
+    "stages": [
+      {
+        "id": "my-scan",
+        "title": "扫描",
+        "tasks": [{"id": "my-read", "title": "读取代码"}]
+      },
+      {
+        "id": "my-security",
+        "title": "安全检查",
+        "tasks": [{"id": "my-vuln", "title": "漏洞扫描"}]
+      },
+      {
+        "id": "my-review",
+        "title": "审查",
+        "tasks": [{"id": "my-check", "title": "逐项检查"}]
+      }
+    ]
+  },
+  "blockSpecs": [
+    {
+      "id": "my-issues",
+      "kind": "checklist",
+      "schemaVersion": 1,
+      "label": "问题清单",
+      "placement": {"slot": "primary", "order": 0},
+      "editable": true
+    },
+    {
+      "id": "my-security-blk",
+      "kind": "notice",
+      "schemaVersion": 1,
+      "label": "安全提醒",
+      "placement": {"slot": "attention", "order": 1},
+      "editable": false
+    }
+  ],
+  "toolContracts": [],
+  "createdAt": "2026-07-21T00:00:00Z"
+}

@@ -48,6 +48,7 @@ import (
 	"workground2/internal/tool"
 	"workground2/internal/tool/builtin"
 	"workground2/internal/tool/sessiontool"
+	"workground2/internal/work"
 )
 
 // ProductName is the user-visible product name used throughout the UI,
@@ -118,6 +119,18 @@ type Options struct {
 	// so each tab loads its own config/skills/hooks without changing the process
 	// cwd — enabling concurrent multi-project sessions.
 	WorkspaceRoot string
+	// WorkDir optionally overrides the per-project Work data directory for hosts
+	// and tests. It is ignored while work.enabled is false. When enabled, a
+	// non-empty path must be writable or Build fails explicitly.
+	WorkDir string
+	// SessionRefs is a process-wide reverse index shared by every Desktop tab.
+	// Nil keeps non-Desktop hosts independent from Desktop session cleanup.
+	SessionRefs work.SessionRefStore
+	// CornerstoneResolver revalidates live Work cornerstone sources before each Run.
+	CornerstoneResolver work.CornerstoneResolver
+	// SessionRefsErr carries host initialization failure into Work boot so the
+	// feature cannot run while its cleanup guard is unavailable.
+	SessionRefsErr error
 	// ExtraPlugins are session-scoped MCP servers supplied by a host transport
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to WorkGround2.toml.
@@ -1023,31 +1036,34 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if cfg.MemoryCompilerEnabled() {
 		memCompiler = memorycompiler.New(config.MemoryCompilerDir(root))
 	}
-	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:                           maxSteps,
-		Temperature:                        cfg.Agent.Temperature,
-		Pricing:                            entry.Price,
-		Gate:                               headlessGate,
-		Hooks:                              hookRunner,
-		Jobs:                               jm,
-		ProjectChecks:                      projectChecks,
-		ContextWindow:                      entry.ContextWindow,
-		SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
-		ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,
-		CompactRatio:                       cfg.Agent.CompactRatio,
-		CompactForceRatio:                  cfg.Agent.CompactForceRatio,
-		RecentKeep:                         cfg.Agent.RecentKeep,
-		ArchiveDir:                         config.ArchiveDir(),
-		KeepPolicy:                         keepPolicy,
-		ResponseLanguage:                   cfg.ResponseLanguage(),
-		ReasoningLanguage:                  cfg.ReasoningLanguage(),
-		PlanModeAllowedTools:               cfg.Agent.PlanModeAllowedTools,
-		SubagentDepth:                      0,
-		MaxSubagentDepth:                   maxSubagentDepth,
-		MemoryCompiler:                     memCompiler,
-		MemoryCompilerVerbosity:            cfg.MemoryCompilerVerbosity(),
-		UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("WorkGround2_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
-	}, sink)
+	newAgentOptions := func(sessionJobs *jobs.Manager) agent.Options {
+		return agent.Options{
+			MaxSteps:                           maxSteps,
+			Temperature:                        cfg.Agent.Temperature,
+			Pricing:                            entry.Price,
+			Gate:                               headlessGate,
+			Hooks:                              hookRunner,
+			Jobs:                               sessionJobs,
+			ProjectChecks:                      projectChecks,
+			ContextWindow:                      entry.ContextWindow,
+			SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
+			ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,
+			CompactRatio:                       cfg.Agent.CompactRatio,
+			CompactForceRatio:                  cfg.Agent.CompactForceRatio,
+			RecentKeep:                         cfg.Agent.RecentKeep,
+			ArchiveDir:                         config.ArchiveDir(),
+			KeepPolicy:                         keepPolicy,
+			ResponseLanguage:                   cfg.ResponseLanguage(),
+			ReasoningLanguage:                  cfg.ReasoningLanguage(),
+			PlanModeAllowedTools:               cfg.Agent.PlanModeAllowedTools,
+			SubagentDepth:                      0,
+			MaxSubagentDepth:                   maxSubagentDepth,
+			MemoryCompiler:                     memCompiler,
+			MemoryCompilerVerbosity:            cfg.MemoryCompilerVerbosity(),
+			UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("WorkGround2_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
+		}
+	}
+	executor := agent.New(execProv, reg, execSess, newAgentOptions(jm), sink)
 
 	var runner agent.Runner = executor
 	label := entry.Model
@@ -1101,6 +1117,109 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 
+	// Work: assemble the structured Work feature by default. An explicit
+	// [work].enabled=false keeps the cache-stable prefix untouched and does not
+	// create writable Work directories.
+	var workSvc *work.Service
+	var workViews *control.WorkViewBroadcaster
+	var taskExec work.TaskExecutor
+	var cornerstoneManager *work.CornerstoneManager
+	var cornerstoneStore work.WorkStore
+	var cornerstoneBlobs work.BlobStore
+	if cfg.Work.Enabled {
+		if opts.SessionRefsErr != nil {
+			jm.Close()
+			cleanup()
+			return nil, fmt.Errorf("initialize Work Session refs: %w", opts.SessionRefsErr)
+		}
+		workDir := strings.TrimSpace(opts.WorkDir)
+		if workDir == "" {
+			workDir = config.ProjectWorkDir(root)
+		}
+		if workDir == "" {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "work: project data directory is unavailable — feature disabled this session"})
+		} else {
+			if err := ensureWorkDir(workDir); err != nil {
+				jm.Close()
+				cleanup()
+				return nil, fmt.Errorf("initialize Work store %q: %w", workDir, err)
+			}
+			store, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+			if err != nil {
+				jm.Close()
+				cleanup()
+				return nil, fmt.Errorf("initialize Work store %q: %w", workDir, err)
+			}
+			bp := work.NewBlueprintRegistry()
+			workViews = control.NewWorkViewBroadcaster()
+			workSvc = work.NewService(store, bp, workViews)
+			// Wire CornerstoneManager for T5 transport-alignment. FileWorkStore
+			// implements both WorkStore and BlobStore, enabling >4096-byte
+			// cornerstone content via content-addressed blob storage.
+			cornerstoneManager = work.NewCornerstoneManager(store, store, nil)
+			cornerstoneStore = store
+			cornerstoneBlobs = store
+			workSvc.SetCornerstoneManager(cornerstoneManager)
+			workSvc.SetCornerstoneResolver(opts.CornerstoneResolver)
+			if opts.SessionRefs != nil {
+				if err := workSvc.SetSessionRefStore(opts.SessionRefs, work.SessionRefScopeID(workDir)); err != nil {
+					jm.Close()
+					cleanup()
+					return nil, fmt.Errorf("initialize Work Session refs: %w", err)
+				}
+				if err := workSvc.RebuildSessionRefs(ctx); err != nil {
+					jm.Close()
+					cleanup()
+					return nil, err
+				}
+			}
+			taskAdapter := control.NewTaskExecutorAdapter(
+				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
+				func(_ context.Context, _ work.TaskExecuteInput) (*control.Controller, func(), error) {
+					taskPath := agent.NewSessionPath(sessionDir, "work-"+label)
+					taskJobs := jobs.NewManager(event.Discard, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
+					taskSession := agent.NewSession(sysPrompt)
+					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), event.Discard)
+					taskCtrl := control.New(control.Options{
+						Runner:               taskAgent,
+						Executor:             taskAgent,
+						Sink:                 event.Discard,
+						Policy:               policy,
+						Label:                label,
+						ModelRef:             modelRef,
+						SystemPrompt:         sysPrompt,
+						SessionDir:           sessionDir,
+						SessionPath:          taskPath,
+						Hooks:                hookRunner,
+						WorkspaceRoot:        root,
+						AutoPlan:             "off",
+						ResponseLanguage:     cfg.ResponseLanguage(),
+						ReasoningLanguage:    cfg.ReasoningLanguage(),
+						Shell:                shell,
+						ApprovalTimeout:      opts.ApprovalTimeout,
+						PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
+						BalanceURL:           entry.BalanceURL,
+						BalanceKey:           entry.APIKey(),
+						BalanceClient:        balanceClient,
+						Jobs:                 taskJobs,
+						Registry:             reg,
+					})
+					return taskCtrl, func() {}, nil
+				},
+			)
+			taskAdapter.SetWorkService(workSvc)
+			taskExec = taskAdapter
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "work: feature enabled"})
+		}
+	}
+
+	// Prevent typed-nil injection: workSvc is *work.Service; assigning a nil
+	// concrete pointer to the WorkService interface creates a non-nil interface
+	// holding nil, which defeats plain == nil checks. Only assign when non-nil.
+	var workSvcIface control.WorkService
+	if workSvc != nil {
+		workSvcIface = workSvc
+	}
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1142,6 +1261,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		},
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
+		Work:                workSvcIface,
+		WorkViews:           workViews,
+		TaskExecutor:        taskExec,
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
@@ -1187,7 +1309,37 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 	}
-	return control.New(ctrlOpts), nil
+	ctrl := control.New(ctrlOpts)
+	// Post-init: wire every live Cornerstone source through production adapters.
+	// URL resolution reuses the configured web_fetch tool, including its proxy,
+	// timeout, response cap, and SSRF policy. If web_fetch is disabled, URL refs
+	// fail explicitly as denied without creating a second network path.
+	if cornerstoneManager != nil && opts.CornerstoneResolver == nil {
+		webFetch, _ := reg.Get("web_fetch")
+		resolver := control.NewLiveCornerstoneResolver(control.LiveCornerstoneResolverOptions{
+			WorkspaceRoot: root,
+			SessionTurns:  ctrl,
+			WorkStore:     cornerstoneStore,
+			BlobStore:     cornerstoneBlobs,
+			URLTool:       webFetch,
+		})
+		cornerstoneManager.SetResolver(resolver)
+	}
+	return ctrl, nil
+}
+
+func ensureWorkDir(path string) error {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+	probe, err := os.CreateTemp(path, ".work-store-probe-*")
+	if err != nil {
+		return err
+	}
+	probePath := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(probePath)
+	return errors.Join(closeErr, removeErr)
 }
 
 func autoDiscoverVisionDelegate(cfg *config.Config, current *config.ProviderEntry) string {

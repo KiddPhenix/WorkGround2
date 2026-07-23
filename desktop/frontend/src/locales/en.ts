@@ -2324,6 +2324,27 @@ export const en = {
   "mock.changedFile2Prompt": "Record project context",
   "mock.changedFile1Path": "docs/dev-standard.md",
   "mock.changedFile2Path": ".WorkGround2/project.md",
+
+  // ── Work ─────────────────────────────────────────────────────────────
+  "work.title": "Work",
+  "work.newWork": "New Work",
+  "work.backToSession": "Back to Session",
+  "work.backToList": "Back to Work list",
+  "work.initializing": "Work is initializing",
+  "work.initializingDetail": "The Work list will open automatically when the session controller is ready.",
+  "work.unavailable": "Work is unavailable",
+  "work.unavailableDetail": "Work failed to initialize or is currently unavailable. Retry safely, or return to the session.",
+  "work.retryUnavailable": "Work is unavailable. Click to retry",
+  "work.cornerstoneBack": "Back to Work",
+  "work.loading": "Loading…",
+  "work.empty": "No Work yet. Click \"New Work\" to create one.",
+  "work.retry": "Retry",
+  "work.createTitle": "New Work",
+  "work.nameLabel": "Name",
+  "work.namePlaceholder": "Enter work name…",
+  "work.cancel": "Cancel",
+  "work.create": "Create",
+  "work.creating": "Creating…",
 };
 
 export type DictKey = keyof typeof en;

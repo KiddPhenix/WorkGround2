@@ -60,6 +60,7 @@ type Config struct {
 	LSP              LSPConfig           `toml:"lsp"`
 	Bot              BotConfig           `toml:"bot"`
 	Serve            ServeConfig         `toml:"serve"`
+	Work             WorkConfig          `toml:"work"`
 
 	providerSources          map[string]providerSourceScope
 	shadowedProjectProviders []ProviderEntry
@@ -766,6 +767,12 @@ type ServeConfig struct {
 	// rate-limiting and Secure-cookie decisions. When false (default), they
 	// are ignored — an attacker can otherwise forge them.
 	BehindProxy bool `toml:"behind_proxy"`
+}
+
+// WorkConfig controls the structured Work feature. It defaults to enabled;
+// only an explicit enabled = false disables Work for a loaded configuration.
+type WorkConfig struct {
+	Enabled bool `toml:"enabled"`
 }
 
 // NetworkConfig controls ordinary outbound HTTP traffic such as model providers,
@@ -1653,6 +1660,7 @@ func Default() *Config {
 		// a missing server yields an install hint rather than an error.
 		LSP:     LSPConfig{Enabled: true},
 		Network: NetworkConfig{ProxyMode: netclient.ModeAuto},
+		Work:    WorkConfig{Enabled: true},
 		Bot: BotConfig{
 			ToolApprovalMode:   "ask",
 			MaxSteps:           25,

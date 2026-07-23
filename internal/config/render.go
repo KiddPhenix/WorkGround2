@@ -640,6 +640,10 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 	}
 
+	// [work] — structured Work feature (default enabled; explicit false disables)
+	b.WriteString("\n[work]\n")
+	fmt.Fprintf(&b, "enabled = %v   # default true; set false to hide Work and skip writable Work services\n", c.Work.Enabled)
+
 	return b.String()
 }
 
@@ -1004,6 +1008,12 @@ func RenderTOMLProjectDelta(c *Config) string {
 			fmt.Fprintf(&b, "network = %v\n", c.Sandbox.Network)
 		}
 		b.WriteString("\n")
+	}
+
+	// [work]
+	if c.Work != d.Work {
+		b.WriteString("[work]\n")
+		fmt.Fprintf(&b, "enabled = %v\n\n", c.Work.Enabled)
 	}
 
 	// [statusline]

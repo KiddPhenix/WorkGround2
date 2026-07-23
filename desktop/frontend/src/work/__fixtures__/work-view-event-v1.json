@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "type": "snapshot",
+  "workID": "work-abc123",
+  "eventID": "evt-snapshot-001",
+  "revision": 5,
+  "baseRevision": 0,
+  "requestID": "req-20260720-001",
+  "object": {
+    "kind": "work",
+    "id": "work-abc123"
+  },
+  "createdAt": "2026-07-20T10:00:00Z",
+  "payload": {
+    "id": "work-abc123",
+    "name": "代码审查：PR #4512",
+    "state": "completed",
+    "archiveState": "active",
+    "blueprintRef": {
+      "id": "blueprint:code-review",
+      "schemaVersion": 1,
+      "version": 2
+    }
+  }
+}

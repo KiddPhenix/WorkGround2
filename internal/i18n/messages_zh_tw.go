@@ -92,6 +92,8 @@ var ChineseTraditional = Messages{
 	CompactionAuto:    "自動",
 	CompactionManual:  "手動",
 
+	CornerstoneCleanupPreserved: "本次不會清理 %d 個 Work 基石",
+
 	SlashCompactDone:   "已壓縮 — 舊的中段換成一段摘要，最近幾輪保留原樣",
 	SlashCompactFailed: "壓縮失敗",
 	SlashNewDone:       "已開啟新上下文 — 之前的對話已存檔",

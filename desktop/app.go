@@ -46,6 +46,7 @@ import (
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
 	"workground2/internal/skill"
+	"workground2/internal/work"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -153,6 +154,19 @@ type App struct {
 
 	runtimeEvents asyncRuntimeEmitter
 
+	// workWatchMu owns transient Wails WorkView subscriptions. The durable
+	// source remains control.WorkViewBroadcaster; these entries only bridge a
+	// mounted WorkCard to its owning tab without teaching the UI to poll.
+	workWatchMu sync.Mutex
+	workWatches map[string]*workViewWatch
+	// workResyncGeneration uniquely orders authoritative overflow/retry snapshots
+	// even when persisted Work revision and I/O-backed assessment diverge.
+	workResyncGeneration atomic.Uint64
+	// workResyncGates serializes authoritativeWorkViewResync per workID so the
+	// GetWork→generation window is linearized for the same Work. Different
+	// workIDs proceed independently; idle entries are deleted on release.
+	workResyncGates workResyncGates
+
 	// promptHistoryTape is a lazy, cursor-addressed view of prompt history. It
 	// stores session order and per-session parsed entries only after that session is
 	// reached by ↑ navigation. See ScanPromptHistory.
@@ -184,6 +198,10 @@ type App struct {
 	widgetInfoMu         sync.Mutex
 	widgetInfoCache      widgetInfoCache
 	widgetSystemProbe    func() WidgetSystemInfo
+
+	sessionRefs    work.SessionRefStore
+	sessionRefsErr error
+	purgeSession   func(dir, path string) error // test seam for durable cleanup recovery
 }
 
 type skillRootsCache struct {
@@ -358,14 +376,25 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 // NewApp constructs the bound object. Tabs are restored in startup from the
 // last session's desktop-tabs.json.
 func NewApp() *App {
-	return &App{
+	a := &App{
 		tabs:             map[string]*WorkspaceTab{},
 		detachedSessions: map[string]*WorkspaceTab{},
+		workWatches:      map[string]*workViewWatch{},
 		mediaTokens:      newMediaTokenStore(),
 		background:       newSessionBackgroundService(),
 		botInstalls:      map[string]*botInstallSession{},
 		botRuntime:       newDesktopBotRuntime(),
 	}
+	root := strings.TrimSpace(config.MemoryUserDir())
+	if root == "" {
+		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
+		return a
+	}
+	a.sessionRefs, a.sessionRefsErr = work.NewFileSessionRefStore(
+		filepath.Join(root, "work-session-refs-v1.json"),
+		work.WithRetention(30*24*time.Hour),
+	)
+	return a
 }
 
 func (a *App) bootContext() context.Context {
@@ -1855,6 +1884,8 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
@@ -3197,17 +3228,191 @@ func (a *App) sessionOpen(dir, sessionPath string) bool {
 }
 
 // PurgeTrashedSession permanently removes a trashed session and its title/display
-// sidecars.
+// sidecars. When a SessionRefStore is configured and the session is referenced by
+// any active Work, purge is blocked — use ForcePurgeTrashedSession to override.
+// If the SessionRefStore is nil (uninitialized), purge is also blocked to prevent
+// silent data loss when the work system failed to start.
 func (a *App) PurgeTrashedSession(path string) error {
-	dir, err := a.trashedSessionDir(path)
+	dir, livePath, err := a.resolveTrashedSessionIdentity(path)
 	if err != nil {
 		return err
 	}
-	if err := purgeTrashedSessionFile(dir, path); err != nil {
+	if err := a.checkSessionPurgeBlocked(livePath, trashedSessionDeletedAt(path)); err != nil {
+		return err
+	}
+	if err := a.purgeSessionFile(dir, path); err != nil {
 		return err
 	}
 	a.invalidatePromptHistoryCache()
 	return nil
+}
+
+// SessionPurgeImpact returns which Work/Branch owners would be affected if the
+// trashed session were force-purged. An unavailable index fails closed.
+func (a *App) SessionPurgeImpact(path string) (*work.ForcePurgeImpact, error) {
+	_, livePath, err := a.resolveTrashedSessionIdentity(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.requireSessionRefs(); err != nil {
+		return nil, err
+	}
+	impact, err := a.sessionRefs.ForcePurgeImpact(livePath)
+	if err != nil {
+		return nil, fmt.Errorf("check session purge impact: %w", err)
+	}
+	return impact, nil
+}
+
+// ForcePurgeTrashedSession permanently removes a trashed session even when it is
+// referenced by Work(s). It returns the impact describing which Work/Branch
+// owners are affected. The Work front-side archive projection remains readable.
+//
+// Before physical purge it persists a cleanup-pending marker. On success the
+// marker is cleared. On failure the marker is updated with the error stage so
+// recovery can retry. Duplicate request IDs are safe.
+func (a *App) ForcePurgeTrashedSession(path string) (*work.ForcePurgeImpact, error) {
+	dir, livePath, err := a.resolveTrashedSessionIdentity(path)
+	if err != nil {
+		return nil, err
+	}
+	impact, err := a.SessionPurgeImpact(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist cleanup-pending before physical purge.
+	requestID := work.SessionPurgeRequestID(livePath)
+	if err := a.sessionRefs.RecordCleanupPending(livePath, "force purge", requestID); err != nil {
+		return impact, fmt.Errorf("record cleanup pending: %w", err)
+	}
+	if err := a.sessionRefs.UpdateCleanupPending(livePath, requestID, "purging", "", impact); err != nil {
+		return impact, fmt.Errorf("update cleanup pending: %w", err)
+	}
+
+	if purgeErr := a.purgeSessionFile(dir, path); purgeErr != nil {
+		if updateErr := a.sessionRefs.UpdateCleanupPending(livePath, requestID, "failed", purgeErr.Error(), impact); updateErr != nil {
+			return impact, errors.Join(purgeErr, fmt.Errorf("persist cleanup failure: %w", updateErr))
+		}
+		return impact, purgeErr
+	}
+
+	if err := a.sessionRefs.ClearCleanupPending(livePath, requestID); err != nil {
+		return impact, fmt.Errorf("clear completed cleanup pending: %w", err)
+	}
+	a.invalidatePromptHistoryCache()
+	return impact, nil
+}
+
+// RetryCleanupPending retries physical purge for a session that has a
+// cleanup-pending marker. It resumes from the last recorded stage.
+func (a *App) RetryCleanupPending(path string, requestID string) error {
+	if err := a.requireSessionRefs(); err != nil {
+		return err
+	}
+	rec, ok, err := a.sessionRefs.GetCleanupPending("", requestID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no cleanup-pending record for request %s", requestID)
+	}
+	dir, livePath, err := a.resolveTrashedSessionIdentity(path)
+	if err != nil {
+		return err
+	}
+	if sessionRuntimeKey(rec.SessionPath) != sessionRuntimeKey(livePath) {
+		return errors.New("cleanup-pending Session identity mismatch")
+	}
+
+	if purgeErr := a.purgeSessionFile(dir, path); purgeErr != nil {
+		if updateErr := a.sessionRefs.UpdateCleanupPending(rec.SessionPath, requestID, "failed", purgeErr.Error(), rec.Impact); updateErr != nil {
+			return errors.Join(purgeErr, fmt.Errorf("persist cleanup failure: %w", updateErr))
+		}
+		return purgeErr
+	}
+	if err := a.sessionRefs.ClearCleanupPending(rec.SessionPath, requestID); err != nil {
+		return fmt.Errorf("clear completed cleanup pending: %w", err)
+	}
+	a.invalidatePromptHistoryCache()
+	return nil
+}
+
+// ListSessionCleanupPending returns all active cleanup-pending records.
+func (a *App) ListSessionCleanupPending() ([]work.CleanupPendingRecord, error) {
+	if err := a.requireSessionRefs(); err != nil {
+		return nil, err
+	}
+	return a.sessionRefs.ListCleanupPending()
+}
+
+// setSessionRefStore injects a SessionRefStore for tests. Production creates
+// the store in NewApp; keeping this helper unexported prevents Wails from
+// exposing a non-serializable Go interface as a frontend binding.
+func (a *App) setSessionRefStore(store work.SessionRefStore) {
+	a.sessionRefs = store
+	a.sessionRefsErr = nil
+}
+
+// resolveTrashedSessionIdentity returns (dir, livePath, error). The livePath
+// is the stable Session identity derived from the trash path — it is the same
+// path the SessionRefStore indexes by.
+func (a *App) resolveTrashedSessionIdentity(path string) (string, string, error) {
+	dir, err := a.trashedSessionDir(path)
+	if err != nil {
+		return "", "", err
+	}
+	_, key, _, err := validateTrashedSessionPath(dir, path)
+	if err != nil {
+		return "", "", err
+	}
+	livePath := filepath.Join(dir, key)
+	return dir, livePath, nil
+}
+
+// checkSessionPurgeBlocked returns an error when the session is referenced by
+// active Work(s). If the SessionRefStore is nil (uninitialized), it blocks
+// purge to prevent silent data loss.
+func (a *App) checkSessionPurgeBlocked(livePath string, trashedAt int64) error {
+	if err := a.requireSessionRefs(); err != nil {
+		return err
+	}
+	purgeable, err := a.sessionRefs.IsPurgeable(livePath, trashedAt)
+	if err != nil {
+		return fmt.Errorf("check session retention: %w", err)
+	}
+	if purgeable {
+		return nil
+	}
+	ref, err := a.sessionRefs.IsReferenced(livePath)
+	if err != nil {
+		return fmt.Errorf("check session refs: %w", err)
+	}
+	if !ref {
+		return errors.New("session retention period has not elapsed")
+	}
+	ids, err := a.sessionRefs.OwnerWorkIDs(livePath)
+	if err != nil {
+		return fmt.Errorf("resolve Work owners: %w", err)
+	}
+	return fmt.Errorf("session is referenced by Work(s): %s — use ForcePurgeTrashedSession to override", strings.Join(ids, ", "))
+}
+
+func (a *App) requireSessionRefs() error {
+	if a.sessionRefsErr != nil {
+		return fmt.Errorf("session ref store is unavailable: %w", a.sessionRefsErr)
+	}
+	if a.sessionRefs == nil {
+		return errors.New("session ref store is not initialized — purge blocked for safety")
+	}
+	return nil
+}
+
+func (a *App) purgeSessionFile(dir, path string) error {
+	if a.purgeSession != nil {
+		return a.purgeSession(dir, path)
+	}
+	return purgeTrashedSessionFile(dir, path)
 }
 
 // RenameSession sets a custom display name for a session (empty clears it back to
@@ -7652,6 +7857,8 @@ func (a *App) applyModelForTabLocked(tab *WorkspaceTab, name string) error {
 		EffortOverride:           cloneStringPtr(effortOverride),
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
@@ -7777,6 +7984,8 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		EffortOverride:           &effort,
 		TokenMode:                currentTabTokenMode(tab),
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
@@ -7874,6 +8083,8 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		EffortOverride:           cloneStringPtr(tab.effort),
 		TokenMode:                mode,
 		SharedHost:               sharedHost,
+		SessionRefs:              a.sessionRefs,
+		SessionRefsErr:           a.sessionRefsErr,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),

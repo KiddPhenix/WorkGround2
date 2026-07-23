@@ -1,6 +1,6 @@
 # Work 系统设计与开发文档
 
-> 文档状态：**起草 v1**。本文定义 Work 系统（Work、WorkCard、WorkBlock、Cornerstone 等）的目标架构和产品行为。当前仓库已有 Session、Checkpoint、PinnedMemory、TaskMemory、Artifact、Run 和 AddOn Schema 等基础能力，但尚无统一的 Work 聚合、双面 WorkCard、Cornerstone 与 WorkBlock 协议；本文是后续设计和开发交付的基准。
+> 文档状态：**V1 已冻结（2026-07-20 启动门定稿）**。本文是 Work 系统（Work、WorkCard、WorkBlock、Cornerstone 等）的 V1 实施基线。当前仓库已有 Session、Checkpoint、PinnedMemory、TaskMemory、Artifact、Run 和 AddOn Schema 等基础能力，但尚无统一的 Work 聚合、双面 WorkCard、Cornerstone 与 WorkBlock 协议。本文是后续所有阶段（M0-M4）的设计和开发基准，任何偏离必须先更新本文再改代码。
 >
 > 与 WorkGround2 关系：Work 系统是 WorkGround2 上的一层产品抽象——`Work` 是用户可保存、历史查看、翻面交互、重执行的结构化工作单元；底层复用 WorkGround2 的 Controller、Session、Checkpoint、Memory、Tool Registry、AddOn 等能力。
 
@@ -25,8 +25,10 @@
 15. [与现有代码映射](#15-与现有代码映射)
 16. [分阶段开发计划](#16-分阶段开发计划)
 17. [可观测性](#17-可观测性)
-18. [风险与明确待定项](#18-风险与明确待定项)
+18. [风险、参数与 feature flag](#18-风险参数与-feature-flag)
 19. [验收标准](#19-验收标准)
+20. [仓库基线证据](#20-仓库基线证据2026-07-20)
+21. [逐项评审清单](#21-逐项评审清单)
 
 ---
 
@@ -38,12 +40,29 @@
 
 ### 1.2 状态
 
-- **产品基线**：已确认双面 WorkCard、右上角翻面、Work 历史/重执行、Cornerstone 和动态内容机制。
-- **技术状态**：本文提出 v1 数据协议、持久化、API 和分期方案；进入实现前需在 M0 用类型/golden fixture 固定契约。
-- **实施状态**：尚未开始实现。第 16 章分阶段开发计划是实施入口。
-- **版本追踪**：本文进入实施后，任何偏离必须先更新本文再改代码。
+- **设计基线**：V1 已冻结。2026-07-20 启动门定稿，本文的所有架构、协议、类型、流程和参数均为 M0 实施入口。
+- **技术状态**：M0-M4 阶段计划（第 16 章）是唯一实施路径。任何偏离必须先更新本文再改代码。
+- **实施状态**：尚未开始实现。`internal/work` 和 `desktop/frontend/src/components/work` 不存在（见第 20 章基线证据）。
+- **版本追踪**：本文是 V1 的单一定稿设计源。后续评审、PR 和测试验收均引用本文具体章节。
 
-### 1.3 目标（Scope）
+### 1.3 ADR 与契约清单
+
+以下架构决策已在本轮定稿中明确，未来实现和评审不得绕过：
+
+| # | 决策 | 依据 | 引用章节 |
+|---|---|---|---|
+| ADR-1 | 依赖方向 `control → work`，`internal/work` 不导入 `internal/control` | 避免 import cycle；`control` 持有 Work Service 并通过窄接口转发 | §14.1、§15.1 |
+| ADR-2 | Work 事件分持久化 WorkEvent 和传输 WorkViewEvent 两层 | 领域事件不与 Agent turn 事件混用；前端通过 snapshot/delta 订阅 | §13.1 |
+| ADR-3 | DefinitionSnapshot 采用 copy-on-write 不可变 revision | 旧版 Work 不追随浮动 Blueprint；每个 WorkflowRun 记录 definition digest | §5.2 |
+| ADR-4 | 翻面仅切换 UI face，不写业务事件也不创建 Session Checkpoint | activeFace 属于 Desktop UI Preference，不是 Work 业务状态 | §4.3.3、§5.6 |
+| ADR-5 | AI/AddOn 只发送 schema 数据（block content、action intent），禁止生成 React/HTML/CSS | 安全边界；渲染器注册表统一控制 UI 呈现 | §8.1、§8.5 |
+| ADR-6 | 归档 WorkRecord 是不可变快照，永不原地改写 | 历史可审计；重执行创建新 Work 通过 rerunOf 关联 | §5.3、§6.1 |
+| ADR-7 | test 默认禁止真实模型、凭据和网络；外部模型 opt-in 同时要求显式 build tag 与 env | 比仓库最低要求更严格，保证误运行不会访问外部依赖 | §16、§19.4 |
+| ADR-8 | `work.enabled` feature flag 关闭时既不删除也不迁移已有 Work 数据 | 安全回滚；既有 Session 流程不变 | §18.5 |
+| ADR-9 | Cornerstone 不受 Memory Compiler/compact 影响 | 长期 pin；清理确认文案必须显示 Cornerstone 保留数量 | §7.6 |
+| ADR-10 | Blueprint 双版本：`SchemaVersion`（序列化契约）和 `Version`（业务定义） | 两者演进节奏不同，不能混用 | §5.2、§6.1 |
+
+### 1.4 目标（Scope）
 
 - 用户可以创建、命名、运行、翻面查看、保存、归档、历史浏览、复用和重执行 Work。
 - Work 正面是版本化 WorkBlock 组合的结构化工作流视图；翻转背面是提示词和关联会话历史。
@@ -51,7 +70,7 @@
 - 旧 Work 作为不可变历史快照保留，新版 Work 通过 `copiedFrom`、`rerunOf` 或 `referencedWorks` 表达复用关系。
 - 系统复用 WorkGround2 Controller、Session 事件日志、Checkpoint、PinnedMemory、TaskMemory、Artifact 和 AddOn 面板能力。
 
-### 1.4 非目标（Out of Scope）
+### 1.5 非目标（Out of Scope）
 
 - **不是**通用工作流引擎或 BPMN 运行时——不做条件分支 DSL、定时触发、外部 webhook 编排。
 - **不是**多人实时协作编辑器——Work 属于单个用户，不设计 OT/CRDT 合并语义。
@@ -391,7 +410,10 @@ type SourceRef struct {
 ```mermaid
 stateDiagram-v2
     [*] --> draft : "创建"
+    draft --> ready : "输入和依赖预检通过"
+    ready --> draft : "编辑或依赖变化使预检失效"
     draft --> running : "触发运行"
+    ready --> running : "触发运行"
     running --> completed : "执行成功"
     running --> failed : "执行失败"
     running --> waiting_user : "等待输入/审批"
@@ -1601,7 +1623,7 @@ interface WorkUIStoreState {
 
 ---
 
-## 18. 风险与明确待定项
+## 18. 风险、参数与 feature flag
 
 ### 18.1 风险
 
@@ -1626,15 +1648,83 @@ interface WorkUIStoreState {
 | Work 定时执行 / Cron 触发 | V1 手动触发。自动定时需要调度器基础设施。 |
 | Work 的 Cornerstone 全文搜索 | 需要索引基础设施。V1 用 Tag 和标题匹配。 |
 
-以下属于 M0/M1 必须定稿的实现参数，不改变本文架构：
+### 18.3 实现参数（M0 定稿）
 
-| 参数 | 默认建议 | 定稿依据 |
+以下五个决策域拆为七个可执行参数。存储、阈值和路径参数在 M0 固定并测试；chart Renderer 在 M1 按已选技术实现和验收。实现时统一从配置/契约入口读取，不在业务流程散落硬编码。
+
+| # | 参数 | 精确默认值 | 选择依据 | Owner | 未来修改位置 |
+|---|---|---|---|---|---|
+| P1 | Work 保留期 | **永久保留**（不自动清理）。Work 不设 TTL；只有用户显式删除才进入 Trash。 | Work 是用户持久资产，磁盘占用由显式清理和 GC 控制。 | `internal/work/service.go` — ArchiveWork/DeleteWork | Project WorkDir 配置，未来可加 `work.retention.active_days` |
+| P2 | Trash 保留期 | **30 天**（自然日）。到期后 GC 可物理清理；用户可在到期前恢复。恢复操作重置计时器。 | 平衡磁盘占用与用户恢复预期；30 天覆盖大多数"误删后补救"场景。 | `internal/work/store_file.go` — MoveToTrash / RestoreFromTrash | config key `work.trash.retention_days`，默认 30，0 表示永不清除 |
+| P3 | Cornerstone inline 阈值 | **≤ 2 000 Unicode 字符**内联；超过此值仅注入 `title + digest + 摘要`，内容通过受权限约束的工具按需读取。 | 给短说明/决策足够空间，同时限制单项挤占上下文；字符阈值可跨 Provider 稳定测试。 | `internal/control/input.go` 的 Work transient composer | `internal/config/config.go`：`work.cornerstone.inline_max_chars = 2000` |
+| P4 | Cornerstone 每次运行 token 上限 | **总计 ≤ 8 000 tokens**。优先使用当前 Provider tokenizer；不可用时按 `max(Unicode 字符数, ceil(UTF-8 bytes / 4))` 保守估算。超限按 required、类型、最近使用排序裁剪，并把被裁剪 ID/原因写入无正文日志。 | 保护模型上下文窗口和 cache-stable prefix；显式 fallback 算法保证离线测试可复现。 | `internal/control/input.go` 的 Work transient composer | `internal/config/config.go`：`work.cornerstone.run_token_budget = 8000` |
+| P5 | 单 Block 转 blob 阈值 | Block data JSON 序列化后 **> 64 KiB** 转内容寻址 blob。BlockInstance 中替换为 `blobDigest + 前 512 字节摘要`。≤ 64 KiB 内联在 projection 和事件中。 | 64 KiB 是典型的"小 JSON payload"上限；超过此值的块数据（如大文件清单、长表格）会明显拉大事件日志和 projection。 | `internal/work/store_file.go` — upsertBlock | config key `work.block.inline_max_bytes`，默认 65536 |
+| P6 | chart Renderer 技术选型 | **V1 使用 React + 原生 SVG 实现内置 `bar/line/pie` Renderer，不新增第三方 chart 依赖**；模块按需 lazy load，同时提供同数据的可访问表格/fallback。协议层仍只定义 `{type, series, axes?, legend?}`，不携带库配置。 | 当前前端没有 chart 依赖；V1 图表范围小，原生 SVG 可控制 bundle、主题和归档确定性，也避开许可证/升级耦合。若 M1 的无障碍或 50+ Block 性能门失败，必须先更新本 ADR 再引入库。 | `desktop/frontend/src/components/work/blocks/ChartBlock.tsx` + Renderer Registry | `desktop/frontend/package.json`（V1 不新增 chart 包）；`ChartBlock.tsx` 是唯一实现入口 |
+| P7 | 用户 Blueprint 存储位置 | **仅存 `config.ProjectWorkDir(root)/blueprints/`**（对应 `project-data-dir/works/blueprints/`，本地私有）。V1 不向 Git workspace 写 Blueprint；共享通过显式导出完成。 | 与现有项目数据路由一致，不污染仓库或意外提交路径/Prompt；workspace 共享能力留到 V2 安全评审。 | `internal/work/blueprint.go` — SaveBlueprint | `internal/config` 新增 `ProjectWorkDir(root)`；V2 若支持共享再新增独立 opt-in 配置 |
+
+**参数测试要求**：P1-P5、P7 在 M0 覆盖默认值、边界值（0、负值、超大值）与配置解析；P6 在 M1 覆盖 `bar/line/pie`、可访问表格、fallback、lazy load 和“无新增 chart 依赖”的 bundle contract。
+
+### 18.4 V1/V2 边界
+
+以下能力在 V1 明确排除，V2 按需求优先级评估：
+
+| 能力 | V1 行为 | V2 评估条件 |
 |---|---|---|
-| Work/Trash 保留期 | Work 默认永久保留；Trash 30 天 | 磁盘占用、用户恢复预期 |
-| Cornerstone inline/token 上限 | 小内容内联，大内容按 digest + 摘要 + 按需读取 | 模型窗口和 prefix cache 回归数据 |
-| 单 Block 内联大小 | 超过阈值转 blob | 启动时间、事件日志大小 |
-| chart Renderer 技术选型 | 不在协议层绑定库 | Bundle 体积、无障碍、主题、许可证 |
-| 用户 Blueprint 存储位置 | 默认 project data；显式选择才进入 workspace | 本地私密性与团队共享需求 |
+| Work 间依赖图 | 不提供。Work Conclusion 的 NextSteps 作为人工参考。 | ≥3 个已验证需求场景。 |
+| Work 模板市场 | 不提供。Blueprint 仅系统内置 + 用户本地创建。 | 安全审计方案和沙箱机制就绪。 |
+| 多人协作 Work | 不提供。Work 属于单用户。 | OT/CRDT 方案评估通过且权限模型明确。 |
+| AddOn 自定义 Block kind | AddOn 只能映射到核心 Block kind；不提供动态 Renderer 注册。 | iframe 沙箱 + CSP 方案验证通过。 |
+| Work 定时/Cron 执行 | 不提供。必须手动触发。 | 调度器基础设施已就绪。 |
+| Cornerstone 全文搜索 | 不提供。仅按 Tag 和标题匹配。 | 索引基础设施具备且隐私审计通过。 |
+| Work 导出/导入 | V1 提供只读 JSON 导出；不提供导入，避免在契约尚未稳定时引入不可信数据写入。 | 导入 schema、安全校验和冲突恢复方案通过评审。 |
+
+### 18.5 `work.enabled` Feature Flag
+
+#### 18.5.1 配置
+
+```toml
+# WorkGround2.toml 或 %AppData%\WorkGround2\config.toml
+# 缺少 [work] 或 enabled 时默认开启；只有以下显式配置会关闭。
+[work]
+enabled = false
+```
+
+- **Owner**：`internal/config/config.go` — `WorkConfig.Enabled` 由共享配置加载链路解析。
+- **默认值**：`true`。缺少 `[work]` 或缺少 `enabled` 均保持开启；只有显式 `enabled = false` 才关闭。该默认语义由 2026-07-23 用户决策覆盖此前 default-off 约束。
+- **运行时修改**：flag 在 Controller 启动时读取，运行期间不变。修改配置后需重启 WorkGround2。
+
+#### 18.5.2 启用行为（`enabled = true`）
+
+- Controller 初始化 Work Service、WorkStore 和 WorkViewEvent Sink。
+- Workspace UI 显示"新建 Work"入口和 Work 历史列表。
+- Session 删除/清理增加 Work owner/ref 检查。
+
+#### 18.5.3 关闭行为（`enabled = false`）
+
+- **不删除、不迁移、不触碰任何已有 Work 数据**。Work 文件保留在磁盘原位置。
+- Controller 不初始化可写 Work Service/WorkSink；只读归档读取器仅服务于导出和引用保护。
+- Workspace UI 不显示 Work 相关入口。
+- Session 的创建、运行、对话、归档和普通删除流程保持原行为。
+- 如果磁盘上已有 Work 引用索引，Session 物理清理仍执行只读 owner/ref 保护；索引缺失或损坏时保守拒绝物理删除并暴露修复入口，避免回滚时破坏 Work 背面历史。
+
+#### 18.5.4 回滚边界
+
+| 场景 | 行为 |
+|---|---|
+| 启用后发现严重 bug → 关闭 flag | Work 数据原地保留。UI 回到纯 Session 模式；只读引用保护继续生效。下次启用时从事件日志校验并重建 projection。 |
+| 启用后创建了 Work 再关闭 | Work 投影和事件日志保留在磁盘。关闭期间不会被修改或清理。 |
+| 关闭期间用户手动删除 Work 文件 | 下次启用时 LoadProjection 返回 ErrNotExist，该 Work 从索引中移除（不崩溃）。 |
+| M0 中途回滚（显式设置 `enabled = false`） | `internal/work` 代码存在但不加载；`go build` 和既有 Session 测试全部通过。 |
+
+#### 18.5.5 只读降级与导出
+
+- **只读降级**：未来 schema（`ArchiveSchemaVersion > CurrentVersion`）的 Work 在 flag=true 时仍可查看元数据和 fallback 视图；禁止写入和重执行。提示用户升级 WorkGround2。
+- **导出**：V1 必须提供规划中的 `workground2 work export <workID>` 只读子命令，输出版本头、projection、archive/fallback 和校验摘要；不得输出 Secret 明文。flag=false 时也可执行，且不修复、不截断、不改写磁盘数据。
+
+#### 18.5.6 迁移/升级路径
+
+- V1→V2 时：升级程序读取旧版 Work 目录，在临时/旁路位置生成并校验新投影后原子切换索引；不可变 archive 永不回写，旧数据保留到迁移确认和宽限期结束。失败保留旧索引并可重试。
+- 降级：不支持。V2 生成的 Work 不能被 V1 程序写入。V1 程序遇到 V2 schema 时遵循只读降级策略。
 
 ---
 
@@ -1648,7 +1738,7 @@ interface WorkUIStoreState {
 - [x] 内容覆盖：文档状态、流程、核心模型、版本兼容、Cornerstone、WorkBlock、模板边界、持久化、API、类型、数据流、组件规划、代码映射、阶段计划（全部 11 项）
 - [x] 无虚假实现声明（未将尚未实现的 Work 层能力描述为已存在）
 - [x] 引用的现有代码路径可验证；规划路径明确标注为新建
-- [x] whitespace/diff check 通过，只有当前文档被修改
+- [x] whitespace/diff check 通过，本启动门仅修改本文和 `Codex/KnowledgeBase/FeatureMap.md`
 
 ### 19.2 可执行性
 
@@ -1658,3 +1748,254 @@ interface WorkUIStoreState {
 - [x] 前端可直接从第 8、12、14 章提取组件规划和 TypeScript 类型
 - [x] 测试可直接从第 16 章提取每阶段的测试策略和验收标准
 - [x] 第 16 章每阶段有明确的改动范围、测试策略、迁移/回滚和验收标准
+
+### 19.3 M0-M4 验收矩阵
+
+每个阶段的验收以该矩阵为准。默认测试禁止真实模型、凭据和网络；opt-in 测试必须同时使用显式环境变量和 build tag，并指定 provider/model/timeout。M1 新增前端测试时必须在 `desktop/frontend/package.json` 收敛为 `test:work` 脚本，继续使用仓库现有的 `tsx + jsdom` 风格。
+
+#### 19.3.1 M0：基础模型与持久化
+
+| 验收项 | 测试类型 | 命令/验证方式 | 外部依赖 |
+|---|---|---|---|
+| Work 类型编译通过、无 import cycle | Go unit | `go build ./internal/work/...` | 无 |
+| Create/Load/Archive/Restore 完整流程 | Go unit | `go test ./internal/work/ -run CreateLoadArchive -count=1` | 无 |
+| request ID 幂等：重复 Create/Archive/Restore 不产生副作用 | Go unit | `go test ./internal/work/ -run Idempotent -count=1` | 无 |
+| revision 断链检测和恢复 | Go unit | `go test ./internal/work/ -run RevisionChain -count=1` | 无 |
+| torn tail 恢复到最后一个合法事件 | Go unit | `go test ./internal/work/ -run TornTail -count=1` | 无 |
+| 未来 schema 只读（不覆盖、不崩溃） | Go unit + golden fixture | `go test ./internal/work/ -run FutureSchema -count=1` | 无 |
+| WorkRecord 独立加载和不可变性 | Go unit | `go test ./internal/work/ -run WorkRecord -count=1` | 无 |
+| 参数 P1-P5、P7 默认值读取 | Go unit | `go test ./internal/work/ -run Params -count=1` | 无 |
+| 参数边界值（0、负值、超大值） | Go unit | `go test ./internal/work/ -run ParamsEdge -count=1` | 无 |
+| `go vet ./internal/work/...` 通过 | Go vet | `go vet ./internal/work/...` | 无 |
+| 全仓 `go build` 不受 `internal/work` 影响 | Go build | `go build ./...` | 无 |
+
+**M0 发布门**：
+- `go test ./internal/work/...` 全部通过。
+- `go vet ./internal/work/...` 零告警。
+- `go build ./...` 全仓编译成功。
+- `work.enabled=false` 时 Session 流程回归全部通过（`go test ./internal/boot/...`、`go test ./internal/control/...` 等现有包）。
+- golden fixtures 目录 `internal/work/testdata/archive-v1/` 存在且不可变。
+
+#### 19.3.2 M1：WorkBlock 与翻面
+
+| 验收项 | 测试类型 | 命令/验证方式 | 外部依赖 |
+|---|---|---|---|
+| Block CRUD + revision 冲突检测 | Go unit | `go test ./internal/work/ -run Block -count=1` | 无 |
+| Block tombstone/未知 schema fallback | Go unit | `go test ./internal/work/ -run BlockFallback -count=1` | 无 |
+| 核心 Renderer 注册、validate 与 P6 chart 契约 | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| WorkCard 双面渲染 | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| 翻面状态保持（滚动、展开、草稿不丢失） | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| reduced-motion 和窄窗降级 | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| 未知 Renderer fallback | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| TypeScript typecheck 通过 | TS check | `Set-Location desktop\frontend; npm.cmd run typecheck` | 无 |
+| 前端生产构建通过 | TS build | `Set-Location desktop\frontend; npm.cmd run build` | 无 |
+| `go vet ./internal/work/...` 通过 | Go vet | `go vet ./internal/work/...` | 无 |
+
+**M1 发布门**：
+- M0 门全部通过。
+- `Set-Location desktop\frontend; npm.cmd run test:work` 全部通过。
+- `Set-Location desktop\frontend; npm.cmd run typecheck` 零错误。
+- `Set-Location desktop\frontend; npm.cmd run build` 成功。
+- 关闭 `work.enabled=false` 后仍能打开关联 Session。
+
+#### 19.3.3 M2：执行、Cornerstone 与历史
+
+| 验收项 | 测试类型 | 命令/验证方式 | 外部依赖 |
+|---|---|---|---|
+| WorkRunner 编排（fake provider + tool） | Go integration | `go test ./internal/work/ -run Runner -count=1` | 无（fake） |
+| Stage → Task → Attempt 生命周期 | Go integration | `go test ./internal/work/ -run Lifecycle -count=1` | 无（fake） |
+| Cornerstone pin/unpin/refresh/remove | Go integration | `go test ./internal/work/ -run Cornerstone -count=1` | 无 |
+| Cornerstone live_ref stale/missing/denied 状态转换 | Go integration | `go test ./internal/work/ -run CornerstoneStatus -count=1` | 无 |
+| Cornerstone 上下文注入（cache-stable prefix 不变） | Go integration | `go test ./internal/control/ -run CornerstoneContext -count=1` | 无 |
+| 记忆清理不触碰 Cornerstone | Go integration | `go test ./internal/work/ -run CornerstoneMemoryBoundary -count=1` | 无 |
+| Session owner/ref 清理协调 | Go integration | `go test ./internal/work/ -run SessionRef -count=1` | 无（fake session） |
+| WorkRecordViewer 只读渲染 | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| 真实模型运行（opt-in） | Go integration | `$env:WORK_TEST_EXTERNAL='1'; $env:WORK_TEST_PROVIDER='<provider>'; $env:WORK_TEST_MODEL='<model>'; $env:WORK_TEST_TIMEOUT='120s'; go test -tags=external ./internal/work/ -run ExternalRun -count=1` | 真实模型、凭据、网络 |
+
+**M2 发布门**：
+- M1 门全部通过。
+- fake 集成测试覆盖所有编排路径。
+- Cornerstone 边界测试通过（记忆清理不误伤）。
+- Session 删除协调测试通过。
+- opt-in 外部模型测试仅在手动触发时运行。
+
+#### 19.3.4 M3：重执行、预检与版本兼容
+
+| 验收项 | 测试类型 | 命令/验证方式 | 外部依赖 |
+|---|---|---|---|
+| PrepareRerun + ExecuteRerun（原定义） | Go integration | `go test ./internal/work/ -run RerunOriginal -count=1` | 无 |
+| PrepareRerun + ExecuteRerun（升级） | Go integration | `go test ./internal/work/ -run RerunUpgraded -count=1` | 无 |
+| 迁移链逐版本应用 + 每步 schema 校验 | Go unit | `go test ./internal/work/ -run Migration -count=1` | 无 |
+| planToken 过期 → ErrPlanStale | Go integration | `go test ./internal/work/ -run PlanStale -count=1` | 无 |
+| 迁移中途失败回滚（不产生半完成 Work） | Go integration | `go test ./internal/work/ -run MigrationRollback -count=1` | 无 |
+| 缺失工具/文件/Secret → 预检阻塞 | Go unit | `go test ./internal/work/ -run PreflightBlocked -count=1` | 无 |
+| 未知 Block kind 降级渲染 | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| 归档不可变验证 | Go unit | `go test ./internal/work/ -run ArchiveImmutable -count=1` | 无 |
+| `go vet ./internal/work/...` 通过 | Go vet | `go vet ./internal/work/...` | 无 |
+
+**M3 发布门**：
+- M2 门全部通过。
+- 原定义和升级重执行两条路径均通过。
+- 迁移链至少覆盖 2 步累积迁移。
+- 预检报告正确阻塞必需项缺失，允许可选项 fallback。
+
+#### 19.3.5 M4：打磨与可观测性
+
+| 验收项 | 测试类型 | 命令/验证方式 | 外部依赖 |
+|---|---|---|---|
+| Work 执行失败恢复（从最后 Stage/Task 重试） | Go integration | `go test ./internal/work/ -run FailureRecovery -count=1` | 无（fake） |
+| 50+ Block WorkCard 渲染性能（虚拟滚动） | TS perf | 人工 + 浏览器 DevTools FPS 检查 | 无 |
+| 前端错误边界覆盖（加载/空/错误状态） | TS unit (tsx + jsdom) | `Set-Location desktop\frontend; npm.cmd run test:work` | 无 |
+| 完整桌面 E2E（创建→运行→归档→重执行） | 手动/E2E | 使用打包桌面程序走完整流程 | 打包桌面程序 |
+| 故障注入：原子写中断恢复 | Go integration | `go test ./internal/work/ -run FaultAtomicWrite -count=1` | 无 |
+| 故障注入：重复 request ID | Go integration | `go test ./internal/work/ -run FaultDupRequest -count=1` | 无 |
+| 故障注入：Session 被占用时清理协调 | Go integration | `go test ./internal/work/ -run FaultSessionConflict -count=1` | 无 |
+| 故障注入：blob 缺失对账修复 | Go integration | `go test ./internal/work/ -run FaultBlobMissing -count=1` | 无 |
+| GC/清理作业幂等对账 | Go integration | `go test ./internal/work/ -run GCIdempotent -count=1` | 无 |
+| `go test ./...` 全仓通过 | Go full | `go test ./...` | 无 |
+| `go vet ./...` 全仓通过 | Go vet | `go vet ./...` | 无 |
+
+**M4 发布门**：
+- M3 门全部通过。
+- `go test ./...` 全仓通过。
+- `go vet ./...` 全仓零告警。
+- 桌面 E2E 覆盖完整用户流程。
+- 故障注入恢复全部通过。
+- `work.enabled` 缺省为 `true`；显式 `false` 的关闭/回滚与只读引用保护门禁全部通过。
+
+### 19.4 测试环境与 opt-in 策略
+
+| 测试类型 | 默认行为 | opt-in 方式 |
+|---|---|---|
+| Go unit test | 不访问外部模型、凭据、网络 | —（默认即安全） |
+| Go integration test | 使用 fake Provider/Tool/Session；不发起真实网络请求 | —（默认即安全） |
+| 外部模型测试 | **跳过**，输出启用方式 | `$env:WORK_TEST_EXTERNAL='1'; $env:WORK_TEST_PROVIDER='<provider>'; $env:WORK_TEST_MODEL='<model>'; $env:WORK_TEST_TIMEOUT='120s'; go test -tags=external ./internal/work/ -run ExternalRun` |
+| 真实凭据测试 | **跳过**，输出启用方式 | `$env:WORK_TEST_CREDENTIALS='1'; go test -tags=credentials ./internal/work/ -run Credential` |
+| 前端组件测试 | 使用 jsdom，模拟事件 | —（默认即安全） |
+| 桌面 E2E | 不自动运行 | 手动触发，需要打包桌面程序和可用 workspace |
+| 故障注入测试 | 默认运行（使用 fake 组件模拟故障） | —（默认即安全） |
+
+所有外部模型 opt-in 测试必须显式指定 `provider/model/timeout`，失败时必须报告 provider/model 和错误，禁止静默跳过或 hang。默认 CI job 不设置这些开关，因此不会访问真实模型、凭据或网络。
+
+---
+
+## 20. 仓库基线证据（2026-07-20）
+
+### 20.1 不存在路径
+
+以下路径在 `developping/work-system-v1+2026-07-20` 分支起点不存在：
+
+| 路径 | 验证方式 | 结果 |
+|---|---|---|
+| `internal/work/` | `Test-Path -LiteralPath internal\work` | `False` |
+| `desktop/frontend/src/components/work/` | `Test-Path -LiteralPath desktop\frontend\src\components\work` | `False` |
+| `internal/work` Go 包 | `rg -n '^package work$' internal --glob '*.go'` | 无匹配 |
+
+验证命令（2026-07-20 执行）：
+
+```powershell
+Test-Path -LiteralPath internal\work
+Test-Path -LiteralPath desktop\frontend\src\components\work
+rg -n '^package work$' internal --glob '*.go'
+# False / False / 无匹配（rg 退出码 1 表示无匹配）
+```
+
+### 20.2 已有可复用代码路径
+
+以下现有代码将在 M0-M4 中复用，不重写：
+
+| 路径 | 复用方式 | Work 系统映射 |
+|---|---|---|
+| `internal/fileutil/atomicwrite.go`（`fileutil.AtomicWriteFile`） | 直接调用 | manifest/projection/archive/index 原子写入 |
+| `internal/agent/session_events.go` | 复用 schema/revision/digest/lease/compact/损坏恢复模式 | Work 事件日志（`work.events.jsonl`）|
+| `internal/control/pinned_memory.go` | 复用稳定幂等 ID、原子 sidecar 和 transient context 模式 | Cornerstone 上下文注入的基础 |
+| `internal/control/controller.go` | Controller 持有 Work Service 并转发 WorkViewEvent | Work 系统的传输层 |
+| `internal/control/input.go` | 复用 transient context composition 点 | Cornerstone 注入位置（cache-stable prefix 之后） |
+| `internal/control/task_memory.go` | 复用 revision/tombstone/乱序 delta 合并规则 | WorkView delta 订阅 |
+| `internal/boot/boot.go` | 组装 Work Service 并注入 Controller | Work 系统初始化 |
+| `desktop/frontend/src/components/MermaidDiagram.tsx` | 直接复用 | `kind: "graph"` 的 Renderer |
+| `desktop/frontend/src/store/run.ts` | 复用 eventId 幂等合并模式 | WorkViewEvent 的 snapshot/delta 合并 |
+| `desktop/frontend/src/store/artifacts.ts` | 复用 host path 校验和状态模型 | Work ArtifactRef 投影 |
+| `internal/permission/` | 复用 Policy 和 ApprovalRequest 流 | Block action intent 的权限和审批 |
+| `internal/tool/tool.go`（`tool.Registry`） | 复用工具注册和发现 | RerunPlan 工具校验 |
+
+### 20.3 `control → work` 依赖方向与 import-cycle 检查
+
+**规划依赖方向**：
+
+```
+control → work（单向）
+```
+
+`internal/work` **不得**导入 `internal/control`。它只依赖自己定义的窄接口（`TaskExecutor`、`SessionLookup`、`ToolCatalog`、`PermissionChecker` 等），`control` 和 `boot` 提供适配器并完成组装。
+
+**import-cycle 检查结论（2026-07-20）**：
+
+- 当前 `internal/work` 包不存在，因此本轮无法验证未来包的实际依赖环；现有 `internal/control` 与 `internal/boot` 可独立编译测试，当前图无 setup failure。
+- 根据仓库约定：M0 创建 `internal/work` 包后，第一道门运行 `go test ./internal/work/ ./internal/control/ ./internal/boot/ -run '^$' -count=1`，任何 `[setup failed]` 都阻断提交。
+- **后续门**：`internal/work` 引入任何新 import 前，先运行目标包测试并检查其测试文件是否反向导入 `internal/work`；不能只依赖 `go list` 推断。
+- 特别关注 `internal/work` → `internal/agent`（Session 管理）和 `internal/work` → `internal/control`（Controller 接口）的潜在反向依赖——这两个方向的 import 必须通过接口适配器在 `internal/control` 侧完成。
+
+---
+
+## 21. 逐项评审清单
+
+以下清单用于启动门 PR 评审和每阶段交付前自查。所有项目必须为 ✅ 或 N/A（写明原因），不允许 ❌。
+
+### 21.1 Markdown 与格式
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| MK-01 | 无未闭合 Markdown fence（``` 成对出现） | ✅ |
+| MK-02 | 4 个 Mermaid 图语法正确（`graph TD`、`erDiagram`、`stateDiagram-v2`、`sequenceDiagram`） | ✅ |
+| MK-03 | 所有章节引用路径可解析（`§14.1`、`§15.1` 等） | ✅ |
+| MK-04 | 本启动门只修改设计文档和 FeatureMap | ✅ |
+| MK-05 | 文档中无硬编码绝对路径（Windows 示例除外，已标注"验证命令"） | ✅ |
+
+### 21.2 内容一致性
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| CC-01 | §1.3 ADR 清单与对应章节一致（ADR-1↔§14.1 依赖方向，ADR-4↔§4.3.3 翻面等） | ✅ |
+| CC-02 | §18.3 七个参数均有精确默认值、选择依据、owner 和未来修改位置 | ✅ |
+| CC-03 | §18.5 feature flag 缺省 `true`、仅显式 `false` 关闭；关闭时仍遵守 §1.3 ADR-8 | ✅ |
+| CC-04 | §19.3 M0-M4 矩阵与 §16 各阶段范围匹配（M0 类型/存储→M1 Block/翻面→M2 执行/Cornerstone→M3 重执行→M4 打磨） | ✅ |
+| CC-05 | §19.4 opt-in 策略与仓库 AGENTS.md 测试策略一致 | ✅ |
+| CC-06 | §20.2 可复用路径与 §15.1 复用项一致 | ✅ |
+
+### 21.3 业务实现
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| BI-01 | 文档未将规划路径描述为已实现（§14、§15.2 使用"规划""需新建"） | ✅ |
+| BI-02 | §20.1 明确记录 `internal/work` 和 `desktop/frontend/src/components/work` 不存在 | ✅ |
+| BI-03 | §15.3 修改现有组件的影响范围标注为"中/高/低"，不声称已完成 | ✅ |
+| BI-04 | 现有代码引用均可验证；未来文件/函数均明确标注为规划/新建 | ✅ |
+
+### 21.4 兼容与回滚
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| RB-01 | `work.enabled=false` 时删除 Work 数据的标注为"不删除" | ✅ |
+| RB-02 | 关闭 flag 后 Session 创建/运行不变，物理清理仍保守保护 Work 引用 | ✅ |
+| RB-03 | V1→V2 迁移不删除旧数据的标注为"不删除旧数据" | ✅ |
+| RB-04 | 降级策略标注为"不支持直接降级 + 只读访问" | ✅ |
+| RB-05 | §6.4 未来 schema 行为标注为"只读+禁止写入" | ✅ |
+
+### 21.5 测试矩阵
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| TM-01 | M0-M4 每阶段都有发布门 | ✅ |
+| TM-02 | 默认测试禁止真实模型、凭据、网络 | ✅ |
+| TM-03 | opt-in 测试需要显式环境变量/build tag | ✅ |
+| TM-04 | 默认 CI job 不运行 opt-in 测试 | ✅ |
+| TM-05 | 故障注入测试在 M0-M4 分布覆盖（M0: torn tail/未来 schema，M2: 记忆清理/会话占用，M4: 原子写/Session/blob/GC） | ✅ |
+
+### 21.6 diff 与自检
+
+| # | 检查项 | 状态 |
+|---|---|---|
+| DF-01 | 本次只修改 `docs/WORK_SYSTEM_DESIGN.zh-CN.md` 和 `Codex/KnowledgeBase/FeatureMap.md` | ✅ |
+| DF-02 | 无对 `AGENTS.md`、`.go`、`.tsx` 或其他业务代码的修改 | ✅ |
+| DF-03 | 提交范围仅含上述两份文档，且不 push/merge | ✅ |

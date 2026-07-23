@@ -1,0 +1,70 @@
+{
+  "TaskExecuteInput": [
+    "workId",
+    "runId",
+    "stageId",
+    "taskId",
+    "attemptIndex",
+    "requestId",
+    "definitionDigest",
+    "prompt"
+  ],
+  "RetryTaskInput": [
+    "workId",
+    "runId",
+    "stageId",
+    "taskId",
+    "requestId"
+  ],
+  "ResumeRunInput": [
+    "workId",
+    "runId",
+    "requestId",
+    "gateResolutions"
+  ],
+  "GateResolution": [
+    "stageId",
+    "outcome",
+    "input",
+    "note"
+  ],
+  "WorkView": [
+    "schemaVersion",
+    "work",
+    "revision",
+    "assessment",
+    "runBlock"
+  ],
+  "RunBlockReason": [
+    "blocked",
+    "items"
+  ],
+  "RunBlockItem": [
+    "code",
+    "cornerstoneId",
+    "status",
+    "detail"
+  ],
+  "WorkViewEvent": [
+    "schemaVersion",
+    "type",
+    "workID",
+    "eventID",
+    "revision",
+    "baseRevision",
+    "requestID",
+    "object",
+    "resync",
+    "payload",
+    "createdAt"
+  ],
+  "ViewResync": [
+    "reason",
+    "authoritative",
+    "generation"
+  ],
+  "ViewRecoveryIntent": [
+    "reason",
+    "generation"
+  ]
+}
