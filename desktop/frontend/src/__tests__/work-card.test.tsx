@@ -297,6 +297,9 @@ async function testFacesAndFixedWorkspace(): Promise<void> {
   eq(unmounts.addon ?? 0, 0, 'AddOn does not unmount on flip');
   ok(front.hasAttribute('inert'), 'inactive front becomes inert');
   ok(!back.hasAttribute('inert'), 'active back is interactive');
+  ok(back.querySelector('[data-testid="work-prompt-editor"]') != null, 'back face exposes the natural-language task input');
+  eq(back.querySelectorAll('textarea').length, 1, 'back face exposes only one text input');
+  ok(!back.textContent?.includes('JSON') && !back.textContent?.includes('Inputs'), 'back face hides internal JSON inputs');
   eq(flip.textContent?.trim(), '工作流', 'back flip entry says 工作流');
   eq(port.preferences.get('work-faces')?.activeFace, 'back', 'last face is persisted by Work ID');
   await mounted.cleanup();

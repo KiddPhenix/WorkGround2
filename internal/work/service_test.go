@@ -201,6 +201,24 @@ func TestServiceCreateRestartIdempotent(t *testing.T) {
 	}
 }
 
+func TestServiceCreateUsesPromptAndDerivesName(t *testing.T) {
+	f := newServiceFixture(t)
+	input := serviceCreateInput("service-create-prompt")
+	input.Name = ""
+	input.Prompt = "  整理生日派对的时间、地点和邀请名单\n并生成执行清单  "
+
+	value, err := f.svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if value.Name != "整理生日派对的时间、地点和邀请名单" {
+		t.Fatalf("Name = %q, want first prompt line", value.Name)
+	}
+	if value.Prompt != "整理生日派对的时间、地点和邀请名单\n并生成执行清单" {
+		t.Fatalf("Prompt = %q, want trimmed user prompt", value.Prompt)
+	}
+}
+
 func TestServiceUpdateDraftIdempotentAndConflict(t *testing.T) {
 	f := newServiceFixture(t)
 	value := mustServiceCreate(t, f.svc, "service-update-create")

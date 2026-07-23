@@ -442,7 +442,8 @@ export interface WorkViewEvent {
 
 export interface CreateWorkInput {
   blueprintRef: BlueprintRef;
-  name: string;
+  name?: string;
+  prompt?: string;
   inputs?: Record<string, unknown>;
   requestId: string;
 }

@@ -271,10 +271,10 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleDraftChange = useCallback((draft: string) => {
     setDraft(workID, 'back', draft);
   }, [setDraft, workID]);
-  const saveDraft = useCallback(async (input: { name: string; prompt: string; inputs: Record<string, unknown> }) => {
+  const savePrompt = useCallback(async (prompt: string) => {
     const current = useWorkStore.getState().works[workID];
     if (!current) throw new Error('Work 投影尚未载入。');
-    const signature = JSON.stringify(input);
+    const signature = prompt;
     if (draftIntentRef.current?.signature !== signature) {
       draftIntentRef.current = {
         signature,
@@ -283,7 +283,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     }
     await adapter.updateDraft({
       workId: workID,
-      ...input,
+      prompt,
       expectedRevision: current.revision,
       requestId: draftIntentRef.current.requestId,
     });
@@ -478,7 +478,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               slots={backSlots}
               selection={selection}
               resolveSessionSurface={resolveSessionSurface}
-              onSaveDraft={saveDraft}
+              onSavePrompt={savePrompt}
             />
           </div>
         </div>

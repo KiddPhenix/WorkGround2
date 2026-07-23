@@ -216,10 +216,18 @@ func (s *Service) Create(ctx context.Context, input CreateWorkInput) (*Work, err
 	now := time.Now().UTC()
 	workID := workIDForRequest(requestID)
 	blocks, placements := buildInitialBlocks(bp.BlockSpecs, now)
+	prompt := strings.TrimSpace(input.Prompt)
+	if prompt == "" {
+		prompt = bp.PromptTemplate
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		name = workNameFromPrompt(prompt, bp.Name)
+	}
 	value := &Work{
 		SchemaVersion: SchemaVersion,
 		ID:            workID,
-		Name:          input.Name,
+		Name:          name,
 		State:         WorkDraft,
 		ArchiveState:  ArchiveActive,
 		BlueprintRef:  input.BlueprintRef,
@@ -227,7 +235,7 @@ func (s *Service) Create(ctx context.Context, input CreateWorkInput) (*Work, err
 		Inputs:        inputs,
 		Blocks:        blocks,
 		Placements:    placements,
-		Prompt:        bp.PromptTemplate,
+		Prompt:        prompt,
 		CreatedWith: RuntimeFingerprint{
 			WorkSchemaVersion:  SchemaVersion,
 			EventSchemaVersion: WorkEventSchemaVersion,
@@ -2281,6 +2289,22 @@ func cloneJSONMap(value map[string]any) (map[string]any, error) {
 		return nil, err
 	}
 	return cloned, nil
+}
+
+func workNameFromPrompt(prompt, fallback string) string {
+	line := strings.TrimSpace(strings.SplitN(prompt, "\n", 2)[0])
+	if line == "" {
+		line = strings.TrimSpace(fallback)
+	}
+	if line == "" {
+		line = "未命名 Work"
+	}
+	const maxRunes = 32
+	runes := []rune(line)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "…"
+	}
+	return line
 }
 
 func cloneWork(value *Work) (*Work, error) {

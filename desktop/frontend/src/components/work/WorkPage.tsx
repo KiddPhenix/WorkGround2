@@ -6,24 +6,16 @@ import type {
   CreateWorkInput,
   RerunMode,
   WorkArchiveState,
-  WorkBlueprint,
   WorkPage as WorkPageData,
   WorkSummary,
 } from '../../work/types';
 
 type PageState = 'loading' | 'ready' | 'error';
 
-const fallbackBlankBlueprint: WorkBlueprint = {
+const blankBlueprintRef = {
   schemaVersion: 1,
   id: 'blueprint:blank',
   version: 1,
-  name: '空白 Work',
-  description: '从空白 Prompt 开始',
-  source: 'system',
-  promptTemplate: '',
-  workflow: { stages: [] },
-  blockSpecs: [],
-  createdAt: '',
 };
 
 function requestID(prefix: string): string {
@@ -31,13 +23,8 @@ function requestID(prefix: string): string {
   return `work-${prefix}-${suffix}`;
 }
 
-function blueprintKey(blueprint: WorkBlueprint): string {
-  return `${blueprint.id}\u0000${blueprint.schemaVersion}\u0000${blueprint.version}`;
-}
-
 interface CreateDialogProps {
   open: boolean;
-  blueprints: WorkBlueprint[];
   creating: boolean;
   error: string | null;
   onCancel: () => void;
@@ -46,81 +33,50 @@ interface CreateDialogProps {
 }
 
 const CreateWorkDialog: React.FC<CreateDialogProps> = ({
-  open, blueprints, creating, error, onCancel, onIntentChange, onCreate,
+  open, creating, error, onCancel, onIntentChange, onCreate,
 }) => {
-  const [name, setName] = useState('');
-  const [blueprintID, setBlueprintID] = useState('');
-  const [inputsText, setInputsText] = useState('{}');
-  const [inputError, setInputError] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState('');
 
   useEffect(() => {
     if (!open) return;
-    setName('');
-    setBlueprintID(blueprints[0] ? blueprintKey(blueprints[0]) : '');
-    setInputsText('{}');
-    setInputError(null);
-  }, [blueprints, open]);
+    setPrompt('');
+  }, [open]);
 
   if (!open) return null;
-  const blueprint = blueprints.find((item) => blueprintKey(item) === blueprintID) ?? blueprints[0];
-
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!blueprint || !name.trim() || creating) return;
-    try {
-      const parsed = JSON.parse(inputsText || '{}') as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Inputs 必须是 JSON 对象');
-      const inputs = parsed as Record<string, unknown>;
-      const input = {
-        blueprintRef: { id: blueprint.id, schemaVersion: blueprint.schemaVersion, version: blueprint.version },
-        name: name.trim(),
-        inputs,
-      };
-      setInputError(null);
-      onCreate(input, JSON.stringify(input));
-    } catch (cause) {
-      setInputError(cause instanceof Error ? cause.message : String(cause));
-    }
+    const task = prompt.trim();
+    if (!task || creating) return;
+    const input = {
+      blueprintRef: blankBlueprintRef,
+      prompt: task,
+    };
+    onCreate(input, JSON.stringify(input));
   };
 
   return (
     <div className="work-page__dialog-overlay" data-testid="work-create-dialog" onClick={onCancel}>
       <form className="work-page__dialog" data-testid="work-create-form" onClick={(event) => event.stopPropagation()} onSubmit={submit}>
-        <h2 className="work-page__dialog-title">新建 Work</h2>
+        <h2 className="work-page__dialog-title">新建任务</h2>
+        <p className="work-page__dialog-description">直接描述你想完成的事情，其余设置由 Work 自动处理。</p>
         <label className="work-page__dialog-label">
-          名称
-          <input
-            className="work-page__dialog-input"
-            data-testid="work-create-name"
-            value={name}
-            maxLength={120}
+          任务说明
+          <textarea
+            className="work-page__dialog-input work-page__dialog-prompt"
+            data-testid="work-create-prompt"
+            value={prompt}
+            rows={7}
             autoFocus
             disabled={creating}
-            onChange={(event) => { setName(event.target.value); onIntentChange(); }}
+            placeholder="例如：整理这次生日派对的时间、地点和邀请名单，并给出一份可执行的准备清单。"
+            onChange={(event) => { setPrompt(event.target.value); onIntentChange(); }}
           />
         </label>
-        <label className="work-page__dialog-label">
-          Blueprint
-          <select data-testid="work-create-blueprint" value={blueprint ? blueprintKey(blueprint) : ''} disabled={creating} onChange={(event) => { setBlueprintID(event.target.value); onIntentChange(); }}>
-            {blueprints.map((item) => <option key={blueprintKey(item)} value={blueprintKey(item)}>{item.name} · v{item.version}</option>)}
-          </select>
-        </label>
-        {blueprint?.description && <p>{blueprint.description}</p>}
-        <label className="work-page__dialog-label">
-          Inputs（JSON）
-          <textarea
-            data-testid="work-create-inputs"
-            rows={6}
-            value={inputsText}
-            disabled={creating}
-            onChange={(event) => { setInputsText(event.target.value); onIntentChange(); }}
-          />
-        </label>
-        {(inputError || error) && <p className="work-page__dialog-error" data-testid="work-create-error" role="alert">{inputError ?? error}</p>}
+        {error && <p className="work-page__dialog-error" data-testid="work-create-error" role="alert">{error}</p>}
         <div className="work-page__dialog-actions">
-          <button type="button" data-testid="work-create-cancel" onClick={onCancel} disabled={creating}>取消</button>
-          <button type="submit" data-testid="work-create-submit" disabled={!name.trim() || !blueprint || creating}>
-            {creating ? '创建中…' : '创建'}
+          <button type="button" className="work-page__dialog-btn work-page__dialog-btn--cancel" data-testid="work-create-cancel" onClick={onCancel} disabled={creating}>取消</button>
+          <button type="submit" className="work-page__dialog-btn work-page__dialog-btn--create" data-testid="work-create-submit" disabled={!prompt.trim() || creating}>
+            {creating ? '创建中…' : '创建任务'}
           </button>
         </div>
       </form>
@@ -139,7 +95,6 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
   const [pageState, setPageState] = useState<PageState>('loading');
   const [error, setError] = useState<string | null>(null);
   const [works, setWorks] = useState<WorkSummary[]>([]);
-  const [blueprints, setBlueprints] = useState<WorkBlueprint[]>([]);
   const [archiveState, setArchiveState] = useState<WorkArchiveState>('active');
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -153,15 +108,9 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
     setPageState('loading');
     setError(null);
     try {
-      const [page, available] = await Promise.all([
-        app.ListWorks(tabID, { limit: 100, archiveState: state }) as Promise<WorkPageData>,
-        typeof app.ListWorkBlueprints === 'function'
-          ? app.ListWorkBlueprints(tabID).catch(() => [fallbackBlankBlueprint])
-          : Promise.resolve([fallbackBlankBlueprint]),
-      ]);
+      const page = await app.ListWorks(tabID, { limit: 100, archiveState: state }) as WorkPageData;
       if (mountGenRef.current !== gen) return;
       setWorks(page.items);
-      setBlueprints(Array.isArray(available) && available.length > 0 ? available : [fallbackBlankBlueprint]);
       setPageState('ready');
     } catch (cause) {
       if (mountGenRef.current !== gen) return;
@@ -238,7 +187,7 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
       <header className="work-page__header">
         <button type="button" data-testid="work-back-btn" onClick={onBack}>← {t('work.backToSession')}</button>
         <h1 className="work-page__title">{t('work.title')}</h1>
-        <button type="button" data-testid="work-new-btn" onClick={() => { setShowCreate(true); setCreateError(null); }} disabled={creating || blueprints.length === 0}>
+        <button type="button" data-testid="work-new-btn" onClick={() => { setShowCreate(true); setCreateError(null); }} disabled={creating}>
           {t('work.newWork')}
         </button>
       </header>
@@ -258,7 +207,7 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
           <div data-testid="work-empty">
             <p>{emptyText}</p>
             {archiveState === 'active' && (
-              <button type="button" data-testid="work-empty-new-btn" onClick={() => setShowCreate(true)} disabled={creating || blueprints.length === 0}>
+              <button type="button" data-testid="work-empty-new-btn" onClick={() => setShowCreate(true)} disabled={creating}>
                 {t('work.newWork')}
               </button>
             )}
@@ -308,7 +257,6 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
 
       <CreateWorkDialog
         open={showCreate}
-        blueprints={blueprints}
         creating={creating}
         error={createError}
         onCancel={() => { createIntentRef.current = null; setShowCreate(false); setCreateError(null); }}

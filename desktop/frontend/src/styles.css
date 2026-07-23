@@ -35449,6 +35449,84 @@ body > .mermaid-diagram--fullscreen {
   gap: 6px;
 }
 
+.wg2-work-draft-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-bg-secondary);
+}
+
+.wg2-work-draft-heading h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.wg2-work-draft-heading p {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.wg2-work-prompt-field {
+  display: block;
+}
+
+.wg2-work-prompt-field textarea {
+  display: block;
+  width: 100%;
+  min-height: 140px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.wg2-work-prompt-field textarea:focus {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  outline-offset: 1px;
+}
+
+.wg2-work-draft-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-height: 30px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.wg2-work-draft-actions button {
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.wg2-work-draft-actions button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.wg2-work-draft-actions [role="alert"] {
+  color: var(--color-error, #e05555);
+}
+
 .wg2-work-back-prompt-preview {
   font-size: 0.85rem;
   color: var(--fg-muted, #999);
@@ -36713,6 +36791,13 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 600;
 }
 
+.work-page__dialog-description {
+  margin: -8px 0 18px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .work-page__dialog-label {
   display: block;
   font-size: 13px;
@@ -36736,6 +36821,12 @@ body > .mermaid-diagram--fullscreen {
 .work-page__dialog-input:focus {
   outline: none;
   border-color: var(--color-accent);
+}
+
+.work-page__dialog-prompt {
+  min-height: 150px;
+  resize: vertical;
+  line-height: 1.6;
 }
 
 .work-page__dialog-error {

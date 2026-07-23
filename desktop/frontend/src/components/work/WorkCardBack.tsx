@@ -38,7 +38,7 @@ export interface WorkCardBackProps {
   slots?: WorkCardBackSlots;
   selection?: RunSelection;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
-  onSaveDraft?: (input: { name: string; prompt: string; inputs: Record<string, unknown> }) => Promise<void>;
+  onSavePrompt?: (prompt: string) => Promise<void>;
 }
 
 function renderSlot(slot: WorkCardBackSlot | undefined, props: WorkCardBackSlotProps): ReactNode {
@@ -54,38 +54,25 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   slots,
   selection,
   resolveSessionSurface,
-  onSaveDraft,
+  onSavePrompt,
 }) => {
   const { work } = view;
-  const [name, setName] = useState(work.name);
   const [prompt, setPrompt] = useState(work.prompt);
-  const [inputsText, setInputsText] = useState(() => JSON.stringify(work.inputs ?? {}, null, 2));
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    setName(work.name);
     setPrompt(work.prompt);
-    setInputsText(JSON.stringify(work.inputs ?? {}, null, 2));
     setSaveState('idle');
     setSaveError(null);
-  }, [view.revision, work.inputs, work.name, work.prompt]);
+  }, [view.revision, work.prompt]);
 
-  const saveDraft = async () => {
-    if (!onSaveDraft || readonly || archived || saveState === 'saving') return;
-    let inputs: Record<string, unknown>;
-    try {
-      const parsed = JSON.parse(inputsText || '{}') as unknown;
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Inputs 必须是 JSON 对象');
-      inputs = parsed as Record<string, unknown>;
-    } catch (error) {
-      setSaveError(error instanceof Error ? error.message : String(error));
-      return;
-    }
+  const savePrompt = async () => {
+    if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
     setSaveState('saving');
     setSaveError(null);
     try {
-      await onSaveDraft({ name: name.trim(), prompt, inputs });
+      await onSavePrompt(prompt.trim());
       setSaveState('saved');
     } catch (error) {
       setSaveState('idle');
@@ -139,27 +126,23 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
 
       {!readonly && !archived && (
         <section className="wg2-work-draft-editor" data-testid="work-draft-editor">
-          <label>
-            名称
-            <input value={name} maxLength={120} onChange={(event) => { setName(event.target.value); setSaveState('idle'); }} />
-          </label>
-          <label>
-            Prompt
+          <div className="wg2-work-draft-heading">
+            <h3>任务说明</h3>
+            <p>用自然语言说明目标、背景和期望结果。</p>
+          </div>
+          <label className="wg2-work-prompt-field">
+            <span className="sr-only">任务说明</span>
             <textarea
               data-testid="work-prompt-editor"
               value={prompt}
-              rows={6}
-              placeholder="请输入要执行的任务；空 Prompt 无法运行。"
+              rows={8}
+              placeholder="描述你希望 Work 完成的事情…"
               onChange={(event) => { setPrompt(event.target.value); onDraftChange(event.target.value); setSaveState('idle'); }}
             />
           </label>
-          <label>
-            Inputs（JSON）
-            <textarea value={inputsText} rows={4} onChange={(event) => { setInputsText(event.target.value); setSaveState('idle'); }} />
-          </label>
-          <div>
-            <button type="button" data-testid="work-save-draft" onClick={() => void saveDraft()} disabled={!name.trim() || saveState === 'saving'}>
-              {saveState === 'saving' ? '保存中…' : '保存草稿'}
+          <div className="wg2-work-draft-actions">
+            <button type="button" data-testid="work-save-draft" onClick={() => void savePrompt()} disabled={!prompt.trim() || saveState === 'saving'}>
+              {saveState === 'saving' ? '保存中…' : '保存任务说明'}
             </button>
             {saveState === 'saved' && <span role="status">已保存</span>}
             {saveError && <span role="alert">{saveError}</span>}

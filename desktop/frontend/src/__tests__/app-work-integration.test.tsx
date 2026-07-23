@@ -697,9 +697,9 @@ await waitFor("Work page for create", () => document.querySelector('[data-testid
 await waitFor("empty Work CTA", () => document.querySelector('[data-testid="work-empty-new-btn"]') != null);
 ok(document.querySelector('[data-testid="work-empty-new-btn"]') != null, "真实 <App/> 空 ListWorks 显示新建工作 CTA");
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-empty-new-btn"]')?.click(); });
-const createName = document.querySelector<HTMLInputElement>('[data-testid="work-create-name"]');
-if (!createName) throw new Error("missing create name input");
-await setControlValue(createName, "创建的 Work");
+const createPrompt = document.querySelector<HTMLTextAreaElement>('[data-testid="work-create-prompt"]');
+if (!createPrompt) throw new Error("missing create prompt input");
+await setControlValue(createPrompt, "创建的 Work");
 const submitCreate = () => document.querySelector<HTMLButtonElement>('[data-testid="work-create-submit"]');
 await act(async () => { submitCreate()?.click(); });
 await waitFor("visible create failure", () => document.querySelector('[data-testid="work-create-error"]') != null);
@@ -994,9 +994,9 @@ await waitFor("race-d Work entry", () => document.querySelector('[data-testid="w
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]')?.click(); });
 await waitFor("race-d Work page", () => document.querySelector('[data-testid="work-item-work-race"]') != null);
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-new-btn"]')?.click(); });
-const raceCreateName = document.querySelector<HTMLInputElement>('[data-testid="work-create-name"]');
-if (!raceCreateName) throw new Error("missing race create input");
-await setControlValue(raceCreateName, "Late Create");
+const raceCreatePrompt = document.querySelector<HTMLTextAreaElement>('[data-testid="work-create-prompt"]');
+if (!raceCreatePrompt) throw new Error("missing race create input");
+await setControlValue(raceCreatePrompt, "Late Create");
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-create-submit"]')?.click(); });
 await waitFor("race-d pending CreateWork", () => raceCreateCalls.includes("race-d"));
 const listCallsBeforeLateCreate = raceListCalls.length;

@@ -32,6 +32,7 @@ function setupDOM(): void {
     HTMLElement: dom.window.HTMLElement,
     SVGElement: dom.window.SVGElement,
     HTMLInputElement: dom.window.HTMLInputElement,
+    HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
     Event: dom.window.Event,
     InputEvent: dom.window.InputEvent,
     MouseEvent: dom.window.MouseEvent,
@@ -66,7 +67,7 @@ function deferred<T>(): Deferred<T> {
 const listDeferreds: Array<Deferred<any>> = [];
 const createDeferreds: Array<Deferred<any>> = [];
 const listTabs: string[] = [];
-const createInputs: Array<{ name: string; requestId: string }> = [];
+const createInputs: Array<{ prompt: string; requestId: string }> = [];
 
 function resetBridge(): void {
   listDeferreds.length = 0;
@@ -80,8 +81,8 @@ function resetBridge(): void {
       listDeferreds.push(next);
       return next.promise;
     },
-    CreateWork: (_tabID: string, input: { name: string; requestId: string }) => {
-      createInputs.push({ name: input.name, requestId: input.requestId });
+    CreateWork: (_tabID: string, input: { prompt: string; requestId: string }) => {
+      createInputs.push({ prompt: input.prompt, requestId: input.requestId });
       const next = deferred<any>();
       createDeferreds.push(next);
       return next.promise;
@@ -149,17 +150,17 @@ function click(host: HTMLElement, testID: string): void {
   });
 }
 
-async function setName(host: HTMLElement, value: string): Promise<void> {
-  const input = host.querySelector('[data-testid="work-create-name"]') as HTMLInputElement | null;
-  if (!input) throw new Error('missing Work name input');
+async function setPrompt(host: HTMLElement, value: string): Promise<void> {
+  const input = host.querySelector('[data-testid="work-create-prompt"]') as HTMLTextAreaElement | null;
+  if (!input) throw new Error('missing Work prompt input');
   await act(async () => {
     const previous = input.value;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
     setter.call(input, value);
-    (input as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+    (input as HTMLTextAreaElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
     const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
     const props = propsKey
-      ? (input as unknown as Record<string, { onChange?: (event: { target: HTMLInputElement }) => void }>)[propsKey]
+      ? (input as unknown as Record<string, { onChange?: (event: { target: HTMLTextAreaElement }) => void }>)[propsKey]
       : undefined;
     if (props?.onChange) props.onChange({ target: input });
     else {
@@ -198,6 +199,10 @@ await test('empty state exposes a focusable create CTA that opens the real form'
   equal(document.activeElement, emptyCTA, 'empty create CTA focus');
   click(host, 'work-empty-new-btn');
   check(host.querySelector('[data-testid="work-create-form"]') !== null, 'empty CTA did not open create form');
+  check(host.querySelector('[data-testid="work-create-prompt"]') !== null, 'prompt input missing');
+  check(host.querySelector('[data-testid="work-create-name"]') === null, 'name input leaked into simple create form');
+  check(host.querySelector('[data-testid="work-create-inputs"]') === null, 'JSON inputs leaked into simple create form');
+  check(host.querySelector('[data-testid="work-create-blueprint"]') === null, 'Blueprint selector leaked into simple create form');
 });
 
 await test('load failure is explicit and retryable', async () => {
@@ -225,7 +230,7 @@ await test('unchanged failed create intent reuses requestID', async () => {
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'My Work');
+  await setPrompt(host, 'My Work');
   click(host, 'work-create-submit');
   createDeferreds[0].reject(new Error('network'));
   await settle();
@@ -240,13 +245,13 @@ await test('A to B to A edit creates a new requestID', async () => {
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'A');
+  await setPrompt(host, 'A');
   click(host, 'work-create-submit');
   createDeferreds[0].reject(new Error('network'));
   await settle();
   const firstID = createInputs[0].requestId;
-  await setName(host, 'B');
-  await setName(host, 'A');
+  await setPrompt(host, 'B');
+  await setPrompt(host, 'A');
   click(host, 'work-create-submit');
   check(createInputs[1].requestId !== firstID, 'edited intent reused its old requestID');
 });
@@ -256,7 +261,7 @@ await test('cancel creates a new intent and pending submit cannot duplicate', as
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'Same');
+  await setPrompt(host, 'Same');
   click(host, 'work-create-submit');
   const firstID = createInputs[0].requestId;
   click(host, 'work-create-submit');
@@ -265,7 +270,7 @@ await test('cancel creates a new intent and pending submit cannot duplicate', as
   await settle();
   click(host, 'work-create-cancel');
   click(host, 'work-new-btn');
-  await setName(host, 'Same');
+  await setPrompt(host, 'Same');
   click(host, 'work-create-submit');
   check(createInputs[1].requestId !== firstID, 'cancelled intent reused requestID');
 });
@@ -289,7 +294,7 @@ await test('same-instance tab switch ignores a late CreateWork result', async ()
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'Late');
+  await setPrompt(host, 'Late');
   click(host, 'work-create-submit');
   await rerender(<WorkPage tabID="tab-b" onBack={() => undefined} onOpenWork={(id) => { opened.push(`b:${id}`); }} />);
   createDeferreds[0].resolve({ id: 'old-work', name: 'Late' });
@@ -304,7 +309,7 @@ await test('same-instance tab switch ignores a late post-create refresh', async 
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'Refresh');
+  await setPrompt(host, 'Refresh');
   click(host, 'work-create-submit');
   createDeferreds[0].resolve({ id: 'old-work', name: 'Refresh' });
   await settle();
@@ -326,7 +331,7 @@ await test('successful create refreshes the list and opens exactly once', async 
   listDeferreds[0].resolve(page());
   await settle();
   click(host, 'work-new-btn');
-  await setName(host, 'Created');
+  await setPrompt(host, 'Created');
   click(host, 'work-create-submit');
   createDeferreds[0].resolve({ id: 'work-created', name: 'Created' });
   await settle();

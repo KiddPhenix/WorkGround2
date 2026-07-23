@@ -9,7 +9,8 @@ import (
 // RequestID 用于幂等创建：相同 RequestID 的重复调用返回同一结果。
 type CreateWorkInput struct {
 	BlueprintRef BlueprintRef   `json:"blueprintRef"`
-	Name         string         `json:"name"`
+	Name         string         `json:"name,omitempty"`
+	Prompt       string         `json:"prompt,omitempty"`
 	Inputs       map[string]any `json:"inputs,omitempty"`
 	RequestID    string         `json:"requestId"`
 }
