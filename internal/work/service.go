@@ -1700,6 +1700,7 @@ func (s *Service) loadView(workID string) (*WorkView, error) {
 }
 
 func viewFromState(value *Work, state WorkEventState) *WorkView {
+	value = workForView(value)
 	var cornerstones []Cornerstone
 	if value != nil {
 		cornerstones = value.Cornerstones
@@ -1712,6 +1713,39 @@ func viewFromState(value *Work, state WorkEventState) *WorkView {
 		Assessment:    assessment,
 		RunBlock:      computeRunBlockReason(assessment, value),
 	}
+}
+
+// workForView keeps the JSON contract stable for every frontend. Go nil slices
+// encode as null, while WorkView's required collections are arrays in the
+// shared transport contract. Normalize a shallow projection copy so loading an
+// older persisted Work never mutates or rewrites its authoritative data.
+func workForView(value *Work) *Work {
+	if value == nil {
+		return nil
+	}
+	view := *value
+	view.Definition.Workflow.Stages = append([]StageSpec{}, value.Definition.Workflow.Stages...)
+	for stageIndex := range view.Definition.Workflow.Stages {
+		sourceStage := value.Definition.Workflow.Stages[stageIndex]
+		view.Definition.Workflow.Stages[stageIndex].Tasks = append([]TaskSpec{}, sourceStage.Tasks...)
+	}
+	view.Definition.BlockSpecs = append([]BlockSpec{}, value.Definition.BlockSpecs...)
+	view.Blocks = append([]BlockInstance{}, value.Blocks...)
+	view.Placements = append([]BlockPlacement{}, value.Placements...)
+	view.Cornerstones = append([]Cornerstone{}, value.Cornerstones...)
+	view.Runs = append([]WorkflowRun{}, value.Runs...)
+	for runIndex := range view.Runs {
+		view.Runs[runIndex].Stages = append([]Stage{}, value.Runs[runIndex].Stages...)
+		for stageIndex := range view.Runs[runIndex].Stages {
+			sourceStage := value.Runs[runIndex].Stages[stageIndex]
+			view.Runs[runIndex].Stages[stageIndex].Tasks = append([]Task{}, sourceStage.Tasks...)
+			for taskIndex := range view.Runs[runIndex].Stages[stageIndex].Tasks {
+				sourceTask := sourceStage.Tasks[taskIndex]
+				view.Runs[runIndex].Stages[stageIndex].Tasks[taskIndex].Attempts = append([]Attempt{}, sourceTask.Attempts...)
+			}
+		}
+	}
+	return &view
 }
 
 // assessView enriches a WorkView with authoritative blob-integrity checks and

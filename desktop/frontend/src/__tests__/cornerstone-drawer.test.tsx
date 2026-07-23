@@ -1191,6 +1191,13 @@ function retryResync(view: WorkView, generation: number): WorkViewEvent {
   };
 }
 
+function wailsRawMessageEvent(event: WorkViewEvent): WorkViewEvent {
+  return {
+    ...event,
+    payload: Array.from(new TextEncoder().encode(JSON.stringify(event.payload))),
+  };
+}
+
 function hydrateResync(view: WorkView, generation: number): WorkViewEvent {
   return {
     schemaVersion: 1,
@@ -1290,12 +1297,58 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   windowAdapter.subscribe(view.work.id);
   await Promise.resolve();
   await Promise.resolve();
-  eventListeners.get(`work:view:${windowSubscription}`)?.(workDelta(view.work.id, 'window-event-2', 2, 1, 'event-wins'));
+  eventListeners.get(`work:view:${windowSubscription}`)?.(wailsRawMessageEvent(
+    workDelta(view.work.id, 'window-event-2', 2, 1, 'event-wins'),
+  ));
   snapshotWait.resolve(makeView([], 1));
   await settle();
   eq(useWorkStore.getState().revisions[view.work.id], 2, '握手/快照窗口事件推进到最高 revision');
   eq(useWorkStore.getState().works[view.work.id]?.work.name, 'event-wins', '窗口事件不被旧 snapshot 覆盖');
   windowAdapter.dispose();
+
+  // RawMessage decoding is only a Wails transport repair. The shared reducer
+  // remains authoritative for ownership/revision checks and malformed bytes.
+  const invalidRawCases: Array<{ label: string; event: WorkViewEvent }> = [
+    {
+      label: 'wrong Work ID',
+      event: wailsRawMessageEvent({
+        ...retryResync(makeView([], 11), 101),
+        payload: {
+          ...makeView([], 11),
+          work: { ...makeView([], 11).work, id: 'work-foreign' },
+        },
+      }),
+    },
+    {
+      label: 'wrong payload revision',
+      event: wailsRawMessageEvent({
+        ...retryResync(makeView([], 12), 102),
+        payload: makeView([], 11),
+      }),
+    },
+    {
+      label: 'malformed JSON bytes',
+      event: { ...retryResync(makeView([], 13), 103), payload: [0x7b] },
+    },
+    {
+      label: 'invalid UTF-8 bytes',
+      event: { ...retryResync(makeView([], 14), 104), payload: [0xff] },
+    },
+  ];
+  for (const testCase of invalidRawCases) {
+    reset();
+    (dom.window as unknown as { go: unknown }).go = {
+      main: { App: {
+        RecoverWorkView: async () => structuredClone(testCase.event),
+      } },
+    };
+    const invalidPort = createWailsWorkControllerPort(`tab-invalid-${testCase.event.revision}`)!;
+    const decoded = await invalidPort.fetchRecoverySnapshot(view.work.id, {
+      reason: 'retry',
+      generation: testCase.event.resync!.generation,
+    });
+    eq(applyWorkViewEvent(decoded).kind, 'conflict', `${testCase.label} 仍由共享 Store 显式拒绝`);
+  }
 
   // Real Wails runtime -> adapter -> Zustand chain: overflow GetWork fails,
   // then an external blob deletion changes assessment at the same persisted
@@ -1326,7 +1379,7 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
       RecoverWorkView: async (_tab: string, _work: string, intent: ViewRecoveryIntent) => {
         if (recoveryMode === 'failed') throw new Error('retry GetWork still unavailable');
         if (recoveryMode === 'delayed') return delayedRecovery.promise;
-        const event = retryResync(blobMissingView, intent.generation);
+        const event = wailsRawMessageEvent(retryResync(blobMissingView, intent.generation));
         recoveryEvents.push(event);
         return event;
       },
