@@ -155,6 +155,24 @@ func (a *App) ListWorks(tabID string, filter work.WorkFilter) (work.WorkPage, er
 	return wc.ListWorks(a.bootContext(), filter)
 }
 
+// ListWorkBlueprints returns the Blueprints available to the current workspace.
+func (a *App) ListWorkBlueprints(tabID string) ([]work.WorkBlueprint, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.ListWorkBlueprints(a.bootContext())
+}
+
+// CopyWork creates an independent Draft from an existing Work.
+func (a *App) CopyWork(tabID string, input work.CopyWorkInput) (*work.Work, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.CopyWork(a.bootContext(), input)
+}
+
 // UpdateDraft updates editable draft fields with optimistic concurrency.
 func (a *App) UpdateDraft(tabID string, input work.UpdateDraftInput) (*work.WorkView, error) {
 	wc, err := a.resolveWorkController(tabID)
@@ -162,6 +180,15 @@ func (a *App) UpdateDraft(tabID string, input work.UpdateDraftInput) (*work.Work
 		return nil, err
 	}
 	return wc.UpdateDraft(a.bootContext(), input)
+}
+
+// UpsertWorkBlock persists a user-editable Block with optimistic concurrency.
+func (a *App) UpsertWorkBlock(tabID string, input work.BlockUpsertInput) (*work.WorkView, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.UpsertWorkBlock(a.bootContext(), input)
 }
 
 // RunWork starts a Work through the shared Controller. Cornerstone preflight
@@ -387,6 +414,24 @@ func (a *App) DeleteWork(tabID, workID, requestID string) error {
 		return err
 	}
 	return wc.DeleteWork(a.bootContext(), workID, requestID)
+}
+
+// PrepareWorkRerun returns an explicit, expiring compatibility plan.
+func (a *App) PrepareWorkRerun(tabID string, input work.PrepareRerunInput) (*work.RerunPlan, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.PrepareRerun(a.bootContext(), input)
+}
+
+// ExecuteWorkRerun creates a new Draft from a reviewed rerun plan.
+func (a *App) ExecuteWorkRerun(tabID, planToken, requestID string) (*work.Work, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.ExecuteRerun(a.bootContext(), planToken, requestID)
 }
 
 // ── Cornerstone bindings ─────────────────────────────────────────────────────

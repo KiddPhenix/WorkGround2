@@ -12,6 +12,7 @@ import {
 import type {
   AcceptCornerstoneInput,
   Attempt,
+  BlockUpsertInput,
   CornerstoneMutationResult,
   FreezeCornerstoneInput,
   PinCornerstoneInput,
@@ -21,6 +22,7 @@ import type {
   ResumeRunInput,
   RetryTaskInput,
   UndoCornerstoneInput,
+  UpdateDraftInput,
   ValidateCornerstoneInput,
   ViewRecoveryIntent,
   WorkView,
@@ -55,6 +57,8 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
   runWork?: (input: { workId: string; requestId: string }) => Promise<WorkflowRun>;
   resumeRun?: (input: ResumeRunInput) => Promise<WorkflowRun>;
+  updateDraft?: (input: UpdateDraftInput) => Promise<WorkView>;
+  upsertBlock?: (input: BlockUpsertInput) => Promise<WorkView>;
 }
 
 export type WorkStreamHealth =
@@ -392,6 +396,24 @@ export class WorkControllerAdapter {
   resumeRun = (input: ResumeRunInput): Promise<WorkflowRun> => {
     if (!this.port.resumeRun) return Promise.reject(new Error('Work 继续运行能力尚未连接。'));
     return this.port.resumeRun(input);
+  };
+
+  updateDraft = async (input: UpdateDraftInput): Promise<WorkView> => {
+    if (!this.port.updateDraft) throw new Error('Work 草稿保存能力尚未连接。');
+    const view = await this.port.updateDraft(input);
+    if (!this.applyMutationView(input.workId, view, `draft:${input.requestId}:${view.revision}`)) {
+      await this.recoverSnapshot(input.workId);
+    }
+    return view;
+  };
+
+  upsertBlock = async (input: BlockUpsertInput): Promise<WorkView> => {
+    if (!this.port.upsertBlock) throw new Error('Work Block 保存能力尚未连接。');
+    const view = await this.port.upsertBlock(input);
+    if (!this.applyMutationView(input.workId, view, `block:${input.requestId}:${view.revision}`)) {
+      await this.recoverSnapshot(input.workId);
+    }
+    return view;
   };
 
   clearErrors = (workID: string): void => {

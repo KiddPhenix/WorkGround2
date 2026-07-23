@@ -1,114 +1,132 @@
-// WorkPage — the Workspace-level Work entry page.
-// Shows active Work list, create button, and basic error/empty/loading states.
-// Tab ownership comes from App; all ACKs are guarded by mountGen so late
-// results from a previous tab can't contaminate the current view.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { app } from '../../lib/bridge';
 import { useT } from '../../lib/i18n';
-import type { CreateWorkInput, WorkSummary, WorkPage as WorkPageData } from '../../work/types';
+import type {
+  CreateWorkInput,
+  RerunMode,
+  WorkArchiveState,
+  WorkBlueprint,
+  WorkPage as WorkPageData,
+  WorkSummary,
+} from '../../work/types';
 
 type PageState = 'loading' | 'ready' | 'error';
 
-// ── CreateWorkDialog ────────────────────────────────────────────────────
+const fallbackBlankBlueprint: WorkBlueprint = {
+  schemaVersion: 1,
+  id: 'blueprint:blank',
+  version: 1,
+  name: '空白 Work',
+  description: '从空白 Prompt 开始',
+  source: 'system',
+  promptTemplate: '',
+  workflow: { stages: [] },
+  blockSpecs: [],
+  createdAt: '',
+};
+
+function requestID(prefix: string): string {
+  const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `work-${prefix}-${suffix}`;
+}
+
+function blueprintKey(blueprint: WorkBlueprint): string {
+  return `${blueprint.id}\u0000${blueprint.schemaVersion}\u0000${blueprint.version}`;
+}
 
 interface CreateDialogProps {
   open: boolean;
-  onCreate: (name: string) => void;
-  onCancel: () => void;
-  onNameChange: () => void;
+  blueprints: WorkBlueprint[];
   creating: boolean;
-  createError: string | null;
+  error: string | null;
+  onCancel: () => void;
+  onIntentChange: () => void;
+  onCreate: (input: Omit<CreateWorkInput, 'requestId'>, signature: string) => void;
 }
 
 const CreateWorkDialog: React.FC<CreateDialogProps> = ({
-  open, onCreate, onCancel, onNameChange, creating, createError,
+  open, blueprints, creating, error, onCancel, onIntentChange, onCreate,
 }) => {
-  const t = useT();
   const [name, setName] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [blueprintID, setBlueprintID] = useState('');
+  const [inputsText, setInputsText] = useState('{}');
+  const [inputError, setInputError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setName('');
-    const timer = window.setTimeout(() => inputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [open]);
-
-  const handleChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setName(e.target.value);
-      onNameChange();
-    },
-    [onNameChange],
-  );
-
-  const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      const trimmed = name.trim();
-      if (!trimmed || creating) return;
-      onCreate(trimmed);
-    },
-    [name, creating, onCreate],
-  );
+    setBlueprintID(blueprints[0] ? blueprintKey(blueprints[0]) : '');
+    setInputsText('{}');
+    setInputError(null);
+  }, [blueprints, open]);
 
   if (!open) return null;
+  const blueprint = blueprints.find((item) => blueprintKey(item) === blueprintID) ?? blueprints[0];
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!blueprint || !name.trim() || creating) return;
+    try {
+      const parsed = JSON.parse(inputsText || '{}') as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Inputs 必须是 JSON 对象');
+      const inputs = parsed as Record<string, unknown>;
+      const input = {
+        blueprintRef: { id: blueprint.id, schemaVersion: blueprint.schemaVersion, version: blueprint.version },
+        name: name.trim(),
+        inputs,
+      };
+      setInputError(null);
+      onCreate(input, JSON.stringify(input));
+    } catch (cause) {
+      setInputError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
 
   return (
     <div className="work-page__dialog-overlay" data-testid="work-create-dialog" onClick={onCancel}>
-      <form
-        className="work-page__dialog"
-        data-testid="work-create-form"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSubmit}
-      >
-        <h2 className="work-page__dialog-title">{t('work.createTitle')}</h2>
+      <form className="work-page__dialog" data-testid="work-create-form" onClick={(event) => event.stopPropagation()} onSubmit={submit}>
+        <h2 className="work-page__dialog-title">新建 Work</h2>
         <label className="work-page__dialog-label">
-          {t('work.nameLabel')}
+          名称
           <input
-            ref={inputRef}
             className="work-page__dialog-input"
-            type="text"
             data-testid="work-create-name"
             value={name}
-            onChange={handleChange}
-            placeholder={t('work.namePlaceholder')}
             maxLength={120}
-            disabled={creating}
             autoFocus
+            disabled={creating}
+            onChange={(event) => { setName(event.target.value); onIntentChange(); }}
           />
         </label>
-        {createError && (
-          <p className="work-page__dialog-error" data-testid="work-create-error">
-            {createError}
-          </p>
-        )}
-        <div className="work-page__dialog-actions">
-          <button
-            type="button"
-            className="work-page__dialog-btn work-page__dialog-btn--cancel"
-            data-testid="work-create-cancel"
-            onClick={onCancel}
+        <label className="work-page__dialog-label">
+          Blueprint
+          <select data-testid="work-create-blueprint" value={blueprint ? blueprintKey(blueprint) : ''} disabled={creating} onChange={(event) => { setBlueprintID(event.target.value); onIntentChange(); }}>
+            {blueprints.map((item) => <option key={blueprintKey(item)} value={blueprintKey(item)}>{item.name} · v{item.version}</option>)}
+          </select>
+        </label>
+        {blueprint?.description && <p>{blueprint.description}</p>}
+        <label className="work-page__dialog-label">
+          Inputs（JSON）
+          <textarea
+            data-testid="work-create-inputs"
+            rows={6}
+            value={inputsText}
             disabled={creating}
-          >
-            {t('work.cancel')}
-          </button>
-          <button
-            type="submit"
-            className="work-page__dialog-btn work-page__dialog-btn--create"
-            data-testid="work-create-submit"
-            disabled={!name.trim() || creating}
-          >
-            {creating ? t('work.creating') : t('work.create')}
+            onChange={(event) => { setInputsText(event.target.value); onIntentChange(); }}
+          />
+        </label>
+        {(inputError || error) && <p className="work-page__dialog-error" data-testid="work-create-error" role="alert">{inputError ?? error}</p>}
+        <div className="work-page__dialog-actions">
+          <button type="button" data-testid="work-create-cancel" onClick={onCancel} disabled={creating}>取消</button>
+          <button type="submit" data-testid="work-create-submit" disabled={!name.trim() || !blueprint || creating}>
+            {creating ? '创建中…' : '创建'}
           </button>
         </div>
       </form>
     </div>
   );
 };
-
-// ── WorkPage ─────────────────────────────────────────────────────────────
 
 export interface WorkPageProps {
   tabID: string;
@@ -118,236 +136,186 @@ export interface WorkPageProps {
 
 export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork }) => {
   const t = useT();
-
   const [pageState, setPageState] = useState<PageState>('loading');
   const [error, setError] = useState<string | null>(null);
   const [works, setWorks] = useState<WorkSummary[]>([]);
+  const [blueprints, setBlueprints] = useState<WorkBlueprint[]>([]);
+  const [archiveState, setArchiveState] = useState<WorkArchiveState>('active');
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-
-  // Stable create intent: first submit generates a requestID that is held
-  // until success/cancel/input-change. Same-name retry reuses it.
-  const lastCreateNameRef = useRef<string | null>(null);
-  const createRequestIDRef = useRef<string | null>(null);
-
-  // Mount generation: guards all async ACKs. Incremented on every mount
-  // (via effect) and also on unmount (via cleanup) so late promises from
-  // a previous render can never apply state.
+  const [actionWorkID, setActionWorkID] = useState<string | null>(null);
   const mountGenRef = useRef(0);
+  const createIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const actionIntentsRef = useRef(new Map<string, string>());
 
-  // List effect with cleanup: on tabID change/unmount, invalidates old
-  // generation and clears any stale create intent.
-  useEffect(() => {
-    if (!tabID) return;
-    mountGenRef.current++;
-    createRequestIDRef.current = null;
-    lastCreateNameRef.current = null;
-    const gen = mountGenRef.current;
-
+  const load = useCallback(async (state: WorkArchiveState, gen = mountGenRef.current) => {
     setPageState('loading');
     setError(null);
-
-    app
-      .ListWorks(tabID, { limit: 50, archiveState: 'active' })
-      .then((page: WorkPageData) => {
-        if (mountGenRef.current !== gen) return;
-        setWorks(page.items);
-        setPageState('ready');
-      })
-      .catch((err: unknown) => {
-        if (mountGenRef.current !== gen) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setPageState('error');
-      });
-
-    return () => {
-      // Invalidate on unmount or tabID change so late ACKs are ignored.
-      mountGenRef.current++;
-      createRequestIDRef.current = null;
-      lastCreateNameRef.current = null;
-    };
+    try {
+      const [page, available] = await Promise.all([
+        app.ListWorks(tabID, { limit: 100, archiveState: state }) as Promise<WorkPageData>,
+        typeof app.ListWorkBlueprints === 'function'
+          ? app.ListWorkBlueprints(tabID).catch(() => [fallbackBlankBlueprint])
+          : Promise.resolve([fallbackBlankBlueprint]),
+      ]);
+      if (mountGenRef.current !== gen) return;
+      setWorks(page.items);
+      setBlueprints(Array.isArray(available) && available.length > 0 ? available : [fallbackBlankBlueprint]);
+      setPageState('ready');
+    } catch (cause) {
+      if (mountGenRef.current !== gen) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+      setPageState('error');
+    }
   }, [tabID]);
 
-  // Clear create intent on any input edit (but not on failure retry).
-  const handleNameChange = useCallback(() => {
-    if (creating) return; // don't clear while request is in-flight
-    createRequestIDRef.current = null;
-    lastCreateNameRef.current = null;
-  }, [creating]);
+  useEffect(() => {
+    if (!tabID) {
+      setWorks([]);
+      setPageState('ready');
+      return;
+    }
+    const gen = ++mountGenRef.current;
+    void load(archiveState, gen);
+    return () => { mountGenRef.current++; };
+  }, [archiveState, load]);
 
-  const handleCreate = useCallback(
-    (name: string) => {
-      if (!tabID) return;
+  const mutation = useCallback(async (key: string, workID: string, run: (requestId: string) => Promise<unknown>) => {
+    const requestId = actionIntentsRef.current.get(key) ?? requestID(key);
+    actionIntentsRef.current.set(key, requestId);
+    setActionWorkID(workID);
+    setError(null);
+    try {
+      await run(requestId);
+      actionIntentsRef.current.delete(key);
+      await load(archiveState);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setActionWorkID(null);
+    }
+  }, [archiveState, load]);
 
-      // Same name → reuse existing requestID; else generate new.
-      if (lastCreateNameRef.current !== name || !createRequestIDRef.current) {
-        createRequestIDRef.current = `work-create-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        lastCreateNameRef.current = name;
-      }
-
-      const requestID = createRequestIDRef.current;
-      const gen = mountGenRef.current;
-      setCreating(true);
-      setCreateError(null);
-
-      const input: CreateWorkInput = {
-        blueprintRef: { id: 'blueprint:blank', schemaVersion: 1, version: 1 },
-        name,
-        requestId: requestID,
-      };
-
-      app
-        .CreateWork(tabID, input)
-        .then((work) => {
-          if (mountGenRef.current !== gen) return;
-          createRequestIDRef.current = null;
-          lastCreateNameRef.current = null;
-          setCreating(false);
-          setShowCreate(false);
-
-          // Refresh list (guarded by gen), then open the new Work.
-          app
-            .ListWorks(tabID, { limit: 50, archiveState: 'active' })
-            .then((page: WorkPageData) => {
-              if (mountGenRef.current !== gen) return;
-              setWorks(page.items);
-              onOpenWork(work.id);
-            })
-            .catch(() => {
-              if (mountGenRef.current !== gen) return;
-              onOpenWork(work.id);
-            });
-        })
-        .catch((err: unknown) => {
-          if (mountGenRef.current !== gen) return;
-          setCreating(false);
-          setCreateError(err instanceof Error ? err.message : String(err));
-          // Keep intent so retry reuses same requestID.
-        });
-    },
-    [tabID, onOpenWork],
-  );
-
-  const handleCancelCreate = useCallback(() => {
-    createRequestIDRef.current = null;
-    lastCreateNameRef.current = null;
-    setShowCreate(false);
+  const create = useCallback((input: Omit<CreateWorkInput, 'requestId'>, signature: string) => {
+    if (createIntentRef.current?.signature !== signature) {
+      createIntentRef.current = { signature, requestId: requestID('create') };
+    }
+    const intent = createIntentRef.current;
+    const gen = mountGenRef.current;
+    setCreating(true);
     setCreateError(null);
-  }, []);
+    void app.CreateWork(tabID, { ...input, requestId: intent.requestId })
+      .then(async (work) => {
+        if (mountGenRef.current !== gen) return;
+        createIntentRef.current = null;
+        setCreating(false);
+        setShowCreate(false);
+        await load('active', gen);
+        if (mountGenRef.current === gen) onOpenWork(work.id);
+      })
+      .catch((cause: unknown) => {
+        if (mountGenRef.current !== gen) return;
+        setCreating(false);
+        setCreateError(cause instanceof Error ? cause.message : String(cause));
+      });
+  }, [load, onOpenWork, tabID]);
 
-  const handleOpenDialog = useCallback(() => {
-    if (pageState !== 'ready' || creating) return;
-    setShowCreate(true);
-    setCreateError(null);
-  }, [creating, pageState]);
+  const rerun = useCallback(async (workID: string, mode: RerunMode) => {
+    const key = `rerun:${mode}:${workID}`;
+    await mutation(key, workID, async (id) => {
+      const plan = await app.PrepareWorkRerun(tabID, { recordId: workID, mode });
+      if (plan.blocking) throw new Error(plan.warnings?.join('；') || '重执行预检存在阻断');
+      const created = await app.ExecuteWorkRerun(tabID, plan.planToken, id);
+      onOpenWork(created.id);
+    });
+  }, [mutation, onOpenWork, tabID]);
+
+  const emptyText = useMemo(() => archiveState === 'active' ? t('work.empty') : archiveState === 'archived' ? '暂无归档 Work' : '回收站为空', [archiveState, t]);
 
   return (
     <div className="work-page" data-testid="work-page">
       <header className="work-page__header">
-        <button
-          type="button"
-          className="work-page__back-btn"
-          data-testid="work-back-btn"
-          onClick={onBack}
-        >
-          ← {t('work.backToSession')}
-        </button>
+        <button type="button" data-testid="work-back-btn" onClick={onBack}>← {t('work.backToSession')}</button>
         <h1 className="work-page__title">{t('work.title')}</h1>
-        <button
-          type="button"
-          className="work-page__new-btn"
-          data-testid="work-new-btn"
-          onClick={handleOpenDialog}
-          disabled={pageState !== 'ready' || creating}
-        >
+        <button type="button" data-testid="work-new-btn" onClick={() => { setShowCreate(true); setCreateError(null); }} disabled={creating || blueprints.length === 0}>
           {t('work.newWork')}
         </button>
       </header>
 
+      <nav className="work-page__filters" aria-label="Work 状态">
+        {(['active', 'archived', 'deleted'] as const).map((state) => (
+          <button key={state} type="button" aria-pressed={archiveState === state} onClick={() => setArchiveState(state)}>
+            {state === 'active' ? '进行中' : state === 'archived' ? '历史' : '回收站'}
+          </button>
+        ))}
+      </nav>
+
       <div className="work-page__body">
-        {pageState === 'loading' && (
-          <div className="work-page__loading" data-testid="work-loading">
-            {t('work.loading')}
-          </div>
-        )}
-
-        {pageState === 'error' && (
-          <div className="work-page__error" data-testid="work-error">
-            <p>{error}</p>
-            <button
-              type="button"
-              className="work-page__retry-btn"
-              data-testid="work-retry-btn"
-              onClick={() => {
-                // Manual retry: just re-trigger the list effect by
-                // setting loading and calling ListWorks directly.
-                if (!tabID) return;
-                mountGenRef.current++;
-                const gen = mountGenRef.current;
-                setPageState('loading');
-                setError(null);
-                app
-                  .ListWorks(tabID, { limit: 50, archiveState: 'active' })
-                  .then((page: WorkPageData) => {
-                    if (mountGenRef.current !== gen) return;
-                    setWorks(page.items);
-                    setPageState('ready');
-                  })
-                  .catch((err: unknown) => {
-                    if (mountGenRef.current !== gen) return;
-                    setError(err instanceof Error ? err.message : String(err));
-                    setPageState('error');
-                  });
-              }}
-            >
-              {t('work.retry')}
-            </button>
-          </div>
-        )}
-
+        {error && <div className="work-page__error" data-testid="work-error" role="alert"><p>{error}</p><button type="button" data-testid="work-retry-btn" onClick={() => void load(archiveState)}>重试</button></div>}
+        {pageState === 'loading' && <div data-testid="work-loading">{t('work.loading')}</div>}
         {pageState === 'ready' && works.length === 0 && (
-          <div className="work-page__empty" data-testid="work-empty">
-            <p>{t('work.empty')}</p>
-            <button
-              type="button"
-              className="work-page__empty-cta"
-              data-testid="work-empty-new-btn"
-              onClick={handleOpenDialog}
-              disabled={creating}
-            >
-              {t('work.newWork')}
-            </button>
+          <div data-testid="work-empty">
+            <p>{emptyText}</p>
+            {archiveState === 'active' && (
+              <button type="button" data-testid="work-empty-new-btn" onClick={() => setShowCreate(true)} disabled={creating || blueprints.length === 0}>
+                {t('work.newWork')}
+              </button>
+            )}
           </div>
         )}
-
         {pageState === 'ready' && works.length > 0 && (
           <ul className="work-page__list" data-testid="work-list">
-            {works.map((w) => (
-              <li key={w.id} className="work-page__item" data-testid={`work-item-${w.id}`}>
-                <button
-                  type="button"
-                  className="work-page__item-btn"
-                  onClick={() => onOpenWork(w.id)}
-                >
-                  <span className="work-page__item-name">{w.name}</span>
-                  <span className="work-page__item-state" data-state={w.state}>
-                    {w.state}
-                  </span>
-                </button>
-              </li>
-            ))}
+            {works.map((work) => {
+              const pending = actionWorkID === work.id;
+              return (
+                <li key={work.id} className="work-page__item" data-testid={`work-item-${work.id}`}>
+                  <button type="button" className="work-page__item-btn" onClick={() => onOpenWork(work.id)} disabled={pending}>
+                    <span className="work-page__item-name">{work.name}</span>
+                    <span className="work-page__item-state" data-state={work.state}>{work.state}</span>
+                  </button>
+                  <div className="work-page__item-actions">
+                    {archiveState === 'active' && <>
+                      <button type="button" disabled={pending} onClick={() => void mutation(`copy:${work.id}`, work.id, (id) => app.CopyWork(tabID, { sourceWorkId: work.id, requestId: id }))}>复制</button>
+                      <button type="button" disabled={pending} onClick={() => void mutation(`archive:${work.id}`, work.id, (id) => app.ArchiveWork(tabID, work.id, id))}>归档</button>
+                    </>}
+                    {archiveState === 'archived' && <>
+                      <button type="button" disabled={pending} onClick={() => void rerun(work.id, 'original_definition')}>按原定义重执行</button>
+                      <button type="button" disabled={pending} onClick={() => void rerun(work.id, 'latest_definition')}>按最新定义重执行</button>
+                      <button type="button" disabled={pending} onClick={() => void mutation(`restore:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>
+                    </>}
+                    {archiveState === 'deleted' && <button type="button" disabled={pending} onClick={() => void mutation(`restore-trash:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>}
+                    {archiveState !== 'deleted' && (
+                      <button
+                        type="button"
+                        disabled={pending}
+                        onClick={() => {
+                          if (window.confirm(`将“${work.name}”移入回收站？`)) {
+                            void mutation(`delete:${work.id}`, work.id, (id) => app.DeleteWork(tabID, work.id, id));
+                          }
+                        }}
+                      >
+                        删除
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
 
       <CreateWorkDialog
         open={showCreate}
-        onCreate={handleCreate}
-        onCancel={handleCancelCreate}
-        onNameChange={handleNameChange}
+        blueprints={blueprints}
         creating={creating}
-        createError={createError}
+        error={createError}
+        onCancel={() => { createIntentRef.current = null; setShowCreate(false); setCreateError(null); }}
+        onIntentChange={() => {
+          if (!creating) createIntentRef.current = null;
+        }}
+        onCreate={create}
       />
     </div>
   );

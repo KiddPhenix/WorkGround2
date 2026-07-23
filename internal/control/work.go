@@ -44,7 +44,10 @@ type WorkService interface {
 	Create(context.Context, work.CreateWorkInput) (*work.Work, error)
 	Get(context.Context, string) (*work.WorkView, error)
 	List(context.Context, work.WorkFilter) (work.WorkPage, error)
+	ListBlueprints(context.Context) ([]work.WorkBlueprint, error)
+	CopyWork(context.Context, work.CopyWorkInput) (*work.Work, error)
 	UpdateDraft(context.Context, work.UpdateDraftInput) (*work.WorkView, error)
+	UpsertBlock(context.Context, work.BlockUpsertInput) (*work.WorkView, error)
 	RunWork(context.Context, string, string) (*work.WorkflowRun, error)
 	RetryTask(context.Context, work.RetryTaskInput) (*work.Attempt, error)
 	CancelRun(context.Context, string, string, string) error
@@ -63,6 +66,8 @@ type WorkService interface {
 	AcceptCornerstone(context.Context, string, work.AcceptCornerstoneInput) (*work.CornerstoneResult, error)
 	FreezeCornerstone(context.Context, string, work.FreezeCornerstoneInput) (*work.CornerstoneResult, error)
 	RepairCornerstone(context.Context, string, work.RepairCornerstoneInput) (*work.RepairResult, error)
+	PrepareRerun(context.Context, work.PrepareRerunInput) (*work.RerunPlan, error)
+	ExecuteRerun(context.Context, string, string) (*work.Work, error)
 }
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
@@ -251,11 +256,32 @@ func (w workMethods) ListWorks(ctx context.Context, filter work.WorkFilter) (wor
 	return w.svc.List(ctx, filter)
 }
 
+func (w workMethods) ListWorkBlueprints(ctx context.Context) ([]work.WorkBlueprint, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.ListBlueprints(ctx)
+}
+
+func (w workMethods) CopyWork(ctx context.Context, input work.CopyWorkInput) (*work.Work, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.CopyWork(ctx, input)
+}
+
 func (w workMethods) UpdateDraft(ctx context.Context, input work.UpdateDraftInput) (*work.WorkView, error) {
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
 	return w.svc.UpdateDraft(ctx, input)
+}
+
+func (w workMethods) UpsertWorkBlock(ctx context.Context, input work.BlockUpsertInput) (*work.WorkView, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.UpsertBlock(ctx, input)
 }
 
 func (w workMethods) RunWork(ctx context.Context, workID, requestID string) (*work.WorkflowRun, error) {
@@ -654,20 +680,22 @@ func actionApprovalSubject(key actionSessionGrantKey) string {
 }
 
 func (w workMethods) PrepareRerun(ctx context.Context, input work.PrepareRerunInput) (*work.RerunPlan, error) {
-	return nil, errWorkNotImplemented("PrepareRerun")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.PrepareRerun(ctx, input)
 }
 
 func (w workMethods) ExecuteRerun(ctx context.Context, planToken, requestID string) (*work.Work, error) {
-	return nil, errWorkNotImplemented("ExecuteRerun")
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.ExecuteRerun(ctx, planToken, requestID)
 }
 
 var (
 	errWorkDisabled = errors.New("work: feature is disabled; enable [work].enabled in config")
 )
-
-func errWorkNotImplemented(method string) error {
-	return fmt.Errorf("work: %s is not yet implemented", method)
-}
 
 // WorkControl returns the WorkController port for this session. It is nil-safe:
 // when Work is disabled the returned port returns errWorkDisabled for every

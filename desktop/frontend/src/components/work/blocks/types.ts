@@ -17,6 +17,7 @@ export interface ValidationResult {
 export interface BlockHostContext {
   workId: string;
   workSchemaVersion: number;
+  workRevision: number;
   runId?: string;
   taskId?: string;
   actionReceipts?: readonly ActionReceipt[];

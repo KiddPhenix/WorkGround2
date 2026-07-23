@@ -17,8 +17,17 @@ type WorkController interface {
 	// ListWorks 按筛选条件分页列出 Work。
 	ListWorks(ctx context.Context, filter WorkFilter) (WorkPage, error)
 
+	// ListWorkBlueprints 列出当前可创建的 Blueprint。
+	ListWorkBlueprints(ctx context.Context) ([]WorkBlueprint, error)
+
+	// CopyWork 从现有 Work 创建独立草稿副本。
+	CopyWork(ctx context.Context, input CopyWorkInput) (*Work, error)
+
 	// UpdateDraft 更新草稿 Work 的可编辑字段。
 	UpdateDraft(ctx context.Context, input UpdateDraftInput) (*WorkView, error)
+
+	// UpsertWorkBlock 更新用户可编辑 Block。
+	UpsertWorkBlock(ctx context.Context, input BlockUpsertInput) (*WorkView, error)
 
 	// RunWork 启动 Work 执行，创建 WorkflowRun。
 	RunWork(ctx context.Context, workID, requestID string) (*WorkflowRun, error)
