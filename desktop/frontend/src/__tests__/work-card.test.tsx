@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { WorkCard } from '../components/work/WorkCard';
 import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
+import { LocaleProvider } from '../lib/i18n';
 import type { WorkControllerPort, WorkPortSubscription, WorkUIPreference } from '../work/controller';
 import { useWorkStore, useWorkUIStore } from '../work/store';
 import type {
@@ -81,7 +82,7 @@ async function mount(element: ReactElement): Promise<Mounted> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host, { onCaughtError: (error) => { throw error; } });
-  await act(async () => { root.render(element); });
+  await act(async () => { root.render(<LocaleProvider>{element}</LocaleProvider>); });
   await settle();
   return {
     host,

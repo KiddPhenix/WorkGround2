@@ -9,6 +9,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import { WorkCard } from '../components/work/WorkCard';
 import { WorkRunEntry } from '../components/work/WorkRunEntry';
+import { LocaleProvider } from '../lib/i18n';
 import { WorkControllerAdapter, type CornerstoneControllerPort, type WorkControllerPort, type WorkPortSubscription } from '../work/controller';
 import { deriveCornerstoneAttention, useCornerstoneUIStore } from '../work/cornerstoneStore';
 import { FakeWorkController, type FakeWorkControllerOptions } from '../work/fakeController';
@@ -98,7 +99,7 @@ async function mount(element: ReactElement): Promise<Mounted> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host, { onCaughtError: (error) => { throw error; } });
-  await act(async () => { root.render(element); });
+  await act(async () => { root.render(<LocaleProvider>{element}</LocaleProvider>); });
   await settle();
   return {
     host,

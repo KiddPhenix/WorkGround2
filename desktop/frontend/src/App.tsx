@@ -1102,48 +1102,134 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   // ── Work navigation state (per-tab ownership) ───────────────────────
   // workViewOpen / activeWorkId are owned by the tab that opened them.
   // ownerTabID is frozen at view-open time; it never tracks activeTabId.
-  // workGenRef invalidates all in-flight ACKs from previous tabs.
+  // workGenRef invalidates config/capability ACKs from previous tabs.
   const workGenRef = useRef(0);
   const workControllerReady = state.meta?.ready === true && !state.backendActivationPending;
   const [workViewOpen, setWorkViewOpen] = useState(false);
-  const [workCapable, setWorkCapable] = useState<boolean | null>(null);
+  const [workConfig, setWorkConfig] = useState<{
+    tabID: string;
+    enabled: boolean;
+    failed: boolean;
+  } | null>(null);
+  const [workCapability, setWorkCapability] = useState<{
+    tabID: string;
+    capable: boolean | null;
+    failed: boolean;
+  } | null>(null);
   const [activeWorkId, setActiveWorkId] = useState<string | null>(null);
   const [ownerTabID, setOwnerTabID] = useState<string | null>(null);
+  const activeWorkConfig = workConfig !== null && workConfig.tabID === activeTabId ? workConfig : null;
+  const workEnabled = activeWorkConfig?.enabled ?? null;
+  const workConfigFailed = activeWorkConfig?.failed === true;
+  const currentWorkCapability = workCapability !== null && workCapability.tabID === activeTabId ? workCapability : null;
+  const workCapable = currentWorkCapability?.capable ?? null;
+  const workCapabilityFailed = currentWorkCapability?.failed === true;
 
-  // On tab switch: immediately close any Work view from the old tab,
-  // then re-check capability for the new tab.
+  // Configuration owns whether the navigation entry exists. It is loaded from
+  // the tab's workspace without waiting for Controller startup.
   useEffect(() => {
-    // Always close old Work view first — unconditionally.
     setWorkViewOpen(false);
     setActiveWorkId(null);
     setOwnerTabID(null);
     workGenRef.current++;
-    if (!activeTabId || !workControllerReady) {
-      setWorkCapable(false);
+    setWorkConfig(null);
+    setWorkCapability(null);
+    if (!activeTabId) {
       return;
     }
     const gen = workGenRef.current;
-    setWorkCapable(null);
+    app.WorkEnabled(activeTabId)
+      .then((enabled) => {
+        if (workGenRef.current !== gen) return;
+        setWorkConfig({ tabID: activeTabId, enabled, failed: false });
+        if (!enabled) setWorkCapability({ tabID: activeTabId, capable: false, failed: false });
+      })
+      .catch(() => {
+        if (workGenRef.current !== gen) return;
+        setWorkConfig({ tabID: activeTabId, enabled: true, failed: true });
+        setWorkCapability({ tabID: activeTabId, capable: false, failed: true });
+      });
+  }, [activeTabId]);
+
+  // Runtime capability only controls whether the stable, configured entry can
+  // be clicked. It never owns whether that entry exists in the sidebar.
+  useEffect(() => {
+    if (!activeTabId || workEnabled !== true || workConfigFailed) return;
+    const gen = workGenRef.current;
+    setWorkCapability({ tabID: activeTabId, capable: null, failed: false });
+    if (!workControllerReady) return;
     app.WorkCapable(activeTabId)
-      .then((capable) => { if (workGenRef.current === gen) setWorkCapable(capable); })
-      .catch(() => { if (workGenRef.current === gen) setWorkCapable(false); });
-  }, [activeTabId, workControllerReady]);
+      .then((capable) => {
+        if (workGenRef.current !== gen) return;
+        setWorkCapability({ tabID: activeTabId, capable, failed: !capable });
+      })
+      .catch(() => {
+        if (workGenRef.current !== gen) return;
+        setWorkCapability({ tabID: activeTabId, capable: false, failed: true });
+      });
+  }, [activeTabId, workConfigFailed, workControllerReady, workEnabled]);
 
   // When work is disabled after being enabled, close the Work view.
   useEffect(() => {
-    if (workCapable === false && workViewOpen) {
+    if ((workEnabled === false || workCapable === false) && workViewOpen) {
       setWorkViewOpen(false);
       setActiveWorkId(null);
       setOwnerTabID(null);
     }
-  }, [workCapable, workViewOpen]);
+  }, [workCapable, workEnabled, workViewOpen]);
 
   const handleOpenWorkView = useCallback(() => {
-    if (!activeTabId) return;
+    if (!activeTabId || workEnabled !== true || workCapable !== true) return;
     setWorkViewOpen(true);
     setActiveWorkId(null);
     setOwnerTabID(activeTabId);
-  }, [activeTabId]);
+  }, [activeTabId, workCapable, workEnabled]);
+
+  const handleRetryWorkConfig = useCallback(() => {
+    if (!activeTabId || !workConfigFailed) return;
+    const tabID = activeTabId;
+    const gen = ++workGenRef.current;
+    setWorkCapability({ tabID, capable: null, failed: false });
+    app.WorkEnabled(tabID)
+      .then((enabled) => {
+        if (workGenRef.current !== gen) return;
+        setWorkConfig({ tabID, enabled, failed: false });
+        if (!enabled) setWorkCapability({ tabID, capable: false, failed: false });
+      })
+      .catch(() => {
+        if (workGenRef.current !== gen) return;
+        setWorkConfig({ tabID, enabled: true, failed: true });
+        setWorkCapability({ tabID, capable: false, failed: true });
+      });
+  }, [activeTabId, workConfigFailed]);
+
+  const handleRetryWorkCapability = useCallback(() => {
+    if (!activeTabId || workConfigFailed || !workCapabilityFailed || !workControllerReady) return;
+    const tabID = activeTabId;
+    const gen = workGenRef.current;
+    setWorkCapability({ tabID, capable: null, failed: false });
+    app.WorkCapable(tabID)
+      .then((capable) => {
+        if (workGenRef.current !== gen) return;
+        setWorkCapability({ tabID, capable, failed: !capable });
+      })
+      .catch(() => {
+        if (workGenRef.current !== gen) return;
+        setWorkCapability({ tabID, capable: false, failed: true });
+      });
+  }, [activeTabId, workCapabilityFailed, workConfigFailed, workControllerReady]);
+
+  const handleWorkEntry = useCallback(() => {
+    if (workConfigFailed) {
+      handleRetryWorkConfig();
+      return;
+    }
+    if (workCapabilityFailed) {
+      handleRetryWorkCapability();
+      return;
+    }
+    handleOpenWorkView();
+  }, [handleOpenWorkView, handleRetryWorkCapability, handleRetryWorkConfig, workCapabilityFailed, workConfigFailed]);
 
   const handleOpenWork = useCallback((workID: string) => {
     setActiveWorkId(workID);
@@ -3430,13 +3516,17 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{t("topbar.newSession")}</span>
               </button>
 
-              {workCapable === true && (
+              {workEnabled === true && (
                 <button
                   type="button"
                   className={`workspace-sidebar__new-session${showWorkView ? ' workspace-sidebar__new-session--active' : ''}`}
-                  aria-label={t("work.title")}
-                  onClick={handleOpenWorkView}
+                  aria-label={workCapabilityFailed ? t("work.retryUnavailable") : workCapable === null ? t("work.initializing") : t("work.title")}
+                  aria-busy={workCapable === null}
+                  disabled={workCapable === null}
+                  title={workCapabilityFailed ? t("work.retryUnavailable") : workCapable === null ? t("work.initializing") : undefined}
+                  onClick={handleWorkEntry}
                   data-testid="work-sidebar-btn"
+                  data-work-state={workCapabilityFailed ? "unavailable" : workCapable === null ? "initializing" : "ready"}
                 >
                   <Briefcase size={18} aria-hidden="true" />
                   <span>{t("work.title")}</span>

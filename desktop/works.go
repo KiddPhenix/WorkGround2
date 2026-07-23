@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/work"
 )
@@ -72,9 +73,25 @@ type workController interface {
 	WorkViews() *control.WorkViewBroadcaster
 }
 
+// WorkEnabled reports the loaded per-tab configuration intent without waiting
+// for that tab's Controller to finish starting. The frontend uses this stable
+// answer to reserve the Work navigation slot while WorkCapable is still
+// pending. Runtime capability remains a separate typed check below.
+func (a *App) WorkEnabled(tabID string) (bool, error) {
+	tab := a.tabByID(tabID)
+	if tab == nil {
+		return false, nil
+	}
+	cfg, err := config.LoadForRoot(tab.WorkspaceRoot)
+	if err != nil {
+		return false, fmt.Errorf("work: load config for tab %q: %w", tabID, err)
+	}
+	return cfg.Work.Enabled, nil
+}
+
 // WorkCapable reports whether the owning controller for tabID supports the
-// typed Work feature. Callers must use this boolean instead of probing errors
-// to decide whether to show Work UI entry points.
+// typed Work feature. Callers use this boolean to control readiness of an entry
+// already owned by WorkEnabled, without probing errors as capability signals.
 func (a *App) WorkCapable(tabID string) bool {
 	_, ctrl := a.tabAndCtrlByID(tabID)
 	owner, ok := ctrl.(workController)

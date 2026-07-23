@@ -1,6 +1,7 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { sha256 } from '../../lib/attachDedup';
+import { useT } from '../../lib/i18n';
 import type { CornerstoneControllerPort } from '../../work/controller';
 import { deriveCornerstoneAttention, useCornerstoneUIStore } from '../../work/cornerstoneStore';
 import type {
@@ -166,8 +167,11 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
   readonly = false,
   onApplyMutationResult,
 }) => {
+  const t = useT();
   const drawer = useCornerstoneUIStore((state) => state.byWork[workId] ?? EMPTY_DRAWER);
   const ui = useCornerstoneUIStore;
+  const openerRef = useRef<HTMLButtonElement>(null);
+  const focusTimerRef = useRef<number | null>(null);
   const [newType, setNewType] = useState<CornerstoneType>('instruction');
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -184,6 +188,32 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
     if (drawer.filterRequired !== null && cornerstone.required !== drawer.filterRequired) return false;
     return true;
   }), [drawer.filterRequired, drawer.filterType, work.cornerstones]);
+
+  const closeDrawer = useCallback(() => {
+    if (!ui.getState().byWork[workId]?.open) return;
+    ui.getState().setOpen(workId, false);
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => {
+      focusTimerRef.current = null;
+      openerRef.current?.focus();
+    }, 0);
+  }, [ui, workId]);
+
+  useEffect(() => {
+    if (!drawer.open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeDrawer();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [closeDrawer, drawer.open]);
+
+  useEffect(() => () => {
+    if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
+  }, []);
 
   const execute = useCallback(async (
     cornerstoneId: string,
@@ -343,9 +373,10 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
   return (
     <div className={`cornerstone-drawer${drawer.open ? ' cornerstone-drawer--open' : ''}`} role="complementary" aria-label="Cornerstone Drawer" data-testid="cornerstone-drawer">
       <button
+        ref={openerRef}
         type="button"
         className="cornerstone-drawer__toggle"
-        onClick={() => ui.getState().setOpen(workId, !drawer.open)}
+        onClick={() => drawer.open ? closeDrawer() : ui.getState().setOpen(workId, true)}
         aria-expanded={drawer.open}
         aria-controls={`cornerstone-drawer-${workId}`}
       >
@@ -357,6 +388,17 @@ export const CornerstoneDrawer: React.FC<CornerstoneDrawerProps> = ({
 
       {drawer.open && (
         <section id={`cornerstone-drawer-${workId}`} className="cornerstone-drawer__body" aria-label="基石列表" data-testid="cornerstone-drawer-body">
+          <header className="cornerstone-drawer__header">
+            <button
+              type="button"
+              className="cornerstone-drawer__back"
+              onClick={closeDrawer}
+              data-testid="cornerstone-drawer-back"
+            >
+              <span aria-hidden="true">←</span>
+              <span>{t('work.cornerstoneBack')}</span>
+            </button>
+          </header>
           <div className="cornerstone-drawer__filters">
             <label>
               类型

@@ -35985,10 +35985,63 @@ body > .mermaid-diagram--fullscreen {
   overflow-y: auto;
 }
 
+.cornerstone-drawer__header {
+  position: sticky;
+  z-index: var(--z-local-raised);
+  top: -12px;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  margin: -12px -12px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft, #2a2a2a);
+  background: var(--bg-surface, #1a1a1a);
+}
+
+.cornerstone-drawer__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border, #333);
+  border-radius: 6px;
+  background: var(--bg-soft, #181818);
+  color: var(--fg, #eee);
+  cursor: pointer;
+  font: inherit;
+}
+
+.cornerstone-drawer__back:hover {
+  border-color: var(--accent, #4a9eff);
+  background: var(--bg-elev-2, #222);
+}
+
+.cornerstone-drawer__back:focus-visible {
+  outline: 2px solid var(--accent, #4a9eff);
+  outline-offset: 2px;
+}
+
 .cornerstone-drawer__filters {
   display: flex;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+@media (max-width: 700px) {
+  .cornerstone-drawer__body {
+    position: fixed;
+    top: calc(var(--windows-window-controls-height, 48px) + 8px);
+    right: 8px;
+    bottom: 8px;
+    left: 8px;
+    width: auto;
+    max-height: none;
+  }
+
+  .cornerstone-drawer__filters {
+    flex-wrap: wrap;
+  }
 }
 
 .cornerstone-drawer__filters label {
@@ -36381,6 +36434,7 @@ body > .mermaid-diagram--fullscreen {
 
 @media (prefers-reduced-motion: reduce) {
   .cornerstone-drawer__toggle,
+  .cornerstone-drawer__back,
   .cornerstone-item__actions button,
   .cornerstone-drawer__pin-row button,
   .work-run-entry__btn,

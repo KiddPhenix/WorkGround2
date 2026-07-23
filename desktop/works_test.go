@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -368,6 +369,45 @@ func TestResolveWorkControllerDisabledWork(t *testing.T) {
 	_, err := wc.CreateWork(nil, work.CreateWorkInput{})
 	if err == nil {
 		t.Fatal("expected error from disabled Work")
+	}
+}
+
+func TestWorkEnabledUsesPerTabConfiguration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	t.Setenv("WorkGround2_PREFER_USER_CONFIG", "")
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultRoot := t.TempDir()
+	disabledRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(disabledRoot, "WorkGround2.toml"), []byte("[work]\nenabled = false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	brokenRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(brokenRoot, "WorkGround2.toml"), []byte("[work\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{tabs: map[string]*WorkspaceTab{
+		"default":  {ID: "default", WorkspaceRoot: defaultRoot},
+		"disabled": {ID: "disabled", WorkspaceRoot: disabledRoot},
+		"broken":   {ID: "broken", WorkspaceRoot: brokenRoot},
+	}}
+	for i := 0; i < 2; i++ {
+		if enabled, err := app.WorkEnabled("default"); err != nil || !enabled {
+			t.Fatalf("default WorkEnabled #%d = %v, %v; want true, nil", i+1, enabled, err)
+		}
+		if enabled, err := app.WorkEnabled("disabled"); err != nil || enabled {
+			t.Fatalf("disabled WorkEnabled #%d = %v, %v; want false, nil", i+1, enabled, err)
+		}
+	}
+	if enabled, err := app.WorkEnabled("missing"); err != nil || enabled {
+		t.Fatalf("missing WorkEnabled = %v, %v; want false, nil", enabled, err)
+	}
+	if enabled, err := app.WorkEnabled("broken"); err == nil || enabled {
+		t.Fatalf("broken WorkEnabled = %v, %v; want false, explicit error", enabled, err)
 	}
 }
 
