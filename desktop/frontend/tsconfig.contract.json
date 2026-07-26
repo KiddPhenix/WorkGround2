@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/__tests__/work-v2-contract.test.ts",
+    "src/work/parse.ts",
+    "src/work/types.ts",
+    "src/work/types_v2.ts",
+    "vite-env.d.ts"
+  ],
+  "exclude": []
+}

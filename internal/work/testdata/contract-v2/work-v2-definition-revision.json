@@ -1,0 +1,63 @@
+{
+  "workId": "work-v2-001",
+  "revision": 1,
+  "parentRevision": 0,
+  "status": "active",
+  "goal": "对 PR #4512 进行完整代码审查，涵盖类型安全、错误处理、并发安全和性能方面",
+  "nodes": [
+    {
+      "id": "fetch_diff",
+      "title": "获取变更",
+      "toolHints": ["git_diff"]
+    },
+    {
+      "id": "static_check",
+      "title": "静态检查",
+      "dependsOn": ["fetch_diff"],
+      "toolHints": ["go_vet", "gofmt"]
+    },
+    {
+      "id": "logic_review",
+      "title": "逻辑审查",
+      "dependsOn": ["fetch_diff"],
+      "inputSpecIds": ["review_focus"],
+      "blockIds": ["review-block"],
+      "producesSlotIds": ["slot-report"]
+    },
+    {
+      "id": "generate_report",
+      "title": "生成报告",
+      "dependsOn": ["static_check", "logic_review"],
+      "consumesSlotIds": ["slot-report"]
+    }
+  ],
+  "artifactSlots": [
+    {
+      "id": "slot-report",
+      "title": "审查报告",
+      "kind": "docx",
+      "expectedCount": 1,
+      "required": true
+    },
+    {
+      "id": "slot-checklist",
+      "title": "审查清单",
+      "kind": "markdown",
+      "expectedCount": 1,
+      "required": false
+    }
+  ],
+  "inputSpecs": [
+    {
+      "id": "review_focus",
+      "label": "审查重点",
+      "description": "请选择本次审查需要重点关注的方面",
+      "kind": "multi_choice",
+      "required": true,
+      "pinEligible": true
+    }
+  ],
+  "createdBy": "user-001",
+  "createdAt": "2026-07-23T10:00:00Z",
+  "digest": "sha256:a1b2c3d4e5f6"
+}

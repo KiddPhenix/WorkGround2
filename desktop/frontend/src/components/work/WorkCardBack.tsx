@@ -1,7 +1,16 @@
-import React, { useEffect, useMemo, useState, type ReactNode } from 'react';
+import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { RunSelection, SessionRef, SessionSurfaceContext, WorkView } from '../../work/types';
 import { attemptKey, resolveSelection, stageKey, taskKey } from '../../work/store';
+import type {
+  ApplyDefinitionInput,
+  ApplyDefinitionResult,
+  CreateCandidateRevisionInput,
+  CreateCandidateRevisionResult,
+  RunImpact,
+  WorkDefinitionRevision,
+} from '../../work/types_v2';
+import { DefinitionDiff } from '../../work/components/v2';
 
 export interface WorkCardBackSlotProps {
   workID: string;
@@ -10,6 +19,9 @@ export interface WorkCardBackSlotProps {
   archived: boolean;
   draft: string;
   onDraftChange: (draft: string) => void;
+  /** Called when the planning session produces a definition ready to apply. */
+  onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
+  onCreateCandidate?: (input: CreateCandidateRevisionInput) => Promise<CreateCandidateRevisionResult>;
 }
 
 export type WorkCardBackSlot = ReactNode | ((props: WorkCardBackSlotProps) => ReactNode);
@@ -39,6 +51,13 @@ export interface WorkCardBackProps {
   selection?: RunSelection;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
   onSavePrompt?: (prompt: string) => Promise<void>;
+  onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
+  v2Definition?: WorkDefinitionRevision;
+  /** Active definition for diff comparison (when v2Definition is a draft). */
+  v2ActiveDefinition?: WorkDefinitionRevision;
+  /** RunImpact from the last apply attempt, if available. */
+  applyImpact?: RunImpact;
+  onCreateCandidate?: (input: CreateCandidateRevisionInput) => Promise<CreateCandidateRevisionResult>;
 }
 
 function renderSlot(slot: WorkCardBackSlot | undefined, props: WorkCardBackSlotProps): ReactNode {
@@ -55,17 +74,105 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   selection,
   resolveSessionSurface,
   onSavePrompt,
+  onApplyDefinition,
+  v2Definition,
+  v2ActiveDefinition,
+  applyImpact,
+  onCreateCandidate,
 }) => {
   const { work } = view;
-  const [prompt, setPrompt] = useState(work.prompt);
+  const [prompt, setPrompt] = useState(draft || work.prompt);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [applyState, setApplyState] = useState<'idle' | 'applying'>('idle');
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const applyIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const candidateIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const [localCandidate, setLocalCandidate] = useState<WorkDefinitionRevision | undefined>();
+  const [candidateImpact, setCandidateImpact] = useState<RunImpact | undefined>();
+  const [candidateState, setCandidateState] = useState<'idle' | 'creating'>('idle');
+  const [candidateError, setCandidateError] = useState<string | null>(null);
+  const [dismissedCandidateRevision, setDismissedCandidateRevision] = useState<number | null>(null);
 
   useEffect(() => {
-    setPrompt(work.prompt);
+    setPrompt(draft || work.prompt);
     setSaveState('idle');
     setSaveError(null);
-  }, [view.revision, work.prompt]);
+  }, [draft, view.revision, work.prompt]);
+
+  useEffect(() => {
+    setLocalCandidate(undefined);
+    setCandidateImpact(undefined);
+    setCandidateError(null);
+    setDismissedCandidateRevision(null);
+    candidateIntentRef.current = null;
+  }, [work.id, v2ActiveDefinition?.revision, v2Definition?.revision]);
+
+  // The base for candidate generation: active definition takes precedence;
+  // when only a draft exists (initial planning), use the draft as base so
+  // the user can generate the first proper structure from the conversation.
+  const candidateBase = v2ActiveDefinition ?? (v2Definition?.status === 'draft' ? v2Definition : undefined);
+  const createCandidate = async () => {
+    if (
+      !onCreateCandidate
+      || !candidateBase
+      || readonly
+      || archived
+      || candidateState === 'creating'
+      || !prompt.trim()
+    ) return;
+    const intent = prompt.trim();
+    const signature = JSON.stringify([
+      work.id,
+      candidateBase.revision,
+      view.revision,
+      intent,
+    ]);
+    if (candidateIntentRef.current?.signature !== signature) {
+      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      candidateIntentRef.current = { signature, requestId: `work-candidate-${suffix}` };
+    }
+    setCandidateState('creating');
+    setCandidateError(null);
+    try {
+      const result = await onCreateCandidate({
+        workId: work.id,
+        intent,
+        baseDefinitionRevision: candidateBase.revision,
+        expectedRevision: view.revision,
+        requestId: candidateIntentRef.current.requestId,
+      });
+      if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
+      setLocalCandidate(result.candidate);
+      setCandidateImpact(result.impact);
+      setDismissedCandidateRevision(null);
+      candidateIntentRef.current = null;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'revision_conflict' || code === 'request_conflict') {
+        candidateIntentRef.current = null;
+        setCandidateError('工作版本已变化，请重新生成候选结构。');
+      } else {
+        setCandidateError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setCandidateState('idle');
+    }
+  };
+
+  // A draft is a "projected candidate" only when it has BOTH a goal AND at
+  // least one node — i.e. the planner has produced a complete structure. A
+  // partial draft (goal-only or nodes-only) is still in planning and must go
+  // through candidate generation.
+  const isSubstantiveDraft = v2Definition?.status === 'draft'
+    && v2Definition.goal.trim().length > 0
+    && v2Definition.nodes.length > 0;
+  const projectedCandidate = isSubstantiveDraft ? v2Definition : undefined;
+  const candidateDefinition = localCandidate ?? projectedCandidate;
+  const visibleCandidate = candidateDefinition?.revision === dismissedCandidateRevision
+    ? undefined
+    : candidateDefinition;
+  const displayDefinition = visibleCandidate ?? v2ActiveDefinition ?? v2Definition;
 
   const savePrompt = async () => {
     if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
@@ -79,6 +186,41 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       setSaveError(error instanceof Error ? error.message : String(error));
     }
   };
+  const applyDefinition = async () => {
+    const candidate = localCandidate ?? (v2Definition?.status === 'draft' ? v2Definition : undefined);
+    if (!onApplyDefinition || !candidate || candidate.status !== 'draft' || applyState === 'applying') return;
+    const signature = `${work.id}:${candidate.revision}:${view.revision}`;
+    if (applyIntentRef.current?.signature !== signature) {
+      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      applyIntentRef.current = { signature, requestId: `work-definition-${suffix}` };
+    }
+    setApplyState('applying');
+    setApplyError(null);
+    try {
+      const result = await onApplyDefinition({
+        workId: work.id,
+        revision: candidate.revision,
+        expectedRevision: view.revision,
+        requestId: applyIntentRef.current.requestId,
+      });
+      if (!result.committed) {
+        if (result.transportError?.code === 'revision_conflict' || result.transportError?.code === 'request_conflict') {
+          applyIntentRef.current = null;
+        }
+        throw new Error(result.transportError?.message || '工作结构未应用，请重试。');
+      }
+      applyIntentRef.current = null;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      setApplyError(
+        code === 'revision_conflict' || code === 'request_conflict'
+          ? '工作版本已变化，请取消并重新生成候选结构。'
+          : error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setApplyState('idle');
+    }
+  };
   const slotProps = useMemo<WorkCardBackSlotProps>(() => ({
     workID: work.id,
     prompt: work.prompt,
@@ -86,7 +228,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     archived,
     draft,
     onDraftChange,
-  }), [archived, draft, onDraftChange, readonly, work.id, work.prompt]);
+    onApplyDefinition,
+    onCreateCandidate,
+  }), [archived, draft, onApplyDefinition, onCreateCandidate, onDraftChange, readonly, work.id, work.prompt]);
 
   // Resolve the selected attempt's session surface.
   const selectedSession = useMemo(() => {
@@ -123,6 +267,83 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       <div className="wg2-work-back-header">
         <h2 className="wg2-work-name">{work.name}</h2>
       </div>
+
+      {displayDefinition && (
+        <section
+          className="wg2-work-planning-definition"
+          data-testid="work-planning-definition"
+          aria-label="工作结构"
+        >
+          <div className="wg2-work-planning-definition__heading">
+            <div>
+              <h3>{displayDefinition.status === 'active' ? '当前工作结构' : '待应用的工作结构'}</h3>
+              <p>
+                 修订 {displayDefinition.revision}
+                 {displayDefinition.parentRevision > 0 ? `，基于修订 ${displayDefinition.parentRevision}` : ''}
+              </p>
+            </div>
+            <span data-status={displayDefinition.status}>
+              {displayDefinition.status === 'active' ? '已应用' : displayDefinition.status === 'superseded' ? '已替代' : '等待确认'}
+            </span>
+          </div>
+          {displayDefinition.goal ? <p className="wg2-work-planning-definition__goal">{displayDefinition.goal}</p> : (
+            <p role="status">继续在对话中补齐目标和工作结构。</p>
+          )}
+          <ul aria-label="结构摘要">
+            <li>{displayDefinition.nodes.length} 个任务节点</li>
+            <li>{displayDefinition.artifactSlots.length} 个成果槽位</li>
+            <li>{displayDefinition.inputSpecs.length} 个输入项</li>
+          </ul>
+          {visibleCandidate?.status === 'draft' && !readonly && !archived && onApplyDefinition && v2ActiveDefinition && (
+            <DefinitionDiff
+              active={v2ActiveDefinition}
+              candidate={visibleCandidate}
+              impact={candidateImpact ?? applyImpact}
+              onApply={() => void applyDefinition()}
+              onCancel={() => {
+                applyIntentRef.current = null;
+                setApplyError(null);
+                setDismissedCandidateRevision(visibleCandidate.revision);
+                setLocalCandidate(undefined);
+                setCandidateImpact(undefined);
+              }}
+              isApplying={applyState === 'applying'}
+              error={applyError}
+            />
+          )}
+          {candidateBase && !visibleCandidate && !readonly && !archived && onCreateCandidate && (
+            <div className="wg2-work-planning-definition__actions">
+              <button
+                type="button"
+                data-testid="work-create-candidate"
+                disabled={candidateState === 'creating' || !prompt.trim()}
+                onClick={() => void createCandidate()}
+              >
+                {candidateState === 'creating' ? '正在生成候选…' : '根据任务说明生成候选结构'}
+              </button>
+              {candidateError && <span role="alert" data-testid="work-create-candidate-error">{candidateError}</span>}
+            </div>
+          )}
+          {candidateBase && !visibleCandidate && !readonly && !archived && !onCreateCandidate && (
+            <div role="status" data-testid="work-create-candidate-unavailable">
+              当前环境未连接工作结构规划能力，请稍后重试。
+            </div>
+          )}
+          {displayDefinition.status === 'draft' && !readonly && !archived && onApplyDefinition && !v2ActiveDefinition && (
+            <div className="wg2-work-planning-definition__actions">
+              <button
+                type="button"
+                data-testid="work-apply-definition"
+                disabled={applyState === 'applying' || !displayDefinition.goal.trim() || displayDefinition.nodes.length === 0}
+                onClick={() => void applyDefinition()}
+              >
+                {applyState === 'applying' ? '正在应用…' : '确认并开始执行'}
+              </button>
+              {applyError && <span role="alert" data-testid="work-apply-definition-error">{applyError}</span>}
+            </div>
+          )}
+        </section>
+      )}
 
       {!readonly && !archived && (
         <section className="wg2-work-draft-editor" data-testid="work-draft-editor">

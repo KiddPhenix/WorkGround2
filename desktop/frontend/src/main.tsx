@@ -12,6 +12,10 @@ import { initFontFamily } from "./lib/fontFamily";
 import { initTextSize } from "./lib/textSize";
 import { initTheme } from "./lib/theme";
 import "./styles.css";
+// Single production CSS entry for Work collaboration workbench V2.
+import "./work/components/v2/input/WorkInputHost.css";
+import "./work/components/v2/discussion/discussion.css";
+import "./work/components/v2/DefinitionDiff.css";
 
 // Install first so startup/runtime failures paint a useful error instead of a
 // featureless webview background, with the recent console trail attached.

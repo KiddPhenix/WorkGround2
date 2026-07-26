@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -22,6 +28,28 @@ type workViewWatch struct {
 	streamID    string
 	cancel      context.CancelFunc
 }
+
+// SelectWorkInputFileRequest carries full input identity to the host boundary.
+// The host validates it against the authoritative WorkView before opening a
+// native picker.
+type SelectWorkInputFileRequest struct {
+	WorkID  string `json:"workId"`
+	RunID   string `json:"runId"`
+	TaskID  string `json:"taskId"`
+	BlockID string `json:"blockId"`
+	InputID string `json:"inputId"`
+	SpecID  string `json:"specId"`
+}
+
+// SelectWorkInputFileResult is a typed, side-effect-free selection result.
+// Selecting a file does not submit the input.
+type SelectWorkInputFileResult struct {
+	ArtifactRef *work.ArtifactRef        `json:"artifactRef,omitempty"`
+	Canceled    bool                     `json:"canceled"`
+	Error       *work.WorkTransportError `json:"error,omitempty"`
+}
+
+var openWorkInputFileDialog = runtime.OpenFileDialog
 
 // workResyncGates serializes authoritativeWorkViewResync per workID so that
 // snapshot linearization order matches generation order. Only same-workID
@@ -69,6 +97,7 @@ func (g *workResyncGates) unlock(gate *workResyncGate, workID string) {
 // The concrete *control.Controller implements both WorkControl() and WorkViews().
 type workController interface {
 	WorkEnabled() bool
+	WorkV2Enabled() bool
 	WorkControl() control.WorkControl
 	WorkViews() *control.WorkViewBroadcaster
 }
@@ -96,6 +125,14 @@ func (a *App) WorkCapable(tabID string) bool {
 	_, ctrl := a.tabAndCtrlByID(tabID)
 	owner, ok := ctrl.(workController)
 	return ok && owner.WorkEnabled()
+}
+
+// WorkCollaborationV2Enabled reports the explicit per-controller V2 gate. V1
+// callers continue to use WorkEnabled/WorkCapable and are unaffected.
+func (a *App) WorkCollaborationV2Enabled(tabID string) bool {
+	_, ctrl := a.tabAndCtrlByID(tabID)
+	owner, ok := ctrl.(workController)
+	return ok && owner.WorkV2Enabled()
 }
 
 func (a *App) resolveWorkController(tabID string) (control.WorkControl, error) {
@@ -315,13 +352,13 @@ func (a *App) authoritativeWorkViewResyncWithMarshal(ctx context.Context, wc con
 	}
 	generation := a.nextWorkResyncGeneration(minGeneration)
 	event := &work.WorkViewEvent{
-		SchemaVersion: work.WorkViewSchemaVersion,
+		SchemaVersion: view.SchemaVersion,
 		Type:          work.ViewSnapshot,
 		WorkID:        workID,
 		EventID:       work.ResyncEventID(workID, view.Revision, reason, generation),
 		Revision:      view.Revision,
 		RequestID:     string(reason) + "-recovery",
-		Object:        work.ObjectContext{Kind: work.ObjectWork, ID: workID},
+		Object:        work.ObjectContext{Kind: work.ObjectWork, ID: workID, WorkID: workID},
 		Resync: &work.ViewResync{
 			Reason:        reason,
 			Authoritative: true,
@@ -507,4 +544,340 @@ func (a *App) RepairCornerstone(tabID, workID string, input work.RepairCornersto
 		return nil, err
 	}
 	return wc.RepairCornerstone(a.bootContext(), workID, input)
+}
+
+// ── V2 Collaboration Controller Wails bindings ──────────────────────────────
+
+// BeginWorkPlanning starts a conversation-based definition flow.
+// requestID ensures idempotent creation.
+func (a *App) BeginWorkPlanning(tabID string, input work.BeginWorkPlanningInput) (*work.BeginWorkPlanningResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.BeginWorkPlanningResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.BeginWorkPlanningWithResult(a.bootContext(), input)
+	if result == nil {
+		result = &work.BeginWorkPlanningResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// ApplyDefinition atomically activates a new definition revision.
+func (a *App) ApplyDefinition(tabID string, input work.ApplyDefinitionInput) (*work.ApplyDefinitionResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.ApplyDefinitionResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.ApplyDefinition(a.bootContext(), input)
+	if result == nil {
+		result = &work.ApplyDefinitionResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// CreateCandidateRevision creates a copy-on-write candidate without switching
+// the active definition. Cancel remains a local UI close with zero writes.
+func (a *App) CreateCandidateRevision(tabID string, input work.CreateCandidateRevisionInput) (*work.CreateCandidateRevisionResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.CreateCandidateRevisionResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.CreateCandidateRevision(a.bootContext(), input)
+	if result == nil {
+		result = &work.CreateCandidateRevisionResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// SubmitWorkInput commits the public Work V2 DTO through InputService.
+func (a *App) SubmitWorkInput(tabID string, input work.SubmitWorkInputRequest) (*work.SubmitInputResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.SubmitInputResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.SubmitWorkInput(a.bootContext(), submitInputRequest(input))
+	if result == nil {
+		result = &work.SubmitInputResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+func submitInputRequest(input work.SubmitWorkInputRequest) work.SubmitInputRequest {
+	return work.SubmitInputRequest{
+		WorkID:           input.WorkID,
+		InputID:          input.InputID,
+		Value:            input.Value,
+		DefinitionRev:    input.DefinitionRevision,
+		InputRevision:    input.InputRevision,
+		ExpectedRevision: input.ExpectedRevision,
+		RequestID:        input.RequestID,
+	}
+}
+
+// SelectWorkInputFile opens the native picker only after the requested
+// Work/Run/Task/Block/Input/Spec identity is found in the authoritative
+// projection and the active InputSpec is a file input.
+func (a *App) SelectWorkInputFile(tabID string, input SelectWorkInputFileRequest) (*SelectWorkInputFileResult, error) {
+	result := &SelectWorkInputFileResult{}
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.RunID = strings.TrimSpace(input.RunID)
+	input.TaskID = strings.TrimSpace(input.TaskID)
+	input.BlockID = strings.TrimSpace(input.BlockID)
+	input.InputID = strings.TrimSpace(input.InputID)
+	input.SpecID = strings.TrimSpace(input.SpecID)
+	if input.WorkID == "" || input.RunID == "" || input.TaskID == "" ||
+		input.BlockID == "" || input.InputID == "" || input.SpecID == "" {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: full input identity is required",
+		))
+		return result, nil
+	}
+	view, err := wc.GetWork(a.bootContext(), input.WorkID)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	if view == nil || view.Work == nil || view.Definition == nil ||
+		view.Work.V2CurrentRevision != view.Definition.Revision {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: active definition is unavailable",
+		))
+		return result, nil
+	}
+	foundInput := false
+	for _, candidate := range view.Inputs {
+		if candidate.ID == input.InputID && candidate.WorkID == input.WorkID &&
+			candidate.RunID == input.RunID && candidate.TaskID == input.TaskID &&
+			candidate.BlockID == input.BlockID && candidate.SpecID == input.SpecID {
+			foundInput = true
+			break
+		}
+	}
+	if !foundInput {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: active input identity not found",
+		))
+		return result, nil
+	}
+	fileSpec := false
+	for _, spec := range view.Definition.InputSpecs {
+		if spec.ID == input.SpecID && spec.Kind == work.InputFile {
+			fileSpec = true
+			break
+		}
+	}
+	if !fileSpec {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: input spec is not a file input",
+		))
+		return result, nil
+	}
+
+	root, _, ok := a.workspaceTargetForTab(tabID)
+	if !ok {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: workspace is unavailable",
+		))
+		return result, nil
+	}
+	base, err := workspaceBaseFromRoot(root)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	path, err := openWorkInputFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:            "Choose file for Work input",
+		DefaultDirectory: dialogDefaultDirectory(base),
+		Filters: []runtime.FileFilter{
+			{DisplayName: "All files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	if strings.TrimSpace(path) == "" {
+		result.Canceled = true
+		return result, nil
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	if !info.Mode().IsRegular() {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInputFile: selection is not a regular file",
+		))
+		return result, nil
+	}
+	now := time.Now().UTC()
+	idBytes := sha256.Sum256([]byte(path + "\x00" + info.ModTime().UTC().Format(time.RFC3339Nano)))
+	ref := &work.ArtifactRef{
+		ID:             fmt.Sprintf("selected:%x", idBytes[:12]),
+		Name:           info.Name(),
+		Type:           strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), "."),
+		Status:         work.ArtifactRefStatusAvailable,
+		Path:           path,
+		LastVerifiedAt: &now,
+	}
+	if rel, inside := workspaceRelativeIn(path, base); inside {
+		ref.RelativePath = rel
+	}
+	result.ArtifactRef = ref
+	return result, nil
+}
+
+// SetInputCornerstone pins or unpins a submitted input as a Cornerstone.
+func (a *App) SetInputCornerstone(tabID string, input work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.CornerstonePinResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.SetInputCornerstone(a.bootContext(), input)
+	if result == nil {
+		result = &work.CornerstonePinResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// PreviewWorkPatch generates a structured WorkPatchPreview from a discussion instruction.
+func (a *App) PreviewWorkPatch(tabID string, input work.PreviewWorkPatchInput) (*work.PreviewWorkPatchResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.PreviewWorkPatchResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.PreviewWorkPatch(a.bootContext(), input)
+	if result == nil {
+		result = &work.PreviewWorkPatchResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// ApplyWorkPatch applies a previously previewed patch.
+func (a *App) ApplyWorkPatch(tabID string, input work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.ApplyWorkPatchResult{}
+		bindWorkTransportError(&result.WorkRevision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.ApplyWorkPatch(a.bootContext(), input)
+	if result == nil {
+		result = &work.ApplyWorkPatchResult{}
+	}
+	bindWorkTransportError(&result.WorkRevision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// RetryWorkNode retries a failed or invalidated V2 task node.
+func (a *App) RetryWorkNode(tabID string, input work.RetryWorkNodeRequest) (*work.RetryWorkNodeResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	result, callErr := wc.RetryWorkNode(a.bootContext(), input)
+	if result == nil {
+		result = &work.RetryWorkNodeResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.Error, callErr)
+	return result, nil
+}
+
+// RetryArtifactSlot resets an active failed/partial/stale slot and wakes the
+// producer task selected from authoritative Definition and run state.
+func (a *App) RetryArtifactSlot(tabID string, input work.RetryArtifactSlotRequest) (*work.RetryArtifactSlotResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.RetryArtifactSlotResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.RetryArtifactSlot(a.bootContext(), input)
+	if result == nil {
+		result = &work.RetryArtifactSlotResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// PreviewArtifact produces a graded ArtifactPreview for the given artifact
+// reference in a work. The preview is read-only, cached by content digest,
+// and degrades safely when no converter is available.
+func (a *App) PreviewArtifact(tabID string, input work.PreviewArtifactRequest) (*work.PreviewArtifactResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.PreviewArtifactResult{}
+		bindWorkTransportError(nil, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.PreviewArtifact(a.bootContext(), input)
+	if result == nil {
+		result = &work.PreviewArtifactResult{}
+	}
+	bindWorkTransportError(nil, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+// RequestArtifactConversion executes or resumes async conversion with
+// external-approval gating.
+func (a *App) RequestArtifactConversion(tabID string, input work.RequestArtifactConversionInput) (*work.RequestArtifactConversionResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.RequestArtifactConversionResult{}
+		bindWorkTransportError(nil, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.RequestArtifactConversion(a.bootContext(), input)
+	if result == nil {
+		result = &work.RequestArtifactConversionResult{}
+	}
+	bindWorkTransportError(nil, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
+func bindWorkTransportError(
+	revision *int64,
+	committed, recoverable *bool,
+	target **work.WorkTransportError,
+	err error,
+) {
+	if err == nil {
+		return
+	}
+	transport := work.TransportErrorFrom(err)
+	*target = transport
+	if revision != nil && *revision == 0 {
+		*revision = transport.Revision
+	}
+	if committed != nil {
+		*committed = *committed || transport.Committed
+	}
+	if recoverable != nil {
+		*recoverable = transport.Recoverable
+	}
 }

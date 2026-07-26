@@ -1,12 +1,25 @@
 export * from './types';
+export * from './types_v2';
 export {
   ViewFutureSchemaError,
   parseWorkViewEvent,
+  parseWorkViewSnapshot,
   rejectWorkViewWrite,
   isViewType,
   deltaAppliesTo,
+  _isRevision,
+  validateRevision,
+  validateTaskID,
+  parseArtifactSlot,
+  parseWorkDefinitionRevision,
+  parseWorkInput,
+  parseWorkPatchPreview,
+  parseTaskV2View,
+  parsePatchIntentReceipt,
+  parseApplyWorkPatchResult,
+  parseWorkViewV2,
 } from './parse';
-export type { ViewParseResult } from './parse';
+export type { ViewParseResult, WorkSnapshotParseResult } from './parse';
 export {
   useWorkStore,
   useWorkUIStore,
@@ -38,6 +51,14 @@ export {
   isTaskTerminal,
   isAttemptTerminal,
   resolveSelection,
+  selectArtifactSlots,
+  selectV2Definition,
+  selectV2ActiveDefinition,
+  selectV2Tasks,
+  selectV2Inputs,
+  selectPatchPreviews,
+  selectV2Task,
+  selectV2Input,
 } from './store';
 export type {
   GapReason,
@@ -46,6 +67,8 @@ export type {
   ApplyResult,
   BlockDeltaItem,
   WorkDeltaPayload,
+  WorkV2SnapshotPayload,
+  WorkV2DeltaFields,
   WorkStoreState,
   WorkFace,
   FaceScrollState,

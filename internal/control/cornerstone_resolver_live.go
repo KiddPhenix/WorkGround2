@@ -42,11 +42,12 @@ type LiveCornerstoneResolverOptions struct {
 // LiveCornerstoneResolver resolves every persisted live_ref kind through the
 // same production stores and guarded tools used by the Controller.
 type LiveCornerstoneResolver struct {
-	workspaceRoot string
-	sessionTurns  SessionTurnLookup
-	workStore     work.WorkStore
-	blobStore     work.BlobStore
-	urlTool       tool.Tool
+	workspaceRoot   string
+	sessionTurns    SessionTurnLookup
+	workStore       work.WorkStore
+	blobStore       work.BlobStore
+	urlTool         tool.Tool
+	artifactSources *work.StoreArtifactSourceResolver
 }
 
 // NewLiveCornerstoneResolver creates the production resolver. Configuration is
@@ -59,12 +60,38 @@ func NewLiveCornerstoneResolver(opts LiveCornerstoneResolverOptions) *LiveCorner
 		}
 	}
 	return &LiveCornerstoneResolver{
-		workspaceRoot: root,
-		sessionTurns:  opts.SessionTurns,
-		workStore:     opts.WorkStore,
-		blobStore:     opts.BlobStore,
-		urlTool:       opts.URLTool,
+		workspaceRoot:   root,
+		sessionTurns:    opts.SessionTurns,
+		workStore:       opts.WorkStore,
+		blobStore:       opts.BlobStore,
+		urlTool:         opts.URLTool,
+		artifactSources: work.NewStoreArtifactSourceResolver(opts.WorkStore, opts.BlobStore, root),
 	}
+}
+
+// ResolveArtifactSource implements the binary-safe Work preview source port.
+func (r *LiveCornerstoneResolver) ResolveArtifactSource(
+	ctx context.Context,
+	request work.ArtifactSourceRequest,
+) (*work.ArtifactSource, error) {
+	if r == nil || r.artifactSources == nil {
+		return nil, errors.New("artifact source resolver is unavailable")
+	}
+	return r.artifactSources.ResolveArtifactSource(ctx, request)
+}
+
+// ValidateArtifactSource performs the final source check without recursively
+// loading the Work projection while FileWorkStore holds its commit lease.
+func (r *LiveCornerstoneResolver) ValidateArtifactSource(
+	ctx context.Context,
+	workID string,
+	ref work.ArtifactRef,
+	expectedDigest string,
+) error {
+	if r == nil || r.artifactSources == nil {
+		return errors.New("artifact source resolver is unavailable")
+	}
+	return r.artifactSources.ValidateArtifactSource(ctx, workID, ref, expectedDigest)
 }
 
 // Resolve implements work.CornerstoneResolver for non-Work-scoped sources.
@@ -323,6 +350,8 @@ func invalidSource(message string) work.ResolveResult {
 }
 
 var (
-	_ work.CornerstoneResolver       = (*LiveCornerstoneResolver)(nil)
-	_ work.ScopedCornerstoneResolver = (*LiveCornerstoneResolver)(nil)
+	_ work.CornerstoneResolver           = (*LiveCornerstoneResolver)(nil)
+	_ work.ScopedCornerstoneResolver     = (*LiveCornerstoneResolver)(nil)
+	_ work.ArtifactSourceResolver        = (*LiveCornerstoneResolver)(nil)
+	_ work.ArtifactSourceCommitValidator = (*LiveCornerstoneResolver)(nil)
 )

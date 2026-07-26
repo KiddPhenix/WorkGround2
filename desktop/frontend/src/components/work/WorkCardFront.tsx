@@ -12,15 +12,46 @@ import type {
   WorkflowRun,
   WorkView,
 } from '../../work/types';
+import type {
+  ArtifactSlot,
+  WorkDefinitionRevision,
+  SubmitWorkInputRequest,
+  SetInputCornerstoneRequest,
+  SubmitInputResult,
+  CornerstonePinResult,
+  PreviewWorkPatchResult,
+  ApplyWorkPatchResult,
+  SelectWorkInputFileRequest,
+  SelectWorkInputFileResult,
+} from '../../work/types_v2';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { RunProgressIndicator } from './RunProgressIndicator';
 import { WorkRunEntry } from './WorkRunEntry';
+import { ResultShelf, ExecutionList } from '../../work/components/v2';
+import type {
+  FileDownloadIntent,
+  FileLocateIntent,
+  FileOpenIntent,
+  SlotRetryIntent,
+  FilePreviewIntent,
+  FileConversionIntent,
+} from '../../work/components/v2/ResultCard';
+import type { TaskRetryIntent as V2TaskRetryIntent } from '../../work/components/v2/ExecutionRow';
+import type {
+  WorkInputRefreshContext,
+} from '../../work/components/v2/ExpandedBlock';
+import type {
+  DiscussionPreviewIntent,
+  DiscussionApplyIntent,
+  DiscussionDraftIntent,
+} from '../../work/components/v2/discussion/DiscussionDrawer';
 
 export interface WorkCardFrontProps {
   view: WorkView;
   expanded: Record<string, boolean>;
   onToggleExpand: (targetID: string) => void;
+  onExecutionExpand: (taskID: string, expanded: boolean) => void;
   onAction?: BlockActionHandler;
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   readonly: boolean;
@@ -32,6 +63,34 @@ export interface WorkCardFrontProps {
   onRun?: (input: { workId: string; requestId: string }) => WorkflowRun | Promise<WorkflowRun>;
   onResumeRun?: (input: ResumeRunInput) => WorkflowRun | Promise<WorkflowRun>;
   onRecoverProjection?: () => void | Promise<void>;
+  /** V2 artifact slots from the store projection. */
+  artifactSlots?: ArtifactSlot[];
+  /** V2 definition when V2 planning has produced one. */
+  v2Definition?: WorkDefinitionRevision;
+  onV2TaskRetry?: (intent: V2TaskRetryIntent) => void | Promise<void>;
+  onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
+  onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
+  onArtifactLocate?: (intent: FileLocateIntent) => void | Promise<void>;
+  onArtifactRetry?: (intent: SlotRetryIntent) => void | Promise<void>;
+  /** Called when user wants to preview an artifact file in-app. */
+  onArtifactPreview?: (intent: FilePreviewIntent) => Promise<import('../../work/types_v2').ArtifactPreview>;
+  onArtifactConvert?: (intent: FileConversionIntent) => Promise<import('../../work/types_v2').ArtifactPreview>;
+  /** V2 run ID for input identity. */
+  runId?: string;
+  /** Session ID for discussion context. */
+  sessionId?: string;
+  // ── V2 typed input callbacks ──────────────────────────────────
+  onSubmitWorkInput?: (req: SubmitWorkInputRequest) => Promise<SubmitInputResult>;
+  onSetCornerstone?: (req: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
+  onUnsetCornerstone?: (req: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
+  onRefreshAuthoritative?: (context: WorkInputRefreshContext) => Promise<void>;
+  onSelectWorkInputFile?: (request: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
+  // ── Discussion callbacks ──────────────────────────────────────
+  onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
+  onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
+  onDiscussionDraftChange?: (intent: DiscussionDraftIntent) => void;
+  /** Called when user clicks "调整工作结构" to flip to dialogue face. */
+  onAdjustStructure?: () => void;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -115,6 +174,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   view,
   expanded,
   onToggleExpand,
+  onExecutionExpand,
   onAction,
   onUpdate,
   readonly,
@@ -126,8 +186,32 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onRun,
   onResumeRun,
   onRecoverProjection,
+  artifactSlots,
+  v2Definition,
+  onV2TaskRetry,
+  onArtifactOpen,
+  onArtifactDownload,
+  onArtifactLocate,
+  onArtifactRetry,
+  onArtifactPreview,
+  onArtifactConvert,
+  runId,
+  sessionId,
+  onSubmitWorkInput,
+  onSetCornerstone,
+  onUnsetCornerstone,
+  onRefreshAuthoritative,
+  onSelectWorkInputFile,
+  onPreviewPatch,
+  onApplyPatch,
+  onDiscussionDraftChange,
+  onAdjustStructure,
 }) => {
   const { work } = view;
+  const isV2 = v2Definition !== undefined && v2Definition.status === 'active';
+  const expandedTaskId = Object.entries(expanded)
+    .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
+    ?.[0].slice('v2-task:'.length);
   const hostContext = useMemo<BlockHostContext>(() => ({
     workId: work.id,
     workSchemaVersion: work.schemaVersion,
@@ -193,19 +277,73 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       data-archived={archived ? 'true' : 'false'}
     >
       <div className="wg2-work-front-header">
-        <h2 className="wg2-work-name">{work.name}</h2>
-        <WorkflowSummary work={work} />
-        <AttentionBadge view={view} />
-        <WorkRunEntry
-          workId={work.id}
-          onRun={onRun}
-          onResumeRun={onResumeRun}
-          onRecoverProjection={onRecoverProjection}
-          disabled={readonly || archived}
-        />
+        <div className="wg2-work-front-header-left">
+          <h2 className="wg2-work-name">{work.name}</h2>
+          <WorkflowSummary work={work} />
+          <AttentionBadge view={view} />
+        </div>
+        <div className="wg2-work-front-header-actions">
+          {isV2 && onAdjustStructure && (
+            <button
+              type="button"
+              className="wg2-work-btn wg2-work-btn-structure"
+              onClick={onAdjustStructure}
+              data-testid="work-adjust-structure"
+            >
+              ⚙ 调整工作结构
+            </button>
+          )}
+          <WorkRunEntry
+            workId={work.id}
+            onRun={onRun}
+            onResumeRun={onResumeRun}
+            onRecoverProjection={onRecoverProjection}
+            disabled={readonly || archived}
+            v2Definition={v2Definition}
+            onPlanStructure={onAdjustStructure}
+            onV2TaskRetry={onV2TaskRetry}
+            onV2ArtifactRetry={onArtifactRetry}
+          />
+        </div>
       </div>
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
+
+      {/* ── V2 execution face: ResultShelf + ExecutionList ──────── */}
+      {isV2 && (
+        <>
+          <ResultShelf
+            slots={artifactSlots ?? []}
+            activeDefinitionRevision={v2Definition.revision}
+            onOpen={onArtifactOpen}
+            onDownload={onArtifactDownload}
+            onLocate={onArtifactLocate}
+            onRetry={onArtifactRetry}
+            onPreview={onArtifactPreview}
+            onConvert={onArtifactConvert}
+          />
+          <ExecutionList
+            workId={work.id}
+            expandedTaskId={expandedTaskId}
+            runId={runId}
+            sessionId={sessionId}
+            workRevision={view.revision}
+            blocks={work.blocks}
+            onExpandTask={(intent) => onExecutionExpand(intent.taskId, true)}
+            onCollapseTask={(intent) => onExecutionExpand(intent.taskId, false)}
+            onRetryTask={onV2TaskRetry}
+            onSubmitWorkInput={onSubmitWorkInput}
+            onSetCornerstone={onSetCornerstone}
+            onUnsetCornerstone={onUnsetCornerstone}
+            onRefreshAuthoritative={onRefreshAuthoritative}
+            onSelectFile={onSelectWorkInputFile}
+            onPreviewPatch={onPreviewPatch}
+            onApplyPatch={onApplyPatch}
+            onDiscussionDraftChange={onDiscussionDraftChange}
+          />
+        </>
+      )}
+
       <RunProgressIndicator
         work={work}
         selection={runSelection}

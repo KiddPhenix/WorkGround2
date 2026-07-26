@@ -1,0 +1,16 @@
+{
+  "requestId": "apply-patch-001",
+  "operation": "ApplyWorkPatch",
+  "intentDigest": "sha256:intent001",
+  "patchId": "patch-preview-001",
+  "resultRevision": 12,
+  "resultDigest": "sha256:result001",
+  "scope": "block",
+  "newRevision": 4,
+  "invalidatedTaskIds": ["logic_review", "generate_report"],
+  "affectedBlockIds": ["review-block"],
+  "affectedArtifactSlotIds": ["slot-report"],
+  "staleArtifactSlotIds": ["slot-report"],
+  "requiresRerun": true,
+  "createdAt": "2026-07-23T10:05:00Z"
+}

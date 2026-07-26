@@ -29,7 +29,8 @@ type ViewParseResult struct {
 
 // ParseWorkViewEvent decodes a supported transport event. Future schema data is
 // preserved without partial interpretation so an old client cannot overwrite
-// fields it does not understand.
+// fields it does not understand. V2 events (schemaVersion ≤ WorkViewSchemaVersionV2)
+// are accepted; versions above that are read-only.
 func ParseWorkViewEvent(raw json.RawMessage) (*ViewParseResult, error) {
 	if !json.Valid(raw) {
 		return nil, fmt.Errorf("work: decode WorkViewEvent: invalid JSON")
@@ -48,12 +49,12 @@ func ParseWorkViewEvent(raw json.RawMessage) (*ViewParseResult, error) {
 	}
 
 	copyRaw := append(json.RawMessage(nil), raw...)
-	if *header.SchemaVersion > WorkViewSchemaVersion {
+	if *header.SchemaVersion > WorkViewSchemaVersionV2 {
 		return &ViewParseResult{
 			Raw: copyRaw,
 			FutureError: &ViewFutureSchemaError{
 				Got:     *header.SchemaVersion,
-				Current: WorkViewSchemaVersion,
+				Current: WorkViewSchemaVersionV2,
 				EventID: header.EventID,
 			},
 		}, nil
@@ -70,9 +71,9 @@ func ParseWorkViewEvent(raw json.RawMessage) (*ViewParseResult, error) {
 }
 
 // Validate checks the context and revision fields needed for safe routing and
-// idempotent frontend merging.
+// idempotent frontend merging. V1 and V2 schema versions are accepted.
 func (e WorkViewEvent) Validate() error {
-	if e.SchemaVersion < 1 || e.SchemaVersion > WorkViewSchemaVersion {
+	if e.SchemaVersion < 1 || e.SchemaVersion > WorkViewSchemaVersionV2 {
 		return fmt.Errorf("work: unsupported WorkViewEvent schemaVersion %d", e.SchemaVersion)
 	}
 	if !e.Type.Valid() {
@@ -124,11 +125,12 @@ func (t ViewEventType) Valid() bool {
 	}
 }
 
-// Valid reports whether k is a V1 object context kind.
+// Valid reports whether k is a V1 or V2 object context kind.
 func (k ObjectKind) Valid() bool {
 	switch k {
 	case ObjectWork, ObjectBlock, ObjectRun, ObjectStage, ObjectTask,
-		ObjectAttempt, ObjectCornerstone, ObjectConclusion, ObjectArtifact:
+		ObjectAttempt, ObjectCornerstone, ObjectConclusion, ObjectArtifact,
+		ObjectDefinition, ObjectArtifactSlot, ObjectInput, ObjectPatch:
 		return true
 	default:
 		return false

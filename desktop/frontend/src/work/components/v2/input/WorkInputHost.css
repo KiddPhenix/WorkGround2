@@ -1,0 +1,560 @@
+/* WorkInputHost — typed input controls with pin/unpin */
+/* BEM: wg2-wh (WorkInputHost) */
+
+/* ── Host wrapper ─────────────────────────────────────────────── */
+
+.wg2-wh-host {
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--wg2-surface-elevated, #1a1d28);
+  margin-top: 10px;
+  contain: layout style;
+}
+
+.wg2-wh-host[data-pinned="true"] {
+  border-color: var(--wg2-pin-border, #d97757);
+  border-width: 2px;
+}
+
+/* ── Label row ────────────────────────────────────────────────── */
+
+.wg2-wh-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
+.wg2-wh-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--wg2-text-primary, #e8e8ed);
+  cursor: pointer;
+}
+
+.wg2-wh-required {
+  color: var(--wg2-error-text, #e0696a);
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.wg2-wh-kind-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--wg2-badge-bg, #2a2d3a);
+  color: var(--wg2-text-secondary, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.wg2-wh-desc {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #888);
+  line-height: 1.4;
+}
+
+/* ── Pin button ───────────────────────────────────────────────── */
+
+.wg2-wh-pin-btn {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--wg2-text-secondary, #888);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.wg2-wh-pin-btn:hover:not(:disabled) {
+  border-color: var(--wg2-pin-border, #d97757);
+  color: var(--wg2-pin-text, #d97757);
+}
+
+.wg2-wh-pin-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-wh-pin-active {
+  border-color: var(--wg2-pin-border, #d97757);
+  color: var(--wg2-pin-text, #d97757);
+  background: var(--wg2-pin-bg, rgba(217, 119, 87, 0.1));
+}
+
+.wg2-wh-pin-pending {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* ── Generic input base ───────────────────────────────────────── */
+
+.wg2-wh-text,
+.wg2-wh-number,
+.wg2-wh-date,
+.wg2-wh-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-surface, #111319);
+  color: var(--wg2-text-primary, #e8e8ed);
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.wg2-wh-text:focus,
+.wg2-wh-number:focus,
+.wg2-wh-date:focus,
+.wg2-wh-select:focus {
+  border-color: var(--wg2-focus-ring, #d97757);
+  box-shadow: 0 0 0 2px var(--wg2-focus-ring-soft, rgba(217, 119, 87, 0.14));
+}
+
+.wg2-wh-text:disabled,
+.wg2-wh-number:disabled,
+.wg2-wh-date:disabled,
+.wg2-wh-select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.wg2-wh-text[aria-invalid="true"],
+.wg2-wh-number[aria-invalid="true"],
+.wg2-wh-date[aria-invalid="true"],
+.wg2-wh-select[aria-invalid="true"] {
+  border-color: var(--wg2-error-border, #e0696a);
+}
+
+/* ── Number wrap ──────────────────────────────────────────────── */
+
+.wg2-wh-number-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wg2-wh-number-unit {
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #888);
+  white-space: nowrap;
+  padding: 0 4px;
+}
+
+/* ── Date range ───────────────────────────────────────────────── */
+
+.wg2-wh-date-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wg2-wh-date-range .wg2-wh-date {
+  flex: 1;
+}
+
+.wg2-wh-date-sep {
+  color: var(--wg2-text-secondary, #888);
+  font-size: 14px;
+}
+
+/* ── Choice ───────────────────────────────────────────────────── */
+
+.wg2-wh-choice-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wg2-wh-select {
+  appearance: auto;
+}
+
+/* ── MultiChoice ──────────────────────────────────────────────── */
+
+.wg2-wh-multichoice-fs {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wg2-wh-check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--wg2-text-primary, #e8e8ed);
+  cursor: pointer;
+}
+
+.wg2-wh-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--wg2-accent, #d97757);
+}
+
+.wg2-wh-multichoice-other {
+  margin-top: 4px;
+}
+
+/* ── Roster ───────────────────────────────────────────────────── */
+
+.wg2-wh-roster {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wg2-wh-roster-entry {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.wg2-wh-roster-entry .wg2-wh-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.wg2-wh-roster-remove,
+.wg2-wh-roster-add {
+  background: none;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--wg2-text-secondary, #aaa);
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.wg2-wh-roster-remove:hover:not(:disabled) {
+  border-color: var(--wg2-error-border, #e0696a);
+  color: var(--wg2-error-text, #e0696a);
+}
+
+.wg2-wh-roster-add:hover:not(:disabled) {
+  border-color: var(--wg2-ok-border, #3a6b3f);
+  color: var(--wg2-ok-text, #6fcf7a);
+}
+
+/* ── Form ─────────────────────────────────────────────────────── */
+
+.wg2-wh-form-fs {
+  border: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wg2-wh-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wg2-wh-form-label {
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #aaa);
+}
+
+/* ── File ─────────────────────────────────────────────────────── */
+
+.wg2-wh-file {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wg2-wh-file-empty {
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #888);
+  font-style: italic;
+}
+
+.wg2-wh-file-ref {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--wg2-surface, #111319);
+  border: 1px solid var(--wg2-border, #343945);
+}
+
+.wg2-wh-file-name {
+  font-size: 13px;
+  color: var(--wg2-text-primary, #e8e8ed);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wg2-wh-file-remove {
+  background: none;
+  border: none;
+  color: var(--wg2-text-secondary, #888);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+}
+
+.wg2-wh-file-remove:hover:not(:disabled) {
+  color: var(--wg2-error-text, #e0696a);
+}
+
+.wg2-wh-file-hint {
+  font-size: 11px;
+  color: var(--wg2-text-tertiary, #666);
+  font-style: italic;
+}
+
+/* ── Approval ─────────────────────────────────────────────────── */
+
+.wg2-wh-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wg2-wh-approval-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #aaa);
+  line-height: 1.4;
+}
+
+.wg2-wh-approval-risk {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  width: fit-content;
+}
+
+.wg2-wh-risk-low { background: var(--wg2-ok-bg, rgba(106, 207, 122, 0.12)); color: var(--wg2-ok-text, #6fcf7a); }
+.wg2-wh-risk-medium { background: var(--wg2-warn-bg, rgba(217, 164, 65, 0.12)); color: var(--wg2-warn-text, #d9a441); }
+.wg2-wh-risk-high { background: var(--wg2-error-bg, rgba(224, 105, 106, 0.12)); color: var(--wg2-error-text, #e0696a); }
+.wg2-wh-risk-critical { background: var(--wg2-error-bg, rgba(224, 105, 106, 0.18)); color: var(--wg2-error-text, #e0696a); font-weight: 700; }
+
+.wg2-wh-approval-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.wg2-wh-approval-btn {
+  flex: 1;
+  padding: 8px 14px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-surface, #111319);
+  color: var(--wg2-text-primary, #e8e8ed);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.wg2-wh-approval-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-wh-approval-accept.wg2-wh-approval-chosen {
+  border-color: var(--wg2-ok-border, #3a6b3f);
+  background: var(--wg2-ok-bg, rgba(106, 207, 122, 0.12));
+  color: var(--wg2-ok-text, #6fcf7a);
+}
+
+.wg2-wh-approval-reject.wg2-wh-approval-chosen {
+  border-color: var(--wg2-error-border, #e0696a);
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.12));
+  color: var(--wg2-error-text, #e0696a);
+}
+
+.wg2-wh-approval-pending {
+  font-size: 12px;
+  color: var(--wg2-warn-text, #d9a441);
+}
+
+/* ── Error display ────────────────────────────────────────────── */
+
+.wg2-wh-error,
+.wg2-wh-pin-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.08));
+  border: 1px solid var(--wg2-error-border-soft, rgba(224, 105, 106, 0.25));
+  font-size: 13px;
+  color: var(--wg2-error-text, #e0696a);
+}
+
+.wg2-wh-error-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.wg2-wh-error-msg {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.wg2-wh-retry-btn {
+  background: none;
+  border: 1px solid var(--wg2-error-border, #e0696a);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--wg2-error-text, #e0696a);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wg2-wh-retry-btn:hover {
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.12));
+}
+
+/* ── Actions ──────────────────────────────────────────────────── */
+
+.wg2-wh-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.wg2-wh-submit-btn {
+  padding: 7px 18px;
+  border: none;
+  border-radius: 6px;
+  background: var(--wg2-accent, #d97757);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.wg2-wh-submit-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.wg2-wh-submit-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 2px;
+}
+
+.wg2-wh-submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wg2-wh-submit-pending {
+  background: var(--wg2-text-secondary, #666);
+  cursor: wait;
+}
+
+.wg2-wh-revision {
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #888);
+  font-family: monospace;
+}
+
+/* ── Unknown kind ─────────────────────────────────────────────── */
+
+.wg2-wh-unknown {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.08));
+  border: 1px dashed var(--wg2-error-border, #e0696a);
+  color: var(--wg2-error-text, #e0696a);
+  font-size: 13px;
+}
+
+/* ── Schema error boundary ────────────────────────────────────── */
+
+.wg2-wh-schema-err {
+  border-color: var(--wg2-error-border, #e0696a);
+  border-style: dashed;
+}
+
+/* ── Committed recovery ───────────────────────────────────────── */
+
+.wg2-wh-recovery {
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--wg2-warn-bg, rgba(217, 164, 65, 0.1));
+  border: 1px solid var(--wg2-warn-border, #d9a441);
+  font-size: 12px;
+  color: var(--wg2-warn-text, #d9a441);
+}
+
+/* ── File select button ───────────────────────────────────────── */
+
+.wg2-wh-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.wg2-wh-file-select-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-surface, #111319);
+  color: var(--wg2-text-primary, #e8e8ed);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.wg2-wh-file-select-btn:hover:not(:disabled) {
+  border-color: var(--wg2-accent, #d97757);
+}
+
+.wg2-wh-file-select-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-wh-file-select-btn[aria-busy="true"] {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.wg2-wh-file-err {
+  font-size: 12px;
+  color: var(--wg2-error-text, #e0696a);
+}
+
+/* ── Form field errors ────────────────────────────────────────── */
+
+.wg2-wh-form-err {
+  font-size: 12px;
+  color: var(--wg2-error-text, #e0696a);
+  margin-top: 2px;
+}

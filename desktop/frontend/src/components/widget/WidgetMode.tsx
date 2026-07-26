@@ -537,7 +537,7 @@ export function WidgetMode({ onExit, submitKey }: { onExit: () => void; submitKe
   // Update native window region on resize so the four transparent corners stay
   // accurate.  Debounced — the Go-side SetWindowRgn is cheap but CreatePolygonRgn
   // on every pixel is unnecessary.
-  const regionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const regionTimer = useRef<number | null>(null);
   useEffect(() => {
     const refreshRegion = () => {
       if (regionTimer.current !== null) window.clearTimeout(regionTimer.current);

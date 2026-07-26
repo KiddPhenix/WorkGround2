@@ -1,0 +1,221 @@
+{
+  "artifactSlots": [
+    {
+      "artifactRefs": null,
+      "definitionRev": 2,
+      "expectedCount": 1,
+      "id": "slot",
+      "kind": "text",
+      "required": true,
+      "revision": 1,
+      "state": "reserved",
+      "title": "Output",
+      "workId": "work-502e10e247ec70fa50211dc1"
+    }
+  ],
+  "assessment": {
+    "blocking": false,
+    "degraded": false,
+    "state": "ready"
+  },
+  "definition": {
+    "artifactSlots": [
+      {
+        "expectedCount": 1,
+        "id": "slot",
+        "kind": "text",
+        "required": true,
+        "title": "Output"
+      }
+    ],
+    "createdAt": "2026-07-24T08:00:00Z",
+    "createdBy": "test",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "goal": "coordinator production test",
+    "inputSpecs": [
+      {
+        "id": "topic",
+        "kind": "text",
+        "label": "Topic",
+        "pinEligible": true,
+        "required": false,
+        "valueSchema": {
+          "type": "string"
+        }
+      }
+    ],
+    "nodes": [
+      {
+        "blockIds": [
+          "b1"
+        ],
+        "id": "n1",
+        "inputSpecIds": [
+          "topic"
+        ],
+        "producesSlotIds": [
+          "slot"
+        ],
+        "title": "Produce report"
+      }
+    ],
+    "parentRevision": 0,
+    "revision": 2,
+    "status": "active",
+    "workId": "work-502e10e247ec70fa50211dc1"
+  },
+  "inputs": [
+    {
+      "blockId": "b1",
+      "id": "input-TestWorkViewV2FullGolden_FileWorkStore",
+      "revision": 0,
+      "runId": "run-fixture",
+      "specId": "topic",
+      "state": "requested",
+      "taskId": "task-fixture",
+      "updatedAt": "2026-07-24T08:00:00Z",
+      "value": null,
+      "workId": "work-502e10e247ec70fa50211dc1"
+    }
+  ],
+  "patchPreviews": [
+    {
+      "affectedArtifactSlotIds": [
+        "slot"
+      ],
+      "affectedBlockIds": [
+        "b1"
+      ],
+      "affectedNodeIds": [
+        "n1"
+      ],
+      "baseBlockRev": 1,
+      "baseDefinitionRev": 2,
+      "blockId": "b1",
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "expiresAt": "2026-07-24T08:00:00Z",
+      "id": "fixture-preview-patch",
+      "invalidatedTaskIds": [
+        "n1"
+      ],
+      "operations": [
+        {
+          "newValue": "renamed",
+          "oldValue": "Report",
+          "op": "replace",
+          "path": "blocks/b1/title"
+        }
+      ],
+      "requiresRerun": true,
+      "runId": "run-fixture",
+      "scope": "block",
+      "sessionId": "fixture-discussion",
+      "staleArtifactSlotIds": [
+        "slot"
+      ],
+      "taskId": "task-fixture",
+      "workId": "work-502e10e247ec70fa50211dc1"
+    }
+  ],
+  "revision": 15,
+  "schemaVersion": 2,
+  "tasks": [
+    {
+      "id": "task-fixture",
+      "nodeId": "n1",
+      "retryable": false,
+      "runId": "run-fixture",
+      "state": "completed",
+      "title": "Produce report",
+      "updatedAt": "2026-07-24T08:00:00Z"
+    }
+  ],
+  "work": {
+    "archiveState": "active",
+    "blocks": [
+      {
+        "createdAt": "2026-07-24T08:00:00Z",
+        "data": {
+          "content": "draft"
+        },
+        "fallback": {
+          "summary": "draft"
+        },
+        "id": "b1",
+        "kind": "markdown",
+        "revision": 1,
+        "schemaVersion": 1,
+        "source": {
+          "mode": "snapshot",
+          "provider": "fixture",
+          "verified": false
+        },
+        "status": "ready",
+        "title": "Report",
+        "updatedAt": "2026-07-24T08:00:00Z"
+      }
+    ],
+    "blueprintRef": {
+      "id": "blueprint:collaboration-v2",
+      "schemaVersion": 2,
+      "version": 1
+    },
+    "cornerstones": [],
+    "createdAt": "2026-07-24T08:00:00Z",
+    "createdWith": {
+      "eventSchemaVersion": 2,
+      "rendererSetVersion": 0,
+      "workSchemaVersion": 2
+    },
+    "definitionSnapshot": {
+      "blockSpecs": [],
+      "blueprintRef": {
+        "id": "",
+        "schemaVersion": 0,
+        "version": 0
+      },
+      "digest": "",
+      "promptTemplate": "",
+      "revision": 1,
+      "schemaVersion": 1,
+      "workflow": {
+        "stages": []
+      }
+    },
+    "id": "work-502e10e247ec70fa50211dc1",
+    "name": "New Work",
+    "placements": [],
+    "prompt": "",
+    "runs": [
+      {
+        "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "id": "run-fixture",
+        "requestId": "apply-TestWorkViewV2FullGolden_FileWorkStore",
+        "stages": [
+          {
+            "id": "n1",
+            "name": "Produce report",
+            "startedAt": "2026-07-24T08:00:00Z",
+            "state": "pending",
+            "tasks": [
+              {
+                "attempts": [],
+                "id": "n1",
+                "name": "Produce report",
+                "state": "pending"
+              }
+            ]
+          }
+        ],
+        "startedAt": "2026-07-24T08:00:00Z",
+        "state": "pending",
+        "workId": "work-502e10e247ec70fa50211dc1"
+      }
+    ],
+    "schemaVersion": 2,
+    "state": "running",
+    "updatedAt": "2026-07-24T08:00:00Z",
+    "v2CurrentRevision": 2,
+    "v2LatestRevision": 2
+  }
+}

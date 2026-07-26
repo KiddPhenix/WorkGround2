@@ -36593,6 +36593,44 @@ body > .mermaid-diagram--fullscreen {
   cursor: default;
 }
 
+.work-page__filters {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.work-page__filter-btn {
+  appearance: none;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.work-page__filter-btn:hover {
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.work-page__filter-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+.work-page__filter-btn:focus-visible,
+.work-page__new-btn:focus-visible,
+.work-page__action-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
 .work-page__body {
   flex: 1;
   overflow-y: auto;
@@ -36727,7 +36765,22 @@ body > .mermaid-diagram--fullscreen {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
+}
+
+.work-page__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 56%, transparent);
+  overflow: hidden;
+}
+
+.work-page__item:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
 }
 
 .work-page__item-btn {
@@ -36761,6 +36814,61 @@ body > .mermaid-diagram--fullscreen {
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   text-transform: capitalize;
+}
+
+.work-page__item-state[data-state="running"] {
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-accent);
+}
+
+.work-page__item-state[data-state="completed"] {
+  background: color-mix(in srgb, var(--success) 18%, transparent);
+  color: var(--success);
+}
+
+.work-page__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px 0 4px;
+}
+
+.work-page__action-btn {
+  appearance: none;
+  padding: 4px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.work-page__action-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  color: var(--color-text);
+  background: var(--color-bg-hover);
+}
+
+.work-page__action-btn--danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--color-border));
+  color: var(--danger);
+}
+
+.work-page__action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (max-width: 720px) {
+  .work-page__item {
+    grid-template-columns: 1fr;
+  }
+
+  .work-page__item-actions {
+    padding: 0 12px 10px;
+    flex-wrap: wrap;
+  }
 }
 
 /* ── CreateWorkDialog ────────────────────────────────────────────────── */
@@ -36869,4 +36977,889 @@ body > .mermaid-diagram--fullscreen {
 .workspace-sidebar__new-session--active {
   background: var(--color-bg-hover);
   color: var(--color-accent);
+}
+
+
+/* ── V2 ResultShelf + ExecutionList CSS (auto-appended by Phase 3) ── */
+
+/* ResultShelf — V2 成果架 */
+/* BEM-like: wg2-rs (ResultShelf), wg2-rc (ResultCard) */
+
+.wg2-rs-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.wg2-rs-shelf:empty {
+  display: none;
+}
+
+.wg2-rs-empty {
+  grid-column: 1 / -1;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--wg2-text-secondary, #888);
+  font-size: 14px;
+  user-select: none;
+}
+
+/* ── ResultCard ──────────────────────────────────────────────── */
+
+.wg2-rc-card {
+  border: 1px solid var(--wg2-border, #e0e0e0);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: var(--wg2-surface, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.wg2-rc-card:focus-visible {
+  border-color: var(--wg2-focus-ring, #4a90d9);
+  box-shadow: 0 0 0 2px var(--wg2-focus-ring, #4a90d9);
+}
+
+.wg2-rc-card[data-slot-state="failed"] {
+  border-color: var(--wg2-error, #d32f2f);
+  background: var(--wg2-error-bg, #fef2f2);
+}
+
+.wg2-rc-card[data-slot-state="generating"] {
+  border-color: var(--wg2-info, #1976d2);
+  background: var(--wg2-info-bg, #f0f7ff);
+}
+
+.wg2-rc-card[data-slot-state="stale"] {
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+/* ── Header ──────────────────────────────────────────────────── */
+
+.wg2-rc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wg2-rc-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  color: var(--wg2-text-primary, #1a1a1a);
+}
+
+.wg2-rc-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: none;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.wg2-rc-badge[data-badge="reserved"] {
+  background: var(--wg2-badge-neutral-bg, #f3f4f6);
+  color: var(--wg2-badge-neutral-text, #6b7280);
+}
+
+.wg2-rc-badge[data-badge="generating"] {
+  background: var(--wg2-badge-info-bg, #dbeafe);
+  color: var(--wg2-badge-info-text, #1e40af);
+}
+
+.wg2-rc-badge[data-badge="ready"] {
+  background: var(--wg2-badge-success-bg, #dcfce7);
+  color: var(--wg2-badge-success-text, #166534);
+}
+
+.wg2-rc-badge[data-badge="partial"] {
+  background: var(--wg2-badge-warn-bg, #fef3c7);
+  color: var(--wg2-badge-warn-text, #92400e);
+}
+
+.wg2-rc-badge[data-badge="failed"] {
+  background: var(--wg2-badge-error-bg, #fee2e2);
+  color: var(--wg2-badge-error-text, #991b1b);
+}
+
+.wg2-rc-badge[data-badge="stale"] {
+  background: var(--wg2-badge-stale-bg, #f3f4f6);
+  color: var(--wg2-badge-stale-text, #6b7280);
+  text-decoration: line-through;
+}
+
+/* ── Progress ────────────────────────────────────────────────── */
+
+.wg2-rc-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.wg2-rc-progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--wg2-progress-track, #e5e7eb);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.wg2-rc-progress-fill {
+  height: 100%;
+  background: var(--wg2-progress-fill, #2563eb);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.wg2-rc-progress-pct {
+  font-size: 11px;
+  color: var(--wg2-text-secondary, #888);
+  flex-shrink: 0;
+  min-width: 3em;
+  text-align: right;
+}
+
+/* ── Summary ─────────────────────────────────────────────────── */
+
+.wg2-rc-summary {
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #888);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* ── Error ───────────────────────────────────────────────────── */
+
+.wg2-rc-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--wg2-error-bg, #fef2f2);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--wg2-error-text, #b91c1c);
+  line-height: 1.4;
+}
+
+.wg2-rc-error-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.wg2-rc-error-msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.wg2-rc-retry-btn {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 2px 10px;
+  border: 1px solid var(--wg2-error, #d32f2f);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--wg2-error, #d32f2f);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.wg2-rc-retry-btn:hover {
+  background: var(--wg2-error, #d32f2f);
+  color: #fff;
+}
+
+.wg2-rc-retry-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #4a90d9);
+  outline-offset: 1px;
+}
+
+/* ── File list ───────────────────────────────────────────────── */
+
+.wg2-rc-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wg2-rc-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--wg2-file-item-bg, #f9fafb);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.wg2-rc-file-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  width: 20px;
+  text-align: center;
+  user-select: none;
+}
+
+.wg2-rc-file-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--wg2-text-primary, #1a1a1a);
+}
+
+.wg2-rc-file-name[data-status="stale"] {
+  color: var(--wg2-text-secondary, #888);
+}
+
+.wg2-rc-file-name[data-status="missing"] {
+  color: var(--wg2-error, #d32f2f);
+  font-style: italic;
+}
+
+.wg2-rc-file-name[data-status="failed"] {
+  color: var(--wg2-error, #d32f2f);
+}
+
+.wg2-rc-file-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.wg2-rc-file-btn {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid var(--wg2-border, #e0e0e0);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--wg2-text-secondary, #666);
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.wg2-rc-file-btn:hover {
+  background: var(--wg2-hover-bg, #f3f4f6);
+  color: var(--wg2-text-primary, #1a1a1a);
+}
+
+.wg2-rc-file-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #4a90d9);
+  outline-offset: 1px;
+}
+
+.wg2-rc-file-btn:disabled,
+.wg2-rc-file-btn--busy {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Action error (handler reject) ──────────────────────────── */
+
+.wg2-rc-action-error {
+  font-size: 11px;
+  color: var(--wg2-error-text, #b91c1c);
+  background: var(--wg2-error-bg, #fef2f2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  word-break: break-word;
+  line-height: 1.3;
+}
+
+/* ── Retry button busy ───────────────────────────────────────── */
+
+.wg2-rc-retry-btn:disabled,
+.wg2-rc-retry-btn--busy {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Stale banner ────────────────────────────────────────────── */
+
+.wg2-rc-stale-banner {
+  font-size: 11px;
+  padding: 4px 8px;
+  background: var(--wg2-badge-stale-bg, #f3f4f6);
+  color: var(--wg2-badge-stale-text, #6b7280);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+/* indeterminate progress animation */
+@keyframes wg2-rc-indeterminate {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(0%); }
+  100% { transform: translateX(100%); }
+}
+
+@media (max-width: 640px) {
+  .wg2-rs-shelf {
+    grid-template-columns: 1fr;
+  }
+
+  .wg2-rc-file {
+    flex-wrap: wrap;
+  }
+}
+
+
+/* ExecutionList / ExecutionRow / ExpandedBlock — V2 稳定执行列表与原位展开 */
+/* BEM-like: wg2-el (ExecutionList), wg2-er (ExecutionRow), wg2-eb (ExpandedBlock) */
+
+/* ── ExecutionList ────────────────────────────────────────────── */
+
+.wg2-el-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: min(70vh, 44rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  contain: layout paint style;
+}
+
+.wg2-el-list > li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+
+.wg2-el-empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--wg2-text-secondary, #888);
+  font-size: 14px;
+  user-select: none;
+}
+
+/* ── ExecutionRow ─────────────────────────────────────────────── */
+
+.wg2-er-row {
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 8px;
+  margin-bottom: 8px;
+  background: var(--wg2-surface, #111319);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.wg2-er-row:last-child {
+  margin-bottom: 0;
+}
+
+.wg2-er-row:focus-visible {
+  border-color: var(--wg2-focus-ring, #d97757);
+  box-shadow: 0 0 0 2px var(--wg2-focus-ring-soft, rgba(217, 119, 87, 0.14));
+}
+
+.wg2-er-row[data-task-state="running"] {
+  border-color: var(--wg2-info-border, #2f6de8);
+}
+
+.wg2-er-row[data-task-state="waiting_input"],
+.wg2-er-row[data-task-state="waiting_approval"] {
+  border-color: var(--wg2-warn-border, #d9a441);
+}
+
+.wg2-er-row[data-task-state="failed_retryable"],
+.wg2-er-row[data-task-state="failed_terminal"] {
+  border-color: var(--wg2-error-border, #e0696a);
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.06));
+}
+
+.wg2-er-row[data-task-state="completed"] {
+  border-color: var(--wg2-ok-border, #3a6b3f);
+}
+
+.wg2-er-row[data-task-state="invalidated"],
+.wg2-er-row[data-task-state="canceled"] {
+  opacity: 0.65;
+  border-style: dashed;
+}
+
+/* ── Row header (always visible) ──────────────────────────────── */
+
+.wg2-er-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  min-height: 44px;
+  user-select: none;
+}
+
+.wg2-er-header:hover {
+  background: var(--wg2-row-hover, rgba(255, 255, 255, 0.03));
+}
+
+/* ── State icon ───────────────────────────────────────────────── */
+
+.wg2-er-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--wg2-text-secondary, #888);
+}
+
+.wg2-er-row[data-task-state="running"] .wg2-er-icon {
+  color: var(--wg2-info, #2f6de8);
+  animation: wg2-er-pulse 1.5s ease-in-out infinite;
+}
+
+.wg2-er-row[data-task-state="waiting_input"] .wg2-er-icon,
+.wg2-er-row[data-task-state="waiting_approval"] .wg2-er-icon {
+  color: var(--wg2-warn, #d9a441);
+}
+
+.wg2-er-row[data-task-state="completed"] .wg2-er-icon {
+  color: var(--wg2-ok, #74b87a);
+}
+
+.wg2-er-row[data-task-state="failed_retryable"] .wg2-er-icon,
+.wg2-er-row[data-task-state="failed_terminal"] .wg2-er-icon {
+  color: var(--wg2-error, #e0696a);
+}
+
+.wg2-er-row[data-task-state="invalidated"] .wg2-er-icon,
+.wg2-er-row[data-task-state="canceled"] .wg2-er-icon {
+  opacity: 0.5;
+}
+
+@keyframes wg2-er-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Title ────────────────────────────────────────────────────── */
+
+.wg2-er-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+.wg2-er-row[data-task-state="invalidated"] .wg2-er-title,
+.wg2-er-row[data-task-state="canceled"] .wg2-er-title {
+  text-decoration: line-through;
+}
+
+/* ── State badge ──────────────────────────────────────────────── */
+
+.wg2-er-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.wg2-er-badge[data-badge="neutral"] {
+  background: var(--wg2-badge-neutral-bg, rgba(255, 255, 255, 0.06));
+  color: var(--wg2-badge-neutral-text, #858b96);
+}
+
+.wg2-er-badge[data-badge="info"] {
+  background: var(--wg2-badge-info-bg, rgba(47, 109, 232, 0.12));
+  color: var(--wg2-badge-info-text, #5b9cf5);
+}
+
+.wg2-er-badge[data-badge="warn"] {
+  background: var(--wg2-badge-warn-bg, rgba(217, 164, 65, 0.12));
+  color: var(--wg2-badge-warn-text, #e0b856);
+}
+
+.wg2-er-badge[data-badge="success"] {
+  background: var(--wg2-badge-success-bg, rgba(116, 184, 122, 0.12));
+  color: var(--wg2-badge-success-text, #82c98a);
+}
+
+.wg2-er-badge[data-badge="error"] {
+  background: var(--wg2-badge-error-bg, rgba(224, 105, 106, 0.12));
+  color: var(--wg2-badge-error-text, #e58587);
+}
+
+/* ── Expand chevron ───────────────────────────────────────────── */
+
+.wg2-er-chevron {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #858b96);
+  transition: transform 0.2s ease;
+}
+
+.wg2-er-chevron[data-expanded="true"] {
+  transform: rotate(90deg);
+}
+
+/* ── Progress bar (in header, for running tasks) ──────────────── */
+
+.wg2-er-progress {
+  flex-shrink: 0;
+  width: 80px;
+  height: 3px;
+  background: var(--wg2-progress-track, rgba(255, 255, 255, 0.08));
+  border-radius: 2px;
+  overflow: hidden;
+  margin-left: 4px;
+}
+
+.wg2-er-progress-fill {
+  height: 100%;
+  background: var(--wg2-progress-fill, #2f6de8);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* ── ExpandedBlock ────────────────────────────────────────────── */
+
+.wg2-eb-panel {
+  border-top: 1px solid var(--wg2-border, #343945);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Node description ─────────────────────────────────────────── */
+
+.wg2-eb-desc {
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #c0c4cc);
+  line-height: 1.5;
+}
+
+/* ── Error block ──────────────────────────────────────────────── */
+
+.wg2-eb-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.08));
+  border: 1px solid var(--wg2-error-border, rgba(224, 105, 106, 0.2));
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--wg2-error-text, #e58587);
+  line-height: 1.4;
+}
+
+.wg2-eb-error-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.wg2-eb-error-msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* ── Input list (waiting inputs) ──────────────────────────────── */
+
+.wg2-eb-inputs {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wg2-eb-inputs--editable {
+  padding: 6px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 8px;
+  background: var(--wg2-input-bg, rgba(255, 255, 255, 0.02));
+}
+
+.wg2-eb-input-item {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) auto minmax(10rem, 2fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-input-bg, rgba(255, 255, 255, 0.02));
+  font-size: 13px;
+}
+
+.wg2-eb-input-item--editable {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.wg2-eb-input-item--editable .wg2-wh-host {
+  margin-top: 0;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+}
+
+.wg2-eb-input-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+.wg2-eb-input-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--wg2-text-secondary, #888);
+  font-size: 11px;
+}
+
+.wg2-eb-input-control {
+  min-width: 0;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 5px;
+  background: var(--wg2-surface, #111319);
+  color: var(--wg2-text-primary, #f4f5f7);
+  font: inherit;
+}
+
+.wg2-eb-input-control:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-eb-input-textarea {
+  min-height: 4.5rem;
+  resize: vertical;
+}
+
+.wg2-eb-input-check {
+  width: 18px;
+  height: 18px;
+  justify-self: start;
+}
+
+.wg2-eb-input-kind {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--wg2-text-secondary, #888);
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: var(--wg2-badge-neutral-bg, rgba(255, 255, 255, 0.06));
+}
+
+.wg2-eb-input-required {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--wg2-error, #e0696a);
+}
+
+/* ── Dependency list ──────────────────────────────────────────── */
+
+.wg2-eb-deps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wg2-eb-dep-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 10px;
+  color: var(--wg2-text-secondary, #888);
+  background: var(--wg2-surface-elev, rgba(255, 255, 255, 0.02));
+}
+
+/* ── Actions bar ──────────────────────────────────────────────── */
+
+.wg2-eb-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.wg2-eb-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-button-bg, rgba(255, 255, 255, 0.04));
+  color: var(--wg2-text-primary, #f4f5f7);
+  cursor: pointer;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.wg2-eb-btn:hover {
+  background: var(--wg2-button-hover, rgba(255, 255, 255, 0.08));
+}
+
+.wg2-eb-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-eb-btn-danger {
+  border-color: var(--wg2-error-border, rgba(224, 105, 106, 0.3));
+  color: var(--wg2-error, #e0696a);
+}
+
+.wg2-eb-btn-danger:hover {
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.12));
+}
+
+.wg2-eb-btn-primary {
+  background: var(--wg2-accent, #d97757);
+  border-color: var(--wg2-accent, #d97757);
+  color: var(--wg2-accent-fg, #1a0f0a);
+  font-weight: 600;
+}
+
+.wg2-eb-btn-primary:hover {
+  background: var(--wg2-accent-strong, #e58a6b);
+}
+
+/* ── Responsive ───────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .wg2-er-header {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .wg2-er-progress {
+    width: 48px;
+  }
+
+  .wg2-eb-panel {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .wg2-eb-input-item {
+    grid-template-columns: 1fr auto;
+  }
+
+  .wg2-eb-input-control {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wg2-er-icon {
+    animation: none !important;
+  }
+
+  .wg2-er-chevron {
+    transition: none;
+  }
+
+  .wg2-er-progress-fill {
+    transition: none;
+  }
+}
+
+.wg2-work-planning-definition {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev);
+}
+
+.wg2-work-planning-definition__heading,
+.wg2-work-planning-definition__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wg2-work-planning-definition__heading h3,
+.wg2-work-planning-definition__heading p,
+.wg2-work-planning-definition__goal,
+.wg2-work-planning-definition ul {
+  margin: 0;
+}
+
+.wg2-work-planning-definition__heading > span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-elev-2);
+}
+
+.wg2-work-planning-definition__heading > span[data-status="active"] {
+  color: var(--success);
+}
+
+.wg2-work-planning-definition ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding-left: 18px;
+}
+
+.wg2-work-planning-definition__actions [role="alert"] {
+  color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .wg2-work-planning-definition__heading,
+  .wg2-work-planning-definition__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

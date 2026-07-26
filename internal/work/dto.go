@@ -97,6 +97,14 @@ type WorkView struct {
 	Revision      int64                 `json:"revision"`
 	Assessment    CornerstoneAssessment `json:"assessment"`
 	RunBlock      *RunBlockReason       `json:"runBlock,omitempty"`
+	// V2 projection fields stay top-level so snapshot and delta consumers do
+	// not need access to persistence-only maps inside Work. Omitempty preserves
+	// the byte contract for every V1 projection.
+	Definition    *WorkDefinitionRevision `json:"definition,omitempty"`
+	ArtifactSlots []ArtifactSlot          `json:"artifactSlots,omitempty"`
+	Tasks         []TaskV2View            `json:"tasks,omitempty"`
+	Inputs        []WorkInput             `json:"inputs,omitempty"`
+	PatchPreviews []WorkPatchPreview      `json:"patchPreviews,omitempty"`
 }
 
 // RunBlockCode 是权威阻断原因的稳定机器可读编码。UI 据此映射图标和文案，

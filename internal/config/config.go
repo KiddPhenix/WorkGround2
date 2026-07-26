@@ -772,7 +772,8 @@ type ServeConfig struct {
 // WorkConfig controls the structured Work feature. It defaults to enabled;
 // only an explicit enabled = false disables Work for a loaded configuration.
 type WorkConfig struct {
-	Enabled bool `toml:"enabled"`
+	Enabled                  bool `toml:"enabled"`
+	CollaborationWorkbenchV2 bool `toml:"collaboration_workbench_v2"`
 }
 
 // NetworkConfig controls ordinary outbound HTTP traffic such as model providers,
@@ -1660,7 +1661,7 @@ func Default() *Config {
 		// a missing server yields an install hint rather than an error.
 		LSP:     LSPConfig{Enabled: true},
 		Network: NetworkConfig{ProxyMode: netclient.ModeAuto},
-		Work:    WorkConfig{Enabled: true},
+		Work:    WorkConfig{Enabled: true, CollaborationWorkbenchV2: true},
 		Bot: BotConfig{
 			ToolApprovalMode:   "ask",
 			MaxSteps:           25,

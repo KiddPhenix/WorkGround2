@@ -93,6 +93,8 @@ type Attempt struct {
 type AttemptReceipt struct {
 	// RequestID is the idempotency key for the resolution action.
 	RequestID string `json:"requestId"`
+	// Operation binds the receipt to the exact executor operation.
+	Operation string `json:"operation,omitempty"`
 	// Outcome records the user-confirmed outcome: retry | accept | skip | cancel.
 	Outcome string `json:"outcome"`
 	// Evidence is an optional human-readable note about the resolution.
@@ -109,8 +111,9 @@ type AttemptReceipt struct {
 // runEventPayload persists a run together with the root Work state derived
 // from it. Legacy run.started events used a bare WorkflowRun payload.
 type runEventPayload struct {
-	Run       WorkflowRun `json:"run"`
-	WorkState WorkState   `json:"workState"`
+	Run       WorkflowRun      `json:"run"`
+	WorkState WorkState        `json:"workState"`
+	V2Receipt *V2IntentReceipt `json:"v2Receipt,omitempty"`
 }
 
 // stageEventPayload wraps a Stage with its parent Run ID.

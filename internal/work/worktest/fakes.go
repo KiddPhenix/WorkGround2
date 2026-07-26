@@ -39,6 +39,7 @@ type Store struct {
 	LoadArchiveFunc     func(string) (*work.WorkRecord, error)
 	AppendFunc          func(string, work.WorkEvent) (int64, error)
 	CommitEventFunc     func(string, work.WorkEvent) (int64, error)
+	CommitEventsFunc    func(string, []work.WorkEvent) ([]int64, error)
 	WriteProjectionFunc func(string, *work.Work, int64) error
 	WriteArchiveFunc    func(string, *work.WorkRecord) error
 	ListFunc            func(work.WorkFilter) ([]work.WorkSummary, error)
@@ -93,6 +94,13 @@ func (s *Store) CommitEvent(id string, event work.WorkEvent) (int64, error) {
 		return 0, ErrUnconfigured
 	}
 	return s.CommitEventFunc(id, event)
+}
+
+func (s *Store) CommitEvents(id string, events []work.WorkEvent) ([]int64, error) {
+	if s.CommitEventsFunc == nil {
+		return nil, ErrUnconfigured
+	}
+	return s.CommitEventsFunc(id, events)
 }
 
 func (s *Store) WriteProjection(id string, value *work.Work, revision int64) error {

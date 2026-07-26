@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"workground2/internal/nilutil"
@@ -27,6 +28,10 @@ type Service struct {
 	runMu        sync.Mutex
 	runFlights   map[string]*runFlight
 	cornerstones *CornerstoneManager
+	defStore     DefinitionRevisionStore
+	defStoreMu   sync.Mutex
+	defPlanner   DefinitionPlanner
+	defPlannerMu sync.RWMutex
 	actionCfgMu  sync.RWMutex
 	actionMu     sync.Mutex
 	actionRuns   map[string]*actionFlight
@@ -34,6 +39,9 @@ type Service struct {
 	refScope     string
 	rerunMu      sync.Mutex
 	rerunPlans   map[string]preparedRerun
+	v2           *V2Coordinator
+	v2Transport  atomic.Bool
+	previewSvc   *PreviewService
 }
 
 type runFlight struct{ done chan struct{} }
@@ -65,12 +73,20 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	}
 	cornerstones := NewCornerstoneManager(store, blobs, RealClock{})
 	cornerstones.SetResolver(unavailableCornerstoneResolver{})
-	return &Service{
+	service := &Service{
 		store: store, blueprint: blueprint, tools: tools, sink: sink,
 		cornerstones: cornerstones,
 		actionRuns:   make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
 		rerunPlans: make(map[string]preparedRerun),
 	}
+	if revisions, ok := store.(DefinitionRevisionStore); ok {
+		service.defStore = revisions
+	}
+	service.v2 = newV2Coordinator(store, service.defStore, cornerstones)
+	// Artifact sources are injected separately; preview never treats WorkStore
+	// internals as the user workspace.
+	service.previewSvc = NewPreviewService(store, "")
+	return service
 }
 
 // SetCornerstoneResolver configures the authoritative live-ref source used by
@@ -85,6 +101,70 @@ func (s *Service) SetCornerstoneResolver(resolver CornerstoneResolver) {
 	}
 }
 
+// SetArtifactSourceResolver configures the authoritative binary artifact source
+// used by V2 preview and conversion. Nil remains fail-closed.
+func (s *Service) SetArtifactSourceResolver(resolver ArtifactSourceResolver) {
+	if s == nil {
+		return
+	}
+	if s.previewSvc == nil {
+		s.previewSvc = NewPreviewService(s.store, "")
+	}
+	s.previewSvc.SetArtifactSourceResolver(resolver)
+}
+
+// SetPreviewApprovalVerifier installs the optional external-conversion approval
+// verifier. Nil keeps external conversion disabled.
+func (s *Service) SetPreviewApprovalVerifier(verifier ApprovalVerifier) {
+	if s == nil {
+		return
+	}
+	if s.previewSvc == nil {
+		s.previewSvc = NewPreviewService(s.store, "")
+	}
+	s.previewSvc.SetApprovalVerifier(verifier)
+}
+
+// SetDefinitionRevisionStore configures the V2 definition revision storage.
+// Nil clears any previously configured store and falls back to an in-memory map.
+func (s *Service) SetDefinitionRevisionStore(store DefinitionRevisionStore) {
+	s.defStoreMu.Lock()
+	defer s.defStoreMu.Unlock()
+	s.defStore = store
+	if s.v2 != nil {
+		s.v2.SetDefinitionStore(store)
+	}
+}
+
+func (s *Service) definitionStore() DefinitionRevisionStore {
+	s.defStoreMu.Lock()
+	defer s.defStoreMu.Unlock()
+	if s.defStore == nil {
+		s.defStore = newMapDefinitionRevisionStore()
+	}
+	return s.defStore
+}
+
+// SetV2DefinitionPlanner configures the production natural-language
+// definition planner. Nil keeps the endpoint fail-closed and retryable.
+func (s *Service) SetV2DefinitionPlanner(planner DefinitionPlanner) {
+	if s == nil {
+		return
+	}
+	s.defPlannerMu.Lock()
+	s.defPlanner = planner
+	s.defPlannerMu.Unlock()
+}
+
+func (s *Service) definitionPlanner() DefinitionPlanner {
+	if s == nil {
+		return nil
+	}
+	s.defPlannerMu.RLock()
+	defer s.defPlannerMu.RUnlock()
+	return s.defPlanner
+}
+
 // SetTaskExecutor replaces the narrow task execution adapter. Nil and typed-nil
 // values disable execution. An active run keeps the adapter snapshot it began
 // with; later calls observe the replacement.
@@ -95,6 +175,9 @@ func (s *Service) SetTaskExecutor(executor TaskExecutor) {
 	s.runMu.Lock()
 	s.runner = NewWorkRunner(executor)
 	s.runMu.Unlock()
+	if s.v2 != nil {
+		s.v2.SetExecutor(executor)
+	}
 }
 
 // SetSessionRefStore connects Work lifecycle writes to the process-wide
@@ -117,6 +200,425 @@ func (s *Service) SetSessionRefStore(store SessionRefStore, scopeID string) erro
 // return ErrCornerstoneDisabled. Call during boot before serving requests.
 func (s *Service) SetCornerstoneManager(cm *CornerstoneManager) {
 	s.cornerstones = cm
+	if s.v2 != nil {
+		s.v2.SetCornerstones(cm)
+	}
+}
+
+// SetV2PatchPlanner configures the production V2 discussion-patch planner.
+func (s *Service) SetV2PatchPlanner(planner PatchPlanner) {
+	if s.v2 != nil {
+		s.v2.SetPatchPlanner(planner)
+	}
+}
+
+// SetV2TransportEnabled selects the frontend projection contract. It is wired
+// once during boot from collaboration_workbench_v2 and remains independent of
+// the persisted Work schema.
+func (s *Service) SetV2TransportEnabled(enabled bool) {
+	if s != nil {
+		s.v2Transport.Store(enabled)
+	}
+}
+
+// SubmitV2Input commits through InputService and automatically resumes only
+// the affected V2 task subgraph from authoritative storage.
+func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (*SubmitInputResult, error) {
+	if s.v2 == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	result, err := s.v2.SubmitInput(ctx, input)
+	if result == nil {
+		result = &SubmitInputResult{}
+	}
+	if result != nil && result.Revision > input.ExpectedRevision {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, requestState, stateErr := s.store.LoadState(
+		strings.TrimSpace(input.WorkID),
+		strings.TrimSpace(input.RequestID)+"/submit",
+	)
+	if stateErr != nil {
+		err = errors.Join(err, fmt.Errorf("work: verify SubmitV2Input receipt: %w", stateErr))
+	} else {
+		result.Committed = requestState.RequestFound &&
+			(requestState.RequestType == EventInputSubmitted || requestState.RequestType == EventInputRejected)
+	}
+	if result.Committed {
+		if result.Revision == 0 {
+			result.Revision = requestState.RequestRevision
+		}
+		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
+		if receiptErr != nil {
+			err = errors.Join(err, committedRecovery(
+				"submit-input-receipt", input.WorkID, input.RequestID, result.Revision, receiptErr,
+			))
+		} else if receipt, ok := projection.V2InputReceipts[strings.TrimSpace(input.RequestID)]; ok {
+			result.Receipt = cloneInputIntentReceipt(&receipt)
+		} else {
+			err = errors.Join(err, committedRecovery(
+				"submit-input-receipt", input.WorkID, input.RequestID, result.Revision,
+				fmt.Errorf("authoritative typed receipt %q is unavailable", input.RequestID),
+			))
+		}
+	}
+	result.TransportError = TransportErrorFrom(err)
+	if result.TransportError != nil {
+		result.Committed = result.Committed || result.TransportError.Committed
+		result.Recoverable = result.TransportError.Recoverable
+	}
+	return result, err
+}
+
+// ApplyV2WorkPatch commits the preview and automatically resumes its affected
+// V2 task subgraph.
+func (s *Service) ApplyV2WorkPatch(ctx context.Context, input ApplyWorkPatchInput) (*ApplyWorkPatchResult, error) {
+	if s.v2 == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	result, err := s.v2.ApplyPatch(ctx, input)
+	if result == nil {
+		result = &ApplyWorkPatchResult{}
+	}
+	if result != nil && result.WorkRevision > input.ExpectedRevision {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, requestState, stateErr := s.store.LoadState(
+		strings.TrimSpace(input.WorkID),
+		strings.TrimSpace(input.RequestID)+"/apply",
+	)
+	if stateErr != nil {
+		err = errors.Join(err, fmt.Errorf("work: verify ApplyV2WorkPatch receipt: %w", stateErr))
+	} else {
+		result.Committed = requestState.RequestFound && requestState.RequestType == EventPatchApplied
+	}
+	if result.Committed {
+		if result.WorkRevision == 0 {
+			result.WorkRevision = requestState.RequestRevision
+		}
+		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
+		if receiptErr != nil {
+			err = errors.Join(err, committedRecovery(
+				"apply-work-patch-receipt", input.WorkID, input.RequestID, result.WorkRevision, receiptErr,
+			))
+		} else if receipt, ok := projection.V2PatchReceipts[strings.TrimSpace(input.RequestID)]; ok {
+			copy := clonePatchIntentReceipt(receipt)
+			result.Receipt = &copy
+		} else {
+			err = errors.Join(err, committedRecovery(
+				"apply-work-patch-receipt", input.WorkID, input.RequestID, result.WorkRevision,
+				fmt.Errorf("authoritative typed receipt %q is unavailable", input.RequestID),
+			))
+		}
+	}
+	result.TransportError = TransportErrorFrom(err)
+	if result.TransportError != nil {
+		result.Committed = result.Committed || result.TransportError.Committed
+		result.Recoverable = result.TransportError.Recoverable
+	}
+	return result, err
+}
+
+// PreviewV2WorkPatch creates the immutable preview consumed by
+// ApplyV2WorkPatch.
+func (s *Service) PreviewV2WorkPatch(ctx context.Context, input PreviewWorkPatchInput) (*PreviewWorkPatchResult, error) {
+	if s.v2 == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	_, beforeState, beforeErr := s.store.LoadState(strings.TrimSpace(input.WorkID), "")
+	if beforeErr != nil {
+		return nil, beforeErr
+	}
+	result, err := s.v2.PreviewPatch(ctx, input)
+	if result == nil {
+		if err != nil {
+			return nil, err
+		}
+		result = &PreviewWorkPatchResult{}
+	}
+	if !result.Duplicate && result.Revision > beforeState.Revision {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, beforeState.Revision, input.RequestID))
+	}
+	_, requestState, stateErr := s.store.LoadState(
+		strings.TrimSpace(input.WorkID),
+		strings.TrimSpace(input.RequestID)+"/preview",
+	)
+	if stateErr != nil {
+		err = errors.Join(err, fmt.Errorf("work: verify PreviewV2WorkPatch receipt: %w", stateErr))
+	} else {
+		result.Committed = requestState.RequestFound && requestState.RequestType == EventPatchPreviewed
+	}
+	if result.Committed {
+		if result.Revision == 0 {
+			result.Revision = requestState.RequestRevision
+		}
+		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
+		if receiptErr != nil {
+			err = errors.Join(err, committedRecovery(
+				"preview-work-patch-receipt", input.WorkID, input.RequestID, result.Revision, receiptErr,
+			))
+		} else if receipt, ok := projection.V2PatchReceipts[strings.TrimSpace(input.RequestID)]; ok {
+			copy := clonePatchIntentReceipt(receipt)
+			result.Receipt = &copy
+		} else {
+			err = errors.Join(err, committedRecovery(
+				"preview-work-patch-receipt", input.WorkID, input.RequestID, result.Revision,
+				fmt.Errorf("authoritative typed receipt %q is unavailable", input.RequestID),
+			))
+		}
+	}
+	result.TransportError = TransportErrorFrom(err)
+	if result.TransportError != nil {
+		result.Committed = result.Committed || result.TransportError.Committed
+		result.Recoverable = result.TransportError.Recoverable
+	}
+	return result, err
+}
+
+// ScheduleV2Run starts or resumes a V2 run using only authoritative Work and
+// definition state. Callers provide object identity, never input snapshots.
+func (s *Service) ScheduleV2Run(
+	ctx context.Context,
+	workID, runID string,
+	changedNodeIDs []string,
+) (V2ScheduleResult, error) {
+	if s.v2 == nil {
+		return V2ScheduleResult{}, errors.New("work: V2 coordinator is not configured")
+	}
+	return s.v2.ScheduleRun(ctx, workID, runID, changedNodeIDs)
+}
+
+// RecoverV2Scheduling resumes durable post-commit wake work after restart.
+func (s *Service) RecoverV2Scheduling(ctx context.Context, workID string) error {
+	if s.v2 == nil {
+		return errors.New("work: V2 coordinator is not configured")
+	}
+	schedulingErr := s.v2.RecoverScheduling(ctx, workID)
+	_, conversionErr := s.RecoverArtifactConversions(ctx, workID)
+	return errors.Join(schedulingErr, conversionErr)
+}
+
+// RecoverArtifactConversions resumes pending and expired-running conversions
+// through the same durable claim path used by live requests.
+func (s *Service) RecoverArtifactConversions(ctx context.Context, workID string) (int, error) {
+	return s.recoverArtifactConversionsLimit(ctx, workID, maxConversionPump)
+}
+
+func (s *Service) recoverArtifactConversionsLimit(ctx context.Context, workID string, limit int) (int, error) {
+	if s == nil || s.previewSvc == nil {
+		return 0, errors.New("work: artifact conversion recovery is not configured")
+	}
+	return s.previewSvc.pumpConversions(ctx, workID, limit)
+}
+
+// RecoverAllV2Scheduling is the boot-owned recovery entry. Frontends cannot
+// invoke it; boot reports individual failures while successful Works continue.
+func (s *Service) RecoverAllV2Scheduling(ctx context.Context) V2RecoveryReport {
+	if s == nil || s.v2 == nil {
+		return V2RecoveryReport{Failures: []V2RecoveryFailure{{Error: "work: V2 coordinator is not configured"}}}
+	}
+	report := s.v2.RecoverAllScheduling(ctx)
+	active := ArchiveActive
+	filter := WorkFilter{ArchiveState: &active, Limit: 500}
+	remaining := maxConversionPump
+	for {
+		if err := checkServiceContext(ctx); err != nil {
+			report.Failures = append(report.Failures, V2RecoveryFailure{Error: err.Error()})
+			return report
+		}
+		items, err := s.store.List(filter)
+		if err != nil {
+			report.Failures = append(report.Failures, V2RecoveryFailure{Error: err.Error()})
+			return report
+		}
+		for _, item := range items {
+			recovered, err := s.recoverArtifactConversionsLimit(ctx, item.ID, remaining)
+			if err != nil {
+				report.Failures = append(report.Failures, V2RecoveryFailure{
+					WorkID: item.ID,
+					Error:  "artifact conversion recovery: " + err.Error(),
+				})
+			}
+			remaining -= recovered
+			if remaining <= 0 {
+				report.Failures = append(report.Failures, V2RecoveryFailure{
+					WorkID: item.ID,
+					Error:  "artifact conversion recovery batch limit reached; retry through RecoverArtifactConversions",
+				})
+				return report
+			}
+		}
+		if len(items) < filter.Limit {
+			return report
+		}
+		filter.Cursor = items[len(items)-1].ID
+	}
+}
+
+// ── V2 Controller adapter methods ─────────────────────────────────────────
+
+// SubmitWorkInput is the public adapter for SubmitV2Input.
+func (s *Service) SubmitWorkInput(ctx context.Context, input SubmitInputRequest) (*SubmitInputResult, error) {
+	return s.SubmitV2Input(ctx, input)
+}
+
+// PreviewWorkPatch is the public adapter for PreviewV2WorkPatch.
+func (s *Service) PreviewWorkPatch(ctx context.Context, input PreviewWorkPatchInput) (*PreviewWorkPatchResult, error) {
+	return s.PreviewV2WorkPatch(ctx, input)
+}
+
+// ApplyWorkPatch is the public adapter for ApplyV2WorkPatch.
+func (s *Service) ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchInput) (*ApplyWorkPatchResult, error) {
+	return s.ApplyV2WorkPatch(ctx, input)
+}
+
+// SetInputCornerstone pins or unpins a submitted WorkInput as a Cornerstone.
+// Pin and input submission are independent operations; pin failure does not
+// roll back the input. requestID makes repeated calls idempotent.
+func (s *Service) SetInputCornerstone(ctx context.Context, input SetInputCornerstoneRequest) (*CornerstonePinResult, error) {
+	if s.v2 == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	result, err := s.v2.SetInputCornerstone(ctx, input)
+	if result == nil {
+		result = &CornerstonePinResult{}
+	}
+	eventSuffix := "/unpin-cs"
+	if input.Pin {
+		eventSuffix = "/pin-cs"
+	}
+	_, requestState, stateErr := s.store.LoadState(
+		strings.TrimSpace(input.WorkID),
+		strings.TrimSpace(input.RequestID)+eventSuffix,
+	)
+	if stateErr != nil {
+		err = errors.Join(err, fmt.Errorf("work: verify SetInputCornerstone receipt: %w", stateErr))
+	} else {
+		result.Committed = requestState.RequestFound && requestState.RequestType == EventInputCornerstoneChanged
+	}
+	if result.Committed {
+		if result.Revision == 0 {
+			result.Revision = requestState.RequestRevision
+		}
+		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
+		if receiptErr != nil {
+			err = errors.Join(err, committedRecovery(
+				"set-input-cornerstone-receipt", input.WorkID, input.RequestID, result.Revision, receiptErr,
+			))
+		} else if receipt, ok := projection.V2InputReceipts[strings.TrimSpace(input.RequestID)]; ok {
+			result.Receipt = cloneInputIntentReceipt(&receipt)
+			result.CornerstoneID = receipt.CornerstoneID
+			result.Pinned = receipt.Pinned
+		} else {
+			err = errors.Join(err, committedRecovery(
+				"set-input-cornerstone-receipt", input.WorkID, input.RequestID, result.Revision,
+				fmt.Errorf("authoritative typed receipt %q is unavailable", input.RequestID),
+			))
+		}
+	}
+	if result.Revision > input.ExpectedRevision {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	result.TransportError = TransportErrorFrom(err)
+	if result.TransportError != nil {
+		result.Committed = result.Committed || result.TransportError.Committed
+		result.Recoverable = result.TransportError.Recoverable
+	}
+	return result, err
+}
+
+// RetryWorkNode retries a failed or invalidated V2 task node.
+// expectedRevision guards against lost updates. On success the affected node
+// is rescheduled.
+func (s *Service) RetryWorkNode(ctx context.Context, input RetryWorkNodeRequest) (*RetryWorkNodeResult, error) {
+	if s.v2 == nil || s.store == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	_, before, err := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/retry-node")
+	if err != nil {
+		return nil, err
+	}
+	task, retryErr := s.v2.RetryNode(ctx, input)
+	result := &RetryWorkNodeResult{Result: task, Duplicate: before.RequestFound}
+	if task != nil {
+		result.Committed = true
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, after, stateErr := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/retry-node")
+	if stateErr == nil {
+		result.Revision = after.Revision
+		result.Committed = result.Committed || after.RequestFound
+	} else {
+		err = errors.Join(err, stateErr)
+	}
+	err = errors.Join(retryErr, err)
+	result.Error = TransportErrorFrom(err)
+	if result.Error != nil {
+		result.Recoverable = result.Error.Recoverable
+		result.Committed = result.Committed || result.Error.Committed
+	}
+	return result, err
+}
+
+func (s *Service) emitV2MutationView(workID string, baseRevision int64, requestID string) error {
+	if s == nil || !s.v2Transport.Load() {
+		return nil
+	}
+	view, err := s.loadView(workID)
+	if err != nil {
+		return err
+	}
+	if err := s.emitV2MutationSnapshot(view, baseRevision, requestID); err != nil {
+		return committedRecovery("v2-view-snapshot", workID, requestID, view.Revision, err)
+	}
+	return nil
+}
+
+// v2TaskRuntimeToTask converts a V2TaskRuntime to a plain Task for the
+// WorkController interface. It preserves identity and state without the
+// V2-specific scheduling fields.
+func v2TaskRuntimeToTask(r *V2TaskRuntime) *Task {
+	if r == nil {
+		return nil
+	}
+	t := &Task{
+		ID:    r.TaskID,
+		Name:  r.NodeID,
+		State: v2StateToRunState(r.State),
+	}
+	if len(r.Attempts) > 0 {
+		t.StartedAt = &r.Attempts[0].StartedAt
+		if last := &r.Attempts[len(r.Attempts)-1]; last.FinishedAt != nil {
+			t.FinishedAt = last.FinishedAt
+		}
+	}
+	return t
+}
+
+// v2StateToRunState maps TaskStateV2 to the legacy RunState.
+func v2StateToRunState(s TaskStateV2) RunState {
+	switch s {
+	case TaskPending:
+		return RunState("pending")
+	case TaskReady:
+		return RunState("ready")
+	case TaskRunning:
+		return RunState("running")
+	case TaskWaitingInput, TaskWaitingApproval:
+		return RunState("waiting")
+	case TaskCompleted:
+		return RunState("completed")
+	case TaskFailedRetryable:
+		return RunState("failed")
+	case TaskFailedTerminal:
+		return RunState("failed")
+	case TaskCanceled:
+		return RunState("canceled")
+	case TaskInvalidated:
+		return RunState("canceled")
+	default:
+		return RunState("unknown")
+	}
 }
 
 // RebuildSessionRefs repairs this Work store's slice of the shared reverse
@@ -1748,7 +2250,7 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 	if err := s.store.MoveToTrash(workID, requestID+"/move"); err != nil {
 		return fmt.Errorf("work: Delete: %w", err)
 	}
-	s.emitRemoved(workID, revision, requestID)
+	s.emitRemoved(workID, revision, requestID, current.SchemaVersion >= SchemaVersionV2)
 	return nil
 }
 
@@ -1772,8 +2274,54 @@ func (s *Service) loadView(workID string) (*WorkView, error) {
 		return nil, err
 	}
 	view := viewFromState(value, state)
+	if err := s.prepareTransportView(view); err != nil {
+		return nil, err
+	}
 	s.assessView(view)
 	return view, nil
+}
+
+func (s *Service) prepareTransportView(view *WorkView) error {
+	if s == nil || view == nil || view.Work == nil || view.Work.SchemaVersion < SchemaVersionV2 {
+		return nil
+	}
+	if !s.v2Transport.Load() {
+		stripV2PersistenceFields(view.Work)
+		return nil
+	}
+	if view.SchemaVersion == WorkViewSchemaVersionV2 {
+		return nil
+	}
+	var definition *WorkDefinitionRevision
+	loadRev := view.Work.V2CurrentRevision
+	if loadRev == 0 && view.Work.V2LatestRevision > 0 {
+		loadRev = view.Work.V2LatestRevision // draft-only: use latest draft revision
+	}
+	if loadRev > 0 {
+		s.defStoreMu.Lock()
+		store := s.defStore
+		s.defStoreMu.Unlock()
+		if store == nil {
+			return errors.New("work: V2 definition store is not configured")
+		}
+		var err error
+		definition, err = store.LoadRevision(view.Work.ID, loadRev)
+		if err != nil {
+			return fmt.Errorf("work: load V2 transport definition: %w", err)
+		}
+		// Project authoritative status from V2RevisionStates.
+		// The stored definition body is immutable (always "draft" at creation);
+		// the runtime lifecycle status is tracked separately.
+		if view.Work.V2RevisionStates != nil {
+			if st, ok := view.Work.V2RevisionStates[loadRev]; ok {
+				definition = cloneDefinitionForView(definition)
+				definition.Status = st
+			}
+		}
+	}
+	promoteV2View(view, definition)
+	stripV2PersistenceFields(view.Work)
+	return nil
 }
 
 func viewFromState(value *Work, state WorkEventState) *WorkView {
@@ -1810,6 +2358,7 @@ func workForView(value *Work) *Work {
 	view.Blocks = append([]BlockInstance{}, value.Blocks...)
 	view.Placements = append([]BlockPlacement{}, value.Placements...)
 	view.Cornerstones = append([]Cornerstone{}, value.Cornerstones...)
+	view.V2ArtifactSlots = append([]ArtifactSlot{}, value.V2ArtifactSlots...)
 	view.Runs = append([]WorkflowRun{}, value.Runs...)
 	for runIndex := range view.Runs {
 		view.Runs[runIndex].Stages = append([]Stage{}, value.Runs[runIndex].Stages...)
@@ -2035,36 +2584,43 @@ func (s *Service) emitSnapshot(view *WorkView, requestID string) error {
 	if view == nil || view.Work == nil {
 		return errors.New("work: cannot emit a nil Work snapshot")
 	}
+	if err := s.prepareTransportView(view); err != nil {
+		return err
+	}
 	s.assessView(view)
 	payload, err := json.Marshal(view)
 	if err != nil {
 		return fmt.Errorf("work: encode WorkView snapshot: %w", err)
 	}
 	s.sink.EmitWorkView(WorkViewEvent{
-		SchemaVersion: WorkViewSchemaVersion,
+		SchemaVersion: view.SchemaVersion,
 		Type:          ViewSnapshot,
 		WorkID:        view.Work.ID,
 		EventID:       fmt.Sprintf("work-view-%s-%d", view.Work.ID, view.Revision),
 		Revision:      view.Revision,
 		BaseRevision:  0,
 		RequestID:     requestID,
-		Object:        ObjectContext{Kind: ObjectWork, ID: view.Work.ID},
+		Object:        ObjectContext{Kind: ObjectWork, ID: view.Work.ID, WorkID: view.Work.ID},
 		Payload:       payload,
 		CreatedAt:     time.Now().UTC(),
 	})
 	return nil
 }
 
-func (s *Service) emitRemoved(workID string, revision int64, requestID string) {
+func (s *Service) emitRemoved(workID string, revision int64, requestID string, v2 bool) {
+	schemaVersion := WorkViewSchemaVersion
+	if v2 && s.v2Transport.Load() {
+		schemaVersion = WorkViewSchemaVersionV2
+	}
 	s.sink.EmitWorkView(WorkViewEvent{
-		SchemaVersion: WorkViewSchemaVersion,
+		SchemaVersion: schemaVersion,
 		Type:          ViewRemoved,
 		WorkID:        workID,
 		EventID:       fmt.Sprintf("work-view-%s-%d", workID, revision),
 		Revision:      revision,
 		BaseRevision:  revision - 1,
 		RequestID:     requestID,
-		Object:        ObjectContext{Kind: ObjectWork, ID: workID},
+		Object:        ObjectContext{Kind: ObjectWork, ID: workID, WorkID: workID},
 		Payload:       json.RawMessage(`{"archiveState":"deleted"}`),
 		CreatedAt:     time.Now().UTC(),
 	})

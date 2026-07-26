@@ -161,19 +161,22 @@ func (s *Service) emitBlockSnapshot(view *WorkView, blockID, requestID string, c
 	if view == nil || view.Work == nil {
 		return errors.New("work: cannot emit a nil block snapshot")
 	}
+	if err := s.prepareTransportView(view); err != nil {
+		return err
+	}
 	payload, err := json.Marshal(view)
 	if err != nil {
 		return fmt.Errorf("work: encode block WorkView snapshot: %w", err)
 	}
 	s.sink.EmitWorkView(WorkViewEvent{
-		SchemaVersion: WorkViewSchemaVersion,
+		SchemaVersion: view.SchemaVersion,
 		Type:          ViewSnapshot,
 		WorkID:        view.Work.ID,
 		EventID:       fmt.Sprintf("work-view-%s-%d", view.Work.ID, view.Revision),
 		Revision:      view.Revision,
 		BaseRevision:  0,
 		RequestID:     requestID,
-		Object:        ObjectContext{Kind: ObjectBlock, ID: blockID, ParentID: view.Work.ID},
+		Object:        ObjectContext{Kind: ObjectBlock, ID: blockID, ParentID: view.Work.ID, WorkID: view.Work.ID, BlockID: blockID},
 		Payload:       payload,
 		CreatedAt:     createdAt,
 	})

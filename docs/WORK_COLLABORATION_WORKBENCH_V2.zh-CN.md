@@ -194,6 +194,10 @@ Block 讨论是附着于 Block 的短上下文协作：
    - `workflow`：生成新的 WorkDefinition revision，供当前及后续运行使用。
 6. 用户点击应用；系统使用 requestID 和 expectedRevision 提交。
 
+讨论目标按当前任务的输入 Block、Definition 声明 Block、稳定派生 Block 依次解析。稳定派生 ID 为 `v2-node-<NodeID 的 UTF-8 十六进制>`，不得使用 taskID 或输入 revision 伪造 Block 身份。对于升级前没有持久化 Block 的旧 Work，首次成功预览会将真实 Block 和补丁预览作为同一原子事件批次提交；规划失败或批次提交失败不留下半完成 Block，并允许使用同一请求安全重试。
+
+Patch planner 必须获得目标 Block 的当前 `data` 和明确的 PatchPlan JSON 示例。模型首次返回自然语言或无效 JSON 时，planner 最多发起一次无副作用的严格 JSON 修复请求；修复仍失败则显式返回可重试错误，错误信息不得回显原始模型内容。
+
 讨论输入可以实时生成预览，但不会直接写入 Work。补丁必须展示：
 
 - 修改前后差异
@@ -444,6 +448,7 @@ task.waiting_approval
 
 - `WorkView` 一次返回成果架、稳定任务行、展开 Block 所需的权威状态。
 - snapshot/delta 按 revision 幂等合并。
+- 同一 V2 mutation 同时影响基础 Work 与 V2 投影时，提交后广播完整 WorkView mutation snapshot；前端必须在推进 revision 的同一入口同时更新真实 Block、权威 `updatedAt` 和 V2 投影。同 revision 后续权威快照应判定为重复，真实基础内容差异仍显式冲突。
 - 事件缺口触发 snapshot 重拉，保留本地输入草稿和打开的讨论区。
 - 任务行 identity 不随状态变化而改变，避免组件卸载和输入丢失。
 - 高频进度事件使用独立 payload，不复用可变静态对象。
@@ -660,3 +665,39 @@ components/work/
 - [ ] 所有写操作幂等、可重试、可观察。
 - [ ] 历史不可变和 Controller-first 约束保持。
 - [ ] Office 预览范围没有膨胀为自研渲染器。
+
+---
+
+## 16. V2 契约矩阵（2026-07-23 冻结）
+
+### 16.1 Schema 版本识别
+
+| 版本 | `schemaVersion` | V1-only 行为 | V2-aware 行为 |
+|---|---|---|---|
+| V1 | 1 | 正常读写 | 正常读写，V2 flag 关闭时降级 |
+| V2 | 2 | `CheckSchemaVersion` 拒绝写入，只读可导出 | 正常读写 |
+| Future (>2) | ≥3 | `CheckSchemaVersion` 拒绝写入，`FutureWorkEnvelope` 只读 metadata/fallback/raw | `CheckSchemaVersionV2` 拒绝写入，`FutureWorkEnvelope` 只读 |
+
+### 16.2 Feature Flag 矩阵
+
+| `collaboration_workbench_v2` | 新建 Work | 现有 V2 Work | V1 Work | V2 事件 |
+|---|---|---|---|---|
+| `false`（显式关闭） | V1 流程 | 降级 V1 Block/Fallback 只读 | 正常 | 拒绝产生 |
+| `true`（默认） | V2 规划流 | 正常 V2 执行面 | 正常 | 正常 |
+
+### 16.3 迁移矩阵
+
+| 方向 | 行为 | 失败恢复 |
+|---|---|---|
+| V1 → V2 | 保留 V1，生成 V2 projection | 源 V1 不变，可重试 |
+| V2 → V1（降级） | V1 compatible projection，V2 数据保留 | 降级失败不损 V2 数据 |
+| any → future | 拒绝迁移，只读可导出 | 不写入，不损坏 |
+
+### 16.4 不可变约束
+
+- V1 `SchemaVersion = 1` 永不变更。
+- V1 `archive-v1/` 目录零字节差异。
+- V1 `RunState`、`WorkDefinitionSnapshot`、`WorkflowDef` 结构不变。
+- V2 新增类型使用独立文件（`v2.go`、`event_v2.go`）和独立 fixture 目录（`contract-v2/`）。
+- `ObjectContext` V2 字段全部 `omitempty`，V1 JSON 不漂移。
+- 所有 V2 写事件 payload 携带 `expectedRevision`。

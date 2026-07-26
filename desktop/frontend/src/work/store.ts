@@ -17,6 +17,22 @@ import type {
   WorkView,
   WorkViewEvent,
 } from './types';
+import type {
+  ArtifactSlot,
+  TaskV2View,
+  WorkDefinitionRevision,
+  WorkInput,
+  WorkPatchPreview,
+  WorkViewV2,
+} from './types_v2';
+import {
+  parseArtifactSlot,
+  parseTaskV2View,
+  parseWorkDefinitionRevision,
+  parseWorkInput,
+  parseWorkPatchPreview,
+  parseWorkViewV2,
+} from './parse';
 
 const MAX_SEEN_EVENTS = 256;
 const WORK_STATES = new Set<WorkState>([
@@ -60,6 +76,7 @@ export type ApplyResult =
   | { kind: 'stale'; workID: string; eventID: string; currentRevision: number; eventRevision: number }
   | { kind: 'gap'; gap: WorkGap }
   | { kind: 'conflict'; conflict: WorkConflict }
+  | { kind: 'unsupported'; observed: true; workID: string; schemaVersion: number; raw: string; source: 'fetch' | 'recover' | 'watch' }
   | { kind: 'ignored'; workID: string; eventID: string };
 
 export interface BlockDeltaItem extends Partial<Omit<BlockInstance, 'id' | 'revision'>> {
@@ -80,6 +97,34 @@ export interface WorkDeltaPayload {
   conclusions?: Conclusion[];
 }
 
+export interface WorkV2SnapshotPayload {
+  schemaVersion: number;
+  work: Work;
+  revision: number;
+  artifactSlots?: ArtifactSlot[];
+  tasks?: TaskV2View[];
+  inputs?: WorkInput[];
+}
+
+export interface WorkV2DeltaFields {
+  definition?: WorkDefinitionRevision;
+  artifactSlots?: ArtifactSlot[];
+  removedArtifactSlotIds?: string[];
+  tasks?: TaskV2View[];
+  removedTaskIds?: string[];
+  inputs?: WorkInput[];
+  removedInputIds?: string[];
+  patchPreviews?: WorkPatchPreview[];
+  removedPatchIds?: string[];
+}
+
+interface WorkV2Tombstones {
+  artifactSlotIds: string[];
+  taskIds: string[];
+  inputIds: string[];
+  patchIds: string[];
+}
+
 interface WorkStoreData {
   works: Record<string, WorkView>;
   revisions: Record<string, number>;
@@ -88,11 +133,19 @@ interface WorkStoreData {
   resyncGenerations: Record<string, number>;
   gaps: Record<string, WorkGap | undefined>;
   conflicts: Record<string, WorkConflict | undefined>;
+  // V2 projection fields — indexed by workID, merged idempotently.
+  v2Definitions: Record<string, WorkDefinitionRevision | undefined>;
+  v2ActiveDefinitions: Record<string, WorkDefinitionRevision | undefined>;
+  artifactSlots: Record<string, ArtifactSlot[]>;
+  v2Tasks: Record<string, TaskV2View[]>;
+  v2Inputs: Record<string, WorkInput[]>;
+  patchPreviews: Record<string, WorkPatchPreview[]>;
+  v2Tombstones: Record<string, WorkV2Tombstones>;
 }
 
 export interface WorkStoreState extends WorkStoreData {
   applyEvent: (event: WorkViewEvent) => ApplyResult;
-  applySnapshot: (view: WorkView, eventID?: string) => ApplyResult;
+  applySnapshot: (view: WorkView | WorkViewV2, eventID?: string) => ApplyResult;
   removeProjection: (workID: string, revision?: number) => void;
   forgetWork: (workID: string) => void;
   clearAll: () => void;
@@ -516,6 +569,310 @@ function mergeDeltaRuns(current: WorkflowRun[], incoming: WorkflowRun[]): Workfl
   return [...runs.values()];
 }
 
+// ── V2 merge helpers ───────────────────────────────────────────────────────
+
+const TASK_V2_TRANSITIONS: Record<TaskV2View['state'], ReadonlySet<TaskV2View['state']>> = {
+  pending: new Set(['ready', 'waiting_input', 'waiting_approval', 'canceled']),
+  ready: new Set(['running', 'waiting_input', 'waiting_approval', 'canceled']),
+  running: new Set(['completed', 'failed_retryable', 'failed_terminal', 'waiting_input', 'waiting_approval', 'canceled']),
+  waiting_input: new Set(['ready', 'canceled', 'failed_terminal']),
+  waiting_approval: new Set(['ready', 'canceled', 'failed_terminal']),
+  completed: new Set(['invalidated']),
+  failed_retryable: new Set(['ready', 'waiting_input', 'waiting_approval', 'canceled']),
+  failed_terminal: new Set(),
+  canceled: new Set(['ready']),
+  invalidated: new Set(['ready', 'waiting_input', 'waiting_approval', 'canceled']),
+};
+
+function mergeV2Items<T>(
+  current: T[],
+  incoming: T[],
+  mergeItem: (existing: T, next: T) => { merged: T; error?: string },
+  removedIDs: Set<string>,
+  blockedIDs: Set<string>,
+): { items?: T[]; error?: string } {
+  const byKey = new Map<string, T>();
+  const keyOf = (item: T): string => {
+    const rec = item as unknown as Record<string, unknown>;
+    return String(rec.id ?? '');
+  };
+  for (const item of current) byKey.set(keyOf(item), item);
+  for (const next of incoming) {
+    const key = keyOf(next);
+    if (removedIDs.has(key) || blockedIDs.has(key)) continue;
+    const existing = byKey.get(key);
+    if (!existing) { byKey.set(key, next); continue; }
+    const { merged, error } = mergeItem(existing, next);
+    if (error) return { error };
+    byKey.set(key, merged);
+  }
+  for (const id of removedIDs) byKey.delete(id);
+  return { items: [...byKey.values()] };
+}
+
+function mergeArtifactSlot(existing: ArtifactSlot, next: ArtifactSlot): { merged: ArtifactSlot; error?: string } {
+  if (next.revision < existing.revision) return { merged: existing };
+  if (next.revision === existing.revision) {
+    if (!sameValue(existing, next)) return { merged: existing, error: `artifact slot ${next.id} conflicts at revision ${next.revision}` };
+    return { merged: existing };
+  }
+  return { merged: next };
+}
+
+function mergeTaskV2(existing: TaskV2View, next: TaskV2View): { merged: TaskV2View; error?: string } {
+  if (next.state === existing.state) return { merged: next };
+  if (!TASK_V2_TRANSITIONS[existing.state]?.has(next.state)) {
+    return { merged: existing, error: `task ${next.id} has invalid state transition ${existing.state} → ${next.state}` };
+  }
+  return { merged: next };
+}
+
+function mergeInput(existing: WorkInput, next: WorkInput): { merged: WorkInput; error?: string } {
+  if (next.revision < existing.revision) return { merged: existing };
+  if (next.revision === existing.revision) {
+    if (!sameValue(existing, next)) return { merged: existing, error: `work input ${next.id} conflicts at revision ${next.revision}` };
+    return { merged: existing };
+  }
+  return { merged: next };
+}
+
+function mergePatch(existing: WorkPatchPreview, next: WorkPatchPreview): { merged: WorkPatchPreview; error?: string } {
+  // Patch previews are immutable per ID; same ID different content is a conflict.
+  if (!sameValue(existing, next)) return { merged: existing, error: `patch preview ${next.id} conflicts with existing` };
+  return { merged: existing };
+}
+
+function mergeV2ArtifactSlots(
+  current: ArtifactSlot[],
+  incoming: ArtifactSlot[],
+  removedIDs: Set<string>,
+  blockedIDs: Set<string>,
+): { slots?: ArtifactSlot[]; error?: string } {
+  const r = mergeV2Items(current, incoming, mergeArtifactSlot, removedIDs, blockedIDs);
+  return { slots: r.items, error: r.error };
+}
+
+function mergeV2Tasks(
+  current: TaskV2View[],
+  incoming: TaskV2View[],
+  removedIDs: Set<string>,
+  blockedIDs: Set<string>,
+  authoritative: boolean,
+): { tasks?: TaskV2View[]; error?: string } {
+  const r = mergeV2Items(
+    current,
+    incoming,
+    authoritative ? (_existing, next) => ({ merged: next }) : mergeTaskV2,
+    removedIDs,
+    blockedIDs,
+  );
+  return { tasks: r.items, error: r.error };
+}
+
+function mergeV2Inputs(
+  current: WorkInput[],
+  incoming: WorkInput[],
+  removedIDs: Set<string>,
+  blockedIDs: Set<string>,
+): { inputs?: WorkInput[]; error?: string } {
+  const r = mergeV2Items(current, incoming, mergeInput, removedIDs, blockedIDs);
+  return { inputs: r.items, error: r.error };
+}
+
+function mergeV2Patches(
+  current: WorkPatchPreview[],
+  incoming: WorkPatchPreview[],
+  removedIDs: Set<string>,
+  blockedIDs: Set<string>,
+): { patches?: WorkPatchPreview[]; error?: string } {
+  const r = mergeV2Items(current, incoming, mergePatch, removedIDs, blockedIDs);
+  return { patches: r.items, error: r.error };
+}
+
+// ── V2 payload extraction ──────────────────────────────────────────────────
+
+interface ExtractedV2Fields {
+  fields: WorkV2DeltaFields | null;
+  authoritativeSnapshot: boolean;
+  error?: string;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractV2Fields(
+  payload: Record<string, unknown>,
+  eventType: WorkViewEvent['type'],
+  workID: string,
+): ExtractedV2Fields {
+  if (eventType === 'snapshot' && payload.schemaVersion === 2) {
+    try {
+      const view = parseWorkViewV2(payload);
+      if (view.work.id !== workID) return { fields: null, authoritativeSnapshot: true, error: `V2 snapshot workID ${view.work.id} does not match ${workID}` };
+      for (const slot of view.artifactSlots ?? []) {
+        if (slot.workId !== workID) return { fields: null, authoritativeSnapshot: true, error: `artifact slot ${slot.id} belongs to ${slot.workId}` };
+      }
+      for (const input of view.inputs ?? []) {
+        if (input.workId !== workID) return { fields: null, authoritativeSnapshot: true, error: `work input ${input.id} belongs to ${input.workId}` };
+      }
+      return {
+        fields: {
+          definition: view.definition,
+          artifactSlots: view.artifactSlots ?? [],
+          tasks: view.tasks ?? [],
+          inputs: view.inputs ?? [],
+          patchPreviews: view.patchPreviews ?? [],
+        },
+        authoritativeSnapshot: true,
+      };
+    } catch (error) {
+      return { fields: null, authoritativeSnapshot: true, error: errorMessage(error) };
+    }
+  }
+
+  const fields: WorkV2DeltaFields = {};
+  let hasV2 = false;
+  try {
+    if (payload.definition !== undefined) {
+      const definition = parseWorkDefinitionRevision(payload.definition);
+      if (definition.workId !== workID) throw new TypeError(`work: definition belongs to ${definition.workId}`);
+      fields.definition = definition;
+      hasV2 = true;
+    }
+    if (payload.artifactSlots !== undefined) {
+      if (!Array.isArray(payload.artifactSlots)) throw new TypeError('work: artifactSlots must be an array');
+      fields.artifactSlots = payload.artifactSlots.map(parseArtifactSlot);
+      const foreign = fields.artifactSlots.find((slot) => slot.workId !== workID);
+      if (foreign) throw new TypeError(`work: artifact slot ${foreign.id} belongs to ${foreign.workId}`);
+      hasV2 = true;
+    }
+    if (payload.tasks !== undefined) {
+      if (!Array.isArray(payload.tasks)) throw new TypeError('work: tasks must be an array');
+      fields.tasks = payload.tasks.map(parseTaskV2View);
+      hasV2 = true;
+    }
+    if (payload.inputs !== undefined) {
+      if (Array.isArray(payload.inputs)) {
+        fields.inputs = payload.inputs.map(parseWorkInput);
+        const foreign = fields.inputs.find((input) => input.workId !== workID);
+        if (foreign) throw new TypeError(`work: work input ${foreign.id} belongs to ${foreign.workId}`);
+        hasV2 = true;
+      }
+    }
+    if (payload.patchPreviews !== undefined) {
+      if (!Array.isArray(payload.patchPreviews)) throw new TypeError('work: patchPreviews must be an array');
+      fields.patchPreviews = payload.patchPreviews.map(parseWorkPatchPreview);
+      const foreign = fields.patchPreviews.find((patch) => patch.workId !== workID);
+      if (foreign) throw new TypeError(`work: patch preview ${foreign.id} belongs to ${foreign.workId}`);
+      hasV2 = true;
+    }
+    for (const [key, target] of [
+      ['removedArtifactSlotIds', 'removedArtifactSlotIds'],
+      ['removedTaskIds', 'removedTaskIds'],
+      ['removedInputIds', 'removedInputIds'],
+      ['removedPatchIds', 'removedPatchIds'],
+    ] as const) {
+      if (payload[key] === undefined) continue;
+      if (!Array.isArray(payload[key]) || payload[key].some((id: unknown) => typeof id !== 'string' || id.length === 0)) {
+        throw new TypeError(`work: ${key} must contain non-empty strings`);
+      }
+      fields[target] = payload[key] as string[];
+      hasV2 = true;
+    }
+  } catch (error) {
+    return { fields: null, authoritativeSnapshot: false, error: errorMessage(error) };
+  }
+  return { fields: hasV2 ? fields : null, authoritativeSnapshot: false };
+}
+
+const emptyV2Tombstones = (): WorkV2Tombstones => ({
+  artifactSlotIds: [],
+  taskIds: [],
+  inputIds: [],
+  patchIds: [],
+});
+
+function applyV2Fields(
+  state: WorkStoreData,
+  workID: string,
+  v2: WorkV2DeltaFields,
+  authoritativeSnapshot: boolean,
+): { patch: Partial<WorkStoreData>; error?: string } {
+  const patch: Partial<WorkStoreData> = {};
+  const incomingSlotIDs = new Set((v2.artifactSlots ?? []).map((item) => item.id));
+  const incomingTaskIDs = new Set((v2.tasks ?? []).map((item) => item.id));
+  const incomingInputIDs = new Set((v2.inputs ?? []).map((item) => item.id));
+  const artifactSlots = authoritativeSnapshot
+    ? (state.artifactSlots[workID] ?? []).filter((item) => incomingSlotIDs.has(item.id))
+    : state.artifactSlots[workID] ?? [];
+  const v2Tasks = authoritativeSnapshot
+    ? (state.v2Tasks[workID] ?? []).filter((item) => incomingTaskIDs.has(item.id))
+    : state.v2Tasks[workID] ?? [];
+  const v2Inputs = authoritativeSnapshot
+    ? (state.v2Inputs[workID] ?? []).filter((item) => incomingInputIDs.has(item.id))
+    : state.v2Inputs[workID] ?? [];
+  const patches = state.patchPreviews[workID] ?? [];
+  const previousTombstones = state.v2Tombstones[workID] ?? emptyV2Tombstones();
+  const tombstones = authoritativeSnapshot ? {
+    ...emptyV2Tombstones(),
+    patchIds: previousTombstones.patchIds,
+  } : {
+    artifactSlotIds: [...new Set([...previousTombstones.artifactSlotIds, ...(v2.removedArtifactSlotIds ?? [])])],
+    taskIds: [...new Set([...previousTombstones.taskIds, ...(v2.removedTaskIds ?? [])])],
+    inputIds: [...new Set([...previousTombstones.inputIds, ...(v2.removedInputIds ?? [])])],
+    patchIds: [...new Set([...previousTombstones.patchIds, ...(v2.removedPatchIds ?? [])])],
+  };
+
+  if (authoritativeSnapshot || v2.definition !== undefined) {
+    patch.v2Definitions = { ...state.v2Definitions };
+    // Keep active definition when a draft supersedes it.
+    if (v2.definition) {
+      const prev = state.v2Definitions[workID];
+      if (v2.definition.status === 'draft' && prev?.status === 'active') {
+        patch.v2ActiveDefinitions = { ...state.v2ActiveDefinitions, [workID]: prev };
+      } else if (v2.definition.status === 'active') {
+        patch.v2ActiveDefinitions = { ...state.v2ActiveDefinitions, [workID]: v2.definition };
+      }
+      patch.v2Definitions[workID] = v2.definition;
+    }
+  }
+  if (v2.artifactSlots !== undefined || v2.removedArtifactSlotIds !== undefined) {
+    const removed = new Set(v2.removedArtifactSlotIds ?? []);
+    const result = mergeV2ArtifactSlots(artifactSlots, v2.artifactSlots ?? [], removed, new Set(authoritativeSnapshot ? [] : previousTombstones.artifactSlotIds));
+    if (result.error) return { patch, error: result.error };
+    patch.artifactSlots = { ...state.artifactSlots, [workID]: result.slots ?? [] };
+  }
+  if (v2.tasks !== undefined || v2.removedTaskIds !== undefined) {
+    const removed = new Set(v2.removedTaskIds ?? []);
+    const result = mergeV2Tasks(
+      v2Tasks,
+      v2.tasks ?? [],
+      removed,
+      new Set(authoritativeSnapshot ? [] : previousTombstones.taskIds),
+      authoritativeSnapshot,
+    );
+    if (result.error) return { patch, error: result.error };
+    patch.v2Tasks = { ...state.v2Tasks, [workID]: result.tasks ?? [] };
+  }
+  if (v2.inputs !== undefined || v2.removedInputIds !== undefined) {
+    const removed = new Set(v2.removedInputIds ?? []);
+    const result = mergeV2Inputs(v2Inputs, v2.inputs ?? [], removed, new Set(authoritativeSnapshot ? [] : previousTombstones.inputIds));
+    if (result.error) return { patch, error: result.error };
+    patch.v2Inputs = { ...state.v2Inputs, [workID]: result.inputs ?? [] };
+  }
+  if (v2.patchPreviews !== undefined || v2.removedPatchIds !== undefined) {
+    const removed = new Set(v2.removedPatchIds ?? []);
+    const result = mergeV2Patches(patches, v2.patchPreviews ?? [], removed, new Set(previousTombstones.patchIds));
+    if (result.error) return { patch, error: result.error };
+    patch.patchPreviews = { ...state.patchPreviews, [workID]: result.patches ?? [] };
+  }
+  patch.v2Tombstones = { ...state.v2Tombstones, [workID]: tombstones };
+  return { patch };
+}
+
+// ── V1 merge helpers ───────────────────────────────────────────────────────
+
 function nextWorkState(
   currentState: WorkState,
   requestedState: WorkState | undefined,
@@ -654,8 +1011,12 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
   if (state.seenEventIDs[event.workID]?.includes(event.eventID)) {
     return { result: { kind: 'duplicate', workID: event.workID, eventID: event.eventID } };
   }
-  if (knownRevision !== undefined && event.revision <= knownRevision) {
+  if (knownRevision !== undefined && event.revision < knownRevision) {
     return { result: { kind: 'stale', workID: event.workID, eventID: event.eventID, currentRevision: knownRevision, eventRevision: event.revision } };
+  }
+  if (knownRevision !== undefined && event.revision === knownRevision) {
+    const issue = conflict(event, `different event ${event.eventID} reuses authoritative revision ${knownRevision}`);
+    return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
   }
   const currentRevision = knownRevision ?? -1;
   if (event.baseRevision !== currentRevision) {
@@ -665,9 +1026,17 @@ function applyDeltaEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: 
 
   if (event.type === 'removed') {
     const { [event.workID]: _, ...works } = state.works;
+    const { [event.workID]: _a, ...artifactSlots } = state.artifactSlots;
+    const { [event.workID]: _t, ...v2Tasks } = state.v2Tasks;
+    const { [event.workID]: _i, ...v2Inputs } = state.v2Inputs;
+    const { [event.workID]: _p, ...patchPreviews } = state.patchPreviews;
     return {
       patch: {
         works,
+        artifactSlots,
+        v2Tasks,
+        v2Inputs,
+        patchPreviews,
         revisions: { ...state.revisions, [event.workID]: event.revision },
         removed: { ...state.removed, [event.workID]: true },
         seenEventIDs: rememberEvent(state.seenEventIDs, event.workID, event.eventID),
@@ -751,8 +1120,42 @@ function reduceEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: Part
       result: { kind: 'ignored', workID: event.workID, eventID: event.eventID },
     };
   }
-  if (event.type === 'snapshot') return applySnapshotEvent(state, event);
-  return applyDeltaEvent(state, event);
+  // Extract V2 fields before V1 handlers to avoid field collisions
+  // (e.g. V2 `inputs: WorkInput[]` vs V1 `inputs: Record<string, unknown>`).
+  const extracted = isRecord(event.payload)
+    ? extractV2Fields(event.payload as Record<string, unknown>, event.type, event.workID)
+    : { fields: null, authoritativeSnapshot: false };
+  if (extracted.error) {
+    const issue = conflict(event, `V2: ${extracted.error}`);
+    return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
+  }
+  const v2 = extracted.fields;
+  const v1Event = v2 ? stripV2Payload(event, v2) : event;
+  const base = v1Event.type === 'snapshot' ? applySnapshotEvent(state, v1Event) : applyDeltaEvent(state, v1Event);
+  if (!v2 || base.result.kind !== 'applied') return base;
+  const merged = { ...state, ...(base.patch ?? {}) } as WorkStoreData;
+  const v2Result = applyV2Fields(merged, event.workID, v2, extracted.authoritativeSnapshot);
+  if (v2Result.error) {
+    const issue = conflict(event, `V2: ${v2Result.error}`);
+    return { patch: { conflicts: { ...state.conflicts, [event.workID]: issue } }, result: { kind: 'conflict', conflict: issue } };
+  }
+  return { patch: { ...(base.patch ?? {}), ...v2Result.patch }, result: base.result };
+}
+
+function stripV2Payload(event: WorkViewEvent, _v2: WorkV2DeltaFields): WorkViewEvent {
+  if (!isRecord(event.payload)) return event;
+  const clean = { ...(event.payload as Record<string, unknown>) };
+  delete clean.definition;
+  delete clean.artifactSlots;
+  delete clean.tasks;
+  delete clean.patchPreviews;
+  delete clean.removedArtifactSlotIds;
+  delete clean.removedTaskIds;
+  delete clean.removedInputIds;
+  delete clean.removedPatchIds;
+  // V2 `inputs` is an array; the legacy Work delta field is an object.
+  if (Array.isArray(clean.inputs)) delete clean.inputs;
+  return { ...event, payload: clean as unknown };
 }
 
 const emptyWorkState = (): WorkStoreData => ({
@@ -763,6 +1166,13 @@ const emptyWorkState = (): WorkStoreData => ({
   resyncGenerations: {},
   gaps: {},
   conflicts: {},
+  artifactSlots: {},
+  v2Definitions: {},
+  v2ActiveDefinitions: {},
+  v2Tasks: {},
+  v2Inputs: {},
+  patchPreviews: {},
+  v2Tombstones: {},
 });
 
 export const useWorkStore = create<WorkStoreState>((set, get) => ({
@@ -790,9 +1200,22 @@ export const useWorkStore = create<WorkStoreState>((set, get) => ({
   }),
   removeProjection: (workID, revision) => set((state) => {
     const { [workID]: _, ...works } = state.works;
+    const { [workID]: _d, ...v2Definitions } = state.v2Definitions;
+    const { [workID]: _ad, ...v2ActiveDefinitions } = state.v2ActiveDefinitions;
+    const { [workID]: _a, ...artifactSlots } = state.artifactSlots;
+    const { [workID]: _t, ...v2Tasks } = state.v2Tasks;
+    const { [workID]: _i, ...v2Inputs } = state.v2Inputs;
+    const { [workID]: _p, ...patchPreviews } = state.patchPreviews;
     const nextRevision = revision ?? state.revisions[workID];
     return {
       works,
+      v2Definitions,
+      v2ActiveDefinitions,
+      artifactSlots,
+      v2Tasks,
+      v2Inputs,
+      patchPreviews,
+      v2Tombstones: state.v2Tombstones,
       revisions: nextRevision === undefined ? state.revisions : { ...state.revisions, [workID]: nextRevision },
       removed: { ...state.removed, [workID]: true },
     };
@@ -804,6 +1227,13 @@ export const useWorkStore = create<WorkStoreState>((set, get) => ({
     };
     return {
       works: omit(state.works),
+      v2Definitions: omit(state.v2Definitions),
+      v2ActiveDefinitions: omit(state.v2ActiveDefinitions),
+      artifactSlots: omit(state.artifactSlots),
+      v2Tasks: omit(state.v2Tasks),
+      v2Inputs: omit(state.v2Inputs),
+      patchPreviews: omit(state.patchPreviews),
+      v2Tombstones: omit(state.v2Tombstones),
       revisions: omit(state.revisions),
       removed: omit(state.removed),
       seenEventIDs: omit(state.seenEventIDs),
@@ -819,7 +1249,7 @@ export function applyWorkViewEvent(event: WorkViewEvent): ApplyResult {
   return useWorkStore.getState().applyEvent(event);
 }
 
-export function applySnapshot(view: WorkView, eventID?: string): ApplyResult {
+export function applySnapshot(view: WorkView | WorkViewV2, eventID?: string): ApplyResult {
   return useWorkStore.getState().applySnapshot(view, eventID);
 }
 
@@ -847,10 +1277,17 @@ export interface WorkFaceLocalState {
 export interface WorkCardLocalState {
   activeFace: WorkFace;
   faces: Record<WorkFace, WorkFaceLocalState>;
+  discussionDrafts: Record<string, string>;
+  inputDrafts: Record<string, unknown>;
+  inputDirtyFlags: Record<string, boolean>;
+  committedRequestIds: Record<string, string>;
+  persistenceError?: string;
 }
 
 export interface WorkUIPreference {
   activeFace: WorkFace;
+  discussionDrafts?: Record<string, string>;
+  inputDrafts?: Record<string, unknown>;
 }
 
 function defaultFaceState(): WorkFaceLocalState {
@@ -858,7 +1295,79 @@ function defaultFaceState(): WorkFaceLocalState {
 }
 
 export function defaultCardState(): WorkCardLocalState {
-  return { activeFace: 'front', faces: { front: defaultFaceState(), back: defaultFaceState() } };
+  return { activeFace: 'front', faces: { front: defaultFaceState(), back: defaultFaceState() }, discussionDrafts: {}, inputDrafts: {}, inputDirtyFlags: {}, committedRequestIds: {} };
+}
+
+const cardStorageErrors: Record<string, string | undefined> = {};
+
+function storageErrorText(operation: 'persist' | 'restore', error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return `Work 本地草稿${operation === 'persist' ? '保存' : '恢复'}失败：${detail}`;
+}
+
+function persistCardState(workID: string, card: WorkCardLocalState): string | undefined {
+  try {
+    const key = `wg2-card:${workID}`;
+    const payload = {
+      activeFace: card.activeFace,
+      discussionDrafts: card.discussionDrafts ?? {},
+      inputDrafts: card.inputDrafts ?? {},
+      inputDirtyFlags: card.inputDirtyFlags ?? {},
+      committedRequestIds: card.committedRequestIds ?? {},
+    };
+    window.localStorage?.setItem(key, JSON.stringify(payload));
+    delete cardStorageErrors[workID];
+    return undefined;
+  } catch (e) {
+    const message = storageErrorText('persist', e);
+    cardStorageErrors[workID] = message;
+    if (typeof console !== 'undefined') console.warn('work: persistCardState failed', e);
+    return message;
+  }
+}
+
+export function restoreCardState(workID: string): Partial<WorkCardLocalState> | null {
+  try {
+    const key = `wg2-card:${workID}`;
+    const raw = window.localStorage?.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed) || (parsed.activeFace !== 'front' && parsed.activeFace !== 'back')) {
+      throw new Error('本地草稿结构无效');
+    }
+    if (parsed.discussionDrafts !== undefined && !isStringRecord(parsed.discussionDrafts)) {
+      throw new Error('discussionDrafts 结构无效');
+    }
+    if (parsed.inputDrafts !== undefined && !isRecord(parsed.inputDrafts)) {
+      throw new Error('inputDrafts 结构无效');
+    }
+    if (parsed.inputDirtyFlags !== undefined && !isBooleanRecord(parsed.inputDirtyFlags)) {
+      throw new Error('inputDirtyFlags 结构无效');
+    }
+    if (parsed.committedRequestIds !== undefined && !isStringRecord(parsed.committedRequestIds)) {
+      throw new Error('committedRequestIds 结构无效');
+    }
+    delete cardStorageErrors[workID];
+    return {
+      activeFace: parsed.activeFace,
+      discussionDrafts: parsed.discussionDrafts,
+      inputDrafts: parsed.inputDrafts,
+      inputDirtyFlags: parsed.inputDirtyFlags,
+      committedRequestIds: parsed.committedRequestIds,
+    };
+  } catch (e) {
+    cardStorageErrors[workID] = storageErrorText('restore', e);
+    if (typeof console !== 'undefined') console.warn('work: restoreCardState failed', e);
+    return null;
+  }
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((item) => typeof item === 'string');
+}
+
+function isBooleanRecord(value: unknown): value is Record<string, boolean> {
+  return isRecord(value) && Object.values(value).every((item) => typeof item === 'boolean');
 }
 
 export interface WorkUIStoreState {
@@ -874,6 +1383,10 @@ export interface WorkUIStoreState {
   beginRetry: (intent: RetryIntent) => void;
   failRetry: (intent: RetryIntent, error: string) => void;
   clearRetry: (intent: RetryIntent) => void;
+  setDiscussionDraft: (workID: string, key: string, text: string) => void;
+  setInputDraft: (workID: string, key: string, value: unknown) => void;
+  setInputDirtyFlag: (workID: string, key: string) => void;
+  setCommittedRequestId: (workID: string, key: string, requestId: string) => void;
   removeCard: (workID: string) => void;
   clearAll: () => void;
 }
@@ -886,7 +1399,22 @@ export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
   cardByWork: {},
   selectionByWork: {},
   retryByTarget: {},
-  ensureCard: (workID) => set((state) => state.cardByWork[workID] ? state : { cardByWork: { ...state.cardByWork, [workID]: defaultCardState() } }),
+  ensureCard: (workID) => set((state) => {
+    if (state.cardByWork[workID]) return state;
+    const restored = typeof window !== 'undefined' ? restoreCardState(workID) : null;
+    const card = restored
+      ? {
+          ...defaultCardState(),
+          activeFace: restored.activeFace ?? 'front',
+          discussionDrafts: restored.discussionDrafts ?? {},
+          inputDrafts: restored.inputDrafts ?? {},
+          inputDirtyFlags: restored.inputDirtyFlags ?? {},
+          committedRequestIds: restored.committedRequestIds ?? {},
+          persistenceError: cardStorageErrors[workID],
+        }
+      : { ...defaultCardState(), persistenceError: cardStorageErrors[workID] };
+    return { cardByWork: { ...state.cardByWork, [workID]: card } };
+  }),
   setActiveFace: (workID, activeFace) => set((state) => {
     const card = cardFor(state, workID);
     return { cardByWork: { ...state.cardByWork, [workID]: { ...card, activeFace } } };
@@ -935,6 +1463,30 @@ export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
     if (!existing || existing.intent.requestId !== intent.requestId) return state;
     const { [key]: _, ...retryByTarget } = state.retryByTarget;
     return { retryByTarget };
+  }),
+  setDiscussionDraft: (workID, key, text) => set((state) => {
+    const card = cardFor(state, workID);
+    const next: WorkCardLocalState = { ...card, discussionDrafts: { ...card.discussionDrafts, [key]: text } };
+    next.persistenceError = persistCardState(workID, next);
+    return { cardByWork: { ...state.cardByWork, [workID]: next } };
+  }),
+  setInputDraft: (workID, key, value) => set((state) => {
+    const card = cardFor(state, workID);
+    const next: WorkCardLocalState = { ...card, inputDrafts: { ...card.inputDrafts, [key]: value } };
+    next.persistenceError = persistCardState(workID, next);
+    return { cardByWork: { ...state.cardByWork, [workID]: next } };
+  }),
+  setInputDirtyFlag: (workID, key) => set((state) => {
+    const card = cardFor(state, workID);
+    const next: WorkCardLocalState = { ...card, inputDirtyFlags: { ...card.inputDirtyFlags, [key]: true } };
+    next.persistenceError = persistCardState(workID, next);
+    return { cardByWork: { ...state.cardByWork, [workID]: next } };
+  }),
+  setCommittedRequestId: (workID, key, requestId) => set((state) => {
+    const card = cardFor(state, workID);
+    const next: WorkCardLocalState = { ...card, committedRequestIds: { ...card.committedRequestIds, [key]: requestId } };
+    next.persistenceError = persistCardState(workID, next);
+    return { cardByWork: { ...state.cardByWork, [workID]: next } };
   }),
   removeCard: (workID) => set((state) => {
     const hasRetry = Object.values(state.retryByTarget).some((retry) => retry.intent.workId === workID);
@@ -1029,3 +1581,45 @@ export function resolveSelection(work: Work, selection: RunSelection): ResolvedS
   const attempt = findAttempt(task, selection.attemptId, selection.attemptIndex);
   return { run, stage, task, attempt: attempt ?? undefined };
 }
+
+// ── V2 selectors ──────────────────────────────────────────────────────────
+
+const EMPTY_SLOTS: ArtifactSlot[] = [];
+const EMPTY_TASKS: TaskV2View[] = [];
+const EMPTY_INPUTS: WorkInput[] = [];
+const EMPTY_PATCHES: WorkPatchPreview[] = [];
+
+export const selectArtifactSlots = (slots: Record<string, ArtifactSlot[]>, workID: string): ArtifactSlot[] =>
+  slots[workID] ?? EMPTY_SLOTS;
+
+export const selectV2Definition = (
+  definitions: Record<string, WorkDefinitionRevision | undefined>,
+  workID: string,
+): WorkDefinitionRevision | undefined => definitions[workID];
+
+export const selectV2ActiveDefinition = (
+  activeDefs: Record<string, WorkDefinitionRevision | undefined>,
+  definitions: Record<string, WorkDefinitionRevision | undefined>,
+  workID: string,
+): WorkDefinitionRevision | undefined => {
+  // If current definition is active, it is the active definition.
+  const current = definitions[workID];
+  if (current?.status === 'active') return current;
+  // Otherwise fall back to the separately preserved active definition.
+  return activeDefs[workID];
+};
+
+export const selectV2Tasks = (tasks: Record<string, TaskV2View[]>, workID: string): TaskV2View[] =>
+  tasks[workID] ?? EMPTY_TASKS;
+
+export const selectV2Inputs = (inputs: Record<string, WorkInput[]>, workID: string): WorkInput[] =>
+  inputs[workID] ?? EMPTY_INPUTS;
+
+export const selectPatchPreviews = (patches: Record<string, WorkPatchPreview[]>, workID: string): WorkPatchPreview[] =>
+  patches[workID] ?? EMPTY_PATCHES;
+
+export const selectV2Task = (tasks: Record<string, TaskV2View[]>, workID: string, taskId: string): TaskV2View | undefined =>
+  (tasks[workID] ?? []).find((t) => t.id === taskId);
+
+export const selectV2Input = (inputs: Record<string, WorkInput[]>, workID: string, inputId: string): WorkInput | undefined =>
+  (inputs[workID] ?? []).find((i) => i.id === inputId);

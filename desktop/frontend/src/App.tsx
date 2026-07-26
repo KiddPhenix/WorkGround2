@@ -3591,6 +3591,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   <WorkCard
                     workID={activeWorkId}
                     tabID={ownerTabID}
+                    sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
+                    onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(ownerTabID, intent.path)}
+                    onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(ownerTabID, intent.path)}
                     resolveSessionSurface={resolveSessionSurface}
                     backSlots={{
                       surface: ({ readonly, archived }) => (
@@ -3616,6 +3619,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 ) : (
                   <WorkPage
                     tabID={ownerTabID || ''}
+                    sessionID={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
                     onBack={handleBackToSession}
                     onOpenWork={handleOpenWork}
                   />

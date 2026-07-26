@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,26 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventBlockActionReserved: true,
 	EventBlockActionChanged:  true,
 	eventCompact:             true,
+	// V2 event types.
+	EventDefPlanningStarted:      true,
+	EventDefRevisionCreated:      true,
+	EventDefRevisionApplied:      true,
+	EventArtifactSlotDeclared:    true,
+	EventArtifactSlotUpdated:     true,
+	EventInputRequested:          true,
+	EventInputDraftSaved:         true,
+	EventInputSubmitted:          true,
+	EventInputRejected:           true,
+	EventInputCornerstoneChanged: true,
+	EventPatchPreviewed:          true,
+	EventPatchApplied:            true,
+	EventTaskInvalidated:         true,
+	EventTaskReady:               true,
+	EventTaskWaitingInput:        true,
+	EventTaskWaitingApproval:     true,
+	EventTaskRuntimeCreated:      true,
+	EventTaskRuntimeUpdated:      true,
+	EventTaskStaleResult:         true,
 }
 
 // ── Path helpers ───────────────────────────────────────────────────────────
@@ -133,6 +154,7 @@ type workEventRecord struct {
 	Type          WorkEventType   `json:"type"`
 	Revision      int64           `json:"revision"`
 	BaseRevision  int64           `json:"baseRevision"`
+	Object        ObjectContext   `json:"object,omitempty"`
 	Payload       json.RawMessage `json:"payload"`
 	ContentDigest string          `json:"contentDigest"`
 	WriterID      string          `json:"writerId"`
@@ -141,34 +163,48 @@ type workEventRecord struct {
 
 func recordFromEvent(e WorkEvent) workEventRecord {
 	return workEventRecord{
-		SchemaVersion: e.SchemaVersion,
-		ID:            e.ID,
-		RequestID:     e.RequestID,
-		WorkID:        e.WorkID,
-		Type:          e.Type,
-		Revision:      e.Revision,
-		BaseRevision:  e.BaseRevision,
-		Payload:       e.Payload,
-		ContentDigest: e.ContentDigest,
-		WriterID:      e.WriterID,
-		CreatedAt:     e.CreatedAt,
+		SchemaVersion: e.SchemaVersion, ID: e.ID, RequestID: e.RequestID,
+		WorkID: e.WorkID, Type: e.Type, Revision: e.Revision, BaseRevision: e.BaseRevision,
+		Object: e.Object, Payload: e.Payload, ContentDigest: e.ContentDigest,
+		WriterID: e.WriterID, CreatedAt: e.CreatedAt,
 	}
 }
 
 func eventFromRecord(r workEventRecord) WorkEvent {
 	return WorkEvent{
-		SchemaVersion: r.SchemaVersion,
-		ID:            r.ID,
-		RequestID:     r.RequestID,
-		WorkID:        r.WorkID,
-		Type:          r.Type,
-		Revision:      r.Revision,
-		BaseRevision:  r.BaseRevision,
-		Payload:       r.Payload,
-		ContentDigest: r.ContentDigest,
-		WriterID:      r.WriterID,
-		CreatedAt:     r.CreatedAt,
+		SchemaVersion: r.SchemaVersion, ID: r.ID, RequestID: r.RequestID,
+		WorkID: r.WorkID, Type: r.Type, Revision: r.Revision, BaseRevision: r.BaseRevision,
+		Object: r.Object, Payload: r.Payload, ContentDigest: r.ContentDigest,
+		WriterID: r.WriterID, CreatedAt: r.CreatedAt,
 	}
+}
+
+// MarshalJSON omits object for schema==1, always includes it for schema>=2.
+func (r workEventRecord) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		SchemaVersion int             `json:"schemaVersion"`
+		ID            string          `json:"id"`
+		RequestID     string          `json:"requestId"`
+		WorkID        string          `json:"workId"`
+		Type          WorkEventType   `json:"type"`
+		Revision      int64           `json:"revision"`
+		BaseRevision  int64           `json:"baseRevision"`
+		Object        *ObjectContext  `json:"object,omitempty"`
+		Payload       json.RawMessage `json:"payload"`
+		ContentDigest string          `json:"contentDigest"`
+		WriterID      string          `json:"writerId"`
+		CreatedAt     time.Time       `json:"createdAt"`
+	}
+	a := alias{
+		SchemaVersion: r.SchemaVersion, ID: r.ID, RequestID: r.RequestID,
+		WorkID: r.WorkID, Type: r.Type, Revision: r.Revision, BaseRevision: r.BaseRevision,
+		Payload: r.Payload, ContentDigest: r.ContentDigest,
+		WriterID: r.WriterID, CreatedAt: r.CreatedAt,
+	}
+	if r.SchemaVersion >= SchemaVersionV2 {
+		a.Object = &r.Object
+	}
+	return json.Marshal(a)
 }
 
 // WorkRequestEntry stores semantic and event identity for a requestID. EventID
@@ -179,6 +215,9 @@ type WorkRequestEntry struct {
 	Digest   string        `json:"digest"`
 	EventID  string        `json:"eventId,omitempty"`
 	Type     WorkEventType `json:"type,omitempty"`
+	// Event preserves the immutable retry intent across event-log compaction.
+	// It is intentionally populated only for task.ready request receipts.
+	Event *WorkEvent `json:"event,omitempty"`
 }
 
 // WorkEventIndex is the persisted sidecar that summarises the event log for
@@ -423,11 +462,12 @@ func workEventIdempotentDigest(r workEventRecord) (string, error) {
 		WorkID    string          `json:"workId"`
 		Type      WorkEventType   `json:"type"`
 		Payload   json.RawMessage `json:"payload"`
+		Object    *ObjectContext  `json:"object,omitempty"`
 	}{
-		RequestID: r.RequestID,
-		WorkID:    r.WorkID,
-		Type:      r.Type,
-		Payload:   r.Payload,
+		RequestID: r.RequestID, WorkID: r.WorkID, Type: r.Type, Payload: r.Payload,
+	}
+	if r.SchemaVersion >= SchemaVersionV2 {
+		content.Object = &r.Object
 	}
 	return hashCanonical(content)
 }
@@ -465,14 +505,13 @@ func workEventContentDigest(r workEventRecord) (string, error) {
 		Revision     int64           `json:"revision"`
 		BaseRevision int64           `json:"baseRevision"`
 		Payload      json.RawMessage `json:"payload"`
+		Object       *ObjectContext  `json:"object,omitempty"`
 	}{
-		ID:           r.ID,
-		RequestID:    r.RequestID,
-		WorkID:       r.WorkID,
-		Type:         r.Type,
-		Revision:     r.Revision,
-		BaseRevision: r.BaseRevision,
-		Payload:      r.Payload,
+		ID: r.ID, RequestID: r.RequestID, WorkID: r.WorkID, Type: r.Type,
+		Revision: r.Revision, BaseRevision: r.BaseRevision, Payload: r.Payload,
+	}
+	if r.SchemaVersion >= SchemaVersionV2 {
+		content.Object = &r.Object
 	}
 	return hashCanonical(content)
 }
@@ -524,9 +563,28 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 	}
 	defer releaseOp()
 
-	// Validate schema.
-	if err := CheckSchemaVersion("WorkEvent", event.SchemaVersion); err != nil {
-		return 0, err
+	// Validate schema/type dispatch.
+	// schema=1: only V1 types. schema=2: only V2 types. Other: rejected.
+	switch event.SchemaVersion {
+	case SchemaVersion:
+		if IsV2EventType(event.Type) {
+			return 0, fmt.Errorf("work: V1 schema event cannot have V2 type %q", event.Type)
+		}
+		if err := CheckSchemaVersion("WorkEvent", event.SchemaVersion); err != nil {
+			return 0, err
+		}
+	case SchemaVersionV2:
+		if !IsV2EventType(event.Type) {
+			return 0, fmt.Errorf("work: V2 schema event cannot have V1 type %q", event.Type)
+		}
+		if err := CheckSchemaVersionV2("WorkEvent", event.SchemaVersion); err != nil {
+			return 0, err
+		}
+		if err := ValidateV2WorkEvent(event); err != nil {
+			return 0, fmt.Errorf("work: V2 event validation: %w", err)
+		}
+	default:
+		return 0, fmt.Errorf("work: unsupported event schemaVersion %d", event.SchemaVersion)
 	}
 
 	// Validate event type.
@@ -628,8 +686,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 		}
 	}
 
-	// Always overwrite SchemaVersion, WriterID, CreatedAt.
-	event.SchemaVersion = WorkEventSchemaVersion
+	// Always overwrite WriterID, CreatedAt. Preserve caller SchemaVersion.
 	event.WriterID = WorkWriterID()
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
@@ -643,7 +700,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 		return 0, err
 	}
 	rec.ContentDigest = digest
-	rec.SchemaVersion = WorkEventSchemaVersion
+	// Preserve caller SchemaVersion; never stamp to a fixed version.
 
 	// Serialize.
 	buf, err := json.Marshal(rec)
@@ -688,12 +745,17 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 	}
 	if rec.RequestID != "" {
 		idDigest, _ := workEventIdempotentDigest(rec)
-		newIdx.RequestIndex[rec.RequestID] = WorkRequestEntry{
+		entry := WorkRequestEntry{
 			Revision: rec.Revision,
 			Digest:   idDigest,
 			EventID:  rec.ID,
 			Type:     rec.Type,
 		}
+		if rec.Type == EventTaskReady {
+			value := eventFromRecord(rec)
+			entry.Event = &value
+		}
+		newIdx.RequestIndex[rec.RequestID] = entry
 	}
 	if err := writeWorkEventIndexAfterAppend(workDir, newIdx); err != nil {
 		return rec.Revision, fmt.Errorf("work: event appended at revision %d but index update failed: %w", rec.Revision, err)
@@ -775,7 +837,7 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 		}
 
 		// Schema check.
-		if rec.SchemaVersion > WorkEventSchemaVersion {
+		if rec.SchemaVersion > WorkEventSchemaVersionV2 {
 			replay.ReadOnly = true
 			replay.ReadOnlyReason = fmt.Sprintf("future schema version %d at offset %d", rec.SchemaVersion, dec.InputOffset())
 			return replay, nil
@@ -790,6 +852,25 @@ func ReplayWorkEventLog(workDir string) (*WorkEventReplay, error) {
 			replay.ReadOnly = true
 			replay.ReadOnlyReason = fmt.Sprintf("unknown event type %q at offset %d", rec.Type, dec.InputOffset())
 			return replay, nil
+		}
+
+		// Schema/type cross-check.
+		if rec.SchemaVersion == SchemaVersionV2 && !IsV2EventType(rec.Type) {
+			replay.NeedsRepair = true
+			return replay, nil
+		}
+		if rec.SchemaVersion == SchemaVersion && IsV2EventType(rec.Type) {
+			replay.NeedsRepair = true
+			return replay, nil
+		}
+
+		// V2 event payload + context validation.
+		if rec.SchemaVersion == SchemaVersionV2 {
+			ev := eventFromRecord(rec)
+			if err := ValidateV2WorkEvent(ev); err != nil {
+				replay.NeedsRepair = true
+				return replay, nil
+			}
 		}
 
 		// WriterID is required audit evidence. It is intentionally not required
@@ -862,7 +943,7 @@ func workEventIndexesEqual(a, b *WorkEventIndex) bool {
 		return false
 	}
 	for requestID, want := range b.RequestIndex {
-		if got, ok := a.RequestIndex[requestID]; !ok || got != want {
+		if got, ok := a.RequestIndex[requestID]; !ok || !reflect.DeepEqual(got, want) {
 			return false
 		}
 	}
@@ -1029,11 +1110,15 @@ func CompactWorkEventLog(workDir string, projection *Work, reducer WorkEventRedu
 		return fmt.Errorf("work: reducer replay before compact: %w", err)
 	}
 
-	providedJSON, err := json.Marshal(projection)
+	// Service.Get returns a transport-safe copy whose required collections are
+	// normalized from nil to empty arrays. Compare the same normalized shape on
+	// both sides so that representation-only nil/empty differences do not reject
+	// an otherwise identical authoritative projection.
+	providedJSON, err := json.Marshal(workForView(projection))
 	if err != nil {
 		return fmt.Errorf("work: marshal provided projection: %w", err)
 	}
-	replayedJSON, err := json.Marshal(replayProj)
+	replayedJSON, err := json.Marshal(workForView(replayProj))
 	if err != nil {
 		return fmt.Errorf("work: marshal replayed projection: %w", err)
 	}
@@ -1047,7 +1132,7 @@ func CompactWorkEventLog(workDir string, projection *Work, reducer WorkEventRedu
 		Projection   *Work                       `json:"projection"`
 		RequestIndex map[string]WorkRequestEntry `json:"requestIndex,omitempty"`
 	}{
-		Projection:   projection,
+		Projection:   replayProj,
 		RequestIndex: map[string]WorkRequestEntry{},
 	}
 	// Collect requestIDs from the original replay.
@@ -1310,12 +1395,17 @@ func buildIndexFromReplay(revision int64, digest string, logSize int64, eventCou
 				// Use the idempotent digest for the requestIndex entry.
 				rec := recordFromEvent(e)
 				idDigest, _ := workEventIdempotentDigest(rec)
-				idx.RequestIndex[e.RequestID] = WorkRequestEntry{
+				entry := WorkRequestEntry{
 					Revision: e.Revision,
 					Digest:   idDigest,
 					EventID:  e.ID,
 					Type:     e.Type,
 				}
+				if e.Type == EventTaskReady {
+					value := e
+					entry.Event = &value
+				}
+				idx.RequestIndex[e.RequestID] = entry
 			}
 			if e.Type == eventCompact {
 				// Extract embedded requestIndex from compact payload.

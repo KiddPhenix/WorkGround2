@@ -9,6 +9,7 @@ import {
   type WorkFace,
   type WorkUIPreference,
 } from './store';
+import { parseWorkViewEvent, parseWorkViewSnapshot } from './parse';
 import type {
   AcceptCornerstoneInput,
   Attempt,
@@ -29,7 +30,33 @@ import type {
   WorkViewEvent,
   WorkflowRun,
 } from './types';
-
+import type {
+  ApplyDefinitionInput,
+  ApplyDefinitionResult,
+  ApplyWorkPatchRequest,
+  ApplyWorkPatchResult,
+  BeginWorkPlanningInput,
+  BeginWorkPlanningResult,
+  CornerstonePinResult,
+  CreateCandidateRevisionInput,
+  CreateCandidateRevisionResult,
+  ArtifactPreview,
+  PreviewArtifactRequest,
+  PreviewArtifactResult,
+  RequestArtifactConversionInput,
+  RequestArtifactConversionResult,
+  PreviewWorkPatchRequest,
+  PreviewWorkPatchResult,
+  RetryWorkNodeRequest,
+  RetryWorkNodeResult,
+  RetryArtifactSlotRequest,
+  RetryArtifactSlotResult,
+  SelectWorkInputFileRequest,
+  SelectWorkInputFileResult,
+  SetInputCornerstoneRequest,
+  SubmitInputResult,
+  SubmitWorkInputRequest,
+} from './types_v2';
 export interface CornerstoneControllerPort {
   pinCornerstone?: (input: PinCornerstoneInput) => Promise<CornerstoneMutationResult>;
   refreshCornerstone?: (input: RefreshCornerstoneInput) => Promise<CornerstoneMutationResult>;
@@ -50,8 +77,8 @@ export interface WorkPortSubscription {
 
 export interface WorkControllerPort extends CornerstoneControllerPort {
   subscribe: (workID: string, onEvent: (event: WorkViewEvent) => void) => WorkPortSubscription;
-  fetchSnapshot: (workID: string) => Promise<WorkView>;
-  fetchRecoverySnapshot: (workID: string, intent: ViewRecoveryIntent) => Promise<WorkViewEvent>;
+  fetchSnapshot: (workID: string) => Promise<unknown>;
+  fetchRecoverySnapshot: (workID: string, intent: ViewRecoveryIntent) => Promise<unknown>;
   readUIPreference: (workID: string) => Promise<WorkUIPreference | null>;
   writeUIPreference: (workID: string, preference: WorkUIPreference) => Promise<void>;
   retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
@@ -59,6 +86,18 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   resumeRun?: (input: ResumeRunInput) => Promise<WorkflowRun>;
   updateDraft?: (input: UpdateDraftInput) => Promise<WorkView>;
   upsertBlock?: (input: BlockUpsertInput) => Promise<WorkView>;
+  beginWorkPlanning?: (input: BeginWorkPlanningInput) => Promise<BeginWorkPlanningResult>;
+  applyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
+  createCandidateRevision?: (input: CreateCandidateRevisionInput) => Promise<CreateCandidateRevisionResult>;
+  retryWorkNode?: (input: RetryWorkNodeRequest) => Promise<RetryWorkNodeResult>;
+  retryArtifactSlot?: (input: RetryArtifactSlotRequest) => Promise<RetryArtifactSlotResult>;
+  previewArtifact?: (input: PreviewArtifactRequest) => Promise<PreviewArtifactResult>;
+  requestArtifactConversion?: (input: RequestArtifactConversionInput) => Promise<RequestArtifactConversionResult>;
+  selectWorkInputFile?: (input: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
+  submitWorkInput?: (input: SubmitWorkInputRequest) => Promise<SubmitInputResult>;
+  setInputCornerstone?: (input: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
+  previewWorkPatch?: (input: PreviewWorkPatchRequest) => Promise<PreviewWorkPatchResult>;
+  applyWorkPatch?: (input: ApplyWorkPatchRequest) => Promise<ApplyWorkPatchResult>;
 }
 
 export type WorkStreamHealth =
@@ -74,6 +113,12 @@ export interface WorkControllerStatus {
   stream: WorkStreamHealth;
   /** Projection/event reducer error; transport health lives in stream. */
   eventError: string | null;
+  /** Raw future-schema data is retained for diagnostics/export but never applied. */
+  unsupportedView: {
+    source: 'fetch' | 'recover' | 'watch';
+    schemaVersion: number;
+    raw: string;
+  } | null;
 }
 
 const idleStatus = (): WorkControllerStatus => ({
@@ -82,7 +127,11 @@ const idleStatus = (): WorkControllerStatus => ({
   preferenceError: null,
   stream: { kind: 'idle' },
   eventError: null,
+  unsupportedView: null,
 });
+
+const MAX_SNAPSHOT_RECOVERY_FETCHES = 3;
+const MAX_RECOVERY_EVENT_IDS = 256;
 
 interface WorkSubscriptionState {
   token: symbol;
@@ -93,6 +142,7 @@ interface WorkSubscriptionState {
   settling: boolean;
   buffering: boolean;
   events: WorkViewEvent[];
+  recoveryEventIDs: Set<string>;
 }
 
 function errorText(error: unknown): string {
@@ -103,6 +153,37 @@ function isOverflowRecoveryFailure(event: WorkViewEvent): boolean {
   if (event.type !== 'attention' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return false;
   const payload = event.payload as Record<string, unknown>;
   return payload.overflow === true && payload.recovery === 'failed' && payload.retryable === true;
+}
+
+function isV2ProjectionEvent(event: WorkViewEvent): boolean {
+  if (event.schemaVersion >= 2) return true;
+  if (typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return false;
+  const payload = event.payload as Record<string, unknown>;
+  if (event.type === 'snapshot' && payload.schemaVersion === 2) return true;
+  return [
+    'definition',
+    'artifactSlots',
+    'tasks',
+    'patchPreviews',
+    'removedArtifactSlotIds',
+    'removedTaskIds',
+    'removedInputIds',
+    'removedPatchIds',
+  ].some((field) => field in payload) || Array.isArray(payload.inputs);
+}
+
+function needsProjectionRecovery(event: WorkViewEvent, result: ApplyResult): boolean {
+  return result.kind === 'gap' || (result.kind === 'conflict' && isV2ProjectionEvent(event));
+}
+
+function claimProjectionRecovery(state: WorkSubscriptionState, event: WorkViewEvent, result: ApplyResult): boolean {
+  if (!needsProjectionRecovery(event, result) || state.recoveryEventIDs.has(event.eventID)) return false;
+  if (state.recoveryEventIDs.size >= MAX_RECOVERY_EVENT_IDS) {
+    const oldest = state.recoveryEventIDs.values().next().value;
+    if (oldest !== undefined) state.recoveryEventIDs.delete(oldest);
+  }
+  state.recoveryEventIDs.add(event.eventID);
+  return true;
 }
 
 export class WorkControllerAdapter {
@@ -162,19 +243,29 @@ export class WorkControllerAdapter {
       settling: true,
       buffering: true,
       events: [] as WorkViewEvent[],
+      recoveryEventIDs: new Set(),
     };
     const onEvent = (event: WorkViewEvent): void => {
       if (this.subscriptions.get(workID)?.token !== token) return;
-      if (event.workID !== workID) {
-        this.updateStatus(workID, { eventError: `received event for ${event.workID} on ${workID} subscription` });
+      const parsed = this.parseEvent(workID, event);
+      if (!parsed) return;
+      if (parsed.workID !== workID) {
+        this.updateStatus(workID, { eventError: `received event for ${parsed.workID} on ${workID} subscription` });
         return;
       }
       if (state.buffering) {
-        state.events.push(event);
+        state.events.push(parsed);
         return;
       }
-      const result = this.applyEvent(event);
-      if (result.kind === 'gap') void this.recoverSnapshot(workID).catch(() => undefined);
+      const result = this.applyParsedEvent(parsed);
+      if (claimProjectionRecovery(state, parsed, result)) {
+        void this.recoverSnapshot(workID).catch(() => {
+          // recoverSnapshot already set snapshotError; ensure stream reflects the failure.
+          this.updateStatus(workID, {
+            stream: { kind: 'offline', message: this.getStatus(workID).snapshotError ?? 'watch-event recovery failed; retry subscription' },
+          });
+        });
+      }
     };
     let subscription: WorkPortSubscription;
     try {
@@ -196,24 +287,37 @@ export class WorkControllerAdapter {
         // The Watch must exist before either snapshot is requested. Initial
         // hydration keeps ordinary revision conflict rules; explicit retry
         // requests a backend-issued typed authoritative resync.
-        if (state.recoveryReason) await this.recoverSubscriptionSnapshot(workID, state);
-        else await this.recoverSnapshot(workID);
+        const snapshotResult = state.recoveryReason
+          ? await this.recoverSubscriptionSnapshot(workID, state)
+          : await this.recoverSnapshot(workID);
+        let observedUnsupported = snapshotResult.kind === 'unsupported';
         if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
           return;
         }
         const buffered = this.flushBuffered(workID, state);
         if (buffered.retryableFailure) throw new Error('authoritative overflow recovery failed; retry synchronization');
-        if (buffered.needsRecovery) await this.recoverSnapshot(workID);
+        if (buffered.needsRecovery) {
+          const recovery = await this.recoverSnapshot(workID);
+          observedUnsupported ||= recovery.kind === 'unsupported';
+        }
         if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
           return;
         }
         state.settling = false;
+        if (observedUnsupported) {
+          this.updateStatus(workID, {
+            stream: { kind: 'online' },
+            fetching: false,
+          });
+          return;
+        }
         this.updateStatus(workID, {
           stream: { kind: 'online' },
           snapshotError: null,
           eventError: null,
+          unsupportedView: null,
           fetching: false,
         });
       })
@@ -264,7 +368,7 @@ export class WorkControllerAdapter {
       const pending = state.events.splice(0);
       for (const event of pending) {
         const result = this.applyEvent(event);
-        if (result.kind === 'gap') needsRecovery = true;
+        if (claimProjectionRecovery(state, event, result)) needsRecovery = true;
         if (isOverflowRecoveryFailure(event)) retryableFailure = true;
       }
     }
@@ -275,7 +379,13 @@ export class WorkControllerAdapter {
   private async recoverSubscriptionSnapshot(workID: string, state: WorkSubscriptionState): Promise<ApplyResult> {
     this.updateStatus(workID, { fetching: true });
     const reason = state.recoveryReason!;
-    const event = await this.port.fetchRecoverySnapshot(workID, { reason, generation: state.generation });
+    const rawEvent = await this.port.fetchRecoverySnapshot(workID, { reason, generation: state.generation });
+    const parsed = parseWorkViewEvent(JSON.stringify(rawEvent));
+    if (parsed.futureError) {
+      return this.observeUnsupported(workID, parsed.futureError.got, parsed.raw, 'recover');
+    }
+    const event = parsed.event;
+    if (!event) throw new Error(`backend returned an unreadable authoritative ${reason} snapshot`);
     if (!this.isCurrentSubscription(workID, state)) throw new Error('stale recovery generation');
     if (event.workID !== workID || event.type !== 'snapshot' || event.resync?.reason !== reason ||
         !event.resync?.authoritative || (event.resync?.generation ?? 0) < state.generation) {
@@ -292,7 +402,21 @@ export class WorkControllerAdapter {
     return result;
   }
 
-  applyEvent = (event: WorkViewEvent): ApplyResult => {
+  private parseEvent(statusWorkID: string, event: WorkViewEvent): WorkViewEvent | null {
+    try {
+      const parsed = parseWorkViewEvent(JSON.stringify(event));
+      if (parsed.futureError) {
+        this.observeUnsupported(statusWorkID, parsed.futureError.got, parsed.raw, 'watch');
+        return null;
+      }
+      return parsed.event;
+    } catch (error) {
+      this.updateStatus(statusWorkID, { eventError: errorText(error) });
+      return null;
+    }
+  }
+
+  private applyParsedEvent(event: WorkViewEvent): ApplyResult {
     const result = applyWorkViewEvent(event);
     if (isOverflowRecoveryFailure(event)) {
       this.updateStatus(event.workID, {
@@ -310,6 +434,12 @@ export class WorkControllerAdapter {
       });
     }
     return result;
+  }
+
+  applyEvent = (event: WorkViewEvent): ApplyResult => {
+    const parsed = this.parseEvent(event.workID, event);
+    if (!parsed) return { kind: 'ignored', workID: event.workID, eventID: event.eventID };
+    return this.applyParsedEvent(parsed);
   };
 
   recoverSnapshot = (workID: string): Promise<ApplyResult> => {
@@ -319,11 +449,16 @@ export class WorkControllerAdapter {
     const request = Promise.resolve()
       .then(async () => {
         let previousRevision = useWorkStore.getState().revisions[workID] ?? -1;
-        for (;;) {
-          const view = await this.port.fetchSnapshot(workID);
+        for (let attempt = 0; attempt < MAX_SNAPSHOT_RECOVERY_FETCHES; attempt++) {
+          const fetched = await this.port.fetchSnapshot(workID);
           if (this.disposed) {
             return { kind: 'ignored' as const, workID, eventID: `fetch:${workID}:disposed` };
           }
+          const parsed = parseWorkViewSnapshot(fetched);
+          if (parsed.kind === 'unsupported') {
+            return this.observeUnsupported(workID, parsed.schemaVersion, parsed.raw, 'fetch');
+          }
+          const view = parsed.view;
           if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
           const eventGeneration = ++this.snapshotEventGeneration;
           const result = applySnapshot(view, `fetch:${workID}:${view.revision}:${eventGeneration}`);
@@ -331,7 +466,7 @@ export class WorkControllerAdapter {
           const state = useWorkStore.getState();
           const issue = state.gaps[workID];
           if (!issue) {
-            this.updateStatus(workID, { snapshotError: null, eventError: null });
+            this.updateStatus(workID, { snapshotError: null, eventError: null, unsupportedView: null });
             return result;
           }
           const currentRevision = state.revisions[workID] ?? -1;
@@ -342,6 +477,10 @@ export class WorkControllerAdapter {
           }
           previousRevision = currentRevision;
         }
+        const issue = useWorkStore.getState().gaps[workID];
+        throw new Error(
+          `snapshot recovery exceeded ${MAX_SNAPSHOT_RECOVERY_FETCHES} fetches without repairing the projection gap through revision ${issue?.eventRevision ?? 'unknown'}`,
+        );
       })
       .catch((error: unknown) => {
         this.updateStatus(workID, { snapshotError: errorText(error) });
@@ -355,11 +494,38 @@ export class WorkControllerAdapter {
     return request;
   };
 
-  restoreUIPreference = async (workID: string): Promise<void> => {
+  /** Fetch authoritative snapshots until the store revision reaches at least
+   *  minimumRevision, or exhaust retries. Used after a committed write whose
+   *  result does not include a trustworthy WorkView payload — the store must
+   *  catch up to the backend's authoritative revision before callers can read
+   *  expectedRevision for the next write. */
+  private async recoverSnapshotToRevision(workID: string, minimumRevision: number): Promise<void> {
+    for (let attempt = 0; attempt < MAX_SNAPSHOT_RECOVERY_FETCHES + 1; attempt++) {
+      try {
+        await this.recoverSnapshot(workID);
+      } catch {
+        // recoverSnapshot already sets snapshotError; continue retrying.
+      }
+      const currentRevision = useWorkStore.getState().revisions[workID] ?? -1;
+      if (currentRevision >= minimumRevision) {
+        this.updateStatus(workID, { snapshotError: null });
+        return;
+      }
+    }
+    const currentRevision = useWorkStore.getState().revisions[workID] ?? -1;
+    const message = `候选已提交 (revision ${minimumRevision})，但权威状态刷新 ${MAX_SNAPSHOT_RECOVERY_FETCHES + 1} 次后仍停留在 revision ${currentRevision}，请重试。`;
+    this.updateStatus(workID, { snapshotError: message });
+    throw Object.assign(new Error(message), {
+      committed: true, recoverable: true, code: 'snapshot_stale',
+    });
+  }
+
+  restoreUIPreference = async (workID: string): Promise<WorkUIPreference | null> => {
     try {
       const preference = await this.port.readUIPreference(workID);
       if (preference) useWorkUIStore.getState().setActiveFace(workID, preference.activeFace);
       this.updateStatus(workID, { preferenceError: null });
+      return preference;
     } catch (error) {
       this.updateStatus(workID, { preferenceError: errorText(error) });
       throw error;
@@ -388,6 +554,237 @@ export class WorkControllerAdapter {
     return request;
   };
 
+  beginWorkPlanning = async (input: BeginWorkPlanningInput): Promise<BeginWorkPlanningResult> => {
+    if (!this.port.beginWorkPlanning) throw new Error('Work 对话规划能力尚未连接。');
+    return this.port.beginWorkPlanning(input);
+  };
+
+  applyDefinition = async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
+    if (!this.port.applyDefinition) throw new Error('Work 定义应用能力尚未连接。');
+    const result = await this.port.applyDefinition(input);
+    if (result.view) {
+      const eventID = `apply-def:${input.requestId}:${result.revision}`;
+      if (!this.applyMutationView(input.workId, result.view, eventID)) {
+        await this.recoverSnapshot(input.workId);
+      }
+    } else if (
+      (result.committed && result.recoverable) ||
+      (!result.duplicate && !result.committed && !result.transportError)
+    ) {
+      // A committed-recovery response has durable state but no trustworthy
+      // response body. Re-read the authoritative projection before callers
+      // switch faces. A body-less claimed revision is recovered as well.
+      await this.recoverSnapshot(input.workId);
+    }
+    return result;
+  };
+
+  createCandidateRevision = async (
+    input: CreateCandidateRevisionInput,
+  ): Promise<CreateCandidateRevisionResult> => {
+    if (!this.port.createCandidateRevision) throw new Error('Work 候选定义生成能力尚未连接。');
+    const result = await this.port.createCandidateRevision(input);
+    if (result.committed) {
+      try {
+        await this.recoverSnapshotToRevision(input.workId, result.revision);
+      } catch (err) {
+        if (!result.recoverable) {
+          result.recoverable = true;
+          result.transportError = {
+            code: (err as { code?: string }).code ?? 'snapshot_stale',
+            message: (err as Error).message,
+            operation: 'CreateCandidateRevision',
+            workId: input.workId,
+            requestId: input.requestId,
+            revision: result.revision,
+            committed: true,
+            recoverable: true,
+          };
+        }
+        throw Object.assign(
+          new Error(result.transportError?.message ?? (err as Error).message),
+          { code: result.transportError?.code ?? 'snapshot_stale', committed: true, recoverable: true },
+        );
+      }
+    }
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || 'Work 候选定义未生成。'),
+        { code: result.transportError?.code },
+      );
+    }
+    return result;
+  };
+
+  retryWorkNode = async (input: RetryWorkNodeRequest): Promise<RetryWorkNodeResult> => {
+    if (!this.port.retryWorkNode) throw new Error('Work V2 节点重试能力尚未连接。');
+    const result = await this.port.retryWorkNode(input);
+    if (!result.committed) {
+      if (result.error?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.error?.message || 'Work 节点重试未提交。'),
+        { code: result.error?.code },
+      );
+    }
+    return result;
+  };
+
+  retryArtifactSlot = async (
+    input: RetryArtifactSlotRequest,
+  ): Promise<RetryArtifactSlotResult> => {
+    if (!this.port.retryArtifactSlot) throw new Error('Work 成果重试能力尚未连接。');
+    const result = await this.port.retryArtifactSlot(input);
+    if (result.committed && result.recoverable) {
+      await this.recoverSnapshot(input.workId);
+    }
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || 'Work 成果重试未提交。'),
+        { code: result.transportError?.code },
+      );
+    }
+    return result;
+  };
+
+  previewArtifact = async (
+    input: PreviewArtifactRequest,
+  ): Promise<ArtifactPreview> => {
+    if (!this.port.previewArtifact) throw new Error('Work 预览能力尚未连接。');
+    const result = await this.port.previewArtifact(input);
+    if (result.transportError && !result.committed) {
+      throw Object.assign(
+        new Error(result.transportError.message || '预览生成失败。'),
+        { code: result.transportError.code },
+      );
+    }
+    if (!result.preview) throw new Error('预览结果为空。');
+    return result.preview;
+  };
+
+  requestArtifactConversion = async (
+    input: RequestArtifactConversionInput,
+  ): Promise<ArtifactPreview> => {
+    if (!this.port.requestArtifactConversion) throw new Error('Work 转换能力尚未连接。');
+    const result = await this.port.requestArtifactConversion(input);
+    if (result.transportError && !result.committed) {
+      throw Object.assign(
+        new Error(result.transportError.message || '转换请求失败。'),
+        { code: result.transportError.code, recoverable: result.recoverable },
+      );
+    }
+    if (!result.preview) throw new Error('转换结果为空。');
+    return result.preview;
+  };
+
+  selectWorkInputFile = async (
+    input: SelectWorkInputFileRequest,
+  ): Promise<SelectWorkInputFileResult> => {
+    if (!this.port.selectWorkInputFile) throw new Error('Work 文件选择能力尚未连接。');
+    const result = await this.port.selectWorkInputFile(input);
+    if (result.error) {
+      throw Object.assign(new Error(result.error.message), { code: result.error.code });
+    }
+    return result;
+  };
+
+  submitWorkInput = async (input: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
+    if (!this.port.submitWorkInput) throw new Error('Work 输入提交能力尚未连接。');
+    const result = await this.port.submitWorkInput(input);
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || result.error || 'Work 输入提交未确认。'),
+        { code: result.transportError?.code },
+      );
+    }
+    if (!result.receipt) {
+      return {
+        ...result,
+        recoverable: true,
+        transportError: {
+          code: 'contract_receipt_missing',
+          message: '输入已提交，但响应缺少 InputIntentReceipt；正在刷新权威状态。',
+          operation: 'SubmitWorkInput',
+          workId: input.workId,
+          requestId: input.requestId,
+          committed: true,
+          recoverable: true,
+        },
+      };
+    }
+    return result;
+  };
+
+  setInputCornerstone = async (input: SetInputCornerstoneRequest): Promise<CornerstonePinResult> => {
+    if (!this.port.setInputCornerstone) throw new Error('Work Cornerstone 能力尚未连接。');
+    const result = await this.port.setInputCornerstone(input);
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || 'Work Cornerstone 操作未确认。'),
+        { code: result.transportError?.code },
+      );
+    }
+    if (!result.receipt) {
+      return {
+        ...result,
+        recoverable: true,
+        transportError: {
+          code: 'contract_receipt_missing',
+          message: 'Cornerstone 已提交，但响应缺少 InputIntentReceipt；正在刷新权威状态。',
+          operation: 'SetInputCornerstone',
+          workId: input.workId,
+          requestId: input.requestId,
+          committed: true,
+          recoverable: true,
+        },
+      };
+    }
+    return result;
+  };
+
+  previewWorkPatch = async (input: PreviewWorkPatchRequest): Promise<PreviewWorkPatchResult> => {
+    if (!this.port.previewWorkPatch) throw new Error('Work 讨论补丁预览能力尚未连接。');
+    const result = await this.port.previewWorkPatch(input);
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || 'Work 补丁预览未确认。'),
+        { code: result.transportError?.code },
+      );
+    }
+    return result;
+  };
+
+  applyWorkPatch = async (input: ApplyWorkPatchRequest): Promise<ApplyWorkPatchResult> => {
+    if (!this.port.applyWorkPatch) throw new Error('Work 讨论补丁应用能力尚未连接。');
+    const result = await this.port.applyWorkPatch(input);
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || 'Work 补丁应用未确认。'),
+        { code: result.transportError?.code },
+      );
+    }
+    return result;
+  };
+
   runWork = (input: { workId: string; requestId: string }): Promise<WorkflowRun> => {
     if (!this.port.runWork) return Promise.reject(new Error('Work 运行能力尚未连接。'));
     return this.port.runWork(input);
@@ -396,6 +793,11 @@ export class WorkControllerAdapter {
   resumeRun = (input: ResumeRunInput): Promise<WorkflowRun> => {
     if (!this.port.resumeRun) return Promise.reject(new Error('Work 继续运行能力尚未连接。'));
     return this.port.resumeRun(input);
+  };
+
+  requestConversion = (input: RequestArtifactConversionInput): Promise<RequestArtifactConversionResult> => {
+    if (!this.port.requestArtifactConversion) return Promise.reject(new Error('Work 转换能力尚未连接。'));
+    return this.port.requestArtifactConversion(input);
   };
 
   updateDraft = async (input: UpdateDraftInput): Promise<WorkView> => {
@@ -417,7 +819,7 @@ export class WorkControllerAdapter {
   };
 
   clearErrors = (workID: string): void => {
-    this.updateStatus(workID, { snapshotError: null, preferenceError: null, eventError: null });
+    this.updateStatus(workID, { snapshotError: null, preferenceError: null, eventError: null, unsupportedView: null });
   };
 
   dispose = (): void => {
@@ -430,16 +832,30 @@ export class WorkControllerAdapter {
 
   private applyMutationView(workID: string, view: WorkView, eventID: string): boolean {
     if (view.work.id !== workID) {
-      this.updateStatus(workID, { eventError: 'cornerstone mutation returned a mismatched Work projection' });
+      this.updateStatus(workID, { eventError: 'mutation returned a mismatched Work projection' });
       return false;
     }
     const applied = applySnapshot(view, eventID);
     if (applied.kind === 'conflict' || applied.kind === 'gap') {
-      this.updateStatus(workID, { eventError: 'cornerstone mutation returned an invalid Work projection' });
+      // Don't pre-set eventError — the caller will recover and clear or fail.
       return false;
     }
     this.updateStatus(workID, { eventError: null });
     return true;
+  }
+
+  private observeUnsupported(
+    workID: string,
+    schemaVersion: number,
+    raw: string,
+    source: 'fetch' | 'recover' | 'watch',
+  ): ApplyResult {
+    const message = `WorkView schema version ${schemaVersion} exceeds current max 2; read-only access is required`;
+    this.updateStatus(workID, {
+      unsupportedView: { source, schemaVersion, raw },
+      ...(source === 'watch' ? { eventError: message } : { snapshotError: message }),
+    });
+    return { kind: 'unsupported', observed: true, workID, schemaVersion, raw, source };
   }
 
   /** Apply a cornerstone mutation result to the Work store. On success the
@@ -451,10 +867,10 @@ export class WorkControllerAdapter {
     if (result.ok) {
       if (result.workView) {
         if (!this.applyMutationView(workID, result.workView, `cornerstone:ok:${workID}:${result.workView.revision}`)) {
-          await this.recoverSnapshot(workID).catch(() => undefined);
+          await this.recoverSnapshot(workID);
         }
       } else {
-        await this.recoverSnapshot(workID).catch(() => undefined);
+        await this.recoverSnapshot(workID);
       }
       return;
     }
@@ -464,11 +880,11 @@ export class WorkControllerAdapter {
         result.error.latestView,
         `cornerstone:conflict:${workID}:${result.error.latestView.revision}`,
       )) {
-        await this.recoverSnapshot(workID).catch(() => undefined);
+        await this.recoverSnapshot(workID);
       }
       return;
     }
-    await this.recoverSnapshot(workID).catch(() => undefined);
+    await this.recoverSnapshot(workID);
   };
 }
 
@@ -477,7 +893,7 @@ export interface WorkController {
   subscribe: (workID: string) => void;
   unsubscribe: (workID: string) => void;
   recoverSnapshot: (workID: string) => Promise<ApplyResult>;
-  restoreUIPreference: (workID: string) => Promise<void>;
+  restoreUIPreference: (workID: string) => Promise<WorkUIPreference | null>;
   setActiveFace: (workID: string, activeFace: WorkFace) => Promise<void>;
   retryTask: (input: RetryTaskInput) => Promise<Attempt>;
   clearErrors: (workID: string) => void;

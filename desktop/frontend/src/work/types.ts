@@ -407,12 +407,28 @@ export type ObjectKind =
   | 'attempt'
   | 'cornerstone'
   | 'conclusion'
-  | 'artifact';
+  | 'artifact'
+  | 'definition'
+  | 'artifact_slot'
+  | 'input'
+  | 'patch';
 
 export interface ObjectContext {
   kind: ObjectKind;
   id: string;
   parentID?: string;
+  // V2 typed context fields
+  workID?: string;
+  runID?: string;
+  taskID?: string;
+  blockID?: string;
+  inputID?: string;
+  specID?: string;
+  definitionID?: string;
+  artifactSlotID?: string;
+  patchID?: string;
+  expectedRevision?: number | null;
+  definitionRevision?: number | null;
 }
 
 export interface ViewResync {
@@ -554,6 +570,11 @@ export interface WorkView {
   revision: number;
   assessment: CornerstoneAssessment;
   runBlock?: RunBlockReason;
+  definition?: import('./types_v2.js').WorkDefinitionRevision;
+  artifactSlots?: import('./types_v2.js').ArtifactSlot[];
+  tasks?: import('./types_v2.js').TaskV2View[];
+  inputs?: import('./types_v2.js').WorkInput[];
+  patchPreviews?: import('./types_v2.js').WorkPatchPreview[];
 }
 
 export type CornerstoneUseState = 'ready' | 'degraded' | 'blocked';

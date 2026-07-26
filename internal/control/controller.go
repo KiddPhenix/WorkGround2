@@ -175,6 +175,9 @@ type Controller struct {
 	// workSvc is the optional Work lifecycle service. Nil when Work is disabled.
 	// All WorkControl methods delegate to it via workMethods.
 	workSvc WorkService
+	// workV2Enabled is the explicit collaboration_workbench_v2 feature gate.
+	// It never disables V1 Work reads or Session behavior.
+	workV2Enabled bool
 	// cornerstoneTurn is a single-use Work context bound to one RunTurn. A
 	// second Work may not overwrite it while active; finishCornerstoneTurn uses
 	// the token to avoid a late cleanup clearing a newer turn.
@@ -440,6 +443,9 @@ type Options struct {
 	// disabled and all WorkControl methods return an error. Boot assembles it
 	// from config when [work].enabled is true.
 	Work WorkService
+	// WorkV2Enabled gates the V2 collaboration intent surface independently
+	// from the V1 Work lifecycle.
+	WorkV2Enabled bool
 	// WorkViews is the broadcaster that fans out WorkViewEvents to frontend
 	// subscribers. It must be non-nil when Work is non-nil; boot creates it and
 	// wires it as the Service's ViewSink.
@@ -512,6 +518,7 @@ func New(opts Options) *Controller {
 		approval:                   newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 		visionDelegate:             opts.VisionDelegateProvider,
 		workSvc:                    opts.Work,
+		workV2Enabled:              opts.WorkV2Enabled,
 		workViews:                  opts.WorkViews,
 		taskExec:                   taskExec,
 		actionRoot:                 actionRoot,

@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useCornerstoneUIStore } from '../../work/cornerstoneStore';
 import { useWorkStore } from '../../work/store';
 import type { ResumeRunInput, RunBlockCode, WorkflowRun } from '../../work/types';
+import type { WorkDefinitionRevision } from '../../work/types_v2';
 
 const RUN_CODE_LABEL: Record<RunBlockCode, string> = {
   blob_missing: '快照内容缺失',
@@ -24,6 +25,19 @@ export interface WorkRunEntryProps {
   onRecoverProjection?: () => void | Promise<void>;
   onOpenDrawer?: () => void;
   disabled?: boolean;
+  /** Active V2 definition — when absent on a V2 work, Run is gated. */
+  v2Definition?: WorkDefinitionRevision;
+  /** Called when user clicks the planning CTA on a V2 draft work. */
+  onPlanStructure?: () => void;
+  /** Retries one authoritative recoverable V2 task. */
+  onV2TaskRetry?: (intent: { workId: string; taskId: string; runId: string }) => void | Promise<void>;
+  /** Regenerates one missing V2 artifact from its completed producer. */
+  onV2ArtifactRetry?: (intent: {
+    workId: string;
+    definitionRevision: number;
+    slotId: string;
+    revision: number;
+  }) => void | Promise<void>;
 }
 
 interface RunIntent {
@@ -47,6 +61,10 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   onRecoverProjection,
   onOpenDrawer,
   disabled = false,
+  v2Definition,
+  onPlanStructure,
+  onV2TaskRetry,
+  onV2ArtifactRetry,
 }) => {
   const view = useWorkStore((state) => state.works[workId]);
   const [pending, setPending] = useState(false);
@@ -59,8 +77,22 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   const runBlock = view?.runBlock;
   const blocked = Boolean(runBlock?.blocked || assessment?.blocking);
   const degraded = assessment?.degraded ?? false;
-  const running = view?.work.state === 'running';
+  const v2Tasks = view?.tasks ?? [];
+  const recoverableV2Task = v2Tasks.find((task) =>
+    task.state === 'failed_retryable' || task.state === 'invalidated');
+  const v2Running = v2Tasks.some((task) =>
+    task.state === 'pending' || task.state === 'ready' || task.state === 'running');
+  const v2Waiting = v2Tasks.some((task) =>
+    task.state === 'waiting_input' || task.state === 'waiting_approval');
+  const v2Completed = v2Tasks.length > 0 && v2Tasks.every((task) => task.state === 'completed');
+  const missingV2Artifact = v2Completed
+    ? view?.artifactSlots?.find((slot) => slot.required && slot.state !== 'ready')
+    : undefined;
+  const running = v2Definition && v2Tasks.length > 0 ? v2Running : view?.work.state === 'running';
   const promptMissing = Boolean(view && !view.work.prompt.trim());
+  // V2 draft: schemaVersion >= 2 but no active executable Definition.
+  // Run/Resume are gated — user must finish planning first.
+  const isV2Draft = Boolean(view && view.work.schemaVersion >= 2 && !v2Definition);
   const waitingRun = useMemo(() => {
     if (!view) return undefined;
     return [...view.work.runs].reverse().find((run) => run.state === 'waiting');
@@ -126,6 +158,9 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   }, [onOpenDrawer, workId]);
 
   const handleRun = useCallback(async () => {
+    // V2 draft gate: Run is never reachable for V2 planning works.
+    // The UI renders a planning CTA instead of the Run button.
+    if (isV2Draft) return;
     if (promptMissing) {
       setError('请先在背面填写并保存 Prompt。');
       return;
@@ -182,7 +217,7 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
     } finally {
       setPending(false);
     }
-  }, [blocked, disabled, onRecoverProjection, onRun, openDrawer, pending, promptMissing, running, setRunIntent, workId]);
+  }, [blocked, disabled, isV2Draft, onRecoverProjection, onRun, openDrawer, pending, promptMissing, running, setRunIntent, workId]);
 
   const handleResume = useCallback(async () => {
     if (!onResumeRun || !waitingRun || disabled || pending) return;
@@ -237,9 +272,85 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
     }
   }, [disabled, onRecoverProjection, onResumeRun, pending, setResumeIntent, waitingRun, workId]);
 
+  const handleV2Retry = useCallback(async () => {
+    if (!recoverableV2Task || !onV2TaskRetry || disabled || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onV2TaskRetry({
+        workId,
+        taskId: recoverableV2Task.id,
+        runId: recoverableV2Task.runId,
+      });
+      if (onRecoverProjection) await onRecoverProjection();
+    } catch {
+      setError('阶段重试失败，状态已保留，可安全重试。');
+    } finally {
+      setPending(false);
+    }
+  }, [disabled, onRecoverProjection, onV2TaskRetry, pending, recoverableV2Task, workId]);
+
+  const handleV2ArtifactRetry = useCallback(async () => {
+    if (!missingV2Artifact || !onV2ArtifactRetry || disabled || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      await onV2ArtifactRetry({
+        workId,
+        definitionRevision: missingV2Artifact.definitionRev,
+        slotId: missingV2Artifact.id,
+        revision: missingV2Artifact.revision,
+      });
+      if (onRecoverProjection) await onRecoverProjection();
+    } catch {
+      setError('缺失成果重新生成失败，状态已保留，可安全重试。');
+    } finally {
+      setPending(false);
+    }
+  }, [disabled, missingV2Artifact, onRecoverProjection, onV2ArtifactRetry, pending, workId]);
+
   return (
     <div className="work-run-entry" data-testid="work-run-entry">
-      {canResume && waitingRun ? (
+      {isV2Draft ? (
+        <button
+          type="button"
+          className="work-run-entry__btn work-run-entry__btn--plan"
+          onClick={() => onPlanStructure?.()}
+          disabled={disabled}
+          data-testid="work-plan-structure"
+        >
+          继续规划工作结构
+        </button>
+      ) : v2Definition && recoverableV2Task ? (
+        <button
+          type="button"
+          className="work-run-entry__btn work-run-entry__btn--resume"
+          onClick={() => void handleV2Retry()}
+          disabled={disabled || pending || !onV2TaskRetry}
+          data-testid="work-v2-retry"
+        >
+          {pending ? '正在重试…' : '重试未完成阶段'}
+        </button>
+      ) : v2Definition && missingV2Artifact ? (
+        <button
+          type="button"
+          className="work-run-entry__btn work-run-entry__btn--resume"
+          onClick={() => void handleV2ArtifactRetry()}
+          disabled={disabled || pending || !onV2ArtifactRetry}
+          data-testid="work-v2-artifact-retry"
+        >
+          {pending ? '正在生成…' : '生成缺失成果'}
+        </button>
+      ) : v2Definition && v2Tasks.length > 0 ? (
+        <button
+          type="button"
+          className="work-run-entry__btn"
+          disabled
+          data-testid="work-v2-status"
+        >
+          {v2Waiting ? '等待输入…' : v2Completed ? '已完成' : running ? '运行中…' : '准备中…'}
+        </button>
+      ) : canResume && waitingRun ? (
         <button
           type="button"
           className="work-run-entry__btn work-run-entry__btn--resume"
@@ -261,7 +372,13 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
         </button>
       )}
 
-      {promptMissing && <p className="work-run-entry__error" role="alert">请先在背面填写并保存 Prompt。</p>}
+      {isV2Draft && (
+        <p className="work-run-entry__hint" data-testid="work-v2-draft-hint">
+          请先在背面完成工作结构规划，确认后可开始执行。
+        </p>
+      )}
+
+      {!isV2Draft && promptMissing && <p className="work-run-entry__error" role="alert">请先在背面填写并保存 Prompt。</p>}
 
       {blocked && (
         <div id={`work-run-blocked-${workId}`} className="work-run-entry__attention work-run-entry__blocked" role="alert" data-testid="work-run-blocked">

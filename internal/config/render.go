@@ -643,6 +643,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	// [work] — structured Work feature (default enabled; explicit false disables)
 	b.WriteString("\n[work]\n")
 	fmt.Fprintf(&b, "enabled = %v   # default true; set false to hide Work and skip writable Work services\n", c.Work.Enabled)
+	fmt.Fprintf(&b, "collaboration_workbench_v2 = %v   # default true; set false to fall back to V1 collaborative workbench\n", c.Work.CollaborationWorkbenchV2)
 
 	return b.String()
 }
@@ -1013,7 +1014,11 @@ func RenderTOMLProjectDelta(c *Config) string {
 	// [work]
 	if c.Work != d.Work {
 		b.WriteString("[work]\n")
-		fmt.Fprintf(&b, "enabled = %v\n\n", c.Work.Enabled)
+		fmt.Fprintf(&b, "enabled = %v\n", c.Work.Enabled)
+		if !c.Work.CollaborationWorkbenchV2 {
+			fmt.Fprintf(&b, "collaboration_workbench_v2 = %v\n", c.Work.CollaborationWorkbenchV2)
+		}
+		b.WriteString("\n")
 	}
 
 	// [statusline]

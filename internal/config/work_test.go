@@ -139,3 +139,122 @@ func TestWorkConfigProjectDeltaPreservesExplicitFalse(t *testing.T) {
 		t.Fatal("project delta did not override default-on Work")
 	}
 }
+
+// ── V2 collaboration workbench flag ────────────────────────────────────────
+
+func TestWorkConfigCollaborationWorkbenchV2DefaultOn(t *testing.T) {
+	cfg := Default()
+	if !cfg.Work.CollaborationWorkbenchV2 {
+		t.Fatal("collaboration_workbench_v2 must default to true")
+	}
+}
+
+func TestWorkConfigCollaborationWorkbenchV2RoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Default-on survives round-trip.
+	cfg := Default()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WorkGround2.toml")
+	if err := cfg.WriteFile(path); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	loaded, err := LoadForRoot(dir)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	if !loaded.Work.CollaborationWorkbenchV2 {
+		t.Fatal("CollabV2 must default to true after round-trip")
+	}
+
+	// Explicit true round-trip via real WriteFile → LoadForRoot path.
+	for _, v := range []bool{true, false} {
+		cfg2 := Default()
+		cfg2.Work.Enabled = false
+		cfg2.Work.CollaborationWorkbenchV2 = v
+		dir2 := t.TempDir()
+		path2 := filepath.Join(dir2, "WorkGround2.toml")
+		if err := cfg2.WriteFile(path2); err != nil {
+			t.Fatalf("WriteFile(v=%v): %v", v, err)
+		}
+		loaded2, err := LoadForRoot(dir2)
+		if err != nil {
+			t.Fatalf("LoadForRoot(v=%v): %v", v, err)
+		}
+		if loaded2.Work.CollaborationWorkbenchV2 != v {
+			t.Fatalf("CollabV2 = %v after round-trip, want %v",
+				loaded2.Work.CollaborationWorkbenchV2, v)
+		}
+	}
+}
+
+func TestWorkConfigCollaborationWorkbenchV2LoadExplicit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "WorkGround2.toml")
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"missing", "config_version = 3\n", true},
+		{"missing section", "[work]\n", true},
+		{"explicit true", "[work]\ncollaboration_workbench_v2 = true\n", true},
+		{"explicit false", "[work]\ncollaboration_workbench_v2 = false\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadForRoot(root)
+			if err != nil {
+				t.Fatalf("LoadForRoot: %v", err)
+			}
+			if cfg.Work.CollaborationWorkbenchV2 != tc.want {
+				t.Fatalf("CollabV2 = %v, want %v",
+					cfg.Work.CollaborationWorkbenchV2, tc.want)
+			}
+		})
+	}
+}
+
+// TestWorkConfigCollaborationWorkbenchV2Delta verifies that explicit false
+// (opt-out from the default-on V2) appears in project delta, while the
+// default true is omitted.
+func TestWorkConfigCollaborationWorkbenchV2Delta(t *testing.T) {
+	cfg := Default()
+	// Default-on: no [work] section in delta when all fields match defaults.
+	if delta := RenderTOMLProjectDelta(cfg); strings.Contains(delta, "[work]") {
+		t.Fatalf("default-on V2 Work should be omitted from project delta:\n%s", delta)
+	}
+
+	// Explicit false must appear in delta.
+	cfg.Work.CollaborationWorkbenchV2 = false
+	delta := RenderTOMLProjectDelta(cfg)
+	if !strings.Contains(delta, "[work]\nenabled = true") {
+		t.Fatalf("project delta lost enabled line when V2 is explicit false:\n%s", delta)
+	}
+	if !strings.Contains(delta, "collaboration_workbench_v2 = false") {
+		t.Fatalf("project delta lost explicit V2 opt-out:\n%s", delta)
+	}
+
+	// Round-trip: decode delta over default -> V2 stays false.
+	loaded := Default()
+	if _, err := toml.Decode(delta, loaded); err != nil {
+		t.Fatalf("decode project delta: %v", err)
+	}
+	if loaded.Work.CollaborationWorkbenchV2 {
+		t.Fatal("project delta did not override default-on V2")
+	}
+	if !loaded.Work.Enabled {
+		t.Fatal("project delta should not change Enabled default")
+	}
+}

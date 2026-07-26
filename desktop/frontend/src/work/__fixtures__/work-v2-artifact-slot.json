@@ -1,0 +1,14 @@
+{
+  "id": "slot-report-001",
+  "workId": "work-v2-001",
+  "definitionRev": 1,
+  "title": "最终报告",
+  "kind": "docx",
+  "expectedCount": 1,
+  "required": true,
+  "state": "generating",
+  "artifactRefs": [],
+  "progress": 0.45,
+  "summary": "正在生成 Word 报告，已完成 45%",
+  "revision": 3
+}

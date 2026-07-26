@@ -1,0 +1,195 @@
+/* DefinitionDiff — 结构调整差异预览 */
+/* BEM: wg2-dd-diff (DefinitionDiff) */
+
+.wg2-dd-diff-panel {
+  background: var(--wg2-surface);
+  border: 1px solid var(--wg2-border);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+}
+
+.wg2-dd-diff-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.wg2-dd-diff-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.wg2-dd-diff-revision {
+  font-size: 12px;
+  color: var(--wg2-text-secondary);
+  background: var(--wg2-bg-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.wg2-dd-diff-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.wg2-dd-diff-badge-rerun {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.wg2-dd-diff-empty {
+  color: var(--wg2-text-secondary);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+.wg2-dd-diff-goal {
+  background: var(--wg2-bg-secondary);
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.wg2-dd-diff-goal-label {
+  font-weight: 600;
+  font-size: 13px;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.wg2-dd-diff-goal-prev {
+  color: #dc3545;
+  text-decoration: line-through;
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.wg2-dd-diff-goal-curr {
+  color: #28a745;
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.wg2-dd-diff-group {
+  margin-bottom: 8px;
+}
+
+.wg2-dd-diff-group-label {
+  font-weight: 500;
+  font-size: 13px;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.wg2-dd-diff-group-added .wg2-dd-diff-group-label { color: #28a745; }
+.wg2-dd-diff-group-removed .wg2-dd-diff-group-label { color: #dc3545; }
+.wg2-dd-diff-group-changed .wg2-dd-diff-group-label { color: #ffc107; }
+.wg2-dd-diff-group-kept .wg2-dd-diff-group-label { color: var(--wg2-text-secondary); }
+.wg2-dd-diff-group-invalidated .wg2-dd-diff-group-label { color: #fd7e14; }
+.wg2-dd-diff-group-new .wg2-dd-diff-group-label { color: #28a745; }
+
+.wg2-dd-diff-group-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.wg2-dd-diff-group-id {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--wg2-bg-secondary);
+}
+
+.wg2-dd-diff-group-added .wg2-dd-diff-group-id { border-left: 3px solid #28a745; }
+.wg2-dd-diff-group-removed .wg2-dd-diff-group-id { border-left: 3px solid #dc3545; text-decoration: line-through; }
+.wg2-dd-diff-group-invalidated .wg2-dd-diff-group-id { border-left: 3px solid #fd7e14; }
+
+.wg2-dd-diff-impact {
+  border-top: 1px solid var(--wg2-border);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.wg2-dd-diff-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f8d7da;
+  color: #721c24;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+
+.wg2-dd-diff-error-icon {
+  font-size: 16px;
+}
+
+.wg2-dd-diff-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+.wg2-dd-diff-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid var(--wg2-border);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.wg2-dd-diff-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wg2-dd-diff-btn-cancel {
+  background: var(--wg2-bg-secondary);
+}
+
+.wg2-dd-diff-btn-apply {
+  background: #28a745;
+  color: #fff;
+  border-color: #28a745;
+}
+
+/* "调整工作结构" button in front face header */
+.wg2-work-btn-structure {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--wg2-border);
+  background: var(--wg2-bg-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.wg2-work-btn-structure:hover {
+  background: var(--wg2-bg-hover);
+}
+
+.wg2-work-front-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 1;
+}
+
+.wg2-work-front-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

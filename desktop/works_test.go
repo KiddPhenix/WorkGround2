@@ -291,6 +291,317 @@ func TestRecoverWorkViewReturnsFreshTypedRetryResync(t *testing.T) {
 	}
 }
 
+func TestV2WailsGetWatchRecoverUsesSchema2_FileWorkStore(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "works")
+	store, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewFileWorkStore: %v", err)
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	svc.SetV2TransportEnabled(true)
+	ctx := t.Context()
+	planning, err := svc.BeginWorkPlanning(ctx, work.BeginWorkPlanningInput{
+		SessionID: "v2-wails", RequestID: "v2-wails-plan",
+	})
+	if err != nil {
+		t.Fatalf("BeginWorkPlanning: %v", err)
+	}
+	definition := &work.WorkDefinitionRevision{
+		WorkID: planning.Work.ID, Goal: "verify schema2 transport",
+		Nodes: []work.NodeDef{{
+			ID: "n1", Title: "read-only task", ProducesSlotIDs: []string{"slot"},
+		}},
+		ArtifactSlots: []work.ArtifactSlotDef{{
+			ID: "slot", Title: "Output", Kind: "text", ExpectedCount: 1, Required: true,
+		}},
+		CreatedBy: "test", CreatedAt: time.Now().UTC(),
+	}
+	candidate, err := svc.CreateCandidateRevision(
+		ctx, planning.Work.ID, definition, "v2-wails-candidate", planning.Revision,
+	)
+	if err != nil {
+		t.Fatalf("CreateCandidateRevision: %v", err)
+	}
+	_, state, err := store.LoadState(planning.Work.ID, "")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+
+	ctrl := control.New(control.Options{
+		Work: svc, WorkViews: views, WorkV2Enabled: true,
+	})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+	emitted := make(chan work.WorkViewEvent, 8)
+	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
+		if name != workViewEventPrefix+"v2-wails-watch" || len(payload) != 1 {
+			return
+		}
+		if event, ok := payload[0].(work.WorkViewEvent); ok {
+			emitted <- event
+		}
+	}
+	if err := app.WatchWork("test", planning.Work.ID, "v2-wails-watch"); err != nil {
+		t.Fatalf("WatchWork: %v", err)
+	}
+	t.Cleanup(func() { app.UnwatchWork("v2-wails-watch") })
+
+	if _, err := app.ApplyDefinition("test", work.ApplyDefinitionInput{
+		WorkID: planning.Work.ID, Revision: candidate.Revision,
+		ExpectedRevision: state.Revision, RequestID: "v2-wails-apply",
+	}); err != nil {
+		t.Fatalf("ApplyDefinition: %v", err)
+	}
+	select {
+	case event := <-emitted:
+		if event.SchemaVersion != work.WorkViewSchemaVersionV2 ||
+			event.Type != work.ViewDelta ||
+			event.Object.WorkID != planning.Work.ID {
+			t.Fatalf("WatchWork event = %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("WatchWork did not receive schema2 production delta")
+	}
+
+	view, err := app.GetWork("test", planning.Work.ID)
+	if err != nil {
+		t.Fatalf("GetWork: %v", err)
+	}
+	if view.SchemaVersion != work.WorkViewSchemaVersionV2 || view.Definition == nil ||
+		len(view.ArtifactSlots) == 0 {
+		t.Fatalf("GetWork schema2 projection = %+v", view)
+	}
+	recovered, err := app.RecoverWorkView("test", planning.Work.ID, work.ViewRecoveryIntent{
+		Reason: work.ViewResyncRetry, Generation: 1,
+	})
+	if err != nil {
+		t.Fatalf("RecoverWorkView: %v", err)
+	}
+	if recovered.SchemaVersion != work.WorkViewSchemaVersionV2 ||
+		recovered.Object.WorkID != planning.Work.ID {
+		t.Fatalf("RecoverWorkView event = %+v", recovered)
+	}
+	var snapshot work.WorkView
+	if err := json.Unmarshal(recovered.Payload, &snapshot); err != nil {
+		t.Fatalf("RecoverWorkView payload: %v", err)
+	}
+	if snapshot.SchemaVersion != work.WorkViewSchemaVersionV2 ||
+		snapshot.Definition == nil || len(snapshot.ArtifactSlots) == 0 {
+		t.Fatalf("RecoverWorkView snapshot = %+v", snapshot)
+	}
+
+	app.UnwatchWork("v2-wails-watch")
+	reopened, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("restart FileWorkStore: %v", err)
+	}
+	restartViews := control.NewWorkViewBroadcaster()
+	restartService := work.NewService(reopened, work.NewBlueprintRegistry(), restartViews)
+	restartService.SetV2TransportEnabled(true)
+	restartCtrl := control.New(control.Options{
+		Work: restartService, WorkViews: restartViews, WorkV2Enabled: true,
+	})
+	restartApp := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	restartApp.setTestCtrl(restartCtrl, "restart")
+	removed := make(chan work.WorkViewEvent, 1)
+	restartApp.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
+		if name != workViewEventPrefix+"v2-wails-restart" || len(payload) != 1 {
+			return
+		}
+		if event, ok := payload[0].(work.WorkViewEvent); ok && event.Type == work.ViewRemoved {
+			removed <- event
+		}
+	}
+	if err := restartApp.WatchWork("test", planning.Work.ID, "v2-wails-restart"); err != nil {
+		t.Fatalf("restart WatchWork: %v", err)
+	}
+	t.Cleanup(func() { restartApp.UnwatchWork("v2-wails-restart") })
+	if err := restartApp.DeleteWork("test", planning.Work.ID, "v2-wails-delete"); err != nil {
+		t.Fatalf("DeleteWork: %v", err)
+	}
+	select {
+	case event := <-removed:
+		if event.SchemaVersion != work.WorkViewSchemaVersionV2 ||
+			event.Object.WorkID != planning.Work.ID || event.RequestID != "v2-wails-delete" {
+			t.Fatalf("removed event = %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("restart WatchWork did not receive schema2 removed")
+	}
+}
+
+// TestV2BlankDraftRestartGetAndRecover_FileWorkStore verifies that a blank
+// draft Definition created via BeginWorkPlanning survives a full Desktop
+// restart: a new FileWorkStore + Service + Controller + App pair re-reads the
+// same blank draft through GetWork and RecoverWorkView.
+func TestV2BlankDraftRestartGetAndRecover_FileWorkStore(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "works-blank-restart")
+	store, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewFileWorkStore: %v", err)
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	svc.SetV2TransportEnabled(true)
+	ctx := t.Context()
+
+	// 1. BeginWorkPlanning → blank draft revision 1.
+	planning, err := svc.BeginWorkPlanning(ctx, work.BeginWorkPlanningInput{
+		SessionID: "blank-restart", RequestID: "blank-restart-plan",
+	})
+	if err != nil {
+		t.Fatalf("BeginWorkPlanning: %v", err)
+	}
+	// Verify blank draft body on disk.
+	body, err := store.LoadRevision(planning.Work.ID, 1)
+	if err != nil {
+		t.Fatalf("LoadRevision: %v", err)
+	}
+	if body.Goal != "" || len(body.Nodes) != 0 || body.Status != work.DefDraft {
+		t.Fatalf("blank draft body: goal=%q nodes=%d status=%s", body.Goal, len(body.Nodes), body.Status)
+	}
+
+	// 2. Restart: new FileWorkStore → Service → Controller → App.
+	reopened, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("restart FileWorkStore: %v", err)
+	}
+	restartViews := control.NewWorkViewBroadcaster()
+	restartService := work.NewService(reopened, work.NewBlueprintRegistry(), restartViews)
+	restartService.SetV2TransportEnabled(true)
+	restartCtrl := control.New(control.Options{
+		Work: restartService, WorkViews: restartViews, WorkV2Enabled: true,
+	})
+	restartApp := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	restartApp.setTestCtrl(restartCtrl, "restart")
+
+	// 2a. Restart GetWork must return blank draft with status=draft.
+	view, err := restartApp.GetWork("test", planning.Work.ID)
+	if err != nil {
+		t.Fatalf("restart GetWork: %v", err)
+	}
+	if view.Definition == nil {
+		t.Fatal("restart GetWork: definition is nil")
+	}
+	if view.Definition.Goal != "" || len(view.Definition.Nodes) != 0 {
+		t.Fatalf("restart GetWork: goal=%q nodes=%d", view.Definition.Goal, len(view.Definition.Nodes))
+	}
+	if view.Definition.Status != work.DefDraft {
+		t.Fatalf("restart GetWork: status=%s, want draft", view.Definition.Status)
+	}
+	if view.Definition.Revision != 1 {
+		t.Fatalf("restart GetWork: revision=%d, want 1", view.Definition.Revision)
+	}
+
+	// 2b. Restart RecoverWorkView must return a snapshot event whose payload
+	// contains the same blank draft.
+	recovered, err := restartApp.RecoverWorkView("test", planning.Work.ID, work.ViewRecoveryIntent{
+		Reason: work.ViewResyncRetry, Generation: 1,
+	})
+	if err != nil {
+		t.Fatalf("restart RecoverWorkView: %v", err)
+	}
+	if recovered.Type != work.ViewSnapshot || recovered.Object.WorkID != planning.Work.ID {
+		t.Fatalf("restart RecoverWorkView event: type=%s workID=%s", recovered.Type, recovered.Object.WorkID)
+	}
+	var snap work.WorkView
+	if err := json.Unmarshal(recovered.Payload, &snap); err != nil {
+		t.Fatalf("restart RecoverWorkView payload: %v", err)
+	}
+	if snap.Definition == nil {
+		t.Fatal("restart RecoverWorkView: snapshot definition is nil")
+	}
+	if snap.Definition.Goal != "" || len(snap.Definition.Nodes) != 0 {
+		t.Fatalf("restart RecoverWorkView: goal=%q nodes=%d", snap.Definition.Goal, len(snap.Definition.Nodes))
+	}
+	if snap.Definition.Status != work.DefDraft {
+		t.Fatalf("restart RecoverWorkView: status=%s, want draft", snap.Definition.Status)
+	}
+}
+
+func TestV2WailsCommittedRecoveryBindingsReturnTypedResult(t *testing.T) {
+	for _, operation := range []string{
+		"BeginWorkPlanning", "ApplyDefinition", "SubmitWorkInput",
+		"SetInputCornerstone", "PreviewWorkPatch", "ApplyWorkPatch", "RetryWorkNode",
+	} {
+		t.Run(operation, func(t *testing.T) {
+			err := fmt.Errorf("wrapped: %w", &work.ErrWorkCommittedRecovery{
+				Operation: operation, WorkID: "w1", RequestID: "req1",
+				Revision: 42, Committed: true, Recoverable: true, Cause: "injected",
+			})
+			var revision int64
+			var committed, recoverable bool
+			var transport *work.WorkTransportError
+			bindWorkTransportError(&revision, &committed, &recoverable, &transport, err)
+			if transport == nil || transport.Code != "committed_recovery" ||
+				transport.Operation != operation || transport.RequestID != "req1" ||
+				revision != 42 || !committed || !recoverable {
+				t.Fatalf("typed binding = %+v revision=%d committed=%v recoverable=%v",
+					transport, revision, committed, recoverable)
+			}
+		})
+	}
+}
+
+func TestSubmitWorkInputMapsPublicDefinitionRevision(t *testing.T) {
+	input := work.SubmitWorkInputRequest{
+		WorkID:             "work-1",
+		RunID:              "run-1",
+		TaskID:             "task-1",
+		BlockID:            "block-1",
+		InputID:            "input-1",
+		Value:              json.RawMessage(`20000`),
+		DefinitionRevision: 7,
+		InputRevision:      3,
+		ExpectedRevision:   11,
+		RequestID:          "submit-1",
+	}
+	mapped := submitInputRequest(input)
+	if mapped.DefinitionRev != input.DefinitionRevision ||
+		mapped.WorkID != input.WorkID ||
+		mapped.InputID != input.InputID ||
+		mapped.InputRevision != input.InputRevision ||
+		mapped.ExpectedRevision != input.ExpectedRevision ||
+		mapped.RequestID != input.RequestID ||
+		string(mapped.Value) != string(input.Value) {
+		t.Fatalf("mapped submit input = %+v", mapped)
+	}
+}
+
+func TestV2WailsBeginPlanningTypedDuplicateAndConflict_FileWorkStore(t *testing.T) {
+	store, err := work.NewFileWorkStore(filepath.Join(t.TempDir(), "works"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	svc.SetV2TransportEnabled(true)
+	ctrl := control.New(control.Options{
+		Work: svc, WorkViews: views, WorkV2Enabled: true,
+	})
+	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	app.setTestCtrl(ctrl, "test")
+	input := work.BeginWorkPlanningInput{SessionID: "wails-begin", RequestID: "wails-begin"}
+	first, err := app.BeginWorkPlanning("test", input)
+	if err != nil || first.Result == nil || first.Duplicate || !first.Committed {
+		t.Fatalf("first = %+v, err=%v", first, err)
+	}
+	replay, err := app.BeginWorkPlanning("test", input)
+	if err != nil || replay.Result == nil || !replay.Duplicate ||
+		replay.Revision != first.Revision {
+		t.Fatalf("replay = %+v, err=%v", replay, err)
+	}
+	conflict, err := app.BeginWorkPlanning("test", work.BeginWorkPlanningInput{
+		SessionID: "other", RequestID: input.RequestID,
+	})
+	if err != nil || conflict.TransportError == nil ||
+		conflict.TransportError.Code != "request_conflict" ||
+		conflict.TransportError.RequestID != input.RequestID {
+		t.Fatalf("conflict = %+v, err=%v", conflict, err)
+	}
+}
+
 func TestRecoverWorkViewRejectsInvalidIntent(t *testing.T) {
 	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
 	for _, tc := range []struct {
@@ -440,6 +751,36 @@ func TestWorkCapableUsesTypedControllerAvailability(t *testing.T) {
 	}
 	if enabledApp.WorkCapable("missing") {
 		t.Fatal("WorkCapable = true for missing tab")
+	}
+}
+
+func TestWorkCollaborationV2EnabledPreservesV1Gate(t *testing.T) {
+	newApp := func(v2 bool) *App {
+		views := control.NewWorkViewBroadcaster()
+		ctrl := control.New(control.Options{
+			Work:          work.NewService(&worktest.Store{}, work.NewBlueprintRegistry(), views),
+			WorkViews:     views,
+			WorkV2Enabled: v2,
+		})
+		app := &App{}
+		app.setTestCtrl(ctrl, "v2-gate")
+		return app
+	}
+
+	off := newApp(false)
+	if !off.WorkCapable("test") {
+		t.Fatal("V1 Work capability must remain available when V2 is disabled")
+	}
+	if off.WorkCollaborationV2Enabled("test") {
+		t.Fatal("V2 planning entry must stay hidden when its explicit gate is disabled")
+	}
+
+	on := newApp(true)
+	if !on.WorkCollaborationV2Enabled("test") {
+		t.Fatal("V2 planning entry must be available when Work and its V2 gate are enabled")
+	}
+	if on.WorkCollaborationV2Enabled("missing") {
+		t.Fatal("missing controller must not expose the V2 planning entry")
 	}
 }
 
@@ -1313,4 +1654,196 @@ func TestCornerstoneWithoutManager(t *testing.T) {
 	if !errors.Is(err, work.ErrCornerstoneDisabled) {
 		t.Fatalf("expected ErrCornerstoneDisabled, got %v", err)
 	}
+}
+
+func TestV2WailsBindingsStayThin(t *testing.T) {
+	source, err := os.ReadFile("works.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := string(source)
+	marker := "// ── V2 Collaboration Controller Wails bindings"
+	if index := strings.Index(section, marker); index >= 0 {
+		section = section[index:]
+	} else {
+		t.Fatalf("V2 binding marker missing from works.go")
+	}
+	for _, forbidden := range []string{
+		"NewFileWorkStore", "LoadProjection(", "LoadState(", "CommitEvent(",
+		"NewService(", "NewV2Scheduler(", "ScheduleAffected(", "ExecuteTask(",
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("V2 Wails bindings must not access domain/store/scheduler directly: found %q", forbidden)
+		}
+	}
+	for method, delegate := range map[string]string{
+		"BeginWorkPlanning": "BeginWorkPlanningWithResult",
+		"ApplyDefinition":   "ApplyDefinition", "SubmitWorkInput": "SubmitWorkInput",
+		"SetInputCornerstone": "SetInputCornerstone", "PreviewWorkPatch": "PreviewWorkPatch",
+		"ApplyWorkPatch": "ApplyWorkPatch", "RetryWorkNode": "RetryWorkNode",
+	} {
+		signature := "func (a *App) " + method + "("
+		start := strings.Index(section, signature)
+		if start < 0 {
+			t.Fatalf("V2 Wails binding %s missing", method)
+		}
+		body := section[start:]
+		next := strings.Index(body[len(signature):], "\nfunc (a *App) ")
+		if next >= 0 {
+			body = body[:len(signature)+next]
+		}
+		if strings.Count(body, "resolveWorkController(") != 1 ||
+			!strings.Contains(body, "wc."+delegate+"(") {
+			t.Fatalf("%s must only resolve the Controller and delegate, body:\n%s", method, body)
+		}
+	}
+	for _, forbiddenMethod := range []string{"ScheduleV2Run", "RecoverV2Scheduling"} {
+		if strings.Contains(section, "func (a *App) "+forbiddenMethod+"(") {
+			t.Fatalf("internal scheduler/recovery method %s must not be exported through Wails", forbiddenMethod)
+		}
+	}
+}
+
+// ── Historical zero-time recovery through production chain ──────────────────
+// Commit a RunChanged event with Stage.StartedAt=time.Time{} into the real
+// FileWorkStore event log. Close, reopen with new FileWorkStore + Service +
+// Controller + App. Call production App.GetWork and verify the DTO natively
+// contains "0001-01-01T00:00:00Z" without post-hoc string injection.
+
+func TestV2HistoricalZeroTime_FileWorkStoreRestartAppGetWork(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "works-histzero")
+	store, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewFileWorkStore: %v", err)
+	}
+	views := control.NewWorkViewBroadcaster()
+	svc := work.NewService(store, work.NewBlueprintRegistry(), views)
+	svc.SetV2TransportEnabled(true)
+	ctx := t.Context()
+
+	// 1. Normal production flow: BeginWorkPlanning → CreateCandidate → ApplyDefinition.
+	planning, err := svc.BeginWorkPlanning(ctx, work.BeginWorkPlanningInput{
+		SessionID: "histzero", RequestID: "histzero-plan",
+	})
+	if err != nil {
+		t.Fatalf("BeginWorkPlanning: %v", err)
+	}
+	workID := planning.Work.ID
+
+	now := time.Now().UTC()
+	candidate := &work.WorkDefinitionRevision{
+		WorkID: workID, Revision: 2, ParentRevision: 1, Status: work.DefDraft,
+		Goal:  "Historical zero-time test",
+		Nodes: []work.NodeDef{{ID: "n1", Title: "Frozen"}},
+		ArtifactSlots: []work.ArtifactSlotDef{
+			{ID: "slot1", Title: "Output", Kind: "text", ExpectedCount: 1, Required: true},
+		},
+		CreatedBy: "test", CreatedAt: now,
+	}
+	candidate.Digest, err = work.ComputeV2RevisionDigest(candidate)
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	candidate, err = svc.CreateCandidateRevision(ctx, workID, candidate, "histzero-cand", planning.Revision)
+	if err != nil {
+		t.Fatalf("CreateCandidateRevision: %v", err)
+	}
+	_, st, _ := store.LoadState(workID, "")
+	result, err := svc.ApplyDefinition(ctx, work.ApplyDefinitionInput{
+		WorkID: workID, Revision: candidate.Revision,
+		RequestID: "histzero-apply", ExpectedRevision: st.Revision,
+	})
+	if err != nil {
+		t.Fatalf("ApplyDefinition: %v", err)
+	}
+	if result.View == nil || len(result.View.Work.Runs) == 0 {
+		t.Fatal("ApplyDefinition returned no runs")
+	}
+
+	// 2. Commit an EventRunChanged that overwrites the run with zero-time stages.
+	//    This injects historical zero-time data into the real event log so that
+	//    restart + event replay natively produces the zero-time projection.
+	currentProj, currentState, err := store.LoadState(workID, "")
+	if err != nil || currentProj == nil {
+		t.Fatalf("LoadState: err=%v", err)
+	}
+	origRun := result.View.Work.Runs[0]
+	zeroRun := origRun
+	zeroRun.Stages = make([]work.Stage, len(origRun.Stages))
+	copy(zeroRun.Stages, origRun.Stages)
+	for si := range zeroRun.Stages {
+		zeroRun.Stages[si].StartedAt = time.Time{} // pre-fix zero value
+	}
+	runPayload, err := json.Marshal(struct {
+		Run       work.WorkflowRun `json:"run"`
+		WorkState work.WorkState   `json:"workState"`
+	}{Run: zeroRun, WorkState: work.WorkRunning})
+	if err != nil {
+		t.Fatalf("marshal runEventPayload: %v", err)
+	}
+	changedEvent := work.WorkEvent{
+		SchemaVersion: work.SchemaVersion,
+		ID:            "evt-histzero-zero-" + zeroRun.ID,
+		WorkID:        workID,
+		Type:          work.EventRunChanged,
+		RequestID:     "histzero-zero-inject/changed",
+		Payload:       runPayload,
+		BaseRevision:  currentState.Revision,
+		Revision:      currentState.Revision + 1,
+		Object:        work.ObjectContext{Kind: work.ObjectRun, ID: zeroRun.ID, WorkID: workID},
+		CreatedAt:     time.Now().UTC(),
+	}
+	_, err = store.CommitEvent(workID, changedEvent)
+	if err != nil {
+		t.Fatalf("CommitEvent EventRunChanged: %v", err)
+	}
+
+	// 3. Verify the projection now natively contains zero-time stages.
+	proj, err := store.LoadProjection(workID)
+	if err != nil || proj == nil || len(proj.Runs) == 0 {
+		t.Fatalf("LoadProjection after CommitEvent: err=%v", err)
+	}
+	foundZero := false
+	for _, run := range proj.Runs {
+		for _, stage := range run.Stages {
+			if stage.StartedAt.IsZero() {
+				foundZero = true
+			}
+		}
+	}
+	if !foundZero {
+		t.Fatal("projection does not contain zero-time stage after CommitEvent")
+	}
+	t.Log("zero-time stage committed to event log and reflected in projection: OK")
+
+	// 4. Restart: new FileWorkStore → Service → Controller → App.
+	reopened, err := work.NewFileWorkStore(workDir, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("restart FileWorkStore: %v", err)
+	}
+	restartViews := control.NewWorkViewBroadcaster()
+	restartService := work.NewService(reopened, work.NewBlueprintRegistry(), restartViews)
+	restartService.SetV2TransportEnabled(true)
+	restartCtrl := control.New(control.Options{
+		Work: restartService, WorkViews: restartViews, WorkV2Enabled: true,
+	})
+	restartApp := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
+	restartApp.setTestCtrl(restartCtrl, "restart")
+
+	// 5. Production App.GetWork → DTO must natively contain "0001-01-01T00:00:00Z".
+	view, err := restartApp.GetWork("test", workID)
+	if err != nil {
+		t.Fatalf("restart GetWork: %v", err)
+	}
+	if view == nil || view.Work == nil {
+		t.Fatal("restart GetWork returned nil view")
+	}
+	dto, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("marshal GetWork DTO: %v", err)
+	}
+	if !strings.Contains(string(dto), `"0001-01-01T00:00:00Z"`) {
+		t.Fatalf("App.GetWork DTO does NOT natively contain zero-time serialization; DTO snippet: %.200s", string(dto))
+	}
+	t.Log("historical zero-time natively survives FileWorkStore restart + App.GetWork: OK")
 }

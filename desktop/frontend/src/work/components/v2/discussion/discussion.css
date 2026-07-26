@@ -1,0 +1,529 @@
+/* DiscussionDrawer / PatchPreview — Block 讨论抽屉与补丁预览 */
+/* BEM-like: wg2-dd (DiscussionDrawer), wg2-pp (PatchPreview) */
+
+/* ── Drawer container ──────────────────────────────────────────── */
+
+.wg2-dd-drawer {
+  border-top: 1px solid var(--wg2-accent, #d97757);
+  background: var(--wg2-surface-elev, #1a1d26);
+  display: flex;
+  flex-direction: column;
+  max-height: min(80vh, 48rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: wg2-dd-slide-in 0.15s ease-out;
+}
+
+@keyframes wg2-dd-slide-in {
+  from { opacity: 0; max-height: 0; }
+  to { opacity: 1; max-height: 48rem; }
+}
+
+/* ── Header ────────────────────────────────────────────────────── */
+
+.wg2-dd-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--wg2-border, #343945);
+  flex-shrink: 0;
+}
+
+.wg2-dd-header-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--wg2-text-primary, #f4f5f7);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ── Body ──────────────────────────────────────────────────────── */
+
+.wg2-dd-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ── Label ─────────────────────────────────────────────────────── */
+
+.wg2-dd-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wg2-text-secondary, #888);
+}
+
+/* ── Textarea ──────────────────────────────────────────────────── */
+
+.wg2-dd-textarea {
+  width: 100%;
+  min-height: 4rem;
+  padding: 8px 10px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-surface, #111319);
+  color: var(--wg2-text-primary, #f4f5f7);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.wg2-dd-textarea:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-dd-textarea::placeholder {
+  color: var(--wg2-text-secondary, #888);
+  opacity: 0.7;
+}
+
+/* ── Hint ──────────────────────────────────────────────────────── */
+
+.wg2-dd-hint {
+  font-size: 11px;
+  color: var(--wg2-text-secondary, #888);
+  user-select: none;
+}
+
+/* ── Scope selector ────────────────────────────────────────────── */
+
+.wg2-dd-scope {
+  display: flex;
+  gap: 14px;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.wg2-dd-scope legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.wg2-dd-radio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--wg2-text-primary, #f4f5f7);
+  cursor: pointer;
+}
+
+.wg2-dd-radio input[type="radio"] {
+  accent-color: var(--wg2-accent, #d97757);
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Actions ───────────────────────────────────────────────────── */
+
+.wg2-dd-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ── Buttons ───────────────────────────────────────────────────── */
+
+.wg2-dd-btn {
+  font-size: 12px;
+  padding: 5px 14px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 6px;
+  background: var(--wg2-button-bg, rgba(255, 255, 255, 0.04));
+  color: var(--wg2-text-primary, #f4f5f7);
+  cursor: pointer;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.wg2-dd-btn:hover:not(:disabled) {
+  background: var(--wg2-button-hover, rgba(255, 255, 255, 0.08));
+}
+
+.wg2-dd-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wg2-dd-btn:focus-visible {
+  outline: 2px solid var(--wg2-focus-ring, #d97757);
+  outline-offset: 1px;
+}
+
+.wg2-dd-btn-close {
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 8px;
+  border: none;
+  background: transparent;
+  color: var(--wg2-text-secondary, #888);
+}
+
+.wg2-dd-btn-close:hover {
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+.wg2-dd-btn-preview {
+  background: var(--wg2-accent, #d97757);
+  border-color: var(--wg2-accent, #d97757);
+  color: var(--wg2-accent-fg, #1a0f0a);
+  font-weight: 600;
+}
+
+.wg2-dd-btn-preview:hover:not(:disabled) {
+  background: var(--wg2-accent-strong, #e58a6b);
+}
+
+.wg2-dd-btn-apply {
+  border-color: var(--wg2-ok-border, #3a6b3f);
+  color: var(--wg2-ok, #74b87a);
+  font-weight: 600;
+}
+
+.wg2-dd-btn-apply:hover:not(:disabled) {
+  background: var(--wg2-ok-bg, rgba(116, 184, 122, 0.1));
+}
+
+.wg2-dd-btn-retry {
+  border-color: var(--wg2-warn-border, #d9a441);
+  color: var(--wg2-warn, #d9a441);
+  font-weight: 600;
+}
+
+.wg2-dd-btn-retry:hover {
+  background: var(--wg2-warn-bg, rgba(217, 164, 65, 0.1));
+}
+
+.wg2-dd-btn-close-result {
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+/* ── Error / Conflict banner ───────────────────────────────────── */
+
+.wg2-dd-error,
+.wg2-dd-conflict {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  flex-wrap: wrap;
+}
+
+.wg2-dd-error {
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.08));
+  border: 1px solid var(--wg2-error-border, rgba(224, 105, 106, 0.2));
+  color: var(--wg2-error-text, #e58587);
+}
+
+.wg2-dd-conflict {
+  background: var(--wg2-warn-bg, rgba(217, 164, 65, 0.08));
+  border: 1px solid var(--wg2-warn-border, rgba(217, 164, 65, 0.2));
+  color: var(--wg2-warn-text, #e0b856);
+}
+
+.wg2-dd-error-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.wg2-dd-error-msg {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+/* ── Apply result banner ───────────────────────────────────────── */
+
+.wg2-dd-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--wg2-border, #343945);
+  font-size: 13px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.wg2-dd-result-ok {
+  background: var(--wg2-ok-bg, rgba(116, 184, 122, 0.08));
+  color: var(--wg2-ok-text, #82c98a);
+}
+
+.wg2-dd-result-error {
+  background: var(--wg2-error-bg, rgba(224, 105, 106, 0.08));
+  color: var(--wg2-error-text, #e58587);
+}
+
+.wg2-dd-result-info {
+  background: var(--wg2-info-bg, rgba(47, 109, 232, 0.08));
+  color: var(--wg2-info-text, #5b9cf5);
+}
+
+.wg2-dd-result-icon {
+  flex-shrink: 0;
+  font-size: 16px;
+}
+
+.wg2-dd-result-msg {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * PatchPreview
+ * ══════════════════════════════════════════════════════════════════ */
+
+.wg2-pp-panel {
+  border-top: 1px solid var(--wg2-border, #343945);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ── Header ────────────────────────────────────────────────────── */
+
+.wg2-pp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wg2-pp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+/* ── Badges ────────────────────────────────────────────────────── */
+
+.wg2-pp-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: var(--wg2-badge-info-bg, rgba(47, 109, 232, 0.12));
+  color: var(--wg2-badge-info-text, #5b9cf5);
+  white-space: nowrap;
+}
+
+.wg2-pp-badge-workflow {
+  background: var(--wg2-badge-warn-bg, rgba(217, 164, 65, 0.12));
+  color: var(--wg2-badge-warn-text, #e0b856);
+}
+
+.wg2-pp-badge-expired {
+  background: var(--wg2-badge-error-bg, rgba(224, 105, 106, 0.12));
+  color: var(--wg2-badge-error-text, #e58587);
+}
+
+/* ── Operations table ──────────────────────────────────────────── */
+
+.wg2-pp-ops-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.wg2-pp-ops {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.wg2-pp-th {
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--wg2-text-secondary, #888);
+  font-weight: 600;
+  font-size: 11px;
+  border-bottom: 1px solid var(--wg2-border, #343945);
+  white-space: nowrap;
+}
+
+.wg2-pp-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.wg2-pp-td {
+  padding: 4px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  word-break: break-word;
+}
+
+.wg2-pp-td-op {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wg2-pp-td-path {
+  color: var(--wg2-accent, #d97757);
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.wg2-pp-td-old {
+  color: var(--wg2-text-secondary, #888);
+  text-decoration: line-through;
+  max-width: 12rem;
+}
+
+.wg2-pp-td-new {
+  color: var(--wg2-text-primary, #f4f5f7);
+  max-width: 12rem;
+}
+
+/* ── Empty state ───────────────────────────────────────────────── */
+
+.wg2-pp-empty {
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #888);
+  font-style: italic;
+  margin: 0;
+}
+
+/* ── Impact summary ────────────────────────────────────────────── */
+
+.wg2-pp-impact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wg2-pp-impact-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.wg2-pp-impact-label {
+  color: var(--wg2-text-secondary, #888);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.wg2-pp-impact-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wg2-pp-impact-id {
+  padding: 1px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wg2-pp-impact-affected .wg2-pp-impact-id {
+  background: rgba(47, 109, 232, 0.12);
+  color: var(--wg2-info-text, #5b9cf5);
+}
+
+.wg2-pp-impact-stale .wg2-pp-impact-id {
+  background: rgba(217, 164, 65, 0.12);
+  color: var(--wg2-warn-text, #e0b856);
+}
+
+.wg2-pp-impact-invalidated .wg2-pp-impact-id {
+  background: rgba(224, 105, 106, 0.12);
+  color: var(--wg2-error-text, #e58587);
+}
+
+.wg2-pp-impact-rerun {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 8px;
+  background: rgba(224, 105, 106, 0.12);
+  color: var(--wg2-error-text, #e58587);
+  white-space: nowrap;
+}
+
+/* ── Meta footer ───────────────────────────────────────────────── */
+
+.wg2-pp-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 10px;
+  color: var(--wg2-text-secondary, #888);
+}
+
+.wg2-pp-meta-item code {
+  font-size: 10px;
+  padding: 1px 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 3px;
+}
+
+.wg2-pp-meta-warn {
+  color: var(--wg2-warn, #d9a441);
+  margin-left: 4px;
+}
+
+/* ── Responsive ────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .wg2-dd-header {
+    padding: 8px 10px;
+  }
+
+  .wg2-dd-body {
+    padding: 8px 10px;
+    gap: 8px;
+  }
+
+  .wg2-pp-panel {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+
+  .wg2-pp-ops,
+  .wg2-pp-th,
+  .wg2-pp-td {
+    font-size: 10px;
+  }
+
+  .wg2-pp-td-old,
+  .wg2-pp-td-new {
+    max-width: 6rem;
+  }
+
+  .wg2-dd-scope {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wg2-dd-drawer {
+    animation: none;
+  }
+}

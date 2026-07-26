@@ -33,6 +33,13 @@ func (c *Controller) WorkEnabled() bool {
 	return c != nil && !nilutil.IsNil(c.workSvc) && c.workViews != nil
 }
 
+// WorkV2Enabled reports whether this Controller exposes the V2 collaboration
+// intent surface. It is deliberately separate from WorkEnabled so disabling V2
+// leaves the existing V1 Work surface unchanged.
+func (c *Controller) WorkV2Enabled() bool {
+	return c != nil && c.WorkEnabled() && c.workV2Enabled
+}
+
 // WorkViewSink is the controller-side transport sink. Persisted WorkEvent
 // values never pass through this boundary.
 type WorkViewSink = work.ViewSink
@@ -68,6 +75,22 @@ type WorkService interface {
 	RepairCornerstone(context.Context, string, work.RepairCornerstoneInput) (*work.RepairResult, error)
 	PrepareRerun(context.Context, work.PrepareRerunInput) (*work.RerunPlan, error)
 	ExecuteRerun(context.Context, string, string) (*work.Work, error)
+
+	// V2 Collaboration Controller
+	BeginWorkPlanning(context.Context, work.BeginWorkPlanningInput) (*work.WorkView, error)
+	BeginWorkPlanningWithResult(context.Context, work.BeginWorkPlanningInput) (*work.BeginWorkPlanningResult, error)
+	BeginBlueprintPlanning(context.Context, work.BeginBlueprintPlanningInput) (*work.BeginBlueprintPlanningResult, error)
+	ApplyDefinition(context.Context, work.ApplyDefinitionInput) (*work.ApplyDefinitionResult, error)
+	CreateCandidateRevisionWithResult(context.Context, work.CreateCandidateRevisionInput) (*work.CreateCandidateRevisionResult, error)
+	SubmitWorkInput(context.Context, work.SubmitInputRequest) (*work.SubmitInputResult, error)
+	SetInputCornerstone(context.Context, work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error)
+	PreviewWorkPatch(context.Context, work.PreviewWorkPatchInput) (*work.PreviewWorkPatchResult, error)
+	ApplyWorkPatch(context.Context, work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error)
+	RetryWorkNode(context.Context, work.RetryWorkNodeRequest) (*work.RetryWorkNodeResult, error)
+	RetryArtifactSlot(context.Context, work.RetryArtifactSlotRequest) (*work.RetryArtifactSlotResult, error)
+	PreviewArtifact(context.Context, work.PreviewArtifactRequest) (*work.PreviewArtifactResult, error)
+	RequestArtifactConversion(context.Context, work.RequestArtifactConversionInput) (*work.RequestArtifactConversionResult, error)
+	RecoverArtifactConversions(context.Context, string) (int, error)
 }
 
 // WorkViewBroadcaster fans out WorkViewEvents to multiple subscribers.
@@ -230,6 +253,7 @@ func (b *WorkViewBroadcaster) SubscriberDrops(id string) int64 {
 // Nil receiver is safe: every method returns an error.
 type workMethods struct {
 	svc     WorkService
+	v2      bool
 	owner   *Controller
 	refresh *work.BlockRefreshManager
 	sources *workSourceRegistry
@@ -246,7 +270,11 @@ func (w workMethods) GetWork(ctx context.Context, workID string) (*work.WorkView
 	if nilutil.IsNil(w.svc) {
 		return nil, errWorkDisabled
 	}
-	return w.svc.Get(ctx, workID)
+	view, err := w.svc.Get(ctx, workID)
+	if err != nil || w.v2 {
+		return view, err
+	}
+	return work.AsV1WorkView(view), nil
 }
 
 func (w workMethods) ListWorks(ctx context.Context, filter work.WorkFilter) (work.WorkPage, error) {
@@ -693,9 +721,118 @@ func (w workMethods) ExecuteRerun(ctx context.Context, planToken, requestID stri
 	return w.svc.ExecuteRerun(ctx, planToken, requestID)
 }
 
+func (w workMethods) BeginWorkPlanning(ctx context.Context, input work.BeginWorkPlanningInput) (*work.WorkView, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.BeginWorkPlanning(ctx, input)
+}
+
+func (w workMethods) BeginWorkPlanningWithResult(ctx context.Context, input work.BeginWorkPlanningInput) (*work.BeginWorkPlanningResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.BeginWorkPlanningWithResult(ctx, input)
+}
+
+func (w workMethods) BeginBlueprintPlanning(ctx context.Context, input work.BeginBlueprintPlanningInput) (*work.BeginBlueprintPlanningResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.BeginBlueprintPlanning(ctx, input)
+}
+
+func (w workMethods) ApplyDefinition(ctx context.Context, input work.ApplyDefinitionInput) (*work.ApplyDefinitionResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.ApplyDefinition(ctx, input)
+}
+
+func (w workMethods) CreateCandidateRevision(ctx context.Context, input work.CreateCandidateRevisionInput) (*work.CreateCandidateRevisionResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.CreateCandidateRevisionWithResult(ctx, input)
+}
+
+func (w workMethods) SubmitWorkInput(ctx context.Context, input work.SubmitInputRequest) (*work.SubmitInputResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.SubmitWorkInput(ctx, input)
+}
+
+func (w workMethods) SetInputCornerstone(ctx context.Context, input work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.SetInputCornerstone(ctx, input)
+}
+
+func (w workMethods) PreviewWorkPatch(ctx context.Context, input work.PreviewWorkPatchInput) (*work.PreviewWorkPatchResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.PreviewWorkPatch(ctx, input)
+}
+
+func (w workMethods) ApplyWorkPatch(ctx context.Context, input work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.ApplyWorkPatch(ctx, input)
+}
+
+func (w workMethods) RetryWorkNode(ctx context.Context, input work.RetryWorkNodeRequest) (*work.RetryWorkNodeResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.RetryWorkNode(ctx, input)
+}
+
+func (w workMethods) RetryArtifactSlot(ctx context.Context, input work.RetryArtifactSlotRequest) (*work.RetryArtifactSlotResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.RetryArtifactSlot(ctx, input)
+}
+
+func (w workMethods) PreviewArtifact(ctx context.Context, input work.PreviewArtifactRequest) (*work.PreviewArtifactResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.PreviewArtifact(ctx, input)
+}
+
+func (w workMethods) RequestArtifactConversion(ctx context.Context, input work.RequestArtifactConversionInput) (*work.RequestArtifactConversionResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.RequestArtifactConversion(ctx, input)
+}
+
+func (w workMethods) RecoverArtifactConversions(ctx context.Context, workID string) (int, error) {
+	if err := w.requireV2(); err != nil {
+		return 0, err
+	}
+	return w.svc.RecoverArtifactConversions(ctx, workID)
+}
+
 var (
-	errWorkDisabled = errors.New("work: feature is disabled; enable [work].enabled in config")
+	errWorkDisabled   = errors.New("work: feature is disabled; enable [work].enabled in config")
+	errWorkV2Disabled = errors.New("work: collaboration workbench V2 is disabled; enable [work].collaboration_workbench_v2 in config")
 )
+
+func (w workMethods) requireV2() error {
+	if nilutil.IsNil(w.svc) {
+		return errWorkDisabled
+	}
+	if !w.v2 {
+		return errWorkV2Disabled
+	}
+	return nil
+}
 
 // WorkControl returns the WorkController port for this session. It is nil-safe:
 // when Work is disabled the returned port returns errWorkDisabled for every
@@ -704,7 +841,7 @@ func (c *Controller) WorkControl() WorkControl {
 	if c == nil {
 		return workMethods{}
 	}
-	return workMethods{svc: c.workSvc, owner: c, refresh: c.workRefresh, sources: c.workSources}
+	return workMethods{svc: c.workSvc, v2: c.workV2Enabled, owner: c, refresh: c.workRefresh, sources: c.workSources}
 }
 
 // WorkViews returns the WorkViewEvent broadcaster for this session, or nil when

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { app } from '../../lib/bridge';
 import { useT } from '../../lib/i18n';
+import { WorkControllerAdapter } from '../../work/controller';
+import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
 import type {
   CreateWorkInput,
   RerunMode,
@@ -86,11 +88,13 @@ const CreateWorkDialog: React.FC<CreateDialogProps> = ({
 
 export interface WorkPageProps {
   tabID: string;
+  /** Session identity persisted by BeginWorkPlanning; tabID remains the Wails route owner. */
+  sessionID?: string;
   onBack: () => void;
   onOpenWork: (workID: string) => void;
 }
 
-export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork }) => {
+export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, onOpenWork }) => {
   const t = useT();
   const [pageState, setPageState] = useState<PageState>('loading');
   const [error, setError] = useState<string | null>(null);
@@ -99,9 +103,15 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [v2Enabled, setV2Enabled] = useState(false);
+  const [v2FlagStatus, setV2FlagStatus] = useState<'unavailable' | 'pending' | 'ready' | 'error'>('pending');
+  const [v2FlagError, setV2FlagError] = useState<string | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planningError, setPlanningError] = useState<string | null>(null);
   const [actionWorkID, setActionWorkID] = useState<string | null>(null);
   const mountGenRef = useRef(0);
   const createIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const planningIntentRef = useRef<{ sessionId: string; requestId: string } | null>(null);
   const actionIntentsRef = useRef(new Map<string, string>());
 
   const load = useCallback(async (state: WorkArchiveState, gen = mountGenRef.current) => {
@@ -123,9 +133,54 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
     if (!tabID) {
       setWorks([]);
       setPageState('ready');
+      setV2Enabled(false);
+      setV2FlagStatus('unavailable');
+      setV2FlagError(null);
+      // Reset transient state even on empty tab to avoid stale cross-tab leakage.
+      setPlanning(false);
+      setPlanningError(null);
+      planningIntentRef.current = null;
+      setCreating(false);
+      setCreateError(null);
+      setShowCreate(false);
+      createIntentRef.current = null;
       return;
     }
     const gen = ++mountGenRef.current;
+    setV2Enabled(false);
+    setV2FlagStatus('pending');
+    setV2FlagError(null);
+    // Reset all transient create/planning state on identity change.
+    setPlanning(false);
+    setPlanningError(null);
+    planningIntentRef.current = null;
+    setCreating(false);
+    setCreateError(null);
+    setShowCreate(false);
+    createIntentRef.current = null;
+    const readV2Enabled = app.WorkCollaborationV2Enabled;
+    if (typeof readV2Enabled !== 'function') {
+      // Missing binding on a real tab is an error, not a silent V1 fallback.
+      setV2FlagStatus('error');
+      setV2FlagError('Work 协作工作台 V2 能力尚未连接，请升级 WorkGround2。');
+      setV2Enabled(false);
+      void load(archiveState, gen);
+      return () => { mountGenRef.current++; };
+    }
+    void readV2Enabled(tabID)
+      .then((enabled) => {
+        if (mountGenRef.current === gen) {
+          setV2Enabled(enabled);
+          setV2FlagStatus('ready');
+          setV2FlagError(null);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (mountGenRef.current === gen) {
+          setV2FlagStatus('error');
+          setV2FlagError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
     void load(archiveState, gen);
     return () => { mountGenRef.current++; };
   }, [archiveState, load]);
@@ -170,6 +225,73 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
       });
   }, [load, onOpenWork, tabID]);
 
+  const beginPlanning = useCallback(() => {
+    if (!tabID || planning) return;
+    const planningSessionID = sessionID?.trim() || tabID;
+    if (planningIntentRef.current?.sessionId !== planningSessionID) {
+      planningIntentRef.current = { sessionId: planningSessionID, requestId: requestID('planning') };
+    }
+    const intent = planningIntentRef.current;
+    const gen = mountGenRef.current;
+    const port = createWailsWorkControllerPort(tabID);
+    if (!port) {
+      setPlanningError('Work 对话规划能力尚未连接。');
+      return;
+    }
+    const adapter = new WorkControllerAdapter(port);
+    setPlanning(true);
+    setPlanningError(null);
+    void adapter.beginWorkPlanning({ sessionId: planningSessionID, requestId: intent.requestId })
+      .then(async (result) => {
+        if (mountGenRef.current !== gen) return;
+        const workID = result.result?.work.id ?? result.transportError?.workId;
+        if (!result.committed || !workID) {
+          throw new Error(result.transportError?.message || '未能创建对话规划 Work，请重试。');
+        }
+        // Persist the planning face before navigation. WorkCard restoration may
+        // race its first snapshot, but both sources now agree on the back face.
+        await adapter.setActiveFace(workID, 'back');
+        planningIntentRef.current = null;
+        setPlanning(false);
+        await load('active', gen);
+        if (mountGenRef.current === gen) onOpenWork(workID);
+      })
+      .catch((cause: unknown) => {
+        if (mountGenRef.current !== gen) return;
+        setPlanning(false);
+        setPlanningError(cause instanceof Error ? cause.message : String(cause));
+      })
+      .finally(() => adapter.dispose());
+  }, [load, onOpenWork, planning, sessionID, tabID]);
+
+  const retryV2Flag = useCallback(() => {
+    if (!tabID) return;
+    const fn = app.WorkCollaborationV2Enabled;
+    if (typeof fn !== 'function') {
+      setV2Enabled(false);
+      setV2FlagStatus('unavailable');
+      setV2FlagError(null);
+      return;
+    }
+    const gen = mountGenRef.current;
+    setV2FlagStatus('pending');
+    setV2FlagError(null);
+    void fn(tabID)
+      .then((enabled) => {
+        if (mountGenRef.current === gen) {
+          setV2Enabled(enabled);
+          setV2FlagStatus('ready');
+          setV2FlagError(null);
+        }
+      })
+      .catch((cause: unknown) => {
+        if (mountGenRef.current === gen) {
+          setV2FlagStatus('error');
+          setV2FlagError(cause instanceof Error ? cause.message : String(cause));
+        }
+      });
+  }, [tabID]);
+
   const rerun = useCallback(async (workID: string, mode: RerunMode) => {
     const key = `rerun:${mode}:${workID}`;
     await mutation(key, workID, async (id) => {
@@ -185,32 +307,58 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
   return (
     <div className="work-page" data-testid="work-page">
       <header className="work-page__header">
-        <button type="button" data-testid="work-back-btn" onClick={onBack}>← {t('work.backToSession')}</button>
+        <button type="button" className="work-page__back-btn" data-testid="work-back-btn" onClick={onBack}>← {t('work.backToSession')}</button>
         <h1 className="work-page__title">{t('work.title')}</h1>
-        <button type="button" data-testid="work-new-btn" onClick={() => { setShowCreate(true); setCreateError(null); }} disabled={creating}>
-          {t('work.newWork')}
+        <button
+          type="button"
+          className="work-page__new-btn"
+          data-testid="work-new-btn"
+          onClick={() => {
+            if (v2Enabled) {
+              beginPlanning();
+            } else {
+              setShowCreate(true);
+              setCreateError(null);
+            }
+          }}
+          disabled={creating || planning || v2FlagStatus === 'pending' || v2FlagStatus === 'error' || v2FlagStatus === 'unavailable'}
+        >
+          {v2FlagStatus === 'pending' ? '…' : planning ? '正在建立对话规划…' : t('work.newWork')}
         </button>
       </header>
 
       <nav className="work-page__filters" aria-label="Work 状态">
         {(['active', 'archived', 'deleted'] as const).map((state) => (
-          <button key={state} type="button" aria-pressed={archiveState === state} onClick={() => setArchiveState(state)}>
+          <button
+            key={state}
+            type="button"
+            className="work-page__filter-btn"
+            aria-pressed={archiveState === state}
+            onClick={() => setArchiveState(state)}
+          >
             {state === 'active' ? '进行中' : state === 'archived' ? '历史' : '回收站'}
           </button>
         ))}
       </nav>
 
       <div className="work-page__body">
+        {v2FlagStatus === 'error' && v2FlagError && (
+          <div className="work-page__error" data-testid="work-v2-flag-error" role="alert">
+            <p>无法确认 V2 协作工作台状态：{v2FlagError}</p>
+            <button type="button" data-testid="work-v2-flag-retry" onClick={retryV2Flag}>重试</button>
+          </div>
+        )}
+        {planningError && (
+          <div className="work-page__error" data-testid="work-planning-error" role="alert">
+            <p>{planningError}</p>
+            <button type="button" data-testid="work-planning-retry" onClick={beginPlanning} disabled={planning}>重试</button>
+          </div>
+        )}
         {error && <div className="work-page__error" data-testid="work-error" role="alert"><p>{error}</p><button type="button" data-testid="work-retry-btn" onClick={() => void load(archiveState)}>重试</button></div>}
-        {pageState === 'loading' && <div data-testid="work-loading">{t('work.loading')}</div>}
+        {pageState === 'loading' && <div className="work-page__loading" data-testid="work-loading">{t('work.loading')}</div>}
         {pageState === 'ready' && works.length === 0 && (
-          <div data-testid="work-empty">
+          <div className="work-page__empty" data-testid="work-empty">
             <p>{emptyText}</p>
-            {archiveState === 'active' && (
-              <button type="button" data-testid="work-empty-new-btn" onClick={() => setShowCreate(true)} disabled={creating}>
-                {t('work.newWork')}
-              </button>
-            )}
           </div>
         )}
         {pageState === 'ready' && works.length > 0 && (
@@ -225,18 +373,19 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, onBack, onOpenWork })
                   </button>
                   <div className="work-page__item-actions">
                     {archiveState === 'active' && <>
-                      <button type="button" disabled={pending} onClick={() => void mutation(`copy:${work.id}`, work.id, (id) => app.CopyWork(tabID, { sourceWorkId: work.id, requestId: id }))}>复制</button>
-                      <button type="button" disabled={pending} onClick={() => void mutation(`archive:${work.id}`, work.id, (id) => app.ArchiveWork(tabID, work.id, id))}>归档</button>
+                      <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void mutation(`copy:${work.id}`, work.id, (id) => app.CopyWork(tabID, { sourceWorkId: work.id, requestId: id }))}>复制</button>
+                      <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void mutation(`archive:${work.id}`, work.id, (id) => app.ArchiveWork(tabID, work.id, id))}>归档</button>
                     </>}
                     {archiveState === 'archived' && <>
-                      <button type="button" disabled={pending} onClick={() => void rerun(work.id, 'original_definition')}>按原定义重执行</button>
-                      <button type="button" disabled={pending} onClick={() => void rerun(work.id, 'latest_definition')}>按最新定义重执行</button>
-                      <button type="button" disabled={pending} onClick={() => void mutation(`restore:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>
+                      <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void rerun(work.id, 'original_definition')}>按原定义重执行</button>
+                      <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void rerun(work.id, 'latest_definition')}>按最新定义重执行</button>
+                      <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void mutation(`restore:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>
                     </>}
-                    {archiveState === 'deleted' && <button type="button" disabled={pending} onClick={() => void mutation(`restore-trash:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>}
+                    {archiveState === 'deleted' && <button type="button" className="work-page__action-btn" disabled={pending} onClick={() => void mutation(`restore-trash:${work.id}`, work.id, (id) => app.RestoreWork(tabID, work.id, id))}>恢复</button>}
                     {archiveState !== 'deleted' && (
                       <button
                         type="button"
+                        className="work-page__action-btn work-page__action-btn--danger"
                         disabled={pending}
                         onClick={() => {
                           if (window.confirm(`将“${work.name}”移入回收站？`)) {

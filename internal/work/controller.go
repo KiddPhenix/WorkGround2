@@ -90,4 +90,71 @@ type WorkController interface {
 
 	// ExecuteRerun 根据已审阅的 RerunPlan 执行重执行。
 	ExecuteRerun(ctx context.Context, planToken, requestID string) (*Work, error)
+
+	// ── V2 Collaboration Controller ──────────────────────────────────────
+
+	// BeginWorkPlanning starts a conversation-based definition flow.
+	// Creates a new Work with a draft WorkDefinitionRevision.
+	// requestID ensures idempotent creation.
+	BeginWorkPlanning(ctx context.Context, input BeginWorkPlanningInput) (*WorkView, error)
+
+	// BeginWorkPlanningWithResult exposes duplicate and committed-recovery
+	// metadata to transport callers without changing the internal view API.
+	BeginWorkPlanningWithResult(ctx context.Context, input BeginWorkPlanningInput) (*BeginWorkPlanningResult, error)
+
+	// BeginBlueprintPlanning selects, defines, and applies a built-in V2
+	// Blueprint through the authoritative planning and scheduling pipeline.
+	BeginBlueprintPlanning(ctx context.Context, input BeginBlueprintPlanningInput) (*BeginBlueprintPlanningResult, error)
+
+	// ApplyDefinition atomically activates a new definition revision.
+	// expectedRevision guards against lost updates.
+	ApplyDefinition(ctx context.Context, input ApplyDefinitionInput) (*ApplyDefinitionResult, error)
+
+	// CreateCandidateRevision creates a copy-on-write draft and impact preview.
+	// It never switches the active definition.
+	CreateCandidateRevision(ctx context.Context, input CreateCandidateRevisionInput) (*CreateCandidateRevisionResult, error)
+
+	// SubmitWorkInput commits a typed input value through InputService.
+	// requestID guarantees idempotent submission; expectedRevision prevents
+	// overwriting a concurrent update. On success the affected task subgraph
+	// is automatically resumed.
+	SubmitWorkInput(ctx context.Context, input SubmitInputRequest) (*SubmitInputResult, error)
+
+	// SetInputCornerstone pins or unpins a submitted input as a Cornerstone.
+	// Pin and input submission are independent operations; pin failure does
+	// not roll back the input.
+	SetInputCornerstone(ctx context.Context, input SetInputCornerstoneRequest) (*CornerstonePinResult, error)
+
+	// PreviewWorkPatch generates a structured WorkPatchPreview from a
+	// discussion instruction. This is read-only — no Work state is mutated.
+	PreviewWorkPatch(ctx context.Context, input PreviewWorkPatchInput) (*PreviewWorkPatchResult, error)
+
+	// ApplyWorkPatch applies a previously previewed patch. requestID makes
+	// repeated applies idempotent; expectedRevision rejects stale mutations.
+	// On success the affected task subgraph is automatically resumed.
+	ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchInput) (*ApplyWorkPatchResult, error)
+
+	// RetryWorkNode retries a failed or invalidated V2 task node.
+	// expectedRevision guards against lost updates.
+	RetryWorkNode(ctx context.Context, input RetryWorkNodeRequest) (*RetryWorkNodeResult, error)
+
+	// RetryArtifactSlot resets a failed/partial/stale active slot and wakes its
+	// authoritative producer task.
+	RetryArtifactSlot(ctx context.Context, input RetryArtifactSlotRequest) (*RetryArtifactSlotResult, error)
+
+	// PreviewArtifact produces a graded ArtifactPreview for the given artifact
+	// reference. This is read-only — no Work state is mutated. The preview is
+	// cached by content digest and converter version; repeated calls for the
+	// same content return the cached result. The original artifact is never
+	// modified. When no converter is available, the result degrades safely to
+	// filecard with CanOpen=true.
+	PreviewArtifact(ctx context.Context, input PreviewArtifactRequest) (*PreviewArtifactResult, error)
+
+	// RequestArtifactConversion executes or resumes an async conversion with
+	// external-approval gating. requestID makes repeated requests idempotent.
+	RequestArtifactConversion(ctx context.Context, input RequestArtifactConversionInput) (*RequestArtifactConversionResult, error)
+
+	// RecoverArtifactConversions resumes pending and expired-running durable
+	// conversion receipts for one Work. It is safe across process instances.
+	RecoverArtifactConversions(ctx context.Context, workID string) (int, error)
 }

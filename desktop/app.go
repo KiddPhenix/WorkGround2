@@ -8347,6 +8347,40 @@ func workspacePathForBase(base, rel string) (string, bool, error) {
 	return path, true, nil
 }
 
+// secureWorkspacePathForBase resolves symlinks before allowing a direct host
+// open/reveal side effect. Lexical containment alone is insufficient because a
+// workspace symlink may target an arbitrary path outside the workspace.
+func secureWorkspacePathForBase(base, rel string) (string, bool, error) {
+	path, ok, err := workspacePathForBase(base, rel)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", false, err
+	}
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false, err
+	}
+	realBase, err = filepath.Abs(realBase)
+	if err != nil {
+		return "", false, err
+	}
+	realPath, err = filepath.Abs(realPath)
+	if err != nil {
+		return "", false, err
+	}
+	relative, err := filepath.Rel(realBase, realPath)
+	if err != nil {
+		return "", false, err
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) || filepath.IsAbs(relative) {
+		return "", false, os.ErrPermission
+	}
+	return filepath.Clean(realPath), true, nil
+}
+
 // ListDir lists one directory level (directories first, then files, each
 // alphabetical) for the "@" file-reference menu. rel resolves against the active
 // tab workspace. The menu navigates one level at a time, never recursively —
@@ -8572,7 +8606,7 @@ func (a *App) OpenWorkspacePath(rel string) error {
 
 // OpenWorkspacePathForTab opens a path resolved against the requested tab.
 func (a *App) OpenWorkspacePathForTab(tabID, rel string) error {
-	path, ok, err := a.workspaceOrExternalPathForTab(tabID, rel)
+	path, ok, err := a.secureWorkspaceOrExternalPathForTab(tabID, rel)
 	if err != nil || !ok {
 		return os.ErrInvalid
 	}
@@ -8587,11 +8621,28 @@ func (a *App) RevealWorkspacePath(rel string) error {
 
 // RevealWorkspacePathForTab reveals a path resolved against the requested tab.
 func (a *App) RevealWorkspacePathForTab(tabID, rel string) error {
-	path, ok, err := a.workspaceOrExternalPathForTab(tabID, rel)
+	path, ok, err := a.secureWorkspaceOrExternalPathForTab(tabID, rel)
 	if err != nil || !ok {
 		return os.ErrInvalid
 	}
 	return revealPath(path)
+}
+
+func (a *App) secureWorkspaceOrExternalPathForTab(tabID, rel string) (string, bool, error) {
+	root, ctrl, ok := a.workspaceTargetForTab(tabID)
+	if !ok {
+		return "", false, os.ErrNotExist
+	}
+	if browser := externalFolderRefBrowserFromController(ctrl); browser != nil {
+		if path, _, ok := browser.ExternalFolderRefLocalPath(rel); ok {
+			return path, true, nil
+		}
+	}
+	base, err := workspaceBaseFromRoot(root)
+	if err != nil {
+		return "", false, err
+	}
+	return secureWorkspacePathForBase(base, rel)
 }
 
 // RevealPath shows an arbitrary absolute path in the native file manager.

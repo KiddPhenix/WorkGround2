@@ -33,7 +33,12 @@
     "work",
     "revision",
     "assessment",
-    "runBlock"
+    "runBlock",
+    "definition",
+    "artifactSlots",
+    "tasks",
+    "inputs",
+    "patchPreviews"
   ],
   "RunBlockReason": [
     "blocked",

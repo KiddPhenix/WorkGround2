@@ -27,6 +27,9 @@ type WorkStore interface {
 	Append(workID string, event WorkEvent) (int64, error)
 	// CommitEvent 为 Service 获取 writer lease，并原子串行化单条事件提交。
 	CommitEvent(workID string, event WorkEvent) (int64, error)
+	// CommitEvents atomically commits multiple events under a single work lock.
+	// All events are validated before any is appended. Returns allocated revisions.
+	CommitEvents(workID string, events []WorkEvent) ([]int64, error)
 	// WriteProjection 以原子方式写入投影快照。
 	WriteProjection(workID string, work *Work, revision int64) error
 	// WriteArchive 以原子方式写入归档 WorkRecord。
@@ -62,19 +65,86 @@ type TaskExecutor interface {
 	CancelTask(ctx context.Context, input TaskCancelInput) error
 }
 
+// TaskArtifactReporter is an optional executor capability used by V2 nodes
+// that declare ArtifactSlot outputs. The scheduler validates every reported
+// SlotID against the active NodeDef before committing it.
+type TaskArtifactReporter interface {
+	TaskArtifacts(context.Context, TaskExecuteInput, *Attempt) ([]TaskArtifactOutput, error)
+}
+
+// TaskArtifactOutput is materialised output returned by an executor for one
+// declared ArtifactSlot.
+type TaskArtifactOutput struct {
+	SlotID  string
+	Refs    []ArtifactRef
+	Summary string
+}
+
+// PatchPlanner converts a block discussion into structured patch operations.
+// Implementations may call an AI model, but may not mutate Work state or
+// execute tools. PatchService validates and normalizes every returned operation.
+type PatchPlanner interface {
+	PlanPatch(context.Context, PatchPlanInput) (*PatchPlan, error)
+}
+
+// DefinitionPlanner converts a natural-language structure intent into a full
+// candidate definition. Implementations may call an AI model, but may not
+// mutate Work state or execute tools. Service validates all planner output.
+type DefinitionPlanner interface {
+	PlanDefinition(context.Context, DefinitionPlanInput) (*DefinitionPlan, error)
+}
+
+// DefinitionPlanInput is the immutable authoritative context supplied to a
+// DefinitionPlanner. Base is loaded by Service; callers cannot provide it.
+type DefinitionPlanInput struct {
+	Intent string
+	Work   *Work
+	Base   *WorkDefinitionRevision
+}
+
+// DefinitionPlan is untrusted planner output. Identity, revision, status,
+// timestamps, and digest are always derived by Service.
+type DefinitionPlan struct {
+	Goal          string            `json:"goal"`
+	Nodes         []NodeDef         `json:"nodes"`
+	ArtifactSlots []ArtifactSlotDef `json:"artifactSlots"`
+	InputSpecs    []InputSpec       `json:"inputSpecs"`
+}
+
+// PatchPlanInput is the complete, immutable context supplied to PatchPlanner.
+// Discussion text stays in the associated Session; it is never persisted in a
+// Work event.
+type PatchPlanInput struct {
+	Instruction string
+	SessionID   string
+	Scope       PatchScope
+	Work        *Work
+	Definition  *WorkDefinitionRevision
+	Run         *WorkflowRun
+	Task        *Task
+	Block       *BlockInstance
+}
+
+// PatchPlan is the planner's untrusted structured output.
+type PatchPlan struct {
+	Operations []PatchOp
+}
+
 // TaskExecuteInput carries stable object and request context into the session
 // executor without exposing Controller internals.
 type TaskExecuteInput struct {
-	WorkID           string `json:"workId"`
-	RunID            string `json:"runId"`
-	StageID          string `json:"stageId"`
-	TaskID           string `json:"taskId"`
-	AttemptID        string `json:"-"`
-	AttemptIndex     int    `json:"attemptIndex"`
-	RequestID        string `json:"requestId"`
-	DefinitionDigest string `json:"definitionDigest"`
-	SideEffectClass  string `json:"-"`
-	Prompt           string `json:"prompt"`
+	WorkID           string   `json:"workId"`
+	RunID            string   `json:"runId"`
+	StageID          string   `json:"stageId"`
+	TaskID           string   `json:"taskId"`
+	AttemptID        string   `json:"-"`
+	AttemptIndex     int      `json:"attemptIndex"`
+	RequestID        string   `json:"requestId"`
+	DefinitionDigest string   `json:"definitionDigest"`
+	SideEffectClass  string   `json:"-"`
+	Operation        string   `json:"-"`
+	ProducesSlotIDs  []string `json:"-"`
+	Prompt           string   `json:"prompt"`
 }
 
 // TaskCancelInput identifies one attempt independently of Session creation.

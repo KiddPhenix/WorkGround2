@@ -34,6 +34,7 @@ import type {
   WorkViewEvent,
   WorkflowRun,
 } from '../work/types';
+import type { WorkDefinitionRevision } from '../work/types_v2';
 
 let passed = 0;
 let failed = 0;
@@ -155,6 +156,11 @@ function button(scope: ParentNode, label: string): HTMLButtonElement {
   return result;
 }
 
+function maybeButton(scope: ParentNode, label: string): HTMLButtonElement | null {
+  return [...scope.querySelectorAll<HTMLButtonElement>('button')]
+    .find((candidate) => candidate.textContent?.replace(/\s+/g, '') === label.replace(/\s+/g, '')) ?? null;
+}
+
 function reset(): void {
   useWorkStore.getState().clearAll();
   useWorkUIStore.getState().clearAll();
@@ -225,6 +231,34 @@ function runAck(workId: string, requestId: string, id = `run-${requestId}`): Wor
     stages: [],
     startedAt: '2026-07-22T00:00:00Z',
   };
+}
+
+function makeV2Definition(overrides: Partial<WorkDefinitionRevision> = {}): WorkDefinitionRevision {
+  return {
+    workId: 'work-cornerstone',
+    revision: 1,
+    parentRevision: 0,
+    status: 'draft',
+    goal: '',
+    nodes: [],
+    artifactSlots: [],
+    inputSpecs: [],
+    createdBy: 'test',
+    createdAt: '2026-07-23T00:00:00Z',
+    digest: 'v2-digest',
+    ...overrides,
+  };
+}
+
+function makeV2View(overrides: Partial<WorkView['work']> = {}, revision = 1): WorkView {
+  const view = makeView([], revision);
+  view.work = {
+    ...view.work,
+    schemaVersion: 2,
+    ...overrides,
+  };
+  view.schemaVersion = 2;
+  return view;
 }
 
 type MutationInput =
@@ -1960,7 +1994,9 @@ async function testRemountAuthoritativeHydration(): Promise<void> {
   ok(!card.host.querySelector('[data-testid="work-attention"]'), 'A1: 首次挂载无 Attention');
   eq(recoverCalls, 0, 'A1: 首次挂载不走 RecoverWorkView');
 
-  useWorkUIStore.getState().setDraft(readyView.work.id, 'front', 'surviving draft');
+  await act(async () => {
+    useWorkUIStore.getState().setDraft(readyView.work.id, 'front', 'surviving draft');
+  });
   const genBeforeUnmount = useWorkStore.getState().resyncGenerations[readyView.work.id] ?? 0;
   await card.cleanup();
 
@@ -2223,6 +2259,223 @@ async function testProductionAdaptersIgnoreLateLowerGeneration(): Promise<void> 
   delete (dom.window as unknown as { runtime?: unknown }).runtime;
 }
 
+async function testV2DraftGateNoRunButton(): Promise<void> {
+  reset();
+  const view = makeV2View({ state: 'draft' });
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const planCalls: string[] = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    onPlanStructure={() => { planCalls.push('plan'); }}
+  />);
+
+  // V2 draft: Run button must not exist; planning CTA must be present.
+  ok(!maybeButton(entry.host, '运行'), 'V2 draft 不显示运行按钮');
+  ok(!!button(entry.host, '继续规划工作结构'), 'V2 draft 显示规划 CTA');
+  ok(!!entry.host.querySelector('[data-testid="work-plan-structure"]'), '规划 CTA 有 data-testid');
+  ok(!!entry.host.querySelector('[data-testid="work-v2-draft-hint"]'), 'V2 draft 显示规划提示');
+
+  // Click planning CTA — must call onPlanStructure, never onRun.
+  await click(button(entry.host, '继续规划工作结构'));
+  eq(planCalls.length, 1, '点击规划 CTA 调用 onPlanStructure');
+  eq(runCalls.length, 0, '规划 CTA 不调用 onRun');
+
+  await entry.cleanup();
+}
+
+async function testV2DraftRunDisabledOnAllPaths(): Promise<void> {
+  reset();
+  const view = makeV2View({ state: 'draft', prompt: 'some prompt' });
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    onResumeRun={() => ({ id: 'r1', workId: view.work.id, definitionDigest: 'd', state: 'running', stages: [], startedAt: '2026-07-23T00:00:00Z' })}
+  />);
+
+  // Double-click planning CTA — must not trigger Run.
+  const planBtn = button(entry.host, '继续规划工作结构');
+  await click(planBtn);
+  await click(planBtn);
+  eq(runCalls.length, 0, 'V2 draft 重复点击规划 CTA 不触发 onRun');
+
+  // Keyboard: Enter on planning CTA — still no Run.
+  await act(async () => {
+    planBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  await settle();
+  eq(runCalls.length, 0, 'V2 draft 键盘事件不触发 onRun');
+
+  await entry.cleanup();
+}
+
+async function testV2ActiveDefinitionEnablesRun(): Promise<void> {
+  reset();
+  const v2def = makeV2Definition({ status: 'active', nodes: [{ id: 'n1', title: 'Task 1' }], goal: 'do work' });
+  const view = makeV2View({ state: 'ready' });
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    v2Definition={v2def}
+  />);
+
+  ok(!!button(entry.host, '运行'), 'V2 active Definition 显示运行按钮');
+  ok(!entry.host.querySelector('[data-testid="work-plan-structure"]'), 'V2 active 不显示规划 CTA');
+  await click(button(entry.host, '运行'));
+  eq(runCalls.length, 1, 'V2 active 正常派发 onRun');
+  eq(runCalls[0].workId, view.work.id, 'onRun workId 正确');
+
+  await entry.cleanup();
+}
+
+async function testV2CompletedTasksWithMissingArtifactCanRecover(): Promise<void> {
+  reset();
+  const v2def = makeV2Definition({
+    status: 'active',
+    revision: 2,
+    nodes: [{ id: 'n1', title: 'Task 1', producesSlotIds: ['result'] }],
+    artifactSlots: [{
+      id: 'result', title: '最终成果', kind: 'text', expectedCount: 1, required: true,
+    }],
+    goal: 'do work',
+  });
+  const view = makeV2View({ state: 'running' }, 8);
+  view.tasks = [{
+    id: 'task-1',
+    runId: 'run-1',
+    nodeId: 'n1',
+    title: 'Task 1',
+    state: 'completed',
+    retryable: false,
+    updatedAt: '2026-07-26T00:00:00Z',
+  }];
+  view.artifactSlots = [{
+    id: 'result',
+    workId: view.work.id,
+    definitionRev: 2,
+    title: '最终成果',
+    kind: 'text',
+    expectedCount: 1,
+    required: true,
+    state: 'reserved',
+    artifactRefs: [],
+    revision: 1,
+  }];
+  useWorkStore.getState().applySnapshot(view);
+  const retries: Array<{ workId: string; definitionRevision: number; slotId: string; revision: number }> = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    v2Definition={v2def}
+    onV2ArtifactRetry={(intent) => { retries.push(structuredClone(intent)); }}
+  />);
+
+  ok(!maybeButton(entry.host, '运行中…'), 'V2 卡死投影不再伪装为运行中');
+  await click(button(entry.host, '生成缺失成果'));
+  eq(retries.length, 1, '缺失成果入口派发一次恢复');
+  eq(retries[0].slotId, 'result', '恢复定位缺失成果槽');
+  eq(retries[0].definitionRevision, 2, '恢复携带 Definition revision');
+
+  await entry.cleanup();
+}
+
+async function testV2ActiveDefinitionArrivesLate(): Promise<void> {
+  reset();
+  // Start as V2 draft — no active Definition.
+  const view = makeV2View({ state: 'draft', prompt: 'test prompt' });
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    v2Definition={undefined}
+  />);
+
+  ok(!!button(entry.host, '继续规划工作结构'), '初始 V2 draft 显示规划 CTA');
+  ok(!maybeButton(entry.host, '运行'), '初始 V2 draft 无运行按钮');
+
+  // Late arrival: active Definition injected via prop change.
+  const v2def = makeV2Definition({ status: 'active', nodes: [{ id: 'n1', title: 'Task 1' }], goal: 'do work' });
+  const entry2 = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    v2Definition={v2def}
+  />);
+
+  ok(!!button(entry2.host, '运行'), '迟到 active Definition 后显示运行按钮');
+  ok(!entry2.host.querySelector('[data-testid="work-plan-structure"]'), '迟到 active 后不显示规划 CTA');
+  await click(button(entry2.host, '运行'));
+  eq(runCalls.length, 1, '迟到 active 后正常派发 onRun');
+
+  await entry.cleanup();
+  await entry2.cleanup();
+}
+
+async function testV2CandidateOnlyNotRunnable(): Promise<void> {
+  reset();
+  // Draft with nodes but NOT active — still not runnable.
+  const v2def = makeV2Definition({ status: 'draft', nodes: [{ id: 'n1', title: 'Task 1' }], goal: 'do work' });
+  const view = makeV2View({ state: 'draft', prompt: 'test prompt' });
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    v2Definition={undefined}
+  />);
+
+  ok(!!button(entry.host, '继续规划工作结构'), 'candidate-only draft 显示规划 CTA');
+  ok(!maybeButton(entry.host, '运行'), 'candidate-only draft 无运行按钮');
+  eq(runCalls.length, 0, 'candidate-only 不触发 onRun');
+
+  await entry.cleanup();
+}
+
+async function testV1RunBehaviorUnchanged(): Promise<void> {
+  reset();
+  const view = makeView([]);
+  useWorkStore.getState().applySnapshot(view);
+  const runCalls: Array<{ workId: string; requestId: string }> = [];
+  let planCalls = 0;
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={(input) => { runCalls.push(structuredClone(input)); return runAck(input.workId, input.requestId); }}
+    onPlanStructure={() => { planCalls++; }}
+  />);
+
+  // V1 work: Run button works as before.
+  ok(!!button(entry.host, '运行'), 'V1 work 正常显示运行按钮');
+  ok(!entry.host.querySelector('[data-testid="work-plan-structure"]'), 'V1 work 不显示规划 CTA');
+  await click(button(entry.host, '运行'));
+  eq(runCalls.length, 1, 'V1 onRun 正常派发');
+  eq(planCalls, 0, 'V1 onPlanStructure 未调用');
+
+  await entry.cleanup();
+}
+
+async function testV2DraftBackendRejectionShowsError(): Promise<void> {
+  reset();
+  // V2 with active Definition — Run is enabled, but backend rejects.
+  const v2def = makeV2Definition({ status: 'active', nodes: [{ id: 'n1', title: 'Task 1' }], goal: 'do work' });
+  const view = makeV2View({ state: 'ready', prompt: 'test prompt' });
+  useWorkStore.getState().applySnapshot(view);
+  const entry = await mount(<WorkRunEntry
+    workId={view.work.id}
+    onRun={() => { throw Object.assign(new Error('后端拒绝：缺少可执行节点'), { code: 'no_executable_definition' }); }}
+    v2Definition={v2def}
+  />);
+
+  await click(button(entry.host, '运行'));
+  ok(!!entry.host.querySelector('[role="alert"]'), '后端拒绝显示错误');
+  ok(entry.host.textContent?.includes('安全重试') || entry.host.textContent?.includes('重试'), '拒绝错误提示可重试');
+
+  await entry.cleanup();
+}
+
 async function testLiveRefRepairStillWorksWithRef(): Promise<void> {
   reset();
   const view = makeView([
@@ -2284,6 +2537,14 @@ await testLargeSnapshotReplacementPassesProductionChain();
 await testRemountAuthoritativeHydration();
 await testProductionAdaptersIgnoreLateLowerGeneration();
 await testLiveRefRepairStillWorksWithRef();
+await testV2DraftGateNoRunButton();
+await testV2DraftRunDisabledOnAllPaths();
+await testV2ActiveDefinitionEnablesRun();
+await testV2CompletedTasksWithMissingArtifactCanRecover();
+await testV2ActiveDefinitionArrivesLate();
+await testV2CandidateOnlyNotRunnable();
+await testV1RunBehaviorUnchanged();
+await testV2DraftBackendRejectionShowsError();
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

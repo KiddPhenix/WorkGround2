@@ -3,7 +3,7 @@
  *
  * Translates between the frontend CornerstoneControllerPort (rich TS DTOs with
  * workId embedded) and the Go Wails bindings (workId passed separately, Go DTOs
- * use PascalCase JSON tags). Handles revision conflicts by preserving draft
+ * use lowerCamelCase JSON tags matching Go json struct tags). Handles revision conflicts by preserving draft
  * state and surfacing the latest snapshot. Same business retry reuses requestID;
  * new intent generates a fresh requestID.
  */
@@ -48,6 +48,7 @@ import type {
 export interface WailsWorkBindings {
   WorkEnabled(tabID: string): Promise<boolean>;
   WorkCapable(tabID: string): Promise<boolean>;
+  WorkCollaborationV2Enabled(tabID: string): Promise<boolean>;
   CreateWork(tabID: string, input: CreateWorkInput): Promise<Work>;
   GetWork(tabID: string, workID: string): Promise<WorkView>;
   ListWorks(tabID: string, filter: WorkFilter): Promise<WorkPage>;
@@ -77,9 +78,57 @@ export interface WailsWorkBindings {
   ForcePurgeTrashedSession(path: string): Promise<GoForcePurgeImpact>;
   RetryCleanupPending(path: string, requestID: string): Promise<void>;
   ListSessionCleanupPending(): Promise<GoCleanupPendingRecord[]>;
+  BeginWorkPlanning(
+    tabID: string,
+    input: import('./types_v2').BeginWorkPlanningInput,
+  ): Promise<GoBeginWorkPlanningResult>;
+  ApplyDefinition(
+    tabID: string,
+    input: import('./types_v2').ApplyDefinitionInput,
+  ): Promise<GoApplyDefinitionResult>;
+  CreateCandidateRevision(
+    tabID: string,
+    input: import('./types_v2').CreateCandidateRevisionInput,
+  ): Promise<GoCreateCandidateRevisionResult>;
+  RetryWorkNode(
+    tabID: string,
+    input: import('./types_v2').RetryWorkNodeRequest,
+  ): Promise<GoRetryWorkNodeResult>;
+  RetryArtifactSlot(
+    tabID: string,
+    input: import('./types_v2').RetryArtifactSlotRequest,
+  ): Promise<GoRetryArtifactSlotResult>;
+  PreviewArtifact(
+    tabID: string,
+    input: import('./types_v2').PreviewArtifactRequest,
+  ): Promise<GoPreviewArtifactResult>;
+  RequestArtifactConversion(
+    tabID: string,
+    input: import('./types_v2').RequestArtifactConversionInput,
+  ): Promise<GoRequestArtifactConversionResult>;
+  SelectWorkInputFile(
+    tabID: string,
+    input: import('./types_v2').SelectWorkInputFileRequest,
+  ): Promise<GoSelectWorkInputFileResult>;
+  SubmitWorkInput(
+    tabID: string,
+    input: import('./types_v2').SubmitWorkInputRequest,
+  ): Promise<GoSubmitInputResult>;
+  SetInputCornerstone(
+    tabID: string,
+    input: import('./types_v2').SetInputCornerstoneRequest,
+  ): Promise<GoCornerstonePinResult>;
+  PreviewWorkPatch(
+    tabID: string,
+    input: import('./types_v2').PreviewWorkPatchRequest,
+  ): Promise<GoPreviewWorkPatchResult>;
+  ApplyWorkPatch(
+    tabID: string,
+    input: import('./types_v2').ApplyWorkPatchRequest,
+  ): Promise<GoApplyWorkPatchResult>;
 }
 
-// --- Go DTO shapes (PascalCase JSON tags as returned by Wails) ---
+// --- Go DTO shapes (lowerCamelCase JSON tags matching Go json struct tags) ---
 interface GoCornerstoneInput {
   type: string;
   title: string;
@@ -182,6 +231,127 @@ interface GoCleanupPendingRecord {
   impact?: GoForcePurgeImpact;
   createdAt: number;
   updatedAt?: number;
+}
+
+// Go returns BeginWorkPlanningResult with lowerCamelCase JSON tags matching Go json struct tags.
+interface GoBeginWorkPlanningResult {
+  result?: import('./types').WorkView;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+// Go returns ApplyDefinitionResult with lowerCamelCase JSON tags matching Go json struct tags.
+interface GoApplyDefinitionResult {
+  view?: import('./types').WorkView;
+  intent?: import('./types_v2').AutoSwitchFaceIntent;
+  impact?: import('./types_v2').RunImpact;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+interface GoCreateCandidateRevisionResult {
+  candidate?: import('./types_v2').WorkDefinitionRevision;
+  impact?: import('./types_v2').RunImpact;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+interface GoRetryWorkNodeResult {
+  result?: import('./types').Task;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: import('./types_v2').WorkTransportError;
+}
+
+interface GoRetryArtifactSlotResult {
+  slot?: import('./types_v2').ArtifactSlot;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+interface GoPreviewArtifactResult {
+  preview?: import('./types_v2').ArtifactPreview;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+interface GoRequestArtifactConversionResult {
+  preview?: import('./types_v2').ArtifactPreview;
+  committed: boolean;
+  recoverable: boolean;
+  duplicate: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+}
+
+interface GoSelectWorkInputFileResult {
+  artifactRef?: import('./types').ArtifactRef;
+  canceled: boolean;
+  error?: import('./types_v2').WorkTransportError;
+}
+
+interface GoSubmitInputResult {
+  input?: import('./types_v2').WorkInput;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: string;
+  transportError?: import('./types_v2').WorkTransportError;
+  receipt?: import('./types_v2').InputIntentReceipt;
+}
+
+interface GoCornerstonePinResult {
+  cornerstoneId?: string;
+  pinned: boolean;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: string;
+  transportError?: import('./types_v2').WorkTransportError;
+  receipt?: import('./types_v2').InputIntentReceipt;
+}
+
+interface GoPreviewWorkPatchResult {
+  preview?: import('./types_v2').WorkPatchPreview;
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: string;
+  transportError?: import('./types_v2').WorkTransportError;
+  receipt?: import('./types_v2').PatchIntentReceipt;
+}
+
+interface GoApplyWorkPatchResult {
+  workRevision: number;
+  newRevision: number;
+  invalidatedTaskIds?: string[];
+  affectedBlockIds?: string[];
+  affectedArtifactSlotIds?: string[];
+  staleArtifactSlotIds?: string[];
+  requiresRerun: boolean;
+  duplicate: boolean;
+  error?: string;
+  committed: boolean;
+  recoverable: boolean;
+  transportError?: import('./types_v2').WorkTransportError;
+  receipt?: import('./types_v2').PatchIntentReceipt;
 }
 
 // --- Helpers ---
@@ -379,13 +549,16 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
       const raw = window.localStorage.getItem(preferenceKey(tabID, workID));
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Partial<WorkUIPreference>;
-      return parsed.activeFace === 'front' || parsed.activeFace === 'back'
-        ? { activeFace: parsed.activeFace }
-        : null;
+      if (parsed.activeFace !== 'front' && parsed.activeFace !== 'back') return null;
+      return {
+        activeFace: parsed.activeFace,
+        discussionDrafts: parsed.discussionDrafts,
+        inputDrafts: parsed.inputDrafts,
+      };
     },
 
     writeUIPreference: async (workID, preference) => {
-      window.localStorage.setItem(preferenceKey(tabID, workID), JSON.stringify({ activeFace: preference.activeFace }));
+      window.localStorage.setItem(preferenceKey(tabID, workID), JSON.stringify(preference));
     },
 
     retryTask: (input) => app.RetryWorkTask(tabID, input),
@@ -513,6 +686,730 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
         return okResult(result);
       } catch (err) {
         return errorResult(app, tabID, err, input.workId, input, input.cornerstoneId);
+      }
+    },
+
+    beginWorkPlanning: async (input) => {
+      try {
+        const go = await app.BeginWorkPlanning(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'BeginWorkPlanning: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'BeginWorkPlanning',
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.result?.work?.id && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'BeginWorkPlanning committed but result.work.id missing',
+              operation: 'BeginWorkPlanning',
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          result: go.result,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'BeginWorkPlanning',
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    applyDefinition: async (input) => {
+      try {
+        const go = await app.ApplyDefinition(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'ApplyDefinition: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'ApplyDefinition',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.view?.work?.id && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'ApplyDefinition committed but view.work.id missing',
+              operation: 'ApplyDefinition',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          view: go.view,
+          intent: go.intent,
+          impact: go.impact,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'ApplyDefinition',
+            workId: input.workId,
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    createCandidateRevision: async (input) => {
+      try {
+        const go = await app.CreateCandidateRevision(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'CreateCandidateRevision: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'CreateCandidateRevision',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.candidate?.workId && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'CreateCandidateRevision committed but candidate.workId missing',
+              operation: 'CreateCandidateRevision',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          candidate: go.candidate,
+          impact: go.impact,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'CreateCandidateRevision',
+            workId: input.workId,
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    retryWorkNode: async (input) => {
+      try {
+        const go = await app.RetryWorkNode(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            error: {
+              code: 'contract_malformed',
+              message: 'RetryWorkNode: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.result?.id && !(go.error?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            error: {
+              code: 'contract_malformed',
+              message: 'RetryWorkNode committed but result.id missing',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          result: go.result,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          error: go.error,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          error: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    retryArtifactSlot: async (input) => {
+      try {
+        const go = await app.RetryArtifactSlot(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'RetryArtifactSlot: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'RetryArtifactSlot',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.slot?.id && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'RetryArtifactSlot committed but slot.id missing',
+              operation: 'RetryArtifactSlot',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          slot: go.slot,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'RetryArtifactSlot',
+            workId: input.workId,
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    previewArtifact: async (input) => {
+      try {
+        const go = await app.PreviewArtifact(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean') {
+          return {
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'PreviewArtifact: required scalar missing/wrong-type (committed/recoverable=boolean)',
+              operation: 'PreviewArtifact',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.preview?.artifactId && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'PreviewArtifact committed but preview.artifactId missing',
+              operation: 'PreviewArtifact',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          preview: go.preview,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'PreviewArtifact',
+            workId: input.workId,
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    requestArtifactConversion: async (input) => {
+      try {
+        const go = await app.RequestArtifactConversion(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean') {
+          return {
+            committed: false,
+            recoverable: true,
+            duplicate: false,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'RequestArtifactConversion: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean)',
+              operation: 'RequestArtifactConversion',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.preview?.artifactId && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            committed: false,
+            recoverable: true,
+            duplicate: false,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'RequestArtifactConversion committed but preview.artifactId missing',
+              operation: 'RequestArtifactConversion',
+              workId: input.workId,
+              requestId: input.requestId,
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          preview: go.preview,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          duplicate: go.duplicate,
+          transportError: go.transportError,
+        };
+      } catch (error) {
+        return {
+          committed: false,
+          recoverable: true,
+          duplicate: false,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'RequestArtifactConversion',
+            workId: input.workId,
+            requestId: input.requestId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    selectWorkInputFile: async (input) => {
+      try {
+        const go = await app.SelectWorkInputFile(tabID, input);
+        if (typeof go.canceled !== 'boolean') {
+          return {
+            canceled: false,
+            error: {
+              code: 'contract_malformed',
+              message: 'SelectWorkInputFile: required scalar canceled missing/wrong-type (boolean)',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        // Conditional: canceled=false with no explicit error → artifactRef must be valid.
+        if (!go.canceled && !go.error) {
+          const ref = go.artifactRef;
+          const validStatuses = new Set(['available', 'stale', 'missing', 'failed']);
+          const missing: string[] = [];
+          if (!ref) { missing.push('artifactRef'); }
+          else {
+            if (typeof ref.id !== 'string' || !ref.id) missing.push('id');
+            if (typeof ref.name !== 'string' || !ref.name) missing.push('name');
+            if (typeof ref.type !== 'string' || !ref.type) missing.push('type');
+            if (typeof ref.status !== 'string' || !ref.status) missing.push('status');
+            else if (!validStatuses.has(ref.status)) missing.push(`status(${ref.status})`);
+          }
+          if (missing.length > 0) {
+            return {
+              canceled: false,
+              error: {
+                code: 'contract_malformed',
+                message: `SelectWorkInputFile: canceled=false without error but artifactRef invalid: ${missing.join(', ')}`,
+                committed: false,
+                recoverable: true,
+              },
+            };
+          }
+        }
+        return {
+          artifactRef: go.artifactRef,
+          canceled: go.canceled,
+          error: go.error,
+        };
+      } catch (error) {
+        return {
+          canceled: false,
+          error: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'SelectWorkInputFile',
+            workId: input.workId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    submitWorkInput: async (input) => {
+      try {
+        const go = await app.SubmitWorkInput(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'SubmitWorkInput: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'SubmitWorkInput',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.input?.id && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'SubmitWorkInput committed but input.id missing',
+              operation: 'SubmitWorkInput',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          input: go.input,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          error: go.error,
+          transportError: go.transportError,
+          receipt: go.receipt,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'SubmitWorkInput',
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    setInputCornerstone: async (input) => {
+      try {
+        const go = await app.SetInputCornerstone(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.pinned !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            pinned: false,
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'SetInputCornerstone: required scalar missing/wrong-type (committed/recoverable/duplicate/pinned=boolean, revision=number)',
+              operation: 'SetInputCornerstone',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && go.pinned && !go.cornerstoneId) {
+          return {
+            pinned: go.pinned,
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'SetInputCornerstone committed+pinned but cornerstoneId missing',
+              operation: 'SetInputCornerstone',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          cornerstoneId: go.cornerstoneId,
+          pinned: go.pinned,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          error: go.error,
+          transportError: go.transportError,
+          receipt: go.receipt,
+        };
+      } catch (error) {
+        return {
+          pinned: false,
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'SetInputCornerstone',
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    previewWorkPatch: async (input) => {
+      try {
+        const go = await app.PreviewWorkPatch(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'PreviewWorkPatch: required scalar missing/wrong-type (committed/recoverable/duplicate=boolean, revision=number)',
+              operation: 'PreviewWorkPatch',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (go.committed && !go.preview?.id && !(go.transportError?.code === 'committed_recovery')) {
+          return {
+            revision: go.revision,
+            duplicate: go.duplicate,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'PreviewWorkPatch committed but preview.id missing',
+              operation: 'PreviewWorkPatch',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          preview: go.preview,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          error: go.error,
+          transportError: go.transportError,
+          receipt: go.receipt,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'PreviewWorkPatch',
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    applyWorkPatch: async (input) => {
+      try {
+        const go = await app.ApplyWorkPatch(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.workRevision !== 'number' || !Number.isFinite(go.workRevision) || typeof go.newRevision !== 'number' || !Number.isFinite(go.newRevision) || typeof go.requiresRerun !== 'boolean') {
+          return {
+            workRevision: 0,
+            newRevision: 0,
+            requiresRerun: false,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'ApplyWorkPatch: required scalar missing/wrong-type (committed/recoverable/duplicate/requiresRerun=boolean, workRevision/newRevision=number)',
+              operation: 'ApplyWorkPatch',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          workRevision: go.workRevision,
+          newRevision: go.newRevision,
+          invalidatedTaskIds: go.invalidatedTaskIds,
+          affectedBlockIds: go.affectedBlockIds,
+          affectedArtifactSlotIds: go.affectedArtifactSlotIds,
+          staleArtifactSlotIds: go.staleArtifactSlotIds,
+          requiresRerun: go.requiresRerun,
+          duplicate: go.duplicate,
+          error: go.error,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          transportError: go.transportError,
+          receipt: go.receipt,
+        };
+      } catch (error) {
+        return {
+          workRevision: 0,
+          newRevision: 0,
+          requiresRerun: false,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'ApplyWorkPatch',
+            committed: false,
+            recoverable: true,
+          },
+        };
       }
     },
   };

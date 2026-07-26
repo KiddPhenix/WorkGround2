@@ -22,4 +22,21 @@ func TestMissingBehaviorIsExplicit(t *testing.T) {
 	if _, err := store.LoadProjection("work-1"); !errors.Is(err, ErrUnconfigured) {
 		t.Fatalf("LoadProjection error = %v", err)
 	}
+	if _, err := store.CommitEvents("work-1", nil); !errors.Is(err, ErrUnconfigured) {
+		t.Fatalf("CommitEvents error = %v", err)
+	}
+}
+
+func TestCommitEventsDelegatesWholeBatch(t *testing.T) {
+	events := []work.WorkEvent{{ID: "e1"}, {ID: "e2"}}
+	store := &Store{CommitEventsFunc: func(workID string, got []work.WorkEvent) ([]int64, error) {
+		if workID != "work-1" || len(got) != 2 || got[0].ID != "e1" || got[1].ID != "e2" {
+			t.Fatalf("CommitEvents args = (%q, %+v)", workID, got)
+		}
+		return []int64{4, 5}, nil
+	}}
+	revisions, err := store.CommitEvents("work-1", events)
+	if err != nil || len(revisions) != 2 || revisions[0] != 4 || revisions[1] != 5 {
+		t.Fatalf("CommitEvents = (%v, %v)", revisions, err)
+	}
 }

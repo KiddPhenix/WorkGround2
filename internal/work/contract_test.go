@@ -21,6 +21,7 @@ var sharedFixtureNames = []string{
 const (
 	goFixtureDir = "testdata/archive-v1"
 	tsFixtureDir = "../../desktop/frontend/src/work/__fixtures__"
+	v2FixtureDir = "testdata/contract-v2"
 )
 
 func readFixture(t *testing.T, dir, name string) json.RawMessage {
@@ -137,7 +138,7 @@ func TestParseWorkViewEventFuture(t *testing.T) {
 	if !errors.As(result.RejectWrite(), &future) {
 		t.Fatalf("RejectWrite error = %T", result.RejectWrite())
 	}
-	if future.Got != 999 || future.Current != WorkViewSchemaVersion || future.EventID != "evt-future-001" {
+	if future.Got != 999 || future.Current != WorkViewSchemaVersionV2 || future.EventID != "evt-future-001" {
 		t.Fatalf("future error fields drifted: %+v", future)
 	}
 }

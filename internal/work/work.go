@@ -40,13 +40,13 @@ const (
 type RunState string
 
 const (
-	RunPending             RunState = "pending"
-	RunRunning             RunState = "running"
-	RunWaiting             RunState = "waiting"
-	RunCompleted           RunState = "completed"
-	RunFailed              RunState = "failed"
-	RunCancelled           RunState = "cancelled"
-	RunNeedsConfirmation   RunState = "needs_confirmation"
+	RunPending           RunState = "pending"
+	RunRunning           RunState = "running"
+	RunWaiting           RunState = "waiting"
+	RunCompleted         RunState = "completed"
+	RunFailed            RunState = "failed"
+	RunCancelled         RunState = "cancelled"
+	RunNeedsConfirmation RunState = "needs_confirmation"
 )
 
 // ── Blueprint / source ─────────────────────────────────────────────────────
@@ -156,10 +156,24 @@ type Work struct {
 	ReferencedWorks []string               `json:"referencedWorks,omitempty"`
 	RerunUpgraded   bool                   `json:"rerunUpgraded,omitempty"`
 	MigrationPath   []int                  `json:"migrationPath,omitempty"`
-	CreatedWith     RuntimeFingerprint     `json:"createdWith"`
-	CreatedAt       time.Time              `json:"createdAt"`
-	UpdatedAt       time.Time              `json:"updatedAt"`
-	ArchivedAt      *time.Time             `json:"archivedAt,omitempty"`
+	// V2 fields — omitempty so V1 JSON is unchanged.
+	V2CurrentRevision  int64                                `json:"v2CurrentRevision,omitempty"`
+	V2LatestRevision   int64                                `json:"v2LatestRevision,omitempty"`
+	V2RevisionStates   map[int64]DefinitionStatus           `json:"v2RevisionStates,omitempty"`
+	V2ArtifactSlots    []ArtifactSlot                       `json:"v2ArtifactSlots,omitempty"`
+	V2ArtifactReceipts map[string]ArtifactSlotUpdateReceipt `json:"v2ArtifactReceipts,omitempty"`
+	V2Inputs           []WorkInput                          `json:"v2Inputs,omitempty"`
+	V2InputReceipts    map[string]InputIntentReceipt        `json:"v2InputReceipts,omitempty"`
+	V2PatchPreviews    map[string]WorkPatchPreview          `json:"v2PatchPreviews,omitempty"`
+	V2PatchReceipts    map[string]PatchIntentReceipt        `json:"v2PatchReceipts,omitempty"`
+	// V2TaskRuntimes is the authoritative per-node execution state for the
+	// active run. Keyed by stable TaskID; schedulers normalize it to NodeID
+	// when evaluating a definition DAG.
+	V2TaskRuntimes map[string]*V2TaskRuntime `json:"v2TaskRuntimes,omitempty"`
+	CreatedWith    RuntimeFingerprint        `json:"createdWith"`
+	CreatedAt      time.Time                 `json:"createdAt"`
+	UpdatedAt      time.Time                 `json:"updatedAt"`
+	ArchivedAt     *time.Time                `json:"archivedAt,omitempty"`
 }
 
 // WorkRecord is an immutable snapshot of an archived Work.

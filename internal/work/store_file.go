@@ -119,7 +119,11 @@ func cleanupRecovery(cp *cleanupPending, path string, committed, persisted bool,
 var digestRegexp = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 var (
-	writeDerivedFile  = fileutil.AtomicWriteFile
+	writeDerivedFile     = fileutil.AtomicWriteFile
+	writeBatchIndex      = writeWorkEventIndex
+	writeBatchProjection = func(store *FileWorkStore, workDir, workID string, value *Work, revision int64) error {
+		return store.persistProjection(workDir, workID, value, revision)
+	}
 	removeWorkDir     = os.RemoveAll
 	renameWorkDir     = os.Rename
 	releaseStoreLease = ReleaseWorkLease
@@ -446,6 +450,53 @@ func (s *FileWorkStore) LoadProjection(workID string) (*Work, error) {
 	return projection, errors.Join(loadErr, done())
 }
 
+// LoadProjectionFutureAware reads raw projection bytes first to detect future
+// schema without triggering replay/repair/index writes. Future Work returns a
+// read-only FutureWorkEnvelope; known Work goes through the full loadProjection
+// path (which validates, replays events, verifies identity, and repairs).
+func (s *FileWorkStore) LoadProjectionFutureAware(workID string) (result *FutureAwareReadResult, retErr error) {
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
+
+	wp, err := s.workPath(workID)
+	if err != nil {
+		return nil, err
+	}
+	projPath := filepath.Join(wp, "projection.json")
+	raw, err := os.ReadFile(projPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Detect future schema from header without full parsing.
+	var header struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return nil, fmt.Errorf("work: LoadProjectionFutureAware header: %w", err)
+	}
+	if IsFutureSchemaV2(header.SchemaVersion) {
+		env, err := ReadFutureWorkEnvelope(json.RawMessage(raw))
+		if err != nil {
+			return nil, fmt.Errorf("work: LoadProjectionFutureAware envelope: %w", err)
+		}
+		if env.ID != workID {
+			return nil, fmt.Errorf("%w: future projection ID mismatch: envelope %q != requested %q", ErrWorkNeedsRepair, env.ID, workID)
+		}
+		return &FutureAwareReadResult{FutureWork: env}, nil
+	}
+
+	// Known schema — use the full loadProjection path (replay, repair, identity).
+	proj, loadErr := s.loadProjection(wp, workID)
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	return &FutureAwareReadResult{Work: proj}, nil
+}
+
 // LoadState returns a projection and its authoritative event-log state while
 // holding the per-Work lifecycle lock. Service uses it to make requestID
 // idempotency and expectedRevision checks survive restarts and concurrent
@@ -539,6 +590,37 @@ func eventStateFromReplay(workID, requestID string, replay *WorkEventReplay) (Wo
 	return state, nil
 }
 
+// LoadRequestEvent returns the authoritative event for an idempotency key.
+// It is used by intent-level duplicate recovery so the original immutable
+// envelope, rather than a mutable current projection, defines the replay.
+func (s *FileWorkStore) LoadRequestEvent(workID, requestID string) (event WorkEvent, retErr error) {
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return event, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
+
+	wp, err := s.workPath(workID)
+	if err != nil {
+		return event, err
+	}
+	replay, _, err := ReplayWithReducer(wp, DefaultReducer())
+	if err != nil {
+		return event, err
+	}
+	for _, candidate := range replay.Events {
+		if candidate.RequestID == requestID {
+			return candidate, nil
+		}
+	}
+	if replay.Index != nil {
+		if entry, ok := replay.Index.RequestIndex[requestID]; ok && entry.Event != nil {
+			return *entry.Event, nil
+		}
+	}
+	return event, fmt.Errorf("%w: request event %q for %s", ErrWorkNotFound, requestID, workID)
+}
+
 func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 	projPath := filepath.Join(workDir, "projection.json")
 
@@ -552,12 +634,15 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 		if w.ID != workID {
 			return s.rebuildProjection(workDir, workID, fmt.Sprintf("projection workID mismatch: %s contains %q", workID, w.ID))
 		}
-		if err := CheckSchemaVersion("Work", w.SchemaVersion); err != nil {
+		if err := CheckSchemaVersionV2("Work", w.SchemaVersion); err != nil {
 			return nil, err
 		}
 		replay, authoritative, replayErr := ReplayWithReducer(workDir, DefaultReducer())
 		if replayErr != nil {
 			return authoritative, fmt.Errorf("%w: validate projection for %s against event log: %v", ErrWorkNeedsRepair, workID, replayErr)
+		}
+		if err := validateV2DefinitionReplay(workDir, workID, replay); err != nil {
+			return authoritative, err
 		}
 		if replay.ReadOnly || replay.NeedsRepair {
 			return authoritative, fmt.Errorf("%w: event log for %s is not safely replayable", ErrWorkNeedsRepair, workID)
@@ -575,7 +660,7 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 		manifest, manifestErr := loadManifestAt(filepath.Join(workDir, "manifest.json"))
 		manifestStale := manifestErr != nil || manifest.ID != workID || manifest.Revision != replay.Index.Revision
 		if !manifestStale {
-			manifestStale = CheckSchemaVersion("WorkManifest", manifest.SchemaVersion) != nil
+			manifestStale = CheckSchemaVersionV2("WorkManifest", manifest.SchemaVersion) != nil
 		}
 		// Projection is written before manifest. A revision mismatch therefore
 		// proves that a prior derived-state update stopped part-way through.
@@ -642,6 +727,9 @@ func (s *FileWorkStore) rebuildProjection(workDir, workID, reason string) (*Work
 	if err != nil {
 		return nil, fmt.Errorf("work: rebuild projection for %s (%s): %w", workID, reason, err)
 	}
+	if err := validateV2DefinitionReplay(workDir, workID, replay); err != nil {
+		return proj, err
+	}
 	if proj == nil {
 		return nil, fmt.Errorf("%w: no events for work %s", ErrWorkNotFound, workID)
 	}
@@ -685,10 +773,47 @@ func (s *FileWorkStore) LoadArchive(workID string) (*WorkRecord, error) {
 	if record.WorkID != workID || record.Snapshot.ID != workID {
 		return nil, fmt.Errorf("%w: archive identity mismatch for %s (record=%q snapshot=%q)", ErrWorkNeedsRepair, workID, record.WorkID, record.Snapshot.ID)
 	}
-	if err := CheckSchemaVersion("Work", record.Snapshot.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("Work", record.Snapshot.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &record, nil
+}
+
+// LoadArchiveFutureAware reads raw archive bytes to detect future schema
+// without triggering repair checks. Future records return a read-only
+// FutureWorkRecordEnvelope; known records go through the full LoadArchive path
+// (identity + schema validation).
+func (s *FileWorkStore) LoadArchiveFutureAware(workID string) (*FutureAwareReadResult, error) {
+	archivePath, err := s.archivePath(workID)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := os.ReadFile(archivePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: archive for %s", ErrWorkNotFound, workID)
+		}
+		return nil, fmt.Errorf("work: read archive for %s: %w", workID, err)
+	}
+
+	// Detect future from header without full parsing.
+	if recordSchemaIsFuture(json.RawMessage(raw)) {
+		env, err := ReadFutureWorkRecordEnvelope(json.RawMessage(raw))
+		if err != nil {
+			return nil, fmt.Errorf("work: LoadArchiveFutureAware envelope: %w", err)
+		}
+		if env.WorkID != workID {
+			return nil, fmt.Errorf("%w: future record ID mismatch: envelope %q != requested %q", ErrWorkNeedsRepair, env.WorkID, workID)
+		}
+		return &FutureAwareReadResult{FutureRecord: env}, nil
+	}
+
+	// Known — use full LoadArchive (identity + schema check).
+	record, err := s.LoadArchive(workID)
+	if err != nil {
+		return nil, err
+	}
+	return &FutureAwareReadResult{Record: record}, nil
 }
 
 // ── WorkStore: Append ──────────────────────────────────────────────────────
@@ -722,6 +847,9 @@ func (s *FileWorkStore) Append(workID string, event WorkEvent) (revision int64, 
 // event-log writer lease. Append intentionally retains its lower-level contract
 // that callers already hold the writer lease.
 func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision int64, retErr error) {
+	if event.Type == EventDefRevisionApplied {
+		return 0, errors.New("work: definition.revision_applied requires the atomic definition apply commit seam")
+	}
 	done, err := s.beginWorkOp(workID)
 	if err != nil {
 		return 0, err
@@ -766,6 +894,11 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 	// Reject malformed transitions before append so a bad or late event cannot
 	// poison the authoritative log and leave a half-committed Work.
 	if eventNeedsReducerPreflight(event.Type) {
+		if IsV2EventType(event.Type) {
+			if validateErr := ValidateV2WorkEvent(event); validateErr != nil {
+				return 0, fmt.Errorf("work: reject V2 event before append: %w", validateErr)
+			}
+		}
 		replay, current, replayErr := ReplayWithReducer(wp, DefaultReducer())
 		if replayErr != nil {
 			return 0, fmt.Errorf("work: preflight state event: %w", replayErr)
@@ -775,6 +908,9 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 			_, existingRequest = replay.Index.RequestIndex[event.RequestID]
 		}
 		if !existingRequest {
+			if guardErr := validateV2ActiveTaskCommit(current, event); guardErr != nil {
+				return 0, fmt.Errorf("work: reject state event before append: %w", guardErr)
+			}
 			if _, reduceErr := DefaultReducer()(event, current); reduceErr != nil {
 				return 0, fmt.Errorf("work: reject state event before append: %w", reduceErr)
 			}
@@ -805,10 +941,282 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 	return rev, nil
 }
 
+// validateV2ActiveTaskCommit protects the definition/runtime identity at the
+// authoritative FileWorkStore commit point. It intentionally does not live in
+// the reducer: historical events must remain replayable after a later
+// definition revision becomes active.
+func validateV2ActiveTaskCommit(current *Work, event WorkEvent) error {
+	if current == nil {
+		return nil
+	}
+	switch event.Type {
+	case EventArtifactSlotUpdated:
+		return validateV2ActiveDefinition(current, event)
+	case EventTaskInvalidated, EventTaskReady, EventTaskRuntimeCreated, EventTaskRuntimeUpdated:
+	default:
+		return nil
+	}
+	if err := validateV2ActiveDefinition(current, event); err != nil {
+		return err
+	}
+	definitionRev := *event.Object.DefinitionRevision
+	activeRun := activeDefinitionRunID(current, current.Definition.Digest)
+	if activeRun != "" && event.Object.RunID != activeRun {
+		return activeDefinitionCommitConflict(event, fmt.Sprintf(
+			"%s run %q is not active run %q",
+			event.Type,
+			event.Object.RunID,
+			activeRun,
+		))
+	}
+
+	if event.Type == EventTaskRuntimeCreated {
+		var payload TaskRuntimeCreatedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("unmarshal task.runtime_created active revision guard: %w", err)
+		}
+		if payload.DefinitionRev != definitionRev || payload.Runtime.DefinitionRev != definitionRev {
+			return activeDefinitionCommitConflict(event, fmt.Sprintf(
+				"%s payload definition mismatch: payload=%d runtime=%d event=%d",
+				event.Type,
+				payload.DefinitionRev,
+				payload.Runtime.DefinitionRev,
+				definitionRev,
+			))
+		}
+		return nil
+	}
+
+	runtime := current.V2TaskRuntimes[event.Object.TaskID]
+	if runtime == nil {
+		return activeDefinitionCommitConflict(event, fmt.Sprintf("%s task runtime %q does not exist", event.Type, event.Object.TaskID))
+	}
+	if runtime.RunID != event.Object.RunID || runtime.DefinitionRev != definitionRev {
+		return activeDefinitionCommitConflict(event, fmt.Sprintf(
+			"%s runtime identity mismatch: run=%q definition=%d, event run=%q definition=%d",
+			event.Type,
+			runtime.RunID,
+			runtime.DefinitionRev,
+			event.Object.RunID,
+			definitionRev,
+		))
+	}
+	if event.Type == EventTaskRuntimeUpdated {
+		var payload TaskRuntimeUpdatedPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("unmarshal task.runtime_updated active revision guard: %w", err)
+		}
+		if payload.Runtime.DefinitionRev != definitionRev {
+			return activeDefinitionCommitConflict(event, fmt.Sprintf(
+				"%s payload runtime definition %d does not match event definition %d",
+				event.Type,
+				payload.Runtime.DefinitionRev,
+				definitionRev,
+			))
+		}
+	}
+	return nil
+}
+
+func validateV2ActiveDefinition(current *Work, event WorkEvent) error {
+	if event.Object.DefinitionRevision == nil || *event.Object.DefinitionRevision <= 0 {
+		return activeDefinitionCommitConflict(event, fmt.Sprintf("%s requires definitionRevision at commit", event.Type))
+	}
+	definitionRev := *event.Object.DefinitionRevision
+	if definitionRev != current.V2CurrentRevision {
+		return activeDefinitionCommitConflict(event, fmt.Sprintf(
+			"%s definition revision %d is not active revision %d",
+			event.Type,
+			definitionRev,
+			current.V2CurrentRevision,
+		))
+	}
+	return nil
+}
+
+func activeDefinitionCommitConflict(event WorkEvent, reason string) error {
+	return &ErrWorkEventConflict{
+		Reason:    reason,
+		RequestID: event.RequestID,
+		WorkID:    event.WorkID,
+		Kind:      WorkEventRevisionConflict,
+	}
+}
+
+// CommitEvents atomically commits multiple events under a single work lock.
+// All events are validated and their BaseRevision/Revision chain is verified
+// before any is appended. If the batch fails, no events are committed.
+func (s *FileWorkStore) CommitEvents(workID string, events []WorkEvent) (revisions []int64, retErr error) {
+	if len(events) == 0 {
+		return nil, errors.New("work: CommitEvents requires at least one event")
+	}
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if closeErr := done(); closeErr != nil {
+			if retErr == nil && len(revisions) > 0 {
+				retErr = committedRecovery("commit-events", workID, events[0].RequestID, revisions[len(revisions)-1], closeErr)
+			} else {
+				retErr = errors.Join(retErr, closeErr)
+			}
+		}
+	}()
+
+	wp, err := s.workPath(workID)
+	if err != nil {
+		return nil, err
+	}
+	if !s.isDirWithData(wp) {
+		return nil, fmt.Errorf("%w: %s", ErrWorkNotFound, workID)
+	}
+	if held, _, writer := probeWorkLease(wp); held {
+		return nil, fmt.Errorf("%w: cannot commit %s while writer %q is active", ErrWorkLeaseHeld, workID, writer)
+	}
+	if err := AcquireWorkLease(wp); err != nil {
+		return nil, fmt.Errorf("work: acquire event writer lease for %s: %w", workID, err)
+	}
+	defer func() {
+		if releaseErr := releaseStoreLease(wp); releaseErr != nil {
+			if retErr == nil && len(revisions) > 0 {
+				retErr = committedRecovery("commit-events", workID, events[0].RequestID, revisions[len(revisions)-1], releaseErr)
+			} else {
+				retErr = errors.Join(retErr, releaseErr)
+			}
+		}
+	}()
+	if err := s.preflightEventBatch(wp, events); err != nil {
+		return nil, err
+	}
+
+	// Build the complete successor log in an isolated sibling directory. No
+	// authoritative byte changes until the final atomic replacement, so a
+	// validation or write failure on any event leaves the current log intact.
+	tmpDir, err := os.MkdirTemp(s.workDir, ".batch-"+workID+"-*")
+	if err != nil {
+		return nil, fmt.Errorf("work: create event batch temp dir: %w", err)
+	}
+	defer func() {
+		if cleanupErr := removeWorkDir(tmpDir); cleanupErr != nil {
+			cleanupErr = fmt.Errorf("work: clean event batch temp dir: %w", cleanupErr)
+			if len(revisions) > 0 {
+				cleanupErr = committedRecovery("commit-events", workID, events[0].RequestID, revisions[len(revisions)-1], cleanupErr)
+			}
+			retErr = errors.Join(retErr, cleanupErr)
+		}
+	}()
+
+	currentLog, err := os.ReadFile(WorkEventLogPath(wp))
+	if err != nil {
+		return nil, fmt.Errorf("work: read event log for batch: %w", err)
+	}
+	if err := writeDerivedFile(WorkEventLogPath(tmpDir), currentLog, 0o644); err != nil {
+		return nil, fmt.Errorf("work: stage event log for batch: %w", err)
+	}
+	if err := AcquireWorkLease(tmpDir); err != nil {
+		return nil, fmt.Errorf("work: acquire staged event writer lease: %w", err)
+	}
+
+	revisions = make([]int64, len(events))
+	for i := range events {
+		events[i].WorkID = workID
+		rev, appendErr := AppendWorkEvent(tmpDir, events[i], true)
+		if appendErr != nil {
+			_ = ReleaseWorkLease(tmpDir)
+			revisions = nil
+			return nil, fmt.Errorf("work: validate event %d in batch: %w", i, appendErr)
+		}
+		revisions[i] = rev
+	}
+	if err := ReleaseWorkLease(tmpDir); err != nil {
+		revisions = nil
+		return nil, fmt.Errorf("work: release staged event writer lease: %w", err)
+	}
+
+	stagedReplay, stagedProjection, replayErr := ReplayWithReducer(tmpDir, DefaultReducer())
+	if replayErr != nil {
+		revisions = nil
+		return nil, fmt.Errorf("work: replay staged event batch: %w", replayErr)
+	}
+	if err := validateV2DefinitionReplay(wp, workID, stagedReplay); err != nil {
+		revisions = nil
+		return nil, err
+	}
+	if stagedProjection == nil || stagedReplay == nil || stagedReplay.Index == nil {
+		revisions = nil
+		return nil, fmt.Errorf("%w: staged event batch produced incomplete replay", ErrWorkNeedsRepair)
+	}
+	stagedLog, err := os.ReadFile(WorkEventLogPath(tmpDir))
+	if err != nil {
+		revisions = nil
+		return nil, fmt.Errorf("work: read staged event batch: %w", err)
+	}
+
+	// This replacement is the batch commit point. The index, projection, and
+	// manifest below are derived and can be rebuilt from the authoritative log.
+	if err := writeDerivedFile(WorkEventLogPath(wp), stagedLog, 0o644); err != nil {
+		revisions = nil
+		return nil, fmt.Errorf("work: commit event batch: %w", err)
+	}
+	if err := writeBatchIndex(wp, stagedReplay.Index); err != nil {
+		return revisions, committedRecovery("commit-events", workID, events[0].RequestID, revisions[len(revisions)-1], err)
+	}
+	if err := writeBatchProjection(s, wp, workID, stagedProjection, revisions[len(revisions)-1]); err != nil {
+		return revisions, committedRecovery("commit-events", workID, events[0].RequestID, revisions[len(revisions)-1], err)
+	}
+	return revisions, nil
+}
+
+func (s *FileWorkStore) preflightEventBatch(workPath string, events []WorkEvent) error {
+	replay, current, err := ReplayWithReducer(workPath, DefaultReducer())
+	if err != nil {
+		return fmt.Errorf("work: preflight event batch: %w", err)
+	}
+	requests := make(map[string]bool)
+	if replay != nil && replay.Index != nil {
+		for requestID := range replay.Index.RequestIndex {
+			requests[requestID] = true
+		}
+	}
+	for i := range events {
+		event := events[i]
+		if event.WorkID == "" && current != nil {
+			event.WorkID = current.ID
+		}
+		if event.RequestID != "" && requests[event.RequestID] {
+			continue
+		}
+		if eventNeedsReducerPreflight(event.Type) {
+			if IsV2EventType(event.Type) {
+				if err := ValidateV2WorkEvent(event); err != nil {
+					return fmt.Errorf("work: reject V2 event %d before batch append: %w", i, err)
+				}
+			}
+			if err := validateV2ActiveTaskCommit(current, event); err != nil {
+				return fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
+			}
+		}
+		current, err = DefaultReducer()(event, current)
+		if err != nil {
+			return fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
+		}
+		if event.RequestID != "" {
+			requests[event.RequestID] = true
+		}
+	}
+	return nil
+}
+
 func eventNeedsReducerPreflight(eventType WorkEventType) bool {
 	switch eventType {
 	case EventBlockActionReserved, EventBlockActionChanged,
-		EventRunStarted, EventRunChanged, EventStageChanged, EventTaskChanged, EventAttemptChanged:
+		EventRunStarted, EventRunChanged, EventStageChanged, EventTaskChanged, EventAttemptChanged,
+		EventArtifactSlotDeclared, EventArtifactSlotUpdated,
+		EventInputRequested, EventInputDraftSaved, EventInputSubmitted, EventInputRejected, EventInputCornerstoneChanged,
+		EventPatchPreviewed, EventPatchApplied,
+		EventTaskInvalidated, EventTaskReady, EventTaskWaitingInput, EventTaskWaitingApproval,
+		EventTaskRuntimeCreated, EventTaskRuntimeUpdated, EventTaskStaleResult:
 		return true
 	default:
 		return false
@@ -822,7 +1230,7 @@ func (s *FileWorkStore) persistProjection(workDir, workID string, value *Work, r
 	if value.ID != workID {
 		return fmt.Errorf("projection workID mismatch: expected %q, got %q", workID, value.ID)
 	}
-	if err := CheckSchemaVersion("Work", value.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("Work", value.SchemaVersion); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
@@ -880,7 +1288,7 @@ func (s *FileWorkStore) writeProjectionLocked(workID string, work *Work, revisio
 	if work == nil {
 		return fmt.Errorf("%w: projection for %s", ErrWorkNilInput, workID)
 	}
-	if err := CheckSchemaVersion("Work", work.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("Work", work.SchemaVersion); err != nil {
 		return fmt.Errorf("work: %w", err)
 	}
 	wp, err := s.workPath(workID)
@@ -918,7 +1326,7 @@ func (s *FileWorkStore) writeArchiveLocked(workID string, record *WorkRecord) er
 	if record.Snapshot.ID != workID {
 		return fmt.Errorf("work: archive snapshot ID mismatch: expected %q, got %q", workID, record.Snapshot.ID)
 	}
-	if err := CheckSchemaVersion("Work", record.Snapshot.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("Work", record.Snapshot.SchemaVersion); err != nil {
 		return err
 	}
 	wp, err := s.workPath(workID)
@@ -1620,7 +2028,7 @@ func (s *FileWorkStore) writeManifestLocked(workID string, m *workManifest) erro
 	if m.ID != workID {
 		return fmt.Errorf("work: manifest workID mismatch: expected %q, got %q", workID, m.ID)
 	}
-	if err := CheckSchemaVersion("WorkManifest", m.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("WorkManifest", m.SchemaVersion); err != nil {
 		return err
 	}
 	path, err := s.manifestPath(workID)
@@ -1657,7 +2065,7 @@ func (s *FileWorkStore) LoadManifest(workID string) (*workManifest, error) {
 	if m.ID != workID {
 		return nil, fmt.Errorf("%w: manifest workID mismatch: %s contains %q", ErrWorkNeedsRepair, workID, m.ID)
 	}
-	if err := CheckSchemaVersion("WorkManifest", m.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("WorkManifest", m.SchemaVersion); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -1812,7 +2220,7 @@ func (s *FileWorkStore) scanIndexEntries() ([]WorkSummary, error) {
 		if m.ID != workID {
 			return nil, fmt.Errorf("%w: manifest identity mismatch for %s", ErrWorkNeedsRepair, workID)
 		}
-		if err := CheckSchemaVersion("WorkManifest", m.SchemaVersion); err != nil {
+		if err := CheckSchemaVersionV2("WorkManifest", m.SchemaVersion); err != nil {
 			return nil, err
 		}
 		works = append(works, summaryFromManifest(m))
@@ -2306,11 +2714,12 @@ func (s *FileWorkStore) TrashRetention() time.Duration { return s.trashRetention
 
 // CreateWorkDirInput carries everything needed to atomically create a Work directory.
 type CreateWorkDirInput struct {
-	RequestID  string                  `json:"requestId"`
-	Work       *Work                   `json:"work"`
-	Definition *WorkDefinitionSnapshot `json:"definition,omitempty"`
-	Events     []WorkEvent             `json:"events,omitempty"`
-	Blobs      map[string][]byte       `json:"blobs,omitempty"` // digest → data
+	RequestID      string                  `json:"requestId"`
+	Work           *Work                   `json:"work"`
+	Definition     *WorkDefinitionSnapshot `json:"definition,omitempty"`
+	Events         []WorkEvent             `json:"events,omitempty"`
+	Blobs          map[string][]byte       `json:"blobs,omitempty"`          // digest → data
+	V2RevisionBody *WorkDefinitionRevision `json:"v2RevisionBody,omitempty"` // V2 initial revision body
 }
 
 // CreateWorkDir atomically creates a complete Work directory. It writes all
@@ -2397,7 +2806,7 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	if err := CheckSchemaVersion("Work", input.Work.SchemaVersion); err != nil {
+	if err := CheckSchemaVersionV2("Work", input.Work.SchemaVersion); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(s.workDir, 0o755); err != nil {
@@ -2503,6 +2912,24 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 		data = append(data, '\n')
 		if err := writeDerivedFile(filepath.Join(tmpDir, "definitions", strings.TrimPrefix(normalized.Digest, digestPrefix)+".json"), data, 0o644); err != nil {
 			return err
+		}
+	}
+	if input.V2RevisionBody != nil {
+		defDir := filepath.Join(tmpDir, v2DefSubDir)
+		if err := os.MkdirAll(defDir, 0o755); err != nil {
+			return err
+		}
+		canon, canonErr := canonicalV2Revision(input.V2RevisionBody)
+		if canonErr != nil {
+			return fmt.Errorf("work: canonicalise V2 revision for %s: %w", workID, canonErr)
+		}
+		revData, err := json.MarshalIndent(canon, "", "  ")
+		if err != nil {
+			return fmt.Errorf("work: marshal V2 revision for %s: %w", workID, err)
+		}
+		revData = append(revData, '\n')
+		if err := writeDerivedFile(filepath.Join(defDir, fmt.Sprintf("%d.json", input.V2RevisionBody.Revision)), revData, 0o644); err != nil {
+			return fmt.Errorf("work: write V2 revision for %s: %w", workID, err)
 		}
 	}
 	for digest, data := range input.Blobs {
@@ -2800,6 +3227,85 @@ func copyDirFull(src, dst string) error {
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
+// ensureTaskRuntime returns the existing V2TaskRuntime for taskID, or creates
+// a minimal placeholder if none exists yet. The placeholder is stored in
+// current.V2TaskRuntimes so subsequent events can accumulate state.
+func ensureTaskRuntime(current *Work, taskID, workID, runID, nodeID string, definitionRev int64, now time.Time) *V2TaskRuntime {
+	if current.V2TaskRuntimes == nil {
+		current.V2TaskRuntimes = make(map[string]*V2TaskRuntime)
+	}
+	if rt, ok := current.V2TaskRuntimes[taskID]; ok && rt != nil {
+		return rt
+	}
+	rt := V2NewTaskRuntime(workID, runID, nodeID, definitionRev, "read", now)
+	current.V2TaskRuntimes[taskID] = rt
+	return rt
+}
+
+// invalidateV2RuntimeContexts makes a committed business mutation immediately
+// visible to in-flight completion checks. It runs inside the event reducer, so
+// the business event and its execution-token invalidation are one replayable
+// transaction. The coordinator later wakes/schedules from the same projection.
+func invalidateV2RuntimeContexts(
+	current *Work,
+	affectedIDs []string,
+	runID string,
+	definitionRev int64,
+	recomputeInput bool,
+	event WorkEvent,
+) {
+	if current == nil || len(affectedIDs) == 0 || len(current.V2TaskRuntimes) == 0 {
+		return
+	}
+	affected := make(map[string]bool, len(affectedIDs))
+	for _, id := range affectedIDs {
+		if id = strings.TrimSpace(id); id != "" {
+			affected[id] = true
+		}
+	}
+	for taskID, runtime := range current.V2TaskRuntimes {
+		if runtime == nil || (runID != "" && runtime.RunID != runID) ||
+			(!affected[taskID] && !affected[runtime.NodeID]) {
+			continue
+		}
+		switch runtime.State {
+		case TaskCompleted, TaskFailedTerminal, TaskCanceled:
+			continue
+		}
+		if definitionRev > 0 {
+			runtime.DefinitionRev = definitionRev
+		}
+		if recomputeInput {
+			specIDs := make([]string, 0)
+			for _, input := range current.V2Inputs {
+				if input.TaskID == runtime.TaskID {
+					specIDs = append(specIDs, input.SpecID)
+				}
+			}
+			runtime.InputDigest = ComputeInputDigest(
+				current.V2Inputs,
+				runtime.WorkID,
+				runtime.RunID,
+				runtime.TaskID,
+				specIDs,
+			)
+		}
+		baseToken := runtime.ExecutionToken
+		if baseToken == "" {
+			baseToken = GenerateExecutionToken(
+				runtime.TaskID,
+				runtime.DefinitionRev,
+				runtime.InputDigest,
+				runtime.DependencyDigest,
+			)
+		}
+		sum := sha256.Sum256([]byte(baseToken + "\x00mutation\x00" + event.RequestID + "\x00" + event.ID))
+		runtime.ExecutionToken = fmt.Sprintf("sha256:%x", sum[:20])
+		runtime.Revision++
+		runtime.UpdatedAt = event.CreatedAt
+	}
+}
+
 // ── DefaultReducer ─────────────────────────────────────────────────────────
 
 func DefaultReducer() WorkEventReducer {
@@ -2813,7 +3319,9 @@ func DefaultReducer() WorkEventReducer {
 				return nil, fmt.Errorf("work: unmarshal created payload: %w", err)
 			}
 			w.ID = event.WorkID
-			w.SchemaVersion = SchemaVersion
+			if w.SchemaVersion == 0 {
+				w.SchemaVersion = SchemaVersion
+			}
 			w.CreatedAt = event.CreatedAt
 			w.UpdatedAt = event.CreatedAt
 			if w.ArchiveState == "" {
@@ -3317,6 +3825,329 @@ func DefaultReducer() WorkEventReducer {
 				return nil, err
 			}
 			current.ArchiveState = ArchiveDeleted
+
+		// ── V2 definition events ──────────────────────────────────────
+		case EventDefPlanningStarted:
+			// No-op for projection: planning_started is a marker event.
+			// The Work was already created with work.created.
+
+		case EventDefRevisionCreated:
+			var p DefRevisionCreatedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal revision_created: %w", err)
+			}
+			if current.V2RevisionStates == nil {
+				current.V2RevisionStates = make(map[int64]DefinitionStatus)
+			}
+			current.V2RevisionStates[p.Revision] = DefDraft
+			if p.Revision > current.V2LatestRevision {
+				current.V2LatestRevision = p.Revision
+			}
+
+		case EventDefRevisionApplied:
+			var p DefRevisionAppliedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal revision_applied: %w", err)
+			}
+			if current.V2RevisionStates == nil {
+				current.V2RevisionStates = make(map[int64]DefinitionStatus)
+			}
+			if p.PreviousRevision != current.V2CurrentRevision {
+				return nil, fmt.Errorf(
+					"work: revision_applied parent mismatch: payload=%d current=%d",
+					p.PreviousRevision,
+					current.V2CurrentRevision,
+				)
+			}
+			if p.Revision <= p.PreviousRevision {
+				return nil, fmt.Errorf(
+					"work: revision_applied revision %d must advance parent %d",
+					p.Revision,
+					p.PreviousRevision,
+				)
+			}
+			activeRevision := int64(0)
+			activeCount := 0
+			for revision, status := range current.V2RevisionStates {
+				if status == DefActive {
+					activeRevision = revision
+					activeCount++
+				}
+			}
+			if current.V2CurrentRevision == 0 {
+				if activeCount != 0 {
+					return nil, fmt.Errorf("work: revision_applied found %d active revisions before initial activation", activeCount)
+				}
+			} else if activeCount != 1 || activeRevision != current.V2CurrentRevision {
+				return nil, fmt.Errorf(
+					"work: revision_applied active state inconsistent: pointer=%d active=%d count=%d",
+					current.V2CurrentRevision,
+					activeRevision,
+					activeCount,
+				)
+			}
+			if status, ok := current.V2RevisionStates[p.Revision]; !ok || status != DefDraft {
+				return nil, fmt.Errorf("work: revision_applied candidate %d is not draft", p.Revision)
+			}
+			// Mark this revision active, supersede previous.
+			current.V2RevisionStates[p.Revision] = DefActive
+			if p.PreviousRevision > 0 {
+				current.V2RevisionStates[p.PreviousRevision] = DefSuperseded
+			}
+			current.V2CurrentRevision = p.Revision
+			invalidateV2RuntimeContexts(current, p.InvalidatedTasks, "", p.Revision, false, event)
+
+		// ── V2 artifact slot events ────────────────────────────────────
+		case EventArtifactSlotDeclared:
+			var p ArtifactSlotDeclaredPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal artifact_slot.declared: %w", err)
+			}
+			if err := reduceArtifactSlotDeclared(current, p.SlotID, p.WorkID, p.DefinitionRev,
+				p.Title, p.Kind, p.ExpectedCount, p.Required); err != nil {
+				return nil, err
+			}
+
+		case EventArtifactSlotUpdated:
+			var p ArtifactSlotUpdatedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal artifact_slot.updated: %w", err)
+			}
+			if event.Object.DefinitionRevision == nil {
+				return nil, errors.New("work: artifact_slot.updated requires definition revision")
+			}
+			if err := reduceArtifactSlotUpdatedAt(current, p, *event.Object.DefinitionRevision, event.RequestID); err != nil {
+				return nil, err
+			}
+
+		// ── V2 input events ───────────────────────────────────────────
+		case EventInputRequested:
+			var p InputRequestedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal input.requested: %w", err)
+			}
+			if err := reduceInputRequested(current, p, event.CreatedAt); err != nil {
+				return nil, err
+			}
+
+		case EventInputDraftSaved:
+			var p InputDraftSavedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal input.draft_saved: %w", err)
+			}
+			if err := reduceInputDraftSaved(current, p, event.CreatedAt, event.RequestID); err != nil {
+				return nil, err
+			}
+
+		case EventInputSubmitted:
+			var p InputSubmittedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal input.submitted: %w", err)
+			}
+			if err := reduceInputSubmitted(current, p, event.CreatedAt, event.RequestID); err != nil {
+				return nil, err
+			}
+			invalidateV2RuntimeContexts(current, p.AffectedTaskIDs, "", 0, true, event)
+
+		case EventInputRejected:
+			var p InputRejectedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal input.rejected: %w", err)
+			}
+			if err := reduceInputRejected(current, p, event.CreatedAt, event.RequestID); err != nil {
+				return nil, err
+			}
+
+		case EventInputCornerstoneChanged:
+			var p InputCornerstoneChangedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal input.cornerstone_changed: %w", err)
+			}
+			if err := reduceInputCornerstoneChanged(current, p, event.CreatedAt); err != nil {
+				return nil, err
+			}
+
+		// ── V2 patch events ─────────────────────────────────────────
+		case EventPatchPreviewed:
+			var p PatchPreviewedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal patch.previewed: %w", err)
+			}
+			if err := reducePatchPreviewed(current, p, event.CreatedAt, event.RequestID); err != nil {
+				return nil, err
+			}
+			if p.Receipt != nil {
+				recordPatchReceipt(current, p.Receipt)
+			}
+
+		case EventPatchApplied:
+			var p PatchAppliedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal patch.applied: %w", err)
+			}
+			if err := reducePatchApplied(current, p, event.CreatedAt, event.RequestID); err != nil {
+				return nil, err
+			}
+			if p.Receipt != nil {
+				recordPatchReceipt(current, p.Receipt)
+			}
+			invalidateV2RuntimeContexts(current, p.InvalidatedTaskIDs, p.RunID, 0, false, event)
+
+		// ── V2 task events ───────────────────────────────────────────
+		case EventTaskInvalidated:
+			var p TaskInvalidatedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.invalidated: %w", err)
+			}
+			rt := ensureTaskRuntime(current, p.TaskID, p.WorkID, p.RunID, "", 0, event.CreatedAt)
+			if err := ValidateTaskV2Transition(rt.State, TaskInvalidated); err != nil {
+				return nil, err
+			}
+			rt.State = TaskInvalidated
+			rt.Error = p.Reason
+			rt.Revision++
+			rt.UpdatedAt = event.CreatedAt
+
+		case EventTaskReady:
+			var p TaskReadyPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.ready: %w", err)
+			}
+			rt := ensureTaskRuntime(current, p.TaskID, p.WorkID, p.RunID, "", 0, event.CreatedAt)
+			if err := ValidateTaskV2Transition(rt.State, TaskReady); err != nil {
+				return nil, err
+			}
+			rt.State = TaskReady
+			rt.Error = ""
+			rt.Revision++
+			rt.UpdatedAt = event.CreatedAt
+
+		case EventTaskWaitingInput:
+			var p TaskWaitingPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.waiting_input: %w", err)
+			}
+			rt := ensureTaskRuntime(current, p.TaskID, p.WorkID, p.RunID, "", 0, event.CreatedAt)
+			if err := ValidateTaskV2Transition(rt.State, TaskWaitingInput); err != nil {
+				return nil, err
+			}
+			rt.State = TaskWaitingInput
+			rt.WaitingInputIDs = append([]string(nil), p.InputIDs...)
+			rt.Revision++
+			rt.UpdatedAt = event.CreatedAt
+
+		case EventTaskWaitingApproval:
+			var p TaskWaitingPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.waiting_approval: %w", err)
+			}
+			rt := ensureTaskRuntime(current, p.TaskID, p.WorkID, p.RunID, "", 0, event.CreatedAt)
+			if err := ValidateTaskV2Transition(rt.State, TaskWaitingApproval); err != nil {
+				return nil, err
+			}
+			rt.State = TaskWaitingApproval
+			rt.ApprovalToken = p.ApprovalToken
+			rt.Revision++
+			rt.UpdatedAt = event.CreatedAt
+
+		// ── V2 task runtime events ──────────────────────────────────────
+		case EventTaskRuntimeCreated:
+			var p TaskRuntimeCreatedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.runtime_created: %w", err)
+			}
+			if current.V2TaskRuntimes == nil {
+				current.V2TaskRuntimes = make(map[string]*V2TaskRuntime)
+			}
+			if p.ExpectedRevision != 0 {
+				return nil, fmt.Errorf("work: task.runtime_created expectedRevision must be zero")
+			}
+			if existing, ok := current.V2TaskRuntimes[p.TaskID]; ok && existing != nil {
+				return nil, fmt.Errorf("work: task runtime %q already exists", p.TaskID)
+			}
+			cp := p.Runtime
+			if cp.TaskID != p.TaskID || cp.WorkID != p.WorkID || cp.RunID != p.RunID ||
+				cp.NodeID != p.NodeID || cp.DefinitionRev != p.DefinitionRev || cp.Revision != 1 {
+				return nil, fmt.Errorf("work: task.runtime_created payload/runtime context mismatch")
+			}
+			cp.UpdatedAt = event.CreatedAt
+			current.V2TaskRuntimes[p.TaskID] = &cp
+
+		case EventTaskRuntimeUpdated:
+			var p TaskRuntimeUpdatedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.runtime_updated: %w", err)
+			}
+			existing, ok := current.V2TaskRuntimes[p.TaskID]
+			if !ok || existing == nil {
+				return nil, fmt.Errorf("work: task.runtime_updated runtime %q does not exist", p.TaskID)
+			}
+			if p.ExpectedRevision != existing.Revision {
+				return nil, fmt.Errorf(
+					"work: task.runtime_updated expectedRevision mismatch: got %d want %d",
+					p.ExpectedRevision,
+					existing.Revision,
+				)
+			}
+			if err := ValidateTaskV2Transition(existing.State, p.State); err != nil {
+				return nil, err
+			}
+			if p.Runtime.TaskID != p.TaskID || p.Runtime.WorkID != p.WorkID ||
+				p.Runtime.RunID != p.RunID || p.Runtime.State != p.State {
+				return nil, fmt.Errorf("work: task.runtime_updated payload/runtime context mismatch")
+			}
+			if p.Runtime.Revision != existing.Revision+1 {
+				return nil, fmt.Errorf(
+					"work: task.runtime_updated revision mismatch: got %d want %d",
+					p.Runtime.Revision,
+					existing.Revision+1,
+				)
+			}
+			cp := p.Runtime
+			cp.UpdatedAt = event.CreatedAt
+			current.V2TaskRuntimes[p.TaskID] = &cp
+
+		case EventTaskStaleResult:
+			var p TaskStaleResultPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal task.stale_result: %w", err)
+			}
+			rt, ok := current.V2TaskRuntimes[p.TaskID]
+			if !ok || rt == nil {
+				return nil, fmt.Errorf("work: task.stale_result runtime %q does not exist", p.TaskID)
+			}
+			if p.ExpectedRevision != rt.Revision {
+				return nil, fmt.Errorf(
+					"work: task.stale_result expectedRevision mismatch: got %d want %d",
+					p.ExpectedRevision,
+					rt.Revision,
+				)
+			}
+			foundAttempt := false
+			// Mark the matching attempt as stale.
+			for i := range rt.Attempts {
+				if rt.Attempts[i].ID == p.AttemptID {
+					foundAttempt = true
+					if rt.Attempts[i].StaleResult &&
+						rt.Attempts[i].ExecutionToken == p.StaleToken &&
+						rt.Attempts[i].ResultRef == p.ResultRef {
+						break
+					}
+					rt.Attempts[i].StaleResult = true
+					if p.ResultRef != "" {
+						rt.Attempts[i].ResultRef = p.ResultRef
+					}
+					if p.PreviousReceipt != nil {
+						rt.Attempts[i].Receipt = p.PreviousReceipt
+					}
+					rt.Revision++
+					rt.UpdatedAt = event.CreatedAt
+					break
+				}
+			}
+			if !foundAttempt {
+				return nil, fmt.Errorf("work: task.stale_result attempt %q does not exist", p.AttemptID)
+			}
 		}
 
 		current.UpdatedAt = event.CreatedAt

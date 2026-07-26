@@ -191,7 +191,8 @@ func (e *ErrFutureSchema) Error() string {
 		e.Kind, e.Got, e.CurrentMax)
 }
 
-// CheckSchemaVersion returns ErrFutureSchema if got > SchemaVersion.
+// CheckSchemaVersion returns ErrFutureSchema if got > SchemaVersion (V1).
+// V1-only code paths use this. V2-aware paths use CheckSchemaVersionV2.
 func CheckSchemaVersion(kind string, got int) error {
 	if got > SchemaVersion {
 		return &ErrFutureSchema{Kind: kind, Got: got, CurrentMax: SchemaVersion}
@@ -199,8 +200,24 @@ func CheckSchemaVersion(kind string, got int) error {
 	return nil
 }
 
-// IsFutureSchema returns true when schemaVersion exceeds the current V1
-// SchemaVersion.
+// CheckSchemaVersionV2 returns ErrFutureSchema if got > SchemaVersionV2.
+// V2-aware code paths use this to accept V1 and V2, rejecting only genuinely
+// future versions.
+func CheckSchemaVersionV2(kind string, got int) error {
+	if got > SchemaVersionV2 {
+		return &ErrFutureSchema{Kind: kind, Got: got, CurrentMax: SchemaVersionV2}
+	}
+	return nil
+}
+
+// IsFutureSchema returns true when schemaVersion exceeds the V1 SchemaVersion.
+// V1-only paths use this. V2-aware paths use IsFutureSchemaV2.
 func IsFutureSchema(schemaVersion int) bool {
 	return schemaVersion > SchemaVersion
+}
+
+// IsFutureSchemaV2 returns true when schemaVersion exceeds the V2
+// SchemaVersion (the binary's true understanding).
+func IsFutureSchemaV2(schemaVersion int) bool {
+	return schemaVersion > SchemaVersionV2
 }

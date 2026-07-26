@@ -4672,6 +4672,7 @@ function makeMockApp(): AppBindings {
 
     WorkEnabled: () => Promise.resolve(false),
     WorkCapable: () => Promise.resolve(false),
+    WorkCollaborationV2Enabled: () => Promise.resolve(false),
     CreateWork: () => Promise.reject(workUnavailableError()),
     GetWork: () => Promise.reject(workUnavailableError()),
     ListWorks: () => Promise.reject(workUnavailableError()),
@@ -4701,5 +4702,17 @@ function makeMockApp(): AppBindings {
     ForcePurgeTrashedSession: () => Promise.reject(workUnavailableError()),
     RetryCleanupPending: () => Promise.reject(workUnavailableError()),
     ListSessionCleanupPending: () => Promise.reject(workUnavailableError()),
+    BeginWorkPlanning: () => Promise.reject(workUnavailableError()),
+    ApplyDefinition: () => Promise.reject(workUnavailableError()),
+    CreateCandidateRevision: () => Promise.reject(workUnavailableError()),
+    RetryWorkNode: () => Promise.reject(workUnavailableError()),
+    RetryArtifactSlot: () => Promise.reject(workUnavailableError()),
+    PreviewArtifact: () => Promise.reject(workUnavailableError()),
+    RequestArtifactConversion: () => Promise.reject(workUnavailableError()),
+    SelectWorkInputFile: () => Promise.reject(workUnavailableError()),
+    SubmitWorkInput: () => Promise.reject(workUnavailableError()),
+    SetInputCornerstone: () => Promise.reject(workUnavailableError()),
+    PreviewWorkPatch: () => Promise.reject(workUnavailableError()),
+    ApplyWorkPatch: () => Promise.reject(workUnavailableError()),
   };
 }

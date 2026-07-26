@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"workground2/internal/work"
 	"workground2/internal/work/worktest"
@@ -138,6 +139,61 @@ func TestLiveCornerstoneResolverScopesArtifactToOwningWork(t *testing.T) {
 	}
 	if blobs.workID != "work-owner" || blobs.digest != digest {
 		t.Fatalf("blob lookup = (%q, %q)", blobs.workID, blobs.digest)
+	}
+}
+
+func TestLiveCornerstoneResolverArtifactSourceUsesRealBinaryBlob(t *testing.T) {
+	store, err := work.NewFileWorkStore(t.TempDir(), 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workID = "binary-artifact-work"
+	now := time.Now()
+	data := []byte{0x00, 0xff, 0x10, 0x80, 0x42}
+	digest := work.ContentDigest(data)
+	if err := store.CreateWorkDir(work.CreateWorkDirInput{
+		RequestID: "create-binary-artifact",
+		Work: &work.Work{
+			SchemaVersion: work.SchemaVersionV2,
+			ID:            workID,
+			Name:          workID,
+			State:         work.WorkDraft,
+			ArchiveState:  work.ArchiveActive,
+			BlueprintRef:  work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			V2ArtifactSlots: []work.ArtifactSlot{{
+				ID: "slot", WorkID: workID, DefinitionRev: 1, Revision: 1,
+				State: work.SlotReady, ArtifactRefs: []work.ArtifactRef{{
+					ID: "artifact", Name: "artifact.bin", Status: work.ArtifactRefStatusAvailable,
+					BlobDigest: digest,
+				}},
+			}},
+			V2CurrentRevision: 1,
+			V2LatestRevision:  1,
+			V2RevisionStates:  map[int64]work.DefinitionStatus{1: work.DefActive},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Put(workID, data); err != nil {
+		t.Fatal(err)
+	}
+	resolver := NewLiveCornerstoneResolver(LiveCornerstoneResolverOptions{
+		WorkspaceRoot: t.TempDir(),
+		WorkStore:     store,
+		BlobStore:     store,
+	})
+	source, err := resolver.ResolveArtifactSource(t.Context(), work.ArtifactSourceRequest{
+		WorkID: workID, DefinitionRevision: 1, SlotID: "slot",
+		SlotRevision: 1, ArtifactRefID: "artifact",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourceKind != "blob" || source.ContentDigest != digest ||
+		string(source.Data) != string(data) {
+		t.Fatalf("binary artifact changed: %+v data=%v", source, source.Data)
 	}
 }
 

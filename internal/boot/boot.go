@@ -128,6 +128,15 @@ type Options struct {
 	SessionRefs work.SessionRefStore
 	// CornerstoneResolver revalidates live Work cornerstone sources before each Run.
 	CornerstoneResolver work.CornerstoneResolver
+	// ArtifactSourceResolver resolves binary V2 preview/conversion sources. Nil
+	// uses the production WorkStore+BlobStore+workspace boundary.
+	ArtifactSourceResolver work.ArtifactSourceResolver
+	// PreviewApprovalVerifier authorises external converters. Nil is local-only
+	// and rejects every external conversion.
+	PreviewApprovalVerifier work.ApprovalVerifier
+	// WorkTaskExecutor optionally replaces the Controller-backed adapter. Tests
+	// and embedding hosts use it to make boot recovery deterministic.
+	WorkTaskExecutor work.TaskExecutor
 	// SessionRefsErr carries host initialization failure into Work boot so the
 	// feature cannot run while its cleanup guard is unavailable.
 	SessionRefsErr error
@@ -1068,6 +1077,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var runner agent.Runner = executor
 	label := entry.Model
 	var classifier *control.ProviderAutoPlanClassifier
+	var workDefinitionProv provider.Provider = execProv
 
 	if !tokenEconomy && !strings.EqualFold(strings.TrimSpace(cfg.Agent.AutoPlan), "off") && cfg.Agent.AutoPlanClassifier != "" {
 		cm := cfg.Agent.AutoPlanClassifier
@@ -1113,6 +1123,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				ResponseLanguage:    cfg.ResponseLanguage(),
 				ReasoningLanguage:   cfg.ReasoningLanguage(),
 			}, executor, cfg.Agent.Temperature, sink, control.NewPlannerGate(classifier))
+			workDefinitionProv = plannerProv
 			label = entry.Model + " + planner " + pe.Model
 		}
 	}
@@ -1153,6 +1164,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bp := work.NewBlueprintRegistry()
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
+			workSvc.SetV2TransportEnabled(cfg.Work.CollaborationWorkbenchV2)
+			workSvc.SetV2PatchPlanner(newBootPatchPlanner(execProv, cfg.Agent.Temperature, 4096))
+			workSvc.SetV2DefinitionPlanner(newBootDefinitionPlanner(workDefinitionProv, cfg.Agent.Temperature, 8192))
+			artifactSources := opts.ArtifactSourceResolver
+			if artifactSources == nil {
+				artifactSources = work.NewStoreArtifactSourceResolver(store, store, root)
+			}
+			workSvc.SetArtifactSourceResolver(artifactSources)
+			workSvc.SetPreviewApprovalVerifier(opts.PreviewApprovalVerifier)
 			// Wire CornerstoneManager for T5 transport-alignment. FileWorkStore
 			// implements both WorkStore and BlobStore, enabling >4096-byte
 			// cornerstone content via content-addressed blob storage.
@@ -1208,7 +1228,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				},
 			)
 			taskAdapter.SetWorkService(workSvc)
+			taskAdapter.SetArtifactStore(store)
 			taskExec = taskAdapter
+			if opts.WorkTaskExecutor != nil {
+				taskExec = opts.WorkTaskExecutor
+			}
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "work: feature enabled"})
 		}
 	}
@@ -1262,6 +1286,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
 		Work:                workSvcIface,
+		WorkV2Enabled:       cfg.Work.CollaborationWorkbenchV2,
 		WorkViews:           workViews,
 		TaskExecutor:        taskExec,
 	}
@@ -1324,6 +1349,25 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			URLTool:       webFetch,
 		})
 		cornerstoneManager.SetResolver(resolver)
+		if workSvc != nil && opts.ArtifactSourceResolver == nil {
+			workSvc.SetArtifactSourceResolver(resolver)
+		}
+	}
+	if workSvc != nil && cfg.Work.CollaborationWorkbenchV2 {
+		report := workSvc.RecoverAllV2Scheduling(ctx)
+		for _, failure := range report.Failures {
+			sink.Emit(event.Event{
+				Kind:  event.Notice,
+				Level: event.LevelWarn,
+				Text:  fmt.Sprintf("work: V2 recovery remains retryable · work=%s · %s", failure.WorkID, failure.Error),
+			})
+		}
+		if report.Recovered > 0 {
+			sink.Emit(event.Event{
+				Kind: event.Notice, Level: event.LevelInfo,
+				Text: fmt.Sprintf("work: recovered V2 scheduling · recovered=%d scanned=%d", report.Recovered, report.Scanned),
+			})
+		}
 	}
 	return ctrl, nil
 }

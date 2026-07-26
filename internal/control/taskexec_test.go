@@ -38,6 +38,53 @@ type taskCornerstoneWork struct {
 	err  error
 }
 
+type taskBlobStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newTaskBlobStore() *taskBlobStore {
+	return &taskBlobStore{data: make(map[string][]byte)}
+}
+
+func (s *taskBlobStore) Put(_ string, data []byte) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	digest := work.ContentDigest(data)
+	s.data[digest] = append([]byte(nil), data...)
+	return digest, nil
+}
+
+func (s *taskBlobStore) Get(_ string, digest string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.data[digest]...), nil
+}
+
+func (s *taskBlobStore) Exists(_ string, digest string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.data[digest]
+	return ok, nil
+}
+
+func (s *taskBlobStore) Delete(_ string, digest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, digest)
+	return nil
+}
+
+func (s *taskBlobStore) ListDigests(_ string) ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, 0, len(s.data))
+	for digest := range s.data {
+		result = append(result, digest)
+	}
+	return result, nil
+}
+
 func (w *taskCornerstoneWork) Get(context.Context, string) (*work.WorkView, error) {
 	return w.view, w.err
 }
@@ -162,6 +209,128 @@ func TestTaskExecutorPersistsLightweightSessionRef(t *testing.T) {
 	}
 	if !cleaned.Load() {
 		t.Fatal("factory cleanup was not called")
+	}
+}
+
+func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "完整的武侠小说正文"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		taskFactory(t, prov, "fake-model", nil, nil),
+	)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID:            "work-1",
+			SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{{
+				ID: "txt_file", WorkID: "work-1", DefinitionRev: 2,
+				Title: "TXT 文件", Kind: "document", ExpectedCount: 1, Required: true,
+				State: work.SlotReserved, Revision: 1,
+			}},
+		},
+		ArtifactSlots: []work.ArtifactSlot{{
+			ID: "txt_file", WorkID: "work-1", DefinitionRev: 2,
+			Title: "TXT 文件", Kind: "document", ExpectedCount: 1, Required: true,
+			State: work.SlotReserved, Revision: 1,
+		}},
+	}})
+	input := taskInput()
+	input.ProducesSlotIDs = []string{"txt_file"}
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs, err := exec.TaskArtifacts(context.Background(), input, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].SlotID != "txt_file" || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "TXT 文件.txt" || ref.Type != "text/plain" || ref.BlobDigest == "" {
+		t.Fatalf("artifact ref = %+v", ref)
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil || string(body) != "完整的武侠小说正文" {
+		t.Fatalf("blob = %q, err=%v", body, err)
+	}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	if _, ok := exec.artifactTexts[key]; ok {
+		t.Fatal("materialized artifact text was not released")
+	}
+}
+
+func TestV2SchedulerPassesCompleteContextToTaskExecutorAdapter(t *testing.T) {
+	store, err := work.NewFileWorkStore(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workID, runID := "work-v2-adapter", "run-v2-adapter"
+	now := time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC)
+	if err := store.CreateWorkDir(work.CreateWorkDirInput{
+		RequestID: workID + "/create",
+		Work: &work.Work{
+			SchemaVersion: work.SchemaVersionV2,
+			ID:            workID,
+			Name:          "V2 adapter",
+			State:         work.WorkDraft,
+			ArchiveState:  work.ArchiveActive,
+			BlueprintRef:  work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := work.NewFileV2RuntimeAuthority(store, workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := &taskProvider{name: "fake-provider", text: "done"}
+	baseFactory := taskFactory(t, prov, "fake/model-v1", nil, nil)
+	captured := make(chan work.TaskExecuteInput, 1)
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+			captured <- input
+			return baseFactory(ctx, input)
+		},
+	)
+	node := work.NodeDef{
+		ID:          "compile-report",
+		Title:       "Compile report",
+		Description: "Generate the reviewed final report.",
+	}
+	if _, err := work.NewV2Scheduler(exec).Schedule(
+		context.Background(),
+		workID,
+		runID,
+		[]work.NodeDef{node},
+		nil,
+		1,
+		nil,
+		nil,
+		authority,
+	); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case input := <-captured:
+		if input.StageID != "v2-dag" {
+			t.Fatalf("V2 scheduler StageID = %q", input.StageID)
+		}
+		if input.Prompt != "Compile report\n\nGenerate the reviewed final report." {
+			t.Fatalf("V2 scheduler Prompt = %q", input.Prompt)
+		}
+		if input.WorkID != workID || input.RunID != runID ||
+			input.TaskID == "" || input.AttemptID == "" || input.RequestID == "" {
+			t.Fatalf("V2 scheduler adapter context incomplete: %+v", input)
+		}
+	default:
+		t.Fatal("TaskExecutorAdapter factory did not receive V2 scheduler input")
 	}
 }
 

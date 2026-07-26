@@ -31,12 +31,28 @@ type Conclusion struct {
 
 // ── ArtifactRef ────────────────────────────────────────────────────────────
 
+const (
+	ArtifactRefStatusAvailable = "available"
+	ArtifactRefStatusStale     = "stale"
+	ArtifactRefStatusMissing   = "missing"
+	ArtifactRefStatusFailed    = "failed"
+)
+
+func validArtifactRefStatus(status string) bool {
+	switch status {
+	case ArtifactRefStatusAvailable, ArtifactRefStatusStale, ArtifactRefStatusMissing, ArtifactRefStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // ArtifactRef references an artifact produced by a Work run.
 type ArtifactRef struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	Type           string     `json:"type"`
-	Status         string     `json:"status"` // available | stale | missing | failed
+	Status         string     `json:"status"` // ArtifactRefStatus*
 	Path           string     `json:"path,omitempty"`
 	RelativePath   string     `json:"relativePath,omitempty"`
 	BlobDigest     string     `json:"blobDigest,omitempty"`

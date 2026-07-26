@@ -1,0 +1,945 @@
+package work
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// V2Coordinator is the domain production entry that joins committed
+// Input/Definition/Patch mutations to authoritative runtime invalidation and
+// affected-only scheduling. Business events remain the durable recovery
+// record; retrying the same request or RecoverScheduling safely resumes wake.
+type V2Coordinator struct {
+	store WorkStore
+
+	mu        sync.RWMutex
+	defs      DefinitionRevisionStore
+	inputs    *InputService
+	patches   *PatchService
+	scheduler *V2Scheduler
+}
+
+// V2RecoveryFailure is one independently retryable boot-recovery failure.
+type V2RecoveryFailure struct {
+	WorkID string `json:"workId"`
+	Error  string `json:"error"`
+}
+
+// V2RecoveryReport makes boot recovery observable without making one damaged
+// Work hide the recovery outcome of every other Work.
+type V2RecoveryReport struct {
+	Scanned   int                 `json:"scanned"`
+	Recovered int                 `json:"recovered"`
+	Failures  []V2RecoveryFailure `json:"failures,omitempty"`
+}
+
+func newV2Coordinator(
+	store WorkStore,
+	defs DefinitionRevisionStore,
+	cornerstones *CornerstoneManager,
+) *V2Coordinator {
+	inputs := NewInputService(store, cornerstones)
+	patches := NewPatchService(store)
+	if defs != nil {
+		inputs.SetDefinitionStore(defs)
+		patches.SetDefinitionStore(defs)
+	}
+	return &V2Coordinator{
+		store: store, defs: defs, inputs: inputs, patches: patches,
+	}
+}
+
+func (c *V2Coordinator) SetDefinitionStore(defs DefinitionRevisionStore) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.defs = defs
+	c.inputs.SetDefinitionStore(defs)
+	c.patches.SetDefinitionStore(defs)
+}
+
+func (c *V2Coordinator) SetExecutor(executor TaskExecutor) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if executor == nil {
+		c.scheduler = nil
+		return
+	}
+	c.scheduler = NewV2Scheduler(executor)
+}
+
+func (c *V2Coordinator) SetPatchPlanner(planner PatchPlanner) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.patches.SetPlanner(planner)
+}
+
+func (c *V2Coordinator) SetCornerstones(cornerstones *CornerstoneManager) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.inputs.cornerstones = cornerstones
+}
+
+func (c *V2Coordinator) enabled() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.store != nil && c.defs != nil && c.scheduler != nil
+}
+
+// SubmitInput commits through the real InputService, then derives all scheduler
+// inputs from the authoritative projection. Callers never assemble runtime
+// digests or supply a stale input snapshot.
+func (c *V2Coordinator) SubmitInput(
+	ctx context.Context,
+	request SubmitInputRequest,
+) (*SubmitInputResult, error) {
+	if c == nil || c.inputs == nil {
+		return nil, errors.New("work: V2 input coordinator is not configured")
+	}
+	result, err := c.inputs.SubmitInput(ctx, request)
+	if err != nil || result == nil || result.Error != "" {
+		return result, err
+	}
+	runID := ""
+	if result.Input != nil {
+		runID = result.Input.RunID
+	}
+	if runID == "" {
+		projection, loadErr := c.store.LoadProjection(request.WorkID)
+		if loadErr != nil {
+			return result, committedRecovery("v2-input-wake", request.WorkID, request.RequestID, result.Revision, loadErr)
+		}
+		runID = runIDForAffectedTasks(projection, result.AffectedTaskIDs)
+	}
+	cause := V2WakeInput
+	if c.inputKind(request.WorkID, result.Input) == InputApproval {
+		cause = V2WakeApproval
+	}
+	if wakeErr := c.continueRun(ctx, request.WorkID, runID, result.AffectedTaskIDs, cause); wakeErr != nil {
+		return result, committedRecovery("v2-input-wake", request.WorkID, request.RequestID, result.Revision, wakeErr)
+	}
+	return result, nil
+}
+
+// ApplyPatch commits through the real PatchService and automatically resumes
+// only the preview's invalidated task subgraph.
+func (c *V2Coordinator) ApplyPatch(
+	ctx context.Context,
+	input ApplyWorkPatchInput,
+) (*ApplyWorkPatchResult, error) {
+	if c == nil || c.patches == nil {
+		return nil, errors.New("work: V2 patch coordinator is not configured")
+	}
+	before, err := c.store.LoadProjection(input.WorkID)
+	if err != nil {
+		return nil, err
+	}
+	preview, ok := before.V2PatchPreviews[input.PatchID]
+	if !ok {
+		return nil, fmt.Errorf("work: V2 patch coordinator: preview %q not found", input.PatchID)
+	}
+	result, err := c.patches.ApplyWorkPatch(ctx, input)
+	if err != nil || result == nil || result.Error != "" {
+		return result, err
+	}
+	definitionRev := before.V2CurrentRevision
+	runID := preview.RunID
+	changedIDs := result.InvalidatedTaskIDs
+	if input.Scope == PatchWorkflow && result.NewRevision > 0 {
+		definitionRev = result.NewRevision
+		after, loadErr := c.store.LoadProjection(input.WorkID)
+		if loadErr != nil {
+			return result, committedRecovery("v2-patch-wake", input.WorkID, input.RequestID, result.WorkRevision, loadErr)
+		}
+		definition, loadErr := c.loadDefinition(input.WorkID, definitionRev)
+		if loadErr != nil {
+			return result, committedRecovery("v2-patch-wake", input.WorkID, input.RequestID, result.WorkRevision, loadErr)
+		}
+		runID = activeDefinitionRunID(after, definition.Digest)
+		changedIDs = definitionRunSeeds(
+			definition,
+			after,
+			runID,
+			changedIDs,
+		)
+	}
+	if wakeErr := c.continueRunAt(
+		ctx,
+		input.WorkID,
+		runID,
+		changedIDs,
+		V2WakePatch,
+		definitionRev,
+	); wakeErr != nil {
+		return result, committedRecovery("v2-patch-wake", input.WorkID, input.RequestID, result.WorkRevision, wakeErr)
+	}
+	return result, nil
+}
+
+func (c *V2Coordinator) PreviewPatch(
+	ctx context.Context,
+	input PreviewWorkPatchInput,
+) (*PreviewWorkPatchResult, error) {
+	if c == nil || c.patches == nil {
+		return nil, errors.New("work: V2 patch coordinator is not configured")
+	}
+	return c.patches.PreviewWorkPatch(ctx, input)
+}
+
+// SetInputCornerstone routes the public V2 request through InputService so the
+// WorkInput link, Cornerstone mutation, receipt, and partial-failure semantics
+// stay on the same authoritative production path.
+func (c *V2Coordinator) SetInputCornerstone(
+	ctx context.Context,
+	input SetInputCornerstoneRequest,
+) (*CornerstonePinResult, error) {
+	if c == nil || c.inputs == nil || c.store == nil {
+		return nil, errors.New("work: V2 input coordinator is not configured")
+	}
+	request := PinInputRequest{
+		WorkID:           input.WorkID,
+		InputID:          input.InputID,
+		DefinitionRev:    input.DefinitionRevision,
+		InputRevision:    input.InputRevision,
+		ExpectedRevision: input.ExpectedRevision,
+		RequestID:        input.RequestID,
+	}
+	oppositeRequestID := strings.TrimSpace(input.RequestID) + "/pin-cs"
+	if input.Pin {
+		oppositeRequestID = strings.TrimSpace(input.RequestID) + "/unpin-cs"
+	}
+	if _, state, err := c.store.LoadState(strings.TrimSpace(input.WorkID), oppositeRequestID); err == nil && state.RequestFound {
+		return nil, fmt.Errorf(
+			"%w: SetInputCornerstone requestID %q was already committed with the opposite pin intent",
+			ErrWorkRequestIDConflict,
+			strings.TrimSpace(input.RequestID),
+		)
+	}
+	partialRequestID := strings.TrimSpace(input.RequestID) + "/cs/cs"
+	oppositePartialType := EventCornerstoneUpserted
+	if input.Pin {
+		partialRequestID = strings.TrimSpace(input.RequestID) + "/cs/cs-remove"
+		oppositePartialType = EventCornerstoneRemoved
+	}
+	if _, state, err := c.store.LoadState(strings.TrimSpace(input.WorkID), partialRequestID); err == nil && state.RequestFound {
+		oppositePartial := state.RequestType == oppositePartialType
+		if oppositePartial {
+			return nil, fmt.Errorf(
+				"%w: SetInputCornerstone requestID %q already partially committed with the opposite pin intent",
+				ErrWorkRequestIDConflict,
+				strings.TrimSpace(input.RequestID),
+			)
+		}
+	}
+	var (
+		result *PinInputResult
+		err    error
+	)
+	if input.Pin {
+		result, err = c.inputs.PinInput(ctx, request)
+	} else {
+		result, err = c.inputs.UnpinInput(ctx, request)
+	}
+	if result == nil {
+		return nil, err
+	}
+	return &CornerstonePinResult{
+		CornerstoneID: result.CornerstoneID,
+		Receipt:       cloneInputIntentReceipt(result.Receipt),
+		Pinned:        result.Pinned,
+		Revision:      result.Revision,
+		Duplicate:     result.Duplicate,
+		Error:         result.Error,
+		Committed:     result.Revision > 0,
+	}, err
+}
+
+// RetryNode makes the retry intent durable before scheduling. Replaying the
+// same request validates the stored intent but never executes the task twice;
+// a wake failure after commit is returned as an explicit recoverable error.
+func (c *V2Coordinator) RetryNode(
+	ctx context.Context,
+	input RetryWorkNodeRequest,
+) (*Task, error) {
+	if c == nil || c.store == nil || c.schedulerSnapshot() == nil {
+		return nil, errors.New("work: V2 retry coordinator is not configured")
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.RunID = strings.TrimSpace(input.RunID)
+	input.TaskID = strings.TrimSpace(input.TaskID)
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.WorkID == "" || input.RunID == "" || input.TaskID == "" || input.RequestID == "" {
+		return nil, errors.New("work: RetryWorkNode: workID/runID/taskID/requestID are required")
+	}
+	if input.ExpectedRevision <= 0 {
+		return nil, errors.New("work: RetryWorkNode: expectedRevision must be positive")
+	}
+
+	projection, state, err := c.store.LoadState(input.WorkID, input.RequestID+"/retry-node")
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckSchemaVersionV2("Work", projection.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if projection.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: RetryWorkNode is not allowed while ArchiveState=%s", projection.ArchiveState)
+	}
+	runtime := projection.V2TaskRuntimes[input.TaskID]
+	definitionRev := projection.V2CurrentRevision
+	if runtime != nil {
+		definitionRev = runtime.DefinitionRev
+	}
+
+	payload, err := json.Marshal(TaskReadyPayload{
+		TaskID: input.TaskID,
+		WorkID: input.WorkID,
+		RunID:  input.RunID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("work: RetryWorkNode: encode retry intent: %w", err)
+	}
+	event := newServiceEventV2(
+		input.WorkID,
+		input.RequestID+"/retry-node",
+		EventTaskReady,
+		payload,
+		time.Now().UTC(),
+	)
+	event.Object = ObjectContext{
+		Kind:               ObjectTask,
+		ID:                 input.TaskID,
+		WorkID:             input.WorkID,
+		RunID:              input.RunID,
+		TaskID:             input.TaskID,
+		ExpectedRevision:   int64Ptr(input.ExpectedRevision),
+		DefinitionRevision: int64Ptr(definitionRev),
+	}
+
+	if state.RequestFound {
+		if loader, ok := c.store.(interface {
+			LoadRequestEvent(string, string) (WorkEvent, error)
+		}); ok {
+			persisted, loadErr := loader.LoadRequestEvent(input.WorkID, event.RequestID)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			if err := validateRetryNodeReplay(input, persisted); err != nil {
+				return nil, err
+			}
+		} else if _, err := c.store.CommitEvent(input.WorkID, event); err != nil {
+			var conflict *ErrWorkEventConflict
+			if errors.As(err, &conflict) && conflict.Kind == WorkEventRequestConflict {
+				return nil, fmt.Errorf("%w: %w", ErrWorkRequestIDConflict, err)
+			}
+			return nil, err
+		}
+		current, loadErr := c.store.LoadProjection(input.WorkID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		currentRuntime := current.V2TaskRuntimes[input.TaskID]
+		if currentRuntime == nil || currentRuntime.RunID != input.RunID {
+			return nil, fmt.Errorf("work: RetryWorkNode: persisted retry task %q not found in run %q", input.TaskID, input.RunID)
+		}
+		if !isActiveRetryRuntime(current, currentRuntime) {
+			return v2TaskRuntimeToTask(currentRuntime), nil
+		}
+		if currentRuntime.State == TaskReady {
+			if prepareErr := c.prepareV2NodeArtifacts(
+				ctx,
+				input.WorkID,
+				currentRuntime.DefinitionRev,
+				currentRuntime.NodeID,
+				input.RequestID,
+			); prepareErr != nil {
+				return v2TaskRuntimeToTask(currentRuntime),
+					committedRecovery("retry-work-node-artifacts", input.WorkID, input.RequestID, state.RequestRevision, prepareErr)
+			}
+			if _, wakeErr := c.ScheduleRun(ctx, input.WorkID, input.RunID, []string{currentRuntime.NodeID}); wakeErr != nil {
+				return v2TaskRuntimeToTask(currentRuntime),
+					committedRecovery("retry-work-node-wake", input.WorkID, input.RequestID, state.RequestRevision, wakeErr)
+			}
+			current, loadErr = c.store.LoadProjection(input.WorkID)
+			if loadErr != nil {
+				return nil, committedRecovery("retry-work-node-reload", input.WorkID, input.RequestID, state.RequestRevision, loadErr)
+			}
+			currentRuntime = current.V2TaskRuntimes[input.TaskID]
+		}
+		return v2TaskRuntimeToTask(currentRuntime), nil
+	}
+	if runtime == nil || runtime.RunID != input.RunID {
+		return nil, fmt.Errorf("work: RetryWorkNode: task %q not found in run %q", input.TaskID, input.RunID)
+	}
+	if !isActiveRetryRuntime(projection, runtime) {
+		return nil, fmt.Errorf(
+			"work: RetryWorkNode: task %q belongs to historical run %q or definition revision %d; active revision is %d",
+			input.TaskID,
+			runtime.RunID,
+			runtime.DefinitionRev,
+			projection.V2CurrentRevision,
+		)
+	}
+	// RetryWorkNodeRequest is part of the frozen Controller contract. Existing
+	// domain callers use the task runtime revision, while Desktop receives only
+	// the aggregate WorkView revision. Both are authoritative current versions:
+	// accept either, but reject a value stale against both. This preserves the
+	// object-level guard and lets Desktop recover after unrelated Work events.
+	if runtime.Revision != input.ExpectedRevision && state.Revision != input.ExpectedRevision {
+		return nil, revisionConflict(input.WorkID, input.ExpectedRevision, state.Revision)
+	}
+	switch runtime.State {
+	case TaskFailedRetryable, TaskInvalidated:
+	default:
+		return nil, fmt.Errorf("work: RetryWorkNode requires failed_retryable or invalidated task, current state: %s", runtime.State)
+	}
+
+	revision, err := c.store.CommitEvent(input.WorkID, event)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.prepareV2NodeArtifacts(
+		ctx,
+		input.WorkID,
+		runtime.DefinitionRev,
+		runtime.NodeID,
+		input.RequestID,
+	); err != nil {
+		return v2TaskRuntimeToTask(runtime),
+			committedRecovery("retry-work-node-artifacts", input.WorkID, input.RequestID, revision, err)
+	}
+	if _, err := c.ScheduleRun(ctx, input.WorkID, input.RunID, []string{runtime.NodeID}); err != nil {
+		current, loadErr := c.store.LoadProjection(input.WorkID)
+		if loadErr != nil {
+			err = errors.Join(err, loadErr)
+			return nil, committedRecovery("retry-work-node-wake", input.WorkID, input.RequestID, revision, err)
+		}
+		return v2TaskRuntimeToTask(current.V2TaskRuntimes[input.TaskID]),
+			committedRecovery("retry-work-node-wake", input.WorkID, input.RequestID, revision, err)
+	}
+	current, err := c.store.LoadProjection(input.WorkID)
+	if err != nil {
+		return nil, committedRecovery("retry-work-node-reload", input.WorkID, input.RequestID, revision, err)
+	}
+	return v2TaskRuntimeToTask(current.V2TaskRuntimes[input.TaskID]), nil
+}
+
+func validateRetryNodeReplay(input RetryWorkNodeRequest, event WorkEvent) error {
+	if event.Type != EventTaskReady {
+		return fmt.Errorf(
+			"%w: RetryWorkNode request %q was committed as %s",
+			ErrWorkRequestIDConflict,
+			input.RequestID,
+			event.Type,
+		)
+	}
+	var payload TaskReadyPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return fmt.Errorf("%w: decode RetryWorkNode event: %v", ErrWorkNeedsRepair, err)
+	}
+	expected := int64(0)
+	if event.Object.ExpectedRevision != nil {
+		expected = *event.Object.ExpectedRevision
+	}
+	if payload.WorkID != input.WorkID || payload.RunID != input.RunID || payload.TaskID != input.TaskID ||
+		expected != input.ExpectedRevision {
+		return fmt.Errorf("%w: RetryWorkNode request %q intent changed", ErrWorkRequestIDConflict, input.RequestID)
+	}
+	return nil
+}
+
+func isActiveRetryRuntime(projection *Work, runtime *V2TaskRuntime) bool {
+	if projection == nil || runtime == nil || runtime.DefinitionRev != projection.V2CurrentRevision {
+		return false
+	}
+	activeRun := activeDefinitionRunID(projection, projection.Definition.Digest)
+	return activeRun == "" || runtime.RunID == activeRun
+}
+
+func (c *V2Coordinator) ScheduleRun(
+	ctx context.Context,
+	workID, runID string,
+	changedNodeIDs []string,
+) (V2ScheduleResult, error) {
+	if c == nil || !c.enabled() {
+		return V2ScheduleResult{}, errors.New("work: V2 scheduler is not configured")
+	}
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return V2ScheduleResult{}, err
+	}
+	definition, err := c.loadDefinition(workID, projection.V2CurrentRevision)
+	if err != nil {
+		return V2ScheduleResult{}, err
+	}
+	if err := c.commitV2RunState(ctx, workID, runID, definition, RunRunning); err != nil {
+		return V2ScheduleResult{}, err
+	}
+	projection, err = c.store.LoadProjection(workID)
+	if err != nil {
+		return V2ScheduleResult{}, err
+	}
+	runtimes := normalizeV2RuntimesForRun(projection.V2TaskRuntimes, runID)
+	prepared := false
+	for _, node := range definition.Nodes {
+		runtime := runtimes[node.ID]
+		if runtime == nil || runtime.State != TaskFailedRetryable || len(node.ProducesSlotIDs) == 0 {
+			continue
+		}
+		if err := c.prepareV2NodeArtifacts(
+			ctx,
+			workID,
+			definition.Revision,
+			node.ID,
+			fmt.Sprintf("%s/v2/schedule/%s/%d", runID, runtime.TaskID, runtime.Revision),
+		); err != nil {
+			return V2ScheduleResult{}, err
+		}
+		prepared = true
+	}
+	if prepared {
+		projection, err = c.store.LoadProjection(workID)
+		if err != nil {
+			return V2ScheduleResult{}, err
+		}
+	}
+	if len(changedNodeIDs) == 0 {
+		changedNodeIDs = make([]string, 0, len(definition.Nodes))
+		for _, node := range definition.Nodes {
+			changedNodeIDs = append(changedNodeIDs, node.ID)
+		}
+	}
+	authority := &workStoreV2Authority{store: c.store, workID: workID}
+	result, scheduleErr := c.schedulerSnapshot().ScheduleAffected(
+		ctx,
+		workID,
+		runID,
+		definition.Nodes,
+		projection.V2TaskRuntimes,
+		definition.Revision,
+		projection.V2Inputs,
+		definition.InputSpecs,
+		changedNodeIDs,
+		authority,
+	)
+	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
+	_, artifactErr := c.reconcileV2Artifacts(ctx, workID, runID, definition)
+	settleErr := c.settleV2Run(ctx, workID, runID, definition)
+	err = errors.Join(scheduleErr, inputErr, artifactErr, settleErr)
+	if err != nil {
+		result.Error = err
+	}
+	return result, err
+}
+
+func (c *V2Coordinator) ContinueDefinition(
+	ctx context.Context,
+	workID, runID, requestID string,
+	definition *WorkDefinitionRevision,
+	affectedNodeIDs []string,
+) error {
+	if c == nil || !c.enabled() {
+		return nil
+	}
+	if definition == nil {
+		return errors.New("work: V2 definition continuation requires definition")
+	}
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
+	affectedNodeIDs = definitionRunSeeds(
+		definition,
+		projection,
+		runID,
+		affectedNodeIDs,
+	)
+	if len(affectedNodeIDs) == 0 {
+		return nil
+	}
+	_, err = c.ScheduleRun(ctx, workID, runID, affectedNodeIDs)
+	if err != nil {
+		return committedRecovery("v2-definition-wake", workID, requestID, 0, err)
+	}
+	return nil
+}
+
+// RecoverScheduling scans durable business/runtime projection state after
+// restart. It resumes ready/input-released tasks and an active definition run
+// that committed before its first runtime could be materialized.
+func (c *V2Coordinator) RecoverScheduling(ctx context.Context, workID string) error {
+	if c == nil || !c.enabled() {
+		return errors.New("work: V2 scheduling recovery is not configured")
+	}
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
+	definition, err := c.loadDefinition(workID, projection.V2CurrentRevision)
+	if err != nil {
+		return err
+	}
+	activeRunID := activeDefinitionRunID(projection, definition.Digest)
+	repaired, repairErr := c.reconcileV2Artifacts(ctx, workID, activeRunID, definition)
+	if repairErr != nil {
+		return repairErr
+	}
+	if repaired {
+		projection, err = c.store.LoadProjection(workID)
+		if err != nil {
+			return err
+		}
+	}
+	inputByRun := make(map[string][]string)
+	approvalByRun := make(map[string][]string)
+	for _, runtime := range projection.V2TaskRuntimes {
+		if runtime == nil || (activeRunID != "" && runtime.RunID != activeRunID) {
+			continue
+		}
+		switch runtime.State {
+		case TaskWaitingInput, TaskReady, TaskFailedRetryable:
+			if !V2ReceiptRequired(runtime.SideEffectClass) {
+				inputByRun[runtime.RunID] = append(inputByRun[runtime.RunID], runtime.NodeID)
+			}
+		case TaskInvalidated:
+			if !isMissingV2ArtifactRuntime(runtime) && !V2ReceiptRequired(runtime.SideEffectClass) {
+				inputByRun[runtime.RunID] = append(inputByRun[runtime.RunID], runtime.NodeID)
+			}
+		case TaskRunning:
+			if !V2ReceiptRequired(runtime.SideEffectClass) && hasSupersededRunningAttempt(runtime) {
+				inputByRun[runtime.RunID] = append(inputByRun[runtime.RunID], runtime.NodeID)
+			}
+		case TaskWaitingApproval:
+			if hasSubmittedApproval(projection.V2Inputs, definition.InputSpecs, runtime.TaskID) {
+				approvalByRun[runtime.RunID] = append(approvalByRun[runtime.RunID], runtime.NodeID)
+			}
+		}
+	}
+	if !repaired && len(inputByRun) == 0 && len(approvalByRun) == 0 {
+		if activeRunID != "" {
+			for _, node := range definition.Nodes {
+				if !V2ReceiptRequired(DeriveV2SideEffectClass(node.ToolHints)) {
+					inputByRun[activeRunID] = append(inputByRun[activeRunID], node.ID)
+				}
+			}
+		}
+	}
+	var recoverErr error
+	for runID, seeds := range inputByRun {
+		if err := c.continueRunAt(
+			ctx, workID, runID, seeds, V2WakeInput, definition.Revision,
+		); err != nil {
+			recoverErr = errors.Join(recoverErr, err)
+		}
+	}
+	for runID, seeds := range approvalByRun {
+		if err := c.continueRunAt(
+			ctx, workID, runID, seeds, V2WakeApproval, definition.Revision,
+		); err != nil {
+			recoverErr = errors.Join(recoverErr, err)
+		}
+	}
+	if activeRunID != "" {
+		recoverErr = errors.Join(recoverErr, c.settleV2Run(ctx, workID, activeRunID, definition))
+	}
+	return recoverErr
+}
+
+// RecoverAllScheduling scans active persisted V2 Works. Planning-only and V1
+// Works are intentionally skipped; each active definition is recovered from
+// authoritative FileWorkStore state.
+func (c *V2Coordinator) RecoverAllScheduling(ctx context.Context) V2RecoveryReport {
+	var report V2RecoveryReport
+	if c == nil || c.store == nil {
+		report.Failures = append(report.Failures, V2RecoveryFailure{Error: "work: V2 recovery store is not configured"})
+		return report
+	}
+	active := ArchiveActive
+	filter := WorkFilter{ArchiveState: &active, Limit: 500}
+	for {
+		if err := checkServiceContext(ctx); err != nil {
+			report.Failures = append(report.Failures, V2RecoveryFailure{Error: err.Error()})
+			return report
+		}
+		items, err := c.store.List(filter)
+		if err != nil {
+			report.Failures = append(report.Failures, V2RecoveryFailure{Error: err.Error()})
+			return report
+		}
+		for _, item := range items {
+			report.Scanned++
+			projection, err := c.store.LoadProjection(item.ID)
+			if err != nil {
+				report.Failures = append(report.Failures, V2RecoveryFailure{WorkID: item.ID, Error: err.Error()})
+				continue
+			}
+			if projection.SchemaVersion < SchemaVersionV2 || projection.V2CurrentRevision == 0 {
+				continue
+			}
+			if err := c.RecoverScheduling(ctx, item.ID); err != nil {
+				report.Failures = append(report.Failures, V2RecoveryFailure{WorkID: item.ID, Error: err.Error()})
+				continue
+			}
+			report.Recovered++
+		}
+		if len(items) < filter.Limit {
+			return report
+		}
+		filter.Cursor = items[len(items)-1].ID
+	}
+}
+
+func (c *V2Coordinator) continueRun(
+	ctx context.Context,
+	workID, runID string,
+	changedIDs []string,
+	cause V2WakeCause,
+) error {
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
+	return c.continueRunAt(ctx, workID, runID, changedIDs, cause, projection.V2CurrentRevision)
+}
+
+func (c *V2Coordinator) continueRunAt(
+	ctx context.Context,
+	workID, runID string,
+	changedIDs []string,
+	cause V2WakeCause,
+	definitionRev int64,
+) error {
+	if strings.TrimSpace(runID) == "" || len(changedIDs) == 0 {
+		return nil
+	}
+	scheduler := c.schedulerSnapshot()
+	if scheduler == nil {
+		return errors.New("work: V2 scheduler is not configured")
+	}
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
+	definition, err := c.loadDefinition(workID, definitionRev)
+	if err != nil {
+		return err
+	}
+	if err := c.commitV2RunState(ctx, workID, runID, definition, RunRunning); err != nil {
+		return err
+	}
+	projection, err = c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
+	runtimes := normalizeV2RuntimesForRun(projection.V2TaskRuntimes, runID)
+	prepared := false
+	for _, node := range definition.Nodes {
+		runtime := runtimes[node.ID]
+		if runtime == nil || runtime.State != TaskFailedRetryable || len(node.ProducesSlotIDs) == 0 {
+			continue
+		}
+		if err := c.prepareV2NodeArtifacts(
+			ctx,
+			workID,
+			definition.Revision,
+			node.ID,
+			fmt.Sprintf("%s/v2/wake/%s/%d", runID, runtime.TaskID, runtime.Revision),
+		); err != nil {
+			return err
+		}
+		prepared = true
+	}
+	if prepared {
+		projection, err = c.store.LoadProjection(workID)
+		if err != nil {
+			return err
+		}
+	}
+	authority := &workStoreV2Authority{store: c.store, workID: workID}
+	_, scheduleErr := scheduler.WakeAndScheduleAffected(
+		ctx,
+		workID,
+		runID,
+		definition.Nodes,
+		definition.Revision,
+		projection.V2Inputs,
+		definition.InputSpecs,
+		changedIDs,
+		cause,
+		authority,
+	)
+	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
+	_, artifactErr := c.reconcileV2Artifacts(ctx, workID, runID, definition)
+	settleErr := c.settleV2Run(ctx, workID, runID, definition)
+	return errors.Join(scheduleErr, inputErr, artifactErr, settleErr)
+}
+
+func (c *V2Coordinator) schedulerSnapshot() *V2Scheduler {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.scheduler
+}
+
+func (c *V2Coordinator) loadDefinition(workID string, revision int64) (*WorkDefinitionRevision, error) {
+	c.mu.RLock()
+	defs := c.defs
+	c.mu.RUnlock()
+	if defs == nil {
+		return nil, errors.New("work: V2 definition store is not configured")
+	}
+	return defs.LoadRevision(workID, revision)
+}
+
+func (c *V2Coordinator) inputKind(workID string, input *WorkInput) InputKind {
+	if input == nil {
+		return ""
+	}
+	projection, err := c.store.LoadProjection(workID)
+	if err != nil {
+		return ""
+	}
+	definition, err := c.loadDefinition(workID, projection.V2CurrentRevision)
+	if err != nil {
+		return ""
+	}
+	for _, spec := range definition.InputSpecs {
+		if spec.ID == input.SpecID {
+			return spec.Kind
+		}
+	}
+	return ""
+}
+
+type workStoreV2Authority struct {
+	store  WorkStore
+	workID string
+}
+
+func (a *workStoreV2Authority) CommitV2Event(event WorkEvent) (int64, error) {
+	if a == nil || a.store == nil || event.WorkID != a.workID {
+		return 0, errors.New("work: V2 authority work mismatch")
+	}
+	return a.store.CommitEvent(a.workID, event)
+}
+
+func (a *workStoreV2Authority) LoadV2Projection() (*Work, error) {
+	if a == nil || a.store == nil {
+		return nil, errors.New("work: V2 authority is not configured")
+	}
+	return a.store.LoadProjection(a.workID)
+}
+
+func (a *workStoreV2Authority) CommitV2Artifact(ctx context.Context, input TaskArtifactCommitInput) (*ArtifactSlotResult, error) {
+	if a == nil || a.store == nil || input.WorkID != a.workID {
+		return nil, errors.New("work: V2 artifact authority work mismatch")
+	}
+	return commitArtifactWithStore(ctx, a.store, input)
+}
+
+func runIDForAffectedTasks(work *Work, taskIDs []string) string {
+	if work == nil {
+		return ""
+	}
+	for _, taskID := range taskIDs {
+		if runtime := work.V2TaskRuntimes[taskID]; runtime != nil {
+			return runtime.RunID
+		}
+	}
+	return ""
+}
+
+func hasSubmittedApproval(inputs []WorkInput, specs []InputSpec, taskID string) bool {
+	approvalSpecs := make(map[string]InputSpec)
+	for _, spec := range specs {
+		if spec.Kind == InputApproval {
+			approvalSpecs[spec.ID] = spec
+		}
+	}
+	for _, input := range inputs {
+		spec, ok := approvalSpecs[input.SpecID]
+		if input.TaskID == taskID && ok && inputSatisfiesSpec(input, spec) {
+			return true
+		}
+	}
+	return false
+}
+
+func activeDefinitionRunID(work *Work, digest string) string {
+	if work == nil {
+		return ""
+	}
+	for i := len(work.Runs) - 1; i >= 0; i-- {
+		if work.Runs[i].DefinitionDigest == digest {
+			return work.Runs[i].ID
+		}
+	}
+	return ""
+}
+
+func hasSupersededRunningAttempt(runtime *V2TaskRuntime) bool {
+	if runtime == nil {
+		return false
+	}
+	index := lastRunningAttempt(runtime)
+	if index < 0 {
+		return false
+	}
+	return ValidateStaleCompletion(&runtime.Attempts[index], DefTokenSet{
+		DefinitionRev:    runtime.DefinitionRev,
+		InputDigest:      runtime.InputDigest,
+		DependencyDigest: runtime.DependencyDigest,
+		ExecutionToken:   runtime.ExecutionToken,
+	})
+}
+
+func definitionRunSeeds(
+	definition *WorkDefinitionRevision,
+	projection *Work,
+	runID string,
+	changedNodeIDs []string,
+) []string {
+	if definition == nil || projection == nil || strings.TrimSpace(runID) == "" {
+		return append([]string(nil), changedNodeIDs...)
+	}
+	seen := make(map[string]bool, len(changedNodeIDs)+len(definition.Nodes))
+	for _, nodeID := range changedNodeIDs {
+		if nodeID = strings.TrimSpace(nodeID); nodeID != "" {
+			seen[nodeID] = true
+		}
+	}
+	runtimes := normalizeV2RuntimesForRun(projection.V2TaskRuntimes, runID)
+	for _, node := range definition.Nodes {
+		if runtimes[node.ID] == nil {
+			seen[node.ID] = true
+		}
+	}
+	seeds := make([]string, 0, len(seen))
+	for nodeID := range seen {
+		seeds = append(seeds, nodeID)
+	}
+	sort.Strings(seeds)
+	return seeds
+}

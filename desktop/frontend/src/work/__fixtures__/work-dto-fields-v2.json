@@ -1,0 +1,437 @@
+{
+  "ArtifactSlot": [
+    "id",
+    "workId",
+    "definitionRev",
+    "title",
+    "kind",
+    "expectedCount",
+    "required",
+    "state",
+    "artifactRefs",
+    "progress",
+    "summary",
+    "error",
+    "revision"
+  ],
+  "ArtifactError": [
+    "code",
+    "message",
+    "retryable"
+  ],
+  "WorkDefinitionRevision": [
+    "workId",
+    "revision",
+    "parentRevision",
+    "status",
+    "goal",
+    "nodes",
+    "artifactSlots",
+    "inputSpecs",
+    "createdBy",
+    "createdAt",
+    "digest"
+  ],
+  "NodeDef": [
+    "id",
+    "title",
+    "description",
+    "dependsOn",
+    "inputSpecIds",
+    "toolHints"
+  ],
+  "ArtifactSlotDef": [
+    "id",
+    "title",
+    "kind",
+    "expectedCount",
+    "required"
+  ],
+  "InputSpec": [
+    "id",
+    "label",
+    "description",
+    "kind",
+    "required",
+    "valueSchema",
+    "defaultValue",
+    "pinEligible"
+  ],
+  "WorkInput": [
+    "id",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "value",
+    "state",
+    "cornerstoneId",
+    "revision",
+    "updatedAt"
+  ],
+  "WorkPatchPreview": [
+    "id",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "sessionId",
+    "baseDefinitionRev",
+    "baseBlockRev",
+    "scope",
+    "operations",
+    "affectedNodeIds",
+    "affectedBlockIds",
+    "affectedArtifactSlotIds",
+    "staleArtifactSlotIds",
+    "invalidatedTaskIds",
+    "requiresRerun",
+    "digest",
+    "expiresAt"
+  ],
+  "PatchOp": [
+    "op",
+    "path",
+    "oldValue",
+    "newValue"
+  ],
+  "SubmitWorkInputRequest": [
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "inputId",
+    "value",
+    "definitionRevision",
+    "inputRevision",
+    "expectedRevision",
+    "requestId"
+  ],
+  "InputSubmissionResult": [
+    "input",
+    "revision",
+    "duplicate",
+    "error"
+  ],
+  "SetInputCornerstoneRequest": [
+    "workId",
+    "inputId",
+    "pin",
+    "definitionRevision",
+    "inputRevision",
+    "expectedRevision",
+    "requestId"
+  ],
+  "CornerstonePinResult": [
+    "cornerstoneId",
+    "pinned",
+    "revision",
+    "duplicate",
+    "error",
+    "committed",
+    "recoverable",
+    "transportError"
+  ],
+  "PreviewWorkPatchRequest": [
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "sessionId",
+    "instruction",
+    "definitionRevision",
+    "blockRevision",
+    "scope",
+    "requestId"
+  ],
+  "ApplyWorkPatchRequest": [
+    "workId",
+    "patchId",
+    "previewDigest",
+    "scope",
+    "expectedRevision",
+    "requestId"
+  ],
+  "ApplyDefinitionInput": [
+    "workId",
+    "revision",
+    "expectedRevision",
+    "requestId"
+  ],
+  "BeginWorkPlanningResult": [
+    "result",
+    "revision",
+    "duplicate",
+    "committed",
+    "recoverable",
+    "transportError"
+  ],
+  "ApplyDefinitionResult": [
+    "view",
+    "intent",
+    "impact",
+    "revision",
+    "duplicate",
+    "committed",
+    "recoverable",
+    "transportError"
+  ],
+  "AutoSwitchFaceIntent": [
+    "workId",
+    "runId",
+    "definitionRev",
+    "reason"
+  ],
+  "RunImpact": [
+    "keptNodeIds",
+    "invalidatedNodeIds",
+    "newNodeIds",
+    "removedNodeIds",
+    "requiresRerun"
+  ],
+  "SubmitInputResult": [
+    "input",
+    "revision",
+    "duplicate",
+    "affectedTaskIds",
+    "error",
+    "committed",
+    "recoverable",
+    "transportError"
+  ],
+  "PreviewWorkPatchResult": [
+    "preview",
+    "revision",
+    "duplicate",
+    "committed",
+    "recoverable",
+    "error",
+    "transportError"
+  ],
+  "RetryWorkNodeRequest": [
+    "workId",
+    "runId",
+    "taskId",
+    "expectedRevision",
+    "requestId"
+  ],
+  "RetryWorkNodeResult": [
+    "result",
+    "revision",
+    "duplicate",
+    "committed",
+    "recoverable",
+    "error"
+  ],
+  "WorkTransportError": [
+    "code",
+    "message",
+    "operation",
+    "workId",
+    "requestId",
+    "revision",
+    "committed",
+    "recoverable"
+  ],
+  "WorkViewV2": [
+    "schemaVersion",
+    "work",
+    "revision",
+    "definition",
+    "artifactSlots",
+    "tasks",
+    "inputs",
+    "patchPreviews"
+  ],
+  "TaskV2View": [
+    "id",
+    "runId",
+    "nodeId",
+    "title",
+    "state",
+    "progress",
+    "waitingInputIds",
+    "error",
+    "retryable",
+    "updatedAt"
+  ],
+  "DefRevisionCreatedPayload": [
+    "workId",
+    "revision",
+    "parentRevision",
+    "digest"
+  ],
+  "DefRevisionAppliedPayload": [
+    "workId",
+    "revision",
+    "previousRevision",
+    "expectedRevision",
+    "invalidatedTasks"
+  ],
+  "DefPlanningStartedPayload": [
+    "workId",
+    "sessionId"
+  ],
+  "ArtifactSlotDeclaredPayload": [
+    "slotId",
+    "workId",
+    "definitionRev",
+    "title",
+    "kind",
+    "expectedCount",
+    "required"
+  ],
+  "ArtifactSlotUpdatedPayload": [
+    "slotId",
+    "workId",
+    "state",
+    "refs",
+    "progress",
+    "summary",
+    "error",
+    "revision"
+  ],
+  "InputRequestedPayload": [
+    "inputId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "receipt"
+  ],
+  "InputDraftSavedPayload": [
+    "inputId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "value",
+    "source",
+    "updatedBy",
+    "revision",
+    "expectedRevision",
+    "receipt"
+  ],
+  "InputSubmittedPayload": [
+    "inputId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "value",
+    "source",
+    "updatedBy",
+    "revision",
+    "expectedRevision",
+    "affectedTaskIds",
+    "receipt"
+  ],
+  "InputRejectedPayload": [
+    "inputId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "value",
+    "reason",
+    "source",
+    "updatedBy",
+    "revision",
+    "expectedRevision",
+    "receipt"
+  ],
+  "InputCornerstoneChangedPayload": [
+    "inputId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "specId",
+    "cornerstoneId",
+    "pinned",
+    "revision",
+    "expectedRevision",
+    "receipt"
+  ],
+  "PatchPreviewedPayload": [
+    "patchId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "sessionId",
+    "scope",
+    "affectedNodeIds",
+    "affectedBlockIds",
+    "affectedArtifactSlotIds",
+    "staleArtifactSlotIds",
+    "invalidatedTasks",
+    "requiresRerun"
+  ],
+  "PatchAppliedPayload": [
+    "patchId",
+    "workId",
+    "runId",
+    "taskId",
+    "blockId",
+    "scope",
+    "newRevision",
+    "expectedRevision",
+    "invalidatedTaskIds"
+  ],
+  "PatchIntentReceipt": [
+    "requestId",
+    "operation",
+    "intentDigest",
+    "patchId",
+    "resultRevision",
+    "resultDigest",
+    "resultPatch",
+    "scope",
+    "newRevision",
+    "invalidatedTaskIds",
+    "affectedBlockIds",
+    "affectedArtifactSlotIds",
+    "staleArtifactSlotIds",
+    "requiresRerun",
+    "error",
+    "createdAt"
+  ],
+  "ApplyWorkPatchResult": [
+    "workRevision",
+    "newRevision",
+    "invalidatedTaskIds",
+    "affectedBlockIds",
+    "affectedArtifactSlotIds",
+    "staleArtifactSlotIds",
+    "requiresRerun",
+    "duplicate",
+    "error",
+    "committed",
+    "recoverable",
+    "transportError"
+  ],
+  "TaskInvalidatedPayload": [
+    "taskId",
+    "workId",
+    "runId",
+    "reason"
+  ],
+  "TaskReadyPayload": [
+    "taskId",
+    "workId",
+    "runId"
+  ],
+  "TaskWaitingPayload": [
+    "taskId",
+    "workId",
+    "runId",
+    "inputIds",
+    "approvalToken"
+  ]
+}

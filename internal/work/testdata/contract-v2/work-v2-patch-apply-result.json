@@ -1,0 +1,10 @@
+{
+  "workRevision": 12,
+  "newRevision": 4,
+  "invalidatedTaskIds": ["logic_review", "generate_report"],
+  "affectedBlockIds": ["review-block"],
+  "affectedArtifactSlotIds": ["slot-report"],
+  "staleArtifactSlotIds": ["slot-report"],
+  "requiresRerun": true,
+  "duplicate": false
+}

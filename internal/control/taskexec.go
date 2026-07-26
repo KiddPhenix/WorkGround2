@@ -85,21 +85,24 @@ type TaskExecutorAdapter struct {
 	profile TaskExecutorProfile
 	factory TaskSessionFactory
 	workSvc WorkService
+	blobs   work.BlobStore
 
-	mu       sync.Mutex
-	active   map[string]*activeTask
-	finished map[string]bool
-	cancels  map[string]taskCancelResult
+	mu            sync.Mutex
+	active        map[string]*activeTask
+	finished      map[string]bool
+	cancels       map[string]taskCancelResult
+	artifactTexts map[string]string
 }
 
 // NewTaskExecutorAdapter returns a Task executor for one provider/model profile.
 func NewTaskExecutorAdapter(profile TaskExecutorProfile, factory TaskSessionFactory) *TaskExecutorAdapter {
 	return &TaskExecutorAdapter{
-		profile:  profile,
-		factory:  factory,
-		active:   make(map[string]*activeTask),
-		finished: make(map[string]bool),
-		cancels:  make(map[string]taskCancelResult),
+		profile:       profile,
+		factory:       factory,
+		active:        make(map[string]*activeTask),
+		finished:      make(map[string]bool),
+		cancels:       make(map[string]taskCancelResult),
+		artifactTexts: make(map[string]string),
 	}
 }
 
@@ -110,6 +113,15 @@ func (a *TaskExecutorAdapter) SetWorkService(svc WorkService) {
 		return
 	}
 	a.workSvc = svc
+}
+
+// SetArtifactStore attaches the content-addressed store used to materialize a
+// V2 task's final response as a durable textual ArtifactRef.
+func (a *TaskExecutorAdapter) SetArtifactStore(store work.BlobStore) {
+	if a == nil {
+		return
+	}
+	a.blobs = store
 }
 
 // ExecuteTask runs one synchronous Controller turn and persists its Session
@@ -205,6 +217,14 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 
 	finishedAt := time.Now().UTC()
 	history := ctrl.History()
+	if cause == nil && len(input.ProducesSlotIDs) > 0 {
+		content := taskSessionArtifactContent(history)
+		if content != "" {
+			a.mu.Lock()
+			a.artifactTexts[targetKey] = content
+			a.mu.Unlock()
+		}
+	}
 	ref := work.SessionRef{
 		SessionPath: sessionPath,
 		BranchID:    agent.BranchID(sessionPath),
@@ -243,6 +263,93 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	taskErr := a.taskError(input, operation, retryable, cause)
 	attempt.Error = taskErr.Error()
 	return attempt, taskErr
+}
+
+// TaskArtifacts implements work.TaskArtifactReporter. The final assistant
+// response is preserved in the Work blob store and referenced from each
+// declared textual/document slot. Binary/image slots require a dedicated
+// producer and fail explicitly instead of being reported as completed.
+func (a *TaskExecutorAdapter) TaskArtifacts(
+	ctx context.Context,
+	input work.TaskExecuteInput,
+	_ *work.Attempt,
+) ([]work.TaskArtifactOutput, error) {
+	if len(input.ProducesSlotIDs) == 0 {
+		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a == nil || a.blobs == nil {
+		return nil, errors.New("work task artifact store is not configured")
+	}
+	if a.workSvc == nil {
+		return nil, errors.New("work task artifact projection is not configured")
+	}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	a.mu.Lock()
+	content := a.artifactTexts[key]
+	a.mu.Unlock()
+	if strings.TrimSpace(content) == "" {
+		return nil, errors.New("work task completed without a materializable final response")
+	}
+	defer func() {
+		a.mu.Lock()
+		delete(a.artifactTexts, key)
+		a.mu.Unlock()
+	}()
+	view, err := a.workSvc.Get(ctx, input.WorkID)
+	if err != nil {
+		return nil, fmt.Errorf("load artifact slots: %w", err)
+	}
+	if view == nil || view.Work == nil {
+		return nil, fmt.Errorf("load artifact slots: Work %q is unavailable", input.WorkID)
+	}
+	slots := view.ArtifactSlots
+	if len(slots) == 0 {
+		slots = view.Work.V2ArtifactSlots
+	}
+	slotByID := make(map[string]work.ArtifactSlot, len(slots))
+	for _, slot := range slots {
+		if current, ok := slotByID[slot.ID]; !ok || slot.DefinitionRev > current.DefinitionRev {
+			slotByID[slot.ID] = slot
+		}
+	}
+	digest, err := a.blobs.Put(input.WorkID, []byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("persist task artifact content: %w", err)
+	}
+	now := time.Now().UTC()
+	outputs := make([]work.TaskArtifactOutput, 0, len(input.ProducesSlotIDs))
+	for _, slotID := range input.ProducesSlotIDs {
+		slot, ok := slotByID[slotID]
+		if !ok {
+			return nil, fmt.Errorf("artifact slot %q is unavailable in the active Work projection", slotID)
+		}
+		name, mediaType, supported := taskTextArtifactName(slot)
+		if !supported {
+			return nil, fmt.Errorf(
+				"artifact slot %q requires %q output; the task returned text only",
+				slot.ID,
+				slot.Kind,
+			)
+		}
+		refID := strings.TrimPrefix(work.ContentDigest([]byte(input.AttemptID+"\x00"+slot.ID)), "sha256:")
+		outputs = append(outputs, work.TaskArtifactOutput{
+			SlotID: slot.ID,
+			Refs: []work.ArtifactRef{{
+				ID:             "task-" + refID[:24],
+				Name:           name,
+				Type:           mediaType,
+				Status:         work.ArtifactRefStatusAvailable,
+				BlobDigest:     digest,
+				SourceRunID:    input.RunID,
+				LastVerifiedAt: &now,
+			}},
+			Summary: firstLine(content, 120),
+		})
+	}
+	return outputs, nil
 }
 
 // CancelTask records cancellation by stable Attempt ownership before consulting
@@ -456,6 +563,50 @@ func taskSessionPreview(messages []provider.Message) string {
 	return ""
 }
 
+func taskSessionArtifactContent(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != provider.RoleAssistant {
+			continue
+		}
+		if content := strings.TrimSpace(messages[i].Content); content != "" {
+			return strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\r", "\n")
+		}
+	}
+	return ""
+}
+
+func taskTextArtifactName(slot work.ArtifactSlot) (name, mediaType string, supported bool) {
+	kind := strings.ToLower(strings.TrimSpace(slot.Kind))
+	switch kind {
+	case "text", "markdown", "md", "document", "txt", "plain_text", "text/plain", "text/markdown":
+	default:
+		return "", "", false
+	}
+	base := strings.TrimSpace(slot.Title)
+	if base == "" {
+		base = strings.TrimSpace(slot.ID)
+	}
+	base = strings.Map(func(r rune) rune {
+		switch r {
+		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
+			return '-'
+		default:
+			if r < 32 {
+				return -1
+			}
+			return r
+		}
+	}, base)
+	base = strings.Trim(strings.TrimSpace(base), ".")
+	if base == "" {
+		base = "artifact"
+	}
+	if kind == "txt" || kind == "text/plain" || strings.Contains(strings.ToLower(slot.ID), "txt") {
+		return base + ".txt", "text/plain", true
+	}
+	return base + ".md", "text/markdown", true
+}
+
 func firstLine(text string, maxRunes int) string {
 	if index := strings.IndexAny(text, "\r\n"); index >= 0 {
 		text = text[:index]
@@ -479,6 +630,7 @@ func taskSessionSource(input work.TaskExecuteInput) string {
 }
 
 var _ work.TaskExecutor = (*TaskExecutorAdapter)(nil)
+var _ work.TaskArtifactReporter = (*TaskExecutorAdapter)(nil)
 
 // injectCornerstoneBlock fetches the Work and builds the cornerstone context
 // block, sets it on the Controller for Compose to inject. Returns an error

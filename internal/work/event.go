@@ -9,9 +9,18 @@ import (
 // WorkEventSchemaVersion is the persisted event contract version.
 const WorkEventSchemaVersion = SchemaVersion
 
+// WorkEventSchemaVersionV2 is the V2 persisted event contract version.
+// V2 events carry this version and are rejected by binaries that only
+// understand V1.
+const WorkEventSchemaVersionV2 = SchemaVersionV2
+
 // WorkViewSchemaVersion is the frontend transport contract version. It evolves
-// independently from the persisted Work schema.
+// independently from the persisted Work schema. V1 projections use this version;
+// V2 projections carry WorkViewSchemaVersionV2.
 const WorkViewSchemaVersion = 1
+
+// WorkViewSchemaVersionV2 is the V2 transport projection schema version.
+const WorkViewSchemaVersionV2 = SchemaVersionV2
 
 // WorkEvent is an append-only persisted domain fact. It is accepted only by
 // WorkStore.Append and is never sent directly to a frontend.
@@ -23,6 +32,7 @@ type WorkEvent struct {
 	Type          WorkEventType   `json:"type"`
 	Revision      int64           `json:"revision"`
 	BaseRevision  int64           `json:"baseRevision"`
+	Object        ObjectContext   `json:"object,omitempty"`
 	Payload       json.RawMessage `json:"payload"`
 	ContentDigest string          `json:"contentDigest"`
 	WriterID      string          `json:"writerId"`
@@ -98,6 +108,20 @@ type ObjectContext struct {
 	Kind     ObjectKind `json:"kind"`
 	ID       string     `json:"id"`
 	ParentID string     `json:"parentID,omitempty"`
+
+	// V2 typed context fields — carry the full object graph so listeners
+	// never infer ownership from active tabs or selections.
+	WorkID             string `json:"workID,omitempty"`
+	RunID              string `json:"runID,omitempty"`
+	TaskID             string `json:"taskID,omitempty"`
+	BlockID            string `json:"blockID,omitempty"`
+	InputID            string `json:"inputID,omitempty"`
+	SpecID             string `json:"specID,omitempty"`
+	DefinitionID       string `json:"definitionID,omitempty"`
+	ArtifactSlotID     string `json:"artifactSlotID,omitempty"`
+	PatchID            string `json:"patchID,omitempty"`
+	ExpectedRevision   *int64 `json:"expectedRevision,omitempty"`
+	DefinitionRevision *int64 `json:"definitionRevision,omitempty"`
 }
 
 // ViewResyncReason identifies the narrowly-scoped transport recovery that may

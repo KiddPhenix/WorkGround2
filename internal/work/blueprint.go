@@ -1572,6 +1572,11 @@ func builtinBlueprints() []*WorkBlueprint {
 		builtinInfoOrganize(),
 		builtinCodeReview(),
 		builtinReport(),
+		builtinImageCompile(),
+		builtinScriptWriting(),
+		builtinFinancialBudget(),
+		builtinGitRelease(),
+		builtinAnnualEvent(),
 	}
 }
 
