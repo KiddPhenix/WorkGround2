@@ -1,5 +1,7 @@
 # Feature Map
 
+> 2026-07-27 Work 结构规划可靠性调整：分支 `developping/definition-planner-json-repair+2026-07-27`；首次提示在 system 与最终 user 尾部双重约束单一 DefinitionPlan JSON；结构解析失败后基于最近草稿有界自动修复，强调业务内容不变、仅纠正 JSON/schema，并保留显式失败与安全重试语义。状态：`done`。
+
 > 2026-07-23 Stage 6 Desktop back repair：正常 Session 与 Work 背面互斥复用同一 SessionSurface；attempt SessionRef 按已有 tab、topic metadata、blank+resume 三层导航，失败保留 WorkCard 并可重试；WorkCapable/List/Create/Get 的迟到 ACK 均按 tab/owner/disposed 隔离。
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |

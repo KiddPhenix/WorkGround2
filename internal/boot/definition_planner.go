@@ -68,14 +68,25 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 }
 
 const definitionPlannerPrompt = `You are the Work Collaboration Workbench V2 structure planner.
-Return exactly one JSON object with fields: goal, nodes, artifactSlots, inputSpecs.
-The object is a complete replacement candidate derived from the authoritative base.
-Nodes may be added, removed, reordered, or changed. Dependencies must form a DAG.
-Every referenced inputSpecId and artifact slot ID must exist in the returned object.
-Every artifact slot must have exactly one producer node.
-Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
-Do not return revision, parentRevision, status, digest, workId, createdAt, or createdBy.
-Do not return markdown, code fences, commentary, null collections, or a clone when the intent requests structural changes.`
+
+Internally validate your JSON against the schema below before sending. Then send the final output.
+
+Output rules (strict — violations cause rejection):
+- Return exactly ONE top-level JSON object — never give candidate A/B, never give a second object, never wrap in an array.
+- The object must contain ONLY these four fields: goal, nodes, artifactSlots, inputSpecs. No other top-level fields.
+- Return ONLY the JSON — no markdown, no code fences, no commentary, no explanations, no preamble, no postscript.
+
+Planning rules:
+- The object is a complete replacement candidate derived from the authoritative base.
+- Nodes may be added, removed, reordered, or changed. Dependencies must form a DAG.
+- Every referenced inputSpecId and artifact slot ID must exist in the returned object.
+- Every artifact slot must have exactly one producer node.
+- Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
+- Do not return revision, parentRevision, status, digest, workId, createdAt, or createdBy.
+- Do not return null collections or a clone when the intent requests structural changes.`
+
+const definitionPlanOutputReminder = `Before responding, validate the result internally against the schema.
+Final response: exactly ONE JSON object and nothing else. Do not emit alternatives, a second JSON value, markdown, or commentary.`
 
 // definitionPlanSchema is the static, reviewable full DefinitionPlan JSON
 // schema appended to the first-turn system prompt. It includes nested
@@ -85,7 +96,8 @@ const definitionPlanSchema = `
 
 ## DefinitionPlan JSON Schema — complete replacement candidate
 
-Return exactly ONE JSON object with ONLY these four top-level fields:
+Return exactly ONE JSON object — no wrapping, no commentary, no markdown fences.
+The object must have ONLY these four top-level fields (no others allowed):
 
 ### Top-level object
 {
@@ -210,15 +222,16 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 
 // buildDefinitionPlanMessages returns the message list for a given attempt.
 // Attempt 0 uses the full system prompt with nested schema + user input.
-// Repair attempts (1+) include the assistant's previous (truncated) response
-// and a repair instruction with only the safe error category.
+// Repair attempts (1+) include the assistant's previous response (truncated
+// head+tail when needed) and a repair instruction that tells the model to
+// preserve the draft's business semantics while fixing JSON structure.
 func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, lastErr error) []provider.Message {
 	if attempt == 0 {
 		return []provider.Message{
 			{Role: provider.RoleSystem, Content: definitionPlannerPrompt + definitionPlanSchema},
 			{Role: provider.RoleUser, Content: fmt.Sprintf(
-				"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s",
-				intent, baseJSON,
+				"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\n%s",
+				intent, baseJSON, definitionPlanOutputReminder,
 			)},
 		}
 	}
@@ -229,12 +242,12 @@ func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, 
 	return []provider.Message{
 		{Role: provider.RoleSystem, Content: definitionPlannerPrompt + definitionPlanSchema},
 		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s",
-			intent, baseJSON,
+			"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\n%s",
+			intent, baseJSON, definitionPlanOutputReminder,
 		)},
 		{Role: provider.RoleAssistant, Content: truncated},
 		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Your response could not be parsed as a valid DefinitionPlan JSON object.\n\nError: %s\n\nReturn exactly ONE JSON object that fixes the error above. The object must conform to the DefinitionPlan schema. Return only the JSON — no markdown, no commentary, no code fences, no arrays.",
+			"Your previous response (shown as the assistant message above) could not be parsed as a valid DefinitionPlan JSON object.\n\nError: %s\n\nThe assistant message above is a DRAFT to be repaired. Keep its goals, nodes, dependencies, inputs, and artifact semantics exactly — do NOT re-plan or add/remove business content. Only fix the JSON structure and schema violations so the result is ONE valid DefinitionPlan JSON object.\n\nIf the draft contains multiple JSON values or candidates, converge them into ONE object that expresses the same plan — do NOT repeat multiple objects.\n\nReturn exactly ONE JSON object that conforms to the DefinitionPlan schema. No markdown, no commentary, no code fences, no arrays.",
 			errCat,
 		)},
 	}
@@ -254,17 +267,51 @@ func repairErrorCategory(err error) string {
 	return msg
 }
 
-// truncateRawResponse truncates raw to at most maxBytes while preserving a
-// valid UTF-8 boundary, and appends a truncation marker.
+// truncateRawResponse truncates raw to at most maxBytes while preserving
+// valid UTF-8 boundaries. When truncation is necessary, it keeps both the
+// head and tail of the input so the model can see the structure at both ends.
+// A truncation marker is inserted between them.
 func truncateRawResponse(raw string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
 	if len(raw) <= maxBytes {
 		return raw
 	}
-	truncated := raw[:maxBytes]
-	for len(truncated) > 0 && !utf8.ValidString(truncated) {
-		truncated = truncated[:len(truncated)-1]
+	const marker = "\n... [middle truncated] ...\n"
+	if maxBytes <= len(marker)+256 {
+		head := raw[:maxBytes]
+		for len(head) > 0 && !utf8.ValidString(head) {
+			head = head[:len(head)-1]
+		}
+		return head
 	}
-	return truncated + "\n... [truncated]"
+
+	contentBytes := maxBytes - len(marker)
+	headBytes := contentBytes * 3 / 4
+	tailBytes := contentBytes - headBytes
+	if tailBytes < 256 {
+		head := raw[:maxBytes]
+		for len(head) > 0 && !utf8.ValidString(head) {
+			head = head[:len(head)-1]
+		}
+		return head
+	}
+
+	// Head: first headBytes, backed off to a valid UTF-8 boundary.
+	head := raw[:headBytes]
+	for len(head) > 0 && !utf8.ValidString(head) {
+		head = head[:len(head)-1]
+	}
+
+	// Tail: last tailBytes, aligned forward to a valid UTF-8 boundary.
+	tailStart := len(raw) - tailBytes
+	for tailStart < len(raw) && !utf8.ValidString(raw[tailStart:]) {
+		tailStart++
+	}
+	tail := raw[tailStart:]
+
+	return head + marker + tail
 }
 
 // extractJSONObject locates the first complete JSON object in raw and returns
