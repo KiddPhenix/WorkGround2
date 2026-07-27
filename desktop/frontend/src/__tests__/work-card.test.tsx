@@ -143,9 +143,10 @@ class TestPort implements WorkControllerPort {
   readonly applyInputs: ApplyDefinitionInput[] = [];
   readonly candidateInputs: CreateCandidateRevisionInput[] = [];
   readonly candidateErrors: Array<Error & { code?: string }> = [];
-  readonly draftInputs: Array<{ workId: string; prompt: string; expectedRevision: number; requestId: string }> = [];
+  readonly draftInputs: Array<{ workId: string; name?: string; prompt?: string; expectedRevision: number; requestId: string }> = [];
   draftRevision = 0;
   draftFailures = 0;
+  candidateDelayMs = 0;
   applyFailures = 0;
   applyNext: Partial<ApplyDefinitionResult> = {};
   /** Non-null when createCandidateRevision committed: fetchSnapshot returns
@@ -220,14 +221,22 @@ class TestPort implements WorkControllerPort {
     };
   }
 
-  async updateDraft(input: { workId: string; prompt?: string; expectedRevision: number; requestId: string }): Promise<WorkView> {
-    this.draftInputs.push({ workId: input.workId, prompt: input.prompt ?? '', expectedRevision: input.expectedRevision, requestId: input.requestId });
+  async updateDraft(input: { workId: string; name?: string; prompt?: string; expectedRevision: number; requestId: string }): Promise<WorkView> {
+    this.draftInputs.push({ ...input });
     if (this.draftFailures-- > 0) throw new Error('draft save unavailable');
     const view = useWorkStore.getState().works[input.workId];
     if (!view) throw new Error(`no projection for ${input.workId}`);
     const newRevision = Math.max(this.draftRevision, input.expectedRevision + 1);
     this.draftRevision = newRevision;
-    return { ...view, revision: newRevision };
+    return {
+      ...view,
+      revision: newRevision,
+      work: {
+        ...view.work,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+      },
+    };
   }
 
   async applyDefinition(input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> {
@@ -252,6 +261,9 @@ class TestPort implements WorkControllerPort {
     input: CreateCandidateRevisionInput,
   ): Promise<CreateCandidateRevisionResult> {
     this.candidateInputs.push(input);
+    if (this.candidateDelayMs > 0) {
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, this.candidateDelayMs));
+    }
     const plannedError = this.candidateErrors.shift();
     if (plannedError) throw plannedError;
     const store = useWorkStore.getState();
@@ -742,6 +754,9 @@ function testMotionCSSContract(): void {
   ok(/\.wg2-work-face\s*\{[\s\S]*?transition:\s*transform 240ms ease/.test(css), 'standard face transition is 240ms');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?transition:\s*opacity 150ms ease/.test(css), 'reduced motion uses a fade');
   ok(/max-width:\s*480px[\s\S]*?\.wg2-work-face\s*\{[\s\S]*?transition:\s*none/.test(css), 'narrow layout uses an ordinary switch');
+  ok(/\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*wg2-work-prompt-orbit/.test(css), 'generation uses the prompt-border orbit');
+  ok(/prefers-reduced-motion:\s*reduce[\s\S]*?\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*none/.test(css), 'prompt-border orbit respects reduced motion');
+  ok(/\.wg2-work-draft-actions \.wg2-work-generate-btn[\s\S]*?min-height:\s*44px/.test(css), 'generate action is a prominent 44px CTA');
 }
 
 async function testUnknownWorkRetry(): Promise<void> {
@@ -2186,6 +2201,53 @@ async function testV2ActiveDefinitionLateArrivalRestoresRun(): Promise<void> {
   await mounted.cleanup();
 }
 
+async function testV2InferredNameCanBeRenamedWithRetry(): Promise<void> {
+  reset();
+  const workID = 'work-v2-rename';
+  const view = makeView(workID, {
+    schemaVersion: 2,
+    name: '自动推定名称',
+    state: 'draft',
+    prompt: '自动推定名称\n生成工作结构',
+    createdWith: { workSchemaVersion: 2, eventSchemaVersion: 2, rendererSetVersion: 1 },
+  });
+  useWorkStore.getState().applySnapshot(view);
+  useWorkStore.setState((state) => ({
+    v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
+  }));
+  const port = new TestPort();
+  port.draftFailures = 1;
+  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+
+  const nameInput = mounted.host.querySelector<HTMLInputElement>('[data-testid="work-name-editor"]')!;
+  const saveButton = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-name-save"]')!;
+  eq(nameInput.value, '自动推定名称', 'inferred name is shown in an editable field');
+  await interact(() => {
+    const previous = nameInput.value;
+    Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')?.set?.call(nameInput, '用户自定义名称');
+    (nameInput as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+    const propsKey = Object.keys(nameInput).find((key) => key.startsWith('__reactProps$'));
+    const props = propsKey
+      ? (nameInput as unknown as Record<string, { onChange?: (event: { target: HTMLInputElement }) => void }>)[propsKey]
+      : undefined;
+    props?.onChange?.({ target: nameInput });
+  });
+  ok(!saveButton.disabled, 'name save action is enabled after editing');
+
+  await interact(() => saveButton.click());
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-name-error"]')), 'name save failure is explicit and retryable');
+  eq(port.draftInputs.length, 1, 'first rename reaches UpdateDraft');
+  const firstRequestID = port.draftInputs[0].requestId;
+
+  await interact(() => saveButton.click());
+  eq(port.draftInputs.length, 2, 'rename retry reaches UpdateDraft');
+  eq(port.draftInputs[1].requestId, firstRequestID, 'rename retry reuses its idempotency key');
+  eq(port.draftInputs[1].name, '用户自定义名称', 'rename sends the explicit user name');
+  eq(useWorkStore.getState().works[workID].work.name, '用户自定义名称', 'renamed projection becomes the local source of truth');
+
+  await mounted.cleanup();
+}
+
 async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   reset();
   const workID = 'work-v2-candidate-gen';
@@ -2200,6 +2262,7 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
+  port.candidateDelayMs = 120;
   const mounted = await mount(
     <WorkCard
       workID={workID}
@@ -2241,6 +2304,13 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   ok(call.requestId.startsWith('work-candidate-'), 'candidate call has typed requestId');
   // Candidate must use the authoritative revision returned by save.
   eq(call.expectedRevision, port.draftRevision, 'candidate uses authoritative revision from save');
+  eq(
+    mounted.host.querySelector('[data-testid="work-prompt-editor"]')?.closest('label')?.getAttribute('data-busy'),
+    'true',
+    'prompt frame exposes busy state while candidate generation is pending',
+  );
+  eq(genBtn.getAttribute('aria-busy'), 'true', 'generate CTA exposes busy state');
+  await settle(140);
 
   // After candidate generation from initial blank draft: there is no active
   // definition to diff against, so DefinitionDiff is hidden. The apply button
@@ -2777,6 +2847,7 @@ async function main(): Promise<void> {
   await testV2CandidatePlannerRecovery();
   await testV2BlankDraftStoreChainNoRun();
   await testV2ActiveDefinitionLateArrivalRestoresRun();
+  await testV2InferredNameCanBeRenamedWithRetry();
   await testV2BlankDraftBackCandidateGeneration();
   await testV2BlankDraftProductionWailsChain();
   await testV2CandidateGenerationFailureRetrySameRequestID();

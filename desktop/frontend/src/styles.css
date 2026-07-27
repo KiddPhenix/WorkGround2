@@ -35500,28 +35500,97 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-back-header {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  width: min(100%, 840px);
+  margin: 0 auto;
 }
 
 .wg2-work-planning-editor {
-  max-width: 760px;
+  max-width: 840px;
   margin: 0 auto;
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+}
+
+.wg2-work-name-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.wg2-work-name-editor > label {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.wg2-work-name-editor__row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.wg2-work-name-editor__row input {
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 76%, var(--color-text-secondary));
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.wg2-work-name-editor__row input:focus {
+  border-color: var(--color-accent);
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  outline-offset: 1px;
+}
+
+.wg2-work-name-editor__row button {
+  min-height: 38px;
+  padding: 7px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wg2-work-name-editor__row button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.wg2-work-name-editor__row button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.wg2-work-name-editor > [role="alert"] {
+  color: var(--color-error, #e05555);
+  font-size: 12px;
+}
+
+.wg2-work-name-editor > [role="status"] {
+  color: var(--color-text-secondary);
+  font-size: 12px;
 }
 
 .wg2-work-draft-editor {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: var(--color-bg-secondary);
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 74%, var(--color-text-secondary));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-bg-secondary) 94%, var(--color-accent) 6%);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 14%);
 }
 
 .wg2-work-draft-heading h3 {
@@ -35538,29 +35607,68 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-prompt-field {
+  position: relative;
   display: block;
+  overflow: hidden;
+  padding: 2px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-border) 82%, var(--color-text-secondary));
+}
+
+.wg2-work-prompt-field::before {
+  content: "";
+  position: absolute;
+  inset: -160%;
+  opacity: 0;
+  background: conic-gradient(
+    from 0deg,
+    #55d8ff,
+    #7c63ff,
+    #f35fce,
+    #ffb44c,
+    #59e391,
+    #55d8ff
+  );
+  transform: rotate(0deg);
+}
+
+.wg2-work-prompt-field[data-busy="true"]::before {
+  opacity: 1;
+  animation: wg2-work-prompt-orbit 1.35s linear infinite;
+}
+
+.wg2-work-prompt-field:focus-within {
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 .wg2-work-prompt-field textarea {
+  position: relative;
   display: block;
   width: 100%;
-  min-height: 140px;
+  min-height: 190px;
   box-sizing: border-box;
   resize: vertical;
-  padding: 12px 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 10px;
   background: var(--color-bg);
   color: var(--color-text);
   font: inherit;
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.65;
 }
 
 .wg2-work-prompt-field textarea:focus {
-  border-color: var(--color-accent);
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
-  outline-offset: 1px;
+  outline: 0;
+}
+
+.wg2-work-prompt-field textarea::placeholder {
+  color: color-mix(in srgb, var(--color-text-secondary) 88%, transparent);
+}
+
+.wg2-work-prompt-field textarea:disabled {
+  opacity: 0.82;
 }
 
 .wg2-work-draft-actions {
@@ -35583,6 +35691,34 @@ body > .mermaid-diagram--fullscreen {
   cursor: pointer;
 }
 
+.wg2-work-draft-actions .wg2-work-generate-btn {
+  min-width: 190px;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 74%, white);
+  border-radius: 10px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-accent) 88%, #6c5cff),
+    color-mix(in srgb, var(--color-accent) 74%, #d15bff)
+  );
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.wg2-work-draft-actions .wg2-work-generate-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.wg2-work-draft-actions .wg2-work-generate-btn[aria-busy="true"] {
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 16%, transparent),
+    0 8px 22px color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
 .wg2-work-draft-actions button:disabled {
   cursor: default;
   opacity: 0.5;
@@ -35590,6 +35726,39 @@ body > .mermaid-diagram--fullscreen {
 
 .wg2-work-draft-actions [role="alert"] {
   color: var(--color-error, #e05555);
+}
+
+@keyframes wg2-work-prompt-orbit {
+  to { transform: rotate(1turn); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wg2-work-prompt-field[data-busy="true"]::before {
+    animation: none;
+  }
+
+  .wg2-work-draft-actions .wg2-work-generate-btn:hover:not(:disabled) {
+    transform: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .wg2-work-draft-editor {
+    padding: 16px;
+  }
+
+  .wg2-work-name-editor__row {
+    flex-direction: column;
+  }
+
+  .wg2-work-draft-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wg2-work-draft-actions .wg2-work-generate-btn {
+    width: 100%;
+  }
 }
 
 .wg2-work-back-prompt-preview {

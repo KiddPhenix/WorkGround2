@@ -51,6 +51,7 @@ export interface WorkCardBackProps {
   selection?: RunSelection;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
   onSavePrompt?: (prompt: string) => Promise<number>;
+  onSaveName?: (name: string) => Promise<number>;
   onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
   v2Definition?: WorkDefinitionRevision;
   /** Active definition for diff comparison (when v2Definition is a draft). */
@@ -74,6 +75,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   selection,
   resolveSessionSurface,
   onSavePrompt,
+  onSaveName,
   onApplyDefinition,
   v2Definition,
   v2ActiveDefinition,
@@ -82,6 +84,10 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
 }) => {
   const { work } = view;
   const [prompt, setPrompt] = useState(draft || work.prompt);
+  const [name, setName] = useState(work.name);
+  const [nameDirty, setNameDirty] = useState(false);
+  const [nameState, setNameState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const [nameError, setNameError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [generateState, setGenerateState] = useState<'idle' | 'saving' | 'generating'>('idle');
@@ -103,6 +109,13 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     setSaveState('idle');
     setSaveError(null);
   }, [draft, view.revision, work.prompt]);
+
+  useEffect(() => {
+    setName(work.name);
+    setNameDirty(false);
+    setNameState('idle');
+    setNameError(null);
+  }, [work.id, work.name]);
 
   useEffect(() => {
     setLocalCandidate(undefined);
@@ -261,6 +274,32 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       setSaveError(error instanceof Error ? error.message : String(error));
     }
   };
+  const saveName = async () => {
+    const nextName = name.trim();
+    if (!onSaveName || readonly || archived || nameState === 'saving') return;
+    if (!nextName) {
+      setNameError('工作名称不能为空。');
+      return;
+    }
+    if (nextName === work.name) {
+      setName(work.name);
+      setNameDirty(false);
+      setNameState('idle');
+      setNameError(null);
+      return;
+    }
+    setNameState('saving');
+    setNameError(null);
+    try {
+      await onSaveName(nextName);
+      setName(nextName);
+      setNameDirty(false);
+      setNameState('saved');
+    } catch (error) {
+      setNameState('idle');
+      setNameError(error instanceof Error ? error.message : String(error));
+    }
+  };
   const applyDefinition = async () => {
     const candidate = localCandidate ?? (v2Definition?.status === 'draft' ? v2Definition : undefined);
     if (!onApplyDefinition || !candidate || candidate.status !== 'draft' || applyState === 'applying') return;
@@ -340,7 +379,48 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       data-archived={archived ? 'true' : 'false'}
     >
       <div className="wg2-work-back-header">
-        <h2 className="wg2-work-name">{work.name}</h2>
+        {!readonly && !archived && onSaveName ? (
+          <div className="wg2-work-name-editor">
+            <label htmlFor={`wg2-work-name-${work.id}`}>工作名称</label>
+            <div className="wg2-work-name-editor__row">
+              <input
+                id={`wg2-work-name-${work.id}`}
+                data-testid="work-name-editor"
+                value={name}
+                disabled={nameState === 'saving' || generateState !== 'idle'}
+                onChange={(event) => {
+                  setName(event.target.value);
+                  setNameDirty(event.target.value.trim() !== work.name);
+                  setNameState('idle');
+                  setNameError(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void saveName();
+                  } else if (event.key === 'Escape') {
+                    setName(work.name);
+                    setNameDirty(false);
+                    setNameState('idle');
+                    setNameError(null);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                data-testid="work-name-save"
+                disabled={!nameDirty || nameState === 'saving' || generateState !== 'idle'}
+                onClick={() => void saveName()}
+              >
+                {nameState === 'saving' ? '保存中…' : '保存名称'}
+              </button>
+            </div>
+            {nameError && <span role="alert" data-testid="work-name-error">{nameError}</span>}
+            {!nameError && nameState === 'saved' && <span role="status">名称已保存</span>}
+          </div>
+        ) : (
+          <h2 className="wg2-work-name">{work.name}</h2>
+        )}
       </div>
 
       {!readonly && !archived && (
@@ -350,7 +430,11 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
               <h3>任务说明</h3>
               <p>用自然语言说明目标、背景和期望结果。</p>
             </div>
-            <label className="wg2-work-prompt-field">
+            <label
+              className="wg2-work-prompt-field"
+              data-busy={generateState !== 'idle' ? 'true' : 'false'}
+              aria-busy={generateState !== 'idle'}
+            >
               <span className="sr-only">任务说明</span>
               <textarea
                 data-testid="work-prompt-editor"
@@ -366,7 +450,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                 <>
                   <button
                     type="button"
+                    className="wg2-work-generate-btn"
                     data-testid="work-generate-structure"
+                    aria-busy={generateState !== 'idle'}
                     disabled={generateState !== 'idle' || !prompt.trim()}
                     onClick={() => void saveAndGenerate()}
                   >

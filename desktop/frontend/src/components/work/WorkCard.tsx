@@ -194,6 +194,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const faceRefs = useRef<Partial<Record<WorkFace, HTMLDivElement>>>({});
   const restoredScroll = useRef<Partial<Record<WorkFace, string>>>({});
   const draftIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const nameIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
   const v2RetryIntentsRef = useRef(new Map<string, RetryWorkNodeRequest>());
   const artifactRetryIntentsRef = useRef(new Map<string, RetryArtifactSlotRequest>());
   // Auto-flip dedup: only flip once per definition revision.
@@ -384,6 +385,25 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       requestId: draftIntentRef.current.requestId,
     });
     draftIntentRef.current = null;
+    return result.revision;
+  }, [adapter, workID]);
+  const saveName = useCallback(async (name: string): Promise<number> => {
+    const current = useWorkStore.getState().works[workID];
+    if (!current) throw new Error('Work 投影尚未载入。');
+    const signature = name;
+    if (nameIntentRef.current?.signature !== signature) {
+      nameIntentRef.current = {
+        signature,
+        requestId: `work-name-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      };
+    }
+    const result = await adapter.updateDraft({
+      workId: workID,
+      name,
+      expectedRevision: current.revision,
+      requestId: nameIntentRef.current.requestId,
+    });
+    nameIntentRef.current = null;
     return result.revision;
   }, [adapter, workID]);
   const handleApplyDefinition = useCallback(async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
@@ -717,6 +737,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               selection={selection}
               resolveSessionSurface={resolveSessionSurface}
               onSavePrompt={savePrompt}
+              onSaveName={saveName}
               onApplyDefinition={handleApplyDefinition}
               onCreateCandidate={
                 resolvedPort.createCandidateRevision ? handleCreateCandidate : undefined

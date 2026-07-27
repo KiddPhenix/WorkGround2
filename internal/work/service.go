@@ -1063,7 +1063,12 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	payload := map[string]any{"expectedRevision": input.ExpectedRevision}
 	if input.Prompt != nil {
 		payload["prompt"] = *input.Prompt
-		payload["name"] = workNameFromPrompt(*input.Prompt, current.Name)
+		// Keep following the prompt while the title is still automatic. Once
+		// the user has renamed the Work, later prompt edits must not silently
+		// replace that explicit choice.
+		if input.Name != nil || workNameIsAutomatic(current) {
+			payload["name"] = workNameFromPrompt(*input.Prompt, current.Name)
+		}
 	} else if input.Name != nil {
 		payload["name"] = *input.Name
 	}
@@ -2902,6 +2907,13 @@ func workNameFromPrompt(prompt, fallback string) string {
 		return string(runes[:maxRunes]) + "…"
 	}
 	return line
+}
+
+func workNameIsAutomatic(current *Work) bool {
+	if current == nil || strings.TrimSpace(current.Prompt) == "" {
+		return true
+	}
+	return strings.TrimSpace(current.Name) == workNameFromPrompt(current.Prompt, "")
 }
 
 func cloneWork(value *Work) (*Work, error) {
