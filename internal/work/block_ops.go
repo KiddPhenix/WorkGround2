@@ -183,9 +183,9 @@ func mergeBlock(current *BlockInstance, incoming *BlockInstance, incomingDigest 
 
 // ── Placement sorting ──────────────────────────────────────────────────────
 
-// sortPlacements returns a sorted copy by (Slot, Order, BlockID). BlockID is a
-// deterministic tie-breaker, so equivalent sets converge regardless of input
-// delivery order.
+// sortPlacements returns a sorted copy in the same semantic slot order as the
+// Desktop canvas, then by (Order, BlockID). BlockID is a deterministic
+// tie-breaker, so equivalent sets converge regardless of delivery order.
 func sortPlacements(placements []BlockPlacement) []BlockPlacement {
 	if len(placements) <= 1 {
 		out := make([]BlockPlacement, len(placements))
@@ -195,8 +195,9 @@ func sortPlacements(placements []BlockPlacement) []BlockPlacement {
 	out := make([]BlockPlacement, len(placements))
 	copy(out, placements)
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Slot != out[j].Slot {
-			return out[i].Slot < out[j].Slot
+		leftSlot, rightSlot := placementSlotOrder(out[i].Slot), placementSlotOrder(out[j].Slot)
+		if leftSlot != rightSlot {
+			return leftSlot < rightSlot
 		}
 		if out[i].Order != out[j].Order {
 			return out[i].Order < out[j].Order
@@ -204,6 +205,21 @@ func sortPlacements(placements []BlockPlacement) []BlockPlacement {
 		return out[i].BlockID < out[j].BlockID
 	})
 	return out
+}
+
+func placementSlotOrder(slot string) int {
+	switch slot {
+	case "attention":
+		return 0
+	case "primary":
+		return 1
+	case "secondary":
+		return 2
+	case "result":
+		return 3
+	default:
+		return 4
+	}
 }
 
 func validatePlacementShape(placements []BlockPlacement) error {
@@ -315,14 +331,23 @@ func placementSetsEqual(left, right []BlockPlacement) bool {
 
 // requireWritableBlockSchemas keeps reads available for unknown future block
 // schemas while making every Service mutation explicitly read-only.
-func requireWritableBlockSchemas(w *Work) error {
+func requireWritableBlockSchemas(w *Work, registries ...*BlockSchemaRegistry) error {
 	if w == nil {
 		return fmt.Errorf("work: writable block schema check requires a Work projection")
 	}
+	registry := builtinBlockSchemas
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
 	for i := range w.Blocks {
 		block := &w.Blocks[i]
-		if err := CheckSchemaVersion("BlockInstance", block.SchemaVersion); err != nil {
+		if err := checkBlockSchemaSupport(registry, block.Kind, block.SchemaVersion); err != nil {
 			return fmt.Errorf("work: Work %s block %s is read-only: %w", w.ID, block.ID, err)
+		}
+		if block.Status == BlockReady || block.Status == BlockStale {
+			if err := registry.Validate(block.Kind, block.SchemaVersion, block.Data); err != nil {
+				return fmt.Errorf("work: Work %s block %s is read-only: %w", w.ID, block.ID, err)
+			}
 		}
 	}
 	return nil

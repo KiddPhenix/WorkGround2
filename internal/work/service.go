@@ -18,37 +18,44 @@ import (
 // projections, manifests, indexes and archive files are derived side effects
 // repaired by WorkStore on retry or reload.
 type Service struct {
-	store        WorkStore
-	blueprint    *BlueprintRegistry
-	tools        ToolCatalog
-	sink         ViewSink
-	actions      *ActionRegistry
-	permissions  PermissionChecker
-	runner       *WorkRunner
-	runMu        sync.Mutex
-	runFlights   map[string]*runFlight
-	cornerstones *CornerstoneManager
-	defStore     DefinitionRevisionStore
-	defStoreMu   sync.Mutex
-	defPlanner   DefinitionPlanner
-	defPlannerMu sync.RWMutex
-	actionCfgMu  sync.RWMutex
-	actionMu     sync.Mutex
-	actionRuns   map[string]*actionFlight
-	sessionRefs  *SessionRefCoordinator
-	refScope     string
-	rerunMu      sync.Mutex
-	rerunPlans   map[string]preparedRerun
-	v2           *V2Coordinator
-	v2Transport  atomic.Bool
-	previewSvc   *PreviewService
+	store         WorkStore
+	blueprint     *BlueprintRegistry
+	blockSchemas  *BlockSchemaRegistry
+	blockSchemaMu sync.RWMutex
+	tools         ToolCatalog
+	sink          ViewSink
+	actions       *ActionRegistry
+	permissions   PermissionChecker
+	runner        *WorkRunner
+	runMu         sync.Mutex
+	runFlights    map[string]*runFlight
+	cornerstones  *CornerstoneManager
+	defStore      DefinitionRevisionStore
+	defStoreMu    sync.Mutex
+	defPlanner    DefinitionPlanner
+	defPlannerMu  sync.RWMutex
+	actionCfgMu   sync.RWMutex
+	actionMu      sync.Mutex
+	actionRuns    map[string]*actionFlight
+	sessionRefs   *SessionRefCoordinator
+	refScope      string
+	rerunMu       sync.Mutex
+	rerunPlans    map[string]preparedRerun
+	v2            *V2Coordinator
+	v2Transport   atomic.Bool
+	previewSvc    *PreviewService
 }
 
 type runFlight struct{ done chan struct{} }
 
 type preparedRerun struct {
-	record *WorkRecord
-	plan   RerunPlan
+	record        *WorkRecord
+	plan          RerunPlan
+	definition    WorkDefinitionSnapshot
+	blocks        []BlockInstance
+	placements    []BlockPlacement
+	migrationPath []int
+	upgraded      bool
 }
 
 var errRunSuspended = errors.New("work: run was suspended or superseded")
@@ -75,6 +82,7 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	cornerstones.SetResolver(unavailableCornerstoneResolver{})
 	service := &Service{
 		store: store, blueprint: blueprint, tools: tools, sink: sink,
+		blockSchemas: NewBlockSchemaRegistry(),
 		cornerstones: cornerstones,
 		actionRuns:   make(map[string]*actionFlight), runFlights: make(map[string]*runFlight),
 		rerunPlans: make(map[string]preparedRerun),
@@ -87,6 +95,39 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 	// internals as the user workspace.
 	service.previewSvc = NewPreviewService(store, "")
 	return service
+}
+
+// SetBlockSchemaRegistry replaces the kind-specific schema and migration
+// capabilities used by Block writes and rerun upgrades. Nil restores the core
+// registry so callers cannot accidentally disable validation.
+func (s *Service) SetBlockSchemaRegistry(registry *BlockSchemaRegistry) {
+	if s == nil {
+		return
+	}
+	if registry == nil {
+		registry = NewBlockSchemaRegistry()
+	}
+	s.blockSchemaMu.Lock()
+	s.blockSchemas = registry
+	s.blockSchemaMu.Unlock()
+}
+
+func (s *Service) blockSchemaRegistry() *BlockSchemaRegistry {
+	if s == nil {
+		return NewBlockSchemaRegistry()
+	}
+	s.blockSchemaMu.RLock()
+	registry := s.blockSchemas
+	s.blockSchemaMu.RUnlock()
+	if registry != nil {
+		return registry
+	}
+	s.blockSchemaMu.Lock()
+	defer s.blockSchemaMu.Unlock()
+	if s.blockSchemas == nil {
+		s.blockSchemas = NewBlockSchemaRegistry()
+	}
+	return s.blockSchemas
 }
 
 // SetCornerstoneResolver configures the authoritative live-ref source used by
@@ -1008,7 +1049,7 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return nil, fmt.Errorf("work: UpdateDraft: %w", err)
 	}
 	if current.ArchiveState != ArchiveActive {
@@ -2044,7 +2085,7 @@ func (s *Service) Archive(ctx context.Context, workID, requestID string) (*WorkR
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return nil, fmt.Errorf("work: Archive: %w", err)
 	}
 	if current.ArchiveState == ArchiveArchived {
@@ -2116,7 +2157,7 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 		if err != nil {
 			return nil, fmt.Errorf("work: Restore: inspect Trash: %w", err)
 		}
-		if err := requireWritableBlockSchemas(current); err != nil {
+		if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 			return nil, fmt.Errorf("work: Restore: %w", err)
 		}
 		if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkRestored) {
@@ -2130,7 +2171,7 @@ func (s *Service) Restore(ctx context.Context, workID, requestID string) (*WorkV
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return nil, fmt.Errorf("work: Restore: %w", err)
 	}
 	if state.RequestFound {
@@ -2199,7 +2240,7 @@ func (s *Service) Delete(ctx context.Context, workID, requestID string) error {
 	if loadErr != nil {
 		return loadErr
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return fmt.Errorf("work: Delete: %w", err)
 	}
 	if state.RequestFound && !lifecycleRequestCurrent(state, EventWorkDeleted) {

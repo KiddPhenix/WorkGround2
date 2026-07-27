@@ -43,11 +43,9 @@ func (s *Service) upsertBlock(ctx context.Context, input BlockUpsertInput, requi
 	if kind == "" {
 		return nil, errors.New("work: UpsertBlock: kind is required")
 	}
-	if err := CheckSchemaVersion("BlockInstance", input.SchemaVersion); err != nil {
+	registry := s.blockSchemaRegistry()
+	if err := checkBlockSchemaSupport(registry, kind, input.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("work: UpsertBlock: %w", err)
-	}
-	if !coreBlockKinds[kind] {
-		return nil, fmt.Errorf("work: UpsertBlock: unsupported block kind %q", kind)
 	}
 	if input.Revision <= 0 {
 		return nil, errors.New("work: UpsertBlock: revision must be positive")
@@ -58,6 +56,11 @@ func (s *Service) upsertBlock(ctx context.Context, input BlockUpsertInput, requi
 	if !validBlockStatus(input.Status) {
 		return nil, fmt.Errorf("work: UpsertBlock: invalid status %q", input.Status)
 	}
+	if input.Status == BlockReady || input.Status == BlockStale {
+		if err := registry.Validate(kind, input.SchemaVersion, input.Data); err != nil {
+			return nil, fmt.Errorf("work: UpsertBlock: %w", err)
+		}
+	}
 	input.WorkID = workID
 	input.BlockID = blockID
 	input.Kind = kind
@@ -67,7 +70,7 @@ func (s *Service) upsertBlock(ctx context.Context, input BlockUpsertInput, requi
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, registry); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: UpsertBlock: %w", err)
 	}
 	incoming := inputToBlock(input)
@@ -218,7 +221,7 @@ func (s *Service) RemoveBlock(ctx context.Context, input BlockRemoveInput) (*Wor
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: RemoveBlock: %w", err)
 	}
 	payload, err := json.Marshal(blockRemovedPayload{BlockID: blockID, Revision: input.Revision})
@@ -325,7 +328,7 @@ func (s *Service) UpdatePlacements(ctx context.Context, input BlockPlacementInpu
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: UpdatePlacements: %w", err)
 	}
 	event := newServiceEvent(workID, eventRequestID, EventDraftUpdated, payload, time.Now().UTC())
@@ -464,7 +467,7 @@ func (s *Service) reconcileUpsertCommit(
 	if err != nil {
 		return nil, errors.Join(cause, fmt.Errorf("work: reload after block upsert race: %w", err))
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: UpsertBlock: %w", err)
 	}
 	if state.RequestFound {
@@ -528,7 +531,7 @@ func (s *Service) reconcileRemoveCommit(
 	if err != nil {
 		return nil, errors.Join(cause, fmt.Errorf("work: reload after block remove race: %w", err))
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: RemoveBlock: %w", err)
 	}
 	if state.RequestFound {
@@ -587,7 +590,7 @@ func (s *Service) reconcilePlacementCommit(
 	if err != nil {
 		return nil, errors.Join(cause, fmt.Errorf("work: reload after placement race: %w", err))
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	if err := requireWritableBlockSchemas(current, s.blockSchemaRegistry()); err != nil {
 		return viewFromState(current, state), fmt.Errorf("work: UpdatePlacements: %w", err)
 	}
 	if state.RequestFound {
@@ -664,7 +667,8 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWritableBlockSchemas(current); err != nil {
+	registry := s.blockSchemaRegistry()
+	if err := requireWritableBlockSchemas(current, registry); err != nil {
 		return nil, fmt.Errorf("work: RefreshBlock: %w", err)
 	}
 	if current.ArchiveState != ArchiveActive {
@@ -695,7 +699,7 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 		return nil, err
 	}
 	if sourceErr == nil {
-		sourceErr = validateRefreshResult(currentBlock, result)
+		sourceErr = validateRefreshResult(currentBlock, result, registry)
 	}
 	next := cloneBlock(currentBlock)
 	if sourceErr == nil {
@@ -717,7 +721,11 @@ func (s *Service) RefreshBlock(ctx context.Context, input RefreshBlockInput, ada
 		}
 	} else {
 		next.Status = BlockFailed
-		if errors.Is(sourceErr, ErrSourceUnavailable) && len(currentBlock.Data) > 0 && currentBlock.Status != BlockLoading && currentBlock.Status != BlockFailed {
+		if errors.Is(sourceErr, ErrSourceUnavailable) &&
+			len(currentBlock.Data) > 0 &&
+			currentBlock.Status != BlockLoading &&
+			currentBlock.Status != BlockFailed &&
+			registry.Validate(currentBlock.Kind, currentBlock.SchemaVersion, currentBlock.Data) == nil {
 			next.Status = BlockStale
 		}
 		next.Freshness = &BlockFreshness{
@@ -854,17 +862,18 @@ func (s *Service) commitRefreshedBlock(ctx context.Context, current *Work, state
 
 // validateRefreshResult rejects over-sized, wrong-schema and UI/execution
 // shaped adapter data before it can enter the persisted projection.
-func validateRefreshResult(block *BlockInstance, result BlockRefreshResult) error {
+func validateRefreshResult(block *BlockInstance, result BlockRefreshResult, registries ...*BlockSchemaRegistry) error {
 	if result.Kind != block.Kind {
 		return fmt.Errorf("adapter returned kind %q, block expects %q", result.Kind, block.Kind)
 	}
 	if result.SchemaVersion != block.SchemaVersion {
 		return fmt.Errorf("adapter returned schemaVersion %d, block expects %d", result.SchemaVersion, block.SchemaVersion)
 	}
-	if !coreBlockKinds[result.Kind] {
-		return fmt.Errorf("adapter returned unknown block kind %q", result.Kind)
+	registry := builtinBlockSchemas
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
 	}
-	if err := CheckSchemaVersion("BlockInstance", result.SchemaVersion); err != nil {
+	if err := checkBlockSchemaSupport(registry, result.Kind, result.SchemaVersion); err != nil {
 		return err
 	}
 	if !validBlockStatus(result.Status) {
@@ -892,7 +901,7 @@ func validateRefreshResult(block *BlockInstance, result BlockRefreshResult) erro
 			return err
 		}
 	}
-	return validateCoreBlockData(result.Kind, data)
+	return registry.Validate(result.Kind, result.SchemaVersion, result.Data)
 }
 
 var forbiddenRefreshKeys = map[string]bool{

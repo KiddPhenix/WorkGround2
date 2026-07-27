@@ -1051,6 +1051,8 @@ var coreBlockKinds = map[string]bool{
 	"decision": true, "approval": true, "input": true, "notice": true,
 }
 
+var builtinBlockSchemas = NewBlockSchemaRegistry()
+
 func validateBlockSpecs(specs []BlockSpec) error {
 	ids := make(map[string]bool)
 	for i, bs := range specs {
@@ -1070,7 +1072,7 @@ func validateBlockSpecs(specs []BlockSpec) error {
 		if bs.SchemaVersion < 1 {
 			return fmt.Errorf("blockSpec[%d] (%s): schemaVersion must be >= 1, got %d", i, bs.ID, bs.SchemaVersion)
 		}
-		if err := CheckSchemaVersion("BlockSpec "+bs.Kind, bs.SchemaVersion); err != nil {
+		if err := checkBlockSchemaSupport(builtinBlockSchemas, bs.Kind, bs.SchemaVersion); err != nil {
 			return fmt.Errorf("blockSpec[%d] (%s): %w", i, bs.ID, err)
 		}
 		if bs.Label == "" {

@@ -2,8 +2,10 @@ package work
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServiceListBlueprintsAndCopyWork(t *testing.T) {
@@ -51,6 +53,101 @@ func TestServiceListBlueprintsAndCopyWork(t *testing.T) {
 	}
 	if got := mustServiceView(t, f.svc, source.ID).Revision; got != view.Revision {
 		t.Fatalf("copy mutated source revision: got %d want %d", got, view.Revision)
+	}
+}
+
+func TestServiceRerunLatestMigratesBlockSchema(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewFileWorkStore(root, 30*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewBlueprintRegistry()
+	v1 := &WorkBlueprint{
+		SchemaVersion:  SchemaVersion,
+		ID:             "blueprint:file-migration",
+		Version:        1,
+		Name:           "File migration",
+		Source:         BlueprintUser,
+		PromptTemplate: "List files",
+		Workflow: WorkflowDef{Stages: []StageSpec{{
+			ID: "stage", Title: "Stage", Tasks: []TaskSpec{{ID: "task", Title: "Task"}},
+		}}},
+		BlockSpecs: []BlockSpec{{
+			ID: "files", Kind: "file_list", SchemaVersion: 1, Label: "Files",
+			Placement: BlockPlacement{Slot: "primary", Order: 0}, Editable: true,
+		}},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := registry.Register(v1); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(store, registry, ViewSinkDiscard)
+	source, err := svc.Create(context.Background(), CreateWorkInput{
+		BlueprintRef: BlueprintRef{ID: v1.ID, SchemaVersion: SchemaVersion, Version: 1},
+		Name:         "Source", Inputs: map[string]any{}, RequestID: "create-file-migration",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.UpsertBlock(context.Background(), BlockUpsertInput{
+		WorkID: source.ID, BlockID: "files", Kind: "file_list", SchemaVersion: 1,
+		Revision: 2, Status: BlockReady,
+		Data:             json.RawMessage(`{"files":[{"path":"a.txt","status":"modified","desc":"legacy"}]}`),
+		Source:           BlockSource{Provider: "user", Mode: "snapshot"},
+		ExpectedRevision: 2, RequestID: "update-file-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Archive(context.Background(), source.ID, "archive-file-v1"); err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := *v1
+	v2.Version = 2
+	v2.CreatedAt = v1.CreatedAt.Add(time.Minute)
+	v2.BlockSpecs = deepCopyBlockSpecs(v1.BlockSpecs)
+	v2.BlockSpecs[0].SchemaVersion = 2
+	v2.BlockSpecs[0].Placement = BlockPlacement{Slot: "result", Order: 1, Span: 8}
+	if err := registry.Register(&v2); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := svc.PrepareRerun(context.Background(), PrepareRerunInput{
+		RecordID: source.ID, Mode: RerunLatestDefinition,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Blocking || len(plan.BlockIssues) != 0 || plan.TargetDefinition.Version != 2 {
+		t.Fatalf("unexpected migration plan: %+v", plan)
+	}
+	rerun, err := svc.ExecuteRerun(context.Background(), plan.PlanToken, "rerun-file-v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rerun.RerunUpgraded || rerun.RerunOf != source.ID ||
+		len(rerun.MigrationPath) != 2 || rerun.MigrationPath[1] != 2 {
+		t.Fatalf("rerun provenance = %+v", rerun)
+	}
+	var migratedData struct {
+		Files []struct {
+			Desc        string `json:"desc"`
+			Description string `json:"description"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(rerun.Blocks[0].Data, &migratedData); err != nil {
+		t.Fatal(err)
+	}
+	if len(rerun.Blocks) != 1 || rerun.Blocks[0].SchemaVersion != 2 ||
+		len(migratedData.Files) != 1 || migratedData.Files[0].Desc != "" ||
+		migratedData.Files[0].Description != "legacy" {
+		t.Fatalf("rerun blocks = %+v; source revision=%d", rerun.Blocks, view.Revision)
+	}
+	if len(rerun.Placements) != 1 || rerun.Placements[0].Slot != "result" ||
+		rerun.Placements[0].Span != 8 {
+		t.Fatalf("rerun placements = %+v", rerun.Placements)
 	}
 }
 
