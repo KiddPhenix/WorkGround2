@@ -77,6 +77,75 @@ func TestBindWorkSessionPersistsIdempotencyAndWorkIdentity(t *testing.T) {
 	}
 }
 
+func TestWorkSessionTitleStaysAutomaticAndSyncsIdempotently(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	workspaceRoot := t.TempDir()
+	sessionDir := desktopSessionDir(workspaceRoot)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(sessionDir, "work-session.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID:            "work-tab",
+		Scope:         "project",
+		WorkspaceRoot: workspaceRoot,
+		TopicID:       "work-topic",
+		TopicTitle:    defaultTopicTitle,
+		SessionPath:   sessionPath,
+	}
+	app := &App{
+		tabs:                   map[string]*WorkspaceTab{tab.ID: tab},
+		tabOrder:               []string{tab.ID},
+		activeTabID:            tab.ID,
+		projectTreeChangedHook: func() {},
+	}
+	if err := app.bindWorkSession(tab, "work-request", "work-1"); err != nil {
+		t.Fatalf("bindWorkSession: %v", err)
+	}
+	if err := app.nameWorkSession(tab, workspaceRoot); err != nil {
+		t.Fatalf("nameWorkSession: %v", err)
+	}
+	if got := loadTopicTitleSource(workspaceRoot, tab.TopicID); got != topicTitleSourceAuto {
+		t.Fatalf("initial Work title source = %q, want auto", got)
+	}
+
+	const generated = "公司团建吃烤肉，KTV 周五晚上"
+	tab.SessionPath = ""
+	if err := app.syncWorkSessionTitle(tab.ID, "work-1", generated); err == nil {
+		t.Fatal("missing session path must expose a retryable title sync failure")
+	}
+	tab.SessionPath = sessionPath
+	if err := app.syncWorkSessionTitle(tab.ID, "work-1", generated); err != nil {
+		t.Fatalf("retry syncWorkSessionTitle: %v", err)
+	}
+	if tab.TopicTitle != generated {
+		t.Fatalf("open tab title = %q, want %q", tab.TopicTitle, generated)
+	}
+	if got := loadTopicTitle(workspaceRoot, tab.TopicID); got != generated {
+		t.Fatalf("topic title = %q, want %q", got, generated)
+	}
+	if got := loadTopicTitleSource(workspaceRoot, tab.TopicID); got != topicTitleSourceAuto {
+		t.Fatalf("synced Work title source = %q, want auto", got)
+	}
+	if got := loadSessionTitles(sessionDir)[filepath.Base(sessionPath)]; got != generated {
+		t.Fatalf("session title = %q, want %q", got, generated)
+	}
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok || meta.TopicTitle != generated {
+		t.Fatalf("branch meta = (%+v, %v, %v), want generated title", meta, ok, err)
+	}
+
+	if err := app.syncWorkSessionTitle(tab.ID, "work-1", generated); err != nil {
+		t.Fatalf("idempotent title sync: %v", err)
+	}
+	if err := app.syncWorkSessionTitle(tab.ID, "other-work", generated); err == nil {
+		t.Fatal("mismatched Work title sync must fail explicitly")
+	}
+}
+
 func TestCreateWorkSessionRequestIDReusesOnlyTheSameIntent(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()

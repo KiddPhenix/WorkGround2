@@ -219,6 +219,37 @@ func TestServiceCreateUsesPromptAndDerivesName(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateDraftPromptDerivesNameIdempotently(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-update-prompt-create")
+	prompt := "  公司团建吃烤肉，KTV 周五晚上，预算不超过3000\n生成可执行安排  "
+	manual := "不应覆盖自动名称"
+	input := UpdateDraftInput{
+		WorkID:           value.ID,
+		Name:             &manual,
+		Prompt:           &prompt,
+		ExpectedRevision: 2,
+		RequestID:        "service-update-prompt-once",
+	}
+
+	first, err := f.svc.UpdateDraft(context.Background(), input)
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	want := "公司团建吃烤肉，KTV 周五晚上，预算不超过3000"
+	if first.Revision != 3 || first.Work.Name != want || first.Work.Prompt != prompt {
+		t.Fatalf("first prompt update = %+v, want derived name %q", first, want)
+	}
+
+	duplicate, err := f.restart(t).UpdateDraft(context.Background(), input)
+	if err != nil {
+		t.Fatalf("duplicate UpdateDraft after restart: %v", err)
+	}
+	if duplicate.Revision != 3 || duplicate.Work.Name != want || duplicate.Work.Prompt != prompt {
+		t.Fatalf("duplicate prompt update = %+v, want stable derived name %q", duplicate, want)
+	}
+}
+
 func TestServiceUpdateDraftIdempotentAndConflict(t *testing.T) {
 	f := newServiceFixture(t)
 	value := mustServiceCreate(t, f.svc, "service-update-create")

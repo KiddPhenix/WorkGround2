@@ -1020,11 +1020,11 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 		return nil, err
 	}
 	payload := map[string]any{"expectedRevision": input.ExpectedRevision}
-	if input.Name != nil {
-		payload["name"] = *input.Name
-	}
 	if input.Prompt != nil {
 		payload["prompt"] = *input.Prompt
+		payload["name"] = workNameFromPrompt(*input.Prompt, current.Name)
+	} else if input.Name != nil {
+		payload["name"] = *input.Name
 	}
 	if input.Inputs != nil {
 		payload["inputs"] = input.Inputs

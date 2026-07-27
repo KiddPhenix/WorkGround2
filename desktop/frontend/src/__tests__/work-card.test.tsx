@@ -2179,12 +2179,20 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
-  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+  const mounted = await mount(
+    <WorkCard
+      workID={workID}
+      port={port}
+      backSlots={{ surface: <div data-testid="default-session-surface" /> }}
+    />,
+  );
 
   // Back face: blank draft → combined generate button is the primary CTA.
   // Empty placeholder (0 nodes) is hidden, so no apply/definition section visible yet.
   ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'blank draft: apply button hidden (empty placeholder suppressed)');
   ok(!mounted.host.querySelector('[data-testid="work-planning-definition"]'), 'blank draft: definition section hidden');
+  ok(!mounted.host.querySelector('[data-testid="default-session-surface"]'), 'blank draft: default Session composer surface is hidden');
+  ok(!mounted.host.querySelector('[data-testid="work-session-unavailable"]'), 'blank draft: no unavailable Session placeholder replaces the hidden composer');
 
   // Combined button: one click saves prompt then generates candidate.
   const promptEditor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;

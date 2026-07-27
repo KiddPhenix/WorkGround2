@@ -3449,7 +3449,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const topicbarSubtitleTitle = sidebarImDetailConnection
     ? [topicbarWorkspaceLabel, topicbarImSourceLabel, sidebarImScopeLabel(sidebarImDetailConnection, t)].filter(Boolean).join(" · ")
     : [topicbarWorkspacePath || topicbarWorkspaceLabel, topicbarImSourceLabel].filter(Boolean).join(" · ");
-  const topicbarCanRename = !sidebarImDetailConnection && Boolean(activeTab?.topicId);
+  const topicbarCanRename = !sidebarImDetailConnection
+    && activeTab?.sessionKind !== "work"
+    && Boolean(activeTab?.topicId);
   const topicbarTitleEditSize = Math.min(56, Math.max(4, topicTitleDraft.length || topicbarTitle.length || 1));
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
   const windowsFramelessChrome = desktopPlatform === "windows";

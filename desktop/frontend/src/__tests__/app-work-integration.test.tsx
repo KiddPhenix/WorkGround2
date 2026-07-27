@@ -41,6 +41,10 @@ ok(
   "创建完成后切换到返回的 Work Session 并刷新树",
 );
 ok(
+  /const topicbarCanRename = !sidebarImDetailConnection\s*&& activeTab\?\.sessionKind !== "work"\s*&& Boolean\(activeTab\?\.topicId\)/.test(appSource),
+  "Work Session 标题由任务说明自动生成，不提供 TopicBar 手动重命名入口",
+);
+ok(
   treeSource.includes("onCreateWork")
     && treeSource.includes('className="project-tree__new-topic project-tree__new-work"')
     && treeSource.includes("<BriefcaseBusiness"),

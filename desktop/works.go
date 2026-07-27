@@ -316,10 +316,63 @@ func (a *App) nameWorkSession(tab *WorkspaceTab, workspaceRoot string) error {
 	tab.TopicTitle = name
 	a.saveTabsLocked()
 	a.mu.Unlock()
-	if err := setTopicTitleWithSource(workspaceRoot, tab.TopicID, name, topicTitleSourceManual); err != nil {
+	if err := setTopicTitleWithSource(workspaceRoot, tab.TopicID, name, topicTitleSourceAuto); err != nil {
 		return err
 	}
-	_ = ensureTopicIndexed(tab.Scope, workspaceRoot, tab.TopicID, name, topicTitleSourceManual)
+	_ = ensureTopicIndexed(tab.Scope, workspaceRoot, tab.TopicID, name, topicTitleSourceAuto)
+	return nil
+}
+
+func (a *App) syncWorkSessionTitle(tabID, workID, title string) error {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return errors.New("work: automatic session title is empty")
+	}
+
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil || tab.sessionKind != agent.SessionKindWork {
+		a.mu.RUnlock()
+		return nil
+	}
+	if tab.workID != "" && tab.workID != workID {
+		a.mu.RUnlock()
+		return fmt.Errorf("work: tab %s owns Work %s, cannot title Work %s", tabID, tab.workID, workID)
+	}
+	sessionPath := tab.currentSessionPath()
+	scope := tab.Scope
+	workspaceRoot := tab.WorkspaceRoot
+	topicID := tab.TopicID
+	a.mu.RUnlock()
+
+	if sessionPath == "" {
+		return fmt.Errorf("work: tab %s session path is empty", tabID)
+	}
+	if topicID == "" {
+		return fmt.Errorf("work: tab %s topic ID is empty", tabID)
+	}
+	titleRoot := workspaceRoot
+	if scope == "global" {
+		titleRoot = ""
+	}
+	if err := a.RenameSession(sessionPath, title); err != nil {
+		return fmt.Errorf("work: update automatic session title: %w", err)
+	}
+	if err := setTopicTitleWithSource(titleRoot, topicID, title, topicTitleSourceAuto); err != nil {
+		return fmt.Errorf("work: update automatic topic title: %w", err)
+	}
+	if err := ensureTopicIndexed(scope, titleRoot, topicID, title, topicTitleSourceAuto); err != nil {
+		return fmt.Errorf("work: index automatic topic title: %w", err)
+	}
+	a.updateOpenTopicTitle(topicID, title)
+	if err := saveTabSessionMeta(tab, sessionPath); err != nil {
+		return fmt.Errorf("work: persist automatic session metadata: %w", err)
+	}
+	a.updateTopicSessionTitles(topicID, title)
+	a.mu.Lock()
+	a.saveTabsLocked()
+	a.mu.Unlock()
+	a.emitProjectTreeChanged()
 	return nil
 }
 
@@ -434,7 +487,16 @@ func (a *App) UpdateDraft(tabID string, input work.UpdateDraftInput) (*work.Work
 	if err != nil {
 		return nil, err
 	}
-	return wc.UpdateDraft(a.bootContext(), input)
+	view, err := wc.UpdateDraft(a.bootContext(), input)
+	if err != nil {
+		return view, err
+	}
+	if view != nil && view.Work != nil {
+		if err := a.syncWorkSessionTitle(tabID, view.Work.ID, view.Work.Name); err != nil {
+			return view, fmt.Errorf("work: UpdateDraft committed at revision %d but title sync failed; retry with the same requestId: %w", view.Revision, err)
+		}
+	}
+	return view, nil
 }
 
 // UpsertWorkBlock persists a user-editable Block with optimistic concurrency.

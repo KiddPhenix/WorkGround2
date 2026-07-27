@@ -247,6 +247,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const suppressEmptyPlaceholder = !visibleCandidate && !v2ActiveDefinition
     && v2Definition?.status === 'draft' && v2Definition.nodes.length === 0;
   const hasCombinedFlow = !!(onSavePrompt && onCreateCandidate && candidateBase && !readonly && !archived);
+  const suppressDefaultSessionSurface = v2Definition !== undefined
+    && work.state === 'draft'
+    && !v2ActiveDefinition;
 
   const savePrompt = async () => {
     if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
@@ -478,7 +481,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
             <div className="wg2-work-session-unavailable" role="alert">目标 Session 暂不可用。</div>
           )}
         </div>
-      ) : slots?.surface ? (
+      ) : suppressDefaultSessionSurface ? null : slots?.surface ? (
         <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
           {renderSlot(slots.surface, slotProps)}
         </div>
