@@ -2065,6 +2065,318 @@ func TestValidateStaleCompletion_RevisionAndDigestMismatch(t *testing.T) {
 	}
 }
 
+// ── V2 node prompt includes submitted inputs ─────────────────────────────────
+
+func TestV2NodePrompt_IncludesSubmittedInput(t *testing.T) {
+	node := &NodeDef{
+		ID:           "story",
+		Title:        "Write a story",
+		Description:  "Write a short story based on the provided theme.",
+		InputSpecIDs: []string{"theme"},
+	}
+	inputs := []WorkInput{{
+		ID: "in-1", WorkID: "w", RunID: "r", TaskID: "t",
+		SpecID: "theme", Value: json.RawMessage(`"鹦鹉和猴子"`),
+		State: InputSubmitted, Revision: 1,
+	}}
+	specs := []InputSpec{
+		{ID: "theme", Label: "故事主题", Kind: InputText, Required: true},
+	}
+
+	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "鹦鹉和猴子") {
+		t.Fatalf("prompt missing submitted value: %s", prompt)
+	}
+	if !strings.Contains(prompt, "故事主题") {
+		t.Fatalf("prompt missing spec label: %s", prompt)
+	}
+	if !strings.Contains(prompt, "theme") {
+		t.Fatalf("prompt missing spec id: %s", prompt)
+	}
+	if !strings.Contains(prompt, "text") {
+		t.Fatalf("prompt missing spec kind: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_IsolatesOtherRun(t *testing.T) {
+	node := &NodeDef{
+		ID:           "story",
+		Title:        "Write a story",
+		InputSpecIDs: []string{"theme"},
+	}
+	// Same WorkID but different RunID — must not leak.
+	inputs := []WorkInput{{
+		ID: "in-1", WorkID: "w", RunID: "other-run", TaskID: "t",
+		SpecID: "theme", Value: json.RawMessage(`"入侵者"`),
+		State: InputSubmitted, Revision: 1,
+	}}
+	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
+
+	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if strings.Contains(prompt, "入侵者") {
+		t.Fatalf("other-run value leaked into prompt: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_IsolatesOtherTask(t *testing.T) {
+	node := &NodeDef{
+		ID:           "story",
+		Title:        "Write a story",
+		InputSpecIDs: []string{"theme"},
+	}
+	// Same WorkID/RunID but different TaskID — must not leak.
+	inputs := []WorkInput{{
+		ID: "in-1", WorkID: "w", RunID: "r", TaskID: "other-task",
+		SpecID: "theme", Value: json.RawMessage(`"入侵者"`),
+		State: InputSubmitted, Revision: 1,
+	}}
+	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
+
+	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if strings.Contains(prompt, "入侵者") {
+		t.Fatalf("other-task value leaked into prompt: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ExcludesUndeclaredSpec(t *testing.T) {
+	node := &NodeDef{
+		ID:           "story",
+		Title:        "Write a story",
+		InputSpecIDs: []string{"theme"},
+	}
+	// Input with SpecID "background" is not declared — must not appear.
+	inputs := []WorkInput{
+		{ID: "in-1", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "theme", Value: json.RawMessage(`"鹦鹉"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "in-2", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "background", Value: json.RawMessage(`"秘密"`),
+			State: InputSubmitted, Revision: 1},
+	}
+	specs := []InputSpec{
+		{ID: "theme", Label: "主题", Kind: InputText},
+		{ID: "background", Label: "背景", Kind: InputText},
+	}
+
+	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "鹦鹉") {
+		t.Fatalf("prompt missing declared input: %s", prompt)
+	}
+	if strings.Contains(prompt, "秘密") {
+		t.Fatalf("undeclared spec value leaked into prompt: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ExcludesNonSubmitted(t *testing.T) {
+	node := &NodeDef{
+		ID:           "story",
+		Title:        "Write a story",
+		InputSpecIDs: []string{"theme"},
+	}
+	inputs := []WorkInput{
+		{ID: "in-1", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "theme", Value: json.RawMessage(`"已提交"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "in-2", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "theme", Value: json.RawMessage(`"草稿"`),
+			State: InputDraft, Revision: 1},
+	}
+	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
+
+	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "已提交") {
+		t.Fatalf("submitted input missing: %s", prompt)
+	}
+	if strings.Contains(prompt, "草稿") {
+		t.Fatalf("draft input leaked: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_DeterministicOrder(t *testing.T) {
+	node := &NodeDef{
+		ID:           "review",
+		Title:        "Review",
+		InputSpecIDs: []string{"a", "b"},
+	}
+	inputs := []WorkInput{
+		{ID: "i-b", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "b", Value: json.RawMessage(`"beta"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "i-a", WorkID: "w", RunID: "r", TaskID: "t",
+			SpecID: "a", Value: json.RawMessage(`"alpha"`),
+			State: InputSubmitted, Revision: 1},
+	}
+	specs := []InputSpec{
+		{ID: "a", Label: "A", Kind: InputText},
+		{ID: "b", Label: "B", Kind: InputText},
+	}
+
+	p1 := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	p2 := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+
+	if p1 != p2 {
+		t.Fatalf("prompt not deterministic:\n---1---\n%s\n---2---\n%s", p1, p2)
+	}
+
+	posA := strings.Index(p1, "alpha")
+	posB := strings.Index(p1, "beta")
+	if posA < 0 || posB < 0 || posA > posB {
+		t.Fatalf("spec order not respected: a(alpha) at %d, b(beta) at %d\n%s", posA, posB, p1)
+	}
+}
+
+// ── V2 scheduler end-to-end: prompt carries submitted inputs ────────────────
+
+func TestV2Scheduler_PromptCarriesSubmittedInputE2E(t *testing.T) {
+	exec := newFakeV2Executor()
+	sched := NewV2Scheduler(exec)
+	nodes := []NodeDef{{
+		ID:              "story",
+		Title:           "Write a story",
+		InputSpecIDs:    []string{"theme", "style"},
+		ProducesSlotIDs: []string{"story_text"},
+	}}
+	runID := "r-e2e-prompt"
+	taskID, _ := DeriveTaskID(runID, "story")
+	inputs := []WorkInput{
+		{ID: "in-theme", WorkID: "w-e2e", RunID: runID, TaskID: taskID,
+			SpecID: "theme", Value: json.RawMessage(`"鹦鹉和猴子"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "in-style", WorkID: "w-e2e", RunID: runID, TaskID: taskID,
+			SpecID: "style", Value: json.RawMessage(`"寓言"`),
+			State: InputAccepted, Revision: 1},
+	}
+	specs := []InputSpec{
+		{ID: "theme", Label: "故事主题", Kind: InputText, Required: true},
+		{ID: "style", Label: "风格", Kind: InputText, Required: true},
+	}
+
+	authority := newMemoryV2Authority("w-e2e", nil)
+	if _, err := sched.Schedule(
+		context.Background(), "w-e2e", runID, nodes, nil, 1, inputs, specs, authority,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	captured := exec.calls
+	var storyCall *TaskExecuteInput
+	for i := range captured {
+		if captured[i].TaskID == taskID {
+			storyCall = &captured[i]
+			break
+		}
+	}
+	if storyCall == nil {
+		t.Fatal("story node was never executed")
+	}
+
+	if !strings.Contains(storyCall.Prompt, "鹦鹉和猴子") {
+		t.Fatalf("E2E prompt missing theme value: %s", storyCall.Prompt)
+	}
+	if !strings.Contains(storyCall.Prompt, "寓言") {
+		t.Fatalf("E2E prompt missing style value: %s", storyCall.Prompt)
+	}
+	if !strings.Contains(storyCall.Prompt, "故事主题") {
+		t.Fatalf("E2E prompt missing spec label: %s", storyCall.Prompt)
+	}
+	if !strings.Contains(storyCall.Prompt, "story_text") {
+		t.Fatalf("E2E prompt missing artifact slot hint: %s", storyCall.Prompt)
+	}
+}
+
+func TestV2Scheduler_PromptIsolatesOtherTaskInputs(t *testing.T) {
+	exec := newFakeV2Executor()
+	sched := NewV2Scheduler(exec)
+	runID := "r-isolate"
+	storyTask, _ := DeriveTaskID(runID, "story")
+	otherTask, _ := DeriveTaskID(runID, "other")
+	nodes := []NodeDef{
+		{ID: "story", InputSpecIDs: []string{"theme"}},
+		{ID: "other", InputSpecIDs: []string{"data"}},
+	}
+	// Both tasks have submitted inputs — story must only see its own.
+	inputs := []WorkInput{
+		{ID: "i-story", WorkID: "w-iso", RunID: runID, TaskID: storyTask,
+			SpecID: "theme", Value: json.RawMessage(`"鹦鹉"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "i-other", WorkID: "w-iso", RunID: runID, TaskID: otherTask,
+			SpecID: "data", Value: json.RawMessage(`"秘密数据"`),
+			State: InputSubmitted, Revision: 1},
+	}
+	specs := []InputSpec{
+		{ID: "theme", Label: "主题", Kind: InputText, Required: true},
+		{ID: "data", Label: "数据", Kind: InputText, Required: true},
+	}
+
+	authority := newMemoryV2Authority("w-iso", nil)
+	if _, err := sched.Schedule(
+		context.Background(), "w-iso", runID, nodes, nil, 1, inputs, specs, authority,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, call := range exec.calls {
+		if call.TaskID == storyTask {
+			if strings.Contains(call.Prompt, "秘密数据") {
+				t.Fatalf("other task's input leaked into story prompt: %s", call.Prompt)
+			}
+		}
+	}
+}
+
+func TestV2Scheduler_PromptStableOnRerun(t *testing.T) {
+	exec := newFakeV2Executor()
+	sched := NewV2Scheduler(exec)
+	runID := "r-stable"
+	taskID, _ := DeriveTaskID(runID, "story")
+	nodes := []NodeDef{{
+		ID:           "story",
+		Title:        "Write a story",
+		InputSpecIDs: []string{"theme", "style"},
+	}}
+	inputs := []WorkInput{
+		{ID: "i-t", WorkID: "w-stable", RunID: runID, TaskID: taskID,
+			SpecID: "theme", Value: json.RawMessage(`"鹦鹉"`),
+			State: InputSubmitted, Revision: 1},
+		{ID: "i-s", WorkID: "w-stable", RunID: runID, TaskID: taskID,
+			SpecID: "style", Value: json.RawMessage(`"寓言"`),
+			State: InputSubmitted, Revision: 1},
+	}
+	specs := []InputSpec{
+		{ID: "theme", Label: "主题", Kind: InputText, Required: true},
+		{ID: "style", Label: "风格", Kind: InputText, Required: true},
+	}
+
+	authority1 := newMemoryV2Authority("w-stable", nil)
+	if _, err := sched.Schedule(
+		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, authority1,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt1 := exec.calls[0].Prompt
+
+	// Second scheduler run with the same inputs (different authority to simulate separate run).
+	exec2 := newFakeV2Executor()
+	sched2 := NewV2Scheduler(exec2)
+	authority2 := newMemoryV2Authority("w-stable", nil)
+	if _, err := sched2.Schedule(
+		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, authority2,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt2 := exec2.calls[0].Prompt
+	if prompt1 != prompt2 {
+		t.Fatalf("prompt not deterministic across scheduler instances:\n---1---\n%s\n---2---\n%s", prompt1, prompt2)
+	}
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 func storeEventEmitter(store *FileWorkStore, workID string) V2EventEmitter {

@@ -461,6 +461,7 @@ func (s *V2Scheduler) executeNode(
 		return false, err
 	}
 
+	taskPrompt := v2NodePrompt(node, inputs, specs, workID, runID, taskID)
 	execResult, execErr := safeExecuteTask(s.executor, ctx, TaskExecuteInput{
 		WorkID:           workID,
 		RunID:            runID,
@@ -473,7 +474,7 @@ func (s *V2Scheduler) executeNode(
 		SideEffectClass:  rt.SideEffectClass,
 		Operation:        node.ID,
 		ProducesSlotIDs:  append([]string(nil), node.ProducesSlotIDs...),
-		Prompt:           v2NodePrompt(node),
+		Prompt:           taskPrompt,
 	})
 	finishedAt := s.clock.Now().UTC()
 	finalAttempt := rt.Attempts[len(rt.Attempts)-1]
@@ -533,7 +534,7 @@ func (s *V2Scheduler) executeNode(
 				SideEffectClass:  rt.SideEffectClass,
 				Operation:        node.ID,
 				ProducesSlotIDs:  append([]string(nil), node.ProducesSlotIDs...),
-				Prompt:           v2NodePrompt(node),
+				Prompt:           taskPrompt,
 			}, execResult)
 			if outputErr != nil {
 				finalAttempt.State = TaskFailedRetryable
@@ -760,7 +761,12 @@ func containsCompletedGlobalGate(
 	return false
 }
 
-func v2NodePrompt(node *NodeDef) string {
+func v2NodePrompt(
+	node *NodeDef,
+	inputs []WorkInput,
+	specs []InputSpec,
+	workID, runID, taskID string,
+) string {
 	if node == nil {
 		return "Execute the V2 work node."
 	}
@@ -779,6 +785,68 @@ func v2NodePrompt(node *NodeDef) string {
 	default:
 		prompt = "Execute the V2 work node."
 	}
+
+	// Append submitted WorkInput values owned by this Work/Run/Task,
+	// limited to the spec IDs this node declares.  Order follows
+	// node.InputSpecIDs for determinism.
+	if len(node.InputSpecIDs) > 0 {
+		specMap := make(map[string]InputSpec, len(specs))
+		for _, s := range specs {
+			specMap[s.ID] = s
+		}
+		specSet := make(map[string]bool, len(node.InputSpecIDs))
+		for _, id := range node.InputSpecIDs {
+			specSet[id] = true
+		}
+		// Collect inputs keyed by SpecID; only submitted/accepted, only this scope.
+		bySpec := make(map[string][]WorkInput, len(node.InputSpecIDs))
+		for _, in := range inputs {
+			if in.WorkID != workID || in.RunID != runID || in.TaskID != taskID {
+				continue
+			}
+			if !specSet[in.SpecID] {
+				continue
+			}
+			if in.State != InputSubmitted && in.State != InputAccepted {
+				continue
+			}
+			bySpec[in.SpecID] = append(bySpec[in.SpecID], in)
+		}
+
+		var parts []string
+		for _, specID := range node.InputSpecIDs {
+			ins, ok := bySpec[specID]
+			if !ok {
+				continue
+			}
+			sort.Slice(ins, func(i, j int) bool { return ins[i].ID < ins[j].ID })
+			spec, hasSpec := specMap[specID]
+			for _, in := range ins {
+				label := specID
+				kind := ""
+				if hasSpec {
+					if strings.TrimSpace(spec.Label) != "" {
+						label = spec.Label
+					}
+					kind = string(spec.Kind)
+				}
+				valueStr := string(in.Value)
+				if !json.Valid(in.Value) {
+					valueStr = fmt.Sprintf("%q", valueStr)
+				}
+				line := fmt.Sprintf("Input %q (spec: %s", label, specID)
+				if kind != "" {
+					line += fmt.Sprintf(", kind: %s", kind)
+				}
+				line += fmt.Sprintf("): %s", valueStr)
+				parts = append(parts, line)
+			}
+		}
+		if len(parts) > 0 {
+			prompt += "\n\n--- Submitted inputs ---\n" + strings.Join(parts, "\n")
+		}
+	}
+
 	if len(node.ProducesSlotIDs) == 0 {
 		return prompt
 	}
