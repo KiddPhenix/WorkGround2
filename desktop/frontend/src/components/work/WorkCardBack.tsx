@@ -50,7 +50,7 @@ export interface WorkCardBackProps {
   slots?: WorkCardBackSlots;
   selection?: RunSelection;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
-  onSavePrompt?: (prompt: string) => Promise<void>;
+  onSavePrompt?: (prompt: string) => Promise<number>;
   onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
   v2Definition?: WorkDefinitionRevision;
   /** Active definition for diff comparison (when v2Definition is a draft). */
@@ -84,6 +84,10 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const [prompt, setPrompt] = useState(draft || work.prompt);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [generateState, setGenerateState] = useState<'idle' | 'saving' | 'generating'>('idle');
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const saveCompletedRef = useRef(false);
+  const savedRevisionRef = useRef<number>(0);
   const [applyState, setApplyState] = useState<'idle' | 'applying'>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
   const applyIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
@@ -112,6 +116,71 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   // when only a draft exists (initial planning), use the draft as base so
   // the user can generate the first proper structure from the conversation.
   const candidateBase = v2ActiveDefinition ?? (v2Definition?.status === 'draft' ? v2Definition : undefined);
+
+  const saveAndGenerate = async () => {
+    if (!onSavePrompt || !onCreateCandidate || !candidateBase || readonly || archived || generateState !== 'idle' || !prompt.trim()) return;
+    const intent = prompt.trim();
+
+    // Phase 1: save the prompt (skip if already completed on a prior attempt).
+    if (!saveCompletedRef.current) {
+      setGenerateState('saving');
+      setGenerateError(null);
+      try {
+        const newRevision = await onSavePrompt(intent);
+        saveCompletedRef.current = true;
+        savedRevisionRef.current = newRevision;
+      } catch (error) {
+        setGenerateState('idle');
+        setGenerateError(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+
+    // Phase 2: generate candidate from the saved authoritative revision.
+    const signature = JSON.stringify([
+      work.id,
+      candidateBase.revision,
+      savedRevisionRef.current,
+      intent,
+    ]);
+    if (candidateIntentRef.current?.signature !== signature) {
+      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      candidateIntentRef.current = { signature, requestId: `work-candidate-${suffix}` };
+    }
+    setGenerateState('generating');
+    setGenerateError(null);
+    try {
+      const result = await onCreateCandidate({
+        workId: work.id,
+        intent,
+        baseDefinitionRevision: candidateBase.revision,
+        expectedRevision: savedRevisionRef.current,
+        requestId: candidateIntentRef.current.requestId,
+      });
+      if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
+      setLocalCandidate(result.candidate);
+      setCandidateImpact(result.impact);
+      setDismissedCandidateRevision(null);
+      candidateIntentRef.current = null;
+      saveCompletedRef.current = false;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'revision_conflict' || code === 'request_conflict') {
+        candidateIntentRef.current = null;
+        saveCompletedRef.current = false;
+        setGenerateError('工作版本已变化，请重新生成候选结构。');
+      } else {
+        // Transport / planner failure: save already succeeded; retry must skip save.
+        setGenerateError(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setGenerateState('idle');
+    }
+  };
+
+  // Fallback candidate-only path: used when onSavePrompt is unavailable so the
+  // combined save+generate flow cannot run.  This preserves V1 / non-candidate
+  // backend contracts.
   const createCandidate = async () => {
     if (
       !onCreateCandidate
@@ -173,6 +242,11 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     ? undefined
     : candidateDefinition;
   const displayDefinition = visibleCandidate ?? v2ActiveDefinition ?? v2Definition;
+  // Hide the empty/partial placeholder that has 0 useful nodes — it must not
+  // dominate the first screen before the user has generated a real structure.
+  const suppressEmptyPlaceholder = !visibleCandidate && !v2ActiveDefinition
+    && v2Definition?.status === 'draft' && v2Definition.nodes.length === 0;
+  const hasCombinedFlow = !!(onSavePrompt && onCreateCandidate && candidateBase && !readonly && !archived);
 
   const savePrompt = async () => {
     if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
@@ -268,7 +342,54 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         <h2 className="wg2-work-name">{work.name}</h2>
       </div>
 
-      {displayDefinition && (
+      {!readonly && !archived && (
+        <div className="wg2-work-planning-editor">
+          <section className="wg2-work-draft-editor" data-testid="work-draft-editor">
+            <div className="wg2-work-draft-heading">
+              <h3>任务说明</h3>
+              <p>用自然语言说明目标、背景和期望结果。</p>
+            </div>
+            <label className="wg2-work-prompt-field">
+              <span className="sr-only">任务说明</span>
+              <textarea
+                data-testid="work-prompt-editor"
+                value={prompt}
+                rows={6}
+                placeholder="描述你希望 Work 完成的事情…"
+                disabled={generateState !== 'idle'}
+                onChange={(event) => { setPrompt(event.target.value); onDraftChange(event.target.value); setSaveState('idle'); saveCompletedRef.current = false; }}
+              />
+            </label>
+            <div className="wg2-work-draft-actions">
+              {hasCombinedFlow ? (
+                <>
+                  <button
+                    type="button"
+                    data-testid="work-generate-structure"
+                    disabled={generateState !== 'idle' || !prompt.trim()}
+                    onClick={() => void saveAndGenerate()}
+                  >
+                    {generateState === 'saving' ? '正在保存…'
+                      : generateState === 'generating' ? '正在生成工作结构…'
+                        : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                  </button>
+                  {generateError && <span role="alert" data-testid="work-generate-structure-error">{generateError}</span>}
+                </>
+              ) : (
+                <>
+                  <button type="button" data-testid="work-save-draft" onClick={() => void savePrompt()} disabled={!prompt.trim() || saveState === 'saving'}>
+                    {saveState === 'saving' ? '保存中…' : '保存任务说明'}
+                  </button>
+                  {saveState === 'saved' && <span role="status">已保存</span>}
+                  {saveError && <span role="alert">{saveError}</span>}
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {displayDefinition && !suppressEmptyPlaceholder && (
         <section
           className="wg2-work-planning-definition"
           data-testid="work-planning-definition"
@@ -311,7 +432,8 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
               error={applyError}
             />
           )}
-          {candidateBase && !visibleCandidate && !readonly && !archived && onCreateCandidate && (
+          {/* Fallback candidate button: only when save is unavailable (non-combined path). */}
+          {!hasCombinedFlow && candidateBase && !visibleCandidate && !readonly && !archived && onCreateCandidate && (
             <div className="wg2-work-planning-definition__actions">
               <button
                 type="button"
@@ -342,32 +464,6 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
               {applyError && <span role="alert" data-testid="work-apply-definition-error">{applyError}</span>}
             </div>
           )}
-        </section>
-      )}
-
-      {!readonly && !archived && (
-        <section className="wg2-work-draft-editor" data-testid="work-draft-editor">
-          <div className="wg2-work-draft-heading">
-            <h3>任务说明</h3>
-            <p>用自然语言说明目标、背景和期望结果。</p>
-          </div>
-          <label className="wg2-work-prompt-field">
-            <span className="sr-only">任务说明</span>
-            <textarea
-              data-testid="work-prompt-editor"
-              value={prompt}
-              rows={8}
-              placeholder="描述你希望 Work 完成的事情…"
-              onChange={(event) => { setPrompt(event.target.value); onDraftChange(event.target.value); setSaveState('idle'); }}
-            />
-          </label>
-          <div className="wg2-work-draft-actions">
-            <button type="button" data-testid="work-save-draft" onClick={() => void savePrompt()} disabled={!prompt.trim() || saveState === 'saving'}>
-              {saveState === 'saving' ? '保存中…' : '保存任务说明'}
-            </button>
-            {saveState === 'saved' && <span role="status">已保存</span>}
-            {saveError && <span role="alert">{saveError}</span>}
-          </div>
         </section>
       )}
 

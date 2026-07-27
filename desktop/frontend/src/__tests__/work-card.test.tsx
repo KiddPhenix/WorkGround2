@@ -143,6 +143,9 @@ class TestPort implements WorkControllerPort {
   readonly applyInputs: ApplyDefinitionInput[] = [];
   readonly candidateInputs: CreateCandidateRevisionInput[] = [];
   readonly candidateErrors: Array<Error & { code?: string }> = [];
+  readonly draftInputs: Array<{ workId: string; prompt: string; expectedRevision: number; requestId: string }> = [];
+  draftRevision = 0;
+  draftFailures = 0;
   applyFailures = 0;
   applyNext: Partial<ApplyDefinitionResult> = {};
   /** Non-null when createCandidateRevision committed: fetchSnapshot returns
@@ -215,6 +218,16 @@ class TestPort implements WorkControllerPort {
       sessionRef: { sessionPath: '/sessions/retry', branchId: 'main', modelRef: 'test', turnCount: 0, preview: '', startedAt: '2026-07-20T10:02:00Z' },
       startedAt: '2026-07-20T10:02:00Z',
     };
+  }
+
+  async updateDraft(input: { workId: string; prompt?: string; expectedRevision: number; requestId: string }): Promise<WorkView> {
+    this.draftInputs.push({ workId: input.workId, prompt: input.prompt ?? '', expectedRevision: input.expectedRevision, requestId: input.requestId });
+    if (this.draftFailures-- > 0) throw new Error('draft save unavailable');
+    const view = useWorkStore.getState().works[input.workId];
+    if (!view) throw new Error(`no projection for ${input.workId}`);
+    const newRevision = Math.max(this.draftRevision, input.expectedRevision + 1);
+    this.draftRevision = newRevision;
+    return { ...view, revision: newRevision };
   }
 
   async applyDefinition(input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> {
@@ -1509,7 +1522,7 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
         id: runID,
         workId: workID,
         definitionDigest: definition.digest,
-        state: 'waiting_user',
+        state: 'waiting',
         stages: [],
         startedAt: '2026-07-24T00:00:00Z',
       }],
@@ -1560,6 +1573,13 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
       return structuredClone(productionView);
     },
     RecoverWorkView: async () => { throw new Error('unexpected recovery'); },
+    UpdateDraft: async (_tabID: string, input: { prompt?: string; expectedRevision: number }) => {
+      calls.push('UpdateDraft');
+      const saved = structuredClone(productionView);
+      saved.revision = input.expectedRevision + 1;
+      saved.work.prompt = input.prompt ?? saved.work.prompt;
+      return saved;
+    },
     SubmitWorkInput: async (_tabID: string, input: SubmitWorkInputRequest) => {
       calls.push('SubmitWorkInput');
       return {
@@ -1703,10 +1723,11 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${taskID}"]`)!.click());
   await settle(50);
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(50);
 
   for (const operation of [
+    'UpdateDraft',
     'RetryArtifactSlot',
     'SelectWorkInputFile',
     'CreateCandidateRevision',
@@ -1911,9 +1932,10 @@ async function testV2CandidateDiffAndLocalCancel(): Promise<void> {
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(30);
 
+  eq(port.draftInputs.length, 1, 'candidate: save called before candidate');
   eq(port.candidateInputs.length, 1, 'candidate: active Definition reaches typed CreateCandidateRevision port');
   eq(port.candidateInputs[0]?.intent, '调整后的交付目标', 'candidate: UI sends only natural-language intent');
   eq(port.candidateInputs[0]?.baseDefinitionRevision, active.revision, 'candidate: authoritative base revision is frozen');
@@ -1927,7 +1949,7 @@ async function testV2CandidateDiffAndLocalCancel(): Promise<void> {
   const writesBeforeCancel = port.operations.length;
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="definition-diff-cancel"]')!.click());
   ok(!mounted.host.querySelector('[data-testid="definition-diff"]'), 'candidate cancel: candidate view closes locally');
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-create-candidate"]')), 'candidate cancel: active Definition remains available for regeneration');
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'candidate cancel: combined generate button reappears');
   eq(port.applyInputs.length, 0, 'candidate cancel: ApplyDefinition is never called');
   eq(port.operations.length, writesBeforeCancel, 'candidate cancel: no Wails/controller write is emitted');
 
@@ -1992,6 +2014,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   await unavailableMount.cleanup();
 
   // A transient planner failure is retryable with the same idempotency key.
+  // Combined flow: save succeeds first, then candidate fails; retry skips save.
   reset();
   const retryWorkID = 'work-v2-planner-retry';
   const retryView = makeView(retryWorkID, { schemaVersion: 2, state: 'running', prompt: '增加校验节点' });
@@ -2007,20 +2030,23 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   retryPort.candidateErrors.push(new Error('planner unavailable'));
   const retryMount = await mount(<WorkCard workID={retryWorkID} port={retryPort} />);
   await interact(() => retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
-  const retryButton = retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!;
+  const retryButton = retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => retryButton.click());
   ok(
-    (retryMount.host.querySelector('[data-testid="work-create-candidate-error"]')?.textContent ?? '').includes('planner unavailable'),
+    (retryMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('planner unavailable'),
     'candidate failure: planner error is explicit',
   );
+  eq(retryPort.draftInputs.length, 1, 'candidate failure: save succeeded before candidate');
   const failedRequestID = retryPort.candidateInputs[0]?.requestId;
   await interact(() => retryButton.click());
+  eq(retryPort.draftInputs.length, 1, 'candidate failure: retry does NOT save again');
   eq(retryPort.candidateInputs[1]?.requestId, failedRequestID, 'candidate failure: retry reuses requestId');
   ok(Boolean(retryMount.host.querySelector('[data-testid="definition-diff-nodes-added"]')), 'candidate failure: retry shows backend structural change');
   await retryMount.cleanup();
 
   // A revision conflict invalidates the old intent key; regeneration gets a
   // fresh request ID and never reuses a locally synthesized candidate.
+  // Combined flow: revision conflict resets both save and candidate state.
   reset();
   const conflictWorkID = 'work-v2-planner-conflict';
   const conflictView = makeView(conflictWorkID, { schemaVersion: 2, state: 'running', prompt: '重排工作结构' });
@@ -2037,18 +2063,21 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   conflictPort.candidateErrors.push(conflictError);
   const conflictMount = await mount(<WorkCard workID={conflictWorkID} port={conflictPort} />);
   await interact(() => conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
-  const conflictButton = conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!;
+  const conflictButton = conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => conflictButton.click());
   ok(
-    (conflictMount.host.querySelector('[data-testid="work-create-candidate-error"]')?.textContent ?? '').includes('重新生成候选结构'),
+    (conflictMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('重新生成候选结构'),
     'candidate conflict: explicit regeneration guidance',
   );
+  const firstSaveCount = conflictPort.draftInputs.length;
   const conflictedRequestID = conflictPort.candidateInputs[0]?.requestId;
   await interact(() => conflictButton.click());
   ok(
     conflictPort.candidateInputs[1]?.requestId !== conflictedRequestID,
     'candidate conflict: regeneration uses fresh requestId',
   );
+  // After conflict reset, retry does a fresh save + candidate.
+  ok(conflictPort.draftInputs.length > firstSaveCount, 'candidate conflict: re-saves after reset');
   ok(Boolean(conflictMount.host.querySelector('[data-testid="definition-diff"]')), 'candidate conflict: regeneration returns real candidate');
   await conflictMount.cleanup();
 }
@@ -2152,35 +2181,37 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Back face: blank draft → candidate generation button must be visible.
-  // Blank draft: apply button exists but is disabled (no goal/nodes).
-  // Candidate generation is the correct path forward.
-  const applyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]');
-  ok(Boolean(applyBtn), 'blank draft: apply button rendered');
-  ok(applyBtn!.disabled, 'blank draft: apply button disabled (no goal/nodes)');
+  // Back face: blank draft → combined generate button is the primary CTA.
+  // Empty placeholder (0 nodes) is hidden, so no apply/definition section visible yet.
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'blank draft: apply button hidden (empty placeholder suppressed)');
+  ok(!mounted.host.querySelector('[data-testid="work-planning-definition"]'), 'blank draft: definition section hidden');
 
-  // Save prompt first.
+  // Combined button: one click saves prompt then generates candidate.
   const promptEditor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   ok(Boolean(promptEditor), 'prompt editor exists');
-  await interact(() => {
+  const genBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
+  ok(Boolean(genBtn), 'combined generate button visible');
+  ok(!genBtn.disabled, 'combined generate button enabled');
+  // Type and click inside the same act to ensure React state propagates.
+  await act(async () => {
     promptEditor.value = 'build a comprehensive report';
     promptEditor.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise<void>((r) => setTimeout(r, 50));
+    genBtn.click();
+    await new Promise<void>((r) => setTimeout(r, 50));
   });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
 
-  // Click candidate generation.
-  const genBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!;
-  ok(!genBtn.disabled, 'candidate generation button enabled after saving prompt');
-  await interact(() => genBtn.click());
-  await settle(40);
-
+  // Save must happen before candidate generation.
+  eq(port.draftInputs.length, 1, 'draft saved before candidate');
+  ok(Boolean(port.draftInputs[0].prompt), 'save has a non-empty prompt');
   eq(port.candidateInputs.length, 1, 'createCandidateRevision called');
   const call = port.candidateInputs[0];
   eq(call.workId, workID, 'candidate call has correct workId');
   eq(call.baseDefinitionRevision, 1, 'blank draft base revision is 1');
   ok(Boolean(call.intent), 'candidate call has intent');
   ok(call.requestId.startsWith('work-candidate-'), 'candidate call has typed requestId');
+  // Candidate must use the authoritative revision returned by save.
+  eq(call.expectedRevision, port.draftRevision, 'candidate uses authoritative revision from save');
 
   // After candidate generation from initial blank draft: there is no active
   // definition to diff against, so DefinitionDiff is hidden. The apply button
@@ -2215,7 +2246,12 @@ async function testV2BlankDraftProductionWailsChain(): Promise<void> {
   (globalThis as Record<string, unknown>).window = {
     go: { main: { App: {
       GetWork: async () => { getWorkCalls++; return blankDraftSnapshot; },
-      UpdateDraft: async () => ({ revision: 1, duplicate: false }),
+      UpdateDraft: async (_t: string, input: { prompt?: string; expectedRevision: number }) => {
+        const saved = JSON.parse(blankDraftSnapshot);
+        saved.revision = input.expectedRevision + 1;
+        saved.work.prompt = input.prompt ?? saved.work.prompt;
+        return saved;
+      },
       CreateCandidateRevision: async (_t: string, input: CreateCandidateRevisionInput) => {
         candidateInputs.push(input);
         return { candidate: { workId: workID, revision: 2, parentRevision: 1, status: 'draft', goal: input.intent, nodes: [{ id: 'n1', title: 'Planned' }], artifactSlots: [], inputSpecs: [], createdBy: 'ai', createdAt: new Date().toISOString(), digest: 'candidate-digest' }, impact: { keptNodeIds: [], invalidatedNodeIds: [], newNodeIds: ['n1'], removedNodeIds: [], requiresRerun: true }, revision: 7, duplicate: false, committed: true, recoverable: false };
@@ -2238,14 +2274,12 @@ async function testV2BlankDraftProductionWailsChain(): Promise<void> {
   eq(stored!.revision, 1, 'wails-chain: revision=1');
   eq(getWorkCalls, 1, 'wails-chain: GetWork called exactly once');
 
-  // Candidate button visible → click → baseDefinitionRevision=1.
-  const genBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]');
-  ok(Boolean(genBtn), 'wails-chain: candidate button rendered');
+  // Combined generate button visible → one click saves then generates.
+  const genBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]');
+  ok(Boolean(genBtn), 'wails-chain: combined generate button rendered');
   const promptEditor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { promptEditor.value = 'build report'; promptEditor.dispatchEvent(new Event('input', { bubbles: true })); });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
-  ok(!genBtn!.disabled, 'wails-chain: candidate button enabled');
+  ok(!genBtn!.disabled, 'wails-chain: combined generate button enabled');
   await interact(() => genBtn!.click());
   await settle(40);
   eq(candidateInputs.length, 1, 'wails-chain: CreateCandidateRevision called');
@@ -2455,29 +2489,31 @@ async function testV2CandidateGenerationFailureRetrySameRequestID(): Promise<voi
   port.candidateErrors.push(Object.assign(new Error('network down'), { code: 'transport' }));
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Save prompt.
+  // Combined button: save succeeds, candidate fails, retry skips save.
   const promptEditor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => {
     promptEditor.value = 'build report';
     promptEditor.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
 
-  // First attempt: fails.
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  // First attempt: save succeeds, candidate fails.
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
+  eq(port.draftInputs.length, 1, 'save called once');
   eq(port.candidateInputs.length, 1, 'first candidate call made');
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-create-candidate-error"]')), 'error shown after failure');
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'error shown after candidate failure');
 
-  // Retry: same button, same requestId.
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  // Retry: save skipped, candidate retried with same requestId.
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
-  eq(port.candidateInputs.length, 2, 'retry made second call');
+  eq(port.draftInputs.length, 1, 'save NOT called again on retry');
+  eq(port.candidateInputs.length, 2, 'retry made second candidate call');
   eq(port.candidateInputs[1].requestId, port.candidateInputs[0].requestId, 'retry reuses same requestId');
   eq(port.candidateInputs[1].baseDefinitionRevision, port.candidateInputs[0].baseDefinitionRevision, 'retry reuses same base revision');
   eq(port.candidateInputs[1].intent, port.candidateInputs[0].intent, 'retry reuses same intent');
   eq(port.candidateInputs[1].expectedRevision, port.candidateInputs[0].expectedRevision, 'retry reuses same expectedRevision');
+  // expectedRevision must be the authoritative revision from save, not stale view.
+  eq(port.candidateInputs[0].expectedRevision, port.draftRevision, 'candidate uses authoritative save revision');
 
   await mounted.cleanup();
 }
@@ -2498,15 +2534,16 @@ async function testV2CandidateGeneratedThenApply(): Promise<void> {
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Save prompt and generate candidate.
+  // Combined button: one click saves then generates.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
 
+  eq(port.draftInputs.length, 1, 'draft saved');
   eq(port.candidateInputs.length, 1, 'candidate generated');
+  // Candidate uses authoritative revision from save.
+  eq(port.candidateInputs[0].expectedRevision, port.draftRevision, 'candidate uses save revision');
   // Initial draft → candidate: no active baseline for DefinitionDiff, so the
   // direct apply button ("确认并开始执行") appears instead.
   ok(Boolean(mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')), 'apply button visible after candidate');
@@ -2544,25 +2581,21 @@ async function testV2CandidateRefreshFailureBlocksApply(): Promise<void> {
   port.candidateSnapshotStale = true; // fetchSnapshot always returns stale rev
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Save prompt and generate candidate.
+  // Combined button: save succeeds, but candidate recovery cannot catch the
+  // authoritative snapshot up to the committed revision.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
 
+  eq(port.draftInputs.length, 1, 'save called');
   eq(port.candidateInputs.length, 1, 'candidate request sent');
-  // Refresh failed: candidate diff must NOT be displayed; blank-draft apply
-  // button may exist but must be disabled (no candidate was accepted).
-  const applyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]');
-  ok(applyBtn !== null, 'blank-draft apply button rendered');
-  ok(applyBtn!.disabled, 'apply button disabled — candidate not accepted');
-  // DefinitionDiff (candidate apply UI) must not appear.
-  ok(mounted.host.querySelector('[data-testid="definition-diff"]') === null, 'candidate diff not shown');
-  // Error must be visible.
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-create-candidate-error"]')), 'error message visible');
-  eq(port.applyInputs.length, 0, 'applyDefinition never called — stale apply blocked');
+  // Stale snapshot recovery clears localCandidate; empty placeholder is
+  // suppressed, so no apply button or definition section is visible.
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'apply button hidden — definition suppressed after stale recovery');
+  ok(!mounted.host.querySelector('[data-testid="work-planning-definition"]'), 'definition section hidden after stale recovery');
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'snapshot recovery error remains visible and retryable');
+  eq(port.applyInputs.length, 0, 'applyDefinition not called');
 
   await mounted.cleanup();
 }
@@ -2586,22 +2619,19 @@ async function testV2GoalOnlyDraftStillShowsCandidateGeneration(): Promise<void>
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Back face: candidate generation button must be visible.
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-create-candidate"]')), 'goal-only draft: candidate generation visible');
+  // Back face: combined generate button must be visible.
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'goal-only draft: combined generate visible');
 
-  // Apply button exists but is disabled (no nodes).
-  const applyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]');
-  ok(Boolean(applyBtn), 'goal-only draft: apply button rendered');
-  ok(applyBtn!.disabled, 'goal-only draft: apply button disabled (no nodes)');
+  // Empty placeholder (0 nodes) suppressed: apply button hidden until candidate generated.
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'goal-only draft: apply button hidden (0 nodes placeholder suppressed)');
 
-  // Save prompt and generate candidate — must succeed (base is the draft).
+  // Combined button: one click saves then generates.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
 
+  eq(port.draftInputs.length, 1, 'goal-only: save called');
   eq(port.candidateInputs.length, 1, 'goal-only: candidate generation called');
   eq(port.candidateInputs[0].baseDefinitionRevision, 1, 'goal-only: base revision is 1');
 
@@ -2625,22 +2655,21 @@ async function testV2NodesOnlyDraftStillShowsCandidateGeneration(): Promise<void
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Back face: candidate generation button must be visible.
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-create-candidate"]')), 'nodes-only draft: candidate generation visible');
+  // Back face: combined generate button must be visible.
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'nodes-only draft: combined generate visible');
 
   // Apply button exists but is disabled (no goal).
   const applyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]');
   ok(Boolean(applyBtn), 'nodes-only draft: apply button rendered');
   ok(applyBtn!.disabled, 'nodes-only draft: apply button disabled (no goal)');
 
-  // Save prompt and generate candidate.
+  // Combined button: one click saves then generates.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-save-draft"]')!.click());
-  await settle(40);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-create-candidate"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
 
+  eq(port.draftInputs.length, 1, 'nodes-only: save called');
   eq(port.candidateInputs.length, 1, 'nodes-only: candidate generation called');
   eq(port.candidateInputs[0].baseDefinitionRevision, 1, 'nodes-only: base revision is 1');
 

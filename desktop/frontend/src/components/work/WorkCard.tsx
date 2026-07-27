@@ -367,7 +367,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleDraftChange = useCallback((draft: string) => {
     setDraft(workID, 'back', draft);
   }, [setDraft, workID]);
-  const savePrompt = useCallback(async (prompt: string) => {
+  const savePrompt = useCallback(async (prompt: string): Promise<number> => {
     const current = useWorkStore.getState().works[workID];
     if (!current) throw new Error('Work 投影尚未载入。');
     const signature = prompt;
@@ -377,13 +377,14 @@ export const WorkCard: React.FC<WorkCardProps> = ({
         requestId: `work-draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       };
     }
-    await adapter.updateDraft({
+    const result = await adapter.updateDraft({
       workId: workID,
       prompt,
       expectedRevision: current.revision,
       requestId: draftIntentRef.current.requestId,
     });
     draftIntentRef.current = null;
+    return result.revision;
   }, [adapter, workID]);
   const handleApplyDefinition = useCallback(async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
     const result = await adapter.applyDefinition(input);
