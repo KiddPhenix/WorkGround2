@@ -1205,6 +1205,9 @@ type SessionInfo struct {
 	RecoveryReason string
 	RecoveryDigest string
 	ParentID       string
+	SessionKind    SessionKind `json:"sessionKind,omitempty"`
+	WorkID         string      `json:"workId,omitempty"`
+	WorkRequestID  string      `json:"workRequestId,omitempty"`
 }
 
 // SessionOrderInfo is the lightweight sidecar/mtime ordering record shared by
@@ -1232,6 +1235,9 @@ type SessionOrderInfo struct {
 	RecoveryReason string
 	RecoveryDigest string
 	ParentID       string
+	SessionKind    SessionKind
+	WorkID         string
+	WorkRequestID  string
 	// Turns and Preview are the cached listing fields from the sidecar; SchemaVersion
 	// >= agent.BranchMetaCountsVersion means they were recorded from content and can
 	// be trusted (even Turns == 0). ListSessions uses them to skip the whole-file decode.
@@ -1756,6 +1762,9 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		recoveryReason := ""
 		recoveryDigest := ""
 		parentID := ""
+		sessionKind := SessionKindNormal
+		workID := ""
+		workRequestID := ""
 		turns := 0
 		preview := ""
 		schemaVersion := 0
@@ -1783,6 +1792,12 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			recoveryReason = meta.RecoveryReason
 			recoveryDigest = meta.RecoveryDigest
 			parentID = meta.ParentID
+			sessionKind = meta.SessionKind
+			if sessionKind == "" {
+				sessionKind = SessionKindNormal
+			}
+			workID = meta.WorkID
+			workRequestID = meta.WorkRequestID
 			turns = meta.Turns
 			preview = meta.Preview
 			schemaVersion = meta.SchemaVersion
@@ -1809,6 +1824,9 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			RecoveryReason: recoveryReason,
 			RecoveryDigest: recoveryDigest,
 			ParentID:       parentID,
+			SessionKind:    sessionKind,
+			WorkID:         workID,
+			WorkRequestID:  workRequestID,
 			Turns:          turns,
 			Preview:        preview,
 			SchemaVersion:  schemaVersion,
@@ -1873,6 +1891,9 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			RecoveryReason: session.RecoveryReason,
 			RecoveryDigest: session.RecoveryDigest,
 			ParentID:       session.ParentID,
+			SessionKind:    session.SessionKind,
+			WorkID:         session.WorkID,
+			WorkRequestID:  session.WorkRequestID,
 		})
 	}
 	return out, nil

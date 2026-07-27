@@ -943,6 +943,8 @@ export const en = {
   "projectTree.emptyNoMatch": "No matching projects or sessions",
   "projectTree.emptyNoProjects": "No projects yet",
   "projectTree.newTopicTooltip": "New session",
+  "projectTree.newWorkTooltip": "New work",
+  "projectTree.workSession": "Work session",
   "projectTree.addProjectTooltip": "Add new project",
   "projectTree.pinProject": "Pin project",
   "projectTree.unpinProject": "Unpin project",

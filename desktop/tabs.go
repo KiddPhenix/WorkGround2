@@ -104,6 +104,9 @@ type WorkspaceTab struct {
 	toolApprovalMode  string
 	disabledMCP       map[string]ServerView
 	mcpOrder          []string
+	sessionKind       agent.SessionKind // "normal" or "work"
+	workID            string            // bound Work ID (only when sessionKind == "work")
+	workRequestID     string            // idempotency key that created the Work Session
 }
 
 const (
@@ -1350,6 +1353,9 @@ type TabMeta struct {
 	SessionSource       string                   `json:"sessionSource,omitempty"`
 	NeedsAttention      bool                     `json:"needsAttention"`
 	NeedsAttentionAt    int64                    `json:"needsAttentionAt,omitempty"`
+	SessionKind         string                   `json:"sessionKind,omitempty"` // "normal" | "work"
+	WorkID              string                   `json:"workId,omitempty"`      // bound Work ID
+	WorkRequestID       string                   `json:"workRequestId,omitempty"`
 }
 
 func enrichTabMeta(meta TabMeta) TabMeta {
@@ -1404,6 +1410,15 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
 	m.Blank = !tab.ReadOnly && blankTabSessionPathHasNoContent(tab)
 
+	// Populate session kind and work ID from tab runtime state.
+	if tab.sessionKind != "" {
+		m.SessionKind = string(tab.sessionKind)
+	} else {
+		m.SessionKind = string(agent.SessionKindNormal)
+	}
+	m.WorkID = tab.workID
+	m.WorkRequestID = tab.workRequestID
+
 	if memory, ok := controllerTaskMemory(tab.Ctrl); ok {
 		m.TaskMemory = &memory
 	}
@@ -1433,6 +1448,15 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 			}
 			m.NeedsAttention = meta.NeedsAttention
 			m.NeedsAttentionAt = meta.NeedsAttentionAt
+			if meta.SessionKind != "" {
+				m.SessionKind = string(meta.SessionKind)
+			}
+			if meta.WorkID != "" {
+				m.WorkID = meta.WorkID
+			}
+			if meta.WorkRequestID != "" {
+				m.WorkRequestID = meta.WorkRequestID
+			}
 		}
 	}
 	// Fold in transient attention states that have not yet been persisted or
@@ -3013,6 +3037,15 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 		a.saveTabsLocked()
 	}
 	a.mu.Unlock()
+
+	// Restore session kind and work ID from branch meta.
+	if meta, ok, loadErr := agent.LoadBranchMeta(binding.path); loadErr == nil && ok {
+		a.mu.Lock()
+		tab.sessionKind = meta.SessionKind
+		tab.workID = meta.WorkID
+		tab.workRequestID = meta.WorkRequestID
+		a.mu.Unlock()
+	}
 }
 
 func (a *App) resolveSessionBinding(sessionPath string) (sessionBinding, bool) {
@@ -5351,6 +5384,8 @@ type ProjectNode struct {
 	Status         string        `json:"status,omitempty"`
 	TurnStartedAt  int64         `json:"turnStartedAt,omitempty"`
 	Pinned         bool          `json:"pinned,omitempty"`
+	SessionKind    string        `json:"sessionKind,omitempty"` // "normal" | "work"
+	WorkID         string        `json:"workId,omitempty"`      // bound Work ID
 	Children       []ProjectNode `json:"children,omitempty"`
 }
 
@@ -6321,6 +6356,8 @@ type runtimeSessionStatus struct {
 	running        bool
 	status         string
 	turnStartedAt  int64
+	sessionKind    string
+	workID         string
 }
 
 var listProjectTreeMu sync.Mutex
@@ -6560,7 +6597,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		if tab == nil || strings.TrimSpace(tab.TopicID) == "" {
 			return
 		}
-		if !tab.ReadOnly && blankTabSessionPathHasNoContent(tab) {
+		if !tab.ReadOnly && tab.sessionKind != agent.SessionKindWork && blankTabSessionPathHasNoContent(tab) {
 			return
 		}
 		sessionPath := canonicalTabSessionPath(tab.currentSessionPath())
@@ -6584,6 +6621,17 @@ func (a *App) ListProjectTree() []ProjectNode {
 		if runtimeStatus.ForegroundActive {
 			turnStartedAt = tab.activeTurnStartedAt()
 		}
+		sk := string(tab.sessionKind)
+		if sk == "" {
+			sk = string(info.SessionKind)
+		}
+		if sk == "" {
+			sk = string(agent.SessionKindNormal)
+		}
+		wid := tab.workID
+		if wid == "" {
+			wid = info.WorkID
+		}
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
 			sessionPath:    sessionPath,
 			label:          label,
@@ -6597,6 +6645,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 			running:        running,
 			status:         status,
 			turnStartedAt:  turnStartedAt,
+			sessionKind:    sk,
+			workID:         wid,
 		})
 	}
 	for _, tab := range a.tabs {
@@ -6651,6 +6701,14 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		return
 	}
+	topicWorkBinding := func(key string) (sessionPath, sessionKind, workID string) {
+		sessions := runtimeSessionsByTopic[key]
+		if len(sessions) != 1 || sessions[0].sessionKind != string(agent.SessionKindWork) {
+			return "", "", ""
+		}
+		session := sessions[0]
+		return session.sessionPath, session.sessionKind, session.workID
+	}
 	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)
 		sessions := runtimeSessionsByTopic[key]
@@ -6662,6 +6720,13 @@ func (a *App) ListProjectTree() []ProjectNode {
 			kind := "session"
 			if scope == "global" {
 				kind = "global_session"
+			}
+			if session.sessionKind == "work" {
+				if scope == "global" {
+					kind = "global_work_session"
+				} else {
+					kind = "work_session"
+				}
 			}
 			nodes = append(nodes, ProjectNode{
 				Key:            projectSessionNodeKey(scope, session.sessionPath),
@@ -6681,6 +6746,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Running:        session.running,
 				Status:         session.status,
 				TurnStartedAt:  session.turnStartedAt,
+				SessionKind:    session.sessionKind,
+				WorkID:         session.workID,
 			})
 		}
 		return nodes
@@ -6711,12 +6778,18 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
+			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			kind := "global_topic"
+			if sessionKind == string(agent.SessionKindWork) {
+				kind = "global_work_session"
+			}
 			pinned := containsDesktopString(f.GlobalPinnedTopics, id)
 			children = append(children, ProjectNode{
 				Key:            "global_topic_" + id,
-				Kind:           "global_topic",
+				Kind:           kind,
 				Label:          title,
 				TopicID:        id,
+				SessionPath:    sessionPath,
 				ProjectColor:   globalColor,
 				TitleSource:    globalTitleSourceMap[id],
 				SessionSource:  summary.sessionSource,
@@ -6730,6 +6803,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Status:         status,
 				TurnStartedAt:  turnStartedAt,
 				Pinned:         pinned,
+				SessionKind:    sessionKind,
+				WorkID:         workID,
 				Children:       runtimeSessionNodes("global", "", id, globalColor),
 			})
 		}
@@ -6804,13 +6879,19 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
+			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			kind := "topic"
+			if sessionKind == string(agent.SessionKindWork) {
+				kind = "work_session"
+			}
 			pinned := containsDesktopString(p.PinnedTopics, tid)
 			children = append(children, ProjectNode{
 				Key:            "topic_" + tid,
-				Kind:           "topic",
+				Kind:           kind,
 				Label:          topicTitle,
 				Root:           p.Root,
 				TopicID:        tid,
+				SessionPath:    sessionPath,
 				ProjectColor:   p.Color,
 				TitleSource:    loaded.sources[tid],
 				SessionSource:  summary.sessionSource,
@@ -6824,6 +6905,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Status:         status,
 				TurnStartedAt:  turnStartedAt,
 				Pinned:         pinned,
+				SessionKind:    sessionKind,
+				WorkID:         workID,
 				Children:       runtimeSessionNodes("project", p.Root, tid, p.Color),
 			})
 		}

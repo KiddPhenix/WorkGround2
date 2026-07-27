@@ -257,11 +257,14 @@ export interface TabMeta {
   sessionSource?: string;
   needsAttention?: boolean;
   needsAttentionAt?: number;
+  sessionKind?: "normal" | "work";
+  workId?: string;
+  workRequestId?: string;
 }
 
 export interface ProjectNode {
   key: string;
-  kind: "project" | "topic" | "session" | "global_folder" | "global_topic" | "global_session" | "crew_folder" | "crew_session";
+  kind: "project" | "topic" | "session" | "work_session" | "global_folder" | "global_topic" | "global_session" | "global_work_session" | "crew_folder" | "crew_session";
   label: string;
   root?: string;
   topicId?: string;
@@ -279,6 +282,8 @@ export interface ProjectNode {
   status?: ProjectTopicStatus;
   turnStartedAt?: number;
   pinned?: boolean;
+  sessionKind?: "normal" | "work";
+  workId?: string;
   children?: ProjectNode[];
 }
 

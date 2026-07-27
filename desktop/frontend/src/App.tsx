@@ -8,7 +8,6 @@ import { ScrollToPlugin } from "gsap/ScrollToPlugin";
 gsap.registerPlugin(useGSAP, Flip, ScrollToPlugin);
 import {
   Activity,
-  Briefcase,
   CircleHelp,
   Command,
   Copy as RestoreIcon,
@@ -66,7 +65,6 @@ import { SessionBackground } from "./components/SessionBackground";
 import { AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
-import { WorkPage } from "./components/work/WorkPage";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
 import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
@@ -1106,7 +1104,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   // workGenRef invalidates config/capability ACKs from previous tabs.
   const workGenRef = useRef(0);
   const workControllerReady = state.meta?.ready === true && !state.backendActivationPending;
-  const [workViewOpen, setWorkViewOpen] = useState(false);
   const [workConfig, setWorkConfig] = useState<{
     tabID: string;
     enabled: boolean;
@@ -1117,8 +1114,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     capable: boolean | null;
     failed: boolean;
   } | null>(null);
-  const [activeWorkId, setActiveWorkId] = useState<string | null>(null);
-  const [ownerTabID, setOwnerTabID] = useState<string | null>(null);
+  const workCreateRequestsRef = useRef(new Map<string, string>());
   const activeWorkConfig = workConfig !== null && workConfig.tabID === activeTabId ? workConfig : null;
   const workEnabled = activeWorkConfig?.enabled ?? null;
   const workConfigFailed = activeWorkConfig?.failed === true;
@@ -1129,9 +1125,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   // Configuration owns whether the navigation entry exists. It is loaded from
   // the tab's workspace without waiting for Controller startup.
   useEffect(() => {
-    setWorkViewOpen(false);
-    setActiveWorkId(null);
-    setOwnerTabID(null);
     workGenRef.current++;
     setWorkConfig(null);
     setWorkCapability(null);
@@ -1195,21 +1188,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   // Configuration is the sole owner of whether Work exists in this tab. A
   // capability failure keeps the lightweight Work error surface open.
-  useEffect(() => {
-    if (workEnabled === false && workViewOpen) {
-      setWorkViewOpen(false);
-      setActiveWorkId(null);
-      setOwnerTabID(null);
-    }
-  }, [workEnabled, workViewOpen]);
-
-  const handleOpenWorkView = useCallback(() => {
-    if (!activeTabId || workEnabled !== true) return;
-    setWorkViewOpen(true);
-    setActiveWorkId(null);
-    setOwnerTabID(activeTabId);
-  }, [activeTabId, workEnabled]);
-
   const handleRetryWorkConfig = useCallback(() => {
     if (!activeTabId || !workConfigFailed) return;
     const tabID = activeTabId;
@@ -1243,24 +1221,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         setWorkCapability({ tabID, capable: false, failed: true });
       });
   }, [activeTabId, workCapabilityFailed, workConfigFailed, workControllerReady]);
-
-  const handleWorkEntry = useCallback(() => {
-    handleOpenWorkView();
-  }, [handleOpenWorkView]);
-
-  const handleOpenWork = useCallback((workID: string) => {
-    setActiveWorkId(workID);
-  }, []);
-
-  const handleBackToWorkList = useCallback(() => {
-    setActiveWorkId(null);
-  }, []);
-
-  const handleBackToSession = useCallback(() => {
-    setWorkViewOpen(false);
-    setActiveWorkId(null);
-    setOwnerTabID(null);
-  }, []);
 
   useEffect(() => {
     try { localStorage.setItem("projectTree:timeFilter", topicTimeFilter); } catch { /* ignore */ }
@@ -3160,6 +3120,51 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [activeTabId, refreshTabMetas, syncActiveTab]);
 
+  const handleCreateWork = useCallback(async (scope: string, workspaceRoot: string) => {
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    const targetRoot = scope === "project" ? workspaceRoot : "";
+    const requestKey = `${scope}:${targetRoot.toLowerCase()}`;
+    let requestID = workCreateRequestsRef.current.get(requestKey);
+    if (!requestID) {
+      requestID = `work-session-${crypto.randomUUID()}`;
+      workCreateRequestsRef.current.set(requestKey, requestID);
+    }
+    try {
+      const result = await app.CreateWorkSession({
+        scope,
+        workspaceRoot: targetRoot,
+        requestId: requestID,
+      });
+      if (result.tabMeta?.id) {
+        await enqueueTabSwitch(result.tabMeta.id, { ...result.tabMeta, active: true });
+        setTabRevealSignal((signal) => signal + 1);
+      }
+      await refreshProjectsAndTabs();
+      if (result.error) {
+        if (!result.recoverable) workCreateRequestsRef.current.delete(requestKey);
+        showToast(result.error, "error");
+        return;
+      }
+      workCreateRequestsRef.current.delete(requestKey);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : String(e), "error");
+    }
+  }, [closeTransientOverlays, enqueueTabSwitch, refreshProjectsAndTabs, showToast]);
+
+  const handleRetryActiveWork = useCallback(() => {
+    if (activeTab?.sessionKind === "work" && !activeTab.workId && activeTab.workRequestId) {
+      const scope = activeTab.scope;
+      const workspaceRoot = scope === "project" ? activeTab.workspaceRoot || "" : "";
+      const requestKey = `${scope}:${workspaceRoot.toLowerCase()}`;
+      workCreateRequestsRef.current.set(requestKey, activeTab.workRequestId);
+      void handleCreateWork(scope, workspaceRoot);
+      return;
+    }
+    if (workConfigFailed) handleRetryWorkConfig();
+    else handleRetryWorkCapability();
+  }, [activeTab, handleCreateWork, handleRetryWorkCapability, handleRetryWorkConfig, workConfigFailed]);
+
   const renameTopic = useCallback(async (topicId: string, title: string) => {
     const nextTitle = title.trim();
     if (!topicId || !nextTitle) return;
@@ -3381,11 +3386,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     );
   }, [activeTab?.sessionPath, handleNavigateToLinkedSession, sessionSurfaceProps, state.historyResolvedPath]);
 
-  const showWorkSurface = workViewOpen
-    && ownerTabID !== null
-    && ownerTabID === activeTabId
-    && workEnabled === true;
-  const showReadyWork = showWorkSurface && !workConfigFailed && workCapable === true;
+  const showWorkSurface = activeTab?.sessionKind === "work";
+  const showReadyWork = showWorkSurface && workEnabled === true && !workConfigFailed && workCapable === true;
 
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
   useEffect(() => {
@@ -3537,22 +3539,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{t("topbar.newSession")}</span>
               </button>
 
-              {workEnabled === true && (
-                <button
-                  type="button"
-                  className={`workspace-sidebar__new-session${showWorkSurface ? ' workspace-sidebar__new-session--active' : ''}`}
-                  aria-label={workConfigFailed || workCapabilityFailed ? t("work.unavailable") : workCapable === null ? t("work.initializing") : t("work.title")}
-                  aria-busy={workCapable === null}
-                  title={workConfigFailed || workCapabilityFailed ? t("work.unavailable") : workCapable === null ? t("work.initializing") : undefined}
-                  onClick={handleWorkEntry}
-                  data-testid="work-sidebar-btn"
-                  data-work-state={workConfigFailed || workCapabilityFailed ? "unavailable" : workCapable === null ? "initializing" : "ready"}
-                >
-                  <Briefcase size={18} aria-hidden="true" />
-                  <span>{t("work.title")}</span>
-                </button>
-              )}
-
               <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
                 {irisFixtureActive ? (
                   <nav className="iris-fixture-tree" aria-label="工作区与会话">
@@ -3579,6 +3565,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
                   onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+                  onCreateWork={handleCreateWork}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
                   refreshSignal={projectRevision}
@@ -3609,49 +3596,28 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
             </aside>
 
             {showWorkSurface ? (
-              showReadyWork ? (
-                activeWorkId && ownerTabID ? (
-                  <WorkCard
-                    workID={activeWorkId}
-                    tabID={ownerTabID}
-                    sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
-                    onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(ownerTabID, intent.path)}
-                    onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(ownerTabID, intent.path)}
-                    resolveSessionSurface={resolveSessionSurface}
-                    backSlots={{
-                      surface: ({ readonly, archived }) => (
-                        <SessionSurface
-                          {...sessionSurfaceProps}
-                          variant="work"
-                          readOnly={sessionSurfaceProps.readOnly || readonly || archived}
-                        />
-                      ),
-                    }}
-                    workspaceActions={
-                      <button
-                        type="button"
-                        className="work-page__back-btn"
-                        data-testid="work-view-back"
-                        onClick={handleBackToWorkList}
-                        style={{ marginRight: 8 }}
-                      >
-                        ← {t("work.backToList")}
-                      </button>
-                    }
-                  />
-                ) : (
-                  <WorkPage
-                    tabID={ownerTabID || ''}
-                    sessionID={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
-                    onBack={handleBackToSession}
-                    onOpenWork={handleOpenWork}
-                  />
-                )
+              showReadyWork && activeTab?.workId ? (
+                <WorkCard
+                  workID={activeTab.workId}
+                  tabID={activeTab.id}
+                  sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
+                  onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(activeTab.id, intent.path)}
+                  onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(activeTab.id, intent.path)}
+                  resolveSessionSurface={resolveSessionSurface}
+                  backSlots={{
+                    surface: ({ readonly, archived }) => (
+                      <SessionSurface
+                        {...sessionSurfaceProps}
+                        variant="work"
+                        readOnly={sessionSurfaceProps.readOnly || readonly || archived}
+                      />
+                    ),
+                  }}
+                />
               ) : (
                 <WorkAvailabilitySurface
-                  state={workConfigFailed || workCapabilityFailed ? "unavailable" : "initializing"}
-                  onBack={handleBackToSession}
-                  onRetry={workConfigFailed ? handleRetryWorkConfig : handleRetryWorkCapability}
+                  state={(workEnabled === false || workConfigFailed || workCapabilityFailed) ? "unavailable" : "initializing"}
+                  onRetry={workEnabled === false ? undefined : handleRetryActiveWork}
                 />
               )
             ) : (
@@ -3808,6 +3774,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
               onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
+              onCreateWork={handleCreateWork}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               refreshSignal={projectRevision}

@@ -712,6 +712,8 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.emptyNoMatch": "沒有匹配的專案或會話",
   "projectTree.emptyNoProjects": "還沒有專案",
   "projectTree.newTopicTooltip": "新建會話",
+  "projectTree.newWorkTooltip": "新建工作",
+  "projectTree.workSession": "工作會話",
   "projectTree.addProjectTooltip": "新增專案",
   "projectTree.pinProject": "置頂專案",
   "projectTree.unpinProject": "取消置頂專案",

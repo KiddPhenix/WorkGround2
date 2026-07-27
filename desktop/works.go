@@ -14,6 +14,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"workground2/internal/agent"
 	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/work"
@@ -133,6 +134,223 @@ func (a *App) WorkCollaborationV2Enabled(tabID string) bool {
 	_, ctrl := a.tabAndCtrlByID(tabID)
 	owner, ok := ctrl.(workController)
 	return ok && owner.WorkV2Enabled()
+}
+
+// ── Composite Work Session creation ─────────────────────────────────────────
+
+// CreateWorkSessionInput is the typed input for creating a Work Session.
+type CreateWorkSessionInput struct {
+	Scope         string `json:"scope"`
+	WorkspaceRoot string `json:"workspaceRoot"`
+	RequestID     string `json:"requestId"`
+}
+
+// CreateWorkSessionResult carries the composite creation outcome.
+type CreateWorkSessionResult struct {
+	TabMeta     TabMeta        `json:"tabMeta"`
+	WorkView    *work.WorkView `json:"workView,omitempty"`
+	Duplicate   bool           `json:"duplicate"`
+	Error       string         `json:"error,omitempty"`
+	Recoverable bool           `json:"recoverable"`
+}
+
+var createWorkSessionMu sync.Mutex
+
+// CreateWorkSession creates a Work Session and calls BeginWorkPlanning.
+// The requestId is a stable idempotency key.
+func (a *App) CreateWorkSession(input CreateWorkSessionInput) (CreateWorkSessionResult, error) {
+	result := CreateWorkSessionResult{}
+	scope := strings.TrimSpace(input.Scope)
+	if scope != "project" && scope != "global" {
+		result.Error = "scope must be 'project' or 'global'"
+		return result, nil
+	}
+	workspaceRoot := input.WorkspaceRoot
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			result.Error = "workspaceRoot is required for project scope"
+			return result, nil
+		}
+	} else {
+		workspaceRoot = ""
+	}
+	requestID := strings.TrimSpace(input.RequestID)
+	if requestID == "" {
+		result.Error = "requestId is required"
+		return result, nil
+	}
+
+	createWorkSessionMu.Lock()
+	defer createWorkSessionMu.Unlock()
+
+	tab, duplicate, err := a.findWorkSessionByRequest(scope, workspaceRoot, requestID)
+	if err != nil {
+		result.Error = fmt.Sprintf("find existing Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if tab == nil {
+		tab, err = a.ensureBlankBackgroundTab(scope, workspaceRoot)
+		if err != nil {
+			result.Error = fmt.Sprintf("create session: %v", err)
+			result.Recoverable = true
+			return result, nil
+		}
+		if err := a.bindWorkSession(tab, requestID, ""); err != nil {
+			result.TabMeta = a.tabMeta(tab, false)
+			result.Error = fmt.Sprintf("persist Work Session: %v", err)
+			result.Recoverable = true
+			return result, nil
+		}
+	}
+	if err := a.nameWorkSession(tab, workspaceRoot); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("name Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if err := a.waitWorkSessionReady(tab.ID, 30*time.Second); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("start Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+
+	planInput := work.BeginWorkPlanningInput{
+		SessionID: tab.SessionID,
+		RequestID: requestID,
+	}
+	planResult, planErr := a.BeginWorkPlanning(tab.ID, planInput)
+	result.Duplicate = duplicate
+
+	if planErr != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("BeginWorkPlanning: %v", planErr)
+		result.Recoverable = true
+		return result, nil
+	}
+	if planResult.TransportError != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = planResult.TransportError.Message
+		result.Recoverable = planResult.Recoverable
+		return result, nil
+	}
+
+	result.Duplicate = result.Duplicate || planResult.Duplicate
+	if planResult.Result != nil {
+		result.WorkView = planResult.Result
+	}
+	result.TabMeta = a.tabMeta(tab, false)
+	return result, nil
+}
+
+func (a *App) waitWorkSessionReady(tabID string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		a.mu.RLock()
+		tab := a.tabByIDLocked(tabID)
+		if tab == nil {
+			a.mu.RUnlock()
+			return fmt.Errorf("session is no longer available")
+		}
+		ready := tab.Ready && tab.Ctrl != nil
+		startupErr := strings.TrimSpace(tab.StartupErr)
+		a.mu.RUnlock()
+		if startupErr != "" {
+			return fmt.Errorf("workspace failed to start: %s", startupErr)
+		}
+		if ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("workspace start timed out")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func (a *App) findWorkSessionByRequest(scope, workspaceRoot, requestID string) (*WorkspaceTab, bool, error) {
+	actualRoot := globalWorkspaceRoot()
+	if scope == "project" {
+		actualRoot = workspaceRoot
+	}
+	infos, err := agent.ListSessionOrder(desktopSessionDir(actualRoot))
+	if err != nil {
+		return nil, false, err
+	}
+	for _, info := range infos {
+		if info.SessionKind != agent.SessionKindWork || info.WorkRequestID != requestID {
+			continue
+		}
+		tab, err := a.ensureTabForSessionPath(info.Path)
+		if err != nil {
+			return nil, false, err
+		}
+		a.mu.Lock()
+		tab.sessionKind = agent.SessionKindWork
+		tab.workID = info.WorkID
+		tab.workRequestID = info.WorkRequestID
+		a.mu.Unlock()
+		return tab, true, nil
+	}
+	return nil, false, nil
+}
+
+func (a *App) nameWorkSession(tab *WorkspaceTab, workspaceRoot string) error {
+	const name = "New Work"
+	a.mu.RLock()
+	currentTitle := strings.TrimSpace(tab.TopicTitle)
+	a.mu.RUnlock()
+	if currentTitle != "" && currentTitle != defaultTopicTitle && currentTitle != name {
+		return nil
+	}
+	path := tab.currentSessionPath()
+	if path == "" {
+		return fmt.Errorf("session path is empty")
+	}
+	if err := a.RenameSession(path, name); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	tab.TopicTitle = name
+	a.saveTabsLocked()
+	a.mu.Unlock()
+	if err := setTopicTitleWithSource(workspaceRoot, tab.TopicID, name, topicTitleSourceManual); err != nil {
+		return err
+	}
+	_ = ensureTopicIndexed(tab.Scope, workspaceRoot, tab.TopicID, name, topicTitleSourceManual)
+	return nil
+}
+
+func (a *App) bindWorkSession(tab *WorkspaceTab, requestID, workID string) error {
+	if tab == nil {
+		return fmt.Errorf("tab is required")
+	}
+	sessionPath := strings.TrimSpace(tab.currentSessionPath())
+	if sessionPath == "" {
+		return fmt.Errorf("session path is required")
+	}
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	meta.SessionKind = agent.SessionKindWork
+	if requestID != "" {
+		meta.WorkRequestID = requestID
+	}
+	if workID != "" {
+		meta.WorkID = workID
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	tab.sessionKind = agent.SessionKindWork
+	tab.workRequestID = meta.WorkRequestID
+	tab.workID = meta.WorkID
+	a.mu.Unlock()
+	return nil
 }
 
 func (a *App) resolveWorkController(tabID string) (control.WorkControl, error) {
@@ -550,6 +768,7 @@ func (a *App) RepairCornerstone(tabID, workID string, input work.RepairCornersto
 
 // BeginWorkPlanning starts a conversation-based definition flow.
 // requestID ensures idempotent creation.
+// On success, writes SessionKind=work and WorkID back to the session's BranchMeta.
 func (a *App) BeginWorkPlanning(tabID string, input work.BeginWorkPlanningInput) (*work.BeginWorkPlanningResult, error) {
 	wc, err := a.resolveWorkController(tabID)
 	if err != nil {
@@ -562,6 +781,17 @@ func (a *App) BeginWorkPlanning(tabID string, input work.BeginWorkPlanningInput)
 		result = &work.BeginWorkPlanningResult{}
 	}
 	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+
+	// On successful commit, bind the Work to the session via BranchMeta.
+	if result.Committed && result.Result != nil && result.Result.Work != nil {
+		tab, _ := a.tabAndCtrlByID(tabID)
+		if tab != nil {
+			if bindErr := a.bindWorkSession(tab, input.RequestID, result.Result.Work.ID); bindErr != nil {
+				return result, fmt.Errorf("persist Work Session binding: %w", bindErr)
+			}
+		}
+	}
+
 	return result, nil
 }
 

@@ -96,6 +96,8 @@ Work 是一个面向交付结果的 AI 工作平台：
 
 ### 4.1 新建 Work
 
+> **入口变更 (2026-07-27):** Work 现在是 Workspace 下的一种特殊 Session（`sessionKind: "work"`）。新建 Work 通过 ProjectTree 每个 Workspace 行旁的 Briefcase 按钮触发，不再使用独立的侧栏 Work 入口。点击已创建的 Work Session 直接打开 WorkCard，背面为该 Session 自己的对话面。
+
 ```mermaid
 flowchart LR
     A["新建 Work"] --> B["对话面：描述目标"]
@@ -231,6 +233,15 @@ Patch planner 必须获得目标 Block 的当前 `data` 和明确的 PatchPlan J
 3. 系统展示 definition diff 和运行影响。
 4. 用户应用后原子切换 revision。
 5. 已完成节点按输入 digest 和依赖 digest 判定保留、失效或重跑。
+
+### 4.6 Work Session 归属
+
+每个 Work 绑定一个唯一的 Work Session（`sessionKind: "work"`），Session 的 BranchMeta 持久化 `workId`。Work Session 在 ProjectTree 中与普通 Session 同树展示，但有独立的 Briefcase 图标和 `work_session` / `global_work_session` 节点类型。
+
+- **创建：** `CreateWorkSession(scope, workspaceRoot, requestId)` 复合创建 Session 并调用 `BeginWorkPlanning`。同一 `requestId` 重复调用返回已有 Session/Work，每次新的创建意图使用新的 `requestId`。
+- **恢复：** 切换会话或重启后，Tab 从 BranchMeta 自动恢复 `sessionKind` 和 `workId`，打开对应 WorkCard。
+- **生命周期：** Session 重命名/移入回收站/恢复时，BranchMeta 随 `.jsonl` 一起移动，Session-Work 关系不悬空。
+- **失败处理：** Session 已创建但 Work 规划失败时，Tab 保留 `sessionKind: "work"` 和创建 `requestId`；重试复用同一幂等键，不重复创建 Session。
 
 ---
 

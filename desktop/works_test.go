@@ -13,10 +13,117 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/control"
 	"workground2/internal/work"
 	"workground2/internal/work/worktest"
 )
+
+func TestBindWorkSessionPersistsIdempotencyAndWorkIdentity(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{SessionPath: sessionPath}
+	app := &App{}
+
+	if err := app.bindWorkSession(tab, "request-1", ""); err != nil {
+		t.Fatalf("bind pending Work Session: %v", err)
+	}
+	if tab.sessionKind != agent.SessionKindWork || tab.workRequestID != "request-1" || tab.workID != "" {
+		t.Fatalf("pending tab binding = kind %q, request %q, work %q", tab.sessionKind, tab.workRequestID, tab.workID)
+	}
+
+	if err := app.bindWorkSession(tab, "request-1", "work-1"); err != nil {
+		t.Fatalf("bind committed Work Session: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, err)
+	}
+	if meta.SessionKind != agent.SessionKindWork || meta.WorkRequestID != "request-1" || meta.WorkID != "work-1" {
+		t.Fatalf("persisted binding = %+v", meta)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, agent.BranchMeta{Preview: "updated elsewhere"}); err != nil {
+		t.Fatalf("unrelated metadata update: %v", err)
+	}
+	meta, _, err = agent.LoadBranchMeta(sessionPath)
+	if err != nil || meta.SessionKind != agent.SessionKindWork || meta.WorkRequestID != "request-1" || meta.WorkID != "work-1" {
+		t.Fatalf("binding lost after unrelated metadata update: meta=%+v err=%v", meta, err)
+	}
+
+	infos, err := agent.ListSessionOrder(filepath.Dir(sessionPath))
+	if err != nil || len(infos) != 1 {
+		t.Fatalf("ListSessions = (%+v, %v)", infos, err)
+	}
+	if infos[0].SessionKind != agent.SessionKindWork || infos[0].WorkRequestID != "request-1" || infos[0].WorkID != "work-1" {
+		t.Fatalf("listed binding = %+v", infos[0])
+	}
+
+	restored := &WorkspaceTab{
+		ID:            "restored",
+		Scope:         "global",
+		WorkspaceRoot: globalTabWorkspaceRoot(),
+		SessionPath:   sessionPath,
+	}
+	restoredApp := &App{tabs: map[string]*WorkspaceTab{restored.ID: restored}}
+	restoredApp.applySessionBindingToTab(restored, sessionBinding{
+		scope:         "global",
+		workspaceRoot: globalTabWorkspaceRoot(),
+		path:          sessionPath,
+	})
+	if restored.sessionKind != agent.SessionKindWork || restored.workRequestID != "request-1" || restored.workID != "work-1" {
+		t.Fatalf("restored binding = kind %q, request %q, work %q", restored.sessionKind, restored.workRequestID, restored.workID)
+	}
+}
+
+func TestCreateWorkSessionRequestIDReusesOnlyTheSameIntent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	first, err := app.CreateWorkSession(CreateWorkSessionInput{Scope: "global", RequestID: "request-1"})
+	if err != nil {
+		t.Fatalf("first CreateWorkSession: %v", err)
+	}
+	if first.TabMeta.ID == "" || first.TabMeta.SessionKind != string(agent.SessionKindWork) {
+		t.Fatalf("first Work Session = %+v", first)
+	}
+	var listed *ProjectNode
+	var findSession func([]ProjectNode)
+	findSession = func(nodes []ProjectNode) {
+		for i := range nodes {
+			if nodes[i].SessionPath == first.TabMeta.SessionPath {
+				listed = &nodes[i]
+				return
+			}
+			findSession(nodes[i].Children)
+			if listed != nil {
+				return
+			}
+		}
+	}
+	findSession(app.ListProjectTree())
+	if listed == nil || listed.Kind != "global_work_session" || listed.SessionKind != string(agent.SessionKindWork) {
+		t.Fatalf("Work Session missing from project tree: node=%+v", listed)
+	}
+
+	retry, err := app.CreateWorkSession(CreateWorkSessionInput{Scope: "global", RequestID: "request-1"})
+	if err != nil {
+		t.Fatalf("retry CreateWorkSession: %v", err)
+	}
+	if retry.TabMeta.ID != first.TabMeta.ID || !retry.Duplicate {
+		t.Fatalf("retry created another session: first=%q retry=%q duplicate=%v", first.TabMeta.ID, retry.TabMeta.ID, retry.Duplicate)
+	}
+
+	second, err := app.CreateWorkSession(CreateWorkSessionInput{Scope: "global", RequestID: "request-2"})
+	if err != nil {
+		t.Fatalf("second CreateWorkSession: %v", err)
+	}
+	if second.TabMeta.ID == "" || second.TabMeta.ID == first.TabMeta.ID {
+		t.Fatalf("new intent reused old session: first=%q second=%q", first.TabMeta.ID, second.TabMeta.ID)
+	}
+}
 
 type repairBlobStore struct {
 	content string

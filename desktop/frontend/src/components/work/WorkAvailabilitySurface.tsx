@@ -3,8 +3,8 @@ import { useT } from '../../lib/i18n';
 
 export interface WorkAvailabilitySurfaceProps {
   state: 'initializing' | 'unavailable';
-  onBack: () => void;
-  onRetry: () => void;
+  onBack?: () => void;
+  onRetry?: () => void;
 }
 
 export function WorkAvailabilitySurface({
@@ -29,14 +29,16 @@ export function WorkAvailabilitySurface({
       aria-busy={!unavailable}
     >
       <header className="work-page__header">
-        <button
-          type="button"
-          className="work-page__back-btn"
-          data-testid="work-availability-back"
-          onClick={onBack}
-        >
-          ← {t('work.backToSession')}
-        </button>
+        {onBack && (
+          <button
+            type="button"
+            className="work-page__back-btn"
+            data-testid="work-availability-back"
+            onClick={onBack}
+          >
+            ← {t('work.backToSession')}
+          </button>
+        )}
         <h1 className="work-page__title">{t('work.title')}</h1>
       </header>
 
@@ -57,7 +59,7 @@ export function WorkAvailabilitySurface({
         <p className="work-availability__detail">
           {t(unavailable ? 'work.unavailableDetail' : 'work.initializingDetail')}
         </p>
-        {unavailable && (
+        {unavailable && onRetry && (
           <button
             type="button"
             className="work-page__retry-btn work-availability__retry"

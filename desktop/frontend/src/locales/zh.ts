@@ -944,6 +944,8 @@ export const zh: Record<DictKey, string> = {
   "projectTree.emptyNoMatch": "没有匹配的项目或会话",
   "projectTree.emptyNoProjects": "还没有项目",
   "projectTree.newTopicTooltip": "新建会话",
+  "projectTree.newWorkTooltip": "新建工作",
+  "projectTree.workSession": "工作会话",
   "projectTree.addProjectTooltip": "添加新项目",
   "projectTree.pinProject": "置顶项目",
   "projectTree.unpinProject": "取消置顶项目",

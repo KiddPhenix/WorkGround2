@@ -13,6 +13,14 @@ import (
 	"workground2/internal/store"
 )
 
+// SessionKind classifies the session type.
+type SessionKind string
+
+const (
+	SessionKindNormal SessionKind = "normal"
+	SessionKindWork   SessionKind = "work"
+)
+
 // BranchMeta is the small sidecar record that turns flat session files into a
 // navigable conversation tree. The conversation itself remains in the .jsonl
 // file; metadata lives beside it at <session>.meta.
@@ -73,6 +81,13 @@ type BranchMeta struct {
 	Turns        int               `json:"turns,omitempty"`
 	Preview      string            `json:"preview,omitempty"`
 	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
+	// SessionKind classifies this session as "normal" or "work".
+	// Old data without this field defaults to "normal".
+	SessionKind SessionKind `json:"session_kind,omitempty"`
+	// WorkID is the primary Work ID bound to this session (only set when SessionKind == "work").
+	WorkID string `json:"work_id,omitempty"`
+	// WorkRequestID is the idempotency key that created this Work Session.
+	WorkRequestID string `json:"work_request_id,omitempty"`
 }
 
 // BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
@@ -221,6 +236,15 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
 	if next == nil {
 		return
+	}
+	if next.SessionKind == "" {
+		next.SessionKind = existing.SessionKind
+	}
+	if next.WorkID == "" {
+		next.WorkID = existing.WorkID
+	}
+	if next.WorkRequestID == "" {
+		next.WorkRequestID = existing.WorkRequestID
 	}
 	if existing.Revision > next.Revision {
 		next.Revision = existing.Revision

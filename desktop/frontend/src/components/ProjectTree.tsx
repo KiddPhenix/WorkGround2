@@ -31,6 +31,7 @@ interface ProjectTreeProps {
   onCreateTopic?: (scope: string, workspaceRoot: string) => Promise<void> | void;
   onRenameTopic?: (topicId: string, title: string) => Promise<void> | void;
   onTopicsChanged?: () => Promise<void> | void;
+  onCreateWork?: (scope: string, workspaceRoot: string) => Promise<void> | void;
   refreshSignal?: number;
   timeFilter: "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   onTimeFilterChange: (filter: "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d") => void;
@@ -53,7 +54,7 @@ function projectNodeKey(node: ProjectNode, depth: number): string {
 }
 
 function isRuntimeSessionNode(node: ProjectNode): boolean {
-  return node.kind === "session" || node.kind === "global_session";
+  return node.kind === "session" || node.kind === "global_session" || node.kind === "work_session" || node.kind === "global_work_session";
 }
 
 function isCrewSessionNode(node: ProjectNode): boolean {
@@ -576,6 +577,7 @@ export function ProjectTree({
   onOpenProjectHistory,
   onAddProject,
   onCreateTopic,
+  onCreateWork,
   onRenameTopic,
   onTopicsChanged,
   refreshSignal,
@@ -1182,6 +1184,7 @@ export function ProjectTree({
       const showStatusInSide = status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job";
       const unread = isCrewSessionNode(node) ? false : projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const visualState = projectTreeTopicVisualState(node, unread, status);
+      const workSession = node.sessionKind === "work";
       const topicId = node.topicId ?? "";
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
@@ -1265,7 +1268,7 @@ export function ProjectTree({
       }
       const row = (
         <div
-          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
+          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${workSession ? " project-tree__topic--work-session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
           onContextMenu={isSessionNode ? undefined : openTopicMenu}
         >
@@ -1316,6 +1319,11 @@ export function ProjectTree({
                 title={visualState === "failed" ? statusLabel : visualState === "running" ? statusLabel || t("projectTree.running") : t("projectTree.status.done")}
                 aria-hidden="true"
               />
+            )}
+            {workSession && (
+              <span className="project-tree__work-icon" title={t("projectTree.workSession")} aria-label={t("projectTree.workSession")}>
+                <BriefcaseBusiness size={12} aria-hidden="true" />
+              </span>
             )}
             <span className="project-tree__topic-copy">
               <span className="project-tree__topic-heading">
@@ -1759,6 +1767,22 @@ export function ProjectTree({
               </button>
             </Tooltip>
           )}
+          {creationTopics && onCreateWork && (
+            <Tooltip label={t("projectTree.newWorkTooltip")} className="project-tree__action-slot">
+              <button
+                type="button"
+                className="project-tree__new-topic project-tree__new-work"
+                aria-label={t("projectTree.newWorkTooltip")}
+                disabled={creatingProject !== null}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void onCreateWork(scope, projectRoot);
+                }}
+              >
+                <BriefcaseBusiness size={12} aria-hidden="true" />
+              </button>
+            </Tooltip>
+          )}
           {compactTopics && (
             <div className="project-tree__workspace-actions" aria-label={t("projectTree.projectActions")}>
               <Tooltip label={t("projectTree.newTopicTooltip")} className="project-tree__workspace-action-slot">
@@ -1775,6 +1799,22 @@ export function ProjectTree({
                   <Plus size={14} aria-hidden="true" />
                 </button>
               </Tooltip>
+              {onCreateWork && (
+                <Tooltip label={t("projectTree.newWorkTooltip")} className="project-tree__workspace-action-slot">
+                  <button
+                    type="button"
+                    className="project-tree__workspace-action"
+                    aria-label={t("projectTree.newWorkTooltip")}
+                    disabled={creatingProject !== null}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void onCreateWork(scope, projectRoot);
+                    }}
+                  >
+                    <BriefcaseBusiness size={14} aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              )}
               {scope === "project" && (
                 <Tooltip label={t("projectTree.visualLabel")} className="project-tree__workspace-action-slot">
                   <button
