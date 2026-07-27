@@ -17,18 +17,24 @@ type bootPatchPlanner struct {
 	prov        provider.Provider
 	temperature float64
 	maxTokens   int
+	llmLog      *workLLMInteractionLogger
 }
 
-func newBootPatchPlanner(prov provider.Provider, temperature float64, maxTokens int) *bootPatchPlanner {
+func newBootPatchPlanner(prov provider.Provider, temperature float64, maxTokens int, llmLog *workLLMInteractionLogger) *bootPatchPlanner {
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
-	return &bootPatchPlanner{prov: prov, temperature: temperature, maxTokens: maxTokens}
+	return &bootPatchPlanner{prov: prov, temperature: temperature, maxTokens: maxTokens, llmLog: llmLog}
 }
 
 func (p *bootPatchPlanner) PlanPatch(ctx context.Context, input work.PatchPlanInput) (*work.PatchPlan, error) {
 	if p == nil || p.prov == nil {
 		return nil, fmt.Errorf("boot: PlanPatch: planner unavailable")
+	}
+
+	workID := ""
+	if input.Work != nil {
+		workID = input.Work.ID
 	}
 
 	var firstRaw string
@@ -37,14 +43,21 @@ func (p *bootPatchPlanner) PlanPatch(ctx context.Context, input work.PatchPlanIn
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("boot: PlanPatch: %w", err)
 		}
-		raw, err := p.streamPatchPlan(ctx, buildPatchPlannerMessages(input, attempt, firstRaw, firstErr))
+		msgs := buildPatchPlannerMessages(input, attempt, firstRaw, firstErr)
+		attemptNo := attempt + 1
+		iid := interactionID("patch", workID, attemptNo)
+		p.llmLog.logRequest(iid, "patch", workID, p.prov.Name(), attemptNo, msgs, p.temperature, p.maxTokens)
+
+		raw, err := p.streamPatchPlan(ctx, msgs)
 		if err != nil {
+			p.llmLog.logResponse(iid, "patch", workID, attemptNo, raw, err)
 			if attempt > 0 {
 				return nil, fmt.Errorf("boot: PlanPatch repair: %w", err)
 			}
 			return nil, err
 		}
 		plan, err := parsePatchPlanResponse(raw)
+		p.llmLog.logResponse(iid, "patch", workID, attemptNo, raw, err)
 		if err == nil {
 			return plan, nil
 		}
@@ -158,7 +171,7 @@ func (p *bootPatchPlanner) streamPatchPlan(ctx context.Context, messages []provi
 	for chunk := range chunks {
 		switch chunk.Type {
 		case provider.ChunkError:
-			return "", fmt.Errorf("boot: PlanPatch chunk error: %w", chunk.Err)
+			return buf.String(), fmt.Errorf("boot: PlanPatch chunk error: %w", chunk.Err)
 		case provider.ChunkDone:
 			return buf.String(), nil
 		default:

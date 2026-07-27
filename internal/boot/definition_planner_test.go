@@ -304,7 +304,7 @@ func TestBootDefinitionPlannerUsesProviderForFullStructure(t *testing.T) {
 		{Type: provider.ChunkText, Text: validPlanJSON()},
 		{Type: provider.ChunkDone},
 	}}
-	planner := newBootDefinitionPlanner(prov, 0.2, 2048)
+	planner := newBootDefinitionPlanner(prov, 0.2, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "split collection and review",
 		Base: &work.WorkDefinitionRevision{
@@ -325,7 +325,7 @@ func TestBootDefinitionPlannerUsesProviderForFullStructure(t *testing.T) {
 
 func TestBootDefinitionPlannerProviderFailureIsExplicit(t *testing.T) {
 	prov := &definitionPlannerProviderStub{err: errors.New("provider unavailable")}
-	_, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	_, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -341,7 +341,7 @@ func TestBootDefinitionPlanner_ChunkError(t *testing.T) {
 	prov := &definitionPlannerProviderStub{chunks: []provider.Chunk{
 		{Type: provider.ChunkError, Err: fmt.Errorf("model overloaded")},
 	}}
-	_, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	_, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -358,7 +358,7 @@ func TestBootDefinitionPlanner_NoChunkDone(t *testing.T) {
 	prov := &definitionPlannerProviderStub{chunks: []provider.Chunk{
 		{Type: provider.ChunkText, Text: validPlanJSON()},
 	}}
-	plan, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	plan, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -375,7 +375,7 @@ func TestBootDefinitionPlanner_DoubleChunkDone(t *testing.T) {
 		{Type: provider.ChunkDone},
 		{Type: provider.ChunkDone},
 	}}
-	plan, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	plan, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -392,7 +392,7 @@ func TestBootDefinitionPlanner_ChinesePrefaceWithChunks(t *testing.T) {
 		{Type: provider.ChunkText, Text: "\n希望对您有帮助！"},
 		{Type: provider.ChunkDone},
 	}}
-	plan, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	plan, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -407,7 +407,7 @@ func TestBootDefinitionPlanner_ErrorDoesNotLeakRawChineseInStream(t *testing.T) 
 		{Type: provider.ChunkText, Text: `{"goal":"test"`},
 		{Type: provider.ChunkDone},
 	}}
-	_, err := newBootDefinitionPlanner(prov, 0, 0).PlanDefinition(
+	_, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -426,7 +426,7 @@ func TestBootDefinitionPlanner_ErrorDoesNotLeakRawChineseInStream(t *testing.T) 
 // ── Nil planner guard ──────────────────────────────────────────────────────
 
 func TestBootDefinitionPlanner_NilProvider(t *testing.T) {
-	_, err := newBootDefinitionPlanner(nil, 0, 0).PlanDefinition(
+	_, err := newBootDefinitionPlanner(nil, 0, 0, nil).PlanDefinition(
 		context.Background(),
 		work.DefinitionPlanInput{Intent: "change", Base: &work.WorkDefinitionRevision{}},
 	)
@@ -688,7 +688,7 @@ func TestBootIntegration_ParseFailureNoWriteThenRetrySuccessThenRestartReplay_Fi
 
 	// 2. Configure a planner with a variable provider.
 	prov := &variableProvider{}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	svc.SetV2DefinitionPlanner(planner)
 
 	// ── Snapshot before first attempt ──────────────────────────────────────
@@ -931,7 +931,7 @@ func TestBootIntegration_RepairSuccessWithinOnePlanDefinition_SingleWrite_FileWo
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	svc.SetV2DefinitionPlanner(planner)
 
 	// ── Snapshot before call ───────────────────────────────────────────────
@@ -1161,7 +1161,7 @@ func TestRepair_ArrayThenSuccess(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "add review node",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1187,7 +1187,7 @@ func TestRepair_UnknownFieldThenSuccess(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1212,7 +1212,7 @@ func TestRepair_TwoFailuresThenSuccess(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},                                                        // success
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1239,7 +1239,7 @@ func TestRepair_ThreeFailuresExhausted(t *testing.T) {
 			{chunkT(bad), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1267,7 +1267,7 @@ func TestRepair_ChunkErrorNoRepair(t *testing.T) {
 			{chunkT("好的，"), chunkErr(fmt.Errorf("model overloaded"))},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1287,7 +1287,7 @@ func TestRepair_ContextCancelNoRepair(t *testing.T) {
 			{chunkT("好的，"), chunkT("以下是"), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before any call
 	_, err := planner.PlanDefinition(ctx, work.DefinitionPlanInput{
@@ -1310,7 +1310,7 @@ func TestRepair_ValidChineseWrappedJSON_SingleCall(t *testing.T) {
 			{chunkT(raw), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1334,7 +1334,7 @@ func TestRepair_FirstPromptContainsFullSchema(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1384,7 +1384,7 @@ func TestRepair_RepairPromptContainsSafeErrorAndSingleObjectInstruction(t *testi
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1464,7 +1464,7 @@ func TestRepair_TruncationKeepsUTF8Boundary(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1505,7 +1505,7 @@ func TestRepair_FirstPromptContainsSingleObjectAndNoMultiCandidate(t *testing.T)
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1572,7 +1572,7 @@ func TestRepair_MultipleJSONValuesRepairIncludesDraftAndSemanticPreservation(t *
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1632,7 +1632,7 @@ func TestRepair_ConsecutiveRepairsUseMostRecentDraft(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	plan, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1708,7 +1708,7 @@ func TestRepair_LongDraftHeadTailPreservationWithUTF8(t *testing.T) {
 			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
@@ -1772,7 +1772,7 @@ func TestRepair_ContextCancelAfterFirstParseFailureStopsImmediately(t *testing.T
 	// make a second provider call.
 	ctx, cancel := context.WithCancel(context.Background())
 	prov := &cancelAfterFirstProvider{cancel: cancel}
-	planner := newBootDefinitionPlanner(prov, 0, 2048)
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
 	_, err := planner.PlanDefinition(ctx, work.DefinitionPlanInput{
 		Intent: "restructure",
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},

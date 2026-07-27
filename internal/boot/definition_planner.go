@@ -20,13 +20,14 @@ type bootDefinitionPlanner struct {
 	prov        provider.Provider
 	temperature float64
 	maxTokens   int
+	llmLog      *workLLMInteractionLogger
 }
 
-func newBootDefinitionPlanner(prov provider.Provider, temperature float64, maxTokens int) *bootDefinitionPlanner {
+func newBootDefinitionPlanner(prov provider.Provider, temperature float64, maxTokens int, llmLog *workLLMInteractionLogger) *bootDefinitionPlanner {
 	if maxTokens <= 0 {
 		maxTokens = 8192
 	}
-	return &bootDefinitionPlanner{prov: prov, temperature: temperature, maxTokens: maxTokens}
+	return &bootDefinitionPlanner{prov: prov, temperature: temperature, maxTokens: maxTokens, llmLog: llmLog}
 }
 
 func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.DefinitionPlanInput) (*work.DefinitionPlan, error) {
@@ -39,6 +40,11 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 	}
 	baseJSON := string(base)
 
+	workID := ""
+	if input.Work != nil {
+		workID = input.Work.ID
+	}
+
 	const maxTries = 3
 	var lastRaw string
 	var lastErr error
@@ -49,14 +55,22 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 		}
 
 		msgs := buildDefinitionPlanMessages(attempt, input.Intent, baseJSON, lastRaw, lastErr)
+		attemptNo := attempt + 1
+		iid := interactionID("definition", workID, attemptNo)
+		p.llmLog.logRequest(iid, "definition", workID, p.prov.Name(), attemptNo, msgs, p.temperature, p.maxTokens)
+
 		raw, streamErr := p.streamDefinitionPlan(ctx, msgs)
 		if streamErr != nil {
+			// Preserve partial raw for diagnostics when a streamed response
+			// fails after emitting content.
+			p.llmLog.logResponse(iid, "definition", workID, attemptNo, raw, streamErr)
 			// Provider-level or chunk error — never repair.
 			return nil, streamErr
 		}
 
 		lastRaw = raw
 		plan, parseErr := parseDefinitionPlanResponse(raw)
+		p.llmLog.logResponse(iid, "definition", workID, attemptNo, raw, parseErr)
 		if parseErr == nil {
 			return plan, nil
 		}
@@ -210,7 +224,7 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 	for chunk := range chunks {
 		switch chunk.Type {
 		case provider.ChunkError:
-			return "", fmt.Errorf("boot: PlanDefinition chunk error: %w", chunk.Err)
+			return output.String(), fmt.Errorf("boot: PlanDefinition chunk error: %w", chunk.Err)
 		case provider.ChunkDone:
 			return output.String(), nil
 		default:

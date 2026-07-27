@@ -774,6 +774,13 @@ type ServeConfig struct {
 type WorkConfig struct {
 	Enabled                  bool `toml:"enabled"`
 	CollaborationWorkbenchV2 bool `toml:"collaboration_workbench_v2"`
+
+	// LLMInteractionLog enables per-attempt request/response JSONL logging
+	// for the Work Definition and Patch planners. The log is written to
+	// work-llm-interactions.jsonl in the WorkGround2 config directory.
+	// TEMPORARY DIAGNOSTIC — contains raw model prompts and responses.
+	// Defaults to false (disabled). Do NOT enable in shared environments.
+	LLMInteractionLog bool `toml:"llm_interaction_log"`
 }
 
 // NetworkConfig controls ordinary outbound HTTP traffic such as model providers,

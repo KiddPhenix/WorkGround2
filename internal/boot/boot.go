@@ -1165,8 +1165,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			workViews = control.NewWorkViewBroadcaster()
 			workSvc = work.NewService(store, bp, workViews)
 			workSvc.SetV2TransportEnabled(cfg.Work.CollaborationWorkbenchV2)
-			workSvc.SetV2PatchPlanner(newBootPatchPlanner(execProv, cfg.Agent.Temperature, 4096))
-			workSvc.SetV2DefinitionPlanner(newBootDefinitionPlanner(workDefinitionProv, cfg.Agent.Temperature, 8192))
+
+			// Wire optional LLM interaction diagnostic logger.
+			// TEMPORARY DIAGNOSTIC — sensitive: controlled by [work].llm_interaction_log.
+			var workLLMLog *workLLMInteractionLogger
+			if cfg.Work.LLMInteractionLog {
+				logPath := filepath.Join(config.WorkGround2HomeDir(), "work-llm-interactions.jsonl")
+				workLLMLog = newWorkLLMInteractionLogger(logPath)
+			}
+
+			workSvc.SetV2PatchPlanner(newBootPatchPlanner(execProv, cfg.Agent.Temperature, 4096, workLLMLog))
+			workSvc.SetV2DefinitionPlanner(newBootDefinitionPlanner(workDefinitionProv, cfg.Agent.Temperature, 8192, workLLMLog))
 			artifactSources := opts.ArtifactSourceResolver
 			if artifactSources == nil {
 				artifactSources = work.NewStoreArtifactSourceResolver(store, store, root)

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -256,5 +257,100 @@ func TestWorkConfigCollaborationWorkbenchV2Delta(t *testing.T) {
 	}
 	if !loaded.Work.Enabled {
 		t.Fatal("project delta should not change Enabled default")
+	}
+}
+
+// ── LLM interaction log flag ──────────────────────────────────────────────
+
+func TestWorkConfigLLMInteractionLogDefaultFalse(t *testing.T) {
+	cfg := Default()
+	if cfg.Work.LLMInteractionLog {
+		t.Fatal("llm_interaction_log must default to false")
+	}
+}
+
+func TestWorkConfigLLMInteractionLogLoad(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	path := filepath.Join(root, "WorkGround2.toml")
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"missing field", "[work]\n", false},
+		{"explicit false", "[work]\nllm_interaction_log = false\n", false},
+		{"explicit true", "[work]\nllm_interaction_log = true\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadForRoot(root)
+			if err != nil {
+				t.Fatalf("LoadForRoot: %v", err)
+			}
+			if cfg.Work.LLMInteractionLog != tc.want {
+				t.Fatalf("llm_interaction_log = %v, want %v", cfg.Work.LLMInteractionLog, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkConfigLLMInteractionLogTOMLRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []bool{true, false} {
+		t.Run(fmt.Sprintf("%v", v), func(t *testing.T) {
+			cfg := Default()
+			cfg.Work.LLMInteractionLog = v
+			dir := t.TempDir()
+			path := filepath.Join(dir, "WorkGround2.toml")
+			if err := cfg.WriteFile(path); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			loaded, err := LoadForRoot(dir)
+			if err != nil {
+				t.Fatalf("LoadForRoot: %v", err)
+			}
+			if loaded.Work.LLMInteractionLog != v {
+				t.Fatalf("llm_interaction_log = %v after round-trip, want %v", loaded.Work.LLMInteractionLog, v)
+			}
+		})
+	}
+}
+
+func TestWorkConfigLLMInteractionLogProjectDelta(t *testing.T) {
+	cfg := Default()
+	// Default false: no [work] section in delta.
+	if delta := RenderTOMLProjectDelta(cfg); strings.Contains(delta, "[work]") {
+		t.Fatalf("default Work config should be omitted from delta:\n%s", delta)
+	}
+
+	// Explicit true: must appear in delta.
+	cfg.Work.LLMInteractionLog = true
+	delta := RenderTOMLProjectDelta(cfg)
+	if !strings.Contains(delta, "[work]") {
+		t.Fatalf("delta missing [work] section when llm_interaction_log=true:\n%s", delta)
+	}
+	if !strings.Contains(delta, "llm_interaction_log = true") {
+		t.Fatalf("delta missing llm_interaction_log = true:\n%s", delta)
+	}
+
+	// Round-trip: decode delta -> LLMInteractionLog stays true.
+	loaded := Default()
+	if _, err := toml.Decode(delta, loaded); err != nil {
+		t.Fatalf("decode project delta: %v", err)
+	}
+	if !loaded.Work.LLMInteractionLog {
+		t.Fatal("project delta did not preserve llm_interaction_log = true")
 	}
 }

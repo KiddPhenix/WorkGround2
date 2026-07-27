@@ -64,7 +64,7 @@ const validPatchPlanJSON = `[{"op":"replace","path":"blocks/v2-node-e694b6e99b86
 
 func TestPatchPlannerValidJSONDoesNotRetry(t *testing.T) {
 	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{patchChunks(validPatchPlanJSON)}}
-	plan, err := newBootPatchPlanner(prov, 0, 2048).PlanPatch(context.Background(), patchPlannerInput())
+	plan, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestPatchPlannerRepairsNaturalLanguageOnce(t *testing.T) {
 		patchChunks("当前工作是一个武侠小说流程。用户要求增加一个门派设定表格。"),
 		patchChunks(validPatchPlanJSON),
 	}}
-	plan, err := newBootPatchPlanner(prov, 0, 2048).PlanPatch(context.Background(), patchPlannerInput())
+	plan, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestPatchPlannerRepairFailureIsExplicitAndSafe(t *testing.T) {
 		patchChunks("首次回答：" + secret),
 		patchChunks("修复回答仍然不是 JSON：" + secret),
 	}}
-	_, err := newBootPatchPlanner(prov, 0, 2048).PlanPatch(context.Background(), patchPlannerInput())
+	_, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
 	if err == nil || !strings.Contains(err.Error(), "repair response invalid") {
 		t.Fatalf("err=%v", err)
 	}
@@ -133,7 +133,7 @@ func TestPatchPlannerRepairChunkErrorIsExplicit(t *testing.T) {
 		patchChunks("自然语言回答"),
 		{{Type: provider.ChunkError, Err: errors.New("model overloaded")}},
 	}}
-	_, err := newBootPatchPlanner(prov, 0, 2048).PlanPatch(context.Background(), patchPlannerInput())
+	_, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
 	if err == nil ||
 		!strings.Contains(err.Error(), "repair") ||
 		!strings.Contains(err.Error(), "model overloaded") {
@@ -149,7 +149,7 @@ func TestPatchPlannerRepairStreamErrorIsExplicit(t *testing.T) {
 		sequences:   [][]provider.Chunk{patchChunks("自然语言回答")},
 		streamError: map[int]error{1: errors.New("network unavailable")},
 	}
-	_, err := newBootPatchPlanner(prov, 0, 2048).PlanPatch(context.Background(), patchPlannerInput())
+	_, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
 	if err == nil ||
 		!strings.Contains(err.Error(), "repair") ||
 		!strings.Contains(err.Error(), "network unavailable") {

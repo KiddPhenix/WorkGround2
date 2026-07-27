@@ -644,6 +644,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	b.WriteString("\n[work]\n")
 	fmt.Fprintf(&b, "enabled = %v   # default true; set false to hide Work and skip writable Work services\n", c.Work.Enabled)
 	fmt.Fprintf(&b, "collaboration_workbench_v2 = %v   # default true; set false to fall back to V1 collaborative workbench\n", c.Work.CollaborationWorkbenchV2)
+	// TEMPORARY DIAGNOSTIC — sensitive: logs raw model prompts/responses.
+	// Default false. Do NOT enable in shared environments.
+	fmt.Fprintf(&b, "llm_interaction_log = %v\n", c.Work.LLMInteractionLog)
 
 	return b.String()
 }
@@ -1017,6 +1020,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 		fmt.Fprintf(&b, "enabled = %v\n", c.Work.Enabled)
 		if !c.Work.CollaborationWorkbenchV2 {
 			fmt.Fprintf(&b, "collaboration_workbench_v2 = %v\n", c.Work.CollaborationWorkbenchV2)
+		}
+		// TEMPORARY DIAGNOSTIC — only emitted when explicitly enabled.
+		if c.Work.LLMInteractionLog {
+			fmt.Fprintf(&b, "llm_interaction_log = true\n")
 		}
 		b.WriteString("\n")
 	}
