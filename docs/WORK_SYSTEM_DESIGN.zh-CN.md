@@ -597,6 +597,8 @@ Blueprint v2 → v3:  [BlockKind:checklist v2→v3, BlockKind:gantt v1→v2]
 
 重执行升级时，从 Work 的 `BlueprintRef.Version` 到目标 Blueprint `Version`，逐版本应用并在每一步校验输出 schema。任何必需字段迁移失败会阻止执行；可选 Block 迁移失败时保留原始数据和 fallback，并在 RerunPlan 中列为降级项。迁移结果只写入新 Work。
 
+当前实现由 `BlockSchemaRegistry` 统一持有 `kind + schemaVersion` 的 validator 和相邻版本 migration。写入、刷新、Blueprint 校验、升级预检共用同一注册表；缺失迁移会显式阻止升级。首个正式演进契约是 `file_list v1→v2`：逐项把 `desc` 迁移为 `description`，源 Work 保持不变。`latest_definition` 重执行会冻结迁移后的 Block 与目标 Placement，并在执行时再次校验 Blueprint 最新版本，变化后返回 `ErrPlanStale`。
+
 ### 6.4 缺失处理
 
 | 缺失类型 | 处理方式 |
@@ -798,27 +800,42 @@ type BlockFallback struct {
 }
 ```
 
+Desktop 正面按照固定语义顺序渲染四个槽位，槽内再按 `order` 和 `blockId` 稳定排序。`span` 使用 12 栏网格，缺省或越界时收敛到 12：
+
+```text
+┌──────────────────── attention（12/12） ────────────────────┐
+│ 阻断、警告、需要用户处理的 Block                            │
+├──────────────── primary（2fr） ──────┬─ secondary（1fr） ──┤
+│ 主内容；Block 按 span 占 1..12 栏     │ 辅助信息与上下文      │
+├──────────────────── result（12/12） ────────────────────────┤
+│ 结果、总结与交付物 Block                                   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+宽度不超过 900px 时四槽按上述顺序纵向排列；不超过 640px 时每个 Block 强制占满槽宽。V2 固定的 `ResultShelf`、`ExecutionList` 和展开工作区保留在通用 Block 画布之前，避免 Placement 改变执行主视图的信息层级。
+
 同一 `ID` 的更新按 Revision 合并：小于当前 revision 的迟到事件丢弃；相同 revision 且 digest 相同视为重复；相同 revision 但内容不同进入冲突状态；更高 revision 的 tombstone 可以删除，旧事件不能把它复活。
 
-### 8.3 核心 Block Kind（V1）
+### 8.3 核心 Block Kind
 
-| Kind | 用途 | Data Schema（关键字段） | 渲染形式 |
+| Kind | Schema | Data Schema（关键字段） | 渲染形式 |
 |---|---|---|---|
-| `item` / `list` | 单条信息或普通条目列表 | `{items: [{id, title, detail?, state?}]}` | 条目卡或列表 |
-| `checklist` | 可勾选条目列表 | `{items: [{id, text, checked, detail?}]}` | 勾选框列表，支持展开详情 |
-| `file_list` | 文件路径清单 | `{files: [{path, status, digest?, desc?}]}` | 文件树，带状态和预览 |
-| `git_status` | Git 工作区状态 | `{branch, changes: [{file, staged, type}]}` | Git 状态面板，diff 预览 |
-| `action_entry` | 可执行入口 | `{description, lastResult?}` + `actions[]` | 意图按钮；真实命令和权限由 Controller 解析 |
-| `key_value` / `status` | 摘要、环境或运行状态 | `{items: [{key, label, value, state?}]}` | 键值/状态面板 |
-| `progress` / `timeline` | 阶段进度和事件时间线 | `{items: [{id, label, state, time?}]}` | 进度条或时间线 |
-| `chart` | 图表 | `{type: "bar"\|"line"\|"pie", series, axes?, legend?}` | 受信任图表 Renderer；具体库在实现阶段单独选型 |
-| `table` | 表格 | `{columns: [{key, title, type?}], rows: [{}]}` | 可排序表格 |
-| `graph` | 流程图或关系图 | `{format: "mermaid", source}` | 复用 MermaidDiagram |
-| `code` | 代码块 | `{language, content, filename?}` | 语法高亮代码块 |
-| `markdown` | Markdown 文档 | `{content}` | 渲染 Markdown |
-| `artifact` | 产物预览 | `{artifactRef, previewType}` | 图片/文件预览卡片 |
-| `decision` / `approval` / `input` | 需要用户处理的结构化交互 | 类型化问题、选项、上下文 | 复用 Ask/Approval 交互 |
-| `notice` | 通知、警告、失败说明 | `{level, content, retryable?}` | 通知卡 |
+| `item` / `list` | v1 | `{items: [{id, title, detail?, state?}]}` | 条目卡或列表 |
+| `checklist` | v1 | `{items: [{id, text, checked, detail?}]}` | 勾选框列表，支持展开详情 |
+| `file_list` | v1 | `{files: [{path, status, digest?, desc?}]}` | 历史 Work 保持可渲染 |
+| `file_list` | v2 | `{files: [{path, status, digest?, description?}]}` | 当前可写版本；Renderer 同时支持 v1/v2 |
+| `git_status` | v1 | `{branch, changes: [{file, staged, type}]}` | Git 状态面板，diff 预览 |
+| `action_entry` | v1 | `{description, lastResult?}` + `actions[]` | 意图按钮；真实命令和权限由 Controller 解析 |
+| `key_value` / `status` | v1 | `{items: [{key, label, value, state?}]}` | 键值/状态面板 |
+| `progress` / `timeline` | v1 | `{items: [{id, label, state, time?}]}` | 进度条或时间线 |
+| `chart` | v1 | `{type: "bar"\|"line"\|"pie", series, axes?, legend?}` | 受信任图表 Renderer；具体库在实现阶段单独选型 |
+| `table` | v1 | `{columns: [{key, title, type?}], rows: [{}]}` | 可排序表格 |
+| `graph` | v1 | `{format: "mermaid", source}` | 复用 MermaidDiagram |
+| `code` | v1 | `{language, content, filename?}` | 语法高亮代码块 |
+| `markdown` | v1 | `{content}` | 渲染 Markdown |
+| `artifact` | v1 | `{artifactRef, previewType}` | 图片/文件预览卡片 |
+| `decision` / `approval` / `input` | v1 | 类型化问题、选项、上下文 | 复用 Ask/Approval 交互 |
+| `notice` | v1 | `{level, content, retryable?}` | 通知卡 |
 
 ### 8.4 BlockSpec（Blueprint 中的模板定义）
 

@@ -21,7 +21,7 @@ function safeCrop(text: string, max: number): string {
   return chars.length > max ? `${chars.slice(0, max).join('')}\u2026` : text;
 }
 
-const FileRow: React.FC<{ file: FileEntry }> = ({ file }) => (
+const FileRow: React.FC<{ file: FileEntry; schemaVersion: number }> = ({ file, schemaVersion }) => (
   <div className={`wg2-file-item wg2-file-status-${file.status}`} role="listitem">
     <span className="wg2-file-icon" aria-hidden="true">
       {STATUS_ICONS[file.status]}
@@ -30,8 +30,10 @@ const FileRow: React.FC<{ file: FileEntry }> = ({ file }) => (
       {file.status}
     </span>
     <code className="wg2-file-path">{safeCrop(file.path, 512)}</code>
-    {file.desc && (
-      <span className="wg2-file-desc">{safeCrop(file.desc, 256)}</span>
+    {(schemaVersion === 2 ? file.description : file.desc) && (
+      <span className="wg2-file-desc">
+        {safeCrop((schemaVersion === 2 ? file.description : file.desc)!, 256)}
+      </span>
     )}
     {file.digest && (
       <span className="wg2-file-digest" title={file.digest}>
@@ -57,7 +59,7 @@ export const FileListBlock: React.FC<BlockRendererProps> = ({ block }) => {
     <section className="wg2-block wg2-file-list-block" aria-label="File list">
       <div className="wg2-file-list" role="list">
         {files.map((file, index) => (
-          <FileRow key={file.path ?? index} file={file} />
+          <FileRow key={file.path ?? index} file={file} schemaVersion={block.schemaVersion} />
         ))}
       </div>
     </section>

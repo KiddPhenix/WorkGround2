@@ -123,6 +123,7 @@ export interface FileEntry {
   status: FileStatus;
   digest?: string;
   desc?: string;
+  description?: string;
 }
 
 export interface FileListData {
@@ -131,7 +132,7 @@ export interface FileListData {
 
 const VALID_FILE_STATUSES = new Set<string>(['added', 'modified', 'deleted', 'renamed', 'unchanged', 'untracked', 'conflict']);
 
-export function validateFileList(_schemaVersion: number, data: unknown): ValidationResult {
+export function validateFileList(schemaVersion: number, data: unknown): ValidationResult {
   if (!isPlainObject(data)) return fail('file_list data must be a plain object');
   if (!('files' in data)) return fail('file_list data requires a files array');
   if (data.files === undefined || data.files === null) return fail('file_list data.files must be an array, not null');
@@ -148,7 +149,17 @@ export function validateFileList(_schemaVersion: number, data: unknown): Validat
       return fail(`file_list data.files[${i}].status must be one of: ${[...VALID_FILE_STATUSES].join(', ')}`);
     }
     if (file.digest !== undefined && !isString(file.digest)) return fail(`file_list data.files[${i}].digest must be a string`);
-    if (file.desc !== undefined && !isString(file.desc)) return fail(`file_list data.files[${i}].desc must be a string`);
+    if (schemaVersion === 1) {
+      if (file.description !== undefined) return fail(`file_list data.files[${i}].description requires schema v2`);
+      if (file.desc !== undefined && !isString(file.desc)) return fail(`file_list data.files[${i}].desc must be a string`);
+    } else if (schemaVersion === 2) {
+      if (file.desc !== undefined) return fail(`file_list data.files[${i}].desc was replaced by description in schema v2`);
+      if (file.description !== undefined && !isString(file.description)) {
+        return fail(`file_list data.files[${i}].description must be a string`);
+      }
+    } else {
+      return fail(`file_list schema v${schemaVersion} is unsupported`);
+    }
   }
   return ok();
 }

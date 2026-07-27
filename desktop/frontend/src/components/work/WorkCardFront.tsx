@@ -107,6 +107,24 @@ function runStateLabel(state: string): string {
   }
 }
 
+const BLOCK_SLOTS: readonly BlockPlacement['slot'][] = ['attention', 'primary', 'secondary', 'result'];
+const BLOCK_SLOT_LABELS: Record<BlockPlacement['slot'], string> = {
+  attention: '需要关注',
+  primary: '主要内容',
+  secondary: '辅助内容',
+  result: '结果',
+};
+
+function blockSpan(placement?: BlockPlacement): number {
+  const value = placement?.span ?? 0;
+  return value > 0 ? Math.min(value, 12) : 12;
+}
+
+function blockSlot(placement?: BlockPlacement): BlockPlacement['slot'] {
+  const slot = placement?.slot;
+  return slot && BLOCK_SLOTS.includes(slot) ? slot : 'primary';
+}
+
 const AttentionBadge: React.FC<{ view: WorkView }> = ({ view }) => {
   const blocked = Boolean(view.runBlock?.blocked || view.assessment?.blocking);
   const degraded = view.assessment?.degraded ?? false;
@@ -224,12 +242,30 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
     () => new Map(work.placements.map((placement) => [placement.blockId, placement])),
     [work.placements],
   );
-  const orderedBlocks = useMemo(() => work.blocks
-    .filter((block) => !block.tombstone)
-    .map((block, index) => ({ block, index, placement: placementByBlock.get(block.id) }))
-    .sort((left, right) => (left.placement?.order ?? Number.MAX_SAFE_INTEGER) -
-      (right.placement?.order ?? Number.MAX_SAFE_INTEGER) || left.index - right.index),
-  [placementByBlock, work.blocks]);
+  const blocksBySlot = useMemo(() => {
+    const grouped = new Map<BlockPlacement['slot'], Array<{
+      block: Work['blocks'][number];
+      index: number;
+      placement?: BlockPlacement;
+    }>>();
+    for (const slot of BLOCK_SLOTS) grouped.set(slot, []);
+    work.blocks
+      .filter((block) => !block.tombstone)
+      .forEach((block, index) => {
+        const placement = placementByBlock.get(block.id);
+        const slot = blockSlot(placement);
+        grouped.get(slot)!.push({ block, index, placement });
+      });
+    for (const blocks of grouped.values()) {
+      blocks.sort((left, right) => (left.placement?.order ?? Number.MAX_SAFE_INTEGER) -
+        (right.placement?.order ?? Number.MAX_SAFE_INTEGER) || left.index - right.index);
+    }
+    return grouped;
+  }, [placementByBlock, work.blocks]);
+  const visibleBlockCount = useMemo(
+    () => [...blocksBySlot.values()].reduce((count, blocks) => count + blocks.length, 0),
+    [blocksBySlot],
+  );
 
   const renderBlock = ({ block, placement }: { block: Work['blocks'][number]; placement?: BlockPlacement }) => {
     const canCollapse = placement?.collapsed !== undefined;
@@ -240,9 +276,12 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         className={`wg2-work-block-host-wrapper${isExpanded ? ' wg2-work-block-expanded' : ' wg2-work-block-collapsed'}`}
         role="listitem"
         data-block-id={block.id}
+        data-block-slot={blockSlot(placement)}
+        data-block-span={blockSpan(placement)}
         data-work-target-id={block.id}
         data-testid={`work-block-${block.id}`}
         tabIndex={-1}
+        style={{ '--wg2-block-span': blockSpan(placement) } as React.CSSProperties}
       >
         <BlockHost
           block={block}
@@ -353,9 +392,24 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         readonly={readonly}
         archived={archived}
       />
-      <div className="wg2-work-block-host-list" role="list">
-        {orderedBlocks.map(renderBlock)}
-        {orderedBlocks.length === 0 && (
+      <div className="wg2-work-block-canvas" data-testid="work-block-canvas">
+        {BLOCK_SLOTS.map((slot) => {
+          const blocks = blocksBySlot.get(slot) ?? [];
+          if (blocks.length === 0) return null;
+          return (
+            <section
+              key={slot}
+              className={`wg2-work-block-slot wg2-work-block-slot--${slot}`}
+              data-block-slot-region={slot}
+              aria-label={BLOCK_SLOT_LABELS[slot]}
+            >
+              <div className="wg2-work-block-host-list" role="list">
+                {blocks.map(renderBlock)}
+              </div>
+            </section>
+          );
+        })}
+        {visibleBlockCount === 0 && (
           <div className="wg2-work-front-empty" data-testid="work-front-empty">
             <p>暂无工作流内容。在背面编辑提示词后运行即可生成。</p>
           </div>

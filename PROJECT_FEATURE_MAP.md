@@ -143,6 +143,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### Work Block schema 与四槽 Placement
+- Location: `internal/work/block_schema.go`, `internal/work/copy_rerun.go`, `desktop/frontend/src/components/work/WorkCardFront.tsx`, `desktop/frontend/src/styles.css`, `docs/WORK_SYSTEM_DESIGN.zh-CN.md`
+- Summary: BlockSchemaRegistry 按 kind/version 校验并执行相邻迁移，file_list 支持 v1/v2 与 latest rerun 升级；Desktop 按 attention、primary、secondary、result 四槽和 12 栏 span 响应式布局。
+- Keywords: BlockSchemaRegistry, BlockMigration, file_list, Placement, attention, primary, secondary, result, span, WorkCardFront
+- Source: verified-by-search
+- Updated: 2026-07-27
+
 ### Work V1/V2 覆盖与兼容
 - Location: `docs/WORK_COLLABORATION_WORKBENCH_V2.zh-CN.md`, `internal/work`, `internal/control/work.go`, `desktop/works.go`, `desktop/frontend/src/components/work`, `desktop/frontend/src/work`
 - Summary: V2 默认覆盖新建规划、定义激活、DAG 调度、类型化输入、节点/成果重试和讨论补丁；V1 创建/手动运行入口保留为 feature flag 回退，V1 Work/Run/Block/事件/归档仍被 V2 复用。

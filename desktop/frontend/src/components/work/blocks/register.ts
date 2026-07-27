@@ -79,7 +79,7 @@ export function registerBuiltinBlocks(): void {
   blockRegistry.register('item', 1, validateItemList, loadItemList);
   blockRegistry.register('list', 1, validateItemList, loadItemList);
   blockRegistry.register('checklist', 1, validateChecklist, loadChecklist);
-  blockRegistry.register('file_list', 1, validateFileList, loadFileList);
+  blockRegistry.register('file_list', { min: 1, max: 2 }, validateFileList, loadFileList);
   blockRegistry.register('git_status', 1, validateGitStatus, loadGitStatus);
   blockRegistry.register('key_value', 1, validateKeyValue, loadKeyValue);
   blockRegistry.register('status', 1, validateKeyValue, loadKeyValue);

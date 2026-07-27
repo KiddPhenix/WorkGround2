@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/block-state-renderers.test.tsx
 //
-// Tests for all core V1 block renderers: item/list, checklist, file_list,
+// Tests for all core block renderers: item/list, checklist, file_list v1/v2,
 // git_status, key_value/status, progress/timeline.
 // Covers: valid/invalid schema, empty states, readonly/archive, fallback,
 // keyboard/ARIA, checklist revision conflicts, draft preservation, retry,
@@ -187,6 +187,10 @@ async function testSchemas(): Promise<void> {
   ok(!validateFileList(1, { files: [{ status: 'added' }] }).valid, 'file_list: missing path rejected');
   ok(!validateFileList(1, { files: [{ path: 'a', status: 'added' }, { path: 'a', status: 'modified' }] }).valid, 'file_list: duplicate path rejected');
   ok(validateFileList(1, { files: [{ path: 'a', status: 'added', digest: 'abc', desc: 'desc' }] }).valid, 'file_list: full valid');
+  ok(!validateFileList(1, { files: [{ path: 'a', status: 'added', description: 'v2' }] }).valid, 'file_list: v1 rejects v2 description');
+  ok(validateFileList(2, { files: [{ path: 'a', status: 'added', description: 'v2' }] }).valid, 'file_list: v2 accepts description');
+  ok(!validateFileList(2, { files: [{ path: 'a', status: 'added', desc: 'legacy' }] }).valid, 'file_list: v2 rejects legacy desc');
+  ok(blockRegistry.has('file_list', 2), 'file_list schema v2 is registered by the production BlockHost entry');
 
   console.log('\n-- schema validation: git_status');
   ok(validateGitStatus(1, { branch: 'main', changes: [] }).valid, 'git_status: valid minimal');
@@ -280,6 +284,17 @@ async function testRenderers(): Promise<void> {
   />);
   await waitFor(() => (container().textContent ?? '').includes('src/index.ts'), 'file_list renders path');
   contains(container().textContent ?? '', 'modified', 'file_list shows status');
+
+  await render(<BlockHost
+    block={block({
+      kind: 'file_list',
+      schemaVersion: 2,
+      data: { files: [{ path: 'src/schema-v2.ts', status: 'added', description: 'Migrated description' }] },
+    })}
+    context={context}
+  />);
+  await waitFor(() => (container().textContent ?? '').includes('src/schema-v2.ts'), 'file_list v2 renders path');
+  contains(container().textContent ?? '', 'Migrated description', 'file_list v2 renders description');
 
   await render(<BlockHost
     block={block({

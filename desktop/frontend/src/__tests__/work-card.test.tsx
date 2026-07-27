@@ -701,15 +701,28 @@ async function testArchiveAndUnavailableSession(): Promise<void> {
 async function testPlacementAndFlipAccessibility(): Promise<void> {
   reset();
   useWorkStore.getState().applySnapshot(makeView('work-order', {
-    blocks: [makeBlock('later'), makeBlock('first')],
+    blocks: [makeBlock('later'), makeBlock('first'), makeBlock('side'), makeBlock('result')],
     placements: [
       { blockId: 'later', slot: 'primary', order: 2 },
-      { blockId: 'first', slot: 'attention', order: 1 },
+      { blockId: 'first', slot: 'attention', order: 99, span: 6 },
+      { blockId: 'side', slot: 'secondary', order: 0, span: 4 },
+      { blockId: 'result', slot: 'result', order: 0 },
     ],
   }));
   const mounted = await mount(<WorkCard workID="work-order" port={new TestPort()} />);
   const blocks = [...mounted.host.querySelectorAll<HTMLElement>('[data-block-id]')].map((node) => node.dataset.blockId);
-  eq(blocks.join(','), 'first,later', 'front honors placement order and passes placement to BlockHost');
+  eq(blocks.join(','), 'first,later,side,result', 'front honors semantic slot order before per-slot order');
+  eq(mounted.host.querySelectorAll('[data-block-slot-region]').length, 4, 'front renders all four non-empty placement regions');
+  eq(
+    mounted.host.querySelector<HTMLElement>('[data-block-id="first"]')?.dataset.blockSpan,
+    '6',
+    'front exposes placement span to the responsive grid',
+  );
+  eq(
+    mounted.host.querySelector<HTMLElement>('[data-block-id="side"]')?.dataset.blockSlot,
+    'secondary',
+    'front preserves the authoritative slot on each Block wrapper',
+  );
   const button = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!;
   eq(button.tagName, 'BUTTON', 'flip entry uses native keyboard semantics');
   eq(button.type, 'button', 'flip entry cannot submit an enclosing form');
