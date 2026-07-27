@@ -566,6 +566,7 @@ test('ordinary same-revision refetch keeps conflict semantics and uses a fresh e
   port.fetch = async () => structuredClone(authoritative);
   const adapter = new WorkControllerAdapter(port);
   equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'initial ordinary snapshot applies');
+
   authoritative = makeView('work-1', 77, { name: 'same revision changed' });
   let failed = false;
   try { await adapter.recoverSnapshot('work-1'); } catch { failed = true; }
@@ -2100,6 +2101,49 @@ test('submit input exposes authoritative rejection instead of generic unconfirme
     'definition revision mismatch: expected 7, current 0',
     'submit rejection keeps backend detail',
   );
+  adapter.dispose();
+});
+
+test('watch event same-revision snapshot conflict triggers auto-recovery', async () => {
+  reset();
+  const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 42, { name: 'stale' });
+  let recoveryCount = 0;
+  port.recover = async (workID, intent) => {
+    recoveryCount++;
+    equal(intent.reason, 'retry', 'automatic conflict recovery uses the authoritative retry handshake');
+    return retryResync(makeView(workID, 42, { name: 'recovered' }), intent);
+  };
+  const adapter = new WorkControllerAdapter(port);
+  adapter.subscribe('work-1');
+  await new Promise<void>((r) => setTimeout(r, 0));
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'stale', 'init snapshot applied');
+  port.emit('work-1', snapshot(makeView('work-1', 42, { name: 'recovered' }), 'ss'));
+  await new Promise<void>((r) => setTimeout(r, 10));
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'recovered',
+    'auto-recovery applied the authoritative snapshot');
+  equal(recoveryCount, 1, 'one conflict creates one authoritative recovery');
+  equal(port.fetchCount, 1, 'automatic recovery does not overwrite through an ordinary snapshot fetch');
+  equal(port.listeners.get('work-1')?.size, 1, 'automatic recovery replaces rather than duplicates the Watch');
+  equal(adapter.getStatus('work-1').eventError, null, 'eventError cleared after recovery');
+  adapter.dispose();
+});
+
+test('permanent fetch failure keeps error observable', async () => {
+  reset();
+  const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 5, { name: 'stale' });
+  port.recover = async () => { throw new Error('network unreachable'); };
+  const adapter = new WorkControllerAdapter(port);
+  adapter.subscribe('work-1');
+  await new Promise<void>((r) => setTimeout(r, 0));
+  port.emit('work-1', snapshot(makeView('work-1', 5, { name: 'different' }), 'fail-rec'));
+  await new Promise<void>((r) => setTimeout(r, 10));
+  ok(adapter.getStatus('work-1').snapshotError?.includes('network unreachable'),
+    'permanent fetch failure remains visible as snapshotError');
+  equal(adapter.getStatus('work-1').stream.kind, 'offline', 'failed automatic recovery marks the stream offline');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'stale',
+    'failed automatic recovery preserves the last usable projection');
   adapter.dispose();
 });
 

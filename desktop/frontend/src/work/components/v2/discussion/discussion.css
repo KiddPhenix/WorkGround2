@@ -1,22 +1,50 @@
 /* DiscussionDrawer / PatchPreview — Block 讨论抽屉与补丁预览 */
 /* BEM-like: wg2-dd (DiscussionDrawer), wg2-pp (PatchPreview) */
 
-/* ── Drawer container ──────────────────────────────────────────── */
+/* ── Backdrop (portal to body) ───────────────────────────────── */
 
-.wg2-dd-drawer {
-  border-top: 1px solid var(--wg2-accent, #d97757);
-  background: var(--wg2-surface-elev, #1a1d26);
+.wg2-dd-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
   display: flex;
-  flex-direction: column;
-  max-height: min(80vh, 48rem);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  animation: wg2-dd-slide-in 0.15s ease-out;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  animation: wg2-dd-backdrop-in 0.15s ease-out;
 }
 
-@keyframes wg2-dd-slide-in {
-  from { opacity: 0; max-height: 0; }
-  to { opacity: 1; max-height: 48rem; }
+@keyframes wg2-dd-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Drawer container (centered dialog) ──────────────────────── */
+
+.wg2-dd-drawer {
+  position: relative;
+  width: min(90vw, 56rem);
+  max-height: min(90vh, 48rem);
+  background: var(--wg2-surface-elev, #1a1d26);
+  border: 1px solid var(--wg2-accent, #d97757);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: wg2-dd-dialog-in 0.18s ease-out;
+}
+
+@keyframes wg2-dd-dialog-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 /* ── Header ────────────────────────────────────────────────────── */
@@ -523,6 +551,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .wg2-dd-backdrop {
+    animation: none;
+  }
   .wg2-dd-drawer {
     animation: none;
   }

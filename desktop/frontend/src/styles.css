@@ -35029,6 +35029,8 @@ body > .mermaid-diagram--fullscreen {
   border-bottom: 1px solid var(--border, #333);
   background: var(--bg-surface, #1a1a1a);
   flex-shrink: 0;
+  user-select: none;
+  --wails-draggable: drag;
 }
 
 .wg2-work-outer-header-left {
@@ -35066,6 +35068,7 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  --wails-draggable: no-drag;
 }
 
 .wg2-work-status-fetching {
@@ -35085,6 +35088,7 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  --wails-draggable: no-drag;
 }
 
 .wg2-work-cornerstone-count {
@@ -35094,6 +35098,7 @@ body > .mermaid-diagram--fullscreen {
 
 .wg2-work-addon-area {
   flex-shrink: 0;
+  --wails-draggable: no-drag;
 }
 
 /* --- Deep link missing target --- */

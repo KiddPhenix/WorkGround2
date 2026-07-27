@@ -247,9 +247,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const suppressEmptyPlaceholder = !visibleCandidate && !v2ActiveDefinition
     && v2Definition?.status === 'draft' && v2Definition.nodes.length === 0;
   const hasCombinedFlow = !!(onSavePrompt && onCreateCandidate && candidateBase && !readonly && !archived);
-  const suppressDefaultSessionSurface = v2Definition !== undefined
-    && work.state === 'draft'
-    && !v2ActiveDefinition;
+  const suppressDefaultSessionSurface = v2Definition !== undefined;
 
   const savePrompt = async () => {
     if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
@@ -481,10 +479,12 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
             <div className="wg2-work-session-unavailable" role="alert">目标 Session 暂不可用。</div>
           )}
         </div>
-      ) : suppressDefaultSessionSurface ? null : slots?.surface ? (
-        <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
-          {renderSlot(slots.surface, slotProps)}
-        </div>
+      ) : slots?.surface ? (
+        suppressDefaultSessionSurface ? null : (
+          <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
+            {renderSlot(slots.surface, slotProps)}
+          </div>
+        )
       ) : slots?.transcript ? (
         <div className="wg2-work-back-slots" data-testid="work-session-surfaces">
           <div className="wg2-work-back-slot wg2-work-back-transcript" data-testid="work-back-slot-transcript">
@@ -511,7 +511,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
             </div>
           )}
         </div>
-      ) : (
+      ) : suppressDefaultSessionSurface ? null : (
         <div className="wg2-work-session-unavailable" role="status" data-testid="work-session-unavailable">
           关联会话界面尚未载入，可继续查看 Work 概览。
         </div>

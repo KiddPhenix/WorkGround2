@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 
 import type {
   ApplyWorkPatchRequest,
@@ -149,6 +150,8 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
 }) => {
   const drawerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const capturedActiveRef = useRef<Element | null>(null);
+  const closeRequestedRef = useRef(false);
   const previewAttemptRef = useRef<{ key: string; requestId: string } | null>(null);
   const applyAttemptRef = useRef<{
     key: string;
@@ -176,13 +179,24 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
   const hasRevisionConflict = revisionConflict || baseRevisionConflict;
   const hasConflict = hasRevisionConflict || digestConflict || previewExpired || scopeConflict;
 
-  // Focus textarea on mount, return focus on close
-  useEffect(() => {
+  // Focus textarea on mount; capture activeElement for restoration on close.
+  useLayoutEffect(() => {
+    capturedActiveRef.current = document.activeElement;
     textareaRef.current?.focus();
     return () => {
-      returnFocusRef?.current?.focus();
+      if (!closeRequestedRef.current) {
+        textareaRef.current?.blur();
+        return;
+      }
+      const target = returnFocusRef?.current ?? capturedActiveRef.current;
+      if (target instanceof HTMLElement && target.isConnected) target.focus();
     };
   }, [returnFocusRef]);
+
+  const requestClose = useCallback(() => {
+    closeRequestedRef.current = true;
+    onClose({ workId, taskId, blockId });
+  }, [workId, taskId, blockId, onClose]);
 
   const firePreview = useCallback((reuseAttempt = false) => {
     const instruction = draftText.trim();
@@ -242,7 +256,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose({ workId, taskId, blockId });
+        requestClose();
         return;
       }
 
@@ -269,7 +283,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
         }
       }
     },
-    [workId, taskId, blockId, draftText, isPreviewing, onClose, firePreview],
+    [draftText, isPreviewing, requestClose, firePreview],
   );
 
   const fireApply = useCallback(() => {
@@ -318,7 +332,13 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     applyResult?.committed && (applyResult.error || applyResult.transportError),
   );
 
-  return (
+  const handleBackdropClick = useCallback((e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) {
+      requestClose();
+    }
+  }, [requestClose]);
+
+  const dialog = (
     <div
       ref={drawerRef}
       id={`discussion-drawer-${taskId}`}
@@ -326,7 +346,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
       data-testid={`discussion-drawer-${taskId}`}
       role="dialog"
       aria-label={`${taskTitle} 讨论`}
-      aria-modal={false}
+      aria-modal={true}
       onKeyDown={handleKeyDown}
     >
       {/* ── Header ────────────────────────────────────────────────── */}
@@ -337,7 +357,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
         <button
           type="button"
           className="wg2-dd-btn wg2-dd-btn-close"
-          onClick={() => onClose({ workId, taskId, blockId })}
+          onClick={requestClose}
           aria-label="关闭讨论"
           data-testid={`discussion-close-${taskId}`}
         >
@@ -497,10 +517,10 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
             committedRecovery
               ? 'wg2-dd-result wg2-dd-result-info'
               : applyResult!.error
-              ? 'wg2-dd-result wg2-dd-result-error'
-              : applyResult!.duplicate
-                ? 'wg2-dd-result wg2-dd-result-info'
-                : 'wg2-dd-result wg2-dd-result-ok'
+                ? 'wg2-dd-result wg2-dd-result-error'
+                : applyResult!.duplicate
+                  ? 'wg2-dd-result wg2-dd-result-info'
+                  : 'wg2-dd-result wg2-dd-result-ok'
           }
           role={applyResult!.error ? 'alert' : 'status'}
           aria-live="polite"
@@ -552,5 +572,16 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
         </div>
       )}
     </div>
+  );
+
+  return createPortal(
+    <div
+      className="wg2-dd-backdrop"
+      onClick={handleBackdropClick}
+      data-testid={`discussion-backdrop-${taskId}`}
+    >
+      {dialog}
+    </div>,
+    document.body,
   );
 };

@@ -173,7 +173,7 @@ function isV2ProjectionEvent(event: WorkViewEvent): boolean {
 }
 
 function needsProjectionRecovery(event: WorkViewEvent, result: ApplyResult): boolean {
-  return result.kind === 'gap' || (result.kind === 'conflict' && isV2ProjectionEvent(event));
+  return result.kind === 'gap' || (result.kind === 'conflict' && (isV2ProjectionEvent(event) || event.type === 'snapshot'));
 }
 
 function claimProjectionRecovery(state: WorkSubscriptionState, event: WorkViewEvent, result: ApplyResult): boolean {
@@ -226,7 +226,11 @@ export class WorkControllerAdapter {
     this.startSubscription(workID, hasProjection ? 'hydrate' : null);
   };
 
-  private startSubscription(workID: string, reason: ViewRecoveryIntent['reason'] | null): void {
+  private startSubscription(
+    workID: string,
+    reason: ViewRecoveryIntent['reason'] | null,
+    recoveryEventIDs = new Set<string>(),
+  ): void {
     if (this.disposed || this.subscriptions.has(workID)) return;
     if (this.getStatus(workID).stream.kind !== 'offline') {
       this.updateStatus(workID, { stream: { kind: 'connecting' } });
@@ -243,7 +247,7 @@ export class WorkControllerAdapter {
       settling: true,
       buffering: true,
       events: [] as WorkViewEvent[],
-      recoveryEventIDs: new Set(),
+      recoveryEventIDs,
     };
     const onEvent = (event: WorkViewEvent): void => {
       if (this.subscriptions.get(workID)?.token !== token) return;
@@ -253,18 +257,14 @@ export class WorkControllerAdapter {
         this.updateStatus(workID, { eventError: `received event for ${parsed.workID} on ${workID} subscription` });
         return;
       }
+      if (state.recoveryEventIDs.has(parsed.eventID)) return;
       if (state.buffering) {
         state.events.push(parsed);
         return;
       }
-      const result = this.applyParsedEvent(parsed);
+      const result = this.applyParsedEvent(parsed, true);
       if (claimProjectionRecovery(state, parsed, result)) {
-        void this.recoverSnapshot(workID).catch(() => {
-          // recoverSnapshot already set snapshotError; ensure stream reflects the failure.
-          this.updateStatus(workID, {
-            stream: { kind: 'offline', message: this.getStatus(workID).snapshotError ?? 'watch-event recovery failed; retry subscription' },
-          });
-        });
+        this.restartSubscription(workID, state);
       }
     };
     let subscription: WorkPortSubscription;
@@ -298,8 +298,8 @@ export class WorkControllerAdapter {
         const buffered = this.flushBuffered(workID, state);
         if (buffered.retryableFailure) throw new Error('authoritative overflow recovery failed; retry synchronization');
         if (buffered.needsRecovery) {
-          const recovery = await this.recoverSnapshot(workID);
-          observedUnsupported ||= recovery.kind === 'unsupported';
+          this.restartSubscription(workID, state);
+          return;
         }
         if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
@@ -355,10 +355,19 @@ export class WorkControllerAdapter {
     // Repeated clicks while either half is still settling must not create a
     // competing generation or let a late response overwrite newer state.
     if (state && (!state.watchReady || state.settling)) return;
-    state?.port?.unsubscribe();
-    this.subscriptions.delete(workID);
+    if (state) {
+      this.restartSubscription(workID, state);
+      return;
+    }
     this.startSubscription(workID, 'retry');
   };
+
+  private restartSubscription(workID: string, state: WorkSubscriptionState): void {
+    if (!this.isCurrentSubscription(workID, state)) return;
+    state.port?.unsubscribe();
+    this.subscriptions.delete(workID);
+    this.startSubscription(workID, 'retry', state.recoveryEventIDs);
+  }
 
   private flushBuffered(workID: string, state: WorkSubscriptionState): { needsRecovery: boolean; retryableFailure: boolean } {
     if (!this.isCurrentSubscription(workID, state)) return { needsRecovery: false, retryableFailure: false };
@@ -367,7 +376,8 @@ export class WorkControllerAdapter {
     while (state.events.length > 0) {
       const pending = state.events.splice(0);
       for (const event of pending) {
-        const result = this.applyEvent(event);
+        if (state.recoveryEventIDs.has(event.eventID)) continue;
+        const result = this.applyParsedEvent(event, true);
         if (claimProjectionRecovery(state, event, result)) needsRecovery = true;
         if (isOverflowRecoveryFailure(event)) retryableFailure = true;
       }
@@ -416,14 +426,14 @@ export class WorkControllerAdapter {
     }
   }
 
-  private applyParsedEvent(event: WorkViewEvent): ApplyResult {
+  private applyParsedEvent(event: WorkViewEvent, suppressRecoverableConflict = false): ApplyResult {
     const result = applyWorkViewEvent(event);
     if (isOverflowRecoveryFailure(event)) {
       this.updateStatus(event.workID, {
         stream: { kind: 'offline', message: 'authoritative overflow recovery failed; retry synchronization' },
         snapshotError: 'authoritative overflow recovery failed; retry synchronization',
       });
-    } else if (result.kind === 'conflict') {
+    } else if (result.kind === 'conflict' && !(suppressRecoverableConflict && needsProjectionRecovery(event, result))) {
       this.updateStatus(event.workID, { eventError: result.conflict.reason });
     } else if (result.kind === 'applied') {
       this.updateStatus(event.workID, {

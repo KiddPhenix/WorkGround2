@@ -1,3 +1,53 @@
+# Work 讨论模态层 Design QA
+
+- source visual truth path: `D:\Temp\codex-clipboard-b62e65db-d7f8-40d6-8a01-d7eaaa235981.png`
+- implementation screenshot path: `D:\Temp\work-discussion-modal-implementation.jpg`
+- full-view comparison: `D:\Temp\work-discussion-modal-comparison-full.png`
+- focused comparison: `D:\Temp\work-discussion-modal-comparison-focus.png`
+- state: 已完成 Work 中点击 `Select KTV venue` 的“讨论”，显示空白讨论表单
+- viewport: 实现 CSS 视口 `1280 × 720`，`devicePixelRatio = 1.375`
+- dimensions and normalization:
+  - source: `1568 × 1256` px
+  - implementation: `1280 × 720` px
+  - full-view comparison 将两侧等比放入各 `784 × 628` 区域，专门判断页面层级与内容流
+  - focused comparison 分别裁切表单区域后按宽度对齐，专门判断表单排版与视觉 token
+
+## Findings
+
+没有可执行的 P0/P1/P2 问题。
+
+- 字体与排版：沿用现有 WorkGround2 UI 字体、字重和字号层级；标题、标签、提示和按钮关系与源表单一致。
+- 间距与布局：讨论表单从文档流提升到居中模态层，底层 Work 列表不再被推挤；`896 × 295` 的弹层在当前视口内留有充分安全边距。
+- 颜色与 token：复用现有暗色 surface、橙色 focus/accent、边框和 `--z-modal: 1200`；45% 遮罩清晰建立上下层级。
+- 图像与资产：该界面没有图像资产或品牌图形，不存在替代、模糊或裁切问题。
+- 文案与内容：标题、输入标签、占位文案、作用范围和主动作均保持原有语义。
+- 可访问性与交互：弹层为 `aria-modal` 对话框并直接挂载到 `document.body`；输入框自动聚焦，关闭按钮可关闭并可再次打开。自动化测试另覆盖 Esc、遮罩关闭、焦点回归和焦点循环。
+
+## Full-view comparison evidence
+
+源图左侧显示讨论区嵌在 `ExecutionList` 文档流内，导致后续内容整体下移；实现右侧显示带遮罩的应用级居中模态层，底层三个任务节点位置保持稳定。该差异是本次明确要求的产品修正。
+
+## Focused comparison evidence
+
+源表单与实现表单在标题、关闭入口、输入区、快捷键提示、作用范围和主按钮上保持同一信息结构。实现只调整了容器层级、宽度约束、圆角与阴影，以建立模态语义。
+
+## Comparison history
+
+- Pass 1: 未发现 P0/P1/P2；无需视觉返工。
+
+## Implementation checklist
+
+- [x] Portal 到 `document.body`
+- [x] 全视口固定遮罩与共享 modal z-index
+- [x] 居中、限宽、限高并支持内部滚动
+- [x] 关闭、Esc、遮罩点击统一收口
+- [x] 自动聚焦、焦点循环与关闭后焦点恢复
+- [x] reduced-motion 支持
+
+final result: passed
+
+---
+
 # Design QA — 全局会话状态
 
 - source visual truth path: `D:\Temp\codex-clipboard-4ae37805-8cc7-47b9-a37b-84e882eae597.png`

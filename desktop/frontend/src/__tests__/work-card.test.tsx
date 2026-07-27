@@ -788,9 +788,16 @@ async function testV2AutoFlipOnApplyDefinition(): Promise<void> {
     v2Tasks: { ...s.v2Tasks, [workID]: [] },
   }));
   const port = new TestPort();
-  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+  const mounted = await mount(
+    <WorkCard
+      workID={workID}
+      port={port}
+      backSlots={{ surface: <div data-testid="default-session-surface" /> }}
+    />,
+  );
 
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'draft V2 defaults to back face');
+  ok(!mounted.host.querySelector('[data-testid="default-session-surface"]'), 'draft V2 hides the default Session composer surface');
 
   // Click Apply — should auto-flip to front
   ok(Boolean(mounted.host.querySelector('[data-testid="work-planning-definition"]')), 'production planning definition is mounted');
@@ -809,6 +816,7 @@ async function testV2AutoFlipOnApplyDefinition(): Promise<void> {
   });
   ok(Boolean(mounted.host.querySelector('[data-testid="result-shelf"]') || mounted.host.querySelector('[data-testid="result-shelf-empty"]')), 'ResultShelf renders after V2 activation');
   ok(Boolean(mounted.host.querySelector('[data-testid="execution-list-empty"]')), 'ExecutionList renders after V2 activation');
+  ok(!mounted.host.querySelector('[data-testid="default-session-surface"]'), 'active V2 keeps the default Session composer surface hidden');
 
   await mounted.cleanup();
 }
@@ -1281,11 +1289,11 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
 
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
   ok(
-    appSource.includes('onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(ownerTabID, intent.path)}'),
+    appSource.includes('onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(activeTab.id, intent.path)}'),
     'production artifact open reaches the authorized system-open host boundary',
   );
   ok(
-    appSource.includes('onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(ownerTabID, intent.path)}'),
+    appSource.includes('onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(activeTab.id, intent.path)}'),
     'production artifact locate reaches the authorized file-manager host boundary',
   );
   ok(
@@ -1717,10 +1725,10 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="work-input-submit-${taskID}-spec-1"]`)!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="work-input-pin-${taskID}-spec-1"]`)!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${taskID}"]`)!.click());
-  eq(mounted.host.querySelectorAll('[data-testid^="discussion-drawer-"]').length, 1, 'production mounts one discussion drawer');
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`)!.click());
+  eq(document.querySelectorAll('[data-testid^="discussion-drawer-"]').length, 1, 'production mounts one discussion drawer');
+  await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`)!.click());
   await settle(50);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${taskID}"]`)!.click());
+  await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${taskID}"]`)!.click());
   await settle(50);
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
@@ -1890,13 +1898,13 @@ async function testV2ExplicitSessionIdReachesPreviewPatch(): Promise<void> {
   await settle(50);
 
   // Type instruction and click preview.
-  const textarea = mounted.host.querySelector<HTMLTextAreaElement>(`[data-testid="discussion-input-${taskID}"]`);
+  const textarea = document.querySelector<HTMLTextAreaElement>(`[data-testid="discussion-input-${taskID}"]`);
   ok(Boolean(textarea), 'explicit session: discussion textarea is present');
   await interact(() => {
     textarea!.value = 'make it better';
     textarea!.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  const previewBtn = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`);
+  const previewBtn = document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`);
   ok(Boolean(previewBtn), 'explicit session: preview button is present');
   ok(!previewBtn!.disabled, 'explicit session: preview button is enabled');
   await interact(() => previewBtn!.click());

@@ -1123,7 +1123,7 @@ async function runTests(): Promise<void> {
     await interact(() =>
       host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${task.id}"]`)?.click());
     await interact(() =>
-      host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
+      document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
     eq(previewBlock?.id, blockId, 'discussion identity: legacy node sends its stable derived Block ID');
     eq(previewBlock?.revision, 1, 'discussion identity: first materialization starts at Block revision 1');
     eq(v2DiscussionBlockId('中文'), 'v2-node-e4b8ade69687', 'discussion identity: Go/TS UTF-8 ID contract');
@@ -1200,7 +1200,7 @@ async function runTests(): Promise<void> {
     await interact(() =>
       host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${task.id}"]`)?.click());
     await interact(() =>
-      host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
+      document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
     eq(previewIntent?.blockId, 'input-block', 'discussion identity: bound input Block wins over declared Block');
     eq(previewIntent?.blockRevision, 7, 'discussion identity: preview uses authoritative Block revision');
     ok(previewIntent?.blockId !== task.id, 'discussion identity: taskId is never used as blockId');
@@ -1312,8 +1312,8 @@ async function runTests(): Promise<void> {
     };
     const { host, root, cleanup } = await mount(<ExecutionList {...props} expandedTaskId="task-a" />);
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-a"]')?.click());
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-a"]')?.click());
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-a"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-a"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-a"]')?.click());
     await act(async () => { root.render(<ExecutionList {...props} expandedTaskId="task-b" />); });
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-b"]')?.click());
     lateA.resolve({
@@ -1325,43 +1325,43 @@ async function runTests(): Promise<void> {
       recoverable: false,
     });
     await settle();
-    ok(host.querySelector('[data-testid="discussion-result-task-b"]') === null, 'discussion epoch: late apply cannot pollute another full identity');
+    ok(document.querySelector('[data-testid="discussion-result-task-b"]') === null, 'discussion epoch: late apply cannot pollute another full identity');
     eq(refreshCalls, 0, 'discussion epoch: late apply cannot trigger authoritative refresh');
 
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
     await settle();
     contains(
-      host.querySelector('[data-testid="discussion-result-task-b"]')?.textContent ?? '',
+      document.querySelector('[data-testid="discussion-result-task-b"]')?.textContent ?? '',
       '补丁已提交',
       'discussion recovery: transport-only committed result is explicit',
     );
     contains(
-      host.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
+      document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
       '刷新权威状态失败',
       'discussion recovery: awaited refresh failure is explicit',
     );
-    ok(Boolean(host.querySelector('[data-testid="discussion-receipt-task-b"]')), 'discussion recovery: typed receipt is displayed');
+    ok(Boolean(document.querySelector('[data-testid="discussion-receipt-task-b"]')), 'discussion recovery: typed receipt is displayed');
     eq(refreshCalls, 1, 'discussion recovery: committed result refreshes exactly once');
 
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-close-task-b"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-task-b"]')?.click());
     returnMissingReceipt = true;
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-b"]')?.click());
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
     await settle();
     contains(
-      host.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
+      document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
       '缺少 PatchIntentReceipt',
       'discussion receipt contract: missing receipt is explicit',
     );
     contains(
-      host.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
+      document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
       '刷新权威状态失败',
       'discussion receipt contract: missing receipt still awaits refresh',
     );
     ok(
-      !host.querySelector('[data-testid="discussion-receipt-task-b"]'),
+      !document.querySelector('[data-testid="discussion-receipt-task-b"]'),
       'discussion receipt contract: client request/revision are not fabricated as receipt',
     );
     eq(refreshCalls, 2, 'discussion receipt contract: missing receipt refreshes exactly once');

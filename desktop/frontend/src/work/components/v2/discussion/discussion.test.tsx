@@ -98,18 +98,27 @@ async function interact(action: () => void): Promise<void> {
 }
 
 interface Mounted {
-  host: HTMLDivElement;
+  host: HTMLElement;
+  container: HTMLDivElement;
   root: Root;
   cleanup: () => Promise<void>;
 }
 
 async function mount(element: React.ReactElement): Promise<Mounted> {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
-  const root = createRoot(host, { onCaughtError: (error) => { throw error; } });
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = createRoot(container, { onCaughtError: (error) => { throw error; } });
   await act(async () => { root.render(element); });
   await settle();
-  return { host, root, cleanup: async () => { await act(async () => { root.unmount(); }); host.remove(); } };
+  return {
+    host: document.body,
+    container,
+    root,
+    cleanup: async () => {
+      await act(async () => { root.unmount(); });
+      container.remove();
+    },
+  };
 }
 
 // ── golden data validation ─────────────────────────────────────────────────
@@ -1022,7 +1031,9 @@ async function runTests(): Promise<void> {
   // ════════════════════════════════════════════════════════════════════════
   {
     ok(cssText.length > 100, 'css: has content');
+    contains(cssText, '.wg2-dd-backdrop', 'css: backdrop class');
     contains(cssText, '.wg2-dd-drawer', 'css: drawer class');
+    contains(cssText, '--z-modal', 'css: uses shared modal layer token');
     contains(cssText, '.wg2-pp-panel', 'css: preview panel class');
     contains(cssText, '.wg2-dd-btn', 'css: button class');
     contains(cssText, '.wg2-pp-ops', 'css: ops table');
@@ -1149,6 +1160,65 @@ async function runTests(): Promise<void> {
     eq(h.applyIntents[0]?.expectedRevision, WORK_REV, 'apply-retry: starts from work revision');
 
     await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 36. Portal modal is outside the render container
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const h = makeHarness();
+    const { host, container, cleanup } = await mount(makeDrawer(h));
+
+    const backdrop = host.querySelector(`[data-testid="discussion-backdrop-${TASK_ID}"]`);
+    const drawer = host.querySelector(`[data-testid="discussion-drawer-${TASK_ID}"]`);
+    ok(backdrop?.parentElement === document.body, 'portal: backdrop is a body child');
+    ok(!container.contains(backdrop), 'portal: backdrop is outside the ExecutionList render container');
+    eq(drawer?.getAttribute('aria-modal'), 'true', 'portal: dialog is modal');
+
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 37. Backdrop closes; dialog content does not
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const h = makeHarness();
+    const { host, cleanup } = await mount(makeDrawer(h));
+    const backdrop = host.querySelector(`[data-testid="discussion-backdrop-${TASK_ID}"]`);
+    const drawer = host.querySelector(`[data-testid="discussion-drawer-${TASK_ID}"]`);
+
+    await interact(() => {
+      drawer?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    eq(h.closeIntents.length, 0, 'backdrop: dialog click stays open');
+
+    await interact(() => {
+      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    eq(h.closeIntents.length, 1, 'backdrop: empty area closes modal');
+
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 38. Focus returns to the captured trigger without an explicit ref
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const trigger = document.createElement('button');
+    document.body.appendChild(trigger);
+    trigger.focus();
+
+    const h = makeHarness();
+    const { host, cleanup } = await mount(makeDrawer(h));
+    const textarea = host.querySelector<HTMLTextAreaElement>(`[data-testid="discussion-input-${TASK_ID}"]`);
+    eq(document.activeElement, textarea, 'focus: textarea receives focus');
+
+    const close = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-close-${TASK_ID}"]`);
+    await interact(() => close?.click());
+    await cleanup();
+    await settle(0);
+    eq(document.activeElement, trigger, 'focus: close restores captured trigger');
+    trigger.remove();
   }
 
   // ── Summary ────────────────────────────────────────────────────────────

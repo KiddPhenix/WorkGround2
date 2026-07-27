@@ -157,6 +157,13 @@ ok(
   "CSS: Work page keeps a draggable header with clickable controls",
 );
 ok(
+  finalDeclaration(stylesSource, ".wg2-work-outer-header", "--wails-draggable") === "drag" &&
+    finalDeclaration(stylesSource, ".wg2-work-outer-header-right", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".wg2-work-cornerstone-entry", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".wg2-work-addon-area", "--wails-draggable") === "no-drag",
+  "CSS: Work detail header is draggable while its actions stay interactive",
+);
+ok(
   finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "top") === "4px" &&
     finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "right") ===
       "calc(var(--windows-window-controls-width) + 8px)",

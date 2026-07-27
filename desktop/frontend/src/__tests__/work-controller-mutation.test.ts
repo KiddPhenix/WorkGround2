@@ -87,7 +87,7 @@ function makeMockPort(): MockPort {
   return port;
 }
 
-// ── A: Watch event triggers onEvent → claimProjectionRecovery → recoverSnapshot fails → retry clears ──
+// ── A: Watch event auto-restarts with authoritative recovery; a later retry clears failure ──
 {
   resetStore();
   const workID = 'w-watch-retry';
@@ -100,13 +100,15 @@ function makeMockPort(): MockPort {
       // Initial hydration succeeds.
       return Promise.resolve(makeView(workID, 3, { name: 'Hydrated' }));
     }
-    // Watch-triggered recovery fails.
-    return Promise.reject(new Error('watch-recovery-network-down'));
+    return Promise.resolve(makeView(workID, 3, { name: 'Hydrated' }));
   });
 
   let recoveryCalls = 0;
   port._setFetchRecoverySnapshot(() => {
     recoveryCalls++;
+    if (recoveryCalls === 1) {
+      return Promise.reject(new Error('watch-recovery-network-down'));
+    }
     const gen = 999;
     return Promise.resolve({
       schemaVersion: 1, type: 'snapshot' as const, workID,
@@ -135,12 +137,12 @@ function makeMockPort(): MockPort {
   const initialRev = useWorkStore.getState().revisions[workID];
   assert.equal(initialRev, 3, `expected revision 3 after hydration, got ${initialRev}`);
 
-  // Dispatch a Watch gap event via the captured onEvent. Store at rev 3; event
-  // baseRevision 2 → gap → claimProjectionRecovery → recoverSnapshot → fetchSnapshot fails.
+  // Store at rev 3; baseRevision 2 creates a gap and starts a fresh Watch plus
+  // an authoritative retry snapshot. The first authoritative request fails.
   assert.ok(port._capturedOnEvent, 'subscribe must capture onEvent');
   port._capturedOnEvent!(gapEvent(workID, 4, 2));
 
-  // Wait for onEvent's async recoverSnapshot + catch at L262 to settle.
+  // Wait for the automatic replacement subscription to settle.
   await sleep(300);
 
   status = getStatus(adapter, workID);
@@ -178,6 +180,19 @@ function makeMockPort(): MockPort {
     // Recovery returns authoritative revision 5.
     return Promise.resolve(authView);
   });
+  port._setFetchRecoverySnapshot(() => {
+    const gen = 999;
+    return Promise.resolve({
+      schemaVersion: 1, type: 'snapshot' as const, workID,
+      eventID: `wv-resync-${workID}-rev-5-retry-${gen}`,
+      revision: 5, baseRevision: 0,
+      requestID: `retry-req:${workID}`,
+      object: { kind: 'work' as const, id: workID },
+      resync: { reason: 'retry' as const, authoritative: true, generation: gen },
+      payload: authView,
+      createdAt: '2026-07-24T10:00:00Z',
+    });
+  });
 
   const adapter = new WorkControllerAdapter(port);
   adapter.subscribe(workID);
@@ -187,12 +202,12 @@ function makeMockPort(): MockPort {
   const revBefore = useWorkStore.getState().revisions[workID];
   assert.equal(revBefore, 3);
 
-  // Watch event arrives first: gap event (baseRevision != current) triggers
-  // claimProjectionRecovery → recoverSnapshot → fetchSnapshot returns revision 5.
+  // Watch event arrives first: the gap replaces the Watch and applies an
+  // authoritative retry snapshot at revision 5.
   assert.ok(port._capturedOnEvent);
   port._capturedOnEvent!(gapEvent(workID, 4, 2));
 
-  // Let the onEvent → recoverSnapshot async chain settle.
+  // Let the replacement subscription settle.
   await sleep(300);
 
   // Store must have converged to revision 5 after recovery.

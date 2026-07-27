@@ -77,7 +77,10 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   const runBlock = view?.runBlock;
   const blocked = Boolean(runBlock?.blocked || assessment?.blocking);
   const degraded = assessment?.degraded ?? false;
-  const v2Tasks = view?.tasks ?? [];
+  const projectedV2Tasks = useWorkStore((state) => state.v2Tasks[workId]);
+  const projectedArtifactSlots = useWorkStore((state) => state.artifactSlots[workId]);
+  const v2Tasks = projectedV2Tasks ?? view?.tasks ?? [];
+  const v2ArtifactSlots = projectedArtifactSlots ?? view?.artifactSlots ?? [];
   const recoverableV2Task = v2Tasks.find((task) =>
     task.state === 'failed_retryable' || task.state === 'invalidated');
   const v2Running = v2Tasks.some((task) =>
@@ -86,7 +89,7 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
     task.state === 'waiting_input' || task.state === 'waiting_approval');
   const v2Completed = v2Tasks.length > 0 && v2Tasks.every((task) => task.state === 'completed');
   const missingV2Artifact = v2Completed
-    ? view?.artifactSlots?.find((slot) => slot.required && slot.state !== 'ready')
+    ? v2ArtifactSlots.find((slot) => slot.required && slot.state !== 'ready')
     : undefined;
   const running = v2Definition && v2Tasks.length > 0 ? v2Running : view?.work.state === 'running';
   const promptMissing = Boolean(view && !view.work.prompt.trim());
