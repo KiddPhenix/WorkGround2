@@ -70,6 +70,8 @@ export interface WorkInputHostProps {
   definitionRevision: number;
   /** Current input revision for DTO construction. */
   inputRevision: number;
+  /** Current work revision for expectedRevision in DTOs and intent keys. */
+  workRevision: number;
   disabled?: boolean;
   committedRequestIds?: Partial<Record<InputOperation, string>>;
   onRequestCommitted?: (operation: InputOperation, requestId: string) => void;
@@ -169,6 +171,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
   blockId,
   definitionRevision,
   inputRevision,
+  workRevision,
   disabled,
   committedRequestIds,
   onRequestCommitted,
@@ -190,6 +193,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       inputSpec.id,
       workInput?.id ?? '',
       definitionRevision,
+      workRevision,
     ].join('\u0000'),
     revision: workInput?.revision ?? inputRevision,
   };
@@ -305,7 +309,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       value: wireValue,
       definitionRevision,
       inputRevision,
-      expectedRevision: startRev,
+      expectedRevision: workRevision,
       requestId: reqId,
     };
 
@@ -391,7 +395,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
     }
   }, [
     disabled, schemaError, inputSpec, draftValue, schema, ui.submitPhase,
-    ui.submitRequestId, workInput, inputRevision, onSubmit, workId, runId,
+    ui.submitRequestId, workInput, inputRevision, workRevision, onSubmit, workId, runId,
     taskId, blockId, definitionRevision, authority.identity, onRefreshAuthoritative,
     committedRequestIds?.submit, onRequestCommitted,
   ]);
@@ -438,7 +442,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       pin,
       definitionRevision,
       inputRevision,
-      expectedRevision: startRev,
+      expectedRevision: workRevision,
       requestId: reqId,
     };
 
@@ -524,7 +528,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       setUI((prev) => ({ ...prev, pinPhase: 'error', pinError: msg }));
     }
   }, [
-    disabled, workInput, inputRevision, ui.pinPhase, ui.pinRequestId,
+    disabled, workInput, inputRevision, workRevision, ui.pinPhase, ui.pinRequestId,
     onPin, onUnpin, workId, definitionRevision, authority.identity,
     onRefreshAuthoritative, committedRequestIds, onRequestCommitted,
   ]);

@@ -151,6 +151,12 @@ ok(
   "CSS: interactive header controls opt out of window dragging",
 );
 ok(
+  finalDeclaration(stylesSource, ".work-page__header", "--wails-draggable") === "drag" &&
+    finalDeclaration(stylesSource, ".work-page__back-btn", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".work-page__new-btn", "--wails-draggable") === "no-drag",
+  "CSS: Work page keeps a draggable header with clickable controls",
+);
+ok(
   finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "top") === "4px" &&
     finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "right") ===
       "calc(var(--windows-window-controls-width) + 8px)",

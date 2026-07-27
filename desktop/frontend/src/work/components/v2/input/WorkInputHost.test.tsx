@@ -112,6 +112,7 @@ const RUN_ID = 'run-fixture';
 const BLOCK_ID = 'b1';
 const DEF_REV = 2;
 const INPUT_REV = 1;
+const WORK_REV = 27;
 
 function makeSpec(overrides: Partial<InputSpec> = {}): InputSpec {
   return { id: 'spec-text', label: '测试输入', kind: 'text' as InputKind, required: false, pinEligible: false, ...overrides };
@@ -143,13 +144,14 @@ function makeInputReceipt(
 }
 
 function WorkInputHost(
-  props: Omit<WorkInputHostProps, 'onRefreshAuthoritative'> &
-    Partial<Pick<WorkInputHostProps, 'onRefreshAuthoritative'>>,
+  props: Omit<WorkInputHostProps, 'onRefreshAuthoritative' | 'workRevision'> &
+    Partial<Pick<WorkInputHostProps, 'onRefreshAuthoritative' | 'workRevision'>>,
 ): React.ReactElement {
   return (
     <ProductionWorkInputHost
       workInput={props.workInput ?? makeWorkInput({ specId: props.inputSpec.id })}
       onRefreshAuthoritative={async () => {}}
+      workRevision={props.workRevision ?? 1}
       {...props}
     />
   );
@@ -1393,6 +1395,84 @@ async function runTests(): Promise<void> {
     )?.textContent ?? '';
     contains(warning, '缺少 InputIntentReceipt', 'receipt-contract: unpin missing receipt is explicit');
     ok(!warning.includes('input-unpin-'), 'receipt-contract: unpin client requestId is not displayed as receipt');
+    await cleanup();
+  }
+
+  // ── workRevision regression: expectedRevision vs inputRevision ──
+  // Submit DTO must send workRevision as expectedRevision, not input revision.
+  {
+    const submitReqs: SubmitWorkInputRequest[] = [];
+    const wi = makeWorkInput({ specId: 'wr-sub', revision: 0 });
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({ id: 'wr-sub', label: 'WorkRevSubmit', kind: 'text', required: false })}
+        workInput={wi}
+        draftValue="test" onDraftChange={() => {}}
+        onSubmit={async (req) => { submitReqs.push(req); return { revision: 28, duplicate: false, committed: true, recoverable: false }; }}
+        onPin={noopPin} onUnpin={noopUnpin}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={0} workRevision={WORK_REV}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="work-input-submit-task-fixture-wr-sub"]')?.click());
+    eq(submitReqs.length >= 1, true, 'workRev: submit fired');
+    if (submitReqs.length > 0) {
+      eq(submitReqs[0].expectedRevision, WORK_REV, 'workRev: submit expectedRevision=27 (work revision)');
+      eq(submitReqs[0].inputRevision, 0, 'workRev: submit inputRevision=0 (input revision)');
+      eq(submitReqs[0].definitionRevision, DEF_REV, 'workRev: submit definitionRevision=2');
+    }
+    await cleanup();
+  }
+
+  // Pin DTO must send workRevision as expectedRevision, not input revision.
+  {
+    const pinReqs: SetInputCornerstoneRequest[] = [];
+    const wi = makeWorkInput({ specId: 'wr-pin', revision: 1 });
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({ id: 'wr-pin', label: 'WorkRevPin', kind: 'text', required: false, pinEligible: true })}
+        workInput={wi}
+        draftValue="test" onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={async (req) => { pinReqs.push(req); return { cornerstoneId: 'cs-wr', pinned: true, revision: 28, duplicate: false, committed: true, recoverable: false }; }}
+        onUnpin={noopUnpin}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={1} workRevision={WORK_REV}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="work-input-pin-task-fixture-wr-pin"]')?.click());
+    eq(pinReqs.length >= 1, true, 'workRev: pin fired');
+    if (pinReqs.length > 0) {
+      eq(pinReqs[0].expectedRevision, WORK_REV, 'workRev: pin expectedRevision=27 (work revision)');
+      eq(pinReqs[0].inputRevision, 1, 'workRev: pin inputRevision=1 (input revision)');
+      eq(pinReqs[0].pin, true, 'workRev: pin DTO.pin=true');
+    }
+    await cleanup();
+  }
+
+  // Unpin DTO must also use workRevision for expectedRevision.
+  {
+    const unpinReqs: SetInputCornerstoneRequest[] = [];
+    const wi = makeWorkInput({ specId: 'wr-unpin', revision: 0, cornerstoneId: 'cs-old' });
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({ id: 'wr-unpin', label: 'WorkRevUnpin', kind: 'text', required: false, pinEligible: true })}
+        workInput={wi}
+        draftValue="test" onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={noopPin}
+        onUnpin={async (req) => { unpinReqs.push(req); return { pinned: false, revision: 28, duplicate: false, committed: true, recoverable: false }; }}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={0} workRevision={WORK_REV}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="work-input-pin-task-fixture-wr-unpin"]')?.click());
+    eq(unpinReqs.length >= 1, true, 'workRev: unpin fired');
+    if (unpinReqs.length > 0) {
+      eq(unpinReqs[0].expectedRevision, WORK_REV, 'workRev: unpin expectedRevision=27 (work revision)');
+      eq(unpinReqs[0].inputRevision, 0, 'workRev: unpin inputRevision=0 (input revision)');
+      eq(unpinReqs[0].pin, false, 'workRev: unpin DTO.pin=false');
+    }
     await cleanup();
   }
 

@@ -1157,17 +1157,40 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   useEffect(() => {
     if (!activeTabId || workEnabled !== true || workConfigFailed) return;
     const gen = workGenRef.current;
+    const tabID = activeTabId;
+    const retryDelays = [120, 300];
+    let retryTimer: number | undefined;
+    let cancelled = false;
     setWorkCapability({ tabID: activeTabId, capable: null, failed: false });
     if (!workControllerReady) return;
-    app.WorkCapable(activeTabId)
-      .then((capable) => {
-        if (workGenRef.current !== gen) return;
-        setWorkCapability({ tabID: activeTabId, capable, failed: !capable });
-      })
-      .catch(() => {
-        if (workGenRef.current !== gen) return;
-        setWorkCapability({ tabID: activeTabId, capable: false, failed: true });
-      });
+    const probe = (attempt: number) => {
+      app.WorkCapable(tabID)
+        .then((capable) => {
+          if (cancelled || workGenRef.current !== gen) return;
+          if (capable) {
+            setWorkCapability({ tabID, capable: true, failed: false });
+            return;
+          }
+          if (attempt < retryDelays.length) {
+            retryTimer = window.setTimeout(() => probe(attempt + 1), retryDelays[attempt]);
+            return;
+          }
+          setWorkCapability({ tabID, capable: false, failed: true });
+        })
+        .catch(() => {
+          if (cancelled || workGenRef.current !== gen) return;
+          if (attempt < retryDelays.length) {
+            retryTimer = window.setTimeout(() => probe(attempt + 1), retryDelays[attempt]);
+            return;
+          }
+          setWorkCapability({ tabID, capable: false, failed: true });
+        });
+    };
+    probe(0);
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
+    };
   }, [activeTabId, workConfigFailed, workControllerReady, workEnabled]);
 
   // Configuration is the sole owner of whether Work exists in this tab. A

@@ -694,9 +694,9 @@ emptyBeforeCreate = true;
 await waitFor("Work entry for create", () => document.querySelector('[data-testid="work-sidebar-btn"]') != null);
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]')?.click(); });
 await waitFor("Work page for create", () => document.querySelector('[data-testid="work-page"]') != null);
-await waitFor("empty Work CTA", () => document.querySelector('[data-testid="work-empty-new-btn"]') != null);
-ok(document.querySelector('[data-testid="work-empty-new-btn"]') != null, "真实 <App/> 空 ListWorks 显示新建工作 CTA");
-await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-empty-new-btn"]')?.click(); });
+await waitFor("empty Work CTA", () => document.querySelector('[data-testid="work-empty"]') != null);
+ok(document.querySelector('[data-testid="work-new-btn"]') != null, "真实 <App/> 空 ListWorks 显示新建工作 CTA");
+await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-new-btn"]')?.click(); });
 const createPrompt = document.querySelector<HTMLTextAreaElement>('[data-testid="work-create-prompt"]');
 if (!createPrompt) throw new Error("missing create prompt input");
 await setControlValue(createPrompt, "创建的 Work");
@@ -846,7 +846,7 @@ const raceMethods: Partial<AppBindings> & { WorkEnabled(tabID: string): Promise<
     if (tabID === "race-c" && !capableCSettled) return capableC.promise;
     if (tabID === "race-g") return false;
     if (tabID === "race-i") return ++capableIAttempts > 1;
-    if (tabID === "race-k" && ++capableKAttempts === 1) throw new Error("capability unavailable");
+    if (tabID === "race-k" && ++capableKAttempts <= 3) throw new Error("capability unavailable");
     return true;
   },
   ListWorks: async (tabID) => {
@@ -947,16 +947,13 @@ ok(
 ok(raceListCalls.filter((tabID) => tabID === "race-h").length === 1, "WorkEnabled 重试成功后恰好一次 ListWorks");
 
 await activateRaceTab("race-i");
-await waitFor("race-i observable capability failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
+await waitFor("race-i automatic capability recovery", () => capableIAttempts === 2 && document.querySelector('[data-work-state="ready"]') != null);
 const failedCapabilityEntry = document.querySelector<HTMLButtonElement>('[data-testid="work-sidebar-btn"]');
-ok(failedCapabilityEntry?.disabled === false, "WorkCapable false 保留可点击入口");
+ok(failedCapabilityEntry?.disabled === false, "WorkCapable 瞬时 false 自动恢复并保留同一入口");
 await act(async () => { failedCapabilityEntry?.click(); });
-ok(document.querySelector('[data-work-status="unavailable"]') != null, "WorkCapable false 点击后进入可重试错误页");
-ok(!raceListCalls.includes("race-i"), "WorkCapable false 错误页不调用 ListWorks");
-await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
-await waitFor("race-i capability retry Work page", () => document.querySelector('[data-testid="work-page"]') != null);
-ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedCapabilityEntry && capableIAttempts === 2, "WorkCapable false 重试成功后原地进入 WorkPage");
-ok(raceListCalls.filter((tabID) => tabID === "race-i").length === 1, "WorkCapable false 重试成功后恰好一次 ListWorks");
+await waitFor("race-i recovered Work page", () => document.querySelector('[data-testid="work-page"]') != null);
+ok(document.querySelector('[data-testid="work-sidebar-btn"]') === failedCapabilityEntry, "WorkCapable 自动恢复后原地进入 WorkPage");
+ok(raceListCalls.filter((tabID) => tabID === "race-i").length === 1, "WorkCapable 自动恢复后恰好一次 ListWorks");
 
 await activateRaceTab("race-j");
 await waitFor("race-j observable config failure", () => document.querySelector('[data-work-state="unavailable"]') != null);
@@ -978,7 +975,7 @@ ok(document.querySelector('[data-work-status="unavailable"]') != null, "WorkCapa
 ok(!raceListCalls.includes("race-k"), "WorkCapable reject 错误页不调用 ListWorks");
 await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="work-availability-retry"]')?.click(); });
 await waitFor("race-k capability retry Work page", () => document.querySelector('[data-testid="work-page"]') != null);
-ok(capableKAttempts === 2, "WorkCapable reject 可安全重试");
+ok(capableKAttempts === 4, "WorkCapable 连续 reject 后保留手动安全重试");
 ok(raceListCalls.filter((tabID) => tabID === "race-k").length === 1, "WorkCapable reject 重试成功后恰好一次 ListWorks");
 
 await activateRaceTab("race-c");

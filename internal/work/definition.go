@@ -408,7 +408,12 @@ type RunImpact struct {
 // ClassifyRunImpact determines how an existing run's tasks are affected by
 // switching from oldRev to newRev. Results are deterministically sorted.
 func ClassifyRunImpact(oldRev, newRev *WorkDefinitionRevision) *RunImpact {
-	ri := &RunImpact{}
+	ri := &RunImpact{
+		KeptNodeIDs:        []string{},
+		InvalidatedNodeIDs: []string{},
+		NewNodeIDs:         []string{},
+		RemovedNodeIDs:     []string{},
+	}
 	oldNodes := indexNodes(oldRev.Nodes)
 	newNodes := indexNodes(newRev.Nodes)
 	oldSpecs := indexSpecs(oldRev.InputSpecs)

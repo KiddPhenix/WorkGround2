@@ -38,10 +38,10 @@ func impactToJSON(ri *RunImpact) *RunImpactJSON {
 		return nil
 	}
 	return &RunImpactJSON{
-		KeptNodeIDs:        append([]string(nil), ri.KeptNodeIDs...),
-		InvalidatedNodeIDs: append([]string(nil), ri.InvalidatedNodeIDs...),
-		NewNodeIDs:         append([]string(nil), ri.NewNodeIDs...),
-		RemovedNodeIDs:     append([]string(nil), ri.RemovedNodeIDs...),
+		KeptNodeIDs:        append([]string{}, ri.KeptNodeIDs...),
+		InvalidatedNodeIDs: append([]string{}, ri.InvalidatedNodeIDs...),
+		NewNodeIDs:         append([]string{}, ri.NewNodeIDs...),
+		RemovedNodeIDs:     append([]string{}, ri.RemovedNodeIDs...),
 		RequiresRerun:      ri.RequiresRerun,
 	}
 }
@@ -51,10 +51,10 @@ func impactFromJSON(ij *RunImpactJSON) *RunImpact {
 		return nil
 	}
 	return &RunImpact{
-		KeptNodeIDs:        append([]string(nil), ij.KeptNodeIDs...),
-		InvalidatedNodeIDs: append([]string(nil), ij.InvalidatedNodeIDs...),
-		NewNodeIDs:         append([]string(nil), ij.NewNodeIDs...),
-		RemovedNodeIDs:     append([]string(nil), ij.RemovedNodeIDs...),
+		KeptNodeIDs:        append([]string{}, ij.KeptNodeIDs...),
+		InvalidatedNodeIDs: append([]string{}, ij.InvalidatedNodeIDs...),
+		NewNodeIDs:         append([]string{}, ij.NewNodeIDs...),
+		RemovedNodeIDs:     append([]string{}, ij.RemovedNodeIDs...),
 		RequiresRerun:      ij.RequiresRerun,
 	}
 }

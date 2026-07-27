@@ -176,16 +176,16 @@ export const DefinitionDiff: React.FC<DefinitionDiffProps> = ({
       {/* ── RunImpact if available ───────────────────────────────── */}
       {impact && (
         <div className="wg2-dd-diff-impact" data-testid="definition-diff-impact">
-          {impact.keptNodeIds.length > 0 && (
+          {impact.keptNodeIds?.length > 0 && (
             <ChangeGroup label="保留任务" kind="kept" ids={impact.keptNodeIds} testId="definition-diff-kept" />
           )}
-          {impact.invalidatedNodeIds.length > 0 && (
+          {impact.invalidatedNodeIds?.length > 0 && (
             <ChangeGroup label="需重新执行" kind="invalidated" ids={impact.invalidatedNodeIds} testId="definition-diff-invalidated" />
           )}
-          {impact.newNodeIds.length > 0 && (
+          {impact.newNodeIds?.length > 0 && (
             <ChangeGroup label="新增任务" kind="new" ids={impact.newNodeIds} testId="definition-diff-new" />
           )}
-          {impact.removedNodeIds.length > 0 && (
+          {impact.removedNodeIds?.length > 0 && (
             <ChangeGroup label="移除任务" kind="removed" ids={impact.removedNodeIds} testId="definition-diff-removed" />
           )}
         </div>

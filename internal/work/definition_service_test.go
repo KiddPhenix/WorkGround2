@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,6 +125,87 @@ func TestImpact_StableSort(t *testing.T) {
 	}
 	if got := strings.Join(r1.InvalidatedNodeIDs, ","); got != "n1,n2" {
 		t.Fatalf("invalidated=%v, want changed node and all descendants", r1.InvalidatedNodeIDs)
+	}
+}
+
+func TestImpact_JSONUsesArraysForEmptyGroups(t *testing.T) {
+	impact := ClassifyRunImpact(v2def("w", 1), v2def("w", 2))
+	data, err := json.Marshal(impact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"invalidatedNodeIds", "newNodeIds", "removedNodeIds"} {
+		if bytes.Contains(data, []byte(`"`+field+`":null`)) {
+			t.Fatalf("%s must serialize as an array: %s", field, data)
+		}
+	}
+
+	replayed := impactFromJSON(&RunImpactJSON{})
+	replayedData, err := json.Marshal(replayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(replayedData, []byte(`:null`)) {
+		t.Fatalf("legacy receipt impact must normalize null lists: %s", replayedData)
+	}
+}
+
+func TestReplay_AcceptsLegacyNullImpactGroups(t *testing.T) {
+	store, _, svc := newFS(t)
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
+		SessionID: "s1", RequestID: "legacy-impact-init",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := svc.CreateCandidateRevision(
+		context.Background(), view.Work.ID, v2def(view.Work.ID, 2), "legacy-impact-candidate", state.Revision,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err = store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyDefinition(context.Background(), ApplyDefinitionInput{
+		WorkID: view.Work.ID, Revision: candidate.Revision,
+		ExpectedRevision: state.Revision, RequestID: "legacy-impact-apply",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	workPath, err := store.workPath(view.Work.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := ReplayWorkEventLog(workPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range replay.Events {
+		event := &replay.Events[i]
+		if event.Type != EventRunStarted || event.RequestID != "legacy-impact-apply/run" {
+			continue
+		}
+		var payload runEventPayload
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		payload.V2Receipt.Impact.KeptNodeIDs = nil
+		payload.V2Receipt.Impact.InvalidatedNodeIDs = nil
+		payload.V2Receipt.Impact.RemovedNodeIDs = nil
+		event.Payload, err = json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := validateV2DefinitionReplay(workPath, view.Work.ID, replay); err != nil {
+		t.Fatalf("legacy null impact groups are semantically empty: %v", err)
 	}
 }
 

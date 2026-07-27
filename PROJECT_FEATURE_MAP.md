@@ -143,6 +143,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### Work V1/V2 覆盖与兼容
+- Location: `docs/WORK_COLLABORATION_WORKBENCH_V2.zh-CN.md`, `internal/work`, `internal/control/work.go`, `desktop/works.go`, `desktop/frontend/src/components/work`, `desktop/frontend/src/work`
+- Summary: V2 默认覆盖新建规划、定义激活、DAG 调度、类型化输入、节点/成果重试和讨论补丁；V1 创建/手动运行入口保留为 feature flag 回退，V1 Work/Run/Block/事件/归档仍被 V2 复用。
+- Keywords: Work V1, Work V2, collaboration_workbench_v2, BeginWorkPlanning, CreateWork, ApplyDefinition, RunWork, RetryWorkNode
+- Source: verified-by-search
+- Updated: 2026-07-27
+
 ### 上游可靠性加固
 - Location: `internal/provider/openai`, `internal/agent`, `internal/control`, `internal/skill`, `internal/tool`, `internal/fileutil/encoding`, `internal/config`, `internal/plugin`, `internal/acp`, `internal/boot`, `desktop`
 - Summary: 状态 done；分支 `developping/upstream-hardening+2026-07-10`；按行为重实现 DeepSeek reasoning 回放、planner 失败降级/no-op/宿主审批与用户决策、review/子代理只读边界、tab-scoped 工作区、Windows 文本解码、MCP get、ACP 文件/终端协作、plan/location/mode。全仓测试编译、Go vet、受影响核心包实跑通过；Windows 历史 `printf`/长等待测试单列风险。

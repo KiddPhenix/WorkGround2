@@ -303,7 +303,7 @@ func validateV2DefinitionReplay(workDir, workID string, replay *WorkEventReplay)
 			} else {
 				expectedImpact = ClassifyRunImpact(&WorkDefinitionRevision{}, body)
 			}
-			gotImpact, _ := json.Marshal(receipt.Impact)
+			gotImpact, _ := json.Marshal(impactToJSON(impactFromJSON(receipt.Impact)))
 			wantImpact, _ := json.Marshal(impactToJSON(expectedImpact))
 			if string(gotImpact) != string(wantImpact) {
 				return fmt.Errorf("%w: revision_applied %d impact receipt mismatch for %s", ErrWorkNeedsRepair, payload.Revision, workID)

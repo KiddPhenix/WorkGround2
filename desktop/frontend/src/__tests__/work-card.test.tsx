@@ -10,6 +10,7 @@ import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
 import { LocaleProvider } from '../lib/i18n';
 import { WorkControllerAdapter, type WorkControllerPort, type WorkPortSubscription, type WorkUIPreference } from '../work/controller';
+import { DefinitionDiff } from '../work/components/v2';
 import { useWorkStore, useWorkUIStore } from '../work/store';
 import { createWailsWorkControllerPort } from '../work/wailsAdapter';
 import type {
@@ -39,6 +40,7 @@ import type {
   RetryArtifactSlotResult,
   RetryWorkNodeRequest,
   RetryWorkNodeResult,
+  RunImpact,
   SetInputCornerstoneRequest,
   SubmitWorkInputRequest,
   TaskV2View,
@@ -1932,6 +1934,38 @@ async function testV2CandidateDiffAndLocalCancel(): Promise<void> {
   await mounted.cleanup();
 }
 
+async function testV2DefinitionDiffAcceptsLegacyNullImpactLists(): Promise<void> {
+  const active = { ...makeV2Definition('work-v2-null-impact'), status: 'active' as const };
+  const candidate = {
+    ...active,
+    revision: active.revision + 1,
+    parentRevision: active.revision,
+    status: 'draft' as const,
+    goal: '更新后的目标',
+  };
+  const legacyImpact = {
+    keptNodeIds: null,
+    invalidatedNodeIds: null,
+    newNodeIds: null,
+    removedNodeIds: null,
+    requiresRerun: false,
+  } as unknown as RunImpact;
+
+  const mounted = await mount(
+    <DefinitionDiff
+      active={active}
+      candidate={candidate}
+      impact={legacyImpact}
+      onApply={() => undefined}
+      onCancel={() => undefined}
+    />,
+  );
+
+  ok(Boolean(mounted.host.querySelector('[data-testid="definition-diff"]')), 'candidate: legacy null impact lists do not crash DefinitionDiff');
+  ok(Boolean(mounted.host.querySelector('[data-testid="definition-diff-impact"]')), 'candidate: legacy impact remains observable');
+  await mounted.cleanup();
+}
+
 async function testV2CandidatePlannerRecovery(): Promise<void> {
   // Planner capability absence is explicit; no client-side clone fallback.
   reset();
@@ -2681,6 +2715,7 @@ async function main(): Promise<void> {
   await testV2DefaultWailsProductionMount();
   await testV2ExplicitSessionIdReachesPreviewPatch();
   await testV2CandidateDiffAndLocalCancel();
+  await testV2DefinitionDiffAcceptsLegacyNullImpactLists();
   await testV2CandidatePlannerRecovery();
   await testV2BlankDraftStoreChainNoRun();
   await testV2ActiveDefinitionLateArrivalRestoresRun();

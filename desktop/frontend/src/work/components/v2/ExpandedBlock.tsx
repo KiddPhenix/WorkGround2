@@ -72,7 +72,7 @@ export interface ExpandedBlockProps {
 export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
   task, workId, sessionId: _sessionId,
   nodeDef, inputSpecs, workInputs,
-  definitionRevision, workRevision: _workRevision,
+  definitionRevision, workRevision,
   hasTypedInput,
   discussionBlock,
   onCollapse, onRetry,
@@ -207,6 +207,7 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
                       workId={workId} taskId={task.id} runId={workInput.runId} blockId={workInput.blockId}
                       definitionRevision={definitionRevision}
                       inputRevision={workInput.revision}
+                      workRevision={workRevision}
                       committedRequestIds={resolveCommittedRequestIds?.(task.id, workInput.blockId, spec, workInput)}
                       onRequestCommitted={(operation, requestId) =>
                         onInputRequestCommitted?.(task.id, workInput.blockId, spec, workInput, operation, requestId)
