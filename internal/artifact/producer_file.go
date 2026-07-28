@@ -185,6 +185,24 @@ func completeStepEvidencePaths(argsJSON string) []string {
 }
 
 func extractResultPaths(output string) []string {
+	paths := extractVerbPaths(output)
+	raw := extractRawFilePaths(output)
+	if len(raw) > 0 {
+		seen := make(map[string]bool, len(paths))
+		for _, p := range paths {
+			seen[p] = true
+		}
+		for _, p := range raw {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
+func extractVerbPaths(output string) []string {
 	var paths []string
 	patterns := []string{
 		"wrote ", "Wrote ",
@@ -232,6 +250,44 @@ func extractResultPaths(output string) []string {
 		}
 	}
 	return paths
+}
+
+// extractRawFilePaths scans output for standalone absolute file paths
+// that are not preceded by an English verb prefix. This catches paths
+// produced by scripts/shells whose output may be in any language or encoding.
+func extractRawFilePaths(output string) []string {
+	var paths []string
+	for _, token := range strings.Fields(output) {
+		token = strings.Trim(token, "\"',;:!?()[]{}<>")
+		if token == "" {
+			continue
+		}
+		if !looksLikeAbsolutePath(token) {
+			continue
+		}
+		if isSourceFile(token) {
+			continue
+		}
+		if !looksLikePath(token) {
+			continue
+		}
+		paths = append(paths, token)
+	}
+	return paths
+}
+
+// looksLikeAbsolutePath reports whether s starts with a Windows drive letter
+// followed by :\ or :/, or is a Unix absolute path that contains at least
+// one additional path separator (heuristic to exclude bare top-level dirs).
+func looksLikeAbsolutePath(s string) bool {
+	if len(s) >= 3 && s[1] == ':' && (s[2] == '\\' || s[2] == '/') &&
+		((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) {
+		return true
+	}
+	if strings.HasPrefix(s, "/") && !strings.HasPrefix(s, "//") {
+		return strings.ContainsRune(s[1:], '/')
+	}
+	return false
 }
 
 func looksLikePath(s string) bool {

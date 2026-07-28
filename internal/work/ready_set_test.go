@@ -815,7 +815,7 @@ func TestV2Scheduler_ScheduleSimpleDAG(t *testing.T) {
 	}
 
 	authority := newMemoryV2Authority("w1", nil)
-	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, authority)
+	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, nil, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +834,7 @@ func TestV2Scheduler_GlobalGateBlocks(t *testing.T) {
 	}
 
 	authority := newMemoryV2Authority("w1", nil)
-	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, authority)
+	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, nil, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,6 +865,7 @@ func TestV2Scheduler_DependentGlobalGateDoesNotBlockUpstream(t *testing.T) {
 		nodes,
 		nil,
 		1,
+		nil,
 		nil,
 		nil,
 		authority,
@@ -911,6 +912,7 @@ func TestV2Scheduler_GlobalGateReleaseAdvancesAllBlockedBranchesFileStore(t *tes
 		runID,
 		nodes,
 		1,
+		nil,
 		nil,
 		nil,
 		[]string{gate.TaskID},
@@ -999,6 +1001,7 @@ func TestV2Scheduler_CompletedGlobalGateRestartRescansWholeDAGFileStore(t *testi
 		1,
 		nil,
 		nil,
+		nil,
 		[]string{gate.TaskID},
 		V2WakeApproval,
 		authority,
@@ -1055,7 +1058,7 @@ func TestV2Scheduler_GlobalGateWakeAcrossInstancesFileStore(t *testing.T) {
 	firstDone := make(chan scheduleOutcome, 1)
 	go func() {
 		result, err := NewV2Scheduler(exec).WakeAndScheduleAffected(
-			context.Background(), workID, runID, nodes, 1, nil, nil,
+			context.Background(), workID, runID, nodes, 1, nil, nil, nil,
 			[]string{gate.TaskID}, V2WakeApproval, firstAuthority,
 		)
 		firstDone <- scheduleOutcome{result: result, err: err}
@@ -1066,7 +1069,7 @@ func TestV2Scheduler_GlobalGateWakeAcrossInstancesFileStore(t *testing.T) {
 		t.Fatal("first scheduler did not start gate")
 	}
 	secondResult, secondErr := NewV2Scheduler(exec).WakeAndScheduleAffected(
-		context.Background(), workID, runID, nodes, 1, nil, nil,
+		context.Background(), workID, runID, nodes, 1, nil, nil, nil,
 		[]string{gate.TaskID}, V2WakeApproval, secondAuthority,
 	)
 	if secondErr != nil {
@@ -1111,7 +1114,7 @@ func TestV2Scheduler_SingleFlight(t *testing.T) {
 	nodes := []NodeDef{{ID: "a", Title: "A"}}
 
 	authority := newMemoryV2Authority("w1", nil)
-	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, authority)
+	result, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, nil, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1130,7 +1133,7 @@ func TestV2Scheduler_ExecutorError(t *testing.T) {
 	nodes := []NodeDef{{ID: "a", Title: "A"}}
 
 	authority := newMemoryV2Authority("w1", nil)
-	_, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, authority)
+	_, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, nil, authority)
 	// Executor errors are recorded as TaskFailedRetryable, not returned.
 	if err != nil {
 		t.Fatalf("executor errors should be recorded, not returned: %v", err)
@@ -1158,6 +1161,7 @@ func TestV2Scheduler_DeclaredArtifactsRequireReporter(t *testing.T) {
 		1,
 		nil,
 		nil,
+		nil,
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1183,7 +1187,7 @@ func TestV2Scheduler_ReceiptGuardWaitingApproval(t *testing.T) {
 	nodes := []NodeDef{{ID: "a", Title: "A", ToolHints: []string{"side_effect=external_write"}}}
 
 	authority := newMemoryV2Authority("w1", nil)
-	_, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, authority)
+	_, err := sched.Schedule(context.Background(), "w1", "r1", nodes, nil, 1, nil, nil, nil, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1222,6 +1226,7 @@ func TestV2Scheduler_ObservedRiskUpgradePersistsOnRuntime(t *testing.T) {
 		1,
 		nil,
 		nil,
+		nil,
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1253,6 +1258,7 @@ func TestV2Scheduler_StartsEntireReadySetConcurrently(t *testing.T) {
 			[]NodeDef{{ID: "a"}, {ID: "b"}},
 			nil,
 			1,
+			nil,
 			nil,
 			nil,
 			authority,
@@ -1303,6 +1309,7 @@ func TestV2Scheduler_FileWorkStoreReadySetRunsConcurrently(t *testing.T) {
 			1,
 			nil,
 			nil,
+			nil,
 			authority,
 		)
 		done <- scheduleErr
@@ -1348,6 +1355,7 @@ func TestV2Scheduler_PerTaskSingleFlightAcrossConcurrentSchedules(t *testing.T) 
 			1,
 			nil,
 			nil,
+			nil,
 			authority,
 		)
 		first <- err
@@ -1365,6 +1373,7 @@ func TestV2Scheduler_PerTaskSingleFlightAcrossConcurrentSchedules(t *testing.T) 
 		[]NodeDef{{ID: "a"}},
 		nil,
 		1,
+		nil,
 		nil,
 		nil,
 		authority,
@@ -1439,6 +1448,7 @@ func TestV2Scheduler_RestartExternalRunningRequiresHumanTakeover(t *testing.T) {
 		1,
 		nil,
 		nil,
+		nil,
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1509,6 +1519,7 @@ func TestV2Scheduler_RestartReadRunningRetriesSafely(t *testing.T) {
 		[]NodeDef{{ID: "inspect"}},
 		projection.V2TaskRuntimes,
 		1,
+		nil,
 		nil,
 		nil,
 		authority,
@@ -1582,6 +1593,7 @@ func TestV2Scheduler_AuthoritativeRefreshProducesStaleResult(t *testing.T) {
 		[]NodeDef{{ID: nodeID}},
 		nil,
 		1,
+		nil,
 		nil,
 		nil,
 		authority,
@@ -1660,6 +1672,7 @@ func TestV2Scheduler_WakeAndScheduleAffected(t *testing.T) {
 				1,
 				inputs,
 				specs,
+				nil,
 				[]string{rt.TaskID},
 				tc.cause,
 				authority,
@@ -1712,6 +1725,7 @@ func TestV2Scheduler_StructuralWakeDoesNotBypassApproval(t *testing.T) {
 		runID,
 		[]NodeDef{{ID: "publish", ToolHints: []string{"side_effect=external_write"}}},
 		1,
+		nil,
 		nil,
 		nil,
 		[]string{rt.TaskID},
@@ -2083,7 +2097,7 @@ func TestV2NodePrompt_IncludesSubmittedInput(t *testing.T) {
 		{ID: "theme", Label: "故事主题", Kind: InputText, Required: true},
 	}
 
-	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	prompt := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if !strings.Contains(prompt, "鹦鹉和猴子") {
 		t.Fatalf("prompt missing submitted value: %s", prompt)
@@ -2113,7 +2127,7 @@ func TestV2NodePrompt_IsolatesOtherRun(t *testing.T) {
 	}}
 	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
 
-	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	prompt := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if strings.Contains(prompt, "入侵者") {
 		t.Fatalf("other-run value leaked into prompt: %s", prompt)
@@ -2134,7 +2148,7 @@ func TestV2NodePrompt_IsolatesOtherTask(t *testing.T) {
 	}}
 	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
 
-	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	prompt := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if strings.Contains(prompt, "入侵者") {
 		t.Fatalf("other-task value leaked into prompt: %s", prompt)
@@ -2161,7 +2175,7 @@ func TestV2NodePrompt_ExcludesUndeclaredSpec(t *testing.T) {
 		{ID: "background", Label: "背景", Kind: InputText},
 	}
 
-	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	prompt := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if !strings.Contains(prompt, "鹦鹉") {
 		t.Fatalf("prompt missing declared input: %s", prompt)
@@ -2187,7 +2201,7 @@ func TestV2NodePrompt_ExcludesNonSubmitted(t *testing.T) {
 	}
 	specs := []InputSpec{{ID: "theme", Label: "主题", Kind: InputText}}
 
-	prompt := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	prompt := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if !strings.Contains(prompt, "已提交") {
 		t.Fatalf("submitted input missing: %s", prompt)
@@ -2216,8 +2230,8 @@ func TestV2NodePrompt_DeterministicOrder(t *testing.T) {
 		{ID: "b", Label: "B", Kind: InputText},
 	}
 
-	p1 := v2NodePrompt(node, inputs, specs, "w", "r", "t")
-	p2 := v2NodePrompt(node, inputs, specs, "w", "r", "t")
+	p1 := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
+	p2 := v2NodePrompt(node, inputs, specs, nil, "w", "r", "t")
 
 	if p1 != p2 {
 		t.Fatalf("prompt not deterministic:\n---1---\n%s\n---2---\n%s", p1, p2)
@@ -2236,7 +2250,7 @@ func TestV2NodePrompt_ToolHints(t *testing.T) {
 		Title:     "Research topic",
 		ToolHints: []string{"web_search"},
 	}
-	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	prompt := v2NodePrompt(node, nil, nil, nil, "w", "r", "t")
 	if !strings.Contains(prompt, "native web search") ||
 		!strings.Contains(prompt, "request_help with capability web_search") ||
 		!strings.Contains(prompt, "Include source URLs") ||
@@ -2250,7 +2264,7 @@ func TestV2NodePrompt_ToolHints(t *testing.T) {
 
 func TestV2NodePrompt_ToolHintsEmpty(t *testing.T) {
 	node := &NodeDef{ID: "simple", Title: "Simple task"}
-	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	prompt := v2NodePrompt(node, nil, nil, nil, "w", "r", "t")
 	if strings.Contains(prompt, "--- Tool guidance ---") {
 		t.Fatalf("prompt should not have tool guidance for empty hints: %s", prompt)
 	}
@@ -2262,13 +2276,157 @@ func TestV2NodePrompt_ToolHintsUnknownPassThrough(t *testing.T) {
 		Title:     "Custom tool task",
 		ToolHints: []string{"", "custom_tool", "custom_tool", "WEB_SEARCH"},
 	}
-	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	prompt := v2NodePrompt(node, nil, nil, nil, "w", "r", "t")
 	if !strings.Contains(prompt, "Tool hint: custom_tool") {
 		t.Fatalf("prompt missing unknown tool hint pass-through: %s", prompt)
 	}
 	if strings.Count(prompt, "Tool hint: custom_tool") != 1 ||
 		strings.Count(prompt, "request_help with capability web_search") != 1 {
 		t.Fatalf("prompt did not normalize tool hints: %s", prompt)
+	}
+}
+
+// ── v2NodePrompt slot guidance tests ───────────────────────────────────────
+
+func TestV2NodePrompt_ImageSlotWithoutHint(t *testing.T) {
+	// Old definition with image slot but no image_generation ToolHint.
+	// The runtime must still inject request_help guidance.
+	node := &NodeDef{
+		ID:              "gen",
+		Title:           "Generate hero image",
+		ProducesSlotIDs: []string{"hero"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "hero", Title: "Hero Image", Kind: "image", ExpectedCount: 1, Required: true},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "Hero Image") {
+		t.Fatalf("prompt missing slot title: %s", prompt)
+	}
+	if !strings.Contains(prompt, "image") {
+		t.Fatalf("prompt missing slot kind: %s", prompt)
+	}
+	if !strings.Contains(prompt, "request_help") || !strings.Contains(prompt, "image_generation") {
+		t.Fatalf("prompt missing request_help(image_generation) guidance: %s", prompt)
+	}
+	if strings.Contains(prompt, "Your final response text is the authoritative content") {
+		t.Fatalf("image slot should NOT be treated as text-authoritative: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_TextSlotBehaviorPreserved(t *testing.T) {
+	node := &NodeDef{
+		ID:              "write",
+		Title:           "Write summary",
+		ProducesSlotIDs: []string{"summary"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "summary", Title: "Summary", Kind: "text", ExpectedCount: 1},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "final response text is the authoritative content") {
+		t.Fatalf("text slot missing authoritative final response instruction: %s", prompt)
+	}
+	if strings.Contains(prompt, "request_help") {
+		t.Fatalf("text slot should NOT contain request_help guidance: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ExplicitImageHintNotDuplicated(t *testing.T) {
+	// Definition already has image_generation toolHint.
+	// Slot guidance should still appear once, not duplicated.
+	node := &NodeDef{
+		ID:              "gen",
+		Title:           "Generate logo",
+		ToolHints:       []string{"image_generation"},
+		ProducesSlotIDs: []string{"logo"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "logo", Title: "Logo", Kind: "image", ExpectedCount: 1},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	count := strings.Count(prompt, "request_help")
+	if count != 1 {
+		t.Fatalf("request_help guidance count = %d, want 1: %s", count, prompt)
+	}
+}
+
+func TestV2NodePrompt_MixedSlots(t *testing.T) {
+	// One text slot + one image slot in the same node.
+	node := &NodeDef{
+		ID:              "publish",
+		Title:           "Publish blog post",
+		ProducesSlotIDs: []string{"body", "cover"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "body", Title: "Blog Body", Kind: "text", ExpectedCount: 1},
+		{ID: "cover", Title: "Cover Image", Kind: "image", ExpectedCount: 1, Required: true},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "Blog Body") || !strings.Contains(prompt, "Cover Image") {
+		t.Fatalf("prompt missing slot titles: %s", prompt)
+	}
+	if !strings.Contains(prompt, "final response text is the authoritative content") {
+		t.Fatalf("text slot missing authoritative instruction: %s", prompt)
+	}
+	if !strings.Contains(prompt, "request_help") || !strings.Contains(prompt, "image_generation") {
+		t.Fatalf("image slot missing request_help guidance: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ExpectedCount(t *testing.T) {
+	node := &NodeDef{
+		ID:              "gen",
+		Title:           "Generate many",
+		ProducesSlotIDs: []string{"photo"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "photo", Title: "Photos", Kind: "image", ExpectedCount: 5},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "×5") {
+		t.Fatalf("prompt missing expectedCount ×5: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_NoSlotDefs(t *testing.T) {
+	// Old-style node with ProducesSlotIDs but no matching slotDefs.
+	node := &NodeDef{
+		ID:              "old",
+		Title:           "Old task",
+		ProducesSlotIDs: []string{"result"},
+	}
+	prompt := v2NodePrompt(node, nil, nil, nil, "w", "r", "t")
+
+	if !strings.Contains(prompt, "result") {
+		t.Fatalf("prompt missing slot ID: %s", prompt)
+	}
+	if !strings.Contains(prompt, "final response text is the authoritative content") {
+		t.Fatalf("missing slot definition should preserve text fallback: %s", prompt)
+	}
+	if strings.Contains(prompt, "request_help") {
+		t.Fatalf("prompt should not contain request_help without slot defs: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_MarkdownSlot(t *testing.T) {
+	node := &NodeDef{
+		ID:              "doc",
+		Title:           "Write docs",
+		ProducesSlotIDs: []string{"readme"},
+	}
+	slotDefs := []ArtifactSlotDef{
+		{ID: "readme", Title: "README", Kind: "markdown", ExpectedCount: 1},
+	}
+	prompt := v2NodePrompt(node, nil, nil, slotDefs, "w", "r", "t")
+
+	if !strings.Contains(prompt, "final response text is the authoritative content") {
+		t.Fatalf("markdown slot should be text-authoritative: %s", prompt)
 	}
 }
 
@@ -2300,7 +2458,7 @@ func TestV2Scheduler_PromptCarriesSubmittedInputE2E(t *testing.T) {
 
 	authority := newMemoryV2Authority("w-e2e", nil)
 	if _, err := sched.Schedule(
-		context.Background(), "w-e2e", runID, nodes, nil, 1, inputs, specs, authority,
+		context.Background(), "w-e2e", runID, nodes, nil, 1, inputs, specs, nil, authority,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2357,7 +2515,7 @@ func TestV2Scheduler_PromptIsolatesOtherTaskInputs(t *testing.T) {
 
 	authority := newMemoryV2Authority("w-iso", nil)
 	if _, err := sched.Schedule(
-		context.Background(), "w-iso", runID, nodes, nil, 1, inputs, specs, authority,
+		context.Background(), "w-iso", runID, nodes, nil, 1, inputs, specs, nil, authority,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2396,7 +2554,7 @@ func TestV2Scheduler_PromptStableOnRerun(t *testing.T) {
 
 	authority1 := newMemoryV2Authority("w-stable", nil)
 	if _, err := sched.Schedule(
-		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, authority1,
+		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, nil, authority1,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2408,7 +2566,7 @@ func TestV2Scheduler_PromptStableOnRerun(t *testing.T) {
 	sched2 := NewV2Scheduler(exec2)
 	authority2 := newMemoryV2Authority("w-stable", nil)
 	if _, err := sched2.Schedule(
-		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, authority2,
+		context.Background(), "w-stable", runID, nodes, nil, 1, inputs, specs, nil, authority2,
 	); err != nil {
 		t.Fatal(err)
 	}

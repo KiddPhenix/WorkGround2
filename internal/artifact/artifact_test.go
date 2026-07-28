@@ -401,3 +401,229 @@ func TestLoadWorkspaceFileRejectsOutsideWorkspace(t *testing.T) {
 		t.Fatal("expected outside-workspace artifact to be rejected")
 	}
 }
+
+// ── extractRawFilePaths tests ──────────────────────────────────────────────
+
+func TestExtractRawFilePaths_GarbledPrefix(t *testing.T) {
+	// Simulates PowerShell GBK-garbled output where a Chinese prefix
+	// precedes an absolute Windows path (the real reproduction case).
+	const output = "\ufffd\u063f\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd: D:\\Work\\test\\final_card.png\r\n  \ufffd\ufffd\ufffd\ufffd: \u7231\u4f60\r\n"
+	paths := extractRawFilePaths(output)
+	if len(paths) != 1 {
+		t.Fatalf("expected 1 path, got %d: %v", len(paths), paths)
+	}
+	if paths[0] != "D:\\Work\\test\\final_card.png" {
+		t.Errorf("path = %q", paths[0])
+	}
+}
+
+func TestExtractRawFilePaths_WindowsAbsolute(t *testing.T) {
+	paths := extractRawFilePaths("Build done. D:\\out\\app.exe is ready.")
+	if len(paths) != 1 || paths[0] != "D:\\out\\app.exe" {
+		t.Fatalf("got %v", paths)
+	}
+}
+
+func TestExtractRawFilePaths_UnixAbsolute(t *testing.T) {
+	paths := extractRawFilePaths("Exported /home/user/report.pdf successfully.")
+	if len(paths) != 1 || paths[0] != "/home/user/report.pdf" {
+		t.Fatalf("got %v", paths)
+	}
+}
+
+func TestExtractRawFilePaths_FiltersSource(t *testing.T) {
+	// Source files must still be filtered even from raw scanning.
+	paths := extractRawFilePaths("D:\\src\\main.go compiled.")
+	if len(paths) != 0 {
+		t.Fatalf("expected 0, got %v", paths)
+	}
+}
+
+func TestExtractRawFilePaths_RejectsNonPathTokens(t *testing.T) {
+	// A bare sentence should not produce false positives.
+	paths := extractRawFilePaths("Hello world. The build finished without errors. Everything is fine.")
+	if len(paths) != 0 {
+		t.Fatalf("expected 0, got %v", paths)
+	}
+}
+
+func TestExtractRawFilePaths_BareTopLevelDirIgnored(t *testing.T) {
+	// /usr alone is not a file path (no second separator, no extension).
+	paths := extractRawFilePaths("/usr")
+	if len(paths) != 0 {
+		t.Fatalf("expected 0 for bare top-level dir, got %v", paths)
+	}
+}
+
+// ── SlotKind extension tests ───────────────────────────────────────────────
+
+func TestSlotKind_ImageByExtension(t *testing.T) {
+	tests := []struct{ name, want string }{
+		{"photo.png", "image"},
+		{"photo.jpg", "image"},
+		{"photo.jpeg", "image"},
+		{"anim.gif", "image"},
+		{"clip.mp4", "video"},
+		{"clip.webm", "video"},
+		{"clip.mov", "video"},
+		{"clip.avi", "video"},
+		{"clip.mkv", "video"},
+		{"song.mp3", "audio"},
+		{"song.wav", "audio"},
+		{"song.ogg", "audio"},
+		{"song.flac", "audio"},
+		{"song.aac", "audio"},
+		{"song.wma", "audio"},
+	}
+	for _, tt := range tests {
+		d := Discovered{Name: tt.name}
+		if got := d.SlotKind(); got != tt.want {
+			t.Errorf("SlotKind(%q) = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
+// ── FileProducer bash indirect image test ──────────────────────────────────
+
+func TestFileProducer_BashIndirectImage(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "final_card.png")
+	writeValidPNG(t, pngPath)
+
+	// Simulate the real reproduction: write_file → bash → garbled output with path.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-write", Name: "write_file", Arguments: `{"path":"generate_card.py","content":"..."}`},
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python generate_card.py"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-write", Name: "write_file",
+			Content: "wrote 7086 bytes to generate_card.py"},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash",
+			// PowerShell GBK-garbled output: Chinese prefix + colon + space + absolute path.
+			Content: "\ufffd\u063f\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd: " + pngPath + "\r\n  \ufffd\ufffd\ufffd\ufffd: \ufffd\ufffd\r\n"},
+	}
+
+	discovered := Collect(msgs, DefaultProducers())
+
+	// Should find 2 artifacts: generate_card.py (filtered as source) → 0,
+	// final_card.png via bash raw path scan → 1.
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	d := discovered[0]
+	if d.Name != "final_card.png" {
+		t.Errorf("Name = %q, want final_card.png", d.Name)
+	}
+	if d.Path != pngPath {
+		t.Errorf("Path = %q, want %q", d.Path, pngPath)
+	}
+	if d.SlotKind() != "image" {
+		t.Errorf("SlotKind = %q, want image", d.SlotKind())
+	}
+	// FileProducer sets Data=nil — callers use LoadWorkspaceFile to validate.
+	if len(d.Data) != 0 {
+		t.Error("Data should be nil for FileProducer artifact")
+	}
+}
+
+func TestFileProducer_BashIndirectImageLoadsWithWorkspaceFile(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "final_card.png")
+	writeValidPNG(t, pngPath)
+
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python generate_card.py"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash",
+			Content: "贺卡已生成: " + pngPath},
+	}
+
+	discovered := Collect(msgs, DefaultProducers())
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+
+	// Simulate Work task materialize via LoadWorkspaceFile.
+	loaded, err := LoadWorkspaceFile(discovered[0], dir)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceFile: %v", err)
+	}
+	if loaded.Name != "final_card.png" {
+		t.Errorf("Name = %q", loaded.Name)
+	}
+	if !strings.HasPrefix(loaded.Type, "image/png") {
+		t.Errorf("Type = %q, want image/png", loaded.Type)
+	}
+	if len(loaded.Data) == 0 {
+		t.Error("Data empty after LoadWorkspaceFile")
+	}
+}
+
+// ── CapabilityProducer / CollectSlotGuidance tests ──────────────────────────
+
+func TestImageProducerCapabilityProducer(t *testing.T) {
+	var p Producer = &ImageProducer{}
+	cp, ok := p.(CapabilityProducer)
+	if !ok {
+		t.Fatal("ImageProducer must implement CapabilityProducer")
+	}
+	kinds := cp.SlotKinds()
+	if len(kinds) != 1 || kinds[0] != "image" {
+		t.Fatalf("SlotKinds = %v, want [image]", kinds)
+	}
+	if capability := cp.SlotCapability(); capability != "image_generation" {
+		t.Fatalf("SlotCapability = %q, want image_generation", capability)
+	}
+	g := cp.SlotPromptGuidance()
+	if g == "" || !strings.Contains(g, "request_help") || !strings.Contains(g, "image_generation") {
+		t.Fatalf("SlotPromptGuidance missing request_help/image_generation: %q", g)
+	}
+}
+
+func TestCollectSlotGuidance_ImageOnly(t *testing.T) {
+	guidance := CollectSlotGuidance(DefaultProducers())
+	// FileProducer does not implement CapabilityProducer; only ImageProducer does.
+	if len(guidance) != 1 {
+		t.Fatalf("expected 1 guidance entry, got %d", len(guidance))
+	}
+	if guidance[0].Kind != "image" {
+		t.Errorf("Kind = %q, want image", guidance[0].Kind)
+	}
+	if guidance[0].Capability != "image_generation" {
+		t.Errorf("Capability = %q, want image_generation", guidance[0].Capability)
+	}
+	if !strings.Contains(guidance[0].Guidance, "request_help") {
+		t.Errorf("Guidance missing request_help: %q", guidance[0].Guidance)
+	}
+}
+
+func TestCollectSlotGuidance_NoCapabilityProducer(t *testing.T) {
+	// FileProducer alone should return no guidance.
+	producers := []Producer{&FileProducer{}}
+	guidance := CollectSlotGuidance(producers)
+	if len(guidance) != 0 {
+		t.Fatalf("expected 0 guidance, got %d", len(guidance))
+	}
+}
+
+type customCapabilityProducer struct{}
+
+func (*customCapabilityProducer) Discover(provider.ToolCall, provider.Message) []Discovered {
+	return nil
+}
+func (*customCapabilityProducer) SlotKinds() []string        { return []string{" Video ", ""} }
+func (*customCapabilityProducer) SlotCapability() string     { return " VIDEO_GENERATION " }
+func (*customCapabilityProducer) SlotPromptGuidance() string { return " use video helper " }
+
+func TestCollectSlotGuidance_CustomProducerNormalizesContract(t *testing.T) {
+	guidance := CollectSlotGuidance([]Producer{&customCapabilityProducer{}})
+	if len(guidance) != 1 {
+		t.Fatalf("guidance count = %d, want 1", len(guidance))
+	}
+	got := guidance[0]
+	if got.Kind != "video" || got.Capability != "video_generation" ||
+		got.Guidance != "use video helper" {
+		t.Fatalf("guidance = %+v", got)
+	}
+}

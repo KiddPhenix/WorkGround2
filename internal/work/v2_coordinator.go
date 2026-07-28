@@ -554,6 +554,7 @@ func (c *V2Coordinator) ScheduleRun(
 		definition.Revision,
 		projection.V2Inputs,
 		definition.InputSpecs,
+		definition.ArtifactSlots,
 		changedNodeIDs,
 		authority,
 	)
@@ -799,6 +800,7 @@ func (c *V2Coordinator) continueRunAt(
 		definition.Revision,
 		projection.V2Inputs,
 		definition.InputSpecs,
+		definition.ArtifactSlots,
 		changedIDs,
 		cause,
 		authority,

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -94,6 +96,50 @@ func TestExtractArtifacts_BashBuild(t *testing.T) {
 	}
 	if artifacts[0].Type != "binary" {
 		t.Errorf("Type = %q, want binary", artifacts[0].Type)
+	}
+}
+
+func TestExtractArtifacts_BashIndirectImage(t *testing.T) {
+	dir := t.TempDir()
+	pngPath := filepath.Join(dir, "final_card.png")
+	os.MkdirAll(filepath.Dir(pngPath), 0o755)
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	f, err := os.Create(pngPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(f, img); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Real reproduction: write_file → bash with garbled output containing path.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-write", Name: "write_file", Arguments: `{"path":"generate_card.py","content":"..."}`},
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python generate_card.py"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-write", Name: "write_file",
+			Content: "wrote 7086 bytes to generate_card.py"},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash",
+			Content: "\ufffd\u063f\ufffd\ufffd\ufffd\ufffd\ufffd\ufffd: " + pngPath + "\r\n  \ufffd\ufffd\ufffd\ufffd: \ufffd\ufffd\r\n"},
+	}
+
+	artifacts := extractArtifacts(msgs, dir)
+	// generate_card.py is filtered as source, final_card.png survives.
+	if len(artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(artifacts))
+	}
+	a := artifacts[0]
+	if a.Name != "final_card.png" {
+		t.Errorf("Name = %q", a.Name)
+	}
+	if a.Status != "available" {
+		t.Errorf("Status = %q, want available", a.Status)
+	}
+	if a.Type != "image" {
+		t.Errorf("Type = %q, want image", a.Type)
 	}
 }
 

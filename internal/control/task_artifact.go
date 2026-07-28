@@ -22,12 +22,20 @@ func materializeTaskArtifact(
 	workspaceRoot string,
 ) (body []byte, name, mediaType string, supported bool, err error) {
 	if discovered != nil {
+		pathOnly := len(discovered.Data) == 0
 		item, loadErr := artifact.LoadWorkspaceFile(*discovered, workspaceRoot)
 		if loadErr != nil {
 			return nil, "", "", false, fmt.Errorf("load artifact %q: %w", discovered.Name, loadErr)
 		}
 		if len(item.Data) == 0 {
 			return nil, "", "", false, fmt.Errorf("artifact %q has no data", item.Name)
+		}
+		if pathOnly && strings.EqualFold(strings.TrimSpace(slot.Kind), "image") {
+			mime, imageErr := artifact.ValidateImageData(item.Data)
+			if imageErr != nil {
+				return nil, "", "", false, fmt.Errorf("validate image artifact %q: %w", item.Name, imageErr)
+			}
+			item.Type = mime
 		}
 		return item.Data, item.Name, item.Type, true, nil
 	}

@@ -390,6 +390,7 @@ func TestV2SchedulerPassesCompleteContextToTaskExecutorAdapter(t *testing.T) {
 		1,
 		nil,
 		nil,
+		nil,
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1121,5 +1122,19 @@ func TestTaskExecutorMaterializesWorkspaceFileArtifact(t *testing.T) {
 	}
 	if !bytes.Equal(body, want) {
 		t.Fatalf("blob = %q, want %q", body, want)
+	}
+}
+
+func TestMaterializeTaskArtifactRejectsInvalidWorkspaceImage(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "fake.png")
+	if err := os.WriteFile(path, []byte("not an image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	slot := work.ArtifactSlot{ID: "image", Title: "Image", Kind: "image"}
+	discovered := artifact.Discovered{Name: "fake.png", Path: path}
+	if _, _, _, _, err := materializeTaskArtifact(slot, "", &discovered, root); err == nil ||
+		!strings.Contains(err.Error(), "validate image artifact") {
+		t.Fatalf("error = %v, want invalid workspace image rejection", err)
 	}
 }

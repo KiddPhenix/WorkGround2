@@ -97,6 +97,7 @@ Planning rules:
 - Nodes may be added, removed, reordered, or changed. Dependencies must form a DAG.
 - Every referenced inputSpecId and artifact slot ID must exist in the returned object.
 - Every artifact slot must have exactly one producer node.
+- When a node produces an image artifact slot, include "image_generation" in that node's toolHints. At execution time this is routed through the shared capability path and request_help(image_generation).
 - Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
 - For text inputs that require multiple lines, lists, or one item per line, set valueSchema.multiline to true.
 - For choice and multi_choice inputs, valueSchema.options is required and must be a JSON array of {"value":"...","label":"..."} objects.
@@ -144,7 +145,7 @@ No other top-level fields are allowed.
   "description": "string (optional)",
   "dependsOn": ["string (optional) — node IDs"],
   "inputSpecIds": ["string (optional) — input spec IDs"],
-  "toolHints": ["string (optional) — use \"web_search\" when the node needs current or public web information"],
+  "toolHints": ["string (optional) — use \"web_search\" for current/public web information and \"image_generation\" when the node produces an image slot"],
   "blockIds": ["string (optional)"],
   "producesSlotIds": ["string (optional)"],
   "consumesSlotIds": ["string (optional)"],

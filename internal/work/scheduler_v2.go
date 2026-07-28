@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"workground2/internal/artifact"
 	"workground2/internal/nilutil"
 )
 
@@ -150,9 +151,10 @@ func (s *V2Scheduler) Schedule(
 	defRev int64,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
-	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, nil, authority)
+	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, nil, authority)
 }
 
 // ScheduleAffected reevaluates only changed seed nodes and their descendants.
@@ -166,10 +168,11 @@ func (s *V2Scheduler) ScheduleAffected(
 	defRev int64,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	changedNodeIDs []string,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
-	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, changedNodeIDs, authority)
+	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, changedNodeIDs, authority)
 }
 
 // V2WakeCause identifies the authoritative event that may release a waiting
@@ -196,6 +199,7 @@ func (s *V2Scheduler) WakeAndScheduleAffected(
 	defRev int64,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	changedIDs []string,
 	cause V2WakeCause,
 	authority V2RuntimeAuthority,
@@ -245,6 +249,7 @@ func (s *V2Scheduler) WakeAndScheduleAffected(
 		defRev,
 		inputs,
 		specs,
+		slotDefs,
 		seeds,
 		authority,
 	)
@@ -258,6 +263,7 @@ func (s *V2Scheduler) schedule(
 	defRev int64,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	changedNodeIDs []string,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
@@ -339,7 +345,7 @@ func (s *V2Scheduler) schedule(
 			go func(nodeID string, node NodeDef) {
 				defer wg.Done()
 				executed, err := s.executeNode(
-					ctx, workID, runID, &node, local, defRev, inputs, specs,
+					ctx, workID, runID, &node, local, defRev, inputs, specs, slotDefs,
 					lockedEmit, authority.LoadV2Projection, authority,
 				)
 				results <- nodeResult{
@@ -384,6 +390,7 @@ func (s *V2Scheduler) executeNode(
 	defRev int64,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	emit V2EventEmitter,
 	load func() (*Work, error),
 	authority V2RuntimeAuthority,
@@ -461,7 +468,7 @@ func (s *V2Scheduler) executeNode(
 		return false, err
 	}
 
-	taskPrompt := v2NodePrompt(node, inputs, specs, workID, runID, taskID)
+	taskPrompt := v2NodePrompt(node, inputs, specs, slotDefs, workID, runID, taskID)
 	execResult, execErr := safeExecuteTask(s.executor, ctx, TaskExecuteInput{
 		WorkID:           workID,
 		RunID:            runID,
@@ -765,6 +772,7 @@ func v2NodePrompt(
 	node *NodeDef,
 	inputs []WorkInput,
 	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
 	workID, runID, taskID string,
 ) string {
 	if node == nil {
@@ -786,8 +794,25 @@ func v2NodePrompt(
 		prompt = "Execute the V2 work node."
 	}
 
-	// Append tool hints when the node declares guided tool usage (e.g. web_search).
-	if hints := v2NodePromptToolHints(node.ToolHints); hints != "" {
+	guidanceByKind, guidanceByCapability := buildSlotGuidanceMaps()
+	slotByID := make(map[string]ArtifactSlotDef, len(slotDefs))
+	for _, slot := range slotDefs {
+		slotByID[slot.ID] = slot
+	}
+	autoCapabilities := make(map[string]bool)
+	for _, slotID := range node.ProducesSlotIDs {
+		slot, ok := slotByID[slotID]
+		if !ok {
+			continue
+		}
+		if guidance, ok := guidanceByKind[strings.ToLower(strings.TrimSpace(slot.Kind))]; ok {
+			autoCapabilities[guidance.Capability] = true
+		}
+	}
+
+	// Append explicit tool hints that are not already supplied by slot-driven
+	// capability guidance.
+	if hints := v2NodePromptToolHints(node.ToolHints, autoCapabilities, guidanceByCapability); hints != "" {
 		prompt += hints
 	}
 
@@ -855,16 +880,94 @@ func v2NodePrompt(
 	if len(node.ProducesSlotIDs) == 0 {
 		return prompt
 	}
-	return prompt + "\n\n" +
-		"Your final response is the authoritative content saved into these Work artifact slots: " +
-		strings.Join(node.ProducesSlotIDs, ", ") +
-		". Include the complete deliverable content in the final response; do not reply with only a summary or a claim that a file was created."
+
+	var slotLines []string
+	for _, sid := range node.ProducesSlotIDs {
+		sd, ok := slotByID[sid]
+		if !ok {
+			slotLines = append(slotLines, fmt.Sprintf("- %s (no definition)", sid))
+			continue
+		}
+		kind := sd.Kind
+		if kind == "" {
+			kind = "text"
+		}
+		line := fmt.Sprintf("- %s (%s)", sd.Title, kind)
+		if sd.ExpectedCount > 1 {
+			line += fmt.Sprintf(" ×%d", sd.ExpectedCount)
+		}
+		slotLines = append(slotLines, line)
+	}
+
+	// Determine which slots are structured (need tool-produced artifacts) vs text
+	// (your final response is authoritative).
+	var structuredLines, textLines []string
+	for _, sid := range node.ProducesSlotIDs {
+		sd, ok := slotByID[sid]
+		if !ok {
+			textLines = append(textLines, sid)
+			continue
+		}
+		kind := sd.Kind
+		if kind == "" {
+			kind = "text"
+		}
+		if g, hasGuidance := guidanceByKind[strings.ToLower(strings.TrimSpace(kind))]; hasGuidance {
+			structuredLines = append(structuredLines,
+				fmt.Sprintf("Slot %q (%s): %s", sd.Title, sd.Kind, g.Guidance))
+		} else if kind == "text" || kind == "document" || kind == "code" || kind == "xlsx" || kind == "markdown" {
+			textLines = append(textLines, sd.Title)
+		} else {
+			// Unknown structured kind — treat as file artifact.
+			structuredLines = append(structuredLines,
+				fmt.Sprintf("Slot %q (%s): produce via appropriate tools; the artifact file will be collected from tool results.", sd.Title, sd.Kind))
+		}
+	}
+
+	var parts []string
+	parts = append(parts,
+		"Your response will be saved into these Work artifact slots:")
+	parts = append(parts, slotLines...)
+
+	if len(structuredLines) > 0 {
+		parts = append(parts, "", "Structured slots — must be produced by tools:",
+			strings.Join(structuredLines, "\n"))
+	}
+	if len(textLines) > 0 {
+		parts = append(parts, "",
+			"Text slots — your final response text is the authoritative content for: "+
+				strings.Join(textLines, ", ")+
+				". Include the complete deliverable in your final response; do not reply with only a summary or a claim that a file was created.")
+	}
+
+	return prompt + "\n\n" + strings.Join(parts, "\n")
+}
+
+// buildSlotGuidanceMaps returns shared kind and capability indexes from
+// artifact producers that implement CapabilityProducer.
+func buildSlotGuidanceMaps() (map[string]artifact.SlotGuidance, map[string]string) {
+	guidance := artifact.CollectSlotGuidance(artifact.DefaultProducers())
+	byKind := make(map[string]artifact.SlotGuidance, len(guidance))
+	byCapability := make(map[string]string, len(guidance))
+	for _, g := range guidance {
+		if _, exists := byKind[g.Kind]; !exists {
+			byKind[g.Kind] = g
+		}
+		if _, exists := byCapability[g.Capability]; !exists {
+			byCapability[g.Capability] = g.Guidance
+		}
+	}
+	return byKind, byCapability
 }
 
 // v2NodePromptToolHints returns guidance text for a node's tool hints.
 // web_search prefers search already available to the task model or registry,
 // then falls back to the shared request_help capability router.
-func v2NodePromptToolHints(hints []string) string {
+func v2NodePromptToolHints(
+	hints []string,
+	skipCapabilities map[string]bool,
+	capabilityGuidance map[string]string,
+) string {
 	if len(hints) == 0 {
 		return ""
 	}
@@ -880,11 +983,18 @@ func v2NodePromptToolHints(hints []string) string {
 			continue
 		}
 		seen[key] = true
+		if skipCapabilities[key] {
+			continue
+		}
 		switch key {
 		case "web_search":
 			parts = append(parts, "Use native web search or an available web_search tool for current information, documentation, and public references. If this model cannot search directly, call request_help with capability web_search. Include source URLs in the result; if no search path is available, fail explicitly so the task can be retried.")
 		default:
-			parts = append(parts, "Tool hint: "+h)
+			if guidance := strings.TrimSpace(capabilityGuidance[key]); guidance != "" {
+				parts = append(parts, guidance)
+			} else {
+				parts = append(parts, "Tool hint: "+h)
+			}
 		}
 	}
 	if len(parts) == 0 {

@@ -1881,6 +1881,19 @@ func TestDefinitionPlannerSchema_InputSpecRequiredAndOrphanRule(t *testing.T) {
 	}
 }
 
+func TestDefinitionPlannerPrompt_DeclaresImageCapabilityRouting(t *testing.T) {
+	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
+	for _, want := range []string{
+		`include "image_generation" in that node's toolHints`,
+		"request_help(image_generation)",
+		`\"image_generation\" when the node produces an image slot`,
+	} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("system prompt missing %q", want)
+		}
+	}
+}
+
 // ── Orphan required InputSpec rejection ────────────────────────────────────
 
 func TestDecodeDefinitionPlan_RejectsOrphanRequiredInputSpec(t *testing.T) {

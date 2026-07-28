@@ -34,6 +34,16 @@ func (p *ImageProducer) Discover(call provider.ToolCall, result provider.Message
 	}}
 }
 
+// CapabilityProducer implementation — tells Work prompt generation that
+// image slots require request_help(image_generation).
+func (p *ImageProducer) SlotKinds() []string    { return []string{"image"} }
+func (p *ImageProducer) SlotCapability() string { return "image_generation" }
+func (p *ImageProducer) SlotPromptGuidance() string {
+	return "Call request_help with capability=image_generation and a detailed visual description as the prompt. " +
+		"The helper model will return a structured artifact header with the generated image path — " +
+		"do not embed or describe the image in your final response text."
+}
+
 // parseRequestHelpImageArtifact extracts the absolute image path from a
 // successful request_help(image_generation) tool result. It validates:
 //   - tool call capability is "image_generation"

@@ -38,6 +38,20 @@ func (d Discovered) SlotKind() string {
 	}
 	// Classify common binary / document types by extension.
 	name := strings.ToLower(d.Name)
+	if strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".jpg") ||
+		strings.HasSuffix(name, ".jpeg") || strings.HasSuffix(name, ".gif") {
+		return "image"
+	}
+	if strings.HasSuffix(name, ".mp4") || strings.HasSuffix(name, ".webm") ||
+		strings.HasSuffix(name, ".mov") || strings.HasSuffix(name, ".avi") ||
+		strings.HasSuffix(name, ".mkv") {
+		return "video"
+	}
+	if strings.HasSuffix(name, ".mp3") || strings.HasSuffix(name, ".wav") ||
+		strings.HasSuffix(name, ".ogg") || strings.HasSuffix(name, ".flac") ||
+		strings.HasSuffix(name, ".aac") || strings.HasSuffix(name, ".wma") {
+		return "audio"
+	}
 	if strings.HasSuffix(name, ".xlsx") || strings.HasSuffix(name, ".xls") {
 		return "xlsx"
 	}
@@ -114,6 +128,64 @@ func DefaultProducers() []Producer {
 		&ImageProducer{},
 		&FileProducer{},
 	}
+}
+
+// ── Capability-based slot guidance ───────────────────────────────────────
+
+// SlotGuidance maps an artifact slot kind to the capability-based guidance
+// that should appear in Work node prompts. It is the shared contract between
+// artifact Producers and Work prompt generation — Work never hardcodes
+// per-kind routing.
+type SlotGuidance struct {
+	Kind       string // e.g. "image"
+	Capability string // e.g. "image_generation"
+	Guidance   string // tool-use instructions injected into the node prompt
+}
+
+// CapabilityProducer is an optional Producer extension. Producers that
+// satisfy artifact slots through a specific model capability (e.g.
+// request_help(image_generation)) implement this to declare which slot
+// kinds they cover and what prompt guidance agents need.
+type CapabilityProducer interface {
+	Producer
+	// SlotKinds returns the artifact slot kinds this producer can satisfy.
+	SlotKinds() []string
+	// SlotCapability returns the capability/tool hint used to produce them.
+	SlotCapability() string
+	// SlotPromptGuidance returns prompt instructions to inject when a node
+	// produces slots of the declared kinds. It should tell the model which
+	// tool/capability to use and what output to expect.
+	SlotPromptGuidance() string
+}
+
+// CollectSlotGuidance returns the consolidated guidance entries from
+// producers that implement CapabilityProducer.
+func CollectSlotGuidance(producers []Producer) []SlotGuidance {
+	var out []SlotGuidance
+	for _, p := range producers {
+		cp, ok := p.(CapabilityProducer)
+		if !ok {
+			continue
+		}
+		kinds := cp.SlotKinds()
+		capability := strings.ToLower(strings.TrimSpace(cp.SlotCapability()))
+		guidance := strings.TrimSpace(cp.SlotPromptGuidance())
+		if len(kinds) == 0 || capability == "" || guidance == "" {
+			continue
+		}
+		for _, k := range kinds {
+			kind := strings.ToLower(strings.TrimSpace(k))
+			if kind == "" {
+				continue
+			}
+			out = append(out, SlotGuidance{
+				Kind:       kind,
+				Capability: capability,
+				Guidance:   guidance,
+			})
+		}
+	}
+	return out
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

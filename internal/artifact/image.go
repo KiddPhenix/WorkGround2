@@ -72,14 +72,27 @@ func ValidateImageFile(path string) ([]byte, string, error) {
 	if after, err := f.Stat(); err != nil || !os.SameFile(opened, after) || after.Size() != opened.Size() {
 		return nil, "", fmt.Errorf("image changed while reading")
 	}
-	mime := http.DetectContentType(raw)
-	if !strings.HasPrefix(mime, "image/") {
-		return nil, "", fmt.Errorf("not an image (detected %q)", mime)
-	}
-	if _, _, err := image.DecodeConfig(bytes.NewReader(raw)); err != nil {
-		return nil, "", fmt.Errorf("image decode: %w", err)
+	mime, err := ValidateImageData(raw)
+	if err != nil {
+		return nil, "", err
 	}
 	return raw, mime, nil
+}
+
+// ValidateImageData verifies that data is a bounded, decodable raster image
+// and returns its detected MIME type.
+func ValidateImageData(raw []byte) (string, error) {
+	if len(raw) == 0 || len(raw) > MaxImageBytes {
+		return "", fmt.Errorf("image must be between 1 byte and 10 MB")
+	}
+	mime := http.DetectContentType(raw)
+	if !strings.HasPrefix(mime, "image/") {
+		return "", fmt.Errorf("not an image (detected %q)", mime)
+	}
+	if _, _, err := image.DecodeConfig(bytes.NewReader(raw)); err != nil {
+		return "", fmt.Errorf("image decode: %w", err)
+	}
+	return mime, nil
 }
 
 // AllowedImageRoots returns the directories where generated images may reside.
