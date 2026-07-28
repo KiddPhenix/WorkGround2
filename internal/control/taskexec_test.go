@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1136,5 +1137,346 @@ func TestMaterializeTaskArtifactRejectsInvalidWorkspaceImage(t *testing.T) {
 	if _, _, _, _, err := materializeTaskArtifact(slot, "", &discovered, root); err == nil ||
 		!strings.Contains(err.Error(), "validate image artifact") {
 		t.Fatalf("error = %v, want invalid workspace image rejection", err)
+	}
+}
+
+// ── Preflight tests ────────────────────────────────────────────────────────
+
+// fakeRequestHelpTool is a deterministic request_help stub for preflight tests.
+type fakeRequestHelpTool struct {
+	calls         []fakeRequestHelpCall
+	err           error
+	artifactPath  string
+	parentSession string
+	completed     atomic.Bool
+	mu            sync.Mutex
+}
+
+type fakeRequestHelpCall struct {
+	Capability string
+	Prompt     string
+}
+
+func (t *fakeRequestHelpTool) Name() string        { return "request_help" }
+func (t *fakeRequestHelpTool) Description() string { return "fake request_help for testing" }
+func (t *fakeRequestHelpTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"capability":{"type":"string"},"prompt":{"type":"string"}},"required":["capability","prompt"]}`)
+}
+func (t *fakeRequestHelpTool) ReadOnly() bool { return false }
+
+func (t *fakeRequestHelpTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Capability string `json:"capability"`
+		Prompt     string `json:"prompt"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	t.mu.Lock()
+	t.calls = append(t.calls, fakeRequestHelpCall{Capability: p.Capability, Prompt: p.Prompt})
+	t.parentSession = agent.ParentSession(ctx)
+	err := t.err
+	t.mu.Unlock()
+	t.completed.Store(true)
+	if err != nil {
+		return "", err
+	}
+	// Return a structured result that ImageProducer can parse.
+	artifactJSON, err := json.Marshal(map[string]any{
+		"task_id": "fake", "path": t.artifactPath, "mime": "image/png",
+		"size": 1, "width": 1, "height": 1,
+	})
+	if err != nil {
+		return "", err
+	}
+	return "Capability assist succeeded\nrequest_id: fake\ncapability: image_generation\nfrom_model: fake\nmodel: fake\nattempt: 1/1\nartifact: " + string(artifactJSON) + "\n\nFake image generated", nil
+}
+
+// eventRecorder captures events in order for assertion.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []event.Event
+}
+
+func (r *eventRecorder) Emit(e event.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, e)
+}
+
+// providerWithGuard tracks whether Stream was called and provides a guard
+// channel to block/fail if called before preflight completes.
+type providerWithGuard struct {
+	name                    string
+	streamedAt              chan struct{} // closed when Stream is called
+	blockCh                 chan struct{} // blocks Stream until closed
+	text                    string        // response text to return
+	preflightDone           *atomic.Bool
+	streamedBeforePreflight atomic.Bool
+}
+
+func (p *providerWithGuard) Name() string { return p.name }
+
+func (p *providerWithGuard) Stream(ctx context.Context, _ provider.Request) (<-chan provider.Chunk, error) {
+	if p.preflightDone != nil && !p.preflightDone.Load() {
+		p.streamedBeforePreflight.Store(true)
+	}
+	close(p.streamedAt)
+	if p.blockCh != nil {
+		select {
+		case <-p.blockCh:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	chunks := make(chan provider.Chunk, 2)
+	chunks <- provider.Chunk{Type: provider.ChunkText, Text: p.text}
+	chunks <- provider.Chunk{Type: provider.ChunkDone}
+	close(chunks)
+	return chunks, nil
+}
+
+func TestPreflightExecutesBeforeProviderStream(t *testing.T) {
+	prov := &providerWithGuard{name: "fake-provider", streamedAt: make(chan struct{}), blockCh: make(chan struct{}), text: "result"}
+	codexHome := t.TempDir()
+	generatedDir := filepath.Join(codexHome, "generated_images")
+	if err := os.MkdirAll(generatedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	artifactPath := filepath.Join(generatedDir, "output.png")
+	if err := os.WriteFile(artifactPath, mustBase64(t, tinyPNG), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := artifact.ValidateImageFile(artifactPath); err != nil {
+		t.Fatalf("validate test image: %v", err)
+	}
+	fakeTool := &fakeRequestHelpTool{artifactPath: artifactPath}
+	prov.preflightDone = &fakeTool.completed
+	recorder := &eventRecorder{}
+
+	dir := t.TempDir()
+	var created *Controller
+	factory := func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+		path := agent.NewSessionPath(dir, "work-task")
+		reg := tool.NewRegistry()
+		reg.Add(fakeTool)
+		session := agent.NewSession("stable system prompt")
+		executor := agent.New(prov, reg, session, agent.Options{}, recorder)
+		ctrl := New(Options{
+			Runner:       executor,
+			Executor:     executor,
+			ModelRef:     "fake/model",
+			SessionDir:   dir,
+			SessionPath:  path,
+			SystemPrompt: "stable system prompt",
+		})
+		created = ctrl
+		return ctrl, func() {}, nil
+	}
+
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model"},
+		factory,
+	)
+
+	input := taskInput()
+	input.SlotPreflights = []work.SlotPreflight{
+		{SlotID: "img", SlotIndex: 0, Capability: "image_generation", Prompt: "generate a hero image"},
+	}
+
+	// Run in a goroutine — the provider blocks, so we check state after.
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := exec.ExecuteTask(context.Background(), input)
+		errCh <- err
+	}()
+
+	// Wait for the provider to be called (preflight must have finished by then).
+	select {
+	case <-prov.streamedAt:
+		// Good: preflight completed, provider called next.
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider Stream was never called")
+	}
+
+	// Unblock the provider so the turn can finish.
+	close(prov.blockCh)
+	if err := <-errCh; err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if prov.streamedBeforePreflight.Load() {
+		t.Fatal("provider Stream started before request_help preflight completed")
+	}
+
+	// Verify preflight events: ToolDispatch then ToolResult for request_help.
+	recorder.mu.Lock()
+	events := recorder.events
+	recorder.mu.Unlock()
+
+	var dispatchSeen, resultSeen bool
+	for _, e := range events {
+		switch e.Kind {
+		case event.ToolDispatch:
+			if e.Tool.Name == "request_help" {
+				dispatchSeen = true
+			}
+		case event.ToolResult:
+			if e.Tool.Name == "request_help" && dispatchSeen {
+				resultSeen = true
+			}
+		}
+	}
+	if !dispatchSeen || !resultSeen {
+		t.Fatalf("expected ToolDispatch+ToolResult for request_help; dispatch=%v result=%v, events=%d", dispatchSeen, resultSeen, len(events))
+	}
+
+	// Verify the fake tool was called with correct args.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 1 {
+		t.Fatalf("expected 1 request_help call, got %d", len(fakeTool.calls))
+	}
+	call := fakeTool.calls[0]
+	if call.Capability != "image_generation" || call.Prompt != "generate a hero image" {
+		t.Fatalf("request_help call = %+v", call)
+	}
+	if fakeTool.parentSession == "" {
+		t.Fatal("request_help preflight missing parent Session context")
+	}
+	fakeTool.mu.Unlock()
+
+	history := created.History()
+	var toolResultIndex, taskPromptIndex = -1, -1
+	for i, msg := range history {
+		if msg.Role == provider.RoleTool && msg.Name == "request_help" {
+			toolResultIndex = i
+		}
+		if msg.Role == provider.RoleUser && strings.Contains(msg.Content, "Host capability preflight terminal states:") {
+			taskPromptIndex = i
+		}
+	}
+	if toolResultIndex < 0 || taskPromptIndex <= toolResultIndex {
+		t.Fatalf("history order toolResult=%d taskPrompt=%d", toolResultIndex, taskPromptIndex)
+	}
+	if got := artifact.Collect(history, artifact.DefaultProducers()); len(got) != 1 {
+		t.Fatalf("preflight artifacts in shared history = %d, want 1; history=%+v", len(got), history)
+	}
+}
+
+func TestPreflightFailureStillAllowsProviderRun(t *testing.T) {
+	prov := &providerWithGuard{name: "fake-provider", streamedAt: make(chan struct{}), blockCh: make(chan struct{}), text: "result"}
+	fakeTool := &fakeRequestHelpTool{err: errors.New("no usable provider")}
+	prov.preflightDone = &fakeTool.completed
+	recorder := &eventRecorder{}
+
+	dir := t.TempDir()
+	var created *Controller
+	factory := func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+		path := agent.NewSessionPath(dir, "work-task")
+		reg := tool.NewRegistry()
+		reg.Add(fakeTool)
+		session := agent.NewSession("stable system prompt")
+		executor := agent.New(prov, reg, session, agent.Options{}, recorder)
+		ctrl := New(Options{
+			Runner:       executor,
+			Executor:     executor,
+			ModelRef:     "fake/model",
+			SessionDir:   dir,
+			SessionPath:  path,
+			SystemPrompt: "stable system prompt",
+		})
+		created = ctrl
+		return ctrl, func() {}, nil
+	}
+
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model"},
+		factory,
+	)
+
+	input := taskInput()
+	input.SlotPreflights = []work.SlotPreflight{
+		{SlotID: "img", SlotIndex: 0, Capability: "image_generation", Prompt: "generate a hero image"},
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := exec.ExecuteTask(context.Background(), input)
+		errCh <- err
+	}()
+
+	// Provider must be called even if preflight fails.
+	select {
+	case <-prov.streamedAt:
+		// Provider was called — preflight completed (success or failure) first.
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider Stream was never called after preflight")
+	}
+
+	close(prov.blockCh)
+	if err := <-errCh; err != nil {
+		t.Fatalf("ExecuteTask should not fail on preflight error: %v", err)
+	}
+	if prov.streamedBeforePreflight.Load() {
+		t.Fatal("provider Stream started before failed preflight reached a terminal result")
+	}
+
+	history := created.History()
+	var failedResult, fallbackUnlocked bool
+	for _, msg := range history {
+		if msg.Role == provider.RoleTool && msg.Name == "request_help" &&
+			strings.Contains(msg.Content, "no usable provider") {
+			failedResult = true
+		}
+		if msg.Role == provider.RoleUser && strings.Contains(msg.Content, "fallback is now unlocked") {
+			fallbackUnlocked = true
+		}
+	}
+	if !failedResult || !fallbackUnlocked {
+		t.Fatalf("failed preflight not visible before fallback: result=%v unlocked=%v", failedResult, fallbackUnlocked)
+	}
+}
+
+func TestNoPreflightPreservesOldPath(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	var cleaned atomic.Bool
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, &cleaned),
+	)
+
+	input := taskInput()
+	// No SlotPreflights — should work exactly as before.
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("expected RunCompleted, got %s", attempt.State)
+	}
+}
+
+func TestValidateTaskInputRejectsInvalidPreflights(t *testing.T) {
+	valid := work.SlotPreflight{
+		SlotID: "image", SlotIndex: 0, Capability: "image_generation", Prompt: "draw",
+	}
+	tests := []struct {
+		name       string
+		preflights []work.SlotPreflight
+		want       string
+	}{
+		{name: "missing slot", preflights: []work.SlotPreflight{{SlotIndex: 0, Capability: "image_generation", Prompt: "draw"}}, want: "slotId is required"},
+		{name: "negative index", preflights: []work.SlotPreflight{{SlotID: "image", SlotIndex: -1, Capability: "image_generation", Prompt: "draw"}}, want: "slotIndex must be non-negative"},
+		{name: "missing capability", preflights: []work.SlotPreflight{{SlotID: "image", SlotIndex: 0, Prompt: "draw"}}, want: "capability is required"},
+		{name: "duplicate", preflights: []work.SlotPreflight{valid, valid}, want: "duplicates slot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := taskInput()
+			input.SlotPreflights = tt.preflights
+			if err := validateTaskInput(input); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }

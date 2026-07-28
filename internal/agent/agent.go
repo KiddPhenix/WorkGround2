@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -665,6 +666,68 @@ func (a *Agent) SetSession(s *Session) {
 	a.resetMemoryCompilerInjectionGate()
 	// 清除分类缓存（会话边界）
 	a.clearClassifierCache()
+}
+
+// ExecuteSyntheticToolCall executes one tool call as if the model had requested
+// it: writes a user message with userPrompt, an assistant message with the tool
+// call, executes the tool through the normal permission/hook/event path, writes
+// the tool result, and returns its output. It is used by Work task preflight to
+// inject capability calls before the first model turn.
+func (a *Agent) ExecuteSyntheticToolCall(ctx context.Context, userPrompt string, call provider.ToolCall) (string, error) {
+	if a == nil {
+		return "", errors.New("agent: nil Agent")
+	}
+	// 1. Write synthetic user message.
+	a.session.Add(provider.Message{
+		Role:    provider.RoleUser,
+		Content: userPrompt,
+	})
+
+	// 2. Write synthetic assistant message with the tool call.
+	a.session.Add(provider.Message{
+		Role:      provider.RoleAssistant,
+		ToolCalls: []provider.ToolCall{call},
+	})
+
+	// 3. Emit ToolDispatch event.
+	t, _ := a.tools.Get(call.Name)
+	a.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{
+		ID: call.ID, Name: call.Name, Args: call.Arguments, ReadOnly: t != nil && t.ReadOnly(),
+	}})
+
+	// 4. Execute the tool through the standard path (permissions, hooks, etc.).
+	start := time.Now()
+	outcome := a.executeOne(ctx, call)
+	duration := time.Since(start).Milliseconds()
+
+	// 5. Write tool result message.
+	a.session.Add(provider.Message{
+		Role:       provider.RoleTool,
+		Content:    outcome.output,
+		ToolCallID: call.ID,
+		Name:       call.Name,
+	})
+
+	// 6. Emit ToolResult event.
+	displayOutput := redactProtectedText(outcome.output)
+	a.sink.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{
+		ID:         call.ID,
+		Name:       call.Name,
+		Args:       call.Arguments,
+		Output:     displayOutput,
+		Err:        outcome.errMsg,
+		ReadOnly:   t != nil && t.ReadOnly(),
+		Truncated:  outcome.truncated,
+		DurationMs: duration,
+	}})
+	if outcome.truncated && outcome.truncMsg != "" {
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: outcome.truncMsg})
+	}
+
+	if outcome.errMsg != "" {
+		return outcome.output, errors.New(outcome.errMsg)
+	}
+	return outcome.output, nil
 }
 
 // LastUsage returns the most recent per-turn token telemetry the provider

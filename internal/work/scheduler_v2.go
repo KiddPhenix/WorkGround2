@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -481,6 +482,7 @@ func (s *V2Scheduler) executeNode(
 		SideEffectClass:  rt.SideEffectClass,
 		Operation:        node.ID,
 		ProducesSlotIDs:  append([]string(nil), node.ProducesSlotIDs...),
+		SlotPreflights:   BuildSlotPreflights(slotDefs, node.ProducesSlotIDs, taskPrompt),
 		Prompt:           taskPrompt,
 	})
 	finishedAt := s.clock.Now().UTC()
@@ -958,6 +960,71 @@ func buildSlotGuidanceMaps() (map[string]artifact.SlotGuidance, map[string]strin
 		}
 	}
 	return byKind, byCapability
+}
+
+// BuildSlotPreflights returns preflight requests for slots whose Kind matches a
+// registered CapabilityProducer. Slots without a capability producer or with
+// Kind empty/"text"/"document"/"code"/"xlsx"/"markdown" are skipped — those are
+// satisfied by the main model's final response or Shell file discovery.
+//
+// Preflights are emitted in slot-definition order, with per-slot indices for
+// ExpectedCount > 1. The Prompt field is built from the slot title, kind, and
+// the node's overall task prompt so the capability helper has full context.
+func BuildSlotPreflights(slotDefs []ArtifactSlotDef, producesSlotIDs []string, taskPrompt string) []SlotPreflight {
+	if len(slotDefs) == 0 || len(producesSlotIDs) == 0 {
+		return nil
+	}
+	byKind, _ := buildSlotGuidanceMaps()
+	if len(byKind) == 0 {
+		return nil
+	}
+	produced := make(map[string]struct{}, len(producesSlotIDs))
+	for _, slotID := range producesSlotIDs {
+		produced[slotID] = struct{}{}
+	}
+	var out []SlotPreflight
+	for _, sd := range slotDefs {
+		if _, ok := produced[sd.ID]; !ok {
+			continue
+		}
+		kind := strings.ToLower(strings.TrimSpace(sd.Kind))
+		g, hasCap := byKind[kind]
+		if !hasCap {
+			continue
+		}
+		count := sd.ExpectedCount
+		if count <= 0 {
+			count = 1
+		}
+		for i := 0; i < count; i++ {
+			prompt := buildPreflightPrompt(sd, i, count, taskPrompt)
+			out = append(out, SlotPreflight{
+				SlotID:     sd.ID,
+				SlotIndex:  i,
+				Capability: g.Capability,
+				Prompt:     prompt,
+			})
+		}
+	}
+	return out
+}
+
+// buildPreflightPrompt constructs a self-contained generation prompt for one
+// capability-produced slot index. When count > 1 it adds positional hints so
+// the helper can differentiate (e.g. "image 2 of 4").
+func buildPreflightPrompt(sd ArtifactSlotDef, index, count int, taskPrompt string) string {
+	var b strings.Builder
+	b.WriteString("Generate the artifact for slot ")
+	b.WriteString(strconv.Quote(sd.Title))
+	b.WriteString(" (")
+	b.WriteString(sd.Kind)
+	b.WriteString(")")
+	if count > 1 {
+		fmt.Fprintf(&b, " — item %d of %d", index+1, count)
+	}
+	b.WriteString(".\n\nContext from the task:\n")
+	b.WriteString(taskPrompt)
+	return b.String()
 }
 
 // v2NodePromptToolHints returns guidance text for a node's tool hints.

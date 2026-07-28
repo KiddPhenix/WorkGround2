@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -217,7 +219,56 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		defer finishContext()
 	}
 
-	runErr := ctrl.RunTurn(taskCtx, input.Prompt)
+	// Execute capability preflights before the first provider call.
+	// Each preflight calls request_help through the standard tool path so
+	// the result (success or failure) is visible in session history.
+	// Failures are non-blocking: the main model sees the error and can
+	// fall back to Shell/file-based artifact discovery.
+	runPrompt := input.Prompt
+	if len(input.SlotPreflights) > 0 {
+		var terminal []string
+		for _, pf := range input.SlotPreflights {
+			if err := taskCtx.Err(); err != nil {
+				return cancelledAttempt(input, startedAt), a.taskError(input, "preflight", false, err)
+			}
+			callID := preflightCallID(input, pf.SlotID, pf.SlotIndex)
+			args, err := buildRequestHelpArgs(pf.Capability, pf.Prompt)
+			if err != nil {
+				slog.Warn("work: preflight args build failed",
+					"work_id", input.WorkID,
+					"task_id", input.TaskID,
+					"slot_id", pf.SlotID,
+					"capability", pf.Capability,
+					"error", err,
+				)
+				continue
+			}
+			_, execErr := ctrl.executeToolCall(taskCtx, callID, pf.Prompt, "request_help", args)
+			if execErr != nil {
+				terminal = append(terminal, fmt.Sprintf(
+					"- slot %q item %d capability %q failed above; fallback is now unlocked. Do not retry the same preflight unless its tool result explicitly asks for a retry.",
+					pf.SlotID, pf.SlotIndex+1, pf.Capability,
+				))
+				slog.Warn("work: preflight failed",
+					"work_id", input.WorkID,
+					"task_id", input.TaskID,
+					"slot_id", pf.SlotID,
+					"capability", pf.Capability,
+					"error", execErr,
+				)
+				continue
+			}
+			terminal = append(terminal, fmt.Sprintf(
+				"- slot %q item %d capability %q succeeded above; consume that tool result and do not generate a replacement or call the same capability again.",
+				pf.SlotID, pf.SlotIndex+1, pf.Capability,
+			))
+		}
+		if len(terminal) > 0 {
+			runPrompt += "\n\nHost capability preflight terminal states:\n" + strings.Join(terminal, "\n")
+		}
+	}
+
+	runErr := ctrl.RunTurn(taskCtx, runPrompt)
 	snapshotErr := ctrl.Snapshot()
 	metaErr := agent.SetBranchSource(sessionPath, taskSessionSource(input))
 	cause := errors.Join(runErr, snapshotErr, metaErr)
@@ -567,6 +618,26 @@ func validateTaskInput(input work.TaskExecuteInput) error {
 	if input.AttemptIndex < 0 {
 		return errors.New("attemptIndex must be non-negative")
 	}
+	seenPreflights := make(map[string]struct{}, len(input.SlotPreflights))
+	for i, pf := range input.SlotPreflights {
+		if strings.TrimSpace(pf.SlotID) == "" {
+			return fmt.Errorf("slotPreflights[%d].slotId is required", i)
+		}
+		if pf.SlotIndex < 0 {
+			return fmt.Errorf("slotPreflights[%d].slotIndex must be non-negative", i)
+		}
+		if strings.TrimSpace(pf.Capability) == "" {
+			return fmt.Errorf("slotPreflights[%d].capability is required", i)
+		}
+		if strings.TrimSpace(pf.Prompt) == "" {
+			return fmt.Errorf("slotPreflights[%d].prompt is required", i)
+		}
+		key := fmt.Sprintf("%s\x00%d", pf.SlotID, pf.SlotIndex)
+		if _, duplicate := seenPreflights[key]; duplicate {
+			return fmt.Errorf("slotPreflights[%d] duplicates slot %q item %d", i, pf.SlotID, pf.SlotIndex)
+		}
+		seenPreflights[key] = struct{}{}
+	}
 	return nil
 }
 
@@ -650,6 +721,33 @@ func taskSessionSource(input work.TaskExecuteInput) string {
 		"work:%s/run:%s/stage:%s/task:%s/attempt:%d/request:%s",
 		input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptIndex, input.RequestID,
 	)
+}
+
+// preflightCallID generates a stable, deterministic tool-call ID for one
+// preflight invocation. The ID is safe to replay: repeated calls with the same
+// arguments produce the same ID.
+func preflightCallID(input work.TaskExecuteInput, slotID string, index int) string {
+	seed := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s\x00%d",
+		input.WorkID, input.RunID, input.TaskID, input.AttemptID, slotID, input.RequestID, index)
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("preflight-%x", sum[:8])
+}
+
+// buildRequestHelpArgs marshals a capability+prompt pair into the JSON that
+// the request_help tool expects.
+func buildRequestHelpArgs(capability, prompt string) (json.RawMessage, error) {
+	args := struct {
+		Capability string `json:"capability"`
+		Prompt     string `json:"prompt"`
+	}{
+		Capability: capability,
+		Prompt:     prompt,
+	}
+	data, err := json.Marshal(args)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request_help args: %w", err)
+	}
+	return json.RawMessage(data), nil
 }
 
 var _ work.TaskExecutor = (*TaskExecutorAdapter)(nil)

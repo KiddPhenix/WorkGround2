@@ -157,6 +157,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-27
 
+### Work 结构化产物能力预执行
+- Location: `internal/work/ports.go`, `internal/work/scheduler_v2.go`, `internal/agent/agent.go`, `internal/control/controller.go`, `internal/control/taskexec.go`
+- Summary: 带能力要求（如 image_generation）的 ArtifactSlot 在 TaskExecutor 主模型运行前，通过标准 Agent 工具路径串行执行 request_help preflight；SlotPreflight 由 ArtifactSlotDef + CapabilityProducer 自动生成，失败结果可观察并允许主模型 fallback；无能力槽保持旧路径。
+- Keywords: SlotPreflight, BuildSlotPreflights, CapabilityProducer, preflight, request_help, ExecuteSyntheticToolCall, executeToolCall
+- Source: implementation+tests
+- Updated: 2026-07-28
+
 ### 上游可靠性加固
 - Location: `internal/provider/openai`, `internal/agent`, `internal/control`, `internal/skill`, `internal/tool`, `internal/fileutil/encoding`, `internal/config`, `internal/plugin`, `internal/acp`, `internal/boot`, `desktop`
 - Summary: 状态 done；分支 `developping/upstream-hardening+2026-07-10`；按行为重实现 DeepSeek reasoning 回放、planner 失败降级/no-op/宿主审批与用户决策、review/子代理只读边界、tab-scoped 工作区、Windows 文本解码、MCP get、ACP 文件/终端协作、plan/location/mode。全仓测试编译、Go vet、受影响核心包实跑通过；Windows 历史 `printf`/长等待测试单列风险。

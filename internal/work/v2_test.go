@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -331,4 +332,120 @@ func TestMigrationDecision_FutureRejectsWrite(t *testing.T) {
 	if dec != MigrateFutureReadOnly {
 		t.Fatalf("v99 must be MigrateFutureReadOnly, got %v", dec)
 	}
+}
+
+// ── BuildSlotPreflights tests ──────────────────────────────────────────────
+
+func TestBuildSlotPreflights_NoSlots(t *testing.T) {
+	result := BuildSlotPreflights(nil, nil, "task prompt")
+	if len(result) != 0 {
+		t.Fatalf("expected nil, got %d preflights", len(result))
+	}
+}
+
+func TestBuildSlotPreflights_NoCapabilitySlots(t *testing.T) {
+	// Slots with kinds that have no CapabilityProducer should produce no preflights.
+	slotDefs := []ArtifactSlotDef{
+		{ID: "text_slot", Title: "Summary", Kind: "text", ExpectedCount: 1},
+		{ID: "doc_slot", Title: "Report", Kind: "document", ExpectedCount: 1},
+	}
+	result := BuildSlotPreflights(slotDefs, []string{"text_slot", "doc_slot"}, "do something")
+	if len(result) != 0 {
+		t.Fatalf("expected 0 preflights for text/document slots, got %d", len(result))
+	}
+}
+
+func TestBuildSlotPreflights_ImageSlotGeneratesPreflight(t *testing.T) {
+	slotDefs := []ArtifactSlotDef{
+		{ID: "img", Title: "Hero Image", Kind: "image", ExpectedCount: 1},
+	}
+	result := BuildSlotPreflights(slotDefs, []string{"img"}, "create a hero banner")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 preflight, got %d", len(result))
+	}
+	pf := result[0]
+	if pf.SlotID != "img" || pf.SlotIndex != 0 || pf.Capability != "image_generation" {
+		t.Fatalf("preflight = %+v", pf)
+	}
+	if pf.Prompt == "" || !containsAll(pf.Prompt, []string{"Hero Image", "image", "create a hero banner"}) {
+		t.Fatalf("prompt missing context: %q", pf.Prompt)
+	}
+}
+
+func TestBuildSlotPreflights_MultiCount(t *testing.T) {
+	slotDefs := []ArtifactSlotDef{
+		{ID: "img", Title: "Gallery", Kind: "image", ExpectedCount: 3},
+	}
+	result := BuildSlotPreflights(slotDefs, []string{"img"}, "generate a gallery")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 preflights for ExpectedCount=3, got %d", len(result))
+	}
+	for i, pf := range result {
+		if pf.SlotIndex != i {
+			t.Fatalf("preflight[%d].SlotIndex = %d", i, pf.SlotIndex)
+		}
+		if pf.Capability != "image_generation" {
+			t.Fatalf("preflight[%d].Capability = %q", i, pf.Capability)
+		}
+	}
+	// Last preflight should mention "3 of 3".
+	if !strings.Contains(result[2].Prompt, "3 of 3") {
+		t.Fatalf("expected positional hint in prompt: %q", result[2].Prompt)
+	}
+}
+
+func TestBuildSlotPreflights_SlotOrderPreserved(t *testing.T) {
+	slotDefs := []ArtifactSlotDef{
+		{ID: "img1", Title: "First", Kind: "image", ExpectedCount: 2},
+		{ID: "txt", Title: "Text", Kind: "text", ExpectedCount: 1},
+		{ID: "img2", Title: "Second", Kind: "image", ExpectedCount: 1},
+	}
+	result := BuildSlotPreflights(slotDefs, []string{"img2", "txt", "img1"}, "task")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 preflights (img1×2 + img2×1), got %d", len(result))
+	}
+	// img1 index 0
+	if result[0].SlotID != "img1" || result[0].SlotIndex != 0 {
+		t.Fatalf("result[0] = slot=%s idx=%d", result[0].SlotID, result[0].SlotIndex)
+	}
+	// img1 index 1
+	if result[1].SlotID != "img1" || result[1].SlotIndex != 1 {
+		t.Fatalf("result[1] = slot=%s idx=%d", result[1].SlotID, result[1].SlotIndex)
+	}
+	// img2 index 0
+	if result[2].SlotID != "img2" || result[2].SlotIndex != 0 {
+		t.Fatalf("result[2] = slot=%s idx=%d", result[2].SlotID, result[2].SlotIndex)
+	}
+}
+
+func TestBuildSlotPreflights_SlotNotInProducesList(t *testing.T) {
+	slotDefs := []ArtifactSlotDef{
+		{ID: "img", Title: "Hero Image", Kind: "image", ExpectedCount: 1},
+	}
+	// Only "other" is in producesSlotIDs — img should not generate preflights.
+	result := BuildSlotPreflights(slotDefs, []string{"other"}, "task")
+	if len(result) != 0 {
+		t.Fatalf("expected 0 preflights, got %d", len(result))
+	}
+}
+
+func TestBuildSlotPreflights_UnknownSlotID(t *testing.T) {
+	slotDefs := []ArtifactSlotDef{
+		{ID: "known", Title: "Known", Kind: "image", ExpectedCount: 1},
+	}
+	result := BuildSlotPreflights(slotDefs, []string{"unknown"}, "task")
+	if len(result) != 0 {
+		t.Fatalf("expected 0 preflights for unknown slot, got %d", len(result))
+	}
+}
+
+// ── helpers ────────────────────────────────────────────────────────────────
+
+func containsAll(s string, subs []string) bool {
+	for _, sub := range subs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }

@@ -131,21 +131,33 @@ type PatchPlan struct {
 	Operations []PatchOp
 }
 
+// SlotPreflight describes a pre-turn capability request for one artifact slot.
+// The scheduler populates this from ArtifactSlotDef + registered CapabilityProducer;
+// the executor serialises them before the first provider call so the main model
+// can consume the results.
+type SlotPreflight struct {
+	SlotID     string `json:"slotId"`
+	SlotIndex  int    `json:"slotIndex"`
+	Capability string `json:"capability"`
+	Prompt     string `json:"prompt"`
+}
+
 // TaskExecuteInput carries stable object and request context into the session
 // executor without exposing Controller internals.
 type TaskExecuteInput struct {
-	WorkID           string   `json:"workId"`
-	RunID            string   `json:"runId"`
-	StageID          string   `json:"stageId"`
-	TaskID           string   `json:"taskId"`
-	AttemptID        string   `json:"-"`
-	AttemptIndex     int      `json:"attemptIndex"`
-	RequestID        string   `json:"requestId"`
-	DefinitionDigest string   `json:"definitionDigest"`
-	SideEffectClass  string   `json:"-"`
-	Operation        string   `json:"-"`
-	ProducesSlotIDs  []string `json:"-"`
-	Prompt           string   `json:"prompt"`
+	WorkID           string          `json:"workId"`
+	RunID            string          `json:"runId"`
+	StageID          string          `json:"stageId"`
+	TaskID           string          `json:"taskId"`
+	AttemptID        string          `json:"-"`
+	AttemptIndex     int             `json:"attemptIndex"`
+	RequestID        string          `json:"requestId"`
+	DefinitionDigest string          `json:"definitionDigest"`
+	SideEffectClass  string          `json:"-"`
+	Operation        string          `json:"-"`
+	ProducesSlotIDs  []string        `json:"-"`
+	SlotPreflights   []SlotPreflight `json:"-"`
+	Prompt           string          `json:"prompt"`
 }
 
 // TaskCancelInput identifies one attempt independently of Session creation.

@@ -3774,6 +3774,21 @@ func (c *Controller) SetSkillEnabled(name string, enabled bool) error {
 // so a frontend can list the active hooks via `/hooks`.
 func (c *Controller) HookRunner() *hook.Runner { return c.hooks }
 
+// executeToolCall runs a single host-directed tool through the Agent's standard path
+// (permissions, hooks, ToolDispatch/ToolResult events) and writes synthetic
+// user + assistant tool_call + tool result messages to the session history.
+// It is used by Work task preflight to inject capability calls.
+func (c *Controller) executeToolCall(ctx context.Context, callID string, userPrompt string, toolName string, toolArgs json.RawMessage) (string, error) {
+	if c == nil || c.executor == nil {
+		return "", errors.New("controller: nil")
+	}
+	parentSession := c.parentSessionID()
+	ctx = agent.WithParentSession(ctx, parentSession)
+	ctx = jobs.WithSession(ctx, parentSession)
+	call := provider.ToolCall{ID: callID, Name: toolName, Arguments: string(toolArgs)}
+	return c.executor.ExecuteSyntheticToolCall(ctx, userPrompt, call)
+}
+
 // AddMCPServer connects an MCP server live and persists it to the config file. Its
 // tools are registered immediately and become available on the next turn (the
 // agent reads the registry per turn). The raw entry — ${VARS} intact — is what's
