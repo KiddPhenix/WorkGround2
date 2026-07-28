@@ -2318,6 +2318,16 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
     'prompt frame exposes busy state while candidate generation is pending',
   );
   eq(genBtn.getAttribute('aria-busy'), 'true', 'generate CTA exposes busy state');
+  const busyCopy = mounted.host.querySelector<HTMLElement>('[data-testid="work-generate-status-copy"]');
+  eq(busyCopy?.getAttribute('data-state'), 'generating', 'busy copy follows the current generation phase');
+  eq(busyCopy?.getAttribute('aria-hidden'), 'true', 'rotating joke copy stays out of the accessibility tree');
+  ok(Boolean(busyCopy?.textContent?.trim()), 'generation phase displays a playful status line');
+  ok(busyCopy?.textContent !== '正在生成工作结构…', 'generation phase replaces the formal placeholder copy');
+  eq(
+    mounted.host.querySelector('[data-testid="work-generate-status-a11y"]')?.textContent,
+    '正在生成工作结构',
+    'screen readers receive a stable formal generation status',
+  );
   await settle(140);
 
   eq(port.applyInputs.length, 1, 'candidate is applied automatically after generation');

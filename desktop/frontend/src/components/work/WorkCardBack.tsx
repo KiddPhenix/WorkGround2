@@ -61,6 +61,44 @@ export interface WorkCardBackProps {
   onCreateCandidate?: (input: CreateCandidateRevisionInput) => Promise<CreateCandidateRevisionResult>;
 }
 
+type GenerateState = 'idle' | 'saving' | 'generating' | 'applying';
+type GenerateBusyState = Exclude<GenerateState, 'idle'>;
+
+const generateBusyCopy: Record<GenerateBusyState, readonly string[]> = {
+  saving: [
+    '正在给脑洞上户口…',
+    '先把灵感钉住…',
+    '需求已捕获，别跑…',
+    '正在保存这次顿悟…',
+  ],
+  generating: [
+    '正在把大象塞进流程图…',
+    '任务们正在认领工位…',
+    '依赖关系正在谈判…',
+    '给脑洞装上轮子…',
+    '章鱼项目经理已上线…',
+  ],
+  applying: [
+    '工作流点火，坐稳…',
+    '正在把计划推向现实…',
+    '任务小队正在出发…',
+    '咖啡已注入，开工…',
+    '宇宙正在批准开工…',
+  ],
+};
+
+const generateBusyStatus: Record<GenerateBusyState, string> = {
+  saving: '正在保存名称和任务说明',
+  generating: '正在生成工作结构',
+  applying: '正在启动工作',
+};
+
+function pickGenerateBusyCopy(state: GenerateBusyState, previous = ''): string {
+  const pool = generateBusyCopy[state];
+  const candidates = pool.filter((copy) => copy !== previous);
+  return candidates[Math.floor(Math.random() * candidates.length)] ?? pool[0];
+}
+
 function renderSlot(slot: WorkCardBackSlot | undefined, props: WorkCardBackSlotProps): ReactNode {
   return typeof slot === 'function' ? slot(props) : slot;
 }
@@ -87,7 +125,8 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const [nameDirty, setNameDirty] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [generateState, setGenerateState] = useState<'idle' | 'saving' | 'generating' | 'applying'>('idle');
+  const [generateState, setGenerateState] = useState<GenerateState>('idle');
+  const [generateStatusCopy, setGenerateStatusCopy] = useState('');
   const [generateError, setGenerateError] = useState<string | null>(null);
   const saveCompletedRef = useRef(false);
   const savedRevisionRef = useRef<number>(0);
@@ -117,6 +156,17 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     setName(work.name);
     setNameDirty(false);
   }, [work.id, work.name]);
+
+  useEffect(() => {
+    if (generateState === 'idle') {
+      setGenerateStatusCopy('');
+      return;
+    }
+    const rotate = () => setGenerateStatusCopy((previous) => pickGenerateBusyCopy(generateState, previous));
+    rotate();
+    const timer = globalThis.setInterval(rotate, 1800);
+    return () => globalThis.clearInterval(timer);
+  }, [generateState]);
 
   useEffect(() => {
     setLocalCandidate(undefined);
@@ -518,13 +568,26 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                         aria-hidden="true"
                       />
                     )}
-                    <span>
-                      {generateState === 'saving' ? '正在保存…'
-                        : generateState === 'generating' ? '正在生成工作结构…'
-                          : generateState === 'applying' ? '正在启动工作…'
-                            : pendingCandidateRef.current ? '重试启动工作'
-                              : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                    <span
+                      data-testid="work-generate-status-copy"
+                      data-state={generateState}
+                      aria-hidden={generateState !== 'idle' ? 'true' : undefined}
+                    >
+                      {generateState !== 'idle'
+                        ? generateStatusCopy || generateBusyCopy[generateState][0]
+                        : pendingCandidateRef.current ? '重试启动工作'
+                          : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
                     </span>
+                    {generateState !== 'idle' && (
+                      <span
+                        className="sr-only"
+                        role="status"
+                        aria-live="polite"
+                        data-testid="work-generate-status-a11y"
+                      >
+                        {generateBusyStatus[generateState]}
+                      </span>
+                    )}
                   </button>
                   {generateError && <span role="alert" data-testid="work-generate-structure-error">{generateError}</span>}
                 </>
