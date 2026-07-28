@@ -751,6 +751,10 @@ async function testPlacementAndFlipAccessibility(): Promise<void> {
 
 function testMotionCSSContract(): void {
   const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
+  const planningCSS = css.slice(
+    css.indexOf('.wg2-work-back-header {'),
+    css.indexOf('.wg2-work-back-prompt-preview {'),
+  );
   ok(/\.wg2-work-face\s*\{[\s\S]*?transition:\s*transform 240ms ease/.test(css), 'standard face transition is 240ms');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?transition:\s*opacity 150ms ease/.test(css), 'reduced motion uses a fade');
   ok(/max-width:\s*480px[\s\S]*?\.wg2-work-face\s*\{[\s\S]*?transition:\s*none/.test(css), 'narrow layout uses an ordinary switch');
@@ -760,6 +764,9 @@ function testMotionCSSContract(): void {
   ok(/\.wg2-work-draft-actions\[data-busy="true"\][\s\S]*?justify-content:\s*flex-start/.test(css), 'busy status moves to the reading edge');
   ok(/\.wg2-work-generate-btn__spinner[\s\S]*?animation:\s*wg2-work-status-spin/.test(css), 'busy status has a compact progress icon');
   ok(/\.wg2-work-draft-actions \.wg2-work-generate-btn[\s\S]*?min-height:\s*44px/.test(css), 'generate action is a prominent 44px CTA');
+  ok(!planningCSS.includes('--color-'), 'planning controls use defined application theme tokens');
+  ok(/\.wg2-work-prompt-field\s*\{[\s\S]*?border:\s*1px solid[\s\S]*?var\(--border\)/.test(planningCSS), 'prompt editor has a visible themed frame');
+  ok(/\.wg2-work-generate-btn:disabled:not\(\[aria-busy="true"\]\)[\s\S]*?opacity:\s*1/.test(planningCSS), 'empty-state generate CTA keeps a visible button surface');
 }
 
 async function testUnknownWorkRetry(): Promise<void> {

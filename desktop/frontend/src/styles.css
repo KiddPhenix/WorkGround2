@@ -35521,7 +35521,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-name-editor > label {
-  color: var(--color-text-secondary);
+  color: var(--fg-dim);
   font-size: 12px;
   font-weight: 600;
 }
@@ -35537,35 +35537,35 @@ body > .mermaid-diagram--fullscreen {
   flex: 1 1 auto;
   min-height: 38px;
   padding: 7px 11px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 76%, var(--color-text-secondary));
+  border: 1px solid color-mix(in srgb, var(--border) 58%, var(--fg-dim));
   border-radius: 8px;
-  background: var(--color-bg-secondary);
-  color: var(--color-text);
+  background: var(--bg-elev);
+  color: var(--fg);
   font: inherit;
   font-size: 15px;
   font-weight: 600;
 }
 
 .wg2-work-name-editor__row input:focus {
-  border-color: var(--color-accent);
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  border-color: var(--accent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 24%, transparent);
   outline-offset: 1px;
 }
 
 .wg2-work-name-editor__row button {
   min-height: 38px;
   padding: 7px 14px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--color-bg-secondary);
-  color: var(--color-text);
+  background: var(--button-bg);
+  color: var(--button-fg);
   font-weight: 600;
   cursor: pointer;
 }
 
 .wg2-work-name-editor__row button:hover:not(:disabled) {
-  border-color: var(--color-accent);
-  color: var(--color-accent);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .wg2-work-name-editor__row button:disabled {
@@ -35574,12 +35574,12 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-name-editor > [role="alert"] {
-  color: var(--color-error, #e05555);
+  color: var(--err, #e05555);
   font-size: 12px;
 }
 
 .wg2-work-name-editor > [role="status"] {
-  color: var(--color-text-secondary);
+  color: var(--fg-dim);
   font-size: 12px;
 }
 
@@ -35588,22 +35588,22 @@ body > .mermaid-diagram--fullscreen {
   flex-direction: column;
   gap: 16px;
   padding: 22px;
-  border: 1px solid color-mix(in srgb, var(--color-border) 74%, var(--color-text-secondary));
+  border: 1px solid color-mix(in srgb, var(--border) 62%, var(--fg-faint));
   border-radius: 14px;
-  background: color-mix(in srgb, var(--color-bg-secondary) 94%, var(--color-accent) 6%);
+  background: color-mix(in srgb, var(--bg-elev) 94%, var(--accent) 6%);
   box-shadow: 0 14px 38px rgb(0 0 0 / 14%);
 }
 
 .wg2-work-draft-heading h3 {
   margin: 0;
-  color: var(--color-text);
+  color: var(--fg);
   font-size: 15px;
   font-weight: 600;
 }
 
 .wg2-work-draft-heading p {
   margin: 5px 0 0;
-  color: var(--color-text-secondary);
+  color: var(--fg-dim);
   font-size: 12px;
 }
 
@@ -35612,9 +35612,11 @@ body > .mermaid-diagram--fullscreen {
   display: block;
   isolation: isolate;
   overflow: hidden;
-  padding: 1px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--border) 52%, var(--fg-dim));
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-border) 88%, var(--color-text-secondary));
+  background: color-mix(in srgb, var(--border) 72%, var(--fg-faint));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-faint) 12%, transparent);
   transition: background-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -35627,9 +35629,9 @@ body > .mermaid-diagram--fullscreen {
   background: conic-gradient(
     from 0deg,
     transparent 0deg 248deg,
-    color-mix(in srgb, var(--color-accent) 8%, transparent) 268deg,
-    color-mix(in srgb, var(--color-accent) 72%, transparent) 310deg,
-    color-mix(in srgb, var(--color-accent) 12%, transparent) 342deg,
+    color-mix(in srgb, var(--accent) 8%, transparent) 268deg,
+    color-mix(in srgb, var(--accent) 72%, transparent) 310deg,
+    color-mix(in srgb, var(--accent) 12%, transparent) 342deg,
     transparent 360deg
   );
   transform: rotate(0deg);
@@ -35641,13 +35643,15 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-prompt-field[data-busy="true"] {
-  background: color-mix(in srgb, var(--color-border) 60%, var(--color-accent));
-  box-shadow: 0 0 18px color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--border) 34%, var(--accent));
+  background: color-mix(in srgb, var(--border) 60%, var(--accent));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .wg2-work-prompt-field:focus-within {
-  background: var(--color-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .wg2-work-prompt-field textarea {
@@ -35661,8 +35665,8 @@ body > .mermaid-diagram--fullscreen {
   padding: 16px 18px;
   border: 0;
   border-radius: 11px;
-  background: color-mix(in srgb, var(--color-bg) 97%, var(--color-bg-secondary));
-  color: var(--color-text);
+  background: color-mix(in srgb, var(--bg) 94%, var(--bg-elev));
+  color: var(--fg);
   font: inherit;
   font-size: 15px;
   line-height: 1.65;
@@ -35673,15 +35677,15 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-prompt-field textarea::placeholder {
-  color: color-mix(in srgb, var(--color-text-secondary) 88%, transparent);
+  color: var(--fg-dim);
 }
 
 .wg2-work-prompt-field textarea:disabled {
   opacity: 1;
-  background: color-mix(in srgb, var(--color-bg) 94%, var(--color-bg-secondary));
-  color: var(--color-text);
+  background: color-mix(in srgb, var(--bg) 90%, var(--bg-elev));
+  color: var(--fg);
   cursor: progress;
-  -webkit-text-fill-color: var(--color-text);
+  -webkit-text-fill-color: var(--fg);
 }
 
 .wg2-work-draft-actions {
@@ -35690,7 +35694,7 @@ body > .mermaid-diagram--fullscreen {
   justify-content: flex-end;
   gap: 10px;
   min-height: 30px;
-  color: var(--color-text-secondary);
+  color: var(--fg-dim);
   font-size: 12px;
 }
 
@@ -35701,10 +35705,10 @@ body > .mermaid-diagram--fullscreen {
 .wg2-work-draft-actions button {
   min-height: 32px;
   padding: 6px 14px;
-  border: 1px solid var(--color-accent);
+  border: 1px solid var(--accent);
   border-radius: 6px;
-  background: var(--color-accent);
-  color: #fff;
+  background: var(--accent);
+  color: var(--accent-text, #fff);
   cursor: pointer;
 }
 
@@ -35716,15 +35720,11 @@ body > .mermaid-diagram--fullscreen {
   min-width: 190px;
   min-height: 44px;
   padding: 10px 20px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 74%, white);
+  border: 1px solid color-mix(in srgb, var(--accent) 74%, white);
   border-radius: 10px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--color-accent) 88%, #6c5cff),
-    color-mix(in srgb, var(--color-accent) 74%, #d15bff)
-  );
-  box-shadow: 0 8px 22px color-mix(in srgb, var(--color-accent) 28%, transparent);
-  color: #fff;
+  background: var(--grad);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--accent-text, #fff);
   font-size: 14px;
   font-weight: 700;
 }
@@ -35738,10 +35738,10 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   min-height: 32px;
   padding: 6px 10px;
-  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
-  background: color-mix(in srgb, var(--color-bg-secondary) 94%, var(--color-accent));
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--bg-elev) 94%, var(--accent));
   box-shadow: none;
-  color: color-mix(in srgb, var(--color-text-secondary) 78%, var(--color-accent));
+  color: color-mix(in srgb, var(--fg-dim) 78%, var(--accent));
   font-size: 12px;
   font-weight: 600;
   opacity: 1;
@@ -35757,8 +35757,16 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.5;
 }
 
+.wg2-work-draft-actions .wg2-work-generate-btn:disabled:not([aria-busy="true"]) {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  background: color-mix(in srgb, var(--accent) 42%, var(--bg-elev-2));
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--fg);
+  opacity: 1;
+}
+
 .wg2-work-draft-actions [role="alert"] {
-  color: var(--color-error, #e05555);
+  color: var(--err, #e05555);
 }
 
 @keyframes wg2-work-prompt-orbit {
