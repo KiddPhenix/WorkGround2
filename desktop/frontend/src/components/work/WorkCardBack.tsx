@@ -51,8 +51,7 @@ export interface WorkCardBackProps {
   slots?: WorkCardBackSlots;
   selection?: RunSelection;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
-  onSavePrompt?: (prompt: string) => Promise<number>;
-  onSaveName?: (name: string) => Promise<number>;
+  onSavePrompt?: (prompt: string, name?: string) => Promise<number>;
   onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
   v2Definition?: WorkDefinitionRevision;
   /** Active definition for diff comparison (when v2Definition is a draft). */
@@ -76,7 +75,6 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   selection,
   resolveSessionSurface,
   onSavePrompt,
-  onSaveName,
   onApplyDefinition,
   v2Definition,
   v2ActiveDefinition,
@@ -87,17 +85,21 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const [prompt, setPrompt] = useState(draft || work.prompt);
   const [name, setName] = useState(work.name);
   const [nameDirty, setNameDirty] = useState(false);
-  const [nameState, setNameState] = useState<'idle' | 'saving' | 'saved'>('idle');
-  const [nameError, setNameError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [generateState, setGenerateState] = useState<'idle' | 'saving' | 'generating'>('idle');
+  const [generateState, setGenerateState] = useState<'idle' | 'saving' | 'generating' | 'applying'>('idle');
   const [generateError, setGenerateError] = useState<string | null>(null);
   const saveCompletedRef = useRef(false);
   const savedRevisionRef = useRef<number>(0);
   const [applyState, setApplyState] = useState<'idle' | 'applying'>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
   const applyIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
+  const autoApplyAttemptRef = useRef<string | null>(null);
+  const generationOwnedRef = useRef(false);
+  const pendingCandidateRef = useRef<{
+    candidate: WorkDefinitionRevision;
+    expectedRevision: number;
+  } | null>(null);
   const candidateIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
   const [localCandidate, setLocalCandidate] = useState<WorkDefinitionRevision | undefined>();
   const [candidateImpact, setCandidateImpact] = useState<RunImpact | undefined>();
@@ -114,8 +116,6 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   useEffect(() => {
     setName(work.name);
     setNameDirty(false);
-    setNameState('idle');
-    setNameError(null);
   }, [work.id, work.name]);
 
   useEffect(() => {
@@ -126,21 +126,78 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     candidateIntentRef.current = null;
   }, [work.id, v2ActiveDefinition?.revision, v2Definition?.revision]);
 
+  useEffect(() => {
+    pendingCandidateRef.current = null;
+    autoApplyAttemptRef.current = null;
+  }, [work.id, v2ActiveDefinition?.revision]);
+
   // The base for candidate generation: active definition takes precedence;
   // when only a draft exists (initial planning), use the draft as base so
   // the user can generate the first proper structure from the conversation.
   const candidateBase = v2ActiveDefinition ?? (v2Definition?.status === 'draft' ? v2Definition : undefined);
 
-  const saveAndGenerate = async () => {
-    if (!onSavePrompt || !onCreateCandidate || !candidateBase || readonly || archived || generateState !== 'idle' || !prompt.trim()) return;
-    const intent = prompt.trim();
+  const applyGeneratedCandidate = async (
+    candidate: WorkDefinitionRevision,
+    expectedRevision: number,
+  ): Promise<void> => {
+    if (!onApplyDefinition) throw new Error('工作结构应用能力尚未连接。');
+    const signature = `${work.id}:${candidate.revision}:${expectedRevision}`;
+    if (applyIntentRef.current?.signature !== signature) {
+      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      applyIntentRef.current = { signature, requestId: `work-definition-${suffix}` };
+    }
+    setGenerateState('applying');
+    setGenerateError(null);
+    try {
+      const result = await onApplyDefinition({
+        workId: work.id,
+        revision: candidate.revision,
+        expectedRevision,
+        requestId: applyIntentRef.current.requestId,
+      });
+      if (!result.committed) {
+        throw Object.assign(
+          new Error(result.transportError?.message || '工作结构未应用，请重试。'),
+          { code: result.transportError?.code },
+        );
+      }
+      applyIntentRef.current = null;
+      pendingCandidateRef.current = null;
+      candidateIntentRef.current = null;
+      saveCompletedRef.current = false;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'revision_conflict' || code === 'request_conflict') {
+        applyIntentRef.current = null;
+        pendingCandidateRef.current = null;
+        candidateIntentRef.current = null;
+        saveCompletedRef.current = false;
+        setGenerateError('工作版本已变化，请重新生成工作结构。');
+      } else {
+        setGenerateError(`工作结构已生成，启动失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      setGenerateState('idle');
+    }
+  };
 
-    // Phase 1: save the prompt (skip if already completed on a prior attempt).
+  const saveAndGenerate = async () => {
+    if (!onSavePrompt || !onCreateCandidate || !onApplyDefinition || !candidateBase || readonly || archived || generateState !== 'idle' || !prompt.trim()) return;
+    const pending = pendingCandidateRef.current;
+    if (pending) {
+      await applyGeneratedCandidate(pending.candidate, pending.expectedRevision);
+      return;
+    }
+    const intent = prompt.trim();
+    const explicitName = nameDirty && name.trim() ? name.trim() : undefined;
+    const inferName = !v2ActiveDefinition && explicitName === undefined;
+
+    // Phase 1: save prompt and an explicit user name in one idempotent write.
     if (!saveCompletedRef.current) {
       setGenerateState('saving');
       setGenerateError(null);
       try {
-        const newRevision = await onSavePrompt(intent);
+        const newRevision = await onSavePrompt(intent, explicitName);
         saveCompletedRef.current = true;
         savedRevisionRef.current = newRevision;
       } catch (error) {
@@ -150,12 +207,14 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       }
     }
 
-    // Phase 2: generate candidate from the saved authoritative revision.
+    // Phase 2: ask the planner for a complete candidate. Initial Work creation
+    // also lets the planner's goal become the inferred title.
     const signature = JSON.stringify([
       work.id,
       candidateBase.revision,
       savedRevisionRef.current,
       intent,
+      inferName,
     ]);
     if (candidateIntentRef.current?.signature !== signature) {
       const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -163,6 +222,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     }
     setGenerateState('generating');
     setGenerateError(null);
+    generationOwnedRef.current = true;
     try {
       const result = await onCreateCandidate({
         workId: work.id,
@@ -170,24 +230,28 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         baseDefinitionRevision: candidateBase.revision,
         expectedRevision: savedRevisionRef.current,
         requestId: candidateIntentRef.current.requestId,
+        inferName,
       });
       if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
-      setLocalCandidate(result.candidate);
+      pendingCandidateRef.current = {
+        candidate: result.candidate,
+        expectedRevision: result.revision,
+      };
       setCandidateImpact(result.impact);
       setDismissedCandidateRevision(null);
-      candidateIntentRef.current = null;
-      saveCompletedRef.current = false;
+      await applyGeneratedCandidate(result.candidate, result.revision);
+      generationOwnedRef.current = false;
     } catch (error) {
+      generationOwnedRef.current = false;
       const code = (error as { code?: string }).code;
       if (code === 'revision_conflict' || code === 'request_conflict') {
         candidateIntentRef.current = null;
         saveCompletedRef.current = false;
-        setGenerateError('工作版本已变化，请重新生成候选结构。');
+        setGenerateError('工作版本已变化，请重新生成工作结构。');
       } else {
         // Transport / planner failure: save already succeeded; retry must skip save.
         setGenerateError(error instanceof Error ? error.message : String(error));
       }
-    } finally {
       setGenerateState('idle');
     }
   };
@@ -250,18 +314,46 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const isSubstantiveDraft = v2Definition?.status === 'draft'
     && v2Definition.goal.trim().length > 0
     && v2Definition.nodes.length > 0;
+  const hasCombinedFlow = !!(
+    onSavePrompt
+    && onCreateCandidate
+    && onApplyDefinition
+    && candidateBase
+    && !readonly
+    && !archived
+  );
   const projectedCandidate = isSubstantiveDraft ? v2Definition : undefined;
   const candidateDefinition = localCandidate ?? projectedCandidate;
-  const visibleCandidate = candidateDefinition?.revision === dismissedCandidateRevision
+  const visibleCandidate = hasCombinedFlow || candidateDefinition?.revision === dismissedCandidateRevision
     ? undefined
     : candidateDefinition;
-  const displayDefinition = visibleCandidate ?? v2ActiveDefinition ?? v2Definition;
+  const displayDefinition = hasCombinedFlow
+    ? v2ActiveDefinition
+    : visibleCandidate ?? v2ActiveDefinition ?? v2Definition;
   // Hide the empty/partial placeholder that has 0 useful nodes — it must not
   // dominate the first screen before the user has generated a real structure.
   const suppressEmptyPlaceholder = !visibleCandidate && !v2ActiveDefinition
     && v2Definition?.status === 'draft' && v2Definition.nodes.length === 0;
-  const hasCombinedFlow = !!(onSavePrompt && onCreateCandidate && candidateBase && !readonly && !archived);
   const suppressDefaultSessionSurface = v2Definition !== undefined;
+
+  useEffect(() => {
+    if (generationOwnedRef.current || !hasCombinedFlow || !projectedCandidate || v2ActiveDefinition || generateState !== 'idle') return;
+    const signature = `${work.id}:${projectedCandidate.revision}:${view.revision}`;
+    if (autoApplyAttemptRef.current === signature) return;
+    autoApplyAttemptRef.current = signature;
+    pendingCandidateRef.current = {
+      candidate: projectedCandidate,
+      expectedRevision: view.revision,
+    };
+    void applyGeneratedCandidate(projectedCandidate, view.revision);
+  }, [
+    generateState,
+    hasCombinedFlow,
+    projectedCandidate,
+    v2ActiveDefinition,
+    view.revision,
+    work.id,
+  ]);
 
   const savePrompt = async () => {
     if (!onSavePrompt || readonly || archived || saveState === 'saving' || !prompt.trim()) return;
@@ -273,32 +365,6 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     } catch (error) {
       setSaveState('idle');
       setSaveError(error instanceof Error ? error.message : String(error));
-    }
-  };
-  const saveName = async () => {
-    const nextName = name.trim();
-    if (!onSaveName || readonly || archived || nameState === 'saving') return;
-    if (!nextName) {
-      setNameError('工作名称不能为空。');
-      return;
-    }
-    if (nextName === work.name) {
-      setName(work.name);
-      setNameDirty(false);
-      setNameState('idle');
-      setNameError(null);
-      return;
-    }
-    setNameState('saving');
-    setNameError(null);
-    try {
-      await onSaveName(nextName);
-      setName(nextName);
-      setNameDirty(false);
-      setNameState('saved');
-    } catch (error) {
-      setNameState('idle');
-      setNameError(error instanceof Error ? error.message : String(error));
     }
   };
   const applyDefinition = async () => {
@@ -380,7 +446,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       data-archived={archived ? 'true' : 'false'}
     >
       <div className="wg2-work-back-header">
-        {!readonly && !archived && onSaveName ? (
+        {hasCombinedFlow ? (
           <div className="wg2-work-name-editor">
             <label htmlFor={`wg2-work-name-${work.id}`}>工作名称</label>
             <div className="wg2-work-name-editor__row">
@@ -388,36 +454,20 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                 id={`wg2-work-name-${work.id}`}
                 data-testid="work-name-editor"
                 value={name}
-                disabled={nameState === 'saving' || generateState !== 'idle'}
+                placeholder="留空时由模型自动推定"
+                disabled={generateState !== 'idle'}
                 onChange={(event) => {
                   setName(event.target.value);
                   setNameDirty(event.target.value.trim() !== work.name);
-                  setNameState('idle');
-                  setNameError(null);
                 }}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void saveName();
-                  } else if (event.key === 'Escape') {
+                  if (event.key === 'Escape') {
                     setName(work.name);
                     setNameDirty(false);
-                    setNameState('idle');
-                    setNameError(null);
                   }
                 }}
               />
-              <button
-                type="button"
-                data-testid="work-name-save"
-                disabled={!nameDirty || nameState === 'saving' || generateState !== 'idle'}
-                onClick={() => void saveName()}
-              >
-                {nameState === 'saving' ? '保存中…' : '保存名称'}
-              </button>
             </div>
-            {nameError && <span role="alert" data-testid="work-name-error">{nameError}</span>}
-            {!nameError && nameState === 'saved' && <span role="status">名称已保存</span>}
           </div>
         ) : (
           <h2 className="wg2-work-name">{work.name}</h2>
@@ -471,7 +521,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                     <span>
                       {generateState === 'saving' ? '正在保存…'
                         : generateState === 'generating' ? '正在生成工作结构…'
-                          : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                          : generateState === 'applying' ? '正在启动工作…'
+                            : pendingCandidateRef.current ? '重试启动工作'
+                              : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
                     </span>
                   </button>
                   {generateError && <span role="alert" data-testid="work-generate-structure-error">{generateError}</span>}
@@ -552,7 +604,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
               当前环境未连接工作结构规划能力，请稍后重试。
             </div>
           )}
-          {displayDefinition.status === 'draft' && !readonly && !archived && onApplyDefinition && !v2ActiveDefinition && (
+          {!hasCombinedFlow && displayDefinition.status === 'draft' && !readonly && !archived && onApplyDefinition && !v2ActiveDefinition && (
             <div className="wg2-work-planning-definition__actions">
               <button
                 type="button"

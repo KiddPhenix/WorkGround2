@@ -21,6 +21,7 @@ type CreateCandidateRevisionInput struct {
 	BaseDefinitionRevision int64  `json:"baseDefinitionRevision"`
 	ExpectedRevision       int64  `json:"expectedRevision"`
 	RequestID              string `json:"requestId"`
+	InferName              bool   `json:"inferName,omitempty"`
 }
 
 // CreateCandidateRevisionResult keeps a committed candidate observable when a
@@ -257,8 +258,12 @@ func (s *Service) CreateCandidateRevisionWithResult(
 		return result, err
 	}
 	candidateInput.CreatedBy = "planner"
+	suggestedName := ""
+	if input.InferName {
+		suggestedName = workNameFromPrompt(candidateInput.Goal, before.Name)
+	}
 	candidate, err := s.createCandidateRevision(
-		ctx, input.WorkID, candidateInput, input.RequestID, input.ExpectedRevision, intentDigest,
+		ctx, input.WorkID, candidateInput, input.RequestID, input.ExpectedRevision, intentDigest, suggestedName,
 	)
 	result.Candidate = candidate
 	if candidate != nil {
@@ -294,10 +299,12 @@ func hashDefinitionPlanIntent(input CreateCandidateRevisionInput) string {
 		WorkID                 string
 		Intent                 string
 		BaseDefinitionRevision int64
+		InferName              bool
 	}{
 		WorkID:                 strings.TrimSpace(input.WorkID),
 		Intent:                 strings.TrimSpace(input.Intent),
 		BaseDefinitionRevision: input.BaseDefinitionRevision,
+		InferName:              input.InferName,
 	}
 	raw, _ := json.Marshal(value)
 	sum := sha256.Sum256(raw)

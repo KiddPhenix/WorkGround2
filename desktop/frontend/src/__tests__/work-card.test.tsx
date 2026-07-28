@@ -834,16 +834,15 @@ async function testV2AutoFlipOnApplyDefinition(): Promise<void> {
     />,
   );
 
-  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'draft V2 defaults to back face');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'resumed substantive draft auto-applies and flips to front');
   ok(!mounted.host.querySelector('[data-testid="default-session-surface"]'), 'draft V2 hides the default Session composer surface');
 
-  // Click Apply — should auto-flip to front
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-planning-definition"]')), 'production planning definition is mounted');
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')!.click());
+  // A committed draft candidate resumes straight into Apply without confirmation.
   await settle(50);
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'auto-flip to front after ApplyDefinition success');
   eq(port.applyInputs.length, 1, 'ApplyDefinition called exactly once');
   ok(port.applyInputs[0].requestId.startsWith('work-definition-'), 'production entry creates typed stable requestId');
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'resumed candidate does not require a second confirmation');
 
   // Now simulate definition becoming active in store
   await act(async () => {
@@ -895,6 +894,7 @@ async function testV2DuplicateApplyNoReflip(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'draft' } },
   }));
   const port = new TestPort();
+  Object.defineProperty(port, 'createCandidateRevision', { value: undefined });
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'draft V2 starts on back');
@@ -928,6 +928,7 @@ async function testV2FirstObservedDuplicateStillFlipsOnce(): Promise<void> {
   }));
   const port = new TestPort();
   port.applyNext = { duplicate: true, committed: true, revision: 2, intent: undefined };
+  Object.defineProperty(port, 'createCandidateRevision', { value: undefined });
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'duplicate recovery starts on planning face');
@@ -961,6 +962,7 @@ async function testV2CommittedRecoveryBeforeFlip(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'draft' } },
   }));
   const port = new TestPort();
+  Object.defineProperty(port, 'createCandidateRevision', { value: undefined });
   port.applyNext = {
     intent: undefined,
     committed: true,
@@ -1074,6 +1076,7 @@ async function testV2ApplyFailurePreservesDraft(): Promise<void> {
       }}
     />,
   );
+  await settle(50);
 
   // Set draft on back
   await act(async () => {
@@ -1085,13 +1088,12 @@ async function testV2ApplyFailurePreservesDraft(): Promise<void> {
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'on back face');
   eq(mounted.host.querySelector('[data-testid="draft-value"]')?.textContent, 'planning notes', 'draft visible on back');
 
-  // Click Apply — should fail, stay on back, keep draft
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')!.click());
-  await settle(50);
+  // Automatic Apply fails: stay on back and keep the local draft.
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'failed apply stays on back face');
   eq(useWorkUIStore.getState().cardByWork[workID].faces.back.draft, 'planning notes', 'draft preserved after failed apply');
   eq(mounted.host.querySelector('[data-testid="draft-value"]')?.textContent, 'planning notes', 'draft still visible');
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-apply-definition-error"]')), 'failed apply is explicit and retryable');
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'failed automatic apply is explicit and retryable');
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'failed automatic apply does not restore a confirmation step');
 
   await mounted.cleanup();
 }
@@ -1962,7 +1964,7 @@ async function testV2ExplicitSessionIdReachesPreviewPatch(): Promise<void> {
   reset();
 }
 
-async function testV2CandidateDiffAndLocalCancel(): Promise<void> {
+async function testV2CandidateUpdateAutoApplies(): Promise<void> {
   reset();
   const workID = 'work-v2-candidate-cancel';
   const view = makeView(workID, { schemaVersion: 2, state: 'running', prompt: '原始目标' });
@@ -1985,19 +1987,10 @@ async function testV2CandidateDiffAndLocalCancel(): Promise<void> {
   eq(port.candidateInputs.length, 1, 'candidate: active Definition reaches typed CreateCandidateRevision port');
   eq(port.candidateInputs[0]?.intent, '调整后的交付目标', 'candidate: UI sends only natural-language intent');
   eq(port.candidateInputs[0]?.baseDefinitionRevision, active.revision, 'candidate: authoritative base revision is frozen');
-  ok(Boolean(mounted.host.querySelector('[data-testid="definition-diff"]')), 'candidate: real definition diff is shown before apply');
-  ok(
-    (mounted.host.querySelector('[data-testid="definition-diff-nodes-added"]')?.textContent ?? '').includes('node-planned'),
-    'candidate: backend-planned structural node is shown',
-  );
-  ok(Boolean(mounted.host.querySelector('[data-testid="definition-diff-impact"]')), 'candidate: backend run impact is shown before apply');
-
-  const writesBeforeCancel = port.operations.length;
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="definition-diff-cancel"]')!.click());
-  ok(!mounted.host.querySelector('[data-testid="definition-diff"]'), 'candidate cancel: candidate view closes locally');
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'candidate cancel: combined generate button reappears');
-  eq(port.applyInputs.length, 0, 'candidate cancel: ApplyDefinition is never called');
-  eq(port.operations.length, writesBeforeCancel, 'candidate cancel: no Wails/controller write is emitted');
+  eq(port.applyInputs.length, 1, 'candidate: generated update is applied without a confirmation step');
+  eq(port.applyInputs[0].revision, active.revision + 1, 'candidate: generated revision is applied');
+  ok(!mounted.host.querySelector('[data-testid="definition-diff"]'), 'candidate: no confirmation diff interrupts the flow');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'candidate: successful apply flips to the workflow face');
 
   await mounted.cleanup();
 }
@@ -2087,7 +2080,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   await interact(() => retryButton.click());
   eq(retryPort.draftInputs.length, 1, 'candidate failure: retry does NOT save again');
   eq(retryPort.candidateInputs[1]?.requestId, failedRequestID, 'candidate failure: retry reuses requestId');
-  ok(Boolean(retryMount.host.querySelector('[data-testid="definition-diff-nodes-added"]')), 'candidate failure: retry shows backend structural change');
+  eq(retryPort.applyInputs.length, 1, 'candidate failure: successful retry automatically applies the structure');
   await retryMount.cleanup();
 
   // A revision conflict invalidates the old intent key; regeneration gets a
@@ -2112,7 +2105,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   const conflictButton = conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => conflictButton.click());
   ok(
-    (conflictMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('重新生成候选结构'),
+    (conflictMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('重新生成工作结构'),
     'candidate conflict: explicit regeneration guidance',
   );
   const firstSaveCount = conflictPort.draftInputs.length;
@@ -2124,7 +2117,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   );
   // After conflict reset, retry does a fresh save + candidate.
   ok(conflictPort.draftInputs.length > firstSaveCount, 'candidate conflict: re-saves after reset');
-  ok(Boolean(conflictMount.host.querySelector('[data-testid="definition-diff"]')), 'candidate conflict: regeneration returns real candidate');
+  eq(conflictPort.applyInputs.length, 1, 'candidate conflict: regenerated structure automatically applies');
   await conflictMount.cleanup();
 }
 
@@ -2211,7 +2204,7 @@ async function testV2ActiveDefinitionLateArrivalRestoresRun(): Promise<void> {
   await mounted.cleanup();
 }
 
-async function testV2InferredNameCanBeRenamedWithRetry(): Promise<void> {
+async function testV2NameSavesWithGenerateAndRetries(): Promise<void> {
   reset();
   const workID = 'work-v2-rename';
   const view = makeView(workID, {
@@ -2230,8 +2223,8 @@ async function testV2InferredNameCanBeRenamedWithRetry(): Promise<void> {
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   const nameInput = mounted.host.querySelector<HTMLInputElement>('[data-testid="work-name-editor"]')!;
-  const saveButton = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-name-save"]')!;
   eq(nameInput.value, '自动推定名称', 'inferred name is shown in an editable field');
+  ok(!mounted.host.querySelector('[data-testid="work-name-save"]'), 'name editor has no standalone save button');
   await interact(() => {
     const previous = nameInput.value;
     Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value')?.set?.call(nameInput, '用户自定义名称');
@@ -2242,17 +2235,21 @@ async function testV2InferredNameCanBeRenamedWithRetry(): Promise<void> {
       : undefined;
     props?.onChange?.({ target: nameInput });
   });
-  ok(!saveButton.disabled, 'name save action is enabled after editing');
 
-  await interact(() => saveButton.click());
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-name-error"]')), 'name save failure is explicit and retryable');
-  eq(port.draftInputs.length, 1, 'first rename reaches UpdateDraft');
+  const generateButton = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
+  await interact(() => generateButton.click());
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'combined save failure is explicit and retryable');
+  eq(port.draftInputs.length, 1, 'first generate attempt saves name and prompt together');
   const firstRequestID = port.draftInputs[0].requestId;
+  eq(port.candidateInputs.length, 0, 'planning does not start before the combined save succeeds');
 
-  await interact(() => saveButton.click());
-  eq(port.draftInputs.length, 2, 'rename retry reaches UpdateDraft');
-  eq(port.draftInputs[1].requestId, firstRequestID, 'rename retry reuses its idempotency key');
-  eq(port.draftInputs[1].name, '用户自定义名称', 'rename sends the explicit user name');
+  await interact(() => generateButton.click());
+  eq(port.draftInputs.length, 2, 'generate retry repeats the same combined save');
+  eq(port.draftInputs[1].requestId, firstRequestID, 'generate retry reuses the save idempotency key');
+  eq(port.draftInputs[1].name, '用户自定义名称', 'combined save includes the explicit user name');
+  eq(port.draftInputs[1].prompt, '自动推定名称\n生成工作结构', 'combined save includes the task description');
+  eq(port.candidateInputs[0].inferName, false, 'an explicit user name disables planner inference');
+  eq(port.applyInputs.length, 1, 'successful planning automatically applies the definition');
   eq(useWorkStore.getState().works[workID].work.name, '用户自定义名称', 'renamed projection becomes the local source of truth');
 
   await mounted.cleanup();
@@ -2312,6 +2309,7 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   eq(call.baseDefinitionRevision, 1, 'blank draft base revision is 1');
   ok(Boolean(call.intent), 'candidate call has intent');
   ok(call.requestId.startsWith('work-candidate-'), 'candidate call has typed requestId');
+  eq(call.inferName, true, 'initial planning asks the backend to infer a name from the LLM plan');
   // Candidate must use the authoritative revision returned by save.
   eq(call.expectedRevision, port.draftRevision, 'candidate uses authoritative revision from save');
   eq(
@@ -2322,13 +2320,10 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   eq(genBtn.getAttribute('aria-busy'), 'true', 'generate CTA exposes busy state');
   await settle(140);
 
-  // After candidate generation from initial blank draft: there is no active
-  // definition to diff against, so DefinitionDiff is hidden. The apply button
-  // (line ~327 in WorkCardBack) appears instead, letting the user commit the
-  // first active definition directly.
-  ok(Boolean(mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')), 'candidate: apply button appears');
-  const candidateApplyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')!;
-  ok(!candidateApplyBtn.disabled, 'candidate: apply button enabled (has goal and nodes)');
+  eq(port.applyInputs.length, 1, 'candidate is applied automatically after generation');
+  eq(port.applyInputs[0].expectedRevision, port.candidateInputs[0].expectedRevision + 1, 'automatic apply uses the candidate commit revision');
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'candidate does not wait for a second confirmation');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'successful automatic apply flips to the workflow face');
 
   await mounted.cleanup();
 }
@@ -2643,7 +2638,7 @@ async function testV2CandidateGeneratedThenApply(): Promise<void> {
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Combined button: one click saves then generates.
+  // Combined button: one click saves, generates, applies and flips.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
@@ -2653,22 +2648,54 @@ async function testV2CandidateGeneratedThenApply(): Promise<void> {
   eq(port.candidateInputs.length, 1, 'candidate generated');
   // Candidate uses authoritative revision from save.
   eq(port.candidateInputs[0].expectedRevision, port.draftRevision, 'candidate uses save revision');
-  // Initial draft → candidate: no active baseline for DefinitionDiff, so the
-  // direct apply button ("确认并开始执行") appears instead.
-  ok(Boolean(mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]')), 'apply button visible after candidate');
-
-  // Apply the candidate.
-  const applyBtn = [...mounted.host.querySelectorAll<HTMLButtonElement>('button')]
-    .find((b) => b.textContent?.includes('确认并开始执行') || b.textContent?.includes('应用'));
-  ok(Boolean(applyBtn), 'apply button found');
-  await interact(() => applyBtn!.click());
-  await settle(40);
-
-  eq(port.applyInputs.length, 1, 'applyDefinition called');
+  eq(port.candidateInputs[0].inferName, true, 'blank initial name requests LLM-derived naming');
+  eq(port.applyInputs.length, 1, 'applyDefinition is called automatically');
   eq(port.applyInputs[0].workId, workID, 'apply has correct workId');
   eq(port.applyInputs[0].expectedRevision, port.candidateInputs[0].expectedRevision + 1,
     'apply expectedRevision = candidate result revision (authoritative, not stale view)');
   ok(port.applyInputs[0].requestId.startsWith('work-definition-'), 'apply has typed requestId');
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'no apply confirmation button is rendered');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'successful apply automatically flips the card');
+
+  await mounted.cleanup();
+}
+
+async function testV2AutomaticApplyFailureRetriesWithoutReplanning(): Promise<void> {
+  reset();
+  const workID = 'work-v2-auto-apply-retry';
+  const view = makeView(workID, {
+    schemaVersion: 2,
+    state: 'draft',
+    prompt: 'build a report',
+    createdWith: { workSchemaVersion: 2, eventSchemaVersion: 2, rendererSetVersion: 1 },
+  });
+  useWorkStore.getState().applySnapshot(view);
+  useWorkStore.setState((state) => ({
+    v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
+  }));
+  const port = new TestPort();
+  port.applyFailures = 1;
+  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
+  await settle(40);
+  eq(port.draftInputs.length, 1, 'automatic apply failure: draft saved once');
+  eq(port.candidateInputs.length, 1, 'automatic apply failure: candidate generated once');
+  eq(port.applyInputs.length, 1, 'automatic apply failure: first apply attempted');
+  ok(
+    (mounted.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('启动失败'),
+    'automatic apply failure remains explicit on the primary action',
+  );
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'automatic apply failure does not expose a second confirmation path');
+  const firstApplyRequestID = port.applyInputs[0].requestId;
+
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
+  await settle(40);
+  eq(port.draftInputs.length, 1, 'automatic apply retry skips the completed save');
+  eq(port.candidateInputs.length, 1, 'automatic apply retry reuses the committed candidate');
+  eq(port.applyInputs.length, 2, 'automatic apply retry repeats only apply');
+  eq(port.applyInputs[1].requestId, firstApplyRequestID, 'automatic apply retry reuses its idempotency key');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'successful apply retry flips to the workflow face');
 
   await mounted.cleanup();
 }
@@ -2767,10 +2794,7 @@ async function testV2NodesOnlyDraftStillShowsCandidateGeneration(): Promise<void
   // Back face: combined generate button must be visible.
   ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'nodes-only draft: combined generate visible');
 
-  // Apply button exists but is disabled (no goal).
-  const applyBtn = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-apply-definition"]');
-  ok(Boolean(applyBtn), 'nodes-only draft: apply button rendered');
-  ok(applyBtn!.disabled, 'nodes-only draft: apply button disabled (no goal)');
+  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'nodes-only draft: no confirmation action is exposed');
 
   // Combined button: one click saves then generates.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
@@ -2852,16 +2876,17 @@ async function main(): Promise<void> {
   await testV2ArtifactRetryRevisionIdentity();
   await testV2DefaultWailsProductionMount();
   await testV2ExplicitSessionIdReachesPreviewPatch();
-  await testV2CandidateDiffAndLocalCancel();
+  await testV2CandidateUpdateAutoApplies();
   await testV2DefinitionDiffAcceptsLegacyNullImpactLists();
   await testV2CandidatePlannerRecovery();
   await testV2BlankDraftStoreChainNoRun();
   await testV2ActiveDefinitionLateArrivalRestoresRun();
-  await testV2InferredNameCanBeRenamedWithRetry();
+  await testV2NameSavesWithGenerateAndRetries();
   await testV2BlankDraftBackCandidateGeneration();
   await testV2BlankDraftProductionWailsChain();
   await testV2CandidateGenerationFailureRetrySameRequestID();
   await testV2CandidateGeneratedThenApply();
+  await testV2AutomaticApplyFailureRetriesWithoutReplanning();
   await testV2CandidateRefreshFailureBlocksApply();
   await testV2GoalOnlyDraftStillShowsCandidateGeneration();
   await testV2NodesOnlyDraftStillShowsCandidateGeneration();

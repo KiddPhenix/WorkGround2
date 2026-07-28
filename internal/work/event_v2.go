@@ -882,6 +882,7 @@ type DefRevisionCreatedPayload struct {
 	ParentRevision int64            `json:"parentRevision"`
 	Digest         string           `json:"digest"`
 	Receipt        *V2IntentReceipt `json:"receipt,omitempty"`
+	SuggestedName  string           `json:"suggestedName,omitempty"`
 }
 
 // DefRevisionAppliedPayload is carried by EventDefRevisionApplied.

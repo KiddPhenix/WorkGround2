@@ -1047,6 +1047,54 @@ func TestCreateCandidateRevisionWithResultDoesNotSwitchActiveDefinition(t *testi
 	}
 }
 
+func TestCreateCandidateRevisionWithResultInfersNameFromPlannerGoal(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "base", ProducesSlotIDs: []string{"slot"}}},
+		nil,
+	))
+	_, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.svc.SetV2DefinitionPlanner(definitionPlannerFunc(func(_ context.Context, input DefinitionPlanInput) (*DefinitionPlan, error) {
+		return &DefinitionPlan{
+			Goal:          "生成季度经营分析报告",
+			Nodes:         append([]NodeDef(nil), input.Base.Nodes...),
+			ArtifactSlots: append([]ArtifactSlotDef(nil), input.Base.ArtifactSlots...),
+			InputSpecs:    append([]InputSpec(nil), input.Base.InputSpecs...),
+		}, nil
+	}))
+	request := CreateCandidateRevisionInput{
+		WorkID: h.work, Intent: "分析经营数据",
+		BaseDefinitionRevision: h.def.Revision,
+		ExpectedRevision:       state.Revision,
+		RequestID:              "candidate-infer-name",
+		InferName:              true,
+	}
+	result, err := h.svc.CreateCandidateRevisionWithResult(context.Background(), request)
+	if err != nil || result == nil || !result.Committed {
+		t.Fatalf("candidate result=%+v err=%v", result, err)
+	}
+	after, _, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Name != "生成季度经营分析报告" {
+		t.Fatalf("Name = %q, want planner-derived name", after.Name)
+	}
+	replay, err := h.svc.CreateCandidateRevisionWithResult(context.Background(), request)
+	if err != nil || replay == nil || !replay.Duplicate {
+		t.Fatalf("candidate replay=%+v err=%v", replay, err)
+	}
+	replayed, _, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Name != after.Name {
+		t.Fatalf("replayed Name = %q, want stable %q", replayed.Name, after.Name)
+	}
+}
+
 func TestCreateCandidateRevisionPlannerTwoFileStoresReplayACKLossAndRestart(t *testing.T) {
 	h := newCoordinatorHarness(t, coordinatorDefinition(
 		[]NodeDef{{ID: "n1", Title: "base", ProducesSlotIDs: []string{"slot"}}},

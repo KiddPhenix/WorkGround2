@@ -68,3 +68,33 @@ func TestServiceUpdateDraftContinuesUpdatingAutomaticName(t *testing.T) {
 		t.Fatalf("Name = %q, want updated automatic name", updated.Work.Name)
 	}
 }
+
+func TestServiceUpdateDraftSavesPromptAndManualNameTogether(t *testing.T) {
+	f := newServiceFixture(t)
+	input := serviceCreateInput("service-combined-name-create")
+	input.Name = ""
+	input.Prompt = ""
+
+	value, err := f.svc.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	name := "用户指定的报告名称"
+	prompt := "生成一份月度经营报告"
+	updated, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID:           value.ID,
+		Name:             &name,
+		Prompt:           &prompt,
+		ExpectedRevision: 2,
+		RequestID:        "service-combined-name-save",
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if updated.Work.Name != name {
+		t.Fatalf("Name = %q, want explicit name %q", updated.Work.Name, name)
+	}
+	if updated.Work.Prompt != prompt {
+		t.Fatalf("Prompt = %q, want %q", updated.Work.Prompt, prompt)
+	}
+}

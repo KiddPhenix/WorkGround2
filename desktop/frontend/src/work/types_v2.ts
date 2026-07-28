@@ -295,6 +295,7 @@ export interface CreateCandidateRevisionInput {
   baseDefinitionRevision: number;
   expectedRevision: number;
   requestId: string;
+  inferName?: boolean;
 }
 
 export interface CreateCandidateRevisionResult {

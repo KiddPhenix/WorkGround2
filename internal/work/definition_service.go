@@ -228,7 +228,7 @@ func (s *Service) CreateCandidateRevision(ctx context.Context, workID string, ca
 	if candidate != nil {
 		intentDigest = "candidate-" + hashCandidateIntentForWork(strings.TrimSpace(workID), candidate)
 	}
-	return s.createCandidateRevision(ctx, workID, candidate, requestID, expectedRevision, intentDigest)
+	return s.createCandidateRevision(ctx, workID, candidate, requestID, expectedRevision, intentDigest, "")
 }
 
 func (s *Service) createCandidateRevision(
@@ -238,6 +238,7 @@ func (s *Service) createCandidateRevision(
 	requestID string,
 	expectedRevision int64,
 	intentDigest string,
+	suggestedName string,
 ) (*WorkDefinitionRevision, error) {
 	if err := checkServiceContext(ctx); err != nil {
 		return nil, err
@@ -362,7 +363,7 @@ func (s *Service) createCandidateRevision(
 	}
 	revPayload, _ := json.Marshal(DefRevisionCreatedPayload{
 		WorkID: workID, Revision: newRev.Revision, ParentRevision: newRev.ParentRevision, Digest: digest,
-		Receipt: eventReceipt,
+		Receipt: eventReceipt, SuggestedName: strings.TrimSpace(suggestedName),
 	})
 	event := newServiceEventV2(workID, eventRequestID, EventDefRevisionCreated, revPayload, time.Now().UTC())
 	event.Object = ObjectContext{

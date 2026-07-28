@@ -3843,6 +3843,9 @@ func DefaultReducer() WorkEventReducer {
 			if p.Revision > current.V2LatestRevision {
 				current.V2LatestRevision = p.Revision
 			}
+			if strings.TrimSpace(p.SuggestedName) != "" {
+				current.Name = strings.TrimSpace(p.SuggestedName)
+			}
 
 		case EventDefRevisionApplied:
 			var p DefRevisionAppliedPayload

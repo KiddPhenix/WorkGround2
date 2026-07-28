@@ -194,7 +194,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const faceRefs = useRef<Partial<Record<WorkFace, HTMLDivElement>>>({});
   const restoredScroll = useRef<Partial<Record<WorkFace, string>>>({});
   const draftIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
-  const nameIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
   const v2RetryIntentsRef = useRef(new Map<string, RetryWorkNodeRequest>());
   const artifactRetryIntentsRef = useRef(new Map<string, RetryArtifactSlotRequest>());
   // Auto-flip dedup: only flip once per definition revision.
@@ -249,6 +248,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     if (view.work.schemaVersion < 2 && !v2Definition) return;
     if (defaultFaceAppliedRef.current === workID) return;
     defaultFaceAppliedRef.current = workID;
+    if (autoFlipRef.current?.startsWith(`${workID}:`)) return;
     if (v2Definition?.status !== 'active') {
       useWorkUIStore.getState().setActiveFace(workID, 'back');
     } else if (!hasStoredPreference) {
@@ -368,10 +368,10 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleDraftChange = useCallback((draft: string) => {
     setDraft(workID, 'back', draft);
   }, [setDraft, workID]);
-  const savePrompt = useCallback(async (prompt: string): Promise<number> => {
+  const savePrompt = useCallback(async (prompt: string, name?: string): Promise<number> => {
     const current = useWorkStore.getState().works[workID];
     if (!current) throw new Error('Work 投影尚未载入。');
-    const signature = prompt;
+    const signature = JSON.stringify([prompt, name ?? null]);
     if (draftIntentRef.current?.signature !== signature) {
       draftIntentRef.current = {
         signature,
@@ -381,29 +381,11 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     const result = await adapter.updateDraft({
       workId: workID,
       prompt,
+      ...(name !== undefined ? { name } : {}),
       expectedRevision: current.revision,
       requestId: draftIntentRef.current.requestId,
     });
     draftIntentRef.current = null;
-    return result.revision;
-  }, [adapter, workID]);
-  const saveName = useCallback(async (name: string): Promise<number> => {
-    const current = useWorkStore.getState().works[workID];
-    if (!current) throw new Error('Work 投影尚未载入。');
-    const signature = name;
-    if (nameIntentRef.current?.signature !== signature) {
-      nameIntentRef.current = {
-        signature,
-        requestId: `work-name-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      };
-    }
-    const result = await adapter.updateDraft({
-      workId: workID,
-      name,
-      expectedRevision: current.revision,
-      requestId: nameIntentRef.current.requestId,
-    });
-    nameIntentRef.current = null;
     return result.revision;
   }, [adapter, workID]);
   const handleApplyDefinition = useCallback(async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
@@ -737,7 +719,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               selection={selection}
               resolveSessionSurface={resolveSessionSurface}
               onSavePrompt={savePrompt}
-              onSaveName={saveName}
               onApplyDefinition={handleApplyDefinition}
               onCreateCandidate={
                 resolvedPort.createCandidateRevision ? handleCreateCandidate : undefined

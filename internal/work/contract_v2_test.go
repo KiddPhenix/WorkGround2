@@ -86,6 +86,7 @@ func v2FrozenFields(name string, fields []string) []string {
 		"NodeDef":                    {"blockIds": true, "producesSlotIds": true, "consumesSlotIds": true, "globalGate": true},
 		"ArtifactSlot":               {"upstreamDigest": true},
 		"ArtifactSlotUpdatedPayload": {"upstreamDigest": true, "receipt": true},
+		"DefRevisionCreatedPayload":  {"suggestedName": true},
 		"WorkInput":                  {"error": true, "source": true, "updatedBy": true},
 		"PatchPreviewedPayload":      {"baseDefinitionRev": true, "baseBlockRev": true, "operations": true, "digest": true, "expiresAt": true, "receipt": true},
 		"PatchAppliedPayload":        {"receipt": true},

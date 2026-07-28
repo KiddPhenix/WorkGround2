@@ -1066,7 +1066,9 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 		// Keep following the prompt while the title is still automatic. Once
 		// the user has renamed the Work, later prompt edits must not silently
 		// replace that explicit choice.
-		if input.Name != nil || workNameIsAutomatic(current) {
+		if input.Name != nil {
+			payload["name"] = *input.Name
+		} else if workNameIsAutomatic(current) {
 			payload["name"] = workNameFromPrompt(*input.Prompt, current.Name)
 		}
 	} else if input.Name != nil {
