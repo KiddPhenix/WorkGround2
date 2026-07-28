@@ -4,10 +4,12 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/xml"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"workground2/internal/artifact"
 	"workground2/internal/work"
 )
 
@@ -16,22 +18,74 @@ const xlsxMediaType = "application/vnd.openxmlformats-officedocument.spreadsheet
 func materializeTaskArtifact(
 	slot work.ArtifactSlot,
 	content string,
+	discovered *artifact.Discovered,
+	workspaceRoot string,
 ) (body []byte, name, mediaType string, supported bool, err error) {
+	if discovered != nil {
+		item, loadErr := artifact.LoadWorkspaceFile(*discovered, workspaceRoot)
+		if loadErr != nil {
+			return nil, "", "", false, fmt.Errorf("load artifact %q: %w", discovered.Name, loadErr)
+		}
+		if len(item.Data) == 0 {
+			return nil, "", "", false, fmt.Errorf("artifact %q has no data", item.Name)
+		}
+		return item.Data, item.Name, item.Type, true, nil
+	}
 	kind := strings.ToLower(strings.TrimSpace(slot.Kind))
 	switch kind {
 	case "text", "txt", "plain_text", "text/plain":
+		if content == "" {
+			return nil, "", "", false, nil
+		}
 		return []byte(content), artifactFileName(slot, ".txt"), "text/plain", true, nil
 	case "markdown", "md", "document", "text/markdown":
+		if content == "" {
+			return nil, "", "", false, nil
+		}
 		if strings.Contains(strings.ToLower(slot.ID), "txt") && kind == "document" {
 			return []byte(content), artifactFileName(slot, ".txt"), "text/plain", true, nil
 		}
 		return []byte(content), artifactFileName(slot, ".md"), "text/markdown", true, nil
 	case "xlsx", "spreadsheet", "excel":
+		if content == "" {
+			return nil, "", "", false, nil
+		}
 		body, err := buildXLSX(content)
 		return body, artifactFileName(slot, ".xlsx"), xlsxMediaType, true, err
 	default:
 		return nil, "", "", false, nil
 	}
+}
+
+func textArtifactKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "text", "txt", "plain_text", "text/plain",
+		"markdown", "md", "document", "text/markdown",
+		"xlsx", "spreadsheet", "excel":
+		return true
+	default:
+		return false
+	}
+}
+
+// takeArtifacts deterministically assigns unconsumed artifacts by declared
+// slot order and discovery order. A structured artifact can feed only one slot.
+func takeArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind string, count int) []int {
+	want := strings.ToLower(strings.TrimSpace(wantKind))
+	if want == "" || count <= 0 {
+		return nil
+	}
+	indexes := make([]int, 0, count)
+	for i := range discovered {
+		if used[i] || strings.ToLower(discovered[i].SlotKind()) != want {
+			continue
+		}
+		indexes = append(indexes, i)
+		if len(indexes) == count {
+			break
+		}
+	}
+	return indexes
 }
 
 func artifactFileName(slot work.ArtifactSlot, extension string) string {

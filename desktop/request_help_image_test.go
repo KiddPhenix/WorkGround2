@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"workground2/internal/artifact"
 )
 
 func writeRequestHelpPNG(t *testing.T, path string) {
@@ -65,7 +67,7 @@ func TestRequestHelpImageRejectsUnsafePathsAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Truncate(maxRequestHelpImageBytes + 1); err != nil {
+	if err := f.Truncate(artifact.MaxImageBytes + 1); err != nil {
 		_ = f.Close()
 		t.Fatal(err)
 	}

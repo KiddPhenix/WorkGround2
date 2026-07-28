@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/artifact"
 	"workground2/internal/provider"
 	"workground2/internal/work"
 )
@@ -91,7 +92,13 @@ type TaskExecutorAdapter struct {
 	active        map[string]*activeTask
 	finished      map[string]bool
 	cancels       map[string]taskCancelResult
-	artifactTexts map[string]string
+	taskArtifacts map[string]taskArtifactData
+}
+
+type taskArtifactData struct {
+	text          string
+	workspaceRoot string
+	artifacts     []artifact.Discovered
 }
 
 // NewTaskExecutorAdapter returns a Task executor for one provider/model profile.
@@ -102,7 +109,7 @@ func NewTaskExecutorAdapter(profile TaskExecutorProfile, factory TaskSessionFact
 		active:        make(map[string]*activeTask),
 		finished:      make(map[string]bool),
 		cancels:       make(map[string]taskCancelResult),
-		artifactTexts: make(map[string]string),
+		taskArtifacts: make(map[string]taskArtifactData),
 	}
 }
 
@@ -219,9 +226,14 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	history := ctrl.History()
 	if cause == nil && len(input.ProducesSlotIDs) > 0 {
 		content := taskSessionArtifactContent(history)
-		if content != "" {
+		discovered := artifact.Collect(history, artifact.DefaultProducers())
+		if content != "" || len(discovered) > 0 {
 			a.mu.Lock()
-			a.artifactTexts[targetKey] = content
+			a.taskArtifacts[targetKey] = taskArtifactData{
+				text:          content,
+				workspaceRoot: ctrl.WorkspaceRoot(),
+				artifacts:     discovered,
+			}
 			a.mu.Unlock()
 		}
 	}
@@ -287,14 +299,14 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 	}
 	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
 	a.mu.Lock()
-	content := a.artifactTexts[key]
+	data := a.taskArtifacts[key]
 	a.mu.Unlock()
-	if strings.TrimSpace(content) == "" {
+	if strings.TrimSpace(data.text) == "" && len(data.artifacts) == 0 {
 		return nil, errors.New("work task completed without a materializable final response")
 	}
 	defer func() {
 		a.mu.Lock()
-		delete(a.artifactTexts, key)
+		delete(a.taskArtifacts, key)
 		a.mu.Unlock()
 	}()
 	view, err := a.workSvc.Get(ctx, input.WorkID)
@@ -316,30 +328,59 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 	}
 	now := time.Now().UTC()
 	outputs := make([]work.TaskArtifactOutput, 0, len(input.ProducesSlotIDs))
+	usedArtifacts := make(map[int]bool, len(data.artifacts))
 	for _, slotID := range input.ProducesSlotIDs {
 		slot, ok := slotByID[slotID]
 		if !ok {
 			return nil, fmt.Errorf("artifact slot %q is unavailable in the active Work projection", slotID)
 		}
-		body, name, mediaType, supported, err := materializeTaskArtifact(slot, content)
-		if err != nil {
-			return nil, fmt.Errorf("materialize artifact slot %q as %q: %w", slot.ID, slot.Kind, err)
+		expectedCount := slot.ExpectedCount
+		if expectedCount <= 0 {
+			expectedCount = 1
 		}
-		if !supported {
+		indexes := takeArtifacts(data.artifacts, usedArtifacts, slot.Kind, expectedCount)
+		useTextFallback := len(indexes) == 0 && textArtifactKind(slot.Kind) && strings.TrimSpace(data.text) != ""
+		if !useTextFallback && len(indexes) != expectedCount {
 			return nil, fmt.Errorf(
-				"artifact slot %q requires %q output; the task returned text only",
-				slot.ID,
-				slot.Kind,
+				"artifact slot %q requires %d %q artifact(s); the task returned %d unconsumed match(es)",
+				slot.ID, expectedCount, slot.Kind, len(indexes),
 			)
 		}
-		digest, err := a.blobs.Put(input.WorkID, body)
-		if err != nil {
-			return nil, fmt.Errorf("persist artifact slot %q content: %w", slot.ID, err)
+		if useTextFallback && expectedCount != 1 {
+			return nil, fmt.Errorf(
+				"artifact slot %q requires %d %q artifact(s); one textual final response cannot satisfy the count",
+				slot.ID, expectedCount, slot.Kind,
+			)
 		}
-		refID := strings.TrimPrefix(work.ContentDigest([]byte(input.AttemptID+"\x00"+slot.ID)), "sha256:")
-		outputs = append(outputs, work.TaskArtifactOutput{
-			SlotID: slot.ID,
-			Refs: []work.ArtifactRef{{
+		if useTextFallback {
+			indexes = []int{-1}
+		}
+		refs := make([]work.ArtifactRef, 0, len(indexes))
+		names := make([]string, 0, len(indexes))
+		for refIndex, artifactIndex := range indexes {
+			var discovered *artifact.Discovered
+			if artifactIndex >= 0 {
+				discovered = &data.artifacts[artifactIndex]
+			}
+			body, name, mediaType, supported, err := materializeTaskArtifact(
+				slot, data.text, discovered, data.workspaceRoot,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("materialize artifact slot %q as %q: %w", slot.ID, slot.Kind, err)
+			}
+			if !supported {
+				return nil, fmt.Errorf(
+					"artifact slot %q requires %q output; the task returned no matching artifact",
+					slot.ID, slot.Kind,
+				)
+			}
+			digest, err := a.blobs.Put(input.WorkID, body)
+			if err != nil {
+				return nil, fmt.Errorf("persist artifact slot %q content: %w", slot.ID, err)
+			}
+			refKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s", input.AttemptID, slot.ID, refIndex, digest)
+			refID := strings.TrimPrefix(work.ContentDigest([]byte(refKey)), "sha256:")
+			refs = append(refs, work.ArtifactRef{
 				ID:             "task-" + refID[:24],
 				Name:           name,
 				Type:           mediaType,
@@ -347,8 +388,20 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 				BlobDigest:     digest,
 				SourceRunID:    input.RunID,
 				LastVerifiedAt: &now,
-			}},
-			Summary: firstLine(content, 120),
+			})
+			names = append(names, name)
+			if artifactIndex >= 0 {
+				usedArtifacts[artifactIndex] = true
+			}
+		}
+		summary := firstLine(data.text, 120)
+		if summary == "" {
+			summary = strings.Join(names, ", ")
+		}
+		outputs = append(outputs, work.TaskArtifactOutput{
+			SlotID:  slot.ID,
+			Refs:    refs,
+			Summary: summary,
 		})
 	}
 	return outputs, nil

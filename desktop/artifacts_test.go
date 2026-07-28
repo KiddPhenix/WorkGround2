@@ -32,59 +32,6 @@ func TestArtifactClassify(t *testing.T) {
 	}
 }
 
-func TestIsSourceFile(t *testing.T) {
-	for _, p := range []string{"main.go", "app.ts", "config.json", "notes.txt", "go.mod"} {
-		if !isSourceFile(p) {
-			t.Errorf("isSourceFile(%q) = false", p)
-		}
-	}
-	for _, p := range []string{"app.exe", "build.zip", "image.png", "report.pdf", "start.bat"} {
-		if isSourceFile(p) {
-			t.Errorf("isSourceFile(%q) = true", p)
-		}
-	}
-}
-
-func TestExtractBashOutputPaths(t *testing.T) {
-	got := extractBashOutputPaths("go build -o bin/app.exe ./cmd/app")
-	if len(got) != 1 || got[0] != "bin/app.exe" {
-		t.Errorf("got %v, want [bin/app.exe]", got)
-	}
-
-	got2 := extractBashOutputPaths("cl /Fe:bin\\app.exe src\\main.cpp")
-	if len(got2) != 1 || got2[0] != `bin\app.exe` {
-		t.Errorf("got %v, want [bin\\app.exe]", got2)
-	}
-
-	got3 := extractBashOutputPaths("echo hello")
-	if len(got3) != 0 {
-		t.Errorf("got %v, want []", got3)
-	}
-}
-
-func TestCompleteStepEvidencePaths(t *testing.T) {
-	args := `{"evidence":[{"kind":"files","paths":["bin/app.exe","bin/helper.dll"]},{"kind":"verification","command":"go test"}]}`
-	got := completeStepEvidencePaths(args)
-	if len(got) != 2 || got[0] != "bin/app.exe" || got[1] != "bin/helper.dll" {
-		t.Errorf("got %v, want [bin/app.exe bin/helper.dll]", got)
-	}
-}
-
-func TestExtractResultPaths(t *testing.T) {
-	got := extractResultPaths("wrote 1024 bytes to bin/app.exe")
-	if len(got) != 1 || got[0] != "bin/app.exe" {
-		t.Errorf("wrote: got %v", got)
-	}
-	got2 := extractResultPaths("created output/report.pdf")
-	if len(got2) != 1 || got2[0] != "output/report.pdf" {
-		t.Errorf("created: got %v", got2)
-	}
-	got3 := extractResultPaths("Wrote 512 bytes to out/image.png")
-	if len(got3) != 1 || got3[0] != "out/image.png" {
-		t.Errorf("Wrote: got %v", got3)
-	}
-}
-
 func TestExtractArtifacts_WriteFile(t *testing.T) {
 	dir := t.TempDir()
 	outPath := filepath.Join(dir, "output", "app.exe")
@@ -583,23 +530,6 @@ func TestExtractArtifacts_RequestHelpImageDedup(t *testing.T) {
 	artifacts := extractArtifacts(msgs, workspaceDir)
 	if len(artifacts) != 1 {
 		t.Fatalf("expected 1 deduplicated artifact, got %d", len(artifacts))
-	}
-}
-
-func TestParseRequestHelpArtifactPathIgnoresBodyOverrides(t *testing.T) {
-	valid := `C:\generated_images\valid.png`
-	malicious := `C:\generated_images\other.png`
-	validJSON, _ := json.Marshal(map[string]string{"path": valid})
-	maliciousJSON, _ := json.Marshal(map[string]string{"path": malicious})
-	output := requestHelpOutput("image_generation", string(validJSON)) +
-		"\ncapability: image_generation\nartifact: " + string(maliciousJSON)
-
-	got, ok := parseRequestHelpArtifactPath(`{"capability":"image_generation"}`, output)
-	if !ok || got != valid {
-		t.Fatalf("path = %q, ok = %v, want trusted header path %q", got, ok, valid)
-	}
-	if _, ok := parseRequestHelpArtifactPath(`{"capability":"web_search"}`, output); ok {
-		t.Fatal("tool-call capability mismatch should reject artifact")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/artifact"
 	"workground2/internal/event"
 	"workground2/internal/provider"
 	"workground2/internal/tool"
@@ -260,7 +262,7 @@ func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
 		t.Fatalf("blob = %q, err=%v", body, err)
 	}
 	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
-	if _, ok := exec.artifactTexts[key]; ok {
+	if _, ok := exec.taskArtifacts[key]; ok {
 		t.Fatal("materialized artifact text was not released")
 	}
 }
@@ -806,5 +808,318 @@ func TestTaskExecutorPendingCancelBeforeSession(t *testing.T) {
 	newRequest.RequestID = "cancel-after-finished"
 	if err := exec.CancelTask(context.Background(), newRequest); !errors.Is(err, ErrTaskSessionNotRunning) {
 		t.Fatalf("new cancel after finished error = %v", err)
+	}
+}
+
+// ── Image artifact regression tests ────────────────────────────────────────
+
+func TestTaskExecutorMaterializesImageSlotFromDiscovered(t *testing.T) {
+	blobs := newTaskBlobStore()
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		nil,
+	)
+	exec.SetArtifactStore(blobs)
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID:            "work-img",
+			SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{{
+				ID: "cover_image", WorkID: "work-img", DefinitionRev: 2,
+				Title: "封面图", Kind: "image", ExpectedCount: 1, Required: true,
+				State: work.SlotReserved, Revision: 1,
+			}},
+		},
+		ArtifactSlots: []work.ArtifactSlot{{
+			ID: "cover_image", WorkID: "work-img", DefinitionRev: 2,
+			Title: "封面图", Kind: "image", ExpectedCount: 1, Required: true,
+			State: work.SlotReserved, Revision: 1,
+		}},
+	}})
+
+	input := taskInput()
+	input.WorkID = "work-img"
+	input.ProducesSlotIDs = []string{"cover_image"}
+
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	imageData := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A} // PNG signature
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "封面已生成",
+		artifacts: []artifact.Discovered{{
+			Name:        "generated_cover.png",
+			Type:        "image/png",
+			Path:        "/fake/path/generated_cover.png",
+			Data:        imageData,
+			SourceRunID: "tc-img-1",
+		}},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].SlotID != "cover_image" || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "generated_cover.png" {
+		t.Errorf("Name = %q, want generated_cover.png", ref.Name)
+	}
+	if ref.Type != "image/png" {
+		t.Errorf("Type = %q, want image/png", ref.Type)
+	}
+	if ref.Status != work.ArtifactRefStatusAvailable {
+		t.Errorf("Status = %q, want available", ref.Status)
+	}
+	if ref.BlobDigest == "" {
+		t.Fatal("BlobDigest is empty")
+	}
+
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, imageData) {
+		t.Fatalf("blob = %x, want %x", body, imageData)
+	}
+	if outputs[0].Summary != "封面已生成" {
+		t.Errorf("Summary = %q, want 封面已生成", outputs[0].Summary)
+	}
+
+	// Verify cleanup.
+	if _, ok := exec.taskArtifacts[key]; ok {
+		t.Fatal("task artifact data was not released")
+	}
+}
+
+func TestTaskExecutorImageSlotRejectsMissingArtifact(t *testing.T) {
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		nil,
+	)
+	exec.SetArtifactStore(newTaskBlobStore())
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID:            "work-img2",
+			SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{{
+				ID: "missing_image", WorkID: "work-img2", DefinitionRev: 2,
+				Title: "Missing", Kind: "image", ExpectedCount: 1, Required: true,
+				State: work.SlotReserved, Revision: 1,
+			}},
+		},
+		ArtifactSlots: []work.ArtifactSlot{{
+			ID: "missing_image", WorkID: "work-img2", DefinitionRev: 2,
+			Title: "Missing", Kind: "image", ExpectedCount: 1, Required: true,
+			State: work.SlotReserved, Revision: 1,
+		}},
+	}})
+
+	input := taskInput()
+	input.WorkID = "work-img2"
+	input.ProducesSlotIDs = []string{"missing_image"}
+
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	// Only text, no image artifact.
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "no image produced",
+	}
+
+	_, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error: no matching artifact for image slot")
+	}
+	if !strings.Contains(err.Error(), `requires 1 "image" artifact`) {
+		t.Errorf("error = %v, want explicit image artifact count", err)
+	}
+}
+
+// ── Generic artifact test: matching by kind, not by tool name ──────────────
+
+func TestTaskExecutorMaterializesSlotByKindNotByToolName(t *testing.T) {
+	blobs := newTaskBlobStore()
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		nil,
+	)
+	exec.SetArtifactStore(blobs)
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID:            "work-gen",
+			SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{{
+				ID: "arbitrary_image", WorkID: "work-gen", DefinitionRev: 2,
+				Title: "任意图片", Kind: "image", ExpectedCount: 1, Required: true,
+				State: work.SlotReserved, Revision: 1,
+			}},
+		},
+		ArtifactSlots: []work.ArtifactSlot{{
+			ID: "arbitrary_image", WorkID: "work-gen", DefinitionRev: 2,
+			Title: "任意图片", Kind: "image", ExpectedCount: 1, Required: true,
+			State: work.SlotReserved, Revision: 1,
+		}},
+	}})
+
+	input := taskInput()
+	input.WorkID = "work-gen"
+	input.ProducesSlotIDs = []string{"arbitrary_image"}
+
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	// Use a Discovered artifact whose SourceRunID is NOT request_help —
+	// proving the match is by SlotKind, not by tool name.
+	genericImageData := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 'G', 'E', 'N', 'E', 'R', 'I', 'C'}
+	exec.taskArtifacts[key] = taskArtifactData{
+		text: "",
+		artifacts: []artifact.Discovered{{
+			Name:        "generic_output.png",
+			Type:        "image/png",
+			Path:        "/some/other/tool/output.png",
+			Data:        genericImageData,
+			SourceRunID: "tc-custom-tool-99", // not request_help
+		}},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].SlotID != "arbitrary_image" {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "generic_output.png" || ref.Type != "image/png" {
+		t.Errorf("ref = %+v", ref)
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, genericImageData) {
+		t.Fatalf("blob mismatch")
+	}
+	// The SourceRunID should be "tc-custom-tool-99", proving no dependency on
+	// request_help or image_generation string.
+	if ref.SourceRunID != input.RunID {
+		t.Errorf("SourceRunID = %q, want %q (run-level, not tool-level)", ref.SourceRunID, input.RunID)
+	}
+
+	// Verify cleanup.
+	if _, ok := exec.taskArtifacts[key]; ok {
+		t.Fatal("task artifact data was not released")
+	}
+}
+
+func TestTaskExecutorSlotTextKindsStillWork(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "| ColA | ColB |\n|---|---:|\n| a | 1 |"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		taskFactory(t, prov, "fake-model", nil, nil),
+	)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "table", WorkID: "work-table", DefinitionRev: 2,
+		Title: "table", Kind: "xlsx", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: "work-table", SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = "work-table"
+	input.ProducesSlotIDs = []string{"table"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs, err := exec.TaskArtifacts(context.Background(), input, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || outputs[0].Refs[0].Type != xlsxMediaType {
+		t.Fatalf("text→xlsx regression: outputs = %+v", outputs)
+	}
+}
+
+func TestTaskExecutorMaterializesExpectedArtifactCount(t *testing.T) {
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "gallery", WorkID: "work-gallery", DefinitionRev: 1,
+		Title: "Gallery", Kind: "image", ExpectedCount: 2, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{artifacts: []artifact.Discovered{
+		{Name: "one.png", Type: "image/png", Data: []byte("one")},
+		{Name: "two.png", Type: "image/png", Data: []byte("two")},
+	}}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 2 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	if outputs[0].Refs[0].ID == outputs[0].Refs[1].ID ||
+		outputs[0].Refs[0].Name != "one.png" ||
+		outputs[0].Refs[1].Name != "two.png" {
+		t.Fatalf("refs were not assigned deterministically: %+v", outputs[0].Refs)
+	}
+}
+
+func TestTaskExecutorMaterializesWorkspaceFileArtifact(t *testing.T) {
+	root := t.TempDir()
+	relative := filepath.Join("dist", "bundle.zip")
+	path := filepath.Join(root, relative)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("zip payload")
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "bundle", WorkID: "work-file", DefinitionRev: 1,
+		Title: "Bundle", Kind: "archive", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts:     []artifact.Discovered{{Name: "bundle.zip", Path: relative, Kind: "archive"}},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := blobs.Get(input.WorkID, outputs[0].Refs[0].BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("blob = %q, want %q", body, want)
 	}
 }

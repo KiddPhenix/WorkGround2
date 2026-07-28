@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"workground2/internal/artifact"
 )
 
 const maxArtifactImageBytes = 10 * 1024 * 1024
@@ -28,7 +30,7 @@ func (a *App) artifactImageAllowedRoots(tabID string) []string {
 			roots = append(roots, root)
 		}
 	}
-	roots = append(roots, requestHelpImageAllowedRoots()...)
+	roots = append(roots, artifact.AllowedImageRoots()...)
 	return roots
 }
 
@@ -78,7 +80,7 @@ func (a *App) readArtifactImage(tabID, artifactID string) ([]byte, string, error
 	// Boundary check: workspace root or request_help allowed roots.
 	allowed := false
 	for _, root := range a.artifactImageAllowedRoots(tabID) {
-		if pathWithinAbsolute(cleaned, root) {
+		if artifact.PathWithinAbsolute(cleaned, root) {
 			allowed = true
 			break
 		}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"strings"
 
 	"workground2/internal/agent"
+	"workground2/internal/artifact"
 	"workground2/internal/provider"
 )
 
@@ -52,256 +52,6 @@ func classifyArtifact(path string) string {
 		}
 	}
 	return "file"
-}
-
-func isSourceFile(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case "", ".go", ".ts", ".tsx", ".js", ".jsx", ".json", ".yaml", ".yml",
-		".toml", ".xml", ".html", ".css", ".scss", ".less",
-		".md", ".mdx", ".txt", ".csv", ".log",
-		".py", ".rb", ".java", ".c", ".cpp", ".h", ".hpp",
-		".rs", ".swift", ".kt", ".scala", ".clj", ".cljs",
-		".cs", ".fs", ".vb",
-		".mod", ".sum", ".lock",
-		".gitignore", ".dockerignore", ".editorconfig",
-		".env", ".ini", ".cfg", ".conf",
-		".proto", ".graphql",
-		".test", ".spec", ".snap":
-		return true
-	}
-	return false
-}
-
-func extractBashOutputPaths(cmd string) []string {
-	var paths []string
-	fields := shellFields(cmd)
-	for i, f := range fields {
-		if (f == "-o" || f == "--output" || f == "/out:" || f == "/Fe:" || f == "-out") && i+1 < len(fields) {
-			paths = append(paths, fields[i+1])
-		}
-		if after, ok := strings.CutPrefix(f, "-o"); ok && after != "" && f != "-out" {
-			paths = append(paths, after)
-		}
-		if after, ok := strings.CutPrefix(f, "--output="); ok && after != "" {
-			paths = append(paths, after)
-		}
-		if after, ok := strings.CutPrefix(f, "/out:"); ok && after != "" {
-			paths = append(paths, after)
-		}
-		if after, ok := strings.CutPrefix(f, "/Fe:"); ok && after != "" {
-			paths = append(paths, after)
-		}
-	}
-	return paths
-}
-
-func bashCommandArg(argsJSON string) string {
-	var p struct {
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &p); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(p.Command)
-}
-
-func shellFields(s string) []string {
-	var fields []string
-	var current strings.Builder
-	inSingle, inDouble := false, false
-	for _, r := range s {
-		switch {
-		case r == '\'' && !inDouble:
-			inSingle = !inSingle
-		case r == '"' && !inSingle:
-			inDouble = !inDouble
-		case r == ' ' || r == '\t':
-			if inSingle || inDouble {
-				current.WriteRune(r)
-			} else if current.Len() > 0 {
-				fields = append(fields, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
-		}
-	}
-	if current.Len() > 0 {
-		fields = append(fields, current.String())
-	}
-	return fields
-}
-
-func toolArgsPath(argsJSON string) string {
-	var p struct {
-		Path            string `json:"path"`
-		DestinationPath string `json:"destination_path"`
-		Destination     string `json:"destination"`
-		OutputPath      string `json:"output_path"`
-		OutputFile      string `json:"output_file"`
-		SavePath        string `json:"save_path"`
-		Target          string `json:"target"`
-		File            string `json:"file"`
-		Filename        string `json:"filename"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &p); err != nil {
-		return ""
-	}
-	if p.Path != "" {
-		return p.Path
-	}
-	for _, candidate := range []string{p.DestinationPath, p.Destination, p.OutputPath, p.OutputFile, p.SavePath, p.Target, p.File, p.Filename} {
-		if candidate != "" {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func completeStepEvidencePaths(argsJSON string) []string {
-	var p struct {
-		Evidence []struct {
-			Kind  string   `json:"kind"`
-			Paths []string `json:"paths"`
-		} `json:"evidence"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &p); err != nil {
-		return nil
-	}
-	var paths []string
-	for _, e := range p.Evidence {
-		if e.Kind == "files" || e.Kind == "diff" {
-			paths = append(paths, e.Paths...)
-		}
-	}
-	return paths
-}
-
-// parseRequestHelpArtifactPath extracts the absolute image path from a
-// successful request_help(image_generation) tool result. It parses the
-// structured output: checks the capability line, decodes the artifact JSON,
-// and returns the path only when everything is valid.
-func parseRequestHelpArtifactPath(argsJSON, output string) (string, bool) {
-	var args struct {
-		Capability string `json:"capability"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args.Capability != "image_generation" {
-		return "", false
-	}
-	lines := strings.Split(output, "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "Capability assist succeeded" {
-		return "", false
-	}
-	var capability, artifactJSON string
-	for _, line := range lines[1:] {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			break
-		}
-		if after, ok := strings.CutPrefix(line, "capability: "); ok {
-			if capability != "" {
-				return "", false
-			}
-			capability = strings.TrimSpace(after)
-		}
-		if after, ok := strings.CutPrefix(line, "artifact: "); ok {
-			if artifactJSON != "" {
-				return "", false
-			}
-			artifactJSON = strings.TrimSpace(after)
-		}
-	}
-	if capability != "image_generation" || artifactJSON == "" {
-		return "", false
-	}
-	var artifact struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(artifactJSON), &artifact); err != nil {
-		return "", false
-	}
-	path := strings.TrimSpace(artifact.Path)
-	if path == "" {
-		return "", false
-	}
-	return path, true
-}
-
-func extractResultPaths(output string) []string {
-	var paths []string
-	patterns := []string{
-		"wrote ", "Wrote ",
-		"created ", "Created ",
-		"saved ", "Saved ",
-		"moved ", "Moved ",
-		"compiled ", "Compiled ",
-		"built ", "Built ",
-		"generated ", "Generated ",
-	}
-	for _, line := range strings.Split(output, "\n") {
-		for _, pat := range patterns {
-			idx := strings.Index(line, pat)
-			if idx < 0 {
-				continue
-			}
-			rest := line[idx+len(pat):]
-			if pat == "wrote " || pat == "Wrote " {
-				if toIdx := strings.LastIndex(rest, " to "); toIdx >= 0 {
-					rest = rest[toIdx+4:]
-				}
-			}
-			if pat == "moved " || pat == "Moved " {
-				if toIdx := strings.LastIndex(rest, " to "); toIdx >= 0 {
-					rest = rest[toIdx+4:]
-				}
-			}
-			rest = strings.TrimSpace(rest)
-			if rest == "" {
-				continue
-			}
-			if rest[0] == '"' || rest[0] == '\'' {
-				quote := rest[0]
-				if end := strings.IndexByte(rest[1:], quote); end >= 0 {
-					rest = rest[1 : end+1]
-				}
-			} else if spaceIdx := strings.IndexAny(rest, " \t\r\n"); spaceIdx > 0 {
-				rest = rest[:spaceIdx]
-			}
-			rest = strings.TrimSpace(rest)
-			rest = strings.TrimRight(rest, ".,;:!?\"'")
-			if rest != "" && !isSourceFile(rest) && looksLikePath(rest) {
-				paths = append(paths, rest)
-			}
-		}
-	}
-	return paths
-}
-
-func looksLikePath(s string) bool {
-	if strings.Contains(s, string(filepath.Separator)) || strings.Contains(s, "/") {
-		return true
-	}
-	ext := filepath.Ext(s)
-	return ext != "" && len(ext) >= 2 && len(ext) <= 10
-}
-
-var producerTools = map[string]bool{
-	"write_file": true, "edit_file": true, "multi_edit": true,
-	"move_file": true, "create_file": true, "save_file": true, "apply_patch": true,
-	"bash": true, "shell": true, "powershell": true, "run_command": true, "complete_step": true,
-}
-
-func isProducerTool(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if producerTools[name] {
-		return true
-	}
-	for _, token := range []string{"image", "render", "export", "download", "generate", "convert", "build", "package"} {
-		if strings.Contains(name, token) {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) ArtifactsForTab(tabID string) []ArtifactView {
@@ -355,25 +105,6 @@ func extractArtifacts(msgs []provider.Message, workspaceRoot string) []ArtifactV
 		return []ArtifactView{}
 	}
 	workspaceRoot = root
-	type callWithResult struct {
-		call provider.ToolCall
-		out  string
-	}
-	callResults := make([]callWithResult, 0)
-	results := historyToolResultsByID(msgs)
-	for _, m := range msgs {
-		if m.Role != provider.RoleAssistant || len(m.ToolCalls) == 0 {
-			continue
-		}
-		for _, tc := range m.ToolCalls {
-			result, ok := results[tc.ID]
-			if tc.ID == "" || !ok || historyToolResultFailed(result.Content) {
-				continue
-			}
-			callResults = append(callResults, callWithResult{call: tc, out: result.Content})
-		}
-	}
-
 	seen := map[string]bool{}
 	var artifacts []ArtifactView
 	appendArtifact := func(abs, sourceRunID string, allowExternal bool) {
@@ -415,58 +146,20 @@ func extractArtifacts(msgs []provider.Message, workspaceRoot string) []ArtifactV
 			LastVerifiedAt: verifiedAt,
 		})
 	}
-	for _, cr := range callResults {
-		// request_help(image_generation) produces structured artifact lines;
-		// re-validate at the desktop boundary and allow workspace-external
-		// paths inside allowed output directories.
-		if cr.call.Name == "request_help" {
-			imgPath, ok := parseRequestHelpArtifactPath(cr.call.Arguments, cr.out)
-			if !ok {
-				continue
-			}
-			abs := filepath.Clean(imgPath)
-			if !filepath.IsAbs(abs) {
-				continue
-			}
-			if _, _, err := readRequestHelpImage(abs); err != nil {
-				continue
-			}
-			appendArtifact(abs, cr.call.ID, true)
-			continue
-		}
 
-		if !isProducerTool(cr.call.Name) {
-			continue
-		}
-		var paths []string
-		switch cr.call.Name {
-		case "write_file", "edit_file", "multi_edit", "move_file", "create_file", "save_file":
-			if p := toolArgsPath(cr.call.Arguments); p != "" {
-				paths = append(paths, p)
-			}
-		case "complete_step":
-			paths = append(paths, completeStepEvidencePaths(cr.call.Arguments)...)
-		case "bash", "shell", "powershell", "run_command":
-			paths = append(paths, extractBashOutputPaths(bashCommandArg(cr.call.Arguments))...)
-		default:
-			if p := toolArgsPath(cr.call.Arguments); p != "" {
-				paths = append(paths, p)
-			}
-		}
-		if cr.out != "" {
-			paths = append(paths, extractResultPaths(cr.out)...)
-		}
-
-		for _, p := range paths {
-			p = strings.TrimSpace(p)
-			if p == "" || isSourceFile(p) {
-				continue
-			}
-			abs := resolvePath(workspaceRoot, p)
+	discovered := artifact.Collect(msgs, artifact.DefaultProducers())
+	for _, d := range discovered {
+		if len(d.Data) > 0 {
+			// Binary artifacts (e.g. validated images) carry absolute paths
+			// and are allowed outside the workspace.
+			appendArtifact(d.Path, d.SourceRunID, true)
+		} else {
+			// File-path artifacts need workspace-relative resolution.
+			abs := resolvePath(workspaceRoot, d.Path)
 			if abs == "" {
 				continue
 			}
-			appendArtifact(abs, cr.call.ID, false)
+			appendArtifact(abs, d.SourceRunID, false)
 		}
 	}
 
