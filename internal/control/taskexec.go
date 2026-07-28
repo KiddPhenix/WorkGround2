@@ -266,9 +266,8 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 }
 
 // TaskArtifacts implements work.TaskArtifactReporter. The final assistant
-// response is preserved in the Work blob store and referenced from each
-// declared textual/document slot. Binary/image slots require a dedicated
-// producer and fail explicitly instead of being reported as completed.
+// response is materialized according to each declared slot's format before it
+// is preserved in the Work blob store.
 func (a *TaskExecutorAdapter) TaskArtifacts(
 	ctx context.Context,
 	input work.TaskExecuteInput,
@@ -315,10 +314,6 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 			slotByID[slot.ID] = slot
 		}
 	}
-	digest, err := a.blobs.Put(input.WorkID, []byte(content))
-	if err != nil {
-		return nil, fmt.Errorf("persist task artifact content: %w", err)
-	}
 	now := time.Now().UTC()
 	outputs := make([]work.TaskArtifactOutput, 0, len(input.ProducesSlotIDs))
 	for _, slotID := range input.ProducesSlotIDs {
@@ -326,13 +321,20 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 		if !ok {
 			return nil, fmt.Errorf("artifact slot %q is unavailable in the active Work projection", slotID)
 		}
-		name, mediaType, supported := taskTextArtifactName(slot)
+		body, name, mediaType, supported, err := materializeTaskArtifact(slot, content)
+		if err != nil {
+			return nil, fmt.Errorf("materialize artifact slot %q as %q: %w", slot.ID, slot.Kind, err)
+		}
 		if !supported {
 			return nil, fmt.Errorf(
 				"artifact slot %q requires %q output; the task returned text only",
 				slot.ID,
 				slot.Kind,
 			)
+		}
+		digest, err := a.blobs.Put(input.WorkID, body)
+		if err != nil {
+			return nil, fmt.Errorf("persist artifact slot %q content: %w", slot.ID, err)
 		}
 		refID := strings.TrimPrefix(work.ContentDigest([]byte(input.AttemptID+"\x00"+slot.ID)), "sha256:")
 		outputs = append(outputs, work.TaskArtifactOutput{
@@ -573,38 +575,6 @@ func taskSessionArtifactContent(messages []provider.Message) string {
 		}
 	}
 	return ""
-}
-
-func taskTextArtifactName(slot work.ArtifactSlot) (name, mediaType string, supported bool) {
-	kind := strings.ToLower(strings.TrimSpace(slot.Kind))
-	switch kind {
-	case "text", "markdown", "md", "document", "txt", "plain_text", "text/plain", "text/markdown":
-	default:
-		return "", "", false
-	}
-	base := strings.TrimSpace(slot.Title)
-	if base == "" {
-		base = strings.TrimSpace(slot.ID)
-	}
-	base = strings.Map(func(r rune) rune {
-		switch r {
-		case '<', '>', ':', '"', '/', '\\', '|', '?', '*':
-			return '-'
-		default:
-			if r < 32 {
-				return -1
-			}
-			return r
-		}
-	}, base)
-	base = strings.Trim(strings.TrimSpace(base), ".")
-	if base == "" {
-		base = "artifact"
-	}
-	if kind == "txt" || kind == "text/plain" || strings.Contains(strings.ToLower(slot.ID), "txt") {
-		return base + ".txt", "text/plain", true
-	}
-	return base + ".md", "text/markdown", true
 }
 
 func firstLine(text string, maxRunes int) string {

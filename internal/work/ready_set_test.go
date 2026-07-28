@@ -2230,6 +2230,48 @@ func TestV2NodePrompt_DeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestV2NodePrompt_ToolHints(t *testing.T) {
+	node := &NodeDef{
+		ID:        "research",
+		Title:     "Research topic",
+		ToolHints: []string{"web_search"},
+	}
+	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	if !strings.Contains(prompt, "native web search") ||
+		!strings.Contains(prompt, "request_help with capability web_search") ||
+		!strings.Contains(prompt, "Include source URLs") ||
+		!strings.Contains(prompt, "fail explicitly") {
+		t.Fatalf("prompt missing web_search tool hint: %s", prompt)
+	}
+	if !strings.Contains(prompt, "--- Tool guidance ---") {
+		t.Fatalf("prompt missing tool guidance section: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ToolHintsEmpty(t *testing.T) {
+	node := &NodeDef{ID: "simple", Title: "Simple task"}
+	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	if strings.Contains(prompt, "--- Tool guidance ---") {
+		t.Fatalf("prompt should not have tool guidance for empty hints: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_ToolHintsUnknownPassThrough(t *testing.T) {
+	node := &NodeDef{
+		ID:        "custom",
+		Title:     "Custom tool task",
+		ToolHints: []string{"", "custom_tool", "custom_tool", "WEB_SEARCH"},
+	}
+	prompt := v2NodePrompt(node, nil, nil, "w", "r", "t")
+	if !strings.Contains(prompt, "Tool hint: custom_tool") {
+		t.Fatalf("prompt missing unknown tool hint pass-through: %s", prompt)
+	}
+	if strings.Count(prompt, "Tool hint: custom_tool") != 1 ||
+		strings.Count(prompt, "request_help with capability web_search") != 1 {
+		t.Fatalf("prompt did not normalize tool hints: %s", prompt)
+	}
+}
+
 // ── V2 scheduler end-to-end: prompt carries submitted inputs ────────────────
 
 func TestV2Scheduler_PromptCarriesSubmittedInputE2E(t *testing.T) {

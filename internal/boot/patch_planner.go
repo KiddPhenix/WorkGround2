@@ -104,7 +104,10 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString("- Preserve the target node's existing responsibilities and incorporate the user's instruction unless the user explicitly asks to replace them.\n")
 		b.WriteString("- Patch root/goal, specs, slots, dependencies, or other nodes only when the instruction explicitly requires that broader change.\n")
 		b.WriteString("- Adding a result requires one add at artifactSlots/<newSlotID> with newValue {\"id\",\"title\",\"kind\",\"expectedCount\",\"required\"}, plus replace nodes/<producerNodeID>/producesSlotIds so exactly one node produces it.\n")
+		b.WriteString("- If an add-result instruction does not name a producer, infer exactly one existing producer from node responsibilities, dependency order, and existing artifact relationships. Never ask the user to choose, never add a node, and do not treat the target node as the producer unless it is the best match.\n")
 		b.WriteString("- Removing a result requires one remove at artifactSlots/<slotID>, plus replace every referencing node's producesSlotIds and consumesSlotIds to remove that ID. Do not leave dangling references.\n")
+		b.WriteString("- Modifying a result keeps its existing slot ID and all producer/consumer references. Replace only the explicitly requested artifactSlots fields; never model an edit as remove plus add.\n")
+		b.WriteString("- A result format change must replace artifactSlots/<slotID>/kind with the exact requested format and keep the title extension consistent. Changing only the title or MIME is not a format change.\n")
 	}
 	b.WriteString("\n## Exact response examples\n")
 	if input.Scope == work.PatchBlock {

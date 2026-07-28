@@ -272,6 +272,47 @@ func TestValidateChoiceValue_AllowOther(t *testing.T) {
 	}
 }
 
+func TestNormalizeInputSpecValueSchema_RecoversLegacyChoiceOptions(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{"object map", `{"options":{"visual":"视觉学习","audio":"听觉学习"}}`},
+		{"delimited string", `{"options":"visual, audio"}`},
+		{"string array", `{"options":["visual","audio"]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spec := InputSpec{ID: "method", Kind: InputChoice, ValueSchema: json.RawMessage(tt.schema)}
+			normalized, err := NormalizeInputSpecValueSchema(spec)
+			if err != nil {
+				t.Fatalf("normalize: %v", err)
+			}
+			var constraints ChoiceConstraints
+			if err := json.Unmarshal(normalized, &constraints); err != nil {
+				t.Fatalf("decode normalized: %v", err)
+			}
+			if len(constraints.Options) != 2 {
+				t.Fatalf("options = %#v", constraints.Options)
+			}
+			spec.ValueSchema = normalized
+			if err := ValidateInputValue(spec, mustJSONRaw("visual")); err != nil {
+				t.Fatalf("validate normalized choice: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateChoiceValue_RecoversLegacyOptionsAtSubmit(t *testing.T) {
+	spec := InputSpec{
+		ID: "method", Kind: InputChoice,
+		ValueSchema: json.RawMessage(`{"options":{"visual":"视觉学习","audio":"听觉学习"}}`),
+	}
+	if err := ValidateInputValue(spec, mustJSONRaw("visual")); err != nil {
+		t.Fatalf("legacy object options should remain submit-compatible: %v", err)
+	}
+}
+
 // ── MultiChoice ─────────────────────────────────────────────────────────────
 
 func TestValidateMultiChoiceValue_Basic(t *testing.T) {

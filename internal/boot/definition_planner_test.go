@@ -2,6 +2,7 @@ package boot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -186,6 +187,18 @@ func TestParseDefinitionPlanResponse_ChineseInStringValues(t *testing.T) {
 	}
 	if plan.Nodes[0].Title != "收集需求" {
 		t.Fatalf("node title=%q", plan.Nodes[0].Title)
+	}
+}
+
+func TestParseDefinitionPlanResponse_NormalizesChoiceOptions(t *testing.T) {
+	raw := `{"goal":"学习","nodes":[{"id":"plan","title":"计划","inputSpecIds":["method"],"producesSlotIds":["result"]}],"artifactSlots":[{"id":"result","title":"结果","kind":"text","expectedCount":1,"required":true}],"inputSpecs":[{"id":"method","label":"学习方式","kind":"choice","required":true,"valueSchema":{"options":{"visual":"视觉学习","audio":"听觉学习"}},"pinEligible":false}]}`
+	plan := mustParsePlan(t, raw)
+	var schema work.ChoiceConstraints
+	if err := json.Unmarshal(plan.InputSpecs[0].ValueSchema, &schema); err != nil {
+		t.Fatalf("decode normalized schema: %v", err)
+	}
+	if len(schema.Options) != 2 {
+		t.Fatalf("normalized options = %#v", schema.Options)
 	}
 }
 
@@ -1824,4 +1837,168 @@ func (p *repairCaptureProvider) Stream(_ context.Context, req provider.Request) 
 	}
 	close(ch)
 	return ch, nil
+}
+
+// ── InputSpec planning rules in prompt ─────────────────────────────────────
+
+func TestDefinitionPlannerPrompt_ContainsInputSpecSearchVsAskRules(t *testing.T) {
+	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
+	for _, want := range []string{
+		"InputSpec rules",
+		"when to ask the user",
+		"public web search",
+		"must NOT generate an InputSpec",
+		"toolHints",
+		"web_search",
+		"native/direct search",
+		"request_help(web_search)",
+		"Only generate a required InputSpec",
+		"can only come from the user",
+		"private preferences",
+		"Label must read like a natural question",
+		"Choose the most specific InputKind",
+		"Group inputs that belong to the same phase",
+		"Every required InputSpec MUST be referenced",
+		"unreferenced required InputSpec is an invalid plan",
+	} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("system prompt missing %q", want)
+		}
+	}
+}
+
+func TestDefinitionPlannerSchema_InputSpecRequiredAndOrphanRule(t *testing.T) {
+	schema := definitionPlanSchema
+	for _, want := range []string{
+		`"required": boolean (required) — set true ONLY`,
+		"publicly searchable info must NOT generate an InputSpec",
+		"CRITICAL: Every InputSpec with required=true MUST appear",
+		"unreferenced required InputSpec is a fatal error",
+	} {
+		if !strings.Contains(schema, want) {
+			t.Fatalf("schema missing %q", want)
+		}
+	}
+}
+
+// ── Orphan required InputSpec rejection ────────────────────────────────────
+
+func TestDecodeDefinitionPlan_RejectsOrphanRequiredInputSpec(t *testing.T) {
+	// Two required specs, only one referenced by a node.
+	raw := `{
+		"goal": "deliver",
+		"nodes": [
+			{
+				"id": "n1",
+				"title": "Main",
+				"inputSpecIds": ["topic"],
+				"producesSlotIds": ["s1"]
+			}
+		],
+		"artifactSlots": [
+			{"id": "s1", "title": "Output", "kind": "text", "expectedCount": 1, "required": true}
+		],
+		"inputSpecs": [
+			{"id": "topic", "label": "Topic?", "kind": "text", "required": true, "pinEligible": false},
+			{"id": "secret", "label": "Secret?", "kind": "text", "required": true, "pinEligible": false}
+		]
+	}`
+	_, err := parseDefinitionPlanResponse(raw)
+	if err == nil {
+		t.Fatal("expected error for orphan required inputSpec, got nil")
+	}
+	if !strings.Contains(err.Error(), `not referenced by any node`) {
+		t.Fatalf("error %q does not mention orphan rejection", err.Error())
+	}
+	if !strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error %q does not name the orphan spec", err.Error())
+	}
+}
+
+func TestDecodeDefinitionPlan_AllowsNonRequiredOrphanInputSpec(t *testing.T) {
+	// Non-required orphan is allowed (optional inputs don't block).
+	raw := `{
+		"goal": "deliver",
+		"nodes": [
+			{
+				"id": "n1",
+				"title": "Main",
+				"producesSlotIds": ["s1"]
+			}
+		],
+		"artifactSlots": [
+			{"id": "s1", "title": "Output", "kind": "text", "expectedCount": 1, "required": true}
+		],
+		"inputSpecs": [
+			{"id": "opt", "label": "Optional?", "kind": "text", "required": false, "pinEligible": false}
+		]
+	}`
+	plan, err := parseDefinitionPlanResponse(raw)
+	if err != nil {
+		t.Fatalf("non-required orphan should be allowed: %v", err)
+	}
+	if plan == nil || len(plan.InputSpecs) != 1 {
+		t.Fatalf("plan=%+v", plan)
+	}
+}
+
+func TestDecodeDefinitionPlan_AllowsReferencedRequiredInputSpec(t *testing.T) {
+	raw := `{
+		"goal": "deliver",
+		"nodes": [
+			{
+				"id": "n1",
+				"title": "Main",
+				"inputSpecIds": ["topic"],
+				"producesSlotIds": ["s1"]
+			}
+		],
+		"artifactSlots": [
+			{"id": "s1", "title": "Output", "kind": "text", "expectedCount": 1, "required": true}
+		],
+		"inputSpecs": [
+			{"id": "topic", "label": "Topic?", "kind": "text", "required": true, "pinEligible": false}
+		]
+	}`
+	plan, err := parseDefinitionPlanResponse(raw)
+	if err != nil {
+		t.Fatalf("referenced required InputSpec should be allowed: %v", err)
+	}
+	if plan == nil || plan.Goal != "deliver" {
+		t.Fatalf("plan=%+v", plan)
+	}
+}
+
+func TestDecodeDefinitionPlan_AllowsRequiredInputSpecReferencedByAnyNode(t *testing.T) {
+	// InputSpec "topic" is required and IS referenced by n2 — this should pass.
+	raw := `{
+		"goal": "deliver",
+		"nodes": [
+			{
+				"id": "n1",
+				"title": "Main",
+				"producesSlotIds": ["s1"]
+			},
+			{
+				"id": "n2",
+				"title": "Setup",
+				"inputSpecIds": ["topic"],
+				"producesSlotIds": ["s2"]
+			}
+		],
+		"artifactSlots": [
+			{"id": "s1", "title": "Output", "kind": "text", "expectedCount": 1, "required": true},
+			{"id": "s2", "title": "Config", "kind": "text", "expectedCount": 1, "required": true}
+		],
+		"inputSpecs": [
+			{"id": "topic", "label": "Topic?", "kind": "text", "required": true, "pinEligible": false}
+		]
+	}`
+	plan, err := parseDefinitionPlanResponse(raw)
+	if err != nil {
+		t.Fatalf("referenced required InputSpec should be allowed: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("nil plan")
+	}
 }

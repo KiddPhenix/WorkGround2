@@ -252,6 +252,14 @@ export interface WidgetConversationResult {
 // added or renamed, the generated types shift, and a key present in GeneratedApp
 // but missing from AppBindings causes a type error here. Fix: add the new method
 // to AppBindings, then run `pnpm typecheck` to verify.
+export interface WorkArtifactFileIntent {
+  workId: string;
+  definitionRevision: number;
+  slotId: string;
+  slotRevision: number;
+  artifactRefId: string;
+}
+
 export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
 	EnterWidgetMode(): Promise<WidgetSnapshot>;
@@ -438,8 +446,10 @@ export interface AppBindings extends WailsWorkBindings {
   WorkspaceGitCommitDetail(tabID: string, hash: string, path: string): Promise<GitCommitDetailView>;
   OpenWorkspacePath(rel: string): Promise<void>;
   OpenWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
+  OpenWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
+  RevealWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
   RevealPath(path: string): Promise<void>;
   SavePastedImage(dataUrl: string): Promise<string>;
   SaveClipboardImage(): Promise<string>;
@@ -3653,11 +3663,17 @@ function makeMockApp(): AppBindings {
     async OpenWorkspacePathForTab(_tabID: string, rel: string) {
       await this.OpenWorkspacePath(rel);
     },
+    async OpenWorkArtifactForTab(_tabID: string, input: WorkArtifactFileIntent) {
+      console.info("mock OpenWorkArtifactForTab", input);
+    },
     async RevealWorkspacePath(rel: string) {
       console.info("mock RevealWorkspacePath", rel);
     },
     async RevealWorkspacePathForTab(_tabID: string, rel: string) {
       await this.RevealWorkspacePath(rel);
+    },
+    async RevealWorkArtifactForTab(_tabID: string, input: WorkArtifactFileIntent) {
+      console.info("mock RevealWorkArtifactForTab", input);
     },
     async RevealPath(path: string) {
       console.info("mock RevealPath", path);

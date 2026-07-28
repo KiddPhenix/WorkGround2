@@ -354,7 +354,7 @@ func TestV2KeptRuntime_RejectsNonCurrentParentProjection_FileStore(t *testing.T)
 	staleNext.ParentRevision = h.def.Revision
 	staleNext.Digest, _ = ComputeV2RevisionDigest(staleNext)
 	impact := ClassifyRunImpact(h.def, staleNext)
-	if projected := projectKeptRuntimes(
+	if _, projected := projectKeptContexts(
 		current, h.def, staleNext, "manual-stale-parent-run", impact, time.Now().UTC(),
 	); len(projected) != 0 {
 		t.Fatalf("non-current parent projected %d runtimes", len(projected))
@@ -444,13 +444,19 @@ func TestV2KeptRuntime_DefinitionProjectsUpstreamAndRunsChangedSuccessor_FileSto
 }
 
 func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
-	h := newCoordinatorHarness(t, coordinatorDefinition(
+	definition := coordinatorDefinition(
 		[]NodeDef{
-			{ID: "n1", Title: "kept"},
+			{ID: "n1", Title: "kept", InputSpecIDs: []string{"topic"}},
 			{ID: "n2", Title: "old", DependsOn: []string{"n1"}, BlockIDs: []string{"b1"}},
 		},
-		nil,
-	))
+		[]InputSpec{{
+			ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+			ValueSchema: json.RawMessage(`{"type":"string"}`),
+		}},
+	)
+	h := newCoordinatorHarness(t, definition)
+	keptInput := requestTaskInput(t, h, h.run, "n1", "kept-topic", "topic")
+	submitTaskInput(t, h, keptInput, `"animals"`)
 	now := time.Now().UTC()
 	blockPayload, _ := json.Marshal(BlockInstance{
 		ID: "b1", Kind: "markdown", SchemaVersion: 1, Revision: 1,
@@ -489,7 +495,7 @@ func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definition, err := h.store.LoadRevision(h.work, result.NewRevision)
+	appliedDefinition, err := h.store.LoadRevision(h.work, result.NewRevision)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,11 +503,18 @@ func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newRunID := latestRunIDForDigest(projection, definition.Digest)
+	newRunID := latestRunIDForDigest(projection, appliedDefinition.Digest)
 	upstreamID, _ := DeriveTaskID(newRunID, "n1")
 	successorID, _ := DeriveTaskID(newRunID, "n2")
 	if runtime := projection.V2TaskRuntimes[upstreamID]; runtime == nil || runtime.State != TaskCompleted {
 		t.Fatalf("workflow patch did not project kept upstream: %+v", runtime)
+	}
+	carriedInput := findV2TaskInput(projection.V2Inputs, newRunID, upstreamID, "topic")
+	if carriedInput == nil || carriedInput.ID == keptInput.ID ||
+		carriedInput.BlockID != keptInput.BlockID || carriedInput.State != InputSubmitted ||
+		string(carriedInput.Value) != `"animals"` {
+		t.Fatalf("workflow patch did not carry kept block data into new input identity: old=%+v new=%+v",
+			keptInput, carriedInput)
 	}
 	if runtime := projection.V2TaskRuntimes[successorID]; runtime == nil || runtime.State != TaskCompleted {
 		t.Fatalf("workflow patch successor did not run: %+v", runtime)
@@ -509,7 +522,9 @@ func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
 	if executor.callCount() != 3 {
 		t.Fatalf("workflow patch re-executed kept node: calls=%d", executor.callCount())
 	}
-	beforeReplayRuns, beforeReplayRuntimes := len(projection.Runs), len(projection.V2TaskRuntimes)
+	beforeReplayRuns := len(projection.Runs)
+	beforeReplayRuntimes := len(projection.V2TaskRuntimes)
+	beforeReplayInputs := len(projection.V2Inputs)
 	replayedResult, err := h.svc.ApplyV2WorkPatch(context.Background(), applyInput)
 	if err != nil || replayedResult == nil || !replayedResult.Duplicate {
 		t.Fatalf("workflow patch replay failed: result=%+v err=%v", replayedResult, err)
@@ -520,8 +535,56 @@ func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
 	}
 	if len(afterReplay.Runs) != beforeReplayRuns ||
 		len(afterReplay.V2TaskRuntimes) != beforeReplayRuntimes ||
+		len(afterReplay.V2Inputs) != beforeReplayInputs ||
 		executor.callCount() != 3 {
-		t.Fatal("workflow patch replay duplicated run, runtime, or execution")
+		t.Fatal("workflow patch replay duplicated run, input, runtime, or execution")
+	}
+}
+
+func TestV2KeptContext_ApplyDefinitionCarriesInputData_FileStore(t *testing.T) {
+	definition := coordinatorDefinition(
+		[]NodeDef{
+			{ID: "n1", Title: "kept", InputSpecIDs: []string{"topic"}},
+			{ID: "n2", Title: "changed", InputSpecIDs: []string{"tone"}},
+		},
+		[]InputSpec{
+			{ID: "topic", Label: "Topic", Kind: InputText, Required: true, ValueSchema: json.RawMessage(`{"type":"string"}`)},
+			{ID: "tone", Label: "Tone", Kind: InputText, Required: true, ValueSchema: json.RawMessage(`{"type":"string"}`)},
+		},
+	)
+	h := newCoordinatorHarness(t, definition)
+	oldInput := requestTaskInput(t, h, h.run, "n1", "definition-topic", "topic")
+	submitTaskInput(t, h, oldInput, `"preserve me"`)
+	changedInput := requestTaskInput(t, h, h.run, "n2", "definition-tone", "tone")
+	submitTaskInput(t, h, changedInput, `"old tone"`)
+	executor := &reuseExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	next := coordinatorDefinition(definition.Nodes, definition.InputSpecs)
+	next.Nodes[1].Description = "new execution semantics"
+	applied := createAndApplyNext(t, h, next, "carry-input-"+t.Name())
+	newTaskID, _ := DeriveTaskID(applied.Intent.RunID, "n1")
+	changedTaskID, _ := DeriveTaskID(applied.Intent.RunID, "n2")
+	projection, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carried := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, newTaskID, "topic")
+	if carried == nil || carried.ID == oldInput.ID || carried.BlockID != oldInput.BlockID ||
+		carried.State != InputSubmitted || string(carried.Value) != `"preserve me"` {
+		t.Fatalf("ApplyDefinition did not carry kept block data: old=%+v new=%+v", oldInput, carried)
+	}
+	runtime := projection.V2TaskRuntimes[newTaskID]
+	if runtime == nil || runtime.State != TaskCompleted || executor.callCount() != 2 {
+		t.Fatalf("kept task reran or lost completion: runtime=%+v calls=%d", runtime, executor.callCount())
+	}
+	changed := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, changedTaskID, "tone")
+	if changed == nil || changed.ID == changedInput.ID || changed.State != InputRequested ||
+		string(changed.Value) == `"old tone"` {
+		t.Fatalf("changed task inherited superseded block data: old=%+v new=%+v", changedInput, changed)
 	}
 }
 

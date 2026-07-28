@@ -17,6 +17,7 @@ import type {
 } from '../../../types_v2';
 import { WorkInputHost as ProductionWorkInputHost } from './WorkInputHost';
 import type { DraftValue, WorkInputHostProps } from './WorkInputHost';
+import { parseValueSchema, toWireValue, validateDraft } from './schema';
 
 // ── test harness ───────────────────────────────────────────────────────────
 
@@ -1102,7 +1103,7 @@ async function runTests(): Promise<void> {
       />,
     );
     ok(h1.querySelector('.wg2-wh-schema-err') !== null, 'schema-err: JSON parse failure rendered');
-    contains(h1.textContent ?? '', 'JSON 解析失败', 'schema-err: JSON error msg');
+    contains(h1.textContent ?? '', '“坏JSON”的输入配置有误', 'schema-err: JSON error is human readable');
 
     // Kind mismatch
     const { host: h2, cleanup: c2 } = await mount(
@@ -1114,7 +1115,7 @@ async function runTests(): Promise<void> {
       />,
     );
     ok(h2.querySelector('.wg2-wh-schema-err') !== null, 'schema-err: kind mismatch rendered');
-    contains(h2.textContent ?? '', '不匹配', 'schema-err: kind mismatch msg');
+    contains(h2.textContent ?? '', '“KindMismatch”的输入配置有误', 'schema-err: kind mismatch is human readable');
 
     // Illegal riskLevel
     const { host: h3, cleanup: c3 } = await mount(
@@ -1126,7 +1127,8 @@ async function runTests(): Promise<void> {
       />,
     );
     ok(h3.querySelector('.wg2-wh-schema-err') !== null, 'schema-err: illegal risk rendered');
-    contains(h3.textContent ?? '', 'extreme', 'schema-err: risk name shown');
+    contains(h3.textContent ?? '', '“坏Risk”的输入配置有误', 'schema-err: invalid risk is human readable');
+    ok(!h3.textContent?.includes('extreme'), 'schema-err: invalid internal value stays hidden');
 
     // Illegal unit
     const { host: h4, cleanup: c4 } = await mount(
@@ -1149,7 +1151,7 @@ async function runTests(): Promise<void> {
       />,
     );
     ok(h5.querySelector('.wg2-wh-schema-err') !== null, 'schema-err: bad pattern rendered');
-    contains(h5.textContent ?? '', '正则', 'schema-err: pattern error');
+    contains(h5.textContent ?? '', '“坏Pattern”的输入配置有误', 'schema-err: pattern error is human readable');
 
     await c1(); await c2(); await c3(); await c4(); await c5();
   }
@@ -1547,6 +1549,150 @@ async function runTests(): Promise<void> {
       eq(unpinReqs[0].inputRevision, 0, 'workRev: unpin inputRevision=0 (input revision)');
       eq(unpinReqs[0].pin, false, 'workRev: unpin DTO.pin=false');
     }
+    await cleanup();
+  }
+
+  // Legacy planner output may encode choice options as an object map. The
+  // current UI must recover it instead of exposing a schema implementation
+  // error or blocking the whole input block.
+  {
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'method',
+          label: '学习方式',
+          kind: 'choice',
+          required: true,
+          valueSchema: JSON.stringify({
+            options: { visual: '视觉学习', audio: '听觉学习' },
+          }),
+        })}
+        draftValue=""
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={noopPin}
+        onUnpin={noopUnpin}
+        workId={WORK_ID}
+        taskId={TASK_ID}
+        runId={RUN_ID}
+        blockId={BLOCK_ID}
+        definitionRevision={DEF_REV}
+        inputRevision={INPUT_REV}
+      />,
+    );
+    const select = host.querySelector<HTMLSelectElement>(
+      '[data-testid="work-input-control-task-fixture-method-select"]',
+    );
+    ok(select !== null, 'choice recovery: object-map options render a select');
+    eq(select?.options.length, 3, 'choice recovery: placeholder plus two recovered options');
+    contains(select?.textContent ?? '', '视觉学习', 'choice recovery: recovered label is visible');
+    ok(!host.textContent?.includes('[method/choice]'), 'choice recovery: internal schema identity stays hidden');
+    await cleanup();
+  }
+
+  {
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'broken-method',
+          label: '学习方式',
+          kind: 'choice',
+          required: true,
+          valueSchema: JSON.stringify({ options: 42 }),
+        })}
+        draftValue=""
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={noopPin}
+        onUnpin={noopUnpin}
+        workId={WORK_ID}
+        taskId={TASK_ID}
+        runId={RUN_ID}
+        blockId={BLOCK_ID}
+        definitionRevision={DEF_REV}
+        inputRevision={INPUT_REV}
+      />,
+    );
+    contains(
+      host.querySelector('[role="alert"]')?.textContent ?? '',
+      '“学习方式”的选项配置有误，请重新规划工作结构后重试。',
+      'choice recovery: irrecoverable schema error is human readable',
+    );
+    ok(!host.textContent?.includes('options 必须是数组'), 'choice recovery: parser detail stays hidden');
+    await cleanup();
+  }
+
+  {
+    const spec = makeSpec({
+      id: 'manual-activities',
+      label: '活动安排',
+      kind: 'multi_choice',
+      required: true,
+      valueSchema: undefined,
+    });
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={spec}
+        draftValue=""
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={noopPin}
+        onUnpin={noopUnpin}
+        workId={WORK_ID}
+        taskId={TASK_ID}
+        runId={RUN_ID}
+        blockId={BLOCK_ID}
+        definitionRevision={DEF_REV}
+        inputRevision={INPUT_REV}
+      />,
+    );
+    const manual = host.querySelector<HTMLTextAreaElement>(
+      '[data-testid="work-input-control-task-fixture-manual-activities-manual"]',
+    );
+    ok(manual !== null, 'multi fallback: missing options renders an editable textarea');
+    eq(manual?.placeholder, '每行填写一项', 'multi fallback: input format is explicit');
+    const parsed = parseValueSchema(spec.id, spec.kind, spec.valueSchema);
+    eq(
+      validateDraft(spec, '晨读\n听力训练', parsed),
+      null,
+      'multi fallback: manual text satisfies required validation',
+    );
+    const wire = toWireValue(
+      'multi_choice',
+      '晨读\n听力训练\n晨读',
+      parsed,
+    );
+    eq(JSON.stringify(wire), JSON.stringify(['晨读', '听力训练']), 'multi fallback: manual lines submit as a deduplicated string array');
+    await cleanup();
+  }
+
+  {
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'manual-method',
+          label: '学习方式',
+          kind: 'choice',
+          required: true,
+          valueSchema: undefined,
+        })}
+        draftValue=""
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit}
+        onPin={noopPin}
+        onUnpin={noopUnpin}
+        workId={WORK_ID}
+        taskId={TASK_ID}
+        runId={RUN_ID}
+        blockId={BLOCK_ID}
+        definitionRevision={DEF_REV}
+        inputRevision={INPUT_REV}
+      />,
+    );
+    ok(
+      host.querySelector('[data-testid="work-input-control-task-fixture-manual-method-manual"]') !== null,
+      'choice fallback: missing options renders a text input',
+    );
     await cleanup();
   }
 

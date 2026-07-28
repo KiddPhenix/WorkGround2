@@ -129,3 +129,44 @@ func TestArtifactSlotPatchRejectsMissingProducerAndDanglingReference(t *testing.
 		t.Fatal("expected dangling producer/consumer references to fail")
 	}
 }
+
+func TestArtifactSlotPatchFormatChangePreservesReferencesAndInvalidatesDependents(t *testing.T) {
+	base := artifactPatchDefinition()
+	ops, err := normalizePatchOps(base, nil, PatchWorkflow, "", []PatchOp{
+		{
+			Op:       "replace",
+			Path:     "artifactSlots/report/title",
+			NewValue: rawPatchValue(t, "Report.xlsx"),
+		},
+		{
+			Op:       "replace",
+			Path:     "artifactSlots/report/kind",
+			NewValue: rawPatchValue(t, "xlsx"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("normalize edit: %v", err)
+	}
+	changed := CopyOnWriteRevision(base)
+	if err := applyPatchOpsToDefinition(changed, ops); err != nil {
+		t.Fatalf("apply edit: %v", err)
+	}
+	if err := validatePatchedDefinition(base, changed); err != nil {
+		t.Fatalf("validate edit: %v", err)
+	}
+	slot := changed.ArtifactSlots[0]
+	if slot.ID != "report" || slot.Title != "Report.xlsx" || slot.Kind != "xlsx" {
+		t.Fatalf("changed slot = %#v", slot)
+	}
+	if !containsID(changed.Nodes[0].ProducesSlotIDs, "report") ||
+		!containsID(changed.Nodes[1].ConsumesSlotIDs, "report") {
+		t.Fatalf("references were not preserved: %#v", changed.Nodes)
+	}
+	impact := new(PatchService).computePatchImpact(base, ops, PatchWorkflow, "make")
+	if !containsID(impact.staleSlots, "report") {
+		t.Fatalf("changed slot must become stale: %v", impact.staleSlots)
+	}
+	if !containsID(impact.invalidatedTasks, "make") || !containsID(impact.invalidatedTasks, "use") {
+		t.Fatalf("format change invalidation = %v", impact.invalidatedTasks)
+	}
+}

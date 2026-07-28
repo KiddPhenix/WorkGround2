@@ -103,9 +103,17 @@ type coordinatorHarness struct {
 }
 
 func newCoordinatorHarness(t *testing.T, definition *WorkDefinitionRevision) *coordinatorHarness {
+	return newCoordinatorHarnessWithSink(t, definition, nil)
+}
+
+func newCoordinatorHarnessWithSink(
+	t *testing.T,
+	definition *WorkDefinitionRevision,
+	sink ViewSink,
+) *coordinatorHarness {
 	t.Helper()
 	store := newTestFileWorkStore(t)
-	svc := NewService(store, nil, nil)
+	svc := NewService(store, nil, sink)
 	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
 		SessionID: "session-" + t.Name(),
 		RequestID: "begin-" + t.Name(),
@@ -392,6 +400,9 @@ func TestV2Coordinator_InputCommitMakesRunningCompletionStale_FileStore(t *testi
 		started:  make(chan TaskExecuteInput, 1),
 		release:  make(chan struct{}),
 	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(executor.release) }) }
+	defer release()
 	h.svc.SetTaskExecutor(executor)
 	done := make(chan error, 1)
 	go func() {
@@ -408,7 +419,7 @@ func TestV2Coordinator_InputCommitMakesRunningCompletionStale_FileStore(t *testi
 		t.Fatal(err)
 	}
 	slots := append([]ArtifactSlot(nil), afterSubmit.V2ArtifactSlots...)
-	close(executor.release)
+	release()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -710,6 +721,125 @@ func TestV2Coordinator_SubmitInputAutoSchedulesOnlyAffected_FileStore(t *testing
 	}
 	if executor.callCount() != 1 {
 		t.Fatalf("executor calls=%d, want 1", executor.callCount())
+	}
+}
+
+func TestV2Coordinator_SubmitInputPublishesRunningBeforeExecutionCompletes_FileStore(t *testing.T) {
+	sink := &serviceSink{next: make(chan WorkViewEvent, 256)}
+	h := newCoordinatorHarnessWithSink(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "target", InputSpecIDs: []string{"topic"}}},
+		[]InputSpec{{
+			ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+			ValueSchema: json.RawMessage(`{"type":"string"}`),
+		}},
+	), sink)
+	h.svc.SetV2TransportEnabled(true)
+
+	input := requestCoordinatorInput(t, h, "topic")
+	executor := &coordinatorExecutor{
+		blockRun: h.run,
+		started:  make(chan TaskExecuteInput, 1),
+		release:  make(chan struct{}),
+	}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := SubmitInputRequest{
+		WorkID: h.work, InputID: input.ID, Value: json.RawMessage(`"changed"`),
+		DefinitionRev: h.def.Revision, InputRevision: input.Revision,
+		ExpectedRevision: state.Revision, RequestID: "submit-running-" + t.Name(),
+	}
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := h.svc.SubmitV2Input(context.Background(), request)
+		resultCh <- err
+	}()
+
+	var started TaskExecuteInput
+	select {
+	case started = <-executor.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for task execution to start")
+	}
+	select {
+	case err := <-resultCh:
+		t.Fatalf("SubmitV2Input returned before the running task completed: %v", err)
+	default:
+	}
+
+	event := waitForSinkEvent(t, sink, func(event WorkViewEvent) bool {
+		if event.Type != ViewSnapshot || event.SchemaVersion != WorkViewSchemaVersionV2 {
+			return false
+		}
+		var view WorkView
+		if json.Unmarshal(event.Payload, &view) != nil {
+			return false
+		}
+		for _, task := range view.Tasks {
+			if task.ID == started.TaskID && task.State == TaskRunning {
+				return true
+			}
+		}
+		return false
+	})
+	if event.Revision <= 0 {
+		t.Fatalf("running snapshot revision = %d", event.Revision)
+	}
+
+	close(executor.release)
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for SubmitV2Input completion")
+	}
+}
+
+func TestWorkStoreV2Authority_ObserverFailurePreservesCommittedRuntime(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "observer-node", Title: "observer"}},
+		nil,
+	))
+	now := time.Now().UTC()
+	runtime := V2NewTaskRuntime(h.work, h.run, "observer-node", h.def.Revision, "read", now)
+	_, event, err := newRuntimeCreatedEvent(runtime, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var observedBase int64
+	authority := &workStoreV2Authority{
+		store: h.store, workID: h.work,
+		observer: func(_ string, baseRevision int64, _ string) error {
+			observedBase = baseRevision
+			return errors.New("injected transport failure")
+		},
+	}
+	revision, err := authority.CommitV2Event(event)
+	if err != nil {
+		t.Fatalf("durable commit must survive observer failure: %v", err)
+	}
+	if observedBase != revision-1 {
+		t.Fatalf("observer base revision = %d, want %d", observedBase, revision-1)
+	}
+	if observerErr := authority.ObserverError(); observerErr == nil ||
+		!strings.Contains(observerErr.Error(), "injected transport failure") {
+		t.Fatalf("observer failure must remain explicit: %v", observerErr)
+	}
+	projection, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committed := projection.V2TaskRuntimes[runtime.TaskID]; committed == nil {
+		t.Fatal("observer failure rolled back the committed runtime")
 	}
 }
 

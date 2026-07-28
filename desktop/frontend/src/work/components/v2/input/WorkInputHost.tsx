@@ -77,6 +77,12 @@ export interface WorkInputHostProps {
   onRequestCommitted?: (operation: InputOperation, requestId: string) => void;
   /** File selection intent — host returns an approved typed ArtifactRef. */
   onSelectFile?: () => Promise<ArtifactRef | null>;
+  /** Hide the field-level submit button when the owning Block provides one. */
+  hideSubmit?: boolean;
+  /** Monotonic signal from the owning Block to submit this field. */
+  submitTrigger?: number;
+  /** Route Ctrl/Cmd+Enter to the owning Block's shared submit action. */
+  onRequestGroupSubmit?: () => void;
 }
 
 export interface WorkInputRefreshContext {
@@ -176,6 +182,9 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
   committedRequestIds,
   onRequestCommitted,
   onSelectFile,
+  hideSubmit,
+  submitTrigger,
+  onRequestGroupSubmit,
 }) => {
   const [ui, setUI] = useState<UIState>(INITIAL_UI);
   const submittingRef = useRef(false);
@@ -206,9 +215,15 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       parseValueSchema(inputSpec.id, inputSpec.kind, inputSpec.valueSchema);
       return null;
     } catch (e) {
-      return e instanceof SchemaParseError ? e.message : String(e);
+      if (e instanceof SchemaParseError) {
+        const target = inputSpec.kind === 'choice' || inputSpec.kind === 'multi_choice'
+          ? '选项'
+          : '输入';
+        return `“${inputSpec.label}”的${target}配置有误，请重新规划工作结构后重试。`;
+      }
+      return `“${inputSpec.label}”暂时无法填写，请刷新后重试。`;
     }
-  }, [inputSpec.id, inputSpec.kind, inputSpec.valueSchema]);
+  }, [inputSpec.id, inputSpec.kind, inputSpec.label, inputSpec.valueSchema]);
 
   const schema: ParsedValueSchema = useMemo(() => {
     if (schemaError) return { kind: inputSpec.kind };
@@ -400,6 +415,13 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
     committedRequestIds?.submit, onRequestCommitted,
   ]);
 
+  const lastSubmitTriggerRef = useRef(submitTrigger);
+  useEffect(() => {
+    if (submitTrigger === undefined || submitTrigger === lastSubmitTriggerRef.current) return;
+    lastSubmitTriggerRef.current = submitTrigger;
+    void handleSubmit();
+  }, [submitTrigger, handleSubmit]);
+
   // ── Pin handler (full DTO) ──────────────────────────────────
   const doPin = useCallback(async (pin: boolean) => {
     if (disabled || pinningRef.current) return;
@@ -564,12 +586,17 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
   // ── Keyboard: Ctrl/Cmd+Enter to submit ──────────────────────
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        handleSubmit();
+        if (onRequestGroupSubmit) {
+          onRequestGroupSubmit();
+        } else {
+          void handleSubmit();
+        }
       }
     },
-    [handleSubmit],
+    [handleSubmit, onRequestGroupSubmit],
   );
 
   // ── Derived display state ───────────────────────────────────
@@ -749,27 +776,29 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       )}
 
       {/* ── Actions ──────────────────────────────────────────── */}
-      <div className="wg2-wh-actions">
-        <button
-          type="button"
-          className={`wg2-wh-submit-btn ${isSubmitting ? 'wg2-wh-submit-pending' : ''}`}
-          disabled={disabled || isSubmitting || !!validationError}
-          onClick={handleSubmit}
-          aria-busy={isSubmitting}
-          data-testid={`work-input-submit-${taskId}-${inputSpec.id}`}
-        >
-          {isSubmitting ? '提交中...' : isCommitted ? '已提交 ✓' : '提交'}
-        </button>
-        {(isCommitted || ui.submitResult) && ui.submitResult?.revision !== undefined && (
-          <span
-            className="wg2-wh-revision"
-            data-testid={`work-input-rev-${taskId}-${inputSpec.id}`}
+      {!hideSubmit && (
+        <div className="wg2-wh-actions">
+          <button
+            type="button"
+            className={`wg2-wh-submit-btn ${isSubmitting ? 'wg2-wh-submit-pending' : ''}`}
+            disabled={disabled || isSubmitting || !!validationError}
+            onClick={handleSubmit}
+            aria-busy={isSubmitting}
+            data-testid={`work-input-submit-${taskId}-${inputSpec.id}`}
           >
-            r{ui.submitResult.revision}
-            {ui.submitResult?.duplicate ? ' (重复)' : ''}
-          </span>
-        )}
-      </div>
+            {isSubmitting ? '提交中...' : isCommitted ? '已提交 ✓' : '提交'}
+          </button>
+          {(isCommitted || ui.submitResult) && ui.submitResult?.revision !== undefined && (
+            <span
+              className="wg2-wh-revision"
+              data-testid={`work-input-rev-${taskId}-${inputSpec.id}`}
+            >
+              r{ui.submitResult.revision}
+              {ui.submitResult?.duplicate ? ' (重复)' : ''}
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -958,6 +987,24 @@ const TypedControl: React.FC<TypedControlProps> = ({
       const allowOther = schema.choice?.allowOther ?? false;
       const strVal = typeof draftValue === 'string' ? draftValue : '';
       const inOptions = options.some((o) => o.value === strVal);
+      if (options.length === 0) {
+        return (
+          <input
+            id={id}
+            className="wg2-wh-text"
+            type="text"
+            value={strVal}
+            placeholder="请输入内容"
+            aria-describedby={describedBy}
+            disabled={disabled}
+            aria-required={inputSpec.required}
+            aria-invalid={ariaInvalid || undefined}
+            onChange={(e) => onDraftChange(e.currentTarget.value)}
+            onKeyDown={onKeyDown}
+            data-testid={`work-input-control-${testIdSuffix}-manual`}
+          />
+        );
+      }
       return (
         <div className="wg2-wh-choice-wrap" data-testid={`work-input-control-${testIdSuffix}`}>
           <select
@@ -1001,6 +1048,25 @@ const TypedControl: React.FC<TypedControlProps> = ({
       const selected: string[] = Array.isArray(draftValue) ? (draftValue as unknown as string[]) : [];
       const allowOther = schema.multiChoice?.allowOther ?? false;
       const otherVal = selected.filter((s) => !options.some((o) => o.value === s));
+      if (options.length === 0) {
+        const manualValue = typeof draftValue === 'string' ? draftValue : selected.join('\n');
+        return (
+          <textarea
+            id={id}
+            className="wg2-wh-textarea"
+            rows={3}
+            value={manualValue}
+            placeholder="每行填写一项"
+            aria-describedby={describedBy}
+            disabled={disabled}
+            aria-required={inputSpec.required}
+            aria-invalid={ariaInvalid || undefined}
+            onChange={(e) => onDraftChange(e.currentTarget.value)}
+            onKeyDown={onKeyDown}
+            data-testid={`work-input-control-${testIdSuffix}-manual`}
+          />
+        );
+      }
       return (
         <fieldset
           className="wg2-wh-multichoice-fs"

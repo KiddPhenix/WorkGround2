@@ -6,7 +6,6 @@ import type {
   Conclusion,
   RetryIntent,
   RetryStatus,
-  ResumeRunInput,
   RunSelection,
   Work,
   WorkflowRun,
@@ -27,7 +26,6 @@ import type {
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { RunProgressIndicator } from './RunProgressIndicator';
-import { WorkRunEntry } from './WorkRunEntry';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
 import type { ResultWorkflowChangeRequest } from '../../work/components/v2/ResultShelf';
 import type {
@@ -61,9 +59,6 @@ export interface WorkCardFrontProps {
   onRunSelect: (selection: RunSelection) => void;
   onRetry?: (intent: RetryIntent) => void;
   retryByTarget: Record<string, RetryStatus>;
-  onRun?: (input: { workId: string; requestId: string }) => WorkflowRun | Promise<WorkflowRun>;
-  onResumeRun?: (input: ResumeRunInput) => WorkflowRun | Promise<WorkflowRun>;
-  onRecoverProjection?: () => void | Promise<void>;
   /** V2 artifact slots from the store projection. */
   artifactSlots?: ArtifactSlot[];
   /** V2 definition when V2 planning has produced one. */
@@ -90,22 +85,10 @@ export interface WorkCardFrontProps {
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
   onDiscussionDraftChange?: (intent: DiscussionDraftIntent) => void;
-  /** Called when user clicks "调整工作结构" to flip to dialogue face. */
-  onAdjustStructure?: () => void;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
   return runs.length > 0 ? runs[runs.length - 1] : undefined;
-}
-
-function runStateLabel(state: string): string {
-  switch (state) {
-    case 'running': return '运行中';
-    case 'completed': return '已完成';
-    case 'failed': return '失败';
-    case 'cancelled': return '已取消';
-    default: return state;
-  }
 }
 
 const BLOCK_SLOTS: readonly BlockPlacement['slot'][] = ['attention', 'primary', 'secondary', 'result'];
@@ -125,30 +108,6 @@ function blockSlot(placement?: BlockPlacement): BlockPlacement['slot'] {
   const slot = placement?.slot;
   return slot && BLOCK_SLOTS.includes(slot) ? slot : 'primary';
 }
-
-const AttentionBadge: React.FC<{ view: WorkView }> = ({ view }) => {
-  const blocked = Boolean(view.runBlock?.blocked || view.assessment?.blocking);
-  const degraded = view.assessment?.degraded ?? false;
-  if (!blocked && !degraded) return null;
-  const count = Math.max(view.runBlock?.items?.length ?? 0, view.assessment?.issues?.length ?? 0, 1);
-  return (
-    <div className="wg2-work-attention" role="alert" aria-live="polite" data-testid="work-attention">
-      <span className="wg2-work-attention-count">{blocked ? count : '⚠'}</span>
-      <span className="wg2-work-attention-label">{blocked ? '个阻断阻止运行' : '降级可用'}</span>
-    </div>
-  );
-};
-
-const WorkflowSummary: React.FC<{ work: Work }> = ({ work }) => {
-  const run = latestRun(work.runs);
-  if (!run) return null;
-  return (
-    <div className="wg2-work-workflow-summary" data-testid="work-workflow-summary">
-      <span className="wg2-work-workflow-state" data-run-state={run.state}>{runStateLabel(run.state)}</span>
-      <span className="wg2-work-workflow-stages">{run.stages.length} 个阶段</span>
-    </div>
-  );
-};
 
 const ConclusionList: React.FC<{ conclusions: Conclusion[] }> = ({ conclusions }) => {
   if (conclusions.length === 0) return null;
@@ -202,9 +161,6 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onRunSelect,
   onRetry,
   retryByTarget,
-  onRun,
-  onResumeRun,
-  onRecoverProjection,
   artifactSlots,
   v2Definition,
   onV2TaskRetry,
@@ -224,7 +180,6 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onPreviewPatch,
   onApplyPatch,
   onDiscussionDraftChange,
-  onAdjustStructure,
 }) => {
   const { work } = view;
   const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
@@ -317,36 +272,6 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       data-readonly={readonly ? 'true' : 'false'}
       data-archived={archived ? 'true' : 'false'}
     >
-      <div className="wg2-work-front-header">
-        <div className="wg2-work-front-header-left">
-          <h2 className="wg2-work-name">{work.name}</h2>
-          <WorkflowSummary work={work} />
-          <AttentionBadge view={view} />
-        </div>
-        <div className="wg2-work-front-header-actions">
-          {isV2 && onAdjustStructure && (
-            <button
-              type="button"
-              className="wg2-work-btn wg2-work-btn-structure"
-              onClick={onAdjustStructure}
-              data-testid="work-adjust-structure"
-            >
-              ⚙ 调整工作结构
-            </button>
-          )}
-          <WorkRunEntry
-            workId={work.id}
-            onRun={onRun}
-            onResumeRun={onResumeRun}
-            onRecoverProjection={onRecoverProjection}
-            disabled={readonly || archived}
-            v2Definition={v2Definition}
-            onPlanStructure={onAdjustStructure}
-            onV2TaskRetry={onV2TaskRetry}
-            onV2ArtifactRetry={onArtifactRetry}
-          />
-        </div>
-      </div>
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
 

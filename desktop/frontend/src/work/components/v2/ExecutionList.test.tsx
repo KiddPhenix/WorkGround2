@@ -319,6 +319,26 @@ async function runTests(): Promise<void> {
       contains(badge?.textContent ?? '', expectedLabel, `state-${state}: badge=${expectedLabel}`);
       await cleanup();
     }
+    ok(
+      /\.wg2-el-item\[data-task-state="running"\]\s*\{[\s\S]*?--wg2-el-flow-a:[^;]*#38bdf8[\s\S]*?--wg2-el-flow-b:\s*#2dd4bf[\s\S]*?--wg2-el-flow-c:\s*#a78bfa/.test(cssText),
+      'state-flow: running uses the blue, cyan, and violet palette',
+    );
+    ok(
+      /\.wg2-el-item\[data-task-state="waiting_input"\],[\s\S]*?--wg2-el-flow-a:\s*var\(--warn\)/.test(cssText),
+      'state-flow: user input and approval use the warning palette',
+    );
+    ok(
+      /\.wg2-el-item\[data-task-state="failed_retryable"\],[\s\S]*?--wg2-el-flow-a:\s*var\(--err\)/.test(cssText),
+      'state-flow: failures use the error palette',
+    );
+    ok(
+      /animation:\s*wg2-el-border-orbit var\(--wg2-el-flow-speed\) linear infinite/.test(cssText),
+      'state-flow: attention border orbits continuously',
+    );
+    ok(
+      /prefers-reduced-motion:\s*reduce[\s\S]*?\.wg2-el-item\[data-task-state="running"\]::before[\s\S]*?animation:\s*none/.test(cssText),
+      'state-flow: reduced motion freezes the orbit',
+    );
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -348,9 +368,11 @@ async function runTests(): Promise<void> {
     const desc = host.querySelector('[data-testid="expanded-block-desc-t-exp"]');
     contains(desc?.textContent ?? '', '节点描述文本', 'expand: description');
 
-    // Collapse button works
-    const collapseBtn = host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-collapse-t-exp"]');
-    ok(collapseBtn !== null, 'expand: collapse button exists');
+    ok(
+      host.querySelector('[data-testid="expanded-block-collapse-t-exp"]') === null,
+      'expand: lower collapse button is omitted',
+    );
+    const collapseBtn = host.querySelector<HTMLButtonElement>('[data-testid="execution-row-toggle-t-exp"]');
     await interact(() => collapseBtn?.click());
     eq(collapseCalls.length, 1, 'expand: collapse intent fired');
     eq(collapseCalls[0]?.taskId, 't-exp', 'expand: collapse correct taskId');
@@ -811,7 +833,7 @@ async function runTests(): Promise<void> {
     const recoveredControl = host.querySelector<HTMLInputElement>('[data-testid="work-input-control-t-id-spec-id"]');
     eq(recoveredControl?.value, '保留的草稿', 'identity: typed draft survives temporary projection removal');
 
-    const submit = host.querySelector<HTMLButtonElement>('[data-testid="work-input-submit-t-id-spec-id"]');
+    const submit = host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-submit-t-id"]');
     await interact(() => submit?.click());
     eq(submitCalls.length, 1, 'identity: first typed submit reaches recoverable failure');
     eq(submitCalls[0]?.value, '保留的草稿', 'identity: typed submit carries retained draft');
@@ -1048,7 +1070,7 @@ async function runTests(): Promise<void> {
       taskId: 'task-party',
       blockId: 'party-inputs',
       specId: spec.id,
-      value: null,
+      value: index === 0 ? '武侠主题' : index === 1 ? 4500 : 15,
       state: 'requested',
       revision: 1,
       updatedAt: '2026-07-24T16:00:00Z',
@@ -1073,9 +1095,17 @@ async function runTests(): Promise<void> {
       },
       inputs,
     );
-    const committedSubmit = async (): Promise<SubmitInputResult> => ({
-      revision: 2, duplicate: false, committed: true, recoverable: false,
-    });
+    const groupSubmits: SubmitWorkInputRequest[] = [];
+    let groupRefreshCalls = 0;
+    const committedSubmit = async (request: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
+      groupSubmits.push(request);
+      return {
+        revision: request.expectedRevision + 1,
+        duplicate: false,
+        committed: true,
+        recoverable: false,
+      };
+    };
     const committedPin = async (request: SetInputCornerstoneRequest): Promise<CornerstonePinResult> => ({
       pinned: request.pin, revision: 2, duplicate: false, committed: true, recoverable: false,
     });
@@ -1087,7 +1117,7 @@ async function runTests(): Promise<void> {
         onSubmitWorkInput={committedSubmit}
         onSetCornerstone={committedPin}
         onUnsetCornerstone={committedPin}
-        onRefreshAuthoritative={async () => {}}
+        onRefreshAuthoritative={async () => { groupRefreshCalls++; }}
       />,
     );
     const group = host.querySelector<HTMLElement>('[data-input-focus-group="task-party"]');
@@ -1096,13 +1126,22 @@ async function runTests(): Promise<void> {
     const guests = host.querySelector<HTMLInputElement>('[data-testid="work-input-control-task-party-party-guests"]');
     ok(group?.classList.contains('wg2-eb-inputs--editable'), 'input group: one compact editable Block');
     ok(Boolean(theme && !theme.disabled), 'input group: text field is editable');
+    eq(
+      host.querySelectorAll('[data-testid^="work-input-submit-"]').length,
+      0,
+      'input group: field-level submit buttons are omitted',
+    );
+    eq(
+      host.querySelectorAll('[data-testid="expanded-block-submit-task-party"]').length,
+      1,
+      'input group: Block has exactly one submit button',
+    );
     if (theme) {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      await interact(() => {
-        setter?.call(theme, '武侠主题');
-        theme.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      eq(theme.value, '武侠主题', 'input group: typed value persists');
+      eq(theme.value, '武侠主题', 'input group: persisted draft is rendered');
+      ok(
+        !host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-submit-task-party"]')?.disabled,
+        'input group: shared submit enables after every field is valid',
+      );
       theme.focus();
       await interact(() => theme.dispatchEvent(new KeyboardEvent(
         'keydown',
@@ -1124,6 +1163,13 @@ async function runTests(): Promise<void> {
       )));
       ok(!group?.contains(document.activeElement), 'input group: final Tab leaves the Block');
     }
+    await interact(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-submit-task-party"]')?.click());
+    await settle();
+    eq(groupSubmits.length, 3, 'input group: one click submits every field');
+    eq(groupSubmits[1]?.expectedRevision, groupSubmits[0]?.expectedRevision + 1, 'input group: second submit uses advanced revision');
+    eq(groupSubmits[2]?.expectedRevision, groupSubmits[1]?.expectedRevision + 1, 'input group: third submit uses advanced revision');
+    eq(groupRefreshCalls, 1, 'input group: authoritative state refreshes once after the full Block');
     const focusSink = document.createElement('button');
     document.body.appendChild(focusSink);
     focusSink.focus();
@@ -1338,11 +1384,15 @@ async function runTests(): Promise<void> {
       />,
     );
     ok(
-      Boolean(host.querySelector(`[data-testid="expanded-block-discuss-${task.id}"]`)),
-      'discussion identity: legacy node keeps a working discussion entry',
+      Boolean(host.querySelector(`[data-testid="execution-row-discuss-${task.id}"]`)),
+      'discussion identity: task row keeps the single discussion entry',
+    );
+    ok(
+      !host.querySelector(`[data-testid="expanded-block-discuss-${task.id}"]`),
+      'discussion identity: expanded Block does not duplicate discussion entry',
     );
     await interact(() =>
-      host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${task.id}"]`)?.click());
+      host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-discuss-${task.id}"]`)?.click());
     await interact(() =>
       document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
     eq(previewBlock?.id, blockId, 'discussion identity: legacy node sends its stable derived Block ID');
@@ -1428,7 +1478,7 @@ async function runTests(): Promise<void> {
       />,
     );
     await interact(() =>
-      host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${task.id}"]`)?.click());
+      host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-discuss-${task.id}"]`)?.click());
     await interact(() =>
       document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${task.id}"]`)?.click());
     eq(previewIntent?.blockId, 'input-block', 'discussion identity: bound input Block wins over declared Block');
@@ -1541,11 +1591,11 @@ async function runTests(): Promise<void> {
       },
     };
     const { host, root, cleanup } = await mount(<ExecutionList {...props} expandedTaskId="task-a" />);
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-a"]')?.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-task-a"]')?.click());
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-a"]')?.click());
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-a"]')?.click());
     await act(async () => { root.render(<ExecutionList {...props} expandedTaskId="task-b" />); });
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-b"]')?.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-task-b"]')?.click());
     lateA.resolve({
       workRevision: 3,
       newRevision: 2,
@@ -1576,7 +1626,7 @@ async function runTests(): Promise<void> {
 
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-task-b"]')?.click());
     returnMissingReceipt = true;
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-discuss-task-b"]')?.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-task-b"]')?.click());
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
     await settle();

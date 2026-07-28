@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 
 import type { ArtifactPreview, ArtifactSlot, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard, ResultShelf } from './index';
+import type { FileLocateIntent, FileOpenIntent } from './ResultCard';
 
 // ── test harness ───────────────────────────────────────────────────────────
 
@@ -199,6 +200,43 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
+  // Blob-backed generated files expose identity-based host actions without
+  // forwarding an arbitrary path from the renderer.
+  {
+    const opened: FileOpenIntent[] = [];
+    const located: FileLocateIntent[] = [];
+    const slot = makeSlot({
+      state: 'ready',
+      artifactRefs: [makeRef({
+        id: 'blob-file',
+        name: '预算表.xlsx',
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        path: undefined,
+        relativePath: undefined,
+        blobDigest: `sha256:${'a'.repeat(64)}`,
+      })],
+    });
+    const { host, cleanup } = await mount(
+      <ResultCard
+        slot={slot}
+        onOpen={(intent) => { opened.push(intent); }}
+        onLocate={(intent) => { located.push(intent); }}
+      />,
+    );
+    const open = host.querySelector<HTMLButtonElement>('[data-testid="rc-file-open-blob-file"]');
+    const locate = host.querySelector<HTMLButtonElement>('[data-testid="rc-file-locate-blob-file"]');
+    ok(open !== null, 'blob-host: default-app action is visible');
+    ok(locate !== null, 'blob-host: file-manager action is visible');
+    contains(open?.getAttribute('aria-label') ?? '', '使用默认应用打开', 'blob-host: open action is explicit');
+    contains(locate?.getAttribute('aria-label') ?? '', '在文件管理器中显示', 'blob-host: locate action is explicit');
+    await interact(() => open?.click());
+    await interact(() => locate?.click());
+    eq(opened[0]?.artifactRefId, 'blob-file', 'blob-host: open carries authoritative ref identity');
+    eq(located[0]?.artifactRefId, 'blob-file', 'blob-host: locate carries authoritative ref identity');
+    ok(!('path' in (opened[0] ?? {})), 'blob-host: renderer does not forward a file path');
+    await cleanup();
+  }
+
   // Partial and stale slots retain a visible recovery path.
   {
     const retried: string[] = [];
@@ -237,7 +275,7 @@ async function runTests(): Promise<void> {
   // revisions. Only the active revision is rendered and its visible ArtifactRef
   // is the exact one forwarded by the click intent.
   {
-    const opened: Array<{ definitionRevision: number; artifactRefId: string; path: string }> = [];
+    const opened: FileOpenIntent[] = [];
     const oldSlot = makeSlot({
       id: 'same-slot',
       definitionRev: 2,
@@ -265,7 +303,6 @@ async function runTests(): Promise<void> {
     eq(opened.length, 1, 'active-revision: visible click fires once');
     eq(opened[0]?.definitionRevision, 3, 'active-revision: click carries active definition revision');
     eq(opened[0]?.artifactRefId, 'active-ref', 'active-revision: click carries visible artifact ref');
-    eq(opened[0]?.path, 'active.txt', 'active-revision: click carries visible relative path');
 
     await act(async () => {
       root.render(
@@ -1002,10 +1039,16 @@ async function runTests(): Promise<void> {
       setter?.call(title, '学习总结');
       title.dispatchEvent(new Event('input', { bubbles: true }));
     });
+    ok(
+      host.querySelector('[data-testid="result-add-producer"]') === null,
+      'result add: producer choice is not exposed to the user',
+    );
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add-preview"]')!.click());
     eq(requests.length, 1, 'result add: emits one workflow preview request');
-    eq(requests[0]?.nodeId, 'make', 'result add: binds selected producer');
+    eq(requests[0]?.nodeId, 'review', 'result add: uses the terminal task only as a stable preview anchor');
     contains(requests[0]?.instruction ?? '', '学习总结', 'result add: instruction is human readable');
+    contains(requests[0]?.instruction ?? '', '自动推断唯一且最合适的产出任务', 'result add: planner owns producer inference');
+    ok(!requests[0]?.instruction.includes('节点 ID'), 'result add: no hidden user-selected producer is fabricated');
     contains(requests[0]?.instruction ?? '', '只添加该成果', 'result add: change is narrowly scoped');
     await cleanup();
   }
@@ -1023,6 +1066,11 @@ async function runTests(): Promise<void> {
         onRequestWorkflowChange={(request) => requests.push(request)}
       />,
     );
+    const badge = host.querySelector('[data-testid="result-card-badge-slot-1"]');
+    const actions = host.querySelector('[data-testid="result-card-actions-slot-1"]');
+    ok(actions !== null, 'result manage: actions have a dedicated header region');
+    eq(actions?.parentElement, badge?.parentElement, 'result manage: status and actions share a non-overlapping layout column');
+    ok(!actions?.contains(badge ?? null), 'result manage: actions do not cover the status badge');
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-slot-1"]')!.click());
     const confirm = host.querySelector('[data-testid="result-delete-confirm"]');
     contains(confirm?.textContent ?? '', '生成报告', 'result remove: producer impact shown');
@@ -1031,6 +1079,48 @@ async function runTests(): Promise<void> {
     eq(requests.length, 1, 'result remove: emits one workflow preview request');
     eq(requests[0]?.nodeId, 'make', 'result remove: anchors discussion to producer');
     contains(requests[0]?.instruction ?? '', '从所有产出或使用它的任务中移除引用', 'result remove: cleans all references');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 31. Result format changes preserve identity and request real regeneration
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const requests: Array<{ nodeId: string; instruction: string; title: string }> = [];
+    const definition = makeDefinition();
+    definition.artifactSlots[0] = {
+      ...definition.artifactSlots[0],
+      title: '预算表.md',
+      kind: 'document',
+    };
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot({ title: '预算表.md', kind: 'document' })]}
+        activeDefinitionRevision={2}
+        definition={definition}
+        onRequestWorkflowChange={(request) => requests.push(request)}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
+    const format = host.querySelector<HTMLSelectElement>('[data-testid="result-edit-kind"]')!;
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(format, 'xlsx');
+      format.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    eq(
+      host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+      '预算表.xlsx',
+      'result edit: changing format updates the known file extension',
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-preview"]')!.click());
+    eq(requests.length, 1, 'result edit: emits one workflow preview request');
+    eq(requests[0]?.nodeId, 'make', 'result edit: anchors the change to the existing producer');
+    contains(requests[0]?.title ?? '', '修改成果', 'result edit: request title is human readable');
+    contains(requests[0]?.instruction ?? '', 'ID：slot-1', 'result edit: preserves the stable slot identity');
+    contains(requests[0]?.instruction ?? '', '格式从 document 改为 xlsx', 'result edit: changes the format field');
+    contains(requests[0]?.instruction ?? '', '不能只改扩展名或 MIME', 'result edit: requires true file regeneration');
+    contains(requests[0]?.instruction ?? '', '不要删除后重建', 'result edit: keeps producer and consumer references stable');
     await cleanup();
   }
 

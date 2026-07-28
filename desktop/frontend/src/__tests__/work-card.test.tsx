@@ -483,9 +483,13 @@ async function testFacesAndFixedWorkspace(): Promise<void> {
   const front = mounted.host.querySelector<HTMLElement>('[data-testid="work-face-front"]')!;
   const back = mounted.host.querySelector<HTMLElement>('[data-testid="work-face-back"]')!;
   const outer = mounted.host.querySelector('[data-testid="work-outer-header"]');
+  const titleStatus = mounted.host.querySelector('[data-testid="work-title-status"]');
   const transcript = mounted.host.querySelector('[data-probe="transcript"]');
   const flip = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!;
   ok(Boolean(outer && front && back && transcript), 'workspace and both real faces render');
+  ok(Boolean(titleStatus?.querySelector('[data-testid="work-run-entry"]')), 'run status lives beside the fixed Work title');
+  ok(!front.querySelector('.wg2-work-front-header'), 'front face omits the duplicate title and action header');
+  ok(!mounted.host.querySelector('[data-testid="work-adjust-structure"]'), 'flip control is the only structure-editing entry');
   eq(flip.textContent?.trim(), '会话', 'front flip entry says 会话');
   eq(flip.getAttribute('aria-controls'), back.id, 'flip control references target face');
   eq(front.getAttribute('aria-hidden'), 'false', 'front is exposed');
@@ -758,6 +762,14 @@ function testMotionCSSContract(): void {
   ok(/\.wg2-work-face\s*\{[\s\S]*?transition:\s*transform 240ms ease/.test(css), 'standard face transition is 240ms');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?transition:\s*opacity 150ms ease/.test(css), 'reduced motion uses a fade');
   ok(/max-width:\s*480px[\s\S]*?\.wg2-work-face\s*\{[\s\S]*?transition:\s*none/.test(css), 'narrow layout uses an ordinary switch');
+  ok(
+    /\.app--windows-frameless \.wg2-work-outer-header\s*\{[\s\S]*?padding-right:\s*calc\(var\(--windows-window-controls-safe\) \+ 16px\)/.test(css),
+    'Windows Work title keeps actions outside the native control safe area',
+  );
+  ok(
+    /\.wg2-work-title-status \.work-run-entry\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border-top:\s*0/.test(css),
+    'title run status uses compact header spacing',
+  );
   ok(/\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*wg2-work-prompt-orbit/.test(css), 'generation uses the prompt-border orbit');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*none/.test(css), 'prompt-border orbit respects reduced motion');
   ok(/\.wg2-work-prompt-field textarea:disabled[\s\S]*?opacity:\s*1/.test(css), 'busy editor keeps an opaque readable surface');
@@ -1257,8 +1269,8 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
     <WorkCard
       workID={workID}
       port={port}
-      onArtifactOpen={(intent) => { artifactIntents.push(`open:${intent.path}`); }}
-      onArtifactLocate={(intent) => { artifactIntents.push(`locate:${intent.path}`); }}
+      onArtifactOpen={(intent) => { artifactIntents.push(`open:${intent.artifactRefId}`); }}
+      onArtifactLocate={(intent) => { artifactIntents.push(`locate:${intent.artifactRefId}`); }}
     />,
   );
 
@@ -1267,7 +1279,7 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
   ok(!mounted.host.querySelector('[data-testid="rc-file-download-artifact-actions"]'), 'artifact download is hidden without capability');
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="rc-file-open-artifact-actions"]')!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="rc-file-locate-artifact-actions"]')!.click());
-  eq(artifactIntents.join('|'), 'open:outputs/actions.txt|locate:outputs/actions.txt', 'artifact actions emit workspace-scoped typed host intents');
+  eq(artifactIntents.join('|'), 'open:artifact-actions|locate:artifact-actions', 'artifact actions emit authoritative identity-scoped host intents');
 
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="execution-row-retry-task-actions"]')!.click());
   await settle(50);
@@ -1329,15 +1341,15 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
 
   const appSource = readFileSync(resolve(process.cwd(), 'src/App.tsx'), 'utf8');
   ok(
-    appSource.includes('onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(activeTab.id, intent.path)}'),
-    'production artifact open reaches the authorized system-open host boundary',
+    appSource.includes('onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}'),
+    'production artifact open reaches the authoritative system-open host boundary',
   );
   ok(
-    appSource.includes('onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(activeTab.id, intent.path)}'),
-    'production artifact locate reaches the authorized file-manager host boundary',
+    appSource.includes('onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}'),
+    'production artifact locate reaches the authoritative file-manager host boundary',
   );
   ok(
-    !appSource.includes('onArtifactOpen={(intent) => app.RevealPath(intent.path)}'),
+    !appSource.includes('onArtifactOpen={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}'),
     'production artifact open cannot silently degrade into locate',
   );
 }
@@ -1770,7 +1782,7 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   await settle(50);
   await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${taskID}"]`)!.click());
   await settle(50);
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(50);
 
@@ -1979,7 +1991,7 @@ async function testV2CandidateUpdateAutoApplies(): Promise<void> {
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(30);
 
@@ -2041,7 +2053,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   const unavailablePort = new TestPort();
   Object.defineProperty(unavailablePort, 'createCandidateRevision', { value: undefined });
   const unavailableMount = await mount(<WorkCard workID={unavailableWorkID} port={unavailablePort} />);
-  await interact(() => unavailableMount.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
+  await interact(() => unavailableMount.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   ok(
     Boolean(unavailableMount.host.querySelector('[data-testid="work-create-candidate-unavailable"]')),
     'candidate unavailable: explicit planner capability status',
@@ -2068,7 +2080,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   const retryPort = new TestPort();
   retryPort.candidateErrors.push(new Error('planner unavailable'));
   const retryMount = await mount(<WorkCard workID={retryWorkID} port={retryPort} />);
-  await interact(() => retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
+  await interact(() => retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   const retryButton = retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => retryButton.click());
   ok(
@@ -2101,7 +2113,7 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   const conflictError = Object.assign(new Error('revision conflict'), { code: 'revision_conflict' });
   conflictPort.candidateErrors.push(conflictError);
   const conflictMount = await mount(<WorkCard workID={conflictWorkID} port={conflictPort} />);
-  await interact(() => conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-adjust-structure"]')!.click());
+  await interact(() => conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   const conflictButton = conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => conflictButton.click());
   ok(

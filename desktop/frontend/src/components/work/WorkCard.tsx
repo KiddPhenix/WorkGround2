@@ -47,6 +47,7 @@ import { CornerstoneDrawer } from './CornerstoneDrawer';
 import { WorkCardBack, type WorkCardBackSlots } from './WorkCardBack';
 import { WorkCardFront } from './WorkCardFront';
 import { WorkFlipControl } from './WorkFlipControl';
+import { WorkRunEntry } from './WorkRunEntry';
 import { WorkWorkspace } from './WorkWorkspace';
 
 export interface WorkDeepLink {
@@ -566,6 +567,21 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       name={view.work.name}
       state={view.work.state}
       archiveState={view.work.archiveState}
+      titleStatus={(
+        <WorkRunEntry
+          workId={view.work.id}
+          onRun={adapter.runWork}
+          onResumeRun={adapter.resumeRun}
+          onRecoverProjection={async () => { await adapter.recoverSnapshot(workID); }}
+          disabled={readonly || archived}
+          v2Definition={v2ActiveDefinition}
+          onPlanStructure={() => handleFlip('back')}
+          onV2TaskRetry={handleV2TaskRetry}
+          onV2ArtifactRetry={onArtifactRetry ?? (
+            resolvedPort.retryArtifactSlot ? handleArtifactRetry : undefined
+          )}
+        />
+      )}
       status={workspaceStatus}
       actions={(
         <>
@@ -643,9 +659,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onRunSelect={handleRunSelect}
               onRetry={handleRetry}
               retryByTarget={retryByTarget}
-              onRun={adapter.runWork}
-              onResumeRun={adapter.resumeRun}
-              onRecoverProjection={async () => { await adapter.recoverSnapshot(workID); }}
               artifactSlots={artifactSlots}
               v2Definition={v2ActiveDefinition}
               onV2TaskRetry={handleV2TaskRetry}
@@ -663,7 +676,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
                   ? (intent) => adapter.requestArtifactConversion(intent)
                   : undefined
               )}
-              onAdjustStructure={() => handleFlip('back')}
               runId={view.work.runs[view.work.runs.length - 1]?.id}
               sessionId={sessionId ?? latestWorkSessionID(view)}
               onSubmitWorkInput={
@@ -682,7 +694,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
                   : undefined
               }
               onRefreshAuthoritative={async (ctx) => {
-                await adapter.recoverSnapshot(ctx.workId);
+                await adapter.reconcileSnapshot(ctx.workId);
               }}
               onSelectWorkInputFile={
                 resolvedPort.selectWorkInputFile ? handleSelectWorkInputFile : undefined

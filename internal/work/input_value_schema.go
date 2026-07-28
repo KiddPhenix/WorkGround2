@@ -1,10 +1,12 @@
 package work
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -91,6 +93,112 @@ type FileConstraints struct {
 type ApprovalConstraints struct {
 	RiskLevel   string `json:"riskLevel,omitempty"`
 	Description string `json:"description,omitempty"`
+}
+
+// NormalizeInputSpecValueSchema canonicalizes recoverable choice option
+// shapes produced by older planners into the authoritative
+// [{"value":"...","label":"..."}] representation.
+func NormalizeInputSpecValueSchema(spec InputSpec) (json.RawMessage, error) {
+	if len(bytes.TrimSpace(spec.ValueSchema)) == 0 ||
+		(spec.Kind != InputChoice && spec.Kind != InputMultiChoice) {
+		return append(json.RawMessage(nil), spec.ValueSchema...), nil
+	}
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(spec.ValueSchema, &schema); err != nil {
+		return nil, fmt.Errorf("work: input %q valueSchema must be a JSON object: %w", spec.ID, err)
+	}
+	optionsRaw, ok := schema["options"]
+	if !ok {
+		return nil, fmt.Errorf("work: input %q (%s) valueSchema.options is required", spec.ID, spec.Kind)
+	}
+	options, err := normalizeChoiceOptions(optionsRaw)
+	if err != nil {
+		return nil, fmt.Errorf("work: input %q (%s) options: %w", spec.ID, spec.Kind, err)
+	}
+	if len(options) == 0 {
+		return nil, fmt.Errorf("work: input %q (%s) requires at least one option", spec.ID, spec.Kind)
+	}
+	canonical, err := json.Marshal(options)
+	if err != nil {
+		return nil, err
+	}
+	schema["options"] = canonical
+	normalized, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func normalizeChoiceOptions(raw json.RawMessage) ([]ChoiceOption, error) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	options := make([]ChoiceOption, 0)
+	add := func(value, label string) {
+		value = strings.TrimSpace(value)
+		label = strings.TrimSpace(label)
+		if value == "" {
+			return
+		}
+		if label == "" {
+			label = value
+		}
+		for _, existing := range options {
+			if existing.Value == value {
+				return
+			}
+		}
+		options = append(options, ChoiceOption{Value: value, Label: label})
+	}
+	switch typed := value.(type) {
+	case string:
+		for _, item := range splitChoiceOptionText(typed) {
+			add(item, item)
+		}
+	case []any:
+		for _, item := range typed {
+			switch option := item.(type) {
+			case string:
+				add(option, option)
+			case map[string]any:
+				value, _ := option["value"].(string)
+				label, _ := option["label"].(string)
+				add(value, label)
+			default:
+				return nil, fmt.Errorf("array entries must be strings or option objects")
+			}
+		}
+	case map[string]any:
+		if value, ok := typed["value"].(string); ok {
+			label, _ := typed["label"].(string)
+			add(value, label)
+			break
+		}
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			label, _ := typed[key].(string)
+			add(key, label)
+		}
+	default:
+		return nil, fmt.Errorf("must be an array, object, or delimited string")
+	}
+	return options, nil
+}
+
+func splitChoiceOptionText(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ',', '，', '、', '\n', '\r', ';', '；', '|':
+			return true
+		}
+		return false
+	})
 }
 
 // ── Known kind set ─────────────────────────────────────────────────────────
@@ -351,8 +459,12 @@ func validateChoiceValue(spec InputSpec, v json.RawMessage) error {
 	if len(spec.ValueSchema) == 0 {
 		return nil
 	}
+	normalized, err := NormalizeInputSpecValueSchema(spec)
+	if err != nil {
+		return err
+	}
 	var c ChoiceConstraints
-	if err := json.Unmarshal(spec.ValueSchema, &c); err != nil {
+	if err := json.Unmarshal(normalized, &c); err != nil {
 		return fmt.Errorf("work: input %q choice constraints invalid: %w", spec.ID, err)
 	}
 	if len(c.Options) == 0 {
@@ -377,8 +489,12 @@ func validateMultiChoiceValue(spec InputSpec, v json.RawMessage) error {
 	if len(spec.ValueSchema) == 0 {
 		return nil
 	}
+	normalized, err := NormalizeInputSpecValueSchema(spec)
+	if err != nil {
+		return err
+	}
 	var c MultiChoiceConstraints
-	if err := json.Unmarshal(spec.ValueSchema, &c); err != nil {
+	if err := json.Unmarshal(normalized, &c); err != nil {
 		return fmt.Errorf("work: input %q multi_choice constraints invalid: %w", spec.ID, err)
 	}
 	if c.MinSelect > 0 && len(arr) < c.MinSelect {

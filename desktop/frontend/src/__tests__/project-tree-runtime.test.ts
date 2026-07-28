@@ -215,6 +215,12 @@ eq(
 );
 
 eq(
+  projectTreeShouldRenderTopicActions(true, true, false, false, true),
+  true,
+  "Work Session rows expose hover actions so they can be deleted",
+);
+
+eq(
   projectTreeShouldSuppressOpenForRename(
     { rowKey: "topic-a", canRename: true },
     { rowKey: "topic-a", canRename: true },

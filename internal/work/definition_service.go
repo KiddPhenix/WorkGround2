@@ -565,7 +565,7 @@ func (s *Service) ApplyDefinition(ctx context.Context, input ApplyDefinitionInpu
 	applyEvent.BaseRevision = runEvent.Revision
 	applyEvent.Revision = runEvent.Revision + 1
 
-	reuseEvents, err := buildKeptRuntimeEvents(
+	reuseEvents, err := buildKeptContextEvents(
 		current,
 		prevRev,
 		candidateRev,
@@ -574,7 +574,7 @@ func (s *Service) ApplyDefinition(ctx context.Context, input ApplyDefinitionInpu
 		appliedAt,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("work: ApplyDefinition: project kept runtimes: %w", err)
+		return nil, fmt.Errorf("work: ApplyDefinition: project kept contexts: %w", err)
 	}
 
 	// Build artifact slot declaration events from the definition.

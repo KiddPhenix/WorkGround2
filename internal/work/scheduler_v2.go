@@ -786,6 +786,11 @@ func v2NodePrompt(
 		prompt = "Execute the V2 work node."
 	}
 
+	// Append tool hints when the node declares guided tool usage (e.g. web_search).
+	if hints := v2NodePromptToolHints(node.ToolHints); hints != "" {
+		prompt += hints
+	}
+
 	// Append submitted WorkInput values owned by this Work/Run/Task,
 	// limited to the spec IDs this node declares.  Order follows
 	// node.InputSpecIDs for determinism.
@@ -854,6 +859,38 @@ func v2NodePrompt(
 		"Your final response is the authoritative content saved into these Work artifact slots: " +
 		strings.Join(node.ProducesSlotIDs, ", ") +
 		". Include the complete deliverable content in the final response; do not reply with only a summary or a claim that a file was created."
+}
+
+// v2NodePromptToolHints returns guidance text for a node's tool hints.
+// web_search prefers search already available to the task model or registry,
+// then falls back to the shared request_help capability router.
+func v2NodePromptToolHints(hints []string) string {
+	if len(hints) == 0 {
+		return ""
+	}
+	var parts []string
+	seen := make(map[string]bool, len(hints))
+	for _, h := range hints {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		key := strings.ToLower(h)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		switch key {
+		case "web_search":
+			parts = append(parts, "Use native web search or an available web_search tool for current information, documentation, and public references. If this model cannot search directly, call request_help with capability web_search. Include source URLs in the result; if no search path is available, fail explicitly so the task can be retried.")
+		default:
+			parts = append(parts, "Tool hint: "+h)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n\n--- Tool guidance ---\n" + strings.Join(parts, "\n")
 }
 
 // recoverInterrupted makes restart behavior explicit. Safe local work becomes

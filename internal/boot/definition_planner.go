@@ -99,8 +99,18 @@ Planning rules:
 - Every artifact slot must have exactly one producer node.
 - Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
 - For text inputs that require multiple lines, lists, or one item per line, set valueSchema.multiline to true.
+- For choice and multi_choice inputs, valueSchema.options is required and must be a JSON array of {"value":"...","label":"..."} objects.
 - Do not return revision, parentRevision, status, digest, workId, createdAt, or createdBy.
-- Do not return null collections or a clone when the intent requests structural changes.`
+- Do not return null collections or a clone when the intent requests structural changes.
+
+InputSpec rules — when to ask the user vs when the system will search:
+- Information that can be found through public web search (facts, documentation, APIs, references, examples) must NOT generate an InputSpec. Instead, set toolHints: ["web_search"] on the node that needs it. At execution time the node uses native/direct search when available and otherwise delegates through request_help(web_search).
+- Only generate a required InputSpec when the information is indispensable for completing the work AND can only come from the user: private preferences, constraints, authorization, access to private systems, files the user must provide, or decisions only the user can make.
+- Label must read like a natural question the user will see (e.g. "Who is the intended audience?"). Description is a short sentence explaining what this input is for.
+- Choose the most specific InputKind: text for free-form answers, number for quantities, date for deadlines, choice for single-select, multi_choice for multi-select, file for uploads, roster for lists of people, form for structured objects, approval for sign-offs.
+- Group inputs that belong to the same phase under the same node via inputSpecIds so they materialize as a single Block.
+- Every required InputSpec MUST be referenced by at least one NodeDef.inputSpecIds. An unreferenced required InputSpec is an invalid plan that will be rejected.
+- Do NOT generate inputs that are optional, have safe defaults, duplicate another input, or are irrelevant to the deliverable.`
 
 const definitionPlanOutputReminder = `Validate silently before responding.
 Your entire response must begin with { and end with }. Return exactly ONE JSON object and nothing else.
@@ -134,7 +144,7 @@ No other top-level fields are allowed.
   "description": "string (optional)",
   "dependsOn": ["string (optional) — node IDs"],
   "inputSpecIds": ["string (optional) — input spec IDs"],
-  "toolHints": ["string (optional)"],
+  "toolHints": ["string (optional) — use \"web_search\" when the node needs current or public web information"],
   "blockIds": ["string (optional)"],
   "producesSlotIds": ["string (optional)"],
   "consumesSlotIds": ["string (optional)"],
@@ -153,16 +163,26 @@ No other top-level fields are allowed.
 ### InputSpec (each element in the inputSpecs array)
 {
   "id": "string (required)",
-  "label": "string (required)",
-  "description": "string (optional)",
+  "label": "string (required) — a human-readable question the user sees, e.g. \"Which target platform?\"",
+  "description": "string (optional) — one sentence explaining what this input is for",
   "kind": "string (required) — must be one of: text, number, date, choice, multi_choice, file, roster, form, approval",
-  "required": boolean (required),
-  "valueSchema": {} (optional; for kind=text, set {"multiline": true} when users must enter multiple lines or one item per line),
+  "required": boolean (required) — set true ONLY when the info is indispensable and only the user can provide it; publicly searchable info must NOT generate an InputSpec",
+  "valueSchema": {} (optional except choice and multi_choice; see kind-specific schemas below),
   "defaultValue": any (optional),
   "pinEligible": boolean (required)
 }
 
+CRITICAL: Every InputSpec with required=true MUST appear in at least one NodeDef.inputSpecIds. An unreferenced required InputSpec is a fatal error — the plan will be rejected.
+
 Allowed InputKind values: "text", "number", "date", "choice", "multi_choice", "file", "roster", "form", "approval"
+
+Kind-specific valueSchema examples:
+- text: {"multiline": true}
+- number: {"min": 1, "max": 100, "integer": true}
+- choice: {"options":[{"value":"visual","label":"视觉学习"},{"value":"audio","label":"听觉学习"}]}
+- multi_choice: {"options":[{"value":"reading","label":"阅读"},{"value":"practice","label":"练习"}],"minSelect":1}
+
+For choice and multi_choice, options MUST be a JSON array. Never return an object map, a comma-separated string, or an array of bare strings.
 
 ### Complete example
 {
@@ -188,7 +208,7 @@ Allowed InputKind values: "text", "number", "date", "choice", "multi_choice", "f
     {"id": "report", "title": "Final report", "kind": "document", "expectedCount": 1, "required": true}
   ],
   "inputSpecs": [
-    {"id": "topic", "label": "Topic", "description": "The report topic", "kind": "text", "required": true, "pinEligible": false}
+    {"id": "topic", "label": "What is the report topic?", "description": "This sets the scope of the report.", "kind": "text", "required": true, "pinEligible": false}
   ]
 }`
 
@@ -524,6 +544,27 @@ func decodeDefinitionPlan(data []byte) (*work.DefinitionPlan, error) {
 	}
 	if err := strictUnmarshal(raw["inputSpecs"], &plan.InputSpecs); err != nil {
 		return nil, fmt.Errorf("boot: PlanDefinition: invalid inputSpecs: %w", safeDecodeError(err))
+	}
+	for i := range plan.InputSpecs {
+		normalized, err := work.NormalizeInputSpecValueSchema(plan.InputSpecs[i])
+		if err != nil {
+			return nil, fmt.Errorf("boot: PlanDefinition: invalid inputSpecs valueSchema")
+		}
+		plan.InputSpecs[i].ValueSchema = normalized
+	}
+
+	// Reject orphan required InputSpecs — every required InputSpec must be
+	// referenced by at least one NodeDef.inputSpecIds so the user is asked.
+	referenced := make(map[string]bool, len(plan.InputSpecs))
+	for _, node := range plan.Nodes {
+		for _, id := range node.InputSpecIDs {
+			referenced[id] = true
+		}
+	}
+	for _, spec := range plan.InputSpecs {
+		if spec.Required && !referenced[spec.ID] {
+			return nil, fmt.Errorf("boot: PlanDefinition: required inputSpec %q is not referenced by any node", spec.ID)
+		}
 	}
 
 	return &plan, nil

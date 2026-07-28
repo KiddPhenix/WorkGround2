@@ -681,7 +681,7 @@ func (s *PatchService) applyWorkflowPatch(ctx context.Context, current *Work, pr
 	}
 
 	events := []WorkEvent{createEvent, runEvent, applyEvent}
-	reuseEvents, err := buildKeptRuntimeEvents(
+	reuseEvents, err := buildKeptContextEvents(
 		current,
 		parent,
 		persisted,
@@ -690,7 +690,7 @@ func (s *PatchService) applyWorkflowPatch(ctx context.Context, current *Work, pr
 		now,
 	)
 	if err != nil {
-		return 0, nil, fmt.Errorf("work: ApplyWorkPatch: project kept runtimes: %w", err)
+		return 0, nil, fmt.Errorf("work: ApplyWorkPatch: project kept contexts: %w", err)
 	}
 	lastRevision := applyEvent.Revision
 	for i := range reuseEvents {

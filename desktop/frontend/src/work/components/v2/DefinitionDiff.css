@@ -164,32 +164,3 @@
   color: #fff;
   border-color: #28a745;
 }
-
-/* "调整工作结构" button in front face header */
-.wg2-work-btn-structure {
-  padding: 5px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--wg2-border);
-  background: var(--wg2-bg-secondary);
-  cursor: pointer;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.wg2-work-btn-structure:hover {
-  background: var(--wg2-bg-hover);
-}
-
-.wg2-work-front-header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-  flex: 1;
-}
-
-.wg2-work-front-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}

@@ -1,32 +1,33 @@
 package work
 
 import (
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
 )
 
-// projectKeptRuntimes deterministically carries compatible completed evidence
-// into a new definition run. It is deliberately conservative: stale, failed,
-// context-mismatched, missing-result, or dependency-incompatible runtimes are
-// left pending and will execute normally in the new run.
-func projectKeptRuntimes(
+// projectKeptContexts deterministically carries compatible submitted input data
+// and completed evidence into a new definition run. Inputs receive new
+// run/task/input identities. Stale, failed, context-mismatched, missing-result,
+// or dependency-incompatible contexts are left pending and execute normally.
+func projectKeptContexts(
 	current *Work,
 	parent, next *WorkDefinitionRevision,
 	newRunID string,
 	impact *RunImpact,
 	now time.Time,
-) []*V2TaskRuntime {
+) ([]WorkInput, []*V2TaskRuntime) {
 	if current == nil || parent == nil || next == nil || impact == nil ||
 		strings.TrimSpace(newRunID) == "" || len(impact.KeptNodeIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	if current.V2CurrentRevision != parent.Revision {
-		return nil
+		return nil, nil
 	}
 	oldRunID := latestRunIDForDigest(current, parent.Digest)
 	if oldRunID == "" {
-		return nil
+		return nil, nil
 	}
 	kept := make(map[string]bool, len(impact.KeptNodeIDs))
 	for _, nodeID := range impact.KeptNodeIDs {
@@ -37,7 +38,8 @@ func projectKeptRuntimes(
 	nodes := append([]NodeDef(nil), next.Nodes...)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
-	projected := make([]*V2TaskRuntime, 0, len(kept))
+	projectedInputs := make([]WorkInput, 0)
+	projectedRuntimes := make([]*V2TaskRuntime, 0, len(kept))
 	remaining := len(nodes)
 	for remaining > 0 {
 		progress := false
@@ -64,7 +66,7 @@ func projectKeptRuntimes(
 				remaining++
 				continue
 			}
-			runtime := projectKeptRuntime(
+			runtime, inputs := projectKeptRuntime(
 				current,
 				parent,
 				next,
@@ -77,7 +79,8 @@ func projectKeptRuntimes(
 			)
 			if runtime != nil {
 				nextByNode[node.ID] = runtime
-				projected = append(projected, runtime)
+				projectedInputs = append(projectedInputs, inputs...)
+				projectedRuntimes = append(projectedRuntimes, runtime)
 			}
 			progress = true
 		}
@@ -85,10 +88,16 @@ func projectKeptRuntimes(
 			break
 		}
 	}
-	sort.Slice(projected, func(i, j int) bool {
-		return projected[i].NodeID < projected[j].NodeID
+	sort.Slice(projectedInputs, func(i, j int) bool {
+		if projectedInputs[i].TaskID != projectedInputs[j].TaskID {
+			return projectedInputs[i].TaskID < projectedInputs[j].TaskID
+		}
+		return projectedInputs[i].SpecID < projectedInputs[j].SpecID
 	})
-	return projected
+	sort.Slice(projectedRuntimes, func(i, j int) bool {
+		return projectedRuntimes[i].NodeID < projectedRuntimes[j].NodeID
+	})
+	return projectedInputs, projectedRuntimes
 }
 
 func projectKeptRuntime(
@@ -98,26 +107,26 @@ func projectKeptRuntime(
 	node NodeDef,
 	oldByNode, nextByNode map[string]*V2TaskRuntime,
 	now time.Time,
-) *V2TaskRuntime {
+) (*V2TaskRuntime, []WorkInput) {
 	old := oldByNode[node.ID]
 	if old == nil || old.State != TaskCompleted || old.RunID != oldRunID ||
 		old.WorkID != current.ID || old.DefinitionRev != parent.Revision ||
 		strings.TrimSpace(old.Error) != "" {
-		return nil
+		return nil, nil
 	}
 	attempt := latestReusableAttempt(old)
 	if attempt == nil {
-		return nil
+		return nil, nil
 	}
 	oldInputDigest := ComputeInputDigest(
 		current.V2Inputs, current.ID, oldRunID, old.TaskID, node.InputSpecIDs,
 	)
 	if old.InputDigest != oldInputDigest {
-		return nil
+		return nil, nil
 	}
 	oldDependencyDigest := ComputeDependencyDigest(oldByNode, node.DependsOn)
 	if old.DependencyDigest != oldDependencyDigest {
-		return nil
+		return nil, nil
 	}
 	if ValidateStaleCompletion(attempt, DefTokenSet{
 		DefinitionRev:    old.DefinitionRev,
@@ -125,18 +134,26 @@ func projectKeptRuntime(
 		DependencyDigest: old.DependencyDigest,
 		ExecutionToken:   old.ExecutionToken,
 	}) {
-		return nil
+		return nil, nil
 	}
 	newTaskID, err := DeriveTaskID(newRunID, node.ID)
 	if err != nil {
-		return nil
+		return nil, nil
+	}
+	inputs := projectKeptInputs(current, old, node, newRunID, newTaskID, now)
+	if complete, _ := HasAllRequiredInputs(
+		inputs,
+		next.InputSpecs,
+		current.ID,
+		newRunID,
+		newTaskID,
+		node.InputSpecIDs,
+	); !complete {
+		return nil, nil
 	}
 	newInputDigest := ComputeInputDigest(
-		current.V2Inputs, current.ID, newRunID, newTaskID, node.InputSpecIDs,
+		inputs, current.ID, newRunID, newTaskID, node.InputSpecIDs,
 	)
-	if newInputDigest != oldInputDigest {
-		return nil
-	}
 	newDependencyDigest := ComputeDependencyDigest(nextByNode, node.DependsOn)
 	token := GenerateExecutionToken(newTaskID, next.Revision, newInputDigest, newDependencyDigest)
 	reusedAttempt := *attempt
@@ -163,7 +180,69 @@ func projectKeptRuntime(
 	runtime.Attempts = []V2Attempt{reusedAttempt}
 	runtime.Revision = 1
 	runtime.UpdatedAt = now
-	return runtime
+	return runtime, inputs
+}
+
+func projectKeptInputs(
+	current *Work,
+	oldRuntime *V2TaskRuntime,
+	node NodeDef,
+	newRunID, newTaskID string,
+	now time.Time,
+) []WorkInput {
+	if current == nil || oldRuntime == nil || len(node.InputSpecIDs) == 0 {
+		return nil
+	}
+	specs := make(map[string]bool, len(node.InputSpecIDs))
+	for _, specID := range node.InputSpecIDs {
+		if specID = strings.TrimSpace(specID); specID != "" {
+			specs[specID] = true
+		}
+	}
+	latest := make(map[string]WorkInput, len(specs))
+	for _, input := range current.V2Inputs {
+		if input.WorkID != current.ID || input.RunID != oldRuntime.RunID ||
+			input.TaskID != oldRuntime.TaskID || !specs[input.SpecID] ||
+			(input.State != InputSubmitted && input.State != InputAccepted) {
+			continue
+		}
+		previous, found := latest[input.SpecID]
+		if found && (previous.Revision > input.Revision ||
+			(previous.Revision == input.Revision && previous.ID <= input.ID)) {
+			continue
+		}
+		latest[input.SpecID] = input
+	}
+	specIDs := make([]string, 0, len(latest))
+	for specID := range latest {
+		specIDs = append(specIDs, specID)
+	}
+	sort.Strings(specIDs)
+	projected := make([]WorkInput, 0, len(specIDs))
+	for _, specID := range specIDs {
+		source := latest[specID]
+		inputID, _ := v2InputIdentity(newRunID, newTaskID, specID)
+		revision := int64(1)
+		if source.CornerstoneID != "" {
+			revision++
+		}
+		projected = append(projected, WorkInput{
+			ID:            inputID,
+			WorkID:        current.ID,
+			RunID:         newRunID,
+			TaskID:        newTaskID,
+			BlockID:       source.BlockID,
+			SpecID:        specID,
+			Value:         append(json.RawMessage(nil), source.Value...),
+			State:         InputSubmitted,
+			CornerstoneID: source.CornerstoneID,
+			Source:        source.Source,
+			UpdatedBy:     source.UpdatedBy,
+			Revision:      revision,
+			UpdatedAt:     now,
+		})
+	}
+	return projected
 }
 
 func latestReusableAttempt(runtime *V2TaskRuntime) *V2Attempt {
@@ -213,15 +292,22 @@ func latestRunIDForDigest(current *Work, digest string) string {
 	return ""
 }
 
-func buildKeptRuntimeEvents(
+func buildKeptContextEvents(
 	current *Work,
 	parent, next *WorkDefinitionRevision,
 	newRunID string,
 	impact *RunImpact,
 	now time.Time,
 ) ([]WorkEvent, error) {
-	runtimes := projectKeptRuntimes(current, parent, next, newRunID, impact, now)
-	events := make([]WorkEvent, 0, len(runtimes))
+	inputs, runtimes := projectKeptContexts(current, parent, next, newRunID, impact, now)
+	events := make([]WorkEvent, 0, len(inputs)*2+len(runtimes))
+	for _, input := range inputs {
+		inputEvents, err := buildKeptInputEvents(input, next.Revision, now)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, inputEvents...)
+	}
 	for _, runtime := range runtimes {
 		_, event, err := newRuntimeCreatedEvent(runtime, now)
 		if err != nil {
@@ -230,4 +316,94 @@ func buildKeptRuntimeEvents(
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+func buildKeptInputEvents(input WorkInput, definitionRev int64, now time.Time) ([]WorkEvent, error) {
+	requestPayload, err := json.Marshal(InputRequestedPayload{
+		InputID: input.ID,
+		WorkID:  input.WorkID,
+		RunID:   input.RunID,
+		TaskID:  input.TaskID,
+		BlockID: input.BlockID,
+		SpecID:  input.SpecID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	request := newServiceEventV2(
+		input.WorkID,
+		input.RunID+"/reuse/input/"+input.ID+"/request",
+		EventInputRequested,
+		requestPayload,
+		now,
+	)
+	request.Object = ObjectContext{
+		Kind: ObjectInput, ID: input.ID, WorkID: input.WorkID,
+		RunID: input.RunID, TaskID: input.TaskID, BlockID: input.BlockID,
+		InputID: input.ID, SpecID: input.SpecID,
+		DefinitionRevision: int64Ptr(definitionRev),
+	}
+
+	submitPayload, err := json.Marshal(InputSubmittedPayload{
+		InputID:          input.ID,
+		WorkID:           input.WorkID,
+		RunID:            input.RunID,
+		TaskID:           input.TaskID,
+		BlockID:          input.BlockID,
+		SpecID:           input.SpecID,
+		Value:            append(json.RawMessage(nil), input.Value...),
+		Source:           input.Source,
+		UpdatedBy:        input.UpdatedBy,
+		Revision:         1,
+		ExpectedRevision: 0,
+	})
+	if err != nil {
+		return nil, err
+	}
+	submit := newServiceEventV2(
+		input.WorkID,
+		input.RunID+"/reuse/input/"+input.ID+"/submit",
+		EventInputSubmitted,
+		submitPayload,
+		now,
+	)
+	submit.Object = ObjectContext{
+		Kind: ObjectInput, ID: input.ID, WorkID: input.WorkID,
+		RunID: input.RunID, TaskID: input.TaskID, BlockID: input.BlockID,
+		InputID: input.ID, SpecID: input.SpecID,
+		ExpectedRevision: int64Ptr(0), DefinitionRevision: int64Ptr(definitionRev),
+	}
+	events := []WorkEvent{request, submit}
+	if input.CornerstoneID == "" {
+		return events, nil
+	}
+	cornerstonePayload, err := json.Marshal(InputCornerstoneChangedPayload{
+		InputID:          input.ID,
+		WorkID:           input.WorkID,
+		RunID:            input.RunID,
+		TaskID:           input.TaskID,
+		BlockID:          input.BlockID,
+		SpecID:           input.SpecID,
+		CornerstoneID:    input.CornerstoneID,
+		Pinned:           true,
+		Revision:         2,
+		ExpectedRevision: 1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	cornerstone := newServiceEventV2(
+		input.WorkID,
+		input.RunID+"/reuse/input/"+input.ID+"/cornerstone",
+		EventInputCornerstoneChanged,
+		cornerstonePayload,
+		now,
+	)
+	cornerstone.Object = ObjectContext{
+		Kind: ObjectInput, ID: input.ID, WorkID: input.WorkID,
+		RunID: input.RunID, TaskID: input.TaskID, BlockID: input.BlockID,
+		InputID: input.ID, SpecID: input.SpecID,
+		ExpectedRevision: int64Ptr(1), DefinitionRevision: int64Ptr(definitionRev),
+	}
+	return append(events, cornerstone), nil
 }

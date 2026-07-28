@@ -224,8 +224,14 @@ export function projectTreeTopicHasUnreadActivity(
   return Boolean(key && activityAt > 0 && (readActivity[key] ?? 0) < activityAt);
 }
 
-export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, compactTopics: boolean, unread: boolean, isCrewSession = false): boolean {
-  return compactTopics && !unread && (!isSessionNode || isCrewSession);
+export function projectTreeShouldRenderTopicActions(
+  isSessionNode: boolean,
+  compactTopics: boolean,
+  unread: boolean,
+  isCrewSession = false,
+  isWorkSession = false,
+): boolean {
+  return compactTopics && !unread && (!isSessionNode || isCrewSession || isWorkSession);
 }
 
 function topicActivityLabel(ms: number, t: Translator, compact = false): string {
@@ -1192,20 +1198,31 @@ export function ProjectTree({
       const imSourcePlatform = (imSource?.platform || "im").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "im";
       const sourceBadge = projectTreeSourceBadge(node, t);
       const title = [label, imSourceTitle, sourceBadge?.title, statusLabel, meta, exactTimeLabel].filter(Boolean).join(" · ");
-      const topicMenuOpen = !isSessionNode && menuTopic === topicId;
+      const topicMenuOpen = (!isSessionNode || workSession) && menuTopic === key;
       const pinned = Boolean(node.pinned);
       const pinLabel = t(pinned ? "projectTree.unpinTopic" : "projectTree.pinTopic");
+      const trashActionLabel = workSession ? t("history.moveToTrash") : t("projectTree.archiveTopic");
       const openTopicMenu = (event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>) => {
-        if (isSessionNode) return;
+        if (isSessionNode && !workSession) return;
         event.preventDefault();
         event.stopPropagation();
         setMenuProject(null);
         setConfirmRemoveProject(null);
         setMenuPoint(contextMenuPointFromEvent(event));
-        setMenuTopic(topicId);
+        setMenuTopic(key);
         setConfirmAction(null);
       };
-      const topicMenuItems: ContextMenuItem[] = [
+      const trashMenuItem: ContextMenuItem = {
+        key: "trash",
+        icon: <Archive size={13} />,
+        label: confirmAction?.topicId === topicId && confirmAction.action === "trash" ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
+        danger: true,
+        onSelect: () => {
+          if (confirmAction?.topicId === topicId && confirmAction.action === "trash") void trashTopic(topicId);
+          else setConfirmAction({ topicId, action: "trash" });
+        },
+      };
+      const topicMenuItems: ContextMenuItem[] = workSession ? [trashMenuItem] : [
         ...(compactTopics
           ? [
               {
@@ -1222,16 +1239,7 @@ export function ProjectTree({
           label: t("projectTree.renameTopic"),
           onSelect: () => startRenameTopic(node, label),
         },
-        {
-          key: "trash",
-          icon: <Archive size={13} />,
-          label: confirmAction?.topicId === topicId && confirmAction.action === "trash" ? t("history.confirmMoveToTrash") : t("history.moveToTrash"),
-          danger: true,
-          onSelect: () => {
-            if (confirmAction?.topicId === topicId && confirmAction.action === "trash") void trashTopic(topicId);
-            else setConfirmAction({ topicId, action: "trash" });
-          },
-        },
+        trashMenuItem,
       ];
       if (!isSessionNode && editingTopic === topicId) {
         return (
@@ -1270,7 +1278,7 @@ export function ProjectTree({
         <div
           className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${workSession ? " project-tree__topic--work-session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
-          onContextMenu={isSessionNode ? undefined : openTopicMenu}
+          onContextMenu={isSessionNode && !workSession ? undefined : openTopicMenu}
         >
           <button
             type="button"
@@ -1369,9 +1377,9 @@ export function ProjectTree({
             )}
           </button>
           {!compactTopics && unread && <span className="project-tree__topic-unread-dot" aria-hidden="true" />}
-          {projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node)) && (
+          {projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node), workSession) && (
             <span className="project-tree__topic-actions" aria-label={t("projectTree.topicActions")}>
-              <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
+              {!workSession && <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
                 <button
                   className={`project-tree__topic-action${pinned ? " project-tree__topic-action--pinned" : ""}`}
                   type="button"
@@ -1386,12 +1394,12 @@ export function ProjectTree({
                 >
                   <Pin size={15} aria-hidden="true" />
                 </button>
-              </Tooltip>
-              {!isSessionNode && <Tooltip label={t("projectTree.archiveTopic")} side="top" className="project-tree__topic-action-slot">
+              </Tooltip>}
+              {(!isSessionNode || workSession) && <Tooltip label={trashActionLabel} side="top" className="project-tree__topic-action-slot">
                 <button
                   className="project-tree__topic-action project-tree__topic-action--archive"
                   type="button"
-                  aria-label={t("projectTree.archiveTopic")}
+                  aria-label={trashActionLabel}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -1403,7 +1411,7 @@ export function ProjectTree({
               </Tooltip>}
             </span>
           )}
-          {!isSessionNode && (
+          {(!isSessionNode || workSession) && (
             <ContextMenu
               open={topicMenuOpen}
               point={menuPoint}

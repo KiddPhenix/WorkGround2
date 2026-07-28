@@ -3603,8 +3603,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   workID={activeTab.workId}
                   tabID={activeTab.id}
                   sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
-                  onArtifactOpen={(intent) => app.OpenWorkspacePathForTab(activeTab.id, intent.path)}
-                  onArtifactLocate={(intent) => app.RevealWorkspacePathForTab(activeTab.id, intent.path)}
+                  onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
+                  onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
                   resolveSessionSurface={resolveSessionSurface}
                   backSlots={{
                     surface: ({ readonly, archived }) => (

@@ -1,5 +1,4 @@
-import React, { useCallback, useState } from 'react';
-import { MessageCircle } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 import type {
   TaskV2View,
@@ -15,17 +14,13 @@ import type {
 } from '../../types_v2';
 import { WorkInputHost } from './input/WorkInputHost';
 import type { DraftValue, WorkInputRefreshContext } from './input/WorkInputHost';
+import { parseValueSchema, validateDraft } from './input/schema';
 export type { WorkInputRefreshContext } from './input/WorkInputHost';
 
 // ── Handler intents ────────────────────────────────────────────────────────
 
 export interface TaskCollapseIntent { workId: string; taskId: string; }
 export interface TaskRetryIntent { workId: string; taskId: string; runId: string; }
-export interface DiscussionBlockRef {
-  id: string;
-  title?: string;
-  revision: number;
-}
 
 // ── ExpandedBlock ──────────────────────────────────────────────────────────
 
@@ -40,8 +35,6 @@ export interface ExpandedBlockProps {
   definitionRevision: number;
   workRevision: number;
   hasTypedInput: boolean;
-  discussionBlock?: DiscussionBlockRef;
-  onCollapse: (intent: TaskCollapseIntent) => void;
   onRetry?: (intent: TaskRetryIntent) => void | Promise<void>;
   onSubmitWorkInput?: (req: SubmitWorkInputRequest) => Promise<SubmitInputResult>;
   onSetCornerstone?: (req: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
@@ -66,8 +59,6 @@ export interface ExpandedBlockProps {
     operation: 'submit' | 'pin' | 'unpin',
     requestId: string,
   ) => void;
-  /** Called when user clicks discussion button — parent opens single global drawer. */
-  onOpenDiscussion?: (blockId: string, blockTitle: string, blockRevision: number) => void;
 }
 
 export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
@@ -75,19 +66,25 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
   nodeDef, inputSpecs, workInputs,
   definitionRevision, workRevision,
   hasTypedInput,
-  discussionBlock,
-  onCollapse, onRetry,
+  onRetry,
   onSubmitWorkInput, onSetCornerstone, onUnsetCornerstone,
   onRefreshAuthoritative, onSelectFile,
   onInputDraftChange, resolveInputDraft, resolveCommittedRequestIds, onInputRequestCommitted,
-  onOpenDiscussion,
 }) => {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
+  const [submitTrigger, setSubmitTrigger] = useState(0);
+  const [groupSubmitting, setGroupSubmitting] = useState(false);
+  const [groupRefreshError, setGroupRefreshError] = useState<string | null>(null);
+  const groupRevisionRef = useRef(workRevision);
+  const submitQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const groupFailedRef = useRef(false);
+  const pendingSubmitsRef = useRef(0);
+  const latestGroupRefreshRef = useRef<WorkInputRefreshContext | null>(null);
 
-  const handleCollapse = useCallback(() => {
-    onCollapse({ workId, taskId: task.id });
-  }, [onCollapse, workId, task.id]);
+  useEffect(() => {
+    if (!groupSubmitting) groupRevisionRef.current = workRevision;
+  }, [groupSubmitting, workRevision]);
 
   const handleRetry = useCallback(async () => {
     if (!onRetry || retrying) return;
@@ -99,14 +96,79 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
   }, [onRetry, retrying, workId, task.id, task.runId]);
 
   const waitingInputs = resolveWaitingInputs(task.waitingInputIds, nodeDef?.inputSpecIds, inputSpecs, workInputs);
-  const handleDiscuss = useCallback(() => {
-    if (!discussionBlock) return;
-    onOpenDiscussion?.(
-      discussionBlock.id,
-      discussionBlock.title?.trim() || task.title,
-      discussionBlock.revision,
-    );
-  }, [onOpenDiscussion, discussionBlock, task.title]);
+  const canSubmitGroup = Boolean(
+    hasTypedInput
+    && onSubmitWorkInput
+    && onSetCornerstone
+    && onUnsetCornerstone
+    && onRefreshAuthoritative
+    && resolveInputDraft
+    && waitingInputs.length > 0
+    && waitingInputs.every(({ input }) => Boolean(input?.id)),
+  );
+  const groupValidationError = canSubmitGroup && resolveInputDraft
+    ? firstInputGroupError(task.id, waitingInputs, resolveInputDraft)
+    : null;
+
+  const submitGroupInput = useCallback((req: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
+    if (!onSubmitWorkInput) {
+      return Promise.reject(new Error('输入提交服务不可用'));
+    }
+    const run = submitQueueRef.current.then(async () => {
+      if (groupFailedRef.current) {
+        throw new Error('整组提交已中止，请修正失败项后重试');
+      }
+      try {
+        const result = await onSubmitWorkInput({
+          ...req,
+          expectedRevision: groupRevisionRef.current,
+        });
+        if (result.revision > groupRevisionRef.current) {
+          groupRevisionRef.current = result.revision;
+        }
+        if (result.committed) {
+          latestGroupRefreshRef.current = {
+            workId: req.workId,
+            inputId: req.inputId,
+            requestId: req.requestId,
+            revision: result.revision,
+            operation: 'submit',
+          };
+        }
+        if (!result.committed) groupFailedRef.current = true;
+        return result;
+      } catch (error) {
+        groupFailedRef.current = true;
+        throw error;
+      }
+    });
+    submitQueueRef.current = run.then(() => undefined, () => undefined);
+    return run.finally(async () => {
+      pendingSubmitsRef.current = Math.max(0, pendingSubmitsRef.current - 1);
+      if (pendingSubmitsRef.current !== 0) return;
+      const refreshContext = latestGroupRefreshRef.current;
+      if (refreshContext && onRefreshAuthoritative) {
+        try {
+          await onRefreshAuthoritative(refreshContext);
+        } catch (error) {
+          setGroupRefreshError(error instanceof Error ? error.message : String(error));
+        }
+      }
+      setGroupSubmitting(false);
+    });
+  }, [onRefreshAuthoritative, onSubmitWorkInput]);
+
+  const handleGroupSubmit = useCallback(() => {
+    if (!canSubmitGroup || groupSubmitting || groupValidationError) return;
+    groupRevisionRef.current = workRevision;
+    groupFailedRef.current = false;
+    latestGroupRefreshRef.current = null;
+    submitQueueRef.current = Promise.resolve();
+    pendingSubmitsRef.current = waitingInputs.length;
+    setGroupRefreshError(null);
+    setGroupSubmitting(true);
+    setSubmitTrigger((value) => value + 1);
+  }, [canSubmitGroup, groupSubmitting, groupValidationError, waitingInputs.length, workRevision]);
 
   const handleInputGroupKeyDown = useCallback((event: React.KeyboardEvent<HTMLUListElement>) => {
     if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -141,22 +203,11 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
       role="region"
       aria-label={`${task.title} 详情`}
     >
-      <div className="wg2-eb-header-row">
-        {nodeDef?.description && (
-          <p className="wg2-eb-desc" data-testid={`expanded-block-desc-${task.id}`}>
-            {nodeDef.description}
-          </p>
-        )}
-        {onOpenDiscussion && discussionBlock && (
-          <button type="button" className="wg2-eb-btn wg2-eb-btn-discuss"
-            onClick={handleDiscuss}
-            aria-label={`讨论 ${task.title}`}
-            data-testid={`expanded-block-discuss-${task.id}`}>
-            <MessageCircle size={15} aria-hidden="true" />
-            <span>讨论</span>
-          </button>
-        )}
-      </div>
+      {nodeDef?.description && (
+        <p className="wg2-eb-desc" data-testid={`expanded-block-desc-${task.id}`}>
+          {nodeDef.description}
+        </p>
+      )}
 
       {waitingInputs.length > 0 && (
         <div data-testid={`expanded-block-inputs-${task.id}`}>
@@ -190,10 +241,10 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
                       onDraftChange={(value) =>
                         onInputDraftChange?.(task.id, workInput.blockId, workInput.id, spec.id, workInput.revision, value)
                       }
-                      onSubmit={onSubmitWorkInput}
+                      onSubmit={submitGroupInput}
                       onPin={onSetCornerstone}
                       onUnpin={onUnsetCornerstone}
-                      onRefreshAuthoritative={onRefreshAuthoritative}
+                      onRefreshAuthoritative={noopRefresh}
                       onSelectFile={onSelectFile ? async () => {
                         const selected = await onSelectFile({
                           workId,
@@ -214,6 +265,9 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
                       onRequestCommitted={(operation, requestId) =>
                         onInputRequestCommitted?.(task.id, workInput.blockId, spec, workInput, operation, requestId)
                       }
+                      hideSubmit
+                      submitTrigger={submitTrigger}
+                      onRequestGroupSubmit={handleGroupSubmit}
                     />
                   ) : (
                     <span className="wg2-eb-input-kind">
@@ -225,6 +279,26 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
               );
             })}
           </ul>
+          {canSubmitGroup && (
+            <div className="wg2-eb-input-actions">
+              <button
+                type="button"
+                className={`wg2-wh-submit-btn ${groupSubmitting ? 'wg2-wh-submit-pending' : ''}`}
+                disabled={groupSubmitting || Boolean(groupValidationError)}
+                onClick={handleGroupSubmit}
+                aria-busy={groupSubmitting}
+                data-testid={`expanded-block-submit-${task.id}`}
+              >
+                {groupSubmitting ? '提交中...' : '提交'}
+              </button>
+            </div>
+          )}
+          {groupRefreshError && (
+            <div className="wg2-eb-error" role="alert" data-testid={`expanded-block-submit-refresh-error-${task.id}`}>
+              <span className="wg2-eb-error-icon" aria-hidden="true">⚠</span>
+              <span className="wg2-eb-error-msg">输入已提交，但刷新最新状态失败：{groupRefreshError}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -243,27 +317,24 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
         </div>
       )}
 
-      <div className="wg2-eb-actions" data-testid={`expanded-block-actions-${task.id}`}>
-        <button type="button" className="wg2-eb-btn" onClick={handleCollapse}
-          aria-label={`收起 ${task.title} 详情`}
-          data-testid={`expanded-block-collapse-${task.id}`}>
-          收起
-        </button>
-        {(task.state === 'failed_retryable' || task.state === 'invalidated') && onRetry && (
-          <button type="button" className="wg2-eb-btn wg2-eb-btn-danger"
-            onClick={() => void handleRetry()} disabled={retrying}
-            aria-busy={retrying ? 'true' : undefined}
-            aria-label={`重试 ${task.title}`}
-            data-testid={`expanded-block-retry-${task.id}`}>
-            {retrying ? '重试中…' : '重试'}
-          </button>
-        )}
-        {retryError && (
-          <div role="alert" className="wg2-eb-error" data-testid={`expanded-block-retry-error-${task.id}`}>
-            {retryError}
-          </div>
-        )}
-      </div>
+      {(((task.state === 'failed_retryable' || task.state === 'invalidated') && onRetry) || retryError) && (
+        <div className="wg2-eb-actions" data-testid={`expanded-block-actions-${task.id}`}>
+          {(task.state === 'failed_retryable' || task.state === 'invalidated') && onRetry && (
+            <button type="button" className="wg2-eb-btn wg2-eb-btn-danger"
+              onClick={() => void handleRetry()} disabled={retrying}
+              aria-busy={retrying ? 'true' : undefined}
+              aria-label={`重试 ${task.title}`}
+              data-testid={`expanded-block-retry-${task.id}`}>
+              {retrying ? '重试中…' : '重试'}
+            </button>
+          )}
+          {retryError && (
+            <div role="alert" className="wg2-eb-error" data-testid={`expanded-block-retry-error-${task.id}`}>
+              {retryError}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -278,6 +349,8 @@ const TABBABLE_SELECTOR = [
   'a[href]',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
+
+async function noopRefresh(): Promise<void> {}
 
 function resolveWaitingInputs(
   waitingIds: string[] | undefined,
@@ -301,4 +374,22 @@ function resolveWaitingInputs(
     if (spec && (input || waitingSet.has(specId))) result.push({ spec, input });
   }
   return result;
+}
+
+function firstInputGroupError(
+  taskId: string,
+  inputs: Array<{ spec: InputSpec; input?: WorkInput }>,
+  resolveDraft: NonNullable<ExpandedBlockProps['resolveInputDraft']>,
+): string | null {
+  for (const { spec, input } of inputs) {
+    if (!input) return `“${spec.label}”尚未准备好`;
+    try {
+      const schema = parseValueSchema(spec.id, spec.kind, spec.valueSchema);
+      const error = validateDraft(spec, resolveDraft(taskId, input.blockId, spec, input), schema);
+      if (error) return error;
+    } catch {
+      return `“${spec.label}”的输入配置有误`;
+    }
+  }
+  return null;
 }

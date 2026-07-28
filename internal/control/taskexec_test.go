@@ -1,6 +1,8 @@
 package control
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -263,6 +265,76 @@ func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorMaterializesMarkdownTableAsXLSX(t *testing.T) {
+	prov := &taskProvider{
+		name: "fake-provider",
+		text: "| 项目 | 金额 |\n|---|---:|\n| 场地 | 1500 |\n| 餐饮 | 3000 |",
+	}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		taskFactory(t, prov, "fake-model", nil, nil),
+	)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "budget", WorkID: "work-1", DefinitionRev: 2,
+		Title: "预算表.md", Kind: "xlsx", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: "work-1", SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.ProducesSlotIDs = []string{"budget"}
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs, err := exec.TaskArtifacts(context.Background(), input, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "预算表.xlsx" || ref.Type != xlsxMediaType {
+		t.Fatalf("artifact ref = %+v", ref)
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workbook, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("open xlsx: %v", err)
+	}
+	files := make(map[string]*zip.File, len(workbook.File))
+	for _, file := range workbook.File {
+		files[file.Name] = file
+	}
+	for _, name := range []string{"[Content_Types].xml", "xl/workbook.xml", "xl/worksheets/sheet1.xml"} {
+		if files[name] == nil {
+			t.Fatalf("xlsx missing %s; files=%v", name, files)
+		}
+	}
+	sheet, err := files["xl/worksheets/sheet1.xml"].Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sheet.Close()
+	var sheetBody bytes.Buffer
+	if _, err := sheetBody.ReadFrom(sheet); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"项目", "金额", "场地", "1500"} {
+		if !strings.Contains(sheetBody.String(), want) {
+			t.Fatalf("sheet missing %q: %s", want, sheetBody.String())
+		}
+	}
+}
+
 func TestV2SchedulerPassesCompleteContextToTaskExecutorAdapter(t *testing.T) {
 	store, err := work.NewFileWorkStore(t.TempDir(), 0)
 	if err != nil {
@@ -273,14 +345,17 @@ func TestV2SchedulerPassesCompleteContextToTaskExecutorAdapter(t *testing.T) {
 	if err := store.CreateWorkDir(work.CreateWorkDirInput{
 		RequestID: workID + "/create",
 		Work: &work.Work{
-			SchemaVersion: work.SchemaVersionV2,
-			ID:            workID,
-			Name:          "V2 adapter",
-			State:         work.WorkDraft,
-			ArchiveState:  work.ArchiveActive,
-			BlueprintRef:  work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			SchemaVersion:     work.SchemaVersionV2,
+			ID:                workID,
+			Name:              "V2 adapter",
+			State:             work.WorkDraft,
+			ArchiveState:      work.ArchiveActive,
+			BlueprintRef:      work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
+			V2CurrentRevision: 1,
+			V2LatestRevision:  1,
+			V2RevisionStates:  map[int64]work.DefinitionStatus{1: work.DefActive},
+			CreatedAt:         now,
+			UpdatedAt:         now,
 		},
 	}); err != nil {
 		t.Fatal(err)

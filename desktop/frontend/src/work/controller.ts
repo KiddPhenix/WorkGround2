@@ -143,6 +143,14 @@ interface WorkSubscriptionState {
   buffering: boolean;
   events: WorkViewEvent[];
   recoveryEventIDs: Set<string>;
+  settlement?: WorkSubscriptionSettlement;
+}
+
+interface WorkSubscriptionSettlement {
+  promise: Promise<ApplyResult>;
+  resolve: (result: ApplyResult) => void;
+  reject: (error: unknown) => void;
+  settled: boolean;
 }
 
 function errorText(error: unknown): string {
@@ -186,9 +194,33 @@ function claimProjectionRecovery(state: WorkSubscriptionState, event: WorkViewEv
   return true;
 }
 
+function createSubscriptionSettlement(): WorkSubscriptionSettlement {
+  let resolvePromise!: (result: ApplyResult) => void;
+  let rejectPromise!: (error: unknown) => void;
+  const settlement: WorkSubscriptionSettlement = {
+    promise: new Promise<ApplyResult>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    }),
+    resolve: (result) => {
+      if (settlement.settled) return;
+      settlement.settled = true;
+      resolvePromise(result);
+    },
+    reject: (error) => {
+      if (settlement.settled) return;
+      settlement.settled = true;
+      rejectPromise(error);
+    },
+    settled: false,
+  };
+  return settlement;
+}
+
 export class WorkControllerAdapter {
   private readonly subscriptions = new Map<string, WorkSubscriptionState>();
   private readonly pendingSnapshots = new Map<string, Promise<ApplyResult>>();
+  private readonly pendingReconciliations = new Map<string, Promise<ApplyResult>>();
   private readonly pendingRetries = new Map<string, Promise<Attempt>>();
   private readonly statusByWork: Record<string, WorkControllerStatus> = {};
   private readonly statusListeners = new Set<() => void>();
@@ -230,8 +262,16 @@ export class WorkControllerAdapter {
     workID: string,
     reason: ViewRecoveryIntent['reason'] | null,
     recoveryEventIDs = new Set<string>(),
+    settlement?: WorkSubscriptionSettlement,
   ): void {
-    if (this.disposed || this.subscriptions.has(workID)) return;
+    if (this.disposed) {
+      settlement?.reject(new Error('Work controller is disposed'));
+      return;
+    }
+    if (this.subscriptions.has(workID)) {
+      settlement?.reject(new Error(`Work ${workID} already has an active subscription`));
+      return;
+    }
     if (this.getStatus(workID).stream.kind !== 'offline') {
       this.updateStatus(workID, { stream: { kind: 'connecting' } });
     }
@@ -248,6 +288,7 @@ export class WorkControllerAdapter {
       buffering: true,
       events: [] as WorkViewEvent[],
       recoveryEventIDs,
+      settlement,
     };
     const onEvent = (event: WorkViewEvent): void => {
       if (this.subscriptions.get(workID)?.token !== token) return;
@@ -273,6 +314,7 @@ export class WorkControllerAdapter {
       state.port = subscription;
     } catch (error) {
       this.updateStatus(workID, { stream: { kind: 'offline', message: errorText(error) } });
+      settlement?.reject(error);
       return;
     }
     this.subscriptions.set(workID, state);
@@ -311,6 +353,7 @@ export class WorkControllerAdapter {
             stream: { kind: 'online' },
             fetching: false,
           });
+          settlement?.resolve(snapshotResult);
           return;
         }
         this.updateStatus(workID, {
@@ -320,6 +363,7 @@ export class WorkControllerAdapter {
           unsupportedView: null,
           fetching: false,
         });
+        settlement?.resolve(snapshotResult);
       })
       .catch((error: unknown) => {
         if (!this.isCurrentSubscription(workID, state)) return;
@@ -336,6 +380,7 @@ export class WorkControllerAdapter {
           subscription.unsubscribe();
           this.subscriptions.delete(workID);
         }
+        settlement?.reject(error);
       });
   }
 
@@ -344,29 +389,21 @@ export class WorkControllerAdapter {
   }
 
   unsubscribe = (workID: string): void => {
-    this.subscriptions.get(workID)?.port?.unsubscribe();
+    const state = this.subscriptions.get(workID);
+    state?.port?.unsubscribe();
+    state?.settlement?.reject(new Error(`Work ${workID} subscription was closed before synchronization completed`));
     this.subscriptions.delete(workID);
   };
 
   retrySubscription = (workID: string): void => {
-    if (this.disposed) return;
-    const state = this.subscriptions.get(workID);
-    // One retry owns the complete Watch -> authoritative snapshot handshake.
-    // Repeated clicks while either half is still settling must not create a
-    // competing generation or let a late response overwrite newer state.
-    if (state && (!state.watchReady || state.settling)) return;
-    if (state) {
-      this.restartSubscription(workID, state);
-      return;
-    }
-    this.startSubscription(workID, 'retry');
+    void this.reconcileSnapshot(workID).catch(() => undefined);
   };
 
   private restartSubscription(workID: string, state: WorkSubscriptionState): void {
     if (!this.isCurrentSubscription(workID, state)) return;
     state.port?.unsubscribe();
     this.subscriptions.delete(workID);
-    this.startSubscription(workID, 'retry', state.recoveryEventIDs);
+    this.startSubscription(workID, 'retry', state.recoveryEventIDs, state.settlement);
   }
 
   private flushBuffered(workID: string, state: WorkSubscriptionState): { needsRecovery: boolean; retryableFailure: boolean } {
@@ -450,6 +487,39 @@ export class WorkControllerAdapter {
     const parsed = this.parseEvent(event.workID, event);
     if (!parsed) return { kind: 'ignored', workID: event.workID, eventID: event.eventID };
     return this.applyParsedEvent(parsed);
+  };
+
+  /**
+   * Reconcile after a committed write through one complete
+   * Watch -> authoritative retry snapshot handshake. Unlike an ordinary
+   * fetch, the backend-issued retry snapshot may replace different content at
+   * the current revision, so transient event/RPC ordering never leaks to UI.
+   */
+  reconcileSnapshot = (workID: string): Promise<ApplyResult> => {
+    const pending = this.pendingReconciliations.get(workID);
+    if (pending) return pending;
+    if (this.disposed) return Promise.reject(new Error('Work controller is disposed'));
+
+    const settlement = createSubscriptionSettlement();
+    const request = settlement.promise.finally(() => {
+      if (this.pendingReconciliations.get(workID) === request) {
+        this.pendingReconciliations.delete(workID);
+      }
+    });
+    this.pendingReconciliations.set(workID, request);
+
+    const state = this.subscriptions.get(workID);
+    const recoveryEventIDs = state?.recoveryEventIDs ?? new Set<string>();
+    state?.port?.unsubscribe();
+    this.subscriptions.delete(workID);
+    this.updateStatus(workID, {
+      stream: { kind: 'connecting' },
+      snapshotError: null,
+      eventError: null,
+      unsupportedView: null,
+    });
+    this.startSubscription(workID, 'retry', recoveryEventIDs, settlement);
+    return request;
   };
 
   recoverSnapshot = (workID: string): Promise<ApplyResult> => {
@@ -835,7 +905,10 @@ export class WorkControllerAdapter {
   dispose = (): void => {
     if (this.disposed) return;
     this.disposed = true;
-    for (const subscription of this.subscriptions.values()) subscription.port?.unsubscribe();
+    for (const subscription of this.subscriptions.values()) {
+      subscription.port?.unsubscribe();
+      subscription.settlement?.reject(new Error('Work controller was disposed before synchronization completed'));
+    }
     this.subscriptions.clear();
     this.statusListeners.clear();
   };
@@ -903,6 +976,7 @@ export interface WorkController {
   subscribe: (workID: string) => void;
   unsubscribe: (workID: string) => void;
   recoverSnapshot: (workID: string) => Promise<ApplyResult>;
+  reconcileSnapshot: (workID: string) => Promise<ApplyResult>;
   restoreUIPreference: (workID: string) => Promise<WorkUIPreference | null>;
   setActiveFace: (workID: string, activeFace: WorkFace) => Promise<void>;
   retryTask: (input: RetryTaskInput) => Promise<Attempt>;
@@ -925,6 +999,7 @@ export function useWorkController(port: WorkControllerPort): WorkController {
     subscribe: adapter.subscribe,
     unsubscribe: adapter.unsubscribe,
     recoverSnapshot: adapter.recoverSnapshot,
+    reconcileSnapshot: adapter.reconcileSnapshot,
     restoreUIPreference: adapter.restoreUIPreference,
     setActiveFace: adapter.setActiveFace,
     retryTask: adapter.retryTask,

@@ -333,6 +333,9 @@ export function toWireValue(kind: InputKind, draft: DraftValue, schema: ParsedVa
       if (typeof draft === 'string') return draft.toLowerCase();
       return draft;
 
+    case 'multi_choice':
+      return typeof draft === 'string' ? splitManualChoices(draft) : draft;
+
     case 'file': {
       const values = Array.isArray(draft) ? draft : [draft];
       return values.map((item) => {
@@ -444,8 +447,13 @@ function validateChoice(label: string, value: DraftValue, c: ParsedChoiceConstra
 }
 
 function validateMultiChoice(label: string, value: DraftValue, c: ParsedMultiChoiceConstraints | undefined): string | null {
-  if (!Array.isArray(value)) return `${label} 必须是字符串数组`;
-  const arr = value as string[];
+  const arr = Array.isArray(value)
+    ? value as string[]
+    : typeof value === 'string' && (!c || c.options.length === 0)
+      ? splitManualChoices(value)
+      : null;
+  if (!arr) return `${label} 必须是字符串数组`;
+  if (arr.length === 0) return `${label} 至少需要填写一项`;
   if (!c) return null;
   if (c.minSelect && arr.length < c.minSelect) {
     return `${label} 至少选择 ${c.minSelect} 项（当前 ${arr.length}）`;
@@ -460,6 +468,13 @@ function validateMultiChoice(label: string, value: DraftValue, c: ParsedMultiCho
     }
   }
   return null;
+}
+
+function splitManualChoices(value: string): string[] {
+  return [...new Set(value
+    .split(/[\n\r,，、;；|]/)
+    .map((item) => item.trim())
+    .filter(Boolean))];
 }
 
 function validateRoster(label: string, value: DraftValue, c: ParsedRosterConstraints | undefined): string | null {
@@ -575,16 +590,41 @@ function asStringArray(v: unknown): string[] {
 }
 
 function asOptions(v: unknown, specId: string): ChoiceOption[] {
-  if (!Array.isArray(v)) {
-    throw new SchemaParseError(`options 必须是数组`, specId, 'choice', v);
-  }
-  const out: ChoiceOption[] = [];
-  for (const item of v) {
-    if (typeof item === 'object' && item !== null && typeof (item as ChoiceOption).value === 'string') {
-      out.push({ value: (item as ChoiceOption).value, label: (item as ChoiceOption).label ?? (item as ChoiceOption).value });
+  const options: ChoiceOption[] = [];
+  const add = (value: unknown, label?: unknown) => {
+    if (typeof value !== 'string' || value.trim() === '') return;
+    const normalizedValue = value.trim();
+    if (options.some((option) => option.value === normalizedValue)) return;
+    options.push({
+      value: normalizedValue,
+      label: typeof label === 'string' && label.trim() ? label.trim() : normalizedValue,
+    });
+  };
+  if (typeof v === 'string') {
+    v.split(/[,，、\n\r;；|]/).forEach((item) => add(item));
+  } else if (Array.isArray(v)) {
+    for (const item of v) {
+      if (typeof item === 'string') add(item);
+      else if (typeof item === 'object' && item !== null) {
+        add((item as { value?: unknown }).value, (item as { label?: unknown }).label);
+      } else {
+        throw new SchemaParseError(`选项格式无效`, specId, 'choice', v);
+      }
     }
+  } else if (typeof v === 'object' && v !== null) {
+    const record = v as Record<string, unknown>;
+    if (typeof record.value === 'string') {
+      add(record.value, record.label);
+    } else {
+      Object.keys(record).sort().forEach((value) => add(value, record[value]));
+    }
+  } else {
+    throw new SchemaParseError(`缺少可用选项`, specId, 'choice', v);
   }
-  return out;
+  if (options.length === 0) {
+    throw new SchemaParseError(`缺少可用选项`, specId, 'choice', v);
+  }
+  return options;
 }
 
 function asFormFields(v: unknown, specId: string): FormFieldSpec[] {

@@ -91,6 +91,7 @@ func NewServiceWithTools(store WorkStore, blueprint *BlueprintRegistry, tools To
 		service.defStore = revisions
 	}
 	service.v2 = newV2Coordinator(store, service.defStore, cornerstones)
+	service.v2.SetCommitObserver(service.emitV2RuntimeCommit)
 	// Artifact sources are injected separately; preview never treats WorkStore
 	// internals as the user workspace.
 	service.previewSvc = NewPreviewService(store, "")
@@ -309,6 +310,10 @@ func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (
 		result.Recoverable = result.TransportError.Recoverable
 	}
 	return result, err
+}
+
+func (s *Service) emitV2RuntimeCommit(workID string, baseRevision int64, requestID string) error {
+	return s.emitV2MutationView(workID, baseRevision, requestID)
 }
 
 // ApplyV2WorkPatch commits the preview and automatically resumes its affected

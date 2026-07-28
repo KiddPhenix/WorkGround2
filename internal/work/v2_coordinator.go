@@ -18,12 +18,15 @@ import (
 type V2Coordinator struct {
 	store WorkStore
 
-	mu        sync.RWMutex
-	defs      DefinitionRevisionStore
-	inputs    *InputService
-	patches   *PatchService
-	scheduler *V2Scheduler
+	mu             sync.RWMutex
+	defs           DefinitionRevisionStore
+	inputs         *InputService
+	patches        *PatchService
+	scheduler      *V2Scheduler
+	commitObserver v2CommitObserver
 }
+
+type v2CommitObserver func(workID string, baseRevision int64, requestID string) error
 
 // V2RecoveryFailure is one independently retryable boot-recovery failure.
 type V2RecoveryFailure struct {
@@ -77,6 +80,15 @@ func (c *V2Coordinator) SetExecutor(executor TaskExecutor) {
 		return
 	}
 	c.scheduler = NewV2Scheduler(executor)
+}
+
+func (c *V2Coordinator) SetCommitObserver(observer v2CommitObserver) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.commitObserver = observer
+	c.mu.Unlock()
 }
 
 func (c *V2Coordinator) SetPatchPlanner(planner PatchPlanner) {
@@ -532,7 +544,7 @@ func (c *V2Coordinator) ScheduleRun(
 			changedNodeIDs = append(changedNodeIDs, node.ID)
 		}
 	}
-	authority := &workStoreV2Authority{store: c.store, workID: workID}
+	authority := c.runtimeAuthority(workID)
 	result, scheduleErr := c.schedulerSnapshot().ScheduleAffected(
 		ctx,
 		workID,
@@ -548,7 +560,7 @@ func (c *V2Coordinator) ScheduleRun(
 	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
 	_, artifactErr := c.reconcileV2Artifacts(ctx, workID, runID, definition)
 	settleErr := c.settleV2Run(ctx, workID, runID, definition)
-	err = errors.Join(scheduleErr, inputErr, artifactErr, settleErr)
+	err = errors.Join(scheduleErr, authority.ObserverError(), inputErr, artifactErr, settleErr)
 	if err != nil {
 		result.Error = err
 	}
@@ -778,7 +790,7 @@ func (c *V2Coordinator) continueRunAt(
 			return err
 		}
 	}
-	authority := &workStoreV2Authority{store: c.store, workID: workID}
+	authority := c.runtimeAuthority(workID)
 	_, scheduleErr := scheduler.WakeAndScheduleAffected(
 		ctx,
 		workID,
@@ -794,13 +806,22 @@ func (c *V2Coordinator) continueRunAt(
 	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
 	_, artifactErr := c.reconcileV2Artifacts(ctx, workID, runID, definition)
 	settleErr := c.settleV2Run(ctx, workID, runID, definition)
-	return errors.Join(scheduleErr, inputErr, artifactErr, settleErr)
+	return errors.Join(scheduleErr, authority.ObserverError(), inputErr, artifactErr, settleErr)
 }
 
 func (c *V2Coordinator) schedulerSnapshot() *V2Scheduler {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.scheduler
+}
+
+func (c *V2Coordinator) runtimeAuthority(workID string) *workStoreV2Authority {
+	c.mu.RLock()
+	observer := c.commitObserver
+	c.mu.RUnlock()
+	return &workStoreV2Authority{
+		store: c.store, workID: workID, observer: observer,
+	}
 }
 
 func (c *V2Coordinator) loadDefinition(workID string, revision int64) (*WorkDefinitionRevision, error) {
@@ -834,15 +855,37 @@ func (c *V2Coordinator) inputKind(workID string, input *WorkInput) InputKind {
 }
 
 type workStoreV2Authority struct {
-	store  WorkStore
-	workID string
+	store    WorkStore
+	workID   string
+	observer v2CommitObserver
+
+	observerMu  sync.Mutex
+	observerErr error
 }
 
 func (a *workStoreV2Authority) CommitV2Event(event WorkEvent) (int64, error) {
 	if a == nil || a.store == nil || event.WorkID != a.workID {
 		return 0, errors.New("work: V2 authority work mismatch")
 	}
-	return a.store.CommitEvent(a.workID, event)
+	revision, err := a.store.CommitEvent(a.workID, event)
+	if err != nil || a.observer == nil || revision <= 0 {
+		return revision, err
+	}
+	if observeErr := a.observer(a.workID, revision-1, event.RequestID); observeErr != nil {
+		a.observerMu.Lock()
+		a.observerErr = errors.Join(a.observerErr, observeErr)
+		a.observerMu.Unlock()
+	}
+	return revision, nil
+}
+
+func (a *workStoreV2Authority) ObserverError() error {
+	if a == nil {
+		return nil
+	}
+	a.observerMu.Lock()
+	defer a.observerMu.Unlock()
+	return a.observerErr
 }
 
 func (a *workStoreV2Authority) LoadV2Projection() (*Work, error) {

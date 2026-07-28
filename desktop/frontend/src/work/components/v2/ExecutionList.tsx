@@ -502,10 +502,9 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                   <ExpandedBlock
                     task={task} workId={workId} runId={task.runId} sessionId={sessionId ?? ''}
                     nodeDef={nd} inputSpecs={inputSpecs} workInputs={taskInputs}
-                    discussionBlock={discussionBlock}
                     definitionRevision={defRev} workRevision={workRevision ?? 1}
                     hasTypedInput={hasFullTypedInput}
-                    onCollapse={(i) => onCollapseTask?.(i)} onRetry={onRetryTask}
+                    onRetry={onRetryTask}
                     onSubmitWorkInput={onSubmitWorkInput} onSetCornerstone={onSetCornerstone}
                     onUnsetCornerstone={onUnsetCornerstone} onRefreshAuthoritative={onRefreshAuthoritative}
                     onSelectFile={onSelectFile}
@@ -513,13 +512,6 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                     resolveInputDraft={(tid, bid, spec, wi) => resolveInputDraft(tid, bid, spec, wi)}
                     resolveCommittedRequestIds={resolveCommittedInputRequestIds}
                     onInputRequestCommitted={handleInputRequestCommitted}
-                    onOpenDiscussion={(bid, _bTitle, br) => handleDOpen(
-                      task.id,
-                      bid,
-                      task.title,
-                      br,
-                      task.state === 'completed' ? 'workflow' : 'block',
-                    )}
                   />
                 )}
               </li>

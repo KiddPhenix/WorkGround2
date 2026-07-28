@@ -576,6 +576,35 @@ test('ordinary same-revision refetch keeps conflict semantics and uses a fresh e
   adapter.dispose();
 });
 
+test('post-commit reconciliation automatically accepts an authoritative same-revision snapshot', async () => {
+  reset();
+  const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 42, { name: 'before commit' });
+  let recoveryCount = 0;
+  port.recover = async (workID, intent) => {
+    recoveryCount++;
+    equal(intent.reason, 'retry', 'post-commit reconciliation uses an authoritative retry snapshot');
+    return retryResync(makeView(workID, 42, { name: 'after commit' }), intent);
+  };
+  const adapter = new WorkControllerAdapter(port);
+  adapter.subscribe('work-1');
+  await new Promise<void>((resolveWait) => setTimeout(resolveWait, 0));
+
+  const reconciliation = adapter.reconcileSnapshot('work-1');
+  const duplicateRequest = adapter.reconcileSnapshot('work-1');
+  equal(duplicateRequest, reconciliation, 'repeated reconciliation joins the in-flight handshake');
+  const result = await reconciliation;
+
+  equal(result.kind, 'applied', 'authoritative same-revision content replaces the stale projection');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'after commit', 'store converges without an ordinary snapshot conflict');
+  equal(port.fetchCount, 1, 'post-commit reconciliation does not perform another ordinary fetch');
+  equal(recoveryCount, 1, 'one authoritative recovery completes the reconciliation');
+  equal(adapter.getStatus('work-1').snapshotError, null, 'transient same-revision ordering does not leak as snapshotError');
+  equal(adapter.getStatus('work-1').eventError, null, 'transient same-revision ordering does not leak as eventError');
+  equal(adapter.getStatus('work-1').stream.kind, 'online', 'subscription is online after reconciliation');
+  adapter.dispose();
+});
+
 test('stale snapshot cannot silently satisfy a gap and a newer retry recovers', async () => {
   reset();
   applySnapshot(makeView('work-1', 2));

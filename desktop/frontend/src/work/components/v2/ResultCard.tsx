@@ -44,7 +44,6 @@ export interface FileOpenIntent {
   slotRevision: number;
   slotId: string;
   artifactRefId: string;
-  path: string;
 }
 
 export interface FileDownloadIntent {
@@ -63,7 +62,6 @@ export interface FileLocateIntent {
   slotRevision: number;
   slotId: string;
   artifactRefId: string;
-  path: string;
 }
 
 export interface SlotRetryIntent {
@@ -98,6 +96,8 @@ export interface ResultCardProps {
   onConvert?: (intent: FileConversionIntent) => Promise<ArtifactPreview>;
   /** Current preview state for this card (managed by parent). */
   preview?: ArtifactPreview | null;
+  /** Optional slot controls rendered beside, never over, the status badge. */
+  managementActions?: React.ReactNode;
 }
 
 const STATE_LABELS: Record<ArtifactSlot['state'], string> = {
@@ -184,19 +184,24 @@ const FileActions: React.FC<FileActionsProps> = ({
   actionErrors,
   onFire,
 }) => {
-  // Production open/locate ports are workspace-scoped. An absolute path is
-  // never forwarded through this component; refs without an authorised
-  // relative path intentionally have no host actions.
-  const hasPath = Boolean(refInfo.relativePath);
-  const canOpen = available.open && hasPath && refInfo.status !== 'missing';
-  const canDownload = available.download && hasPath;
-  const canLocate = available.locate && hasPath;
+  const hasReadableSource = Boolean(refInfo.relativePath || refInfo.blobDigest);
+  const canOpen = available.open && hasReadableSource && refInfo.status !== 'missing';
+  const canDownload = available.download && Boolean(refInfo.relativePath);
+  const canLocate = available.locate && hasReadableSource && refInfo.status !== 'missing';
 
   function actionLabel(kind: FileActionKind): string {
     switch (kind) {
       case 'open': return '打开';
       case 'download': return '下载';
-      case 'locate': return '定位';
+      case 'locate': return '文件位置';
+    }
+  }
+
+  function actionDescription(kind: FileActionKind): string {
+    switch (kind) {
+      case 'open': return '使用默认应用打开';
+      case 'download': return '下载';
+      case 'locate': return '在文件管理器中显示';
     }
   }
 
@@ -222,7 +227,8 @@ const FileActions: React.FC<FileActionsProps> = ({
             onClick={() => onFire(refInfo.id, kind)}
             disabled={busy}
             aria-busy={busy ? 'true' : undefined}
-            aria-label={`${actionLabel(kind)} ${refInfo.name ?? refInfo.id}`}
+            aria-label={`${actionDescription(kind)} ${refInfo.name ?? refInfo.id}`}
+            title={actionDescription(kind)}
             data-testid={`rc-file-${kind}-${refInfo.id}`}
           >
             {busy ? <LoaderCircle size={12} className="wg2-rc-spin" /> : actionIcon(kind)}
@@ -262,6 +268,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
   onPreview,
   onConvert,
   preview,
+  managementActions,
 }) => {
   // Ref-backed state: ref is the authority, state triggers re-renders.
   const inFlightRef = useRef<Record<string, boolean>>({});
@@ -401,8 +408,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       clearActionError(actionKey);
 
       const ref = slot.artifactRefs?.find((r) => r.id === refId);
-      const path = ref?.relativePath;
-      if (!path) {
+      if (!ref) {
         clearInFlight(actionKey);
         return;
       }
@@ -418,10 +424,13 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             slotRevision: slot.revision,
             slotId: slot.id,
             artifactRefId: refId,
-            path,
           };
           break;
         case 'download':
+          if (!ref.relativePath) {
+            clearInFlight(actionKey);
+            return;
+          }
           handler = onDownload as ((intent: unknown) => void | Promise<void>) | undefined;
           intent = {
             workId: slot.workId,
@@ -429,8 +438,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             slotRevision: slot.revision,
             slotId: slot.id,
             artifactRefId: refId,
-            path,
-            name: ref?.name ?? refId,
+            path: ref.relativePath,
+            name: ref.name ?? refId,
           };
           break;
         case 'locate':
@@ -441,7 +450,6 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             slotRevision: slot.revision,
             slotId: slot.id,
             artifactRefId: refId,
-            path,
           };
           break;
       }
@@ -528,14 +536,21 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             )}
           </span>
         </span>
-        <span
-          className="wg2-rc-badge"
-          data-badge={slot.state}
-          data-testid={`result-card-badge-${slot.id}`}
-          aria-label={STATE_LABELS[slot.state]}
-        >
-          {stateIcon(slot.state)}
-          {slot.state !== 'ready' && <span>{STATE_LABELS[slot.state]}</span>}
+        <span className="wg2-rc-header-side">
+          <span
+            className="wg2-rc-badge"
+            data-badge={slot.state}
+            data-testid={`result-card-badge-${slot.id}`}
+            aria-label={STATE_LABELS[slot.state]}
+          >
+            {stateIcon(slot.state)}
+            {slot.state !== 'ready' && <span>{STATE_LABELS[slot.state]}</span>}
+          </span>
+          {managementActions && (
+            <span className="wg2-rc-manage-actions" data-testid={`result-card-actions-${slot.id}`}>
+              {managementActions}
+            </span>
+          )}
         </span>
       </div>
 

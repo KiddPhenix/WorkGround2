@@ -6,6 +6,7 @@ export interface WorkWorkspaceProps {
   name: string;
   state: WorkState;
   archiveState: WorkArchiveState;
+  titleStatus?: ReactNode;
   status?: ReactNode;
   actions?: ReactNode;
   cornerstoneEntry?: ReactNode;
@@ -20,6 +21,7 @@ export const WorkWorkspace: React.FC<WorkWorkspaceProps> = ({
   name,
   state,
   archiveState,
+  titleStatus,
   status,
   actions,
   cornerstoneEntry,
@@ -34,6 +36,11 @@ export const WorkWorkspace: React.FC<WorkWorkspaceProps> = ({
         <span className="wg2-work-outer-state" data-state={state} data-archive={archiveState}>
           {state}{archiveState === 'archived' && ' · 已归档'}
         </span>
+        {titleStatus && (
+          <div className="wg2-work-title-status" data-testid="work-title-status">
+            {titleStatus}
+          </div>
+        )}
       </div>
       <div className="wg2-work-outer-header-right">
         {status}
