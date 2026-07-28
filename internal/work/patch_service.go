@@ -175,14 +175,15 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 		plannerWork.Blocks = append(plannerWork.Blocks, cloneDiscussionBlock(*block))
 	}
 	plan, err := s.planner.PlanPatch(ctx, PatchPlanInput{
-		Instruction: input.Instruction,
-		SessionID:   input.SessionID,
-		Scope:       input.Scope,
-		Work:        plannerWork,
-		Definition:  def,
-		Run:         run,
-		Task:        task,
-		Block:       block,
+		Instruction:  input.Instruction,
+		SessionID:    input.SessionID,
+		Scope:        input.Scope,
+		TargetNodeID: targetNodeID,
+		Work:         plannerWork,
+		Definition:   def,
+		Run:          run,
+		Task:         task,
+		Block:        block,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("work: PreviewWorkPatch: planner: %w", err)
@@ -193,6 +194,15 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	operations, err := normalizePatchOps(def, block, input.Scope, input.BlockID, plan.Operations)
 	if err != nil {
 		return nil, fmt.Errorf("work: PreviewWorkPatch: normalize: %w", err)
+	}
+	if input.Scope == PatchWorkflow {
+		candidate := CopyOnWriteRevision(def)
+		if err := applyPatchOpsToDefinition(candidate, operations); err != nil {
+			return nil, fmt.Errorf("work: PreviewWorkPatch: apply preview: %w", err)
+		}
+		if err := validatePatchedDefinition(def, candidate); err != nil {
+			return nil, fmt.Errorf("work: PreviewWorkPatch: invalid workflow change: %w", err)
+		}
 	}
 
 	// Compute impact analysis.
@@ -213,11 +223,11 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 		BaseBlockRev:            input.BlockRevision,
 		Scope:                   input.Scope,
 		Operations:              clonePatchOps(operations),
-		AffectedNodeIDs:         affectedNodes,
-		AffectedBlockIDs:        impact.affectedBlocks,
-		AffectedArtifactSlotIDs: impact.affectedSlots,
-		StaleArtifactSlotIDs:    impact.staleSlots,
-		InvalidatedTaskIDs:      invalidatedTasks,
+		AffectedNodeIDs:         clonePatchStrings(affectedNodes),
+		AffectedBlockIDs:        clonePatchStrings(impact.affectedBlocks),
+		AffectedArtifactSlotIDs: clonePatchStrings(impact.affectedSlots),
+		StaleArtifactSlotIDs:    clonePatchStrings(impact.staleSlots),
+		InvalidatedTaskIDs:      clonePatchStrings(invalidatedTasks),
 		RequiresRerun:           requiresRerun,
 		ExpiresAt:               now.Add(patchPreviewTTL),
 	}
@@ -251,11 +261,11 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 		BaseDefinitionRev:       input.DefinitionRevision,
 		BaseBlockRev:            input.BlockRevision,
 		Operations:              clonePatchOps(operations),
-		AffectedNodeIDs:         affectedNodes,
-		AffectedBlockIDs:        impact.affectedBlocks,
-		AffectedArtifactSlotIDs: impact.affectedSlots,
-		StaleArtifactSlotIDs:    impact.staleSlots,
-		InvalidatedTasks:        invalidatedTasks,
+		AffectedNodeIDs:         clonePatchStrings(affectedNodes),
+		AffectedBlockIDs:        clonePatchStrings(impact.affectedBlocks),
+		AffectedArtifactSlotIDs: clonePatchStrings(impact.affectedSlots),
+		StaleArtifactSlotIDs:    clonePatchStrings(impact.staleSlots),
+		InvalidatedTasks:        clonePatchStrings(invalidatedTasks),
 		RequiresRerun:           requiresRerun,
 		Digest:                  preview.Digest,
 		ExpiresAt:               &preview.ExpiresAt,
@@ -302,11 +312,11 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 
 	cpy := *preview
 	cpy.Operations = clonePatchOps(preview.Operations)
-	cpy.AffectedNodeIDs = append([]string(nil), preview.AffectedNodeIDs...)
-	cpy.AffectedBlockIDs = append([]string(nil), preview.AffectedBlockIDs...)
-	cpy.AffectedArtifactSlotIDs = append([]string(nil), preview.AffectedArtifactSlotIDs...)
-	cpy.StaleArtifactSlotIDs = append([]string(nil), preview.StaleArtifactSlotIDs...)
-	cpy.InvalidatedTaskIDs = append([]string(nil), preview.InvalidatedTaskIDs...)
+	cpy.AffectedNodeIDs = clonePatchStrings(preview.AffectedNodeIDs)
+	cpy.AffectedBlockIDs = clonePatchStrings(preview.AffectedBlockIDs)
+	cpy.AffectedArtifactSlotIDs = clonePatchStrings(preview.AffectedArtifactSlotIDs)
+	cpy.StaleArtifactSlotIDs = clonePatchStrings(preview.StaleArtifactSlotIDs)
+	cpy.InvalidatedTaskIDs = clonePatchStrings(preview.InvalidatedTaskIDs)
 	return &PreviewWorkPatchResult{Preview: &cpy, Revision: event.Revision, Committed: true}, nil
 }
 
@@ -325,11 +335,11 @@ func (s *PatchService) replayPreview(current *Work, input PreviewWorkPatchInput,
 	if receipt.ResultPatch != nil {
 		cpy := *receipt.ResultPatch
 		cpy.Operations = clonePatchOps(receipt.ResultPatch.Operations)
-		cpy.AffectedNodeIDs = append([]string(nil), receipt.ResultPatch.AffectedNodeIDs...)
-		cpy.AffectedBlockIDs = append([]string(nil), receipt.ResultPatch.AffectedBlockIDs...)
-		cpy.AffectedArtifactSlotIDs = append([]string(nil), receipt.ResultPatch.AffectedArtifactSlotIDs...)
-		cpy.StaleArtifactSlotIDs = append([]string(nil), receipt.ResultPatch.StaleArtifactSlotIDs...)
-		cpy.InvalidatedTaskIDs = append([]string(nil), receipt.ResultPatch.InvalidatedTaskIDs...)
+		cpy.AffectedNodeIDs = clonePatchStrings(receipt.ResultPatch.AffectedNodeIDs)
+		cpy.AffectedBlockIDs = clonePatchStrings(receipt.ResultPatch.AffectedBlockIDs)
+		cpy.AffectedArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.AffectedArtifactSlotIDs)
+		cpy.StaleArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.StaleArtifactSlotIDs)
+		cpy.InvalidatedTaskIDs = clonePatchStrings(receipt.ResultPatch.InvalidatedTaskIDs)
 		return &PreviewWorkPatchResult{
 			Preview: &cpy, Revision: receipt.ResultRevision, Duplicate: true, Committed: true,
 		}, nil
@@ -596,7 +606,7 @@ func (s *PatchService) applyWorkflowPatch(ctx context.Context, current *Work, pr
 		return 0, nil, fmt.Errorf("work: ApplyWorkPatch: compute digest: %w", err)
 	}
 	newRev.Digest = digest
-	if err := ValidateDefinitionRevision(newRev); err != nil {
+	if err := validatePatchedDefinition(parent, newRev); err != nil {
 		return 0, nil, fmt.Errorf("work: ApplyWorkPatch: invalid patched definition: %w", err)
 	}
 
@@ -794,6 +804,7 @@ func (s *PatchService) computePatchImpact(
 	affectedBlocks := make(map[string]bool)
 	affectedSlots := make(map[string]bool)
 	staleSlots := make(map[string]bool)
+	removedSlots := make(map[string]bool)
 	for _, op := range ops {
 		pp, err := CompilePatchPath(op.Path)
 		if err != nil {
@@ -838,7 +849,11 @@ func (s *PatchService) computePatchImpact(
 			if len(pp.Segments) >= 2 {
 				slotID := pp.Segments[1]
 				affectedSlots[slotID] = true
-				staleSlots[slotID] = true
+				if op.Op == "replace" {
+					staleSlots[slotID] = true
+				} else if op.Op == "remove" {
+					removedSlots[slotID] = true
+				}
 				matched := false
 				for _, node := range def.Nodes {
 					if containsID(node.ProducesSlotIDs, slotID) || containsID(node.ConsumesSlotIDs, slotID) {
@@ -870,6 +885,9 @@ func (s *PatchService) computePatchImpact(
 			affectedSlots[slotID] = true
 			staleSlots[slotID] = true
 		}
+	}
+	for slotID := range removedSlots {
+		delete(staleSlots, slotID)
 	}
 	invalidatedSet := descendantsOf(def.Nodes, affected)
 	affectedList := sortedIDSet(affected)
@@ -942,6 +960,37 @@ func mergeSortedIDs(groups ...[]string) []string {
 	return sortedIDSet(set)
 }
 
+func validatePatchedDefinition(parent, candidate *WorkDefinitionRevision) error {
+	if err := ValidateDefinitionRevision(candidate); err != nil {
+		return err
+	}
+	parentSlots := make(map[string]bool, len(parent.ArtifactSlots))
+	before := make(map[string]int, len(parent.ArtifactSlots))
+	after := make(map[string]int, len(candidate.ArtifactSlots))
+	for _, slot := range parent.ArtifactSlots {
+		parentSlots[slot.ID] = true
+	}
+	for _, node := range parent.Nodes {
+		for _, slotID := range node.ProducesSlotIDs {
+			before[slotID]++
+		}
+	}
+	for _, node := range candidate.Nodes {
+		for _, slotID := range node.ProducesSlotIDs {
+			after[slotID]++
+		}
+	}
+	for _, slot := range candidate.ArtifactSlots {
+		if !parentSlots[slot.ID] || before[slot.ID] != after[slot.ID] {
+			if after[slot.ID] != 1 {
+				return fmt.Errorf("artifact slot %q must have exactly one producer after this change, got %d",
+					slot.ID, after[slot.ID])
+			}
+		}
+	}
+	return nil
+}
+
 // ── Patch application helpers ─────────────────────────────────────────────
 
 // applyPatchOpsToDefinition applies typed patch operations to a definition
@@ -968,8 +1017,46 @@ func applyPatchOpsToDefinition(rev *WorkDefinitionRevision, ops []PatchOp) error
 		if err := ValidatePatchOpVerb(op.Op); err != nil {
 			return fmt.Errorf("work: apply op %q %q: %w", op.Op, op.Path, err)
 		}
+		if pp.Kind == PathSlots && len(pp.Segments) == 2 {
+			id := pp.Segments[1]
+			idx, exists := slotIdx[id]
+			switch op.Op {
+			case "add":
+				if exists {
+					return fmt.Errorf("work: apply: slot %q already exists", id)
+				}
+				if len(op.OldValue) > 0 && !jsonValuesEqual(op.OldValue, json.RawMessage("null")) {
+					return fmt.Errorf("work: stale before value for %q", op.Path)
+				}
+				var slot ArtifactSlotDef
+				if err := json.Unmarshal(op.NewValue, &slot); err != nil {
+					return fmt.Errorf("work: apply slot %q: %w", id, err)
+				}
+				if slot.ID != id {
+					return fmt.Errorf("work: apply slot %q: newValue id %q does not match path", id, slot.ID)
+				}
+				rev.ArtifactSlots = append(rev.ArtifactSlots, slot)
+				slotIdx[id] = len(rev.ArtifactSlots) - 1
+			case "remove":
+				if !exists {
+					return fmt.Errorf("work: apply: slot %q not found", id)
+				}
+				before, err := json.Marshal(rev.ArtifactSlots[idx])
+				if err != nil {
+					return fmt.Errorf("work: apply slot %q: %w", id, err)
+				}
+				if !jsonValuesEqual(before, op.OldValue) {
+					return fmt.Errorf("work: stale before value for %q", op.Path)
+				}
+				rev.ArtifactSlots = append(rev.ArtifactSlots[:idx], rev.ArtifactSlots[idx+1:]...)
+				delete(slotIdx, id)
+			default:
+				return fmt.Errorf("work: apply op %q %q: object path only allows add or remove", op.Op, op.Path)
+			}
+			continue
+		}
 		if op.Op != "replace" {
-			return fmt.Errorf("work: apply op %q %q: only replace is allowed", op.Op, op.Path)
+			return fmt.Errorf("work: apply op %q %q: only artifact slot object paths allow add or remove", op.Op, op.Path)
 		}
 		before, err := readDefinitionPatchValue(rev, pp)
 		if err != nil {
@@ -994,21 +1081,8 @@ func applyPatchOpsToDefinition(rev *WorkDefinitionRevision, ops []PatchOp) error
 		case PathNodes:
 			id := pp.Segments[1]
 			idx, ok := nodeIdx[id]
-			if !ok && op.Op != "add" {
+			if !ok {
 				return fmt.Errorf("work: apply: node %q not found", id)
-			}
-			if op.Op == "remove" {
-				rev.Nodes = append(rev.Nodes[:idx], rev.Nodes[idx+1:]...)
-				delete(nodeIdx, id)
-				continue
-			}
-			if op.Op == "add" && ok {
-				return fmt.Errorf("work: apply: node %q already exists", id)
-			}
-			if op.Op == "add" {
-				rev.Nodes = append(rev.Nodes, NodeDef{ID: id})
-				nodeIdx[id] = len(rev.Nodes) - 1
-				idx = nodeIdx[id]
 			}
 			if err := applyNodeOp(&rev.Nodes[idx], pp.Leaf, op); err != nil {
 				return err
@@ -1017,21 +1091,8 @@ func applyPatchOpsToDefinition(rev *WorkDefinitionRevision, ops []PatchOp) error
 		case PathSlots:
 			id := pp.Segments[1]
 			idx, ok := slotIdx[id]
-			if !ok && op.Op != "add" {
+			if !ok {
 				return fmt.Errorf("work: apply: slot %q not found", id)
-			}
-			if op.Op == "remove" {
-				rev.ArtifactSlots = append(rev.ArtifactSlots[:idx], rev.ArtifactSlots[idx+1:]...)
-				delete(slotIdx, id)
-				continue
-			}
-			if op.Op == "add" && ok {
-				return fmt.Errorf("work: apply: slot %q already exists", id)
-			}
-			if op.Op == "add" {
-				rev.ArtifactSlots = append(rev.ArtifactSlots, ArtifactSlotDef{ID: id})
-				slotIdx[id] = len(rev.ArtifactSlots) - 1
-				idx = slotIdx[id]
 			}
 			if err := applySlotOp(&rev.ArtifactSlots[idx], pp.Leaf, op); err != nil {
 				return err
@@ -1040,21 +1101,8 @@ func applyPatchOpsToDefinition(rev *WorkDefinitionRevision, ops []PatchOp) error
 		case PathSpecs:
 			id := pp.Segments[1]
 			idx, ok := specIdx[id]
-			if !ok && op.Op != "add" {
+			if !ok {
 				return fmt.Errorf("work: apply: spec %q not found", id)
-			}
-			if op.Op == "remove" {
-				rev.InputSpecs = append(rev.InputSpecs[:idx], rev.InputSpecs[idx+1:]...)
-				delete(specIdx, id)
-				continue
-			}
-			if op.Op == "add" && ok {
-				return fmt.Errorf("work: apply: spec %q already exists", id)
-			}
-			if op.Op == "add" {
-				rev.InputSpecs = append(rev.InputSpecs, InputSpec{ID: id})
-				specIdx[id] = len(rev.InputSpecs) - 1
-				idx = specIdx[id]
 			}
 			if err := applySpecOp(&rev.InputSpecs[idx], pp.Leaf, op); err != nil {
 				return err
@@ -1267,6 +1315,10 @@ func clonePatchOps(ops []PatchOp) []PatchOp {
 	return out
 }
 
+func clonePatchStrings(values []string) []string {
+	return append([]string{}, values...)
+}
+
 func normalizePatchOps(def *WorkDefinitionRevision, block *BlockInstance, scope PatchScope, blockID string, ops []PatchOp) ([]PatchOp, error) {
 	if len(ops) == 0 {
 		return nil, errors.New("planner returned no operations")
@@ -1279,8 +1331,8 @@ func normalizePatchOps(def *WorkDefinitionRevision, block *BlockInstance, scope 
 	for i, candidate := range ops {
 		candidate.Op = strings.TrimSpace(candidate.Op)
 		candidate.Path = strings.TrimSpace(candidate.Path)
-		if candidate.Op != "replace" {
-			return nil, fmt.Errorf("op[%d]: only replace is allowed", i)
+		if err := ValidatePatchOpVerb(candidate.Op); err != nil {
+			return nil, fmt.Errorf("op[%d]: %w", i, err)
 		}
 		path, err := CompilePatchPath(candidate.Path)
 		if err != nil {
@@ -1290,27 +1342,66 @@ func normalizePatchOps(def *WorkDefinitionRevision, block *BlockInstance, scope 
 			return nil, fmt.Errorf("op[%d]: duplicate path %q", i, candidate.Path)
 		}
 		seen[candidate.Path] = struct{}{}
-		if len(candidate.NewValue) == 0 || !json.Valid(candidate.NewValue) {
+		slotObjectOp := path.Kind == PathSlots && len(path.Segments) == 2
+		if candidate.Op != "replace" && !slotObjectOp {
+			return nil, fmt.Errorf("op[%d]: add/remove is only allowed for artifactSlots/<id>", i)
+		}
+		if candidate.Op == "replace" && slotObjectOp {
+			return nil, fmt.Errorf("op[%d]: artifactSlots/<id> object path only allows add/remove", i)
+		}
+		if candidate.Op != "remove" && (len(candidate.NewValue) == 0 || !json.Valid(candidate.NewValue)) {
 			return nil, fmt.Errorf("op[%d]: newValue must be valid JSON", i)
 		}
-		if err := rejectForbiddenJSON(candidate.NewValue); err != nil {
-			return nil, fmt.Errorf("op[%d]: %w", i, err)
+		if candidate.Op != "remove" {
+			if err := rejectForbiddenJSON(candidate.NewValue); err != nil {
+				return nil, fmt.Errorf("op[%d]: %w", i, err)
+			}
+		}
+		if candidate.Op == "remove" && len(candidate.NewValue) > 0 &&
+			(!json.Valid(candidate.NewValue) || !jsonValuesEqual(candidate.NewValue, json.RawMessage("null"))) {
+			return nil, fmt.Errorf("op[%d]: remove newValue must be omitted or null", i)
+		}
+		if scope == PatchBlock && candidate.Op != "replace" {
+			return nil, fmt.Errorf("op[%d]: block scope only allows replace", i)
 		}
 
 		var before json.RawMessage
-		switch scope {
-		case PatchBlock:
-			if path.Kind != PathBlocks || len(path.Segments) != 3 || path.Segments[1] != blockID {
-				return nil, fmt.Errorf("op[%d]: block scope may only patch block %q", i, blockID)
+		switch {
+		case candidate.Op == "add":
+			if scope != PatchWorkflow || !slotObjectOp {
+				return nil, fmt.Errorf("op[%d]: add requires workflow artifactSlots/<id>", i)
 			}
-			before, err = readBlockPatchValue(block, path.Leaf)
-		case PatchWorkflow:
-			if path.Kind == PathBlocks {
-				return nil, fmt.Errorf("op[%d]: workflow scope cannot patch a runtime Block", i)
+			if _, readErr := readDefinitionPatchValue(def, path); readErr == nil {
+				return nil, fmt.Errorf("op[%d]: artifact slot %q already exists", i, path.Segments[1])
+			}
+			var slot ArtifactSlotDef
+			if err := json.Unmarshal(candidate.NewValue, &slot); err != nil {
+				return nil, fmt.Errorf("op[%d]: artifact slot newValue: %w", i, err)
+			}
+			if slot.ID != path.Segments[1] {
+				return nil, fmt.Errorf("op[%d]: artifact slot id %q does not match path", i, slot.ID)
+			}
+			before = json.RawMessage("null")
+		case candidate.Op == "remove":
+			if scope != PatchWorkflow || !slotObjectOp {
+				return nil, fmt.Errorf("op[%d]: remove requires workflow artifactSlots/<id>", i)
 			}
 			before, err = readDefinitionPatchValue(def, path)
 		default:
-			return nil, fmt.Errorf("op[%d]: invalid scope %q", i, scope)
+			switch scope {
+			case PatchBlock:
+				if path.Kind != PathBlocks || len(path.Segments) != 3 || path.Segments[1] != blockID {
+					return nil, fmt.Errorf("op[%d]: block scope may only patch block %q", i, blockID)
+				}
+				before, err = readBlockPatchValue(block, path.Leaf)
+			case PatchWorkflow:
+				if path.Kind == PathBlocks {
+					return nil, fmt.Errorf("op[%d]: workflow scope cannot patch a runtime Block", i)
+				}
+				before, err = readDefinitionPatchValue(def, path)
+			default:
+				return nil, fmt.Errorf("op[%d]: invalid scope %q", i, scope)
+			}
 		}
 		if err != nil {
 			return nil, fmt.Errorf("op[%d]: %w", i, err)
@@ -1319,7 +1410,11 @@ func normalizePatchOps(def *WorkDefinitionRevision, block *BlockInstance, scope 
 			return nil, fmt.Errorf("op[%d]: before value does not match authoritative state", i)
 		}
 		candidate.OldValue = append(json.RawMessage(nil), before...)
-		candidate.NewValue = append(json.RawMessage(nil), candidate.NewValue...)
+		if candidate.Op == "remove" {
+			candidate.NewValue = nil
+		} else {
+			candidate.NewValue = append(json.RawMessage(nil), candidate.NewValue...)
+		}
 		normalized = append(normalized, candidate)
 	}
 	return normalized, nil
@@ -1374,6 +1469,9 @@ func readDefinitionPatchValue(def *WorkDefinitionRevision, path PatchPath) (json
 	case PathSlots:
 		for i := range def.ArtifactSlots {
 			if def.ArtifactSlots[i].ID == id {
+				if len(path.Segments) == 2 {
+					return json.Marshal(def.ArtifactSlots[i])
+				}
 				switch path.Leaf {
 				case "title":
 					return json.Marshal(def.ArtifactSlots[i].Title)

@@ -16,6 +16,7 @@ import (
 // fail with a message that names the model, lists what IS configured, and hints
 // at the [[providers]] trap — not a silent empty model.
 func TestBuildUnknownModelErrorIsActionable(t *testing.T) {
+	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
@@ -42,6 +43,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 }
 
 func TestBuildMigratesLegacyBareMimoModelOverride(t *testing.T) {
+	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
@@ -69,6 +71,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 // builds fine (RequireKey is false so the UI stays reachable) but must emit a
 // notice naming the env var, instead of silently showing a dead/empty model.
 func TestBuildNoticesMissingAPIKey(t *testing.T) {
+	isolateConfigHome(t)
 	const keyEnv = "WorkGround2_MISSING_KEY_FOR_TEST"
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -108,6 +111,7 @@ api_key_env = "`+keyEnv+`"
 }
 
 func TestBuildDoesNotNoticeMissingAPIKeyForNoAuthLoopback(t *testing.T) {
+	isolateConfigHome(t)
 	const keyEnv = "WorkGround2_LOCAL_GATEWAY_KEY_FOR_TEST"
 	dir := robustTempDir(t)
 	t.Chdir(dir)

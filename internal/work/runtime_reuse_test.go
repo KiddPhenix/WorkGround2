@@ -46,6 +46,21 @@ func (reusePatchPlanner) PlanPatch(_ context.Context, _ PatchPlanInput) (*PatchP
 	}}}, nil
 }
 
+type targetPatchPlanner struct {
+	nodeID string
+}
+
+func (p targetPatchPlanner) PlanPatch(_ context.Context, input PatchPlanInput) (*PatchPlan, error) {
+	if input.TargetNodeID != p.nodeID {
+		return nil, errors.New("target node context mismatch")
+	}
+	return &PatchPlan{Operations: []PatchOp{{
+		Op:       "replace",
+		Path:     "nodes/" + p.nodeID + "/description",
+		NewValue: json.RawMessage(`"updated guidance"`),
+	}}}, nil
+}
+
 type failReuseBatchStore struct {
 	*FileWorkStore
 	fail bool
@@ -508,6 +523,111 @@ func TestV2KeptRuntime_WorkflowPatchProjectsUpstream_FileStore(t *testing.T) {
 		executor.callCount() != 3 {
 		t.Fatal("workflow patch replay duplicated run, runtime, or execution")
 	}
+}
+
+func TestV2WorkflowPatch_CompletedTargetRerunsEntireDownstream_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{
+			{ID: "n1", Title: "Plan theme", BlockIDs: []string{"b1"}},
+			{ID: "n2", Title: "Create jokes", DependsOn: []string{"n1"}},
+			{ID: "n3", Title: "Compile series", DependsOn: []string{"n2"}, ProducesSlotIDs: []string{"slot"}},
+		},
+		nil,
+	))
+	now := time.Now().UTC()
+	blockPayload, _ := json.Marshal(BlockInstance{
+		ID: "b1", Kind: "markdown", SchemaVersion: 1, Revision: 1,
+		Title: "Plan theme", Status: BlockReady, Data: json.RawMessage(`{"content":"original guidance"}`),
+		Source:   BlockSource{Provider: "test", Mode: "snapshot"},
+		Fallback: BlockFallback{Summary: "original guidance"}, CreatedAt: now, UpdatedAt: now,
+	})
+	_, state, _ := h.store.LoadState(h.work, "")
+	blockEvent := newServiceEvent(h.work, "block-"+t.Name(), EventBlockUpserted, blockPayload, now)
+	blockEvent.BaseRevision, blockEvent.Revision = state.Revision, state.Revision+1
+	if _, err := h.store.CommitEvent(h.work, blockEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	executor := &coordinatorExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	h.svc.SetV2PatchPlanner(targetPatchPlanner{nodeID: "n1"})
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, nil); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != WorkCompleted || executor.callCount() != 3 {
+		t.Fatalf("initial run did not complete once per node: state=%s calls=%d", completed.State, executor.callCount())
+	}
+
+	_, state, _ = h.store.LoadState(h.work, "")
+	preview, err := h.svc.PreviewV2WorkPatch(context.Background(), PreviewWorkPatchInput{
+		WorkID: h.work, RunID: h.run, TaskID: "n1", BlockID: "b1",
+		SessionID: "discussion", Instruction: "use animal themes",
+		DefinitionRevision: completed.V2CurrentRevision, BlockRevision: 1,
+		Scope: PatchWorkflow, RequestID: "preview-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := preview.Preview.InvalidatedTaskIDs; !containsAllIDs(got, "n1", "n2", "n3") {
+		t.Fatalf("preview invalidation=%v, want target and all descendants", got)
+	}
+	_, state, _ = h.store.LoadState(h.work, "")
+	applyInput := ApplyWorkPatchInput{
+		WorkID: h.work, PatchID: preview.Preview.ID, PreviewDigest: preview.Preview.Digest,
+		Scope: PatchWorkflow, ExpectedRevision: state.Revision, RequestID: "patch-apply-" + t.Name(),
+	}
+	result, err := h.svc.ApplyV2WorkPatch(context.Background(), applyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.RequiresRerun || !containsAllIDs(result.InvalidatedTaskIDs, "n1", "n2", "n3") {
+		t.Fatalf("apply impact=%+v, want target and all descendants", result)
+	}
+
+	definition, err := h.store.LoadRevision(h.work, result.NewRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRunID := latestRunIDForDigest(after, definition.Digest)
+	if newRunID == "" || newRunID == h.run || after.State != WorkCompleted {
+		t.Fatalf("revision run not settled independently: run=%q old=%q state=%s", newRunID, h.run, after.State)
+	}
+	for _, nodeID := range []string{"n1", "n2", "n3"} {
+		taskID, _ := DeriveTaskID(newRunID, nodeID)
+		runtime := after.V2TaskRuntimes[taskID]
+		if runtime == nil || runtime.State != TaskCompleted || len(runtime.Attempts) != 1 {
+			t.Fatalf("revised runtime %s=%+v", nodeID, runtime)
+		}
+	}
+	if executor.callCount() != 6 {
+		t.Fatalf("completed target patch executed %d tasks, want old 3 + revised 3", executor.callCount())
+	}
+
+	replayed, err := h.svc.ApplyV2WorkPatch(context.Background(), applyInput)
+	if err != nil || replayed == nil || !replayed.Duplicate || executor.callCount() != 6 {
+		t.Fatalf("duplicate apply was not idempotent: result=%+v err=%v calls=%d", replayed, err, executor.callCount())
+	}
+}
+
+func containsAllIDs(values []string, expected ...string) bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	for _, value := range expected {
+		if !set[value] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestV2KeptRuntime_FailedRuntimeIsNotReused_FileStore(t *testing.T) {

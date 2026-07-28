@@ -200,14 +200,40 @@ func TestParseDefinitionPlanResponse_StringContainsMarkdownFenceChars(t *testing
 
 // ── Rejection cases ────────────────────────────────────────────────────────
 
-func TestParseDefinitionPlanResponse_TwoObjects(t *testing.T) {
-	raw := validPlanJSON() + " " + validPlanJSON()
-	mustFailParse(t, raw, "multiple JSON values")
+func TestParseDefinitionPlanResponse_TwoObjectsUsesLastValid(t *testing.T) {
+	first := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"first"`, 1)
+	last := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"last"`, 1)
+	plan := mustParsePlan(t, first+" "+last)
+	if plan.Goal != "last" {
+		t.Fatalf("goal=%q, want last", plan.Goal)
+	}
 }
 
-func TestParseDefinitionPlanResponse_ObjectThenAnotherObjectWithText(t *testing.T) {
-	raw := validPlanJSON() + "\n这里有一些说明\n" + validPlanJSON()
-	mustFailParse(t, raw, "multiple JSON values")
+func TestParseDefinitionPlanResponse_ObjectThenAnotherObjectWithTextUsesLastValid(t *testing.T) {
+	first := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"first"`, 1)
+	last := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"last"`, 1)
+	plan := mustParsePlan(t, first+"\n这里有一些说明\n"+last)
+	if plan.Goal != "last" {
+		t.Fatalf("goal=%q, want last", plan.Goal)
+	}
+}
+
+func TestParseDefinitionPlanResponse_UsesEarlierObjectWhenLastIsInvalid(t *testing.T) {
+	invalid := `{"goal":"invalid","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`
+	plan := mustParsePlan(t, validPlanJSON()+"\n"+invalid)
+	if plan.Goal != "deliver" {
+		t.Fatalf("goal=%q, want deliver", plan.Goal)
+	}
+}
+
+func TestParseDefinitionPlanResponse_AnalysisArrayThenValidObject(t *testing.T) {
+	raw := "分析：先比较两个候选。\n" +
+		`[{"candidate":"A"},{"candidate":"B"}]` +
+		"\n最终答案：\n" + validPlanJSON()
+	plan := mustParsePlan(t, raw)
+	if plan.Goal != "deliver" {
+		t.Fatalf("goal=%q, want deliver", plan.Goal)
+	}
 }
 
 func TestParseDefinitionPlanResponse_ArrayInsteadOfObject(t *testing.T) {
@@ -541,16 +567,20 @@ func TestParseDefinitionPlanResponse_PureArrayWithPrefaceStillRejected(t *testin
 	mustFailParse(t, raw, "expected JSON object, got array")
 }
 
-func TestParseDefinitionPlanResponse_ObjectThenArrayRejected(t *testing.T) {
-	// Valid object followed by a real JSON array must be rejected.
+func TestParseDefinitionPlanResponse_ObjectThenArrayUsesValidObject(t *testing.T) {
 	raw := validPlanJSON() + "\n[1,2]"
-	mustFailParse(t, raw, "multiple JSON values")
+	plan := mustParsePlan(t, raw)
+	if plan.Goal != "deliver" {
+		t.Fatalf("goal=%q, want deliver", plan.Goal)
+	}
 }
 
-func TestParseDefinitionPlanResponse_ArrayThenObjectRejected(t *testing.T) {
-	// Real JSON array before a valid object must be rejected.
+func TestParseDefinitionPlanResponse_ArrayThenObjectUsesValidObject(t *testing.T) {
 	raw := "[1,2]\n" + validPlanJSON()
-	mustFailParse(t, raw, "expected JSON object, got array")
+	plan := mustParsePlan(t, raw)
+	if plan.Goal != "deliver" {
+		t.Fatalf("goal=%q, want deliver", plan.Goal)
+	}
 }
 
 func TestParseDefinitionPlanResponse_ArrayWrappingObjectRejected(t *testing.T) {
@@ -1362,6 +1392,7 @@ func TestRepair_FirstPromptContainsFullSchema(t *testing.T) {
 		`"pinEligible"`,
 		`"text", "number", "date", "choice", "multi_choice", "file", "roster", "form", "approval"`,
 		`"valueSchema"`,
+		`"multiline": true`,
 	} {
 		if !strings.Contains(sysContent, want) {
 			t.Fatalf("first prompt missing %q in system message:\n%s", want, sysContent)
@@ -1370,13 +1401,9 @@ func TestRepair_FirstPromptContainsFullSchema(t *testing.T) {
 }
 
 func TestRepair_RepairPromptContainsSafeErrorAndSingleObjectInstruction(t *testing.T) {
-	// The repair request (attempt 1) must:
-	//   1. Have system message with full schema (same as first-turn)
-	//   2. Have safe error category (no raw response content)
-	//   3. Have single-object / no-arrays instruction
-	//   4. NOT leak the original raw content in the repair user message
 	secret := "凤凰绝密项目代号xyz"
-	bad := `{"goal":"` + secret + `","nodes":` + secret + `,"artifactSlots":[],"inputSpecs":[]}`
+	bad := "RAW_ANALYSIS_MUST_BE_DROPPED\n" +
+		`{"goal":"` + secret + `","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`
 
 	prov := &repairCaptureProvider{
 		sequences: [][]provider.Chunk{
@@ -1398,9 +1425,8 @@ func TestRepair_RepairPromptContainsSafeErrorAndSingleObjectInstruction(t *testi
 	}
 	repairReq := prov.requests[1]
 
-	// ── System message must contain full schema (same as first turn) ────────
-	if len(repairReq.Messages) < 4 {
-		t.Fatalf("repair request: expected >=4 messages, got %d", len(repairReq.Messages))
+	if len(repairReq.Messages) != 2 {
+		t.Fatalf("repair request: expected exactly 2 messages, got %d", len(repairReq.Messages))
 	}
 	sysContent := repairReq.Messages[0].Content
 	for _, want := range []string{
@@ -1417,42 +1443,43 @@ func TestRepair_RepairPromptContainsSafeErrorAndSingleObjectInstruction(t *testi
 		`"pinEligible"`,
 		`"text", "number", "date", "choice", "multi_choice", "file", "roster", "form", "approval"`,
 		`"valueSchema"`,
+		`"multiline": true`,
 	} {
 		if !strings.Contains(sysContent, want) {
 			t.Fatalf("repair system message missing %q:\n%s", want, sysContent)
 		}
 	}
 
-	// ── Last user message: safe error + single-object instruction ──────────
 	lastUser := repairReq.Messages[len(repairReq.Messages)-1].Content
-	if !strings.Contains(lastUser, "could not be parsed") {
-		t.Fatalf("repair prompt missing parse-failure notice: %q", lastUser)
-	}
-	if !strings.Contains(lastUser, "Error:") {
+	if !strings.Contains(lastUser, "Parse error category: unknown field") {
 		t.Fatalf("repair prompt missing safe error category: %q", lastUser)
 	}
-	if !strings.Contains(lastUser, "no arrays") || !strings.Contains(lastUser, "No markdown") {
-		t.Fatalf("repair prompt missing single-object / no-arrays instruction: %q", lastUser)
+	if !strings.Contains(lastUser, "Last JSON object candidate to repair:") {
+		t.Fatalf("repair prompt missing object candidate: %q", lastUser)
 	}
-	if strings.Contains(lastUser, secret) {
-		t.Fatalf("repair user message leaks sensitive content: %q", lastUser)
+	if !strings.Contains(lastUser, secret) {
+		t.Fatalf("repair prompt lost candidate semantics: %q", lastUser)
 	}
-
-	// ── Assistant message: safely truncated previous response ──────────────
-	assistant := repairReq.Messages[len(repairReq.Messages)-2].Content
-	if len(bad) > 4096 && !strings.Contains(assistant, "... [truncated]") {
-		t.Fatalf("repair assistant message not truncated for >4096 byte input (%d bytes): %q", len(bad), assistant)
+	if strings.Contains(lastUser, "RAW_ANALYSIS_MUST_BE_DROPPED") {
+		t.Fatalf("repair prompt retained raw analysis: %q", lastUser)
+	}
+	for _, message := range repairReq.Messages {
+		if message.Role == provider.RoleAssistant {
+			t.Fatalf("repair request must not replay raw response as assistant history")
+		}
+	}
+	for _, want := range []string{"do NOT re-plan", "begin with { and end with }", "Do not emit analysis"} {
+		if !strings.Contains(lastUser, want) {
+			t.Fatalf("repair prompt missing %q: %q", want, lastUser)
+		}
 	}
 }
 
-func TestRepair_TruncationKeepsUTF8Boundary(t *testing.T) {
-	// Build a bad response > 4096 bytes with multi-byte UTF-8 characters
-	// crossing the 4096 boundary. Use an array wrapper (not object) so
-	// parse fails and repair is triggered.
-	marker := "\n... [middle truncated] ...\n"
-	// Build ~4200 bytes of Chinese text so the 4096 cut lands inside a multi-byte char.
-	chinesePadding := strings.Repeat("凤凰计划项目代号绝密信息测试数据", 100) // ~3500 bytes
-	bad := `[{"goal":"` + chinesePadding + strings.Repeat("测", 200) + `","nodes":[],"artifactSlots":[],"inputSpecs":[]}]`
+func TestRepair_DropsLongRawAnalysisAndKeepsLastObjectCandidateUTF8(t *testing.T) {
+	chinesePadding := strings.Repeat("模型分析内容不应进入修复上下文", 200)
+	uniqueGoal := "凤凰计划候选语义"
+	bad := chinesePadding + "\n" +
+		`{"goal":"` + uniqueGoal + `","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`
 
 	if len(bad) <= 4096 {
 		t.Fatalf("test setup: bad response must be >4096 bytes, got %d", len(bad))
@@ -1477,23 +1504,18 @@ func TestRepair_TruncationKeepsUTF8Boundary(t *testing.T) {
 		t.Fatalf("expected at least 2 requests, got %d", len(prov.requests))
 	}
 	repairReq := prov.requests[1]
-	if len(repairReq.Messages) < 4 {
-		t.Fatalf("repair request: expected >=4 messages, got %d", len(repairReq.Messages))
+	if len(repairReq.Messages) != 2 {
+		t.Fatalf("repair request: expected exactly 2 messages, got %d", len(repairReq.Messages))
 	}
-	assistant := repairReq.Messages[len(repairReq.Messages)-2].Content
-
-	// Must be truncated.
-	if !strings.Contains(assistant, marker) {
-		t.Fatalf("assistant message missing truncation marker: %q", assistant[:200])
+	repair := repairReq.Messages[1].Content
+	if !strings.Contains(repair, uniqueGoal) {
+		t.Fatalf("repair prompt lost last object candidate: %q", repair)
 	}
-	// Length: ≤ maxBytes (4096) because head+tail+marker fits in budget.
-	maxLen := 4096
-	if len(assistant) > maxLen {
-		t.Fatalf("assistant message length %d exceeds max %d", len(assistant), maxLen)
+	if strings.Contains(repair, "模型分析内容不应进入修复上下文") {
+		t.Fatalf("repair prompt retained raw analysis")
 	}
-	// Must be valid UTF-8.
-	if !utf8.ValidString(assistant) {
-		t.Fatalf("assistant message contains invalid UTF-8 after truncation")
+	if !utf8.ValidString(repair) {
+		t.Fatalf("repair prompt contains invalid UTF-8")
 	}
 }
 
@@ -1539,9 +1561,24 @@ func TestRepair_FirstPromptContainsSingleObjectAndNoMultiCandidate(t *testing.T)
 	if !strings.Contains(sysContent, "no markdown, no code fences, no commentary") {
 		t.Fatalf("first prompt missing no-markdown/commentary constraint:\n%s", sysContent)
 	}
+	for _, want := range []string{
+		"Think silently",
+		"first non-whitespace character of your response must be {",
+		"last must be }",
+		"Do not quote, restate, or discuss the input JSON",
+	} {
+		if !strings.Contains(sysContent, want) {
+			t.Fatalf("first prompt missing %q:\n%s", want, sysContent)
+		}
+	}
 	userContent := req.Messages[len(req.Messages)-1].Content
 	if !strings.HasSuffix(userContent, definitionPlanOutputReminder) {
 		t.Fatalf("first user message must end with the output reminder:\n%s", userContent)
+	}
+	for _, want := range []string{"Validate silently", "Do not emit analysis", "a second JSON value"} {
+		if !strings.Contains(userContent, want) {
+			t.Fatalf("first user message missing %q:\n%s", want, userContent)
+		}
 	}
 	// Full schema still present.
 	for _, want := range []string{
@@ -1560,16 +1597,14 @@ func TestRepair_FirstPromptContainsSingleObjectAndNoMultiCandidate(t *testing.T)
 	}
 }
 
-func TestRepair_MultipleJSONValuesRepairIncludesDraftAndSemanticPreservation(t *testing.T) {
-	// Call 1 returns two valid JSON objects → parse fails "multiple JSON values".
-	// Call 2 must include the original draft in assistant message and
-	// "preserve semantics / do not re-plan / converge" in the repair prompt.
-	raw1 := validPlanJSON() + "\n" + validPlanJSON()
+func TestPlanDefinition_MultipleValidObjectsUsesLastWithoutRepair(t *testing.T) {
+	first := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"first"`, 1)
+	last := strings.Replace(validPlanJSON(), `"goal":"deliver"`, `"goal":"last"`, 1)
+	raw1 := first + "\n" + last
 
 	prov := &repairCaptureProvider{
 		sequences: [][]provider.Chunk{
 			{chunkT(raw1), chunkD},
-			{chunkT(validPlanJSON()), chunkD},
 		},
 	}
 	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
@@ -1578,49 +1613,19 @@ func TestRepair_MultipleJSONValuesRepairIncludesDraftAndSemanticPreservation(t *
 		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
 	})
 	if err != nil {
-		t.Fatalf("repair should succeed: %v", err)
+		t.Fatalf("parse should succeed: %v", err)
 	}
-	if plan == nil || plan.Goal != "deliver" {
+	if plan == nil || plan.Goal != "last" {
 		t.Fatalf("plan=%+v", plan)
 	}
-
-	if len(prov.requests) < 2 {
-		t.Fatalf("expected at least 2 requests, got %d", len(prov.requests))
-	}
-	repairReq := prov.requests[1]
-	if len(repairReq.Messages) < 4 {
-		t.Fatalf("repair request: expected >=4 messages, got %d", len(repairReq.Messages))
-	}
-
-	// Assistant message must contain the original draft (raw1).
-	assistant := repairReq.Messages[len(repairReq.Messages)-2].Content
-	if assistant != raw1 {
-		t.Fatalf("repair assistant message must preserve the full draft:\ngot:  %q\nwant: %q", assistant, raw1)
-	}
-
-	// Last user message must ask to preserve semantics, not re-plan.
-	lastUser := repairReq.Messages[len(repairReq.Messages)-1].Content
-	if !strings.Contains(lastUser, "DRAFT to be repaired") {
-		t.Fatalf("repair prompt missing 'DRAFT to be repaired': %q", lastUser)
-	}
-	if !strings.Contains(lastUser, "do NOT re-plan") {
-		t.Fatalf("repair prompt missing 'do NOT re-plan': %q", lastUser)
-	}
-	if !strings.Contains(lastUser, "converge them into ONE object") {
-		t.Fatalf("repair prompt missing 'converge them into ONE object': %q", lastUser)
-	}
-	if !strings.Contains(lastUser, "multiple JSON values") {
-		t.Fatalf("repair prompt missing safe error category: %q", lastUser)
-	}
-	// Must not leak raw content.
-	if strings.Contains(lastUser, "deliver") {
-		t.Fatalf("repair user message leaks raw content: %q", lastUser)
+	if len(prov.requests) != 1 {
+		t.Fatalf("expected one request without repair, got %d", len(prov.requests))
 	}
 }
 
 func TestRepair_ConsecutiveRepairsUseMostRecentDraft(t *testing.T) {
-	// Call 1 fails with unknown field → repair uses call 1's draft.
-	// Call 2 fails with array error → repair uses call 2's draft (not call 1's).
+	// Call 1 fails with unknown field → repair includes its last object.
+	// Call 2 fails with array error → repair reports that no object exists.
 	// Call 3 succeeds.
 	bad1 := `{"goal":"x","nodes":[],"artifactSlots":[],"inputSpecs":[],"secretField":"bad"}`
 	bad2 := `[{"goal":"x","nodes":[],"artifactSlots":[],"inputSpecs":[]}]`
@@ -1648,55 +1653,46 @@ func TestRepair_ConsecutiveRepairsUseMostRecentDraft(t *testing.T) {
 		t.Fatalf("expected 3 requests, got %d", len(prov.requests))
 	}
 
-	// Repair 1 (request index 1): assistant must contain bad1.
 	repair1 := prov.requests[1]
-	if len(repair1.Messages) < 4 {
-		t.Fatalf("repair1: expected >=4 messages, got %d", len(repair1.Messages))
+	if len(repair1.Messages) != 2 {
+		t.Fatalf("repair1: expected 2 messages, got %d", len(repair1.Messages))
 	}
-	assistant1 := repair1.Messages[len(repair1.Messages)-2].Content
-	if !strings.Contains(assistant1, "secretField") {
-		t.Fatalf("repair1 assistant missing bad1 content: %q", assistant1)
+	lastUser1 := repair1.Messages[1].Content
+	if !strings.Contains(lastUser1, "secretField") {
+		t.Fatalf("repair1 missing bad1 candidate: %q", lastUser1)
 	}
-	lastUser1 := repair1.Messages[len(repair1.Messages)-1].Content
 	if !strings.Contains(lastUser1, "unknown field") {
 		t.Fatalf("repair1 error category wrong: %q", lastUser1)
 	}
-	// Repair 1 must NOT contain bad2 content.
-	if strings.Contains(assistant1, `[{"goal":"x"`) {
-		t.Fatalf("repair1 assistant leaked bad2 content: %q", assistant1)
-	}
 
-	// Repair 2 (request index 2): assistant must contain bad2, NOT bad1.
 	repair2 := prov.requests[2]
-	if len(repair2.Messages) < 4 {
-		t.Fatalf("repair2: expected >=4 messages, got %d", len(repair2.Messages))
+	if len(repair2.Messages) != 2 {
+		t.Fatalf("repair2: expected 2 messages, got %d", len(repair2.Messages))
 	}
-	assistant2 := repair2.Messages[len(repair2.Messages)-2].Content
-	if !strings.Contains(assistant2, `[{"goal":"x"`) {
-		t.Fatalf("repair2 assistant missing bad2 content: %q", assistant2)
+	lastUser2 := repair2.Messages[1].Content
+	if !strings.Contains(lastUser2, "No complete JSON object candidate was found") {
+		t.Fatalf("repair2 missing no-object notice: %q", lastUser2)
 	}
-	if strings.Contains(assistant2, "secretField") {
-		t.Fatalf("repair2 assistant still contains bad1 content: %q", assistant2)
+	if strings.Contains(lastUser2, "secretField") || strings.Contains(lastUser2, `[{"goal":"x"`) {
+		t.Fatalf("repair2 retained prior raw output: %q", lastUser2)
 	}
-	lastUser2 := repair2.Messages[len(repair2.Messages)-1].Content
 	if !strings.Contains(lastUser2, "expected JSON object, got array") {
 		t.Fatalf("repair2 error category wrong: %q", lastUser2)
 	}
+	for i, req := range prov.requests[1:] {
+		for _, message := range req.Messages {
+			if message.Role == provider.RoleAssistant {
+				t.Fatalf("repair request %d contains assistant history", i+1)
+			}
+		}
+	}
 }
 
-func TestRepair_LongDraftHeadTailPreservationWithUTF8(t *testing.T) {
-	// Build a bad response > 4096 bytes with multi-byte UTF-8 characters.
-	// Verify the truncated assistant message contains both head and tail
-	// portions with the middle-truncation marker, and is valid UTF-8.
-	marker := "\n... [middle truncated] ...\n"
-
-	// Build a unique ~5000-byte response: Chinese prefix (~4000 bytes) +
-	// a unique tail marker that must survive truncation.
-	chineseHead := strings.Repeat("凤凰计划项目代号绝密信息测试数据", 100) // ~3500 bytes
+func TestRepair_LongRawSendsOnlyLastObjectCandidate(t *testing.T) {
+	chineseHead := strings.Repeat("凤凰计划原始分析不应回灌", 180)
 	uniqueTail := `UNIQUE_TAIL_SURVIVES_9876543210`
-	// Pad the middle with more content to cross 4096.
-	middlePad := strings.Repeat("中间填充内容数据", 40) // ~960 bytes
-	bad := chineseHead + middlePad + `[{"goal":"` + uniqueTail + `","nodes":[],"artifactSlots":[],"inputSpecs":[]}]`
+	bad := chineseHead + "\n" +
+		`{"goal":"` + uniqueTail + `","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`
 
 	if len(bad) <= 4096 {
 		t.Fatalf("test setup: bad response must be >4096 bytes, got %d", len(bad))
@@ -1721,30 +1717,21 @@ func TestRepair_LongDraftHeadTailPreservationWithUTF8(t *testing.T) {
 		t.Fatalf("expected at least 2 requests, got %d", len(prov.requests))
 	}
 	repairReq := prov.requests[1]
-	if len(repairReq.Messages) < 4 {
-		t.Fatalf("repair request: expected >=4 messages, got %d", len(repairReq.Messages))
+	if len(repairReq.Messages) != 2 {
+		t.Fatalf("repair request: expected 2 messages, got %d", len(repairReq.Messages))
 	}
-	assistant := repairReq.Messages[len(repairReq.Messages)-2].Content
-
-	// Must be truncated with the middle marker.
-	if !strings.Contains(assistant, marker) {
-		t.Fatalf("assistant message missing middle-truncation marker: %q", assistant[:200])
+	repair := repairReq.Messages[1].Content
+	if strings.Contains(repair, "凤凰计划原始分析不应回灌") {
+		t.Fatalf("repair prompt retained long raw analysis")
 	}
-	// Total length must be reasonable.
-	if len(assistant) > 4096+len(marker) {
-		t.Fatalf("assistant message length %d exceeds max %d", len(assistant), 4096+len(marker))
+	if !strings.Contains(repair, uniqueTail) {
+		t.Fatalf("repair prompt missing last object candidate: %q", repair)
 	}
-	// Must be valid UTF-8.
-	if !utf8.ValidString(assistant) {
-		t.Fatalf("assistant message contains invalid UTF-8 after truncation")
+	if strings.Contains(repair, "... [middle truncated] ...") {
+		t.Fatalf("repair prompt should not contain raw-response truncation marker")
 	}
-	// The head portion must start with the Chinese prefix.
-	if !strings.Contains(assistant, "凤凰计划") {
-		t.Fatalf("assistant message missing head content: %q", assistant[:200])
-	}
-	// The tail portion must contain the unique marker.
-	if !strings.Contains(assistant, uniqueTail) {
-		t.Fatalf("assistant message missing tail content (uniqueTail=%q): %q", uniqueTail, assistant[len(assistant)-200:])
+	if !utf8.ValidString(repair) {
+		t.Fatalf("repair prompt contains invalid UTF-8")
 	}
 }
 

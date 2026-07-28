@@ -12,8 +12,11 @@ import (
 )
 
 // newTestFileWorkStore creates a FileWorkStore in a temp directory.
+// File-backed store coverage belongs to the integration lane so the short
+// suite remains useful for edit-time feedback.
 func newTestFileWorkStore(t *testing.T) *FileWorkStore {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	dir := t.TempDir()
 	workDir := filepath.Join(dir, "works")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
@@ -24,6 +27,13 @@ func newTestFileWorkStore(t *testing.T) *FileWorkStore {
 		t.Fatalf("NewFileWorkStore: %v", err)
 	}
 	return s
+}
+
+func requireFileStoreIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("file-backed work store integration; run without -short")
+	}
 }
 
 // writeFutureWorkProjection writes a projection.json with a future schema version.

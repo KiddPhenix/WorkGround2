@@ -93,6 +93,40 @@ func TestPatchPlannerRepairsNaturalLanguageOnce(t *testing.T) {
 	}
 }
 
+func TestPatchPlannerRepairsWorkflowRuntimeBlockPathOnce(t *testing.T) {
+	input := patchPlannerInput()
+	input.Scope = work.PatchWorkflow
+	input.TargetNodeID = "plan-theme"
+	input.Definition = &work.WorkDefinitionRevision{
+		WorkID:   "joke-series",
+		Revision: 2,
+		Nodes: []work.NodeDef{{
+			ID:          "plan-theme",
+			Title:       "Plan theme",
+			Description: "Choose a coherent theme.",
+		}},
+	}
+	const repaired = `[{"op":"replace","path":"nodes/plan-theme/description","newValue":"Choose a coherent animal theme, focusing on chickens and ducks."}]`
+	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{
+		patchChunks(validPatchPlanJSON),
+		patchChunks(repaired),
+	}}
+
+	plan, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.requests) != 2 || len(plan.Operations) != 1 ||
+		plan.Operations[0].Path != "nodes/plan-theme/description" {
+		t.Fatalf("plan=%+v calls=%d", plan, len(prov.requests))
+	}
+	repair := prov.requests[1]
+	if len(repair.Messages) != 4 ||
+		!strings.Contains(repair.Messages[3].Content, "runtime Block forbidden by workflow scope") {
+		t.Fatalf("repair request does not explain the scope violation: %+v", repair.Messages)
+	}
+}
+
 func TestPatchPlannerParsesJSONWithNaturalLanguageWrapper(t *testing.T) {
 	raw := "好的，补丁如下：\n```json\n" + validPatchPlanJSON + "\n```\n请确认。"
 	plan, err := parsePatchPlanResponse(raw)
@@ -167,6 +201,45 @@ func TestPatchPlannerPromptIncludesBlockDataAndExactExample(t *testing.T) {
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestPatchPlannerWorkflowPromptAnchorsGuidanceToTargetNode(t *testing.T) {
+	input := patchPlannerInput()
+	input.Scope = work.PatchWorkflow
+	input.TargetNodeID = "plan-theme"
+	input.Definition = &work.WorkDefinitionRevision{
+		WorkID:   "joke-series",
+		Revision: 2,
+		Goal:     "创作系列笑话集",
+		Nodes: []work.NodeDef{
+			{ID: "plan-theme", Title: "Plan theme"},
+			{ID: "create-jokes", Title: "Create jokes", DependsOn: []string{"plan-theme"}},
+		},
+	}
+	prompt := buildPatchPlannerSystemPrompt(input)
+	for _, want := range []string{
+		"workflow revision",
+		"nodes/<targetNodeID>/description",
+		"Target Node: id=plan-theme",
+		"downstream nodes execute with the new guidance",
+		`description=""`,
+		`"path":"nodes/plan-theme/description"`,
+		"Runtime Block paths are forbidden",
+		"Reference output Block (read-only)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{
+		"Allowed paths for this Block patch",
+		`"path":"blocks/<blockID>/data"`,
+		"For block content or table requests",
+	} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("workflow prompt contains block-only guidance %q:\n%s", forbidden, prompt)
 		}
 	}
 }

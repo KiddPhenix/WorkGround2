@@ -10,6 +10,8 @@ import (
 )
 
 func TestRequestHelpToolExposedWhenAssistEnabled(t *testing.T) {
+	isolateConfigHome(t)
+	t.Chdir(robustTempDir(t))
 	cfg := config.Default()
 	if !cfg.AssistEnabled() {
 		t.Fatal("default config should have assist enabled")
@@ -40,6 +42,8 @@ func TestRequestHelpToolExposedWhenAssistEnabled(t *testing.T) {
 }
 
 func TestRequestHelpToolNotInTokenEconomy(t *testing.T) {
+	isolateConfigHome(t)
+	t.Chdir(robustTempDir(t))
 	cfg := config.Default()
 	if !cfg.AssistEnabled() {
 		t.Fatal("default config should have assist enabled")

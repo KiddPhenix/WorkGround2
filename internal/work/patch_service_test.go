@@ -142,6 +142,7 @@ func newLegacyPatchHarness(t *testing.T) *patchHarness {
 
 func newPatchHarnessConfig(t *testing.T, declareBlock, seedBlock bool) *patchHarness {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	dir := t.TempDir()
 	store, err := NewFileWorkStore(dir, 0)
 	if err != nil {
@@ -310,7 +311,8 @@ func TestPatchPreviewPlannerContextAndRestartReplay(t *testing.T) {
 	}
 	if h.planner.calls != 1 || h.planner.last.Work == nil || h.planner.last.Definition == nil ||
 		h.planner.last.Run == nil || h.planner.last.Task == nil || h.planner.last.Block == nil ||
-		h.planner.last.SessionID != input.SessionID || h.planner.last.Instruction != input.Instruction {
+		h.planner.last.SessionID != input.SessionID || h.planner.last.Instruction != input.Instruction ||
+		h.planner.last.TargetNodeID != "n1" {
 		t.Fatalf("planner did not receive complete context: %+v", h.planner.last)
 	}
 	if got := string(result.Preview.Operations[0].OldValue); got != `"Research"` {
@@ -348,6 +350,37 @@ func TestPatchPreviewPlannerContextAndRestartReplay(t *testing.T) {
 	if planner.calls != 0 || replay.Revision != result.Revision ||
 		replay.Preview.Digest != result.Preview.Digest || replay.Preview.ExpiresAt != result.Preview.ExpiresAt {
 		t.Fatalf("preview replay changed result: first=%+v replay=%+v calls=%d", result, replay, planner.calls)
+	}
+}
+
+func TestPatchPreviewCollectionsEncodeAsArrays(t *testing.T) {
+	h := newPatchHarness(t)
+	result, err := h.service.PreviewWorkPatch(
+		context.Background(),
+		h.previewInput(t, PatchBlock, "block-title", "preview-array-contract"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result.Preview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"operations",
+		"affectedNodeIds",
+		"affectedBlockIds",
+		"affectedArtifactSlotIds",
+		"staleArtifactSlotIds",
+		"invalidatedTaskIds",
+	} {
+		if _, ok := payload[field].([]any); !ok {
+			t.Fatalf("%s=%T(%v), want JSON array; payload=%s", field, payload[field], payload[field], raw)
+		}
 	}
 }
 

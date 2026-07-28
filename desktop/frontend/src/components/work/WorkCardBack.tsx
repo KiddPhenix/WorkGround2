@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { LoaderCircle } from 'lucide-react';
 
 import type { RunSelection, SessionRef, SessionSurfaceContext, WorkView } from '../../work/types';
 import { attemptKey, resolveSelection, stageKey, taskKey } from '../../work/store';
@@ -445,7 +446,10 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                 onChange={(event) => { setPrompt(event.target.value); onDraftChange(event.target.value); setSaveState('idle'); saveCompletedRef.current = false; }}
               />
             </label>
-            <div className="wg2-work-draft-actions">
+            <div
+              className="wg2-work-draft-actions"
+              data-busy={generateState !== 'idle' ? 'true' : 'false'}
+            >
               {hasCombinedFlow ? (
                 <>
                   <button
@@ -456,9 +460,19 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                     disabled={generateState !== 'idle' || !prompt.trim()}
                     onClick={() => void saveAndGenerate()}
                   >
-                    {generateState === 'saving' ? '正在保存…'
-                      : generateState === 'generating' ? '正在生成工作结构…'
-                        : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                    {generateState !== 'idle' && (
+                      <LoaderCircle
+                        className="wg2-work-generate-btn__spinner"
+                        size={15}
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <span>
+                      {generateState === 'saving' ? '正在保存…'
+                        : generateState === 'generating' ? '正在生成工作结构…'
+                          : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                    </span>
                   </button>
                   {generateError && <span role="alert" data-testid="work-generate-structure-error">{generateError}</span>}
                 </>

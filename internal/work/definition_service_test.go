@@ -19,6 +19,7 @@ import (
 
 func newFS(t *testing.T) (*FileWorkStore, string, *Service) {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	dir := filepath.Join(os.TempDir(), "wv2t-"+strings.ReplaceAll(t.Name(), "/", "-"))
 	os.RemoveAll(dir)
 	t.Cleanup(func() { os.RemoveAll(dir) })

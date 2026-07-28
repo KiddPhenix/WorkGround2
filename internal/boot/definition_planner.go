@@ -89,6 +89,8 @@ Output rules (strict — violations cause rejection):
 - Return exactly ONE top-level JSON object — never give candidate A/B, never give a second object, never wrap in an array.
 - The object must contain ONLY these four fields: goal, nodes, artifactSlots, inputSpecs. No other top-level fields.
 - Return ONLY the JSON — no markdown, no code fences, no commentary, no explanations, no preamble, no postscript.
+- Think silently. The first non-whitespace character of your response must be { and the last must be }.
+- Do not quote, restate, or discuss the input JSON, a draft JSON, or these instructions.
 
 Planning rules:
 - The object is a complete replacement candidate derived from the authoritative base.
@@ -96,11 +98,13 @@ Planning rules:
 - Every referenced inputSpecId and artifact slot ID must exist in the returned object.
 - Every artifact slot must have exactly one producer node.
 - Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
+- For text inputs that require multiple lines, lists, or one item per line, set valueSchema.multiline to true.
 - Do not return revision, parentRevision, status, digest, workId, createdAt, or createdBy.
 - Do not return null collections or a clone when the intent requests structural changes.`
 
-const definitionPlanOutputReminder = `Before responding, validate the result internally against the schema.
-Final response: exactly ONE JSON object and nothing else. Do not emit alternatives, a second JSON value, markdown, or commentary.`
+const definitionPlanOutputReminder = `Validate silently before responding.
+Your entire response must begin with { and end with }. Return exactly ONE JSON object and nothing else.
+Do not emit analysis, alternatives, quoted JSON, a second JSON value, markdown, or commentary.`
 
 // definitionPlanSchema is the static, reviewable full DefinitionPlan JSON
 // schema appended to the first-turn system prompt. It includes nested
@@ -153,7 +157,7 @@ No other top-level fields are allowed.
   "description": "string (optional)",
   "kind": "string (required) — must be one of: text, number, date, choice, multi_choice, file, roster, form, approval",
   "required": boolean (required),
-  "valueSchema": {} (optional),
+  "valueSchema": {} (optional; for kind=text, set {"multiline": true} when users must enter multiple lines or one item per line),
   "defaultValue": any (optional),
   "pinEligible": boolean (required)
 }
@@ -188,18 +192,46 @@ Allowed InputKind values: "text", "number", "date", "choice", "multi_choice", "f
   ]
 }`
 
-// parseDefinitionPlanResponse extracts and validates a DefinitionPlan from
-// raw model output. The response may contain natural-language commentary,
-// markdown fences, or a UTF-8 BOM around a single top-level JSON object.
-// Every other form — arrays, multiple objects, truncation, invalid UTF-8,
-// unknown fields, type errors, null or missing required fields — is an
-// explicit, recoverable failure whose error message never includes raw
-// response content.
+// parseDefinitionPlanResponse selects the last contract-valid DefinitionPlan
+// object from raw model output. Earlier commentary, arrays, examples, and
+// invalid objects are ignored. If no object passes the frozen DTO contract,
+// the last object's safe validation error is returned for repair.
 func parseDefinitionPlanResponse(raw string) (*work.DefinitionPlan, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("boot: PlanDefinition: empty model response")
 	}
-	jsonBytes, err := extractJSONObject([]byte(raw))
+	data := bytes.TrimPrefix([]byte(raw), []byte{0xEF, 0xBB, 0xBF})
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("boot: PlanDefinition: response contains invalid UTF-8")
+	}
+
+	containers := scanJSONContainers(data)
+	var lastErr error
+	hasArray := false
+	for i := len(containers) - 1; i >= 0; i-- {
+		candidate := containers[i]
+		if candidate.kind == '[' {
+			hasArray = true
+			continue
+		}
+		plan, err := decodeDefinitionPlan(candidate.data)
+		if err == nil {
+			return plan, nil
+		}
+		if lastErr == nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	if hasArray {
+		return nil, fmt.Errorf("boot: PlanDefinition: expected JSON object, got array")
+	}
+
+	// No syntactically complete JSON container was found. Preserve the
+	// previous precise error categories for truncated or malformed objects.
+	jsonBytes, err := extractFirstJSONObject(data)
 	if err != nil {
 		return nil, fmt.Errorf("boot: PlanDefinition: %w", err)
 	}
@@ -236,9 +268,9 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 
 // buildDefinitionPlanMessages returns the message list for a given attempt.
 // Attempt 0 uses the full system prompt with nested schema + user input.
-// Repair attempts (1+) include the assistant's previous response (truncated
-// head+tail when needed) and a repair instruction that tells the model to
-// preserve the draft's business semantics while fixing JSON structure.
+// Repair attempts include only the last syntactically complete object
+// candidate, never the full raw response, so analysis and duplicate objects
+// are not fed back to the model as assistant history.
 func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, lastErr error) []provider.Message {
 	if attempt == 0 {
 		return []provider.Message{
@@ -252,19 +284,39 @@ func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, 
 
 	// Repair attempt.
 	errCat := repairErrorCategory(lastErr)
-	truncated := truncateRawResponse(lastRaw, 4096)
+	candidate := lastJSONObjectCandidate(lastRaw)
+	candidateSection := "No complete JSON object candidate was found. Reconstruct one from the intent and authoritative base."
+	if candidate != "" {
+		candidateSection = fmt.Sprintf(
+			"Last JSON object candidate to repair:\n%s",
+			candidate,
+		)
+	}
 	return []provider.Message{
 		{Role: provider.RoleSystem, Content: definitionPlannerPrompt + definitionPlanSchema},
 		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\n%s",
-			intent, baseJSON, definitionPlanOutputReminder,
-		)},
-		{Role: provider.RoleAssistant, Content: truncated},
-		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Your previous response (shown as the assistant message above) could not be parsed as a valid DefinitionPlan JSON object.\n\nError: %s\n\nThe assistant message above is a DRAFT to be repaired. Keep its goals, nodes, dependencies, inputs, and artifact semantics exactly — do NOT re-plan or add/remove business content. Only fix the JSON structure and schema violations so the result is ONE valid DefinitionPlan JSON object.\n\nIf the draft contains multiple JSON values or candidates, converge them into ONE object that expresses the same plan — do NOT repeat multiple objects.\n\nReturn exactly ONE JSON object that conforms to the DefinitionPlan schema. No markdown, no commentary, no code fences, no arrays.",
+			"Repair a DefinitionPlan response.\n\nNatural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\nParse error category: %s\n\n%s\n\nPreserve the candidate's business semantics. Fix only JSON structure and schema violations; do NOT re-plan, add alternatives, explain the error, or quote the candidate before the answer.\n\n%s",
+			intent,
+			baseJSON,
 			errCat,
+			candidateSection,
+			definitionPlanOutputReminder,
 		)},
 	}
+}
+
+func lastJSONObjectCandidate(raw string) string {
+	data := bytes.TrimPrefix([]byte(raw), []byte{0xEF, 0xBB, 0xBF})
+	if !utf8.Valid(data) {
+		return ""
+	}
+	containers := scanJSONContainers(data)
+	for i := len(containers) - 1; i >= 0; i-- {
+		if containers[i].kind == '{' {
+			return string(containers[i].data)
+		}
+	}
+	return ""
 }
 
 // repairErrorCategory strips the "boot: PlanDefinition: " prefix from a parse
@@ -328,25 +380,49 @@ func truncateRawResponse(raw string, maxBytes int) string {
 	return head + marker + tail
 }
 
-// extractJSONObject locates the first complete JSON object in raw and returns
-// its bytes. Surrounding natural language (including bracket characters like
-// [draft] that happen to appear before {), a UTF-8 BOM, and trailing markdown
-// fences are stripped.
-//
-// Arrays — whether bare ([...]) or wrapping an object ([{...}]) — are rejected.
-// Multiple objects, truncation, and invalid UTF-8 are errors.
-func extractJSONObject(raw []byte) ([]byte, error) {
-	// Strip UTF-8 BOM.
-	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+type jsonContainer struct {
+	kind byte
+	data []byte
+}
 
-	// Reject invalid UTF-8 early so errors stay safe and deterministic.
-	if !utf8.Valid(raw) {
-		return nil, fmt.Errorf("response contains invalid UTF-8")
+// scanJSONContainers returns complete top-level JSON objects and arrays in
+// source order. Once a container is decoded, its entire byte range is skipped,
+// so arrays and objects nested inside it are never treated as separate values.
+func scanJSONContainers(raw []byte) []jsonContainer {
+	var containers []jsonContainer
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if b != '{' && b != '[' {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw[i:]))
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(val))
+		if len(s) == 0 {
+			continue
+		}
+		kind := s[0]
+		if kind != '{' && kind != '[' {
+			continue
+		}
+		containers = append(containers, jsonContainer{
+			kind: kind,
+			data: append([]byte(nil), val...),
+		})
+		consumed := dec.InputOffset()
+		if consumed > 0 {
+			i += int(consumed) - 1
+		}
 	}
+	return containers
+}
 
-	// Find the first '{'.  If none exists and a '[' does, the response is a
-	// pure array.  Natural-language brackets like [draft] that precede '{' are
-	// harmless — we only care about the object start.
+// extractFirstJSONObject preserves precise diagnostics when no complete JSON
+// container could be decoded, such as truncated objects or malformed syntax.
+func extractFirstJSONObject(raw []byte) ([]byte, error) {
 	firstBrace := bytes.IndexByte(raw, '{')
 	if firstBrace < 0 {
 		if bytes.IndexByte(raw, '[') >= 0 {
@@ -355,19 +431,6 @@ func extractJSONObject(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("no JSON object found in response")
 	}
 
-	// Reject array wrappers: if the text before '{', when trimmed, ends with
-	// '[' it means the response started a JSON array (e.g. [{...}]).
-	// Also scan the pre-text for any valid JSON container — a JSON array
-	// preceding the object (e.g. [1,2]\n{...}) must be rejected.
-	pre := bytes.TrimSpace(raw[:firstBrace])
-	if len(pre) > 0 && pre[len(pre)-1] == '[' {
-		return nil, fmt.Errorf("expected JSON object, got array")
-	}
-	if objs, arrs := countJSONContainers(pre); objs > 0 || arrs > 0 {
-		return nil, fmt.Errorf("expected JSON object, got array")
-	}
-
-	// Brace-counting scan that respects JSON string rules.
 	depth := 0
 	inString := false
 	escaped := false
@@ -394,90 +457,11 @@ func extractJSONObject(raw []byte) ([]byte, error) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return checkTrailingJSON(raw, firstBrace, i)
+				return raw[firstBrace : i+1], nil
 			}
 		}
 	}
 	return nil, fmt.Errorf("unterminated JSON object")
-}
-
-// checkTrailingJSON verifies that content after the extracted JSON object does
-// not contain another JSON value.  It uses encoding/json.Decoder to
-// deterministically identify valid JSON containers; natural-language brackets
-// like [draft] that are not valid JSON are ignored.  Trailing markdown fences
-// are stripped first.
-func checkTrailingJSON(raw []byte, start, end int) ([]byte, error) {
-	rest := raw[end+1:]
-
-	// Strip trailing markdown fences.
-	for {
-		rest = bytes.TrimSpace(rest)
-		if len(rest) == 0 {
-			break
-		}
-		if bytes.HasSuffix(rest, []byte("```")) {
-			rest = bytes.TrimSuffix(rest, []byte("```"))
-			rest = bytes.TrimRight(rest, "`")
-			rest = bytes.TrimSpace(rest)
-			if idx := bytes.LastIndexByte(rest, '\n'); idx >= 0 {
-				lastLine := bytes.TrimSpace(rest[idx+1:])
-				if !bytes.ContainsAny(lastLine, "{}[]") {
-					rest = bytes.TrimSpace(rest[:idx])
-				}
-			}
-			continue
-		}
-		if idx := bytes.LastIndex(rest, []byte("```")); idx >= 0 {
-			after := bytes.TrimSpace(rest[idx+3:])
-			if len(after) == 0 {
-				rest = bytes.TrimSpace(rest[:idx])
-				continue
-			}
-		}
-		break
-	}
-
-	// Scan remaining text for valid JSON containers.  Natural-language
-	// brackets like [draft] or [仅供参考] fail json.Decode and are skipped.
-	objects, arrays := countJSONContainers(rest)
-	if objects > 0 || arrays > 0 {
-		return nil, fmt.Errorf("multiple JSON values in response")
-	}
-	return raw[start : end+1], nil
-}
-
-// countJSONContainers scans raw for valid top-level JSON objects and arrays
-// using encoding/json.Decoder.  Only syntactically complete containers are
-// counted; malformed fragments (e.g. natural-language [draft]) are ignored.
-func countJSONContainers(raw []byte) (objects int, arrays int) {
-	for i := 0; i < len(raw); i++ {
-		b := raw[i]
-		if b != '{' && b != '[' {
-			continue
-		}
-		dec := json.NewDecoder(bytes.NewReader(raw[i:]))
-		var val json.RawMessage
-		if err := dec.Decode(&val); err != nil {
-			continue
-		}
-		s := strings.TrimSpace(string(val))
-		if len(s) == 0 {
-			continue
-		}
-		switch s[0] {
-		case '{':
-			objects++
-		case '[':
-			arrays++
-		default:
-			continue
-		}
-		consumed := dec.InputOffset()
-		if consumed > 0 {
-			i += int(consumed) - 1
-		}
-	}
-	return
 }
 
 // ── Strict DTO decode ───────────────────────────────────────────────────────

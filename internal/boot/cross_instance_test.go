@@ -115,6 +115,9 @@ func setupV2WorkWithDef(t *testing.T, store *work.FileWorkStore, bp *work.Bluepr
 // ── SubmitV2Input ──────────────────────────────────────────────────────────
 
 func TestDualFileStoreCrossInstance_SubmitV2Input_DuplicateConflictLate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-instance FileWorkStore integration; run without -short")
+	}
 	storeA, storeB := dualFileStores(t)
 	bp := work.NewBlueprintRegistry()
 	workID, svcA, rev, _ := setupV2WorkWithDef(t, storeA, bp)
@@ -204,6 +207,9 @@ func (p *deterministicPatcher) PlanPatch(_ context.Context, in work.PatchPlanInp
 }
 
 func TestDualFileStoreCrossInstance_PreviewApplyPatch_DuplicateConflictRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-instance FileWorkStore integration; run without -short")
+	}
 	storeA, storeB := dualFileStores(t)
 	bp := work.NewBlueprintRegistry()
 	workID, svcA, _, runID := setupV2WorkWithDef(t, storeA, bp)
@@ -320,6 +326,9 @@ func TestDualFileStoreCrossInstance_PreviewApplyPatch_DuplicateConflictRestart(t
 // ── ApplyV2Definition cross-instance ──────────────────────────────────────
 
 func TestDualFileStoreCrossInstance_ApplyV2Definition_ConflictRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cross-instance FileWorkStore integration; run without -short")
+	}
 	storeA, storeB := dualFileStores(t)
 	bp := work.NewBlueprintRegistry()
 	workID, svcA, rev, _ := setupV2WorkWithDef(t, storeA, bp)

@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-import type { ArtifactPreview, ArtifactSlot } from '../../types_v2';
+import type { ArtifactPreview, ArtifactSlot, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard, ResultShelf } from './index';
 
 // ── test harness ───────────────────────────────────────────────────────────
@@ -92,6 +92,27 @@ function makeSlot(overrides: Partial<ArtifactSlot> = {}): ArtifactSlot {
     artifactRefs: [],
     revision: 1,
     ...overrides,
+  };
+}
+
+function makeDefinition(): WorkDefinitionRevision {
+  return {
+    workId: 'work-1',
+    revision: 2,
+    parentRevision: 1,
+    status: 'active',
+    goal: 'deliver',
+    nodes: [
+      { id: 'make', title: '生成报告', producesSlotIds: ['slot-1'], blockIds: ['block-make'] },
+      { id: 'review', title: '审核报告', dependsOn: ['make'], consumesSlotIds: ['slot-1'] },
+    ],
+    artifactSlots: [
+      { id: 'slot-1', title: '测试成果', kind: 'text', expectedCount: 1, required: true },
+    ],
+    inputSpecs: [],
+    createdBy: 'test',
+    createdAt: '2026-07-28T00:00:00Z',
+    digest: 'digest',
   };
 }
 
@@ -317,7 +338,7 @@ async function runTests(): Promise<void> {
     ];
     const slot = makeSlot({ state: 'ready', kind: 'docx', artifactRefs: refs });
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
-    ok(host.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent?.includes('已完成') ?? false, 'ready: badge');
+    eq(host.querySelector('[data-testid="result-card-badge-slot-1"]')?.getAttribute('aria-label'), '已完成', 'ready: icon badge remains accessible');
     ok(host.querySelector('[data-testid="result-card-file-ref-a"]') !== null, 'ready: file ref-a');
     contains(host.querySelector('[data-testid="result-card-file-ref-a"]')?.textContent ?? '', 'report.docx', 'ready: ref-a name');
     ok(host.querySelector('[data-testid="result-card-file-ref-b"]') !== null, 'ready: file ref-b');
@@ -451,7 +472,7 @@ async function runTests(): Promise<void> {
     eq(fireCount, 1, 'dedup: only 1 fire for rapid clicks before settle');
     ok(btn.disabled === true, 'dedup: button disabled while in-flight');
     eq(btn.getAttribute('aria-busy'), 'true', 'dedup: aria-busy=true');
-    contains(btn.textContent ?? '', '…', 'dedup: button shows …');
+    contains(btn.textContent ?? '', '处理中', 'dedup: button exposes busy state');
 
     // resolve the deferred promise
     d.resolve();
@@ -666,6 +687,7 @@ async function runTests(): Promise<void> {
     const empty = host.querySelector('[data-testid="result-shelf-empty"]');
     ok(empty !== null, 'shelf-empty: node');
     contains(empty?.textContent ?? '', '暂无成果', 'shelf-empty: text');
+    contains(host.querySelector('.wg2-rs-intro')?.textContent ?? '', '成果', 'shelf-empty: intro remains visible');
     await cleanup();
   }
 
@@ -681,6 +703,7 @@ async function runTests(): Promise<void> {
     const { host, cleanup } = await mount(<ResultShelf slots={slots} activeDefinitionRevision={2} />);
     ok(host.querySelector('[data-testid="result-shelf"]') !== null, 'shelf-multi: rendered');
     eq(host.querySelectorAll('[data-testid^="result-shelf-item-"]').length, 3, 'shelf-multi: 3 items');
+    contains(host.querySelector('.wg2-rs-intro')?.textContent ?? '', '工作过程中产生的文件与成果将在此汇总', 'shelf-multi: design intro rendered');
     await cleanup();
   }
 
@@ -730,31 +753,32 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 22. summary + required flag
+  // 22. Summary + required state stays accessible without visual punctuation.
   // ════════════════════════════════════════════════════════════════════════
   {
     const { host, cleanup } = await mount(<ResultCard slot={makeSlot({ state: 'ready', summary: '3 files, 1.2MB', artifactRefs: [makeRef({ id: 'rs', name: 'x.txt', path: '/tmp/x.txt' })] })} />);
     contains(host.querySelector('[data-testid="result-card-summary-slot-1"]')?.textContent ?? '', '3 files', 'summary: text');
     await cleanup();
     const { host: h2, cleanup: c2 } = await mount(<ResultCard slot={makeSlot({ state: 'reserved', required: true })} />);
-    contains(h2.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent ?? '', '*', 'required: asterisk');
+    ok(h2.querySelector('[data-testid="result-card-slot-1"]')?.getAttribute('aria-label')?.includes('必需') ?? false, 'required: conveyed in aria-label');
+    ok(!(h2.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent?.includes('*') ?? false), 'required: no stray visual asterisk');
     await c2();
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 23. File icon mapping
+  // 23. File icon mapping uses the app icon library, not platform emoji.
   // ════════════════════════════════════════════════════════════════════════
   {
     const cases: Array<[string, string, string]> = [
-      ['pdf', 'application/pdf', '📄'],
-      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '📝'],
-      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '📊'],
-      ['text', 'text/plain', '📃'],
-      ['unknown', 'application/octet-stream', '📎'],
+      ['pdf', 'application/pdf', '.lucide-file-text'],
+      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.lucide-file-text'],
+      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.lucide-file-spreadsheet'],
+      ['text', 'text/plain', '.lucide-file-text'],
+      ['unknown', 'application/octet-stream', '.lucide-file'],
     ];
-    for (const [kind, type, expected] of cases) {
+    for (const [kind, type, selector] of cases) {
       const { host, cleanup } = await mount(<ResultCard slot={makeSlot({ id: `icon-${kind}`, kind, artifactRefs: [makeRef({ id: `ri-${kind}`, type, name: 'f' })] })} />);
-      eq(host.querySelector('.wg2-rc-file-icon')?.textContent, expected, `icon: ${kind} → ${expected}`);
+      ok(host.querySelector(`.wg2-rc-file-icon ${selector}`) !== null, `icon: ${kind} → ${selector}`);
       await cleanup();
     }
   }
@@ -910,6 +934,103 @@ async function runTests(): Promise<void> {
     await settle();
     ok(host.querySelector('[data-testid="rc-preview-text"]') === null, 'late preview: stale promise discarded after revision change');
     ok(host.querySelector('[data-testid="result-card-file-new-ref"]') !== null, 'late preview: new authoritative ref remains visible');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 28. Preview action toggles the current preview without a duplicate load
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const slot = makeSlot({
+      id: 'preview-toggle-slot',
+      state: 'ready',
+      artifactRefs: [makeRef({ id: 'preview-toggle-ref', name: 'notes.md', type: 'text/markdown' })],
+    });
+    let previewCalls = 0;
+    const { host, cleanup } = await mount(
+      <ResultCard
+        slot={slot}
+        onPreview={async () => {
+          previewCalls++;
+          return {
+            artifactId: 'preview-toggle-ref',
+            workId: 'work-1',
+            grade: 'inline',
+            canOpen: false,
+            canConvert: false,
+            textContent: '# Notes',
+          };
+        }}
+      />,
+    );
+    const previewButton = () =>
+      host.querySelector<HTMLButtonElement>('[data-testid="rc-file-preview-preview-toggle-ref"]')!;
+
+    await interact(() => previewButton().click());
+    ok(host.querySelector('[data-testid="rc-inline-preview"]') !== null, 'preview toggle: first click expands');
+    eq(previewButton().getAttribute('aria-expanded'), 'true', 'preview toggle: expanded state exposed');
+    contains(previewButton().textContent ?? '', '收起预览', 'preview toggle: expanded action label');
+
+    await interact(() => previewButton().click());
+    ok(host.querySelector('[data-testid="rc-inline-preview"]') === null, 'preview toggle: second click collapses');
+    eq(previewButton().getAttribute('aria-expanded'), 'false', 'preview toggle: collapsed state exposed');
+    eq(previewCalls, 1, 'preview toggle: collapse does not reload');
+
+    await interact(() => previewButton().click());
+    ok(host.querySelector('[data-testid="rc-inline-preview"]') !== null, 'preview toggle: third click restores cached preview');
+    eq(previewCalls, 1, 'preview toggle: cached preview reopens without reload');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 29. Result additions enter workflow-impact preview
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const requests: Array<{ nodeId: string; instruction: string }> = [];
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={(request) => requests.push(request)}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
+    const title = host.querySelector<HTMLInputElement>('[data-testid="result-add-title"]')!;
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(title, '学习总结');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add-preview"]')!.click());
+    eq(requests.length, 1, 'result add: emits one workflow preview request');
+    eq(requests[0]?.nodeId, 'make', 'result add: binds selected producer');
+    contains(requests[0]?.instruction ?? '', '学习总结', 'result add: instruction is human readable');
+    contains(requests[0]?.instruction ?? '', '只添加该成果', 'result add: change is narrowly scoped');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 30. Result removal explains references before workflow-impact preview
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const requests: Array<{ nodeId: string; instruction: string }> = [];
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={(request) => requests.push(request)}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-slot-1"]')!.click());
+    const confirm = host.querySelector('[data-testid="result-delete-confirm"]');
+    contains(confirm?.textContent ?? '', '生成报告', 'result remove: producer impact shown');
+    contains(confirm?.textContent ?? '', '审核报告', 'result remove: consumer impact shown');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-preview"]')!.click());
+    eq(requests.length, 1, 'result remove: emits one workflow preview request');
+    eq(requests[0]?.nodeId, 'make', 'result remove: anchors discussion to producer');
+    contains(requests[0]?.instruction ?? '', '从所有产出或使用它的任务中移除引用', 'result remove: cleans all references');
     await cleanup();
   }
 

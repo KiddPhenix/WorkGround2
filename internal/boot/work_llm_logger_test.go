@@ -209,7 +209,7 @@ func TestWorkLLMInteractionLogger_DefinitionRepairLogsParseError(t *testing.T) {
 	log := newWorkLLMInteractionLogger(logPath)
 
 	prov := &sequenceProvider{sequences: [][]provider.Chunk{
-		{chunkT(validPlanJSON() + "\n" + validPlanJSON()), chunkD},
+		{chunkT(`{"goal":"deliver","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`), chunkD},
 		{chunkT(validPlanJSON()), chunkD},
 	}}
 	planner := newBootDefinitionPlanner(prov, 0, 2048, log)
@@ -240,11 +240,21 @@ func TestWorkLLMInteractionLogger_DefinitionRepairLogsParseError(t *testing.T) {
 	if firstResponse["attempt"] != float64(1) {
 		t.Fatalf("first attempt=%v, want 1", firstResponse["attempt"])
 	}
-	if parseErr, _ := firstResponse["error"].(string); !strings.Contains(parseErr, "multiple JSON values") {
+	if parseErr, _ := firstResponse["error"].(string); !strings.Contains(parseErr, "unknown field") {
 		t.Fatalf("first parse error=%v", firstResponse["error"])
 	}
 	if secondRequest["attempt"] != float64(2) {
 		t.Fatalf("second attempt=%v, want 2", secondRequest["attempt"])
+	}
+	messages, ok := secondRequest["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("repair messages=%T %#v, want exactly 2", secondRequest["messages"], secondRequest["messages"])
+	}
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if ok && message["role"] == "assistant" {
+			t.Fatalf("repair request replayed raw response as assistant history")
+		}
 	}
 }
 

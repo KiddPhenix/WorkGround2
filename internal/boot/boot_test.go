@@ -53,6 +53,7 @@ func TestAgentKeepPolicyFromConfig(t *testing.T) {
 // into the session's system message (the cached prefix), and the `remember`
 // tool is registered. It builds a real Controller from a throwaway project dir.
 func TestBuildFoldsProjectMemoryIntoSystemPrompt(t *testing.T) {
+	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 
@@ -1006,9 +1007,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 // into the cache-stable system prompt's "# Skills" index alongside a built-in.
 func TestBuildDiscoversSkills(t *testing.T) {
 	dir := robustTempDir(t)
-	home := robustTempDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	isolateConfigHome(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
 default_model = "test-model"
@@ -2317,9 +2316,7 @@ model = "x"
 
 func TestBuildOmitsDisabledSkillsFromPromptAndRuntimeList(t *testing.T) {
 	dir := robustTempDir(t)
-	home := robustTempDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	isolateConfigHome(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
 default_model = "test-model"
@@ -2367,9 +2364,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 
 func TestBuildOmitsExcludedSkillRootsFromPromptAndRuntimeList(t *testing.T) {
 	dir := robustTempDir(t)
-	home := robustTempDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	home := isolateConfigHome(t)
 	t.Chdir(dir)
 	excluded := filepath.Join(home, ".agents", "skills")
 	writeFile(t, home, ".workground2/skills/keep.md", "---\ndescription: keep\n---\nplaybook")
@@ -2416,10 +2411,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 // prefix is untouched by the memory feature.
 func TestBuildWithoutMemoryLeavesPromptUnchanged(t *testing.T) {
 	dir := robustTempDir(t)
-	home := robustTempDir(t)
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	isolateConfigHome(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
 default_model = "test-model"
@@ -2463,6 +2455,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 }
 
 func TestBuildLanguagePolicyIsAppended(t *testing.T) {
+	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `
@@ -2492,6 +2485,7 @@ api_key_env = "WorkGround2_TEST_KEY_UNSET"
 }
 
 func TestBuildAppendsUserDecisionPolicyToCustomSystemPrompt(t *testing.T) {
+	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "WorkGround2.toml", `

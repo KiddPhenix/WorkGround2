@@ -276,7 +276,7 @@ async function runTests(): Promise<void> {
     ok(panel !== null, 'golden: preview panel rendered');
 
     const scopeBadge = host.querySelector(`[data-testid="patch-preview-scope-${goPatchGolden.taskId}"]`);
-    contains(scopeBadge?.textContent ?? '', '仅此 Block', 'golden: scope badge');
+    contains(scopeBadge?.textContent ?? '', '只更新当前内容', 'golden: scope badge');
 
     const ops = host.querySelector(`[data-testid="patch-preview-ops-${goPatchGolden.taskId}"]`);
     ok(ops !== null, 'golden: ops table exists');
@@ -499,7 +499,7 @@ async function runTests(): Promise<void> {
 
     const previewBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${TASK_ID}"]`);
     eq(previewBtn?.disabled, true, 'loading: preview btn disabled');
-    contains(previewBtn?.textContent ?? '', '生成预览中', 'loading: button text');
+    contains(previewBtn?.textContent ?? '', '分析影响中', 'loading: button text');
 
     await cleanup();
   }
@@ -553,7 +553,7 @@ async function runTests(): Promise<void> {
     const conflict = host.querySelector(`[data-testid="discussion-conflict-${TASK_ID}"]`);
     ok(conflict !== null, 'conflict: banner exists');
     eq(conflict?.getAttribute('role'), 'alert', 'conflict: role=alert');
-    contains(conflict?.textContent ?? '', '工作版本已变化', 'conflict: revision message');
+    contains(conflict?.textContent ?? '', '工作内容已变化', 'conflict: revision message');
 
     // Apply button should be disabled
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
@@ -585,12 +585,35 @@ async function runTests(): Promise<void> {
 
     const conflict = host.querySelector(`[data-testid="discussion-conflict-${TASK_ID}"]`);
     ok(conflict !== null, 'digest-conflict: banner exists');
-    contains(conflict?.textContent ?? '', '预览摘要已变化', 'digest-conflict: explicit digest message');
+    contains(conflict?.textContent ?? '', '改动内容已变化', 'digest-conflict: explicit digest message');
     notContains(conflict?.textContent ?? '', '预览内容已过期', 'digest-conflict: does not misreport expiry');
     const regenerate = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-repreview-${TASK_ID}"]`);
-    contains(regenerate?.textContent ?? '', '重新生成', 'digest-conflict: recovery regenerates preview');
+    contains(regenerate?.textContent ?? '', '重新预览', 'digest-conflict: recovery regenerates preview');
     await interact(() => regenerate?.click());
     eq(h.previewIntents.length, 1, 'digest-conflict: regenerate returns to preview planning');
+
+    await cleanup();
+  }
+
+  // A changed instruction cannot apply a preview generated from older text.
+  {
+    const h = makeHarness();
+    h.draftText = '使用动物主题';
+    const { host, root, cleanup } = await mount(makeDrawer(h));
+    const previewBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${TASK_ID}"]`);
+    await interact(() => previewBtn?.click());
+    await act(async () => {
+      root.render(makeDrawer(h, { patchPreview: patchGolden }));
+    });
+
+    h.draftText = '改成太空主题';
+    await act(async () => {
+      root.render(makeDrawer(h, { patchPreview: patchGolden }));
+    });
+    const conflict = host.querySelector(`[data-testid="discussion-conflict-${TASK_ID}"]`);
+    contains(conflict?.textContent ?? '', '修改意见已变化', 'instruction-conflict: stale preview is explicit');
+    const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
+    eq(applyBtn?.disabled, true, 'instruction-conflict: stale preview cannot be applied');
 
     await cleanup();
   }
@@ -601,14 +624,18 @@ async function runTests(): Promise<void> {
   {
     const h = makeHarness();
     h.draftText = '改标题';
-    const { host, cleanup } = await mount(makeDrawer(h, {
-      patchPreview: patchGolden,
-    }));
+    const { host, root, cleanup } = await mount(makeDrawer(h));
 
+    const previewBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${TASK_ID}"]`);
+    ok(previewBtn !== null, 'apply: preview action exists');
+    eq(previewBtn?.disabled, false, 'apply: preview action is enabled');
+
+    await interact(() => previewBtn?.click());
+    await act(async () => {
+      root.render(makeDrawer(h, { patchPreview: patchGolden }));
+    });
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
-    ok(applyBtn !== null, 'apply: button exists');
-    eq(applyBtn?.disabled, false, 'apply: enabled when preview present');
-
+    ok(applyBtn !== null, 'apply: confirmation action exists after preview');
     await interact(() => applyBtn?.click());
     eq(h.applyIntents.length, 1, 'apply: intent fired');
     const intent = h.applyIntents[0]!;
@@ -635,7 +662,7 @@ async function runTests(): Promise<void> {
 
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
     eq(applyBtn?.disabled, true, 'apply-loading: button disabled');
-    contains(applyBtn?.textContent ?? '', '应用中', 'apply-loading: button text');
+    contains(applyBtn?.textContent ?? '', '正在应用', 'apply-loading: button text');
 
     await cleanup();
   }
@@ -667,8 +694,8 @@ async function runTests(): Promise<void> {
     ok(result !== null, 'apply-ok: result banner exists');
     eq(result?.getAttribute('role'), 'status', 'apply-ok: role=status');
     ok(result?.getAttribute('aria-live') === 'polite', 'apply-ok: aria-live=polite');
-    contains(result?.textContent ?? '', '补丁已应用', 'apply-ok: success message');
-    contains(result?.textContent ?? '', '需要重新执行', 'apply-ok: rerun hint');
+    contains(result?.textContent ?? '', '修改已应用', 'apply-ok: success message');
+    contains(result?.textContent ?? '', 'AI 正在按新要求重新处理', 'apply-ok: rerun hint');
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
     eq(applyBtn?.disabled, true, 'apply-ok: committed patch cannot be applied again');
 
@@ -725,7 +752,7 @@ async function runTests(): Promise<void> {
     }));
 
     const result = host.querySelector(`[data-testid="discussion-result-${TASK_ID}"]`);
-    contains(result?.textContent ?? '', '补丁已提交', 'committed-recovery: commit is explicit');
+    contains(result?.textContent ?? '', '改动已提交', 'committed-recovery: commit is explicit');
     contains(result?.textContent ?? '', '恢复确认', 'committed-recovery: recovery is explicit');
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
     eq(applyBtn?.disabled, true, 'committed-recovery: apply remains disabled');
@@ -753,7 +780,7 @@ async function runTests(): Promise<void> {
     }));
 
     const result = host.querySelector(`[data-testid="discussion-result-${TASK_ID}"]`);
-    contains(result?.textContent ?? '', '重复请求', 'apply-dup: duplicate message');
+    contains(result?.textContent ?? '', '无需重复处理', 'apply-dup: duplicate message');
 
     await cleanup();
   }
@@ -786,7 +813,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 22. Expired preview shows expired badge
+  // 22. Expired impact preview stays visible but cannot be applied
   // ════════════════════════════════════════════════════════════════════════
   {
     const h = makeHarness();
@@ -801,13 +828,12 @@ async function runTests(): Promise<void> {
       patchPreview: expiredPatch,
     }));
 
-    const expiredBadge = host.querySelector(`[data-testid="patch-preview-expired-${TASK_ID}"]`);
-    ok(expiredBadge !== null, 'expired: badge shown');
-    contains(expiredBadge?.textContent ?? '', '已过期', 'expired: badge text');
+    const previewPanel = host.querySelector(`[data-testid="patch-preview-${TASK_ID}"]`);
+    ok(previewPanel !== null, 'expired: impact preview remains visible for diagnosis');
     const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
     eq(applyBtn?.disabled, true, 'expired: apply disabled');
     const conflict = host.querySelector(`[data-testid="discussion-conflict-${TASK_ID}"]`);
-    contains(conflict?.textContent ?? '', '预览内容已过期', 'expired: explicit re-preview message');
+    contains(conflict?.textContent ?? '', '改动校验已过期', 'expired: explicit retry message');
 
     await cleanup();
   }
@@ -852,18 +878,38 @@ async function runTests(): Promise<void> {
       digest: 'empty-digest',
       operations: [],
     };
-    const { host, cleanup } = await mount(makeDrawer(h, {
-      patchPreview: emptyOpsPatch,
-    }));
+    const { host, cleanup } = await mount(
+      <PatchPreview patch={emptyOpsPatch} taskTitle={TASK_TITLE} taskId={TASK_ID} />,
+    );
 
     const empty = host.querySelector(`[data-testid="patch-preview-empty-ops-${TASK_ID}"]`);
     ok(empty !== null, 'empty-ops: placeholder shown');
-    contains(empty?.textContent ?? '', '无具体操作变更', 'empty-ops: message');
+    contains(empty?.textContent ?? '', '没有检测到需要修改的内容', 'empty-ops: message');
 
     // No ops table
     const opsTable = host.querySelector(`[data-testid="patch-preview-ops-${TASK_ID}"]`);
     ok(opsTable === null, 'empty-ops: no ops table');
 
+    await cleanup();
+  }
+
+  // Historical previews may contain Go nil slices encoded as null.
+  {
+    const nullCollections = {
+      ...patchGolden,
+      operations: null,
+      affectedNodeIds: null,
+      affectedBlockIds: null,
+      affectedArtifactSlotIds: null,
+      staleArtifactSlotIds: null,
+      invalidatedTaskIds: null,
+    } as unknown as WorkPatchPreview;
+    const { host, cleanup } = await mount(
+      <PatchPreview patch={nullCollections} taskTitle={TASK_TITLE} taskId={TASK_ID} />,
+    );
+    ok(host.querySelector(`[data-testid="patch-preview-${TASK_ID}"]`) !== null, 'null-collections: preview renders');
+    ok(host.querySelector(`[data-testid="patch-preview-empty-ops-${TASK_ID}"]`) !== null, 'null-collections: operations normalize to empty');
+    ok(host.querySelector(`[data-testid="patch-affected-nodes-${TASK_ID}"]`) === null, 'null-collections: no phantom impact');
     await cleanup();
   }
 
@@ -875,16 +921,31 @@ async function runTests(): Promise<void> {
       ...patchGolden,
       id: 'patch-with-invalidated',
       digest: 'inv-digest',
-      invalidatedTaskIds: ['task-a', 'task-b'],
+      invalidatedTaskIds: ['task-b', 'task-a'],
+    };
+    const labels: Record<string, string> = {
+      'task-a': '规划主题',
+      'task-b': '创作笑话',
     };
     const { host, cleanup } = await mount(
-      <PatchPreview patch={patchWithInvalidated} taskTitle={TASK_TITLE} taskId={TASK_ID} />,
+      <PatchPreview
+        patch={patchWithInvalidated}
+        taskTitle={TASK_TITLE}
+        taskId={TASK_ID}
+        resolveLabel={(_kind, id) => labels[id]}
+        resolveOrder={(_kind, id) => id === 'task-a' ? 0 : 1}
+      />,
     );
 
     const inv = host.querySelector(`[data-testid="patch-invalidated-tasks-${TASK_ID}"]`);
     ok(inv !== null, 'invalidated: section exists');
-    contains(inv?.textContent ?? '', 'task-a', 'invalidated: contains task-a');
-    contains(inv?.textContent ?? '', 'task-b', 'invalidated: contains task-b');
+    contains(inv?.textContent ?? '', '规划主题', 'invalidated: uses friendly task title');
+    contains(inv?.textContent ?? '', '创作笑话', 'invalidated: uses friendly task title');
+    notContains(inv?.textContent ?? '', 'task-a', 'invalidated: hides internal task id');
+    ok(
+      (inv?.textContent?.indexOf('规划主题') ?? -1) < (inv?.textContent?.indexOf('创作笑话') ?? -1),
+      'invalidated: follows workflow order',
+    );
 
     await cleanup();
   }
@@ -893,14 +954,18 @@ async function runTests(): Promise<void> {
   // 25. Affected nodes shown in preview
   // ════════════════════════════════════════════════════════════════════════
   {
+    const nodeOnly = {
+      ...patchGolden,
+      invalidatedTaskIds: [],
+    };
     const { host, cleanup } = await mount(
-      <PatchPreview patch={patchGolden} taskTitle={TASK_TITLE} taskId={TASK_ID} />,
+      <PatchPreview patch={nodeOnly} taskTitle={TASK_TITLE} taskId={TASK_ID} />,
     );
 
     const nodes = host.querySelector(`[data-testid="patch-affected-nodes-${TASK_ID}"]`);
     ok(nodes !== null, 'affected-nodes: section exists');
 
-    for (const id of patchGolden.affectedNodeIds) {
+    for (const id of nodeOnly.affectedNodeIds) {
       contains(nodes?.textContent ?? '', id, `affected-nodes: contains ${id}`);
     }
 
@@ -1072,8 +1137,10 @@ async function runTests(): Promise<void> {
     ok(closeBtn?.getAttribute('aria-label')?.length! > 0, 'aria: close has label');
 
     const previewPanel = host.querySelector(`[data-testid="patch-preview-${TASK_ID}"]`);
-    ok(previewPanel?.getAttribute('role') === 'region', 'aria: preview role=region');
-    ok(previewPanel?.getAttribute('aria-label')?.length! > 0, 'aria: preview has label');
+    ok(previewPanel !== null, 'aria: impact preview is exposed before apply');
+    contains(previewPanel?.getAttribute('aria-label') ?? '', '修改影响预览', 'aria: preview has a user-facing label');
+    const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
+    contains(applyBtn?.textContent ?? '', '确认并应用修改', 'aria: apply action matches local scope');
 
     await cleanup();
   }
@@ -1114,7 +1181,7 @@ async function runTests(): Promise<void> {
     );
 
     const badge = host.querySelector(`[data-testid="patch-preview-scope-${TASK_ID}"]`);
-    contains(badge?.textContent ?? '', '整个工作流', 'workflow: badge text');
+    contains(badge?.textContent ?? '', '会更新当前任务和后续步骤', 'workflow: badge text');
     ok(badge?.classList.contains('wg2-pp-badge-workflow') ?? false, 'workflow: badge class');
 
     await cleanup();
@@ -1126,12 +1193,15 @@ async function runTests(): Promise<void> {
   {
     const h = makeHarness();
     h.draftText = '改标题';
-    const { host, root, cleanup } = await mount(makeDrawer(h, {
-      patchPreview: patchGolden,
-    }));
+    const { host, root, cleanup } = await mount(makeDrawer(h));
 
-    let applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
-    await interact(() => applyBtn?.click());
+    const submitBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${TASK_ID}"]`);
+    await interact(() => submitBtn?.click());
+    await act(async () => {
+      root.render(makeDrawer(h, { patchPreview: patchGolden }));
+    });
+    const firstApplyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
+    await interact(() => firstApplyBtn?.click());
     eq(h.applyIntents.length, 1, 'apply-retry: first apply fired');
 
     // A late snapshot may advance the visible work revision while the network
@@ -1143,7 +1213,7 @@ async function runTests(): Promise<void> {
         applyError: '网络中断，可安全重试',
       }));
     });
-    applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
+    const applyBtn = host.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${TASK_ID}"]`);
     await interact(() => applyBtn?.click());
 
     eq(h.applyIntents.length, 2, 'apply-retry: second apply fired');

@@ -9,6 +9,7 @@ func TestCompilePatchPathRestrictedWhitelist(t *testing.T) {
 		"nodes/n1/blockIds",
 		"nodes/n1/producesSlotIds",
 		"nodes/n1/consumesSlotIds",
+		"artifactSlots/report",
 		"artifactSlots/report/required",
 		"inputSpecs/topic/defaultValue",
 		"blocks/b1/data",

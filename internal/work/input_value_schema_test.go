@@ -95,6 +95,17 @@ func TestValidateTextValue_Pattern(t *testing.T) {
 	}
 }
 
+func TestValidateTextValue_Multiline(t *testing.T) {
+	spec := InputSpec{
+		ID:          "word-list",
+		Kind:        InputText,
+		ValueSchema: mustJSONRaw(TextConstraints{Multiline: true}),
+	}
+	if err := ValidateInputValue(spec, mustJSONRaw("hello\nworld")); err != nil {
+		t.Fatalf("multiline text should remain a valid string: %v", err)
+	}
+}
+
 // ── Number ──────────────────────────────────────────────────────────────────
 
 func TestValidateNumberValue_Basic(t *testing.T) {

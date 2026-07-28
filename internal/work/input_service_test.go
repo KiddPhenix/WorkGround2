@@ -16,6 +16,7 @@ import (
 
 func newInputServiceTest(t *testing.T) (*InputService, *Service, *FileWorkStore, string) {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	dir := filepath.Join(os.TempDir(), "wist-"+strings.ReplaceAll(t.Name(), "/", "-"))
 	os.RemoveAll(dir)
 	t.Cleanup(func() { os.RemoveAll(dir) })

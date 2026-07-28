@@ -9,6 +9,7 @@ import type {
   WorkPatchPreview,
 } from '../../../types_v2';
 import { PatchPreview } from './PatchPreview';
+import type { PatchPreviewLabelResolver, PatchPreviewOrderResolver } from './PatchPreview';
 
 // ── Typed intents ──────────────────────────────────────────────────────────
 
@@ -73,6 +74,8 @@ export interface DiscussionDrawerProps {
 
   /** Task title for context display. */
   taskTitle: string;
+  resolvePatchLabel?: PatchPreviewLabelResolver;
+  resolvePatchOrder?: PatchPreviewOrderResolver;
 
   // ── Draft state (parent-managed, survives close/reopen/block switch) ──
   draftText: string;
@@ -91,6 +94,7 @@ export interface DiscussionDrawerProps {
   // ── Scope selection ────────────────────────────────────────────────
   selectedScope: PatchScope;
   onScopeChange: (scope: PatchScope) => void;
+  scopeLocked?: boolean;
 
   // ── Conflict detection ─────────────────────────────────────────────
   /** True when base revision has changed since last preview — user must re-preview. */
@@ -109,7 +113,6 @@ export interface DiscussionDrawerProps {
   committedApplyRequestId?: string;
   previewAvailable?: boolean;
   applyAvailable?: boolean;
-  applyReceipt?: { requestId: string; revision: number } | null;
 
   /** Optional: element ref to return focus to on close. */
   returnFocusRef?: React.RefObject<HTMLElement | null>;
@@ -125,6 +128,8 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
   definitionRevision,
   blockRevision,
   taskTitle,
+  resolvePatchLabel,
+  resolvePatchOrder,
   draftText,
   onDraftChange,
   patchPreview,
@@ -135,6 +140,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
   applyError,
   selectedScope,
   onScopeChange,
+  scopeLocked = false,
   revisionConflict,
   digestConflict,
   onClose,
@@ -146,7 +152,6 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
   committedApplyRequestId,
   previewAvailable = true,
   applyAvailable = true,
-  applyReceipt,
 }) => {
   const drawerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -158,6 +163,17 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     requestId: string;
     expectedRevision: number;
   } | null>(null);
+  const previewIntentKey = JSON.stringify([
+    workId,
+    taskId,
+    blockId,
+    runId,
+    sessionId,
+    draftText.trim(),
+    definitionRevision,
+    blockRevision,
+    selectedScope,
+  ]);
 
   const activePreview =
     patchPreview?.workId === workId
@@ -176,8 +192,17 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
       || (activePreview.scope === 'block' && activePreview.baseBlockRev !== blockRevision)
     );
   const scopeConflict = activePreview !== null && activePreview.scope !== selectedScope;
+  const instructionConflict =
+    activePreview !== null
+    && previewAttemptRef.current !== null
+    && previewAttemptRef.current.key !== previewIntentKey;
   const hasRevisionConflict = revisionConflict || baseRevisionConflict;
-  const hasConflict = hasRevisionConflict || digestConflict || previewExpired || scopeConflict;
+  const hasConflict =
+    hasRevisionConflict
+    || digestConflict
+    || previewExpired
+    || scopeConflict
+    || instructionConflict;
 
   // Focus textarea on mount; capture activeElement for restoration on close.
   useLayoutEffect(() => {
@@ -202,17 +227,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     const instruction = draftText.trim();
     if (instruction.length === 0 || isPreviewing) return;
 
-    const key = JSON.stringify([
-      workId,
-      taskId,
-      blockId,
-      runId,
-      sessionId,
-      instruction,
-      definitionRevision,
-      blockRevision,
-      selectedScope,
-    ]);
+    const key = previewIntentKey;
     if (
       !reuseAttempt
       || previewAttemptRef.current?.key !== key
@@ -247,44 +262,10 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     definitionRevision,
     blockRevision,
     selectedScope,
+    previewIntentKey,
     committedPreviewRequestId,
     onPreview,
   ]);
-
-  // Trap focus within drawer (Tab / Shift+Tab cycling)
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        requestClose();
-        return;
-      }
-
-      // Ctrl+Enter to preview
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && draftText.trim().length > 0 && !isPreviewing) {
-        e.preventDefault();
-        firePreview(false);
-      }
-
-      // Trap Tab cycling
-      if (e.key === 'Tab' && drawerRef.current) {
-        const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        );
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    },
-    [draftText, isPreviewing, requestClose, firePreview],
-  );
 
   const fireApply = useCallback(() => {
     if (!activePreview || hasConflict || isApplying || applyResult?.committed) return;
@@ -324,8 +305,41 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
     onApply,
   ]);
 
+  // Trap focus within drawer (Tab / Shift+Tab cycling)
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        requestClose();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && draftText.trim().length > 0) {
+        e.preventDefault();
+        firePreview(false);
+      }
+
+      if (e.key === 'Tab' && drawerRef.current) {
+        const focusable = drawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    },
+    [draftText, requestClose, firePreview],
+  );
+
   const hasPreview = activePreview !== null;
-  const canPreview = previewAvailable && draftText.trim().length > 0 && !isPreviewing;
+  const canPreview = previewAvailable && draftText.trim().length > 0 && !isPreviewing && !isApplying;
   const canApply = applyAvailable && hasPreview && !isApplying && !hasConflict && !applyResult?.committed;
   const showApplyResult = applyResult !== null;
   const committedRecovery = Boolean(
@@ -345,14 +359,14 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
       className="wg2-dd-drawer"
       data-testid={`discussion-drawer-${taskId}`}
       role="dialog"
-      aria-label={`${taskTitle} 讨论`}
+      aria-label={`${taskTitle} 修改意见`}
       aria-modal={true}
       onKeyDown={handleKeyDown}
     >
       {/* ── Header ────────────────────────────────────────────────── */}
       <div className="wg2-dd-header">
         <span className="wg2-dd-header-title" data-testid={`discussion-header-${taskId}`}>
-          讨论：{taskTitle}
+          修改意见：{taskTitle}
         </span>
         <button
           type="button"
@@ -387,20 +401,20 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
           data-testid={`discussion-input-${taskId}`}
         />
         <span id={`discussion-hint-${taskId}`} className="wg2-dd-hint">
-          Ctrl+Enter 预览改动
+          Ctrl+Enter 预览影响
         </span>
         {(!previewAvailable || !applyAvailable) && (
           <div className="wg2-dd-error" role="status" data-testid={`discussion-capability-${taskId}`}>
-            {!previewAvailable
-              ? '当前环境未连接讨论补丁预览能力。'
-              : '当前环境未连接讨论补丁应用能力。'}
+            当前环境无法应用讨论改动。
           </div>
         )}
 
         {/* ── Scope selector ─────────────────────────────────────── */}
         <fieldset className="wg2-dd-scope" data-testid={`discussion-scope-${taskId}`}>
           <legend className="wg2-dd-label">作用范围</legend>
-          <label className="wg2-dd-radio">
+          {scopeLocked ? (
+            <p className="wg2-dd-scope-note">这是流程结构变更，会更新相关任务并重跑受影响的后续任务。</p>
+          ) : <><label className="wg2-dd-radio">
             <input
               type="radio"
               name={`discussion-scope-${taskId}`}
@@ -409,7 +423,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
               onChange={() => onScopeChange('block')}
               data-testid={`discussion-scope-block-${taskId}`}
             />
-            <span>仅此 Block</span>
+            <span>仅更新当前内容，不重跑后续任务</span>
           </label>
           <label className="wg2-dd-radio">
             <input
@@ -420,8 +434,9 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
               onChange={() => onScopeChange('workflow')}
               data-testid={`discussion-scope-workflow-${taskId}`}
             />
-            <span>整个工作流</span>
+            <span>影响当前项及后续任务（推荐）</span>
           </label>
+          </>}
         </fieldset>
 
         {/* ── Action buttons ─────────────────────────────────────── */}
@@ -433,7 +448,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
             onClick={() => firePreview(false)}
             data-testid={`discussion-preview-btn-${taskId}`}
           >
-            {isPreviewing ? '生成预览中…' : '预览改动'}
+            {isPreviewing ? '分析影响中…' : hasPreview ? '重新预览' : '预览影响'}
           </button>
           {hasPreview && (
             <button
@@ -443,7 +458,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
               onClick={fireApply}
               data-testid={`discussion-apply-btn-${taskId}`}
             >
-              {isApplying ? '应用中…' : '应用补丁'}
+              {isApplying ? '正在应用…' : activePreview?.scope === 'workflow' ? '确认修改并更新后续步骤' : '确认并应用修改'}
             </button>
           )}
         </div>
@@ -482,12 +497,14 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
             <span className="wg2-dd-error-icon" aria-hidden="true">↻</span>
             <span className="wg2-dd-error-msg">
               {hasRevisionConflict
-                ? '工作版本已变化，请重新生成补丁。'
+                ? '工作内容已变化，请重新预览影响。'
                 : scopeConflict
-                  ? '作用范围已变化，请重新生成补丁。'
+                  ? '作用范围已变化，请重新预览影响。'
+                  : instructionConflict
+                    ? '修改意见已变化，请重新预览影响。'
                   : digestConflict
-                    ? '预览摘要已变化，请重新生成补丁。'
-                    : '预览内容已过期，请重新生成补丁。'}
+                    ? '改动内容已变化，请重新预览影响。'
+                    : '改动校验已过期，请重新预览影响。'}
             </span>
             <button
               type="button"
@@ -495,18 +512,19 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
               onClick={() => firePreview(false)}
               data-testid={`discussion-repreview-${taskId}`}
             >
-              重新生成
+              重新预览
             </button>
           </div>
         )}
       </div>
 
-      {/* ── Preview section ─────────────────────────────────────────── */}
       {activePreview && (
         <PatchPreview
           patch={activePreview}
           taskTitle={taskTitle}
           taskId={taskId}
+          resolveLabel={resolvePatchLabel}
+          resolveOrder={resolvePatchOrder}
         />
       )}
 
@@ -530,7 +548,7 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
             <>
               <span className="wg2-dd-result-icon" aria-hidden="true">↻</span>
               <span className="wg2-dd-result-msg">
-                补丁已提交，正在恢复确认：
+                改动已提交，正在恢复确认：
                 {applyResult!.transportError?.message ?? applyResult!.error}
               </span>
             </>
@@ -545,20 +563,18 @@ export const DiscussionDrawer: React.FC<DiscussionDrawerProps> = ({
           ) : applyResult!.duplicate ? (
             <>
               <span className="wg2-dd-result-icon" aria-hidden="true">ⓘ</span>
-              <span className="wg2-dd-result-msg">补丁已应用（重复请求）。</span>
+              <span className="wg2-dd-result-msg">修改已经应用，无需重复处理。</span>
             </>
           ) : (
             <>
               <span className="wg2-dd-result-icon" aria-hidden="true">✓</span>
               <span className="wg2-dd-result-msg">
-                补丁已应用。{applyResult!.requiresRerun ? '部分任务需要重新执行。' : ''}
+                修改已应用。
+                {applyResult!.requiresRerun
+                  ? `AI 正在按新要求重新处理 ${applyResult!.invalidatedTaskIds?.length ?? 0} 个步骤。`
+                  : ''}
               </span>
             </>
-          )}
-          {applyReceipt && (
-            <span className="wg2-dd-result-msg" data-testid={`discussion-receipt-${taskId}`}>
-              receipt {applyReceipt.requestId} · r{applyReceipt.revision}
-            </span>
           )}
           <button
             type="button"

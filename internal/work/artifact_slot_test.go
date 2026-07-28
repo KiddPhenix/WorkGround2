@@ -17,6 +17,7 @@ import (
 
 func newArtifactFS(t *testing.T) (*FileWorkStore, string, *Service) {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	dir := filepath.Join(os.TempDir(), "wart-"+strings.ReplaceAll(t.Name(), "/", "-"))
 	os.RemoveAll(dir)
 	t.Cleanup(func() { os.RemoveAll(dir) })

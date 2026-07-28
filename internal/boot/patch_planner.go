@@ -57,6 +57,9 @@ func (p *bootPatchPlanner) PlanPatch(ctx context.Context, input work.PatchPlanIn
 			return nil, err
 		}
 		plan, err := parsePatchPlanResponse(raw)
+		if err == nil {
+			err = validatePatchPlanScope(input, plan)
+		}
 		p.llmLog.logResponse(iid, "patch", workID, attemptNo, raw, err)
 		if err == nil {
 			return plan, nil
@@ -75,24 +78,49 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	b.WriteString("You are a structured work definition editor. Given a user's discussion instruction and the current work context, produce a JSON array of patch operations (PatchPlan).\n\n")
 	b.WriteString("## Rules\n")
 	b.WriteString("- Output ONLY valid JSON — no markdown, no code fences, no explanatory text.\n")
-	b.WriteString("- Every operation must use \"replace\" as the op.\n")
-	b.WriteString("- Paths must follow the schema below. Only patch fields that exist.\n")
-	b.WriteString("- Block scope paths: blocks/<blockID>/title, blocks/<blockID>/data\n")
-	b.WriteString("- Workflow scope paths:\n")
-	b.WriteString("  - nodes/<nodeID>/title, nodes/<nodeID>/description, nodes/<nodeID>/dependsOn, nodes/<nodeID>/inputSpecIds, nodes/<nodeID>/toolHints, nodes/<nodeID>/blockIds, nodes/<nodeID>/producesSlotIds, nodes/<nodeID>/consumesSlotIds\n")
-	b.WriteString("  - slots/<slotID>/title, slots/<slotID>/kind, slots/<slotID>/expectedCount, slots/<slotID>/required\n")
-	b.WriteString("  - specs/<specID>/label, specs/<specID>/description, specs/<specID>/kind, specs/<specID>/required, specs/<specID>/valueSchema, specs/<specID>/defaultValue, specs/<specID>/pinEligible\n")
-	b.WriteString("  - root/goal\n")
+	b.WriteString("- Use \"replace\" for existing fields. Workflow scope may also use \"add\" or \"remove\" only for a complete artifact slot object.\n")
+	b.WriteString("- Paths must follow the schema below.\n")
+	switch input.Scope {
+	case work.PatchBlock:
+		b.WriteString("- Allowed paths for this Block patch: blocks/<blockID>/title, blocks/<blockID>/data\n")
+	case work.PatchWorkflow:
+		b.WriteString("- Allowed paths for this Workflow patch:\n")
+		b.WriteString("  - nodes/<nodeID>/title, nodes/<nodeID>/description, nodes/<nodeID>/dependsOn, nodes/<nodeID>/inputSpecIds, nodes/<nodeID>/toolHints, nodes/<nodeID>/blockIds, nodes/<nodeID>/producesSlotIds, nodes/<nodeID>/consumesSlotIds\n")
+		b.WriteString("  - artifactSlots/<slotID>/title, artifactSlots/<slotID>/kind, artifactSlots/<slotID>/expectedCount, artifactSlots/<slotID>/required\n")
+		b.WriteString("  - inputSpecs/<specID>/label, inputSpecs/<specID>/description, inputSpecs/<specID>/kind, inputSpecs/<specID>/required, inputSpecs/<specID>/valueSchema, inputSpecs/<specID>/defaultValue, inputSpecs/<specID>/pinEligible\n")
+		b.WriteString("  - goal\n")
+		b.WriteString("  - add/remove only: artifactSlots/<slotID> (complete slot object)\n")
+	}
 	b.WriteString("- newValue must be JSON-encoded. oldValue is optional — if given it must match current state exactly.\n")
 	b.WriteString("- Scope is " + string(input.Scope) + ". Only patch within this scope.\n")
-	b.WriteString("- Do not invent IDs that don't exist in the context.\n")
+	b.WriteString("- Do not invent IDs that don't exist in the context, except the exact new slot ID explicitly supplied by an add request.\n")
 	b.WriteString("- Max 64 operations. If no change is needed, return an empty array.\n")
 	b.WriteString("- Convert the instruction into actual patch operations. Do not summarize or restate the request.\n")
-	b.WriteString("- For block content or table requests, replace blocks/<blockID>/data and preserve the current data object's shape; do not merely rename the Block.\n")
+	if input.Scope == work.PatchBlock {
+		b.WriteString("- For block content or table requests, replace blocks/<blockID>/data and preserve the current data object's shape; do not merely rename the Block.\n")
+	} else if input.Scope == work.PatchWorkflow {
+		b.WriteString("- This is a workflow revision. Runtime Block paths are forbidden; the Target Block below is read-only reference output.\n")
+		b.WriteString("- Apply task-specific guidance to nodes/<targetNodeID>/description so the target node and its downstream nodes execute with the new guidance.\n")
+		b.WriteString("- Preserve the target node's existing responsibilities and incorporate the user's instruction unless the user explicitly asks to replace them.\n")
+		b.WriteString("- Patch root/goal, specs, slots, dependencies, or other nodes only when the instruction explicitly requires that broader change.\n")
+		b.WriteString("- Adding a result requires one add at artifactSlots/<newSlotID> with newValue {\"id\",\"title\",\"kind\",\"expectedCount\",\"required\"}, plus replace nodes/<producerNodeID>/producesSlotIds so exactly one node produces it.\n")
+		b.WriteString("- Removing a result requires one remove at artifactSlots/<slotID>, plus replace every referencing node's producesSlotIds and consumesSlotIds to remove that ID. Do not leave dangling references.\n")
+	}
 	b.WriteString("\n## Exact response examples\n")
-	b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/title\",\"newValue\":\"New title\"}]\n")
-	b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/data\",\"newValue\":{\"content\":\"Updated content\"}}]\n")
-	b.WriteString("[{\"op\":\"replace\",\"path\":\"nodes/<nodeID>/description\",\"newValue\":\"Updated description\"}]\n")
+	if input.Scope == work.PatchBlock {
+		b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/title\",\"newValue\":\"New title\"}]\n")
+		b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/data\",\"newValue\":{\"content\":\"Updated content\"}}]\n")
+	} else {
+		targetNodeID := input.TargetNodeID
+		if targetNodeID == "" {
+			targetNodeID = "<targetNodeID>"
+		}
+		b.WriteString(fmt.Sprintf(
+			"[{\"op\":\"replace\",\"path\":\"nodes/%s/description\",\"newValue\":\"Existing responsibilities. Additional user guidance.\"}]\n",
+			targetNodeID,
+		))
+		b.WriteString("[{\"op\":\"add\",\"path\":\"artifactSlots/new_report\",\"newValue\":{\"id\":\"new_report\",\"title\":\"New report\",\"kind\":\"document\",\"expectedCount\":1,\"required\":true}},{\"op\":\"replace\",\"path\":\"nodes/<producerNodeID>/producesSlotIds\",\"newValue\":[\"existing_slot\",\"new_report\"]}]\n")
+	}
 
 	b.WriteString("\n## Current Work Context\n")
 	if input.Definition != nil {
@@ -100,8 +128,8 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString(fmt.Sprintf("Goal: %s\n", input.Definition.Goal))
 		b.WriteString("Nodes:\n")
 		for _, n := range input.Definition.Nodes {
-			b.WriteString(fmt.Sprintf("  - id=%s title=%q dependsOn=%v inputSpecIds=%v blockIds=%v producesSlotIds=%v consumesSlotIds=%v\n",
-				n.ID, n.Title, n.DependsOn, n.InputSpecIDs, n.BlockIDs, n.ProducesSlotIDs, n.ConsumesSlotIDs))
+			b.WriteString(fmt.Sprintf("  - id=%s title=%q description=%q dependsOn=%v inputSpecIds=%v blockIds=%v producesSlotIds=%v consumesSlotIds=%v\n",
+				n.ID, n.Title, n.Description, n.DependsOn, n.InputSpecIDs, n.BlockIDs, n.ProducesSlotIDs, n.ConsumesSlotIDs))
 		}
 		b.WriteString("ArtifactSlots:\n")
 		for _, s := range input.Definition.ArtifactSlots {
@@ -114,7 +142,12 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	}
 
 	if input.Block != nil {
-		b.WriteString(fmt.Sprintf("\nTarget Block: id=%s title=%q revision=%d data=%s\n",
+		blockLabel := "Target Block"
+		if input.Scope == work.PatchWorkflow {
+			blockLabel = "Reference output Block (read-only)"
+		}
+		b.WriteString(fmt.Sprintf("\n%s: id=%s title=%q revision=%d data=%s\n",
+			blockLabel,
 			input.Block.ID,
 			input.Block.Title,
 			input.Block.Revision,
@@ -125,11 +158,22 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	if input.Task != nil {
 		b.WriteString(fmt.Sprintf("Target Task: id=%s name=%q state=%s\n", input.Task.ID, input.Task.Name, input.Task.State))
 	}
+	if input.TargetNodeID != "" {
+		b.WriteString(fmt.Sprintf("Target Node: id=%s\n", input.TargetNodeID))
+	}
 
 	return b.String()
 }
 
 func buildPatchPlannerUserMessage(input work.PatchPlanInput) string {
+	if input.Scope == work.PatchWorkflow {
+		return fmt.Sprintf(
+			"Instruction for Target Node %s: %s\nScope: %s\nReturn only Workflow paths; never return a blocks/ path.",
+			input.TargetNodeID,
+			input.Instruction,
+			input.Scope,
+		)
+	}
 	return fmt.Sprintf("Instruction: %s\nScope: %s", input.Instruction, input.Scope)
 }
 
@@ -255,6 +299,34 @@ func decodePatchPlan(raw json.RawMessage) (*work.PatchPlan, error) {
 		return nil, fmt.Errorf("operations must be a JSON array")
 	}
 	return &work.PatchPlan{Operations: ops}, nil
+}
+
+func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) error {
+	if plan == nil {
+		return fmt.Errorf("boot: PlanPatch: empty PatchPlan")
+	}
+	for i, op := range plan.Operations {
+		isBlockPath := strings.HasPrefix(op.Path, "blocks/")
+		switch input.Scope {
+		case work.PatchBlock:
+			if !isBlockPath {
+				return fmt.Errorf(
+					"boot: PlanPatch: op[%d] path %q is outside block scope",
+					i,
+					op.Path,
+				)
+			}
+		case work.PatchWorkflow:
+			if isBlockPath {
+				return fmt.Errorf(
+					"boot: PlanPatch: op[%d] path %q targets a runtime Block forbidden by workflow scope",
+					i,
+					op.Path,
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func patchParseErrorCategory(err error) string {

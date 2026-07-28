@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react';
+import { MessageCircle } from 'lucide-react';
 
 import type {
   TaskV2View,
@@ -151,7 +152,8 @@ export const ExpandedBlock: React.FC<ExpandedBlockProps> = ({
             onClick={handleDiscuss}
             aria-label={`讨论 ${task.title}`}
             data-testid={`expanded-block-discuss-${task.id}`}>
-            💬 讨论
+            <MessageCircle size={15} aria-hidden="true" />
+            <span>讨论</span>
           </button>
         )}
       </div>

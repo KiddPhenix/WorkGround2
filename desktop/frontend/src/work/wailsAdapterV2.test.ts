@@ -357,6 +357,28 @@ async function run(): Promise<void> {
     mock.set('BeginWorkPlanning', async () => OK.beginWorkPlanning);
   }
 
+  // ── 9. Go nil slices normalize to frontend arrays ───────────────────────
+  {
+    const method = 'previewWorkPatch'; const fn = p[method]; if (!fn) { fail('preview null arrays','undefined'); return; }
+    const preview = {
+      ...(OK.previewWorkPatch.preview as Record<string, unknown>),
+      operations: null,
+      affectedNodeIds: null,
+      affectedBlockIds: null,
+      affectedArtifactSlotIds: null,
+      staleArtifactSlotIds: null,
+      invalidatedTaskIds: null,
+    };
+    mock.set(wailsMethod(method), async () => ({ ...OK.previewWorkPatch, preview }));
+    const result = await fn(inputFor(method));
+    const normalized = (result as any).preview;
+    for (const field of ['operations','affectedNodeIds','affectedBlockIds','affectedArtifactSlotIds','staleArtifactSlotIds','invalidatedTaskIds']) {
+      checkOk(Array.isArray(normalized?.[field]), `preview null arrays: ${field}`);
+      checkEq(normalized?.[field]?.length, 0, `preview null arrays: ${field} empty`);
+    }
+    mock.set(wailsMethod(method), async () => OK.previewWorkPatch);
+  }
+
   // ── Summary ──────────────────────────────────────────────────────────────
   process.stdout.write(`\n${passed} passed, ${failed} failed, ${passed + failed} total\n`);
   if (failed > 0) { process.stdout.write('\nFailures:\n'); for (const f of failures) process.stdout.write(`  ${f}\n`); }

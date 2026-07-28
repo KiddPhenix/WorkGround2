@@ -279,12 +279,13 @@ async function runTests(): Promise<void> {
     const row = host.querySelector('[data-testid="execution-row-t1"]');
     ok(row !== null, 'single: row exists');
     eq(row?.getAttribute('data-task-state'), 'running', 'single: data-task-state=running');
-    const header = host.querySelector('[data-testid="execution-row-header-t1"]');
-    eq(header?.getAttribute('aria-expanded'), 'false', 'single: aria-expanded=false');
+    const toggle = host.querySelector('[data-testid="execution-row-toggle-t1"]');
+    eq(toggle?.getAttribute('aria-expanded'), 'false', 'single: aria-expanded=false');
     const icon = host.querySelector('[data-testid="execution-row-icon-t1"]');
-    contains(icon?.textContent ?? '', '◉', 'single: running icon');
+    ok(icon?.querySelector('.lucide-loader-circle') !== null, 'single: running icon uses the V2 icon treatment');
     const badge = host.querySelector('[data-testid="execution-row-badge-t1"]');
     contains(badge?.textContent ?? '', '运行中', 'single: badge shows 运行中');
+    contains(host.querySelector('.wg2-el-heading')?.textContent ?? '', 'AI 正在执行', 'single: V2 execution heading');
     await cleanup();
   }
 
@@ -293,18 +294,18 @@ async function runTests(): Promise<void> {
   // ════════════════════════════════════════════════════════════════════════
   {
     const stateCases: Array<[TaskStateV2, string, string]> = [
-      ['pending', '○', '等待中'],
-      ['ready', '◌', '就绪'],
-      ['running', '◉', '运行中'],
-      ['waiting_input', '✎', '等待输入'],
-      ['waiting_approval', '⚠', '等待批准'],
-      ['completed', '✓', '已完成'],
-      ['failed_retryable', '↻', '失败（可重试）'],
-      ['failed_terminal', '✗', '失败（不可恢复）'],
-      ['canceled', '⊘', '已取消'],
-      ['invalidated', '⏻', '待重新生成'],
+      ['pending', '.lucide-clock-3', '等待中'],
+      ['ready', '.lucide-circle', '就绪'],
+      ['running', '.lucide-loader-circle', '运行中'],
+      ['waiting_input', '.lucide-pencil-line', '等待输入'],
+      ['waiting_approval', '.lucide-shield-alert', '等待批准'],
+      ['completed', '.lucide-check', '已完成'],
+      ['failed_retryable', '.lucide-rotate-ccw', '失败（可重试）'],
+      ['failed_terminal', '.lucide-x', '失败（不可恢复）'],
+      ['canceled', '.lucide-ban', '已取消'],
+      ['invalidated', '.lucide-refresh-cw', '待重新生成'],
     ];
-    for (const [state, expectedIcon, expectedLabel] of stateCases) {
+    for (const [state, iconSelector, expectedLabel] of stateCases) {
       resetStore();
       const tasks = [makeTask({ id: `st-${state}`, nodeId: 'n1', state, title: `${expectedLabel}任务` })];
       seedStore(tasks, makeDefinition([makeNodeDef({ id: 'n1', title: `${expectedLabel}任务` })]));
@@ -313,7 +314,7 @@ async function runTests(): Promise<void> {
       ok(row !== null, `state-${state}: row rendered`);
       eq(row?.getAttribute('data-task-state'), state, `state-${state}: data-task-state`);
       const icon = host.querySelector(`[data-testid="execution-row-icon-st-${state}"]`);
-      eq(icon?.textContent, expectedIcon, `state-${state}: icon=${expectedIcon}`);
+      ok(icon?.querySelector(iconSelector) !== null, `state-${state}: icon=${iconSelector}`);
       const badge = host.querySelector(`[data-testid="execution-row-badge-st-${state}"]`);
       contains(badge?.textContent ?? '', expectedLabel, `state-${state}: badge=${expectedLabel}`);
       await cleanup();
@@ -356,6 +357,223 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
+  // V2 discussion entry is available on a collapsed row and does not expand it.
+  {
+    resetStore();
+    const tasks = [makeTask({
+      id: 't-discuss-row',
+      nodeId: 'n-discuss',
+      title: '已完成任务',
+      state: 'completed',
+    })];
+    seedStore(tasks, makeDefinition([makeNodeDef({ id: 'n-discuss' })]));
+    const expandCalls: Array<{ workId: string; taskId: string }> = [];
+    const { host, cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId="session-discuss"
+        onExpandTask={(intent) => expandCalls.push(intent)}
+      />,
+    );
+    const discuss = host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-t-discuss-row"]');
+    ok(discuss !== null, 'row discussion: V2 discussion action visible while collapsed');
+    contains(discuss?.textContent ?? '', '修改意见', 'row discussion: completed task uses revision wording');
+    await interact(() => {
+      discuss?.focus();
+      discuss?.click();
+    });
+    ok(document.querySelector('[data-testid="discussion-drawer-t-discuss-row"]') !== null, 'row discussion: drawer opens');
+    eq(
+      document.querySelector<HTMLInputElement>('[data-testid="discussion-scope-workflow-t-discuss-row"]')?.checked,
+      true,
+      'row discussion: completed task defaults to downstream workflow revision',
+    );
+    contains(
+      document.querySelector('[data-testid="discussion-scope-t-discuss-row"]')?.textContent ?? '',
+      '影响当前项及后续任务',
+      'row discussion: downstream effect is explicit',
+    );
+    eq(expandCalls.length, 0, 'row discussion: opening discussion does not expand task');
+    await interact(() =>
+      document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-t-discuss-row"]')?.click());
+    await cleanup();
+  }
+
+  // ResultShelf structure changes open the existing discussion flow with a
+  // human-readable draft and a locked workflow scope.
+  {
+    resetStore();
+    const tasks = [makeTask({
+      id: 't-result-change',
+      nodeId: 'n-result-change',
+      title: '生成成果',
+      state: 'completed',
+    })];
+    seedStore(tasks, makeDefinition([makeNodeDef({ id: 'n-result-change' })]));
+    const { cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId="session-result-change"
+        externalWorkflowDiscussion={{
+          token: 'add:summary:1',
+          nodeId: 'n-result-change',
+          title: '新增成果：总结',
+          instruction: '新增成果“总结”，由任务“生成成果”产出。',
+        }}
+      />,
+    );
+    const drawer = document.querySelector('[data-testid="discussion-drawer-t-result-change"]');
+    ok(drawer !== null, 'result workflow: external request opens discussion drawer');
+    eq(
+      document.querySelector<HTMLTextAreaElement>('[data-testid="discussion-input-t-result-change"]')?.value,
+      '新增成果“总结”，由任务“生成成果”产出。',
+      'result workflow: human-readable instruction is preserved',
+    );
+    contains(
+      document.querySelector('[data-testid="discussion-scope-t-result-change"]')?.textContent ?? '',
+      '流程结构变更',
+      'result workflow: workflow-only scope is explicit',
+    );
+    ok(
+      document.querySelector('[data-testid="discussion-scope-block-t-result-change"]') === null,
+      'result workflow: block-only scope cannot be selected',
+    );
+    await interact(() =>
+      document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-t-result-change"]')?.click());
+    await cleanup();
+  }
+
+  // A successful patch may replace the Definition while its authoritative
+  // refresh is still pending. That self-triggered identity change must close
+  // the original drawer after refresh instead of leaving stale UI behind.
+  {
+    resetStore();
+    const sessionId = 'session-auto-close';
+    const blockId = 'block-auto-close';
+    const task = makeTask({
+      id: 'task-auto-close',
+      runId: 'run-auto-close',
+      nodeId: 'node-auto-close',
+      title: '自动关闭测试',
+      state: 'completed',
+    });
+    const definition = makeDefinition([
+      makeNodeDef({ id: task.nodeId, title: task.title, blockIds: [blockId] }),
+    ]);
+    seedStore([task], definition);
+    const draftKey = [
+      WORK_ID,
+      task.runId,
+      sessionId,
+      task.id,
+      blockId,
+      definition.revision,
+      1,
+    ].join('\u0000');
+    useWorkUIStore.getState().setDiscussionDraft(WORK_ID, draftKey, '更新当前任务及后续步骤');
+    let refreshCalls = 0;
+    const { host, cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId={sessionId}
+        workRevision={definition.revision}
+        blocks={[makeBlock(blockId)]}
+        onPreviewPatch={async () => ({
+          preview: {
+            id: 'patch-auto-close',
+            workId: WORK_ID,
+            runId: task.runId,
+            taskId: task.id,
+            blockId,
+            sessionId,
+            baseDefinitionRev: definition.revision,
+            baseBlockRev: 1,
+            scope: 'workflow',
+            operations: [{
+              op: 'replace',
+              path: `nodes/${task.nodeId}/description`,
+              newValue: '新的任务说明',
+            }],
+            affectedNodeIds: [task.nodeId],
+            affectedBlockIds: [blockId],
+            affectedArtifactSlotIds: [],
+            staleArtifactSlotIds: [],
+            invalidatedTaskIds: [task.id],
+            requiresRerun: true,
+            digest: 'digest-auto-close',
+            expiresAt: '2099-07-24T00:00:00Z',
+          },
+          revision: definition.revision,
+          duplicate: false,
+          committed: true,
+          recoverable: false,
+        })}
+        onApplyPatch={async (intent) => {
+          // The event stream can project the new Definition before the
+          // ApplyWorkPatch RPC returns its receipt.
+          seedStore(
+            [
+              { ...task, state: 'invalidated' },
+              makeTask({
+                id: 'task-after-patch',
+                runId: 'run-after-patch',
+                nodeId: task.nodeId,
+                title: task.title,
+                state: 'waiting_input',
+              }),
+            ],
+            { ...definition, revision: 2, parentRevision: definition.revision },
+          );
+          await new Promise<void>((resolveApply) => setTimeout(resolveApply, 0));
+          return {
+            workRevision: 2,
+            newRevision: 2,
+            affectedArtifactSlotIds: [],
+            staleArtifactSlotIds: [],
+            invalidatedTaskIds: [task.id],
+            requiresRerun: true,
+            duplicate: false,
+            committed: true,
+            recoverable: false,
+            receipt: {
+              requestId: intent.requestId,
+              operation: 'patch.apply',
+              intentDigest: 'intent-auto-close',
+              patchId: intent.patchId,
+              resultRevision: 2,
+              resultDigest: 'result-auto-close',
+              affectedArtifactSlotIds: [],
+              staleArtifactSlotIds: [],
+              invalidatedTaskIds: [task.id],
+              requiresRerun: true,
+              createdAt: '2026-07-24T00:00:00Z',
+            },
+          };
+        }}
+        onRefreshAuthoritative={async () => {
+          refreshCalls++;
+        }}
+      />,
+    );
+    await interact(() =>
+      host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-task-auto-close"]')?.click());
+    await interact(() =>
+      document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-auto-close"]')?.click());
+    ok(
+      document.querySelector('[data-testid="discussion-drawer-task-auto-close"]') !== null,
+      'discussion auto-close: drawer stays open for confirmation',
+    );
+    await interact(() =>
+      document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-auto-close"]')?.click());
+    await settle();
+    eq(refreshCalls, 1, 'discussion auto-close: authoritative refresh runs exactly once');
+    ok(
+      document.querySelector('[data-testid="discussion-drawer-task-auto-close"]') === null,
+      'discussion auto-close: pre-response structure update still closes the drawer',
+    );
+    await cleanup();
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // 5. Click row toggles expand
   // ════════════════════════════════════════════════════════════════════════
@@ -379,7 +597,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 6. Keyboard Enter/Space toggles expand
+  // 6. Native toggle button is keyboard-operable
   // ════════════════════════════════════════════════════════════════════════
   {
     resetStore();
@@ -391,18 +609,13 @@ async function runTests(): Promise<void> {
       <ExecutionList workId={WORK_ID} onExpandTask={(i) => expandCalls.push(i)} />,
     );
 
-    const header = host.querySelector<HTMLElement>('[data-testid="execution-row-header-t-key"]');
-    ok(header !== null, 'keyboard: header exists');
-    eq(header?.getAttribute('tabIndex'), '0', 'keyboard: tabIndex=0');
-    eq(header?.getAttribute('role'), 'button', 'keyboard: role=button');
-
-    // Enter key
-    await interact(() => header?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
-    eq(expandCalls.length, 1, 'keyboard: Enter fires expand');
-
-    // Space key
-    await interact(() => header?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })));
-    eq(expandCalls.length, 2, 'keyboard: Space fires expand');
+    const toggle = host.querySelector<HTMLButtonElement>('[data-testid="execution-row-toggle-t-key"]');
+    ok(toggle !== null, 'keyboard: native toggle exists');
+    eq(toggle?.tagName, 'BUTTON', 'keyboard: native button semantics');
+    toggle?.focus();
+    eq(document.activeElement, toggle, 'keyboard: toggle can receive focus');
+    await interact(() => toggle?.click());
+    eq(expandCalls.length, 1, 'keyboard: native activation fires expand');
 
     await cleanup();
   }
@@ -663,11 +876,10 @@ async function runTests(): Promise<void> {
     ok(row?.getAttribute('aria-label')?.includes('A11y 任务') ?? false, 'a11y: aria-label includes title');
     ok(row?.getAttribute('aria-label')?.includes('运行中') ?? false, 'a11y: aria-label includes state');
 
-    const header = host.querySelector('[data-testid="execution-row-header-t-a11y"]');
-    eq(header?.getAttribute('role'), 'button', 'a11y: header role=button');
-    eq(header?.getAttribute('tabIndex'), '0', 'a11y: header tabIndex=0');
-    eq(header?.getAttribute('aria-expanded'), 'false', 'a11y: header aria-expanded=false');
-    eq(header?.getAttribute('aria-controls'), 'expanded-block-t-a11y', 'a11y: header controls inline panel');
+    const toggle = host.querySelector('[data-testid="execution-row-toggle-t-a11y"]');
+    eq(toggle?.tagName, 'BUTTON', 'a11y: native toggle button');
+    eq(toggle?.getAttribute('aria-expanded'), 'false', 'a11y: toggle aria-expanded=false');
+    eq(toggle?.getAttribute('aria-controls'), 'expanded-block-t-a11y', 'a11y: toggle controls inline panel');
     await cleanup();
   }
 
@@ -1114,6 +1326,15 @@ async function runTests(): Promise<void> {
             error: 'fixture stop',
           };
         }}
+        onApplyPatch={async () => ({
+          workRevision: 1,
+          newRevision: 1,
+          requiresRerun: false,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+        })}
+        onRefreshAuthoritative={async () => {}}
       />,
     );
     ok(
@@ -1195,6 +1416,15 @@ async function runTests(): Promise<void> {
             error: 'fixture stop',
           };
         }}
+        onApplyPatch={async () => ({
+          workRevision: 1,
+          newRevision: 1,
+          requiresRerun: false,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+        })}
+        onRefreshAuthoritative={async () => {}}
       />,
     );
     await interact(() =>
@@ -1333,15 +1563,15 @@ async function runTests(): Promise<void> {
     await settle();
     contains(
       document.querySelector('[data-testid="discussion-result-task-b"]')?.textContent ?? '',
-      '补丁已提交',
+      '改动已提交',
       'discussion recovery: transport-only committed result is explicit',
     );
     contains(
       document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '刷新权威状态失败',
+      '刷新最新状态失败',
       'discussion recovery: awaited refresh failure is explicit',
     );
-    ok(Boolean(document.querySelector('[data-testid="discussion-receipt-task-b"]')), 'discussion recovery: typed receipt is displayed');
+    ok(!document.querySelector('[data-testid="discussion-receipt-task-b"]'), 'discussion recovery: technical receipt stays hidden');
     eq(refreshCalls, 1, 'discussion recovery: committed result refreshes exactly once');
 
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-task-b"]')?.click());
@@ -1352,12 +1582,12 @@ async function runTests(): Promise<void> {
     await settle();
     contains(
       document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '缺少 PatchIntentReceipt',
-      'discussion receipt contract: missing receipt is explicit',
+      '确认响应不完整',
+      'discussion receipt contract: incomplete confirmation is explicit',
     );
     contains(
       document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '刷新权威状态失败',
+      '刷新最新状态失败',
       'discussion receipt contract: missing receipt still awaits refresh',
     );
     ok(

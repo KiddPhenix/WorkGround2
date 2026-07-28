@@ -51,6 +51,7 @@ function setupDOM(): void {
     Element: dom.window.Element,
     HTMLElement: dom.window.HTMLElement,
     HTMLInputElement: dom.window.HTMLInputElement,
+    HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
     HTMLSelectElement: dom.window.HTMLSelectElement,
     HTMLButtonElement: dom.window.HTMLButtonElement,
     HTMLFieldSetElement: dom.window.HTMLFieldSetElement,
@@ -265,6 +266,79 @@ async function runTests(): Promise<void> {
     ok(rev?.textContent?.includes('r3') ?? false, 'text: r3');
 
     await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 1b. Text multiline contract + legacy "每行一个" compatibility
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const draft: DraftValue = 'hello\nworld';
+    const { host, cleanup } = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'text-multiline',
+          label: '详细内容',
+          valueSchema: JSON.stringify({ multiline: true }),
+        })}
+        draftValue={draft}
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit} onPin={noopPin} onUnpin={noopUnpin}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={INPUT_REV}
+      />,
+    );
+    const textarea = host.querySelector<HTMLTextAreaElement>(
+      '[data-testid="work-input-control-task-fixture-text-multiline"]',
+    );
+    eq(textarea?.tagName, 'TEXTAREA', 'text-multiline: explicit schema renders textarea');
+    eq(textarea?.value, 'hello\nworld', 'text-multiline: newline preserved');
+    eq(textarea?.rows, 4, 'text-multiline: shows multiple editable rows');
+    await cleanup();
+
+    const legacy = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'legacy-lines',
+          label: '单词列表',
+          description: '每行一个单词',
+        })}
+        draftValue="hello"
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit} onPin={noopPin} onUnpin={noopUnpin}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={INPUT_REV}
+      />,
+    );
+    eq(
+      legacy.host.querySelector('[data-testid="work-input-control-task-fixture-legacy-lines"]')?.tagName,
+      'TEXTAREA',
+      'text-multiline: legacy 每行 hint renders textarea',
+    );
+    await legacy.cleanup();
+
+    const explicitSingleLine = await mount(
+      <WorkInputHost
+        inputSpec={makeSpec({
+          id: 'explicit-single-line',
+          label: '单词列表',
+          description: '每行一个单词',
+          valueSchema: JSON.stringify({ multiline: false }),
+        })}
+        draftValue="hello"
+        onDraftChange={() => {}}
+        onSubmit={noopSubmit} onPin={noopPin} onUnpin={noopUnpin}
+        workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
+        definitionRevision={DEF_REV} inputRevision={INPUT_REV}
+      />,
+    );
+    eq(
+      explicitSingleLine.host.querySelector(
+        '[data-testid="work-input-control-task-fixture-explicit-single-line"]',
+      )?.tagName,
+      'INPUT',
+      'text-multiline: explicit false overrides legacy hint',
+    );
+    await explicitSingleLine.cleanup();
   }
 
   // ════════════════════════════════════════════════════════════════════════

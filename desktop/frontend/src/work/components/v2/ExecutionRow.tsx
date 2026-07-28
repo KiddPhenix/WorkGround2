@@ -1,4 +1,18 @@
 import React, { useCallback, useState } from 'react';
+import {
+  Ban,
+  Check,
+  ChevronRight,
+  Circle,
+  Clock3,
+  LoaderCircle,
+  MessageCircle,
+  PencilLine,
+  RefreshCw,
+  RotateCcw,
+  ShieldAlert,
+  X,
+} from 'lucide-react';
 
 import type { TaskV2View, TaskStateV2, NodeDef } from '../../types_v2';
 
@@ -30,19 +44,6 @@ const STATE_LABELS: Record<TaskStateV2, string> = {
   invalidated: '待重新生成',
 };
 
-const STATE_ICONS: Record<TaskStateV2, string> = {
-  pending: '○',
-  ready: '◌',
-  running: '◉',
-  waiting_input: '✎',
-  waiting_approval: '⚠',
-  completed: '✓',
-  failed_retryable: '↻',
-  failed_terminal: '✗',
-  canceled: '⊘',
-  invalidated: '⏻',
-};
-
 const STATE_BADGE: Record<TaskStateV2, string> = {
   pending: 'neutral',
   ready: 'info',
@@ -71,6 +72,8 @@ export interface ExecutionRowProps {
   onToggleExpand: (intent: TaskExpandIntent) => void;
   /** Called when user wants to retry a failed task. */
   onRetry?: (intent: TaskRetryIntent) => void | Promise<void>;
+  /** Opens discussion for this task without changing its expanded state. */
+  onDiscuss?: () => void;
 }
 
 export const ExecutionRow: React.FC<ExecutionRowProps> = ({
@@ -79,22 +82,13 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
   isExpanded,
   onToggleExpand,
   onRetry,
+  onDiscuss,
 }) => {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const handleClick = useCallback(() => {
     onToggleExpand({ workId, taskId: task.id });
   }, [onToggleExpand, workId, task.id]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        onToggleExpand({ workId, taskId: task.id });
-      }
-    },
-    [onToggleExpand, workId, task.id],
-  );
 
   const handleRetry = useCallback(
     async (e: React.MouseEvent) => {
@@ -112,6 +106,14 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
     },
     [onRetry, retrying, workId, task.id, task.runId, task.state],
   );
+  const handleDiscuss = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    onDiscuss?.();
+  }, [onDiscuss]);
+  const handleChevron = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    handleClick();
+  }, [handleClick]);
 
   const badgeClass = STATE_BADGE[task.state];
   const progressValue = task.state === 'running' ? progressPercent(task.progress) : null;
@@ -128,52 +130,55 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
       <div
         className="wg2-er-header"
         onClick={handleClick}
-        onKeyDown={handleKeyDown}
-        role="button"
-        tabIndex={0}
-        aria-expanded={isExpanded}
-        aria-controls={`expanded-block-${task.id}`}
         data-testid={`execution-row-header-${task.id}`}
       >
         {/* State icon */}
         <span
           className="wg2-er-icon"
+          data-tone={badgeClass}
           aria-hidden="true"
           data-testid={`execution-row-icon-${task.id}`}
         >
-          {STATE_ICONS[task.state]}
+          {stateIcon(task.state)}
         </span>
 
-        {/* Title */}
-        <span className="wg2-er-title" title={task.title}>
-          {task.title}
+        <span className="wg2-er-copy">
+          <span className="wg2-er-title" title={task.title}>
+            {task.title}
+          </span>
+          <span className="wg2-er-meta">
+            <span
+              className="wg2-er-badge"
+              data-badge={badgeClass}
+              data-testid={`execution-row-badge-${task.id}`}
+            >
+              {STATE_LABELS[task.state]}
+            </span>
+            {task.progress && progressValue === null && (
+              <span className="wg2-er-progress-copy"> · {task.progress}</span>
+            )}
+          </span>
         </span>
 
         {/* Progress bar for running */}
         {progressValue !== null && (
-          <div
-            className="wg2-er-progress"
-            role="progressbar"
-            aria-valuenow={progressValue}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`${task.title} 进度`}
-          >
+          <div className="wg2-er-progress-group">
             <div
-              className="wg2-er-progress-fill"
-              style={{ width: `${progressValue}%` }}
-            />
+              className="wg2-er-progress"
+              role="progressbar"
+              aria-valuenow={progressValue}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`${task.title} 进度`}
+            >
+              <div
+                className="wg2-er-progress-fill"
+                style={{ width: `${progressValue}%` }}
+              />
+            </div>
+            <span className="wg2-er-progress-value">{progressValue}%</span>
           </div>
         )}
-
-        {/* State badge */}
-        <span
-          className="wg2-er-badge"
-          data-badge={badgeClass}
-          data-testid={`execution-row-badge-${task.id}`}
-        >
-          {STATE_LABELS[task.state]}
-        </span>
 
         {/* Failed retry button (inline) */}
         {(task.state === 'failed_retryable' || task.state === 'invalidated') && onRetry && (
@@ -190,14 +195,32 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
           </button>
         )}
 
+        {onDiscuss && (
+          <button
+            type="button"
+            className="wg2-er-discuss"
+            onClick={handleDiscuss}
+            aria-label={`${task.state === 'completed' ? '提出修改意见' : '讨论'} ${task.title}`}
+            data-testid={`execution-row-discuss-${task.id}`}
+          >
+            <MessageCircle size={15} aria-hidden="true" />
+            <span>{task.state === 'completed' ? '修改意见' : '讨论'}</span>
+          </button>
+        )}
+
         {/* Expand chevron */}
-        <span
+        <button
+          type="button"
           className="wg2-er-chevron"
-          aria-hidden="true"
+          onClick={handleChevron}
+          aria-label={`${isExpanded ? '收起' : '展开'} ${task.title}`}
+          aria-expanded={isExpanded}
+          aria-controls={`expanded-block-${task.id}`}
           data-expanded={isExpanded}
+          data-testid={`execution-row-toggle-${task.id}`}
         >
-          ▶
-        </span>
+          <ChevronRight size={16} aria-hidden="true" />
+        </button>
       </div>
       {retryError && (
         <div role="alert" className="wg2-eb-error" data-testid={`execution-row-retry-error-${task.id}`}>
@@ -207,6 +230,31 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
     </div>
   );
 };
+
+function stateIcon(state: TaskStateV2): React.ReactNode {
+  switch (state) {
+    case 'pending':
+      return <Clock3 size={19} />;
+    case 'ready':
+      return <Circle size={19} />;
+    case 'running':
+      return <LoaderCircle size={19} />;
+    case 'waiting_input':
+      return <PencilLine size={19} />;
+    case 'waiting_approval':
+      return <ShieldAlert size={19} />;
+    case 'completed':
+      return <Check size={19} />;
+    case 'failed_retryable':
+      return <RotateCcw size={19} />;
+    case 'failed_terminal':
+      return <X size={19} />;
+    case 'canceled':
+      return <Ban size={19} />;
+    case 'invalidated':
+      return <RefreshCw size={19} />;
+  }
+}
 
 function progressPercent(progress: string | undefined): number | null {
   if (!progress) return null;

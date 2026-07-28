@@ -26,6 +26,7 @@ type cmFixture struct {
 
 func newCMFixture(t *testing.T) *cmFixture {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	root := filepath.Join(t.TempDir(), "works")
 	store, err := NewFileWorkStore(root, 30*24*time.Hour)
 	if err != nil {

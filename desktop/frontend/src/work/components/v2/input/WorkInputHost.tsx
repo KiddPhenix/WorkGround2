@@ -794,6 +794,15 @@ interface TypedControlProps {
   fileError: string | null;
 }
 
+const LEGACY_MULTILINE_HINT =
+  /(?:每行|逐行|换行|多行|列表|one\s+.+\s+per\s+line|line[- ]separated|multiline|newlines?|\blist\b)/i;
+
+function shouldUseMultilineText(inputSpec: InputSpec, schema: ParsedValueSchema): boolean {
+  if (schema.text?.multiline !== undefined) return schema.text.multiline;
+  // Compatibility for definitions created before valueSchema.multiline existed.
+  return LEGACY_MULTILINE_HINT.test(`${inputSpec.label}\n${inputSpec.description ?? ''}`);
+}
+
 const TypedControl: React.FC<TypedControlProps> = ({
   id,
   inputSpec,
@@ -813,13 +822,32 @@ const TypedControl: React.FC<TypedControlProps> = ({
 
   switch (inputSpec.kind) {
     // ── Text ──────────────────────────────────────────────────
-    case 'text':
+    case 'text': {
+      const value = typeof draftValue === 'string' ? draftValue : String(draftValue ?? '');
+      if (shouldUseMultilineText(inputSpec, schema)) {
+        return (
+          <textarea
+            id={id}
+            className="wg2-wh-text wg2-wh-textarea"
+            value={value}
+            rows={4}
+            placeholder={schema.text?.pattern ? `匹配: ${schema.text.pattern}` : undefined}
+            aria-describedby={describedBy}
+            disabled={disabled}
+            aria-required={inputSpec.required}
+            aria-invalid={ariaInvalid || undefined}
+            onChange={(e) => onDraftChange(e.currentTarget.value)}
+            onKeyDown={onKeyDown}
+            data-testid={`work-input-control-${testIdSuffix}`}
+          />
+        );
+      }
       return (
         <input
           id={id}
           className="wg2-wh-text"
           type="text"
-          value={typeof draftValue === 'string' ? draftValue : String(draftValue ?? '')}
+          value={value}
           placeholder={schema.text?.pattern ? `匹配: ${schema.text.pattern}` : undefined}
           aria-describedby={describedBy}
           disabled={disabled}
@@ -830,6 +858,7 @@ const TypedControl: React.FC<TypedControlProps> = ({
           data-testid={`work-input-control-${testIdSuffix}`}
         />
       );
+    }
 
     // ── Number ────────────────────────────────────────────────
     case 'number': {

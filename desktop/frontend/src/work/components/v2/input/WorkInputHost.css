@@ -135,6 +135,12 @@
   border-color: var(--wg2-error-border, #e0696a);
 }
 
+.wg2-wh-textarea {
+  min-height: 88px;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
 /* ── Number wrap ──────────────────────────────────────────────── */
 
 .wg2-wh-number-wrap {

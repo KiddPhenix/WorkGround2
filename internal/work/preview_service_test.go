@@ -16,6 +16,7 @@ import (
 
 func makeWorkStore(t *testing.T, dir string) *FileWorkStore {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	store, err := NewFileWorkStore(dir, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)

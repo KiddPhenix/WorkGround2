@@ -1056,7 +1056,7 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 		return nil, fmt.Errorf("work: UpdateDraft: Work %s is %s", workID, current.ArchiveState)
 	}
 
-	targetState, err := draftTargetState(current.State)
+	targetState, err := updateDraftTargetState(current)
 	if err != nil {
 		return nil, err
 	}
@@ -2842,6 +2842,22 @@ func draftTargetState(state WorkState) (WorkState, error) {
 	default:
 		return "", fmt.Errorf("work: UpdateDraft is not allowed while Work.State=%s", state)
 	}
+}
+
+func updateDraftTargetState(current *Work) (WorkState, error) {
+	if current == nil {
+		return "", errors.New("work: UpdateDraft: Work is required")
+	}
+	if current.SchemaVersion >= SchemaVersionV2 {
+		switch current.State {
+		case WorkRunning, WorkWaitingUser, WorkPaused, WorkCompleted:
+			// V2 edits prepare a candidate Definition while the current run and
+			// lifecycle remain authoritative. Applying that candidate performs
+			// the explicit transition back to running.
+			return current.State, nil
+		}
+	}
+	return draftTargetState(current.State)
 }
 
 func buildInitialBlocks(specs []BlockSpec, now time.Time) ([]BlockInstance, []BlockPlacement) {

@@ -4,7 +4,7 @@
 // build tag. Run it against a real model with:
 //
 //	set -a; . /path/to/.env; set +a
-//	go test -tags live -run Live ./internal/acp/ -v
+//	WORKGROUND2_LIVE_TEST=1 go test -tags live -run Live ./internal/acp/ -v
 //
 // It drives the full ACP stack — acp.Serve → control.Controller → agent.Agent →
 // the real OpenAI-compatible provider — over a tiny prompt, proving the live
@@ -35,6 +35,9 @@ func (f *liveFactory) NewSession(_ context.Context, p SessionParams) (*control.C
 }
 
 func TestLiveDeepSeekPrompt(t *testing.T) {
+	if os.Getenv("WORKGROUND2_LIVE_TEST") != "1" {
+		t.Skip("set WORKGROUND2_LIVE_TEST=1 and use -tags=live to run live model tests")
+	}
 	key := os.Getenv("DEEPSEEK_API_KEY")
 	if key == "" {
 		t.Skip("DEEPSEEK_API_KEY not set")

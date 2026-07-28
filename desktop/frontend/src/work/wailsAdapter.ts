@@ -356,6 +356,21 @@ interface GoApplyWorkPatchResult {
 
 // --- Helpers ---
 
+function normalizeWorkPatchPreview(
+  preview: import('./types_v2').WorkPatchPreview | undefined,
+): import('./types_v2').WorkPatchPreview | undefined {
+  if (!preview) return undefined;
+  return {
+    ...preview,
+    operations: Array.isArray(preview.operations) ? preview.operations : [],
+    affectedNodeIds: Array.isArray(preview.affectedNodeIds) ? preview.affectedNodeIds : [],
+    affectedBlockIds: Array.isArray(preview.affectedBlockIds) ? preview.affectedBlockIds : [],
+    affectedArtifactSlotIds: Array.isArray(preview.affectedArtifactSlotIds) ? preview.affectedArtifactSlotIds : [],
+    staleArtifactSlotIds: Array.isArray(preview.staleArtifactSlotIds) ? preview.staleArtifactSlotIds : [],
+    invalidatedTaskIds: Array.isArray(preview.invalidatedTaskIds) ? preview.invalidatedTaskIds : [],
+  };
+}
+
 function getWailsApp(): WailsWorkBindings | undefined {
   if (typeof window === 'undefined') return undefined;
   const go = (window as unknown as Record<string, unknown>).go as Record<string, unknown> | undefined;
@@ -1333,7 +1348,7 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
           };
         }
         return {
-          preview: go.preview,
+          preview: normalizeWorkPatchPreview(go.preview),
           revision: go.revision,
           duplicate: go.duplicate,
           committed: go.committed,

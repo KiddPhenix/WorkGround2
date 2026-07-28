@@ -21,6 +21,7 @@ type cmResolverFixture struct {
 
 func newCMResolverFixture(t *testing.T) *cmResolverFixture {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	root := filepath.Join(t.TempDir(), "works")
 	store, err := NewFileWorkStore(root, 30*24*time.Hour)
 	if err != nil {

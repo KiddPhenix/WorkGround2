@@ -3,7 +3,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 GOEXE := $(shell go env GOEXE)
 ADDONS_ROOT ?= ../wg2addons
 
-.PHONY: build build-addons vet fmt test hooks cross clean
+.PHONY: build build-addons vet fmt test test-fast test-fresh test-desktop test-all test-live hooks cross clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o bin/workground2$(GOEXE) ./cmd/workground2
@@ -19,7 +19,22 @@ fmt:
 	gofmt -w .
 
 test:
+	go test ./...
+
+test-fast:
+	go test -short ./...
+
+test-fresh:
 	go test -count=1 ./...
+
+test-desktop:
+	cd desktop && go test ./...
+
+test-all: test test-desktop
+
+test-live:
+	@test "$$WORKGROUND2_LIVE_TEST" = "1" || (echo "set WORKGROUND2_LIVE_TEST=1 to run live model tests" && exit 1)
+	go test -tags=live -count=1 ./internal/acp ./internal/provider/openai
 
 hooks:
 	@git config core.hooksPath .githooks

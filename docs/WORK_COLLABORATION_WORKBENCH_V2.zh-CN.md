@@ -192,9 +192,11 @@ Block 讨论是附着于 Block 的短上下文协作：
 3. 用户输入改进、指导或意见。
 4. AI 返回结构化 `WorkPatchPreview`。
 5. 用户选择作用范围：
-   - `block`：只修改当前 Block 或当前运行实例。
-   - `workflow`：生成新的 WorkDefinition revision，供当前及后续运行使用。
-6. 用户点击应用；系统使用 requestID 和 expectedRevision 提交。
+   - “仅更新当前内容，不重跑后续任务”（`block`）：只修改当前 Block 或当前运行实例。
+   - “影响当前项及后续任务”（`workflow`）：生成新的 WorkDefinition revision，供当前及后续运行使用。
+6. 已完成任务默认选择 `workflow`；进行中、等待中任务默认选择 `block`，用户可以显式切换。
+7. 系统先展示修改前后差异、失效成果和重跑范围；用户确认后应用，系统使用 requestID 和 expectedRevision 提交。
+8. `workflow` 应用创建独立修订 Run，旧 Run 保持历史不可变；未受影响的已完成节点复用，目标节点及其 DAG 下游重新执行。
 
 讨论目标按当前任务的输入 Block、Definition 声明 Block、稳定派生 Block 依次解析。稳定派生 ID 为 `v2-node-<NodeID 的 UTF-8 十六进制>`，不得使用 taskID 或输入 revision 伪造 Block 身份。对于升级前没有持久化 Block 的旧 Work，首次成功预览会将真实 Block 和补丁预览作为同一原子事件批次提交；规划失败或批次提交失败不留下半完成 Block，并允许使用同一请求安全重试。
 
@@ -634,6 +636,7 @@ components/work/
 
 - 每个 Block 使用同一讨论入口。
 - 补丁应用前可查看范围、影响和是否重跑。
+- A→B→C 全部完成后修改 A 时，新修订 Run 重跑 A/B/C；修改 B 时复用 A，只重跑 B/C。
 - 重复 apply requestID 只产生一次 revision。
 - base revision 过期时拒绝覆盖并提供最新预览。
 

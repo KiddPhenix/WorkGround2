@@ -115,14 +115,15 @@ type DefinitionPlan struct {
 // Discussion text stays in the associated Session; it is never persisted in a
 // Work event.
 type PatchPlanInput struct {
-	Instruction string
-	SessionID   string
-	Scope       PatchScope
-	Work        *Work
-	Definition  *WorkDefinitionRevision
-	Run         *WorkflowRun
-	Task        *Task
-	Block       *BlockInstance
+	Instruction  string
+	SessionID    string
+	Scope        PatchScope
+	TargetNodeID string
+	Work         *Work
+	Definition   *WorkDefinitionRevision
+	Run          *WorkflowRun
+	Task         *Task
+	Block        *BlockInstance
 }
 
 // PatchPlan is the planner's untrusted structured output.

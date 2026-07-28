@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 
 import type {
   BlockPlacement,
@@ -29,6 +29,7 @@ import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { RunProgressIndicator } from './RunProgressIndicator';
 import { WorkRunEntry } from './WorkRunEntry';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
+import type { ResultWorkflowChangeRequest } from '../../work/components/v2/ResultShelf';
 import type {
   FileDownloadIntent,
   FileLocateIntent,
@@ -226,6 +227,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onAdjustStructure,
 }) => {
   const { work } = view;
+  const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
   const isV2 = v2Definition !== undefined && v2Definition.status === 'active';
   const expandedTaskId = Object.entries(expanded)
     .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
@@ -354,6 +356,9 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
           <ResultShelf
             slots={artifactSlots ?? []}
             activeDefinitionRevision={v2Definition.revision}
+            definition={v2Definition}
+            readonly={readonly || archived}
+            onRequestWorkflowChange={setResultWorkflowChange}
             onOpen={onArtifactOpen}
             onDownload={onArtifactDownload}
             onLocate={onArtifactLocate}
@@ -379,6 +384,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onPreviewPatch={onPreviewPatch}
             onApplyPatch={onApplyPatch}
             onDiscussionDraftChange={onDiscussionDraftChange}
+            externalWorkflowDiscussion={resultWorkflowChange}
           />
         </>
       )}

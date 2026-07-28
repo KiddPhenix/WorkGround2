@@ -42,6 +42,11 @@ function workViewV2(w?: Work): Record<string, unknown> {
 { const raw: unknown = readFixtureJSON('work-v2-definition-revision.json'); const r: WorkDefinitionRevision = parseWorkDefinitionRevision(raw); void r; }
 { const raw: unknown = readFixtureJSON('work-v2-work-input.json'); const i: WorkInput = parseWorkInput(raw); void i; }
 { const raw: unknown = readFixtureJSON('work-v2-patch-preview.json'); const p: WorkPatchPreview = parseWorkPatchPreview(raw); void p; }
+{ const raw=cloneToRecord(readFixtureJSON('work-v2-patch-preview.json'));
+  for(const field of['operations','affectedNodeIds','affectedBlockIds','affectedArtifactSlotIds','staleArtifactSlotIds','invalidatedTaskIds'])raw[field]=null;
+  const p=parseWorkPatchPreview(raw);
+  assert.deepEqual(p.operations,[]);assert.deepEqual(p.affectedNodeIds,[]);assert.deepEqual(p.affectedBlockIds,[]);
+  assert.deepEqual(p.affectedArtifactSlotIds,[]);assert.deepEqual(p.staleArtifactSlotIds,[]);assert.deepEqual(p.invalidatedTaskIds,[]); }
 { const raw: unknown = readFixtureJSON('work-v2-patch-receipt.json'); const p: PatchIntentReceipt = parsePatchIntentReceipt(raw); assert.equal(p.requiresRerun,true); }
 { const raw: unknown = readFixtureJSON('work-v2-patch-apply-result.json'); const p: ApplyWorkPatchResult = parseApplyWorkPatchResult(raw); assert.equal(p.requiresRerun,true); }
 { const r: RetryWorkNodeRequest = { workId:'w1',runId:'r1',taskId:'t1',expectedRevision:1,requestId:'r1' }; void r; }

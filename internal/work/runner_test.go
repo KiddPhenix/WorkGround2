@@ -95,6 +95,7 @@ func (f *fakeRunnerExecutor) CancelTask(ctx context.Context, input TaskCancelInp
 
 func newRunnerFixture(t *testing.T) *runnerFixture {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	root := t.TempDir()
 	store, err := NewFileWorkStore(root, 30*24*time.Hour)
 	if err != nil {

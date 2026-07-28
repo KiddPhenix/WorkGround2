@@ -48,6 +48,89 @@ final result: passed
 
 ---
 
+# Design QA — Work V2 执行 Block
+
+- source visual truth path: `D:\Work\WorkGround2\docs\assets\work-collaboration-workbench\workbench-baseline.png`
+- implementation screenshot path: `D:\Temp\workground2-v2-block-implementation-final.png`
+- focused comparison evidence: `D:\Temp\workground2-v2-block-comparison-final.png`
+- viewport: CSS `1280 × 720`，`devicePixelRatio = 1`
+- dimensions and normalization:
+  - source full image: `1488 × 1026` px；执行列表裁切后按宽度归一为 `1128 × 148` px
+  - implementation full image: `1280 × 720` px；执行列表裁切为 `1128 × 170` px
+  - comparison 将相同执行列表状态上下排列，排除侧栏、成果架与页面其余区域
+- state: 深色主题；完成、运行中和等待输入各一项；运行任务进度 `76%`
+
+## Findings
+
+没有可执行的 P0/P1/P2 问题。
+
+- Fonts and typography：沿用 WorkGround2 全局字体；标题、状态说明、进度百分比和操作文字的层级与 V2 基线一致，长说明保持单行截断。
+- Spacing and layout rhythm：恢复“AI 正在执行”分区、紧凑任务行、`36px` 状态图标、固定标题列、状态说明列、右侧进度与操作区；展开内容与任务行保持同一卡片边界。
+- Colors and visual tokens：移除按完成状态描整行绿框的旧表达；容器使用中性边框，状态颜色只落在图标、状态文字和进度上。
+- Image quality and asset fidelity：状态、讨论和展开入口使用项目现有 Lucide 图标，没有平台 emoji、占位图或近似 CSS 图形。DTO 暂无任务类别图标字段，因此图标按状态表达，这是明确的数据约束。
+- Copy and content：恢复“AI 正在执行 / 无需额外照看，各项任务将并行推进”；数值进度只在右侧进度区显示，不重复塞入状态说明。
+- Accessibility and interaction：讨论与展开是两个独立原生按钮，避免嵌套交互语义；浏览器实测展开、折叠、打开讨论和关闭讨论均有效。
+
+## Full-view and focused comparison evidence
+
+源图与实现的分区标题、图标列、标题列、状态说明列、进度区和讨论入口顺序一致。实现保留右侧独立展开箭头，因为生产 Block 支持整行展开；这是现有交互能力的显式入口，不改变基线信息层级。
+
+## Comparison history
+
+- Pass 1：发现标题列过宽，状态说明相对源图明显右移；运行进度同时出现在说明和进度条，属于 P2 密度偏差。
+- Fix：标题列收敛到 `140px`；可解析数值进度仅保留在右侧进度条；进度色切换为成功语义色。
+- Pass 2：状态说明与源图列位置对齐，重复进度消失；五项保真面无剩余 P0/P1/P2。
+
+## Engineering evidence
+
+- `ExecutionList.test.tsx`：180 项通过，覆盖十种状态、稳定身份、展开折叠、折叠态讨论、输入、重试和恢复。
+- `npm.cmd run typecheck`、`npm.cmd run check:css`：通过。
+- 浏览器 console error/warning：0。
+
+final result: passed
+
+---
+
+# Design QA — Work V2 成果架
+
+- source visual truth path: `D:\Work\WorkGround2\docs\assets\work-collaboration-workbench\scenario-script-writing.png`
+- implementation screenshot path: `D:\Temp\work-result-shelf-implementation.png`
+- full-view comparison evidence: `D:\Temp\work-result-shelf-comparison.png`
+- responsive evidence: `D:\Temp\work-result-shelf-narrow.png`
+- viewport: 主视图 CSS `1120 × 520`、窄视图 CSS `620 × 520`，`devicePixelRatio = 1`
+- dimensions and normalization:
+  - source full image: `1486 × 1058` px；成果架聚焦裁切 `918 × 172` px
+  - implementation full image: `1120 × 520` px；成果架区域 `1072 × 155` px
+  - comparison 将源图成果架与实现成果架并排等高展示，排除整页侧栏和执行区差异
+- state: 三个 Markdown 成果均为 `ready`，带打开与预览能力
+
+## Findings
+
+没有可执行的 P0/P1/P2 问题。
+
+- Fonts and typography：沿用 WorkGround2 全局 UI 字体与字号 token；成果标题、状态摘要和操作文案层级与设计稿一致，长标题和摘要单行省略。
+- Spacing and layout rhythm：恢复左侧 `136px` 成果说明栏、单排成果卡、卡片内主信息区和底部操作区；主视图三卡等宽且成果架无横向溢出。
+- Colors and visual tokens：移除白底 fallback，全部使用 `--bg-*`、`--fg-*`、`--border*` 和语义状态 token；暗色主题与设计稿一致。
+- Image quality and asset fidelity：成果类型、状态和操作均使用项目现有 Lucide 图标，不再使用平台 emoji；不同文件类型保留语义色。
+- Copy and content：成果说明恢复为“工作过程中产生的文件与成果将在此汇总”；单文件成果以真实文件名作为卡片标题，状态与摘要进入次级信息。
+- Responsiveness：`620px` 下说明栏转为顶部横条，成果卡保留 `300px` 可读宽度并在成果架内部横向滚动；页面本身无横向溢出。
+
+## Interaction evidence
+
+- 浏览器内点击唯一的“预览 Preview result.md”按钮后，内联预览显示 `# Preview ready`。
+- 主视图、窄视图和预览交互的浏览器 console error/warning 均为 0。
+- 组件专项测试覆盖打开、下载、定位、预览、转换、重试、并发去重、失败恢复和迟到结果隔离。
+
+## Comparison history
+
+- Pass 1：发现虽已修复白底和成果说明栏，卡片仍沿用“槽位标题 + 小文件行”的旧结构，与设计稿的大文件图标、文件标题和底部操作区存在 P2 差异。
+- Fix：卡片改为 artifact-led 结构；单文件成果使用文件名、大号类型图标、状态摘要和独立底部操作区，已完成状态收敛为右上角图标。
+- Pass 2：并排对照后，五项保真面无剩余 P0/P1/P2；窄窗口和预览交互复验通过。
+
+final result: passed
+
+---
+
 # Design QA — 全局会话状态
 
 - source visual truth path: `D:\Temp\codex-clipboard-4ae37805-8cc7-47b9-a37b-84e882eae597.png`

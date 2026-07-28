@@ -33,6 +33,13 @@ type fixtureHarness struct {
 	def    *WorkDefinitionRevision
 }
 
+func requireBlueprintIntegration(t *testing.T) {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("blueprint filesystem integration; run without -short")
+	}
+}
+
 type blueprintPlanningController interface {
 	BeginBlueprintPlanning(context.Context, BeginBlueprintPlanningInput) (*BeginBlueprintPlanningResult, error)
 }
@@ -303,6 +310,7 @@ func defaultValueForSpec(spec InputSpec) string {
 // ── Test 1: All five scenarios execute through full production chain ────────
 
 func TestFiveBlueprints_FullChainExecution(t *testing.T) {
+	requireBlueprintIntegration(t)
 	scenarios := []struct {
 		bpID         string
 		minNodes     int
@@ -378,6 +386,7 @@ func TestFiveBlueprints_FullChainExecution(t *testing.T) {
 // ── Test 2: Git release — approval gate blocks publishing ───────────────────
 
 func TestGitRelease_ApprovalGateBlocksPublishing(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:git-release")
 	for _, spec := range h.def.InputSpecs {
 		if spec.Kind == InputApproval || !spec.Required {
@@ -454,6 +463,7 @@ func TestGitRelease_ApprovalGateBlocksPublishing(t *testing.T) {
 }
 
 func TestGitRelease_ApprovedPublishesExactlyOnceWithReceipt(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:git-release")
 	for _, spec := range h.def.InputSpecs {
 		if spec.Kind == InputApproval || !spec.Required {
@@ -501,6 +511,7 @@ func TestGitRelease_ApprovedPublishesExactlyOnceWithReceipt(t *testing.T) {
 // ── Test 3: Annual event roster must be Block typed input ───────────────────
 
 func TestAnnualEvent_RosterRequiredBlockInput(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:annual-event")
 	var rosterSpec *InputSpec
 	for i := range h.def.InputSpecs {
@@ -602,6 +613,7 @@ func TestOfficePreviewContract_DeclaresGradedPreview(t *testing.T) {
 // ── Test 5: Fixture offline deterministic — HARD FAIL on mismatch ───────────
 
 func TestFiveBlueprints_DeterministicRepeatable(t *testing.T) {
+	requireBlueprintIntegration(t)
 	for _, bpID := range V2BlueprintIDs() {
 		t.Run(bpID, func(t *testing.T) {
 			h1 := newFixtureHarness(t, bpID)
@@ -851,6 +863,7 @@ func TestBeginBlueprintPlanning_IdempotentRestart(t *testing.T) {
 }
 
 func TestBeginBlueprintPlanning_ConcurrentInstances(t *testing.T) {
+	requireFileStoreIntegration(t)
 	root := t.TempDir()
 	store1, err := NewFileWorkStore(root, -1)
 	if err != nil {
@@ -911,6 +924,7 @@ func TestBeginBlueprintPlanning_ConcurrentInstances(t *testing.T) {
 // ── Test 7: Idempotent requestID — HARD FAIL on conflict ────────────────────
 
 func TestFiveBlueprints_IdempotentRequestID(t *testing.T) {
+	requireBlueprintIntegration(t)
 	for _, bpID := range V2BlueprintIDs() {
 		t.Run(bpID, func(t *testing.T) {
 			h := newFixtureHarness(t, bpID)
@@ -984,6 +998,7 @@ func TestFiveBlueprints_IdempotentRequestID(t *testing.T) {
 // ── Test 8: Fake executor failure — HARD FAIL on retry error ─────────────────
 
 func TestFiveBlueprints_ExecutorFailureSafeRetry(t *testing.T) {
+	requireBlueprintIntegration(t)
 	bpID := "blueprint:image-compile"
 	h := newFixtureHarness(t, bpID)
 	h.exec.failNodes["batch-crop"] = true
@@ -1050,6 +1065,7 @@ func TestFiveBlueprints_ExecutorFailureSafeRetry(t *testing.T) {
 // ── Test 9: Late roster — HARD ASSERT unrelated tasks unchanged ─────────────
 
 func TestAnnualEvent_LateRosterNoCrossPollution(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:annual-event")
 	for _, spec := range h.def.InputSpecs {
 		if spec.ID == "event-roster" || !spec.Required {
@@ -1105,6 +1121,7 @@ func TestAnnualEvent_LateRosterNoCrossPollution(t *testing.T) {
 // ── Test 10: Restart recovery — HARD ASSERTs, no duplicates ─────────────────
 
 func TestFiveBlueprints_RestartRecoveryTwoStores(t *testing.T) {
+	requireBlueprintIntegration(t)
 	bpID := "blueprint:image-compile"
 	h1 := newFixtureHarness(t, bpID)
 	for _, spec := range h1.def.InputSpecs {
@@ -1354,6 +1371,7 @@ func TestFiveBlueprints_IdempotentCreate(t *testing.T) {
 // ── Test 16: GlobalGate blocks ─────────────────────────────────────────────
 
 func TestGitRelease_GlobalGateBlocksNode(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:git-release")
 	for _, spec := range h.def.InputSpecs {
 		if spec.Kind == InputApproval || !spec.Required {
@@ -1390,6 +1408,7 @@ func TestV2DefinitionTemplate_UnknownReturnsNil(t *testing.T) {
 // ── Test 18: Concurrent scheduling — two real stores, two executors, total call assertion ──
 
 func TestFiveBlueprints_ConcurrentInstanceSafety(t *testing.T) {
+	requireBlueprintIntegration(t)
 	h := newFixtureHarness(t, "blueprint:git-release")
 	for _, spec := range h.def.InputSpecs {
 		if spec.Kind == InputApproval || !spec.Required {

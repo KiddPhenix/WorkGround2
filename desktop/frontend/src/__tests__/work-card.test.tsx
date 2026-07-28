@@ -756,6 +756,9 @@ function testMotionCSSContract(): void {
   ok(/max-width:\s*480px[\s\S]*?\.wg2-work-face\s*\{[\s\S]*?transition:\s*none/.test(css), 'narrow layout uses an ordinary switch');
   ok(/\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*wg2-work-prompt-orbit/.test(css), 'generation uses the prompt-border orbit');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*none/.test(css), 'prompt-border orbit respects reduced motion');
+  ok(/\.wg2-work-prompt-field textarea:disabled[\s\S]*?opacity:\s*1/.test(css), 'busy editor keeps an opaque readable surface');
+  ok(/\.wg2-work-draft-actions\[data-busy="true"\][\s\S]*?justify-content:\s*flex-start/.test(css), 'busy status moves to the reading edge');
+  ok(/\.wg2-work-generate-btn__spinner[\s\S]*?animation:\s*wg2-work-status-spin/.test(css), 'busy status has a compact progress icon');
   ok(/\.wg2-work-draft-actions \.wg2-work-generate-btn[\s\S]*?min-height:\s*44px/.test(css), 'generate action is a prominent 44px CTA');
 }
 

@@ -1186,6 +1186,50 @@ test('V2 delta merges artifactSlots by revision and rejects same-revision confli
   equal((useWorkStore.getState().artifactSlots['work-1'] ?? [])[0].title, 'Slot slot-1', 'conflict cannot overwrite slot');
 });
 
+test('V2 receipt recovery keeps same artifact slot ID across definition revisions', () => {
+  reset();
+  const view = makeView('work-1', 56);
+  const previous = {
+    ...makeV2Slot('joke_drafts', 2, 'ready'),
+    definitionRev: 1,
+    title: 'Earlier joke drafts',
+  };
+  equal(
+    applyWorkViewEvent(v2Snapshot(view, { artifactSlots: [previous] })).kind,
+    'applied',
+    'previous definition slot seeds the projection',
+  );
+
+  const current = {
+    ...makeV2Slot('joke_drafts', 2, 'reserved'),
+    definitionRev: 2,
+    title: 'Current joke drafts',
+  };
+  const recovery = {
+    ...v2Snapshot(view, { artifactSlots: [previous, current] }),
+    eventID: 'wv-resync-work-1-rev-56-retry-1',
+    requestID: 'input-submit-dovi9y-a0',
+    resync: { reason: 'retry', authoritative: true, generation: 1 } as const,
+  };
+  equal(
+    applyWorkViewEvent(recovery).kind,
+    'duplicate',
+    'authoritative receipt retry accepts both definition generations',
+  );
+  const slots = useWorkStore.getState().artifactSlots['work-1'] ?? [];
+  equal(slots.length, 2, 'same slot ID is preserved once per definition revision');
+  equal(
+    slots.find((slot) => slot.definitionRev === 1)?.state,
+    'ready',
+    'previous definition result remains historical',
+  );
+  equal(
+    slots.find((slot) => slot.definitionRev === 2)?.state,
+    'reserved',
+    'current definition slot remains independently retryable',
+  );
+});
+
 test('V2 task transitions match the authoritative Go state machine', () => {
   reset();
   applySnapshot(makeView('work-1', 1));

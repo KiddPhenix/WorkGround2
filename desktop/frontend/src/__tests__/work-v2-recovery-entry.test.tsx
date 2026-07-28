@@ -53,6 +53,17 @@ const view = {
   artifactSlots: [{
     id: 'novel',
     workId: 'work-v2-recovery',
+    definitionRev: 1,
+    title: '旧版小说正文',
+    kind: 'text',
+    expectedCount: 1,
+    required: true,
+    state: 'reserved',
+    artifactRefs: [],
+    revision: 1,
+  }, {
+    id: 'novel',
+    workId: 'work-v2-recovery',
     definitionRev: 2,
     title: '小说正文',
     kind: 'text',

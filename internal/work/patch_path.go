@@ -82,9 +82,15 @@ func CompilePatchPath(raw string) (PatchPath, error) {
 		return PatchPath{}, fmt.Errorf("work: patch path %q: id segment is empty", raw)
 	}
 
-	// For nodes/artifactSlots/inputSpecs: path is <root>/<id>/<field>.
+	// For nodes/inputSpecs: path is <root>/<id>/<field>.
+	// Artifact slots additionally support the object path
+	// artifactSlots/<id> for atomic add/remove operations.
 	// For blocks: path is blocks/<id>/<field> (or deeper for block data).
 	// For runs: path is runs/<runID>/tasks/<taskID>/<field>.
+
+	if kind == PathSlots && len(segs) == 2 {
+		return PatchPath{Kind: kind, Segments: segs}, nil
+	}
 
 	leafIdx := len(segs) - 1
 	leaf := segs[leafIdx]

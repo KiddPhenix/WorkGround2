@@ -1,4 +1,22 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AlertTriangle,
+  Archive,
+  CheckCircle2,
+  Clock3,
+  Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  File,
+  FileImage,
+  FileSpreadsheet,
+  FileText,
+  FolderOpen,
+  LoaderCircle,
+  Presentation,
+  RefreshCw,
+} from 'lucide-react';
 
 import type {
   ArtifactSlot,
@@ -91,39 +109,50 @@ const STATE_LABELS: Record<ArtifactSlot['state'], string> = {
   stale: '已过期',
 };
 
-const FILE_TYPE_ICONS: Record<string, string> = {
-  'application/pdf': '📄',
-  pdf: '📄',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '📝',
-  docx: '📝',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '📊',
-  xlsx: '📊',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': '🖼️',
-  pptx: '🖼️',
-  'application/zip': '📦',
-  zip: '📦',
-  'text/plain': '📃',
-  text: '📃',
-  markdown: '📃',
-  'text/markdown': '📃',
-  image: '🖼️',
-  'image/png': '🖼️',
-  'image/jpeg': '🖼️',
-  'image/gif': '🖼️',
-  'image/svg+xml': '🖼️',
-};
+function fileIcon(kind: string, type?: string): React.ReactNode {
+  const key = `${type ?? ''} ${kind}`.toLowerCase();
+  if (key.includes('image')) return <FileImage size={18} />;
+  if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) {
+    return <FileSpreadsheet size={18} />;
+  }
+  if (key.includes('present') || key.includes('ppt')) return <Presentation size={18} />;
+  if (key.includes('zip') || key.includes('tar') || key.includes('gzip')) return <Archive size={18} />;
+  if (
+    key.includes('pdf') ||
+    key.includes('word') ||
+    key.includes('doc') ||
+    key.includes('text') ||
+    key.includes('markdown')
+  ) {
+    return <FileText size={18} />;
+  }
+  return <File size={18} />;
+}
 
-function fileIcon(kind: string, type?: string): string {
-  const key = kind || type || '';
-  if (FILE_TYPE_ICONS[key]) return FILE_TYPE_ICONS[key];
-  if (key.includes('image')) return '🖼️';
-  if (key.includes('pdf')) return '📄';
-  if (key.includes('word') || key.includes('doc')) return '📝';
-  if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) return '📊';
-  if (key.includes('present') || key.includes('ppt')) return '🖼️';
-  if (key.includes('zip') || key.includes('tar') || key.includes('gzip')) return '📦';
-  if (key.includes('text') || key.includes('markdown') || key.includes('md')) return '📃';
-  return '📎';
+function artifactTone(kind: string, type?: string): string {
+  const key = `${type ?? ''} ${kind}`.toLowerCase();
+  if (key.includes('pdf')) return 'pdf';
+  if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) return 'sheet';
+  if (key.includes('present') || key.includes('ppt') || key.includes('image')) return 'image';
+  if (key.includes('zip') || key.includes('tar') || key.includes('gzip')) return 'archive';
+  if (key.includes('word') || key.includes('doc') || key.includes('text') || key.includes('markdown')) return 'document';
+  return 'generic';
+}
+
+function stateIcon(state: ArtifactSlot['state']): React.ReactNode {
+  switch (state) {
+    case 'ready':
+      return <CheckCircle2 size={13} />;
+    case 'generating':
+      return <LoaderCircle size={13} className="wg2-rc-spin" />;
+    case 'failed':
+    case 'partial':
+      return <AlertTriangle size={13} />;
+    case 'stale':
+      return <RefreshCw size={13} />;
+    case 'reserved':
+      return <Clock3 size={13} />;
+  }
 }
 
 // ── file action key helpers ────────────────────────────────────────────────
@@ -171,6 +200,14 @@ const FileActions: React.FC<FileActionsProps> = ({
     }
   }
 
+  function actionIcon(kind: FileActionKind): React.ReactNode {
+    switch (kind) {
+      case 'open': return <ExternalLink size={12} />;
+      case 'download': return <Download size={12} />;
+      case 'locate': return <FolderOpen size={12} />;
+    }
+  }
+
   function renderButton(kind: FileActionKind, enabled: boolean) {
     const key = fileActionKey(refInfo.id, kind);
     const busy = inFlight[key] === true;
@@ -188,7 +225,8 @@ const FileActions: React.FC<FileActionsProps> = ({
             aria-label={`${actionLabel(kind)} ${refInfo.name ?? refInfo.id}`}
             data-testid={`rc-file-${kind}-${refInfo.id}`}
           >
-            {busy ? '…' : actionLabel(kind)}
+            {busy ? <LoaderCircle size={12} className="wg2-rc-spin" /> : actionIcon(kind)}
+            <span>{busy ? '处理中' : actionLabel(kind)}</span>
           </button>
         )}
         {error && (
@@ -236,23 +274,36 @@ export const ResultCard: React.FC<ResultCardProps> = ({
   const [localPreview, setLocalPreview] = useState<ArtifactPreview | null>(null);
   const [previewBusy, setPreviewBusy] = useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = useState<Record<string, string | null>>({});
+  const [collapsedPreviewId, setCollapsedPreviewId] = useState<string | null>(null);
   // Epoch counter: increments on identity change → stale promises ignored.
   const previewEpochRef = useRef(0);
 
-  const activePreview = preview ?? localPreview;
+  const previewCandidate = preview ?? localPreview;
+  const activePreview =
+    previewCandidate?.artifactId === collapsedPreviewId ? null : previewCandidate;
 
   // Clear preview when slot identity changes.
   useEffect(() => {
     setLocalPreview(null);
     setPreviewBusy({});
     setPreviewError({});
+    setCollapsedPreviewId(null);
     previewEpochRef.current++;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slot.workId, slot.definitionRev, slot.id, slot.revision]);
 
   const firePreview = useCallback(async (refId: string) => {
     if (!onPreview) return;
+    if (previewCandidate?.artifactId === refId) {
+      previewEpochRef.current++;
+      setCollapsedPreviewId(current => current === refId ? null : refId);
+      setPreviewBusy(prev => ({ ...prev, [refId]: false }));
+      setPreviewError(prev => ({ ...prev, [refId]: null }));
+      return;
+    }
+
     const epoch = ++previewEpochRef.current;
+    setCollapsedPreviewId(null);
     setPreviewBusy(prev => ({ ...prev, [refId]: true }));
     setPreviewError(prev => ({ ...prev, [refId]: null }));
     try {
@@ -276,7 +327,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       if (previewEpochRef.current !== epoch) return;
       setPreviewBusy(prev => ({ ...prev, [refId]: false }));
     }
-  }, [onPreview, slot]);
+  }, [onPreview, previewCandidate, slot]);
 
   const fireConversion = useCallback(async (refId: string) => {
     if (!onConvert) return;
@@ -440,6 +491,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({
   const retryKey = retryActionKey(slot.id);
   const retryBusy = inFlightRender[retryKey] === true;
   const retryError = actionErrorsRender[retryKey];
+  const singleRef = slot.artifactRefs?.length === 1 ? slot.artifactRefs[0] : undefined;
+  const displayTitle = singleRef?.name ?? slot.title;
 
   const ariaLabel = `${slot.title} — ${STATE_LABELS[slot.state]}${slot.required ? '（必需）' : ''}`;
 
@@ -455,18 +508,34 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       tabIndex={0}
       key={slot.id}
     >
-      {/* Header: title + badge */}
+      {/* Artifact-led header mirrors the Work V2 design shelf. */}
       <div className="wg2-rc-header">
-        <span className="wg2-rc-title" title={slot.title}>
-          {slot.title}
+        <span
+          className="wg2-rc-hero-icon"
+          data-artifact-tone={artifactTone(slot.kind, singleRef?.type)}
+          aria-hidden="true"
+        >
+          {fileIcon(slot.kind, singleRef?.type)}
+        </span>
+        <span className="wg2-rc-heading">
+          <span className="wg2-rc-title" title={displayTitle}>
+            {displayTitle}
+          </span>
+          <span className="wg2-rc-meta">
+            {STATE_LABELS[slot.state]}
+            {slot.summary && singleRef && (
+              <span data-testid={`result-card-summary-${slot.id}`}> · {slot.summary}</span>
+            )}
+          </span>
         </span>
         <span
           className="wg2-rc-badge"
           data-badge={slot.state}
           data-testid={`result-card-badge-${slot.id}`}
+          aria-label={STATE_LABELS[slot.state]}
         >
-          {STATE_LABELS[slot.state]}
-          {slot.required ? ' *' : ''}
+          {stateIcon(slot.state)}
+          {slot.state !== 'ready' && <span>{STATE_LABELS[slot.state]}</span>}
         </span>
       </div>
 
@@ -493,12 +562,11 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       )}
 
       {/* Summary */}
-      {slot.summary && (
+      {slot.summary && !singleRef && (
         <p className="wg2-rc-summary" data-testid={`result-card-summary-${slot.id}`}>
           {slot.summary}
         </p>
       )}
-
       {/* Slot-level recovery. A partial slot remains actionable even when the
           projection has no ArtifactError payload. */}
       {(slot.state === 'failed' || slot.state === 'partial') && (slot.error || slot.state === 'partial') && (
@@ -507,7 +575,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
           role="alert"
           data-testid={`${slot.state === 'partial' ? 'result-card-partial-error' : 'result-card-error'}-${slot.id}`}
         >
-          <span className="wg2-rc-error-icon" aria-hidden="true">⚠</span>
+          <AlertTriangle className="wg2-rc-error-icon" size={14} aria-hidden="true" />
           <span className="wg2-rc-error-msg">
             {slot.error?.message ?? '部分产物尚未完成，可重新生成缺失部分。'}
             {slot.error?.code && <span> ({slot.error.code})</span>}
@@ -552,7 +620,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       {/* Stale banner */}
       {showStaleBanner && (
         <div className="wg2-rc-stale-banner" role="status" data-testid={`result-card-stale-${slot.id}`}>
-          <span aria-hidden="true">⏳</span>
+          <RefreshCw size={13} aria-hidden="true" />
           <span>上游输入已变化，结果可能过期</span>
           {onRetry && (
             <button
@@ -572,13 +640,20 @@ export const ResultCard: React.FC<ResultCardProps> = ({
 
       {/* File list */}
       {hasRefs && (
-        <ul className="wg2-rc-files" role="list" aria-label={`${slot.title} 的文件列表`}>
-          {slot.artifactRefs.map((ref) => (
-            <li
-              key={ref.id}
-              className="wg2-rc-file"
-              data-testid={`result-card-file-${ref.id}`}
-            >
+        <ul
+          className="wg2-rc-files"
+          data-layout={singleRef ? 'single' : 'multiple'}
+          role="list"
+          aria-label={`${slot.title} 的文件列表`}
+        >
+          {slot.artifactRefs.map((ref) => {
+            const isPreviewOpen = activePreview?.artifactId === ref.id;
+            return (
+              <li
+                key={ref.id}
+                className="wg2-rc-file"
+                data-testid={`result-card-file-${ref.id}`}
+              >
               <span className="wg2-rc-file-icon" aria-hidden="true">
                 {fileIcon(slot.kind, ref.type)}
               </span>
@@ -611,10 +686,14 @@ export const ResultCard: React.FC<ResultCardProps> = ({
                   onClick={() => firePreview(ref.id)}
                   disabled={previewBusy[ref.id] === true}
                   aria-busy={previewBusy[ref.id] ? 'true' : undefined}
-                  aria-label={`预览 ${ref.name ?? ref.id}`}
+                  aria-expanded={isPreviewOpen}
+                  aria-label={`${isPreviewOpen ? '收起预览' : '预览'} ${ref.name ?? ref.id}`}
                   data-testid={`rc-file-preview-${ref.id}`}
                 >
-                  {previewBusy[ref.id] ? '…' : '预览'}
+                  {previewBusy[ref.id]
+                    ? <LoaderCircle size={12} className="wg2-rc-spin" />
+                    : isPreviewOpen ? <EyeOff size={12} /> : <Eye size={12} />}
+                  <span>{previewBusy[ref.id] ? '载入中' : isPreviewOpen ? '收起预览' : '预览'}</span>
                 </button>
               )}
               {onConvert &&
@@ -630,11 +709,15 @@ export const ResultCard: React.FC<ResultCardProps> = ({
                     aria-label={`本地转换预览 ${ref.name ?? ref.id}`}
                     data-testid={`rc-file-convert-${ref.id}`}
                   >
-                    {previewBusy[ref.id] ? '转换中…' : '本地转换预览'}
+                    {previewBusy[ref.id]
+                      ? <LoaderCircle size={12} className="wg2-rc-spin" />
+                      : <RefreshCw size={12} />}
+                    <span>{previewBusy[ref.id] ? '转换中' : '本地转换预览'}</span>
                   </button>
                 )}
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
       )}
 

@@ -21,6 +21,7 @@ type TextConstraints struct {
 	MinLength int    `json:"minLength,omitempty"`
 	MaxLength int    `json:"maxLength,omitempty"`
 	Pattern   string `json:"pattern,omitempty"`
+	Multiline bool   `json:"multiline,omitempty"`
 }
 
 // NumberConstraints defines optional range and unit rules for number input.

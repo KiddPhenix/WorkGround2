@@ -319,10 +319,10 @@
 
 .wg2-pp-panel {
   border-top: 1px solid var(--wg2-border, #343945);
-  padding: 12px 14px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   flex-shrink: 0;
 }
 
@@ -336,8 +336,8 @@
 }
 
 .wg2-pp-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 700;
   color: var(--wg2-text-primary, #f4f5f7);
 }
 
@@ -363,7 +363,132 @@
   color: var(--wg2-badge-error-text, #e58587);
 }
 
-/* ── Operations table ──────────────────────────────────────────── */
+/* ── Human-readable change summary ─────────────────────────────── */
+
+.wg2-pp-intro {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(47, 109, 232, 0.18);
+  border-radius: 8px;
+  background: rgba(47, 109, 232, 0.07);
+  color: var(--wg2-info-text, #75a9f7);
+}
+
+.wg2-pp-intro svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.wg2-pp-intro p {
+  margin: 0;
+  color: var(--wg2-text-primary, #f4f5f7);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wg2-pp-intro strong {
+  font-weight: 700;
+}
+
+.wg2-pp-changes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wg2-pp-change {
+  padding: 10px;
+  border: 1px solid var(--wg2-border, #343945);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.wg2-pp-change h4 {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0 0 8px;
+  color: var(--wg2-text-primary, #f4f5f7);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.wg2-pp-change h4 span {
+  color: var(--wg2-text-secondary, #999);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wg2-pp-change-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.wg2-pp-before,
+.wg2-pp-after {
+  min-width: 0;
+  padding: 8px 9px;
+  border-radius: 6px;
+}
+
+.wg2-pp-before {
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--wg2-text-secondary, #aaa);
+}
+
+.wg2-pp-after {
+  background: rgba(116, 184, 122, 0.08);
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+.wg2-pp-before > span,
+.wg2-pp-after > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--wg2-text-secondary, #999);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.wg2-pp-after > span {
+  color: var(--wg2-ok-text, #82c98a);
+}
+
+.wg2-pp-before p,
+.wg2-pp-after p {
+  max-height: 12rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ── Technical details ──────────────────────────────────────────── */
+
+.wg2-pp-technical {
+  padding-top: 2px;
+  color: var(--wg2-text-secondary, #888);
+  font-size: 11px;
+}
+
+.wg2-pp-technical summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+}
+
+.wg2-pp-technical summary:hover {
+  color: var(--wg2-text-primary, #f4f5f7);
+}
+
+.wg2-pp-technical[open] summary {
+  margin-bottom: 8px;
+}
 
 .wg2-pp-ops-wrap {
   max-width: 100%;
@@ -434,21 +559,22 @@
 
 .wg2-pp-impact {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .wg2-pp-impact-group {
   display: flex;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 11px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex-wrap: wrap;
 }
 
 .wg2-pp-impact-label {
-  color: var(--wg2-text-secondary, #888);
-  font-weight: 600;
-  white-space: nowrap;
+  color: var(--wg2-text-primary, #f4f5f7);
+  font-weight: 700;
 }
 
 .wg2-pp-impact-list {
@@ -461,7 +587,7 @@
 }
 
 .wg2-pp-impact-id {
-  padding: 1px 6px;
+  padding: 2px 7px;
   border-radius: 6px;
   white-space: nowrap;
   max-width: 10rem;
@@ -485,12 +611,15 @@
 }
 
 .wg2-pp-impact-rerun {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 1px 8px;
-  border-radius: 8px;
-  background: rgba(224, 105, 106, 0.12);
-  color: var(--wg2-error-text, #e58587);
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(116, 184, 122, 0.08);
+  color: var(--wg2-ok-text, #82c98a);
   white-space: nowrap;
 }
 
@@ -500,6 +629,9 @@
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
   font-size: 10px;
   color: var(--wg2-text-secondary, #888);
 }
@@ -531,6 +663,10 @@
   .wg2-pp-panel {
     padding: 8px 10px;
     gap: 6px;
+  }
+
+  .wg2-pp-change-grid {
+    grid-template-columns: 1fr;
   }
 
   .wg2-pp-ops,

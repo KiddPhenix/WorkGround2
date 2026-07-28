@@ -455,6 +455,9 @@ collaboration_workbench_v2 = true
 }
 
 func TestV2BootConversionRecoveryHasGlobalBatchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem conversion recovery integration; run without -short")
+	}
 	isolateConfigHome(t)
 	workspace := t.TempDir()
 	workDir := filepath.Join(t.TempDir(), "works")
@@ -916,6 +919,9 @@ collaboration_workbench_v2 = true
 }
 
 func TestV2BootAutomaticallyRecoversReadButNotExternal_FileWorkStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("filesystem restart recovery integration; run without -short")
+	}
 	isolateConfigHome(t)
 	root := t.TempDir()
 	workDir := filepath.Join(root, "work-data")

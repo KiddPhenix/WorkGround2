@@ -1,3 +1,5 @@
+//go:build live
+
 package openai
 
 import (
@@ -27,8 +29,11 @@ type probeResult struct {
 //  3. does re-sending reasoning_content inflate prompt_tokens and/or break the
 //     cache hit on the next turn (the open question the mock can't answer).
 //
-// Run with:  set -a; source .env; set +a; go test ./internal/provider/openai/ -run TestRealDeepSeekCacheProbe -v -count=1
+// Run with: WORKGROUND2_LIVE_TEST=1 go test -tags=live ./internal/provider/openai/ -run TestRealDeepSeekCacheProbe -v -count=1
 func TestRealDeepSeekCacheProbe(t *testing.T) {
+	if os.Getenv("WORKGROUND2_LIVE_TEST") != "1" {
+		t.Skip("set WORKGROUND2_LIVE_TEST=1 and use -tags=live to run the live DeepSeek probe")
+	}
 	key := os.Getenv("DEEPSEEK_API_KEY")
 	if key == "" {
 		t.Skip("DEEPSEEK_API_KEY not set — skipping live probe")

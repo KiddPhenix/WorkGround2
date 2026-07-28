@@ -590,30 +590,44 @@ function mergeV2Items<T>(
   mergeItem: (existing: T, next: T) => { merged: T; error?: string },
   removedIDs: Set<string>,
   blockedIDs: Set<string>,
+  keyOf: (item: T) => string = v2ItemID,
 ): { items?: T[]; error?: string } {
   const byKey = new Map<string, T>();
-  const keyOf = (item: T): string => {
-    const rec = item as unknown as Record<string, unknown>;
-    return String(rec.id ?? '');
-  };
   for (const item of current) byKey.set(keyOf(item), item);
   for (const next of incoming) {
     const key = keyOf(next);
-    if (removedIDs.has(key) || blockedIDs.has(key)) continue;
+    const id = v2ItemID(next);
+    if (removedIDs.has(id) || blockedIDs.has(id)) continue;
     const existing = byKey.get(key);
     if (!existing) { byKey.set(key, next); continue; }
     const { merged, error } = mergeItem(existing, next);
     if (error) return { error };
     byKey.set(key, merged);
   }
-  for (const id of removedIDs) byKey.delete(id);
+  for (const [key, item] of byKey) {
+    if (removedIDs.has(v2ItemID(item))) byKey.delete(key);
+  }
   return { items: [...byKey.values()] };
+}
+
+function v2ItemID<T>(item: T): string {
+  const rec = item as unknown as Record<string, unknown>;
+  return String(rec.id ?? '');
+}
+
+function artifactSlotKey(slot: ArtifactSlot): string {
+  return `${slot.definitionRev}\u0000${slot.id}`;
 }
 
 function mergeArtifactSlot(existing: ArtifactSlot, next: ArtifactSlot): { merged: ArtifactSlot; error?: string } {
   if (next.revision < existing.revision) return { merged: existing };
   if (next.revision === existing.revision) {
-    if (!sameValue(existing, next)) return { merged: existing, error: `artifact slot ${next.id} conflicts at revision ${next.revision}` };
+    if (!sameValue(existing, next)) {
+      return {
+        merged: existing,
+        error: `artifact slot ${next.id} at definition ${next.definitionRev} conflicts at revision ${next.revision}`,
+      };
+    }
     return { merged: existing };
   }
   return { merged: next };
@@ -648,7 +662,7 @@ function mergeV2ArtifactSlots(
   removedIDs: Set<string>,
   blockedIDs: Set<string>,
 ): { slots?: ArtifactSlot[]; error?: string } {
-  const r = mergeV2Items(current, incoming, mergeArtifactSlot, removedIDs, blockedIDs);
+  const r = mergeV2Items(current, incoming, mergeArtifactSlot, removedIDs, blockedIDs, artifactSlotKey);
   return { slots: r.items, error: r.error };
 }
 
@@ -800,11 +814,11 @@ function applyV2Fields(
   authoritativeSnapshot: boolean,
 ): { patch: Partial<WorkStoreData>; error?: string } {
   const patch: Partial<WorkStoreData> = {};
-  const incomingSlotIDs = new Set((v2.artifactSlots ?? []).map((item) => item.id));
+  const incomingSlotKeys = new Set((v2.artifactSlots ?? []).map(artifactSlotKey));
   const incomingTaskIDs = new Set((v2.tasks ?? []).map((item) => item.id));
   const incomingInputIDs = new Set((v2.inputs ?? []).map((item) => item.id));
   const artifactSlots = authoritativeSnapshot
-    ? (state.artifactSlots[workID] ?? []).filter((item) => incomingSlotIDs.has(item.id))
+    ? (state.artifactSlots[workID] ?? []).filter((item) => incomingSlotKeys.has(artifactSlotKey(item)))
     : state.artifactSlots[workID] ?? [];
   const v2Tasks = authoritativeSnapshot
     ? (state.v2Tasks[workID] ?? []).filter((item) => incomingTaskIDs.has(item.id))
@@ -1132,7 +1146,10 @@ function reduceEvent(state: WorkStoreData, event: WorkViewEvent): { patch?: Part
   const v2 = extracted.fields;
   const v1Event = v2 ? stripV2Payload(event, v2) : event;
   const base = v1Event.type === 'snapshot' ? applySnapshotEvent(state, v1Event) : applyDeltaEvent(state, v1Event);
-  if (!v2 || base.result.kind !== 'applied') return base;
+  const alreadySeen = state.seenEventIDs[event.workID]?.includes(event.eventID) ?? false;
+  const canApplyAuthoritativeV2Duplicate =
+    extracted.authoritativeSnapshot && base.result.kind === 'duplicate' && !alreadySeen;
+  if (!v2 || (base.result.kind !== 'applied' && !canApplyAuthoritativeV2Duplicate)) return base;
   const merged = { ...state, ...(base.patch ?? {}) } as WorkStoreData;
   const v2Result = applyV2Fields(merged, event.workID, v2, extracted.authoritativeSnapshot);
   if (v2Result.error) {

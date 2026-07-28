@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -105,6 +106,7 @@ type serviceFixture struct {
 
 func newServiceFixture(t *testing.T) *serviceFixture {
 	t.Helper()
+	requireFileStoreIntegration(t)
 	root := filepath.Join(t.TempDir(), "works")
 	store, err := NewFileWorkStore(root, 30*24*time.Hour)
 	if err != nil {
@@ -769,6 +771,81 @@ func TestServiceDraftStateRules(t *testing.T) {
 		if !test.ok && err == nil {
 			t.Errorf("draftTargetState(%s) unexpectedly succeeded", test.from)
 		}
+	}
+
+	for _, state := range []WorkState{WorkRunning, WorkWaitingUser, WorkPaused, WorkCompleted} {
+		got, err := updateDraftTargetState(&Work{SchemaVersion: SchemaVersionV2, State: state})
+		if err != nil || got != state {
+			t.Errorf("updateDraftTargetState(V2 %s) = %s, %v", state, got, err)
+		}
+	}
+	if _, err := updateDraftTargetState(&Work{SchemaVersion: SchemaVersion, State: WorkCompleted}); err == nil {
+		t.Fatal("updateDraftTargetState(V1 completed) unexpectedly succeeded")
+	}
+}
+
+func TestServiceV2UpdateDraftKeepsCompletedState(t *testing.T) {
+	f := newServiceFixture(t)
+	view, err := f.svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
+		SessionID: "session-v2-completed-edit",
+		RequestID: "service-v2-completed-edit-create",
+	})
+	if err != nil {
+		t.Fatalf("BeginWorkPlanning: %v", err)
+	}
+
+	run := WorkflowRun{
+		ID:        "run-v2-completed-edit",
+		WorkID:    view.Work.ID,
+		RequestID: "service-v2-completed-edit-run",
+		State:     RunPending,
+	}
+	states := []struct {
+		eventType WorkEventType
+		runState  RunState
+		workState WorkState
+	}{
+		{EventRunStarted, RunPending, WorkRunning},
+		{EventRunChanged, RunRunning, WorkRunning},
+		{EventRunChanged, RunCompleted, WorkCompleted},
+	}
+	revision := view.Revision
+	for i, state := range states {
+		run.State = state.runState
+		payload, marshalErr := json.Marshal(runEventPayload{Run: run, WorkState: state.workState})
+		if marshalErr != nil {
+			t.Fatalf("marshal run state %s: %v", state.runState, marshalErr)
+		}
+		event := newServiceEvent(
+			view.Work.ID,
+			fmt.Sprintf("service-v2-completed-edit-state-%d", i),
+			state.eventType,
+			payload,
+			time.Now().UTC(),
+		)
+		event.BaseRevision = revision
+		event.Revision = revision + 1
+		if _, commitErr := f.store.CommitEvent(view.Work.ID, event); commitErr != nil {
+			t.Fatalf("commit run state %s: %v", state.runState, commitErr)
+		}
+		revision++
+	}
+
+	prompt := "基于已完成结果生成新的工作结构"
+	updated, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID:           view.Work.ID,
+		Prompt:           &prompt,
+		ExpectedRevision: revision,
+		RequestID:        "service-v2-completed-edit-update",
+	})
+	if err != nil {
+		t.Fatalf("UpdateDraft on completed V2 Work: %v", err)
+	}
+	if updated.Work.State != WorkCompleted || updated.Work.Prompt != prompt {
+		t.Fatalf("updated Work = state %s prompt %q", updated.Work.State, updated.Work.Prompt)
+	}
+	if updated.Revision != revision+1 {
+		t.Fatalf("updated revision = %d, want %d", updated.Revision, revision+1)
 	}
 }
 

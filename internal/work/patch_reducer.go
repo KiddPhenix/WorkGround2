@@ -40,11 +40,11 @@ func reducePatchPreviewed(current *Work, p PatchPreviewedPayload, now time.Time,
 		BaseBlockRev:            p.BaseBlockRev,
 		Scope:                   p.Scope,
 		Operations:              clonePatchOps(p.Operations),
-		AffectedNodeIDs:         append([]string(nil), p.AffectedNodeIDs...),
-		AffectedBlockIDs:        append([]string(nil), p.AffectedBlockIDs...),
-		AffectedArtifactSlotIDs: append([]string(nil), p.AffectedArtifactSlotIDs...),
-		StaleArtifactSlotIDs:    append([]string(nil), p.StaleArtifactSlotIDs...),
-		InvalidatedTaskIDs:      append([]string(nil), p.InvalidatedTasks...),
+		AffectedNodeIDs:         clonePatchStrings(p.AffectedNodeIDs),
+		AffectedBlockIDs:        clonePatchStrings(p.AffectedBlockIDs),
+		AffectedArtifactSlotIDs: clonePatchStrings(p.AffectedArtifactSlotIDs),
+		StaleArtifactSlotIDs:    clonePatchStrings(p.StaleArtifactSlotIDs),
+		InvalidatedTaskIDs:      clonePatchStrings(p.InvalidatedTasks),
 		RequiresRerun:           p.RequiresRerun,
 		Digest:                  p.Digest,
 	}
@@ -118,11 +118,11 @@ func recordPatchReceipt(current *Work, receipt *PatchIntentReceipt) {
 	if receipt.ResultPatch != nil {
 		patchCopy := *receipt.ResultPatch
 		patchCopy.Operations = clonePatchOps(receipt.ResultPatch.Operations)
-		patchCopy.AffectedNodeIDs = append([]string(nil), receipt.ResultPatch.AffectedNodeIDs...)
-		patchCopy.AffectedBlockIDs = append([]string(nil), receipt.ResultPatch.AffectedBlockIDs...)
-		patchCopy.AffectedArtifactSlotIDs = append([]string(nil), receipt.ResultPatch.AffectedArtifactSlotIDs...)
-		patchCopy.StaleArtifactSlotIDs = append([]string(nil), receipt.ResultPatch.StaleArtifactSlotIDs...)
-		patchCopy.InvalidatedTaskIDs = append([]string(nil), receipt.ResultPatch.InvalidatedTaskIDs...)
+		patchCopy.AffectedNodeIDs = clonePatchStrings(receipt.ResultPatch.AffectedNodeIDs)
+		patchCopy.AffectedBlockIDs = clonePatchStrings(receipt.ResultPatch.AffectedBlockIDs)
+		patchCopy.AffectedArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.AffectedArtifactSlotIDs)
+		patchCopy.StaleArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.StaleArtifactSlotIDs)
+		patchCopy.InvalidatedTaskIDs = clonePatchStrings(receipt.ResultPatch.InvalidatedTaskIDs)
 		cp.ResultPatch = &patchCopy
 	}
 	cp.InvalidatedIDs = append([]string(nil), receipt.InvalidatedIDs...)

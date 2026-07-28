@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useWorkStore, useWorkUIStore } from '../../store';
 import type { BlockInstance } from '../../types';
@@ -21,6 +21,7 @@ import type {
 } from './discussion/DiscussionDrawer';
 import type { DraftValue } from './input/WorkInputHost';
 import { v2DiscussionBlockId } from './discussionBlock';
+import type { ResultWorkflowChangeRequest } from './ResultShelf';
 
 export interface ExecutionListProps {
   workId: string; expandedTaskId?: string | null;
@@ -37,6 +38,7 @@ export interface ExecutionListProps {
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
   onDiscussionDraftChange?: (intent: DiscussionDraftIntent) => void;
+  externalWorkflowDiscussion?: ResultWorkflowChangeRequest;
 }
 
 function inputIdentity(wid: string, rid: string, tid: string, bid: string, iid: string, sid: string, dr: number, ir: number) {
@@ -53,12 +55,15 @@ function discIdentity(
 ) {
   return `${wid}\u0000${rid}\u0000${sid}\u0000${tid}\u0000${bid}\u0000${definitionRevision}\u0000${blockRevision}`;
 }
+function discTargetIdentity(wid: string, sid: string, tid: string, bid: string) {
+  return `${wid}\u0000${sid}\u0000${tid}\u0000${bid}`;
+}
 
 export const ExecutionList: React.FC<ExecutionListProps> = ({
   workId, expandedTaskId, runId, sessionId, workRevision, blocks,
   onExpandTask, onCollapseTask, onRetryTask,
   onSubmitWorkInput, onSetCornerstone, onUnsetCornerstone, onRefreshAuthoritative, onSelectFile,
-  onPreviewPatch, onApplyPatch, onDiscussionDraftChange,
+  onPreviewPatch, onApplyPatch, onDiscussionDraftChange, externalWorkflowDiscussion,
 }) => {
   const allTasks = useWorkStore((s) => selectV2Tasks(s.v2Tasks, workId));
   const definition = useWorkStore((s) =>
@@ -95,6 +100,40 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     () => effRunId ? allTasks.filter((task) => task.runId === effRunId) : [],
     [allTasks, effRunId],
   );
+  const resolvePatchLabel = useCallback((
+    kind: 'node' | 'task' | 'slot' | 'block',
+    id: string,
+  ): string | undefined => {
+    switch (kind) {
+      case 'node':
+        return nodeMap.get(id)?.title;
+      case 'task': {
+        const task = tasks.find((candidate) => candidate.id === id || candidate.nodeId === id);
+        return task?.title ?? nodeMap.get(id)?.title;
+      }
+      case 'slot':
+        return definition?.artifactSlots?.find((slot) => slot.id === id)?.title;
+      case 'block':
+        return blockMap.get(id)?.title;
+    }
+  }, [blockMap, definition?.artifactSlots, nodeMap, tasks]);
+  const resolvePatchOrder = useCallback((
+    kind: 'node' | 'task' | 'slot' | 'block',
+    id: string,
+  ): number | undefined => {
+    if (kind === 'node' || kind === 'task') {
+      const nodeId = kind === 'task'
+        ? tasks.find((task) => task.id === id || task.nodeId === id)?.nodeId ?? id
+        : id;
+      const index = definition?.nodes?.findIndex((node) => node.id === nodeId) ?? -1;
+      return index >= 0 ? index : undefined;
+    }
+    if (kind === 'slot') {
+      const index = definition?.artifactSlots?.findIndex((slot) => slot.id === id) ?? -1;
+      return index >= 0 ? index : undefined;
+    }
+    return undefined;
+  }, [definition?.artifactSlots, definition?.nodes, tasks]);
 
   const hasFullTypedInput = !!(onSubmitWorkInput && onSetCornerstone && onUnsetCornerstone && onRefreshAuthoritative);
 
@@ -167,26 +206,75 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   const [revConflict, setRevConflict] = useState(false);
   const [digConflict, setDigConflict] = useState(false);
   const [dBlockRev, setDBlockRev] = useState(1);
+  const [dScopeLocked, setDScopeLocked] = useState(false);
   const discussionEpochRef = useRef(0);
   const activeDiscussionRef = useRef('');
-  const [applyReceipt, setApplyReceipt] = useState<{ requestId: string; revision: number } | null>(null);
+  const activeDiscussionTargetRef = useRef('');
 
   const discKey = useMemo(
     () => discIdentity(workId, effRunId, sessionId ?? '', dTid, dBid, defRev, dBlockRev),
     [workId, effRunId, sessionId, dTid, dBid, defRev, dBlockRev],
   );
+  const discTarget = useMemo(
+    () => discTargetIdentity(workId, sessionId ?? '', dTid, dBid),
+    [workId, sessionId, dTid, dBid],
+  );
   const discDraft = cardState?.discussionDrafts?.[discKey] ?? '';
   activeDiscussionRef.current = discKey;
+  activeDiscussionTargetRef.current = discTarget;
   const committedPreviewRid = cardState?.committedRequestIds?.[`${discKey}\u0000preview`];
   const committedApplyRid = cardState?.committedRequestIds?.[`${discKey}\u0000apply`];
 
-  const handleDOpen = useCallback((tid: string, bid: string, title: string, br: number) => {
+  const handleDOpen = useCallback((
+    tid: string,
+    bid: string,
+    title: string,
+    br: number,
+    scope: PatchScope,
+    scopeLocked = false,
+  ) => {
     discussionEpochRef.current++;
     setDOpen(true); setDTid(tid); setDBid(bid); setDTitle(title); setDBlockRev(br);
+    setDScope(scope);
+    setDScopeLocked(scopeLocked);
     setIsPreviewing(false); setIsApplying(false);
     setApplyResult(null); setApplyError(null); setRevConflict(false); setDigConflict(false);
-    setPreviewError(null); setPatchPreview(null); setApplyReceipt(null);
+    setPreviewError(null); setPatchPreview(null);
   }, []);
+  const externalRequestRef = useRef('');
+  useEffect(() => {
+    if (!externalWorkflowDiscussion || externalRequestRef.current === externalWorkflowDiscussion.token) return;
+    const task = tasks.find((candidate) => candidate.nodeId === externalWorkflowDiscussion.nodeId);
+    const node = nodeMap.get(externalWorkflowDiscussion.nodeId);
+    if (!task || !node) return;
+    const boundInputs = allInputs.filter((input) => input.runId === task.runId && input.taskId === task.id);
+    const inputByID = new Map(boundInputs.map((input) => [input.id, input]));
+    const blockID = [
+      ...(task.waitingInputIds ?? []).map((id) => inputByID.get(id)?.blockId),
+      ...boundInputs.map((input) => input.blockId),
+      ...(node.blockIds ?? []),
+      v2DiscussionBlockId(node.id),
+    ].find((id): id is string => Boolean(id && !removedBlockIDs.has(id)));
+    if (!blockID) return;
+    const blockRevision = blockMap.get(blockID)?.revision ?? 1;
+    externalRequestRef.current = externalWorkflowDiscussion.token;
+    const intent = {
+      workId,
+      taskId: task.id,
+      blockId: blockID,
+      text: externalWorkflowDiscussion.instruction,
+    };
+    setDiscussionDraft(
+      workId,
+      discIdentity(workId, effRunId, sessionId ?? '', task.id, blockID, defRev, blockRevision),
+      intent.text,
+    );
+    onDiscussionDraftChange?.(intent);
+    handleDOpen(task.id, blockID, externalWorkflowDiscussion.title, blockRevision, 'workflow', true);
+  }, [
+    allInputs, blockMap, defRev, effRunId, externalWorkflowDiscussion, handleDOpen,
+    nodeMap, onDiscussionDraftChange, removedBlockIDs, sessionId, setDiscussionDraft, tasks, workId,
+  ]);
   const handleDClose = useCallback(() => {
     discussionEpochRef.current++;
     setDOpen(false);
@@ -219,7 +307,7 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
       intent.blockRevision,
     );
     setIsPreviewing(true); setPreviewError(null); setPatchPreview(null);
-    setRevConflict(false); setDigConflict(false); setApplyResult(null); setApplyError(null); setApplyReceipt(null);
+    setRevConflict(false); setDigConflict(false); setApplyResult(null); setApplyError(null);
     try {
       const r = await onPreviewPatch(intent);
       if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
@@ -234,7 +322,7 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
           || preview.baseDefinitionRev !== intent.definitionRevision
           || preview.baseBlockRev !== intent.blockRevision
         ) {
-          setPreviewError('补丁预览身份与当前 Block 不一致，已拒绝迟到结果。');
+          setPreviewError('改动校验结果与当前 Block 不一致，已忽略迟到结果。');
           return;
         }
         setPatchPreview(r.preview);
@@ -259,11 +347,11 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   const handleDApply = useCallback(async (intent: DiscussionApplyIntent) => {
     if (!onApplyPatch || !onRefreshAuthoritative) return;
     const epoch = ++discussionEpochRef.current;
-    const expectedIdentity = discKey;
+    const expectedTarget = discTarget;
     setIsApplying(true); setApplyError(null); setApplyResult(null);
     try {
       const r = await onApplyPatch(intent);
-      if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
+      if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
       const receiptMissing = r.committed && !r.receipt;
       const visibleResult = receiptMissing
         ? {
@@ -271,7 +359,7 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
             recoverable: true,
             transportError: {
               code: 'contract_receipt_missing',
-              message: '补丁已提交，但响应缺少 PatchIntentReceipt；正在刷新权威状态。',
+              message: '改动已提交，但确认响应不完整；正在刷新状态。',
               operation: 'ApplyWorkPatch',
               workId,
               requestId: intent.requestId,
@@ -283,14 +371,8 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
       setApplyResult(visibleResult);
       if (r.committed) {
         setCommittedRequestId(workId, `${discKey}\u0000apply`, intent.requestId);
-        setApplyReceipt(r.receipt
-          ? {
-              requestId: r.receipt.requestId,
-              revision: r.receipt.resultRevision,
-            }
-          : null);
         if (receiptMissing) {
-          setApplyError('补丁已提交，但响应缺少 PatchIntentReceipt；正在刷新权威状态。');
+          setApplyError('改动已提交，但确认响应不完整；正在刷新状态。');
         }
         try {
           await onRefreshAuthoritative({
@@ -300,10 +382,14 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
             revision: r.newRevision,
             operation: 'patch',
           });
-          if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
+          if (epoch !== discussionEpochRef.current) return;
+          if (!receiptMissing && !r.error && !r.transportError) {
+            handleDClose();
+            return;
+          }
         } catch (refreshError) {
-          if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
-          const refreshMessage = `补丁已提交，但刷新权威状态失败：${
+          if (epoch !== discussionEpochRef.current) return;
+          const refreshMessage = `改动已提交，但刷新最新状态失败：${
             refreshError instanceof Error ? refreshError.message : String(refreshError)
           }`;
           setApplyError((current) => current ? `${current}；${refreshMessage}` : refreshMessage);
@@ -317,17 +403,17 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
       if (!r.committed && r.error) setApplyError(r.error);
       if (!r.committed && r.transportError) setApplyError(r.transportError.message);
     } catch (e) {
-      if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
+      if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
       const code = (e as { code?: string }).code;
       if (code === 'revision_conflict') setRevConflict(true);
       setApplyError(e instanceof Error ? e.message : String(e));
     }
     finally {
-      if (epoch === discussionEpochRef.current && activeDiscussionRef.current === expectedIdentity) {
+      if (epoch === discussionEpochRef.current) {
         setIsApplying(false);
       }
     }
-  }, [onApplyPatch, onRefreshAuthoritative, workId, discKey, setCommittedRequestId]);
+  }, [onApplyPatch, onRefreshAuthoritative, workId, discKey, discTarget, setCommittedRequestId, handleDClose]);
   const handleDismiss = useCallback(() => { setApplyResult(null); setApplyError(null); }, []);
 
   const ordered = useMemo(() => {
@@ -343,82 +429,122 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   }, [tasks, definition]);
 
   if (!ordered.length) {
-    return <div className="wg2-el-empty" data-testid="execution-list-empty" role="status" aria-live="polite">暂无执行任务</div>;
+    return (
+      <section className="wg2-el-frame" aria-label="AI 执行任务">
+        <ExecutionListHeading />
+        <div className="wg2-el-empty" data-testid="execution-list-empty" role="status" aria-live="polite">
+          暂无执行任务
+        </div>
+      </section>
+    );
   }
 
   return (
     <>
-      <ul className="wg2-el-list" data-testid="execution-list" role="list" aria-label="执行任务列表">
-        {ordered.map((task) => {
-          const nd = nodeMap.get(task.nodeId);
-          const isExpanded = expandedTaskId === task.id;
-          const blockIDs = new Set(nd?.blockIds ?? []);
-          const boundInputs = allInputs.filter((input) =>
-            input.runId === task.runId
-            && input.taskId === task.id);
-          const taskInputs = boundInputs.filter((input) =>
-            blockIDs.size === 0 || blockIDs.has(input.blockId));
-          const inputByID = new Map(boundInputs.map((input) => [input.id, input]));
-          const discussionBlockIDs = [
-            ...(task.waitingInputIds ?? []).map((id) => inputByID.get(id)?.blockId),
-            ...boundInputs.map((input) => input.blockId),
-            ...(nd?.blockIds ?? []),
-            ...(nd ? [v2DiscussionBlockId(nd.id)] : []),
-          ];
-          const discussionBlockID = discussionBlockIDs.find(
-            (id): id is string => Boolean(id && !removedBlockIDs.has(id)),
-          );
-          const materializedBlock = discussionBlockID ? blockMap.get(discussionBlockID) : undefined;
-          const discussionBlock = materializedBlock ?? (discussionBlockID ? {
-            id: discussionBlockID,
-            title: task.title,
-            revision: 1,
-          } : undefined);
-          return (
-            <li key={`${task.runId}\u0000${task.id}`} role="listitem" data-testid={`execution-list-item-${task.id}`}>
-              <ExecutionRow task={task} workId={workId} nodeDef={nd} isExpanded={isExpanded}
-                onToggleExpand={(intent) => {
-                  isExpanded ? onCollapseTask?.({ workId: intent.workId, taskId: intent.taskId })
-                    : onExpandTask?.(intent);
-                }} onRetry={onRetryTask} />
-              {isExpanded && (
-                <ExpandedBlock
-                  task={task} workId={workId} runId={task.runId} sessionId={sessionId ?? ''}
-                  nodeDef={nd} inputSpecs={inputSpecs} workInputs={taskInputs}
-                  discussionBlock={discussionBlock}
-                  definitionRevision={defRev} workRevision={workRevision ?? 1}
-                  hasTypedInput={hasFullTypedInput}
-                  onCollapse={(i) => onCollapseTask?.(i)} onRetry={onRetryTask}
-                  onSubmitWorkInput={onSubmitWorkInput} onSetCornerstone={onSetCornerstone}
-                  onUnsetCornerstone={onUnsetCornerstone} onRefreshAuthoritative={onRefreshAuthoritative}
-                  onSelectFile={onSelectFile}
-                  onInputDraftChange={(tid, bid, iid, sid, ir, v) => handleInputDraftChange(tid, bid, iid, sid, ir, v)}
-                  resolveInputDraft={(tid, bid, spec, wi) => resolveInputDraft(tid, bid, spec, wi)}
-                  resolveCommittedRequestIds={resolveCommittedInputRequestIds}
-                  onInputRequestCommitted={handleInputRequestCommitted}
-                  onOpenDiscussion={(bid, bTitle, br) => handleDOpen(task.id, bid, bTitle, br)}
+      <section className="wg2-el-frame" aria-label="AI 执行任务">
+        <ExecutionListHeading />
+        <ul className="wg2-el-list" data-testid="execution-list" role="list" aria-label="执行任务列表">
+          {ordered.map((task) => {
+            const nd = nodeMap.get(task.nodeId);
+            const isExpanded = expandedTaskId === task.id;
+            const blockIDs = new Set(nd?.blockIds ?? []);
+            const boundInputs = allInputs.filter((input) =>
+              input.runId === task.runId
+              && input.taskId === task.id);
+            const taskInputs = boundInputs.filter((input) =>
+              blockIDs.size === 0 || blockIDs.has(input.blockId));
+            const inputByID = new Map(boundInputs.map((input) => [input.id, input]));
+            const discussionBlockIDs = [
+              ...(task.waitingInputIds ?? []).map((id) => inputByID.get(id)?.blockId),
+              ...boundInputs.map((input) => input.blockId),
+              ...(nd?.blockIds ?? []),
+              ...(nd ? [v2DiscussionBlockId(nd.id)] : []),
+            ];
+            const discussionBlockID = discussionBlockIDs.find(
+              (id): id is string => Boolean(id && !removedBlockIDs.has(id)),
+            );
+            const materializedBlock = discussionBlockID ? blockMap.get(discussionBlockID) : undefined;
+            const discussionBlock = materializedBlock ?? (discussionBlockID ? {
+              id: discussionBlockID,
+              title: task.title,
+              revision: 1,
+            } : undefined);
+            return (
+              <li
+                key={`${task.runId}\u0000${task.id}`}
+                className="wg2-el-item"
+                data-expanded={isExpanded}
+                data-task-state={task.state}
+                role="listitem"
+                data-testid={`execution-list-item-${task.id}`}
+              >
+                <ExecutionRow
+                  task={task}
+                  workId={workId}
+                  nodeDef={nd}
+                  isExpanded={isExpanded}
+                  onToggleExpand={(intent) => {
+                    isExpanded ? onCollapseTask?.({ workId: intent.workId, taskId: intent.taskId })
+                      : onExpandTask?.(intent);
+                  }}
+                  onRetry={onRetryTask}
+                  onDiscuss={discussionBlock
+                    ? () => handleDOpen(
+                        task.id,
+                        discussionBlock.id,
+                        task.title,
+                        discussionBlock.revision,
+                        task.state === 'completed' ? 'workflow' : 'block',
+                      )
+                    : undefined}
                 />
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                {isExpanded && (
+                  <ExpandedBlock
+                    task={task} workId={workId} runId={task.runId} sessionId={sessionId ?? ''}
+                    nodeDef={nd} inputSpecs={inputSpecs} workInputs={taskInputs}
+                    discussionBlock={discussionBlock}
+                    definitionRevision={defRev} workRevision={workRevision ?? 1}
+                    hasTypedInput={hasFullTypedInput}
+                    onCollapse={(i) => onCollapseTask?.(i)} onRetry={onRetryTask}
+                    onSubmitWorkInput={onSubmitWorkInput} onSetCornerstone={onSetCornerstone}
+                    onUnsetCornerstone={onUnsetCornerstone} onRefreshAuthoritative={onRefreshAuthoritative}
+                    onSelectFile={onSelectFile}
+                    onInputDraftChange={(tid, bid, iid, sid, ir, v) => handleInputDraftChange(tid, bid, iid, sid, ir, v)}
+                    resolveInputDraft={(tid, bid, spec, wi) => resolveInputDraft(tid, bid, spec, wi)}
+                    resolveCommittedRequestIds={resolveCommittedInputRequestIds}
+                    onInputRequestCommitted={handleInputRequestCommitted}
+                    onOpenDiscussion={(bid, _bTitle, br) => handleDOpen(
+                      task.id,
+                      bid,
+                      task.title,
+                      br,
+                      task.state === 'completed' ? 'workflow' : 'block',
+                    )}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
       {dOpen && (
         <DiscussionDrawer
           workId={workId} taskId={dTid} blockId={dBid} runId={effRunId} sessionId={sessionId ?? ''}
           workRevision={workRevision ?? 1} definitionRevision={defRev}
           blockRevision={dBlockRev} taskTitle={dTitle}
+          resolvePatchLabel={resolvePatchLabel}
+          resolvePatchOrder={resolvePatchOrder}
           draftText={discDraft} onDraftChange={handleDDraft}
           patchPreview={patchPreview} isPreviewing={isPreviewing}
           previewError={previewError} isApplying={isApplying}
           applyResult={applyResult} applyError={applyError}
           selectedScope={dScope} onScopeChange={setDScope}
+          scopeLocked={dScopeLocked}
           revisionConflict={revConflict} digestConflict={digConflict}
           onClose={handleDClose} onPreview={handleDPreview}
           onApply={handleDApply} onDismissResult={handleDismiss}
           committedPreviewRequestId={committedPreviewRid}
            committedApplyRequestId={committedApplyRid}
-           applyReceipt={applyReceipt}
           previewAvailable={Boolean(onPreviewPatch)}
           applyAvailable={Boolean(onApplyPatch && onRefreshAuthoritative)}
         />
@@ -426,6 +552,13 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     </>
   );
 };
+
+const ExecutionListHeading: React.FC = () => (
+  <div className="wg2-el-heading">
+    <strong>AI 正在执行</strong>
+    <span>无需额外照看，各项任务将并行推进</span>
+  </div>
+);
 
 function computeInitialDraft(spec: InputSpec, wi: WorkInput): DraftValue {
   if (wi.value != null) {

@@ -18,6 +18,7 @@ export interface ParsedTextConstraints {
   minLength?: number;
   maxLength?: number;
   pattern?: string;
+  multiline?: boolean;
 }
 
 export interface ParsedNumberConstraints {
@@ -164,6 +165,7 @@ export function parseValueSchema(
         minLength: asPosInt(obj.minLength, specId, 'minLength'),
         maxLength: asPosInt(obj.maxLength, specId, 'maxLength'),
         pattern: asValidPattern(obj.pattern, specId),
+        multiline: asOptionalBool(obj.multiline, specId, 'multiline'),
       };
       break;
     case 'number': {
@@ -557,6 +559,14 @@ function asPosInt(v: unknown, specId: string, field: string): number | undefined
 
 function asString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
+}
+
+function asOptionalBool(v: unknown, specId: string, field: string): boolean | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'boolean') {
+    throw new SchemaParseError(`${field} 必须是布尔值, 实际为 ${String(v)}`, specId, 'text', v);
+  }
+  return v;
 }
 
 function asStringArray(v: unknown): string[] {
