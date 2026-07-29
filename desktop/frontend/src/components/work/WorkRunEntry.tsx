@@ -86,7 +86,20 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   const degraded = assessment?.degraded ?? false;
   const projectedV2Tasks = useWorkStore((state) => state.v2Tasks[workId]);
   const projectedArtifactSlots = useWorkStore((state) => state.artifactSlots[workId]);
-  const v2Tasks = projectedV2Tasks ?? view?.tasks ?? [];
+  const allV2Tasks = projectedV2Tasks ?? view?.tasks ?? [];
+  const activeRunId = useMemo(() => {
+    if (!view || !v2Definition?.digest) return '';
+    return [...view.work.runs].reverse()
+      .find((run) => run.definitionDigest === v2Definition.digest)?.id ?? '';
+  }, [v2Definition?.digest, view]);
+  const v2Tasks = useMemo(
+    () => {
+      if (!v2Definition?.digest) return allV2Tasks;
+      if (!activeRunId) return allV2Tasks;
+      return allV2Tasks.filter((task) => task.runId === activeRunId);
+    },
+    [activeRunId, allV2Tasks, v2Definition?.digest],
+  );
   const v2ArtifactSlots = projectedArtifactSlots ?? view?.artifactSlots ?? [];
   const activeV2ArtifactSlots = v2Definition
     ? v2ArtifactSlots.filter((slot) => slot.definitionRev === v2Definition.revision)
@@ -108,8 +121,9 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   const isV2Draft = Boolean(view && view.work.schemaVersion >= 2 && !v2Definition);
   const waitingRun = useMemo(() => {
     if (!view) return undefined;
-    return [...view.work.runs].reverse().find((run) => run.state === 'waiting');
-  }, [view]);
+    return [...view.work.runs].reverse().find((run) =>
+      run.state === 'waiting' && (!v2Definition || !activeRunId || run.id === activeRunId));
+  }, [activeRunId, v2Definition, view]);
   const blockItems = runBlock?.items ?? [];
   const waitingUser = blockItems.some((item) => item.code === 'waiting_user');
   const canResume = runBlock?.blocked === true

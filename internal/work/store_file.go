@@ -119,9 +119,10 @@ func cleanupRecovery(cp *cleanupPending, path string, committed, persisted bool,
 var digestRegexp = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 var (
-	writeDerivedFile     = fileutil.AtomicWriteFile
-	writeBatchIndex      = writeWorkEventIndex
-	writeBatchProjection = func(store *FileWorkStore, workDir, workID string, value *Work, revision int64) error {
+	writeDerivedFile       = fileutil.AtomicWriteFile
+	writeBatchIndex        = writeWorkEventIndex
+	appendIndexedWorkEvent = appendWorkEventIndexed
+	writeBatchProjection   = func(store *FileWorkStore, workDir, workID string, value *Work, revision int64) error {
 		return store.persistProjection(workDir, workID, value, revision)
 	}
 	removeWorkDir     = os.RemoveAll
@@ -516,6 +517,12 @@ func (s *FileWorkStore) LoadState(workID, requestID string) (value *Work, state 
 	if err != nil {
 		return value, state, err
 	}
+	if requestID == "" {
+		if idx, ok := trustedWorkEventIndex(wp, workID); ok {
+			state.Revision = idx.Revision
+			return value, state, nil
+		}
+	}
 	replay, err := ReplayWorkEventLog(wp)
 	if err != nil {
 		return value, state, err
@@ -637,6 +644,9 @@ func (s *FileWorkStore) loadProjection(workDir, workID string) (*Work, error) {
 		if err := CheckSchemaVersionV2("Work", w.SchemaVersion); err != nil {
 			return nil, err
 		}
+		if _, ok := trustedProjectionState(workDir, workID, data); ok {
+			return &w, nil
+		}
 		replay, authoritative, replayErr := ReplayWithReducer(workDir, DefaultReducer())
 		if replayErr != nil {
 			return authoritative, fmt.Errorf("%w: validate projection for %s against event log: %v", ErrWorkNeedsRepair, workID, replayErr)
@@ -698,6 +708,44 @@ func projectionsEqual(a, b *Work) (bool, error) {
 		return false, err
 	}
 	return bytes.Equal(left, right), nil
+}
+
+func trustedProjectionState(workDir, workID string, data []byte) (*WorkEventIndex, bool) {
+	manifest, err := loadManifestAt(filepath.Join(workDir, "manifest.json"))
+	if err != nil || manifest.ID != workID || manifest.ProjectionDigest == "" {
+		return nil, false
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	if digest != manifest.ProjectionDigest {
+		return nil, false
+	}
+	idx, ok := trustedWorkEventIndex(workDir, workID)
+	if !ok || manifest.Revision != idx.Revision {
+		return nil, false
+	}
+	return idx, true
+}
+
+func trustedWorkEventIndex(workDir, workID string) (*WorkEventIndex, bool) {
+	header, err := readWorkEventIndexHeader(workDir)
+	if err != nil || header == nil || header.Revision <= 0 || header.LogSize <= 0 {
+		return nil, false
+	}
+	logPath := WorkEventLogPath(workDir)
+	info, err := os.Stat(logPath)
+	if err != nil || info.IsDir() || info.Size() != header.LogSize {
+		return nil, false
+	}
+	last, err := readLastWorkEventRecord(logPath, info.Size())
+	if err != nil || last.WorkID != workID || last.Revision != header.Revision ||
+		last.ContentDigest != header.ContentDigest {
+		return nil, false
+	}
+	idx, err := readCachedWorkEventIndex(workDir, header)
+	if err != nil {
+		return nil, false
+	}
+	return idx, true
 }
 
 func (s *FileWorkStore) repairEventIndex(workDir string, replay *WorkEventReplay) error {
@@ -890,6 +938,10 @@ func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision in
 }
 
 func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64, error) {
+	if current, idx, ok := loadTrustedProjectionAt(wp, workID); ok {
+		return s.appendIndexedLocked(workID, wp, current, idx, event)
+	}
+
 	// State-machine and action receipt events carry terminal/idempotency facts.
 	// Reject malformed transitions before append so a bad or late event cannot
 	// poison the authoritative log and leave a half-committed Work.
@@ -939,6 +991,75 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 	}
 
 	return rev, nil
+}
+
+func loadTrustedProjectionAt(workDir, workID string) (*Work, *WorkEventIndex, bool) {
+	data, err := os.ReadFile(filepath.Join(workDir, "projection.json"))
+	if err != nil {
+		return nil, nil, false
+	}
+	var current Work
+	if json.Unmarshal(data, &current) != nil || current.ID != workID ||
+		CheckSchemaVersionV2("Work", current.SchemaVersion) != nil {
+		return nil, nil, false
+	}
+	idx, ok := trustedProjectionState(workDir, workID, data)
+	if !ok {
+		return nil, nil, false
+	}
+	return &current, idx, true
+}
+
+func (s *FileWorkStore) appendIndexedLocked(
+	workID, workDir string,
+	current *Work,
+	idx *WorkEventIndex,
+	event WorkEvent,
+) (int64, error) {
+	if err := validateWorkEventForAppend(event); err != nil {
+		return 0, err
+	}
+	if event.RequestID != "" {
+		if _, exists := idx.RequestIndex[event.RequestID]; exists {
+			result, err := appendIndexedWorkEvent(workDir, event, true, idx, workID)
+			return result.Revision, err
+		}
+	}
+	if event.Revision == 0 {
+		event.BaseRevision = idx.Revision
+		event.Revision = idx.Revision + 1
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	if eventNeedsReducerPreflight(event.Type) {
+		if err := validateV2ActiveTaskCommit(current, event); err != nil {
+			return 0, fmt.Errorf("work: reject state event before append: %w", err)
+		}
+	}
+	next, err := cloneWork(current)
+	if err != nil {
+		return 0, fmt.Errorf("work: clone projection before indexed append: %w", err)
+	}
+	next, err = DefaultReducer()(event, next)
+	if err != nil {
+		return 0, fmt.Errorf("work: reject event before indexed append: %w", err)
+	}
+
+	result, err := appendIndexedWorkEvent(workDir, event, true, idx, workID)
+	if err != nil {
+		if result.Revision > 0 {
+			return result.Revision, committedRecovery("append", workID, event.RequestID, result.Revision, err)
+		}
+		return 0, err
+	}
+	if !result.Appended {
+		return result.Revision, nil
+	}
+	if err := s.persistProjection(workDir, workID, next, result.Revision); err != nil {
+		return result.Revision, committedRecovery("append", workID, event.RequestID, result.Revision, err)
+	}
+	return result.Revision, nil
 }
 
 // validateV2ActiveTaskCommit protects the definition/runtime identity at the
@@ -1224,6 +1345,19 @@ func eventNeedsReducerPreflight(eventType WorkEventType) bool {
 }
 
 func (s *FileWorkStore) persistProjection(workDir, workID string, value *Work, revision int64) error {
+	return s.persistProjectionState(workDir, workID, value, revision, true)
+}
+
+func (s *FileWorkStore) persistUnverifiedProjection(workDir, workID string, value *Work, revision int64) error {
+	return s.persistProjectionState(workDir, workID, value, revision, false)
+}
+
+func (s *FileWorkStore) persistProjectionState(
+	workDir, workID string,
+	value *Work,
+	revision int64,
+	verified bool,
+) error {
 	if value == nil {
 		return ErrWorkNilInput
 	}
@@ -1238,10 +1372,14 @@ func (s *FileWorkStore) persistProjection(workDir, workID string, value *Work, r
 		return fmt.Errorf("marshal projection: %w", err)
 	}
 	data = append(data, '\n')
+	projectionDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
 	if err := writeDerivedFile(filepath.Join(workDir, "projection.json"), data, 0o644); err != nil {
 		return fmt.Errorf("write projection: %w", err)
 	}
 	manifest := manifestFromWork(value, revision)
+	if verified {
+		manifest.ProjectionDigest = projectionDigest
+	}
 	// Preserve metadata that cannot be reconstructed from the projection.
 	// A missing/corrupt manifest is derived-state damage and is repaired below;
 	// a healthy manifest keeps the original create idempotency key.
@@ -1302,7 +1440,7 @@ func (s *FileWorkStore) writeProjectionLocked(workID string, work *Work, revisio
 		return fmt.Errorf("work: projection workID mismatch: expected %q, got %q", workID, work.ID)
 	}
 
-	return s.persistProjection(wp, workID, work, revision)
+	return s.persistUnverifiedProjection(wp, workID, work, revision)
 }
 
 // ── WorkStore: WriteArchive ────────────────────────────────────────────────
@@ -1985,19 +2123,20 @@ func (s *FileWorkStore) Get(workID, digest string) ([]byte, error) {
 // ── Manifest ───────────────────────────────────────────────────────────────
 
 type workManifest struct {
-	SchemaVersion   int              `json:"schemaVersion"`
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
-	State           WorkState        `json:"state"`
-	ArchiveState    WorkArchiveState `json:"archiveState"`
-	BlueprintRef    BlueprintRef     `json:"blueprintRef"`
-	CreatedAt       time.Time        `json:"createdAt"`
-	UpdatedAt       time.Time        `json:"updatedAt"`
-	ArchivedAt      *time.Time       `json:"archivedAt,omitempty"`
-	DeletedAt       *time.Time       `json:"deletedAt,omitempty"`
-	Revision        int64            `json:"revision"`
-	CreateRequestID string           `json:"createRequestId,omitempty"`
-	CreateDigest    string           `json:"createDigest,omitempty"`
+	SchemaVersion    int              `json:"schemaVersion"`
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	State            WorkState        `json:"state"`
+	ArchiveState     WorkArchiveState `json:"archiveState"`
+	BlueprintRef     BlueprintRef     `json:"blueprintRef"`
+	CreatedAt        time.Time        `json:"createdAt"`
+	UpdatedAt        time.Time        `json:"updatedAt"`
+	ArchivedAt       *time.Time       `json:"archivedAt,omitempty"`
+	DeletedAt        *time.Time       `json:"deletedAt,omitempty"`
+	Revision         int64            `json:"revision"`
+	ProjectionDigest string           `json:"projectionDigest,omitempty"`
+	CreateRequestID  string           `json:"createRequestId,omitempty"`
+	CreateDigest     string           `json:"createDigest,omitempty"`
 }
 
 func manifestFromWork(value *Work, revision int64) *workManifest {
@@ -2890,6 +3029,7 @@ func (s *FileWorkStore) createWorkDirLocked(input CreateWorkDirInput) (retErr er
 		return err
 	}
 	manifest := manifestFromWork(projection, revision)
+	manifest.ProjectionDigest = fmt.Sprintf("sha256:%x", sha256.Sum256(projectionData))
 	manifest.CreateRequestID = input.RequestID
 	manifest.CreateDigest = intentDigest
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")

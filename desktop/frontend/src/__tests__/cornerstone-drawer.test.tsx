@@ -2383,6 +2383,61 @@ async function testV2CompletedTasksWithMissingArtifactCanRecover(): Promise<void
   await entry.cleanup();
 }
 
+async function testV2StatusIgnoresHistoricalRunTasks(): Promise<void> {
+  reset();
+  const v2def = makeV2Definition({
+    status: 'active',
+    nodes: [{ id: 'n1', title: 'Task 1' }],
+    goal: 'do work',
+  });
+  const view = makeV2View({
+    state: 'running',
+    runs: [{
+      id: 'run-old',
+      workId: 'work-cornerstone',
+      requestId: 'request-old',
+      definitionDigest: 'old-v2-digest',
+      state: 'waiting',
+      stages: [],
+      startedAt: '2026-07-25T00:00:00Z',
+    }, {
+      id: 'run-active',
+      workId: 'work-cornerstone',
+      requestId: 'request-active',
+      definitionDigest: v2def.digest,
+      state: 'completed',
+      stages: [],
+      startedAt: '2026-07-26T00:00:00Z',
+      finishedAt: '2026-07-26T00:01:00Z',
+    }],
+  }, 9);
+  view.tasks = [{
+    id: 'task-old',
+    runId: 'run-old',
+    nodeId: 'n1',
+    title: 'Old Task',
+    state: 'waiting_input',
+    retryable: false,
+    updatedAt: '2026-07-25T00:00:10Z',
+  }, {
+    id: 'task-active',
+    runId: 'run-active',
+    nodeId: 'n1',
+    title: 'Task 1',
+    state: 'completed',
+    retryable: false,
+    updatedAt: '2026-07-26T00:01:00Z',
+  }];
+  useWorkStore.getState().applySnapshot(view);
+
+  const entry = await mount(<WorkRunEntry workId={view.work.id} v2Definition={v2def} />);
+  const status = entry.host.querySelector('[data-testid="work-v2-status"]');
+  ok(status?.textContent?.includes('已完成'), 'V2 状态只聚合 active Run 的任务');
+  ok(!status?.textContent?.includes('等待输入'), '历史 waiting_input 不污染 active Run 状态');
+
+  await entry.cleanup();
+}
+
 async function testV2ActiveDefinitionArrivesLate(): Promise<void> {
   reset();
   // Start as V2 draft — no active Definition.
@@ -2541,6 +2596,7 @@ await testV2DraftGateNoRunButton();
 await testV2DraftRunDisabledOnAllPaths();
 await testV2ActiveDefinitionEnablesRun();
 await testV2CompletedTasksWithMissingArtifactCanRecover();
+await testV2StatusIgnoresHistoricalRunTasks();
 await testV2ActiveDefinitionArrivesLate();
 await testV2CandidateOnlyNotRunnable();
 await testV1RunBehaviorUnchanged();

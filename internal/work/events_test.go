@@ -116,6 +116,38 @@ func TestAppendWorkEvent_BasicFlow(t *testing.T) {
 	appendAndCheck(t, workDir, e2, 2)
 }
 
+func TestReadLastWorkEventRecord_ReadsBackwardByChunk(t *testing.T) {
+	workDir := tempWorkDir(t)
+	acquireLease(t, workDir)
+
+	appendAndCheck(t, workDir, makeEvent(
+		EventWorkCreated,
+		1,
+		0,
+		"req-tail-1",
+		json.RawMessage(`{"name":"test"}`),
+	), 1)
+	appendAndCheck(t, workDir, makeEvent(
+		EventDraftUpdated,
+		2,
+		1,
+		"req-tail-2",
+		json.RawMessage(fmt.Sprintf(`{"name":"%s"}`, strings.Repeat("x", 160<<10))),
+	), 2)
+
+	info, err := os.Stat(WorkEventLogPath(workDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := readLastWorkEventRecord(WorkEventLogPath(workDir), info.Size())
+	if err != nil {
+		t.Fatalf("read last event record: %v", err)
+	}
+	if record.Revision != 2 || record.RequestID != "req-tail-2" {
+		t.Fatalf("last event = revision %d request %q", record.Revision, record.RequestID)
+	}
+}
+
 // ── Lease required ─────────────────────────────────────────────────────────
 
 func TestAppendWorkEvent_RequiresLease(t *testing.T) {

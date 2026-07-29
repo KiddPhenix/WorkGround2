@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -336,6 +337,129 @@ func TestFileWorkStore_AppendThenLoad(t *testing.T) {
 	}
 	if loaded.Name != "Updated Name" {
 		t.Fatalf("loaded Name = %q, want %q", loaded.Name, "Updated Name")
+	}
+}
+
+func TestFileWorkStore_AppendUsesIndexedSteadyState(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-indexed-steady-state"
+	createTestWork(t, store, workID)
+
+	// The legacy test fixture rewrites the manifest without the projection
+	// digest. One load performs the bounded migration and establishes trust.
+	if _, err := store.LoadProjection(workID); err != nil {
+		t.Fatalf("establish trusted projection: %v", err)
+	}
+
+	originalAppend := appendIndexedWorkEvent
+	t.Cleanup(func() { appendIndexedWorkEvent = originalAppend })
+	indexedAppends := 0
+	appendIndexedWorkEvent = func(
+		workDir string,
+		event WorkEvent,
+		sync bool,
+		idx *WorkEventIndex,
+		existingWorkID string,
+	) (workEventAppendResult, error) {
+		indexedAppends++
+		return originalAppend(workDir, event, sync, idx, existingWorkID)
+	}
+
+	event := WorkEvent{
+		SchemaVersion: WorkEventSchemaVersion,
+		ID:            "evt-indexed-2",
+		RequestID:     "req-indexed-2",
+		WorkID:        workID,
+		Type:          EventDraftUpdated,
+		Payload:       json.RawMessage(`{"name":"Indexed Name"}`),
+	}
+	revision, err := store.Append(workID, event)
+	if err != nil || revision != 2 {
+		t.Fatalf("indexed append = (%d, %v), want (2, nil)", revision, err)
+	}
+	revision, err = store.Append(workID, event)
+	if err != nil || revision != 2 {
+		t.Fatalf("indexed idempotent retry = (%d, %v), want (2, nil)", revision, err)
+	}
+	if indexedAppends != 2 {
+		t.Fatalf("indexed append calls = %d, want 2", indexedAppends)
+	}
+
+	wp, _ := store.workPath(workID)
+	replay, err := ReplayWorkEventLog(wp)
+	if err != nil || len(replay.Events) != 2 {
+		t.Fatalf("steady-state replay = %+v, err = %v", replay, err)
+	}
+	header, err := os.ReadFile(WorkEventIndexPath(wp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(header, []byte(`"requestIndex"`)) || len(header) > 2048 {
+		t.Fatalf("event index header rewrote request history: bytes=%d", len(header))
+	}
+	receipts, err := os.ReadFile(WorkRequestIndexPath(wp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(receipts, []byte(event.RequestID)) {
+		t.Fatalf("append-only request index lost %q", event.RequestID)
+	}
+}
+
+func TestFileWorkStore_AppendMigratesEmbeddedRequestIndex(t *testing.T) {
+	store := newTestStore(t)
+	workID := "work-index-migration"
+	createTestWork(t, store, workID)
+	if _, err := store.LoadProjection(workID); err != nil {
+		t.Fatalf("establish trusted projection: %v", err)
+	}
+	wp, _ := store.workPath(workID)
+	legacy, err := ReadWorkEventIndex(wp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(WorkRequestIndexPath(wp)); err != nil {
+		t.Fatal(err)
+	}
+	legacyData, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fileutil.AtomicWriteFile(
+		WorkEventIndexPath(wp),
+		append(legacyData, '\n'),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	cacheKey, _ := filepath.Abs(wp)
+	workEventIndexCache.Delete(filepath.Clean(cacheKey))
+
+	event := WorkEvent{
+		SchemaVersion: WorkEventSchemaVersion,
+		ID:            "evt-migrated-2",
+		RequestID:     "req-migrated-2",
+		WorkID:        workID,
+		Type:          EventDraftUpdated,
+		Payload:       json.RawMessage(`{"name":"Migrated"}`),
+	}
+	if revision, err := store.Append(workID, event); err != nil || revision != 2 {
+		t.Fatalf("append after legacy index = (%d, %v), want (2, nil)", revision, err)
+	}
+
+	header, err := os.ReadFile(WorkEventIndexPath(wp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(header, []byte(`"requestIndex"`)) {
+		t.Fatal("legacy embedded request index was not migrated")
+	}
+	migrated, err := ReadWorkEventIndex(wp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrated.RequestIndex) != 2 {
+		t.Fatalf("migrated request receipts = %d, want 2", len(migrated.RequestIndex))
 	}
 }
 
@@ -1750,6 +1874,13 @@ func TestFileWorkStore_CreateWorkDir(t *testing.T) {
 	}
 	if loaded.ID != workID {
 		t.Fatalf("loaded ID = %q, want %q", loaded.ID, workID)
+	}
+	manifest, err := store.LoadManifest(workID)
+	if err != nil {
+		t.Fatalf("LoadManifest after atomic create: %v", err)
+	}
+	if manifest.ProjectionDigest == "" {
+		t.Fatal("atomic create did not establish trusted projection digest")
 	}
 
 	// Idempotent.

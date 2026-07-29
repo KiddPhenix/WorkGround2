@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,16 @@ func WorkEventIndexPath(workDir string) string {
 		return ""
 	}
 	return filepath.Join(workDir, "work.event-index.json")
+}
+
+// WorkRequestIndexPath returns the append-only request receipt index path.
+// Keeping receipts separate prevents the event index header from growing and
+// being rewritten on every live progress update.
+func WorkRequestIndexPath(workDir string) string {
+	if workDir == "" {
+		return ""
+	}
+	return filepath.Join(workDir, "work.request-index.jsonl")
 }
 
 // WorkRecoveryPath returns the recovery-copy path used before repairing a torn
@@ -231,6 +242,12 @@ type WorkEventIndex struct {
 	WriterID      string                      `json:"writerId"`
 	UpdatedAt     time.Time                   `json:"updatedAt"`
 	RequestIndex  map[string]WorkRequestEntry `json:"requestIndex,omitempty"`
+	appendRequest string
+}
+
+type workRequestIndexRecord struct {
+	RequestID string           `json:"requestId"`
+	Entry     WorkRequestEntry `json:"entry"`
 }
 
 // ── Lease ──────────────────────────────────────────────────────────────────
@@ -552,57 +569,19 @@ func (e *ErrWorkEventConflict) Error() string {
 //
 // When sync is true the write is fsynced before returning.
 func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) {
-	logPath := WorkEventLogPath(workDir)
-	if logPath == "" {
-		return 0, fmt.Errorf("work: empty work event log path")
-	}
-
 	releaseOp, err := requireLease(workDir)
 	if err != nil {
 		return 0, err
 	}
 	defer releaseOp()
 
-	// Validate schema/type dispatch.
-	// schema=1: only V1 types. schema=2: only V2 types. Other: rejected.
-	switch event.SchemaVersion {
-	case SchemaVersion:
-		if IsV2EventType(event.Type) {
-			return 0, fmt.Errorf("work: V1 schema event cannot have V2 type %q", event.Type)
-		}
-		if err := CheckSchemaVersion("WorkEvent", event.SchemaVersion); err != nil {
-			return 0, err
-		}
-	case SchemaVersionV2:
-		if !IsV2EventType(event.Type) {
-			return 0, fmt.Errorf("work: V2 schema event cannot have V1 type %q", event.Type)
-		}
-		if err := CheckSchemaVersionV2("WorkEvent", event.SchemaVersion); err != nil {
-			return 0, err
-		}
-		if err := ValidateV2WorkEvent(event); err != nil {
-			return 0, fmt.Errorf("work: V2 event validation: %w", err)
-		}
-	default:
-		return 0, fmt.Errorf("work: unsupported event schemaVersion %d", event.SchemaVersion)
+	if err := validateWorkEventForAppend(event); err != nil {
+		return 0, err
 	}
 
-	// Validate event type.
-	if !knownWorkEventTypes[event.Type] {
-		return 0, fmt.Errorf("work: unknown event type %q", event.Type)
-	}
-
-	// Reject internal compact events from callers.
-	if event.Type == eventCompact {
-		return 0, fmt.Errorf("work: cannot append internal event type %q", eventCompact)
-	}
-	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.WorkID) == "" {
-		return 0, fmt.Errorf("work: event id and workID are required")
-	}
-
-	// Always validate the authoritative log before writing. The index is only
-	// a cache; trusting a stale-but-decodable index can duplicate a request
-	// after an append succeeded but its index update failed.
+	// Always validate the authoritative log before the public low-level append.
+	// FileWorkStore uses appendWorkEventIndexed after it has independently
+	// verified the projection, manifest, event index and log tail.
 	replay, err := ReplayWorkEventLog(workDir)
 	if err != nil {
 		return 0, err
@@ -619,10 +598,133 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 			return 0, fmt.Errorf("work: rebuild event index before append: %w", err)
 		}
 	}
+	existingWorkID := ""
+	if len(replay.Events) > 0 {
+		existingWorkID = replay.Events[0].WorkID
+	}
+	result, err := appendWorkEventValidated(
+		workDir,
+		event,
+		sync,
+		idx,
+		replay.LogSize,
+		existingWorkID,
+	)
+	return result.Revision, err
+}
 
-	// WorkID consistency: if the log has existing records, the workID must match.
-	if len(replay.Events) > 0 && replay.Events[0].WorkID != event.WorkID {
-		return 0, fmt.Errorf("work: workID mismatch: log contains %q, event has %q", replay.Events[0].WorkID, event.WorkID)
+type workEventAppendResult struct {
+	Revision int64
+	Event    WorkEvent
+	Index    *WorkEventIndex
+	Appended bool
+}
+
+// appendWorkEventIndexed is the steady-state append seam used by
+// FileWorkStore. It avoids replaying an already verified event prefix while
+// still detecting the normal crash boundary where the log append succeeded
+// but the index replacement did not.
+func appendWorkEventIndexed(
+	workDir string,
+	event WorkEvent,
+	sync bool,
+	idx *WorkEventIndex,
+	existingWorkID string,
+) (workEventAppendResult, error) {
+	if err := validateWorkEventForAppend(event); err != nil {
+		return workEventAppendResult{}, err
+	}
+	if idx == nil || idx.Revision <= 0 || idx.LogSize <= 0 {
+		return workEventAppendResult{}, errors.New("work: indexed append requires a non-empty verified event index")
+	}
+	logPath := WorkEventLogPath(workDir)
+	info, err := os.Stat(logPath)
+	if err != nil {
+		return workEventAppendResult{}, fmt.Errorf("work: stat indexed event log: %w", err)
+	}
+	if info.IsDir() || info.Size() != idx.LogSize {
+		return workEventAppendResult{}, fmt.Errorf(
+			"work: indexed event log size mismatch: index=%d log=%d",
+			idx.LogSize,
+			info.Size(),
+		)
+	}
+	last, err := readLastWorkEventRecord(logPath, info.Size())
+	if err != nil {
+		return workEventAppendResult{}, fmt.Errorf("work: verify indexed event log tail: %w", err)
+	}
+	if last.Revision != idx.Revision || last.ContentDigest != idx.ContentDigest ||
+		(existingWorkID != "" && last.WorkID != existingWorkID) {
+		return workEventAppendResult{}, errors.New("work: indexed event log tail does not match event index")
+	}
+	return appendWorkEventValidated(
+		workDir,
+		event,
+		sync,
+		idx,
+		idx.LogSize,
+		existingWorkID,
+	)
+}
+
+func validateWorkEventForAppend(event WorkEvent) error {
+	// Validate schema/type dispatch.
+	// schema=1: only V1 types. schema=2: only V2 types. Other: rejected.
+	switch event.SchemaVersion {
+	case SchemaVersion:
+		if IsV2EventType(event.Type) {
+			return fmt.Errorf("work: V1 schema event cannot have V2 type %q", event.Type)
+		}
+		if err := CheckSchemaVersion("WorkEvent", event.SchemaVersion); err != nil {
+			return err
+		}
+	case SchemaVersionV2:
+		if !IsV2EventType(event.Type) {
+			return fmt.Errorf("work: V2 schema event cannot have V1 type %q", event.Type)
+		}
+		if err := CheckSchemaVersionV2("WorkEvent", event.SchemaVersion); err != nil {
+			return err
+		}
+		if err := ValidateV2WorkEvent(event); err != nil {
+			return fmt.Errorf("work: V2 event validation: %w", err)
+		}
+	default:
+		return fmt.Errorf("work: unsupported event schemaVersion %d", event.SchemaVersion)
+	}
+
+	// Validate event type.
+	if !knownWorkEventTypes[event.Type] {
+		return fmt.Errorf("work: unknown event type %q", event.Type)
+	}
+
+	// Reject internal compact events from callers.
+	if event.Type == eventCompact {
+		return fmt.Errorf("work: cannot append internal event type %q", eventCompact)
+	}
+	if strings.TrimSpace(event.ID) == "" || strings.TrimSpace(event.WorkID) == "" {
+		return fmt.Errorf("work: event id and workID are required")
+	}
+	return nil
+}
+
+func appendWorkEventValidated(
+	workDir string,
+	event WorkEvent,
+	sync bool,
+	idx *WorkEventIndex,
+	logSize int64,
+	existingWorkID string,
+) (workEventAppendResult, error) {
+	logPath := WorkEventLogPath(workDir)
+	if logPath == "" {
+		return workEventAppendResult{}, fmt.Errorf("work: empty work event log path")
+	}
+	if existingWorkID != "" && existingWorkID != event.WorkID {
+		return workEventAppendResult{}, fmt.Errorf(
+			"work: workID mismatch: log contains %q, event has %q",
+			existingWorkID,
+			event.WorkID,
+		)
 	}
 
 	// Determine last revision and next revision.
@@ -638,13 +740,16 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 			newRec := recordFromEvent(event)
 			newDigest, digestErr := workEventIdempotentDigest(newRec)
 			if digestErr != nil {
-				return 0, digestErr
+				return workEventAppendResult{}, digestErr
 			}
 			if newDigest == entry.Digest {
 				// Same requestID, same semantic content → idempotent.
-				return entry.Revision, nil
+				return workEventAppendResult{
+					Revision: entry.Revision,
+					Index:    idx,
+				}, nil
 			}
-			return 0, &ErrWorkEventConflict{
+			return workEventAppendResult{}, &ErrWorkEventConflict{
 				Reason:    fmt.Sprintf("requestID %q already used at revision %d with different content", event.RequestID, entry.Revision),
 				RequestID: event.RequestID,
 				WorkID:    event.WorkID,
@@ -663,7 +768,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 
 	if lastRevision == 0 {
 		if event.Revision != 1 || event.BaseRevision != 0 {
-			return 0, &ErrWorkEventConflict{
+			return workEventAppendResult{}, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("first event must have revision=1 baseRevision=0, got revision=%d baseRevision=%d", event.Revision, event.BaseRevision),
 				WorkID: event.WorkID,
 				Kind:   WorkEventRevisionConflict,
@@ -671,14 +776,14 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 		}
 	} else {
 		if event.BaseRevision != lastRevision {
-			return 0, &ErrWorkEventConflict{
+			return workEventAppendResult{}, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("revision chain broken: expected baseRevision=%d, got baseRevision=%d", lastRevision, event.BaseRevision),
 				WorkID: event.WorkID,
 				Kind:   WorkEventRevisionConflict,
 			}
 		}
 		if event.Revision != lastRevision+1 {
-			return 0, &ErrWorkEventConflict{
+			return workEventAppendResult{}, &ErrWorkEventConflict{
 				Reason: fmt.Sprintf("revision gap: expected revision=%d, got revision=%d", lastRevision+1, event.Revision),
 				WorkID: event.WorkID,
 				Kind:   WorkEventRevisionConflict,
@@ -697,7 +802,7 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 	rec.ContentDigest = "" // recompute — never trust caller-provided digest
 	digest, err := workEventContentDigest(rec)
 	if err != nil {
-		return 0, err
+		return workEventAppendResult{}, err
 	}
 	rec.ContentDigest = digest
 	// Preserve caller SchemaVersion; never stamp to a fixed version.
@@ -705,42 +810,43 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 	// Serialize.
 	buf, err := json.Marshal(rec)
 	if err != nil {
-		return 0, fmt.Errorf("work: encode event: %w", err)
+		return workEventAppendResult{}, fmt.Errorf("work: encode event: %w", err)
 	}
 	buf = append(buf, '\n')
 
 	// Ensure directory exists.
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		return 0, err
+		return workEventAppendResult{}, err
 	}
 
 	// Append to log.
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return 0, fmt.Errorf("work: open event log: %w", err)
+		return workEventAppendResult{}, fmt.Errorf("work: open event log: %w", err)
 	}
 	if _, err := f.Write(buf); err != nil {
 		_ = f.Close()
-		return 0, fmt.Errorf("work: append event: %w", err)
+		return workEventAppendResult{}, fmt.Errorf("work: append event: %w", err)
 	}
 	if sync {
 		if err := f.Sync(); err != nil {
 			_ = f.Close()
-			return 0, err
+			return workEventAppendResult{}, err
 		}
 	}
 	if err := f.Close(); err != nil {
-		return 0, err
+		return workEventAppendResult{}, err
 	}
 
 	// Update index. If write fails, the next Append or Rebuild will self-heal.
-	newIdx := buildIndexFromReplay(rec.Revision, rec.ContentDigest, replay.LogSize+int64(len(buf)), 1, nil)
+	newIdx := buildIndexFromReplay(rec.Revision, rec.ContentDigest, logSize+int64(len(buf)), 1, nil)
 	if idx != nil {
 		newIdx.EventCount = idx.EventCount + 1
 		if idx.RequestIndex != nil {
-			for k, v := range idx.RequestIndex {
-				newIdx.RequestIndex[k] = v
-			}
+			// Appends are serialized by the Work operation/lease. Reuse the
+			// in-memory receipt map so live updates do not copy the complete
+			// history on every event.
+			newIdx.RequestIndex = idx.RequestIndex
 		}
 	}
 	if rec.RequestID != "" {
@@ -756,12 +862,77 @@ func AppendWorkEvent(workDir string, event WorkEvent, sync bool) (int64, error) 
 			entry.Event = &value
 		}
 		newIdx.RequestIndex[rec.RequestID] = entry
+		newIdx.appendRequest = rec.RequestID
 	}
 	if err := writeWorkEventIndexAfterAppend(workDir, newIdx); err != nil {
-		return rec.Revision, fmt.Errorf("work: event appended at revision %d but index update failed: %w", rec.Revision, err)
+		return workEventAppendResult{
+			Revision: rec.Revision,
+			Event:    eventFromRecord(rec),
+			Index:    newIdx,
+			Appended: true,
+		}, fmt.Errorf("work: event appended at revision %d but index update failed: %w", rec.Revision, err)
 	}
 
-	return rec.Revision, nil
+	return workEventAppendResult{
+		Revision: rec.Revision,
+		Event:    eventFromRecord(rec),
+		Index:    newIdx,
+		Appended: true,
+	}, nil
+}
+
+func readLastWorkEventRecord(logPath string, size int64) (workEventRecord, error) {
+	const (
+		tailChunk = int64(64 << 10)
+		maxTail   = int64(4 << 20)
+	)
+	if size <= 0 {
+		return workEventRecord{}, errors.New("work: event log is empty")
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		return workEventRecord{}, err
+	}
+	defer f.Close()
+
+	end := size
+	var tail []byte
+	for end > 0 && int64(len(tail)) < maxTail {
+		readSize := tailChunk
+		if end < readSize {
+			readSize = end
+		}
+		start := end - readSize
+		part := make([]byte, readSize)
+		n, readErr := f.ReadAt(part, start)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return workEventRecord{}, readErr
+		}
+		combined := make([]byte, 0, n+len(tail))
+		combined = append(combined, part[:n]...)
+		tail = append(combined, tail...)
+
+		record := bytes.TrimRight(tail, "\r\n\t ")
+		if split := bytes.LastIndexByte(record, '\n'); split >= 0 {
+			return decodeLastWorkEventRecord(record[split+1:])
+		}
+		if start == 0 {
+			return decodeLastWorkEventRecord(record)
+		}
+		end = start
+	}
+	return workEventRecord{}, errors.New("work: last event exceeds indexed tail verification limit")
+}
+
+func decodeLastWorkEventRecord(data []byte) (workEventRecord, error) {
+	if len(data) == 0 {
+		return workEventRecord{}, errors.New("work: event log is empty")
+	}
+	var rec workEventRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return workEventRecord{}, err
+	}
+	return rec, nil
 }
 
 // ── Replay ─────────────────────────────────────────────────────────────────
@@ -1317,7 +1488,9 @@ func copyFile(src, dst string) error {
 
 // ── Index ──────────────────────────────────────────────────────────────────
 
-func readWorkEventIndex(workDir string) (*WorkEventIndex, error) {
+var workEventIndexCache sync.Map // absolute work dir -> *WorkEventIndex
+
+func readWorkEventIndexHeader(workDir string) (*WorkEventIndex, error) {
 	indexPath := WorkEventIndexPath(workDir)
 	if indexPath == "" {
 		return nil, nil
@@ -1336,7 +1509,146 @@ func readWorkEventIndex(workDir string) (*WorkEventIndex, error) {
 	return &idx, nil
 }
 
-func writeWorkEventIndex(workDir string, idx *WorkEventIndex) error {
+func readWorkEventIndex(workDir string) (*WorkEventIndex, error) {
+	idx, err := readWorkEventIndexHeader(workDir)
+	if err != nil || idx == nil {
+		return idx, err
+	}
+	requests, err := readWorkRequestIndex(workDir)
+	switch {
+	case err == nil:
+		idx.RequestIndex = requests
+	case os.IsNotExist(err):
+		if idx.RequestIndex == nil {
+			idx.RequestIndex = map[string]WorkRequestEntry{}
+		}
+	default:
+		return nil, err
+	}
+	return idx, nil
+}
+
+func readCachedWorkEventIndex(workDir string, header *WorkEventIndex) (*WorkEventIndex, error) {
+	key, err := filepath.Abs(workDir)
+	if err != nil {
+		return nil, err
+	}
+	key = filepath.Clean(key)
+	if cached, ok := workEventIndexCache.Load(key); ok {
+		idx := cached.(*WorkEventIndex)
+		if workEventIndexHeadersEqual(idx, header) {
+			return idx, nil
+		}
+	}
+	idx, err := readWorkEventIndex(workDir)
+	if err != nil {
+		return nil, err
+	}
+	if !workEventIndexHeadersEqual(idx, header) {
+		return nil, errors.New("work: event index header changed while loading request receipts")
+	}
+	workEventIndexCache.Store(key, idx)
+	return idx, nil
+}
+
+func workEventIndexHeadersEqual(a, b *WorkEventIndex) bool {
+	return a != nil && b != nil &&
+		a.SchemaVersion == b.SchemaVersion &&
+		a.LogSize == b.LogSize &&
+		a.EventCount == b.EventCount &&
+		a.Revision == b.Revision &&
+		a.ContentDigest == b.ContentDigest
+}
+
+func readWorkRequestIndex(workDir string) (map[string]WorkRequestEntry, error) {
+	path := WorkRequestIndexPath(workDir)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	requests := map[string]WorkRequestEntry{}
+	dec := json.NewDecoder(f)
+	for {
+		var record workRequestIndexRecord
+		if err := dec.Decode(&record); err != nil {
+			if errors.Is(err, io.EOF) {
+				return requests, nil
+			}
+			return nil, fmt.Errorf("work: decode request index: %w", err)
+		}
+		if strings.TrimSpace(record.RequestID) == "" {
+			return nil, errors.New("work: request index contains an empty requestID")
+		}
+		requests[record.RequestID] = record.Entry
+	}
+}
+
+func writeWorkRequestIndex(workDir string, requests map[string]WorkRequestEntry) error {
+	path := WorkRequestIndexPath(workDir)
+	if path == "" {
+		return nil
+	}
+	keys := make([]string, 0, len(requests))
+	for requestID := range requests {
+		keys = append(keys, requestID)
+	}
+	sort.Strings(keys)
+	var data bytes.Buffer
+	enc := json.NewEncoder(&data)
+	for _, requestID := range keys {
+		if err := enc.Encode(workRequestIndexRecord{
+			RequestID: requestID,
+			Entry:     requests[requestID],
+		}); err != nil {
+			return err
+		}
+	}
+	return fileutil.AtomicWriteFile(path, data.Bytes(), 0o644)
+}
+
+func appendWorkRequestIndex(workDir string, idx *WorkEventIndex) error {
+	path := WorkRequestIndexPath(workDir)
+	if path == "" || idx == nil {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return writeWorkRequestIndex(workDir, idx.RequestIndex)
+		}
+		return err
+	}
+	if idx.appendRequest == "" {
+		return nil
+	}
+	entry, ok := idx.RequestIndex[idx.appendRequest]
+	if !ok {
+		return fmt.Errorf("work: appended request %q missing from event index", idx.appendRequest)
+	}
+	data, err := json.Marshal(workRequestIndexRecord{
+		RequestID: idx.appendRequest,
+		Entry:     entry,
+	})
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func writeWorkEventIndexHeader(workDir string, idx *WorkEventIndex) error {
 	indexPath := WorkEventIndexPath(workDir)
 	if indexPath == "" {
 		return nil
@@ -1346,7 +1658,10 @@ func writeWorkEventIndex(workDir string, idx *WorkEventIndex) error {
 	if idx.WriterID == "" {
 		idx.WriterID = WorkWriterID()
 	}
-	b, err := json.MarshalIndent(idx, "", "  ")
+	header := *idx
+	header.RequestIndex = nil
+	header.appendRequest = ""
+	b, err := json.MarshalIndent(&header, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1357,10 +1672,52 @@ func writeWorkEventIndex(workDir string, idx *WorkEventIndex) error {
 	return fileutil.AtomicWriteFile(indexPath, b, 0o644)
 }
 
+func cacheWorkEventIndex(workDir string, idx *WorkEventIndex) {
+	key, err := filepath.Abs(workDir)
+	if err == nil && idx != nil {
+		workEventIndexCache.Store(filepath.Clean(key), idx)
+	}
+}
+
+func invalidateWorkEventIndexCache(workDir string) {
+	key, err := filepath.Abs(workDir)
+	if err == nil {
+		workEventIndexCache.Delete(filepath.Clean(key))
+	}
+}
+
+func writeWorkEventIndex(workDir string, idx *WorkEventIndex) error {
+	if idx == nil {
+		return errors.New("work: nil event index")
+	}
+	invalidateWorkEventIndexCache(workDir)
+	if err := writeWorkRequestIndex(workDir, idx.RequestIndex); err != nil {
+		return err
+	}
+	if err := writeWorkEventIndexHeader(workDir, idx); err != nil {
+		return err
+	}
+	cacheWorkEventIndex(workDir, idx)
+	return nil
+}
+
+func appendWorkEventIndex(workDir string, idx *WorkEventIndex) error {
+	invalidateWorkEventIndexCache(workDir)
+	if err := appendWorkRequestIndex(workDir, idx); err != nil {
+		return err
+	}
+	if err := writeWorkEventIndexHeader(workDir, idx); err != nil {
+		return err
+	}
+	cacheWorkEventIndex(workDir, idx)
+	return nil
+}
+
 // writeWorkEventIndexAfterAppend is a narrow failure-injection seam for the
 // only non-atomic boundary in AppendWorkEvent: log append succeeded, index
-// replacement failed. Production always uses writeWorkEventIndex.
-var writeWorkEventIndexAfterAppend = writeWorkEventIndex
+// replacement failed. Production appends one request receipt and replaces only
+// the fixed-size event index header.
+var writeWorkEventIndexAfterAppend = appendWorkEventIndex
 
 // ReadWorkEventIndex loads the event index from disk. Returns nil when no
 // index exists yet.
