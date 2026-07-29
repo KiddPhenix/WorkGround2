@@ -1545,7 +1545,10 @@ async function runTests(): Promise<void> {
     const committedSubmit = async (request: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
       groupSubmits.push(request);
       return {
-        revision: request.expectedRevision + 1,
+        // One input commit may synchronously append scheduler/runtime events.
+        // The next field must use the authoritative returned revision, not
+        // assume that every submit advances the Work by exactly one.
+        revision: request.expectedRevision + 3,
         duplicate: false,
         committed: true,
         recoverable: false,
@@ -1612,8 +1615,8 @@ async function runTests(): Promise<void> {
       host.querySelector<HTMLButtonElement>('[data-testid="expanded-block-submit-task-party"]')?.click());
     await settle();
     eq(groupSubmits.length, 3, 'input group: one click submits every field');
-    eq(groupSubmits[1]?.expectedRevision, groupSubmits[0]?.expectedRevision + 1, 'input group: second submit uses advanced revision');
-    eq(groupSubmits[2]?.expectedRevision, groupSubmits[1]?.expectedRevision + 1, 'input group: third submit uses advanced revision');
+    eq(groupSubmits[1]?.expectedRevision, groupSubmits[0]?.expectedRevision + 3, 'input group: second submit uses returned authoritative revision');
+    eq(groupSubmits[2]?.expectedRevision, groupSubmits[1]?.expectedRevision + 3, 'input group: third submit uses returned authoritative revision');
     eq(groupRefreshCalls, 1, 'input group: authoritative state refreshes once after the full Block');
     const focusSink = document.createElement('button');
     document.body.appendChild(focusSink);

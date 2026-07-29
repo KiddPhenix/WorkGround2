@@ -734,7 +734,18 @@ export class WorkControllerAdapter {
     input: CreateCandidateRevisionInput,
   ): Promise<CreateCandidateRevisionResult> => {
     if (!this.port.createCandidateRevision) throw new Error('Work 候选定义生成能力尚未连接。');
-    const result = await this.port.createCandidateRevision(input);
+    let result = await this.port.createCandidateRevision(input);
+    if (!result.committed && result.transportError?.code === 'revision_conflict') {
+      await this.recoverSnapshot(input.workId);
+      const expectedRevision = useWorkStore.getState().revisions[input.workId];
+      if (!Number.isSafeInteger(expectedRevision)) {
+        throw new Error(`Work ${input.workId} 权威 revision 未载入，候选定义未重试。`);
+      }
+      result = await this.port.createCandidateRevision({
+        ...input,
+        expectedRevision: expectedRevision!,
+      });
+    }
     if (result.committed) {
       try {
         await this.recoverSnapshotToRevision(input.workId, result.revision);
@@ -848,7 +859,18 @@ export class WorkControllerAdapter {
 
   submitWorkInput = async (input: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
     if (!this.port.submitWorkInput) throw new Error('Work 输入提交能力尚未连接。');
-    const result = await this.port.submitWorkInput(input);
+    let result = await this.port.submitWorkInput(input);
+    if (!result.committed && result.transportError?.code === 'revision_conflict') {
+      await this.recoverSnapshot(input.workId);
+      const expectedRevision = useWorkStore.getState().revisions[input.workId];
+      if (!Number.isSafeInteger(expectedRevision)) {
+        throw new Error(`Work ${input.workId} 权威 revision 未载入，输入提交未重试。`);
+      }
+      result = await this.port.submitWorkInput({
+        ...input,
+        expectedRevision: expectedRevision!,
+      });
+    }
     if (!result.committed) {
       if (result.transportError?.code === 'revision_conflict') {
         await this.recoverSnapshot(input.workId);

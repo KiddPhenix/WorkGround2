@@ -759,10 +759,14 @@ func TestV2Coordinator_SubmitInputPublishesRunningBeforeExecutionCompletes_FileS
 		ExpectedRevision: state.Revision, RequestID: "submit-running-" + t.Name(),
 	}
 
-	resultCh := make(chan error, 1)
+	type submitOutcome struct {
+		result *SubmitInputResult
+		err    error
+	}
+	resultCh := make(chan submitOutcome, 1)
 	go func() {
-		_, err := h.svc.SubmitV2Input(context.Background(), request)
-		resultCh <- err
+		result, err := h.svc.SubmitV2Input(context.Background(), request)
+		resultCh <- submitOutcome{result: result, err: err}
 	}()
 
 	var started TaskExecuteInput
@@ -772,8 +776,8 @@ func TestV2Coordinator_SubmitInputPublishesRunningBeforeExecutionCompletes_FileS
 		t.Fatal("timed out waiting for task execution to start")
 	}
 	select {
-	case err := <-resultCh:
-		t.Fatalf("SubmitV2Input returned before the running task completed: %v", err)
+	case outcome := <-resultCh:
+		t.Fatalf("SubmitV2Input returned before the running task completed: %v", outcome.err)
 	default:
 	}
 
@@ -798,9 +802,19 @@ func TestV2Coordinator_SubmitInputPublishesRunningBeforeExecutionCompletes_FileS
 
 	close(executor.release)
 	select {
-	case err := <-resultCh:
-		if err != nil {
-			t.Fatal(err)
+	case outcome := <-resultCh:
+		if outcome.err != nil {
+			t.Fatal(outcome.err)
+		}
+		_, finalState, stateErr := h.store.LoadState(h.work, "")
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		if outcome.result == nil || outcome.result.Revision != finalState.Revision {
+			t.Fatalf(
+				"SubmitV2Input revision=%v, want final authoritative revision %d",
+				outcome.result, finalState.Revision,
+			)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for SubmitV2Input completion")

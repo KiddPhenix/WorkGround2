@@ -407,4 +407,87 @@ function makeMockPort(): MockPort {
   assert.equal(attempts, 1, 'non-revision errors must not be retried');
 }
 
-process.stdout.write('\ncontroller mutation + watch recovery (9 scenarios): all assertions passed\n');
+// ── J: input submit refreshes stale authority and retries in one action ──────
+{
+  resetStore();
+  const workID = 'w-input-conflict-retry';
+  applySnapshot(makeView(workID, 10));
+
+  const port = makeMockPort();
+  port._setFetchSnapshot(() => Promise.resolve(makeView(workID, 11)));
+  const writes: Array<{ expectedRevision: number; requestId: string }> = [];
+  port.submitWorkInput = async (input) => {
+    writes.push({ expectedRevision: input.expectedRevision, requestId: input.requestId });
+    if (writes.length === 1) {
+      return {
+        revision: 11, duplicate: false, committed: false, recoverable: true,
+        transportError: {
+          code: 'revision_conflict', message: 'stale input authority',
+          committed: false, recoverable: true,
+        },
+      };
+    }
+    return { revision: 12, duplicate: false, committed: true, recoverable: false };
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  const result = await adapter.submitWorkInput({
+    workId: workID, runId: 'run-1', taskId: 'task-1', blockId: 'block-1',
+    inputId: 'input-1', value: 'new value', definitionRevision: 2,
+    inputRevision: 1, expectedRevision: 10, requestId: 'input-request-stable',
+  });
+
+  assert.equal(result.committed, true);
+  assert.deepEqual(
+    writes.map((input) => input.expectedRevision),
+    [10, 11],
+    'input retry must use recovered Work revision',
+  );
+  assert.deepEqual(
+    writes.map((input) => input.requestId),
+    ['input-request-stable', 'input-request-stable'],
+    'uncommitted input retry preserves the idempotency key',
+  );
+}
+
+// ── K: candidate generation retries a pre-planning revision conflict once ───
+{
+  resetStore();
+  const workID = 'w-candidate-conflict-retry';
+  applySnapshot(makeView(workID, 20));
+
+  const port = makeMockPort();
+  port._setFetchSnapshot(() => Promise.resolve(makeView(workID, 21)));
+  const writes: number[] = [];
+  port.createCandidateRevision = async (input) => {
+    writes.push(input.expectedRevision);
+    if (writes.length === 1) {
+      return {
+        revision: 21, duplicate: false, committed: false, recoverable: true,
+        transportError: {
+          code: 'revision_conflict', message: 'runtime advanced before planning',
+          committed: false, recoverable: true,
+        },
+      };
+    }
+    return {
+      revision: 21, duplicate: false, committed: false, recoverable: true,
+      clarification: {
+        id: 'clarify-1', impact: 'task_nodes', question: 'Choose a structure',
+        flow: ['current', 'candidate'],
+        options: [{ id: 'keep', label: 'Keep current' }, { id: 'split', label: 'Split task' }],
+      },
+    };
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  const result = await adapter.createCandidateRevision({
+    workId: workID, intent: 'improve structure', baseDefinitionRevision: 2,
+    expectedRevision: 20, requestId: 'candidate-request-stable',
+  });
+
+  assert.equal(result.clarification?.id, 'clarify-1');
+  assert.deepEqual(writes, [20, 21], 'candidate retry must use recovered Work revision');
+}
+
+process.stdout.write('\ncontroller mutation + watch recovery (11 scenarios): all assertions passed\n');

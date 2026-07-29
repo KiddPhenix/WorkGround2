@@ -159,6 +159,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-27
 
+### Work Block 单次提交与修订链恢复
+- Location: `internal/work/service.go`, `internal/work/collaboration_recovery.go`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/components/v2/ExpandedBlock.tsx`
+- Summary: 输入 Block 串行提交消费最终权威 Work revision，结构改进在活动 Definition 未变化时对并发 revision 进行有界重基。
+- Keywords: Work Block, SubmitV2Input, CreateCandidateRevision, revision conflict, single submit
+- Source: verified-by-search
+- Updated: 2026-07-29
+
 ### Work V1/V2 覆盖与兼容
 - Location: `docs/WORK_COLLABORATION_WORKBENCH_V2.zh-CN.md`, `internal/work`, `internal/control/work.go`, `desktop/works.go`, `desktop/frontend/src/components/work`, `desktop/frontend/src/work`
 - Summary: V2 默认覆盖新建规划、定义激活、DAG 调度、类型化输入、节点/成果重试和讨论补丁；V1 创建/手动运行入口保留为 feature flag 回退，V1 Work/Run/Block/事件/归档仍被 V2 复用。

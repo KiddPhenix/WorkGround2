@@ -1411,6 +1411,84 @@ func TestCreateCandidateRevisionPlannerUnavailableFailsClosedThenRetries(t *test
 	}
 }
 
+func TestCreateCandidateRevisionRebasesUnrelatedWorkRevisionAfterPlanning(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{
+			ID: "n1", Title: "base", InputSpecIDs: []string{"topic"},
+			ProducesSlotIDs: []string{"slot"},
+		}},
+		[]InputSpec{{
+			ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+			ValueSchema: json.RawMessage(`{"type":"string"}`),
+		}},
+	))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	h.svc.SetV2DefinitionPlanner(definitionPlannerFunc(func(context.Context, DefinitionPlanInput) (*DefinitionPlan, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return &DefinitionPlan{
+			Goal: "improved plan",
+			Nodes: []NodeDef{{
+				ID: "n1", Title: "improved", InputSpecIDs: []string{"topic"},
+				ProducesSlotIDs: []string{"slot"},
+			}},
+			ArtifactSlots: []ArtifactSlotDef{{
+				ID: "slot", Title: "Output", Kind: "text", ExpectedCount: 1, Required: true,
+			}},
+			InputSpecs: []InputSpec{{
+				ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+				ValueSchema: json.RawMessage(`{"type":"string"}`),
+			}},
+		}, nil
+	}))
+	_, before, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CreateCandidateRevisionInput{
+		WorkID: h.work, Intent: "improve the active work",
+		BaseDefinitionRevision: h.def.Revision, ExpectedRevision: before.Revision,
+		RequestID: "candidate-rebase-after-planning",
+	}
+	type outcome struct {
+		result *CreateCandidateRevisionResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, callErr := h.svc.CreateCandidateRevisionWithResult(context.Background(), request)
+		done <- outcome{result: result, err: callErr}
+	}()
+	<-entered
+
+	// Simulate a runtime/input event committed while the model is planning.
+	// The active Definition remains unchanged, so the generated candidate can
+	// safely rebase onto the new aggregate Work revision.
+	requestCoordinatorInput(t, h, "topic")
+	close(release)
+
+	got := <-done
+	if got.err != nil || got.result == nil || !got.result.Committed || got.result.Candidate == nil {
+		t.Fatalf("candidate did not rebase after unrelated event: result=%+v err=%v", got.result, got.err)
+	}
+	if got.result.Candidate.ParentRevision != h.def.Revision {
+		t.Fatalf("candidate parent=%d, want active definition %d", got.result.Candidate.ParentRevision, h.def.Revision)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("planner calls=%d, want one preserved plan", calls.Load())
+	}
+	_, after, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.result.Revision != after.Revision || after.Revision <= before.Revision+1 {
+		t.Fatalf("candidate revision=%d state=%d before=%d", got.result.Revision, after.Revision, before.Revision)
+	}
+}
+
 func TestCreateCandidateRevisionRejectsInvalidPlannerOutputWithoutWrite(t *testing.T) {
 	h := newCoordinatorHarness(t, coordinatorDefinition(
 		[]NodeDef{{ID: "n1", Title: "base", ProducesSlotIDs: []string{"slot"}}},

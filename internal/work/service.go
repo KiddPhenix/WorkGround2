@@ -287,9 +287,12 @@ func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (
 			(requestState.RequestType == EventInputSubmitted || requestState.RequestType == EventInputRejected)
 	}
 	if result.Committed {
-		if result.Revision == 0 {
-			result.Revision = requestState.RequestRevision
-		}
+		// SubmitInput may synchronously wake the scheduler, which can append
+		// task/runtime events after the input receipt. Callers serialize a
+		// multi-field Block with this revision, so return the latest
+		// authoritative Work revision instead of the earlier receipt revision.
+		// The receipt keeps ResultRevision as the immutable input commit point.
+		result.Revision = requestState.Revision
 		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
 		if receiptErr != nil {
 			err = errors.Join(err, committedRecovery(
