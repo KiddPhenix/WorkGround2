@@ -231,6 +231,10 @@ const (
 	TaskInvalidated     TaskStateV2 = "invalidated"
 )
 
+// maxV2AutomaticRecoveryAttempts bounds retries caused only by process
+// restart. Explicit user retries remain available after this limit.
+const maxV2AutomaticRecoveryAttempts = 3
+
 // ── V2 Controller contract (frozen interface, no implementation) ───────────
 
 // SubmitWorkInputRequest is the contract DTO for submitting a typed input.

@@ -628,12 +628,25 @@ func (c *V2Coordinator) RecoverScheduling(ctx context.Context, workID string) er
 	}
 	inputByRun := make(map[string][]string)
 	approvalByRun := make(map[string][]string)
+	var recoverErr error
 	for _, runtime := range projection.V2TaskRuntimes {
 		if runtime == nil || (activeRunID != "" && runtime.RunID != activeRunID) {
 			continue
 		}
 		switch runtime.State {
-		case TaskWaitingInput, TaskReady, TaskFailedRetryable:
+		case TaskWaitingInput, TaskReady:
+			if !V2ReceiptRequired(runtime.SideEffectClass) {
+				inputByRun[runtime.RunID] = append(inputByRun[runtime.RunID], runtime.NodeID)
+			}
+		case TaskFailedRetryable:
+			if len(runtime.Attempts) >= maxV2AutomaticRecoveryAttempts {
+				recoverErr = errors.Join(recoverErr, fmt.Errorf(
+					"work: automatic recovery paused for task %s after %d attempts; retry it manually",
+					runtime.TaskID,
+					len(runtime.Attempts),
+				))
+				continue
+			}
 			if !V2ReceiptRequired(runtime.SideEffectClass) {
 				inputByRun[runtime.RunID] = append(inputByRun[runtime.RunID], runtime.NodeID)
 			}
@@ -660,7 +673,6 @@ func (c *V2Coordinator) RecoverScheduling(ctx context.Context, workID string) er
 			}
 		}
 	}
-	var recoverErr error
 	for runID, seeds := range inputByRun {
 		if err := c.continueRunAt(
 			ctx, workID, runID, seeds, V2WakeInput, definition.Revision,

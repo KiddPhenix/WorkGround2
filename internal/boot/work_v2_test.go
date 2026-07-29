@@ -18,16 +18,30 @@ import (
 )
 
 type bootV2Executor struct {
-	mu    sync.Mutex
-	fail  bool
-	calls []work.TaskExecuteInput
+	mu          sync.Mutex
+	fail        bool
+	block       <-chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	calls       []work.TaskExecuteInput
 }
 
-func (e *bootV2Executor) ExecuteTask(_ context.Context, input work.TaskExecuteInput) (*work.Attempt, error) {
+func (e *bootV2Executor) ExecuteTask(ctx context.Context, input work.TaskExecuteInput) (*work.Attempt, error) {
 	e.mu.Lock()
 	e.calls = append(e.calls, input)
 	fail := e.fail
+	block := e.block
 	e.mu.Unlock()
+	if e.started != nil {
+		e.startedOnce.Do(func() { close(e.started) })
+	}
+	if block != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-block:
+		}
+	}
 	if fail {
 		return nil, errors.New("injected retryable read failure")
 	}
@@ -441,6 +455,13 @@ collaboration_workbench_v2 = true
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	deadline = time.Now().Add(5 * time.Second)
+	for workRecoveryRunning(workDir) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if workRecoveryRunning(workDir) {
+		t.Fatal("background conversion recovery did not finish")
+	}
 	if pumped, err := ctrl.WorkControl().RecoverArtifactConversions(context.Background(), workID); err != nil || pumped != 0 {
 		t.Fatalf("completed recovery remained pumpable: pumped=%d err=%v", pumped, err)
 	}
@@ -539,6 +560,13 @@ collaboration_workbench_v2 = true
 		t.Fatalf("Build: %v", err)
 	}
 	defer ctrl.Close()
+	deadline := time.Now().Add(15 * time.Second)
+	for workRecoveryRunning(workDir) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if workRecoveryRunning(workDir) {
+		t.Fatal("background conversion recovery did not reach its batch limit")
+	}
 	foundBatchNotice := false
 	for _, emitted := range sink.events {
 		if strings.Contains(emitted.Text, "batch limit reached") {
@@ -577,7 +605,7 @@ collaboration_workbench_v2 = true
 		}
 		return
 	}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline = time.Now().Add(15 * time.Second)
 	for {
 		completed, pending, running, failed, readErr := countStates()
 		if readErr == nil && completed == 64 && pending == 1 && running == 0 && failed == 0 {
@@ -963,14 +991,25 @@ collaboration_workbench_v2 = true
 		t.Fatalf("Build with automatic V2 recovery: %v", err)
 	}
 	defer ctrl.Close()
-	if recoveryExecutor.callCount() != 1 {
-		t.Fatalf("boot recovery calls=%d, want read-only task only", recoveryExecutor.callCount())
-	}
+	deadline := time.Now().Add(5 * time.Second)
 	reopened, err := work.NewFileWorkStore(workDir, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	readProjection, err := reopened.LoadProjection(readWork)
+	var readProjection *work.Work
+	for time.Now().Before(deadline) {
+		readProjection, err = reopened.LoadProjection(readWork)
+		if err == nil {
+			runtime := readProjection.V2TaskRuntimes[readTask]
+			if runtime != nil && runtime.State == work.TaskCompleted && !workRecoveryRunning(workDir) {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if recoveryExecutor.callCount() != 1 {
+		t.Fatalf("boot recovery calls=%d, want read-only task only", recoveryExecutor.callCount())
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -984,6 +1023,97 @@ collaboration_workbench_v2 = true
 	if runtime := externalProjection.V2TaskRuntimes[externalTask]; runtime == nil ||
 		runtime.State != work.TaskWaitingApproval {
 		t.Fatalf("external task must remain manual after restart: %+v", runtime)
+	}
+}
+
+func TestV2BootRecoveryDoesNotBlockControllerAndIsSingleFlight_FileWorkStore(t *testing.T) {
+	isolateConfigHome(t)
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work-data")
+	if err := os.WriteFile(filepath.Join(root, "WorkGround2.toml"), []byte(`
+config_version = 3
+default_model = "deepseek-flash"
+
+[work]
+enabled = true
+collaboration_workbench_v2 = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := work.NewFileWorkStore(workDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := work.NewService(store, nil, nil)
+	seed.SetTaskExecutor(&bootV2Executor{fail: true})
+	seedBootRecoveryWork(t, seed, store, "blocked", nil)
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	recoveryExecutor := &bootV2Executor{block: release, started: started}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type buildResult struct {
+		ctrl *control.Controller
+		err  error
+	}
+	build := func() <-chan buildResult {
+		result := make(chan buildResult, 1)
+		go func() {
+			ctrl, err := Build(ctx, Options{
+				Sink:             &recordSink{},
+				WorkspaceRoot:    root,
+				WorkDir:          workDir,
+				WorkTaskExecutor: recoveryExecutor,
+			})
+			result <- buildResult{ctrl: ctrl, err: err}
+		}()
+		return result
+	}
+	awaitBuild := func(result <-chan buildResult) *control.Controller {
+		t.Helper()
+		select {
+		case got := <-result:
+			if got.err != nil {
+				t.Fatalf("Build: %v", got.err)
+			}
+			return got.ctrl
+		case <-time.After(3 * time.Second):
+			close(release)
+			t.Fatal("Build waited for background Work recovery")
+			return nil
+		}
+	}
+
+	first := awaitBuild(build())
+	defer func() {
+		if first != nil {
+			first.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("background Work recovery did not start")
+	}
+	second := awaitBuild(build())
+	defer second.Close()
+	time.Sleep(100 * time.Millisecond)
+	if calls := recoveryExecutor.callCount(); calls != 1 {
+		close(release)
+		t.Fatalf("concurrent boot started %d recovery attempts, want one", calls)
+	}
+	first.Close()
+	first = nil
+	deadline := time.Now().Add(5 * time.Second)
+	for workRecoveryRunning(workDir) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if workRecoveryRunning(workDir) {
+		close(release)
+		t.Fatal("background Work recovery did not stop with its controller")
 	}
 }
 

@@ -17,6 +17,7 @@ type coordinatorExecutor struct {
 	blockRun string
 	started  chan TaskExecuteInput
 	release  chan struct{}
+	fail     bool
 
 	mu    sync.Mutex
 	calls []TaskExecuteInput
@@ -34,6 +35,9 @@ func (e *coordinatorExecutor) ExecuteTask(ctx context.Context, input TaskExecute
 			return nil, ctx.Err()
 		case <-e.release:
 		}
+	}
+	if e.fail {
+		return nil, errors.New("injected retryable failure")
 	}
 	return &Attempt{
 		State:      RunCompleted,
@@ -927,6 +931,42 @@ func TestV2Coordinator_RestartRecoversCommittedWake_FileStore(t *testing.T) {
 	}
 	if runtime := projection.V2TaskRuntimes[taskID]; runtime == nil || runtime.State != TaskCompleted {
 		t.Fatalf("restart did not recover scheduling: %+v", runtime)
+	}
+}
+
+func TestV2Coordinator_AutomaticRecoveryAttemptsAreBounded_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "retryable", ProducesSlotIDs: []string{"slot"}}},
+		nil,
+	))
+	executor := &coordinatorExecutor{fail: true}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+	for executor.callCount() < maxV2AutomaticRecoveryAttempts {
+		_ = h.svc.RecoverV2Scheduling(context.Background(), h.work)
+	}
+	before := executor.callCount()
+	err := h.svc.RecoverV2Scheduling(context.Background(), h.work)
+	if err == nil || !strings.Contains(err.Error(), "automatic recovery paused") {
+		t.Fatalf("recovery limit error = %v", err)
+	}
+	if after := executor.callCount(); after != before {
+		t.Fatalf("automatic recovery exceeded limit: before=%d after=%d", before, after)
+	}
+	taskID, err := DeriveTaskID(h.run, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := projection.V2TaskRuntimes[taskID]
+	if runtime == nil || runtime.State != TaskFailedRetryable ||
+		len(runtime.Attempts) != maxV2AutomaticRecoveryAttempts {
+		t.Fatalf("bounded runtime = %+v", runtime)
 	}
 }
 

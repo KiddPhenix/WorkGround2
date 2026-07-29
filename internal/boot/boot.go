@@ -1137,13 +1137,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var cornerstoneManager *work.CornerstoneManager
 	var cornerstoneStore work.WorkStore
 	var cornerstoneBlobs work.BlobStore
+	var workDir string
 	if cfg.Work.Enabled {
 		if opts.SessionRefsErr != nil {
 			jm.Close()
 			cleanup()
 			return nil, fmt.Errorf("initialize Work Session refs: %w", opts.SessionRefsErr)
 		}
-		workDir := strings.TrimSpace(opts.WorkDir)
+		workDir = strings.TrimSpace(opts.WorkDir)
 		if workDir == "" {
 			workDir = config.ProjectWorkDir(root)
 		}
@@ -1257,6 +1258,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if workSvc != nil {
 		workSvcIface = workSvc
 	}
+	workRecoveryCtx, cancelWorkRecovery := context.WithCancel(ctx)
+	previousCleanup := cleanup
+	cleanup = func() {
+		cancelWorkRecovery()
+		previousCleanup()
+	}
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1367,20 +1374,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	if workSvc != nil && cfg.Work.CollaborationWorkbenchV2 {
-		report := workSvc.RecoverAllV2Scheduling(ctx)
-		for _, failure := range report.Failures {
-			sink.Emit(event.Event{
-				Kind:  event.Notice,
-				Level: event.LevelWarn,
-				Text:  fmt.Sprintf("work: V2 recovery remains retryable · work=%s · %s", failure.WorkID, failure.Error),
-			})
-		}
-		if report.Recovered > 0 {
-			sink.Emit(event.Event{
-				Kind: event.Notice, Level: event.LevelInfo,
-				Text: fmt.Sprintf("work: recovered V2 scheduling · recovered=%d scanned=%d", report.Recovered, report.Scanned),
-			})
-		}
+		startBackgroundWorkRecovery(workRecoveryCtx, workDir, workSvc, sink)
 	}
 	return ctrl, nil
 }
