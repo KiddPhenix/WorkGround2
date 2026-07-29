@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useT } from '../../lib/i18n';
 
 export interface WorkAvailabilitySurfaceProps {
-  state: 'initializing' | 'unavailable';
+  state: 'initializing' | 'unavailable' | 'incomplete';
   onBack?: () => void;
   onRetry?: () => void;
 }
@@ -14,7 +14,7 @@ export function WorkAvailabilitySurface({
 }: WorkAvailabilitySurfaceProps) {
   const t = useT();
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const unavailable = state === 'unavailable';
+  const blocked = state === 'unavailable' || state === 'incomplete';
 
   useEffect(() => {
     headingRef.current?.focus();
@@ -26,7 +26,7 @@ export function WorkAvailabilitySurface({
       data-testid="work-availability"
       data-work-status={state}
       aria-labelledby="work-availability-title"
-      aria-busy={!unavailable}
+      aria-busy={!blocked}
     >
       <header className="work-page__header">
         {onBack && (
@@ -44,8 +44,8 @@ export function WorkAvailabilitySurface({
 
       <div
         className="work-availability__body"
-        role={unavailable ? 'alert' : 'status'}
-        aria-live={unavailable ? 'assertive' : 'polite'}
+        role={blocked ? 'alert' : 'status'}
+        aria-live={blocked ? 'assertive' : 'polite'}
       >
         <span className="work-availability__icon" aria-hidden="true" />
         <h2
@@ -54,12 +54,12 @@ export function WorkAvailabilitySurface({
           className="work-availability__title"
           tabIndex={-1}
         >
-          {t(unavailable ? 'work.unavailable' : 'work.initializing')}
+          {t(state === 'unavailable' ? 'work.unavailable' : state === 'incomplete' ? 'work.incomplete' : 'work.initializing')}
         </h2>
         <p className="work-availability__detail">
-          {t(unavailable ? 'work.unavailableDetail' : 'work.initializingDetail')}
+          {t(state === 'unavailable' ? 'work.unavailableDetail' : state === 'incomplete' ? 'work.incompleteDetail' : 'work.initializingDetail')}
         </p>
-        {unavailable && onRetry && (
+        {blocked && onRetry && (
           <button
             type="button"
             className="work-page__retry-btn work-availability__retry"

@@ -1082,6 +1082,13 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	if input.Inputs != nil {
 		payload["inputs"] = input.Inputs
 	}
+	if strings.TrimSpace(input.Locale) != "" {
+		locale, normalizeErr := NormalizeLocale(input.Locale)
+		if normalizeErr != nil {
+			return viewFromState(current, state), fmt.Errorf("work: UpdateDraft: %w", normalizeErr)
+		}
+		payload["locale"] = locale
+	}
 	if targetState != current.State {
 		payload["state"] = targetState
 	}

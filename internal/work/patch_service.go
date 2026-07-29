@@ -1353,6 +1353,19 @@ func normalizePatchOps(def *WorkDefinitionRevision, block *BlockInstance, scope 
 			return nil, fmt.Errorf("op[%d]: newValue must be valid JSON", i)
 		}
 		if candidate.Op != "remove" {
+			if scope == PatchBlock && path.Kind == PathBlocks && path.Leaf == "data" {
+				normalized, err := normalizeBlockDataValue(candidate.NewValue)
+				if err != nil {
+					return nil, fmt.Errorf("op[%d]: %w", i, err)
+				}
+				candidate.NewValue = normalized
+				if block == nil {
+					return nil, fmt.Errorf("op[%d]: block context is missing", i)
+				}
+				if err := validateBlockData(block.Kind, block.SchemaVersion, candidate.NewValue); err != nil {
+					return nil, fmt.Errorf("op[%d]: %w", i, err)
+				}
+			}
 			if err := rejectForbiddenJSON(candidate.NewValue); err != nil {
 				return nil, fmt.Errorf("op[%d]: %w", i, err)
 			}
@@ -1550,6 +1563,50 @@ func jsonValuesEqual(left, right json.RawMessage) bool {
 	return bytes.Equal(ca, cb)
 }
 
+// normalizeBlockDataValue unwraps a single layer of JSON string encoding for
+// blocks/<id>/data newValue. If newValue is a JSON string whose content is a
+// valid JSON object, it returns the re-serialized object. Plain strings,
+// arrays, numbers, and nested encodings are rejected so a broken planner
+// output is surfaced instead of silently persisted.
+func normalizeBlockDataValue(raw json.RawMessage) (json.RawMessage, error) {
+	var strValue string
+	if err := json.Unmarshal(raw, &strValue); err != nil {
+		// Not a JSON string — nothing to unwrap, keep as-is.
+		return raw, nil
+	}
+	var inner any
+	if err := json.Unmarshal([]byte(strValue), &inner); err != nil {
+		return nil, fmt.Errorf("blocks data newValue is a JSON string but its content is not valid JSON")
+	}
+	if _, ok := inner.(map[string]any); !ok {
+		return nil, fmt.Errorf("blocks data newValue is a JSON string wrapping a non-object — only objects are allowed")
+	}
+	normalized, err := json.Marshal(inner)
+	if err != nil {
+		return nil, fmt.Errorf("blocks data normalization failed: %w", err)
+	}
+	return json.RawMessage(normalized), nil
+}
+
+// validateBlockData checks every candidate through the authoritative writable
+// Block schema registry. Future and unsupported schemas remain readable, but
+// cannot be mutated. Markdown v1 also keeps the frontend's exact-key contract.
+func validateBlockData(kind string, schemaVersion int, data json.RawMessage) error {
+	if err := builtinBlockSchemas.Validate(kind, schemaVersion, data); err != nil {
+		return err
+	}
+	if kind == "markdown" && schemaVersion == 1 {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return fmt.Errorf("markdown block data must be a JSON object")
+		}
+		if len(obj) != 1 {
+			return fmt.Errorf("markdown block data has unexpected fields: only {content:string} is allowed")
+		}
+	}
+	return nil
+}
+
 func applyPatchOpsToBlock(block *BlockInstance, ops []PatchOp) error {
 	for _, op := range ops {
 		path, err := CompilePatchPath(op.Path)
@@ -1569,6 +1626,9 @@ func applyPatchOpsToBlock(block *BlockInstance, ops []PatchOp) error {
 				return fmt.Errorf("work: block title: %w", err)
 			}
 		case "data":
+			if err := validateBlockData(block.Kind, block.SchemaVersion, op.NewValue); err != nil {
+				return fmt.Errorf("work: block data: %w", err)
+			}
 			block.Data = append(json.RawMessage(nil), op.NewValue...)
 		}
 	}

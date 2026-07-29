@@ -90,7 +90,7 @@ func (c *V2Coordinator) failV2ArtifactSlot(
 ) error {
 	requestID := fmt.Sprintf("%s/v2/artifact-missing/%s/%s", runID, taskID, slotID)
 	for tries := 0; tries < 4; tries++ {
-		projection, state, err := c.store.LoadState(workID, requestID)
+		projection, state, err := c.store.LoadState(workID, artifactSlotRequestID(requestID))
 		if err != nil {
 			return err
 		}

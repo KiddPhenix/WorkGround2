@@ -749,6 +749,28 @@ func (f *gateSyncExecutor) ExecuteTask(ctx context.Context, input TaskExecuteInp
 
 func (f *gateSyncExecutor) CancelTask(context.Context, TaskCancelInput) error { return nil }
 
+type liveV2Executor struct {
+	ref SessionRef
+}
+
+func (f *liveV2Executor) ExecuteTask(_ context.Context, input TaskExecuteInput) (*Attempt, error) {
+	if input.Live == nil {
+		return nil, errors.New("live reporter is unavailable")
+	}
+	if err := input.Live(TaskLiveUpdate{SessionRef: &f.ref}); err != nil {
+		return nil, err
+	}
+	if err := input.Live(TaskLiveUpdate{Output: "模型正在输出"}); err != nil {
+		return nil, err
+	}
+	if err := input.Live(TaskLiveUpdate{Output: "模型正在输出"}); err != nil {
+		return nil, err
+	}
+	return &Attempt{State: RunCompleted, SessionRef: f.ref}, nil
+}
+
+func (*liveV2Executor) CancelTask(context.Context, TaskCancelInput) error { return nil }
+
 type memoryV2Authority struct {
 	mu         sync.Mutex
 	projection *Work
@@ -804,6 +826,48 @@ func (a *memoryV2Authority) eventSnapshot() []WorkEvent {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return append([]WorkEvent(nil), a.events...)
+}
+
+func TestV2SchedulerPersistsLiveSessionAndOutput(t *testing.T) {
+	workID, runID := "w-live", "r-live"
+	ref := SessionRef{
+		SessionPath: "sessions/work-live.jsonl",
+		BranchID:    "work-live",
+		ModelRef:    "test-model",
+		StartedAt:   time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+	}
+	authority := newMemoryV2Authority(workID, nil)
+	_, err := NewV2Scheduler(&liveV2Executor{ref: ref}).Schedule(
+		context.Background(),
+		workID,
+		runID,
+		[]NodeDef{{ID: "draft", Title: "Draft"}},
+		nil,
+		1,
+		nil,
+		nil,
+		nil,
+		authority,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projection, err := authority.LoadV2Projection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := DeriveTaskID(runID, "draft")
+	runtime := projection.V2TaskRuntimes[taskID]
+	if runtime == nil || runtime.Progress != "模型正在输出" || runtime.SessionRef == nil ||
+		runtime.SessionRef.SessionPath != ref.SessionPath {
+		t.Fatalf("live state was not preserved: %+v", runtime)
+	}
+	if runtime.State != TaskCompleted {
+		t.Fatalf("runtime state = %s, want completed", runtime.State)
+	}
+	if runtime.Revision != 6 {
+		t.Fatalf("runtime revision = %d, want 6 (duplicate live output must be idempotent)", runtime.Revision)
+	}
 }
 
 func TestV2Scheduler_ScheduleSimpleDAG(t *testing.T) {
@@ -2427,6 +2491,72 @@ func TestV2NodePrompt_MarkdownSlot(t *testing.T) {
 
 	if !strings.Contains(prompt, "final response text is the authoritative content") {
 		t.Fatalf("markdown slot should be text-authoritative: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_LocaleEnglish(t *testing.T) {
+	node := &NodeDef{ID: "n1", Title: "Write docs", ProducesSlotIDs: []string{"s1"}}
+	slotDefs := []ArtifactSlotDef{{ID: "s1", Title: "Output", Kind: "text", ExpectedCount: 1}}
+	prompt := v2NodePromptLocale(node, nil, nil, slotDefs, "w", "r", "t", "en")
+	if !strings.Contains(prompt, "--- Work language ---") {
+		t.Fatal("prompt missing Work language section")
+	}
+	if !strings.Contains(prompt, "English") {
+		t.Fatalf("prompt missing English constraint: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_LocaleSimplifiedChinese(t *testing.T) {
+	node := &NodeDef{ID: "n1", Title: "写文档", ProducesSlotIDs: []string{"s1"}}
+	slotDefs := []ArtifactSlotDef{{ID: "s1", Title: "输出", Kind: "text", ExpectedCount: 1}}
+	prompt := v2NodePromptLocale(node, nil, nil, slotDefs, "w", "r", "t", "zh")
+	if !strings.Contains(prompt, "Simplified Chinese") {
+		t.Fatalf("prompt missing Simplified Chinese constraint: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_LocaleTraditionalChinese(t *testing.T) {
+	node := &NodeDef{ID: "n1", Title: "寫文檔", ProducesSlotIDs: []string{"s1"}}
+	slotDefs := []ArtifactSlotDef{{ID: "s1", Title: "輸出", Kind: "text", ExpectedCount: 1}}
+	prompt := v2NodePromptLocale(node, nil, nil, slotDefs, "w", "r", "t", "zh-TW")
+	if !strings.Contains(prompt, "Traditional Chinese") {
+		t.Fatalf("prompt missing Traditional Chinese constraint: %s", prompt)
+	}
+}
+
+func TestV2NodePrompt_LocaleEmptySkipsDirective(t *testing.T) {
+	node := &NodeDef{ID: "n1", Title: "Write docs", ProducesSlotIDs: []string{"s1"}}
+	slotDefs := []ArtifactSlotDef{{ID: "s1", Title: "Output", Kind: "text", ExpectedCount: 1}}
+	prompt := v2NodePromptLocale(node, nil, nil, slotDefs, "w", "r", "t", "")
+	if strings.Contains(prompt, "--- Work language ---") {
+		t.Fatal("prompt should not contain Work language section for empty locale")
+	}
+}
+
+func TestV2SchedulerPromptInheritsProjectionLocale(t *testing.T) {
+	exec := newFakeV2Executor()
+	authority := newMemoryV2Authority("w-locale", nil)
+	authority.projection.Locale = LocaleChinese
+
+	_, err := NewV2Scheduler(exec).Schedule(
+		context.Background(),
+		"w-locale",
+		"r-locale",
+		[]NodeDef{{ID: "write", Title: "撰写报告"}},
+		nil,
+		1,
+		nil,
+		nil,
+		nil,
+		authority,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec.mu.Lock()
+	defer exec.mu.Unlock()
+	if len(exec.calls) != 1 || !strings.Contains(exec.calls[0].Prompt, "Simplified Chinese") {
+		t.Fatalf("executor did not inherit persisted Work locale: %+v", exec.calls)
 	}
 }
 

@@ -8,6 +8,7 @@ const tsx = require.resolve('tsx/cli');
 const tests = [
   'src/__tests__/work-v2-contract.test.ts',
   'src/__tests__/work-contract.test.ts',
+  'src/__tests__/work-controller-mutation.test.ts',
   'src/work/store.test.ts',
   'src/work/components/v2/ResultShelf.test.tsx',
   'src/work/components/v2/ExecutionList.test.tsx',
@@ -22,6 +23,7 @@ const tests = [
   'src/__tests__/block-renderers.test.tsx',
   'src/__tests__/block-action-renderers.test.tsx',
   'src/__tests__/work-card.test.tsx',
+  'src/__tests__/work-start-surface.test.tsx',
   'src/__tests__/work-page.test.tsx',
   'src/__tests__/app-work-integration.test.tsx',
   'src/__tests__/cornerstone-drawer.test.tsx',

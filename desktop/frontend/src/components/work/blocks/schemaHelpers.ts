@@ -207,12 +207,29 @@ export function validateCodeData(data: unknown): data is SafeCodeData {
 
 // ── Markdown ─────────────────────────────────────────────────────────────────
 
-export function validateMarkdownData(data: unknown): data is SafeMarkdownData {
-  if (!isRecord(data) || !hasOnlyKeys(data, ['content'])) return false;
-  const d = data;
-  if (typeof d.content !== 'string') return false;
-  if (d.content.length > MAX_CONTENT_LEN) return false;
-  return true;
+export function normalizeMarkdownData(data: unknown): SafeMarkdownData | null {
+  // Direct object — fast path.
+  if (isRecord(data) && hasOnlyKeys(data, ['content']) && typeof data.content === 'string' && data.content.length <= MAX_CONTENT_LEN) {
+    return data as unknown as SafeMarkdownData;
+  }
+  // Legacy tolerance: one layer of JSON string wrapping (backward compat for
+  // bad snapshots produced before the backend hardening). Only accept if the
+  // unwrapped value strictly satisfies the schema.
+  if (typeof data === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(data);
+      if (isRecord(parsed) && hasOnlyKeys(parsed, ['content']) && typeof parsed.content === 'string' && parsed.content.length <= MAX_CONTENT_LEN) {
+        return parsed as unknown as SafeMarkdownData;
+      }
+    } catch {
+      // Not valid JSON — fall through to rejection.
+    }
+  }
+  return null;
+}
+
+export function validateMarkdownData(data: unknown): boolean {
+  return normalizeMarkdownData(data) !== null;
 }
 
 // ── Artifact ─────────────────────────────────────────────────────────────────

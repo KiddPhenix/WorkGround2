@@ -13,6 +13,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"workground2/internal/skill"
@@ -26,6 +27,7 @@ const (
 	maxRemoteSkills       = 200
 	maxRemoteFileBytes    = 5 << 20
 	maxRemoteArchiveBytes = 50 << 20
+	remoteProviderTimeout = 5 * time.Second
 )
 
 type remoteSnapshot struct {
@@ -47,6 +49,8 @@ type remoteManifest struct {
 
 type remoteProvider struct {
 	service *Service
+	once    sync.Once
+	skills  []skill.Skill
 }
 
 func (s *Service) Provider() skill.Provider {
@@ -57,11 +61,16 @@ func (p *remoteProvider) List() []skill.Skill {
 	if p == nil || p.service == nil || !p.service.Remote {
 		return nil
 	}
+	p.once.Do(p.load)
+	return append([]skill.Skill(nil), p.skills...)
+}
+
+func (p *remoteProvider) load() {
 	profiles, err := p.enabledProfiles()
 	if err != nil {
-		return nil
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), remoteProviderTimeout)
 	defer cancel()
 
 	byName := map[string]skill.Skill{}
@@ -85,33 +94,16 @@ func (p *remoteProvider) List() []skill.Skill {
 		out = append(out, sk)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out
+	p.skills = out
 }
 
 func (p *remoteProvider) Read(name string) (skill.Skill, bool) {
 	if p == nil || p.service == nil || !p.service.Remote || !skill.IsValidName(name) {
 		return skill.Skill{}, false
 	}
-	profiles, err := p.enabledProfiles()
-	if err != nil {
-		return skill.Skill{}, false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	for _, profile := range profiles {
-		cred, err := p.service.resolveCredential(profile)
-		if err != nil {
-			continue
-		}
-		snap, err := fetchRemoteSnapshot(ctx, profile, cred)
-		if err != nil {
-			continue
-		}
-		for _, sk := range snap.Skills {
-			if sk.Name == name {
-				return sk, true
-			}
+	for _, sk := range p.List() {
+		if sk.Name == name {
+			return sk, true
 		}
 	}
 	return skill.Skill{}, false

@@ -1204,15 +1204,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 			taskAdapter := control.NewTaskExecutorAdapter(
 				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
-				func(_ context.Context, _ work.TaskExecuteInput) (*control.Controller, func(), error) {
+				func(_ context.Context, input work.TaskExecuteInput) (*control.Controller, func(), error) {
 					taskPath := agent.NewSessionPath(sessionDir, "work-"+label)
-					taskJobs := jobs.NewManager(event.Discard, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
+					if _, err := control.PublishTaskSession(input, taskPath, modelRef); err != nil {
+						return nil, nil, fmt.Errorf("publish hidden Task Session: %w", err)
+					}
+					taskSink := control.NewTaskLiveSink(input.Live)
+					taskJobs := jobs.NewManager(taskSink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
 					taskSession := agent.NewSession(sysPrompt)
-					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), event.Discard)
+					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), taskSink)
 					taskCtrl := control.New(control.Options{
 						Runner:               taskAgent,
 						Executor:             taskAgent,
-						Sink:                 event.Discard,
+						Sink:                 taskSink,
 						Policy:               policy,
 						Label:                label,
 						ModelRef:             modelRef,

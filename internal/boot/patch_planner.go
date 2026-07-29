@@ -91,13 +91,19 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString("  - goal\n")
 		b.WriteString("  - add/remove only: artifactSlots/<slotID> (complete slot object)\n")
 	}
-	b.WriteString("- newValue must be JSON-encoded. oldValue is optional — if given it must match current state exactly.\n")
+	b.WriteString("- newValue must be a native JSON value (string, number, boolean, object, array, or null) — never a JSON-encoded string wrapping another value.\n")
 	b.WriteString("- Scope is " + string(input.Scope) + ". Only patch within this scope.\n")
 	b.WriteString("- Do not invent IDs that don't exist in the context, except the exact new slot ID explicitly supplied by an add request.\n")
 	b.WriteString("- Max 64 operations. If no change is needed, return an empty array.\n")
 	b.WriteString("- Convert the instruction into actual patch operations. Do not summarize or restate the request.\n")
+	if input.Work != nil {
+		if directive := work.LocaleDirective(input.Work.Locale); directive != "" {
+			b.WriteString("- " + directive + "\n")
+		}
+	}
 	if input.Scope == work.PatchBlock {
 		b.WriteString("- For block content or table requests, replace blocks/<blockID>/data and preserve the current data object's shape; do not merely rename the Block.\n")
+		b.WriteString("- CRITICAL: blocks/<blockID>/data newValue must be a raw JSON object like {\"content\":\"...\"}, NEVER a JSON-encoded string like \"{\\\"content\\\":\\\"...\\\"}\". The backend rejects string-encoded objects.\n")
 	} else if input.Scope == work.PatchWorkflow {
 		b.WriteString("- This is a workflow revision. Runtime Block paths are forbidden; the Target Block below is read-only reference output.\n")
 		b.WriteString("- Apply task-specific guidance to nodes/<targetNodeID>/description so the target node and its downstream nodes execute with the new guidance.\n")

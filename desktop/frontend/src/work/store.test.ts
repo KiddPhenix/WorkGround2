@@ -559,20 +559,79 @@ test('snapshot backfill failure is visible and safely retryable', async () => {
   adapter.dispose();
 });
 
-test('ordinary same-revision refetch keeps conflict semantics and uses a fresh event identity', async () => {
+test('ordinary snapshot conflict at same revision auto-recovers through authoritative retry', async () => {
   reset();
-  let authoritative = makeView('work-1', 77, { name: 'ready assessment' });
   const port = new TestPort();
-  port.fetch = async () => structuredClone(authoritative);
+  let fetchCall = 0;
+  port.fetch = async () => {
+    fetchCall++;
+    if (fetchCall === 1) return makeView('work-1', 42, { name: 'ready assessment' });
+    return makeView('work-1', 42, { name: 'same revision changed' });
+  };
+  let recoveryCount = 0;
+  port.recover = async (workID, intent) => {
+    recoveryCount++;
+    equal(intent.reason, 'retry', 'auto-recovery uses an authoritative retry snapshot');
+    return retryResync(makeView(workID, 42, { name: 'same revision changed' }), intent);
+  };
   const adapter = new WorkControllerAdapter(port);
-  equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'initial ordinary snapshot applies');
 
-  authoritative = makeView('work-1', 77, { name: 'same revision changed' });
+  // Initial snapshot applies cleanly.
+  equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'initial ordinary snapshot applies');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'ready assessment', 'initial projection');
+
+  // Different content at the same revision auto-escalates to authoritative retry.
+  const result = await adapter.recoverSnapshot('work-1');
+  equal(result.kind, 'applied', 'same-revision conflict auto-recovers via authoritative retry');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'same revision changed', 'store converges to authoritative content');
+  equal(port.listeners.get('work-1')?.size, 1, 'exactly one active Watch remains online');
+  equal(adapter.getStatus('work-1').snapshotError, null, 'snapshotError cleared after auto-recovery');
+  equal(adapter.getStatus('work-1').eventError, null, 'eventError cleared after auto-recovery');
+  equal(adapter.getStatus('work-1').stream.kind, 'online', 'stream is online');
+  equal(recoveryCount, 1, 'exactly one authoritative retry recovery occurs');
+  adapter.dispose();
+});
+
+test('failed authoritative retry after ordinary conflict still rejects', async () => {
+  reset();
+  const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 42, { name: 'conflicting' });
+  port.recover = async () => { throw new Error('backend recovery unavailable'); };
+  const adapter = new WorkControllerAdapter(port);
+  applySnapshot(makeView('work-1', 42, { name: 'original' }));
+
   let failed = false;
   try { await adapter.recoverSnapshot('work-1'); } catch { failed = true; }
-  ok(failed, 'different ordinary snapshot at the same revision conflicts instead of looking duplicate');
-  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'ready assessment', 'ordinary conflict does not overwrite projection');
-  ok(adapter.getStatus('work-1').snapshotError?.includes('different snapshot'), 'ordinary same-revision conflict remains observable');
+  ok(failed, 'failed authoritative retry rejects');
+  ok(adapter.getStatus('work-1').snapshotError?.includes('backend recovery unavailable'), 'retry failure is observable');
+  adapter.dispose();
+});
+
+test('repeated ordinary snapshot conflict coalesces and uses one authoritative recovery', async () => {
+  reset();
+  const port = new TestPort();
+  let fetchCall = 0;
+  port.fetch = async () => {
+    fetchCall++;
+    if (fetchCall === 1) return makeView('work-1', 42, { name: 'baseline' });
+    return makeView('work-1', 42, { name: 'different content' });
+  };
+  let recoveryCount = 0;
+  port.recover = async (workID, intent) => {
+    recoveryCount++;
+    return retryResync(makeView(workID, 42, { name: 'different content' }), intent);
+  };
+  const adapter = new WorkControllerAdapter(port);
+  equal((await adapter.recoverSnapshot('work-1')).kind, 'applied', 'initial snapshot applies');
+
+  // Two concurrent recoverSnapshot calls — first enters the pendingSnapshots
+  // coalescing, detects conflict, and escalates to reconcileSnapshot which has
+  // its own pendingReconciliations coalescing.
+  const first = adapter.recoverSnapshot('work-1');
+  const second = adapter.recoverSnapshot('work-1');
+  equal(first, second, 'concurrent recoverSnapshot calls are coalesced');
+  equal((await first).kind, 'applied', 'coalesced recovery succeeds');
+  equal(recoveryCount, 1, 'exactly one authoritative recovery for coalesced requests');
   adapter.dispose();
 });
 
@@ -2217,6 +2276,55 @@ test('permanent fetch failure keeps error observable', async () => {
   equal(adapter.getStatus('work-1').stream.kind, 'offline', 'failed automatic recovery marks the stream offline');
   equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'stale',
     'failed automatic recovery preserves the last usable projection');
+  adapter.dispose();
+});
+
+test('hydrate same-revision content conflict escalates to authoritative retry instead of going offline', async () => {
+  reset();
+  // Seed the store with a projection — simulating a WorkCard remount where
+  // the store already holds stale content at the current revision.
+  applySnapshot(makeView('work-1', 42, { name: 'stale content' }));
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'stale content',
+    'store has a projection before subscribe');
+
+  const port = new TestPort();
+  port.fetch = async () => makeView('work-1', 42, { name: 'stale content' });
+
+  let recoverCalls = 0;
+  let hydrateConflictSeen = false;
+  port.recover = async (workID, intent) => {
+    recoverCalls++;
+    if (intent.reason === 'hydrate') {
+      hydrateConflictSeen = true;
+      // Return a hydrate snapshot at the same revision but with content that
+      // differs beyond assessment/runBlock — the store's narrow hydrate check
+      // will return conflict.
+      return retryResync(makeView(workID, 42, { name: 'diverged content' }), intent);
+    }
+    equal(intent.reason, 'retry', 'hydrate conflict escalates to a retry authoritative handshake');
+    return retryResync(makeView(workID, 42, { name: 'authoritative content' }), intent);
+  };
+
+  const adapter = new WorkControllerAdapter(port);
+  adapter.subscribe('work-1');
+  // Let the hydrate → conflict → restartSubscription('retry') → applied flow settle.
+  await new Promise<void>((r) => setTimeout(r, 20));
+
+  ok(hydrateConflictSeen, 'hydrate was attempted and returned a content conflict');
+  equal(recoverCalls, 2, 'hydrate conflict triggers exactly one retry');
+  equal(selectWork(useWorkStore.getState().works, 'work-1')?.name, 'authoritative content',
+    'store converges to authoritative content after retry');
+  equal(adapter.getStatus('work-1').stream.kind, 'online',
+    'subscription is online after successful retry');
+  equal(adapter.getStatus('work-1').snapshotError, null,
+    'snapshotError cleared after retry');
+  equal(adapter.getStatus('work-1').eventError, null,
+    'eventError cleared after retry');
+  equal(port.fetchCount, 0,
+    'no ordinary fetch was triggered — the entire flow stays within authoritative recovery');
+  // Verify the retry subscription is alive — events still delivered.
+  equal(port.listeners.get('work-1')?.size, 1,
+    'one active Watch listener remains after retry');
   adapter.dispose();
 });
 

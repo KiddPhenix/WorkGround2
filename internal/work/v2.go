@@ -35,7 +35,7 @@ type WorkDefinitionRevision struct {
 	ArtifactSlots  []ArtifactSlotDef `json:"artifactSlots"`
 	InputSpecs     []InputSpec       `json:"inputSpecs"`
 	CreatedBy      string            `json:"createdBy"`
-	CreatedAt      time.Time         `json:"createdAt"`
+	CreatedAt      time.Time         `json:"createdAt" ts_type:"string"`
 	Digest         string            `json:"digest"`
 }
 
@@ -165,7 +165,7 @@ type WorkInput struct {
 	Source        string          `json:"source,omitempty"`
 	UpdatedBy     string          `json:"updatedBy,omitempty"`
 	Revision      int64           `json:"revision"`
-	UpdatedAt     time.Time       `json:"updatedAt"`
+	UpdatedAt     time.Time       `json:"updatedAt" ts_type:"string"`
 }
 
 // ── V2 discussion patches ──────────────────────────────────────────────────
@@ -209,7 +209,7 @@ type WorkPatchPreview struct {
 	InvalidatedTaskIDs      []string   `json:"invalidatedTaskIds"`
 	RequiresRerun           bool       `json:"requiresRerun"`
 	Digest                  string     `json:"digest"`
-	ExpiresAt               time.Time  `json:"expiresAt"`
+	ExpiresAt               time.Time  `json:"expiresAt" ts_type:"string"`
 }
 
 // ── V2 Task states ─────────────────────────────────────────────────────────
@@ -311,6 +311,7 @@ type ApplyWorkPatchRequest struct {
 type BeginWorkPlanningInput struct {
 	SessionID string `json:"sessionId"`
 	RequestID string `json:"requestId"`
+	Locale    string `json:"locale,omitempty"`
 }
 
 // ApplyDefinitionInput atomically activates a new definition revision.
@@ -354,10 +355,11 @@ type TaskV2View struct {
 	Title           string      `json:"title"`
 	State           TaskStateV2 `json:"state"`
 	Progress        string      `json:"progress,omitempty"`
+	SessionRef      *SessionRef `json:"sessionRef,omitempty"`
 	WaitingInputIDs []string    `json:"waitingInputIds,omitempty"`
 	Error           string      `json:"error,omitempty"`
 	Retryable       bool        `json:"retryable"`
-	UpdatedAt       time.Time   `json:"updatedAt"`
+	UpdatedAt       time.Time   `json:"updatedAt" ts_type:"string"`
 }
 
 // ── V2 state transition validators (production code) ───────────────────────

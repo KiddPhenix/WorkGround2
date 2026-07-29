@@ -28,7 +28,7 @@ type PatchIntentReceipt struct {
 	StaleArtifactSlotIDs    []string          `json:"staleArtifactSlotIds,omitempty"`
 	RequiresRerun           bool              `json:"requiresRerun"`
 	Error                   string            `json:"error,omitempty"`
-	CreatedAt               time.Time         `json:"createdAt"`
+	CreatedAt               time.Time         `json:"createdAt" ts_type:"string"`
 }
 
 // hashPatchIntent produces a stable intent digest for a patch operation.

@@ -1,3 +1,50 @@
+# Work 结构规划实时输出与结构确认 Design QA
+
+- source visual truth: `D:\Codex\.codex\generated_images\019face3-a142-7712-90e3-3b5256973ee9\call_k7TTbidAluoO0TbL6lP5GQis.png`
+- implementation: `D:\Work\WorkGround2\artifacts\design-qa\structure-clarification-final.png`
+- mobile implementation: `D:\Work\WorkGround2\artifacts\design-qa\structure-clarification-mobile-v2.png`
+- full comparison: `D:\Work\WorkGround2\artifacts\design-qa\structure-clarification-comparison-final.png`
+- state: 历史布局基线；模型 JSON 正在输出，语义进度持续上推
+- semantic status: 截图中的固定“确认节点”问题已废弃；当前实现只展示 Planner 报告的不可推导结构分歧，且不预选答案
+- viewport: source `1430 × 1100`；implementation CSS viewport `1430 × 1100`、capture `1429 × 1100`、DPR `1`
+- normalization: 同尺寸、同状态直接比较；浏览器截图后端产生 1px 宽度差，未做非等比缩放
+
+## Findings
+
+没有可执行的 P0/P1/P2 问题。
+
+- 布局：回答卡位于 Work 主内容区视觉中心，左侧保留可读的实时规划输出；遮罩不会把后台工作过程完全抹掉。
+- 信息边界：问题和影响标签只涉及无法推导的节点边界、依赖、并串行或槽归属，不询问业务内容、通用确认偏好或可自动推导的信息。
+- 反馈强度：真实模型 JSON 作为连续底层输出，解析出的节点/依赖作为上推状态卡；加载描边、状态点和节点脉冲均遵守 reduced-motion。
+- 选项：由 Planner 返回 2–4 个中立结构选项，可包含一个自定义输入；没有推荐态和默认选择，用户明确选择后按钮才启用。
+- 恢复：关闭卡片后保留待答状态，刷新时按 Work revision 与任务说明恢复；失败显式展示并允许安全重试。
+- 响应式：`600 × 900` 视口无横向溢出，底部动作区保持可见。
+- 字体：实现沿用产品既有字体与 token；与概念稿存在轻微字形和密度差异，属于 P3。
+
+## Comparison evidence
+
+完整对比图已按等尺寸并排保存。弹层宽 `880px`，标题、流程节点、问题和选项在原始截图中可直接阅读，因此无需额外缩放裁切；实现单图同时作为聚焦证据。
+
+## Interaction evidence
+
+- 点击“自定义”后显示输入框，填写节点或依赖关系后主按钮启用。
+- 点击采用后回答进入结构规划请求；问题只改变节点、依赖、并串行或槽归属。
+- `Escape` 关闭弹层但保留待答问题。
+- 移动端复验底部确认按钮持续可见。
+- 浏览器控制台 error：0。
+
+## Comparison history
+
+- Pass 1：卡片偏小、遮罩偏重，后台 JSON 与上推状态不够明显（P1/P2）。
+- Fix：卡片扩为 `880px`，降低遮罩并减小模糊，改为纵向流程，补齐结构影响标签、描述和选项图标。
+- Pass 2：移动端长内容时动作区可能落到首屏外（P2）。
+- Fix：移动端动作区改为 sticky，并复验无横向溢出。
+- Pass 3：桌面、移动端、交互与控制台复验通过，P0/P1/P2 清零。
+
+final result: passed
+
+---
+
 # Work 讨论模态层 Design QA
 
 - source visual truth path: `D:\Temp\codex-clipboard-b62e65db-d7f8-40d6-8a01-d7eaaa235981.png`

@@ -16,6 +16,7 @@ import "./styles.css";
 import "./work/components/v2/input/WorkInputHost.css";
 import "./work/components/v2/discussion/discussion.css";
 import "./work/components/v2/DefinitionDiff.css";
+import { StructureClarificationPreview } from "./components/work/StructureClarificationPreview";
 
 // Install first so startup/runtime failures paint a useful error instead of a
 // featureless webview background, with the recent console trail attached.
@@ -86,7 +87,9 @@ createRoot(root).render(
     <ErrorBoundary>
       <LocaleProvider>
         <ToastProvider>
-          <App />
+          {import.meta.env.DEV && new URLSearchParams(window.location.search).has("structure-preview")
+            ? <StructureClarificationPreview />
+            : <App />}
         </ToastProvider>
       </LocaleProvider>
     </ErrorBoundary>

@@ -4,8 +4,7 @@
 
 import React from 'react';
 import type { BlockRendererProps } from './types';
-import { validateMarkdownData } from './schemaHelpers';
-import type { SafeMarkdownData } from './schemaHelpers';
+import { validateMarkdownData, normalizeMarkdownData } from './schemaHelpers';
 
 export function validate(schemaVersion: number, data: unknown) {
   if (schemaVersion !== 1) return { valid: false, reason: `unsupported schema version ${schemaVersion}` };
@@ -16,7 +15,7 @@ export function validate(schemaVersion: number, data: unknown) {
 const Markdown = React.lazy(() => import('../../../components/Markdown').then((m) => ({ default: m.Markdown })));
 
 const MarkdownBlock: React.FC<BlockRendererProps> = ({ block }) => {
-  const data = block.data as SafeMarkdownData;
+  const data = normalizeMarkdownData(block.data)!;
   return (
     <div className="wg2-markdown-block" role="region" aria-label={block.title ?? 'Markdown block'}>
       <React.Suspense fallback={<div className="wg2-markdown-block__loading">Rendering markdown…</div>}>

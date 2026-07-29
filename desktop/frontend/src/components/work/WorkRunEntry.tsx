@@ -38,6 +38,10 @@ export interface WorkRunEntryProps {
     slotId: string;
     revision: number;
   }) => void | Promise<void>;
+  /** Pins the header progress popover. Repeated calls are intentionally safe. */
+  onProgressOpen?: () => void;
+  progressOpen?: boolean;
+  progressPanelId?: string;
 }
 
 interface RunIntent {
@@ -65,6 +69,9 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
   onPlanStructure,
   onV2TaskRetry,
   onV2ArtifactRetry,
+  onProgressOpen,
+  progressOpen = false,
+  progressPanelId,
 }) => {
   const view = useWorkStore((state) => state.works[workId]);
   const [pending, setPending] = useState(false);
@@ -321,9 +328,14 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
         <button
           type="button"
           className="work-run-entry__btn work-run-entry__btn--plan"
-          onClick={() => onPlanStructure?.()}
+          onClick={() => {
+            onProgressOpen?.();
+            onPlanStructure?.();
+          }}
           disabled={disabled}
           data-testid="work-plan-structure"
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           继续规划工作结构
         </button>
@@ -331,9 +343,14 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
         <button
           type="button"
           className="work-run-entry__btn work-run-entry__btn--resume"
-          onClick={() => void handleV2Retry()}
+          onClick={() => {
+            onProgressOpen?.();
+            void handleV2Retry();
+          }}
           disabled={disabled || pending || !onV2TaskRetry}
           data-testid="work-v2-retry"
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           {pending ? '正在重试…' : '重试未完成阶段'}
         </button>
@@ -341,18 +358,25 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
         <button
           type="button"
           className="work-run-entry__btn work-run-entry__btn--resume"
-          onClick={() => void handleV2ArtifactRetry()}
+          onClick={() => {
+            onProgressOpen?.();
+            void handleV2ArtifactRetry();
+          }}
           disabled={disabled || pending || !onV2ArtifactRetry}
           data-testid="work-v2-artifact-retry"
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           {pending ? '正在生成…' : '生成缺失成果'}
         </button>
       ) : v2Definition && v2Tasks.length > 0 ? (
         <button
           type="button"
-          className="work-run-entry__btn"
-          disabled
+          className="work-run-entry__btn work-run-entry__btn--status"
+          onClick={onProgressOpen}
           data-testid="work-v2-status"
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           {v2Waiting ? '等待输入…' : v2Completed ? '已完成' : running ? '运行中…' : '准备中…'}
         </button>
@@ -360,19 +384,29 @@ export const WorkRunEntry: React.FC<WorkRunEntryProps> = ({
         <button
           type="button"
           className="work-run-entry__btn work-run-entry__btn--resume"
-          onClick={() => void handleResume()}
+          onClick={() => {
+            onProgressOpen?.();
+            void handleResume();
+          }}
           disabled={disabled || pending || !onResumeRun}
           aria-describedby={`work-run-blocked-${workId}`}
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           {pending ? (resumeIntent?.ackedRunId ? '正在同步…' : '正在继续…') : (resumeIntent?.ackedRunId ? '重试同步' : '继续运行')}
         </button>
       ) : (
         <button
           type="button"
-          className="work-run-entry__btn"
-          onClick={() => void handleRun()}
-          disabled={disabled || running || pending || !view || blocked || promptMissing}
+          className={`work-run-entry__btn${running ? ' work-run-entry__btn--status' : ''}`}
+          onClick={() => {
+            onProgressOpen?.();
+            void handleRun();
+          }}
+          disabled={disabled || (!running && (pending || !view || blocked || promptMissing))}
           aria-describedby={blocked ? `work-run-blocked-${workId}` : undefined}
+          aria-controls={progressPanelId}
+          aria-expanded={progressPanelId ? progressOpen : undefined}
         >
           {running ? '运行中…' : pending ? (runIntent?.ackedRunId ? '正在同步…' : '正在启动…') : (runIntent?.ackedRunId ? '重试同步' : '运行')}
         </button>

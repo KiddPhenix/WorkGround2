@@ -5540,6 +5540,9 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 		} else if ok && !legacySessionMetaMatchesMigrationTarget(meta, scope, workspaceRoot) {
 			continue
 		}
+		if isWorkTaskSessionSource(info.SessionSource) {
+			continue
+		}
 		topicID := legacySessionTopicID(info.Path)
 		if topicID == "" {
 			continue
@@ -6519,6 +6522,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 	topicSummaries := map[string]topicSummary{}
 	sessionInfos := map[string]agent.SessionInfo{}
 	sessionTitles := map[string]string{}
+	workTaskTopics := map[string]bool{}
+	visibleSessionTopics := map[string]bool{}
 
 	// Read session listings from all known directories concurrently, since
 	// each dir is independent I/O. With N workspaces × dozens of sessions,
@@ -6535,7 +6540,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 	for _, dir := range knownDirs {
 		infos, titles, ok := projectSessionCache.get(dir)
 		if ok {
-			mergeSessionInfos(dir, infos, titles, sessionInfos, sessionTitles, topicSummaries)
+			mergeSessionInfos(dir, infos, titles, sessionInfos, sessionTitles, topicSummaries, workTaskTopics, visibleSessionTopics)
 			continue
 		}
 		pendingLoads++
@@ -6571,7 +6576,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			case result := <-results:
 				received++
 				if result.ok {
-					mergeSessionInfos(result.dir, result.infos, result.titles, sessionInfos, sessionTitles, topicSummaries)
+					mergeSessionInfos(result.dir, result.infos, result.titles, sessionInfos, sessionTitles, topicSummaries, workTaskTopics, visibleSessionTopics)
 				}
 			case <-timer.C:
 				received = pendingLoads
@@ -6607,6 +6612,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		seenRuntimePaths[sessionKey] = true
 		info := sessionInfos[sessionKey]
+		if isWorkTaskSessionSource(info.SessionSource) {
+			return
+		}
 		label := runtimeSessionTreeLabel(tab, info, sessionTitles[sessionKey])
 		status := activityStatusForTab(tab)
 		runtimeStatus := control.RuntimeStatus{}
@@ -6717,6 +6725,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		nodes := make([]ProjectNode, 0, len(sessions))
 		for _, session := range sessions {
+			if isWorkTaskSessionSource(session.sessionSource) {
+				continue
+			}
 			kind := "session"
 			if scope == "global" {
 				kind = "global_session"
@@ -6773,6 +6784,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 			}
 			title := globalTitleMap[id]
 			key := topicSummaryKey("global", "", id)
+			if workTaskTopics[key] && !visibleSessionTopics[key] && len(runtimeSessionsByTopic[key]) == 0 {
+				continue
+			}
 			summary := topicSummaries[key]
 			if hideBlankTopicFromTree(title, summary, runtimeSessionsByTopic[key], globalTitleSourceMap[id]) {
 				continue
@@ -6874,6 +6888,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 				topicTitle = defaultTopicTitle
 			}
 			key := topicSummaryKey("project", p.Root, tid)
+			if workTaskTopics[key] && !visibleSessionTopics[key] && len(runtimeSessionsByTopic[key]) == 0 {
+				continue
+			}
 			summary := topicSummaries[key]
 			if hideBlankTopicFromTree(topicTitle, summary, runtimeSessionsByTopic[key], loaded.sources[tid]) {
 				continue
@@ -7743,6 +7760,12 @@ func (c *sessionListCache) invalidate() {
 
 var projectSessionCache = &sessionListCache{byDir: map[string]sessionListCacheEntry{}}
 
+// isWorkTaskSessionSource reports whether a SessionSource identifies a
+// Work Task execution child session (created by the TaskExecutor).
+func isWorkTaskSessionSource(source string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(source)), "work:")
+}
+
 func projectTreeSessionSource(info agent.SessionInfo) (source, channel, channelLabel string) {
 	source = strings.TrimSpace(info.SessionSource)
 	channel = strings.TrimSpace(info.Channel)
@@ -7774,7 +7797,16 @@ func topicSummaryShouldUseSource(summary topicSummary, sourceAt int64, channel s
 
 // mergeSessionInfos merges one directory's session listing into the maps used by
 // ListProjectTree. The result collection loop calls it serially.
-func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]string, sessionInfos map[string]agent.SessionInfo, sessionTitles map[string]string, topicSummaries map[string]topicSummary) {
+func mergeSessionInfos(
+	dir string,
+	infos []agent.SessionInfo,
+	titles map[string]string,
+	sessionInfos map[string]agent.SessionInfo,
+	sessionTitles map[string]string,
+	topicSummaries map[string]topicSummary,
+	workTaskTopics map[string]bool,
+	visibleSessionTopics map[string]bool,
+) {
 	for _, info := range infos {
 		sessionKey := sessionRuntimeKey(info.Path)
 		if sessionKey != "" {
@@ -7785,6 +7817,11 @@ func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]
 			continue
 		}
 		key := topicSummaryKey(info.Scope, info.WorkspaceRoot, info.TopicID)
+		if isWorkTaskSessionSource(info.SessionSource) {
+			workTaskTopics[key] = true
+			continue
+		}
+		visibleSessionTopics[key] = true
 		summary := topicSummaries[key]
 		summary.turns += info.Turns
 		lastActivityAt := info.LastActivityAt.UnixMilli()

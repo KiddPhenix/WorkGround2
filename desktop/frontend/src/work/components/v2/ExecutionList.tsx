@@ -21,7 +21,7 @@ import type {
 } from './discussion/DiscussionDrawer';
 import type { DraftValue } from './input/WorkInputHost';
 import { v2DiscussionBlockId } from './discussionBlock';
-import type { ResultWorkflowChangeRequest } from './ResultShelf';
+import type { ResultWorkflowChangeRequest, WorkflowChangeState } from './ResultShelf';
 
 export interface ExecutionListProps {
   workId: string; expandedTaskId?: string | null;
@@ -39,6 +39,11 @@ export interface ExecutionListProps {
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
   onDiscussionDraftChange?: (intent: DiscussionDraftIntent) => void;
   externalWorkflowDiscussion?: ResultWorkflowChangeRequest;
+  onWorkflowChangeState?: (state: WorkflowChangeState | null) => void;
+  /** Called when user clicks info on a task row with a session ref. */
+  onTaskInfo?: (runId: string, taskId: string) => void;
+  /** Run+Task identities that have session refs — only these rows show the info action. */
+  taskInfoTaskKeys?: Set<string>;
 }
 
 function inputIdentity(wid: string, rid: string, tid: string, bid: string, iid: string, sid: string, dr: number, ir: number) {
@@ -59,11 +64,22 @@ function discTargetIdentity(wid: string, sid: string, tid: string, bid: string) 
   return `${wid}\u0000${sid}\u0000${tid}\u0000${bid}`;
 }
 
+function wfChangeCommittedKey(workId: string, token: string, kind: 'preview' | 'apply'): string {
+  return `wfchange\u0000${workId}\u0000${token}\u0000${kind}`;
+}
+
+function deriveTaskId(runId: string, nodeId: string): string {
+  const byteLength = (value: string) => new TextEncoder().encode(value).length;
+  return `${byteLength(runId)}:${runId}/${byteLength(nodeId)}:${nodeId}`;
+}
+
 export const ExecutionList: React.FC<ExecutionListProps> = ({
   workId, expandedTaskId, runId, sessionId, workRevision, blocks,
   onExpandTask, onCollapseTask, onRetryTask,
   onSubmitWorkInput, onSetCornerstone, onUnsetCornerstone, onRefreshAuthoritative, onSelectFile,
   onPreviewPatch, onApplyPatch, onDiscussionDraftChange, externalWorkflowDiscussion,
+  onWorkflowChangeState,
+  onTaskInfo, taskInfoTaskKeys,
 }) => {
   const allTasks = useWorkStore((s) => selectV2Tasks(s.v2Tasks, workId));
   const definition = useWorkStore((s) =>
@@ -96,10 +112,27 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   // Production passes the active run explicitly. Standalone renderers fall
   // back to the last projected run identity without rewriting any task.
   const effRunId = runId ?? allTasks[allTasks.length - 1]?.runId ?? '';
-  const tasks = useMemo(
+  const projectedTasks = useMemo(
     () => effRunId ? allTasks.filter((task) => task.runId === effRunId) : [],
     [allTasks, effRunId],
   );
+  const tasks = useMemo(() => {
+    if (!effRunId || !definition?.nodes?.length) return projectedTasks;
+    const runtimeByNode = new Map(projectedTasks.map((task) => [task.nodeId, task]));
+    const plannedNodeIds = new Set(definition.nodes.map((node) => node.id));
+    return [
+      ...definition.nodes.map((node) => runtimeByNode.get(node.id) ?? {
+        id: deriveTaskId(effRunId, node.id),
+        runId: effRunId,
+        nodeId: node.id,
+        title: node.title,
+        state: 'pending' as const,
+        retryable: false,
+        updatedAt: definition.createdAt,
+      }),
+      ...projectedTasks.filter((task) => !plannedNodeIds.has(task.nodeId)),
+    ];
+  }, [definition, effRunId, projectedTasks]);
   const resolvePatchLabel = useCallback((
     kind: 'node' | 'task' | 'slot' | 'block',
     id: string,
@@ -241,12 +274,31 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     setApplyResult(null); setApplyError(null); setRevConflict(false); setDigConflict(false);
     setPreviewError(null); setPatchPreview(null);
   }, []);
+  // ── Direct workflow change: preview → apply → refresh (no drawer) ──
+  const wfChangeEpochRef = useRef(0);
   const externalRequestRef = useRef('');
+  const wfChangeTokenRef = useRef('');
   useEffect(() => {
-    if (!externalWorkflowDiscussion || externalRequestRef.current === externalWorkflowDiscussion.token) return;
+    if (!externalWorkflowDiscussion) return;
+    const token = externalWorkflowDiscussion.token;
+    const attempt = externalWorkflowDiscussion.attempt ?? 0;
+    const dispatchKey = `${token}\u0000${attempt}`;
+    if (externalRequestRef.current === dispatchKey) return;
+    externalRequestRef.current = dispatchKey;
+
+    const fail = (error: string) => {
+      onWorkflowChangeState?.({ token, status: 'failed', error });
+    };
+    if (!onPreviewPatch || !onApplyPatch || !onRefreshAuthoritative) {
+      fail('当前环境无法更新流程');
+      return;
+    }
     const task = tasks.find((candidate) => candidate.nodeId === externalWorkflowDiscussion.nodeId);
     const node = nodeMap.get(externalWorkflowDiscussion.nodeId);
-    if (!task || !node) return;
+    if (!task || !node) {
+      fail('暂时无法定位相关任务，请刷新工作后重试');
+      return;
+    }
     const boundInputs = allInputs.filter((input) => input.runId === task.runId && input.taskId === task.id);
     const inputByID = new Map(boundInputs.map((input) => [input.id, input]));
     const blockID = [
@@ -255,25 +307,122 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
       ...(node.blockIds ?? []),
       v2DiscussionBlockId(node.id),
     ].find((id): id is string => Boolean(id && !removedBlockIDs.has(id)));
-    if (!blockID) return;
+    if (!blockID) {
+      fail('暂时无法定位流程内容，请刷新工作后重试');
+      return;
+    }
     const blockRevision = blockMap.get(blockID)?.revision ?? 1;
-    externalRequestRef.current = externalWorkflowDiscussion.token;
-    const intent = {
-      workId,
-      taskId: task.id,
-      blockId: blockID,
-      text: externalWorkflowDiscussion.instruction,
-    };
-    setDiscussionDraft(
-      workId,
-      discIdentity(workId, effRunId, sessionId ?? '', task.id, blockID, defRev, blockRevision),
-      intent.text,
-    );
-    onDiscussionDraftChange?.(intent);
-    handleDOpen(task.id, blockID, externalWorkflowDiscussion.title, blockRevision, 'workflow', true);
+    const baseWorkRevision = workRevision ?? 1;
+
+    const epoch = ++wfChangeEpochRef.current;
+    wfChangeTokenRef.current = token;
+    onWorkflowChangeState?.({ token, status: 'updating' });
+
+    (async () => {
+      let patchId = '';
+      let digest = '';
+      let applyCommitted = false;
+
+      // ── Step 1: Preview ────────────────────────────────────────────
+      const previewKey = wfChangeCommittedKey(workId, token, 'preview');
+      const committedPreviewId = cardState?.committedRequestIds?.[previewKey];
+      const previewRid = committedPreviewId ?? `wf-preview-${token}`;
+      try {
+        const previewResult = await onPreviewPatch({
+          workId,
+          runId: effRunId,
+          taskId: task.id,
+          blockId: blockID,
+          sessionId: sessionId ?? '',
+          instruction: externalWorkflowDiscussion.instruction,
+          definitionRevision: defRev,
+          blockRevision,
+          scope: 'workflow',
+          requestId: previewRid,
+        });
+        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+        if (previewResult.committed) {
+          setCommittedRequestId(workId, previewKey, previewRid);
+        }
+        const preview = previewResult.preview ?? previewResult.receipt?.resultPatch;
+        if (preview) {
+          if (
+            preview.workId !== workId
+            || preview.runId !== effRunId
+            || preview.taskId !== task.id
+            || preview.blockId !== blockID
+            || preview.sessionId !== (sessionId ?? '')
+            || preview.baseDefinitionRev !== defRev
+            || preview.baseBlockRev !== blockRevision
+            || preview.scope !== 'workflow'
+          ) {
+            throw new Error('预览结果与当前工作不一致，请重试');
+          }
+          patchId = preview.id;
+          digest = preview.digest;
+        } else if (previewResult.receipt) {
+          patchId = previewResult.receipt.patchId;
+          digest = previewResult.receipt.resultDigest;
+        } else {
+          const err = previewResult.error ?? previewResult.transportError?.message ?? '预览失败';
+          throw new Error(err);
+        }
+        if (!patchId || !digest) throw new Error('预览结果不完整，请重试');
+      } catch (e) {
+        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+        onWorkflowChangeState?.({ token, status: 'failed', error: e instanceof Error ? e.message : String(e) });
+        return;
+      }
+
+      // ── Step 2: Apply ──────────────────────────────────────────────
+      const applyKey = wfChangeCommittedKey(workId, token, 'apply');
+      const committedApplyId = cardState?.committedRequestIds?.[applyKey];
+      const applyRid = committedApplyId ?? `wf-apply-${token}`;
+      try {
+        const applyResult = await onApplyPatch({
+          workId,
+          patchId,
+          previewDigest: digest,
+          scope: 'workflow',
+          expectedRevision: baseWorkRevision,
+          requestId: applyRid,
+        });
+        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+        if (applyResult.committed) {
+          setCommittedRequestId(workId, applyKey, applyRid);
+        }
+        if (!applyResult.committed) {
+          throw new Error(
+            applyResult.error
+            ?? applyResult.transportError?.message
+            ?? '流程更新未提交，请重试',
+          );
+        }
+        applyCommitted = true;
+        await onRefreshAuthoritative({
+          workId,
+          inputId: '',
+          requestId: `wf-refresh-${token}`,
+          revision: applyResult.newRevision,
+          operation: 'patch',
+        });
+        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+        onWorkflowChangeState?.({ token, status: 'applied' });
+      } catch (e) {
+        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+        const message = e instanceof Error ? e.message : String(e);
+        onWorkflowChangeState?.({
+          token,
+          status: 'failed',
+          error: applyCommitted ? `更新已提交，但刷新状态失败：${message}` : message,
+        });
+      }
+    })();
   }, [
-    allInputs, blockMap, defRev, effRunId, externalWorkflowDiscussion, handleDOpen,
-    nodeMap, onDiscussionDraftChange, removedBlockIDs, sessionId, setDiscussionDraft, tasks, workId,
+    allInputs, blockMap, cardState?.committedRequestIds, defRev, effRunId,
+    externalWorkflowDiscussion, nodeMap, onApplyPatch, onPreviewPatch,
+    onRefreshAuthoritative, onWorkflowChangeState, removedBlockIDs,
+    sessionId, setCommittedRequestId, tasks, workId, workRevision,
   ]);
   const handleDClose = useCallback(() => {
     discussionEpochRef.current++;
@@ -488,6 +637,9 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                       : onExpandTask?.(intent);
                   }}
                   onRetry={onRetryTask}
+                  onInfo={onTaskInfo && taskInfoTaskKeys?.has(`${task.runId}\u0000${task.id}`)
+                    ? () => onTaskInfo(task.runId, task.id)
+                    : undefined}
                   onDiscuss={discussionBlock
                     ? () => handleDOpen(
                         task.id,

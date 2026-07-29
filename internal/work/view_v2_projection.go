@@ -42,12 +42,19 @@ func promoteV2View(view *WorkView, definition *WorkDefinitionRevision) *WorkView
 		if runtime == nil {
 			continue
 		}
+		var sessionRef *SessionRef
+		if runtime.SessionRef != nil {
+			cloned := *runtime.SessionRef
+			sessionRef = &cloned
+		}
 		view.Tasks = append(view.Tasks, TaskV2View{
 			ID:              runtime.TaskID,
 			RunID:           runtime.RunID,
 			NodeID:          runtime.NodeID,
 			Title:           titles[runtime.NodeID],
 			State:           runtime.State,
+			Progress:        runtime.Progress,
+			SessionRef:      sessionRef,
 			WaitingInputIDs: append([]string{}, runtime.WaitingInputIDs...),
 			Error:           runtime.Error,
 			Retryable:       runtime.State == TaskFailedRetryable || runtime.State == TaskInvalidated,

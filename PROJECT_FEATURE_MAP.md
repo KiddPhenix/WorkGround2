@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Work 任务说明底板中性化
+- Status: done
+- Branch: `main`（共享脏工作树，未提交）
+- Location: `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/work-card.test.tsx`
+- Summary: 任务说明卡片、输入框运行态及规划覆盖层改用中性深灰底色，强调色仅用于边框、状态点与轻量光晕。
+- Keywords: Work, task prompt, planning overlay, neutral surface, accent
+- Source: user-requested+verified-by-tests
+- Updated: 2026-07-29
+
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, `D:\Work\wg2addons`, `D:\Work\WG2AddOnsExample`
 - Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。

@@ -13,6 +13,42 @@ import (
 
 const fullV2ViewGolden = "testdata/contract-v2/work-view-v2-full.json"
 
+func TestPromoteV2ViewIncludesTaskLiveState(t *testing.T) {
+	now := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	ref := &SessionRef{
+		SessionPath: "sessions/work-live.jsonl",
+		BranchID:    "work-live",
+		ModelRef:    "test-model",
+		StartedAt:   now,
+	}
+	runtime := V2NewTaskRuntime("work-live", "run-live", "node-live", 1, "read", now)
+	runtime.State = TaskRunning
+	runtime.Progress = "模型实时输出"
+	runtime.SessionRef = ref
+	view := promoteV2View(&WorkView{
+		Work: &Work{
+			SchemaVersion:  SchemaVersionV2,
+			ID:             "work-live",
+			V2TaskRuntimes: map[string]*V2TaskRuntime{runtime.TaskID: runtime},
+		},
+	}, &WorkDefinitionRevision{
+		WorkID:   "work-live",
+		Revision: 1,
+		Nodes:    []NodeDef{{ID: "node-live", Title: "Live node"}},
+	})
+	if len(view.Tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(view.Tasks))
+	}
+	task := view.Tasks[0]
+	if task.Progress != runtime.Progress || task.SessionRef == nil ||
+		task.SessionRef.SessionPath != ref.SessionPath {
+		t.Fatalf("live Task view = %+v", task)
+	}
+	if task.SessionRef == ref {
+		t.Fatal("transport projection exposed the mutable runtime SessionRef")
+	}
+}
+
 func TestWorkViewV2FullGolden_FileWorkStore(t *testing.T) {
 	h := newFullV2ViewFixture(t)
 	view, err := h.svc.Get(context.Background(), h.work)

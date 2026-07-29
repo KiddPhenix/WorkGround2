@@ -155,6 +155,7 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	}
 	defer a.finishTask(targetKey)
 	startedAt := time.Now().UTC()
+	input.StartedAt = startedAt
 	if cancelled {
 		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
 	}
@@ -191,6 +192,20 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	sessionKey := agent.CanonicalSessionPath(sessionPath)
 	if sessionKey == "" {
 		return nil, a.taskError(input, "create_session", false, errors.New("Task Session path is empty"))
+	}
+	if err := agent.SetBranchSource(sessionPath, taskSessionSource(input)); err != nil {
+		return nil, a.taskError(input, "persist_session", true, err)
+	}
+	liveRef := work.SessionRef{
+		SessionPath: sessionPath,
+		BranchID:    agent.BranchID(sessionPath),
+		ModelRef:    controllerModelRef(ctrl, a.profile.Model),
+		StartedAt:   startedAt,
+	}
+	if input.Live != nil {
+		if err := input.Live(work.TaskLiveUpdate{SessionRef: &liveRef}); err != nil {
+			return nil, a.taskError(input, "publish_session", true, err)
+		}
 	}
 	if a.attachController(targetKey, ctrl) {
 		return cancelledAttempt(input, startedAt), a.taskError(input, "cancel", false, context.Canceled)
@@ -270,8 +285,7 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 
 	runErr := ctrl.RunTurn(taskCtx, runPrompt)
 	snapshotErr := ctrl.Snapshot()
-	metaErr := agent.SetBranchSource(sessionPath, taskSessionSource(input))
-	cause := errors.Join(runErr, snapshotErr, metaErr)
+	cause := errors.Join(runErr, snapshotErr)
 
 	finishedAt := time.Now().UTC()
 	history := ctrl.History()
@@ -296,6 +310,11 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		Preview:     taskSessionPreview(history),
 		StartedAt:   startedAt,
 	}
+	var liveErr error
+	if input.Live != nil {
+		liveErr = input.Live(work.TaskLiveUpdate{SessionRef: &ref})
+		cause = errors.Join(cause, liveErr)
+	}
 	attempt := &work.Attempt{
 		ID:              input.AttemptID,
 		Index:           input.AttemptIndex,
@@ -310,11 +329,13 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	}
 
 	operation := "run"
-	if snapshotErr != nil || metaErr != nil {
+	if snapshotErr != nil {
 		operation = "persist_session"
+	} else if liveErr != nil {
+		operation = "publish_session"
 	}
 	retryable := taskErrorRetryable(runErr)
-	if snapshotErr != nil || metaErr != nil {
+	if snapshotErr != nil || liveErr != nil {
 		retryable = true
 	}
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
@@ -721,6 +742,36 @@ func taskSessionSource(input work.TaskExecuteInput) string {
 		"work:%s/run:%s/stage:%s/task:%s/attempt:%d/request:%s",
 		input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptIndex, input.RequestID,
 	)
+}
+
+// PublishTaskSession makes a freshly allocated hidden Session observable before
+// slower Controller setup or the first provider token. Repeating the call with
+// the same input is safe: branch ownership and live runtime updates are both
+// idempotent.
+func PublishTaskSession(input work.TaskExecuteInput, sessionPath, modelRef string) (work.SessionRef, error) {
+	sessionPath = strings.TrimSpace(sessionPath)
+	if sessionPath == "" {
+		return work.SessionRef{}, errors.New("Task Session path is empty")
+	}
+	if err := agent.SetBranchSource(sessionPath, taskSessionSource(input)); err != nil {
+		return work.SessionRef{}, err
+	}
+	startedAt := input.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now().UTC()
+	}
+	ref := work.SessionRef{
+		SessionPath: sessionPath,
+		BranchID:    agent.BranchID(sessionPath),
+		ModelRef:    strings.TrimSpace(modelRef),
+		StartedAt:   startedAt,
+	}
+	if input.Live != nil {
+		if err := input.Live(work.TaskLiveUpdate{SessionRef: &ref}); err != nil {
+			return work.SessionRef{}, err
+		}
+	}
+	return ref, nil
 }
 
 // preflightCallID generates a stable, deterministic tool-call ID for one

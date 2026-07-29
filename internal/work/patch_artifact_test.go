@@ -2,6 +2,8 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +170,277 @@ func TestArtifactSlotPatchFormatChangePreservesReferencesAndInvalidatesDependent
 	}
 	if !containsID(impact.invalidatedTasks, "make") || !containsID(impact.invalidatedTasks, "use") {
 		t.Fatalf("format change invalidation = %v", impact.invalidatedTasks)
+	}
+}
+
+// ── Block data normalization & validation ──────────────────────────────────
+
+func markdownBlock() *BlockInstance {
+	return &BlockInstance{
+		ID:            "b-md",
+		Kind:          "markdown",
+		SchemaVersion: 1,
+		Revision:      1,
+		Data:          json.RawMessage(`{"content":"原内容"}`),
+	}
+}
+
+func str(s string) json.RawMessage { return json.RawMessage(s) }
+
+func TestNormalizeBlockDataValueUnwrapsStringObject(t *testing.T) {
+	// Simulates the bug: planner returns newValue as JSON string wrapping an object.
+	raw := str(`"{\"content\":\"中文\"}"`)
+	normalized, err := normalizeBlockDataValue(raw)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !jsonValuesEqual(normalized, json.RawMessage(`{"content":"中文"}`)) {
+		t.Fatalf("normalized = %s", normalized)
+	}
+}
+
+func TestNormalizeBlockDataValueRejectsStringWrappedArray(t *testing.T) {
+	raw := str(`"[1,2,3]"`)
+	_, err := normalizeBlockDataValue(raw)
+	if err == nil || !strings.Contains(err.Error(), "non-object") {
+		t.Fatalf("expected rejection of array, got err=%v", err)
+	}
+}
+
+func TestNormalizeBlockDataValueRejectsStringWrappedPrimitive(t *testing.T) {
+	raw := str(`"123"`)
+	_, err := normalizeBlockDataValue(raw)
+	if err == nil || !strings.Contains(err.Error(), "non-object") {
+		t.Fatalf("expected rejection of number, got err=%v", err)
+	}
+}
+
+func TestNormalizeBlockDataValueRejectsDoubleWrappedString(t *testing.T) {
+	// Double encoding: a JSON string wrapping another JSON string.
+	raw := str(`"\"{\\\"content\\\":\\\"x\\\"}\""`)
+	// Unwraps once → `"{\"content\":\"x\"}"` which is a valid JSON string but
+	// whose content is itself a JSON string (not an object) → reject.
+	_, err := normalizeBlockDataValue(raw)
+	if err == nil {
+		t.Fatal("expected rejection of double-wrapped string")
+	}
+	if !strings.Contains(err.Error(), "non-object") {
+		t.Fatalf("error should mention non-object, got: %v", err)
+	}
+}
+
+func TestNormalizeBlockDataValueRejectsInvalidJSONContent(t *testing.T) {
+	raw := str(`"not json at all"`)
+	_, err := normalizeBlockDataValue(raw)
+	if err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Fatalf("expected rejection of non-JSON content, got err=%v", err)
+	}
+}
+
+func TestNormalizeBlockDataValuePassthroughObject(t *testing.T) {
+	// Already correct: an object passes through unchanged.
+	raw := str(`{"content":"noop"}`)
+	normalized, err := normalizeBlockDataValue(raw)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !jsonValuesEqual(normalized, json.RawMessage(`{"content":"noop"}`)) {
+		t.Fatalf("normalized = %s", normalized)
+	}
+}
+
+func TestNormalizeBlockDataValuePassthroughNumber(t *testing.T) {
+	// Non-string JSON values pass through (rejected later by validateBlockData).
+	raw := str(`42`)
+	normalized, err := normalizeBlockDataValue(raw)
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !jsonValuesEqual(normalized, json.RawMessage(`42`)) {
+		t.Fatalf("normalized = %s", normalized)
+	}
+}
+
+func TestValidateBlockDataMarkdown(t *testing.T) {
+	tests := []struct {
+		name string
+		data json.RawMessage
+		ok   bool
+	}{
+		{"valid", json.RawMessage(`{"content":"hello"}`), true},
+		{"empty content", json.RawMessage(`{"content":""}`), true},
+		{"missing content", json.RawMessage(`{}`), false},
+		{"extra field", json.RawMessage(`{"content":"x","extra":1}`), false},
+		{"content not string", json.RawMessage(`{"content":123}`), false},
+		{"not an object", json.RawMessage(`"just a string"`), false},
+		{"null", json.RawMessage(`null`), false},
+		{"array", json.RawMessage(`[1,2,3]`), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateBlockData("markdown", 1, tc.data)
+			if tc.ok && err != nil {
+				t.Fatalf("expected ok, got: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestApplyPatchOpsToBlockRejectsBadMarkdownData(t *testing.T) {
+	block := markdownBlock()
+	ops := []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: json.RawMessage(`"bad string"`),
+		OldValue: block.Data,
+	}}
+	err := applyPatchOpsToBlock(block, ops)
+	if err == nil || !strings.Contains(err.Error(), "block data") {
+		t.Fatalf("expected block data validation error, got: %v", err)
+	}
+}
+
+func TestApplyPatchOpsToBlockAcceptsValidMarkdownData(t *testing.T) {
+	block := markdownBlock()
+	ops := []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: json.RawMessage(`{"content":"新内容"}`),
+		OldValue: block.Data,
+	}}
+	err := applyPatchOpsToBlock(block, ops)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !jsonValuesEqual(block.Data, json.RawMessage(`{"content":"新内容"}`)) {
+		t.Fatalf("block data = %s", block.Data)
+	}
+}
+
+func TestNormalizePatchOpsNormalizesBlockDataStringWrap(t *testing.T) {
+	block := markdownBlock()
+	// Planner returns newValue as a JSON string wrapping an object — the exact bug.
+	ops, err := normalizePatchOps(nil, block, PatchBlock, "b-md", []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: str(`"{\"content\":\"更新后的中文\"}"`),
+	}})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if len(ops) != 1 {
+		t.Fatalf("ops len = %d", len(ops))
+	}
+	if !jsonValuesEqual(ops[0].NewValue, json.RawMessage(`{"content":"更新后的中文"}`)) {
+		t.Fatalf("newValue was not normalized: %s", ops[0].NewValue)
+	}
+	// OldValue should be read from the authoritative state (block.Data), not the raw input.
+	if !jsonValuesEqual(ops[0].OldValue, json.RawMessage(`{"content":"原内容"}`)) {
+		t.Fatalf("oldValue mismatch: %s", ops[0].OldValue)
+	}
+}
+
+func TestNormalizePatchOpsRejectsBlockDataStringWrappedArray(t *testing.T) {
+	block := markdownBlock()
+	_, err := normalizePatchOps(nil, block, PatchBlock, "b-md", []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: str(`"[1,2,3]"`),
+	}})
+	if err == nil {
+		t.Fatal("expected rejection of string-wrapped array")
+	}
+	if !strings.Contains(err.Error(), "non-object") {
+		t.Fatalf("error should mention non-object: %v", err)
+	}
+}
+
+func TestNormalizePatchOpsRejectsBlockDataStringWrappedPrimitive(t *testing.T) {
+	block := markdownBlock()
+	_, err := normalizePatchOps(nil, block, PatchBlock, "b-md", []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: str(`"just a string"`),
+	}})
+	if err == nil {
+		t.Fatal("expected rejection of string wrapping a plain string")
+	}
+}
+
+func TestNormalizePatchOpsBlockDataObjectPassthrough(t *testing.T) {
+	block := markdownBlock()
+	ops, err := normalizePatchOps(nil, block, PatchBlock, "b-md", []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: str(`{"content":"直接对象"}`),
+	}})
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if !jsonValuesEqual(ops[0].NewValue, json.RawMessage(`{"content":"直接对象"}`)) {
+		t.Fatalf("object was altered: %s", ops[0].NewValue)
+	}
+}
+
+func TestNormalizePatchOpsValidatesAllBlockKinds(t *testing.T) {
+	block := &BlockInstance{
+		ID:            "b-table",
+		Kind:          "table",
+		SchemaVersion: 1,
+		Data:          json.RawMessage(`{"columns":[],"rows":[]}`),
+	}
+	ops, err := normalizePatchOps(nil, block, PatchBlock, block.ID, []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-table/data",
+		NewValue: str(`"{\"columns\":[],\"rows\":[]}"`),
+	}})
+	if err != nil {
+		t.Fatalf("normalize table: %v", err)
+	}
+	if !jsonValuesEqual(ops[0].NewValue, json.RawMessage(`{"columns":[],"rows":[]}`)) {
+		t.Fatalf("table newValue was not normalized: %s", ops[0].NewValue)
+	}
+
+	_, err = normalizePatchOps(nil, block, PatchBlock, block.ID, []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-table/data",
+		NewValue: json.RawMessage(`{"content":"wrong shape"}`),
+	}})
+	if err == nil {
+		t.Fatal("expected table schema rejection")
+	}
+}
+
+func TestNormalizePatchOpsRejectsFutureBlockSchemaMutation(t *testing.T) {
+	block := markdownBlock()
+	block.SchemaVersion = 99
+	_, err := normalizePatchOps(nil, block, PatchBlock, block.ID, []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: json.RawMessage(`{"content":"future"}`),
+	}})
+	var future *ErrFutureBlockSchema
+	if !errors.As(err, &future) {
+		t.Fatalf("expected future block schema error, got: %v", err)
+	}
+}
+
+func TestApplyPatchOpsToBlockRejectsMarkdownExtraFields(t *testing.T) {
+	block := markdownBlock()
+	ops := []PatchOp{{
+		Op:       "replace",
+		Path:     "blocks/b-md/data",
+		NewValue: json.RawMessage(`{"content":"ok","allowDangerousHtml":true}`),
+		OldValue: block.Data,
+	}}
+	err := applyPatchOpsToBlock(block, ops)
+	if err == nil {
+		t.Fatal("expected rejection of extra fields in markdown data")
+	}
+	if !strings.Contains(err.Error(), "unexpected fields") {
+		t.Fatalf("error should mention unexpected fields: %v", err)
 	}
 }

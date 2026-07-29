@@ -198,6 +198,7 @@ func TestPatchPlannerPromptIncludesBlockDataAndExactExample(t *testing.T) {
 		`"path":"blocks/<blockID>/data"`,
 		"Do not summarize or restate",
 		"For block content or table requests",
+		`blocks/<blockID>/data newValue must be a raw JSON object`,
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
@@ -246,5 +247,43 @@ func TestPatchPlannerWorkflowPromptAnchorsGuidanceToTargetNode(t *testing.T) {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("workflow prompt contains block-only guidance %q:\n%s", forbidden, prompt)
 		}
+	}
+}
+
+// ── Locale language constraint tests ──────────────────────────────────────
+
+func TestPatchPlanner_LocalePrompt_SimplifiedChinese(t *testing.T) {
+	input := patchPlannerInput()
+	input.Work = &work.Work{ID: "w1", Locale: "zh"}
+	prompt := buildPatchPlannerSystemPrompt(input)
+	if !strings.Contains(prompt, "Simplified Chinese") {
+		t.Fatal("patch planner prompt missing Simplified Chinese language constraint")
+	}
+}
+
+func TestPatchPlanner_LocalePrompt_English(t *testing.T) {
+	input := patchPlannerInput()
+	input.Work = &work.Work{ID: "w1", Locale: "en"}
+	prompt := buildPatchPlannerSystemPrompt(input)
+	if !strings.Contains(prompt, "English") {
+		t.Fatal("patch planner prompt missing English language constraint\n" + prompt)
+	}
+}
+
+func TestPatchPlanner_LocalePrompt_TraditionalChinese(t *testing.T) {
+	input := patchPlannerInput()
+	input.Work = &work.Work{ID: "w1", Locale: "zh-TW"}
+	prompt := buildPatchPlannerSystemPrompt(input)
+	if !strings.Contains(prompt, "Traditional Chinese") {
+		t.Fatal("patch planner prompt missing Traditional Chinese language constraint")
+	}
+}
+
+func TestPatchPlanner_LocalePrompt_NoWorkSkipsDirective(t *testing.T) {
+	input := patchPlannerInput()
+	// input.Work is nil
+	prompt := buildPatchPlannerSystemPrompt(input)
+	if strings.Contains(prompt, "Simplified Chinese") || strings.Contains(prompt, "English") {
+		t.Fatal("patch planner prompt should not contain language directive when Work is nil")
 	}
 }

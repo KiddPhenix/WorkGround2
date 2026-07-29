@@ -55,13 +55,28 @@ func (d Discovered) SlotKind() string {
 	if strings.HasSuffix(name, ".xlsx") || strings.HasSuffix(name, ".xls") {
 		return "xlsx"
 	}
+	if strings.HasSuffix(name, ".docx") {
+		return "docx"
+	}
 	if strings.HasSuffix(name, ".pdf") {
-		return "document"
+		return "pdf"
+	}
+	if strings.HasSuffix(name, ".sh") {
+		return "sh"
+	}
+	if strings.HasSuffix(name, ".bat") || strings.HasSuffix(name, ".cmd") {
+		return "bat"
+	}
+	if strings.HasSuffix(name, ".ps1") {
+		return "ps1"
+	}
+	if strings.HasSuffix(name, ".exe") {
+		return "exe"
 	}
 	if strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz") ||
 		strings.HasSuffix(name, ".tar") || strings.HasSuffix(name, ".gz") ||
 		strings.HasSuffix(name, ".7z") {
-		return "archive"
+		return "zip"
 	}
 	// For files where we only have a path (no content), default to "file".
 	if d.Data == nil {

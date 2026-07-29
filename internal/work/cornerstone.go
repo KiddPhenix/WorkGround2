@@ -20,9 +20,9 @@ type Cornerstone struct {
 	Status         CornerstoneStatus `json:"status"`
 	Tags           []string          `json:"tags,omitempty"`
 	Provenance     SourceRef         `json:"provenance"`
-	LastVerifiedAt *time.Time        `json:"lastVerifiedAt,omitempty"`
-	PinnedAt       time.Time         `json:"pinnedAt"`
-	UpdatedAt      time.Time         `json:"updatedAt"`
+	LastVerifiedAt *time.Time        `json:"lastVerifiedAt,omitempty" ts_type:"string"`
+	PinnedAt       time.Time         `json:"pinnedAt" ts_type:"string"`
+	UpdatedAt      time.Time         `json:"updatedAt" ts_type:"string"`
 	Error          string            `json:"error,omitempty"`
 	// ResolveErrorKind classifies the latest resolution failure without relying
 	// on parsing Error text. Network failures use stale + network because the

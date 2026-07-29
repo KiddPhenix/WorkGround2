@@ -1,12 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 
 import type {
   BlockPlacement,
   BlockUpdateRequest,
   Conclusion,
-  RetryIntent,
-  RetryStatus,
-  RunSelection,
   Work,
   WorkflowRun,
   WorkView,
@@ -25,9 +22,8 @@ import type {
 } from '../../work/types_v2';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
-import { RunProgressIndicator } from './RunProgressIndicator';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
-import type { ResultWorkflowChangeRequest } from '../../work/components/v2/ResultShelf';
+import type { ResultWorkflowChangeRequest, WorkflowChangeState } from '../../work/components/v2/ResultShelf';
 import type {
   FileDownloadIntent,
   FileLocateIntent,
@@ -55,10 +51,6 @@ export interface WorkCardFrontProps {
   onUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   readonly: boolean;
   archived: boolean;
-  runSelection?: RunSelection;
-  onRunSelect: (selection: RunSelection) => void;
-  onRetry?: (intent: RetryIntent) => void;
-  retryByTarget: Record<string, RetryStatus>;
   /** V2 artifact slots from the store projection. */
   artifactSlots?: ArtifactSlot[];
   /** V2 definition when V2 planning has produced one. */
@@ -85,6 +77,10 @@ export interface WorkCardFrontProps {
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
   onDiscussionDraftChange?: (intent: DiscussionDraftIntent) => void;
+  /** Called when user clicks info on a V2 task row with a session ref. */
+  onTaskInfo?: (runId: string, taskId: string) => void;
+  /** Run+Task identities that have session refs — only these rows show the info action. */
+  taskInfoTaskKeys?: Set<string>;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -157,10 +153,6 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onUpdate,
   readonly,
   archived,
-  runSelection,
-  onRunSelect,
-  onRetry,
-  retryByTarget,
   artifactSlots,
   v2Definition,
   onV2TaskRetry,
@@ -180,9 +172,17 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onPreviewPatch,
   onApplyPatch,
   onDiscussionDraftChange,
+  onTaskInfo,
+  taskInfoTaskKeys,
 }) => {
   const { work } = view;
   const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
+  const [workflowChangeState, setWorkflowChangeState] = useState<WorkflowChangeState | null>(null);
+  const canChangeWorkflow = Boolean(onPreviewPatch && onApplyPatch && onRefreshAuthoritative);
+  const requestWorkflowChange = useCallback((request: ResultWorkflowChangeRequest) => {
+    setWorkflowChangeState({ token: request.token, status: 'updating' });
+    setResultWorkflowChange({ ...request });
+  }, []);
   const isV2 = v2Definition !== undefined && v2Definition.status === 'active';
   const expandedTaskId = Object.entries(expanded)
     .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
@@ -283,7 +283,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             activeDefinitionRevision={v2Definition.revision}
             definition={v2Definition}
             readonly={readonly || archived}
-            onRequestWorkflowChange={setResultWorkflowChange}
+            onRequestWorkflowChange={canChangeWorkflow ? requestWorkflowChange : undefined}
+            workflowChangeState={workflowChangeState}
             onOpen={onArtifactOpen}
             onDownload={onArtifactDownload}
             onLocate={onArtifactLocate}
@@ -310,19 +311,13 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onApplyPatch={onApplyPatch}
             onDiscussionDraftChange={onDiscussionDraftChange}
             externalWorkflowDiscussion={resultWorkflowChange}
+            onWorkflowChangeState={setWorkflowChangeState}
+            onTaskInfo={onTaskInfo}
+            taskInfoTaskKeys={taskInfoTaskKeys}
           />
         </>
       )}
 
-      <RunProgressIndicator
-        work={work}
-        selection={runSelection}
-        onSelect={onRunSelect}
-        onRetry={onRetry}
-        retryByTarget={retryByTarget}
-        readonly={readonly}
-        archived={archived}
-      />
       <div className="wg2-work-block-canvas" data-testid="work-block-canvas">
         {BLOCK_SLOTS.map((slot) => {
           const blocks = blocksBySlot.get(slot) ?? [];

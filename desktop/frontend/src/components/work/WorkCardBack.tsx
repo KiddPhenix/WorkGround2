@@ -8,10 +8,14 @@ import type {
   ApplyDefinitionResult,
   CreateCandidateRevisionInput,
   CreateCandidateRevisionResult,
+  DefinitionPlanProgress,
+  DefinitionStructuralAnswer,
+  DefinitionStructuralClarification,
   RunImpact,
   WorkDefinitionRevision,
 } from '../../work/types_v2';
 import { DefinitionDiff } from '../../work/components/v2';
+import { StructureClarificationCard } from './StructureClarificationCard';
 
 export interface WorkCardBackSlotProps {
   workID: string;
@@ -46,10 +50,16 @@ export interface WorkCardBackProps {
   view: WorkView;
   draft: string;
   onDraftChange: (draft: string) => void;
+  startIntent?: {
+    id: string;
+    prompt: string;
+  };
+  onStartIntentConsumed?: (id: string) => void;
   readonly: boolean;
   archived: boolean;
   slots?: WorkCardBackSlots;
   selection?: RunSelection;
+  sessionTarget?: SessionSurfaceContext;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
   onSavePrompt?: (prompt: string, name?: string) => Promise<number>;
   onApplyDefinition?: (input: ApplyDefinitionInput) => Promise<ApplyDefinitionResult>;
@@ -59,6 +69,7 @@ export interface WorkCardBackProps {
   /** RunImpact from the last apply attempt, if available. */
   applyImpact?: RunImpact;
   onCreateCandidate?: (input: CreateCandidateRevisionInput) => Promise<CreateCandidateRevisionResult>;
+  planningProgress?: DefinitionPlanProgress[];
 }
 
 type GenerateState = 'idle' | 'saving' | 'generating' | 'applying';
@@ -103,14 +114,58 @@ function renderSlot(slot: WorkCardBackSlot | undefined, props: WorkCardBackSlotP
   return typeof slot === 'function' ? slot(props) : slot;
 }
 
+interface PendingStructureClarification {
+  schemaVersion: 2;
+  workRevision: number;
+  prompt: string;
+  clarification: DefinitionStructuralClarification;
+  answers: DefinitionStructuralAnswer[];
+}
+
+function clarificationStorageKey(workID: string): string {
+  return `wg2-definition-clarification:${workID}`;
+}
+
+function readPendingClarification(workID: string): PendingStructureClarification | null {
+  try {
+    const raw = globalThis.localStorage?.getItem(clarificationStorageKey(workID));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as PendingStructureClarification;
+    if (
+      value.schemaVersion !== 2
+      || !Number.isSafeInteger(value.workRevision)
+      || typeof value.prompt !== 'string'
+      || typeof value.clarification?.id !== 'string'
+      || !Array.isArray(value.clarification.options)
+      || !Array.isArray(value.answers)
+    ) return null;
+    return value;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingClarification(workID: string, value: PendingStructureClarification | null): void {
+  try {
+    const key = clarificationStorageKey(workID);
+    if (value) globalThis.localStorage?.setItem(key, JSON.stringify(value));
+    else globalThis.localStorage?.removeItem(key);
+  } catch {
+    // Local persistence is recovery assistance; the live typed result remains authoritative.
+  }
+}
+
 export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   view,
   draft,
   onDraftChange,
+  startIntent,
+  onStartIntentConsumed,
   readonly,
   archived,
   slots,
   selection,
+  sessionTarget,
   resolveSessionSurface,
   onSavePrompt,
   onApplyDefinition,
@@ -118,9 +173,10 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   v2ActiveDefinition,
   applyImpact,
   onCreateCandidate,
+  planningProgress = [],
 }) => {
   const { work } = view;
-  const [prompt, setPrompt] = useState(draft || work.prompt);
+  const [prompt, setPrompt] = useState(startIntent?.prompt || draft || work.prompt);
   const [name, setName] = useState(work.name);
   const [nameDirty, setNameDirty] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
@@ -128,6 +184,11 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const [generateState, setGenerateState] = useState<GenerateState>('idle');
   const [generateStatusCopy, setGenerateStatusCopy] = useState('');
   const [generateError, setGenerateError] = useState<string | null>(null);
+  const [clarification, setClarification] = useState<DefinitionStructuralClarification | null>(null);
+  const [clarificationOpen, setClarificationOpen] = useState(false);
+  const [clarificationBusy, setClarificationBusy] = useState(false);
+  const [clarificationError, setClarificationError] = useState<string | null>(null);
+  const [structuralAnswers, setStructuralAnswers] = useState<DefinitionStructuralAnswer[]>([]);
   const saveCompletedRef = useRef(false);
   const savedRevisionRef = useRef<number>(0);
   const [applyState, setApplyState] = useState<'idle' | 'applying'>('idle');
@@ -135,6 +196,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const applyIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
   const autoApplyAttemptRef = useRef<string | null>(null);
   const generationOwnedRef = useRef(false);
+  const autoStartIntentRef = useRef<string | null>(null);
   const pendingCandidateRef = useRef<{
     candidate: WorkDefinitionRevision;
     expectedRevision: number;
@@ -151,6 +213,15 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     setSaveState('idle');
     setSaveError(null);
   }, [draft, view.revision, work.prompt]);
+
+  useEffect(() => {
+    if (!startIntent || autoStartIntentRef.current === startIntent.id) return;
+    setPrompt(startIntent.prompt);
+    onDraftChange(startIntent.prompt);
+    setSaveState('idle');
+    setSaveError(null);
+    saveCompletedRef.current = false;
+  }, [onDraftChange, startIntent]);
 
   useEffect(() => {
     setName(work.name);
@@ -174,6 +245,19 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     setCandidateError(null);
     setDismissedCandidateRevision(null);
     candidateIntentRef.current = null;
+    setClarification(null);
+    setClarificationOpen(false);
+    setClarificationBusy(false);
+    setClarificationError(null);
+    setStructuralAnswers([]);
+    const restored = readPendingClarification(work.id);
+    if (restored && restored.workRevision === view.revision && restored.prompt === prompt.trim()) {
+      setClarification(restored.clarification);
+      setClarificationOpen(true);
+      setStructuralAnswers(restored.answers);
+    } else if (restored) {
+      writePendingClarification(work.id, null);
+    }
   }, [work.id, v2ActiveDefinition?.revision, v2Definition?.revision]);
 
   useEffect(() => {
@@ -189,11 +273,13 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   const applyGeneratedCandidate = async (
     candidate: WorkDefinitionRevision,
     expectedRevision: number,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     if (!onApplyDefinition) throw new Error('工作结构应用能力尚未连接。');
     const signature = `${work.id}:${candidate.revision}:${expectedRevision}`;
     if (applyIntentRef.current?.signature !== signature) {
-      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const suffix = startIntent?.id
+        ?? globalThis.crypto?.randomUUID?.()
+        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       applyIntentRef.current = { signature, requestId: `work-definition-${suffix}` };
     }
     setGenerateState('applying');
@@ -215,6 +301,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       pendingCandidateRef.current = null;
       candidateIntentRef.current = null;
       saveCompletedRef.current = false;
+      return true;
     } catch (error) {
       const code = (error as { code?: string }).code;
       if (code === 'revision_conflict' || code === 'request_conflict') {
@@ -226,19 +313,22 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       } else {
         setGenerateError(`工作结构已生成，启动失败：${error instanceof Error ? error.message : String(error)}`);
       }
+      return false;
     } finally {
       setGenerateState('idle');
     }
   };
 
-  const saveAndGenerate = async () => {
+  const saveAndGenerate = async (answerOverride?: DefinitionStructuralAnswer[]) => {
     if (!onSavePrompt || !onCreateCandidate || !onApplyDefinition || !candidateBase || readonly || archived || generateState !== 'idle' || !prompt.trim()) return;
     const pending = pendingCandidateRef.current;
     if (pending) {
-      await applyGeneratedCandidate(pending.candidate, pending.expectedRevision);
+      const applied = await applyGeneratedCandidate(pending.candidate, pending.expectedRevision);
+      if (applied && startIntent) onStartIntentConsumed?.(startIntent.id);
       return;
     }
     const intent = prompt.trim();
+    const answers = answerOverride ?? structuralAnswers;
     const explicitName = nameDirty && name.trim() ? name.trim() : undefined;
     const inferName = !v2ActiveDefinition && explicitName === undefined;
 
@@ -265,9 +355,12 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       savedRevisionRef.current,
       intent,
       inferName,
+      answers,
     ]);
     if (candidateIntentRef.current?.signature !== signature) {
-      const suffix = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const suffix = startIntent?.id
+        ?? globalThis.crypto?.randomUUID?.()
+        ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       candidateIntentRef.current = { signature, requestId: `work-candidate-${suffix}` };
     }
     setGenerateState('generating');
@@ -281,15 +374,36 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         expectedRevision: savedRevisionRef.current,
         requestId: candidateIntentRef.current.requestId,
         inferName,
+        structuralAnswers: answers,
       });
+      if (result.clarification) {
+        setClarification(result.clarification);
+        setClarificationOpen(true);
+        setClarificationError(null);
+        writePendingClarification(work.id, {
+          schemaVersion: 2,
+          workRevision: result.revision,
+          prompt: intent,
+          clarification: result.clarification,
+          answers,
+        });
+        generationOwnedRef.current = false;
+        setGenerateState('idle');
+        return;
+      }
       if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
+      setClarification(null);
+      setClarificationOpen(false);
+      setClarificationError(null);
+      writePendingClarification(work.id, null);
       pendingCandidateRef.current = {
         candidate: result.candidate,
         expectedRevision: result.revision,
       };
       setCandidateImpact(result.impact);
       setDismissedCandidateRevision(null);
-      await applyGeneratedCandidate(result.candidate, result.revision);
+      const applied = await applyGeneratedCandidate(result.candidate, result.revision);
+      if (applied && startIntent) onStartIntentConsumed?.(startIntent.id);
       generationOwnedRef.current = false;
     } catch (error) {
       generationOwnedRef.current = false;
@@ -300,7 +414,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         setGenerateError('工作版本已变化，请重新生成工作结构。');
       } else {
         // Transport / planner failure: save already succeeded; retry must skip save.
-        setGenerateError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setGenerateError(message);
+        if (clarification) setClarificationError(message);
       }
       setGenerateState('idle');
     }
@@ -339,6 +455,18 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         expectedRevision: view.revision,
         requestId: candidateIntentRef.current.requestId,
       });
+      if (result.clarification) {
+        setClarification(result.clarification);
+        setClarificationOpen(true);
+        writePendingClarification(work.id, {
+          schemaVersion: 2,
+          workRevision: result.revision,
+          prompt: intent,
+          clarification: result.clarification,
+          answers: [],
+        });
+        return;
+      }
       if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
       setLocalCandidate(result.candidate);
       setCandidateImpact(result.impact);
@@ -372,6 +500,26 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
     && !readonly
     && !archived
   );
+  useEffect(() => {
+    if (
+      !startIntent
+      || autoStartIntentRef.current === startIntent.id
+      || !hasCombinedFlow
+      || !candidateBase
+      || generateState !== 'idle'
+    ) return;
+    const intent = startIntent.prompt.trim();
+    if (!intent || prompt.trim() !== intent) return;
+    autoStartIntentRef.current = startIntent.id;
+    void saveAndGenerate();
+  }, [
+    candidateBase,
+    generateState,
+    hasCombinedFlow,
+    onStartIntentConsumed,
+    prompt,
+    startIntent,
+  ]);
   const projectedCandidate = isSubstantiveDraft ? v2Definition : undefined;
   const candidateDefinition = localCandidate ?? projectedCandidate;
   const visibleCandidate = hasCombinedFlow || candidateDefinition?.revision === dismissedCandidateRevision
@@ -452,6 +600,25 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       setApplyState('idle');
     }
   };
+  const submitClarification = async (answer: DefinitionStructuralAnswer) => {
+    if (clarificationBusy) return;
+    const nextAnswers = [
+      ...structuralAnswers.filter((item) => item.questionId !== answer.questionId),
+      answer,
+    ];
+    setStructuralAnswers(nextAnswers);
+    setClarificationBusy(true);
+    setClarificationError(null);
+    await saveAndGenerate(nextAnswers);
+    setClarificationBusy(false);
+  };
+  const semanticProgress = planningProgress.filter((item) => item.kind !== 'raw').slice(-6);
+  const rawProgress = planningProgress
+    .filter((item) => item.kind === 'raw')
+    .map((item) => item.text)
+    .join('')
+    .slice(-2400);
+  const showPlanningFeed = generateState !== 'idle' || !!clarification;
   const slotProps = useMemo<WorkCardBackSlotProps>(() => ({
     workID: work.id,
     prompt: work.prompt,
@@ -465,7 +632,15 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
 
   // Resolve the selected attempt's session surface.
   const selectedSession = useMemo(() => {
-    if (!selection || !resolveSessionSurface) return null;
+    if (!resolveSessionSurface) return null;
+    if (sessionTarget) {
+      return {
+        key: `${sessionTarget.sessionRef.sessionPath}\u0000${sessionTarget.sessionRef.branchId}`,
+        targetID: `attempt:${sessionTarget.runId}:${sessionTarget.stageId}:${sessionTarget.taskId}:${sessionTarget.attemptId ?? sessionTarget.attemptIndex}`,
+        node: resolveSessionSurface(sessionTarget.sessionRef, sessionTarget),
+      };
+    }
+    if (!selection) return null;
     const resolved = resolveSelection(work, selection);
     if (!resolved?.stage || !resolved.task || !resolved.attempt?.sessionRef) return null;
     const sessionRef = resolved.attempt.sessionRef;
@@ -485,7 +660,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       targetID: `attempt:${context.runId}:${context.stageId}:${context.taskId}:${attemptKey(resolved.attempt)}`,
       node: resolveSessionSurface(sessionRef, context),
     };
-  }, [archived, readonly, resolveSessionSurface, selection, work]);
+  }, [archived, readonly, resolveSessionSurface, selection, sessionTarget, work]);
 
   return (
     <div
@@ -543,8 +718,31 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                 rows={6}
                 placeholder="描述你希望 Work 完成的事情…"
                 disabled={generateState !== 'idle'}
-                onChange={(event) => { setPrompt(event.target.value); onDraftChange(event.target.value); setSaveState('idle'); saveCompletedRef.current = false; }}
+                onChange={(event) => {
+                  setPrompt(event.target.value);
+                  onDraftChange(event.target.value);
+                  setSaveState('idle');
+                  saveCompletedRef.current = false;
+                  candidateIntentRef.current = null;
+                  setClarification(null);
+                  setClarificationOpen(false);
+                  setStructuralAnswers([]);
+                  writePendingClarification(work.id, null);
+                }}
               />
+              {showPlanningFeed && (
+                <div className="wg2-definition-planning" data-testid="definition-planning-feed">
+                  <pre className="wg2-definition-planning__raw" aria-hidden="true">{rawProgress}</pre>
+                  <ol className="wg2-definition-planning__steps" aria-live="polite">
+                    {semanticProgress.map((item) => (
+                      <li key={`${item.requestId}-${item.sequence}`} data-kind={item.kind}>
+                        <span className="wg2-definition-planning__dot" aria-hidden="true" />
+                        <span>{item.text}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
             </label>
             <div
               className="wg2-work-draft-actions"
@@ -576,7 +774,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                       {generateState !== 'idle'
                         ? generateStatusCopy || generateBusyCopy[generateState][0]
                         : pendingCandidateRef.current ? '重试启动工作'
-                          : v2ActiveDefinition ? '更新工作结构' : '生成工作结构'}
+                          : v2ActiveDefinition ? '怎么改进' : '生成工作结构'}
                     </span>
                     {generateState !== 'idle' && (
                       <span
@@ -590,6 +788,16 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                     )}
                   </button>
                   {generateError && <span role="alert" data-testid="work-generate-structure-error">{generateError}</span>}
+                  {clarification && !clarificationOpen && (
+                    <button
+                      type="button"
+                      className="wg2-structure-clarification__reopen"
+                      data-testid="structure-clarification-reopen"
+                      onClick={() => setClarificationOpen(true)}
+                    >
+                      还差 1 个结构问题
+                    </button>
+                  )}
                 </>
               ) : (
                 <>
@@ -603,6 +811,17 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
             </div>
           </section>
         </div>
+      )}
+      {clarification && clarificationOpen && (
+        <StructureClarificationCard
+          clarification={clarification}
+          busy={clarificationBusy}
+          error={clarificationError}
+          onClose={() => {
+            if (!clarificationBusy) setClarificationOpen(false);
+          }}
+          onSubmit={submitClarification}
+        />
       )}
 
       {displayDefinition && !suppressEmptyPlaceholder && (

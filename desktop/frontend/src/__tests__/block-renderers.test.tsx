@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { BlockHost } from '../components/work/blocks/BlockHost';
 import { blockRegistry } from '../components/work/blocks/registry';
 import { registerBuiltinBlocks } from '../components/work/blocks/register';
+import { normalizeMarkdownData } from '../components/work/blocks/schemaHelpers';
 import type { BlockInstance } from '../work/types';
 
 const reportError = console.error.bind(console);
@@ -364,6 +365,17 @@ async function run(): Promise<void> {
   ok(!blockRegistry.validate('markdown', 1, {})!.valid, 'missing content fails');
   ok(!blockRegistry.validate('markdown', 1, { content: 'x'.repeat(200_001) }).valid, 'oversized content fails');
   ok(!blockRegistry.validate('markdown', 1, { ...validMarkdown, allowDangerousHtml: true }).valid, 'markdown rejects raw HTML config');
+  const legacyMarkdown = JSON.stringify({ content: '根据研究材料和您的创意构思，规划小说大纲。' });
+  ok(blockRegistry.validate('markdown', 1, legacyMarkdown)!.valid, 'one-layer legacy JSON string passes');
+  ok(!blockRegistry.validate('markdown', 1, JSON.stringify(legacyMarkdown))!.valid, 'nested JSON string fails');
+  ok(!blockRegistry.validate('markdown', 1, 'plain markdown')!.valid, 'plain string fails');
+  ok(!blockRegistry.validate('markdown', 1, JSON.stringify(['content']))!.valid, 'string-wrapped array fails');
+  ok(!blockRegistry.validate('markdown', 1, JSON.stringify({ content: 'ok', extra: true }))!.valid, 'string-wrapped extra field fails');
+  ok(!blockRegistry.validate('markdown', 1, JSON.stringify({ content: 'x'.repeat(200_001) }))!.valid, 'string-wrapped oversized content fails');
+  ok(
+    normalizeMarkdownData(legacyMarkdown)?.content === '根据研究材料和您的创意构思，规划小说大纲。',
+    'one-layer legacy JSON string normalizes to renderer content',
+  );
 
   // ── Markdown: render (MarkdownRenderer lazy-imports react-markdown/katex;
   //   may not fully render in jsdom but must not crash) + security ─────────

@@ -21,8 +21,8 @@ type BlockInstance struct {
 	Freshness     *BlockFreshness   `json:"freshness,omitempty"`
 	Fallback      BlockFallback     `json:"fallback"`
 	Tombstone     bool              `json:"tombstone,omitempty"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	UpdatedAt     time.Time         `json:"updatedAt"`
+	CreatedAt     time.Time         `json:"createdAt" ts_type:"string"`
+	UpdatedAt     time.Time         `json:"updatedAt" ts_type:"string"`
 }
 
 // BlockStatus is the runtime readiness of a BlockInstance.
@@ -47,9 +47,9 @@ type BlockSource struct {
 
 // BlockFreshness carries optional freshness metadata for live Blocks.
 type BlockFreshness struct {
-	CheckedAt   *time.Time `json:"checkedAt,omitempty"`
-	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
-	RetryAt     *time.Time `json:"retryAt,omitempty"`
+	CheckedAt   *time.Time `json:"checkedAt,omitempty" ts_type:"string"`
+	ExpiresAt   *time.Time `json:"expiresAt,omitempty" ts_type:"string"`
+	RetryAt     *time.Time `json:"retryAt,omitempty" ts_type:"string"`
 	StaleReason string     `json:"staleReason,omitempty"`
 }
 

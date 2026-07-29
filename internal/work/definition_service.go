@@ -70,6 +70,11 @@ func (s *Service) beginWorkPlanning(ctx context.Context, input BeginWorkPlanning
 	if sessionID == "" {
 		return nil, errors.New("work: BeginWorkPlanning: sessionId is required")
 	}
+	normalizedLocale, err := NormalizeLocale(input.Locale)
+	if err != nil {
+		return nil, fmt.Errorf("work: BeginWorkPlanning: %w", err)
+	}
+	localeProvided := strings.TrimSpace(input.Locale) != ""
 	blueprint.ID = strings.TrimSpace(blueprint.ID)
 	if blueprint.ID == "" {
 		return nil, errors.New("work: BeginWorkPlanning: blueprintRef.id is required")
@@ -79,10 +84,17 @@ func (s *Service) beginWorkPlanning(ctx context.Context, input BeginWorkPlanning
 	workID := workIDForRequest(requestID)
 	intentBytes, _ := json.Marshal(struct {
 		SessionID    string       `json:"sessionId"`
+		Locale       string       `json:"locale"`
 		BlueprintRef BlueprintRef `json:"blueprintRef"`
-	}{SessionID: sessionID, BlueprintRef: blueprint})
+	}{SessionID: sessionID, BlueprintRef: blueprint, Locale: normalizedLocale})
 	intentSum := sha256.Sum256(intentBytes)
 	intentDigest := fmt.Sprintf("begin-%x", intentSum[:])
+	legacyIntentBytes, _ := json.Marshal(struct {
+		SessionID    string       `json:"sessionId"`
+		BlueprintRef BlueprintRef `json:"blueprintRef"`
+	}{SessionID: sessionID, BlueprintRef: blueprint})
+	legacyIntentSum := sha256.Sum256(legacyIntentBytes)
+	legacyIntentDigest := fmt.Sprintf("begin-%x", legacyIntentSum[:])
 
 	// Idempotency: if Work exists, verify intent then return.
 	existing, _, stateErr := s.store.LoadState(workID, "")
@@ -95,7 +107,11 @@ func (s *Service) beginWorkPlanning(ctx context.Context, input BeginWorkPlanning
 			return nil, committedRecovery("planning-receipt", workID, requestID, 0,
 				errors.New("authoritative planning receipt is unavailable"))
 		}
-		if receipt.IntentDigest != intentDigest {
+		intentMatches := receipt.IntentDigest == intentDigest
+		if !intentMatches && !localeProvided {
+			intentMatches = receipt.IntentDigest == legacyIntentDigest
+		}
+		if !intentMatches {
 			return nil, &ErrWorkEventConflict{
 				WorkID: workID, RequestID: requestID, Kind: WorkEventRequestConflict,
 				Reason: fmt.Sprintf("BeginWorkPlanning request %q reused with different creation intent", requestID),
@@ -129,7 +145,8 @@ func (s *Service) beginWorkPlanning(ctx context.Context, input BeginWorkPlanning
 	value := &Work{
 		SchemaVersion:    SchemaVersionV2,
 		ID:               workID,
-		Name:             "New Work",
+		Name:             defaultWorkName(normalizedLocale),
+		Locale:           normalizedLocale,
 		State:            WorkDraft,
 		ArchiveState:     ArchiveActive,
 		BlueprintRef:     blueprint,

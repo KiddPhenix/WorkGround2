@@ -93,7 +93,7 @@ type ArtifactPreview struct {
 	ConversionState string `json:"conversionState,omitempty"`
 
 	// ── Cache ───────────────────────────────────────────────────────
-	CachedAt         time.Time `json:"cachedAt,omitempty"`
+	CachedAt         time.Time `json:"cachedAt,omitempty" ts_type:"string"`
 	ConverterVersion string    `json:"converterVersion,omitempty"`
 	Error            string    `json:"error,omitempty"`
 }

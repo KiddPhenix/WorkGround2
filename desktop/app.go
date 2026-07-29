@@ -2370,6 +2370,9 @@ func (a *App) ListSessionsForSession(sessionID string) []SessionMeta {
 	seen := map[string]struct{}{}
 	out := make([]SessionMeta, 0, len(infos))
 	for _, s := range infos {
+		if isWorkTaskSessionSource(s.SessionSource) {
+			continue
+		}
 		_, isOpen := open[s.Path]
 		meta := sessionMetaFromInfo(s, titles[filepath.Base(s.Path)], s.Path == active, isOpen, 0)
 		if route, ok := channelSessionRouteFromInfo(s); ok {
@@ -2399,6 +2402,7 @@ func (a *App) runtimeSessionMetasForDir(dir string, titles map[string]string, se
 		workspaceRoot string
 		topicID       string
 		topicTitle    string
+		sessionSource string
 		ctrl          control.SessionAPI
 	}
 	a.mu.RLock()
@@ -2413,6 +2417,7 @@ func (a *App) runtimeSessionMetasForDir(dir string, titles map[string]string, se
 			workspaceRoot: tab.WorkspaceRoot,
 			topicID:       tab.TopicID,
 			topicTitle:    tab.TopicTitle,
+			sessionSource: tabRuntimeSource(tab),
 			ctrl:          tab.Ctrl,
 		})
 	}
@@ -2421,6 +2426,13 @@ func (a *App) runtimeSessionMetasForDir(dir string, titles map[string]string, se
 	now := time.Now().UnixMilli()
 	out := []SessionMeta{}
 	for _, rt := range runtimes {
+		sessionSource := rt.sessionSource
+		if meta, ok, err := agent.LoadBranchMeta(rt.path); err == nil && ok && strings.TrimSpace(meta.SessionSource) != "" {
+			sessionSource = meta.SessionSource
+		}
+		if isWorkTaskSessionSource(sessionSource) {
+			continue
+		}
 		path, _, err := validateSessionPath(dir, rt.path)
 		if err != nil {
 			continue

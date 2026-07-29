@@ -1392,3 +1392,114 @@ func TestV2Controller_SetInputCornerstoneDualInstance_FileStore(t *testing.T) {
 		t.Fatalf("after restart: idx=%d cid=%s want=%s", idx3, p3.V2Inputs[idx3].CornerstoneID, p1.V2Inputs[idx1].CornerstoneID)
 	}
 }
+
+// failingArtifactExecutor wraps a TaskExecutor and fails TaskArtifacts with a
+// fixed error. It tests the path where artifact materialisation/reporting fails
+// and the producer task becomes failed_retryable.
+type failingArtifactExecutor struct {
+	TaskExecutor
+	err error
+}
+
+func (e *failingArtifactExecutor) TaskArtifacts(context.Context, TaskExecuteInput, *Attempt) ([]TaskArtifactOutput, error) {
+	return nil, e.err
+}
+
+func TestV2Coordinator_FailedArtifactMaterializationFailsSlot(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "Producer", ProducesSlotIDs: []string{"slot"}}},
+		nil,
+	))
+	exec := &failingArtifactExecutor{
+		TaskExecutor: &coordinatorExecutor{},
+		err:          errors.New("artifact materialization failed: disk full"),
+	}
+	h.svc.SetTaskExecutor(exec)
+
+	_, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"})
+	if err != nil {
+		t.Fatalf("ScheduleV2Run: %v", err)
+	}
+
+	projection, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, _ := DeriveTaskID(h.run, "n1")
+	runtime := projection.V2TaskRuntimes[taskID]
+	slot, _ := FindArtifactSlotRevision(projection, h.def.Revision, "slot")
+
+	if runtime == nil || runtime.State != TaskFailedRetryable {
+		t.Fatalf("task state = %v, want failed_retryable", runtime)
+	}
+	if runtime.Error == "" {
+		t.Fatal("task error must not be empty after artifact failure")
+	}
+	if !strings.Contains(runtime.Error, "disk full") {
+		t.Fatalf("task error = %q, should contain the artifact failure reason", runtime.Error)
+	}
+	if slot == nil {
+		t.Fatal("slot must exist")
+	}
+	if slot.State == SlotGenerating {
+		t.Fatalf("slot must not stay generating after producer fails; state = %s", slot.State)
+	}
+	if slot.State != SlotFailed {
+		t.Fatalf("slot state = %s, want failed", slot.State)
+	}
+	if slot.Error == nil || slot.Error.Code == "" {
+		t.Fatalf("slot error = %+v, want explicit retryable failure", slot.Error)
+	}
+	if !slot.Error.Retryable {
+		t.Fatalf("slot error.retryable = false, want true")
+	}
+	if strings.Contains(slot.Error.Message, "snapshot") ||
+		strings.Contains(slot.Error.Message, "revision") {
+		t.Fatalf("slot error message %q exposes internal protocol text", slot.Error.Message)
+	}
+	view := promoteV2View(&WorkView{
+		Work:          projection,
+		SchemaVersion: SchemaVersionV2,
+		ArtifactSlots: projection.V2ArtifactSlots,
+		Revision:      state.Revision,
+	}, h.def)
+	var taskView *TaskV2View
+	for i := range view.Tasks {
+		if view.Tasks[i].ID == taskID {
+			taskView = &view.Tasks[i]
+			break
+		}
+	}
+	if taskView == nil || !taskView.Retryable {
+		t.Fatalf("view task retryable = %v, want true after failed_retryable", taskView)
+	}
+	var slotInView *ArtifactSlot
+	for i := range view.ArtifactSlots {
+		if view.ArtifactSlots[i].ID == "slot" && view.ArtifactSlots[i].DefinitionRev == h.def.Revision {
+			slotInView = &view.ArtifactSlots[i]
+			break
+		}
+	}
+	if slotInView == nil || slotInView.State != SlotFailed {
+		t.Fatalf("view slot state = %v, want failed", slotInView)
+	}
+
+	if _, err := h.svc.v2.reconcileV2Artifacts(context.Background(), h.work, h.run, h.def); err != nil {
+		t.Fatal(err)
+	}
+	_, repeatedState, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repeatedState.Revision != state.Revision {
+		t.Fatalf("idempotent reconciliation advanced revision from %d to %d", state.Revision, repeatedState.Revision)
+	}
+	repeated, _ := h.store.LoadProjection(h.work)
+	repeatedSlot, _ := FindArtifactSlotRevision(repeated, h.def.Revision, "slot")
+	if repeatedSlot.State != SlotFailed {
+		t.Fatalf("idempotent schedule changed slot state from failed to %s", repeatedSlot.State)
+	}
+	if repeatedSlot.Revision != slot.Revision {
+		t.Fatalf("idempotent schedule advanced slot revision from %d to %d", slot.Revision, repeatedSlot.Revision)
+	}
+}

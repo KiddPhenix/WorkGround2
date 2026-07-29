@@ -97,18 +97,57 @@ type DefinitionPlanner interface {
 // DefinitionPlanInput is the immutable authoritative context supplied to a
 // DefinitionPlanner. Base is loaded by Service; callers cannot provide it.
 type DefinitionPlanInput struct {
-	Intent string
-	Work   *Work
-	Base   *WorkDefinitionRevision
+	Intent            string
+	Work              *Work
+	Base              *WorkDefinitionRevision
+	StructuralAnswers []DefinitionStructuralAnswer
+	OnProgress        func(DefinitionPlanProgress)
+}
+
+// DefinitionPlanProgress is a visible fragment from the model stream or a
+// semantic planning event derived from the validated plan.
+type DefinitionPlanProgress struct {
+	Kind string
+	Text string
+}
+
+// DefinitionStructuralAnswer records one user decision that can only change
+// nodes, dependencies, input slots, or artifact slots.
+type DefinitionStructuralAnswer struct {
+	QuestionID string `json:"questionId"`
+	OptionID   string `json:"optionId,omitempty"`
+	Value      string `json:"value"`
+}
+
+// DefinitionStructuralOption is one answer to a structure-only clarification.
+type DefinitionStructuralOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Recommended bool   `json:"recommended,omitempty"`
+	Custom      bool   `json:"custom,omitempty"`
+}
+
+// DefinitionStructuralClarification pauses candidate creation for a workflow
+// topology decision that the planner cannot safely infer.
+type DefinitionStructuralClarification struct {
+	ID                string                       `json:"id"`
+	Impact            string                       `json:"impact"`
+	Question          string                       `json:"question"`
+	Description       string                       `json:"description,omitempty"`
+	Flow              []string                     `json:"flow"`
+	Options           []DefinitionStructuralOption `json:"options"`
+	CustomPlaceholder string                       `json:"customPlaceholder,omitempty"`
 }
 
 // DefinitionPlan is untrusted planner output. Identity, revision, status,
 // timestamps, and digest are always derived by Service.
 type DefinitionPlan struct {
-	Goal          string            `json:"goal"`
-	Nodes         []NodeDef         `json:"nodes"`
-	ArtifactSlots []ArtifactSlotDef `json:"artifactSlots"`
-	InputSpecs    []InputSpec       `json:"inputSpecs"`
+	Goal                string                              `json:"goal"`
+	Nodes               []NodeDef                           `json:"nodes"`
+	ArtifactSlots       []ArtifactSlotDef                   `json:"artifactSlots"`
+	InputSpecs          []InputSpec                         `json:"inputSpecs"`
+	StructuralQuestions []DefinitionStructuralClarification `json:"structuralQuestions,omitempty"`
 }
 
 // PatchPlanInput is the complete, immutable context supplied to PatchPlanner.
@@ -145,20 +184,34 @@ type SlotPreflight struct {
 // TaskExecuteInput carries stable object and request context into the session
 // executor without exposing Controller internals.
 type TaskExecuteInput struct {
-	WorkID           string          `json:"workId"`
-	RunID            string          `json:"runId"`
-	StageID          string          `json:"stageId"`
-	TaskID           string          `json:"taskId"`
-	AttemptID        string          `json:"-"`
-	AttemptIndex     int             `json:"attemptIndex"`
-	RequestID        string          `json:"requestId"`
-	DefinitionDigest string          `json:"definitionDigest"`
-	SideEffectClass  string          `json:"-"`
-	Operation        string          `json:"-"`
-	ProducesSlotIDs  []string        `json:"-"`
-	SlotPreflights   []SlotPreflight `json:"-"`
-	Prompt           string          `json:"prompt"`
+	WorkID           string           `json:"workId"`
+	RunID            string           `json:"runId"`
+	StageID          string           `json:"stageId"`
+	TaskID           string           `json:"taskId"`
+	AttemptID        string           `json:"-"`
+	AttemptIndex     int              `json:"attemptIndex"`
+	RequestID        string           `json:"requestId"`
+	DefinitionDigest string           `json:"definitionDigest"`
+	SideEffectClass  string           `json:"-"`
+	Operation        string           `json:"-"`
+	ProducesSlotIDs  []string         `json:"-"`
+	SlotPreflights   []SlotPreflight  `json:"-"`
+	Prompt           string           `json:"prompt"`
+	Live             TaskLiveReporter `json:"-"`
+	StartedAt        time.Time        `json:"-"`
 }
+
+// TaskLiveUpdate reports recoverable, display-only execution state while a
+// Task Session is running. SessionRef is published as soon as the hidden
+// Session exists; Output is a bounded model-output preview.
+type TaskLiveUpdate struct {
+	SessionRef *SessionRef
+	Output     string
+}
+
+// TaskLiveReporter persists one live update. Implementations must be
+// idempotent because provider retries and final flushes may repeat content.
+type TaskLiveReporter func(TaskLiveUpdate) error
 
 // TaskCancelInput identifies one attempt independently of Session creation.
 // Stable object IDs are the owner key; SessionRef is supplemental evidence.

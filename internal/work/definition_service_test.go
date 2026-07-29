@@ -320,6 +320,66 @@ func TestBegin_DifferentSessionConflict(t *testing.T) {
 	}
 }
 
+func TestBegin_DifferentLocaleConflict(t *testing.T) {
+	_, _, svc := newFS(t)
+	svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{SessionID: "s1", RequestID: "b-locale", Locale: "zh"})
+	_, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{SessionID: "s1", RequestID: "b-locale", Locale: "en"})
+	if err == nil {
+		t.Fatal("expected conflict for different Locale with same requestId")
+	}
+	var c *ErrWorkEventConflict
+	if !errors.As(err, &c) || c.Kind != WorkEventRequestConflict {
+		t.Fatalf("expected typed conflict, got %T: %v", err, err)
+	}
+}
+
+func TestBegin_LocaleDefaultsToEn(t *testing.T) {
+	_, _, svc := newFS(t)
+	// Old caller sends no locale
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{SessionID: "s1", RequestID: "b-no-locale"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Work.Locale != "en" {
+		t.Fatalf("expected default locale 'en', got %q", view.Work.Locale)
+	}
+}
+
+func TestBegin_LocalePersistsZh(t *testing.T) {
+	_, _, svc := newFS(t)
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{SessionID: "s1", RequestID: "b-zh", Locale: "zh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Work.Locale != "zh" {
+		t.Fatalf("expected locale 'zh', got %q", view.Work.Locale)
+	}
+	if view.Work.Name != "新工作" {
+		t.Fatalf("expected Work name '新工作' for zh locale, got %q", view.Work.Name)
+	}
+}
+
+func TestBegin_LocalePersistsZhTW(t *testing.T) {
+	_, _, svc := newFS(t)
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{SessionID: "s1", RequestID: "b-zhtw", Locale: "zh-TW"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Work.Locale != "zh-TW" {
+		t.Fatalf("expected locale 'zh-TW', got %q", view.Work.Locale)
+	}
+}
+
+func TestBegin_RejectsUnsupportedLocale(t *testing.T) {
+	_, _, svc := newFS(t)
+	_, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
+		SessionID: "s1", RequestID: "b-bad-locale", Locale: "fr",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported locale") {
+		t.Fatalf("expected explicit unsupported locale error, got %v", err)
+	}
+}
+
 // ── CreateCandidateRevision — receipt replay, intent match/mismatch ─────────
 
 func TestCandidate_SameRequestSameIntent(t *testing.T) {

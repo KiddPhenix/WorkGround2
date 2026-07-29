@@ -30,6 +30,7 @@ type UpdateDraftInput struct {
 	Name             *string        `json:"name,omitempty"`
 	Prompt           *string        `json:"prompt,omitempty"`
 	Inputs           map[string]any `json:"inputs,omitempty"`
+	Locale           string         `json:"locale,omitempty"`
 	ExpectedRevision int64          `json:"expectedRevision"`
 	RequestID        string         `json:"requestId"`
 }
@@ -145,8 +146,8 @@ type WorkSummary struct {
 	State        WorkState        `json:"state"`
 	ArchiveState WorkArchiveState `json:"archiveState"`
 	BlueprintRef BlueprintRef     `json:"blueprintRef"`
-	CreatedAt    time.Time        `json:"createdAt"`
-	UpdatedAt    time.Time        `json:"updatedAt"`
+	CreatedAt    time.Time        `json:"createdAt" ts_type:"string"`
+	UpdatedAt    time.Time        `json:"updatedAt" ts_type:"string"`
 }
 
 // CornerstoneInput captures the user's pin intent. RequestID makes repeated
@@ -338,7 +339,7 @@ type RerunPlan struct {
 	BlockIssues       []BlockCompatIssue `json:"blockIssues,omitempty"`
 	Blocking          bool               `json:"blocking"`
 	Warnings          []string           `json:"warnings,omitempty"`
-	ExpiresAt         time.Time          `json:"expiresAt"`
+	ExpiresAt         time.Time          `json:"expiresAt" ts_type:"string"`
 }
 
 // ChangeSummary 描述 Blueprint 版本间的差异。

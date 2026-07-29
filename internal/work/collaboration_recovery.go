@@ -16,24 +16,26 @@ import (
 // copy-on-write definition candidate. Creating a candidate never switches the
 // active definition; ApplyDefinition remains the only activation boundary.
 type CreateCandidateRevisionInput struct {
-	WorkID                 string `json:"workId"`
-	Intent                 string `json:"intent"`
-	BaseDefinitionRevision int64  `json:"baseDefinitionRevision"`
-	ExpectedRevision       int64  `json:"expectedRevision"`
-	RequestID              string `json:"requestId"`
-	InferName              bool   `json:"inferName,omitempty"`
+	WorkID                 string                       `json:"workId"`
+	Intent                 string                       `json:"intent"`
+	BaseDefinitionRevision int64                        `json:"baseDefinitionRevision"`
+	ExpectedRevision       int64                        `json:"expectedRevision"`
+	RequestID              string                       `json:"requestId"`
+	InferName              bool                         `json:"inferName,omitempty"`
+	StructuralAnswers      []DefinitionStructuralAnswer `json:"structuralAnswers,omitempty"`
 }
 
 // CreateCandidateRevisionResult keeps a committed candidate observable when a
 // later projection refresh fails.
 type CreateCandidateRevisionResult struct {
-	Candidate      *WorkDefinitionRevision `json:"candidate,omitempty"`
-	Impact         *RunImpact              `json:"impact,omitempty"`
-	Revision       int64                   `json:"revision"`
-	Duplicate      bool                    `json:"duplicate"`
-	Committed      bool                    `json:"committed"`
-	Recoverable    bool                    `json:"recoverable"`
-	TransportError *WorkTransportError     `json:"transportError,omitempty"`
+	Candidate      *WorkDefinitionRevision            `json:"candidate,omitempty"`
+	Clarification  *DefinitionStructuralClarification `json:"clarification,omitempty"`
+	Impact         *RunImpact                         `json:"impact,omitempty"`
+	Revision       int64                              `json:"revision"`
+	Duplicate      bool                               `json:"duplicate"`
+	Committed      bool                               `json:"committed"`
+	Recoverable    bool                               `json:"recoverable"`
+	TransportError *WorkTransportError                `json:"transportError,omitempty"`
 }
 
 var definitionPlanGates = struct {
@@ -212,10 +214,13 @@ func (s *Service) CreateCandidateRevisionWithResult(
 		result.TransportError = TransportErrorFrom(cloneErr)
 		return result, cloneErr
 	}
+	emitProgress := s.definitionProgressEmitter(input.WorkID, input.RequestID, beforeState.Revision)
 	plan, planErr := planner.PlanDefinition(ctx, DefinitionPlanInput{
-		Intent: input.Intent,
-		Work:   plannerWork,
-		Base:   cloneDefinitionForView(base),
+		Intent:            input.Intent,
+		Work:              plannerWork,
+		Base:              cloneDefinitionForView(base),
+		StructuralAnswers: append([]DefinitionStructuralAnswer(nil), input.StructuralAnswers...),
+		OnProgress:        emitProgress,
 	})
 	if planErr != nil {
 		err := fmt.Errorf("%w: %v", ErrDefinitionPlannerFailed, planErr)
@@ -234,6 +239,26 @@ func (s *Service) CreateCandidateRevisionWithResult(
 			RequestID: input.RequestID, Recoverable: true,
 		}
 		return result, err
+	}
+	clarification, clarificationErr := nextDefinitionStructuralClarification(plan, input.StructuralAnswers)
+	if clarificationErr != nil {
+		err := fmt.Errorf("%w: invalid structural question: %v", ErrDefinitionPlannerFailed, clarificationErr)
+		result.Recoverable = true
+		result.TransportError = &WorkTransportError{
+			Code: "planner_failed", Message: err.Error(), WorkID: input.WorkID,
+			RequestID: input.RequestID, Recoverable: true,
+		}
+		return result, err
+	}
+	if clarification != nil {
+		result.Clarification = clarification
+		result.Revision = beforeState.Revision
+		result.Recoverable = true
+		emitProgress(DefinitionPlanProgress{
+			Kind: "clarification",
+			Text: result.Clarification.Question,
+		})
+		return result, nil
 	}
 	candidateInput := &WorkDefinitionRevision{
 		Goal:          strings.TrimSpace(plan.Goal),
@@ -300,11 +325,13 @@ func hashDefinitionPlanIntent(input CreateCandidateRevisionInput) string {
 		Intent                 string
 		BaseDefinitionRevision int64
 		InferName              bool
+		StructuralAnswers      []DefinitionStructuralAnswer
 	}{
 		WorkID:                 strings.TrimSpace(input.WorkID),
 		Intent:                 strings.TrimSpace(input.Intent),
 		BaseDefinitionRevision: input.BaseDefinitionRevision,
 		InferName:              input.InferName,
+		StructuralAnswers:      input.StructuralAnswers,
 	}
 	raw, _ := json.Marshal(value)
 	sum := sha256.Sum256(raw)

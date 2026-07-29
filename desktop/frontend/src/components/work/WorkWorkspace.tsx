@@ -29,13 +29,19 @@ export const WorkWorkspace: React.FC<WorkWorkspaceProps> = ({
   addonPanel,
   children,
 }) => (
-  <section className="wg2-work-card" data-testid="work-workspace" aria-label={`${name} Work`}>
+  <section
+    className="wg2-work-card"
+    data-testid="work-workspace"
+    data-state={state}
+    data-archive={archiveState}
+    aria-label={`${name} Work`}
+  >
     <header className="wg2-work-outer-header" data-testid="work-outer-header">
       <div className="wg2-work-outer-header-left">
         <h1 className="wg2-work-outer-title">{name}</h1>
-        <span className="wg2-work-outer-state" data-state={state} data-archive={archiveState}>
-          {state}{archiveState === 'archived' && ' · 已归档'}
-        </span>
+        {archiveState === 'archived' && (
+          <span className="wg2-work-outer-state">已归档</span>
+        )}
         {titleStatus && (
           <div className="wg2-work-title-status" data-testid="work-title-status">
             {titleStatus}

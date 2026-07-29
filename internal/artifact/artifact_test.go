@@ -150,8 +150,8 @@ func TestFileProducer_WriteFile(t *testing.T) {
 	if discovered[0].Name != "app.exe" {
 		t.Errorf("Name = %q, want app.exe", discovered[0].Name)
 	}
-	if discovered[0].SlotKind() != "file" {
-		t.Errorf("SlotKind = %q, want file", discovered[0].SlotKind())
+	if discovered[0].SlotKind() != "exe" {
+		t.Errorf("SlotKind = %q, want exe", discovered[0].SlotKind())
 	}
 }
 
@@ -316,11 +316,15 @@ func TestDiscoveredSlotKind(t *testing.T) {
 		{"video/mp4", "clip.mp4", "video"},
 		{"audio/mpeg", "song.mp3", "audio"},
 		{"", "report.xlsx", "xlsx"},
-		{"", "doc.pdf", "document"},
-		{"", "archive.zip", "archive"},
-		{"", "data.tar.gz", "archive"},
-		// Data is nil for file-only artifacts, so SlotKind returns "file".
-		{"application/octet-stream", "app.exe", "file"},
+		{"", "doc.pdf", "pdf"},
+		{"", "letter.docx", "docx"},
+		{"", "script.sh", "sh"},
+		{"", "run.bat", "bat"},
+		{"", "run.cmd", "bat"},
+		{"", "deploy.ps1", "ps1"},
+		{"", "archive.zip", "zip"},
+		{"", "data.tar.gz", "zip"},
+		{"application/octet-stream", "app.exe", "exe"},
 	}
 
 	for _, tt := range tests {

@@ -41,8 +41,10 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 	baseJSON := string(base)
 
 	workID := ""
+	locale := ""
 	if input.Work != nil {
 		workID = input.Work.ID
+		locale = input.Work.Locale
 	}
 
 	const maxTries = 3
@@ -54,12 +56,17 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 			return nil, fmt.Errorf("boot: PlanDefinition: %w", err)
 		}
 
-		msgs := buildDefinitionPlanMessages(attempt, input.Intent, baseJSON, lastRaw, lastErr)
+		msgs := buildDefinitionPlanMessages(
+			attempt, input.Intent, baseJSON, lastRaw, lastErr, locale, input.StructuralAnswers,
+		)
 		attemptNo := attempt + 1
 		iid := interactionID("definition", workID, attemptNo)
 		p.llmLog.logRequest(iid, "definition", workID, p.prov.Name(), attemptNo, msgs, p.temperature, p.maxTokens)
 
-		raw, streamErr := p.streamDefinitionPlan(ctx, msgs)
+		if input.OnProgress != nil && attempt == 0 {
+			input.OnProgress(work.DefinitionPlanProgress{Kind: "analyzing", Text: "正在理解任务并拆分工作节点"})
+		}
+		raw, streamErr := p.streamDefinitionPlan(ctx, msgs, input.OnProgress)
 		if streamErr != nil {
 			// Preserve partial raw for diagnostics when a streamed response
 			// fails after emitting content.
@@ -72,6 +79,7 @@ func (p *bootDefinitionPlanner) PlanDefinition(ctx context.Context, input work.D
 		plan, parseErr := parseDefinitionPlanResponse(raw)
 		p.llmLog.logResponse(iid, "definition", workID, attemptNo, raw, parseErr)
 		if parseErr == nil {
+			emitDefinitionSemanticProgress(plan, input.OnProgress)
 			return plan, nil
 		}
 		lastErr = parseErr
@@ -87,7 +95,7 @@ Internally validate your JSON against the schema below before sending. Then send
 
 Output rules (strict — violations cause rejection):
 - Return exactly ONE top-level JSON object — never give candidate A/B, never give a second object, never wrap in an array.
-- The object must contain ONLY these four fields: goal, nodes, artifactSlots, inputSpecs. No other top-level fields.
+- The object must contain ONLY these five fields: goal, nodes, artifactSlots, inputSpecs, structuralQuestions. No other top-level fields.
 - Return ONLY the JSON — no markdown, no code fences, no commentary, no explanations, no preamble, no postscript.
 - Think silently. The first non-whitespace character of your response must be { and the last must be }.
 - Do not quote, restate, or discuss the input JSON, a draft JSON, or these instructions.
@@ -97,12 +105,25 @@ Planning rules:
 - Nodes may be added, removed, reordered, or changed. Dependencies must form a DAG.
 - Every referenced inputSpecId and artifact slot ID must exist in the returned object.
 - Every artifact slot must have exactly one producer node.
+- Artifact slots are deliverable outputs created by the workflow and shown to the user in the Results shelf. Never use an artifact slot for an original/source/input file, an upload, reference material, or an existing workspace file.
+- A file supplied by the user must be a file InputSpec referenced through the consuming node's inputSpecIds. That node consumes the submitted file; it must not reproduce the same file through producesSlotIds.
+- Do not create an "upload", "collect source file", or similar producer task for a user-supplied file. Attach the file InputSpec directly to the first real task that uses it.
+- Only include a source or input file in artifactSlots when the user explicitly requests a newly generated copy or transformed version as a deliverable. The transformed output must have its own output-oriented slot ID and title.
 - When a node produces an image artifact slot, include "image_generation" in that node's toolHints. At execution time this is routed through the shared capability path and request_help(image_generation).
 - Preserve stable IDs for unchanged concepts. Use short deterministic IDs for new concepts.
 - For text inputs that require multiple lines, lists, or one item per line, set valueSchema.multiline to true.
 - For choice and multi_choice inputs, valueSchema.options is required and must be a JSON array of {"value":"...","label":"..."} objects.
 - Do not return revision, parentRevision, status, digest, workId, createdAt, or createdBy.
 - Do not return null collections or a clone when the intent requests structural changes.
+
+Structural clarification rules — default to no question:
+- structuralQuestions MUST normally be [].
+- Return at most ONE structural question, and only when the intent/base leave at least two materially different, reasonable workflow topologies and no safe, reversible default can be inferred.
+- A permitted question must change node boundaries or membership, dependency edges, parallel-vs-sequential topology, or which node owns an input/artifact slot. Only ask when the user is the sole source of that decision.
+- NEVER ask about content, facts, wording, quality, tone, language, audience, private values, files, authorization, output details, or searchable information here. Those belong to InputSpecs, web_search, or ordinary planning.
+- NEVER ask for generic approval preferences, review frequency, confirmation gates, whether to pause after a step, or whether the user accepts the inferred plan.
+- NEVER ask when one option is recommended, conventional, safer, reversible, or inferable from the intent/base. Choose it and return [].
+- Options must be neutral structural alternatives. Do not mark an option recommended. Do not repeat a question whose ID appears in Confirmed work-structure decisions JSON.
 
 InputSpec rules — when to ask the user vs when the system will search:
 - Information that can be found through public web search (facts, documentation, APIs, references, examples) must NOT generate an InputSpec. Instead, set toolHints: ["web_search"] on the node that needs it. At execution time the node uses native/direct search when available and otherwise delegates through request_help(web_search).
@@ -115,6 +136,7 @@ InputSpec rules — when to ask the user vs when the system will search:
 
 const definitionPlanOutputReminder = `Validate silently before responding.
 Your entire response must begin with { and end with }. Return exactly ONE JSON object and nothing else.
+Always include structuralQuestions; use [] unless a permitted non-inferable topology decision exists.
 Do not emit analysis, alternatives, quoted JSON, a second JSON value, markdown, or commentary.`
 
 // definitionPlanSchema is the static, reviewable full DefinitionPlan JSON
@@ -126,14 +148,15 @@ const definitionPlanSchema = `
 ## DefinitionPlan JSON Schema — complete replacement candidate
 
 Return exactly ONE JSON object — no wrapping, no commentary, no markdown fences.
-The object must have ONLY these four top-level fields (no others allowed):
+The object must have ONLY these five top-level fields (no others allowed):
 
 ### Top-level object
 {
   "goal": "string (required, non-null)",
   "nodes": [ ... NodeDef ... ] (required, non-null JSON array),
   "artifactSlots": [ ... ArtifactSlotDef ... ] (required, non-null JSON array),
-  "inputSpecs": [ ... InputSpec ... ] (required, non-null JSON array)
+  "inputSpecs": [ ... InputSpec ... ] (required, non-null JSON array),
+  "structuralQuestions": [ ... StructuralQuestion ... ] (required, non-null JSON array; normally [])
 }
 
 No other top-level fields are allowed.
@@ -155,7 +178,7 @@ No other top-level fields are allowed.
 ### ArtifactSlotDef (each element in the artifactSlots array)
 {
   "id": "string (required)",
-  "title": "string (required)",
+  "title": "string (required) — a deliverable output shown in the Results shelf; never the original/source/input file",
   "kind": "string (required) — e.g. text, document, image, code",
   "expectedCount": integer (required),
   "required": boolean (required)
@@ -185,32 +208,44 @@ Kind-specific valueSchema examples:
 
 For choice and multi_choice, options MUST be a JSON array. Never return an object map, a comma-separated string, or an array of bare strings.
 
-### Complete example
+### StructuralQuestion (zero or one element in structuralQuestions)
 {
-  "goal": "Deliver a reviewed report",
+  "id": "short stable lowercase identifier (required)",
+  "impact": "one of: task_nodes, task_dependencies, input_slots, artifact_slots (required)",
+  "question": "a concise question describing the unresolved topology choice (required)",
+  "description": "why the intent/base cannot determine this structural choice (optional)",
+  "options": [
+    {
+      "id": "short stable lowercase identifier (required)",
+      "label": "neutral structural alternative (required)",
+      "description": "how this alternative changes the workflow topology (optional)",
+      "custom": boolean (optional; at most one custom option)
+    }
+  ],
+  "customPlaceholder": "structure-only example for a custom option (optional)"
+}
+
+The collection must be [] whenever the structure can be safely inferred. StructuralQuestion must never contain flow or recommended fields.
+
+### Complete example — user file is input, translated file is the only deliverable
+{
+  "goal": "Translate the user-provided PDF and deliver the translated PDF",
   "nodes": [
     {
-      "id": "collect",
-      "title": "Collect materials",
-      "description": "Gather source documents",
-      "inputSpecIds": ["topic"],
-      "producesSlotIds": ["source"]
-    },
-    {
-      "id": "review",
-      "title": "Review and finalize",
-      "dependsOn": ["collect"],
-      "consumesSlotIds": ["source"],
-      "producesSlotIds": ["report"]
+      "id": "translate",
+      "title": "Translate document",
+      "description": "Translate the uploaded source PDF into the requested language",
+      "inputSpecIds": ["source_pdf"],
+      "producesSlotIds": ["translated_pdf"]
     }
   ],
   "artifactSlots": [
-    {"id": "source", "title": "Source materials", "kind": "text", "expectedCount": 1, "required": true},
-    {"id": "report", "title": "Final report", "kind": "document", "expectedCount": 1, "required": true}
+    {"id": "translated_pdf", "title": "Translated PDF", "kind": "pdf", "expectedCount": 1, "required": true}
   ],
   "inputSpecs": [
-    {"id": "topic", "label": "What is the report topic?", "description": "This sets the scope of the report.", "kind": "text", "required": true, "pinEligible": false}
-  ]
+    {"id": "source_pdf", "label": "Which PDF should be translated?", "description": "This is the source document used by the translation task.", "kind": "file", "required": true, "pinEligible": false}
+  ],
+  "structuralQuestions": []
 }`
 
 // parseDefinitionPlanResponse selects the last contract-valid DefinitionPlan
@@ -264,7 +299,11 @@ func parseDefinitionPlanResponse(raw string) (*work.DefinitionPlan, error) {
 // streamDefinitionPlan calls the provider and accumulates the full text
 // response. Provider-level errors and ChunkError are returned as-is and are
 // never eligible for repair.
-func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs []provider.Message) (string, error) {
+func (p *bootDefinitionPlanner) streamDefinitionPlan(
+	ctx context.Context,
+	msgs []provider.Message,
+	onProgress func(work.DefinitionPlanProgress),
+) (string, error) {
 	chunks, err := p.prov.Stream(ctx, provider.Request{
 		Messages:    msgs,
 		Temperature: p.temperature,
@@ -274,6 +313,7 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 		return "", fmt.Errorf("boot: PlanDefinition stream: %w", err)
 	}
 	var output bytes.Buffer
+	jsonStarted := false
 	for chunk := range chunks {
 		switch chunk.Type {
 		case provider.ChunkError:
@@ -282,6 +322,20 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 			return output.String(), nil
 		default:
 			output.WriteString(chunk.Text)
+			if onProgress != nil {
+				visible := chunk.Text
+				if !jsonStarted {
+					if start := strings.IndexByte(visible, '{'); start >= 0 {
+						jsonStarted = true
+						visible = visible[start:]
+					} else {
+						visible = ""
+					}
+				}
+				if visible != "" {
+					onProgress(work.DefinitionPlanProgress{Kind: "raw", Text: visible})
+				}
+			}
 		}
 	}
 	return output.String(), nil
@@ -292,13 +346,35 @@ func (p *bootDefinitionPlanner) streamDefinitionPlan(ctx context.Context, msgs [
 // Repair attempts include only the last syntactically complete object
 // candidate, never the full raw response, so analysis and duplicate objects
 // are not fed back to the model as assistant history.
-func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, lastErr error) []provider.Message {
+func buildDefinitionPlanMessages(
+	attempt int,
+	intent, baseJSON, lastRaw string,
+	lastErr error,
+	locale string,
+	answerSets ...[]work.DefinitionStructuralAnswer,
+) []provider.Message {
+	system := definitionPlannerPrompt + definitionPlanSchema
+	if directive := work.LocaleDirective(locale); directive != "" {
+		system += "\n\n## Work language\n- " + directive
+	}
+	structuralDecisions := ""
+	var answers []work.DefinitionStructuralAnswer
+	if len(answerSets) > 0 {
+		answers = answerSets[0]
+	}
+	if len(answers) > 0 {
+		raw, _ := json.Marshal(answers)
+		structuralDecisions = fmt.Sprintf(
+			"\n\nConfirmed work-structure decisions JSON:\n%s\nApply these decisions only to nodes, dependencies, input slots, or artifact slots. Do not reinterpret them as content preferences. Do not repeat any structural question whose ID appears here.",
+			raw,
+		)
+	}
 	if attempt == 0 {
 		return []provider.Message{
-			{Role: provider.RoleSystem, Content: definitionPlannerPrompt + definitionPlanSchema},
+			{Role: provider.RoleSystem, Content: system},
 			{Role: provider.RoleUser, Content: fmt.Sprintf(
-				"Natural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\n%s",
-				intent, baseJSON, definitionPlanOutputReminder,
+				"Natural-language structure intent:\n%s%s\n\nAuthoritative base definition JSON:\n%s\n\n%s",
+				intent, structuralDecisions, baseJSON, definitionPlanOutputReminder,
 			)},
 		}
 	}
@@ -314,16 +390,45 @@ func buildDefinitionPlanMessages(attempt int, intent, baseJSON, lastRaw string, 
 		)
 	}
 	return []provider.Message{
-		{Role: provider.RoleSystem, Content: definitionPlannerPrompt + definitionPlanSchema},
+		{Role: provider.RoleSystem, Content: system},
 		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Repair a DefinitionPlan response.\n\nNatural-language structure intent:\n%s\n\nAuthoritative base definition JSON:\n%s\n\nParse error category: %s\n\n%s\n\nPreserve the candidate's business semantics. Fix only JSON structure and schema violations; do NOT re-plan, add alternatives, explain the error, or quote the candidate before the answer.\n\n%s",
+			"Repair a DefinitionPlan response.\n\nNatural-language structure intent:\n%s%s\n\nAuthoritative base definition JSON:\n%s\n\nParse error category: %s\n\n%s\n\nPreserve the candidate's business semantics. Fix only JSON structure and schema violations; do NOT re-plan, add alternatives, explain the error, or quote the candidate before the answer.\n\n%s",
 			intent,
+			structuralDecisions,
 			baseJSON,
 			errCat,
 			candidateSection,
 			definitionPlanOutputReminder,
 		)},
 	}
+}
+
+func emitDefinitionSemanticProgress(plan *work.DefinitionPlan, emit func(work.DefinitionPlanProgress)) {
+	if plan == nil || emit == nil {
+		return
+	}
+	for _, node := range plan.Nodes {
+		if title := strings.TrimSpace(node.Title); title != "" {
+			emit(work.DefinitionPlanProgress{Kind: "node", Text: "已建立 · " + title})
+		}
+	}
+	titles := make(map[string]string, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		titles[node.ID] = strings.TrimSpace(node.Title)
+	}
+	for _, node := range plan.Nodes {
+		for _, dependency := range node.DependsOn {
+			from, to := titles[dependency], strings.TrimSpace(node.Title)
+			if from != "" && to != "" {
+				emit(work.DefinitionPlanProgress{Kind: "dependency", Text: "正在连接 · " + from + " → " + to})
+			}
+		}
+	}
+	if len(plan.StructuralQuestions) > 0 {
+		emit(work.DefinitionPlanProgress{Kind: "ambiguity", Text: "发现一个无法可靠推导的结构分歧"})
+		return
+	}
+	emit(work.DefinitionPlanProgress{Kind: "complete", Text: "工作结构已生成"})
 }
 
 func lastJSONObjectCandidate(raw string) string {
@@ -487,19 +592,20 @@ func extractFirstJSONObject(raw []byte) ([]byte, error) {
 
 // ── Strict DTO decode ───────────────────────────────────────────────────────
 
-// definitionPlanContract lists the four fields every DefinitionPlan must
-// contain.  Collections must be JSON arrays; goal must be a non-null string.
+// definitionPlanContract keeps the original four fields required for
+// compatibility and accepts the newer structuralQuestions collection.
+// New planner prompts always require structuralQuestions, usually as [].
 var definitionPlanContract = struct {
 	required    []string
 	collections map[string]bool
 }{
 	required:    []string{"goal", "nodes", "artifactSlots", "inputSpecs"},
-	collections: map[string]bool{"nodes": true, "artifactSlots": true, "inputSpecs": true},
+	collections: map[string]bool{"nodes": true, "artifactSlots": true, "inputSpecs": true, "structuralQuestions": true},
 }
 
 // decodeDefinitionPlan validates the raw JSON against the frozen DefinitionPlan
-// contract: all four required fields present and non-null, collections must
-// be JSON arrays, no unknown fields at any level, and no type mismatches.
+// contract: legacy required fields are present and non-null, collections must
+// be JSON arrays, no unknown fields exist at any level, and types must match.
 func decodeDefinitionPlan(data []byte) (*work.DefinitionPlan, error) {
 	// Step 1 — decode into a raw map with DisallowUnknownFields to catch
 	// top-level unknown keys.
@@ -520,6 +626,14 @@ func decodeDefinitionPlan(data []byte) (*work.DefinitionPlan, error) {
 		}
 		if definitionPlanContract.collections[key] && !isJSONArray(val) {
 			return nil, fmt.Errorf("boot: PlanDefinition: field %s must be a JSON array", key)
+		}
+	}
+	if val, ok := raw["structuralQuestions"]; ok {
+		if isJSONNull(val) {
+			return nil, fmt.Errorf("boot: PlanDefinition: field structuralQuestions must not be null")
+		}
+		if !isJSONArray(val) {
+			return nil, fmt.Errorf("boot: PlanDefinition: field structuralQuestions must be a JSON array")
 		}
 	}
 
@@ -545,6 +659,11 @@ func decodeDefinitionPlan(data []byte) (*work.DefinitionPlan, error) {
 	}
 	if err := strictUnmarshal(raw["inputSpecs"], &plan.InputSpecs); err != nil {
 		return nil, fmt.Errorf("boot: PlanDefinition: invalid inputSpecs: %w", safeDecodeError(err))
+	}
+	if questions, ok := raw["structuralQuestions"]; ok {
+		if err := strictUnmarshal(questions, &plan.StructuralQuestions); err != nil {
+			return nil, fmt.Errorf("boot: PlanDefinition: invalid structuralQuestions: %w", safeDecodeError(err))
+		}
 	}
 	for i := range plan.InputSpecs {
 		normalized, err := work.NormalizeInputSpecValueSchema(plan.InputSpecs[i])
@@ -610,7 +729,7 @@ func strictUnmarshal(data json.RawMessage, dst any) error {
 //
 // Allowed in messages:
 //   - byte offset (from json.SyntaxError)
-//   - field name from the frozen contract only (goal / nodes / artifactSlots / inputSpecs)
+//   - field name from the frozen contract only (goal / nodes / artifactSlots / inputSpecs / structuralQuestions)
 func safeDecodeError(err error) error {
 	if err == nil {
 		return nil

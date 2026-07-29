@@ -28,11 +28,13 @@ type V2TaskRuntime struct {
 	ExecutionToken   string      `json:"executionToken,omitempty"`
 	SideEffectClass  string      `json:"sideEffectClass,omitempty"`
 	Attempts         []V2Attempt `json:"attempts,omitempty"`
+	Progress         string      `json:"progress,omitempty"`
+	SessionRef       *SessionRef `json:"sessionRef,omitempty"`
 	Error            string      `json:"error,omitempty"`
 	WaitingInputIDs  []string    `json:"waitingInputIds,omitempty"`
 	ApprovalToken    string      `json:"approvalToken,omitempty"`
 	Revision         int64       `json:"revision"`
-	UpdatedAt        time.Time   `json:"updatedAt"`
+	UpdatedAt        time.Time   `json:"updatedAt" ts_type:"string"`
 }
 
 // V2Attempt records one execution try of a V2 task node. External/destructive
@@ -43,8 +45,8 @@ type V2Attempt struct {
 	RequestID        string          `json:"requestId,omitempty"`
 	Index            int             `json:"index"`
 	State            TaskStateV2     `json:"state"`
-	StartedAt        time.Time       `json:"startedAt"`
-	FinishedAt       *time.Time      `json:"finishedAt,omitempty"`
+	StartedAt        time.Time       `json:"startedAt" ts_type:"string"`
+	FinishedAt       *time.Time      `json:"finishedAt,omitempty" ts_type:"string"`
 	DefinitionRev    int64           `json:"definitionRev"`
 	InputDigest      string          `json:"inputDigest,omitempty"`
 	DependencyDigest string          `json:"dependencyDigest,omitempty"`

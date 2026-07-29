@@ -148,7 +148,7 @@ func (s *Service) UpdateArtifactSlot(ctx context.Context, input UpdateArtifactSl
 	if err != nil {
 		return nil, err
 	}
-	input.RequestID = requestID + "/artifact-slot"
+	input.RequestID = artifactSlotRequestID(requestID)
 	input.WorkID = strings.TrimSpace(input.WorkID)
 	input.SlotID = strings.TrimSpace(input.SlotID)
 	input.UpstreamDigest = strings.TrimSpace(input.UpstreamDigest)
@@ -308,6 +308,10 @@ func artifactSlotIntentDigest(input UpdateArtifactSlotInput) string {
 		return ""
 	}
 	return digest
+}
+
+func artifactSlotRequestID(requestID string) string {
+	return requestID + "/artifact-slot"
 }
 
 // ── Projection read helpers ────────────────────────────────────────────────

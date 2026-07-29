@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Circle,
   Clock3,
+  Info,
   LoaderCircle,
   MessageCircle,
   PencilLine,
@@ -74,6 +75,8 @@ export interface ExecutionRowProps {
   onRetry?: (intent: TaskRetryIntent) => void | Promise<void>;
   /** Opens discussion for this task without changing its expanded state. */
   onDiscuss?: () => void;
+  /** Opens the linked execution session on the back face. */
+  onInfo?: () => void;
 }
 
 export const ExecutionRow: React.FC<ExecutionRowProps> = ({
@@ -83,6 +86,7 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
   onToggleExpand,
   onRetry,
   onDiscuss,
+  onInfo,
 }) => {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -110,6 +114,10 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
     event.stopPropagation();
     onDiscuss?.();
   }, [onDiscuss]);
+  const handleInfo = useCallback((event: React.MouseEvent) => {
+    event.stopPropagation();
+    onInfo?.();
+  }, [onInfo]);
   const handleChevron = useCallback((event: React.MouseEvent) => {
     event.stopPropagation();
     handleClick();
@@ -117,6 +125,9 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
 
   const badgeClass = STATE_BADGE[task.state];
   const progressValue = task.state === 'running' ? progressPercent(task.progress) : null;
+  const liveOutput = task.state === 'running' && progressValue === null
+    ? task.progress?.trim() ?? ''
+    : '';
 
   return (
     <div
@@ -154,11 +165,41 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
             >
               {STATE_LABELS[task.state]}
             </span>
-            {task.progress && progressValue === null && (
+            {task.progress && progressValue === null && task.state !== 'running' && (
               <span className="wg2-er-progress-copy"> · {task.progress}</span>
             )}
           </span>
         </span>
+
+        {task.state === 'running' && (
+          <div
+            className="wg2-er-live"
+            data-has-output={liveOutput ? 'true' : 'false'}
+            data-testid={`execution-row-live-${task.id}`}
+          >
+            <div
+              className="wg2-er-live-viewport"
+              aria-label={liveOutput ? `模型输出：${liveOutput}` : '等待模型输出'}
+              aria-live="polite"
+            >
+              <span className="wg2-er-live-track">
+                <span className="wg2-er-live-copy">{liveOutput || '等待模型输出…'}</span>
+                <span className="wg2-er-live-copy" aria-hidden="true">{liveOutput || '等待模型输出…'}</span>
+              </span>
+            </div>
+            {onInfo && (
+              <button
+                type="button"
+                className="wg2-er-info wg2-er-info-live"
+                onClick={handleInfo}
+                aria-label={`打开 ${task.title} 的隐藏会话`}
+                data-testid={`execution-row-info-${task.id}`}
+              >
+                <Info size={15} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Progress bar for running */}
         {progressValue !== null && (
@@ -192,6 +233,18 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
             data-testid={`execution-row-retry-${task.id}`}
           >
             {retrying ? '重试中…' : '重试'}
+          </button>
+        )}
+
+        {onInfo && task.state !== 'running' && (
+          <button
+            type="button"
+            className="wg2-er-info"
+            onClick={handleInfo}
+            aria-label={`查看 ${task.title} 的会话`}
+            data-testid={`execution-row-info-${task.id}`}
+          >
+            <Info size={15} aria-hidden="true" />
           </button>
         )}
 
@@ -259,6 +312,7 @@ function stateIcon(state: TaskStateV2): React.ReactNode {
 function progressPercent(progress: string | undefined): number | null {
   if (!progress) return null;
   const trimmed = progress.trim();
+  if (!/^\d+(?:\.\d+)?%?$/.test(trimmed)) return null;
   const numeric = Number.parseFloat(trimmed);
   if (!Number.isFinite(numeric)) return null;
   const percent = trimmed.endsWith('%') ? numeric : numeric <= 1 ? numeric * 100 : numeric;

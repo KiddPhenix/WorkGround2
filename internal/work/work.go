@@ -108,7 +108,7 @@ type WorkBlueprint struct {
 	ConclusionKinds []ConclusionKind  `json:"conclusionKinds,omitempty"`
 	ArtifactKinds   []string          `json:"artifactKinds,omitempty"`
 	ToolContracts   []ToolContractRef `json:"toolContracts,omitempty"`
-	CreatedAt       time.Time         `json:"createdAt"`
+	CreatedAt       time.Time         `json:"createdAt" ts_type:"string"`
 }
 
 // WorkflowDef is the V1 workflow definition — ordered stages with explicit
@@ -139,6 +139,7 @@ type Work struct {
 	SchemaVersion   int                    `json:"schemaVersion"`
 	ID              string                 `json:"id"`
 	Name            string                 `json:"name"`
+	Locale          string                 `json:"locale,omitempty"`
 	State           WorkState              `json:"state"`
 	ArchiveState    WorkArchiveState       `json:"archiveState"`
 	BlueprintRef    BlueprintRef           `json:"blueprintRef"`
@@ -171,9 +172,9 @@ type Work struct {
 	// when evaluating a definition DAG.
 	V2TaskRuntimes map[string]*V2TaskRuntime `json:"v2TaskRuntimes,omitempty"`
 	CreatedWith    RuntimeFingerprint        `json:"createdWith"`
-	CreatedAt      time.Time                 `json:"createdAt"`
-	UpdatedAt      time.Time                 `json:"updatedAt"`
-	ArchivedAt     *time.Time                `json:"archivedAt,omitempty"`
+	CreatedAt      time.Time                 `json:"createdAt" ts_type:"string"`
+	UpdatedAt      time.Time                 `json:"updatedAt" ts_type:"string"`
+	ArchivedAt     *time.Time                `json:"archivedAt,omitempty" ts_type:"string"`
 }
 
 // WorkRecord is an immutable snapshot of an archived Work.
@@ -183,5 +184,5 @@ type WorkRecord struct {
 	Snapshot             Work            `json:"snapshot"`
 	RendererSetVersion   int             `json:"rendererSetVersion"`
 	FallbackBlocks       []BlockFallback `json:"fallbackBlocks"`
-	ArchivedAt           time.Time       `json:"archivedAt"`
+	ArchivedAt           time.Time       `json:"archivedAt" ts_type:"string"`
 }

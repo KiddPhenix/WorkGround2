@@ -134,6 +134,7 @@ class TestPort implements WorkControllerPort {
   private listeners = new Map<string, (event: WorkViewEvent) => void>();
   readonly preferences = new Map<string, WorkUIPreference>();
   readonly operations: string[] = [];
+  subscribeCalls = 0;
   preferenceFailures = 0;
   snapshotFailures = 0;
   retryFailures = 0;
@@ -143,7 +144,14 @@ class TestPort implements WorkControllerPort {
   readonly applyInputs: ApplyDefinitionInput[] = [];
   readonly candidateInputs: CreateCandidateRevisionInput[] = [];
   readonly candidateErrors: Array<Error & { code?: string }> = [];
-  readonly draftInputs: Array<{ workId: string; name?: string; prompt?: string; expectedRevision: number; requestId: string }> = [];
+  readonly draftInputs: Array<{
+    workId: string;
+    name?: string;
+    prompt?: string;
+    locale?: 'en' | 'zh' | 'zh-TW';
+    expectedRevision: number;
+    requestId: string;
+  }> = [];
   draftRevision = 0;
   draftFailures = 0;
   candidateDelayMs = 0;
@@ -166,6 +174,7 @@ class TestPort implements WorkControllerPort {
   readonly artifactConversionResults: RequestArtifactConversionResult[] = [];
 
   subscribe(workID: string, onEvent: (event: WorkViewEvent) => void): WorkPortSubscription {
+    this.subscribeCalls++;
     this.listeners.set(workID, onEvent);
     return { ready: Promise.resolve(), unsubscribe: () => { this.listeners.delete(workID); } };
   }
@@ -221,7 +230,14 @@ class TestPort implements WorkControllerPort {
     };
   }
 
-  async updateDraft(input: { workId: string; name?: string; prompt?: string; expectedRevision: number; requestId: string }): Promise<WorkView> {
+  async updateDraft(input: {
+    workId: string;
+    name?: string;
+    prompt?: string;
+    locale?: 'en' | 'zh' | 'zh-TW';
+    expectedRevision: number;
+    requestId: string;
+  }): Promise<WorkView> {
     this.draftInputs.push({ ...input });
     if (this.draftFailures-- > 0) throw new Error('draft save unavailable');
     const view = useWorkStore.getState().works[input.workId];
@@ -235,6 +251,7 @@ class TestPort implements WorkControllerPort {
         ...view.work,
         ...(input.name !== undefined ? { name: input.name } : {}),
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+        ...(input.locale !== undefined ? { locale: input.locale } : {}),
       },
     };
   }
@@ -451,7 +468,7 @@ function makeFailedRun(workID: string): WorkflowRun {
 
 async function testFacesAndFixedWorkspace(): Promise<void> {
   reset();
-  const view = makeView('work-faces', { state: 'running', blocks: [makeBlock('block-a')] });
+  const view = makeView('work-faces', { state: 'running', blocks: [makeBlock('block-a')], runs: [makeFailedRun('work-faces')] });
   useWorkStore.getState().applySnapshot(view);
   const port = new TestPort();
   const mounts: Record<string, number> = {};
@@ -488,6 +505,28 @@ async function testFacesAndFixedWorkspace(): Promise<void> {
   const flip = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!;
   ok(Boolean(outer && front && back && transcript), 'workspace and both real faces render');
   ok(Boolean(titleStatus?.querySelector('[data-testid="work-run-entry"]')), 'run status lives beside the fixed Work title');
+  const progressPopover = titleStatus?.querySelector<HTMLElement>('[data-testid="run-progress-popover"]');
+  const progressPanel = titleStatus?.querySelector<HTMLElement>('[data-testid="run-progress-popover-panel"]');
+  ok(Boolean(progressPopover && progressPanel), 'run progress is mounted in the fixed title popover');
+  ok(progressPanel?.hidden ?? false, 'run progress is hidden before hover or activation');
+  ok(!front.querySelector('[data-testid="run-progress"]'), 'run progress no longer occupies the front document flow');
+  await interact(() => {
+    progressPopover?.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true }));
+  });
+  ok(!(progressPanel?.hidden ?? true), 'hovering the title status previews run progress');
+  await interact(() => {
+    progressPopover?.dispatchEvent(new dom.window.MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+  });
+  ok(progressPanel?.hidden ?? false, 'un-pinned progress hides after pointer leave');
+  const runButton = titleStatus?.querySelector<HTMLButtonElement>('.work-run-entry__btn');
+  await interact(() => runButton?.click());
+  eq(progressPopover?.dataset.pinned, 'true', 'clicking the run status pins progress');
+  ok(Boolean(titleStatus?.querySelector('[data-testid="run-progress-close"]')), 'pinned progress exposes an explicit close action');
+  await interact(() => titleStatus?.querySelector<HTMLButtonElement>('[data-testid="run-progress-close"]')?.click());
+  eq(progressPopover?.dataset.open, 'false', 'close action dismisses pinned progress');
+  ok(!titleStatus?.querySelector('[data-testid="run-progress-close"]'), 'close action is removed after dismiss');
+  eq(outer?.querySelectorAll('.wg2-work-outer-state').length, 0, 'active Work omits duplicate raw state badge');
+  ok(!outer?.textContent?.includes('running'), 'raw Work state is not rendered beside localized run status');
   ok(!front.querySelector('.wg2-work-front-header'), 'front face omits the duplicate title and action header');
   ok(!mounted.host.querySelector('[data-testid="work-adjust-structure"]'), 'flip control is the only structure-editing entry');
   eq(flip.textContent?.trim(), '会话', 'front flip entry says 会话');
@@ -773,6 +812,22 @@ function testMotionCSSContract(): void {
   ok(/\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*wg2-work-prompt-orbit/.test(css), 'generation uses the prompt-border orbit');
   ok(/prefers-reduced-motion:\s*reduce[\s\S]*?\.wg2-work-prompt-field\[data-busy="true"\]::before[\s\S]*?animation:\s*none/.test(css), 'prompt-border orbit respects reduced motion');
   ok(/\.wg2-work-prompt-field textarea:disabled[\s\S]*?opacity:\s*1/.test(css), 'busy editor keeps an opaque readable surface');
+  ok(
+    /\.wg2-work-draft-editor\s*\{[\s\S]*?background:\s*color-mix\(in srgb,\s*var\(--bg-elev\)[^;]*var\(--fg\)/.test(planningCSS),
+    'draft panel uses a neutral elevated surface',
+  );
+  ok(
+    /\.wg2-work-prompt-field\[data-busy="true"\]\s*\{[\s\S]*?background:\s*color-mix\(in srgb,\s*var\(--bg-elev\)[^;]*var\(--border\)/.test(planningCSS),
+    'busy prompt keeps a neutral surface',
+  );
+  ok(
+    /\.wg2-definition-planning\s*\{[\s\S]*?color-mix\(in srgb,\s*var\(--bg\)[^;]*var\(--bg-elev\)/.test(planningCSS),
+    'planning overlay avoids an accent-tinted base',
+  );
+  ok(
+    !/\.wg2-work-prompt-field:focus-within\s*\{[^}]*background:\s*var\(--accent\)/.test(planningCSS),
+    'focus state does not flood the prompt surface with accent color',
+  );
   ok(/\.wg2-work-draft-actions\[data-busy="true"\][\s\S]*?justify-content:\s*flex-start/.test(css), 'busy status moves to the reading edge');
   ok(/\.wg2-work-generate-btn__spinner[\s\S]*?animation:\s*wg2-work-status-spin/.test(css), 'busy status has a compact progress icon');
   ok(/\.wg2-work-draft-actions \.wg2-work-generate-btn[\s\S]*?min-height:\s*44px/.test(css), 'generate action is a prominent 44px CTA');
@@ -789,6 +844,40 @@ async function testUnknownWorkRetry(): Promise<void> {
   ok(Boolean(mounted.host.querySelector('[data-testid="work-card-unknown"]')), 'unknown Work has a readable fallback');
   ok(Boolean(mounted.host.querySelector('button')), 'unknown Work exposes retry');
   await mounted.cleanup();
+}
+
+async function testBackgroundSyncGate(): Promise<void> {
+  reset();
+  const pendingPort = new TestPort();
+  const pending = await mount(<WorkCard workID="work-pending" port={pendingPort} ready={false} />);
+  ok(Boolean(pending.host.querySelector('[data-testid="work-card-pending"]')), 'pending Work mounts inside the Work card hierarchy');
+  ok(!pending.host.textContent?.includes('Work 不可用'), 'pending Work is not reported as unavailable');
+  eq(pendingPort.subscribeCalls, 0, 'pending Work defers the backend subscription');
+  eq(pendingPort.operations.length, 0, 'pending Work defers the snapshot request');
+  await pending.cleanup();
+
+  reset();
+  const workID = 'work-cached-pending';
+  useWorkStore.getState().applySnapshot(makeView(workID));
+  const cachedPort = new TestPort();
+  const cached = await mount(<WorkCard workID={workID} port={cachedPort} ready={false} />);
+  ok(Boolean(cached.host.querySelector('[data-testid="work-card"]')), 'cached Work content renders before controller readiness');
+  eq(cached.host.querySelector('[data-testid="work-card"]')?.getAttribute('data-readonly'), 'true', 'cached Work stays read-only while synchronization is pending');
+  ok(Boolean(cached.host.querySelector('[data-testid="work-background-sync"]')), 'cached Work exposes a lightweight background synchronization status');
+  eq(cachedPort.subscribeCalls, 0, 'cached Work does not subscribe before readiness');
+
+  await act(async () => {
+    cached.root.render(
+      <LocaleProvider>
+        <WorkCard workID={workID} port={cachedPort} ready={true} />
+      </LocaleProvider>,
+    );
+  });
+  await settle();
+  eq(cachedPort.subscribeCalls, 1, 'ready transition starts one subscription automatically');
+  ok(cachedPort.operations.includes(`snapshot:${workID}`), 'ready transition fetches the Work snapshot automatically');
+  eq(cached.host.querySelector('[data-testid="work-card"]')?.getAttribute('data-readonly'), 'false', 'successful readiness restores Work actions');
+  await cached.cleanup();
 }
 
 // ── V2 integration tests ────────────────────────────────────────────────────
@@ -1992,6 +2081,11 @@ async function testV2CandidateUpdateAutoApplies(): Promise<void> {
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
+  eq(
+    mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')?.textContent?.trim(),
+    '怎么改进',
+    'candidate: existing Work asks how to improve after flipping back',
+  );
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(30);
 
@@ -2267,6 +2361,40 @@ async function testV2NameSavesWithGenerateAndRetries(): Promise<void> {
   await mounted.cleanup();
 }
 
+async function testV2DraftSaveRefreshesAuthoritativeLocale(): Promise<void> {
+  reset();
+  const originalLanguage = Object.getOwnPropertyDescriptor(dom.window.navigator, 'language');
+  Object.defineProperty(dom.window.navigator, 'language', { configurable: true, value: 'zh-CN' });
+  try {
+    const workID = 'work-v2-locale-refresh';
+    const view = makeView(workID, {
+      schemaVersion: 2,
+      locale: 'en',
+      state: 'draft',
+      prompt: '我想写一个武侠小说',
+      createdWith: { workSchemaVersion: 2, eventSchemaVersion: 2, rendererSetVersion: 1 },
+    });
+    useWorkStore.getState().applySnapshot(view);
+    useWorkStore.setState((state) => ({
+      v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
+    }));
+    const port = new TestPort();
+    const mounted = await mount(<WorkCard workID={workID} port={port} />);
+
+    await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
+    await settle(40);
+
+    eq(port.draftInputs.length, 1, 'locale refresh: task description is saved once');
+    eq(port.draftInputs[0].locale, 'zh', 'locale refresh: save uses the current Simplified Chinese UI locale');
+    eq(useWorkStore.getState().works[workID].work.locale, 'zh', 'locale refresh: saved locale becomes the local authoritative projection');
+
+    await mounted.cleanup();
+  } finally {
+    if (originalLanguage) Object.defineProperty(dom.window.navigator, 'language', originalLanguage);
+    else delete (dom.window.navigator as unknown as { language?: string }).language;
+  }
+}
+
 async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   reset();
   const workID = 'work-v2-candidate-gen';
@@ -2346,6 +2474,41 @@ async function testV2BlankDraftBackCandidateGeneration(): Promise<void> {
   eq(port.applyInputs[0].expectedRevision, port.candidateInputs[0].expectedRevision + 1, 'automatic apply uses the candidate commit revision');
   ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'candidate does not wait for a second confirmation');
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'successful automatic apply flips to the workflow face');
+
+  await mounted.cleanup();
+}
+
+async function testV2StartIntentRunsCombinedFlowOnce(): Promise<void> {
+  reset();
+  const workID = 'work-v2-start-intent';
+  const prompt = '整理发布计划并生成可执行任务';
+  const view = makeView(workID, {
+    schemaVersion: 2,
+    state: 'draft',
+    prompt: '',
+    createdWith: { workSchemaVersion: 2, eventSchemaVersion: 2, rendererSetVersion: 1 },
+  });
+  useWorkStore.getState().applySnapshot(view);
+  useWorkStore.setState((state) => ({
+    v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
+  }));
+  const port = new TestPort();
+  const consumed: string[] = [];
+  const mounted = await mount(
+    <WorkCard
+      workID={workID}
+      port={port}
+      startIntent={{ id: 'start-once', prompt }}
+      onStartIntentConsumed={(id) => consumed.push(id)}
+    />,
+  );
+  await settle(120);
+
+  eq(consumed.join(','), 'start-once', 'start intent is consumed exactly once');
+  eq(port.draftInputs.length, 1, 'start intent saves the visible prompt without a second click');
+  eq(port.draftInputs[0]?.prompt, prompt, 'start intent preserves the user prompt');
+  eq(port.candidateInputs.length, 1, 'start intent generates one candidate');
+  eq(port.applyInputs.length, 1, 'start intent applies the generated definition');
 
   await mounted.cleanup();
 }
@@ -2796,6 +2959,226 @@ async function testV2GoalOnlyDraftStillShowsCandidateGeneration(): Promise<void>
   await mounted.cleanup();
 }
 
+async function testV2TaskInfoButtonVisibleWithSessionRef(): Promise<void> {
+  reset();
+  const workID = 'work-v2-info';
+  const taskID = 'task-info';
+
+  // V1 model: run with task that has a completed attempt with sessionRef.
+  const run: WorkflowRun = {
+    id: 'run-info',
+    workId: workID,
+    definitionDigest: 'digest',
+    state: 'completed',
+    startedAt: '2026-07-20T10:00:00Z',
+    finishedAt: '2026-07-20T10:01:00Z',
+    stages: [{
+      id: 'stage-info',
+      name: 'info-stage',
+      state: 'completed',
+      startedAt: '2026-07-20T10:00:00Z',
+      finishedAt: '2026-07-20T10:01:00Z',
+      tasks: [{
+        id: taskID,
+        name: 'info-task',
+        state: 'completed',
+        attempts: [{
+          id: 'attempt-info-2',
+          index: 2,
+          state: 'completed',
+          sessionRef: { sessionPath: '/sessions/info-session', branchId: 'main', modelRef: 'test', turnCount: 3, preview: 'info', startedAt: '2026-07-20T10:00:00Z' },
+          startedAt: '2026-07-20T10:00:00Z',
+          finishedAt: '2026-07-20T10:01:00Z',
+        }, {
+          id: 'attempt-info-0',
+          index: 0,
+          state: 'completed',
+          sessionRef: { sessionPath: '/sessions/info-session-old-attempt', branchId: 'main', modelRef: 'test', turnCount: 1, preview: 'old attempt', startedAt: '2026-07-20T09:00:00Z' },
+          startedAt: '2026-07-20T09:00:00Z',
+          finishedAt: '2026-07-20T09:01:00Z',
+        }],
+      }],
+    }],
+  };
+
+  const oldRun: WorkflowRun = {
+    ...run,
+    id: 'run-info-old',
+    stages: [{
+      ...run.stages[0],
+      id: 'stage-info-old',
+      tasks: [{
+        ...run.stages[0].tasks[0],
+        attempts: [{
+          ...run.stages[0].tasks[0].attempts[1],
+          id: 'attempt-info-old-run',
+          sessionRef: {
+            ...run.stages[0].tasks[0].attempts[1].sessionRef,
+            sessionPath: '/sessions/info-session-old-run',
+          },
+        }],
+      }],
+    }],
+  };
+  const view = makeView(workID, { schemaVersion: 2, state: 'completed', runs: [oldRun, run] });
+  useWorkStore.getState().applySnapshot(view);
+
+  // V2 task matching the V1 task ID.
+  const v2Task: TaskV2View = {
+    id: taskID, runId: 'run-info', nodeId: 'node-info', title: 'Info Task',
+    state: 'completed', retryable: false, updatedAt: '2026-07-20T10:02:00Z',
+  };
+  useWorkStore.setState((s) => ({
+    v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'active' } },
+    v2Tasks: { ...s.v2Tasks, [workID]: [v2Task] },
+  }));
+
+  const port = new TestPort();
+  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+
+  // Info button must be present on the row.
+  const infoBtn = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${taskID}"]`);
+  ok(Boolean(infoBtn), 'info button visible when task has session ref');
+
+  // Click info button – should flip to back face and set selection.
+  await interact(() => infoBtn!.click());
+  await settle(50);
+
+  // Verify selection is set.
+  const sel = useWorkUIStore.getState().selectionByWork[workID];
+  ok(Boolean(sel), 'selection is set after info click');
+  eq(sel?.runId, 'run-info', 'selection runId matches');
+  eq(sel?.stageId, 'stage-info', 'selection stageId matches');
+  eq(sel?.taskId, taskID, 'selection taskId matches');
+  eq(sel?.attemptId, 'attempt-info-2', 'selection uses latest session-bearing attempt in the selected run');
+  eq(sel?.attemptIndex, 2, 'selection attemptIndex matches the selected run');
+
+  // Verify face flipped to back.
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'face flipped to back');
+
+  // Repeated click is idempotent.
+  await interact(() => infoBtn!.click());
+  await settle(30);
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'repeated info click stays on back');
+
+  await mounted.cleanup();
+}
+
+async function testV2TaskInfoNotVisibleWithoutSessionRef(): Promise<void> {
+  reset();
+  const workID = 'work-v2-noinfo';
+  const taskID = 'task-noinfo';
+
+  // V1 model: task without sessionRef.
+  const run: WorkflowRun = {
+    id: 'run-noinfo',
+    workId: workID,
+    definitionDigest: 'digest',
+    state: 'running',
+    startedAt: '2026-07-20T10:00:00Z',
+    stages: [{
+      id: 'stage-noinfo',
+      name: 'noinfo-stage',
+      state: 'running',
+      startedAt: '2026-07-20T10:00:00Z',
+      tasks: [{
+        id: taskID,
+        name: 'noinfo-task',
+        state: 'running',
+        attempts: [{
+          id: 'attempt-noinfo-0',
+          index: 0,
+          state: 'running',
+          sessionRef: { sessionPath: '', branchId: '', modelRef: '', turnCount: 0, preview: '', startedAt: '2026-07-20T10:00:00Z' },
+          startedAt: '2026-07-20T10:00:00Z',
+        }],
+      }],
+    }],
+  };
+
+  const view = makeView(workID, { schemaVersion: 2, state: 'running', runs: [run] });
+  useWorkStore.getState().applySnapshot(view);
+
+  const v2Task: TaskV2View = {
+    id: taskID, runId: 'run-noinfo', nodeId: 'node-noinfo', title: 'No Info Task',
+    state: 'running', retryable: false, updatedAt: '2026-07-20T10:02:00Z',
+  };
+  useWorkStore.setState((s) => ({
+    v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'active' } },
+    v2Tasks: { ...s.v2Tasks, [workID]: [v2Task] },
+  }));
+
+  const port = new TestPort();
+  const mounted = await mount(<WorkCard workID={workID} port={port} />);
+
+  // Info button must NOT be present (row has no usable sessionRef).
+  const infoBtn = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${taskID}"]`);
+  ok(!infoBtn, 'info button hidden when task has no usable sessionRef');
+
+  await mounted.cleanup();
+}
+
+async function testV2RunningTaskOpensProjectedHiddenSession(): Promise<void> {
+  reset();
+  const workID = 'work-v2-live-session';
+  const taskID = 'task-v2-live-session';
+  useWorkStore.getState().applySnapshot(makeView(workID, { schemaVersion: 2, state: 'running', runs: [] }));
+  const sessionRef = {
+    sessionPath: '/sessions/work-live-session.jsonl',
+    branchId: 'work-live-session',
+    modelRef: 'test-model',
+    turnCount: 0,
+    preview: '',
+    startedAt: '2026-07-29T10:00:00Z',
+  };
+  const v2Task: TaskV2View = {
+    id: taskID,
+    runId: 'run-live-session',
+    nodeId: 'node-live-session',
+    title: 'Live Session Task',
+    state: 'running',
+    progress: '正在生成实时内容',
+    sessionRef,
+    retryable: false,
+    updatedAt: '2026-07-29T10:00:01Z',
+  };
+  useWorkStore.setState((s) => ({
+    v2Definitions: {
+      ...s.v2Definitions,
+      [workID]: {
+        ...makeV2Definition(workID),
+        status: 'active',
+        nodes: [{ id: v2Task.nodeId, title: v2Task.title }],
+      },
+    },
+    v2Tasks: { ...s.v2Tasks, [workID]: [v2Task] },
+  }));
+
+  const mounted = await mount(
+    <WorkCard
+      workID={workID}
+      port={new TestPort()}
+      resolveSessionSurface={(ref, context) => (
+        <div
+          data-testid="projected-hidden-session"
+          data-session-path={ref.sessionPath}
+          data-task-id={context.taskId}
+        />
+      )}
+    />,
+  );
+  const info = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${taskID}"]`);
+  ok(Boolean(info), 'running V2 task: info is available from projected SessionRef');
+  await interact(() => info?.click());
+  await settle(30);
+  const projected = mounted.host.querySelector('[data-testid="projected-hidden-session"]');
+  eq(projected?.getAttribute('data-session-path'), sessionRef.sessionPath, 'running V2 task: opens the hidden Session directly');
+  eq(projected?.getAttribute('data-task-id'), taskID, 'running V2 task: preserves Task identity');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'running V2 task: opens inside the Work back face');
+  ok(!useWorkUIStore.getState().selectionByWork[workID], 'running V2 task: does not fabricate a legacy Attempt selection');
+  await mounted.cleanup();
+}
+
 async function testV2NodesOnlyDraftStillShowsCandidateGeneration(): Promise<void> {
   reset();
   const workID = 'work-v2-nodes-only';
@@ -2806,19 +3189,15 @@ async function testV2NodesOnlyDraftStillShowsCandidateGeneration(): Promise<void
     createdWith: { workSchemaVersion: 2, eventSchemaVersion: 2, rendererSetVersion: 1 },
   });
   useWorkStore.getState().applySnapshot(view);
-  // nodes-only: has 1 node but no goal — NOT a projected candidate.
   useWorkStore.setState((s) => ({
     v2Definitions: { ...s.v2Definitions, [workID]: makeNodesOnlyV2Definition(workID) },
   }));
   const port = new TestPort();
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
-  // Back face: combined generate button must be visible.
   ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure"]')), 'nodes-only draft: combined generate visible');
-
   ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'nodes-only draft: no confirmation action is exposed');
 
-  // Combined button: one click saves then generates.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
@@ -2880,6 +3259,7 @@ async function main(): Promise<void> {
   await testPlacementAndFlipAccessibility();
   testMotionCSSContract();
   await testUnknownWorkRetry();
+  await testBackgroundSyncGate();
 
   console.log('\nWorkCard V2 Tests\n');
   await testV2AutoFlipOnApplyDefinition();
@@ -2890,12 +3270,17 @@ async function main(): Promise<void> {
   await testV2ManualFlipIndependent();
   await testV2ScrollDraftExpandPerWork();
   await testV2ApplyFailurePreservesDraft();
+  await testV2StartIntentRunsCombinedFlowOnce();
+  await testV2DraftSaveRefreshesAuthoritativeLocale();
   await testV2ComponentsA11y();
   await testV2FlipDoesNotInterruptRunning();
   await testV2CSSImportsProduceClasses();
   await testV2ProductionActionCapabilities();
   await testV2ArtifactPreviewConversionPort();
   await testV2ArtifactRetryRevisionIdentity();
+  await testV2TaskInfoButtonVisibleWithSessionRef();
+  await testV2TaskInfoNotVisibleWithoutSessionRef();
+  await testV2RunningTaskOpensProjectedHiddenSession();
   await testV2DefaultWailsProductionMount();
   await testV2ExplicitSessionIdReachesPreviewPatch();
   await testV2CandidateUpdateAutoApplies();

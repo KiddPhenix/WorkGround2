@@ -15,8 +15,8 @@ type WorkflowRun struct {
 	DefinitionDigest string            `json:"definitionDigest"`
 	State            RunState          `json:"state"`
 	Stages           []Stage           `json:"stages"`
-	StartedAt        time.Time         `json:"startedAt"`
-	FinishedAt       *time.Time        `json:"finishedAt,omitempty"`
+	StartedAt        time.Time         `json:"startedAt" ts_type:"string"`
+	FinishedAt       *time.Time        `json:"finishedAt,omitempty" ts_type:"string"`
 	Conclusion       *Conclusion       `json:"conclusion,omitempty"`
 	Cancel           *RunCancelReceipt `json:"cancel,omitempty"`
 	Pause            *RunPauseReceipt  `json:"pause,omitempty"`
@@ -38,7 +38,7 @@ type RunCancelReceipt struct {
 	Status    CancelDelivery `json:"status"`
 	Error     string         `json:"error,omitempty"`
 	Attempts  int            `json:"attempts"`
-	UpdatedAt time.Time      `json:"updatedAt"`
+	UpdatedAt time.Time      `json:"updatedAt" ts_type:"string"`
 }
 
 // RunPauseReceipt records the cooperative pause boundary and its recovery
@@ -47,7 +47,7 @@ type RunCancelReceipt struct {
 // external effects.
 type RunPauseReceipt struct {
 	RequestID string    `json:"requestId"`
-	PausedAt  time.Time `json:"pausedAt"`
+	PausedAt  time.Time `json:"pausedAt" ts_type:"string"`
 	Notice    string    `json:"notice"`
 }
 
@@ -58,8 +58,8 @@ type Stage struct {
 	Gate       string          `json:"gate,omitempty"`
 	State      RunState        `json:"state"`
 	Tasks      []Task          `json:"tasks"`
-	StartedAt  time.Time       `json:"startedAt"`
-	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+	StartedAt  time.Time       `json:"startedAt" ts_type:"string"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty" ts_type:"string"`
 	Resolution *GateResolution `json:"resolution,omitempty"`
 }
 
@@ -69,8 +69,8 @@ type Task struct {
 	Name       string     `json:"name"`
 	State      RunState   `json:"state"`
 	Attempts   []Attempt  `json:"attempts"`
-	StartedAt  *time.Time `json:"startedAt,omitempty"`
-	FinishedAt *time.Time `json:"finishedAt,omitempty"`
+	StartedAt  *time.Time `json:"startedAt,omitempty" ts_type:"string"`
+	FinishedAt *time.Time `json:"finishedAt,omitempty" ts_type:"string"`
 }
 
 // Attempt is one try of a Task, linked to a SessionRef.
@@ -80,8 +80,8 @@ type Attempt struct {
 	Index           int             `json:"index"`
 	State           RunState        `json:"state"`
 	SessionRef      SessionRef      `json:"sessionRef"`
-	StartedAt       time.Time       `json:"startedAt"`
-	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
+	StartedAt       time.Time       `json:"startedAt" ts_type:"string"`
+	FinishedAt      *time.Time      `json:"finishedAt,omitempty" ts_type:"string"`
 	Error           string          `json:"error,omitempty"`
 	Receipt         *AttemptReceipt `json:"receipt,omitempty"`
 	SideEffectClass string          `json:"sideEffectClass,omitempty"`
@@ -101,7 +101,7 @@ type AttemptReceipt struct {
 	Evidence        string `json:"evidence,omitempty"`
 	SideEffectClass string `json:"sideEffectClass,omitempty"`
 	// ConfirmedAt is when the evidence was recorded.
-	ConfirmedAt time.Time `json:"confirmedAt"`
+	ConfirmedAt time.Time `json:"confirmedAt" ts_type:"string"`
 }
 
 // ── Event payload wrappers ────────────────────────────────────────────────

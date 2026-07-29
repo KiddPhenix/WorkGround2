@@ -3339,6 +3339,7 @@ func DefaultReducer() WorkEventReducer {
 				Name       *string          `json:"name,omitempty"`
 				Prompt     *string          `json:"prompt,omitempty"`
 				Inputs     map[string]any   `json:"inputs,omitempty"`
+				Locale     *string          `json:"locale,omitempty"`
 				State      WorkState        `json:"state,omitempty"`
 				Placements []BlockPlacement `json:"placements,omitempty"`
 			}
@@ -3353,11 +3354,22 @@ func DefaultReducer() WorkEventReducer {
 					return nil, fmt.Errorf("work: validate draft placements: %w", placementErr)
 				}
 			}
+			var locale *string
+			if update.Locale != nil {
+				normalized, err := NormalizeLocale(*update.Locale)
+				if err != nil {
+					return nil, fmt.Errorf("work: normalize draft locale: %w", err)
+				}
+				locale = &normalized
+			}
 			if update.Name != nil {
 				current.Name = *update.Name
 			}
 			if update.Prompt != nil {
 				current.Prompt = *update.Prompt
+			}
+			if locale != nil {
+				current.Locale = *locale
 			}
 			if update.Inputs != nil {
 				if current.Inputs == nil {

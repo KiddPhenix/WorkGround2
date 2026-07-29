@@ -453,6 +453,15 @@ func (s *V2Scheduler) executeNode(
 		}
 	}
 
+	promptWork, loadErr := load()
+	if loadErr != nil {
+		return false, fmt.Errorf("work: load Work locale before V2 execution: %w", loadErr)
+	}
+	locale := ""
+	if promptWork != nil {
+		locale = promptWork.Locale
+	}
+
 	attempt := V2Attempt{
 		ID:               V2RunAttemptID(taskID, len(rt.Attempts)),
 		RequestID:        fmt.Sprintf("%s/run/v2/attempt/%s/%d", runID, taskID, len(rt.Attempts)),
@@ -469,7 +478,31 @@ func (s *V2Scheduler) executeNode(
 		return false, err
 	}
 
-	taskPrompt := v2NodePrompt(node, inputs, specs, slotDefs, workID, runID, taskID)
+	taskPrompt := v2NodePromptLocale(
+		node, inputs, specs, slotDefs, workID, runID, taskID, locale,
+	)
+	var liveErr error
+	reportLive := func(update TaskLiveUpdate) error {
+		output := strings.TrimSpace(update.Output)
+		sessionChanged := update.SessionRef != nil &&
+			(rt.SessionRef == nil || *rt.SessionRef != *update.SessionRef)
+		if !sessionChanged && (output == "" || output == rt.Progress) {
+			return nil
+		}
+		err := updateRuntime(emit, rt, TaskRunning, nil, s.clock.Now().UTC(), func(next *V2TaskRuntime) {
+			if sessionChanged {
+				ref := *update.SessionRef
+				next.SessionRef = &ref
+			}
+			if output != "" {
+				next.Progress = output
+			}
+		})
+		if err != nil {
+			liveErr = errors.Join(liveErr, err)
+		}
+		return err
+	}
 	execResult, execErr := safeExecuteTask(s.executor, ctx, TaskExecuteInput{
 		WorkID:           workID,
 		RunID:            runID,
@@ -484,7 +517,9 @@ func (s *V2Scheduler) executeNode(
 		ProducesSlotIDs:  append([]string(nil), node.ProducesSlotIDs...),
 		SlotPreflights:   BuildSlotPreflights(slotDefs, node.ProducesSlotIDs, taskPrompt),
 		Prompt:           taskPrompt,
+		Live:             reportLive,
 	})
+	execErr = errors.Join(execErr, liveErr)
 	finishedAt := s.clock.Now().UTC()
 	finalAttempt := rt.Attempts[len(rt.Attempts)-1]
 	finalAttempt.FinishedAt = &finishedAt
@@ -777,6 +812,16 @@ func v2NodePrompt(
 	slotDefs []ArtifactSlotDef,
 	workID, runID, taskID string,
 ) string {
+	return v2NodePromptLocale(node, inputs, specs, slotDefs, workID, runID, taskID, "")
+}
+
+func v2NodePromptLocale(
+	node *NodeDef,
+	inputs []WorkInput,
+	specs []InputSpec,
+	slotDefs []ArtifactSlotDef,
+	workID, runID, taskID, locale string,
+) string {
 	if node == nil {
 		return "Execute the V2 work node."
 	}
@@ -816,6 +861,9 @@ func v2NodePrompt(
 	// capability guidance.
 	if hints := v2NodePromptToolHints(node.ToolHints, autoCapabilities, guidanceByCapability); hints != "" {
 		prompt += hints
+	}
+	if directive := LocaleDirective(locale); directive != "" {
+		prompt += "\n\n--- Work language ---\n" + directive
 	}
 
 	// Append submitted WorkInput values owned by this Work/Run/Task,
@@ -1349,6 +1397,10 @@ func cloneV2Runtime(runtime *V2TaskRuntime) *V2TaskRuntime {
 	cloned := *runtime
 	cloned.Attempts = append([]V2Attempt(nil), runtime.Attempts...)
 	cloned.WaitingInputIDs = append([]string(nil), runtime.WaitingInputIDs...)
+	if runtime.SessionRef != nil {
+		sessionRef := *runtime.SessionRef
+		cloned.SessionRef = &sessionRef
+	}
 	return &cloned
 }
 

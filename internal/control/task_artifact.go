@@ -46,6 +46,11 @@ func materializeTaskArtifact(
 			return nil, "", "", false, nil
 		}
 		return []byte(content), artifactFileName(slot, ".txt"), "text/plain", true, nil
+	case "code", "source", "source_code":
+		if content == "" {
+			return nil, "", "", false, nil
+		}
+		return []byte(content), artifactFileName(slot, ".txt"), "text/plain", true, nil
 	case "markdown", "md", "document", "text/markdown":
 		if content == "" {
 			return nil, "", "", false, nil
@@ -68,6 +73,7 @@ func materializeTaskArtifact(
 func textArtifactKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "text", "txt", "plain_text", "text/plain",
+		"code", "source", "source_code",
 		"markdown", "md", "document", "text/markdown",
 		"xlsx", "spreadsheet", "excel":
 		return true
@@ -78,6 +84,8 @@ func textArtifactKind(kind string) bool {
 
 // takeArtifacts deterministically assigns unconsumed artifacts by declared
 // slot order and discovery order. A structured artifact can feed only one slot.
+// Specific file formats are matched by SlotKind and extension aliases, while
+// older broad document / file / archive declarations remain compatible.
 func takeArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind string, count int) []int {
 	want := strings.ToLower(strings.TrimSpace(wantKind))
 	if want == "" || count <= 0 {
@@ -85,7 +93,7 @@ func takeArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind
 	}
 	indexes := make([]int, 0, count)
 	for i := range discovered {
-		if used[i] || strings.ToLower(discovered[i].SlotKind()) != want {
+		if used[i] || !artifactKindMatches(discovered[i], want) {
 			continue
 		}
 		indexes = append(indexes, i)
@@ -94,6 +102,48 @@ func takeArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind
 		}
 	}
 	return indexes
+}
+
+func artifactKindMatches(item artifact.Discovered, wantKind string) bool {
+	slotKind := strings.ToLower(strings.TrimSpace(item.SlotKind()))
+	if slotKind == wantKind {
+		return true
+	}
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(item.Name)))
+	switch wantKind {
+	case "document":
+		return ext == ".doc" || ext == ".docx" || ext == ".pdf"
+	case "doc", "docx", "word":
+		return ext == ".doc" || ext == ".docx"
+	case "pdf":
+		return ext == ".pdf"
+	case "archive":
+		return ext == ".zip" || ext == ".7z" || ext == ".gz" || ext == ".tar" ||
+			strings.HasSuffix(strings.ToLower(item.Name), ".tar.gz") ||
+			strings.HasSuffix(strings.ToLower(item.Name), ".tar.xz")
+	case "zip":
+		return ext == ".zip"
+	case "file":
+		// "file" is the broadest catch-all; anything that isn't media is a file.
+		return slotKind != "image" && slotKind != "video" && slotKind != "audio"
+	case "data":
+		switch ext {
+		case ".csv", ".json", ".tsv", ".xml", ".yaml", ".yml", ".xlsx", ".xls":
+			return true
+		}
+	case "sh", "shell":
+		return ext == ".sh"
+	case "bat", "batch", "cmd":
+		return ext == ".bat" || ext == ".cmd"
+	case "ps1", "powershell":
+		return ext == ".ps1"
+	case "exe", "executable":
+		switch ext {
+		case ".exe", ".com", ".app", ".appimage":
+			return true
+		}
+	}
+	return false
 }
 
 func artifactFileName(slot work.ArtifactSlot, extension string) string {
@@ -116,8 +166,17 @@ func artifactFileName(slot work.ArtifactSlot, extension string) string {
 	if base == "" {
 		base = "artifact"
 	}
+	// Strip known compound extensions first (e.g. .tar.gz).
+	for _, ce := range []string{".tar.gz", ".tar.xz", ".tar.bz2"} {
+		if strings.HasSuffix(strings.ToLower(base), ce) {
+			base = base[:len(base)-len(ce)]
+			break
+		}
+	}
 	switch strings.ToLower(filepath.Ext(base)) {
-	case ".md", ".markdown", ".txt", ".xlsx", ".xls", ".csv", ".json":
+	case ".md", ".markdown", ".txt", ".xlsx", ".xls", ".csv", ".json",
+		".docx", ".pdf", ".sh", ".bat", ".cmd", ".ps1", ".exe", ".zip", ".7z",
+		".gz", ".tar":
 		base = strings.TrimSuffix(base, filepath.Ext(base))
 	}
 	return base + extension

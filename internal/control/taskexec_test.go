@@ -217,6 +217,74 @@ func TestTaskExecutorPersistsLightweightSessionRef(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorPublishesHiddenSessionBeforeTurn(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "done"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	input := taskInput()
+	var refs []work.SessionRef
+	input.Live = func(update work.TaskLiveUpdate) error {
+		if update.SessionRef == nil {
+			return nil
+		}
+		refs = append(refs, *update.SessionRef)
+		meta, ok, err := agent.LoadBranchMeta(update.SessionRef.SessionPath)
+		if err != nil || !ok || !strings.HasPrefix(meta.SessionSource, "work:work-1/") {
+			t.Fatalf("hidden Session source was not durable before publish: (%+v, %v, %v)", meta, ok, err)
+		}
+		return nil
+	}
+
+	if _, err := exec.ExecuteTask(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 {
+		t.Fatalf("SessionRef updates = %d, want created + final", len(refs))
+	}
+	if refs[0].SessionPath == "" || refs[0].TurnCount != 0 || refs[1].TurnCount != 1 ||
+		refs[1].Preview != "done" {
+		t.Fatalf("SessionRef lifecycle = %+v", refs)
+	}
+}
+
+func TestPublishTaskSessionIsEarlyAndIdempotent(t *testing.T) {
+	startedAt := time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC)
+	path := agent.NewSessionPath(t.TempDir(), "work-task")
+	input := taskInput()
+	input.StartedAt = startedAt
+	var refs []work.SessionRef
+	input.Live = func(update work.TaskLiveUpdate) error {
+		if update.SessionRef != nil {
+			refs = append(refs, *update.SessionRef)
+		}
+		return nil
+	}
+
+	first, err := PublishTaskSession(input, path, "fake/model-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := PublishTaskSession(input, path, "fake/model-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || len(refs) != 2 || refs[0] != refs[1] {
+		t.Fatalf("idempotent Session announcement = (%+v, %+v, %+v)", first, second, refs)
+	}
+	if first.StartedAt != startedAt || first.SessionPath != path || first.BranchID != agent.BranchID(path) {
+		t.Fatalf("SessionRef = %+v", first)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta = (%+v, %v, %v)", meta, ok, err)
+	}
+	if !strings.HasPrefix(meta.SessionSource, "work:work-1/") {
+		t.Fatalf("Session source = %q", meta.SessionSource)
+	}
+}
+
 func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
 	prov := &taskProvider{name: "fake-provider", text: "完整的武侠小说正文"}
 	exec := NewTaskExecutorAdapter(
@@ -265,6 +333,52 @@ func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
 	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
 	if _, ok := exec.taskArtifacts[key]; ok {
 		t.Fatal("materialized artifact text was not released")
+	}
+}
+
+func TestTaskExecutorMaterializesCodeFinalResponseAsArtifact(t *testing.T) {
+	const code = "```python\nprint(\"Hello, World!\")\n```"
+	prov := &taskProvider{name: "fake-provider", text: code}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
+		taskFactory(t, prov, "fake-model", nil, nil),
+	)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "hello-world-code", WorkID: "work-code", DefinitionRev: 1,
+		Title: "Hello World Code", Kind: "code", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputs, err := exec.TaskArtifacts(context.Background(), input, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "Hello World Code.txt" || ref.Type != "text/plain" {
+		t.Fatalf("artifact ref = %+v", ref)
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != code {
+		t.Fatalf("blob = %q, want %q", body, code)
 	}
 }
 

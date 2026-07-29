@@ -362,6 +362,49 @@ func TestBootDefinitionPlannerUsesProviderForFullStructure(t *testing.T) {
 	}
 }
 
+func TestBootDefinitionPlannerEmitsVisibleJSONAndSemanticProgress(t *testing.T) {
+	raw := validPlanJSON()
+	split := len(raw) / 2
+	prov := &definitionPlannerProviderStub{chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "internal preamble must stay hidden\n"},
+		{Type: provider.ChunkText, Text: raw[:split]},
+		{Type: provider.ChunkText, Text: raw[split:]},
+		{Type: provider.ChunkDone},
+	}}
+	var progress []work.DefinitionPlanProgress
+	plan, err := newBootDefinitionPlanner(prov, 0, 2048, nil).PlanDefinition(
+		context.Background(),
+		work.DefinitionPlanInput{
+			Intent: "make a report",
+			Work:   &work.Work{ID: "work-progress"},
+			Base:   &work.WorkDefinitionRevision{},
+			OnProgress: func(item work.DefinitionPlanProgress) {
+				progress = append(progress, item)
+			},
+		},
+	)
+	if err != nil || plan == nil {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	var visible strings.Builder
+	kinds := make(map[string]int)
+	for _, item := range progress {
+		kinds[item.Kind]++
+		if item.Kind == "raw" {
+			visible.WriteString(item.Text)
+		}
+	}
+	if visible.String() != raw {
+		t.Fatalf("visible raw=%q, want exact JSON stream", visible.String())
+	}
+	if strings.Contains(visible.String(), "preamble") {
+		t.Fatal("non-JSON model preamble leaked into visible planning stream")
+	}
+	if kinds["node"] != 2 || kinds["dependency"] != 1 || kinds["complete"] != 1 {
+		t.Fatalf("semantic progress kinds=%+v", kinds)
+	}
+}
+
 func TestBootDefinitionPlannerProviderFailureIsExplicit(t *testing.T) {
 	prov := &definitionPlannerProviderStub{err: errors.New("provider unavailable")}
 	_, err := newBootDefinitionPlanner(prov, 0, 0, nil).PlanDefinition(
@@ -1881,6 +1924,103 @@ func TestDefinitionPlannerSchema_InputSpecRequiredAndOrphanRule(t *testing.T) {
 	}
 }
 
+func TestDefinitionPlannerPrompt_AsksOnlyNonInferableStructuralQuestions(t *testing.T) {
+	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
+	for _, want := range []string{
+		"structuralQuestions MUST normally be []",
+		"at least two materially different, reasonable workflow topologies",
+		"no safe, reversible default can be inferred",
+		"node boundaries or membership",
+		"parallel-vs-sequential topology",
+		"NEVER ask about content",
+		"NEVER ask for generic approval preferences",
+		"whether to pause after a step",
+		"NEVER ask when one option is recommended",
+		"Do not repeat a question whose ID appears",
+	} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("system prompt missing structural clarification rule %q", want)
+		}
+	}
+}
+
+func TestDefinitionPlannerSchema_StructuralQuestionsDefaultEmpty(t *testing.T) {
+	for _, want := range []string{
+		`"structuralQuestions": [ ... StructuralQuestion ... ]`,
+		"normally []",
+		"zero or one element",
+		"must never contain flow or recommended fields",
+		`"structuralQuestions": []`,
+	} {
+		if !strings.Contains(definitionPlanSchema, want) {
+			t.Fatalf("schema missing structural question rule %q", want)
+		}
+	}
+}
+
+func TestDecodeDefinitionPlan_AllowsTypedStructuralQuestion(t *testing.T) {
+	raw := `{
+		"goal": "process both report groups",
+		"nodes": [
+			{"id": "a", "title": "Process A"},
+			{"id": "b", "title": "Process B"}
+		],
+		"artifactSlots": [],
+		"inputSpecs": [],
+		"structuralQuestions": [{
+			"id": "report_topology",
+			"impact": "task_dependencies",
+			"question": "Should B depend on A, or should they run independently?",
+			"description": "The intent does not define a data dependency.",
+			"options": [
+				{"id": "parallel", "label": "Run independently"},
+				{"id": "a_then_b", "label": "B depends on A"}
+			]
+		}]
+	}`
+	plan, err := parseDefinitionPlanResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.StructuralQuestions) != 1 || plan.StructuralQuestions[0].ID != "report_topology" {
+		t.Fatalf("structuralQuestions=%+v", plan.StructuralQuestions)
+	}
+}
+
+func TestDecodeDefinitionPlan_RejectsInvalidStructuralQuestionCollection(t *testing.T) {
+	raw := `{"goal":"deliver","nodes":[],"artifactSlots":[],"inputSpecs":[],"structuralQuestions":null}`
+	_, err := parseDefinitionPlanResponse(raw)
+	if err == nil || !strings.Contains(err.Error(), "structuralQuestions must not be null") {
+		t.Fatalf("err=%v, want null structuralQuestions rejection", err)
+	}
+}
+
+func TestDefinitionPlanMessages_DoNotRepeatAnsweredStructuralQuestion(t *testing.T) {
+	messages := buildDefinitionPlanMessages(
+		0,
+		"organize A and B",
+		`{"goal":"","nodes":[],"artifactSlots":[],"inputSpecs":[]}`,
+		"",
+		nil,
+		"en",
+		[]work.DefinitionStructuralAnswer{{
+			QuestionID: "report_topology",
+			OptionID:   "parallel",
+			Value:      "Run independently",
+		}},
+	)
+	user := messages[len(messages)-1].Content
+	for _, want := range []string{
+		`"questionId":"report_topology"`,
+		`"optionId":"parallel"`,
+		"Do not repeat any structural question whose ID appears here",
+	} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("user message missing %q", want)
+		}
+	}
+}
+
 func TestDefinitionPlannerPrompt_DeclaresImageCapabilityRouting(t *testing.T) {
 	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
 	for _, want := range []string{
@@ -1891,6 +2031,30 @@ func TestDefinitionPlannerPrompt_DeclaresImageCapabilityRouting(t *testing.T) {
 		if !strings.Contains(sysPrompt, want) {
 			t.Fatalf("system prompt missing %q", want)
 		}
+	}
+}
+
+func TestDefinitionPlannerPrompt_SeparatesSourceFilesFromDeliverables(t *testing.T) {
+	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
+	for _, want := range []string{
+		"Artifact slots are deliverable outputs",
+		"Never use an artifact slot for an original/source/input file",
+		"must be a file InputSpec",
+		"must not reproduce the same file through producesSlotIds",
+		`"inputSpecIds": ["source_pdf"]`,
+		`"producesSlotIds": ["translated_pdf"]`,
+		`"id": "translated_pdf", "title": "Translated PDF"`,
+		`"id": "source_pdf", "label": "Which PDF should be translated?"`,
+	} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("system prompt missing source/deliverable rule %q", want)
+		}
+	}
+	if strings.Contains(definitionPlanSchema, `"producesSlotIds": ["source_pdf"]`) {
+		t.Fatal("complete example incorrectly teaches the planner to produce the source file")
+	}
+	if got := strings.Count(definitionPlanSchema, `"id": "source_pdf"`); got != 1 {
+		t.Fatalf("source_pdf must appear exactly once as an InputSpec id, got %d", got)
 	}
 }
 
@@ -2013,5 +2177,100 @@ func TestDecodeDefinitionPlan_AllowsRequiredInputSpecReferencedByAnyNode(t *test
 	}
 	if plan == nil {
 		t.Fatal("nil plan")
+	}
+}
+
+// ── Locale language constraint tests ──────────────────────────────────────
+
+func TestDefinitionPlanner_LocalePrompt_English(t *testing.T) {
+	prov := &sequenceProvider{
+		sequences: [][]provider.Chunk{
+			{chunkT(validPlanJSON()), chunkD},
+		},
+	}
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
+	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
+		Intent: "restructure",
+		Work:   &work.Work{ID: "w1", Locale: "en"},
+		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysContent := prov.lastRequest().Messages[0].Content
+	if !strings.Contains(sysContent, "Work language") {
+		t.Fatal("definition planner system prompt missing ## Work language section")
+	}
+	if !strings.Contains(sysContent, "English") {
+		t.Fatal("definition planner prompt missing English language constraint")
+	}
+}
+
+func TestDefinitionPlanner_LocalePrompt_SimplifiedChinese(t *testing.T) {
+	prov := &sequenceProvider{
+		sequences: [][]provider.Chunk{
+			{chunkT(validPlanJSON()), chunkD},
+		},
+	}
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
+	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
+		Intent: "重构",
+		Work:   &work.Work{ID: "w1", Locale: "zh"},
+		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "基础"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysContent := prov.lastRequest().Messages[0].Content
+	if !strings.Contains(sysContent, "Simplified Chinese") {
+		t.Fatal("definition planner prompt missing Simplified Chinese language constraint")
+	}
+}
+
+func TestDefinitionPlanner_LocalePrompt_TraditionalChinese(t *testing.T) {
+	prov := &sequenceProvider{
+		sequences: [][]provider.Chunk{
+			{chunkT(validPlanJSON()), chunkD},
+		},
+	}
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
+	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
+		Intent: "重構",
+		Work:   &work.Work{ID: "w1", Locale: "zh-TW"},
+		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "基礎"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysContent := prov.lastRequest().Messages[0].Content
+	if !strings.Contains(sysContent, "Traditional Chinese") {
+		t.Fatal("definition planner prompt missing Traditional Chinese language constraint")
+	}
+}
+
+func TestDefinitionPlanner_LocaleRepair_InheritsLanguage(t *testing.T) {
+	bad := `{"goal":"x","nodes":[],"artifactSlots":[],"inputSpecs":[],"extra":true}`
+	prov := &repairCaptureProvider{
+		sequences: [][]provider.Chunk{
+			{chunkT(bad), chunkD},
+			{chunkT(validPlanJSON()), chunkD},
+		},
+	}
+	planner := newBootDefinitionPlanner(prov, 0, 2048, nil)
+	_, err := planner.PlanDefinition(context.Background(), work.DefinitionPlanInput{
+		Intent: "restructure",
+		Work:   &work.Work{ID: "w1", Locale: "zh"},
+		Base:   &work.WorkDefinitionRevision{WorkID: "w1", Revision: 1, Goal: "base"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.requests) < 2 {
+		t.Fatal("expected at least 2 requests (initial + repair)")
+	}
+	// Repair system prompt must also contain language directive.
+	repairSys := prov.requests[1].Messages[0].Content
+	if !strings.Contains(repairSys, "Simplified Chinese") {
+		t.Fatal("repair system prompt missing language constraint:", repairSys)
 	}
 }

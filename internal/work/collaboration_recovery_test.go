@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1092,6 +1093,173 @@ func TestCreateCandidateRevisionWithResultInfersNameFromPlannerGoal(t *testing.T
 	}
 	if replayed.Name != after.Name {
 		t.Fatalf("replayed Name = %q, want stable %q", replayed.Name, after.Name)
+	}
+}
+
+func TestCreateCandidateRevisionSparseInferableIntentDoesNotAsk(t *testing.T) {
+	store := newTestFileWorkStore(t)
+	sink := &serviceSink{next: make(chan WorkViewEvent, 32)}
+	svc := NewService(store, nil, sink)
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
+		SessionID: "session-" + t.Name(),
+		RequestID: "begin-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, state, err := store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRevision := record.V2CurrentRevision
+	if baseRevision == 0 {
+		baseRevision = record.V2LatestRevision
+	}
+	svc.SetV2DefinitionPlanner(definitionPlannerFunc(func(_ context.Context, input DefinitionPlanInput) (*DefinitionPlan, error) {
+		input.OnProgress(DefinitionPlanProgress{Kind: "raw", Text: `{"goal":"翻译 PDF"`})
+		return &DefinitionPlan{
+			Goal: "翻译用户提供的 PDF 并生成英文 PDF",
+			Nodes: []NodeDef{
+				{ID: "read", Title: "读取 PDF"},
+				{ID: "translate", Title: "翻译并生成英文 PDF", DependsOn: []string{"read"}, ProducesSlotIDs: []string{"english_pdf"}},
+			},
+			ArtifactSlots: []ArtifactSlotDef{{
+				ID: "english_pdf", Title: "英文 PDF", Kind: "pdf", ExpectedCount: 1, Required: true,
+			}},
+			InputSpecs: []InputSpec{},
+		}, nil
+	}))
+	request := CreateCandidateRevisionInput{
+		WorkID:                 view.Work.ID,
+		Intent:                 "翻译一个中文 PDF 到英文",
+		BaseDefinitionRevision: baseRevision,
+		ExpectedRevision:       state.Revision,
+		RequestID:              "candidate-" + t.Name(),
+		InferName:              true,
+	}
+	result, err := svc.CreateCandidateRevisionWithResult(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Candidate == nil || result.Clarification != nil {
+		t.Fatalf("result=%+v, want direct commit without clarification", result)
+	}
+}
+
+func TestCreateCandidateRevisionPausesOnlyForPlannerStructuralAmbiguity(t *testing.T) {
+	store := newTestFileWorkStore(t)
+	sink := &serviceSink{next: make(chan WorkViewEvent, 32)}
+	svc := NewService(store, nil, sink)
+	view, err := svc.BeginWorkPlanning(context.Background(), BeginWorkPlanningInput{
+		SessionID: "session-" + t.Name(),
+		RequestID: "begin-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, state, err := store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRevision := record.V2CurrentRevision
+	if baseRevision == 0 {
+		baseRevision = record.V2LatestRevision
+	}
+	var observedAnswers []DefinitionStructuralAnswer
+	svc.SetV2DefinitionPlanner(definitionPlannerFunc(func(_ context.Context, input DefinitionPlanInput) (*DefinitionPlan, error) {
+		observedAnswers = append([]DefinitionStructuralAnswer(nil), input.StructuralAnswers...)
+		plan := &DefinitionPlan{
+			Goal: "处理两组报告并生成汇总",
+			Nodes: []NodeDef{
+				{ID: "process_a", Title: "处理 A 组报告", ProducesSlotIDs: []string{"report_a"}},
+				{ID: "process_b", Title: "处理 B 组报告", ProducesSlotIDs: []string{"report_b"}},
+				{
+					ID: "summary", Title: "生成汇总", DependsOn: []string{"process_a", "process_b"},
+					ConsumesSlotIDs: []string{"report_a", "report_b"}, ProducesSlotIDs: []string{"summary"},
+				},
+			},
+			ArtifactSlots: []ArtifactSlotDef{
+				{ID: "report_a", Title: "A 组报告", Kind: "document", ExpectedCount: 1, Required: true},
+				{ID: "report_b", Title: "B 组报告", Kind: "document", ExpectedCount: 1, Required: true},
+				{ID: "summary", Title: "汇总报告", Kind: "document", ExpectedCount: 1, Required: true},
+			},
+			InputSpecs: []InputSpec{},
+		}
+		if len(input.StructuralAnswers) == 0 {
+			plan.StructuralQuestions = []DefinitionStructuralClarification{{
+				ID:          "report_topology",
+				Impact:      definitionImpactDependencies,
+				Question:    "A、B 两组报告应独立并行处理，还是 B 组必须使用 A 组的结果？",
+				Description: "任务说明没有给出两组报告之间的数据依赖，两种结构都会改变执行拓扑。",
+				Options: []DefinitionStructuralOption{
+					{ID: "parallel", Label: "两组独立并行", Description: "A、B 两组互不依赖，完成后再汇总"},
+					{ID: "a_then_b", Label: "A 完成后处理 B", Description: "B 组节点依赖 A 组结果"},
+				},
+			}}
+		}
+		return plan, nil
+	}))
+	request := CreateCandidateRevisionInput{
+		WorkID:                 view.Work.ID,
+		Intent:                 "处理 A、B 两组报告并汇总；它们的关系由我决定",
+		BaseDefinitionRevision: baseRevision,
+		ExpectedRevision:       state.Revision,
+		RequestID:              "candidate-" + t.Name(),
+		InferName:              true,
+	}
+	first, err := svc.CreateCandidateRevisionWithResult(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Committed || first.Candidate != nil || first.Clarification == nil || !first.Recoverable {
+		t.Fatalf("first result=%+v, want recoverable clarification without commit", first)
+	}
+	if first.Clarification.ID != "report_topology" || first.Clarification.Impact != definitionImpactDependencies {
+		t.Fatalf("clarification=%+v, want planner-provided dependency ambiguity", first.Clarification)
+	}
+	if len(first.Clarification.Flow) != 3 || len(first.Clarification.Options) != 2 {
+		t.Fatalf("clarification=%+v, want derived flow and two neutral options", first.Clarification)
+	}
+	for _, option := range first.Clarification.Options {
+		if option.Recommended {
+			t.Fatalf("option=%+v, non-inferable choice must not have a default", option)
+		}
+	}
+
+	request.RequestID += "-answered"
+	request.StructuralAnswers = []DefinitionStructuralAnswer{{
+		QuestionID: first.Clarification.ID,
+		OptionID:   "parallel",
+		Value:      "两组独立并行",
+	}}
+	second, err := svc.CreateCandidateRevisionWithResult(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Committed || second.Candidate == nil || second.Clarification != nil {
+		t.Fatalf("second result=%+v, want committed candidate", second)
+	}
+	if len(observedAnswers) != 1 || observedAnswers[0].OptionID != "parallel" {
+		t.Fatalf("planner answers=%+v", observedAnswers)
+	}
+}
+
+func TestDefinitionStructuralQuestionRejectsInferableDefault(t *testing.T) {
+	plan := &DefinitionPlan{
+		Nodes: []NodeDef{{ID: "first", Title: "第一步"}, {ID: "second", Title: "第二步"}},
+		StructuralQuestions: []DefinitionStructuralClarification{{
+			ID:       "execution_shape",
+			Impact:   definitionImpactDependencies,
+			Question: "两个节点应并行还是串行？",
+			Options: []DefinitionStructuralOption{
+				{ID: "parallel", Label: "并行", Recommended: true},
+				{ID: "sequential", Label: "串行"},
+			},
+		}},
+	}
+	_, err := nextDefinitionStructuralClarification(plan, nil)
+	if err == nil || !strings.Contains(err.Error(), "must not recommend") {
+		t.Fatalf("err=%v, want recommended-default rejection", err)
 	}
 }
 

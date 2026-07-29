@@ -1043,7 +1043,7 @@ async function runTests(): Promise<void> {
       host.querySelector('[data-testid="result-add-producer"]') === null,
       'result add: producer choice is not exposed to the user',
     );
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add-preview"]')!.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add-submit"]')!.click());
     eq(requests.length, 1, 'result add: emits one workflow preview request');
     eq(requests[0]?.nodeId, 'review', 'result add: uses the terminal task only as a stable preview anchor');
     contains(requests[0]?.instruction ?? '', '学习总结', 'result add: instruction is human readable');
@@ -1075,7 +1075,7 @@ async function runTests(): Promise<void> {
     const confirm = host.querySelector('[data-testid="result-delete-confirm"]');
     contains(confirm?.textContent ?? '', '生成报告', 'result remove: producer impact shown');
     contains(confirm?.textContent ?? '', '审核报告', 'result remove: consumer impact shown');
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-preview"]')!.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-confirm-btn"]')!.click());
     eq(requests.length, 1, 'result remove: emits one workflow preview request');
     eq(requests[0]?.nodeId, 'make', 'result remove: anchors discussion to producer');
     contains(requests[0]?.instruction ?? '', '从所有产出或使用它的任务中移除引用', 'result remove: cleans all references');
@@ -1103,6 +1103,54 @@ async function runTests(): Promise<void> {
     );
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
     const format = host.querySelector<HTMLSelectElement>('[data-testid="result-edit-kind"]')!;
+
+    // All 12 format options are present with clear labels.
+    const expectedFormats: Record<string, string> = {
+      document: '文档（Markdown）',
+      text: '纯文本',
+      docx: 'Word 文档（DOCX）',
+      pdf: 'PDF 文档',
+      xlsx: 'Excel 工作簿（XLSX）',
+      data: '数据',
+      sh: 'Shell 脚本（SH）',
+      bat: 'Windows 批处理（BAT/CMD）',
+      ps1: 'PowerShell 脚本（PS1）',
+      exe: '可执行程序（EXE）',
+      zip: '压缩包（ZIP）',
+      file: '其他文件',
+    };
+    for (const [value, label] of Object.entries(expectedFormats)) {
+      eq(
+        format.querySelector<HTMLOptionElement>(`option[value="${value}"]`)?.textContent,
+        label,
+        `result edit: ${value} format is available with a clear label`,
+      );
+    }
+
+    // Switching to each new format correctly rewrites the extension.
+    const extensionCases: Array<{ kind: string; expectedTitle: string }> = [
+      { kind: 'docx', expectedTitle: '预算表.docx' },
+      { kind: 'pdf', expectedTitle: '预算表.pdf' },
+      { kind: 'sh', expectedTitle: '预算表.sh' },
+      { kind: 'bat', expectedTitle: '预算表.bat' },
+      { kind: 'ps1', expectedTitle: '预算表.ps1' },
+      { kind: 'exe', expectedTitle: '预算表.exe' },
+      { kind: 'zip', expectedTitle: '预算表.zip' },
+    ];
+    for (const tc of extensionCases) {
+      await interact(() => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+        setter?.call(format, tc.kind);
+        format.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      eq(
+        host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+        tc.expectedTitle,
+        `result edit: ${tc.kind} rewrites extension to ${tc.expectedTitle}`,
+      );
+    }
+
+    // Switch back to xlsx for the workflow preview assertion.
     await interact(() => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
       setter?.call(format, 'xlsx');
@@ -1113,7 +1161,7 @@ async function runTests(): Promise<void> {
       '预算表.xlsx',
       'result edit: changing format updates the known file extension',
     );
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-preview"]')!.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-submit"]')!.click());
     eq(requests.length, 1, 'result edit: emits one workflow preview request');
     eq(requests[0]?.nodeId, 'make', 'result edit: anchors the change to the existing producer');
     contains(requests[0]?.title ?? '', '修改成果', 'result edit: request title is human readable');
@@ -1121,6 +1169,265 @@ async function runTests(): Promise<void> {
     contains(requests[0]?.instruction ?? '', '格式从 document 改为 xlsx', 'result edit: changes the format field');
     contains(requests[0]?.instruction ?? '', '不能只改扩展名或 MIME', 'result edit: requires true file regeneration');
     contains(requests[0]?.instruction ?? '', '不要删除后重建', 'result edit: keeps producer and consumer references stable');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 32. New format kinds are all available in the add form dropdown
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={() => {}}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
+    const addFormat = host.querySelector<HTMLSelectElement>('[data-testid="result-add-kind"]')!;
+    const allKinds = ['document', 'text', 'xlsx', 'docx', 'pdf', 'data', 'sh', 'bat', 'ps1', 'exe', 'zip', 'file'];
+    for (const kind of allKinds) {
+      ok(
+        addFormat.querySelector<HTMLOptionElement>(`option[value="${kind}"]`) !== null,
+        `result add: ${kind} option is present in the add form`,
+      );
+    }
+    // Default kind is "document".
+    eq(addFormat.value, 'document', 'result add: default kind is document');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 33. Extension rewrite handles .txt → new format and compound extensions
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const definition = makeDefinition();
+    definition.artifactSlots[0] = {
+      ...definition.artifactSlots[0],
+      title: 'output.txt',
+      kind: 'text',
+    };
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot({ title: 'output.txt', kind: 'text' })]}
+        activeDefinitionRevision={2}
+        definition={definition}
+        onRequestWorkflowChange={() => {}}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
+    const format = host.querySelector<HTMLSelectElement>('[data-testid="result-edit-kind"]')!;
+
+    // .txt → .sh rewrites correctly.
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(format, 'sh');
+      format.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    eq(
+      host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+      'output.sh',
+      'result edit: .txt → .sh rewrites extension',
+    );
+
+    // .txt → .exe rewrites correctly.
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(format, 'exe');
+      format.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    eq(
+      host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+      'output.exe',
+      'result edit: .txt → .exe rewrites extension',
+    );
+
+    // .txt → .bat rewrites correctly.
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(format, 'bat');
+      format.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    eq(
+      host.querySelector<HTMLInputElement>('[data-testid="result-edit-title"]')?.value,
+      'output.bat',
+      'result edit: .txt → .bat rewrites extension',
+    );
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 34. workflowChangeState: "正在更新流程..." status visible
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={() => {}}
+        workflowChangeState={{ token: 'tk-1', status: 'updating' }}
+      />,
+    );
+    const status = host.querySelector('[data-testid="result-workflow-status"]');
+    ok(status !== null, 'wf-state updating: status bar visible');
+    contains(status?.textContent ?? '', '正在更新流程', 'wf-state updating: shows updating text');
+    ok(status?.classList.contains('wg2-rs-wfstatus--updating') ?? false, 'wf-state updating: has updating class');
+    // Add button should be disabled while updating
+    const addBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-add"]');
+    ok(addBtn?.disabled === true, 'wf-state updating: add button disabled');
+    // Edit button should be disabled
+    const editBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]');
+    ok(editBtn?.disabled === true, 'wf-state updating: edit button disabled');
+    // Delete button should be disabled
+    const deleteBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-delete-slot-1"]');
+    ok(deleteBtn?.disabled === true, 'wf-state updating: delete button disabled');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 35. workflowChangeState: "已更新" status appears and auto-dismisses
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    let container: Element | null = null;
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={() => {}}
+        workflowChangeState={{ token: 'tk-2', status: 'applied' }}
+      />,
+    );
+    container = host.querySelector('[data-testid="result-workflow-status"]');
+    ok(container !== null, 'wf-state applied: status bar visible');
+    contains(container?.textContent ?? '', '已更新', 'wf-state applied: shows applied text');
+    ok(container?.classList.contains('wg2-rs-wfstatus--applied') ?? false, 'wf-state applied: has applied class');
+    // After auto-dismiss timeout (>3s), the "已更新" text should disappear
+    await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 3500)); });
+    container = host.querySelector('[data-testid="result-workflow-status"]');
+    ok(container === null, 'wf-state applied: status auto-dismissed without an empty container');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 36. workflowChangeState: "失败" status with retry button
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const retried: string[] = [];
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={(req) => { retried.push(req.token); }}
+        workflowChangeState={{ token: 'tk-3', status: 'failed', error: '预览超时' }}
+      />,
+    );
+    const status = host.querySelector('[data-testid="result-workflow-status"]');
+    ok(status !== null, 'wf-state failed: status bar visible');
+    contains(status?.textContent ?? '', '更新失败', 'wf-state failed: shows failed text');
+    contains(status?.textContent ?? '', '预览超时', 'wf-state failed: shows error detail');
+    ok(status?.classList.contains('wg2-rs-wfstatus--failed') ?? false, 'wf-state failed: has failed class');
+    const retryBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-workflow-retry"]');
+    ok(retryBtn !== null, 'wf-state failed: retry button visible');
+    contains(retryBtn?.textContent ?? '', '重试', 'wf-state failed: retry button label');
+    await interact(() => retryBtn?.click());
+    eq(retried.length, 0, 'wf-state failed: retry fires only when a prior request was stored (no-op for cold state)');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 37. Button text: no "预览" or "Patch" language exposed
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const definition = makeDefinition();
+    definition.artifactSlots[0] = { ...definition.artifactSlots[0], title: '测试.md', kind: 'document' };
+    const { host, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot({ title: '测试.md', kind: 'document' })]}
+        activeDefinitionRevision={2}
+        definition={definition}
+        onRequestWorkflowChange={() => {}}
+      />,
+    );
+    // Add form
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
+    const addBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-add-submit"]');
+    contains(addBtn?.textContent ?? '', '添加成果', 'wf-state text: add button says 添加成果');
+    ok(!(addBtn?.textContent ?? '').includes('预览'), 'wf-state text: add button no 预览');
+    ok(!(addBtn?.textContent ?? '').includes('Patch'), 'wf-state text: add button no Patch');
+    ok(!(addBtn?.textContent ?? '').includes('差异'), 'wf-state text: add button no 差异');
+    // Close add
+    await interact(() => host.querySelector<HTMLButtonElement>('[aria-label="关闭添加成果"]')!.click());
+
+    // Edit form
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-edit-slot-1"]')!.click());
+    const editBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-edit-submit"]');
+    contains(editBtn?.textContent ?? '', '保存修改', 'wf-state text: edit button says 保存修改');
+    ok(!(editBtn?.textContent ?? '').includes('预览'), 'wf-state text: edit button no 预览');
+    // Close edit
+    await interact(() => host.querySelector<HTMLButtonElement>('[aria-label="关闭修改成果"]')!.click());
+
+    // Delete confirm
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-delete-slot-1"]')!.click());
+    const delBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-delete-confirm-btn"]');
+    contains(delBtn?.textContent ?? '', '删除成果', 'wf-state text: delete button says 删除成果');
+    ok(!(delBtn?.textContent ?? '').includes('预览'), 'wf-state text: delete button no 预览');
+    // Editor action description should not mention Patch/差异
+    const descAfterAddClose = host.querySelector('.wg2-rs-editor');
+    ok(descAfterAddClose === null, 'wf-state text: add editor closed');
+    await cleanup();
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // 38. Retry with stored request re-fires identical token
+  // ════════════════════════════════════════════════════════════════════════
+  {
+    const requests: Array<{ token: string; attempt?: number }> = [];
+    const { host, root, cleanup } = await mount(
+      <ResultShelf
+        slots={[makeSlot()]}
+        activeDefinitionRevision={2}
+        definition={makeDefinition()}
+        onRequestWorkflowChange={(req) => { requests.push({ token: req.token, attempt: req.attempt }); }}
+        workflowChangeState={null}
+      />,
+    );
+    // First submit an add to prime lastRequestRef
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
+    const title = host.querySelector<HTMLInputElement>('[data-testid="result-add-title"]')!;
+    await interact(() => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      setter?.call(title, 'retry-target');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add-submit"]')!.click());
+    eq(requests.length, 1, 'wf-state retry: first request fired');
+    const firstToken = requests[0]!.token;
+    ok(firstToken.startsWith('add:'), 'wf-state retry: token is add-type');
+    eq(requests[0]?.attempt, undefined, 'wf-state retry: first dispatch has no retry attempt');
+
+    // Re-render with failed state, same token — retry should re-fire
+    await act(async () => {
+      root.render(
+        <ResultShelf
+          slots={[makeSlot()]}
+          activeDefinitionRevision={2}
+          definition={makeDefinition()}
+          onRequestWorkflowChange={(req) => { requests.push({ token: req.token, attempt: req.attempt }); }}
+          workflowChangeState={{ token: firstToken, status: 'failed', error: 'boom' }}
+        />,
+      );
+    });
+    await settle();
+    const retryBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-workflow-retry"]');
+    ok(retryBtn !== null, 'wf-state retry: retry button rendered');
+    await interact(() => retryBtn?.click());
+    eq(requests.length, 2, 'wf-state retry: retry re-fires request');
+    eq(requests[1]?.token, firstToken, 'wf-state retry: retry uses the same token for idempotency');
+    eq(requests[1]?.attempt, 1, 'wf-state retry: retry increments dispatch attempt');
     await cleanup();
   }
 

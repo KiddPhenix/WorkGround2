@@ -307,8 +307,8 @@ type ActionReceiptRecord struct {
 	Result                 json.RawMessage     `json:"result,omitempty"`
 	Retryable              bool                `json:"retryable"`
 	OutcomeKnown           bool                `json:"outcomeKnown"`
-	CreatedAt              time.Time           `json:"createdAt"`
-	UpdatedAt              time.Time           `json:"updatedAt"`
+	CreatedAt              time.Time           `json:"createdAt" ts_type:"string"`
+	UpdatedAt              time.Time           `json:"updatedAt" ts_type:"string"`
 }
 
 func (r ActionReceiptRecord) toPublicReceipt(revision int64) *ActionReceipt {

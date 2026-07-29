@@ -21,7 +21,7 @@ type V2IntentReceipt struct {
 	ResultDigest   string         `json:"resultDigest"`   // body digest of the result revision
 	ResultRunID    string         `json:"resultRunId,omitempty"`
 	Impact         *RunImpactJSON `json:"impact,omitempty"`
-	CreatedAt      time.Time      `json:"createdAt"`
+	CreatedAt      time.Time      `json:"createdAt" ts_type:"string"`
 }
 
 // RunImpactJSON is the JSON-serialisable form of RunImpact for persistence.

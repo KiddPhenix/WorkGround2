@@ -271,6 +271,7 @@ export interface ApplyWorkPatchResult {
 export interface BeginWorkPlanningInput {
   sessionId: string;
   requestId: string;
+  locale: 'en' | 'zh' | 'zh-TW';
 }
 
 export interface BeginWorkPlanningResult {
@@ -296,10 +297,50 @@ export interface CreateCandidateRevisionInput {
   expectedRevision: number;
   requestId: string;
   inferName?: boolean;
+  structuralAnswers?: DefinitionStructuralAnswer[];
+}
+
+export type DefinitionStructureImpact =
+  | 'task_nodes'
+  | 'task_dependencies'
+  | 'input_slots'
+  | 'artifact_slots';
+
+export interface DefinitionStructuralAnswer {
+  questionId: string;
+  optionId?: string;
+  value: string;
+}
+
+export interface DefinitionStructuralOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+  custom?: boolean;
+}
+
+export interface DefinitionStructuralClarification {
+  id: string;
+  impact: DefinitionStructureImpact;
+  question: string;
+  description?: string;
+  flow: string[];
+  options: DefinitionStructuralOption[];
+  customPlaceholder?: string;
+}
+
+export interface DefinitionPlanProgress {
+  requestId: string;
+  sequence: number;
+  kind: 'analyzing' | 'raw' | 'node' | 'dependency' | 'clarification' | 'complete';
+  text: string;
+  state: 'streaming' | 'waiting' | 'complete';
 }
 
 export interface CreateCandidateRevisionResult {
   candidate?: WorkDefinitionRevision;
+  clarification?: DefinitionStructuralClarification;
   impact?: RunImpact;
   revision: number;
   duplicate: boolean;
@@ -488,6 +529,7 @@ export interface TaskV2View {
   title: string;
   state: TaskStateV2;
   progress?: string;
+  sessionRef?: import('./types.js').SessionRef;
   waitingInputIds?: string[];
   error?: string;
   retryable: boolean;

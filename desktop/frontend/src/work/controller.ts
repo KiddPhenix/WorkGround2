@@ -40,6 +40,7 @@ import type {
   CornerstonePinResult,
   CreateCandidateRevisionInput,
   CreateCandidateRevisionResult,
+  DefinitionPlanProgress,
   ArtifactPreview,
   PreviewArtifactRequest,
   PreviewArtifactResult,
@@ -157,6 +158,18 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function revisionConflict(error: unknown): { actualRevision?: number } | null {
+  const value = typeof error === 'object' && error !== null
+    ? error as { code?: unknown; actualRevision?: unknown; currentRevision?: unknown }
+    : null;
+  const match = errorText(error).match(
+    /work event conflict\b.*expected revision \d+,\s*current revision (\d+)/i,
+  );
+  if (value?.code !== 'revision_conflict' && !match) return null;
+  const actual = value?.actualRevision ?? value?.currentRevision ?? (match ? Number(match[1]) : undefined);
+  return Number.isSafeInteger(actual) ? { actualRevision: actual as number } : {};
+}
+
 function isOverflowRecoveryFailure(event: WorkViewEvent): boolean {
   if (event.type !== 'attention' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return false;
   const payload = event.payload as Record<string, unknown>;
@@ -224,6 +237,7 @@ export class WorkControllerAdapter {
   private readonly pendingRetries = new Map<string, Promise<Attempt>>();
   private readonly statusByWork: Record<string, WorkControllerStatus> = {};
   private readonly statusListeners = new Set<() => void>();
+  private readonly planningListeners = new Map<string, Set<(progress: DefinitionPlanProgress) => void>>();
   private readonly subscriptionGenerations = new Map<string, number>();
   private snapshotEventGeneration = 0;
   private disposed = false;
@@ -299,6 +313,7 @@ export class WorkControllerAdapter {
         return;
       }
       if (state.recoveryEventIDs.has(parsed.eventID)) return;
+      this.notifyPlanning(parsed);
       if (state.buffering) {
         state.events.push(parsed);
         return;
@@ -332,6 +347,17 @@ export class WorkControllerAdapter {
         const snapshotResult = state.recoveryReason
           ? await this.recoverSubscriptionSnapshot(workID, state)
           : await this.recoverSnapshot(workID);
+        // hydrate conflict at the same revision means content genuinely
+        // diverged beyond assessment-only merge. Escalate to a full
+        // authoritative retry overwrite instead of going offline.
+        if (snapshotResult.kind === 'conflict' && state.recoveryReason === 'hydrate') {
+          if (this.isCurrentSubscription(workID, state)) {
+            this.restartSubscription(workID, state);
+          } else {
+            subscription.unsubscribe();
+          }
+          return;
+        }
         let observedUnsupported = snapshotResult.kind === 'unsupported';
         if (!this.isCurrentSubscription(workID, state)) {
           subscription.unsubscribe();
@@ -395,6 +421,41 @@ export class WorkControllerAdapter {
     this.subscriptions.delete(workID);
   };
 
+  subscribePlanning = (
+    workID: string,
+    listener: (progress: DefinitionPlanProgress) => void,
+  ): (() => void) => {
+    let listeners = this.planningListeners.get(workID);
+    if (!listeners) {
+      listeners = new Set();
+      this.planningListeners.set(workID, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) this.planningListeners.delete(workID);
+    };
+  };
+
+  private notifyPlanning(event: WorkViewEvent): void {
+    if (event.type !== 'attention' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return;
+    const planning = (event.payload as Record<string, unknown>).planning;
+    if (typeof planning !== 'object' || planning === null || Array.isArray(planning)) return;
+    const value = planning as Record<string, unknown>;
+    if (
+      typeof value.requestId !== 'string'
+      || !Number.isSafeInteger(value.sequence)
+      || Number(value.sequence) <= 0
+      || typeof value.kind !== 'string'
+      || typeof value.text !== 'string'
+      || typeof value.state !== 'string'
+    ) return;
+    const progress = value as unknown as DefinitionPlanProgress;
+    for (const listener of this.planningListeners.get(event.workID) ?? []) {
+      listener(progress);
+    }
+  }
+
   retrySubscription = (workID: string): void => {
     void this.reconcileSnapshot(workID).catch(() => undefined);
   };
@@ -443,6 +504,11 @@ export class WorkControllerAdapter {
     // generation while this valid response was in flight. That makes the
     // response harmlessly ignored, not a failed subscription handshake.
     if (result.kind !== 'applied' && result.kind !== 'duplicate' && result.kind !== 'ignored') {
+      // hydrate at the same revision may legitimately conflict when
+      // content diverged (store protects against silent overwrite of
+      // non-assessment fields). Return the conflict so the caller can
+      // escalate to a full authoritative retry overwrite.
+      if (reason === 'hydrate' && result.kind === 'conflict') return result;
       const detail = result.kind === 'conflict' ? result.conflict.reason : result.kind;
       throw new Error(`authoritative ${reason} snapshot was not applied: ${detail}`);
     }
@@ -542,7 +608,12 @@ export class WorkControllerAdapter {
           if (view.work.id !== workID) throw new Error(`snapshot workID ${view.work.id} does not match ${workID}`);
           const eventGeneration = ++this.snapshotEventGeneration;
           const result = applySnapshot(view, `fetch:${workID}:${view.revision}:${eventGeneration}`);
-          if (result.kind === 'conflict') throw new Error(result.conflict.reason);
+          if (result.kind === 'conflict') {
+            if (result.conflict.reason === 'different snapshot at the current revision') {
+              return this.reconcileSnapshot(workID);
+            }
+            throw new Error(result.conflict.reason);
+          }
           const state = useWorkStore.getState();
           const issue = state.gaps[workID];
           if (!issue) {
@@ -593,7 +664,7 @@ export class WorkControllerAdapter {
       }
     }
     const currentRevision = useWorkStore.getState().revisions[workID] ?? -1;
-    const message = `候选已提交 (revision ${minimumRevision})，但权威状态刷新 ${MAX_SNAPSHOT_RECOVERY_FETCHES + 1} 次后仍停留在 revision ${currentRevision}，请重试。`;
+    const message = `权威状态刷新 ${MAX_SNAPSHOT_RECOVERY_FETCHES + 1} 次后仍停留在 revision ${currentRevision}，未达到 revision ${minimumRevision}，请重试。`;
     this.updateStatus(workID, { snapshotError: message });
     throw Object.assign(new Error(message), {
       committed: true, recoverable: true, code: 'snapshot_stale',
@@ -687,7 +758,7 @@ export class WorkControllerAdapter {
         );
       }
     }
-    if (!result.committed) {
+    if (!result.committed && !result.clarification) {
       if (result.transportError?.code === 'revision_conflict') {
         await this.recoverSnapshot(input.workId);
       }
@@ -882,7 +953,23 @@ export class WorkControllerAdapter {
 
   updateDraft = async (input: UpdateDraftInput): Promise<WorkView> => {
     if (!this.port.updateDraft) throw new Error('Work 草稿保存能力尚未连接。');
-    const view = await this.port.updateDraft(input);
+    let view: WorkView;
+    try {
+      view = await this.port.updateDraft(input);
+    } catch (error) {
+      const conflict = revisionConflict(error);
+      if (!conflict) throw error;
+      if (conflict.actualRevision !== undefined) {
+        await this.recoverSnapshotToRevision(input.workId, conflict.actualRevision);
+      } else {
+        await this.recoverSnapshot(input.workId);
+      }
+      const expectedRevision = useWorkStore.getState().revisions[input.workId];
+      if (!Number.isSafeInteger(expectedRevision)) {
+        throw new Error(`Work ${input.workId} 权威 revision 未载入，草稿保存未重试。`);
+      }
+      view = await this.port.updateDraft({ ...input, expectedRevision: expectedRevision! });
+    }
     if (!this.applyMutationView(input.workId, view, `draft:${input.requestId}:${view.revision}`)) {
       await this.recoverSnapshot(input.workId);
     }
@@ -911,6 +998,7 @@ export class WorkControllerAdapter {
     }
     this.subscriptions.clear();
     this.statusListeners.clear();
+    this.planningListeners.clear();
   };
 
   private applyMutationView(workID: string, view: WorkView, eventID: string): boolean {

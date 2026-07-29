@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { app } from '../../lib/bridge';
-import { useT } from '../../lib/i18n';
+import { useI18n, type Locale } from '../../lib/i18n';
 import { WorkControllerAdapter } from '../../work/controller';
 import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
 import type {
@@ -95,7 +95,7 @@ export interface WorkPageProps {
 }
 
 export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, onOpenWork }) => {
-  const t = useT();
+  const { locale, t } = useI18n();
   const [pageState, setPageState] = useState<PageState>('loading');
   const [error, setError] = useState<string | null>(null);
   const [works, setWorks] = useState<WorkSummary[]>([]);
@@ -111,7 +111,7 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, on
   const [actionWorkID, setActionWorkID] = useState<string | null>(null);
   const mountGenRef = useRef(0);
   const createIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
-  const planningIntentRef = useRef<{ sessionId: string; requestId: string } | null>(null);
+  const planningIntentRef = useRef<{ sessionId: string; requestId: string; locale: Locale } | null>(null);
   const actionIntentsRef = useRef(new Map<string, string>());
 
   const load = useCallback(async (state: WorkArchiveState, gen = mountGenRef.current) => {
@@ -229,7 +229,11 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, on
     if (!tabID || planning) return;
     const planningSessionID = sessionID?.trim() || tabID;
     if (planningIntentRef.current?.sessionId !== planningSessionID) {
-      planningIntentRef.current = { sessionId: planningSessionID, requestId: requestID('planning') };
+      planningIntentRef.current = {
+        sessionId: planningSessionID,
+        requestId: requestID('planning'),
+        locale,
+      };
     }
     const intent = planningIntentRef.current;
     const gen = mountGenRef.current;
@@ -241,7 +245,11 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, on
     const adapter = new WorkControllerAdapter(port);
     setPlanning(true);
     setPlanningError(null);
-    void adapter.beginWorkPlanning({ sessionId: planningSessionID, requestId: intent.requestId })
+    void adapter.beginWorkPlanning({
+      sessionId: planningSessionID,
+      requestId: intent.requestId,
+      locale: intent.locale,
+    })
       .then(async (result) => {
         if (mountGenRef.current !== gen) return;
         const workID = result.result?.work.id ?? result.transportError?.workId;
@@ -262,7 +270,7 @@ export const WorkPage: React.FC<WorkPageProps> = ({ tabID, sessionID, onBack, on
         setPlanningError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => adapter.dispose());
-  }, [load, onOpenWork, planning, sessionID, tabID]);
+  }, [load, locale, onOpenWork, planning, sessionID, tabID]);
 
   const retryV2Flag = useCallback(() => {
     if (!tabID) return;

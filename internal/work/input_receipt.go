@@ -26,7 +26,7 @@ type InputIntentReceipt struct {
 	ResultInput     *WorkInput `json:"resultInput,omitempty"`
 	Pinned          bool       `json:"pinned,omitempty"`
 	Error           string     `json:"error,omitempty"`
-	CreatedAt       time.Time  `json:"createdAt"`
+	CreatedAt       time.Time  `json:"createdAt" ts_type:"string"`
 }
 
 // InputReceiptStore is the persistence interface for input receipts.

@@ -100,6 +100,7 @@ export interface Work {
   schemaVersion: number;
   id: string;
   name: string;
+  locale?: 'en' | 'zh' | 'zh-TW';
   state: WorkState;
   archiveState: WorkArchiveState;
   blueprintRef: BlueprintRef;
@@ -475,6 +476,7 @@ export interface UpdateDraftInput {
   name?: string;
   prompt?: string;
   inputs?: Record<string, unknown>;
+  locale?: Work['locale'];
   expectedRevision: number;
   requestId: string;
 }

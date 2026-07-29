@@ -226,8 +226,8 @@ func TestFlowSyncUsesRemoteSkillsWithoutActiveCheckout(t *testing.T) {
 	if !first.IsProtected() || !first.AntiLeak || first.SourceKind != skill.SourceFlowSkillShare {
 		t.Fatalf("remote skill should default protected anti-leak source kind, got protected=%v antiLeak=%v source=%q", first.IsProtected(), first.AntiLeak, first.SourceKind)
 	}
-	if got := atomic.LoadInt32(&skillHits); got < 2 {
-		t.Fatalf("Provider.Read should fetch remote content each time, skill hits = %d", got)
+	if got := atomic.LoadInt32(&skillHits); got != 1 {
+		t.Fatalf("Provider should reuse one remote snapshot, skill hits = %d", got)
 	}
 }
 

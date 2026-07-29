@@ -26,7 +26,7 @@ type Conclusion struct {
 	Artifacts   []ArtifactRef  `json:"artifacts,omitempty"`
 	NextSteps   []string       `json:"nextSteps,omitempty"`
 	Supersedes  string         `json:"supersedes,omitempty"`
-	GeneratedAt time.Time      `json:"generatedAt"`
+	GeneratedAt time.Time      `json:"generatedAt" ts_type:"string"`
 }
 
 // ── ArtifactRef ────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ type ArtifactRef struct {
 	RelativePath   string     `json:"relativePath,omitempty"`
 	BlobDigest     string     `json:"blobDigest,omitempty"`
 	SourceRunID    string     `json:"sourceRunId,omitempty"`
-	LastVerifiedAt *time.Time `json:"lastVerifiedAt,omitempty"`
+	LastVerifiedAt *time.Time `json:"lastVerifiedAt,omitempty" ts_type:"string"`
 	Error          string     `json:"error,omitempty"`
 }
 
@@ -71,7 +71,7 @@ type SessionRef struct {
 	ModelRef    string    `json:"modelRef"`
 	TurnCount   int       `json:"turnCount"`
 	Preview     string    `json:"preview"`
-	StartedAt   time.Time `json:"startedAt"`
+	StartedAt   time.Time `json:"startedAt" ts_type:"string"`
 }
 
 // ── SourceRef ──────────────────────────────────────────────────────────────

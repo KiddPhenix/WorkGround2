@@ -70,7 +70,7 @@ const planningDeferreds: Array<Deferred<any>> = [];
 const v2Deferreds: Array<Deferred<boolean>> = [];
 const listTabs: string[] = [];
 const createInputs: Array<{ prompt: string; requestId: string }> = [];
-const planningInputs: Array<{ sessionId: string; requestId: string }> = [];
+const planningInputs: Array<{ sessionId: string; requestId: string; locale: string }> = [];
 let collaborationV2Enabled = false;
 let v2FlagPending = false;
 let v2FlagRejects = false;
@@ -111,7 +111,7 @@ function resetBridge(): void {
       }
       return Promise.resolve(collaborationV2Enabled);
     },
-    BeginWorkPlanning: (_tabID: string, input: { sessionId: string; requestId: string }) => {
+    BeginWorkPlanning: (_tabID: string, input: { sessionId: string; requestId: string; locale: string }) => {
       planningInputs.push(input);
       const next = deferred<any>();
       planningDeferreds.push(next);
@@ -294,11 +294,13 @@ await test('V2 enabled: single CTA routes to BeginWorkPlanning, retry reuses req
   equal(planningInputs.length, 1, 'BeginWorkPlanning first call');
   equal(createInputs.length, 0, 'V1 CreateWork must not be called when V2 enabled');
   equal(planningInputs[0].sessionId, 'session-v2', 'BeginWorkPlanning persists real Session identity');
+  equal(planningInputs[0].locale, 'en', 'BeginWorkPlanning persists the selected UI locale');
   planningDeferreds[0].reject(new Error('offline'));
   await settle();
   check(host.querySelector('[data-testid="work-planning-error"]')?.textContent?.includes('offline') === true, 'planning failure not explicit');
   click(host, 'work-planning-retry');
   equal(planningInputs[1].requestId, planningInputs[0].requestId, 'planning retry requestID');
+  equal(planningInputs[1].locale, planningInputs[0].locale, 'planning retry locale');
   // Retry must not call CreateWork.
   equal(createInputs.length, 0, 'V1 CreateWork must not be called on V2 retry');
   planningDeferreds[1].resolve({

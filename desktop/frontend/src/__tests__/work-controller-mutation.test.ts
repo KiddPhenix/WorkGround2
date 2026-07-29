@@ -304,4 +304,107 @@ function makeMockPort(): MockPort {
   assert.match(status.snapshotError!, /network down/);
 }
 
-process.stdout.write('\ncontroller mutation + watch recovery (6 scenarios): all assertions passed\n');
+// ── G: stale draft write → refresh authoritative revision + retry once ───────
+{
+  resetStore();
+  const workID = 'w-draft-conflict-retry';
+  applySnapshot(makeView(workID, 16, { prompt: 'Old prompt' }));
+
+  const port = makeMockPort();
+  let fetchCalls = 0;
+  port._setFetchSnapshot(() => {
+    fetchCalls++;
+    return Promise.resolve(makeView(workID, 17, { prompt: 'Old prompt' }));
+  });
+  const writes: Array<{ expectedRevision: number; requestId: string }> = [];
+  port.updateDraft = async (input) => {
+    writes.push({ expectedRevision: input.expectedRevision, requestId: input.requestId });
+    if (writes.length === 1) {
+      throw new Error('work event conflict: expected revision 16, current revision 17');
+    }
+    return makeView(workID, 18, { prompt: input.prompt });
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  const view = await adapter.updateDraft({
+    workId: workID,
+    prompt: 'Improved prompt',
+    expectedRevision: 16,
+    requestId: 'draft-request-stable',
+  });
+
+  assert.equal(fetchCalls, 1, 'revision conflict must refresh the authoritative snapshot');
+  assert.deepEqual(
+    writes.map((input) => input.expectedRevision),
+    [16, 17],
+    'retry must use the recovered revision',
+  );
+  assert.deepEqual(
+    writes.map((input) => input.requestId),
+    ['draft-request-stable', 'draft-request-stable'],
+    'safe retry must preserve requestId',
+  );
+  assert.equal(view.revision, 18);
+  assert.equal(useWorkStore.getState().revisions[workID], 18);
+  assert.equal(useWorkStore.getState().works[workID]?.work.prompt, 'Improved prompt');
+}
+
+// ── H: structured revision conflict is also recoverable ─────────────────────
+{
+  resetStore();
+  const workID = 'w-draft-typed-conflict';
+  applySnapshot(makeView(workID, 4));
+
+  const port = makeMockPort();
+  port._setFetchSnapshot(() => Promise.resolve(makeView(workID, 5)));
+  let attempts = 0;
+  port.updateDraft = async (input) => {
+    attempts++;
+    if (attempts === 1) {
+      throw Object.assign(new Error('stale Work projection'), {
+        code: 'revision_conflict',
+        actualRevision: 5,
+      });
+    }
+    return makeView(workID, 6, { prompt: input.prompt });
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  await adapter.updateDraft({
+    workId: workID,
+    prompt: 'Typed recovery',
+    expectedRevision: 4,
+    requestId: 'typed-conflict-request',
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(useWorkStore.getState().revisions[workID], 6);
+}
+
+// ── I: non-revision failure stays explicit and is never retried ─────────────
+{
+  resetStore();
+  const workID = 'w-draft-network-failure';
+  applySnapshot(makeView(workID, 2));
+
+  const port = makeMockPort();
+  let attempts = 0;
+  port.updateDraft = async () => {
+    attempts++;
+    throw new Error('network unavailable');
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  await assert.rejects(
+    adapter.updateDraft({
+      workId: workID,
+      prompt: 'Keep this draft',
+      expectedRevision: 2,
+      requestId: 'network-failure-request',
+    }),
+    /network unavailable/,
+  );
+  assert.equal(attempts, 1, 'non-revision errors must not be retried');
+}
+
+process.stdout.write('\ncontroller mutation + watch recovery (9 scenarios): all assertions passed\n');

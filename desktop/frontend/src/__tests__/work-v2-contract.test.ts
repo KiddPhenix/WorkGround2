@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   parseArtifactSlot, parseWorkDefinitionRevision, parseWorkInput,
-  parseApplyWorkPatchResult, parsePatchIntentReceipt, parseWorkPatchPreview, parseWorkViewV2,
+  parseApplyWorkPatchResult, parsePatchIntentReceipt, parseTaskV2View, parseWorkPatchPreview, parseWorkViewV2,
 } from '../work/parse.js';
 import type {
   ApplyWorkPatchResult, ArtifactSlot, PatchIntentReceipt, WorkDefinitionRevision, WorkInput, WorkPatchPreview,
@@ -119,6 +119,16 @@ function workViewV2(w?: Work): Record<string, unknown> {
       receipt:{requestId:'ar1',outcome:'ok',confirmedAt:'2026-01-01T00:00:00Z'}}]}]}],
     startedAt:'2026-01-01T00:00:00Z'}];
   assert.doesNotThrow(() => parseWorkViewV2(workViewV2(w))); }
+assert.doesNotThrow(() => parseTaskV2View({
+  id:'task-live',runId:'run-live',nodeId:'node-live',title:'Live',state:'running',
+  progress:'模型正在输出',retryable:false,updatedAt:'2026-07-29T10:00:00Z',
+  sessionRef:{sessionPath:'sessions/work-live.jsonl',branchId:'work-live',modelRef:'test',turnCount:0,preview:'',startedAt:'2026-07-29T10:00:00Z'},
+}));
+assert.throws(() => parseTaskV2View({
+  id:'task-live',runId:'run-live',nodeId:'node-live',title:'Live',state:'running',
+  retryable:false,updatedAt:'2026-07-29T10:00:00Z',
+  sessionRef:{sessionPath:'',branchId:'work-live',modelRef:'test',turnCount:0,preview:'',startedAt:'2026-07-29T10:00:00Z'},
+}));
 // BlockFreshness positive
 { const w: Work = structuredClone(fullWorkData);
   w.blocks = [{id:'b1',kind:'k',schemaVersion:1,revision:1,status:'ready',data:{},source:{provider:'ai',mode:'snapshot',verified:false},fallback:{summary:''},createdAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z',freshness:{checkedAt:'2026-01-01T00:00:00Z',staleReason:'stale'}}];

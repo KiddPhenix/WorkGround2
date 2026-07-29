@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Pencil, Plus, Sparkles, Trash2, X } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle, Check, Pencil, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
 
 import type { ArtifactSlot, ArtifactPreview, ArtifactSlotDef, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard } from './ResultCard';
@@ -16,6 +16,7 @@ export interface ResultShelfProps {
   definition?: WorkDefinitionRevision;
   readonly?: boolean;
   onRequestWorkflowChange?: (request: ResultWorkflowChangeRequest) => void;
+  workflowChangeState?: WorkflowChangeState | null;
   /** Called when the user wants to open a file. */
   onOpen?: (intent: FileOpenIntent) => void | Promise<void>;
   /** Called when the user wants to download a file. */
@@ -30,9 +31,17 @@ export interface ResultShelfProps {
 
 export interface ResultWorkflowChangeRequest {
   token: string;
+  /** UI dispatch attempt; retries increment this while keeping token/idempotency keys stable. */
+  attempt?: number;
   nodeId: string;
   title: string;
   instruction: string;
+}
+
+export interface WorkflowChangeState {
+  token: string;
+  status: 'updating' | 'applied' | 'failed';
+  error?: string;
 }
 
 interface ArtifactDraft {
@@ -50,8 +59,15 @@ interface EditState {
 const ARTIFACT_KINDS = [
   { value: 'document', label: '文档（Markdown）' },
   { value: 'text', label: '纯文本' },
+  { value: 'docx', label: 'Word 文档（DOCX）' },
+  { value: 'pdf', label: 'PDF 文档' },
   { value: 'xlsx', label: 'Excel 工作簿（XLSX）' },
   { value: 'data', label: '数据' },
+  { value: 'sh', label: 'Shell 脚本（SH）' },
+  { value: 'bat', label: 'Windows 批处理（BAT/CMD）' },
+  { value: 'ps1', label: 'PowerShell 脚本（PS1）' },
+  { value: 'exe', label: '可执行程序（EXE）' },
+  { value: 'zip', label: '压缩包（ZIP）' },
   { value: 'file', label: '其他文件' },
 ] as const;
 
@@ -62,18 +78,32 @@ function titleForKind(title: string, kind: string): string {
     md: '.md',
     text: '.txt',
     txt: '.txt',
+    docx: '.docx',
+    word: '.docx',
+    pdf: '.pdf',
     xlsx: '.xlsx',
     spreadsheet: '.xlsx',
     excel: '.xlsx',
     data: '.json',
+    sh: '.sh',
+    shell: '.sh',
+    bat: '.bat',
+    cmd: '.cmd',
+    batch: '.bat',
+    ps1: '.ps1',
+    powershell: '.ps1',
+    executable: '.exe',
+    exe: '.exe',
+    archive: '.zip',
+    zip: '.zip',
   };
   const next = extension[kind.toLowerCase()];
   if (!next) return title;
   const trimmed = title.trim();
   if (!trimmed) return trimmed;
   if (trimmed.toLowerCase().endsWith(next)) return trimmed;
-  if (/\.(?:md|markdown|txt|xlsx|xls|csv|json)$/i.test(trimmed)) {
-    return trimmed.replace(/\.(?:md|markdown|txt|xlsx|xls|csv|json)$/i, next);
+  if (/\.(?:md|markdown|txt|docx?|pdf|xlsx|xls|csv|json|sh|bat|cmd|ps1|exe|zip|7z|tar|gz)$/i.test(trimmed)) {
+    return trimmed.replace(/\.(?:md|markdown|txt|docx?|pdf|xlsx|xls|csv|json|sh|bat|cmd|ps1|exe|zip|7z|tar|gz)$/i, next);
   }
   return `${trimmed}${next}`;
 }
@@ -99,6 +129,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   definition,
   readonly = false,
   onRequestWorkflowChange,
+  workflowChangeState,
   onOpen,
   onDownload,
   onLocate,
@@ -109,6 +140,8 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<EditState | null>(null);
   const [deleting, setDeleting] = useState<ArtifactSlotDef | null>(null);
+  const [appliedVisible, setAppliedVisible] = useState(false);
+  const appliedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [draft, setDraft] = useState<ArtifactDraft>({
     title: '',
     kind: 'document',
@@ -124,13 +157,39 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
     [definitions],
   );
   const canEdit = !readonly && Boolean(onRequestWorkflowChange && definition?.nodes?.length);
+  const isUpdating = workflowChangeState?.status === 'updating';
+  const lastRequestRef = useRef<ResultWorkflowChangeRequest | null>(null);
+
+  useEffect(() => {
+    if (workflowChangeState?.status === 'applied') {
+      setAppliedVisible(true);
+      clearTimeout(appliedTimerRef.current);
+      appliedTimerRef.current = setTimeout(() => setAppliedVisible(false), 3000);
+      return () => clearTimeout(appliedTimerRef.current);
+    }
+    setAppliedVisible(false);
+  }, [workflowChangeState?.status, workflowChangeState?.token]);
+
+  const handleRetry = useCallback(() => {
+    if (!workflowChangeState || !onRequestWorkflowChange) return;
+    const last = lastRequestRef.current;
+    if (!last) return;
+    const retry = { ...last, attempt: (last.attempt ?? 0) + 1 };
+    lastRequestRef.current = retry;
+    onRequestWorkflowChange(retry);
+  }, [workflowChangeState, onRequestWorkflowChange]);
+
+  const fireRequest = useCallback((request: ResultWorkflowChangeRequest) => {
+    lastRequestRef.current = request;
+    onRequestWorkflowChange?.(request);
+  }, [onRequestWorkflowChange]);
 
   const submitAdd = () => {
     const title = draft.title.trim();
     const anchor = workflowAnchorNode(definition);
-    if (!title || !anchor || !onRequestWorkflowChange) return;
+    if (!title || !anchor || !onRequestWorkflowChange || isUpdating) return;
     const id = slotID(title, existingIDs);
-    onRequestWorkflowChange({
+    fireRequest({
       token: `add:${id}:${Date.now()}`,
       nodeId: anchor.id,
       title: `新增成果：${title}`,
@@ -141,7 +200,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   };
 
   const submitDelete = () => {
-    if (!deleting || !onRequestWorkflowChange || !definition) return;
+    if (!deleting || !onRequestWorkflowChange || !definition || isUpdating) return;
     const producers = definition.nodes.filter((node) => node.producesSlotIds?.includes(deleting.id));
     const consumers = definition.nodes.filter((node) => node.consumesSlotIds?.includes(deleting.id));
     const target = producers[0] ?? consumers[0] ?? definition.nodes[0];
@@ -150,7 +209,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
       .filter((node, index, all) => all.findIndex((candidate) => candidate.id === node.id) === index)
       .map((node) => `“${node.title}”（${node.id}）`)
       .join('、');
-    onRequestWorkflowChange({
+    fireRequest({
       token: `remove:${deleting.id}:${Date.now()}`,
       nodeId: target.id,
       title: `删除成果：${deleting.title}`,
@@ -181,7 +240,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   };
 
   const submitEdit = () => {
-    if (!editing || !definition || !onRequestWorkflowChange) return;
+    if (!editing || !definition || !onRequestWorkflowChange || isUpdating) return;
     const title = editing.draft.title.trim();
     if (!title || !artifactChanged(editing.slot, editing.draft)) return;
     const producers = definition.nodes.filter((node) => node.producesSlotIds?.includes(editing.slot.id));
@@ -190,7 +249,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
     if (!target) return;
     const changes = artifactChanges(editing.slot, { ...editing.draft, title });
     const formatChanged = editing.slot.kind !== editing.draft.kind;
-    onRequestWorkflowChange({
+    fireRequest({
       token: `edit:${editing.slot.id}:${Date.now()}`,
       nodeId: target.id,
       title: `修改成果：${editing.slot.title}`,
@@ -209,13 +268,44 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
       <ShelfIntro
         canEdit={canEdit}
         adding={adding}
+        disabled={isUpdating}
         onAdd={() => {
           setEditing(null);
           setDeleting(null);
           setAdding((current) => !current);
         }}
       />
-      <div className="wg2-rs-content">
+      <div className="wg2-rs-main">
+        {workflowChangeState && (workflowChangeState.status !== 'applied' || appliedVisible) && (
+          <div
+            className={`wg2-rs-wfstatus wg2-rs-wfstatus--${workflowChangeState.status}`}
+            role={workflowChangeState.status === 'failed' ? 'alert' : 'status'}
+            aria-live="polite"
+            data-testid="result-workflow-status"
+          >
+            {workflowChangeState.status === 'updating' && (
+              <><RefreshCw size={14} className="wg2-rs-wfstatus-spin" /> 正在更新流程…</>
+            )}
+            {workflowChangeState.status === 'applied' && appliedVisible && (
+              <><Check size={14} /> 已更新</>
+            )}
+            {workflowChangeState.status === 'failed' && (
+              <>
+                <AlertCircle size={14} />
+                <span className="wg2-rs-wfstatus-err">更新失败{workflowChangeState.error ? `：${workflowChangeState.error}` : ''}</span>
+                <button
+                  type="button"
+                  className="wg2-rs-wfstatus-retry"
+                  onClick={handleRetry}
+                  data-testid="result-workflow-retry"
+                >
+                  重试
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        <div className="wg2-rs-content">
         {adding && (
           <ResultEditor
             mode="add"
@@ -224,7 +314,8 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
             onChange={setDraft}
             onClose={() => setAdding(false)}
             onSubmit={submitAdd}
-            submitDisabled={!draft.title.trim()}
+            submitDisabled={!draft.title.trim() || isUpdating}
+            isUpdating={isUpdating}
           />
         )}
         {editing && (
@@ -235,7 +326,8 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
             onChange={(next) => setEditing({ ...editing, draft: next })}
             onClose={() => setEditing(null)}
             onSubmit={submitEdit}
-            submitDisabled={!editing.draft.title.trim() || !artifactChanged(editing.slot, editing.draft)}
+            submitDisabled={!editing.draft.title.trim() || !artifactChanged(editing.slot, editing.draft) || isUpdating}
+            isUpdating={isUpdating}
           />
         )}
         {visibleSlots.length === 0 ? (
@@ -266,6 +358,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
                         className="wg2-rc-manage-btn"
                         aria-label={`修改成果 ${slot.title}`}
                         title="修改成果"
+                        disabled={isUpdating}
                         onClick={() => beginEdit(slot)}
                         data-testid={`result-edit-${slot.id}`}
                       >
@@ -276,6 +369,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
                         className="wg2-rc-manage-btn wg2-rc-manage-btn--danger"
                         aria-label={`删除成果 ${slot.title}`}
                         title="删除成果"
+                        disabled={isUpdating}
                         onClick={() => {
                           setAdding(false);
                           setEditing(null);
@@ -298,6 +392,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
             ))}
           </ul>
         )}
+        </div>
       </div>
       {deleting && (
         <div className="wg2-rs-confirm" role="alertdialog" aria-label="确认删除成果" data-testid="result-delete-confirm">
@@ -305,8 +400,8 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
           <p>{deleteImpactText(deleting.id, definition)}</p>
           <div>
             <button type="button" onClick={() => setDeleting(null)}>取消</button>
-            <button type="button" className="danger" onClick={submitDelete} data-testid="result-delete-preview">
-              预览删除影响
+            <button type="button" className="danger" onClick={submitDelete} disabled={isUpdating} data-testid="result-delete-confirm-btn">
+              删除成果
             </button>
           </div>
         </div>
@@ -323,11 +418,12 @@ const ResultEditor: React.FC<{
   onClose: () => void;
   onSubmit: () => void;
   submitDisabled: boolean;
-}> = ({ mode, title, draft, onChange, onClose, onSubmit, submitDisabled }) => (
+  isUpdating?: boolean;
+}> = ({ mode, title, draft, onChange, onClose, onSubmit, submitDisabled, isUpdating }) => (
   <div className="wg2-rs-editor" data-testid={`result-${mode}-form`}>
     <div className="wg2-rs-editor-head">
       <strong>{title}</strong>
-      <button type="button" onClick={onClose} aria-label={`关闭${mode === 'add' ? '添加' : '修改'}成果`}><X size={15} /></button>
+      <button type="button" onClick={onClose} disabled={isUpdating} aria-label={`关闭${mode === 'add' ? '添加' : '修改'}成果`}><X size={15} /></button>
     </div>
     <div className="wg2-rs-editor-grid">
       <label>
@@ -379,15 +475,15 @@ const ResultEditor: React.FC<{
     </label>
     <div className="wg2-rs-editor-actions">
       <span>{mode === 'add'
-        ? '产出任务将根据流程自动推断；下一步会先展示影响，不会立即修改。'
-        : '会生成新版本，并重跑产出任务及受影响的后续任务；历史文件仍可追溯。'}</span>
+        ? '产出任务将由流程自动推断。'
+        : '会生成新版本并重跑相关任务，历史文件仍可追溯。'}</span>
       <button
         type="button"
         disabled={submitDisabled}
         onClick={onSubmit}
-        data-testid={`result-${mode}-preview`}
+        data-testid={`result-${mode}-submit`}
       >
-        预览流程变化
+        {mode === 'add' ? '添加成果' : '保存修改'}
       </button>
     </div>
   </div>
@@ -427,7 +523,7 @@ function workflowAnchorNode(
   return [...nodes].reverse().find((node) => !upstreamIDs.has(node.id)) ?? nodes[nodes.length - 1];
 }
 
-const ShelfIntro: React.FC<{ canEdit: boolean; adding: boolean; onAdd: () => void }> = ({ canEdit, adding, onAdd }) => (
+const ShelfIntro: React.FC<{ canEdit: boolean; adding: boolean; disabled?: boolean; onAdd: () => void }> = ({ canEdit, adding, disabled, onAdd }) => (
   <header className="wg2-rs-intro">
     <div className="wg2-rs-title">
       <Sparkles size={16} aria-hidden="true" />
@@ -435,7 +531,7 @@ const ShelfIntro: React.FC<{ canEdit: boolean; adding: boolean; onAdd: () => voi
     </div>
     <p>工作过程中产生的文件与成果将在此汇总</p>
     {canEdit && (
-      <button type="button" className="wg2-rs-add" onClick={onAdd} aria-expanded={adding} data-testid="result-add">
+      <button type="button" className="wg2-rs-add" onClick={onAdd} disabled={disabled} aria-expanded={adding} data-testid="result-add">
         <Plus size={14} />
         <span>添加成果</span>
       </button>

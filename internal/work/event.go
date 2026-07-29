@@ -36,7 +36,7 @@ type WorkEvent struct {
 	Payload       json.RawMessage `json:"payload"`
 	ContentDigest string          `json:"contentDigest"`
 	WriterID      string          `json:"writerId"`
-	CreatedAt     time.Time       `json:"createdAt"`
+	CreatedAt     time.Time       `json:"createdAt" ts_type:"string"`
 }
 
 // WorkEventType identifies a persisted domain fact.
@@ -189,5 +189,5 @@ type WorkViewEvent struct {
 	Object        ObjectContext   `json:"object"`
 	Resync        *ViewResync     `json:"resync,omitempty"`
 	Payload       json.RawMessage `json:"payload"`
-	CreatedAt     time.Time       `json:"createdAt"`
+	CreatedAt     time.Time       `json:"createdAt" ts_type:"string"`
 }

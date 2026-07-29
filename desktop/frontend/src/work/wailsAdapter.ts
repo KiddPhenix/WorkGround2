@@ -257,6 +257,7 @@ interface GoApplyDefinitionResult {
 
 interface GoCreateCandidateRevisionResult {
   candidate?: import('./types_v2').WorkDefinitionRevision;
+  clarification?: import('./types_v2').DefinitionStructuralClarification;
   impact?: import('./types_v2').RunImpact;
   revision: number;
   duplicate: boolean;
@@ -870,6 +871,7 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
         }
         return {
           candidate: go.candidate,
+          clarification: go.clarification,
           impact: go.impact,
           revision: go.revision,
           duplicate: go.duplicate,

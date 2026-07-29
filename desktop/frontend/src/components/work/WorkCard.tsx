@@ -9,9 +9,10 @@ import React, {
   type UIEvent,
 } from 'react';
 
+import { useI18n } from '../../lib/i18n';
 import { WorkControllerAdapter, type WorkControllerPort, type WorkControllerStatus } from '../../work/controller';
 import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
-import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectArtifactSlots, type FaceScrollState, type WorkFace } from '../../work/store';
+import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectV2Tasks, selectArtifactSlots, type FaceScrollState, type WorkFace } from '../../work/store';
 import type {
   BlockUpdateRequest,
   DeepLinkTarget,
@@ -20,6 +21,7 @@ import type {
   RunSelection,
   SessionRef,
   SessionSurfaceContext,
+  Work,
   WorkView,
 } from '../../work/types';
 import type {
@@ -27,6 +29,7 @@ import type {
   ApplyDefinitionResult,
   CreateCandidateRevisionInput,
   CreateCandidateRevisionResult,
+  DefinitionPlanProgress,
   RetryArtifactSlotRequest,
   RetryWorkNodeRequest,
   RunImpact,
@@ -47,6 +50,7 @@ import { CornerstoneDrawer } from './CornerstoneDrawer';
 import { WorkCardBack, type WorkCardBackSlots } from './WorkCardBack';
 import { WorkCardFront } from './WorkCardFront';
 import { WorkFlipControl } from './WorkFlipControl';
+import { RunProgressPopover } from './RunProgressPopover';
 import { WorkRunEntry } from './WorkRunEntry';
 import { WorkWorkspace } from './WorkWorkspace';
 
@@ -59,6 +63,14 @@ export interface WorkDeepLink {
 
 export interface WorkCardProps {
   workID: string;
+  /** When false the card mounts immediately (showing any cached store data) but
+   * defers subscription and snapshot until ready becomes true. Default true. */
+  ready?: boolean;
+  startIntent?: {
+    id: string;
+    prompt: string;
+  };
+  onStartIntentConsumed?: (id: string) => void;
   /** Tests/embedders may inject a complete port. Desktop production passes the
    * owning tabID and the WorkCard assembles the real Wails port itself. */
   port?: WorkControllerPort;
@@ -145,8 +157,58 @@ function latestWorkSessionID(view: WorkView): string {
   return '';
 }
 
+function taskSessionKey(runId: string, taskId: string): string {
+  return `${runId}\u0000${taskId}`;
+}
+
+function findTaskSessionSelection(work: Work, runId: string, taskId: string): RunSelection | null {
+  const run = work.runs.find((candidate) => candidate.id === runId);
+  if (!run) return null;
+  for (const stage of run.stages ?? []) {
+    for (const task of stage.tasks ?? []) {
+      const tid = task.id || task.name;
+      if (tid !== taskId) continue;
+      const attempt = (task.attempts ?? []).reduce<typeof task.attempts[number] | undefined>(
+        (latest, candidate) => candidate.sessionRef?.sessionPath && (!latest || candidate.index > latest.index)
+          ? candidate
+          : latest,
+        undefined,
+      );
+      if (attempt) {
+        return {
+          runId: run.id,
+          stageId: stage.id || stage.name || '',
+          taskId: tid,
+          attemptId: attempt.id,
+          attemptIndex: attempt.index,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function taskInfoTaskKeys(work: Work): Set<string> {
+  const keys = new Set<string>();
+  for (const run of work.runs) {
+    for (const stage of run.stages ?? []) {
+      for (const task of stage.tasks ?? []) {
+        const tid = task.id || task.name;
+        if (!tid) continue;
+        if ((task.attempts ?? []).some((attempt) => Boolean(attempt.sessionRef?.sessionPath))) {
+          keys.add(taskSessionKey(run.id, tid));
+        }
+      }
+    }
+  }
+  return keys;
+}
+
 export const WorkCard: React.FC<WorkCardProps> = ({
   workID,
+  ready = true,
+  startIntent,
+  onStartIntentConsumed,
   port,
   tabID,
   sessionId,
@@ -166,10 +228,12 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   onArtifactConvert,
   onArtifactPreview,
 }) => {
+  const { locale } = useI18n();
   const view = useWorkStore((state) => state.works[workID]);
   const artifactSlots = useWorkStore((state) => selectArtifactSlots(state.artifactSlots, workID));
   const v2Definition = useWorkStore((state) => selectV2Definition(state.v2Definitions, workID));
   const v2ActiveDefinition = useWorkStore((state) => selectV2ActiveDefinition(state.v2ActiveDefinitions, state.v2Definitions, workID));
+  const v2Tasks = useWorkStore((state) => selectV2Tasks(state.v2Tasks, workID));
   const cardState = useWorkUIStore((state) => state.cardByWork[workID]);
   const selection = useWorkUIStore((state) => state.selectionByWork[workID]);
   const retryByTarget = useWorkUIStore((state) => state.retryByTarget);
@@ -187,8 +251,20 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     [port, tabID],
   );
   const adapter = useMemo(() => new WorkControllerAdapter(resolvedPort), [resolvedPort]);
+  const taskInfoKeys = useMemo(
+    () => {
+      const keys = view ? taskInfoTaskKeys(view.work) : new Set<string>();
+      for (const task of v2Tasks) {
+        if (task.sessionRef?.sessionPath) keys.add(taskSessionKey(task.runId, task.id));
+      }
+      return keys;
+    },
+    [v2Tasks, view],
+  );
+  const [taskSessionIdentity, setTaskSessionIdentity] = useState<{ runId: string; taskId: string } | null>(null);
   const [statuses, setStatuses] = useState<Record<string, WorkControllerStatus>>({});
   const [definitionImpact, setDefinitionImpact] = useState<RunImpact | undefined>();
+  const [planningProgress, setPlanningProgress] = useState<DefinitionPlanProgress[]>([]);
   const [preferenceReady, setPreferenceReady] = useState(false);
   const [hasStoredPreference, setHasStoredPreference] = useState<boolean | null>(null);
   const [deepLinkState, setDeepLinkState] = useState<DeepLinkState>({ kind: 'idle' });
@@ -206,8 +282,24 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const backState = cardState?.faces.back;
   const status = statuses[workID];
   const streamError = status?.stream.kind === 'offline' ? status.stream.message : null;
-  const readonly = !view || view.work.archiveState !== 'active';
+  const readonly = !ready || !view || view.work.archiveState !== 'active';
   const archived = view?.work.archiveState === 'archived';
+  const taskSessionTarget = useMemo<SessionSurfaceContext | undefined>(() => {
+    if (!taskSessionIdentity) return undefined;
+    const task = v2Tasks.find((candidate) =>
+      candidate.runId === taskSessionIdentity.runId && candidate.id === taskSessionIdentity.taskId);
+    if (!task?.sessionRef?.sessionPath) return undefined;
+    return {
+      workId: workID,
+      runId: task.runId,
+      stageId: 'v2-dag',
+      taskId: task.id,
+      attemptIndex: 0,
+      sessionRef: task.sessionRef,
+      readonly,
+      archived,
+    };
+  }, [archived, readonly, taskSessionIdentity, v2Tasks, workID]);
   const faceIDs = useMemo<Record<WorkFace, string>>(() => ({
     front: `work-${workID}-front`,
     back: `work-${workID}-back`,
@@ -217,8 +309,18 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     setStatuses(adapter.getStatuses());
     return adapter.subscribeStatus(() => setStatuses(adapter.getStatuses()));
   }, [adapter]);
+  useEffect(() => adapter.subscribePlanning(workID, (progress) => {
+    setPlanningProgress((current) => {
+      const sameRequest = current.length === 0 || current[current.length - 1]?.requestId === progress.requestId;
+      const base = sameRequest ? current : [];
+      if (base.some((item) => item.sequence === progress.sequence)) return base;
+      return [...base, progress].slice(-96);
+    });
+  }), [adapter, workID]);
   useEffect(() => {
     setDefinitionImpact(undefined);
+    setPlanningProgress([]);
+    setTaskSessionIdentity(null);
   }, [workID, v2Definition?.revision]);
   useEffect(() => () => adapter.dispose(), [adapter]);
 
@@ -229,6 +331,9 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     setDeepLinkState({ kind: 'idle' });
     restoredScroll.current = {};
     ensureCard(workID);
+    if (!ready) {
+      return () => { current = false; };
+    }
     adapter.subscribe(workID);
     void adapter.restoreUIPreference(workID)
       .then((preference) => {
@@ -242,7 +347,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       current = false;
       adapter.unsubscribe(workID);
     };
-  }, [adapter, ensureCard, workID]);
+  }, [adapter, ensureCard, ready, workID]);
 
   useEffect(() => {
     if (!preferenceReady || hasStoredPreference === null || !view) return;
@@ -372,23 +477,25 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const savePrompt = useCallback(async (prompt: string, name?: string): Promise<number> => {
     const current = useWorkStore.getState().works[workID];
     if (!current) throw new Error('Work 投影尚未载入。');
-    const signature = JSON.stringify([prompt, name ?? null]);
+    const signature = JSON.stringify([prompt, name ?? null, locale]);
     if (draftIntentRef.current?.signature !== signature) {
+      const suffix = startIntent?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       draftIntentRef.current = {
         signature,
-        requestId: `work-draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        requestId: `work-draft-${suffix}`,
       };
     }
     const result = await adapter.updateDraft({
       workId: workID,
       prompt,
       ...(name !== undefined ? { name } : {}),
+      locale,
       expectedRevision: current.revision,
       requestId: draftIntentRef.current.requestId,
     });
     draftIntentRef.current = null;
     return result.revision;
-  }, [adapter, workID]);
+  }, [adapter, locale, startIntent?.id, workID]);
   const handleApplyDefinition = useCallback(async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
     const result = await adapter.applyDefinition(input);
     if (result.impact) setDefinitionImpact(result.impact);
@@ -499,6 +606,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     });
   }, [adapter, onBlockUpdate, workID]);
   const handleRunSelect = useCallback((sel: RunSelection) => {
+    setTaskSessionIdentity(null);
     setSelection(workID, sel);
   }, [setSelection, workID]);
   const handleRetry = useCallback(async (intent: RetryIntent) => {
@@ -529,6 +637,22 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       if (task?.attempts.some((attempt) => attempt.index > retry.intent.attemptIndex)) clearRetry(retry.intent);
     }
   }, [clearRetry, retryByTarget, view, workID]);
+  const handleTaskInfo = useCallback((runId: string, taskId: string) => {
+    if (!view) return;
+    const v2Task = v2Tasks.find((candidate) =>
+      candidate.runId === runId && candidate.id === taskId && Boolean(candidate.sessionRef?.sessionPath));
+    if (v2Task) {
+      setTaskSessionIdentity({ runId, taskId });
+      void adapter.setActiveFace(workID, 'back').catch(() => undefined);
+      return;
+    }
+    const sel = findTaskSessionSelection(view.work, runId, taskId);
+    if (!sel) return;
+    setTaskSessionIdentity(null);
+    setSelection(workID, sel);
+    void adapter.setActiveFace(workID, 'back').catch(() => undefined);
+  }, [adapter, setSelection, v2Tasks, view, workID]);
+
   const retrySync = useCallback(() => {
     adapter.retrySubscription(workID);
   }, [adapter, workID]);
@@ -537,6 +661,17 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   }, [activeFace, adapter, workID]);
 
   if (!view) {
+    if (!ready) {
+      return (
+        <div className="wg2-work-card wg2-work-card-unknown wg2-work-card-pending" data-testid="work-card-pending" data-work-id={workID}>
+          <div className="wg2-work-unknown-notice wg2-work-pending-notice" role="status" aria-live="polite">
+            <h3>后台同步中…</h3>
+            <p>Work 投影尚未载入，连接就绪后自动开始同步。</p>
+            <p>Work ID: {workID}</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="wg2-work-card wg2-work-card-unknown" data-testid="work-card-unknown" data-work-id={workID}>
         <div className="wg2-work-unknown-notice" role="alert">
@@ -552,6 +687,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
 
   const workspaceStatus = (
     <>
+      {!ready && <span className="wg2-work-status-fetching" data-testid="work-background-sync">后台同步中…</span>}
       {status?.fetching && <span className="wg2-work-status-fetching">同步中…</span>}
       {status?.preferenceError && (
         <span className="wg2-work-status-error" role="alert" data-testid="work-pref-error">
@@ -568,17 +704,31 @@ export const WorkCard: React.FC<WorkCardProps> = ({
       state={view.work.state}
       archiveState={view.work.archiveState}
       titleStatus={(
-        <WorkRunEntry
-          workId={view.work.id}
-          onRun={adapter.runWork}
-          onResumeRun={adapter.resumeRun}
-          onRecoverProjection={async () => { await adapter.recoverSnapshot(workID); }}
-          disabled={readonly || archived}
-          v2Definition={v2ActiveDefinition}
-          onPlanStructure={() => handleFlip('back')}
-          onV2TaskRetry={handleV2TaskRetry}
-          onV2ArtifactRetry={onArtifactRetry ?? (
-            resolvedPort.retryArtifactSlot ? handleArtifactRetry : undefined
+        <RunProgressPopover
+          work={view.work}
+          selection={selection}
+          onSelect={handleRunSelect}
+          onRetry={handleRetry}
+          retryByTarget={retryByTarget}
+          readonly={readonly}
+          archived={archived}
+          trigger={({ open, panelId, pin }) => (
+            <WorkRunEntry
+              workId={view.work.id}
+              onRun={adapter.runWork}
+              onResumeRun={adapter.resumeRun}
+              onRecoverProjection={async () => { await adapter.recoverSnapshot(workID); }}
+              disabled={readonly || archived}
+              v2Definition={v2ActiveDefinition}
+              onPlanStructure={() => handleFlip('back')}
+              onV2TaskRetry={handleV2TaskRetry}
+              onV2ArtifactRetry={onArtifactRetry ?? (
+                resolvedPort.retryArtifactSlot ? handleArtifactRetry : undefined
+              )}
+              onProgressOpen={pin}
+              progressOpen={open}
+              progressPanelId={panelId}
+            />
           )}
         />
       )}
@@ -655,10 +805,6 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onUpdate={updateBlock}
               readonly={readonly}
               archived={archived}
-              runSelection={selection}
-              onRunSelect={handleRunSelect}
-              onRetry={handleRetry}
-              retryByTarget={retryByTarget}
               artifactSlots={artifactSlots}
               v2Definition={v2ActiveDefinition}
               onV2TaskRetry={handleV2TaskRetry}
@@ -709,6 +855,8 @@ export const WorkCard: React.FC<WorkCardProps> = ({
                   ? (intent) => adapter.applyWorkPatch(intent)
                   : undefined
               }
+              onTaskInfo={taskInfoKeys.size > 0 ? handleTaskInfo : undefined}
+              taskInfoTaskKeys={taskInfoKeys}
             />
           </div>
           <div
@@ -725,10 +873,13 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               view={view}
               draft={backState?.draft ?? ''}
               onDraftChange={handleDraftChange}
+              startIntent={startIntent}
+              onStartIntentConsumed={onStartIntentConsumed}
               readonly={readonly}
               archived={archived}
               slots={backSlots}
               selection={selection}
+              sessionTarget={taskSessionTarget}
               resolveSessionSurface={resolveSessionSurface}
               onSavePrompt={savePrompt}
               onApplyDefinition={handleApplyDefinition}
@@ -738,6 +889,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               v2Definition={v2Definition}
               v2ActiveDefinition={v2ActiveDefinition}
               applyImpact={definitionImpact}
+              planningProgress={planningProgress}
             />
           </div>
         </div>

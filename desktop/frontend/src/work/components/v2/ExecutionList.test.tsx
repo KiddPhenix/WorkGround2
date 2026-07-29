@@ -285,7 +285,113 @@ async function runTests(): Promise<void> {
     ok(icon?.querySelector('.lucide-loader-circle') !== null, 'single: running icon uses the V2 icon treatment');
     const badge = host.querySelector('[data-testid="execution-row-badge-t1"]');
     contains(badge?.textContent ?? '', '运行中', 'single: badge shows 运行中');
+    const live = host.querySelector('[data-testid="execution-row-live-t1"]');
+    ok(live !== null, 'single: running task always reserves the marquee region');
+    contains(live?.textContent ?? '', '等待模型输出…', 'single: marquee remains visible before the first model token');
     contains(host.querySelector('.wg2-el-heading')?.textContent ?? '', 'AI 正在执行', 'single: V2 execution heading');
+    await cleanup();
+  }
+
+  // Definition owns the complete planned DAG. Missing runtimes render as
+  // pending rows and are updated in place when execution reaches the node.
+  {
+    resetStore();
+    const nodes = [
+      makeNodeDef({ id: 'collect', title: '收集团建需求' }),
+      makeNodeDef({ id: 'plan', title: '规划团建方案', dependsOn: ['collect'] }),
+      makeNodeDef({ id: 'invite', title: '生成邀请函', dependsOn: ['plan'] }),
+    ];
+    const current = makeTask({
+      id: 'run-1-task-collect',
+      nodeId: 'collect',
+      title: '收集团建需求',
+      state: 'running',
+    });
+    seedStore([current], makeDefinition(nodes));
+    const { host, cleanup } = await mount(<ExecutionList workId={WORK_ID} runId="run-1" />);
+
+    const items = host.querySelectorAll('[data-testid^="execution-list-item-"]');
+    eq(items.length, 3, 'planned DAG: every definition node is visible before execution reaches it');
+    const planId = '5:run-1/4:plan';
+    const inviteId = '5:run-1/6:invite';
+    const planRow = host.querySelector(`[data-testid="execution-row-${planId}"]`);
+    ok(planRow !== null, 'planned DAG: future plan task is materialized');
+    eq(planRow?.getAttribute('data-task-state'), 'pending', 'planned DAG: future task starts pending');
+    ok(host.querySelector(`[data-testid="execution-row-${inviteId}"]`) !== null, 'planned DAG: final task is immediately visible');
+
+    await act(async () => {
+      seedStore([
+        { ...current, state: 'completed' },
+        makeTask({ id: planId, nodeId: 'plan', title: '规划团建方案', state: 'running' }),
+      ], makeDefinition(nodes));
+    });
+    const updatedPlanRow = host.querySelector(`[data-testid="execution-row-${planId}"]`);
+    ok(updatedPlanRow === planRow, 'planned DAG: runtime update preserves the existing row');
+    eq(updatedPlanRow?.getAttribute('data-task-state'), 'running', 'planned DAG: runtime state replaces pending');
+    eq(host.querySelectorAll('[data-testid^="execution-list-item-"]').length, 3, 'planned DAG: runtime does not duplicate the block');
+    await cleanup();
+  }
+
+  // Synthetic task identity follows Go's UTF-8 byte-length contract.
+  {
+    resetStore();
+    seedStore([], makeDefinition([makeNodeDef({ id: '方案', title: '生成方案' })]));
+    const { host, cleanup } = await mount(<ExecutionList workId={WORK_ID} runId="团建" />);
+    ok(
+      host.querySelector('[data-testid="execution-row-6:团建/6:方案"]') !== null,
+      'planned DAG: Unicode task ID matches Go byte lengths',
+    );
+    await cleanup();
+  }
+
+  // Running output is a muted, non-selectable marquee; its hidden Session
+  // action appears in the same hover target and preserves row expansion.
+  {
+    resetStore();
+    const task = makeTask({
+      id: 't-live',
+      nodeId: 'n-live',
+      title: '实时任务',
+      state: 'running',
+      progress: '正在读取资料并整理关键结论',
+      sessionRef: {
+        sessionPath: '/sessions/work-live.jsonl',
+        branchId: 'work-live',
+        modelRef: 'test-model',
+        turnCount: 0,
+        preview: '',
+        startedAt: '2026-07-29T10:00:00Z',
+      },
+    });
+    seedStore([task], makeDefinition([makeNodeDef({ id: 'n-live', title: task.title })]));
+    let infoCalls = 0;
+    let expandCalls = 0;
+    const { host, cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        onExpandTask={() => { expandCalls++; }}
+        onTaskInfo={() => { infoCalls++; }}
+        taskInfoTaskKeys={new Set([`${task.runId}\u0000${task.id}`])}
+      />,
+    );
+    const live = host.querySelector(`[data-testid="execution-row-live-${task.id}"]`);
+    ok(live !== null, 'live output: marquee region renders');
+    eq(live?.querySelectorAll('.wg2-er-live-copy').length, 2, 'live output: duplicated copies form a seamless marquee');
+    contains(live?.textContent ?? '', task.progress ?? '', 'live output: model output is visible');
+    ok(host.querySelector('[role="progressbar"]') === null, 'live output: textual output is not parsed as numeric progress');
+    const info = host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${task.id}"]`);
+    ok(info !== null, 'live output: hidden Session info action renders');
+    await interact(() => info?.click());
+    eq(infoCalls, 1, 'live output: info action opens the hidden Session once');
+    eq(expandCalls, 0, 'live output: info action does not expand the row');
+    ok(
+      /\.wg2-er-live\s*\{[\s\S]*?user-select:\s*none[\s\S]*?-webkit-user-select:\s*none/.test(cssText),
+      'live output: marquee text cannot be selected',
+    );
+    ok(
+      /\.wg2-er-info-live\s*\{[\s\S]*?opacity:\s*0[\s\S]*?pointer-events:\s*none[\s\S]*?\.wg2-er-live:hover\s+\.wg2-er-info-live/.test(cssText),
+      'live output: info action is revealed by marquee hover',
+    );
     await cleanup();
   }
 
@@ -421,47 +527,386 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
-  // ResultShelf structure changes open the existing discussion flow with a
-  // human-readable draft and a locked workflow scope.
+  // ResultShelf structure changes execute preview→apply→refresh directly
+  // without opening the DiscussionDrawer.
   {
     resetStore();
     const tasks = [makeTask({
-      id: 't-result-change',
-      nodeId: 'n-result-change',
+      id: 't-dir-apply',
+      runId: 'run-dir-apply',
+      nodeId: 'n-dir-apply',
       title: '生成成果',
       state: 'completed',
     })];
-    seedStore(tasks, makeDefinition([makeNodeDef({ id: 'n-result-change' })]));
+    const blockId = 'block-dir-apply';
+    const nodeDef = makeNodeDef({ id: 'n-dir-apply', blockIds: [blockId] });
+    seedStore(tasks, makeDefinition([nodeDef]));
+    const blocks = [makeBlock(blockId, 1, '生成成果')];
+
+    const previewD = deferred<PreviewWorkPatchResult>();
+    const applyD = deferred<ApplyWorkPatchResult>();
+    const refreshD = deferred<void>();
+    let previewCall: any;
+    let applyCall: any;
+    let refreshCall: any;
+    const stateChanges: Array<{ token: string; status: string }> = [];
+
     const { cleanup } = await mount(
       <ExecutionList
         workId={WORK_ID}
-        sessionId="session-result-change"
+        sessionId="session-dir-apply"
+        workRevision={7}
+        blocks={blocks}
+        onPreviewPatch={async (intent) => { previewCall = intent; return previewD.promise; }}
+        onApplyPatch={async (intent) => { applyCall = intent; return applyD.promise; }}
+        onRefreshAuthoritative={async (ctx) => { refreshCall = ctx; refreshD.resolve(); }}
+        onWorkflowChangeState={(state) => { if (state) stateChanges.push({ token: state.token, status: state.status }); }}
         externalWorkflowDiscussion={{
-          token: 'add:summary:1',
-          nodeId: 'n-result-change',
-          title: '新增成果：总结',
-          instruction: '新增成果“总结”，由任务“生成成果”产出。',
+          token: 'add:dir:1',
+          nodeId: 'n-dir-apply',
+          title: '新增成果：直达',
+          instruction: 'add slot',
         }}
       />,
     );
-    const drawer = document.querySelector('[data-testid="discussion-drawer-t-result-change"]');
-    ok(drawer !== null, 'result workflow: external request opens discussion drawer');
-    eq(
-      document.querySelector<HTMLTextAreaElement>('[data-testid="discussion-input-t-result-change"]')?.value,
-      '新增成果“总结”，由任务“生成成果”产出。',
-      'result workflow: human-readable instruction is preserved',
+
+    // 1. Status transitions to 'updating' immediately
+    eq(stateChanges.length, 1, 'dir apply: state transitions to updating');
+    eq(stateChanges[0]?.status, 'updating', 'dir apply: status is updating');
+    eq(stateChanges[0]?.token, 'add:dir:1', 'dir apply: token matches');
+
+    // 2. No drawer should open
+    const drawer = document.querySelector('[data-testid^="discussion-drawer-"]');
+    ok(drawer === null, 'dir apply: no discussion drawer opens');
+
+    // 3. Preview is called with workflow scope
+    ok(previewCall !== undefined, 'dir apply: preview called');
+    eq(previewCall?.scope, 'workflow', 'dir apply: preview scope is workflow');
+    eq(previewCall?.instruction, 'add slot', 'dir apply: instruction forwarded');
+    eq(previewCall?.requestId, 'wf-preview-add:dir:1', 'dir apply: preview requestId derived from token');
+
+    // 4. Resolve preview → apply is called with patchId + digest
+    previewD.resolve({
+      preview: {
+        id: 'patch-dir-1',
+        workId: WORK_ID,
+        runId: 'run-dir-apply',
+        taskId: 't-dir-apply',
+        blockId,
+        sessionId: 'session-dir-apply',
+        baseDefinitionRev: 1,
+        baseBlockRev: 1,
+        scope: 'workflow',
+        operations: [],
+        affectedNodeIds: [],
+        affectedBlockIds: [],
+        affectedArtifactSlotIds: [],
+        staleArtifactSlotIds: [],
+        invalidatedTaskIds: [],
+        requiresRerun: false,
+        digest: 'digest-dir-1',
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+      },
+      revision: 1,
+      duplicate: false,
+      committed: true,
+      recoverable: false,
+    });
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    ok(applyCall !== undefined, 'dir apply: apply called after preview');
+    eq(applyCall?.patchId, 'patch-dir-1', 'dir apply: patchId from preview');
+    eq(applyCall?.previewDigest, 'digest-dir-1', 'dir apply: digest from preview');
+    eq(applyCall?.scope, 'workflow', 'dir apply: scope is workflow');
+    eq(applyCall?.requestId, 'wf-apply-add:dir:1', 'dir apply: apply requestId derived from token');
+    eq(applyCall?.expectedRevision, 7, 'dir apply: apply uses authoritative work revision');
+
+    // 5. Resolve apply → refresh is called
+    applyD.resolve({
+      workRevision: 1,
+      newRevision: 2,
+      requiresRerun: false,
+      duplicate: false,
+      committed: true,
+      recoverable: false,
+    });
+    await refreshD.promise;
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    ok(refreshCall !== undefined, 'dir apply: refresh called after apply');
+    eq(refreshCall?.operation, 'patch', 'dir apply: refresh operation is patch');
+    eq(refreshCall?.revision, 2, 'dir apply: refresh uses committed work revision');
+
+    // 6. Final state is 'applied'
+    eq(stateChanges.length, 2, 'dir apply: two state transitions total');
+    eq(stateChanges[1]?.status, 'applied', 'dir apply: final status is applied');
+
+    await cleanup();
+  }
+
+  // Direct workflow change: preview failure reports error and is retryable.
+  {
+    resetStore();
+    const tasks = [makeTask({
+      id: 't-dir-pf',
+      runId: 'run-dir-pf',
+      nodeId: 'n-dir-pf',
+      title: '生成成果',
+      state: 'completed',
+    })];
+    const nodeDef = makeNodeDef({ id: 'n-dir-pf', blockIds: ['block-dir-pf'] });
+    seedStore(tasks, makeDefinition([nodeDef]));
+    const blocks = [makeBlock('block-dir-pf', 1, '生成成果')];
+
+    const previewD = deferred<PreviewWorkPatchResult>();
+    const stateChanges: Array<{ token: string; status: string; error?: string }> = [];
+
+    const { cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId="session-dir-pf"
+        blocks={blocks}
+        onPreviewPatch={async () => previewD.promise}
+        onApplyPatch={async () => ({
+          workRevision: 1,
+          newRevision: 1,
+          requiresRerun: false,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+        })}
+        onRefreshAuthoritative={async () => {}}
+        onWorkflowChangeState={(state) => { if (state) stateChanges.push({ token: state.token, status: state.status, error: state.error }); }}
+        externalWorkflowDiscussion={{
+          token: 'add:pf:1',
+          nodeId: 'n-dir-pf',
+          title: 'fail',
+          instruction: 'fail',
+        }}
+      />,
     );
+
+    eq(stateChanges[0]?.status, 'updating', 'dir preview fail: starts updating');
+
+    // Resolve preview with error
+    previewD.resolve({
+      revision: 1,
+      duplicate: false,
+      committed: false,
+      recoverable: true,
+      error: '模型不可用',
+    });
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    eq(stateChanges.length, 2, 'dir preview fail: two transitions');
+    eq(stateChanges[1]?.status, 'failed', 'dir preview fail: failed status');
+    contains(stateChanges[1]?.error ?? '', '模型不可用', 'dir preview fail: error surfaced');
+
+    await cleanup();
+  }
+
+  // Direct workflow change: duplicate token is idempotent (skips re-execution).
+  {
+    resetStore();
+    const token = 'add:dup:1';
+    const tasks = [makeTask({
+      id: 't-dir-dup-1',
+      runId: 'run-dir-dup',
+      nodeId: 'n-dir-dup',
+      title: '任务',
+      state: 'completed',
+    })];
+    const nodeDef = makeNodeDef({ id: 'n-dir-dup', blockIds: ['block-dir-dup'] });
+    seedStore(tasks, makeDefinition([nodeDef]));
+    const blocks = [makeBlock('block-dir-dup', 1, '任务')];
+
+    let previewCount = 0;
+    const previewRequestIDs: string[] = [];
+    const handlePreview = async (intent: { requestId: string }): Promise<PreviewWorkPatchResult> => {
+      previewCount++;
+      previewRequestIDs.push(intent.requestId);
+      return { revision: 1, duplicate: false, committed: false, recoverable: true, error: 'no' };
+    };
+    const { cleanup, root } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId="session-dir-dup"
+        blocks={blocks}
+        onPreviewPatch={handlePreview}
+        onApplyPatch={async () => ({
+          workRevision: 1,
+          newRevision: 1,
+          requiresRerun: false,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+        })}
+        onRefreshAuthoritative={async () => {}}
+        onWorkflowChangeState={() => {}}
+        externalWorkflowDiscussion={{ token, nodeId: 'n-dir-dup', title: 'dup', instruction: 'x' }}
+      />,
+    );
+
+    // First mount triggers the effect
+    await new Promise<void>((r) => setTimeout(r, 50));
+    eq(previewCount, 1, 'dir dup: preview called once on first mount');
+
+    // Re-render with same token — should NOT re-trigger
+    await act(async () => {
+      root.render(
+        <ExecutionList
+          workId={WORK_ID}
+          sessionId="session-dir-dup"
+          blocks={blocks}
+          onPreviewPatch={handlePreview}
+          onApplyPatch={async () => ({
+            workRevision: 1,
+            newRevision: 1,
+            requiresRerun: false,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+          })}
+          onRefreshAuthoritative={async () => {}}
+          onWorkflowChangeState={() => {}}
+          externalWorkflowDiscussion={{ token, nodeId: 'n-dir-dup', title: 'dup', instruction: 'x' }}
+        />,
+      );
+    });
+    await new Promise<void>((r) => setTimeout(r, 50));
+    eq(previewCount, 1, 'dir dup: no re-trigger on same token');
+
+    // A user retry increments the UI attempt, but keeps the stable request ID
+    // so the backend can safely deduplicate an already-committed operation.
+    await act(async () => {
+      root.render(
+        <ExecutionList
+          workId={WORK_ID}
+          sessionId="session-dir-dup"
+          blocks={blocks}
+          onPreviewPatch={handlePreview}
+          onApplyPatch={async () => ({
+            workRevision: 1,
+            newRevision: 1,
+            requiresRerun: false,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+          })}
+          onRefreshAuthoritative={async () => {}}
+          onWorkflowChangeState={() => {}}
+          externalWorkflowDiscussion={{ token, attempt: 1, nodeId: 'n-dir-dup', title: 'dup', instruction: 'x' }}
+        />,
+      );
+    });
+    await new Promise<void>((r) => setTimeout(r, 50));
+    eq(previewCount, 2, 'dir dup: a new retry attempt re-runs the request');
+    eq(previewRequestIDs[0], `wf-preview-${token}`, 'dir dup: first request ID is stable');
+    eq(previewRequestIDs[1], previewRequestIDs[0], 'dir dup: retry reuses request ID for idempotency');
+
+    await cleanup();
+  }
+
+  // Direct workflow change: a committed apply remains recoverable when the
+  // authoritative refresh fails. Retrying reuses backend idempotency keys.
+  {
+    resetStore();
+    const token = 'edit:refresh-recovery:1';
+    const task = makeTask({
+      id: 't-dir-refresh',
+      runId: 'run-dir-refresh',
+      nodeId: 'n-dir-refresh',
+      title: '生成成果',
+      state: 'completed',
+    });
+    const blockId = 'block-dir-refresh';
+    seedStore([task], makeDefinition([makeNodeDef({ id: task.nodeId, blockIds: [blockId] })]));
+    const blocks = [makeBlock(blockId, 1, '生成成果')];
+    const previewIDs: string[] = [];
+    const applyIDs: string[] = [];
+    let refreshCount = 0;
+    const stateChanges: Array<{ status: string; error?: string }> = [];
+    const handlePreview = async (intent: { requestId: string }): Promise<PreviewWorkPatchResult> => {
+      previewIDs.push(intent.requestId);
+      return {
+        preview: {
+          id: 'patch-dir-refresh',
+          workId: WORK_ID,
+          runId: task.runId,
+          taskId: task.id,
+          blockId,
+          sessionId: 'session-dir-refresh',
+          baseDefinitionRev: 1,
+          baseBlockRev: 1,
+          scope: 'workflow',
+          operations: [],
+          affectedNodeIds: [],
+          affectedBlockIds: [],
+          affectedArtifactSlotIds: [],
+          staleArtifactSlotIds: [],
+          invalidatedTaskIds: [],
+          requiresRerun: false,
+          digest: 'digest-dir-refresh',
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+        },
+        revision: 1,
+        duplicate: previewIDs.length > 1,
+        committed: true,
+        recoverable: false,
+      };
+    };
+    const handleApply = async (intent: { requestId: string }): Promise<ApplyWorkPatchResult> => {
+      applyIDs.push(intent.requestId);
+      return {
+        workRevision: 1,
+        newRevision: 2,
+        requiresRerun: false,
+        duplicate: applyIDs.length > 1,
+        committed: true,
+        recoverable: false,
+      };
+    };
+    const renderList = (attempt?: number) => (
+      <ExecutionList
+        workId={WORK_ID}
+        sessionId="session-dir-refresh"
+        workRevision={1}
+        blocks={blocks}
+        onPreviewPatch={handlePreview}
+        onApplyPatch={handleApply}
+        onRefreshAuthoritative={async () => {
+          refreshCount++;
+          if (refreshCount === 1) throw new Error('暂时离线');
+        }}
+        onWorkflowChangeState={(state) => {
+          if (state) stateChanges.push({ status: state.status, error: state.error });
+        }}
+        externalWorkflowDiscussion={{
+          token,
+          attempt,
+          nodeId: task.nodeId,
+          title: '修改成果',
+          instruction: '修改成果定义',
+        }}
+      />
+    );
+
+    const { cleanup, root } = await mount(renderList());
+    await new Promise<void>((r) => setTimeout(r, 80));
+    eq(stateChanges[stateChanges.length - 1]?.status, 'failed', 'dir refresh recovery: refresh failure is visible');
     contains(
-      document.querySelector('[data-testid="discussion-scope-t-result-change"]')?.textContent ?? '',
-      '流程结构变更',
-      'result workflow: workflow-only scope is explicit',
+      stateChanges[stateChanges.length - 1]?.error ?? '',
+      '更新已提交，但刷新状态失败',
+      'dir refresh recovery: committed state is explicit',
     );
-    ok(
-      document.querySelector('[data-testid="discussion-scope-block-t-result-change"]') === null,
-      'result workflow: block-only scope cannot be selected',
-    );
-    await interact(() =>
-      document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-t-result-change"]')?.click());
+
+    await act(async () => { root.render(renderList(1)); });
+    await new Promise<void>((r) => setTimeout(r, 80));
+    eq(stateChanges[stateChanges.length - 1]?.status, 'applied', 'dir refresh recovery: retry recovers to applied');
+    eq(refreshCount, 2, 'dir refresh recovery: authoritative refresh retried');
+    eq(previewIDs[1], previewIDs[0], 'dir refresh recovery: preview request ID reused');
+    eq(applyIDs[1], applyIDs[0], 'dir refresh recovery: apply request ID reused');
+
     await cleanup();
   }
 
