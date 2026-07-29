@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"workground2/internal/artifact"
 	"workground2/internal/nilutil"
@@ -57,6 +58,13 @@ type V2RuntimeAuthority interface {
 // FileWorkStore path always provides durable slot receipts.
 type V2ArtifactAuthority interface {
 	CommitV2Artifact(context.Context, TaskArtifactCommitInput) (*ArtifactSlotResult, error)
+}
+
+// V2ArtifactReader resolves content-addressed upstream artifacts. The scheduler
+// selects refs from the authoritative projection; this port only reads the
+// already-selected digest for the bound Work.
+type V2ArtifactReader interface {
+	ReadV2ArtifactBlob(context.Context, string) ([]byte, error)
 }
 
 type TaskArtifactCommitInput struct {
@@ -107,6 +115,16 @@ func (a *FileV2RuntimeAuthority) CommitV2Artifact(ctx context.Context, input Tas
 	return commitArtifactWithStore(ctx, a.store, input)
 }
 
+func (a *FileV2RuntimeAuthority) ReadV2ArtifactBlob(ctx context.Context, digest string) ([]byte, error) {
+	if a == nil || a.store == nil {
+		return nil, errors.New("work: V2 artifact reader is not configured")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return a.store.Get(a.workID, digest)
+}
+
 func commitArtifactWithStore(ctx context.Context, store WorkStore, input TaskArtifactCommitInput) (*ArtifactSlotResult, error) {
 	requestID := fmt.Sprintf("%s/artifact/%s", input.AttemptID, input.Output.SlotID)
 	for tries := 0; tries < 4; tries++ {
@@ -155,7 +173,7 @@ func (s *V2Scheduler) Schedule(
 	slotDefs []ArtifactSlotDef,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
-	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, nil, authority)
+	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, nil, "", authority)
 }
 
 // ScheduleAffected reevaluates only changed seed nodes and their descendants.
@@ -171,9 +189,10 @@ func (s *V2Scheduler) ScheduleAffected(
 	specs []InputSpec,
 	slotDefs []ArtifactSlotDef,
 	changedNodeIDs []string,
+	goal string,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
-	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, changedNodeIDs, authority)
+	return s.schedule(ctx, workID, runID, nodes, runtimes, defRev, inputs, specs, slotDefs, changedNodeIDs, goal, authority)
 }
 
 // V2WakeCause identifies the authoritative event that may release a waiting
@@ -203,6 +222,7 @@ func (s *V2Scheduler) WakeAndScheduleAffected(
 	slotDefs []ArtifactSlotDef,
 	changedIDs []string,
 	cause V2WakeCause,
+	goal string,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
 	if authority == nil {
@@ -252,6 +272,7 @@ func (s *V2Scheduler) WakeAndScheduleAffected(
 		specs,
 		slotDefs,
 		seeds,
+		goal,
 		authority,
 	)
 }
@@ -266,6 +287,7 @@ func (s *V2Scheduler) schedule(
 	specs []InputSpec,
 	slotDefs []ArtifactSlotDef,
 	changedNodeIDs []string,
+	goal string,
 	authority V2RuntimeAuthority,
 ) (V2ScheduleResult, error) {
 	if ctx == nil {
@@ -347,7 +369,7 @@ func (s *V2Scheduler) schedule(
 				defer wg.Done()
 				executed, err := s.executeNode(
 					ctx, workID, runID, &node, local, defRev, inputs, specs, slotDefs,
-					lockedEmit, authority.LoadV2Projection, authority,
+					lockedEmit, authority.LoadV2Projection, authority, nodes, goal,
 				)
 				results <- nodeResult{
 					nodeID:   nodeID,
@@ -395,6 +417,8 @@ func (s *V2Scheduler) executeNode(
 	emit V2EventEmitter,
 	load func() (*Work, error),
 	authority V2RuntimeAuthority,
+	allNodes []NodeDef,
+	goal string,
 ) (bool, error) {
 	taskID, err := DeriveTaskID(runID, node.ID)
 	if err != nil {
@@ -474,13 +498,41 @@ func (s *V2Scheduler) executeNode(
 		ExecutionToken:   token,
 		SideEffectClass:  rt.SideEffectClass,
 	}
-	if err := updateRuntime(emit, rt, TaskRunning, &attempt, now, setContext); err != nil {
-		return false, err
-	}
 
 	taskPrompt := v2NodePromptLocale(
 		node, inputs, specs, slotDefs, workID, runID, taskID, locale,
 	)
+	var runtimeSlots []ArtifactSlot
+	if promptWork != nil {
+		runtimeSlots = promptWork.V2ArtifactSlots
+	}
+	artifactReader, _ := authority.(V2ArtifactReader)
+	workContext, contextErr := v2WorkContextPrompt(
+		ctx, goal, node, rtMap, allNodes, slotDefs, runtimeSlots, defRev, artifactReader,
+	)
+	if contextErr != nil {
+		if err := updateRuntime(emit, rt, TaskRunning, &attempt, now, setContext); err != nil {
+			return false, errors.Join(contextErr, err)
+		}
+		finishedAt := s.clock.Now().UTC()
+		failedAttempt := rt.Attempts[len(rt.Attempts)-1]
+		failedAttempt.State = TaskFailedRetryable
+		failedAttempt.FinishedAt = &finishedAt
+		failedAttempt.Error = "upstream context: " + contextErr.Error()
+		err := updateRuntime(emit, rt, TaskFailedRetryable, nil, finishedAt, func(next *V2TaskRuntime) {
+			setContext(next)
+			next.Attempts[len(next.Attempts)-1] = failedAttempt
+			next.Error = failedAttempt.Error
+		})
+		if err != nil {
+			return true, errors.Join(contextErr, err)
+		}
+		return true, nil
+	}
+	taskPrompt = workContext + taskPrompt
+	if err := updateRuntime(emit, rt, TaskRunning, &attempt, now, setContext); err != nil {
+		return false, err
+	}
 	var liveErr error
 	reportLive := func(update TaskLiveUpdate) error {
 		output := strings.TrimSpace(update.Output)
@@ -504,20 +556,22 @@ func (s *V2Scheduler) executeNode(
 		return err
 	}
 	execResult, execErr := safeExecuteTask(s.executor, ctx, TaskExecuteInput{
-		WorkID:           workID,
-		RunID:            runID,
-		StageID:          v2ExecutionStageID,
-		TaskID:           taskID,
-		AttemptID:        attempt.ID,
-		AttemptIndex:     attempt.Index,
-		RequestID:        attempt.RequestID,
-		DefinitionDigest: fmt.Sprintf("%d:%s", defRev, token),
-		SideEffectClass:  rt.SideEffectClass,
-		Operation:        node.ID,
-		ProducesSlotIDs:  append([]string(nil), node.ProducesSlotIDs...),
-		SlotPreflights:   BuildSlotPreflights(slotDefs, node.ProducesSlotIDs, taskPrompt),
-		Prompt:           taskPrompt,
-		Live:             reportLive,
+		WorkID:               workID,
+		RunID:                runID,
+		StageID:              v2ExecutionStageID,
+		TaskID:               taskID,
+		AttemptID:            attempt.ID,
+		AttemptIndex:         attempt.Index,
+		RequestID:            attempt.RequestID,
+		DefinitionDigest:     fmt.Sprintf("%d:%s", defRev, token),
+		SideEffectClass:      rt.SideEffectClass,
+		Operation:            node.ID,
+		ProducesSlotIDs:      append([]string(nil), node.ProducesSlotIDs...),
+		SlotPreflights:       BuildSlotPreflights(slotDefs, node.ProducesSlotIDs, taskPrompt),
+		AcceptanceCriteria:   append([]string(nil), node.AcceptanceCriteria...),
+		RequiredCapabilities: requiredV2Capabilities(node.ToolHints),
+		Prompt:               taskPrompt,
+		Live:                 reportLive,
 	})
 	execErr = errors.Join(execErr, liveErr)
 	finishedAt := s.clock.Now().UTC()
@@ -555,6 +609,19 @@ func (s *V2Scheduler) executeNode(
 			finalAttempt.Error = fmt.Sprintf("work: V2 executor returned invalid state %q", execResult.State)
 		}
 	}
+
+	// Post-execution completion gate: verify delivery contract before accepting
+	// TaskCompleted. Gates run only when the executor returned success;
+	// gate failures produce failed_retryable with a stable, observable reason.
+	if finalAttempt.State == TaskCompleted && execResult != nil {
+		if gateErr := v2CompletionGate(
+			node, execResult.LastAssistantText, execResult.SuccessfulCapabilities, execResult.State,
+		); gateErr != "" {
+			finalAttempt.State = TaskFailedRetryable
+			finalAttempt.Error = "completion gate: " + gateErr
+		}
+	}
+
 	if V2ReceiptRequired(finalAttempt.SideEffectClass) &&
 		(finalAttempt.Receipt == nil ||
 			strings.TrimSpace(finalAttempt.Receipt.RequestID) != strings.TrimSpace(attempt.RequestID) ||
@@ -813,6 +880,259 @@ func v2NodePrompt(
 	workID, runID, taskID string,
 ) string {
 	return v2NodePromptLocale(node, inputs, specs, slotDefs, workID, runID, taskID, "")
+}
+
+// v2WorkContextPrompt builds the work goal, upstream artifact content, and
+// acceptance criteria prefix for a V2 node task prompt.
+func v2WorkContextPrompt(
+	ctx context.Context,
+	goal string,
+	node *NodeDef,
+	rtMap map[string]*V2TaskRuntime,
+	allNodes []NodeDef,
+	slotDefs []ArtifactSlotDef,
+	runtimeSlots []ArtifactSlot,
+	definitionRev int64,
+	reader V2ArtifactReader,
+) (string, error) {
+	var parts []string
+
+	// Work goal.
+	if goal != "" {
+		parts = append(parts, "## Work goal\n"+goal)
+	}
+
+	// Include explicitly consumed slots plus every output of direct dependency
+	// nodes. This prevents a downstream node from rediscovering an upstream
+	// result merely because the planner omitted consumesSlotIds.
+	slotProducer := make(map[string]string)
+	var upstreamSlotIDs []string
+	seenSlots := make(map[string]bool)
+	for _, n := range allNodes {
+		for _, sid := range n.ProducesSlotIDs {
+			slotProducer[sid] = n.ID
+		}
+		if stringInSlice(n.ID, node.DependsOn) {
+			for _, slotID := range n.ProducesSlotIDs {
+				if !seenSlots[slotID] {
+					seenSlots[slotID] = true
+					upstreamSlotIDs = append(upstreamSlotIDs, slotID)
+				}
+			}
+		}
+	}
+	for _, slotID := range node.ConsumesSlotIDs {
+		if !seenSlots[slotID] {
+			seenSlots[slotID] = true
+			upstreamSlotIDs = append(upstreamSlotIDs, slotID)
+		}
+	}
+	slotByID := make(map[string]ArtifactSlotDef, len(slotDefs))
+	for _, sd := range slotDefs {
+		slotByID[sd.ID] = sd
+	}
+
+	if len(upstreamSlotIDs) > 0 {
+		var upstream []string
+		const maxUpstreamBytes = 32 * 1024
+		remaining := maxUpstreamBytes
+		for _, slotID := range upstreamSlotIDs {
+			producerNodeID := slotProducer[slotID]
+			if producerNodeID == "" {
+				return "", fmt.Errorf("slot %q has no producing node", slotID)
+			}
+			rt, ok := rtMap[producerNodeID]
+			if !ok || rt == nil {
+				return "", fmt.Errorf("node %q for slot %q has no runtime state", producerNodeID, slotID)
+			}
+			slotDef, hasSlot := slotByID[slotID]
+			slotTitle := slotID
+			if hasSlot {
+				slotTitle = slotDef.Title
+			}
+			if rt.State != TaskCompleted {
+				return "", fmt.Errorf(
+					"node %q for slot %q is %q, not completed",
+					producerNodeID, slotID, rt.State,
+				)
+			}
+			slot := findV2RuntimeSlot(runtimeSlots, definitionRev, slotID)
+			if slot == nil || slot.State != SlotReady {
+				return "", fmt.Errorf(
+					"node %q completed but slot %q (%s) is not ready",
+					producerNodeID, slotID, slotTitle,
+				)
+			}
+			formatted, err := formatV2UpstreamSlot(ctx, *slot, reader, &remaining)
+			if err != nil {
+				return "", err
+			}
+			upstream = append(upstream, formatted)
+		}
+		if len(upstream) > 0 {
+			parts = append(parts, "## Upstream results (authoritative)\n"+
+				strings.Join(upstream, "\n\n")+
+				"\n\nUse the supplied content or workspace reference as authoritative input. Do not re-search or reconstruct it.")
+		}
+	}
+
+	// Acceptance criteria.
+	if len(node.AcceptanceCriteria) > 0 {
+		var critLines []string
+		for i, c := range node.AcceptanceCriteria {
+			critLines = append(critLines, fmt.Sprintf("%d. %s", i+1, c))
+		}
+		parts = append(parts, "## Acceptance criteria (must satisfy ALL before completing)\n"+
+			strings.Join(critLines, "\n")+
+			"\n\nCheck each criterion before finishing. If any criterion cannot be met, state which one and why.")
+	}
+
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return strings.Join(parts, "\n\n") + "\n\n---\n\n", nil
+}
+
+func stringInSlice(value string, values []string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func findV2RuntimeSlot(slots []ArtifactSlot, definitionRev int64, slotID string) *ArtifactSlot {
+	for i := range slots {
+		if slots[i].DefinitionRev == definitionRev && slots[i].ID == slotID {
+			return &slots[i]
+		}
+	}
+	return nil
+}
+
+func formatV2UpstreamSlot(
+	ctx context.Context,
+	slot ArtifactSlot,
+	reader V2ArtifactReader,
+	remaining *int,
+) (string, error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### Slot %q — %s\n", slot.ID, slot.Title)
+	if summary := strings.TrimSpace(slot.Summary); summary != "" {
+		fmt.Fprintf(&b, "Summary: %s\n", summary)
+	}
+	for _, ref := range slot.ArtifactRefs {
+		if ref.Status != ArtifactRefStatusAvailable {
+			continue
+		}
+		fmt.Fprintf(&b, "- Artifact %q; type=%q; digest=%q", ref.Name, ref.Type, ref.BlobDigest)
+		if ref.RelativePath != "" {
+			fmt.Fprintf(&b, "; workspace_path=%q", ref.RelativePath)
+		} else if ref.Path != "" {
+			fmt.Fprintf(&b, "; path=%q", ref.Path)
+		}
+		b.WriteString("\n")
+		if !textV2Artifact(ref.Type, slot.Kind) {
+			if strings.TrimSpace(ref.RelativePath) == "" && strings.TrimSpace(ref.Path) == "" {
+				return "", fmt.Errorf("slot %q artifact %q is binary and has no usable workspace path", slot.ID, ref.Name)
+			}
+			b.WriteString("  Content: binary; use the authoritative workspace path above.\n")
+			continue
+		}
+		if strings.TrimSpace(ref.BlobDigest) == "" {
+			if strings.TrimSpace(ref.RelativePath) == "" && strings.TrimSpace(ref.Path) == "" {
+				return "", fmt.Errorf("slot %q text artifact %q has no content or usable workspace path", slot.ID, ref.Name)
+			}
+			b.WriteString("  Content: use the authoritative workspace path above.\n")
+			continue
+		}
+		if reader == nil {
+			return "", fmt.Errorf("slot %q content reader is unavailable", slot.ID)
+		}
+		if *remaining <= 0 {
+			b.WriteString("  Content: omitted because the upstream context limit was reached.\n")
+			continue
+		}
+		content, err := reader.ReadV2ArtifactBlob(ctx, ref.BlobDigest)
+		if err != nil {
+			return "", fmt.Errorf("read authoritative content for slot %q: %w", slot.ID, err)
+		}
+		take := len(content)
+		truncated := false
+		if take > *remaining {
+			take = *remaining
+			truncated = true
+		}
+		for take > 0 && !utf8.Valid(content[:take]) {
+			take--
+			truncated = true
+		}
+		*remaining -= take
+		b.WriteString("  Content:\n\n")
+		b.Write(content[:take])
+		if truncated {
+			b.WriteString("\n\n[truncated by host at the total upstream context limit]")
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+func textV2Artifact(mediaType, kind string) bool {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if strings.Contains(mediaType, "/") {
+		return strings.HasPrefix(mediaType, "text/") ||
+			strings.Contains(mediaType, "json") ||
+			strings.Contains(mediaType, "xml") ||
+			strings.Contains(mediaType, "javascript") ||
+			strings.Contains(mediaType, "yaml") ||
+			strings.Contains(mediaType, "csv")
+	}
+	return stringInSlice(kind, []string{"text", "markdown", "md", "report", "code", "json", "html", "csv"})
+}
+
+// v2CompletionGate checks the model response against the node's delivery
+// contract. Returns an error message if the gate fails, or "" if it passes.
+func v2CompletionGate(
+	node *NodeDef,
+	assistantText string,
+	successfulCapabilities []string,
+	execState RunState,
+) string {
+	if execState != RunCompleted && execState != "" {
+		return "" // Only gate completed runs.
+	}
+	text := strings.TrimSpace(assistantText)
+	if text == "" {
+		return "model produced no output text"
+	}
+
+	for _, required := range requiredV2Capabilities(node.ToolHints) {
+		if !stringInSlice(required, successfulCapabilities) {
+			return fmt.Sprintf("node requires %s but no successful capability tool result was recorded", required)
+		}
+	}
+
+	return ""
+}
+
+func requiredV2Capabilities(toolHints []string) []string {
+	var out []string
+	for _, hint := range toolHints {
+		switch strings.ToLower(strings.TrimSpace(hint)) {
+		case "web_search":
+			if !stringInSlice("web_search", out) {
+				out = append(out, "web_search")
+			}
+		case "image_generation":
+			if !stringInSlice("image_generation", out) {
+				out = append(out, "image_generation")
+			}
+		}
+	}
+	return out
 }
 
 func v2NodePromptLocale(

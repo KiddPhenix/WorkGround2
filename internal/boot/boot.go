@@ -56,6 +56,49 @@ import (
 // the product brand.
 const ProductName = "WorkGround2"
 
+// WorkTaskSystemPrompt is the system prompt injected into every Work V2 task
+// session. It defines the role as a business delivery executor — distinct from
+// the coding-agent prompt used for normal conversational sessions.
+const WorkTaskSystemPrompt = `You are a work delivery executor. Your job is to produce concrete, verifiable
+deliverables for a single work node. You are NOT a coding assistant, NOT a
+conversational agent.
+
+Core rules:
+- Use every required capability and tool for this node. Never answer from "common
+  knowledge" when a tool hint (web_search, image_generation, etc.) mandates
+  active search or generation. If you cannot use a required capability, return a
+  clear failure with the reason — never substitute a plausible-sounding answer.
+- Before finishing, check each acceptance criterion listed in the task prompt.
+  Address every criterion explicitly. If any criterion cannot be met, state which
+  one and why — do not silently skip it.
+- When web_search is required, every factual claim must be backed by a cited,
+  accessible source URL. Include at least the URLs in your final response. A
+  response without URLs when search was required is a delivery failure.
+- Produce every declared artifact slot output. Text slots require the complete
+  deliverable in your final response — not a summary, not a claim that a file
+  was created somewhere else. Structured slots must be produced by the
+  appropriate tool.
+- If upstream results are provided in the task prompt, use them as authoritative
+  input. Do not re-derive, re-search, or second-guess upstream output unless the
+  task explicitly asks you to validate it.
+- When you cannot deliver (missing capability, insufficient input, contradictory
+  requirements), signal failure clearly: state what is missing, why it blocks
+  delivery, and whether retrying could help. Do not produce partial or
+  fabricated output and claim success.
+- Your final response is the delivery record. The host runs a mandatory quality
+  pass against the acceptance criteria and verifies objective evidence such as
+  successful capability calls and declared artifact outputs. Missing objective
+  evidence returns the node to failed_retryable state.`
+
+func workTaskSystemPrompt(hostPrompt string) string {
+	hostPrompt = strings.TrimSpace(hostPrompt)
+	hostPrompt = strings.TrimSpace(strings.Replace(hostPrompt, config.DefaultSystemPrompt, "", 1))
+	if hostPrompt == "" {
+		return WorkTaskSystemPrompt
+	}
+	return WorkTaskSystemPrompt + "\n\n# Workspace policies and context\n" + hostPrompt
+}
+
 // ErrUnknownModel is returned by Build when the configured model can't be
 // resolved to a provider — e.g. a default_model left over from a renamed or
 // removed provider. Callers can detect it (errors.Is) to re-run setup.
@@ -1203,8 +1246,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					return nil, err
 				}
 			}
+			taskPrompt := workTaskSystemPrompt(sysPrompt)
 			taskAdapter := control.NewTaskExecutorAdapter(
-				control.TaskExecutorProfile{Provider: execProv.Name(), Model: modelRef},
+				control.TaskExecutorProfile{
+					Provider:           execProv.Name(),
+					Model:              modelRef,
+					NativeCapabilities: append([]string(nil), entry.Capabilities...),
+				},
 				func(_ context.Context, input work.TaskExecuteInput) (*control.Controller, func(), error) {
 					taskPath := agent.NewSessionPath(sessionDir, "work-"+label)
 					if _, err := control.PublishTaskSession(input, taskPath, modelRef); err != nil {
@@ -1212,7 +1260,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					}
 					taskSink := control.NewTaskLiveSink(input.Live)
 					taskJobs := jobs.NewManager(taskSink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
-					taskSession := agent.NewSession(sysPrompt)
+					taskSession := agent.NewSession(taskPrompt)
 					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), taskSink)
 					taskCtrl := control.New(control.Options{
 						Runner:               taskAgent,
@@ -1221,7 +1269,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 						Policy:               policy,
 						Label:                label,
 						ModelRef:             modelRef,
-						SystemPrompt:         sysPrompt,
+						SystemPrompt:         taskPrompt,
 						SessionDir:           sessionDir,
 						SessionPath:          taskPath,
 						Hooks:                hookRunner,

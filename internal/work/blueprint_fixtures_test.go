@@ -63,8 +63,10 @@ func (e *fixtureExecutor) ExecuteTask(ctx context.Context, input TaskExecuteInpu
 		return &Attempt{State: RunFailed, Error: "injected failure for " + nodeID}, nil
 	}
 	result := &Attempt{
-		State:      RunCompleted,
-		SessionRef: SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		State:                  RunCompleted,
+		SessionRef:             SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		LastAssistantText:      "fixture delivery for " + input.Operation,
+		SuccessfulCapabilities: append([]string(nil), input.RequiredCapabilities...),
 	}
 	if V2ReceiptRequired(input.SideEffectClass) {
 		result.Receipt = &AttemptReceipt{

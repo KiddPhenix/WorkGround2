@@ -132,7 +132,15 @@ InputSpec rules — when to ask the user vs when the system will search:
 - Choose the most specific InputKind: text for free-form answers, number for quantities, date for deadlines, choice for single-select, multi_choice for multi-select, file for uploads, roster for lists of people, form for structured objects, approval for sign-offs.
 - Group inputs that belong to the same phase under the same node via inputSpecIds so they materialize as a single Block.
 - Every required InputSpec MUST be referenced by at least one NodeDef.inputSpecIds. An unreferenced required InputSpec is an invalid plan that will be rejected.
-- Do NOT generate inputs that are optional, have safe defaults, duplicate another input, or are irrelevant to the deliverable.`
+- Do NOT generate inputs that are optional, have safe defaults, duplicate another input, or are irrelevant to the deliverable.
+
+Acceptance criteria rules — every node must declare concrete, verifiable success conditions:
+- Every NodeDef MUST include 2-5 acceptanceCriteria. Each criterion must name a specific, observable outcome — a concrete deliverable, evidence, or property that can be checked after execution. Never use vague phrases like "complete the task", "ensure quality", "deliver as requested", or "finish the work".
+- Good criteria name concrete artifacts ("translated PDF saved to slot"), observable properties ("all cited URLs are real and accessible"), specific constraints ("response includes at least 3 source URLs"), or verifiable evidence ("search results confirm the latest API version").
+- When a node has toolHints including "web_search", at least one criterion MUST require search evidence with source URLs: e.g. "response cites at least N search result URLs" or "each factual claim is backed by a cited source URL".
+- When a node produces artifact slots, criteria must cover slot delivery: e.g. "image slot X populated with a generated image", "text slot Y contains the complete report, not a summary".
+- Criteria drive a mandatory post-execution quality pass. The host separately verifies objective evidence such as successful required-capability calls and declared artifact outputs before marking the node completed.
+- Never use criteria as a substitute for node description or goal. They are the contract the model must fulfill.`
 
 const definitionPlanOutputReminder = `Validate silently before responding.
 Your entire response must begin with { and end with }. Return exactly ONE JSON object and nothing else.
@@ -172,6 +180,7 @@ No other top-level fields are allowed.
   "blockIds": ["string (optional)"],
   "producesSlotIds": ["string (optional)"],
   "consumesSlotIds": ["string (optional)"],
+  "acceptanceCriteria": ["string (required) — 2-5 concrete, observable, deliverable-oriented conditions that will be checked at the post-execution gate. Never use vague phrases like \"complete the task\" or \"ensure quality\"."],
   "globalGate": "string (optional)"
 }
 
@@ -236,7 +245,12 @@ The collection must be [] whenever the structure can be safely inferred. Structu
       "title": "Translate document",
       "description": "Translate the uploaded source PDF into the requested language",
       "inputSpecIds": ["source_pdf"],
-      "producesSlotIds": ["translated_pdf"]
+      "producesSlotIds": ["translated_pdf"],
+      "acceptanceCriteria": [
+        "translated PDF file saved to the translated_pdf artifact slot",
+        "translation preserves all original formatting, tables, and images",
+        "all text is translated to the target language with no untranslated passages"
+      ]
     }
   ],
   "artifactSlots": [
@@ -687,6 +701,20 @@ func decodeDefinitionPlan(data []byte) (*work.DefinitionPlan, error) {
 		}
 	}
 
+	// Validate acceptance criteria concreteness for each node.
+	// Old definitions without criteria pass (backward compatible);
+	// new definitions must have concrete, non-vague criteria.
+	for i, node := range plan.Nodes {
+		if len(node.AcceptanceCriteria) == 0 {
+			// Backward compatible — old planner output or simple nodes.
+			continue
+		}
+		if msg := validateAcceptanceCriteria(node.AcceptanceCriteria, node.ToolHints); msg != "" {
+			return nil, fmt.Errorf("boot: PlanDefinition: node %q acceptanceCriteria: %s", node.ID, msg)
+		}
+		_ = i // reserved for future use
+	}
+
 	return &plan, nil
 }
 
@@ -768,6 +796,83 @@ func safeDecodeError(err error) error {
 	// Non-json errors (e.g. io errors) are passed through — they don't contain
 	// model output.
 	return err
+}
+
+// validateAcceptanceCriteria checks that criteria are concrete and observable.
+// Returns an error message on the first vague criterion, or "" if all pass.
+func validateAcceptanceCriteria(criteria []string, toolHints []string) string {
+	if len(criteria) == 0 {
+		return ""
+	}
+	if len(criteria) < 2 {
+		return "at least 2 concrete acceptance criteria required"
+	}
+	if len(criteria) > 8 {
+		return "at most 8 acceptance criteria allowed"
+	}
+
+	// Vague phrases that indicate no concrete deliverable is named.
+	vaguePatterns := []string{
+		"complete the task", "complete task", "finish the work", "finish work",
+		"ensure quality", "ensure correctness", "guarantee quality",
+		"do a good job", "do good work", "be thorough",
+		"deliver as requested", "deliver as required", "fulfill the request",
+		"meet requirements", "meet the requirements", "satisfy requirements",
+		"follow instructions", "do what is asked",
+		"produce output", "generate output", "create output",
+		"complete successfully", "finish successfully",
+		"work is done", "task is done", "node is done",
+		"everything works", "it works", "works correctly",
+		"no errors", "error free", "without errors",
+	}
+
+	hasWebSearch := false
+	for _, h := range toolHints {
+		if strings.TrimSpace(h) == "web_search" {
+			hasWebSearch = true
+			break
+		}
+	}
+
+	for i, c := range criteria {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			return fmt.Sprintf("criterion %d is empty", i+1)
+		}
+		lower := strings.ToLower(c)
+		for _, vp := range vaguePatterns {
+			if strings.Contains(lower, vp) {
+				return fmt.Sprintf("criterion %d is too vague (%q); name a specific observable outcome", i+1, c)
+			}
+		}
+		// Very short criteria are likely vague.
+		if len(c) < 15 {
+			return fmt.Sprintf("criterion %d is too short (%q); must describe a specific observable outcome", i+1, c)
+		}
+	}
+
+	// Web search nodes must have at least one criterion mentioning search evidence.
+	if hasWebSearch {
+		hasSearchCriterion := false
+		searchHints := []string{"url", "source", "cite", "citation", "search result", "reference", "link"}
+		for _, c := range criteria {
+			lower := strings.ToLower(c)
+			for _, hint := range searchHints {
+				if strings.Contains(lower, hint) {
+					hasSearchCriterion = true
+					break
+				}
+			}
+			if hasSearchCriterion {
+				break
+			}
+		}
+		if !hasSearchCriterion {
+			return "nodes with web_search tool hint must include at least one acceptance criterion requiring search evidence (URL, source, or citation)"
+		}
+	}
+
+	return ""
 }
 
 var _ work.DefinitionPlanner = (*bootDefinitionPlanner)(nil)

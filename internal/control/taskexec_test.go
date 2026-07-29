@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1008,6 +1009,19 @@ func TestTaskExecutorMaterializesImageSlotFromDiscovered(t *testing.T) {
 	}
 }
 
+func TestTaskArtifactRelativePathKeepsWorkspaceArtifactUsable(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "outputs", "report.pdf")
+	got := taskArtifactRelativePath(&artifact.Discovered{Path: path}, root)
+	if got != "outputs/report.pdf" {
+		t.Fatalf("relative artifact path = %q", got)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside.pdf")
+	if got := taskArtifactRelativePath(&artifact.Discovered{Path: outside}, root); got != "" {
+		t.Fatalf("outside artifact path leaked as %q", got)
+	}
+}
+
 func TestTaskExecutorImageSlotRejectsMissingArtifact(t *testing.T) {
 	exec := NewTaskExecutorAdapter(
 		TaskExecutorProfile{Provider: "fake-provider", Model: "fake-model"},
@@ -1567,6 +1581,65 @@ func TestNoPreflightPreservesOldPath(t *testing.T) {
 	}
 	if attempt.State != work.RunCompleted {
 		t.Fatalf("expected RunCompleted, got %s", attempt.State)
+	}
+}
+
+func TestTaskExecutorRunsMandatoryQualityPass(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "complete delivery"}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: "fake/model-v1"},
+		taskFactory(t, prov, "fake/model-v1", nil, nil),
+	)
+	input := taskInput()
+	input.AcceptanceCriteria = []string{"include the full report", "preserve source URLs"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.SessionRef.TurnCount != 2 || prov.calls.Load() != 2 {
+		t.Fatalf("quality pass turns=%d provider_calls=%d, want 2", attempt.SessionRef.TurnCount, prov.calls.Load())
+	}
+	request := prov.lastRequest()
+	if len(request.Messages) == 0 {
+		t.Fatal("quality pass request is empty")
+	}
+	last := request.Messages[len(request.Messages)-1]
+	if last.Role != provider.RoleUser ||
+		!strings.Contains(last.Content, "complete replacement delivery") ||
+		!strings.Contains(last.Content, "preserve source URLs") {
+		t.Fatalf("quality pass prompt = %+v", last)
+	}
+}
+
+func TestTaskSuccessfulCapabilitiesRequirePairedSuccessfulToolResult(t *testing.T) {
+	messages := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "search-ok", Name: "request_help", Arguments: `{"capability":"web_search"}`},
+			{ID: "image-failed", Name: "request_help", Arguments: `{"capability":"image_generation"}`},
+			{ID: "orphan", Name: "web_search", Arguments: `{}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "search-ok", Name: "request_help", Content: "Capability assist succeeded"},
+		{Role: provider.RoleTool, ToolCallID: "image-failed", Name: "request_help", Content: "error: no provider"},
+	}
+	got := taskSuccessfulCapabilities(messages, nil)
+	if !reflect.DeepEqual(got, []string{"web_search"}) {
+		t.Fatalf("successful capabilities = %v, want [web_search]", got)
+	}
+}
+
+func TestTaskSuccessfulCapabilitiesAcceptNativeSearchOnlyWithCitations(t *testing.T) {
+	withURL := []provider.Message{{
+		Role: provider.RoleAssistant, Content: "Current result: https://example.com/source",
+	}}
+	if got := taskSuccessfulCapabilities(withURL, []string{"web_search"}); !reflect.DeepEqual(got, []string{"web_search"}) {
+		t.Fatalf("native search evidence = %v", got)
+	}
+	withoutURL := []provider.Message{{
+		Role: provider.RoleAssistant, Content: "I searched and found a result.",
+	}}
+	if got := taskSuccessfulCapabilities(withoutURL, []string{"web_search"}); len(got) != 0 {
+		t.Fatalf("uncited native search should not pass: %v", got)
 	}
 }
 

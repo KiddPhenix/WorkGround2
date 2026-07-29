@@ -487,6 +487,7 @@ func nodeExecutionDigest(node NodeDef, specs map[string]InputSpec) string {
 	normalized.BlockIDs = append([]string(nil), node.BlockIDs...)
 	normalized.ProducesSlotIDs = append([]string(nil), node.ProducesSlotIDs...)
 	normalized.ConsumesSlotIDs = append([]string(nil), node.ConsumesSlotIDs...)
+	normalized.AcceptanceCriteria = append([]string(nil), node.AcceptanceCriteria...)
 	sort.Strings(normalized.DependsOn)
 	sort.Strings(normalized.InputSpecIDs)
 	sort.Strings(normalized.ToolHints)
@@ -651,6 +652,7 @@ func CopyOnWriteRevision(parent *WorkDefinitionRevision) *WorkDefinitionRevision
 		rev.Nodes[i].BlockIDs = append([]string(nil), parent.Nodes[i].BlockIDs...)
 		rev.Nodes[i].ProducesSlotIDs = append([]string(nil), parent.Nodes[i].ProducesSlotIDs...)
 		rev.Nodes[i].ConsumesSlotIDs = append([]string(nil), parent.Nodes[i].ConsumesSlotIDs...)
+		rev.Nodes[i].AcceptanceCriteria = append([]string(nil), parent.Nodes[i].AcceptanceCriteria...)
 	}
 	rev.ArtifactSlots = append([]ArtifactSlotDef(nil), parent.ArtifactSlots...)
 	rev.InputSpecs = make([]InputSpec, len(parent.InputSpecs))
