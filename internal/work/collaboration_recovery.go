@@ -287,9 +287,34 @@ func (s *Service) CreateCandidateRevisionWithResult(
 	if input.InferName {
 		suggestedName = workNameFromPrompt(candidateInput.Goal, before.Name)
 	}
-	candidate, err := s.createCandidateRevision(
-		ctx, input.WorkID, candidateInput, input.RequestID, input.ExpectedRevision, intentDigest, suggestedName,
-	)
+	// Planning can take long enough for unrelated runtime/input events to
+	// advance the Work event log. Rebase only the aggregate Work revision when
+	// the active Definition is still the exact base that the planner saw. This
+	// preserves the generated candidate and avoids a second model call while
+	// keeping real Definition changes explicit.
+	candidateExpectedRevision := input.ExpectedRevision
+	var candidate *WorkDefinitionRevision
+	for attempt := 0; attempt < 2; attempt++ {
+		candidate, err = s.createCandidateRevision(
+			ctx, input.WorkID, candidateInput, input.RequestID, candidateExpectedRevision, intentDigest, suggestedName,
+		)
+		if err == nil || !isRevisionEventConflict(err) || attempt > 0 {
+			break
+		}
+		latest, latestState, loadErr := s.store.LoadState(input.WorkID, "")
+		if loadErr != nil {
+			err = errors.Join(err, fmt.Errorf("work: reload candidate base after revision conflict: %w", loadErr))
+			break
+		}
+		latestBase := latest.V2CurrentRevision
+		if latestBase == 0 {
+			latestBase = latest.V2LatestRevision
+		}
+		if latestBase != baseRevision {
+			break
+		}
+		candidateExpectedRevision = latestState.Revision
+	}
 	result.Candidate = candidate
 	if candidate != nil {
 		result.Committed = true
@@ -308,6 +333,11 @@ func (s *Service) CreateCandidateRevisionWithResult(
 		result.Recoverable = result.TransportError.Recoverable
 	}
 	return result, err
+}
+
+func isRevisionEventConflict(err error) bool {
+	var conflict *ErrWorkEventConflict
+	return errors.As(err, &conflict) && conflict.Kind == WorkEventRevisionConflict
 }
 
 // ErrDefinitionPlannerUnavailable is retryable configuration state. The

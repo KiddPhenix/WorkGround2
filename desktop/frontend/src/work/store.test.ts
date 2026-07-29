@@ -2131,7 +2131,7 @@ test('candidate committed: fetch always stale → committed+recoverable error', 
   adapter.dispose();
 });
 
-test('candidate revision_conflict: controller refreshes, retry uses new requestId', async () => {
+test('candidate revision_conflict: controller refreshes and safely retries once', async () => {
   reset();
   const workID = 'work-cand-conflict';
   const rev8 = makeView(workID, 8);
@@ -2154,49 +2154,34 @@ test('candidate revision_conflict: controller refreshes, retry uses new requestI
       recoverable: true,
     },
   };
-  // After conflict, fetch returns authoritative rev9.
+  // After conflict, fetch returns authoritative rev9. The automatic retry
+  // commits at rev10 and then performs the normal committed refresh.
   port.fetchDeferreds = [
     async () => makeView(workID, 9),
+    async () => makeView(workID, 10),
   ];
 
   const adapter = new WorkControllerAdapter(port);
-  let conflictThrown = false;
-  try {
-    await adapter.createCandidateRevision({
-      workId: workID,
-      intent: 'test',
-      baseDefinitionRevision: 1,
-      expectedRevision: 8,
-      requestId: 'cand-conflict-1',
-    });
-  } catch (err) {
-    conflictThrown = true;
-    equal((err as { code?: string }).code, 'revision_conflict', 'error code revision_conflict');
-  }
-  ok(conflictThrown, 'revision_conflict throws');
-  equal(useWorkStore.getState().revisions[workID], 9, 'store refreshed to rev9 after conflict');
-
-  // Retry with new requestId.
-  port.candidateNext = {
-    candidate: undefined,
-    revision: 10,
-    duplicate: false,
-    committed: true,
-    recoverable: false,
-  };
-  port.fetchDeferreds = [
-    async () => makeView(workID, 10),
-  ];
   const retry = await adapter.createCandidateRevision({
     workId: workID,
     intent: 'test',
     baseDefinitionRevision: 1,
-    expectedRevision: 9,   // uses refreshed revision
-    requestId: 'cand-conflict-2', // new requestId
+    expectedRevision: 8,
+    requestId: 'cand-conflict-1',
   });
   equal(retry.committed, true, 'retry succeeds');
   equal(retry.revision, 10, 'retry revision 10');
   equal(useWorkStore.getState().revisions[workID], 10, 'store reaches rev10 after retry');
+  equal(
+    JSON.stringify(port.candidateInputs.map((input) => input.expectedRevision)),
+    JSON.stringify([8, 9]),
+    'automatic retry uses refreshed revision',
+  );
+  equal(
+    JSON.stringify(port.candidateInputs.map((input) => input.requestId)),
+    JSON.stringify(['cand-conflict-1', 'cand-conflict-1']),
+    'uncommitted retry preserves the request ID',
+  );
   adapter.dispose();
 });
 
