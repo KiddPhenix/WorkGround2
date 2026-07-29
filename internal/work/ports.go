@@ -184,21 +184,23 @@ type SlotPreflight struct {
 // TaskExecuteInput carries stable object and request context into the session
 // executor without exposing Controller internals.
 type TaskExecuteInput struct {
-	WorkID           string           `json:"workId"`
-	RunID            string           `json:"runId"`
-	StageID          string           `json:"stageId"`
-	TaskID           string           `json:"taskId"`
-	AttemptID        string           `json:"-"`
-	AttemptIndex     int              `json:"attemptIndex"`
-	RequestID        string           `json:"requestId"`
-	DefinitionDigest string           `json:"definitionDigest"`
-	SideEffectClass  string           `json:"-"`
-	Operation        string           `json:"-"`
-	ProducesSlotIDs  []string         `json:"-"`
-	SlotPreflights   []SlotPreflight  `json:"-"`
-	Prompt           string           `json:"prompt"`
-	Live             TaskLiveReporter `json:"-"`
-	StartedAt        time.Time        `json:"-"`
+	WorkID               string           `json:"workId"`
+	RunID                string           `json:"runId"`
+	StageID              string           `json:"stageId"`
+	TaskID               string           `json:"taskId"`
+	AttemptID            string           `json:"-"`
+	AttemptIndex         int              `json:"attemptIndex"`
+	RequestID            string           `json:"requestId"`
+	DefinitionDigest     string           `json:"definitionDigest"`
+	SideEffectClass      string           `json:"-"`
+	Operation            string           `json:"-"`
+	ProducesSlotIDs      []string         `json:"-"`
+	SlotPreflights       []SlotPreflight  `json:"-"`
+	AcceptanceCriteria   []string         `json:"-"`
+	RequiredCapabilities []string         `json:"-"`
+	Prompt               string           `json:"prompt"`
+	Live                 TaskLiveReporter `json:"-"`
+	StartedAt            time.Time        `json:"-"`
 }
 
 // TaskLiveUpdate reports recoverable, display-only execution state while a

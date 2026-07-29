@@ -51,6 +51,12 @@ type NodeDef struct {
 	BlockIDs        []string `json:"blockIds,omitempty"`
 	ProducesSlotIDs []string `json:"producesSlotIds,omitempty"`
 	ConsumesSlotIDs []string `json:"consumesSlotIds,omitempty"`
+	// AcceptanceCriteria lists concrete, observable delivery conditions that
+	// must be satisfied before this node can be marked completed. Each criterion
+	// should name a specific deliverable, observable outcome, or evidence
+	// requirement — never vague phrases like "complete the task" or "ensure quality".
+	// Empty remains valid only for backward compatibility with old definitions.
+	AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 	// GlobalGate, when non-empty, declares this node as a global scheduling gate.
 	// While the node is not completed, no other node in the DAG may become ready.
 	// Only used for genuinely global risks such as a release approval or final

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,8 +35,9 @@ type TaskSessionFactory func(context.Context, work.TaskExecuteInput) (*Controlle
 // TaskExecutorProfile identifies the provider and model used by Task Sessions.
 // It is copied into structured errors without exposing prompts or credentials.
 type TaskExecutorProfile struct {
-	Provider string
-	Model    string
+	Provider           string
+	Model              string
+	NativeCapabilities []string
 }
 
 // TaskRunError reports a sanitized Task execution failure while preserving its
@@ -284,6 +286,9 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 	}
 
 	runErr := ctrl.RunTurn(taskCtx, runPrompt)
+	if runErr == nil && len(input.AcceptanceCriteria) > 0 {
+		runErr = ctrl.RunTurn(taskCtx, taskQualityReviewPrompt(input.AcceptanceCriteria))
+	}
 	snapshotErr := ctrl.Snapshot()
 	cause := errors.Join(runErr, snapshotErr)
 
@@ -316,13 +321,15 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		cause = errors.Join(cause, liveErr)
 	}
 	attempt := &work.Attempt{
-		ID:              input.AttemptID,
-		Index:           input.AttemptIndex,
-		State:           work.RunCompleted,
-		SessionRef:      ref,
-		StartedAt:       startedAt,
-		FinishedAt:      &finishedAt,
-		SideEffectClass: input.SideEffectClass,
+		ID:                     input.AttemptID,
+		Index:                  input.AttemptIndex,
+		State:                  work.RunCompleted,
+		SessionRef:             ref,
+		StartedAt:              startedAt,
+		FinishedAt:             &finishedAt,
+		SideEffectClass:        input.SideEffectClass,
+		LastAssistantText:      taskLastAssistantText(history),
+		SuccessfulCapabilities: taskSuccessfulCapabilities(history, a.profile.NativeCapabilities),
 	}
 	if cause == nil {
 		return attempt, nil
@@ -457,6 +464,7 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 				Name:           name,
 				Type:           mediaType,
 				Status:         work.ArtifactRefStatusAvailable,
+				RelativePath:   taskArtifactRelativePath(discovered, data.workspaceRoot),
 				BlobDigest:     digest,
 				SourceRunID:    input.RunID,
 				LastVerifiedAt: &now,
@@ -659,6 +667,16 @@ func validateTaskInput(input work.TaskExecuteInput) error {
 		}
 		seenPreflights[key] = struct{}{}
 	}
+	for i, criterion := range input.AcceptanceCriteria {
+		if strings.TrimSpace(criterion) == "" {
+			return fmt.Errorf("acceptanceCriteria[%d] is required", i)
+		}
+	}
+	for i, capability := range input.RequiredCapabilities {
+		if strings.TrimSpace(capability) == "" {
+			return fmt.Errorf("requiredCapabilities[%d] is required", i)
+		}
+	}
 	return nil
 }
 
@@ -720,6 +738,99 @@ func taskSessionArtifactContent(messages []provider.Message) string {
 		}
 	}
 	return ""
+}
+
+// taskLastAssistantText returns the full content of the last assistant message.
+func taskLastAssistantText(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == provider.RoleAssistant {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+func taskQualityReviewPrompt(criteria []string) string {
+	var b strings.Builder
+	b.WriteString("Perform the mandatory final quality pass now. Re-read the original task, the upstream inputs, and your previous delivery. Return a corrected, complete replacement delivery; do not return a review, checklist, summary, or a claim that the work passes.\n\nAcceptance criteria:\n")
+	for i, criterion := range criteria {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, strings.TrimSpace(criterion))
+	}
+	b.WriteString("\nPreserve valid citations and generated artifacts. If a criterion cannot be satisfied, fail explicitly with the blocking reason instead of claiming completion.")
+	return b.String()
+}
+
+// taskSuccessfulCapabilities derives objective capability evidence from paired,
+// successful tool calls. Text that merely claims a search happened is ignored.
+func taskSuccessfulCapabilities(messages []provider.Message, nativeCapabilities []string) []string {
+	successful := make(map[string]bool)
+	for _, message := range messages {
+		if message.Role != provider.RoleTool || strings.TrimSpace(message.ToolCallID) == "" {
+			continue
+		}
+		if !taskToolResultFailed(message.Content) {
+			successful[message.ToolCallID] = true
+		}
+	}
+	capabilities := make(map[string]bool)
+	finalText := taskLastAssistantText(messages)
+	for _, capability := range nativeCapabilities {
+		switch strings.ToLower(strings.TrimSpace(capability)) {
+		case "web_search":
+			if strings.Contains(finalText, "https://") || strings.Contains(finalText, "http://") {
+				capabilities["web_search"] = true
+			}
+		}
+	}
+	for _, message := range messages {
+		if message.Role != provider.RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if !successful[call.ID] {
+				continue
+			}
+			switch taskToolCapability(call) {
+			case "web_search":
+				capabilities["web_search"] = true
+			case "image_generation":
+				capabilities["image_generation"] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(capabilities))
+	for capability := range capabilities {
+		out = append(out, capability)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func taskToolCapability(call provider.ToolCall) string {
+	name := strings.ToLower(strings.TrimSpace(call.Name))
+	switch {
+	case name == "web_search", strings.HasSuffix(name, "__web_search"):
+		return "web_search"
+	case name == "image_generation", name == "draw_image", strings.HasSuffix(name, "__image_generation"):
+		return "image_generation"
+	case name != "request_help":
+		return ""
+	}
+	var args struct {
+		Capability string `json:"capability"`
+	}
+	if json.Unmarshal([]byte(call.Arguments), &args) != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(args.Capability))
+}
+
+func taskToolResultFailed(content string) bool {
+	content = strings.TrimSpace(content)
+	return strings.HasPrefix(content, "error:") ||
+		strings.HasPrefix(content, "blocked:") ||
+		strings.HasPrefix(content, "Error:") ||
+		strings.HasPrefix(content, "[error")
 }
 
 func firstLine(text string, maxRunes int) string {

@@ -26,6 +26,20 @@ type bootV2Executor struct {
 	calls       []work.TaskExecuteInput
 }
 
+func TestWorkTaskSystemPromptPreservesHostPoliciesWithoutCodingIdentity(t *testing.T) {
+	host := config.DefaultSystemPrompt + "\n\nproject policy: cite authoritative inputs"
+	got := workTaskSystemPrompt(host)
+	if !strings.HasPrefix(got, "You are a work delivery executor.") {
+		t.Fatalf("unexpected Work task identity: %q", got)
+	}
+	if strings.Contains(got, "a coding agent focused on executing code tasks") {
+		t.Fatalf("coding identity leaked into Work task prompt: %q", got)
+	}
+	if !strings.Contains(got, "project policy: cite authoritative inputs") {
+		t.Fatalf("host policy was dropped: %q", got)
+	}
+}
+
 func (e *bootV2Executor) ExecuteTask(ctx context.Context, input work.TaskExecuteInput) (*work.Attempt, error) {
 	e.mu.Lock()
 	e.calls = append(e.calls, input)
@@ -46,8 +60,10 @@ func (e *bootV2Executor) ExecuteTask(ctx context.Context, input work.TaskExecute
 		return nil, errors.New("injected retryable read failure")
 	}
 	return &work.Attempt{
-		State:      work.RunCompleted,
-		SessionRef: work.SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		State:                  work.RunCompleted,
+		SessionRef:             work.SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		LastAssistantText:      "test delivery",
+		SuccessfulCapabilities: append([]string(nil), input.RequiredCapabilities...),
 	}, nil
 }
 

@@ -85,6 +85,11 @@ type Attempt struct {
 	Error           string          `json:"error,omitempty"`
 	Receipt         *AttemptReceipt `json:"receipt,omitempty"`
 	SideEffectClass string          `json:"sideEffectClass,omitempty"`
+	// LastAssistantText and SuccessfulCapabilities are transient executor
+	// evidence used by the V2 completion gate. The durable Task Session remains
+	// the source of the full transcript.
+	LastAssistantText      string   `json:"-"`
+	SuccessfulCapabilities []string `json:"-"`
 }
 
 // AttemptReceipt records execution or human-confirmed evidence for an attempt.

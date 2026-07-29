@@ -671,7 +671,7 @@ func (f *fakeV2Executor) ExecuteTask(ctx context.Context, input TaskExecuteInput
 	if ok {
 		return fn()
 	}
-	return &Attempt{State: RunCompleted}, nil
+	return &Attempt{State: RunCompleted, LastAssistantText: "ok"}, nil
 }
 
 func (f *fakeV2Executor) CancelTask(ctx context.Context, input TaskCancelInput) error { return nil }
@@ -720,7 +720,7 @@ func (f *blockingV2Executor) ExecuteTask(ctx context.Context, input TaskExecuteI
 		return nil, ctx.Err()
 	case <-f.release:
 		f.active.Add(-1)
-		return &Attempt{State: RunCompleted}, nil
+		return &Attempt{State: RunCompleted, LastAssistantText: "ok"}, nil
 	}
 }
 
@@ -744,7 +744,7 @@ func (f *gateSyncExecutor) ExecuteTask(ctx context.Context, input TaskExecuteInp
 		case <-f.release:
 		}
 	}
-	return &Attempt{State: RunCompleted}, nil
+	return &Attempt{State: RunCompleted, LastAssistantText: "ok"}, nil
 }
 
 func (f *gateSyncExecutor) CancelTask(context.Context, TaskCancelInput) error { return nil }
@@ -766,7 +766,7 @@ func (f *liveV2Executor) ExecuteTask(_ context.Context, input TaskExecuteInput) 
 	if err := input.Live(TaskLiveUpdate{Output: "模型正在输出"}); err != nil {
 		return nil, err
 	}
-	return &Attempt{State: RunCompleted, SessionRef: f.ref}, nil
+	return &Attempt{State: RunCompleted, SessionRef: f.ref, LastAssistantText: "ok"}, nil
 }
 
 func (*liveV2Executor) CancelTask(context.Context, TaskCancelInput) error { return nil }
@@ -775,6 +775,7 @@ type memoryV2Authority struct {
 	mu         sync.Mutex
 	projection *Work
 	events     []WorkEvent
+	blobs      map[string][]byte
 }
 
 func newMemoryV2Authority(workID string, runtimes map[string]*V2TaskRuntime) *memoryV2Authority {
@@ -782,7 +783,7 @@ func newMemoryV2Authority(workID string, runtimes map[string]*V2TaskRuntime) *me
 		SchemaVersion:  SchemaVersionV2,
 		ID:             workID,
 		V2TaskRuntimes: cloneV2RuntimeMap(runtimes),
-	}}
+	}, blobs: make(map[string][]byte)}
 }
 
 func (a *memoryV2Authority) CommitV2Event(event WorkEvent) (int64, error) {
@@ -820,6 +821,19 @@ func (a *memoryV2Authority) LoadV2Projection() (*Work, error) {
 		return nil, err
 	}
 	return &cloned, nil
+}
+
+func (a *memoryV2Authority) ReadV2ArtifactBlob(ctx context.Context, digest string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	content, ok := a.blobs[digest]
+	if !ok {
+		return nil, fmt.Errorf("missing blob %q", digest)
+	}
+	return append([]byte(nil), content...), nil
 }
 
 func (a *memoryV2Authority) eventSnapshot() []WorkEvent {
@@ -981,6 +995,7 @@ func TestV2Scheduler_GlobalGateReleaseAdvancesAllBlockedBranchesFileStore(t *tes
 		nil,
 		[]string{gate.TaskID},
 		V2WakeApproval,
+		"",
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1068,6 +1083,7 @@ func TestV2Scheduler_CompletedGlobalGateRestartRescansWholeDAGFileStore(t *testi
 		nil,
 		[]string{gate.TaskID},
 		V2WakeApproval,
+		"",
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -1123,7 +1139,7 @@ func TestV2Scheduler_GlobalGateWakeAcrossInstancesFileStore(t *testing.T) {
 	go func() {
 		result, err := NewV2Scheduler(exec).WakeAndScheduleAffected(
 			context.Background(), workID, runID, nodes, 1, nil, nil, nil,
-			[]string{gate.TaskID}, V2WakeApproval, firstAuthority,
+			[]string{gate.TaskID}, V2WakeApproval, "", firstAuthority,
 		)
 		firstDone <- scheduleOutcome{result: result, err: err}
 	}()
@@ -1134,7 +1150,7 @@ func TestV2Scheduler_GlobalGateWakeAcrossInstancesFileStore(t *testing.T) {
 	}
 	secondResult, secondErr := NewV2Scheduler(exec).WakeAndScheduleAffected(
 		context.Background(), workID, runID, nodes, 1, nil, nil, nil,
-		[]string{gate.TaskID}, V2WakeApproval, secondAuthority,
+		[]string{gate.TaskID}, V2WakeApproval, "", secondAuthority,
 	)
 	if secondErr != nil {
 		t.Fatalf("late duplicate cross-instance wake: %v", secondErr)
@@ -1245,7 +1261,7 @@ func TestV2Scheduler_ReceiptGuardWaitingApproval(t *testing.T) {
 	exec := newFakeV2Executor()
 	taskID, _ := DeriveTaskID("r1", "a")
 	exec.results[taskID] = func() (*Attempt, error) {
-		return &Attempt{State: RunCompleted, SideEffectClass: "read"}, nil
+		return &Attempt{State: RunCompleted, SideEffectClass: "read", LastAssistantText: "ok"}, nil
 	}
 	sched := NewV2Scheduler(exec)
 	nodes := []NodeDef{{ID: "a", Title: "A", ToolHints: []string{"side_effect=external_write"}}}
@@ -1278,7 +1294,7 @@ func TestV2Scheduler_ObservedRiskUpgradePersistsOnRuntime(t *testing.T) {
 	exec := newFakeV2Executor()
 	taskID, _ := DeriveTaskID("r-risk-upgrade", "a")
 	exec.results[taskID] = func() (*Attempt, error) {
-		return &Attempt{State: RunCompleted, SideEffectClass: "destructive"}, nil
+		return &Attempt{State: RunCompleted, SideEffectClass: "destructive", LastAssistantText: "ok"}, nil
 	}
 	authority := newMemoryV2Authority("w-risk-upgrade", nil)
 	if _, err := NewV2Scheduler(exec).Schedule(
@@ -1644,8 +1660,9 @@ func TestV2Scheduler_AuthoritativeRefreshProducesStaleResult(t *testing.T) {
 			return nil, updateErr
 		}
 		return &Attempt{
-			State:      RunCompleted,
-			SessionRef: SessionRef{SessionPath: "sessions/stale-result.jsonl"},
+			State:             RunCompleted,
+			SessionRef:        SessionRef{SessionPath: "sessions/stale-result.jsonl"},
+			LastAssistantText: "ok",
 		}, nil
 	}
 
@@ -1739,6 +1756,7 @@ func TestV2Scheduler_WakeAndScheduleAffected(t *testing.T) {
 				nil,
 				[]string{rt.TaskID},
 				tc.cause,
+				"",
 				authority,
 			); err != nil {
 				t.Fatal(err)
@@ -1794,6 +1812,7 @@ func TestV2Scheduler_StructuralWakeDoesNotBypassApproval(t *testing.T) {
 		nil,
 		[]string{rt.TaskID},
 		V2WakePatch,
+		"",
 		authority,
 	); err != nil {
 		t.Fatal(err)
@@ -2731,4 +2750,305 @@ func createMinimalV2WorkStore(t *testing.T, store *FileWorkStore, workID string,
 		RequestID: workID + "/create",
 		Work:      w,
 	})
+}
+
+// ── Completion gate tests ─────────────────────────────────────────────────
+
+func TestV2Scheduler_WebSearchGateRejectsNoEvidence(t *testing.T) {
+	node := NodeDef{
+		ID:        "research",
+		Title:     "Research topic",
+		ToolHints: []string{"web_search"},
+		AcceptanceCriteria: []string{
+			"response cites at least 2 search result URLs",
+			"each factual claim is backed by a cited source",
+		},
+	}
+	nodes := []NodeDef{node}
+	taskID, _ := DeriveTaskID("r1", "research")
+	exec := newFakeV2Executor()
+	exec.results[taskID] = func() (*Attempt, error) {
+		return &Attempt{
+			State:             RunCompleted,
+			LastAssistantText: "Based on common knowledge, the answer is 42.",
+		}, nil
+	}
+	authority := newMemoryV2Authority("w-web-gate", nil)
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-web-gate", "r1", nodes, nil, 1,
+		nil, nil, nil, []string{"research"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	proj, _ := authority.LoadV2Projection()
+	rt := proj.V2TaskRuntimes[taskID]
+	if rt == nil {
+		t.Fatal("runtime not found")
+	}
+	if rt.State != TaskFailedRetryable {
+		t.Errorf("expected failed_retryable, got %s (error: %s)", rt.State, rt.Error)
+	}
+	if !strings.Contains(rt.Error, "web_search") {
+		t.Errorf("error should mention web_search, got: %s", rt.Error)
+	}
+}
+
+func TestV2Scheduler_WebSearchGatePassesWithURLs(t *testing.T) {
+	node := NodeDef{
+		ID:        "research",
+		Title:     "Research topic",
+		ToolHints: []string{"web_search"},
+		AcceptanceCriteria: []string{
+			"response contains the answer",
+		},
+	}
+	nodes := []NodeDef{node}
+	taskID, _ := DeriveTaskID("r1", "research")
+	exec := newFakeV2Executor()
+	exec.results[taskID] = func() (*Attempt, error) {
+		return &Attempt{
+			State:                  RunCompleted,
+			LastAssistantText:      "According to https://example.com/article, the answer is 42.",
+			SuccessfulCapabilities: []string{"web_search"},
+		}, nil
+	}
+	authority := newMemoryV2Authority("w-web-pass", nil)
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-web-pass", "r1", nodes, nil, 1,
+		nil, nil, nil, []string{"research"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	proj, _ := authority.LoadV2Projection()
+	rt := proj.V2TaskRuntimes[taskID]
+	if rt == nil {
+		t.Fatal("runtime not found")
+	}
+	if rt.State != TaskCompleted {
+		t.Errorf("expected completed, got %s (error: %s)", rt.State, rt.Error)
+	}
+}
+
+func TestV2Scheduler_ForwardsAcceptanceCriteriaForQualityPass(t *testing.T) {
+	node := NodeDef{
+		ID:    "report",
+		Title: "Generate report",
+		AcceptanceCriteria: []string{
+			"report includes executive summary section",
+			"report includes financial projections for Q3",
+		},
+	}
+	nodes := []NodeDef{node}
+	taskID, _ := DeriveTaskID("r1", "report")
+	exec := newFakeV2Executor()
+	exec.results[taskID] = func() (*Attempt, error) {
+		return &Attempt{
+			State:             RunCompleted,
+			LastAssistantText: "Here is a short note. The task is done.",
+		}, nil
+	}
+	authority := newMemoryV2Authority("w-crit-gate", nil)
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-crit-gate", "r1", nodes, nil, 1,
+		nil, nil, nil, []string{"report"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	proj, _ := authority.LoadV2Projection()
+	rt := proj.V2TaskRuntimes[taskID]
+	if rt == nil {
+		t.Fatal("runtime not found")
+	}
+	if rt.State != TaskCompleted {
+		t.Errorf("expected completed, got %s (error: %s)", rt.State, rt.Error)
+	}
+	if len(exec.calls) != 1 || !reflect.DeepEqual(exec.calls[0].AcceptanceCriteria, node.AcceptanceCriteria) {
+		t.Fatalf("acceptance criteria not forwarded: %+v", exec.calls)
+	}
+}
+
+func TestV2Scheduler_UpstreamContentInjectedIntoPrompt(t *testing.T) {
+	producer := NodeDef{ID: "a", Title: "Producer", ProducesSlotIDs: []string{"s1"}}
+	consumer := NodeDef{
+		ID:        "b",
+		Title:     "Consumer",
+		DependsOn: []string{"a"},
+	}
+	nodes := []NodeDef{producer, consumer}
+	slotDefs := []ArtifactSlotDef{{ID: "s1", Title: "Slot One", Kind: "text", ExpectedCount: 1, Required: true}}
+
+	exec := newFakeV2Executor()
+	authority := newMemoryV2Authority("w-upstream", nil)
+	authority.projection.V2TaskRuntimes = map[string]*V2TaskRuntime{
+		"9:r1/1:a": {
+			TaskID: "9:r1/1:a", WorkID: "w-upstream", RunID: "r1", NodeID: "a",
+			DefinitionRev: 1, State: TaskCompleted,
+		},
+	}
+	digest := ContentDigest([]byte("authoritative upstream body"))
+	oldDigest := ContentDigest([]byte("old revision must not leak"))
+	unrelatedDigest := ContentDigest([]byte("unrelated result must not leak"))
+	authority.projection.V2ArtifactSlots = []ArtifactSlot{
+		{
+			ID: "s1", WorkID: "w-upstream", DefinitionRev: 0, Title: "Old Slot",
+			Kind: "text", ExpectedCount: 1, Required: true, State: SlotReady,
+			ArtifactRefs: []ArtifactRef{{
+				ID: "ref-old", Name: "old.md", Type: "text/markdown",
+				Status: ArtifactRefStatusAvailable, BlobDigest: oldDigest,
+			}},
+		},
+		{
+			ID: "s1", WorkID: "w-upstream", DefinitionRev: 1, Title: "Slot One",
+			Kind: "text", ExpectedCount: 1, Required: true, State: SlotReady,
+			ArtifactRefs: []ArtifactRef{{
+				ID: "ref-1", Name: "slot-one.md", Type: "text/markdown",
+				Status: ArtifactRefStatusAvailable, BlobDigest: digest,
+			}},
+		},
+		{
+			ID: "unrelated", WorkID: "w-upstream", DefinitionRev: 1, Title: "Unrelated",
+			Kind: "text", ExpectedCount: 1, Required: true, State: SlotReady,
+			ArtifactRefs: []ArtifactRef{{
+				ID: "ref-other", Name: "other.md", Type: "text/markdown",
+				Status: ArtifactRefStatusAvailable, BlobDigest: unrelatedDigest,
+			}},
+		},
+	}
+	authority.blobs[digest] = []byte("authoritative upstream body")
+	authority.blobs[oldDigest] = []byte("old revision must not leak")
+	authority.blobs[unrelatedDigest] = []byte("unrelated result must not leak")
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-upstream", "r1", nodes, authority.projection.V2TaskRuntimes, 1,
+		nil, nil, slotDefs, []string{"b"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	var consumerCall TaskExecuteInput
+	for _, call := range exec.calls {
+		if call.Operation == "b" {
+			consumerCall = call
+			break
+		}
+	}
+	if consumerCall.Prompt == "" {
+		t.Fatal("consumer prompt was not captured")
+	}
+	if !strings.Contains(consumerCall.Prompt, "Upstream results") {
+		t.Error("consumer prompt should contain 'Upstream results' section")
+	}
+	if !strings.Contains(consumerCall.Prompt, "Slot One") {
+		t.Error("consumer prompt should reference 'Slot One'")
+	}
+	if !strings.Contains(consumerCall.Prompt, "authoritative upstream body") {
+		t.Error("consumer prompt should contain the authoritative upstream artifact content")
+	}
+	if strings.Contains(consumerCall.Prompt, "old revision must not leak") ||
+		strings.Contains(consumerCall.Prompt, "unrelated result must not leak") {
+		t.Error("consumer prompt leaked an old revision or unrelated artifact")
+	}
+}
+
+func TestV2Scheduler_MissingUpstreamBlobFailsBeforeExecution(t *testing.T) {
+	nodes := []NodeDef{
+		{ID: "a", ProducesSlotIDs: []string{"s1"}},
+		{ID: "b", DependsOn: []string{"a"}},
+	}
+	slotDefs := []ArtifactSlotDef{{
+		ID: "s1", Title: "Research", Kind: "text", ExpectedCount: 1, Required: true,
+	}}
+	authority := newMemoryV2Authority("w-upstream-missing", nil)
+	producerTaskID, _ := DeriveTaskID("r1", "a")
+	authority.projection.V2TaskRuntimes = map[string]*V2TaskRuntime{
+		producerTaskID: {
+			TaskID: producerTaskID, WorkID: "w-upstream-missing", RunID: "r1",
+			NodeID: "a", DefinitionRev: 1, State: TaskCompleted,
+		},
+	}
+	authority.projection.V2ArtifactSlots = []ArtifactSlot{{
+		ID: "s1", WorkID: "w-upstream-missing", DefinitionRev: 1, Title: "Research",
+		Kind: "text", ExpectedCount: 1, Required: true, State: SlotReady,
+		ArtifactRefs: []ArtifactRef{{
+			ID: "ref-1", Name: "research.md", Type: "text/markdown",
+			Status: ArtifactRefStatusAvailable, BlobDigest: "sha256:missing",
+		}},
+	}}
+	exec := newFakeV2Executor()
+	_, err := NewV2Scheduler(exec).ScheduleAffected(
+		context.Background(), "w-upstream-missing", "r1", nodes,
+		authority.projection.V2TaskRuntimes, 1, nil, nil, slotDefs,
+		[]string{"b"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	if exec.callCount() != 0 {
+		t.Fatalf("executor called with missing upstream content: %d", exec.callCount())
+	}
+	consumerTaskID, _ := DeriveTaskID("r1", "b")
+	projection, _ := authority.LoadV2Projection()
+	runtime := projection.V2TaskRuntimes[consumerTaskID]
+	if runtime == nil || runtime.State != TaskFailedRetryable ||
+		!strings.Contains(runtime.Error, "upstream context") {
+		t.Fatalf("consumer runtime = %+v", runtime)
+	}
+}
+
+func TestV2Scheduler_WorkGoalInjectedIntoPrompt(t *testing.T) {
+	node := NodeDef{ID: "task", Title: "Do work"}
+	nodes := []NodeDef{node}
+	exec := newFakeV2Executor()
+	authority := newMemoryV2Authority("w-goal", nil)
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-goal", "r1", nodes, nil, 1,
+		nil, nil, nil, []string{"task"}, "Translate all documents to French", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	var taskCall TaskExecuteInput
+	for _, call := range exec.calls {
+		if call.Operation == "task" {
+			taskCall = call
+			break
+		}
+	}
+	if !strings.Contains(taskCall.Prompt, "Work goal") {
+		t.Error("task prompt should contain 'Work goal' section")
+	}
+	if !strings.Contains(taskCall.Prompt, "Translate all documents to French") {
+		t.Error("task prompt should contain the work goal text")
+	}
+}
+
+func TestV2Scheduler_NoAcceptanceCriteriaPasses(t *testing.T) {
+	node := NodeDef{ID: "simple", Title: "Simple task"}
+	nodes := []NodeDef{node}
+	exec := newFakeV2Executor()
+	authority := newMemoryV2Authority("w-no-crit", nil)
+	sched := NewV2Scheduler(exec)
+	_, err := sched.ScheduleAffected(
+		context.Background(), "w-no-crit", "r1", nodes, nil, 1,
+		nil, nil, nil, []string{"simple"}, "", authority,
+	)
+	if err != nil {
+		t.Fatalf("schedule: %v", err)
+	}
+	taskID, _ := DeriveTaskID("r1", "simple")
+	proj, _ := authority.LoadV2Projection()
+	rt := proj.V2TaskRuntimes[taskID]
+	if rt == nil {
+		t.Fatal("runtime not found")
+	}
+	if rt.State != TaskCompleted {
+		t.Errorf("expected completed, got %s (error: %s)", rt.State, rt.Error)
+	}
 }

@@ -70,6 +70,19 @@ func materializeTaskArtifact(
 	}
 }
 
+func taskArtifactRelativePath(discovered *artifact.Discovered, workspaceRoot string) string {
+	if discovered == nil || strings.TrimSpace(discovered.Path) == "" || strings.TrimSpace(workspaceRoot) == "" {
+		return ""
+	}
+	relative, err := filepath.Rel(workspaceRoot, discovered.Path)
+	if err != nil || relative == "." || relative == ".." ||
+		strings.HasPrefix(relative, ".."+string(filepath.Separator)) ||
+		filepath.IsAbs(relative) {
+		return ""
+	}
+	return filepath.ToSlash(relative)
+}
+
 func textArtifactKind(kind string) bool {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "text", "txt", "plain_text", "text/plain",

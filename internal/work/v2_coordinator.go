@@ -556,6 +556,7 @@ func (c *V2Coordinator) ScheduleRun(
 		definition.InputSpecs,
 		definition.ArtifactSlots,
 		changedNodeIDs,
+		definition.Goal,
 		authority,
 	)
 	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
@@ -815,6 +816,7 @@ func (c *V2Coordinator) continueRunAt(
 		definition.ArtifactSlots,
 		changedIDs,
 		cause,
+		definition.Goal,
 		authority,
 	)
 	inputErr := c.materializeV2WaitingInputs(ctx, workID, runID, definition)
@@ -914,6 +916,20 @@ func (a *workStoreV2Authority) CommitV2Artifact(ctx context.Context, input TaskA
 		return nil, errors.New("work: V2 artifact authority work mismatch")
 	}
 	return commitArtifactWithStore(ctx, a.store, input)
+}
+
+func (a *workStoreV2Authority) ReadV2ArtifactBlob(ctx context.Context, digest string) ([]byte, error) {
+	if a == nil || a.store == nil {
+		return nil, errors.New("work: V2 artifact reader is not configured")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	blobs, ok := a.store.(BlobStore)
+	if !ok {
+		return nil, errors.New("work: V2 store cannot read artifact blobs")
+	}
+	return blobs.Get(a.workID, digest)
 }
 
 func runIDForAffectedTasks(work *Work, taskIDs []string) string {
