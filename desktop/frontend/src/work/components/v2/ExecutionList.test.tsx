@@ -1777,6 +1777,14 @@ async function runTests(): Promise<void> {
     ok(host.querySelector('.wg2-er-icon') !== null, 'css: icon class present');
     ok(host.querySelector('.wg2-er-badge') !== null, 'css: badge class present');
     ok(host.querySelector('.wg2-eb-panel') !== null, 'css: panel class present');
+    ok(
+      /\.wg2-er-title\s*\{[\s\S]*?flex:\s*0 0 clamp\(12rem,\s*24vw,\s*24rem\)/.test(cssText),
+      'css: task title keeps a readable non-shrinking width',
+    );
+    ok(
+      /\.wg2-er-meta\s*\{[\s\S]*?flex:\s*1 1 auto[\s\S]*?overflow:\s*hidden/.test(cssText),
+      'css: long progress copy yields space before the task title',
+    );
     await cleanup();
   }
 

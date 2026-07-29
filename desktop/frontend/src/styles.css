@@ -39022,7 +39022,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-er-title {
-  flex: 0 1 140px;
+  flex: 0 0 clamp(12rem, 24vw, 24rem);
   min-width: 0;
   font-size: var(--text-md);
   font-weight: 650;
@@ -39040,6 +39040,7 @@ body > .mermaid-diagram--fullscreen {
 /* ── State badge ──────────────────────────────────────────────── */
 
 .wg2-er-meta {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--fg-faint);
