@@ -1317,7 +1317,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 34. workflowChangeState: "正在更新流程..." status visible
+  // 34. workflowChangeState: automatic coordination status visible
   // ════════════════════════════════════════════════════════════════════════
   {
     const { host, cleanup } = await mount(
@@ -1331,7 +1331,7 @@ async function runTests(): Promise<void> {
     );
     const status = host.querySelector('[data-testid="result-workflow-status"]');
     ok(status !== null, 'wf-state updating: status bar visible');
-    contains(status?.textContent ?? '', '正在更新流程', 'wf-state updating: shows updating text');
+    contains(status?.textContent ?? '', 'AI 正在协调更新', 'wf-state updating: shows coordination text');
     ok(status?.classList.contains('wg2-rs-wfstatus--updating') ?? false, 'wf-state updating: has updating class');
     // Add button should be disabled while updating
     const addBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-add"]');
@@ -1371,7 +1371,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 36. workflowChangeState: "失败" status with retry button
+  // 36. workflowChangeState: terminal status asks for a clearer requirement
   // ════════════════════════════════════════════════════════════════════════
   {
     const retried: string[] = [];
@@ -1386,14 +1386,13 @@ async function runTests(): Promise<void> {
     );
     const status = host.querySelector('[data-testid="result-workflow-status"]');
     ok(status !== null, 'wf-state failed: status bar visible');
-    contains(status?.textContent ?? '', '更新失败', 'wf-state failed: shows failed text');
+    contains(status?.textContent ?? '', '这次调整暂未完成', 'wf-state failed: shows business failure text');
     contains(status?.textContent ?? '', '预览超时', 'wf-state failed: shows error detail');
+    contains(status?.textContent ?? '', '补充要求后再次提交', 'wf-state failed: guides the next user action');
     ok(status?.classList.contains('wg2-rs-wfstatus--failed') ?? false, 'wf-state failed: has failed class');
     const retryBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-workflow-retry"]');
-    ok(retryBtn !== null, 'wf-state failed: retry button visible');
-    contains(retryBtn?.textContent ?? '', '重试', 'wf-state failed: retry button label');
-    await interact(() => retryBtn?.click());
-    eq(retried.length, 0, 'wf-state failed: retry fires only when a prior request was stored (no-op for cold state)');
+    ok(retryBtn === null, 'wf-state failed: technical retry button is hidden');
+    eq(retried.length, 0, 'wf-state failed: no hidden redispatch occurs');
     await cleanup();
   }
 
@@ -1441,7 +1440,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 38. Retry with stored request re-fires identical token
+  // 38. Failed state does not ask the user to replay an identical request
   // ════════════════════════════════════════════════════════════════════════
   {
     const requests: Array<{ token: string; attempt?: number }> = [];
@@ -1454,7 +1453,7 @@ async function runTests(): Promise<void> {
         workflowChangeState={null}
       />,
     );
-    // First submit an add to prime lastRequestRef
+    // First submit an add.
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-add"]')!.click());
     const title = host.querySelector<HTMLInputElement>('[data-testid="result-add-title"]')!;
     await interact(() => {
@@ -1468,7 +1467,8 @@ async function runTests(): Promise<void> {
     ok(firstToken.startsWith('add:'), 'wf-state retry: token is add-type');
     eq(requests[0]?.attempt, undefined, 'wf-state retry: first dispatch has no retry attempt');
 
-    // Re-render with failed state, same token — retry should re-fire
+    // Re-render with failed state. Internal recovery has already been exhausted,
+    // so the UI asks for a clarified edit instead of replaying the same intent.
     await act(async () => {
       root.render(
         <ResultShelf
@@ -1482,11 +1482,8 @@ async function runTests(): Promise<void> {
     });
     await settle();
     const retryBtn = host.querySelector<HTMLButtonElement>('[data-testid="result-workflow-retry"]');
-    ok(retryBtn !== null, 'wf-state retry: retry button rendered');
-    await interact(() => retryBtn?.click());
-    eq(requests.length, 2, 'wf-state retry: retry re-fires request');
-    eq(requests[1]?.token, firstToken, 'wf-state retry: retry uses the same token for idempotency');
-    eq(requests[1]?.attempt, 1, 'wf-state retry: retry increments dispatch attempt');
+    ok(retryBtn === null, 'wf-state retry: retry button is not rendered');
+    eq(requests.length, 1, 'wf-state retry: failed status does not redispatch');
     await cleanup();
   }
 

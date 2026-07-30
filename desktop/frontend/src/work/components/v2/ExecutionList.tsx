@@ -241,7 +241,6 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   const [dBlockRev, setDBlockRev] = useState(1);
   const [dScopeLocked, setDScopeLocked] = useState(false);
   const discussionEpochRef = useRef(0);
-  const activeDiscussionRef = useRef('');
   const activeDiscussionTargetRef = useRef('');
 
   const discKey = useMemo(
@@ -253,7 +252,6 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     [workId, sessionId, dTid, dBid],
   );
   const discDraft = cardState?.discussionDrafts?.[discKey] ?? '';
-  activeDiscussionRef.current = discKey;
   activeDiscussionTargetRef.current = discTarget;
   const committedPreviewRid = cardState?.committedRequestIds?.[`${discKey}\u0000preview`];
   const committedApplyRid = cardState?.committedRequestIds?.[`${discKey}\u0000apply`];
@@ -319,102 +317,140 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     onWorkflowChangeState?.({ token, status: 'updating' });
 
     (async () => {
-      let patchId = '';
-      let digest = '';
-      let applyCommitted = false;
-
-      // ── Step 1: Preview ────────────────────────────────────────────
-      const previewKey = wfChangeCommittedKey(workId, token, 'preview');
-      const committedPreviewId = cardState?.committedRequestIds?.[previewKey];
-      const previewRid = committedPreviewId ?? `wf-preview-${token}`;
       try {
-        const previewResult = await onPreviewPatch({
-          workId,
-          runId: effRunId,
-          taskId: task.id,
-          blockId: blockID,
-          sessionId: sessionId ?? '',
-          instruction: externalWorkflowDiscussion.instruction,
-          definitionRevision: defRev,
-          blockRevision,
-          scope: 'workflow',
-          requestId: previewRid,
-        });
-        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
-        if (previewResult.committed) {
-          setCommittedRequestId(workId, previewKey, previewRid);
-        }
-        const preview = previewResult.preview ?? previewResult.receipt?.resultPatch;
-        if (preview) {
+        let currentDefinitionRevision = defRev;
+        let currentBlockRevision = blockRevision;
+        let currentWorkRevision = baseWorkRevision;
+        for (let round = 0; round < 2; round++) {
+          const previewKey = wfChangeCommittedKey(workId, token, 'preview');
+          const committedPreviewId = cardState?.committedRequestIds?.[previewKey];
+          const previewRid = round === 0
+            ? committedPreviewId ?? `wf-preview-${token}`
+            : `wf-preview-${token}-r${round}`;
+          let previewResult: PreviewWorkPatchResult | undefined;
+          let failure = '';
+          for (let retry = 0; retry < 2; retry++) {
+            try {
+              previewResult = await onPreviewPatch({
+                workId,
+                runId: effRunId,
+                taskId: task.id,
+                blockId: blockID,
+                sessionId: sessionId ?? '',
+                instruction: externalWorkflowDiscussion.instruction,
+                definitionRevision: currentDefinitionRevision,
+                blockRevision: currentBlockRevision,
+                scope: 'workflow',
+                requestId: previewRid,
+              });
+              failure = previewResult.error ?? previewResult.transportError?.message ?? '';
+              if (previewResult.preview ?? previewResult.receipt?.resultPatch) break;
+            } catch (error) {
+              failure = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+          const preview = previewResult?.preview ?? previewResult?.receipt?.resultPatch;
+          if (!preview) throw new Error(failure || 'AI 暂时无法理解这次成果调整');
           if (
             preview.workId !== workId
             || preview.runId !== effRunId
             || preview.taskId !== task.id
             || preview.blockId !== blockID
             || preview.sessionId !== (sessionId ?? '')
-            || preview.baseDefinitionRev !== defRev
-            || preview.baseBlockRev !== blockRevision
+            || preview.baseDefinitionRev !== currentDefinitionRevision
+            || preview.baseBlockRev !== currentBlockRevision
             || preview.scope !== 'workflow'
           ) {
-            throw new Error('预览结果与当前工作不一致，请重试');
+            throw new Error('工作状态已变化，AI 未采用过期的调整结果');
           }
-          patchId = preview.id;
-          digest = preview.digest;
-        } else if (previewResult.receipt) {
-          patchId = previewResult.receipt.patchId;
-          digest = previewResult.receipt.resultDigest;
-        } else {
-          const err = previewResult.error ?? previewResult.transportError?.message ?? '预览失败';
-          throw new Error(err);
-        }
-        if (!patchId || !digest) throw new Error('预览结果不完整，请重试');
-      } catch (e) {
-        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
-        onWorkflowChangeState?.({ token, status: 'failed', error: e instanceof Error ? e.message : String(e) });
-        return;
-      }
+          if (previewResult?.committed) setCommittedRequestId(workId, previewKey, previewRid);
 
-      // ── Step 2: Apply ──────────────────────────────────────────────
-      const applyKey = wfChangeCommittedKey(workId, token, 'apply');
-      const committedApplyId = cardState?.committedRequestIds?.[applyKey];
-      const applyRid = committedApplyId ?? `wf-apply-${token}`;
-      try {
-        const applyResult = await onApplyPatch({
-          workId,
-          patchId,
-          previewDigest: digest,
-          scope: 'workflow',
-          expectedRevision: baseWorkRevision,
-          requestId: applyRid,
-        });
-        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
-        if (applyResult.committed) {
-          setCommittedRequestId(workId, applyKey, applyRid);
+          const applyKey = wfChangeCommittedKey(workId, token, 'apply');
+          const committedApplyId = cardState?.committedRequestIds?.[applyKey];
+          const applyRid = round === 0
+            ? committedApplyId ?? `wf-apply-${token}`
+            : `wf-apply-${token}-r${round}`;
+          let result: ApplyWorkPatchResult | undefined;
+          failure = '';
+          for (let retry = 0; retry < 2; retry++) {
+            try {
+              result = await onApplyPatch({
+                workId,
+                patchId: preview.id,
+                previewDigest: preview.digest,
+                scope: 'workflow',
+                expectedRevision: currentWorkRevision,
+                requestId: applyRid,
+              });
+              failure = result.error ?? result.transportError?.message ?? '';
+              if (result.committed) break;
+            } catch (error) {
+              failure = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+          if (result?.committed) {
+            setCommittedRequestId(workId, applyKey, applyRid);
+            let refreshFailure = '';
+            for (let retry = 0; retry < 3; retry++) {
+              try {
+                await onRefreshAuthoritative({
+                  workId,
+                  inputId: '',
+                  requestId: `wf-refresh-${token}`,
+                  revision: result.newRevision,
+                  operation: 'patch',
+                });
+                refreshFailure = '';
+                break;
+              } catch (error) {
+                refreshFailure = error instanceof Error ? error.message : String(error);
+              }
+            }
+            if (refreshFailure) throw new Error(`修改已提交，但最新状态暂时未同步：${refreshFailure}`);
+            if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
+            onWorkflowChangeState?.({ token, status: 'applied' });
+            return;
+          }
+
+          const conflict = `${result?.transportError?.code ?? ''} ${failure}`.toLowerCase();
+          if (
+            round === 0
+            && (conflict.includes('revision') || conflict.includes('digest') || conflict.includes('expired'))
+          ) {
+            try {
+              await onRefreshAuthoritative({
+                workId,
+                inputId: '',
+                requestId: `wf-rebase-${token}`,
+                revision: currentWorkRevision,
+                operation: 'patch',
+              });
+            } catch {
+              // A fresh preview below remains the source of truth.
+            }
+            const state = useWorkStore.getState();
+            const latestDefinition = selectV2ActiveDefinition(
+              state.v2ActiveDefinitions,
+              state.v2Definitions,
+              workId,
+            );
+            currentDefinitionRevision = latestDefinition?.revision ?? currentDefinitionRevision;
+            currentBlockRevision = state.works[workId]?.work.blocks.find(
+              (block) => block.id === blockID,
+            )?.revision ?? currentBlockRevision;
+            currentWorkRevision = state.revisions[workId] ?? currentWorkRevision;
+            continue;
+          }
+          throw new Error(failure || '这次成果调整暂时无法完成');
         }
-        if (!applyResult.committed) {
-          throw new Error(
-            applyResult.error
-            ?? applyResult.transportError?.message
-            ?? '流程更新未提交，请重试',
-          );
-        }
-        applyCommitted = true;
-        await onRefreshAuthoritative({
-          workId,
-          inputId: '',
-          requestId: `wf-refresh-${token}`,
-          revision: applyResult.newRevision,
-          operation: 'patch',
-        });
-        if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
-        onWorkflowChangeState?.({ token, status: 'applied' });
       } catch (e) {
         if (epoch !== wfChangeEpochRef.current || wfChangeTokenRef.current !== token) return;
-        const message = e instanceof Error ? e.message : String(e);
         onWorkflowChangeState?.({
           token,
           status: 'failed',
-          error: applyCommitted ? `更新已提交，但刷新状态失败：${message}` : message,
+          error: e instanceof Error ? e.message : String(e),
         });
       }
     })();
@@ -444,125 +480,145 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   }, [effRunId, sessionId, defRev, dBlockRev, workId, setDiscussionDraft, onDiscussionDraftChange]);
 
   const handleDPreview = useCallback(async (intent: DiscussionPreviewIntent) => {
-    if (!onPreviewPatch) return;
+    if (!onPreviewPatch || !onApplyPatch || !onRefreshAuthoritative) return;
     const epoch = ++discussionEpochRef.current;
-    const expectedIdentity = discIdentity(
-      intent.workId,
-      intent.runId,
-      intent.sessionId,
-      intent.taskId,
-      intent.blockId,
-      intent.definitionRevision,
-      intent.blockRevision,
-    );
+    const expectedTarget = discTarget;
     setIsPreviewing(true); setPreviewError(null); setPatchPreview(null);
     setRevConflict(false); setDigConflict(false); setApplyResult(null); setApplyError(null);
     try {
-      const r = await onPreviewPatch(intent);
-      if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
-      if (r.preview) {
-        const preview = r.preview;
-        if (
-          preview.workId !== intent.workId
-          || preview.runId !== intent.runId
-          || preview.taskId !== intent.taskId
-          || preview.blockId !== intent.blockId
-          || preview.sessionId !== intent.sessionId
-          || preview.baseDefinitionRev !== intent.definitionRevision
-          || preview.baseBlockRev !== intent.blockRevision
-        ) {
-          setPreviewError('改动校验结果与当前 Block 不一致，已忽略迟到结果。');
-          return;
-        }
-        setPatchPreview(r.preview);
-        if (r.committed) {
-          setCommittedRequestId(workId, `${discKey}\u0000preview`, intent.requestId);
-        }
-      }
-      else setPreviewError(r.error ?? r.transportError?.message ?? '预览失败');
-    } catch (e) {
-      if (epoch !== discussionEpochRef.current || activeDiscussionRef.current !== expectedIdentity) return;
-      const code = (e as { code?: string }).code;
-      if (code === 'revision_conflict') setRevConflict(true);
-      setPreviewError(e instanceof Error ? e.message : String(e));
-    }
-    finally {
-      if (epoch === discussionEpochRef.current && activeDiscussionRef.current === expectedIdentity) {
-        setIsPreviewing(false);
-      }
-    }
-  }, [onPreviewPatch, setCommittedRequestId, workId, discKey]);
-
-  const handleDApply = useCallback(async (intent: DiscussionApplyIntent) => {
-    if (!onApplyPatch || !onRefreshAuthoritative) return;
-    const epoch = ++discussionEpochRef.current;
-    const expectedTarget = discTarget;
-    setIsApplying(true); setApplyError(null); setApplyResult(null);
-    try {
-      const r = await onApplyPatch(intent);
-      if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
-      const receiptMissing = r.committed && !r.receipt;
-      const visibleResult = receiptMissing
-        ? {
-            ...r,
-            recoverable: true,
-            transportError: {
-              code: 'contract_receipt_missing',
-              message: '改动已提交，但确认响应不完整；正在刷新状态。',
-              operation: 'ApplyWorkPatch',
-              workId,
-              requestId: intent.requestId,
-              committed: true,
-              recoverable: true,
-            },
+      let currentIntent = intent;
+      for (let round = 0; round < 2; round++) {
+        let previewResult: PreviewWorkPatchResult | undefined;
+        let previewFailure = '';
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            previewResult = await onPreviewPatch(currentIntent);
+            previewFailure = previewResult.error ?? previewResult.transportError?.message ?? '';
+            if (previewResult.preview ?? previewResult.receipt?.resultPatch) break;
+          } catch (error) {
+            previewFailure = error instanceof Error ? error.message : String(error);
           }
-        : r;
-      setApplyResult(visibleResult);
-      if (r.committed) {
-        setCommittedRequestId(workId, `${discKey}\u0000apply`, intent.requestId);
-        if (receiptMissing) {
-          setApplyError('改动已提交，但确认响应不完整；正在刷新状态。');
+          if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
         }
-        try {
-          await onRefreshAuthoritative({
-            workId,
-            inputId: '',
-            requestId: intent.requestId,
-            revision: r.newRevision,
-            operation: 'patch',
-          });
-          if (epoch !== discussionEpochRef.current) return;
-          if (!receiptMissing && !r.error && !r.transportError) {
+        if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
+        const preview = previewResult?.preview ?? previewResult?.receipt?.resultPatch;
+        if (!preview) throw new Error(previewFailure || 'AI 暂时无法理解这次调整，请补充要求后再提交。');
+        if (
+          preview.workId !== currentIntent.workId
+          || preview.runId !== currentIntent.runId
+          || preview.taskId !== currentIntent.taskId
+          || preview.blockId !== currentIntent.blockId
+          || preview.sessionId !== currentIntent.sessionId
+          || preview.baseDefinitionRev !== currentIntent.definitionRevision
+          || preview.baseBlockRev !== currentIntent.blockRevision
+          || preview.scope !== currentIntent.scope
+        ) {
+          throw new Error('工作状态刚刚发生变化，AI 未采用过期的调整结果。');
+        }
+        setIsPreviewing(false);
+        setIsApplying(true);
+        if (previewResult?.committed) {
+          setCommittedRequestId(workId, `${discKey}\u0000preview`, currentIntent.requestId);
+        }
+
+        const applyIntent: DiscussionApplyIntent = {
+          workId,
+          patchId: preview.id,
+          previewDigest: preview.digest,
+          scope: preview.scope,
+          expectedRevision: useWorkStore.getState().revisions[workId] ?? workRevision ?? 1,
+          requestId: `${currentIntent.requestId}/apply`,
+        };
+        let result: ApplyWorkPatchResult | undefined;
+        let applyFailure = '';
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            result = await onApplyPatch(applyIntent);
+            applyFailure = result.error ?? result.transportError?.message ?? '';
+            if (result.committed) break;
+          } catch (error) {
+            applyFailure = error instanceof Error ? error.message : String(error);
+          }
+          if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
+        }
+        if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
+        if (result?.committed) {
+          setApplyResult(result);
+          setCommittedRequestId(workId, `${discKey}\u0000apply`, applyIntent.requestId);
+          let refreshFailure = '';
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              await onRefreshAuthoritative({
+                workId,
+                inputId: '',
+                requestId: `${applyIntent.requestId}/refresh`,
+                revision: result.newRevision,
+                operation: 'patch',
+              });
+              refreshFailure = '';
+              break;
+            } catch (error) {
+              refreshFailure = error instanceof Error ? error.message : String(error);
+            }
+          }
+          if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
+          if (!refreshFailure) {
             handleDClose();
             return;
           }
-        } catch (refreshError) {
-          if (epoch !== discussionEpochRef.current) return;
-          const refreshMessage = `改动已提交，但刷新最新状态失败：${
-            refreshError instanceof Error ? refreshError.message : String(refreshError)
-          }`;
-          setApplyError((current) => current ? `${current}；${refreshMessage}` : refreshMessage);
+          setApplyError(`修改已经提交，但最新状态暂时未同步：${refreshFailure}`);
+          return;
         }
+        const conflict = `${result?.transportError?.code ?? ''} ${applyFailure}`.toLowerCase();
+        if (
+          round === 0
+          && (conflict.includes('revision') || conflict.includes('digest') || conflict.includes('expired'))
+        ) {
+          try {
+            await onRefreshAuthoritative({
+              workId,
+              inputId: '',
+              requestId: `${currentIntent.requestId}/rebase`,
+              revision: useWorkStore.getState().revisions[workId] ?? applyIntent.expectedRevision,
+              operation: 'patch',
+            });
+          } catch {
+            // The next preview still performs authoritative validation.
+          }
+          const state = useWorkStore.getState();
+          const latestDefinition = selectV2ActiveDefinition(
+            state.v2ActiveDefinitions,
+            state.v2Definitions,
+            workId,
+          );
+          const latestBlock = state.works[workId]?.work.blocks.find(
+            (block) => block.id === currentIntent.blockId,
+          );
+          currentIntent = {
+            ...currentIntent,
+            definitionRevision: latestDefinition?.revision ?? currentIntent.definitionRevision,
+            blockRevision: latestBlock?.revision ?? currentIntent.blockRevision,
+            requestId: `${intent.requestId}/rebase`,
+          };
+          setIsApplying(false);
+          setIsPreviewing(true);
+          continue;
+        }
+        throw new Error(applyFailure || '这次调整暂时无法完成，请补充要求后再提交。');
       }
-      const conflictText = `${r.error ?? ''} ${r.transportError?.message ?? ''}`.toLowerCase();
-      if (r.transportError?.code === 'revision_conflict' || conflictText.includes('revision mismatch')) {
-        setRevConflict(true);
-      }
-      if (conflictText.includes('digest mismatch')) setDigConflict(true);
-      if (!r.committed && r.error) setApplyError(r.error);
-      if (!r.committed && r.transportError) setApplyError(r.transportError.message);
     } catch (e) {
       if (epoch !== discussionEpochRef.current || activeDiscussionTargetRef.current !== expectedTarget) return;
-      const code = (e as { code?: string }).code;
-      if (code === 'revision_conflict') setRevConflict(true);
       setApplyError(e instanceof Error ? e.message : String(e));
-    }
-    finally {
+    } finally {
       if (epoch === discussionEpochRef.current) {
+        setIsPreviewing(false);
         setIsApplying(false);
       }
     }
-  }, [onApplyPatch, onRefreshAuthoritative, workId, discKey, discTarget, setCommittedRequestId, handleDClose]);
+  }, [
+    discKey, discTarget, handleDClose, onApplyPatch, onPreviewPatch,
+    onRefreshAuthoritative, setCommittedRequestId, workId, workRevision,
+  ]);
   const handleDismiss = useCallback(() => { setApplyResult(null); setApplyError(null); }, []);
 
   const ordered = useMemo(() => {
@@ -686,7 +742,7 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
           scopeLocked={dScopeLocked}
           revisionConflict={revConflict} digestConflict={digConflict}
           onClose={handleDClose} onPreview={handleDPreview}
-          onApply={handleDApply} onDismissResult={handleDismiss}
+          onApply={() => {}} onDismissResult={handleDismiss}
           committedPreviewRequestId={committedPreviewRid}
            committedApplyRequestId={committedApplyRid}
           previewAvailable={Boolean(onPreviewPatch)}

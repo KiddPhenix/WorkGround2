@@ -718,7 +718,32 @@ export class WorkControllerAdapter {
 
   applyDefinition = async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
     if (!this.port.applyDefinition) throw new Error('Work 定义应用能力尚未连接。');
-    const result = await this.port.applyDefinition(input);
+    let result: ApplyDefinitionResult | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        result = await this.port.applyDefinition(input);
+        if (
+          result.committed
+          || !result.recoverable
+          || result.transportError?.code === 'revision_conflict'
+        ) break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!result) throw lastError;
+    if (!result.committed && result.transportError?.code === 'revision_conflict') {
+      await this.recoverSnapshot(input.workId);
+      const expectedRevision = useWorkStore.getState().revisions[input.workId];
+      if (!Number.isSafeInteger(expectedRevision)) {
+        throw new Error(`Work ${input.workId} 权威 revision 未载入，Definition 应用未继续。`);
+      }
+      result = await this.port.applyDefinition({
+        ...input,
+        expectedRevision: expectedRevision!,
+      });
+    }
     if (result.view) {
       const eventID = `apply-def:${input.requestId}:${result.revision}`;
       if (!this.applyMutationView(input.workId, result.view, eventID)) {
@@ -740,7 +765,22 @@ export class WorkControllerAdapter {
     input: CreateCandidateRevisionInput,
   ): Promise<CreateCandidateRevisionResult> => {
     if (!this.port.createCandidateRevision) throw new Error('Work 候选定义生成能力尚未连接。');
-    let result = await this.port.createCandidateRevision(input);
+    let result: CreateCandidateRevisionResult | undefined;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        result = await this.port.createCandidateRevision(input);
+        if (
+          result.committed
+          || result.clarification
+          || !result.recoverable
+          || result.transportError?.code === 'revision_conflict'
+        ) break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!result) throw lastError;
     if (!result.committed && result.transportError?.code === 'revision_conflict') {
       await this.recoverSnapshot(input.workId);
       const expectedRevision = useWorkStore.getState().revisions[input.workId];
@@ -1001,17 +1041,22 @@ export class WorkControllerAdapter {
       view = await this.port.updateDraft(input);
     } catch (error) {
       const conflict = revisionConflict(error);
-      if (!conflict) throw error;
-      if (conflict.actualRevision !== undefined) {
-        await this.recoverSnapshotToRevision(input.workId, conflict.actualRevision);
+      if (!conflict) {
+        // The request ID is unchanged, so a lost response or transient
+        // transport failure can be retried without duplicating the mutation.
+        view = await this.port.updateDraft(input);
       } else {
-        await this.recoverSnapshot(input.workId);
+        if (conflict.actualRevision !== undefined) {
+          await this.recoverSnapshotToRevision(input.workId, conflict.actualRevision);
+        } else {
+          await this.recoverSnapshot(input.workId);
+        }
+        const expectedRevision = useWorkStore.getState().revisions[input.workId];
+        if (!Number.isSafeInteger(expectedRevision)) {
+          throw new Error(`Work ${input.workId} 权威 revision 未载入，草稿保存未重试。`);
+        }
+        view = await this.port.updateDraft({ ...input, expectedRevision: expectedRevision! });
       }
-      const expectedRevision = useWorkStore.getState().revisions[input.workId];
-      if (!Number.isSafeInteger(expectedRevision)) {
-        throw new Error(`Work ${input.workId} 权威 revision 未载入，草稿保存未重试。`);
-      }
-      view = await this.port.updateDraft({ ...input, expectedRevision: expectedRevision! });
     }
     if (!this.applyMutationView(input.workId, view, `draft:${input.requestId}:${view.revision}`)) {
       await this.recoverSnapshot(input.workId);

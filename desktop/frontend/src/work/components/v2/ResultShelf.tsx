@@ -205,7 +205,6 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   );
   const canEdit = !readonly && Boolean(onRequestWorkflowChange && definition?.nodes?.length);
   const isUpdating = workflowChangeState?.status === 'updating';
-  const lastRequestRef = useRef<ResultWorkflowChangeRequest | null>(null);
 
   useEffect(() => {
     if (workflowChangeState?.status === 'applied') {
@@ -217,17 +216,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
     setAppliedVisible(false);
   }, [workflowChangeState?.status, workflowChangeState?.token]);
 
-  const handleRetry = useCallback(() => {
-    if (!workflowChangeState || !onRequestWorkflowChange) return;
-    const last = lastRequestRef.current;
-    if (!last) return;
-    const retry = { ...last, attempt: (last.attempt ?? 0) + 1 };
-    lastRequestRef.current = retry;
-    onRequestWorkflowChange(retry);
-  }, [workflowChangeState, onRequestWorkflowChange]);
-
   const fireRequest = useCallback((request: ResultWorkflowChangeRequest) => {
-    lastRequestRef.current = request;
     onRequestWorkflowChange?.(request);
   }, [onRequestWorkflowChange]);
 
@@ -331,7 +320,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
             data-testid="result-workflow-status"
           >
             {workflowChangeState.status === 'updating' && (
-              <><RefreshCw size={14} className="wg2-rs-wfstatus-spin" /> 正在更新流程…</>
+              <><RefreshCw size={14} className="wg2-rs-wfstatus-spin" /> AI 正在协调更新…</>
             )}
             {workflowChangeState.status === 'applied' && appliedVisible && (
               <><Check size={14} /> 已更新</>
@@ -339,15 +328,9 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
             {workflowChangeState.status === 'failed' && (
               <>
                 <AlertCircle size={14} />
-                <span className="wg2-rs-wfstatus-err">更新失败{workflowChangeState.error ? `：${workflowChangeState.error}` : ''}</span>
-                <button
-                  type="button"
-                  className="wg2-rs-wfstatus-retry"
-                  onClick={handleRetry}
-                  data-testid="result-workflow-retry"
-                >
-                  重试
-                </button>
+                <span className="wg2-rs-wfstatus-err">
+                  这次调整暂未完成{workflowChangeState.error ? `：${workflowChangeState.error}` : ''}。你可以补充要求后再次提交。
+                </span>
               </>
             )}
           </div>
