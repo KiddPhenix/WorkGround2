@@ -191,9 +191,19 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	if plan == nil {
 		return nil, errors.New("work: PreviewWorkPatch: planner returned no plan")
 	}
+	for _, action := range plan.Actions {
+		if action.Action == PatchActionAskUser {
+			return nil, fmt.Errorf("work: PreviewWorkPatch: coordinator requires user input: %s",
+				strings.TrimSpace(action.Question))
+		}
+	}
 	operations, err := normalizePatchOps(def, block, input.Scope, input.BlockID, plan.Operations)
 	if err != nil {
 		return nil, fmt.Errorf("work: PreviewWorkPatch: normalize: %w", err)
+	}
+	actions, err := normalizePatchActions(current, def, operations, input.Scope, plan.Actions)
+	if err != nil {
+		return nil, fmt.Errorf("work: PreviewWorkPatch: semantic actions: %w", err)
 	}
 	if input.Scope == PatchWorkflow {
 		candidate := CopyOnWriteRevision(def)
@@ -206,7 +216,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	}
 
 	// Compute impact analysis.
-	impact := s.computePatchImpact(def, operations, input.Scope, targetNodeID)
+	impact := s.computePatchImpactWithActions(def, operations, input.Scope, targetNodeID, actions)
 	affectedNodes := impact.affectedNodes
 	invalidatedTasks := impact.invalidatedTasks
 	requiresRerun := impact.requiresRerun
@@ -223,6 +233,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 		BaseBlockRev:            input.BlockRevision,
 		Scope:                   input.Scope,
 		Operations:              clonePatchOps(operations),
+		Actions:                 clonePatchActions(actions),
 		AffectedNodeIDs:         clonePatchStrings(affectedNodes),
 		AffectedBlockIDs:        clonePatchStrings(impact.affectedBlocks),
 		AffectedArtifactSlotIDs: clonePatchStrings(impact.affectedSlots),
@@ -261,6 +272,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 		BaseDefinitionRev:       input.DefinitionRevision,
 		BaseBlockRev:            input.BlockRevision,
 		Operations:              clonePatchOps(operations),
+		Actions:                 clonePatchActions(actions),
 		AffectedNodeIDs:         clonePatchStrings(affectedNodes),
 		AffectedBlockIDs:        clonePatchStrings(impact.affectedBlocks),
 		AffectedArtifactSlotIDs: clonePatchStrings(impact.affectedSlots),
@@ -312,6 +324,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 
 	cpy := *preview
 	cpy.Operations = clonePatchOps(preview.Operations)
+	cpy.Actions = clonePatchActions(preview.Actions)
 	cpy.AffectedNodeIDs = clonePatchStrings(preview.AffectedNodeIDs)
 	cpy.AffectedBlockIDs = clonePatchStrings(preview.AffectedBlockIDs)
 	cpy.AffectedArtifactSlotIDs = clonePatchStrings(preview.AffectedArtifactSlotIDs)
@@ -335,6 +348,7 @@ func (s *PatchService) replayPreview(current *Work, input PreviewWorkPatchInput,
 	if receipt.ResultPatch != nil {
 		cpy := *receipt.ResultPatch
 		cpy.Operations = clonePatchOps(receipt.ResultPatch.Operations)
+		cpy.Actions = clonePatchActions(receipt.ResultPatch.Actions)
 		cpy.AffectedNodeIDs = clonePatchStrings(receipt.ResultPatch.AffectedNodeIDs)
 		cpy.AffectedBlockIDs = clonePatchStrings(receipt.ResultPatch.AffectedBlockIDs)
 		cpy.AffectedArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.AffectedArtifactSlotIDs)
@@ -597,7 +611,7 @@ func (s *PatchService) applyWorkflowPatch(ctx context.Context, current *Work, pr
 	}
 
 	// Compute impact.
-	impact := ClassifyRunImpact(parent, newRev)
+	impact := classifyRunImpactWithActions(parent, newRev, preview.Actions)
 	invalidatedIDs := mergeSortedIDs(impact.InvalidatedNodeIDs, preview.InvalidatedTaskIDs)
 
 	// Compute digest.
@@ -632,7 +646,7 @@ func (s *PatchService) applyWorkflowPatch(ctx context.Context, current *Work, pr
 	if err != nil {
 		return 0, nil, fmt.Errorf("work: ApplyWorkPatch: reload revision: %w", err)
 	}
-	impact = ClassifyRunImpact(parent, persisted)
+	impact = classifyRunImpactWithActions(parent, persisted, preview.Actions)
 	invalidatedIDs = mergeSortedIDs(impact.InvalidatedNodeIDs, preview.InvalidatedTaskIDs)
 
 	createPayload, _ := json.Marshal(DefRevisionCreatedPayload{
@@ -902,6 +916,204 @@ func (s *PatchService) computePatchImpact(
 		invalidatedTasks: invalidated,
 		requiresRerun:    requiresRerun,
 	}
+}
+
+func (s *PatchService) computePatchImpactWithActions(
+	def *WorkDefinitionRevision,
+	ops []PatchOp,
+	scope PatchScope,
+	targetNodeID string,
+	actions []PatchAction,
+) patchImpact {
+	impact := s.computePatchImpact(def, ops, scope, targetNodeID)
+	if len(actions) == 0 {
+		return impact
+	}
+	rerunRoots := make(map[string]bool)
+	for _, action := range actions {
+		if action.Action == PatchActionRerun {
+			rerunRoots[action.NodeID] = true
+		}
+		if action.Action == PatchActionReformat {
+			impact.affectedSlots = mergeSortedIDs(impact.affectedSlots, []string{action.ArtifactSlotID})
+			impact.staleSlots = mergeSortedIDs(impact.staleSlots, []string{action.ArtifactSlotID})
+		}
+	}
+	invalidated := descendantsOf(def.Nodes, rerunRoots)
+	impact.invalidatedTasks = sortedIDSet(invalidated)
+	impact.requiresRerun = len(impact.invalidatedTasks) > 0
+	return impact
+}
+
+func normalizePatchActions(
+	current *Work,
+	def *WorkDefinitionRevision,
+	ops []PatchOp,
+	scope PatchScope,
+	actions []PatchAction,
+) ([]PatchAction, error) {
+	if len(actions) == 0 {
+		return nil, nil // Backward-compatible safe mechanical impact.
+	}
+	if len(actions) > 64 {
+		return nil, errors.New("planner returned more than 64 semantic actions")
+	}
+	nodes := indexNodes(def.Nodes)
+	slots := indexSlots(def.ArtifactSlots)
+	nodeActions := make(map[string]PatchActionKind)
+	slotActions := make(map[string]PatchActionKind)
+	normalized := make([]PatchAction, 0, len(actions))
+	for i, action := range actions {
+		action.NodeID = strings.TrimSpace(action.NodeID)
+		action.ArtifactSlotID = strings.TrimSpace(action.ArtifactSlotID)
+		action.Question = strings.TrimSpace(action.Question)
+		action.Reason = strings.TrimSpace(action.Reason)
+		switch action.Action {
+		case PatchActionReuse, PatchActionRerun:
+			if action.NodeID == "" || action.ArtifactSlotID != "" {
+				return nil, fmt.Errorf("action[%d] %q requires only nodeId", i, action.Action)
+			}
+			if _, ok := nodes[action.NodeID]; !ok {
+				return nil, fmt.Errorf("action[%d] references unknown node %q", i, action.NodeID)
+			}
+			if previous, exists := nodeActions[action.NodeID]; exists && previous != action.Action {
+				return nil, fmt.Errorf("node %q has conflicting actions %q and %q",
+					action.NodeID, previous, action.Action)
+			}
+			nodeActions[action.NodeID] = action.Action
+		case PatchActionReformat:
+			if scope != PatchWorkflow || action.ArtifactSlotID == "" || action.NodeID != "" {
+				return nil, fmt.Errorf("action[%d] reformat requires workflow scope and only artifactSlotId", i)
+			}
+			if _, ok := slots[action.ArtifactSlotID]; !ok {
+				return nil, fmt.Errorf("action[%d] references unknown artifact slot %q", i, action.ArtifactSlotID)
+			}
+			if previous, exists := slotActions[action.ArtifactSlotID]; exists && previous != action.Action {
+				return nil, fmt.Errorf("artifact slot %q has conflicting actions", action.ArtifactSlotID)
+			}
+			if !patchChangesSlotKind(ops, action.ArtifactSlotID) {
+				return nil, fmt.Errorf("reformat action for %q requires an artifact kind change", action.ArtifactSlotID)
+			}
+			slot, _ := FindArtifactSlotRevision(current, def.Revision, action.ArtifactSlotID)
+			if !v2ArtifactDelivered(slot) {
+				return nil, fmt.Errorf("reformat action for %q requires a ready source artifact", action.ArtifactSlotID)
+			}
+			slotActions[action.ArtifactSlotID] = action.Action
+		case PatchActionAskUser:
+			return nil, fmt.Errorf("ask_user must be handled before patch normalization")
+		default:
+			return nil, fmt.Errorf("action[%d] has invalid action %q", i, action.Action)
+		}
+		normalized = append(normalized, action)
+	}
+	if err := validatePatchActionCoverage(def, ops, nodeActions, slotActions); err != nil {
+		return nil, err
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		left := string(normalized[i].Action) + "\x00" + normalized[i].NodeID + "\x00" + normalized[i].ArtifactSlotID
+		right := string(normalized[j].Action) + "\x00" + normalized[j].NodeID + "\x00" + normalized[j].ArtifactSlotID
+		return left < right
+	})
+	return normalized, nil
+}
+
+func validatePatchActionCoverage(
+	def *WorkDefinitionRevision,
+	ops []PatchOp,
+	nodeActions map[string]PatchActionKind,
+	slotActions map[string]PatchActionKind,
+) error {
+	requireNode := func(nodeID, path string) error {
+		if nodeActions[nodeID] == "" {
+			return fmt.Errorf("planner did not decide reuse or rerun for node %q affected by %q", nodeID, path)
+		}
+		return nil
+	}
+	for _, op := range ops {
+		path, err := CompilePatchPath(op.Path)
+		if err != nil {
+			continue
+		}
+		switch path.Kind {
+		case PathNodes:
+			if err := requireNode(path.Segments[1], op.Path); err != nil {
+				return err
+			}
+		case PathSpecs:
+			specID := path.Segments[1]
+			for _, node := range def.Nodes {
+				if containsID(node.InputSpecIDs, specID) {
+					if err := requireNode(node.ID, op.Path); err != nil {
+						return err
+					}
+				}
+			}
+		case PathSlots:
+			slotID := path.Segments[1]
+			if slotActions[slotID] == PatchActionReformat {
+				continue
+			}
+			for _, node := range def.Nodes {
+				if containsID(node.ProducesSlotIDs, slotID) || containsID(node.ConsumesSlotIDs, slotID) {
+					if err := requireNode(node.ID, op.Path); err != nil {
+						return err
+					}
+				}
+			}
+		case PathRoot:
+			for _, node := range def.Nodes {
+				if err := requireNode(node.ID, op.Path); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func patchChangesSlotKind(ops []PatchOp, slotID string) bool {
+	path := "artifactSlots/" + slotID + "/kind"
+	for _, op := range ops {
+		if op.Op == "replace" && op.Path == path && !jsonValuesEqual(op.OldValue, op.NewValue) {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyRunImpactWithActions(
+	oldRev, newRev *WorkDefinitionRevision,
+	actions []PatchAction,
+) *RunImpact {
+	if len(actions) == 0 {
+		return ClassifyRunImpact(oldRev, newRev)
+	}
+	base := ClassifyRunImpact(oldRev, newRev)
+	rerunRoots := make(map[string]bool)
+	for _, action := range actions {
+		if action.Action == PatchActionRerun {
+			rerunRoots[action.NodeID] = true
+		}
+	}
+	invalidated := descendantsOf(newRev.Nodes, rerunRoots)
+	oldNodes := indexNodes(oldRev.Nodes)
+	newNodes := indexNodes(newRev.Nodes)
+	base.KeptNodeIDs = base.KeptNodeIDs[:0]
+	base.InvalidatedNodeIDs = base.InvalidatedNodeIDs[:0]
+	for nodeID := range oldNodes {
+		if _, exists := newNodes[nodeID]; !exists {
+			continue
+		}
+		if invalidated[nodeID] {
+			base.InvalidatedNodeIDs = append(base.InvalidatedNodeIDs, nodeID)
+		} else {
+			base.KeptNodeIDs = append(base.KeptNodeIDs, nodeID)
+		}
+	}
+	sort.Strings(base.KeptNodeIDs)
+	sort.Strings(base.InvalidatedNodeIDs)
+	base.RequiresRerun = len(base.InvalidatedNodeIDs) > 0
+	return base
 }
 
 func containsID(values []string, target string) bool {
@@ -1313,6 +1525,10 @@ func clonePatchOps(ops []PatchOp) []PatchOp {
 		out[i].NewValue = append(json.RawMessage(nil), ops[i].NewValue...)
 	}
 	return out
+}
+
+func clonePatchActions(actions []PatchAction) []PatchAction {
+	return append([]PatchAction(nil), actions...)
 }
 
 func clonePatchStrings(values []string) []string {

@@ -192,30 +192,54 @@ type PatchOp struct {
 	NewValue json.RawMessage `json:"newValue,omitempty"`
 }
 
+// PatchActionKind is the semantic execution decision made by PatchPlanner.
+// PatchService validates the decision against the authoritative definition and
+// runtime state; V2Coordinator performs it idempotently.
+type PatchActionKind string
+
+const (
+	PatchActionReuse    PatchActionKind = "reuse"
+	PatchActionReformat PatchActionKind = "reformat"
+	PatchActionRerun    PatchActionKind = "rerun"
+	PatchActionAskUser  PatchActionKind = "ask_user"
+)
+
+// PatchAction separates semantic impact from JSON mutation paths. NodeID owns
+// reuse/rerun decisions; ArtifactSlotID owns reformat decisions. Ask-user
+// carries a concrete question and applies no mutation until the user replies.
+type PatchAction struct {
+	Action         PatchActionKind `json:"action"`
+	NodeID         string          `json:"nodeId,omitempty"`
+	ArtifactSlotID string          `json:"artifactSlotId,omitempty"`
+	Question       string          `json:"question,omitempty"`
+	Reason         string          `json:"reason,omitempty"`
+}
+
 // WorkPatchPreview is a read-only preview generated from a discussion message.
 // The patch_previewed event persists only structured operations, impact summary,
 // and references — it never saves the raw discussion text. The event does not
 // mutate Work state; only a separate apply_patch event (with requestID and
 // expectedRevision) applies the change.
 type WorkPatchPreview struct {
-	ID                      string     `json:"id"`
-	WorkID                  string     `json:"workId"`
-	RunID                   string     `json:"runId"`
-	TaskID                  string     `json:"taskId"`
-	BlockID                 string     `json:"blockId"`
-	SessionID               string     `json:"sessionId"`
-	BaseDefinitionRev       int64      `json:"baseDefinitionRev"`
-	BaseBlockRev            int64      `json:"baseBlockRev"`
-	Scope                   PatchScope `json:"scope"`
-	Operations              []PatchOp  `json:"operations"`
-	AffectedNodeIDs         []string   `json:"affectedNodeIds"`
-	AffectedBlockIDs        []string   `json:"affectedBlockIds"`
-	AffectedArtifactSlotIDs []string   `json:"affectedArtifactSlotIds"`
-	StaleArtifactSlotIDs    []string   `json:"staleArtifactSlotIds"`
-	InvalidatedTaskIDs      []string   `json:"invalidatedTaskIds"`
-	RequiresRerun           bool       `json:"requiresRerun"`
-	Digest                  string     `json:"digest"`
-	ExpiresAt               time.Time  `json:"expiresAt" ts_type:"string"`
+	ID                      string        `json:"id"`
+	WorkID                  string        `json:"workId"`
+	RunID                   string        `json:"runId"`
+	TaskID                  string        `json:"taskId"`
+	BlockID                 string        `json:"blockId"`
+	SessionID               string        `json:"sessionId"`
+	BaseDefinitionRev       int64         `json:"baseDefinitionRev"`
+	BaseBlockRev            int64         `json:"baseBlockRev"`
+	Scope                   PatchScope    `json:"scope"`
+	Operations              []PatchOp     `json:"operations"`
+	Actions                 []PatchAction `json:"actions,omitempty"`
+	AffectedNodeIDs         []string      `json:"affectedNodeIds"`
+	AffectedBlockIDs        []string      `json:"affectedBlockIds"`
+	AffectedArtifactSlotIDs []string      `json:"affectedArtifactSlotIds"`
+	StaleArtifactSlotIDs    []string      `json:"staleArtifactSlotIds"`
+	InvalidatedTaskIDs      []string      `json:"invalidatedTaskIds"`
+	RequiresRerun           bool          `json:"requiresRerun"`
+	Digest                  string        `json:"digest"`
+	ExpiresAt               time.Time     `json:"expiresAt" ts_type:"string"`
 }
 
 // ── V2 Task states ─────────────────────────────────────────────────────────

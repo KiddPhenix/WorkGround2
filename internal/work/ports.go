@@ -167,7 +167,25 @@ type PatchPlanInput struct {
 
 // PatchPlan is the planner's untrusted structured output.
 type PatchPlan struct {
-	Operations []PatchOp
+	Operations []PatchOp     `json:"operations"`
+	Actions    []PatchAction `json:"actions,omitempty"`
+}
+
+// ArtifactReformatInput describes one coordinator-approved, artifact-only
+// conversion. SourceRefs always belong to the previous definition revision;
+// Target is the newly declared slot in the active revision.
+type ArtifactReformatInput struct {
+	WorkID     string
+	RequestID  string
+	SourceRefs []ArtifactRef
+	Target     ArtifactSlot
+}
+
+// TaskArtifactReformatter is an optional executor capability. It performs
+// deterministic file materialisation without starting another model turn or
+// repeating node capabilities such as web_search.
+type TaskArtifactReformatter interface {
+	ReformatTaskArtifacts(context.Context, ArtifactReformatInput) ([]ArtifactRef, error)
 }
 
 // SlotPreflight describes a pre-turn capability request for one artifact slot.

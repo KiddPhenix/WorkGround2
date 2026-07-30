@@ -60,7 +60,7 @@ func patchChunks(text string) []provider.Chunk {
 	}
 }
 
-const validPatchPlanJSON = `[{"op":"replace","path":"blocks/v2-node-e694b6e99b86e8aebe/data","newValue":{"content":"| 门派 | 特点 |\n|---|---|"}}]`
+const validPatchPlanJSON = `{"operations":[{"op":"replace","path":"blocks/v2-node-e694b6e99b86e8aebe/data","newValue":{"content":"| 门派 | 特点 |\n|---|---|"}}],"actions":[{"action":"rerun","nodeId":"v2-node-e694b6e99b86e8aebe","reason":"block content changed"}]}`
 
 func TestPatchPlannerValidJSONDoesNotRetry(t *testing.T) {
 	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{patchChunks(validPatchPlanJSON)}}
@@ -68,7 +68,22 @@ func TestPatchPlannerValidJSONDoesNotRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Operations) != 1 || len(prov.requests) != 1 {
+	if len(plan.Operations) != 1 || len(plan.Actions) != 1 || len(prov.requests) != 1 {
+		t.Fatalf("plan=%+v calls=%d", plan, len(prov.requests))
+	}
+}
+
+func TestPatchPlannerRepairsLegacyOperationArray(t *testing.T) {
+	legacy := `[{"op":"replace","path":"blocks/v2-node-e694b6e99b86e8aebe/data","newValue":{"content":"updated"}}]`
+	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{
+		patchChunks(legacy),
+		patchChunks(validPatchPlanJSON),
+	}}
+	plan, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), patchPlannerInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.requests) != 2 || len(plan.Actions) != 1 {
 		t.Fatalf("plan=%+v calls=%d", plan, len(prov.requests))
 	}
 }
@@ -88,8 +103,23 @@ func TestPatchPlannerRepairsNaturalLanguageOnce(t *testing.T) {
 	repair := prov.requests[1]
 	if len(repair.Messages) != 4 ||
 		!strings.Contains(repair.Messages[1].Content, "要有一个门派设定表格") ||
-		!strings.Contains(repair.Messages[3].Content, "JSON array") {
+		!strings.Contains(repair.Messages[3].Content, "operations and actions") {
 		t.Fatalf("repair request does not preserve intent and strict contract: %+v", repair.Messages)
+	}
+}
+
+func TestPatchPlannerParsesSemanticReformatAction(t *testing.T) {
+	raw := `{"operations":[` +
+		`{"op":"replace","path":"artifactSlots/route/kind","newValue":"docx"}` +
+		`],"actions":[{"action":"reformat","artifactSlotId":"route","reason":"content remains valid"}]}`
+	plan, err := parsePatchPlanResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 1 || len(plan.Actions) != 1 ||
+		plan.Actions[0].Action != work.PatchActionReformat ||
+		plan.Actions[0].ArtifactSlotID != "route" {
+		t.Fatalf("plan=%+v", plan)
 	}
 }
 
@@ -106,7 +136,7 @@ func TestPatchPlannerRepairsWorkflowRuntimeBlockPathOnce(t *testing.T) {
 			Description: "Choose a coherent theme.",
 		}},
 	}
-	const repaired = `[{"op":"replace","path":"nodes/plan-theme/description","newValue":"Choose a coherent animal theme, focusing on chickens and ducks."}]`
+	const repaired = `{"operations":[{"op":"replace","path":"nodes/plan-theme/description","newValue":"Choose a coherent animal theme, focusing on chickens and ducks."}],"actions":[{"action":"rerun","nodeId":"plan-theme","reason":"semantic guidance changed"}]}`
 	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{
 		patchChunks(validPatchPlanJSON),
 		patchChunks(repaired),
@@ -230,6 +260,8 @@ func TestPatchPlannerWorkflowPromptAnchorsGuidanceToTargetNode(t *testing.T) {
 		"keeps its existing slot ID",
 		"never model an edit as remove plus add",
 		"Changing only the title or MIME is not a format change",
+		"For a format-only result change, do not modify any node description",
+		`"action":"reformat"`,
 		`description=""`,
 		`"path":"nodes/plan-theme/description"`,
 		"Runtime Block paths are forbidden",

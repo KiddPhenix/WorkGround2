@@ -50,6 +50,7 @@ func hashPatchPreviewDigest(p *WorkPatchPreview) string {
 	clone := *p
 	clone.Digest = ""
 	clone.Operations = clonePatchOps(p.Operations)
+	clone.Actions = clonePatchActions(p.Actions)
 	clone.AffectedNodeIDs = append([]string{}, p.AffectedNodeIDs...)
 	clone.AffectedBlockIDs = append([]string{}, p.AffectedBlockIDs...)
 	clone.AffectedArtifactSlotIDs = append([]string{}, p.AffectedArtifactSlotIDs...)

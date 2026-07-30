@@ -188,6 +188,26 @@ func (c *V2Coordinator) ApplyPatch(
 			return result, committedRecovery("v2-patch-wake", input.WorkID, input.RequestID, result.WorkRevision, loadErr)
 		}
 		runID = activeDefinitionRunID(after, definition.Digest)
+		if reconcileErr := c.reconcilePatchArtifacts(
+			ctx,
+			input.WorkID,
+			runID,
+			input.RequestID,
+			preview,
+			definition,
+		); reconcileErr != nil {
+			return result, committedRecovery(
+				"v2-patch-artifacts",
+				input.WorkID,
+				input.RequestID,
+				result.WorkRevision,
+				reconcileErr,
+			)
+		}
+		after, loadErr = c.store.LoadProjection(input.WorkID)
+		if loadErr != nil {
+			return result, committedRecovery("v2-patch-wake", input.WorkID, input.RequestID, result.WorkRevision, loadErr)
+		}
 		changedIDs = definitionRunSeeds(
 			definition,
 			after,
@@ -617,6 +637,13 @@ func (c *V2Coordinator) RecoverScheduling(ctx context.Context, workID string) er
 		return err
 	}
 	activeRunID := activeDefinitionRunID(projection, definition.Digest)
+	if recoverErr := c.recoverPatchArtifacts(ctx, workID, activeRunID, projection, definition); recoverErr != nil {
+		return committedRecovery("v2-patch-artifacts-recovery", workID, "", 0, recoverErr)
+	}
+	projection, err = c.store.LoadProjection(workID)
+	if err != nil {
+		return err
+	}
 	repaired, repairErr := c.reconcileV2Artifacts(ctx, workID, activeRunID, definition)
 	if repairErr != nil {
 		return repairErr
