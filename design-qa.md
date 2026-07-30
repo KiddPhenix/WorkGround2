@@ -45,6 +45,21 @@ final result: passed
 
 ---
 
+# Work 通用工作面板 Design QA（2026-07-30）
+
+- source visual truth：`docs/assets/work-general-model/` 下团建、财务报表、软件工程的 running / waiting / completed 九张新生成图；未使用旧界面截图。
+- implementation：`docs/assets/work-general-model/qa/implementation-*-approved.png`
+- comparison：`docs/assets/work-general-model/qa/compare-*-approved.png` 与 `compare-*-top-approved.png`
+- viewport：桌面 `1536 × 1024`；响应式 `720 × 900`
+- states：running、waiting、completed；组件同时覆盖 planning 与 failed
+- interactions：等待态“处理”可展开现有类型化输入/执行区；执行摘要可展开/收起；成果动作沿用真实处理器。
+- findings：最终无 P0/P1/P2；720px 无页面级横向溢出。字体与间距较概念图略紧凑，作为遵循现有桌面设计系统的 P3 接受。
+- detail：`docs/WORK_GENERAL_MODEL_DESIGN_QA.zh-CN.md`
+
+final result: passed
+
+---
+
 # Work 讨论模态层 Design QA
 
 - source visual truth path: `D:\Temp\codex-clipboard-b62e65db-d7f8-40d6-8a01-d7eaaa235981.png`

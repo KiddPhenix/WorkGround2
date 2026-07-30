@@ -34759,6 +34759,11 @@ body > .mermaid-diagram--fullscreen {
   font-size: 0.9em;
 }
 
+.wg2-checklist-compact-detail {
+  color: var(--fg-dim);
+  font-size: 0.9em;
+}
+
 .wg2-item-state-success { border-left-color: var(--ok); }
 .wg2-item-state-error { border-left-color: var(--err); }
 .wg2-item-state-warning { border-left-color: var(--warn); }
@@ -36897,6 +36902,623 @@ body > .mermaid-diagram--fullscreen {
 
 .wg2-work-card[data-readonly="true"] {
   --card-overlay: rgba(0, 0, 0, 0.02);
+}
+
+/* ============================================================
+   Work presentation board — domain-neutral state composition
+   ============================================================ */
+
+.wg2-work-card:has(.wg2-work-card-front--presentation) {
+  --accent: #4ad6c4;
+  --accent-strong: #70e5d4;
+  --ok: #4ad6c4;
+}
+
+.wg2-work-card-front--presentation {
+  --accent: #4ad6c4;
+  --accent-strong: #70e5d4;
+  --ok: #4ad6c4;
+  min-height: 100%;
+  padding: 12px 20px 14px;
+  background: color-mix(in srgb, var(--bg) 96%, var(--bg-elev));
+}
+
+.wg2-work-presentation {
+  display: flex;
+  min-width: 0;
+  min-height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-frame {
+  grid-template-columns: 216px minmax(0, 1fr);
+  border-color: color-mix(in srgb, var(--border) 82%, var(--fg-faint));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-elev) 78%, var(--bg-soft));
+  box-shadow: none;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-intro {
+  gap: 9px;
+  padding: 13px 16px;
+  background: transparent;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-title {
+  font-size: var(--text-md);
+}
+
+.wg2-work-card-front--presentation .wg2-rs-intro p {
+  display: none;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-add {
+  width: fit-content;
+  margin-top: 0;
+  padding: 6px 10px;
+  border-color: var(--border);
+  background: transparent;
+  color: var(--fg-muted);
+}
+
+.wg2-work-card-front--presentation .wg2-rs-add:hover {
+  border-color: color-mix(in srgb, var(--accent) 56%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--fg);
+}
+
+.wg2-work-card-front--presentation .wg2-rs-shelf {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-shelf > li {
+  min-width: 0;
+  max-width: none;
+  padding: 9px 12px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.wg2-work-card-front--presentation .wg2-rs-shelf > li:last-child {
+  border-right: 0;
+}
+
+.wg2-work-card-front--presentation .wg2-rc-card {
+  min-height: 84px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.wg2-work-card-front--presentation .wg2-rc-header {
+  min-height: 72px;
+  padding: 8px;
+}
+
+.wg2-work-card-front--presentation .wg2-rc-hero-icon {
+  width: 38px;
+  height: 38px;
+  flex-basis: 38px;
+}
+
+.wg2-work-card-front--presentation .wg2-rc-files[data-layout="single"] {
+  margin-inline: 8px;
+}
+
+.wg2-work-card-front--presentation .wg2-rs-empty {
+  min-height: 96px;
+}
+
+.work-state-panel {
+  --work-state-accent: var(--accent);
+  display: grid;
+  grid-template-columns: minmax(190px, 0.36fr) minmax(0, 1fr);
+  min-height: 132px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--work-state-accent) 72%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--work-state-accent) 4%, var(--bg-elev));
+  box-shadow: 0 10px 28px rgb(0 0 0 / 12%);
+}
+
+.work-state-panel--waiting {
+  --work-state-accent: var(--warn);
+}
+
+.work-state-panel--failed {
+  --work-state-accent: var(--err);
+}
+
+.work-state-panel--completed {
+  --work-state-accent: var(--ok);
+}
+
+.work-state-panel--planning {
+  --work-state-accent: var(--fg-faint);
+}
+
+.work-state-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.work-state-panel__phase-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--work-state-accent) 42%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--work-state-accent) 12%, var(--bg-elev));
+  color: var(--work-state-accent);
+}
+
+.work-state-panel--running .work-state-panel__phase-icon svg {
+  animation: wg2-work-state-spin 1.8s linear infinite;
+}
+
+.work-state-panel__heading {
+  min-width: 0;
+}
+
+.work-state-panel__eyebrow {
+  color: var(--work-state-accent);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
+}
+
+.work-state-panel__heading h3 {
+  margin: 5px 0 0;
+  color: var(--fg);
+  font-size: var(--text-md);
+  font-weight: 620;
+}
+
+.work-state-panel__tasks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  align-items: stretch;
+  min-width: 0;
+}
+
+.work-state-panel__task {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  padding: 15px 18px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.work-state-panel__task:last-child {
+  border-right: 0;
+}
+
+.work-state-panel__task--attention {
+  background: color-mix(in srgb, var(--work-state-accent) 6%, transparent);
+}
+
+.work-state-panel__task-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.work-state-panel__task-label {
+  color: var(--work-state-accent);
+  font-size: var(--text-xs);
+}
+
+.work-state-panel__task-title {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: clamp(1rem, 1.3vw, 1.2rem);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-state-panel__task-progress {
+  overflow: hidden;
+  color: color-mix(in srgb, var(--work-state-accent) 86%, var(--fg));
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-state-panel__progress-track {
+  width: 100%;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-faint) 24%, transparent);
+}
+
+.work-state-panel__progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--work-state-accent);
+}
+
+.work-state-panel__task-error {
+  color: var(--err);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.work-state-panel__focus {
+  display: inline-flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--work-state-accent) 46%, var(--border));
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.work-state-panel__focus:hover,
+.work-state-panel__focus:focus-visible {
+  border-color: var(--work-state-accent);
+  background: color-mix(in srgb, var(--work-state-accent) 10%, transparent);
+  color: var(--fg);
+  outline: none;
+}
+
+.work-state-panel__completion {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+}
+
+.work-state-panel__completion strong {
+  color: var(--fg);
+  font-size: clamp(1rem, 1.3vw, 1.2rem);
+  font-weight: 620;
+}
+
+.work-state-panel__completion span,
+.work-state-panel__empty {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.work-state-panel__empty {
+  align-self: center;
+  margin: 0;
+  padding: 18px 22px;
+}
+
+.wg2-work-presentation__canvas {
+  min-width: 0;
+}
+
+.wg2-work-card-front--presentation .wg2-work-block-canvas {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-areas: none;
+  gap: 10px;
+}
+
+.wg2-work-card-front--presentation .wg2-work-block-canvas--presentation {
+  align-items: stretch;
+  grid-auto-flow: row dense;
+}
+
+.wg2-work-card-front--presentation .wg2-work-block-host-list {
+  gap: 10px;
+}
+
+.wg2-work-card-front--presentation .wg2-work-block-host-wrapper {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, var(--bg-soft));
+  box-shadow: none;
+}
+
+.wg2-work-block-title {
+  margin: 0;
+  padding: 13px 14px 5px;
+  color: var(--fg);
+  font-size: 1rem;
+  font-weight: 620;
+}
+
+.wg2-work-card-front--presentation .wg2-table-block__table {
+  font-size: 0.9rem;
+}
+
+.wg2-work-card-front--presentation .wg2-table-block__table th {
+  padding: 9px 11px;
+}
+
+.wg2-work-card-front--presentation .wg2-table-block__table td {
+  padding: 9px 11px;
+}
+
+.wg2-work-card-front--presentation .wg2-kv-key,
+.wg2-work-card-front--presentation .wg2-kv-separator {
+  display: none;
+}
+
+.wg2-work-card-front--presentation .wg2-kv-value {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.wg2-work-card-front--presentation .wg2-kv-item,
+.wg2-work-card-front--presentation .wg2-checklist-item {
+  min-height: 42px;
+  align-items: center;
+  border-left: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.wg2-work-card-front--presentation .wg2-checklist-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 12px;
+}
+
+.wg2-work-card-front--presentation .wg2-checklist-compact-detail {
+  align-self: center;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.wg2-work-card-front--presentation .wg2-kv-item + .wg2-kv-item,
+.wg2-work-card-front--presentation .wg2-checklist-item + .wg2-checklist-item {
+  border-top: 1px solid var(--border-soft);
+}
+
+.wg2-work-card-front--presentation .wg2-checklist-checked .wg2-checklist-text {
+  color: var(--fg-dim);
+  text-decoration: none;
+}
+
+.wg2-work-execution {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev) 72%, var(--bg-soft));
+}
+
+.wg2-work-execution-summary {
+  display: grid;
+  width: 100%;
+  min-height: 48px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wg2-work-execution-summary:hover,
+.wg2-work-execution-summary:focus-visible {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  outline: none;
+}
+
+.wg2-work-execution-summary__icon {
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.wg2-work-execution-summary[data-phase="waiting"] .wg2-work-execution-summary__icon {
+  color: var(--warn);
+}
+
+.wg2-work-execution-summary[data-phase="failed"] .wg2-work-execution-summary__icon {
+  color: var(--err);
+}
+
+.wg2-work-execution-summary[data-phase="completed"] .wg2-work-execution-summary__icon {
+  color: var(--ok);
+}
+
+.wg2-work-execution-summary__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wg2-work-execution-summary__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.wg2-work-execution-summary__action svg {
+  transition: transform var(--dur-fast);
+}
+
+.wg2-work-execution[data-expanded="true"] .wg2-work-execution-summary__action svg {
+  transform: rotate(180deg);
+}
+
+.wg2-work-execution__details {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--dur-fast), opacity var(--dur-fast);
+}
+
+.wg2-work-execution__details > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.wg2-work-execution[data-expanded="true"] .wg2-work-execution__details {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.wg2-work-execution[data-expanded="true"] .wg2-work-execution__details > * {
+  overflow: visible;
+}
+
+.wg2-work-execution__details .wg2-el-frame {
+  margin: 0;
+  padding: 10px;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
+}
+
+.wg2-work-goal {
+  position: sticky;
+  z-index: var(--z-local-raised);
+  bottom: 0;
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  font-size: var(--text-sm);
+}
+
+.wg2-work-goal svg {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+}
+
+.wg2-work-goal span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes wg2-work-state-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-state-panel--running .work-state-panel__phase-icon svg {
+    animation: none;
+  }
+
+  .wg2-work-execution__details,
+  .wg2-work-execution-summary__action svg {
+    transition: none;
+  }
+}
+
+@media (max-width: 1050px) {
+  .wg2-work-card-front--presentation .wg2-rs-frame {
+    grid-template-columns: 172px minmax(0, 1fr);
+  }
+
+  .wg2-work-card-front--presentation .wg2-rs-shelf {
+    display: flex;
+    gap: 0;
+    overflow-x: auto;
+  }
+
+  .wg2-work-card-front--presentation .wg2-rs-shelf > li {
+    min-width: 250px;
+  }
+
+  .work-state-panel {
+    grid-template-columns: 180px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .wg2-work-card-front--presentation {
+    padding: 10px;
+  }
+
+  .wg2-work-card-front--presentation .wg2-rs-frame,
+  .work-state-panel {
+    display: block;
+  }
+
+  .wg2-work-card-front--presentation .wg2-rs-intro,
+  .work-state-panel__header {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .wg2-work-card-front--presentation .wg2-rs-intro {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .work-state-panel__tasks {
+    display: block;
+  }
+
+  .work-state-panel__task {
+    border-right: 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .wg2-work-card-front--presentation .wg2-work-block-canvas {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "attention"
+      "primary"
+      "secondary"
+      "result";
+  }
+
+  .wg2-work-card-front--presentation .wg2-work-block-canvas--presentation >
+  .wg2-work-block-host-wrapper {
+    grid-column: 1 / -1;
+  }
+
+  .wg2-work-execution-summary {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .wg2-work-execution-summary__action {
+    grid-column: 2 / -1;
+    justify-self: end;
+    padding-bottom: 8px;
+  }
+
+  .wg2-work-goal span {
+    white-space: normal;
+  }
 }
 
 /* ── CornerstoneDrawer — T5 ─────────────────────────────────────────────── */

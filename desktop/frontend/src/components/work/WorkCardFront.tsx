@@ -1,4 +1,11 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronDown,
+  CircleDashed,
+  ListChecks,
+  Sparkles,
+} from 'lucide-react';
 
 import type {
   BlockPlacement,
@@ -24,6 +31,11 @@ import type {
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
+import { WorkStatePanel } from '../../work/components/presentation';
+import {
+  deriveWorkPresentation,
+  type WorkPresentation,
+} from '../../work/presentation';
 import type { ResultWorkflowChangeRequest, WorkflowChangeState } from '../../work/components/v2/ResultShelf';
 import type {
   FileDownloadIntent,
@@ -147,6 +159,61 @@ const ArtifactSummary: React.FC<{ work: Work }> = ({ work }) => {
   );
 };
 
+interface ExecutionSummaryProps {
+  presentation: WorkPresentation;
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+const ExecutionSummary: React.FC<ExecutionSummaryProps> = ({
+  presentation,
+  expanded,
+  onToggle,
+}) => {
+  const completed = presentation.tasks.filter((task) => task.state === 'completed').length;
+  const running = presentation.tasks.filter(
+    (task) => task.state === 'running' || task.state === 'ready',
+  ).length;
+  const waiting = presentation.tasks.filter(
+    (task) => task.state === 'waiting_input' || task.state === 'waiting_approval',
+  ).length;
+  const failed = presentation.tasks.filter(
+    (task) => task.state === 'failed_retryable' || task.state === 'failed_terminal',
+  ).length;
+  const Icon = presentation.phase === 'completed' ? CheckCircle2
+    : presentation.phase === 'planning' ? CircleDashed
+      : ListChecks;
+  const detail = presentation.phase === 'completed'
+    ? `${completed}/${presentation.tasks.length} 已完成`
+    : [
+        running > 0 ? `${running} 运行中` : '',
+        waiting > 0 ? `${waiting} 等待处理` : '',
+        failed > 0 ? `${failed} 需要处理` : '',
+        completed > 0 ? `${completed} 已完成` : '',
+      ].filter(Boolean).join(' · ') || `${presentation.tasks.length} 项待执行`;
+
+  return (
+    <button
+      type="button"
+      className="wg2-work-execution-summary"
+      data-phase={presentation.phase}
+      data-testid="work-execution-summary"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      <span className="wg2-work-execution-summary__icon">
+        <Icon aria-hidden="true" size={18} strokeWidth={1.8} />
+      </span>
+      <strong>执行任务</strong>
+      <span className="wg2-work-execution-summary__detail">{detail}</span>
+      <span className="wg2-work-execution-summary__action">
+        {expanded ? '收起运行详情' : '展开运行详情'}
+        <ChevronDown aria-hidden="true" size={17} strokeWidth={1.8} />
+      </span>
+    </button>
+  );
+};
+
 export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   view,
   expanded,
@@ -182,15 +249,30 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   const { work } = view;
   const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
   const [workflowChangeState, setWorkflowChangeState] = useState<WorkflowChangeState | null>(null);
+  const [executionExpanded, setExecutionExpanded] = useState(false);
   const canChangeWorkflow = Boolean(onPreviewPatch && onApplyPatch && onRefreshAuthoritative);
   const requestWorkflowChange = useCallback((request: ResultWorkflowChangeRequest) => {
     setWorkflowChangeState({ token: request.token, status: 'updating' });
     setResultWorkflowChange({ ...request });
   }, []);
   const isV2 = v2Definition !== undefined && v2Definition.status === 'active';
+  const presentation = useMemo(() => {
+    if (!v2Definition || v2Definition.status !== 'active') return undefined;
+    return deriveWorkPresentation(
+      v2Definition,
+      v2Tasks ?? [],
+      artifactSlots ?? [],
+      { activeRunId: runId },
+    );
+  }, [artifactSlots, runId, v2Definition, v2Tasks]);
   const expandedTaskId = Object.entries(expanded)
     .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
     ?.[0].slice('v2-task:'.length);
+  const executionDetailsOpen = executionExpanded || expandedTaskId !== undefined;
+  const focusPresentationTask = useCallback((taskID: string) => {
+    setExecutionExpanded(true);
+    onExecutionExpand(taskID, true);
+  }, [onExecutionExpand]);
   const hostContext = useMemo<BlockHostContext>(() => ({
     workId: work.id,
     workSchemaVersion: work.schemaVersion,
@@ -244,6 +326,9 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         tabIndex={-1}
         style={{ '--wg2-block-span': blockSpan(placement) } as React.CSSProperties}
       >
+        {isV2 && block.title ? (
+          <h3 className="wg2-work-block-title">{block.title}</h3>
+        ) : null}
         <BlockHost
           block={block}
           placement={placement}
@@ -268,20 +353,95 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
     );
   };
 
-  return (
-    <div
-      className="wg2-work-card-front"
-      data-testid="work-card-front"
-      data-work-id={work.id}
-      data-readonly={readonly ? 'true' : 'false'}
-      data-archived={archived ? 'true' : 'false'}
-    >
-      <ConclusionList conclusions={work.conclusions ?? []} />
-      <ArtifactSummary work={work} />
+  const blockCanvas = (
+    <div className="wg2-work-block-canvas" data-testid="work-block-canvas">
+      {BLOCK_SLOTS.map((slot) => {
+        const blocks = blocksBySlot.get(slot) ?? [];
+        if (blocks.length === 0) return null;
+        return (
+          <section
+            key={slot}
+            className={`wg2-work-block-slot wg2-work-block-slot--${slot}`}
+            data-block-slot-region={slot}
+            aria-label={BLOCK_SLOT_LABELS[slot]}
+          >
+            <div className="wg2-work-block-host-list" role="list">
+              {blocks.map(renderBlock)}
+            </div>
+          </section>
+        );
+      })}
+      {visibleBlockCount === 0 && (
+        <div className="wg2-work-front-empty" data-testid="work-front-empty">
+          <p>暂无工作流内容。在背面编辑提示词后运行即可生成。</p>
+        </div>
+      )}
+    </div>
+  );
 
-      {/* ── V2 execution face: ResultShelf + ExecutionList ──────── */}
-      {isV2 && (
-        <>
+  const presentationBlockCanvas = (
+    <div
+      className="wg2-work-block-canvas wg2-work-block-canvas--presentation"
+      data-testid="work-block-canvas"
+      role="list"
+      aria-label="工作内容"
+    >
+      {(presentation?.layoutMode === 'balanced'
+        ? work.blocks
+          .filter((block) => !block.tombstone)
+          .map((block, index) => ({
+            block,
+            index,
+            placement: placementByBlock.get(block.id),
+          }))
+        : BLOCK_SLOTS.flatMap((slot) => blocksBySlot.get(slot) ?? [])
+      ).map(renderBlock)}
+      {visibleBlockCount === 0 && (
+        <div className="wg2-work-front-empty" data-testid="work-front-empty">
+          <p>暂无工作流内容。在背面编辑提示词后运行即可生成。</p>
+        </div>
+      )}
+    </div>
+  );
+
+  const executionList = (
+    <ExecutionList
+      workId={work.id}
+      expandedTaskId={expandedTaskId}
+      runId={runId}
+      sessionId={sessionId}
+      workRevision={view.revision}
+      blocks={work.blocks}
+      onExpandTask={(intent) => onExecutionExpand(intent.taskId, true)}
+      onCollapseTask={(intent) => onExecutionExpand(intent.taskId, false)}
+      onRetryTask={onV2TaskRetry}
+      onSubmitWorkInput={onSubmitWorkInput}
+      onSetCornerstone={onSetCornerstone}
+      onUnsetCornerstone={onUnsetCornerstone}
+      onRefreshAuthoritative={onRefreshAuthoritative}
+      onSelectFile={onSelectWorkInputFile}
+      onPreviewPatch={onPreviewPatch}
+      onApplyPatch={onApplyPatch}
+      onDiscussionDraftChange={onDiscussionDraftChange}
+      externalWorkflowDiscussion={resultWorkflowChange}
+      onWorkflowChangeState={setWorkflowChangeState}
+      onTaskInfo={onTaskInfo}
+      taskInfoTaskKeys={taskInfoTaskKeys}
+    />
+  );
+
+  if (isV2 && v2Definition && presentation) {
+    return (
+      <div
+        className="wg2-work-card-front wg2-work-card-front--presentation"
+        data-testid="work-card-front"
+        data-work-id={work.id}
+        data-readonly={readonly ? 'true' : 'false'}
+        data-archived={archived ? 'true' : 'false'}
+        data-presentation-phase={presentation.phase}
+        data-presentation-layout={presentation.layoutMode}
+      >
+        <div className="wg2-work-presentation">
           <ResultShelf
             slots={artifactSlots ?? []}
             activeDefinitionRevision={v2Definition.revision}
@@ -298,55 +458,63 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onPreview={onArtifactPreview}
             onConvert={onArtifactConvert}
           />
-          <ExecutionList
-            workId={work.id}
-            expandedTaskId={expandedTaskId}
-            runId={runId}
-            sessionId={sessionId}
-            workRevision={view.revision}
-            blocks={work.blocks}
-            onExpandTask={(intent) => onExecutionExpand(intent.taskId, true)}
-            onCollapseTask={(intent) => onExecutionExpand(intent.taskId, false)}
-            onRetryTask={onV2TaskRetry}
-            onSubmitWorkInput={onSubmitWorkInput}
-            onSetCornerstone={onSetCornerstone}
-            onUnsetCornerstone={onUnsetCornerstone}
-            onRefreshAuthoritative={onRefreshAuthoritative}
-            onSelectFile={onSelectWorkInputFile}
-            onPreviewPatch={onPreviewPatch}
-            onApplyPatch={onApplyPatch}
-            onDiscussionDraftChange={onDiscussionDraftChange}
-            externalWorkflowDiscussion={resultWorkflowChange}
-            onWorkflowChangeState={setWorkflowChangeState}
-            onTaskInfo={onTaskInfo}
-            taskInfoTaskKeys={taskInfoTaskKeys}
-          />
-        </>
-      )}
 
-      <div className="wg2-work-block-canvas" data-testid="work-block-canvas">
-        {BLOCK_SLOTS.map((slot) => {
-          const blocks = blocksBySlot.get(slot) ?? [];
-          if (blocks.length === 0) return null;
-          return (
-            <section
-              key={slot}
-              className={`wg2-work-block-slot wg2-work-block-slot--${slot}`}
-              data-block-slot-region={slot}
-              aria-label={BLOCK_SLOT_LABELS[slot]}
-            >
-              <div className="wg2-work-block-host-list" role="list">
-                {blocks.map(renderBlock)}
-              </div>
-            </section>
-          );
-        })}
-        {visibleBlockCount === 0 && (
-          <div className="wg2-work-front-empty" data-testid="work-front-empty">
-            <p>暂无工作流内容。在背面编辑提示词后运行即可生成。</p>
+          <WorkStatePanel
+            presentation={presentation}
+            onFocusTask={focusPresentationTask}
+          />
+
+          <div className="wg2-work-presentation__canvas">
+            {presentationBlockCanvas}
           </div>
-        )}
+
+          <section
+            className="wg2-work-execution"
+            data-expanded={executionDetailsOpen ? 'true' : 'false'}
+            data-testid="work-execution"
+            aria-label="执行任务"
+          >
+            <ExecutionSummary
+              presentation={presentation}
+              expanded={executionDetailsOpen}
+              onToggle={() => {
+                if (executionDetailsOpen) {
+                  setExecutionExpanded(false);
+                  if (expandedTaskId) onExecutionExpand(expandedTaskId, false);
+                  return;
+                }
+                setExecutionExpanded(true);
+              }}
+            />
+            <div
+              className="wg2-work-execution__details"
+              aria-hidden={!executionDetailsOpen}
+              inert={!executionDetailsOpen || undefined}
+            >
+              {executionList}
+            </div>
+          </section>
+
+          <footer className="wg2-work-goal" data-testid="work-goal">
+            <Sparkles aria-hidden="true" size={18} strokeWidth={1.7} />
+            <span>{v2Definition.goal}</span>
+          </footer>
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div
+      className="wg2-work-card-front"
+      data-testid="work-card-front"
+      data-work-id={work.id}
+      data-readonly={readonly ? 'true' : 'false'}
+      data-archived={archived ? 'true' : 'false'}
+    >
+      <ConclusionList conclusions={work.conclusions ?? []} />
+      <ArtifactSummary work={work} />
+      {blockCanvas}
     </div>
   );
 };
