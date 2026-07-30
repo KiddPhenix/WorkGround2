@@ -293,7 +293,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       });
       if (!result.committed) {
         throw Object.assign(
-          new Error(result.transportError?.message || '工作结构未应用，请重试。'),
+          new Error(result.transportError?.message || '工作结构暂未应用。'),
           { code: result.transportError?.code },
         );
       }
@@ -309,9 +309,9 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         pendingCandidateRef.current = null;
         candidateIntentRef.current = null;
         saveCompletedRef.current = false;
-        setGenerateError('工作版本已变化，请重新生成工作结构。');
+        setGenerateError('工作状态仍在变化，AI 暂时未能完成这次调整。');
       } else {
-        setGenerateError(`工作结构已生成，启动失败：${error instanceof Error ? error.message : String(error)}`);
+        setGenerateError(`这次调整暂未完成：${error instanceof Error ? error.message : String(error)}`);
       }
       return false;
     } finally {
@@ -411,9 +411,10 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       if (code === 'revision_conflict' || code === 'request_conflict') {
         candidateIntentRef.current = null;
         saveCompletedRef.current = false;
-        setGenerateError('工作版本已变化，请重新生成工作结构。');
+        setGenerateError('工作状态仍在变化，AI 暂时未能完成这次调整。');
       } else {
-        // Transport / planner failure: save already succeeded; retry must skip save.
+        // Save already succeeded. A later clarified submission can continue
+        // from the durable phase without replaying the save.
         const message = error instanceof Error ? error.message : String(error);
         setGenerateError(message);
         if (clarification) setClarificationError(message);
@@ -773,7 +774,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
                     >
                       {generateState !== 'idle'
                         ? generateStatusCopy || generateBusyCopy[generateState][0]
-                        : pendingCandidateRef.current ? '重试启动工作'
+                        : pendingCandidateRef.current ? '继续协调'
                           : v2ActiveDefinition ? '怎么改进' : '生成工作结构'}
                     </span>
                     {generateState !== 'idle' && (

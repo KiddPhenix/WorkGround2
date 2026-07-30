@@ -518,7 +518,7 @@ async function runTests(): Promise<void> {
     );
     contains(
       document.querySelector('[data-testid="discussion-scope-t-discuss-row"]')?.textContent ?? '',
-      '影响当前项及后续任务',
+      '同步调整后续工作',
       'row discussion: downstream effect is explicit',
     );
     eq(expandCalls.length, 0, 'row discussion: opening discussion does not expand task');
@@ -749,7 +749,7 @@ async function runTests(): Promise<void> {
 
     // First mount triggers the effect
     await new Promise<void>((r) => setTimeout(r, 50));
-    eq(previewCount, 1, 'dir dup: preview called once on first mount');
+    eq(previewCount, 2, 'dir dup: recoverable preview is retried automatically');
 
     // Re-render with same token — should NOT re-trigger
     await act(async () => {
@@ -774,10 +774,10 @@ async function runTests(): Promise<void> {
       );
     });
     await new Promise<void>((r) => setTimeout(r, 50));
-    eq(previewCount, 1, 'dir dup: no re-trigger on same token');
+    eq(previewCount, 2, 'dir dup: no re-trigger on same token');
 
-    // A user retry increments the UI attempt, but keeps the stable request ID
-    // so the backend can safely deduplicate an already-committed operation.
+    // A repeated external intent still keeps the stable request ID so the
+    // backend can safely deduplicate an already-committed operation.
     await act(async () => {
       root.render(
         <ExecutionList
@@ -800,7 +800,7 @@ async function runTests(): Promise<void> {
       );
     });
     await new Promise<void>((r) => setTimeout(r, 50));
-    eq(previewCount, 2, 'dir dup: a new retry attempt re-runs the request');
+    eq(previewCount, 4, 'dir dup: a new external attempt re-runs automatic recovery');
     eq(previewRequestIDs[0], `wf-preview-${token}`, 'dir dup: first request ID is stable');
     eq(previewRequestIDs[1], previewRequestIDs[0], 'dir dup: retry reuses request ID for idempotency');
 
@@ -891,21 +891,12 @@ async function runTests(): Promise<void> {
       />
     );
 
-    const { cleanup, root } = await mount(renderList());
+    const { cleanup } = await mount(renderList());
     await new Promise<void>((r) => setTimeout(r, 80));
-    eq(stateChanges[stateChanges.length - 1]?.status, 'failed', 'dir refresh recovery: refresh failure is visible');
-    contains(
-      stateChanges[stateChanges.length - 1]?.error ?? '',
-      '更新已提交，但刷新状态失败',
-      'dir refresh recovery: committed state is explicit',
-    );
-
-    await act(async () => { root.render(renderList(1)); });
-    await new Promise<void>((r) => setTimeout(r, 80));
-    eq(stateChanges[stateChanges.length - 1]?.status, 'applied', 'dir refresh recovery: retry recovers to applied');
+    eq(stateChanges[stateChanges.length - 1]?.status, 'applied', 'dir refresh recovery: automatic refresh recovers to applied');
     eq(refreshCount, 2, 'dir refresh recovery: authoritative refresh retried');
-    eq(previewIDs[1], previewIDs[0], 'dir refresh recovery: preview request ID reused');
-    eq(applyIDs[1], applyIDs[0], 'dir refresh recovery: apply request ID reused');
+    eq(previewIDs.length, 1, 'dir refresh recovery: no user retry or replan is needed');
+    eq(applyIDs.length, 1, 'dir refresh recovery: apply remains idempotent');
 
     await cleanup();
   }
@@ -1026,13 +1017,11 @@ async function runTests(): Promise<void> {
       host.querySelector<HTMLButtonElement>('[data-testid="execution-row-discuss-task-auto-close"]')?.click());
     await interact(() =>
       document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-auto-close"]')?.click());
-    ok(
-      document.querySelector('[data-testid="discussion-drawer-task-auto-close"]') !== null,
-      'discussion auto-close: drawer stays open for confirmation',
-    );
-    await interact(() =>
-      document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-auto-close"]')?.click());
     await settle();
+    ok(
+      document.querySelector('[data-testid="discussion-drawer-task-auto-close"]') === null,
+      'discussion auto-close: automatic coordination needs no confirmation step',
+    );
     eq(refreshCalls, 1, 'discussion auto-close: authoritative refresh runs exactly once');
     ok(
       document.querySelector('[data-testid="discussion-drawer-task-auto-close"]') === null,
@@ -2069,16 +2058,16 @@ async function runTests(): Promise<void> {
     await settle();
     contains(
       document.querySelector('[data-testid="discussion-result-task-b"]')?.textContent ?? '',
-      '改动已提交',
+      '修改已提交',
       'discussion recovery: transport-only committed result is explicit',
     );
     contains(
       document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '刷新最新状态失败',
+      '最新状态暂时未同步',
       'discussion recovery: awaited refresh failure is explicit',
     );
     ok(!document.querySelector('[data-testid="discussion-receipt-task-b"]'), 'discussion recovery: technical receipt stays hidden');
-    eq(refreshCalls, 1, 'discussion recovery: committed result refreshes exactly once');
+    eq(refreshCalls, 3, 'discussion recovery: committed result refreshes automatically with a bound');
 
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-close-task-b"]')?.click());
     returnMissingReceipt = true;
@@ -2086,21 +2075,20 @@ async function runTests(): Promise<void> {
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-preview-btn-task-b"]')?.click());
     await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="discussion-apply-btn-task-b"]')?.click());
     await settle();
-    contains(
-      document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '确认响应不完整',
-      'discussion receipt contract: incomplete confirmation is explicit',
+    ok(
+      !document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent?.includes('确认响应不完整'),
+      'discussion receipt contract: technical confirmation details stay hidden',
     );
     contains(
       document.querySelector('[data-testid="discussion-error-task-b"]')?.textContent ?? '',
-      '刷新最新状态失败',
+      '最新状态暂时未同步',
       'discussion receipt contract: missing receipt still awaits refresh',
     );
     ok(
       !document.querySelector('[data-testid="discussion-receipt-task-b"]'),
       'discussion receipt contract: client request/revision are not fabricated as receipt',
     );
-    eq(refreshCalls, 2, 'discussion receipt contract: missing receipt refreshes exactly once');
+    eq(refreshCalls, 6, 'discussion receipt contract: missing receipt uses bounded automatic refresh');
     await cleanup();
   }
 

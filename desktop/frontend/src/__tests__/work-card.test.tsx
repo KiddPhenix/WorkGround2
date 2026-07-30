@@ -1868,9 +1868,7 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${taskID}"]`)!.click());
   eq(document.querySelectorAll('[data-testid^="discussion-drawer-"]').length, 1, 'production mounts one discussion drawer');
   await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`)!.click());
-  await settle(50);
-  await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-apply-btn-${taskID}"]`)!.click());
-  await settle(50);
+  await settle(100);
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(50);

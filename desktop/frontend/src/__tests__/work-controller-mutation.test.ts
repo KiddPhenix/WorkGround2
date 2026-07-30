@@ -381,7 +381,7 @@ function makeMockPort(): MockPort {
   assert.equal(useWorkStore.getState().revisions[workID], 6);
 }
 
-// ── I: non-revision failure stays explicit and is never retried ─────────────
+// ── I: transient draft failure gets one idempotent automatic retry ──────────
 {
   resetStore();
   const workID = 'w-draft-network-failure';
@@ -404,7 +404,7 @@ function makeMockPort(): MockPort {
     }),
     /network unavailable/,
   );
-  assert.equal(attempts, 1, 'non-revision errors must not be retried');
+  assert.equal(attempts, 2, 'transient errors receive one bounded automatic retry');
 }
 
 // ── J: input submit refreshes stale authority and retries in one action ──────
