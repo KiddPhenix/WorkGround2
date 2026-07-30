@@ -490,4 +490,51 @@ function makeMockPort(): MockPort {
   assert.deepEqual(writes, [20, 21], 'candidate retry must use recovered Work revision');
 }
 
-process.stdout.write('\ncontroller mutation + watch recovery (11 scenarios): all assertions passed\n');
+// ── L: Definition apply rebases an uncommitted revision conflict ─────────────
+{
+  resetStore();
+  const workID = 'w-definition-apply-conflict';
+  applySnapshot(makeView(workID, 5));
+
+  const port = makeMockPort();
+  port._setFetchSnapshot(() => Promise.resolve(makeView(workID, 6)));
+  const writes: Array<{ revision: number; requestId: string }> = [];
+  port.applyDefinition = async (input) => {
+    writes.push({ revision: input.expectedRevision, requestId: input.requestId });
+    if (writes.length === 1) {
+      return {
+        revision: 6, duplicate: false, committed: false, recoverable: true,
+        transportError: {
+          code: 'revision_conflict', message: 'aggregate advanced',
+          committed: false, recoverable: true,
+        },
+      };
+    }
+    return {
+      revision: 7, duplicate: false, committed: true, recoverable: false,
+      intent: {
+        workId: workID,
+        runId: 'run-definition-7',
+        definitionRev: 2,
+        reason: 'definition_applied',
+      },
+    };
+  };
+  const adapter = new WorkControllerAdapter(port);
+
+  const result = await adapter.applyDefinition({
+    workId: workID,
+    revision: 2,
+    expectedRevision: 5,
+    requestId: 'definition-apply-stable',
+  });
+
+  assert.equal(result.committed, true);
+  assert.deepEqual(writes.map((write) => write.revision), [5, 6]);
+  assert.deepEqual(writes.map((write) => write.requestId), [
+    'definition-apply-stable',
+    'definition-apply-stable',
+  ]);
+}
+
+process.stdout.write('\ncontroller mutation + watch recovery (12 scenarios): all assertions passed\n');
