@@ -368,6 +368,25 @@ func hashDefinitionPlanIntent(input CreateCandidateRevisionInput) string {
 	return fmt.Sprintf("definition-plan-%x", sum[:])
 }
 
+func retryArtifactSlotIntentDigest(input RetryArtifactSlotRequest) string {
+	value := struct {
+		WorkID             string
+		SlotID             string
+		DefinitionRevision int64
+	}{
+		WorkID:             strings.TrimSpace(input.WorkID),
+		SlotID:             strings.TrimSpace(input.SlotID),
+		DefinitionRevision: input.DefinitionRevision,
+	}
+	raw, _ := json.Marshal(value)
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("retry-artifact-slot-%x", sum[:])
+}
+
+func retryArtifactSlotNoopDigest(input RetryArtifactSlotRequest) string {
+	return retryArtifactSlotIntentDigest(input) + "/satisfied"
+}
+
 func validateDefinitionPlan(workID string, baseRevision int64, candidate *WorkDefinitionRevision) error {
 	if candidate == nil {
 		return errors.New("candidate is nil")
@@ -452,6 +471,8 @@ func (s *Service) RetryArtifactSlot(
 	}
 
 	slotRequestID := input.RequestID + "/slot/artifact-slot"
+	retryIntentDigest := retryArtifactSlotIntentDigest(input)
+	noopIntentDigest := retryArtifactSlotNoopDigest(input)
 	current, slotState, err := s.store.LoadState(input.WorkID, slotRequestID)
 	if err != nil {
 		result.TransportError = TransportErrorFrom(err)
@@ -459,107 +480,112 @@ func (s *Service) RetryArtifactSlot(
 	}
 	var slotResult *ArtifactSlotResult
 	slotCommitted := false
+	alreadySatisfied := false
 	if slotState.RequestFound {
 		result.Duplicate = true
 		slotCommitted = true
-		loader, ok := s.store.(interface {
-			LoadArtifactSlotUpdate(string, string) (*ArtifactSlotResult, string, error)
-		})
-		if !ok {
-			err = errors.New("work: RetryArtifactSlot: store cannot recover slot receipt")
-		} else {
-			var storedDigest string
-			slotResult, storedDigest, err = loader.LoadArtifactSlotUpdate(input.WorkID, slotRequestID)
-			if err == nil && slotResult != nil {
-				replayedIntent := UpdateArtifactSlotInput{
-					WorkID:           input.WorkID,
-					SlotID:           input.SlotID,
-					RequestID:        slotRequestID,
-					State:            SlotGenerating,
-					Refs:             append([]ArtifactRef(nil), slotResult.Slot.ArtifactRefs...),
-					UpstreamDigest:   slotResult.Slot.UpstreamDigest,
-					Summary:          slotResult.Slot.Summary,
-					Revision:         slotResult.Slot.Revision,
-					ExpectedRevision: input.ExpectedRevision,
-					DefinitionRev:    input.DefinitionRevision,
+		slotResult, alreadySatisfied, err = s.loadArtifactRetryReceipt(
+			input, slotRequestID, retryIntentDigest, noopIntentDigest,
+		)
+	} else {
+		if input.ExpectedRevision > slotState.Revision {
+			err = revisionConflict(input.WorkID, input.ExpectedRevision, slotState.Revision)
+		}
+		const maxArtifactRetryRebases = 3
+		for attempt := 0; err == nil && attempt < maxArtifactRetryRebases; attempt++ {
+			if attempt > 0 {
+				current, slotState, err = s.store.LoadState(input.WorkID, slotRequestID)
+				if err != nil {
+					break
 				}
-				if slotResult.Slot.ID != input.SlotID ||
-					slotResult.Slot.DefinitionRev != input.DefinitionRevision ||
-					storedDigest != artifactSlotIntentDigest(replayedIntent) {
-					conflict := &ErrWorkEventConflict{
-						WorkID: input.WorkID, RequestID: input.RequestID,
-						Kind:   WorkEventRequestConflict,
-						Reason: "RetryArtifactSlot requestID reused with a different slot or revision",
-					}
-					err = fmt.Errorf("%w: %w", ErrWorkRequestIDConflict, conflict)
-					slotResult = nil
+				if slotState.RequestFound {
+					slotResult, alreadySatisfied, err = s.loadArtifactRetryReceipt(
+						input, slotRequestID, retryIntentDigest, noopIntentDigest,
+					)
+					slotCommitted = true
+					result.Duplicate = true
+					break
 				}
 			}
-		}
-	} else {
-		if err = validateArtifactRetryRevision(current, input); err == nil {
-			err = CheckSchemaVersionV2("Work", current.SchemaVersion)
-		}
-		if err == nil {
-			err = s.validateRetryArtifactSlot(current, input.SlotID, input.DefinitionRevision)
-		}
-		if err == nil {
-			definition, loadErr := s.definitionStore().LoadRevision(input.WorkID, input.DefinitionRevision)
-			if loadErr != nil {
-				err = loadErr
-			} else {
+
+			if err = validateArtifactRetryRevision(current, input); err == nil {
+				err = CheckSchemaVersionV2("Work", current.SchemaVersion)
+			}
+			if err == nil {
+				err = s.validateRetryArtifactSlot(current, input.SlotID, input.DefinitionRevision)
+			}
+			var definition *WorkDefinitionRevision
+			if err == nil {
+				definition, err = s.definitionStore().LoadRevision(input.WorkID, input.DefinitionRevision)
+			}
+			var slot *ArtifactSlot
+			if err == nil {
+				slot, _ = FindArtifactSlotRevision(current, input.DefinitionRevision, input.SlotID)
+				err = validateArtifactRetryContract(input, slot, definition)
+			}
+			attemptSatisfied := err == nil &&
+				(slot.State == SlotGenerating || slot.State == SlotReady)
+			if err == nil && !attemptSatisfied {
 				runID := activeDefinitionRunID(current, definition.Digest)
 				_, _, err = artifactProducerRuntime(current, definition, runID, input.SlotID)
 			}
-		}
-		if err == nil {
-			slot, _ := FindArtifactSlotRevision(current, input.DefinitionRevision, input.SlotID)
+			if err != nil {
+				break
+			}
+
+			nextState := SlotGenerating
+			nextSlotRevision := slot.Revision + 1
+			var nextError *ArtifactError
+			if attemptSatisfied {
+				nextState = slot.State
+				nextSlotRevision = slot.Revision
+				nextError = slot.Error
+			}
 			slotIntent := UpdateArtifactSlotInput{
 				WorkID:           input.WorkID,
 				SlotID:           input.SlotID,
 				RequestID:        input.RequestID + "/slot",
-				State:            SlotGenerating,
+				State:            nextState,
 				Refs:             append([]ArtifactRef(nil), slot.ArtifactRefs...),
 				UpstreamDigest:   slot.UpstreamDigest,
+				Progress:         slot.Progress,
 				Summary:          slot.Summary,
-				Revision:         slot.Revision + 1,
-				ExpectedRevision: input.ExpectedRevision,
+				Error:            nextError,
+				Revision:         nextSlotRevision,
+				ExpectedRevision: slotState.Revision,
 				DefinitionRev:    input.DefinitionRevision,
+				intentDigest:     retryIntentDigest,
+			}
+			if attemptSatisfied {
+				slotIntent.intentDigest = noopIntentDigest
 			}
 			slotResult, err = s.UpdateArtifactSlot(ctx, slotIntent)
 			if err == nil {
 				slotCommitted = true
-			} else {
-				_, committedState, stateErr := s.store.LoadState(input.WorkID, slotRequestID)
-				if stateErr != nil {
-					err = errors.Join(err, stateErr)
-				} else if committedState.RequestFound {
-					slotCommitted = true
-					if loader, ok := s.store.(interface {
-						LoadArtifactSlotUpdate(string, string) (*ArtifactSlotResult, string, error)
-					}); ok {
-						var storedDigest string
-						var loadErr error
-						slotResult, storedDigest, loadErr = loader.LoadArtifactSlotUpdate(input.WorkID, slotRequestID)
-						if loadErr != nil {
-							err = errors.Join(err, loadErr)
-						} else if storedDigest != artifactSlotIntentDigest(UpdateArtifactSlotInput{
-							WorkID: input.WorkID, SlotID: input.SlotID, RequestID: slotRequestID,
-							State: slotIntent.State, Refs: slotIntent.Refs, UpstreamDigest: slotIntent.UpstreamDigest,
-							Summary: slotIntent.Summary, Error: slotIntent.Error, Revision: slotIntent.Revision,
-							ExpectedRevision: slotIntent.ExpectedRevision, DefinitionRev: slotIntent.DefinitionRev,
-						}) {
-							err = &ErrWorkEventConflict{
-								WorkID: input.WorkID, RequestID: input.RequestID, Kind: WorkEventRequestConflict,
-								Reason: "RetryArtifactSlot requestID won concurrently with a different intent",
-							}
-						} else {
-							err = nil
-							result.Duplicate = true
-						}
-					}
+				alreadySatisfied = attemptSatisfied
+				break
+			}
+			if isRevisionEventConflict(err) && attempt+1 < maxArtifactRetryRebases {
+				continue
+			}
+
+			_, committedState, stateErr := s.store.LoadState(input.WorkID, slotRequestID)
+			if stateErr != nil {
+				err = errors.Join(err, stateErr)
+			} else if committedState.RequestFound {
+				slotCommitted = true
+				var loadErr error
+				slotResult, alreadySatisfied, loadErr = s.loadArtifactRetryReceipt(
+					input, slotRequestID, retryIntentDigest, noopIntentDigest,
+				)
+				if loadErr != nil {
+					err = errors.Join(err, loadErr)
+				} else {
+					err = nil
+					result.Duplicate = true
 				}
 			}
+			break
 		}
 	}
 	if slotResult == nil {
@@ -599,6 +625,15 @@ func (s *Service) RetryArtifactSlot(
 		result.TransportError = TransportErrorFrom(err)
 		result.Recoverable = true
 		return result, err
+	}
+	if alreadySatisfied {
+		if authoritative, _ := FindArtifactSlotRevision(projection, input.DefinitionRevision, input.SlotID); authoritative != nil {
+			slotCopy := *authoritative
+			slotCopy.ArtifactRefs = append([]ArtifactRef(nil), authoritative.ArtifactRefs...)
+			result.Slot = &slotCopy
+		}
+		result.TransportError = nil
+		return result, nil
 	}
 	definition, loadErr := s.definitionStore().LoadRevision(input.WorkID, projection.V2CurrentRevision)
 	if loadErr != nil {
@@ -704,6 +739,50 @@ func (s *Service) RetryArtifactSlot(
 	return result, nil
 }
 
+func (s *Service) loadArtifactRetryReceipt(
+	input RetryArtifactSlotRequest,
+	slotRequestID, retryIntentDigest, noopIntentDigest string,
+) (*ArtifactSlotResult, bool, error) {
+	loader, ok := s.store.(interface {
+		LoadArtifactSlotUpdate(string, string) (*ArtifactSlotResult, string, error)
+	})
+	if !ok {
+		return nil, false, errors.New("work: RetryArtifactSlot: store cannot recover slot receipt")
+	}
+	slotResult, storedDigest, err := loader.LoadArtifactSlotUpdate(input.WorkID, slotRequestID)
+	if err != nil {
+		return nil, false, err
+	}
+	if slotResult == nil {
+		return nil, false, fmt.Errorf("%w: empty artifact retry receipt %s", ErrWorkNeedsRepair, slotRequestID)
+	}
+	legacyIntent := UpdateArtifactSlotInput{
+		WorkID:           input.WorkID,
+		SlotID:           input.SlotID,
+		RequestID:        slotRequestID,
+		State:            SlotGenerating,
+		Refs:             append([]ArtifactRef(nil), slotResult.Slot.ArtifactRefs...),
+		UpstreamDigest:   slotResult.Slot.UpstreamDigest,
+		Summary:          slotResult.Slot.Summary,
+		Revision:         slotResult.Slot.Revision,
+		ExpectedRevision: slotResult.WorkRevision - 1,
+		DefinitionRev:    input.DefinitionRevision,
+	}
+	if slotResult.Slot.ID != input.SlotID ||
+		slotResult.Slot.DefinitionRev != input.DefinitionRevision ||
+		(storedDigest != retryIntentDigest &&
+			storedDigest != noopIntentDigest &&
+			storedDigest != artifactSlotIntentDigest(legacyIntent)) {
+		conflict := &ErrWorkEventConflict{
+			WorkID: input.WorkID, RequestID: input.RequestID,
+			Kind:   WorkEventRequestConflict,
+			Reason: "RetryArtifactSlot requestID reused with a different slot or revision",
+		}
+		return nil, false, fmt.Errorf("%w: %w", ErrWorkRequestIDConflict, conflict)
+	}
+	return slotResult, storedDigest == noopIntentDigest, nil
+}
+
 func candidateSemanticEqual(left, right *WorkDefinitionRevision) bool {
 	normalize := func(value *WorkDefinitionRevision) *WorkDefinitionRevision {
 		if value == nil {
@@ -799,13 +878,49 @@ func (s *Service) validateRetryArtifactSlot(current *Work, slotID string, defini
 	}
 	slot, _ := FindArtifactSlotRevision(current, definitionRevision, slotID)
 	if slot == nil {
-		return fmt.Errorf("work: RetryArtifactSlot: active slot %q not found", slotID)
+		return &ErrWorkEventConflict{
+			WorkID: current.ID, Kind: WorkEventRequestConflict,
+			Reason: fmt.Sprintf("active slot %q was removed", slotID),
+		}
 	}
 	switch slot.State {
-	case SlotReserved, SlotFailed, SlotPartial, SlotStale:
+	case SlotReserved, SlotFailed, SlotPartial, SlotStale, SlotGenerating, SlotReady:
 		return nil
 	default:
 		return fmt.Errorf("work: RetryArtifactSlot requires reserved, failed, partial, or stale slot; current state is %s", slot.State)
+	}
+}
+
+func validateArtifactRetryContract(
+	input RetryArtifactSlotRequest,
+	slot *ArtifactSlot,
+	definition *WorkDefinitionRevision,
+) error {
+	if slot == nil || definition == nil {
+		return &ErrWorkEventConflict{
+			WorkID: input.WorkID, RequestID: input.RequestID, Kind: WorkEventRequestConflict,
+			Reason: "active artifact slot contract is unavailable",
+		}
+	}
+	for _, declared := range definition.ArtifactSlots {
+		if declared.ID != input.SlotID {
+			continue
+		}
+		if slot.DefinitionRev == definition.Revision &&
+			slot.Title == declared.Title &&
+			slot.Kind == declared.Kind &&
+			slot.ExpectedCount == declared.ExpectedCount &&
+			slot.Required == declared.Required {
+			return nil
+		}
+		return &ErrWorkEventConflict{
+			WorkID: input.WorkID, RequestID: input.RequestID, Kind: WorkEventRequestConflict,
+			Reason: fmt.Sprintf("artifact slot %q contract is incompatible with active definition", input.SlotID),
+		}
+	}
+	return &ErrWorkEventConflict{
+		WorkID: input.WorkID, RequestID: input.RequestID, Kind: WorkEventRequestConflict,
+		Reason: fmt.Sprintf("artifact slot %q was removed from active definition", input.SlotID),
 	}
 }
 

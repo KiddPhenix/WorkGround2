@@ -92,6 +92,10 @@ type UpdateArtifactSlotInput struct {
 	Revision         int64
 	ExpectedRevision int64
 	DefinitionRev    int64
+	// intentDigest lets a coordinating operation keep its caller-level
+	// idempotency identity while rebasing this child event onto the latest
+	// aggregate Work revision. Direct callers leave it empty.
+	intentDigest string
 }
 
 // ArtifactSlotResult reports both the updated slot revision and the
@@ -182,7 +186,7 @@ func (s *Service) UpdateArtifactSlot(ctx context.Context, input UpdateArtifactSl
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		if intentDigest != artifactSlotIntentDigest(input) {
+		if intentDigest != effectiveArtifactSlotIntentDigest(input) {
 			return nil, &ErrWorkEventConflict{
 				WorkID: input.WorkID, RequestID: input.RequestID,
 				Kind:   WorkEventRequestConflict,
@@ -222,7 +226,7 @@ func (s *Service) UpdateArtifactSlot(ctx context.Context, input UpdateArtifactSl
 	payload.Receipt = &ArtifactSlotUpdateReceipt{
 		Slot:         updatedSlot,
 		WorkRevision: event.Revision,
-		IntentDigest: artifactSlotIntentDigest(input),
+		IntentDigest: effectiveArtifactSlotIntentDigest(input),
 	}
 	event.Payload, err = json.Marshal(payload)
 	if err != nil {
@@ -308,6 +312,13 @@ func artifactSlotIntentDigest(input UpdateArtifactSlotInput) string {
 		return ""
 	}
 	return digest
+}
+
+func effectiveArtifactSlotIntentDigest(input UpdateArtifactSlotInput) string {
+	if digest := strings.TrimSpace(input.intentDigest); digest != "" {
+		return digest
+	}
+	return artifactSlotIntentDigest(input)
 }
 
 func artifactSlotRequestID(requestID string) string {

@@ -1,5 +1,6 @@
 export * from './types';
 export * from './types_v2';
+export * from './presentation';
 export {
   ViewFutureSchemaError,
   parseWorkViewEvent,
