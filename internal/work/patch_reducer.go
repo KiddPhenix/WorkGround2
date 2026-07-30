@@ -40,6 +40,7 @@ func reducePatchPreviewed(current *Work, p PatchPreviewedPayload, now time.Time,
 		BaseBlockRev:            p.BaseBlockRev,
 		Scope:                   p.Scope,
 		Operations:              clonePatchOps(p.Operations),
+		Actions:                 clonePatchActions(p.Actions),
 		AffectedNodeIDs:         clonePatchStrings(p.AffectedNodeIDs),
 		AffectedBlockIDs:        clonePatchStrings(p.AffectedBlockIDs),
 		AffectedArtifactSlotIDs: clonePatchStrings(p.AffectedArtifactSlotIDs),
@@ -118,6 +119,7 @@ func recordPatchReceipt(current *Work, receipt *PatchIntentReceipt) {
 	if receipt.ResultPatch != nil {
 		patchCopy := *receipt.ResultPatch
 		patchCopy.Operations = clonePatchOps(receipt.ResultPatch.Operations)
+		patchCopy.Actions = clonePatchActions(receipt.ResultPatch.Actions)
 		patchCopy.AffectedNodeIDs = clonePatchStrings(receipt.ResultPatch.AffectedNodeIDs)
 		patchCopy.AffectedBlockIDs = clonePatchStrings(receipt.ResultPatch.AffectedBlockIDs)
 		patchCopy.AffectedArtifactSlotIDs = clonePatchStrings(receipt.ResultPatch.AffectedArtifactSlotIDs)

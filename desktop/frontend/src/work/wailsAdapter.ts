@@ -364,6 +364,7 @@ function normalizeWorkPatchPreview(
   return {
     ...preview,
     operations: Array.isArray(preview.operations) ? preview.operations : [],
+    actions: Array.isArray(preview.actions) ? preview.actions : [],
     affectedNodeIds: Array.isArray(preview.affectedNodeIds) ? preview.affectedNodeIds : [],
     affectedBlockIds: Array.isArray(preview.affectedBlockIds) ? preview.affectedBlockIds : [],
     affectedArtifactSlotIds: Array.isArray(preview.affectedArtifactSlotIds) ? preview.affectedArtifactSlotIds : [],

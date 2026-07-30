@@ -173,6 +173,38 @@ func TestArtifactSlotPatchFormatChangePreservesReferencesAndInvalidatesDependent
 	}
 }
 
+func TestArtifactSlotPatchCoordinatorReformatDoesNotInvalidateProducer(t *testing.T) {
+	base := artifactPatchDefinition()
+	ops, err := normalizePatchOps(base, nil, PatchWorkflow, "", []PatchOp{
+		{
+			Op:       "replace",
+			Path:     "artifactSlots/report/title",
+			NewValue: rawPatchValue(t, "Report.xlsx"),
+		},
+		{
+			Op:       "replace",
+			Path:     "artifactSlots/report/kind",
+			NewValue: rawPatchValue(t, "xlsx"),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact := new(PatchService).computePatchImpactWithActions(
+		base,
+		ops,
+		PatchWorkflow,
+		"make",
+		[]PatchAction{{Action: PatchActionReformat, ArtifactSlotID: "report"}},
+	)
+	if len(impact.invalidatedTasks) != 0 || impact.requiresRerun {
+		t.Fatalf("semantic reformat invalidated producer: %+v", impact)
+	}
+	if !containsID(impact.staleSlots, "report") {
+		t.Fatalf("reformat must still identify target slot: %+v", impact)
+	}
+}
+
 // ── Block data normalization & validation ──────────────────────────────────
 
 func markdownBlock() *BlockInstance {

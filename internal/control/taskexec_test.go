@@ -91,6 +91,59 @@ func (s *taskBlobStore) ListDigests(_ string) ([]string, error) {
 	return result, nil
 }
 
+func TestTaskArtifactReformatMarkdownToDOCXDoesNotStartModelTurn(t *testing.T) {
+	blobs := newTaskBlobStore()
+	sourceBody := []byte("# 路线指引\n\n从公司集合后乘车前往场地。")
+	sourceDigest, err := blobs.Put("work-reformat", sourceBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec := NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: "unused", Model: "unused"},
+		func(context.Context, work.TaskExecuteInput) (*Controller, func(), error) {
+			t.Fatal("reformat must not create a model session")
+			return nil, nil, nil
+		},
+	)
+	exec.SetArtifactStore(blobs)
+	refs, err := exec.ReformatTaskArtifacts(context.Background(), work.ArtifactReformatInput{
+		WorkID:    "work-reformat",
+		RequestID: "patch/reformat/route",
+		SourceRefs: []work.ArtifactRef{{
+			ID: "route-md", Name: "路线指引.md", Type: "text/markdown",
+			Status: work.ArtifactRefStatusAvailable, BlobDigest: sourceDigest,
+		}},
+		Target: work.ArtifactSlot{
+			ID: "route", Title: "路线指引.docx", Kind: "docx",
+			ExpectedCount: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].Name != "路线指引.docx" || refs[0].Type != docxMediaType {
+		t.Fatalf("refs=%+v", refs)
+	}
+	body, err := blobs.Get("work-reformat", refs[0].BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("reformatted artifact is not a DOCX zip: %v", err)
+	}
+	foundDocument := false
+	for _, file := range reader.File {
+		if file.Name == "word/document.xml" {
+			foundDocument = true
+			break
+		}
+	}
+	if !foundDocument {
+		t.Fatalf("DOCX is missing word/document.xml: %+v", reader.File)
+	}
+}
+
 func (w *taskCornerstoneWork) Get(context.Context, string) (*work.WorkView, error) {
 	return w.view, w.err
 }

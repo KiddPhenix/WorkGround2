@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -40,8 +41,10 @@ func (e *coordinatorExecutor) ExecuteTask(ctx context.Context, input TaskExecute
 		return nil, errors.New("injected retryable failure")
 	}
 	return &Attempt{
-		State:      RunCompleted,
-		SessionRef: SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		State:                  RunCompleted,
+		SessionRef:             SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		LastAssistantText:      "completed",
+		SuccessfulCapabilities: append([]string(nil), input.RequiredCapabilities...),
 	}, nil
 }
 
@@ -84,6 +87,53 @@ func (coordinatorPatchPlanner) PlanPatch(_ context.Context, in PatchPlanInput) (
 	return &PatchPlan{Operations: []PatchOp{{
 		Op: "replace", Path: "blocks/b1/title", NewValue: json.RawMessage(`"renamed"`),
 	}}}, nil
+}
+
+type coordinatorReformatPlanner struct{}
+
+func (coordinatorReformatPlanner) PlanPatch(_ context.Context, in PatchPlanInput) (*PatchPlan, error) {
+	if in.Instruction != "route-guide-docx" {
+		return nil, errors.New("unexpected reformat instruction")
+	}
+	return &PatchPlan{
+		Operations: []PatchOp{
+			{Op: "replace", Path: "artifactSlots/slot/title", NewValue: json.RawMessage(`"路线指引.docx"`)},
+			{Op: "replace", Path: "artifactSlots/slot/kind", NewValue: json.RawMessage(`"docx"`)},
+		},
+		Actions: []PatchAction{{
+			Action: PatchActionReformat, ArtifactSlotID: "slot",
+			Reason: "existing route content and search evidence remain valid",
+		}},
+	}, nil
+}
+
+type coordinatorReformatExecutor struct {
+	*coordinatorExecutor
+	mu            sync.Mutex
+	reformatCalls int
+}
+
+func (e *coordinatorReformatExecutor) ReformatTaskArtifacts(
+	_ context.Context,
+	input ArtifactReformatInput,
+) ([]ArtifactRef, error) {
+	e.mu.Lock()
+	e.reformatCalls++
+	e.mu.Unlock()
+	if input.Target.Kind != "docx" || len(input.SourceRefs) != 1 {
+		return nil, fmt.Errorf("unexpected reformat input: %+v", input)
+	}
+	return []ArtifactRef{{
+		ID: "route-docx", Name: "路线指引.docx", Type: "application/docx",
+		Status: ArtifactRefStatusAvailable, BlobDigest: ContentDigest([]byte("docx")),
+		SourceRunID: input.SourceRefs[0].SourceRunID,
+	}}, nil
+}
+
+func (e *coordinatorReformatExecutor) reformatCallCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.reformatCalls
 }
 
 type failLoadDefinitionStore struct {
@@ -687,6 +737,107 @@ func TestV2Coordinator_PatchCommitMakesRunningCompletionStale_FileStore(t *testi
 	}
 	if slot, _ := FindArtifactSlotRevision(recovered, h.def.Revision, "slot"); !v2ArtifactDelivered(slot) {
 		t.Fatalf("patch stale recovery did not materialize artifact slot: %+v", slot)
+	}
+}
+
+func TestV2Coordinator_ReformatActionReusesNodeWithoutRepeatingSearch_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{
+			ID: "n1", Title: "设计团建方案", BlockIDs: []string{"b1"},
+			ToolHints: []string{"web_search"}, ProducesSlotIDs: []string{"slot"},
+		}},
+		nil,
+	))
+	_, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	blockPayload, _ := json.Marshal(BlockInstance{
+		ID: "b1", Kind: "markdown", SchemaVersion: 1, Revision: 1,
+		Title: "设计团建方案", Status: BlockReady, Data: json.RawMessage(`{"content":"existing route"}`),
+		Source:    BlockSource{Provider: "test", Mode: "snapshot"},
+		CreatedAt: now, UpdatedAt: now,
+	})
+	blockEvent := newServiceEvent(h.work, "block-"+t.Name(), EventBlockUpserted, blockPayload, now)
+	blockEvent.BaseRevision, blockEvent.Revision = state.Revision, state.Revision+1
+	if _, err := h.store.CommitEvent(h.work, blockEvent); err != nil {
+		t.Fatal(err)
+	}
+
+	baseExecutor := &coordinatorExecutor{}
+	executor := &coordinatorReformatExecutor{coordinatorExecutor: baseExecutor}
+	h.svc.SetTaskExecutor(executor)
+	h.svc.SetV2PatchPlanner(coordinatorReformatPlanner{})
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+	if baseExecutor.callCount() != 1 {
+		t.Fatalf("initial execution calls=%d", baseExecutor.callCount())
+	}
+	projection, _, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, _ := FindArtifactSlotRevision(projection, h.def.Revision, "slot")
+	if !v2ArtifactDelivered(source) {
+		t.Fatalf("source artifact=%+v", source)
+	}
+	preview, err := h.svc.PreviewV2WorkPatch(context.Background(), PreviewWorkPatchInput{
+		WorkID: h.work, RunID: h.run, TaskID: "n1", BlockID: "b1",
+		SessionID: "discussion", Instruction: "route-guide-docx",
+		DefinitionRevision: projection.V2CurrentRevision, BlockRevision: 1,
+		Scope: PatchWorkflow, RequestID: "preview-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Preview.RequiresRerun || len(preview.Preview.InvalidatedTaskIDs) != 0 ||
+		len(preview.Preview.Actions) != 1 ||
+		preview.Preview.Actions[0].Action != PatchActionReformat {
+		t.Fatalf("preview=%+v", preview.Preview)
+	}
+	_, state, _ = h.store.LoadState(h.work, "")
+	applied, err := h.svc.ApplyV2WorkPatch(context.Background(), ApplyWorkPatchInput{
+		WorkID: h.work, PatchID: preview.Preview.ID, PreviewDigest: preview.Preview.Digest,
+		Scope: PatchWorkflow, ExpectedRevision: state.Revision, RequestID: "patch-apply-" + t.Name(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.RequiresRerun || len(applied.InvalidatedTaskIDs) != 0 {
+		t.Fatalf("apply=%+v", applied)
+	}
+	if baseExecutor.callCount() != 1 {
+		t.Fatalf("format-only patch repeated node/search: calls=%d", baseExecutor.callCount())
+	}
+	if executor.reformatCallCount() != 1 {
+		t.Fatalf("reformat calls=%d", executor.reformatCallCount())
+	}
+	after, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, _ := FindArtifactSlotRevision(after, applied.NewRevision, "slot")
+	if !v2ArtifactDelivered(target) || target.Kind != "docx" ||
+		target.ArtifactRefs[0].Name != "路线指引.docx" {
+		t.Fatalf("target artifact=%+v", target)
+	}
+	newDef, err := h.store.LoadRevision(h.work, applied.NewRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRunID := activeDefinitionRunID(after, newDef.Digest)
+	taskID, _ := DeriveTaskID(newRunID, "n1")
+	if runtime := after.V2TaskRuntimes[taskID]; runtime == nil || runtime.State != TaskCompleted {
+		t.Fatalf("reused runtime=%+v", runtime)
+	}
+	if err := h.svc.RecoverV2Scheduling(context.Background(), h.work); err != nil {
+		t.Fatal(err)
+	}
+	if baseExecutor.callCount() != 1 || executor.reformatCallCount() != 1 {
+		t.Fatalf("recovery repeated work: taskCalls=%d reformatCalls=%d",
+			baseExecutor.callCount(), executor.reformatCallCount())
 	}
 }
 

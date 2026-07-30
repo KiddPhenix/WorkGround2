@@ -14,6 +14,7 @@ import (
 )
 
 const xlsxMediaType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+const docxMediaType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 func materializeTaskArtifact(
 	slot work.ArtifactSlot,
@@ -65,6 +66,12 @@ func materializeTaskArtifact(
 		}
 		body, err := buildXLSX(content)
 		return body, artifactFileName(slot, ".xlsx"), xlsxMediaType, true, err
+	case "docx", "doc", "word":
+		if content == "" {
+			return nil, "", "", false, nil
+		}
+		body, err := buildDOCX(content)
+		return body, artifactFileName(slot, ".docx"), docxMediaType, true, err
 	default:
 		return nil, "", "", false, nil
 	}
@@ -193,6 +200,63 @@ func artifactFileName(slot work.ArtifactSlot, extension string) string {
 		base = strings.TrimSuffix(base, filepath.Ext(base))
 	}
 	return base + extension
+}
+
+func buildDOCX(content string) ([]byte, error) {
+	var output bytes.Buffer
+	writer := zip.NewWriter(&output)
+	files := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "[Content_Types].xml",
+			body: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+				`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+				`<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+				`<Default Extension="xml" ContentType="application/xml"/>` +
+				`<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+				`</Types>`,
+		},
+		{
+			name: "_rels/.rels",
+			body: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+				`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+				`<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+				`</Relationships>`,
+		},
+		{name: "word/document.xml", body: documentXML(content)},
+	}
+	for _, file := range files {
+		entry, err := writer.Create(file.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := entry.Write([]byte(file.body)); err != nil {
+			return nil, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return output.Bytes(), nil
+}
+
+func documentXML(content string) string {
+	lines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(content, "\r\n", "\n"), "\r", "\n"), "\n")
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
+	b.WriteString(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>`)
+	for _, line := range lines {
+		b.WriteString(`<w:p><w:r><w:t xml:space="preserve">`)
+		var escaped bytes.Buffer
+		if err := xml.EscapeText(&escaped, []byte(line)); err == nil {
+			b.Write(escaped.Bytes())
+		}
+		b.WriteString(`</w:t></w:r></w:p>`)
+	}
+	b.WriteString(`<w:sectPr/></w:body></w:document>`)
+	return b.String()
 }
 
 func buildXLSX(content string) ([]byte, error) {

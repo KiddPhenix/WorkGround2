@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"workground2/internal/provider"
@@ -75,9 +76,15 @@ func (p *bootPatchPlanner) PlanPatch(ctx context.Context, input work.PatchPlanIn
 
 func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	var b strings.Builder
-	b.WriteString("You are a structured work definition editor. Given a user's discussion instruction and the current work context, produce a JSON array of patch operations (PatchPlan).\n\n")
+	b.WriteString("You are the Work coordinator. Given a user's instruction and the current authoritative Work state, produce one structured PatchPlan that describes both definition mutations and the semantic next action.\n\n")
 	b.WriteString("## Rules\n")
 	b.WriteString("- Output ONLY valid JSON — no markdown, no code fences, no explanatory text.\n")
+	b.WriteString("- Output exactly one object: {\"operations\":[...],\"actions\":[...]}.\n")
+	b.WriteString("- actions are authoritative semantic decisions: reuse, reformat, rerun, or ask_user.\n")
+	b.WriteString("- Use reuse with nodeId when its existing execution, inputs, search evidence, and outputs remain semantically valid.\n")
+	b.WriteString("- Use reformat with artifactSlotId when existing artifact content remains valid and only its delivery format must change. Reformat never repeats the producer node or web_search.\n")
+	b.WriteString("- Use rerun with nodeId only when the requested change alters the node's semantic content, inputs, dependencies, or evidence requirements.\n")
+	b.WriteString("- Use ask_user with a concrete question only when current state cannot determine a safe action. In that case operations must be empty.\n")
 	b.WriteString("- Use \"replace\" for existing fields. Workflow scope may also use \"add\" or \"remove\" only for a complete artifact slot object.\n")
 	b.WriteString("- Paths must follow the schema below.\n")
 	switch input.Scope {
@@ -94,7 +101,7 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	b.WriteString("- newValue must be a native JSON value (string, number, boolean, object, array, or null) — never a JSON-encoded string wrapping another value.\n")
 	b.WriteString("- Scope is " + string(input.Scope) + ". Only patch within this scope.\n")
 	b.WriteString("- Do not invent IDs that don't exist in the context, except the exact new slot ID explicitly supplied by an add request.\n")
-	b.WriteString("- Max 64 operations. If no change is needed, return an empty array.\n")
+	b.WriteString("- Max 64 operations and 64 actions. If no change is needed, return empty operations and reuse actions for the relevant nodes.\n")
 	b.WriteString("- Convert the instruction into actual patch operations. Do not summarize or restate the request.\n")
 	if input.Work != nil {
 		if directive := work.LocaleDirective(input.Work.Locale); directive != "" {
@@ -114,21 +121,24 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 		b.WriteString("- Removing a result requires one remove at artifactSlots/<slotID>, plus replace every referencing node's producesSlotIds and consumesSlotIds to remove that ID. Do not leave dangling references.\n")
 		b.WriteString("- Modifying a result keeps its existing slot ID and all producer/consumer references. Replace only the explicitly requested artifactSlots fields; never model an edit as remove plus add.\n")
 		b.WriteString("- A result format change must replace artifactSlots/<slotID>/kind with the exact requested format and keep the title extension consistent. Changing only the title or MIME is not a format change.\n")
+		b.WriteString("- For a format-only result change, do not modify any node description, acceptance criteria, tool hints, dependencies, or goal. Emit reformat for that slot; its producer is reused.\n")
 	}
 	b.WriteString("\n## Exact response examples\n")
 	if input.Scope == work.PatchBlock {
-		b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/title\",\"newValue\":\"New title\"}]\n")
-		b.WriteString("[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/data\",\"newValue\":{\"content\":\"Updated content\"}}]\n")
+		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/title\",\"newValue\":\"New title\"}],\"actions\":[{\"action\":\"reuse\",\"nodeId\":\"<targetNodeID>\",\"reason\":\"presentation-only change\"}]}\n")
+		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"blocks/<blockID>/data\",\"newValue\":{\"content\":\"Updated content\"}}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"<targetNodeID>\",\"reason\":\"content changed\"}]}\n")
 	} else {
 		targetNodeID := input.TargetNodeID
 		if targetNodeID == "" {
 			targetNodeID = "<targetNodeID>"
 		}
 		b.WriteString(fmt.Sprintf(
-			"[{\"op\":\"replace\",\"path\":\"nodes/%s/description\",\"newValue\":\"Existing responsibilities. Additional user guidance.\"}]\n",
+			"{\"operations\":[{\"op\":\"replace\",\"path\":\"nodes/%s/description\",\"newValue\":\"Existing responsibilities. Additional user guidance.\"}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"%s\",\"reason\":\"semantic guidance changed\"}]}\n",
+			targetNodeID,
 			targetNodeID,
 		))
-		b.WriteString("[{\"op\":\"add\",\"path\":\"artifactSlots/new_report\",\"newValue\":{\"id\":\"new_report\",\"title\":\"New report\",\"kind\":\"document\",\"expectedCount\":1,\"required\":true}},{\"op\":\"replace\",\"path\":\"nodes/<producerNodeID>/producesSlotIds\",\"newValue\":[\"existing_slot\",\"new_report\"]}]\n")
+		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"artifactSlots/route_guide/title\",\"newValue\":\"Route guide.docx\"},{\"op\":\"replace\",\"path\":\"artifactSlots/route_guide/kind\",\"newValue\":\"docx\"}],\"actions\":[{\"action\":\"reformat\",\"artifactSlotId\":\"route_guide\",\"reason\":\"content and search evidence remain valid\"}]}\n")
+		b.WriteString("{\"operations\":[{\"op\":\"add\",\"path\":\"artifactSlots/new_report\",\"newValue\":{\"id\":\"new_report\",\"title\":\"New report\",\"kind\":\"document\",\"expectedCount\":1,\"required\":true}},{\"op\":\"replace\",\"path\":\"nodes/<producerNodeID>/producesSlotIds\",\"newValue\":[\"existing_slot\",\"new_report\"]}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"<producerNodeID>\",\"reason\":\"new output content is required\"}]}\n")
 	}
 
 	b.WriteString("\n## Current Work Context\n")
@@ -170,6 +180,37 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 	if input.TargetNodeID != "" {
 		b.WriteString(fmt.Sprintf("Target Node: id=%s\n", input.TargetNodeID))
 	}
+	if input.Work != nil {
+		b.WriteString("Current Runtime State:\n")
+		runtimeIDs := make([]string, 0, len(input.Work.V2TaskRuntimes))
+		for taskID := range input.Work.V2TaskRuntimes {
+			runtimeIDs = append(runtimeIDs, taskID)
+		}
+		sort.Strings(runtimeIDs)
+		for _, taskID := range runtimeIDs {
+			runtime := input.Work.V2TaskRuntimes[taskID]
+			if runtime == nil || input.Definition == nil || runtime.DefinitionRev != input.Definition.Revision {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("  - nodeId=%s taskId=%s state=%s progress=%q\n",
+				runtime.NodeID, runtime.TaskID, runtime.State, runtime.Progress))
+		}
+		b.WriteString("Current Artifact State:\n")
+		slots := append([]work.ArtifactSlot(nil), input.Work.V2ArtifactSlots...)
+		sort.Slice(slots, func(i, j int) bool {
+			if slots[i].DefinitionRev != slots[j].DefinitionRev {
+				return slots[i].DefinitionRev < slots[j].DefinitionRev
+			}
+			return slots[i].ID < slots[j].ID
+		})
+		for _, slot := range slots {
+			if input.Definition != nil && slot.DefinitionRev != input.Definition.Revision {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("  - id=%s kind=%s state=%s refs=%d\n",
+				slot.ID, slot.Kind, slot.State, len(slot.ArtifactRefs)))
+		}
+	}
 
 	return b.String()
 }
@@ -205,7 +246,7 @@ func buildPatchPlannerMessages(
 		{Role: provider.RoleUser, Content: user},
 		{Role: provider.RoleAssistant, Content: truncateRawResponse(firstRaw, 4096)},
 		{Role: provider.RoleUser, Content: fmt.Sprintf(
-			"Your previous response was not a valid PatchPlan (%s). Return exactly one JSON array of patch operations now. Output JSON only; do not explain, summarize, use markdown, or repeat the instruction.",
+			"Your previous response was not a valid PatchPlan (%s). Return exactly one JSON object with operations and actions now. Output JSON only; do not explain, summarize, use markdown, or repeat the instruction.",
 			patchParseErrorCategory(firstErr),
 		)},
 	}
@@ -298,6 +339,7 @@ func decodePatchPlan(raw json.RawMessage) (*work.PatchPlan, error) {
 		if err := json.Unmarshal(planRaw, &nested); err != nil {
 			return nil, fmt.Errorf("PatchPlan plan must be an object")
 		}
+		object = nested
 		operations, ok = nested["operations"]
 		if !ok {
 			return nil, fmt.Errorf("PatchPlan plan is missing operations")
@@ -307,12 +349,21 @@ func decodePatchPlan(raw json.RawMessage) (*work.PatchPlan, error) {
 	if err := json.Unmarshal(operations, &ops); err != nil || ops == nil {
 		return nil, fmt.Errorf("operations must be a JSON array")
 	}
-	return &work.PatchPlan{Operations: ops}, nil
+	var actions []work.PatchAction
+	if actionsRaw, ok := object["actions"]; ok {
+		if err := json.Unmarshal(actionsRaw, &actions); err != nil || actions == nil {
+			return nil, fmt.Errorf("actions must be a JSON array")
+		}
+	}
+	return &work.PatchPlan{Operations: ops, Actions: actions}, nil
 }
 
 func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) error {
 	if plan == nil {
 		return fmt.Errorf("boot: PlanPatch: empty PatchPlan")
+	}
+	if len(plan.Operations) > 0 && len(plan.Actions) == 0 {
+		return fmt.Errorf("boot: PlanPatch: semantic actions are required for every non-empty patch")
 	}
 	for i, op := range plan.Operations {
 		isBlockPath := strings.HasPrefix(op.Path, "blocks/")
@@ -333,6 +384,27 @@ func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) err
 					op.Path,
 				)
 			}
+		}
+	}
+	if len(plan.Actions) > 64 {
+		return fmt.Errorf("boot: PlanPatch: more than 64 semantic actions")
+	}
+	for i, action := range plan.Actions {
+		switch action.Action {
+		case work.PatchActionReuse, work.PatchActionRerun:
+			if strings.TrimSpace(action.NodeID) == "" || strings.TrimSpace(action.ArtifactSlotID) != "" {
+				return fmt.Errorf("boot: PlanPatch: action[%d] %q requires only nodeId", i, action.Action)
+			}
+		case work.PatchActionReformat:
+			if strings.TrimSpace(action.ArtifactSlotID) == "" || strings.TrimSpace(action.NodeID) != "" {
+				return fmt.Errorf("boot: PlanPatch: action[%d] reformat requires only artifactSlotId", i)
+			}
+		case work.PatchActionAskUser:
+			if strings.TrimSpace(action.Question) == "" || len(plan.Operations) != 0 {
+				return fmt.Errorf("boot: PlanPatch: action[%d] ask_user requires a question and empty operations", i)
+			}
+		default:
+			return fmt.Errorf("boot: PlanPatch: action[%d] has invalid action %q", i, action.Action)
 		}
 	}
 	return nil

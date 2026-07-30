@@ -139,6 +139,16 @@ export interface PatchOp {
   newValue?: unknown;
 }
 
+export type PatchActionKind = 'reuse' | 'reformat' | 'rerun' | 'ask_user';
+
+export interface PatchAction {
+  action: PatchActionKind;
+  nodeId?: string;
+  artifactSlotId?: string;
+  question?: string;
+  reason?: string;
+}
+
 export interface WorkPatchPreview {
   id: string;
   workId: string;
@@ -150,6 +160,7 @@ export interface WorkPatchPreview {
   baseBlockRev: number;
   scope: PatchScope;
   operations: PatchOp[];
+  actions?: PatchAction[];
   affectedNodeIds: string[];
   affectedBlockIds: string[];
   affectedArtifactSlotIds: string[];
@@ -732,6 +743,7 @@ export interface PatchPreviewedPayload {
   baseDefinitionRev?: number;
   baseBlockRev?: number;
   operations?: PatchOp[];
+  actions?: PatchAction[];
   affectedNodeIds: string[];
   affectedBlockIds: string[];
   affectedArtifactSlotIds: string[];

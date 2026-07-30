@@ -25,8 +25,10 @@ func (e *reuseExecutor) ExecuteTask(_ context.Context, input TaskExecuteInput) (
 		state = RunFailed
 	}
 	return &Attempt{
-		State:      state,
-		SessionRef: SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		State:                  state,
+		SessionRef:             SessionRef{SessionPath: "sessions/" + input.AttemptID + ".jsonl"},
+		LastAssistantText:      "completed",
+		SuccessfulCapabilities: append([]string(nil), input.RequiredCapabilities...),
 	}, nil
 }
 

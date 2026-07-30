@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"workground2/internal/agent"
 	"workground2/internal/artifact"
@@ -562,6 +564,112 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 	return outputs, nil
 }
 
+// ReformatTaskArtifacts implements work.TaskArtifactReformatter. It reuses
+// immutable source blobs and performs local materialisation only; no Controller
+// turn or capability preflight is started.
+func (a *TaskExecutorAdapter) ReformatTaskArtifacts(
+	ctx context.Context,
+	input work.ArtifactReformatInput,
+) ([]work.ArtifactRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a == nil || a.blobs == nil {
+		return nil, errors.New("work task artifact store is not configured")
+	}
+	if strings.TrimSpace(input.WorkID) == "" || strings.TrimSpace(input.RequestID) == "" ||
+		strings.TrimSpace(input.Target.ID) == "" {
+		return nil, errors.New("artifact reformat requires workID, requestID, and target slot")
+	}
+	expected := input.Target.ExpectedCount
+	if expected <= 0 {
+		expected = 1
+	}
+	available := make([]work.ArtifactRef, 0, len(input.SourceRefs))
+	for _, ref := range input.SourceRefs {
+		if ref.Status == work.ArtifactRefStatusAvailable && strings.TrimSpace(ref.BlobDigest) != "" {
+			available = append(available, ref)
+		}
+	}
+	if len(available) < expected {
+		return nil, fmt.Errorf("artifact reformat requires %d available source(s), got %d", expected, len(available))
+	}
+
+	now := time.Now().UTC()
+	out := make([]work.ArtifactRef, 0, expected)
+	for index, source := range available[:expected] {
+		body, err := a.blobs.Get(input.WorkID, source.BlobDigest)
+		if err != nil {
+			return nil, fmt.Errorf("read source artifact %q: %w", source.ID, err)
+		}
+		item := artifact.Discovered{Name: source.Name, Type: source.Type, Data: body}
+		name, mediaType := source.Name, source.Type
+		if artifactKindMatches(item, strings.ToLower(strings.TrimSpace(input.Target.Kind))) {
+			if ext := filepath.Ext(source.Name); ext != "" {
+				name = artifactFileName(input.Target, ext)
+			}
+		} else {
+			if !utf8.Valid(body) || !textualArtifactSource(source) {
+				return nil, fmt.Errorf("source artifact %q cannot be locally converted to %q",
+					source.Name, input.Target.Kind)
+			}
+			var supported bool
+			body, name, mediaType, supported, err = materializeTaskArtifact(
+				input.Target,
+				string(body),
+				nil,
+				"",
+			)
+			if err != nil {
+				return nil, fmt.Errorf("convert source artifact %q to %q: %w",
+					source.Name, input.Target.Kind, err)
+			}
+			if !supported {
+				return nil, fmt.Errorf("local conversion from %q to %q is unavailable",
+					source.Name, input.Target.Kind)
+			}
+		}
+		digest, err := a.blobs.Put(input.WorkID, body)
+		if err != nil {
+			return nil, fmt.Errorf("persist reformatted artifact %q: %w", name, err)
+		}
+		refDigest := work.ContentDigest([]byte(fmt.Sprintf(
+			"%s\x00%s\x00%d\x00%s",
+			input.RequestID,
+			input.Target.ID,
+			index,
+			digest,
+		)))
+		out = append(out, work.ArtifactRef{
+			ID:             "reformat-" + strings.TrimPrefix(refDigest, "sha256:")[:24],
+			Name:           name,
+			Type:           mediaType,
+			Status:         work.ArtifactRefStatusAvailable,
+			BlobDigest:     digest,
+			SourceRunID:    source.SourceRunID,
+			LastVerifiedAt: &now,
+		})
+	}
+	return out, nil
+}
+
+func textualArtifactSource(ref work.ArtifactRef) bool {
+	mediaType := strings.ToLower(strings.TrimSpace(ref.Type))
+	if strings.HasPrefix(mediaType, "text/") ||
+		strings.Contains(mediaType, "json") ||
+		strings.Contains(mediaType, "xml") ||
+		strings.Contains(mediaType, "yaml") ||
+		strings.Contains(mediaType, "csv") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(ref.Name))) {
+	case ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml":
+		return true
+	default:
+		return false
+	}
+}
+
 // CancelTask records cancellation by stable Attempt ownership before consulting
 // Session state. A cancellation that arrives before Session creation is held
 // and consumed by ExecuteTask, so the empty-SessionRef window is safe.
@@ -1045,6 +1153,7 @@ func buildCapabilityPreflightPrompt(capability, taskPrompt string) string {
 
 var _ work.TaskExecutor = (*TaskExecutorAdapter)(nil)
 var _ work.TaskArtifactReporter = (*TaskExecutorAdapter)(nil)
+var _ work.TaskArtifactReformatter = (*TaskExecutorAdapter)(nil)
 
 // injectCornerstoneBlock fetches the Work and builds the cornerstone context
 // block, sets it on the Controller for Compose to inject. Returns an error

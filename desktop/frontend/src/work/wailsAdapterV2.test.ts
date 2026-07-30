@@ -363,6 +363,7 @@ async function run(): Promise<void> {
     const preview = {
       ...(OK.previewWorkPatch.preview as Record<string, unknown>),
       operations: null,
+      actions: null,
       affectedNodeIds: null,
       affectedBlockIds: null,
       affectedArtifactSlotIds: null,
@@ -372,10 +373,17 @@ async function run(): Promise<void> {
     mock.set(wailsMethod(method), async () => ({ ...OK.previewWorkPatch, preview }));
     const result = await fn(inputFor(method));
     const normalized = (result as any).preview;
-    for (const field of ['operations','affectedNodeIds','affectedBlockIds','affectedArtifactSlotIds','staleArtifactSlotIds','invalidatedTaskIds']) {
+    for (const field of ['operations','actions','affectedNodeIds','affectedBlockIds','affectedArtifactSlotIds','staleArtifactSlotIds','invalidatedTaskIds']) {
       checkOk(Array.isArray(normalized?.[field]), `preview null arrays: ${field}`);
       checkEq(normalized?.[field]?.length, 0, `preview null arrays: ${field} empty`);
     }
+    const action = { action:'reformat', artifactSlotId:'route-guide', reason:'format only' };
+    mock.set(wailsMethod(method), async () => ({
+      ...OK.previewWorkPatch,
+      preview: { ...(OK.previewWorkPatch.preview as Record<string, unknown>), actions:[action] },
+    }));
+    const withAction = await fn(inputFor(method));
+    checkEq((withAction as any).preview?.actions?.[0]?.action, 'reformat', 'preview semantic action survives normalization');
     mock.set(wailsMethod(method), async () => OK.previewWorkPatch);
   }
 

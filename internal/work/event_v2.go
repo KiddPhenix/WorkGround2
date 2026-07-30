@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -645,24 +646,25 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 
 	case EventPatchPreviewed:
 		var p struct {
-			PatchID                 string     `json:"patchId"`
-			WorkID                  string     `json:"workId"`
-			RunID                   string     `json:"runId"`
-			TaskID                  string     `json:"taskId"`
-			BlockID                 string     `json:"blockId"`
-			SessionID               string     `json:"sessionId"`
-			Scope                   string     `json:"scope"`
-			BaseDefinitionRev       wireInt64  `json:"baseDefinitionRev"`
-			BaseBlockRev            wireInt64  `json:"baseBlockRev"`
-			Operations              []PatchOp  `json:"operations"`
-			AffectedNodeIDs         []string   `json:"affectedNodeIds"`
-			AffectedBlockIDs        []string   `json:"affectedBlockIds"`
-			AffectedArtifactSlotIDs []string   `json:"affectedArtifactSlotIds"`
-			StaleArtifactSlotIDs    []string   `json:"staleArtifactSlotIds"`
-			InvalidatedTasks        []string   `json:"invalidatedTasks"`
-			RequiresRerun           bool       `json:"requiresRerun"`
-			Digest                  string     `json:"digest"`
-			ExpiresAt               *time.Time `json:"expiresAt"`
+			PatchID                 string        `json:"patchId"`
+			WorkID                  string        `json:"workId"`
+			RunID                   string        `json:"runId"`
+			TaskID                  string        `json:"taskId"`
+			BlockID                 string        `json:"blockId"`
+			SessionID               string        `json:"sessionId"`
+			Scope                   string        `json:"scope"`
+			BaseDefinitionRev       wireInt64     `json:"baseDefinitionRev"`
+			BaseBlockRev            wireInt64     `json:"baseBlockRev"`
+			Operations              []PatchOp     `json:"operations"`
+			Actions                 []PatchAction `json:"actions"`
+			AffectedNodeIDs         []string      `json:"affectedNodeIds"`
+			AffectedBlockIDs        []string      `json:"affectedBlockIds"`
+			AffectedArtifactSlotIDs []string      `json:"affectedArtifactSlotIds"`
+			StaleArtifactSlotIDs    []string      `json:"staleArtifactSlotIds"`
+			InvalidatedTasks        []string      `json:"invalidatedTasks"`
+			RequiresRerun           bool          `json:"requiresRerun"`
+			Digest                  string        `json:"digest"`
+			ExpiresAt               *time.Time    `json:"expiresAt"`
 		}
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("work: %s payload: %w", typ, err)
@@ -693,6 +695,22 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 			}
 			if p.Scope == string(PatchWorkflow) && path.Kind == PathBlocks {
 				return fmt.Errorf("work: %s workflow scope operation[%d] targets runtime block", typ, i)
+			}
+		}
+		for i, action := range p.Actions {
+			switch action.Action {
+			case PatchActionReuse, PatchActionRerun:
+				if strings.TrimSpace(action.NodeID) == "" || strings.TrimSpace(action.ArtifactSlotID) != "" {
+					return fmt.Errorf("work: %s action[%d] %q requires only nodeId", typ, i, action.Action)
+				}
+			case PatchActionReformat:
+				if strings.TrimSpace(action.ArtifactSlotID) == "" || strings.TrimSpace(action.NodeID) != "" {
+					return fmt.Errorf("work: %s action[%d] reformat requires only artifactSlotId", typ, i)
+				}
+			case PatchActionAskUser:
+				return fmt.Errorf("work: %s cannot persist unresolved ask_user action", typ)
+			default:
+				return fmt.Errorf("work: %s action[%d] has invalid action %q", typ, i, action.Action)
 			}
 		}
 		for i, v := range p.AffectedNodeIDs {
@@ -1007,6 +1025,7 @@ type PatchPreviewedPayload struct {
 	BaseDefinitionRev       int64               `json:"baseDefinitionRev,omitempty"`
 	BaseBlockRev            int64               `json:"baseBlockRev,omitempty"`
 	Operations              []PatchOp           `json:"operations,omitempty"`
+	Actions                 []PatchAction       `json:"actions,omitempty"`
 	AffectedNodeIDs         []string            `json:"affectedNodeIds"`
 	AffectedBlockIDs        []string            `json:"affectedBlockIds"`
 	AffectedArtifactSlotIDs []string            `json:"affectedArtifactSlotIds"`
