@@ -13,6 +13,7 @@ import type {
   WorkPresentation,
   WorkPresentationPhase,
 } from '../../presentation';
+import type { InputSpec } from '../../types_v2';
 
 interface PhaseMeta {
   eyebrow: string;
@@ -61,6 +62,7 @@ const PHASE_META: Record<WorkPresentationPhase, PhaseMeta> = {
 
 export interface WorkStatePanelProps {
   presentation: WorkPresentation;
+  pendingInputSpecs?: readonly InputSpec[];
   onFocusTask: (taskId: string) => void;
 }
 
@@ -160,6 +162,7 @@ function CompletedSummary({ presentation }: { presentation: WorkPresentation }) 
 
 export function WorkStatePanel({
   presentation,
+  pendingInputSpecs = [],
   onFocusTask,
 }: WorkStatePanelProps) {
   const titleId = useId();
@@ -171,6 +174,10 @@ export function WorkStatePanel({
       ? undefined
       : presentation.primaryTask;
   const hasTask = Boolean(attentionTask || primaryTask);
+  const showInputContext = presentation.phase === 'waiting'
+    && attentionTask?.state === 'waiting_input'
+    && pendingInputSpecs.length > 0
+    && !primaryTask;
 
   return (
     <section
@@ -208,6 +215,22 @@ export function WorkStatePanel({
             kind="primary"
             onFocusTask={onFocusTask}
           />
+        ) : null}
+        {showInputContext ? (
+          <article
+            className="work-state-panel__task work-state-panel__task--context"
+            data-testid="work-state-panel-input-context"
+          >
+            <div className="work-state-panel__task-copy">
+              <span className="work-state-panel__task-label">等待信息</span>
+              <strong className="work-state-panel__task-title">
+                {pendingInputSpecs.length} 项信息待填写
+              </strong>
+              <span className="work-state-panel__task-progress">
+                {pendingInputSpecs.slice(0, 2).map((spec) => spec.label).join(' · ')}
+              </span>
+            </div>
+          </article>
         ) : null}
         {!hasTask && presentation.phase !== 'completed' ? (
           <p

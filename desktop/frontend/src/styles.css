@@ -37109,6 +37109,10 @@ body > .mermaid-diagram--fullscreen {
   background: color-mix(in srgb, var(--work-state-accent) 6%, transparent);
 }
 
+.work-state-panel__task--context {
+  background: color-mix(in srgb, var(--bg-soft) 64%, transparent);
+}
+
 .work-state-panel__task-copy {
   display: flex;
   min-width: 0;
@@ -37213,6 +37217,182 @@ body > .mermaid-diagram--fullscreen {
 
 .wg2-work-presentation__canvas {
   min-width: 0;
+}
+
+.work-definition-overview {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 10px;
+}
+
+.work-definition-overview[data-has-inputs="false"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.work-definition-overview__panel {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev) 82%, var(--bg-soft));
+}
+
+.work-definition-overview__header {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.work-definition-overview__title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 620;
+}
+
+.work-definition-overview__title svg {
+  color: var(--accent);
+}
+
+.work-definition-overview__count {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+}
+
+.work-definition-overview__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.work-definition-overview__field {
+  display: grid;
+  min-width: 0;
+  min-height: 50px;
+  grid-template-columns: minmax(0, 1fr) minmax(72px, auto) 16px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.work-definition-overview__field:nth-child(odd) {
+  border-right: 1px solid var(--border-soft);
+}
+
+.work-definition-overview__field:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.work-definition-overview__field > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-definition-overview__field strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-medium);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-definition-overview__field > svg {
+  color: var(--fg-faint);
+}
+
+.work-definition-overview__field[data-state="complete"] > svg {
+  color: var(--ok);
+}
+
+.work-definition-overview__nodes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.work-definition-overview__nodes > li {
+  display: grid;
+  min-height: 58px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+}
+
+.work-definition-overview__nodes > li + li {
+  border-top: 1px solid var(--border-soft);
+}
+
+.work-definition-overview__node-index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+}
+
+.work-definition-overview__node-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.work-definition-overview__node-copy strong {
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 620;
+}
+
+.work-definition-overview__node-copy > span {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-definition-overview__node-state {
+  color: var(--fg-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.work-definition-overview__nodes > li[data-state="running"] .work-definition-overview__node-index,
+.work-definition-overview__nodes > li[data-state="ready"] .work-definition-overview__node-index {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  color: var(--accent);
+}
+
+.work-definition-overview__nodes > li[data-state="waiting_input"] .work-definition-overview__node-index,
+.work-definition-overview__nodes > li[data-state="waiting_approval"] .work-definition-overview__node-index {
+  border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+  color: var(--warn);
+}
+
+.work-definition-overview__nodes > li[data-state="completed"] .work-definition-overview__node-index {
+  border-color: color-mix(in srgb, var(--ok) 54%, var(--border));
+  color: var(--ok);
 }
 
 .wg2-work-card-front--presentation .wg2-work-block-canvas {
@@ -37438,6 +37618,26 @@ body > .mermaid-diagram--fullscreen {
   .wg2-work-execution__details,
   .wg2-work-execution-summary__action svg {
     transition: none;
+  }
+}
+
+@media (max-width: 880px) {
+  .work-definition-overview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .work-definition-overview__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .work-definition-overview__field:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .work-definition-overview__field:nth-last-child(2) {
+    border-bottom: 1px solid var(--border-soft);
   }
 }
 

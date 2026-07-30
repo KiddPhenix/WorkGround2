@@ -62,3 +62,34 @@
 - 设计取舍：等待态的详细问题和选项继续由既有类型化输入面板承载，状态面板只提供摘要与入口，避免在视觉层复制业务表单。
 
 final result: passed
+
+## 真实首次输入态补充验收（2026-07-30）
+
+原 waiting 验收数据属于“AI 已生成中间结果，等待用户审批”。生产反馈截图属于更早的“首次等待输入”，两者同为 waiting，但内容阶段不同。旧报告把前者的通过结论扩展到了全部 waiting，范围不准确。
+
+本轮用生产 Definition 3 的真实形态复验：
+
+- 2 个 reserved 成果槽；
+- 1 个 `waiting_input` 任务；
+- 6 个 requested 输入；
+- 1 个 revision 1、内容仅等于节点描述的自动 Markdown Block。
+
+修正后的通用规则：
+
+1. 成果架、状态、Block 工作区、执行摘要、目标保持同一稳定骨架。
+2. 等待输入时，第三段状态展示待填数量和代表性问题，避免单任务把状态区留空。
+3. 自动节点摘要只有在 `revision=1` 且内容仍等于 Definition 节点描述时隐藏；用户修改或 AI 产出的真实 Block 不隐藏。
+4. 没有真实业务 Block 时，从 Definition/Input 投影“工作信息”和“工作结构”Block；只消费通用 DTO，不枚举工作类型。
+5. 不伪造候选方案、预算、财务数据或代码结果。真实 Block 到达后自然替换结构概览。
+
+证据：
+
+- 实现：`docs/assets/work-general-model/qa/implementation-real-input-waiting-pass1.png`
+- 同输入对照：`docs/assets/work-general-model/qa/compare-real-input-waiting-pass1.png`
+- 视口：`1536 × 1024`，DPR `1`
+- 执行摘要交互：`false → true → false`
+- 浏览器控制台 error：`0`
+
+本补充验收无可执行 P0/P1/P2。
+
+final result: passed

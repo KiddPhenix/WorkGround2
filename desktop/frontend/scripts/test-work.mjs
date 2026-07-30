@@ -11,6 +11,7 @@ const tests = [
   'src/__tests__/work-controller-mutation.test.ts',
   'src/work/presentation.test.ts',
   'src/work/components/presentation/WorkStatePanel.test.tsx',
+  'src/work/components/presentation/WorkDefinitionOverview.test.tsx',
   'src/work/store.test.ts',
   'src/work/components/v2/ResultShelf.test.tsx',
   'src/work/components/v2/ExecutionList.test.tsx',

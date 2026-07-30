@@ -19,6 +19,7 @@ import type {
   ArtifactSlot,
   TaskV2View,
   WorkDefinitionRevision,
+  WorkInput,
   SubmitWorkInputRequest,
   SetInputCornerstoneRequest,
   SubmitInputResult,
@@ -31,7 +32,8 @@ import type {
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
-import { WorkStatePanel } from '../../work/components/presentation';
+import { WorkDefinitionOverview, WorkStatePanel } from '../../work/components/presentation';
+import { v2DiscussionBlockId } from '../../work/components/v2/discussionBlock';
 import {
   deriveWorkPresentation,
   type WorkPresentation,
@@ -70,6 +72,8 @@ export interface WorkCardFrontProps {
   v2Definition?: WorkDefinitionRevision;
   /** Current V2 task projections used to reconcile artifact presentation. */
   v2Tasks?: TaskV2View[];
+  /** Current typed inputs used by the generic definition overview. */
+  v2Inputs?: WorkInput[];
   onV2TaskRetry?: (intent: V2TaskRetryIntent) => void | Promise<void>;
   onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
   onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
@@ -226,6 +230,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   artifactSlots,
   v2Definition,
   v2Tasks,
+  v2Inputs,
   onV2TaskRetry,
   onArtifactOpen,
   onArtifactDownload,
@@ -265,6 +270,27 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       { activeRunId: runId },
     );
   }, [artifactSlots, runId, v2Definition, v2Tasks]);
+  const automaticNodeSummaries = useMemo(() => {
+    if (!v2Definition) return new Map<string, string>();
+    return new Map(v2Definition.nodes.map((node) => [
+      v2DiscussionBlockId(node.id),
+      (node.description ?? node.title).trim(),
+    ]));
+  }, [v2Definition]);
+  const isAutomaticNodeSummary = useCallback((block: Work['blocks'][number]) => {
+    const expected = automaticNodeSummaries.get(block.id);
+    if (!expected || block.kind !== 'markdown' || block.revision !== 1) return false;
+    const data = block.data as { content?: unknown } | undefined;
+    return typeof data?.content === 'string' && data.content.trim() === expected;
+  }, [automaticNodeSummaries]);
+  const presentationBlocks = useMemo(
+    () => work.blocks.filter((block) => !block.tombstone && !isAutomaticNodeSummary(block)),
+    [isAutomaticNodeSummary, work.blocks],
+  );
+  const pendingInputSpecs = useMemo(() => {
+    const pending = new Set(presentation?.attentionTask?.waitingInputIds ?? []);
+    return v2Definition?.inputSpecs.filter((spec) => pending.has(spec.id)) ?? [];
+  }, [presentation?.attentionTask?.waitingInputIds, v2Definition]);
   const expandedTaskId = Object.entries(expanded)
     .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
     ?.[0].slice('v2-task:'.length);
@@ -387,20 +413,23 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       aria-label="工作内容"
     >
       {(presentation?.layoutMode === 'balanced'
-        ? work.blocks
-          .filter((block) => !block.tombstone)
+        ? presentationBlocks
           .map((block, index) => ({
             block,
             index,
             placement: placementByBlock.get(block.id),
           }))
-        : BLOCK_SLOTS.flatMap((slot) => blocksBySlot.get(slot) ?? [])
+        : BLOCK_SLOTS.flatMap((slot) =>
+          (blocksBySlot.get(slot) ?? []).filter(({ block }) => !isAutomaticNodeSummary(block)))
       ).map(renderBlock)}
-      {visibleBlockCount === 0 && (
-        <div className="wg2-work-front-empty" data-testid="work-front-empty">
-          <p>暂无工作流内容。在背面编辑提示词后运行即可生成。</p>
-        </div>
-      )}
+      {presentationBlocks.length === 0 && v2Definition ? (
+        <WorkDefinitionOverview
+          definition={v2Definition}
+          inputs={v2Inputs ?? []}
+          runId={presentation?.runId}
+          tasks={presentation?.tasks ?? []}
+        />
+      ) : null}
     </div>
   );
 
@@ -461,6 +490,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
 
           <WorkStatePanel
             presentation={presentation}
+            pendingInputSpecs={pendingInputSpecs}
             onFocusTask={focusPresentationTask}
           />
 

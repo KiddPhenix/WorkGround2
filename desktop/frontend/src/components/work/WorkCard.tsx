@@ -12,7 +12,7 @@ import React, {
 import { useI18n } from '../../lib/i18n';
 import { WorkControllerAdapter, type WorkControllerPort, type WorkControllerStatus } from '../../work/controller';
 import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
-import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectV2Tasks, selectArtifactSlots, type FaceScrollState, type WorkFace } from '../../work/store';
+import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectV2Tasks, selectV2Inputs, selectArtifactSlots, type FaceScrollState, type WorkFace } from '../../work/store';
 import type {
   BlockUpdateRequest,
   DeepLinkTarget,
@@ -234,6 +234,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const v2Definition = useWorkStore((state) => selectV2Definition(state.v2Definitions, workID));
   const v2ActiveDefinition = useWorkStore((state) => selectV2ActiveDefinition(state.v2ActiveDefinitions, state.v2Definitions, workID));
   const v2Tasks = useWorkStore((state) => selectV2Tasks(state.v2Tasks, workID));
+  const v2Inputs = useWorkStore((state) => selectV2Inputs(state.v2Inputs, workID));
   const cardState = useWorkUIStore((state) => state.cardByWork[workID]);
   const selection = useWorkUIStore((state) => state.selectionByWork[workID]);
   const retryByTarget = useWorkUIStore((state) => state.retryByTarget);
@@ -808,6 +809,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               artifactSlots={artifactSlots}
               v2Definition={v2ActiveDefinition}
               v2Tasks={v2Tasks}
+              v2Inputs={v2Inputs}
               onV2TaskRetry={handleV2TaskRetry}
               onArtifactOpen={onArtifactOpen}
               onArtifactDownload={onArtifactDownload}

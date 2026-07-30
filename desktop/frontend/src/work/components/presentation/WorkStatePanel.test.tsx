@@ -209,6 +209,53 @@ async function runTests(): Promise<void> {
 
   {
     const task = makeTask({
+      id: 'task-input',
+      title: '设计方案',
+      state: 'waiting_input',
+      waitingInputIds: ['team_size', 'budget'],
+    });
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(
+        <WorkStatePanel
+          presentation={makePresentation('waiting', {
+            tasks: [task],
+            attentionTask: task,
+            primaryTask: task,
+          })}
+          pendingInputSpecs={[
+            {
+              id: 'team_size',
+              label: '参与人数是多少？',
+              kind: 'number',
+              required: true,
+              pinEligible: false,
+            },
+            {
+              id: 'budget',
+              label: '总预算是多少？',
+              kind: 'number',
+              required: true,
+              pinEligible: false,
+            },
+          ]}
+          onFocusTask={() => undefined}
+        />,
+      );
+    });
+    ok(
+      host.querySelector('[data-testid="work-state-panel-input-context"]') !== null,
+      'waiting input: fills the third status column with pending information',
+    );
+    ok(host.textContent?.includes('2 项信息待填写') === true, 'waiting input: exposes pending count');
+    await act(async () => root.unmount());
+    host.remove();
+  }
+
+  {
+    const task = makeTask({
       id: 'definition:work-1:1:node-planned',
       state: 'pending',
       source: 'definition',

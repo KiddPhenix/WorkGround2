@@ -47,13 +47,36 @@ final result: passed
 
 # Work 通用工作面板 Design QA（2026-07-30）
 
-- source visual truth：`docs/assets/work-general-model/` 下团建、财务报表、软件工程的 running / waiting / completed 九张新生成图；未使用旧界面截图。
-- implementation：`docs/assets/work-general-model/qa/implementation-*-approved.png`
-- comparison：`docs/assets/work-general-model/qa/compare-*-approved.png` 与 `compare-*-top-approved.png`
-- viewport：桌面 `1536 × 1024`；响应式 `720 × 900`
-- states：running、waiting、completed；组件同时覆盖 planning 与 failed
-- interactions：等待态“处理”可展开现有类型化输入/执行区；执行摘要可展开/收起；成果动作沿用真实处理器。
-- findings：最终无 P0/P1/P2；720px 无页面级横向溢出。字体与间距较概念图略紧凑，作为遵循现有桌面设计系统的 P3 接受。
+- source visual truth：`docs/assets/work-general-model/team-building-waiting.png`；同目录其余团建、财务报表、软件工程状态图用于验证通用布局语法。
+- production feedback source：`D:\Temp\codex-clipboard-88238c3a-da6f-44c6-94a4-28c3ada9c131.png`。
+- implementation screenshot：`docs/assets/work-general-model/qa/implementation-real-input-waiting-pass1.png`。
+- combined comparison：`docs/assets/work-general-model/qa/compare-real-input-waiting-pass1.png`。
+- viewport：CSS `1536 × 1024`，capture `1536 × 1024`，device scale factor `1`。
+- state：真实 Definition 3 形态；两个 reserved 成果槽、一个 `waiting_input` 任务、六个 requested 输入、一个自动生成且仅重复节点描述的 Markdown Block。
+
+## Findings
+
+最终无可执行 P0/P1/P2。
+
+- 字体：沿用产品现有 UI 字体、字重和字号层级；标题、状态、字段和值均在原始截图中可读。
+- 布局：恢复“成果架 → 三段状态 → Block 工作区 → 折叠执行摘要 → 目标脚注”的稳定骨架；首次输入态在 `339–533px` 区域形成 `1496 × 193px` 的结构化工作区，不再留下重复目标 Block 和大片无意义空白。
+- 颜色：沿用现有暗色 surface、青色结构语义与琥珀色等待语义；没有引入领域专属配色。
+- 图像与资产：界面不含图片资产；图标全部来自既有 Lucide 库。
+- 文案：设计参考是“处理完成后等待审批”，真实数据是“首次等待输入”。两者的业务文案和 Block 内容必须不同；相同的是布局骨架、密度和动作层级。
+- 通用性：新增工作区只消费 Definition 的 `inputSpecs`、`nodes`，以及当前 Run 的 `inputs`、`tasks`；没有团建、财务或软件工程枚举。
+
+## Comparison history
+
+- 旧 QA：只用富内容夹具验证“处理后等待审批”，没有覆盖真实 `waiting_input` 的单任务、空输入、自动摘要 Block 组合。生产截图证明该 QA 结论范围过宽。
+- Pass 1 findings：状态卡只有两段且右侧空洞；节点描述被当成正文 Block 重复展示；执行区一旦展开便压过工作内容（P1/P2）。
+- Fix：等待输入补成三段状态；精确识别 revision 1 且内容等于节点描述的自动摘要 Block；无真实业务 Block 时，以 Definition/Input 投影生成“工作信息 + 工作结构”通用 Block；执行详情继续默认折叠。
+- Post-fix evidence：同一真实数据形态在 `1536 × 1024` 浏览器渲染；执行摘要 `false → true → false` 可逆；控制台 error `0`。
+
+## Residual scope
+
+- 概念图中的候选方案、预算占用和筛选条件只会在 AI 真正生成对应 Block 数据后出现。首次输入态不会伪造这些业务结果。
+- 响应式规则延续既有 `880px / 640px` 断点；本轮主要回归为用户反馈的桌面形态。
+
 - detail：`docs/WORK_GENERAL_MODEL_DESIGN_QA.zh-CN.md`
 
 final result: passed
