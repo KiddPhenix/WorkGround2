@@ -1667,3 +1667,261 @@ func TestValidateTaskInputRejectsInvalidPreflights(t *testing.T) {
 		})
 	}
 }
+
+// ── Capability preflight tests ───────────────────────────────────────────
+
+// taskExecutorWithRequestHelp builds a TaskExecutorAdapter whose Controller
+// registry includes the given fake request_help tool.
+func taskExecutorWithRequestHelp(t *testing.T, prov provider.Provider, modelRef string, fakeTool *fakeRequestHelpTool, nativeCaps []string) *TaskExecutorAdapter {
+	t.Helper()
+	dir := t.TempDir()
+	factory := func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+		path := agent.NewSessionPath(dir, "work-task")
+		reg := tool.NewRegistry()
+		reg.Add(fakeTool)
+		session := agent.NewSession("stable system prompt")
+		executor := agent.New(prov, reg, session, agent.Options{}, event.Discard)
+		ctrl := New(Options{
+			Runner:       executor,
+			Executor:     executor,
+			Registry:     reg,
+			ModelRef:     modelRef,
+			SessionDir:   dir,
+			SessionPath:  path,
+			SystemPrompt: "stable system prompt",
+		})
+		return ctrl, func() {}, nil
+	}
+	return NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: modelRef, NativeCapabilities: nativeCaps},
+		factory,
+	)
+}
+
+func TestCapabilityPreflightWebSearchSuccess(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	fakeTool := &fakeRequestHelpTool{}
+	exec := taskExecutorWithRequestHelp(t, prov, "fake/model", fakeTool, nil)
+
+	input := taskInput()
+	input.RequiredCapabilities = []string{"web_search"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("state = %s, want RunCompleted", attempt.State)
+	}
+
+	// Preflight was called once with web_search.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 1 || fakeTool.calls[0].Capability != "web_search" {
+		t.Fatalf("request_help calls = %+v, want 1 web_search call", fakeTool.calls)
+	}
+	fakeTool.mu.Unlock()
+
+	// web_search appears in SuccessfulCapabilities.
+	var found bool
+	for _, c := range attempt.SuccessfulCapabilities {
+		if c == "web_search" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("SuccessfulCapabilities = %v, want web_search", attempt.SuccessfulCapabilities)
+	}
+}
+
+func TestCapabilityPreflightWebSearchFailure(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	fakeTool := &fakeRequestHelpTool{err: errors.New("no usable web_search provider")}
+	exec := taskExecutorWithRequestHelp(t, prov, "fake/model", fakeTool, nil)
+
+	input := taskInput()
+	input.RequiredCapabilities = []string{"web_search"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask should not fail on preflight error: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("state = %s, want RunCompleted (preflight failure is non-blocking)", attempt.State)
+	}
+
+	// Preflight was called once.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 1 {
+		t.Fatalf("request_help calls = %d, want 1", len(fakeTool.calls))
+	}
+	fakeTool.mu.Unlock()
+
+	// web_search must NOT appear in SuccessfulCapabilities after failure.
+	for _, c := range attempt.SuccessfulCapabilities {
+		if c == "web_search" {
+			t.Fatalf("SuccessfulCapabilities should not include web_search after preflight failure")
+		}
+	}
+}
+
+func TestCapabilityPreflightNativeSkip(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	fakeTool := &fakeRequestHelpTool{}
+	// Model has native web_search capability.
+	exec := taskExecutorWithRequestHelp(t, prov, "fake/model", fakeTool, []string{"web_search"})
+
+	input := taskInput()
+	input.RequiredCapabilities = []string{"web_search"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("state = %s", attempt.State)
+	}
+
+	// No preflight should have been triggered.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 0 {
+		t.Fatalf("request_help was called %d times despite native web_search", len(fakeTool.calls))
+	}
+	fakeTool.mu.Unlock()
+}
+
+func TestCapabilityPreflightUnsupportedSkip(t *testing.T) {
+	for _, capability := range []string{"image_generation", "future_capability"} {
+		t.Run(capability, func(t *testing.T) {
+			prov := &taskProvider{name: "fake-provider", text: "result"}
+			fakeTool := &fakeRequestHelpTool{}
+			exec := taskExecutorWithRequestHelp(t, prov, "fake/model", fakeTool, nil)
+
+			input := taskInput()
+			input.RequiredCapabilities = []string{capability}
+
+			attempt, err := exec.ExecuteTask(context.Background(), input)
+			if err != nil {
+				t.Fatalf("ExecuteTask: %v", err)
+			}
+			if attempt.State != work.RunCompleted {
+				t.Fatalf("state = %s", attempt.State)
+			}
+
+			fakeTool.mu.Lock()
+			defer fakeTool.mu.Unlock()
+			if len(fakeTool.calls) != 0 {
+				t.Fatalf("request_help was called %d times for unsupported capability %q", len(fakeTool.calls), capability)
+			}
+		})
+	}
+}
+
+// fakeWebSearchTool is a minimal stub that the model could call directly.
+type fakeWebSearchTool struct{}
+
+func (t *fakeWebSearchTool) Name() string        { return "web_search" }
+func (t *fakeWebSearchTool) Description() string { return "fake web_search" }
+func (t *fakeWebSearchTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}`)
+}
+func (t *fakeWebSearchTool) ReadOnly() bool { return true }
+func (t *fakeWebSearchTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	return "search result: https://example.com", nil
+}
+
+// taskExecutorWithWebSearch builds a TaskExecutorAdapter whose Controller
+// registry includes both a fake request_help and a fake web_search tool.
+func taskExecutorWithWebSearch(t *testing.T, prov provider.Provider, modelRef string, fakeTool *fakeRequestHelpTool) *TaskExecutorAdapter {
+	t.Helper()
+	dir := t.TempDir()
+	factory := func(ctx context.Context, input work.TaskExecuteInput) (*Controller, func(), error) {
+		path := agent.NewSessionPath(dir, "work-task")
+		reg := tool.NewRegistry()
+		reg.Add(fakeTool)
+		reg.Add(&fakeWebSearchTool{})
+		session := agent.NewSession("stable system prompt")
+		executor := agent.New(prov, reg, session, agent.Options{}, event.Discard)
+		ctrl := New(Options{
+			Runner:       executor,
+			Executor:     executor,
+			Registry:     reg,
+			ModelRef:     modelRef,
+			SessionDir:   dir,
+			SessionPath:  path,
+			SystemPrompt: "stable system prompt",
+		})
+		return ctrl, func() {}, nil
+	}
+	return NewTaskExecutorAdapter(
+		TaskExecutorProfile{Provider: prov.Name(), Model: modelRef},
+		factory,
+	)
+}
+
+func TestCapabilityPreflightDirectToolSkip(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	fakeTool := &fakeRequestHelpTool{}
+	exec := taskExecutorWithWebSearch(t, prov, "fake/model", fakeTool)
+
+	input := taskInput()
+	input.RequiredCapabilities = []string{"web_search"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("state = %s", attempt.State)
+	}
+
+	// No preflight because a direct web_search tool exists.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 0 {
+		t.Fatalf("request_help was called %d times despite direct web_search tool", len(fakeTool.calls))
+	}
+	fakeTool.mu.Unlock()
+}
+
+func TestCapabilityPreflightDedup(t *testing.T) {
+	prov := &taskProvider{name: "fake-provider", text: "result"}
+	fakeTool := &fakeRequestHelpTool{}
+	exec := taskExecutorWithRequestHelp(t, prov, "fake/model", fakeTool, nil)
+
+	input := taskInput()
+	// Duplicate RequiredCapabilities.
+	input.RequiredCapabilities = []string{"web_search", "web_search", "web_search"}
+
+	attempt, err := exec.ExecuteTask(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ExecuteTask: %v", err)
+	}
+	if attempt.State != work.RunCompleted {
+		t.Fatalf("state = %s", attempt.State)
+	}
+
+	// Only one preflight despite three duplicates.
+	fakeTool.mu.Lock()
+	if len(fakeTool.calls) != 1 {
+		t.Fatalf("request_help calls = %d, want 1 (duplicates deduped)", len(fakeTool.calls))
+	}
+	fakeTool.mu.Unlock()
+}
+
+func TestWebFetchNotWebSearchEvidence(t *testing.T) {
+	// A model that calls web_fetch and outputs a URL must NOT be counted as
+	// having web_search capability.
+	messages := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "fetch-1", Name: "web_fetch", Arguments: `{"url":"https://example.com"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "fetch-1", Name: "web_fetch", Content: "page content"},
+		{Role: provider.RoleAssistant, Content: "I fetched https://example.com and found the answer."},
+	}
+	caps := taskSuccessfulCapabilities(messages, nil)
+	for _, c := range caps {
+		if c == "web_search" {
+			t.Fatalf("web_fetch + URL should not produce web_search capability; got %v", caps)
+		}
+	}
+}
