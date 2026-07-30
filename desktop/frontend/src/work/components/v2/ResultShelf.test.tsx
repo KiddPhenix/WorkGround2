@@ -6,7 +6,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-import type { ArtifactPreview, ArtifactSlot, WorkDefinitionRevision } from '../../types_v2';
+import type { ArtifactPreview, ArtifactSlot, TaskV2View, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard, ResultShelf } from './index';
 import type { FileLocateIntent, FileOpenIntent } from './ResultCard';
 
@@ -117,6 +117,19 @@ function makeDefinition(): WorkDefinitionRevision {
   };
 }
 
+function makeTask(overrides: Partial<TaskV2View> = {}): TaskV2View {
+  return {
+    id: 'task-make',
+    runId: 'run-current',
+    nodeId: 'make',
+    title: '生成报告',
+    state: 'running',
+    retryable: false,
+    updatedAt: '2026-07-30T00:00:00Z',
+    ...overrides,
+  };
+}
+
 function makeRef(overrides: Record<string, unknown> = {}): ArtifactSlot['artifactRefs'][number] {
   return {
     id: 'ref-1',
@@ -168,6 +181,52 @@ try {
 // ── tests ──────────────────────────────────────────────────────────────────
 
 async function runTests(): Promise<void> {
+  // A producer failure can arrive before artifact settlement. The shelf derives
+  // the truthful state from the current Run, then returns to generating when
+  // the same producer starts its retry.
+  {
+    const slot = makeSlot({ state: 'generating', progress: 0.72 });
+    const definition = makeDefinition();
+    const { host, root, cleanup } = await mount(
+      <ResultShelf
+        slots={[slot]}
+        activeDefinitionRevision={2}
+        definition={definition}
+        tasks={[makeTask({
+          state: 'failed_retryable',
+          retryable: true,
+          error: 'completion gate: missing web_search evidence',
+        })]}
+        runId="run-current"
+        onRetry={async () => {}}
+      />,
+    );
+    const failedCard = host.querySelector('[data-testid="result-card-slot-1"]');
+    eq(failedCard?.getAttribute('data-slot-state'), 'failed', 'producer failure: generating artifact becomes failed');
+    contains(host.querySelector('[data-testid="result-card-error-slot-1"]')?.textContent ?? '', 'completion gate', 'producer failure: task error is visible');
+    ok(host.querySelector('[data-testid="result-card-retry-slot-1"]') !== null, 'producer failure: retryable artifact exposes retry');
+    ok(host.querySelector('[role="progressbar"]') === null, 'producer failure: stale generation progress is hidden');
+
+    await act(async () => {
+      root.render(
+        <ResultShelf
+          slots={[slot]}
+          activeDefinitionRevision={2}
+          definition={definition}
+          tasks={[
+            makeTask({ runId: 'run-old', state: 'failed_retryable', retryable: true }),
+            makeTask({ state: 'running' }),
+          ]}
+          runId="run-current"
+        />,
+      );
+    });
+    await settle();
+    eq(host.querySelector('[data-testid="result-card-slot-1"]')?.getAttribute('data-slot-state'), 'generating', 'producer retry: current Run restores generating state');
+    ok(host.querySelector('[data-testid="result-card-error-slot-1"]') === null, 'producer retry: historical Run failure is ignored');
+    await cleanup();
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // 1. reserved — no refs, visible placeholder
   // ════════════════════════════════════════════════════════════════════════

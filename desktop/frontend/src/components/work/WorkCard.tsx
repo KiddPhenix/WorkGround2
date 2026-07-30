@@ -807,6 +807,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               archived={archived}
               artifactSlots={artifactSlots}
               v2Definition={v2ActiveDefinition}
+              v2Tasks={v2Tasks}
               onV2TaskRetry={handleV2TaskRetry}
               onArtifactOpen={onArtifactOpen}
               onArtifactDownload={onArtifactDownload}
