@@ -285,6 +285,81 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		}
 	}
 
+	// Execute capability preflights for RequiredCapabilities that the model
+	// lacks natively and for which no direct tool is available. Each preflight
+	// calls request_help through the standard tool path so the result (success
+	// or failure) is visible in session history. Failures are non-blocking:
+	// the main model sees the error and can attempt direct search or report
+	// the failure.
+	if len(input.RequiredCapabilities) > 0 {
+		directToolNames := directToolNamesFromController(ctrl)
+		var capTerminal []string
+		seen := make(map[string]bool, len(input.RequiredCapabilities))
+		for _, cap := range input.RequiredCapabilities {
+			cap = strings.ToLower(strings.TrimSpace(cap))
+			if cap == "" || seen[cap] {
+				continue
+			}
+			seen[cap] = true
+
+			// Only web_search uses this generic preflight. image_generation is
+			// handled per output by SlotPreflights; future capabilities must opt
+			// in explicitly instead of being sent to request_help by accident.
+			if cap != "web_search" {
+				continue
+			}
+
+			// Model has native support — no preflight needed.
+			if hasNativeCapability(a.profile.NativeCapabilities, cap) {
+				continue
+			}
+
+			// A direct tool is available (e.g. web_search or mcp__*__web_search)
+			// that the model can call itself.
+			if hasDirectCapabilityTool(directToolNames, cap) {
+				continue
+			}
+
+			if err := taskCtx.Err(); err != nil {
+				return cancelledAttempt(input, startedAt), a.taskError(input, "preflight", false, err)
+			}
+
+			callID := capabilityPreflightCallID(input, cap)
+			preflightPrompt := buildCapabilityPreflightPrompt(cap, input.Prompt)
+			args, err := buildRequestHelpArgs(cap, preflightPrompt)
+			if err != nil {
+				slog.Warn("work: capability preflight args build failed",
+					"work_id", input.WorkID,
+					"task_id", input.TaskID,
+					"capability", cap,
+					"error", err,
+				)
+				continue
+			}
+			_, execErr := ctrl.executeToolCall(taskCtx, callID, preflightPrompt, "request_help", args)
+			if execErr != nil {
+				capTerminal = append(capTerminal, fmt.Sprintf(
+					"- capability %q preflight failed above; the model should attempt direct search or report the failure. Do not retry the same preflight unless its tool result explicitly asks for a retry.",
+					cap,
+				))
+				slog.Warn("work: capability preflight failed",
+					"work_id", input.WorkID,
+					"task_id", input.TaskID,
+					"capability", cap,
+					"error", execErr,
+				)
+				continue
+			}
+			capTerminal = append(capTerminal, fmt.Sprintf(
+				"- capability %q preflight succeeded above; consume that tool result and do not generate a replacement or call the same capability again.",
+				cap,
+			))
+		}
+		if len(capTerminal) > 0 {
+			runPrompt += "\n\nHost capability preflight terminal states (required capabilities):\n" + strings.Join(capTerminal, "\n")
+		}
+	}
+
 	runErr := ctrl.RunTurn(taskCtx, runPrompt)
 	if runErr == nil && len(input.AcceptanceCriteria) > 0 {
 		runErr = ctrl.RunTurn(taskCtx, taskQualityReviewPrompt(input.AcceptanceCriteria))
@@ -910,6 +985,62 @@ func buildRequestHelpArgs(capability, prompt string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("marshal request_help args: %w", err)
 	}
 	return json.RawMessage(data), nil
+}
+
+// hasNativeCapability reports whether cap is among the model's native
+// capabilities (case-insensitive).
+func hasNativeCapability(native []string, cap string) bool {
+	cap = strings.ToLower(strings.TrimSpace(cap))
+	for _, n := range native {
+		if strings.ToLower(strings.TrimSpace(n)) == cap {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDirectCapabilityTool reports whether any tool named `cap` or
+// `mcp__*__cap` is among the provided tool names, making a preflight
+// unnecessary because the model can call it directly.
+func hasDirectCapabilityTool(toolNames []string, cap string) bool {
+	cap = strings.ToLower(cap)
+	for _, name := range toolNames {
+		lower := strings.ToLower(strings.TrimSpace(name))
+		if lower == cap || strings.HasSuffix(lower, "__"+cap) {
+			return true
+		}
+	}
+	return false
+}
+
+// directToolNamesFromController extracts the current tool names from a
+// Controller's combined (builtin + MCP) registry.
+func directToolNamesFromController(ctrl *Controller) []string {
+	if ctrl == nil {
+		return nil
+	}
+	entries := ctrl.ToolContractEntries()
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name
+	}
+	return names
+}
+
+// capabilityPreflightCallID generates a stable, deterministic tool-call ID
+// for one RequiredCapabilities preflight invocation. The ID is safe to replay:
+// repeated calls with the same arguments produce the same ID.
+func capabilityPreflightCallID(input work.TaskExecuteInput, capability string) string {
+	seed := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00%s\x00%s",
+		input.WorkID, input.RunID, input.TaskID, input.AttemptID, capability, input.RequestID)
+	sum := sha256.Sum256([]byte(seed))
+	return fmt.Sprintf("cap-pf-%x", sum[:8])
+}
+
+// buildCapabilityPreflightPrompt constructs a self-contained prompt for a
+// capability preflight using the task's semantic context.
+func buildCapabilityPreflightPrompt(capability, taskPrompt string) string {
+	return fmt.Sprintf("Search with context from the following task. Return URLs and key findings.\n\n--- Task ---\n%s", taskPrompt)
 }
 
 var _ work.TaskExecutor = (*TaskExecutorAdapter)(nil)

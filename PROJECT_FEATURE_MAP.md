@@ -173,6 +173,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-27
 
+### Work 搜索硬能力自动预取
+- Location: `internal/control/taskexec.go`, `internal/control/taskexec_test.go`
+- Summary: TaskExecutor 对非原生且无直接搜索工具的 web_search 要求，在主模型运行前经标准 request_help 路径预取并把客观回执留在 Task Session；web_fetch 与纯 URL 不计作搜索成功。
+- Keywords: RequiredCapabilities, web_search, request_help, completion gate, taskSuccessfulCapabilities
+- Source: verified-by-search
+- Updated: 2026-07-30
+
 ### Work 结构化产物能力预执行
 - Location: `internal/work/ports.go`, `internal/work/scheduler_v2.go`, `internal/agent/agent.go`, `internal/control/controller.go`, `internal/control/taskexec.go`
 - Summary: 带能力要求（如 image_generation）的 ArtifactSlot 在 TaskExecutor 主模型运行前，通过标准 Agent 工具路径串行执行 request_help preflight；SlotPreflight 由 ArtifactSlotDef + CapabilityProducer 自动生成，失败结果可观察并允许主模型 fallback；无能力槽保持旧路径。
