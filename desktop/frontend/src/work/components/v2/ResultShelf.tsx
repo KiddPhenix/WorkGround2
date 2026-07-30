@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, Pencil, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react';
 
-import type { ArtifactSlot, ArtifactPreview, ArtifactSlotDef, WorkDefinitionRevision } from '../../types_v2';
+import type { ArtifactSlot, ArtifactPreview, ArtifactSlotDef, TaskV2View, WorkDefinitionRevision } from '../../types_v2';
 import { ResultCard } from './ResultCard';
 import type { FileConversionIntent, FileDownloadIntent, FileLocateIntent, FileOpenIntent, SlotRetryIntent, FilePreviewIntent } from './ResultCard';
 
@@ -14,6 +14,10 @@ export interface ResultShelfProps {
   activeDefinitionRevision: number;
   /** Active workflow definition used to explain producer/consumer changes. */
   definition?: WorkDefinitionRevision;
+  /** Current Run tasks used to reconcile a lagging artifact projection. */
+  tasks?: TaskV2View[];
+  /** Current authoritative Run identity. */
+  runId?: string;
   readonly?: boolean;
   onRequestWorkflowChange?: (request: ResultWorkflowChangeRequest) => void;
   workflowChangeState?: WorkflowChangeState | null;
@@ -123,10 +127,50 @@ function slotID(title: string, existing: Set<string>): string {
   return candidate;
 }
 
+function effectiveSlot(
+  slot: ArtifactSlot,
+  definition?: WorkDefinitionRevision,
+  tasks: TaskV2View[] = [],
+  runId?: string,
+): ArtifactSlot {
+  if ((slot.state !== 'reserved' && slot.state !== 'generating') || !definition || !runId) return slot;
+  const producerIDs = new Set(
+    definition.nodes
+      .filter((node) => node.producesSlotIds?.includes(slot.id))
+      .map((node) => node.id),
+  );
+  const producer = tasks.find((task) =>
+    task.runId === runId &&
+    producerIDs.has(task.nodeId) &&
+    (task.state === 'failed_retryable' || task.state === 'failed_terminal' || task.state === 'canceled'));
+  if (!producer) return slot;
+
+  const retryable = producer.state === 'failed_retryable';
+  const message = producer.error?.trim() || (
+    retryable
+      ? '产出任务失败，等待重试。'
+      : producer.state === 'canceled'
+        ? '产出任务已取消。'
+        : '产出任务失败，无法自动重试。'
+  );
+  return {
+    ...slot,
+    state: 'failed',
+    progress: undefined,
+    error: {
+      code: producer.state === 'canceled' ? 'producer_canceled' : 'producer_failed',
+      message,
+      retryable,
+    },
+  };
+}
+
 export const ResultShelf: React.FC<ResultShelfProps> = ({
   slots,
   activeDefinitionRevision,
   definition,
+  tasks,
+  runId,
   readonly = false,
   onRequestWorkflowChange,
   workflowChangeState,
@@ -148,8 +192,11 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
     expectedCount: 1,
     required: true,
   });
-  const visibleSlots = slots.filter(
-    (slot) => slot.definitionRev === activeDefinitionRevision,
+  const visibleSlots = useMemo(
+    () => slots
+      .filter((slot) => slot.definitionRev === activeDefinitionRevision)
+      .map((slot) => effectiveSlot(slot, definition, tasks, runId)),
+    [activeDefinitionRevision, definition, runId, slots, tasks],
   );
   const definitions = definition?.artifactSlots ?? [];
   const existingIDs = useMemo(

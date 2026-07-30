@@ -10,6 +10,7 @@ import type {
 } from '../../work/types';
 import type {
   ArtifactSlot,
+  TaskV2View,
   WorkDefinitionRevision,
   SubmitWorkInputRequest,
   SetInputCornerstoneRequest,
@@ -55,6 +56,8 @@ export interface WorkCardFrontProps {
   artifactSlots?: ArtifactSlot[];
   /** V2 definition when V2 planning has produced one. */
   v2Definition?: WorkDefinitionRevision;
+  /** Current V2 task projections used to reconcile artifact presentation. */
+  v2Tasks?: TaskV2View[];
   onV2TaskRetry?: (intent: V2TaskRetryIntent) => void | Promise<void>;
   onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
   onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
@@ -155,6 +158,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   archived,
   artifactSlots,
   v2Definition,
+  v2Tasks,
   onV2TaskRetry,
   onArtifactOpen,
   onArtifactDownload,
@@ -282,6 +286,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             slots={artifactSlots ?? []}
             activeDefinitionRevision={v2Definition.revision}
             definition={v2Definition}
+            tasks={v2Tasks}
+            runId={runId}
             readonly={readonly || archived}
             onRequestWorkflowChange={canChangeWorkflow ? requestWorkflowChange : undefined}
             workflowChangeState={workflowChangeState}

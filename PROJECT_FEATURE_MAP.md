@@ -19,6 +19,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-requested+verified-by-tests
 - Updated: 2026-07-29
 
+### Work 失败任务成果状态同步
+- Status: done
+- Branch: `developping/work-failed-artifact-status+2026-07-30`
+- Location: `desktop/frontend/src/work/components/v2/ResultShelf.tsx`, `desktop/frontend/src/components/work/WorkCardFront.tsx`, `desktop/frontend/src/components/work/WorkCard.tsx`, `desktop/frontend/src/work/components/v2/ResultShelf.test.tsx`
+- Summary: 成果架使用活动 Definition 的生产关系与当前 Run Task 状态修正迟到或缺失的 ArtifactSlot 结算；生产任务失败时，仍处于生成态的成果即时显示失败并保留可重试入口，任务重新运行后恢复生成态。
+- Keywords: ResultShelf, ArtifactSlot, failed_retryable, TaskV2View, producesSlotIds
+- Source: user-requested+verified-by-tests
+- Updated: 2026-07-30
+
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, `D:\Work\wg2addons`, `D:\Work\WG2AddOnsExample`
 - Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。
