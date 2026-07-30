@@ -19,7 +19,7 @@ func projectKeptContexts(
 	now time.Time,
 ) ([]WorkInput, []*V2TaskRuntime) {
 	if current == nil || parent == nil || next == nil || impact == nil ||
-		strings.TrimSpace(newRunID) == "" || len(impact.KeptNodeIDs) == 0 {
+		strings.TrimSpace(newRunID) == "" {
 		return nil, nil
 	}
 	if current.V2CurrentRevision != parent.Revision {
@@ -88,6 +88,23 @@ func projectKeptContexts(
 			break
 		}
 	}
+	// User-owned values belong to the Work, not to one immutable Definition
+	// revision. Carry every unambiguous value whose stable spec ID and schema
+	// still accept it, even when its node must rerun or moved in the new DAG.
+	// Completed runtime reuse stays stricter and is handled above.
+	carried := projectCompatibleInputs(current, parent, next, oldRunID, newRunID, impact, now)
+	existing := make(map[string]bool, len(projectedInputs))
+	for _, input := range projectedInputs {
+		existing[input.TaskID+"\x00"+input.SpecID] = true
+	}
+	for _, input := range carried {
+		key := input.TaskID + "\x00" + input.SpecID
+		if existing[key] {
+			continue
+		}
+		existing[key] = true
+		projectedInputs = append(projectedInputs, input)
+	}
 	sort.Slice(projectedInputs, func(i, j int) bool {
 		if projectedInputs[i].TaskID != projectedInputs[j].TaskID {
 			return projectedInputs[i].TaskID < projectedInputs[j].TaskID
@@ -98,6 +115,103 @@ func projectKeptContexts(
 		return projectedRuntimes[i].NodeID < projectedRuntimes[j].NodeID
 	})
 	return projectedInputs, projectedRuntimes
+}
+
+func projectCompatibleInputs(
+	current *Work,
+	parent, next *WorkDefinitionRevision,
+	oldRunID, newRunID string,
+	impact *RunImpact,
+	now time.Time,
+) []WorkInput {
+	if current == nil || parent == nil || next == nil || impact == nil {
+		return nil
+	}
+	parentSpecs := indexSpecs(parent.InputSpecs)
+	nextSpecs := indexSpecs(next.InputSpecs)
+	kept := make(map[string]bool, len(impact.KeptNodeIDs))
+	for _, nodeID := range impact.KeptNodeIDs {
+		kept[nodeID] = true
+	}
+
+	// A spec may be bound to more than one old task. Reuse it only when every
+	// submitted value agrees; conflicting user facts require a fresh question.
+	bySpec := make(map[string][]WorkInput)
+	for _, input := range current.V2Inputs {
+		if input.WorkID != current.ID || input.RunID != oldRunID ||
+			(input.State != InputSubmitted && input.State != InputAccepted) {
+			continue
+		}
+		bySpec[input.SpecID] = append(bySpec[input.SpecID], input)
+	}
+
+	nodes := append([]NodeDef(nil), next.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	projected := make([]WorkInput, 0)
+	for _, node := range nodes {
+		taskID, err := DeriveTaskID(newRunID, node.ID)
+		if err != nil {
+			continue
+		}
+		specIDs := append([]string(nil), node.InputSpecIDs...)
+		sort.Strings(specIDs)
+		for _, specID := range specIDs {
+			oldSpec, oldOK := parentSpecs[specID]
+			newSpec, newOK := nextSpecs[specID]
+			if !oldOK || !newOK || oldSpec.Kind != newSpec.Kind {
+				continue
+			}
+			// Approval is a decision about a concrete execution context. It may
+			// cross revisions only when the owning node is semantically kept.
+			if newSpec.Kind == InputApproval && !kept[node.ID] {
+				continue
+			}
+			source, ok := unambiguousInput(bySpec[specID])
+			if !ok || ValidateInputValue(newSpec, source.Value) != nil {
+				continue
+			}
+			inputID, _ := v2InputIdentity(newRunID, taskID, specID)
+			revision := int64(1)
+			if source.CornerstoneID != "" {
+				revision++
+			}
+			projected = append(projected, WorkInput{
+				ID:            inputID,
+				WorkID:        current.ID,
+				RunID:         newRunID,
+				TaskID:        taskID,
+				BlockID:       v2InputBlockID(node),
+				SpecID:        specID,
+				Value:         append(json.RawMessage(nil), source.Value...),
+				State:         InputSubmitted,
+				CornerstoneID: source.CornerstoneID,
+				Source:        source.Source,
+				UpdatedBy:     source.UpdatedBy,
+				Revision:      revision,
+				UpdatedAt:     now,
+			})
+		}
+	}
+	return projected
+}
+
+func unambiguousInput(candidates []WorkInput) (WorkInput, bool) {
+	if len(candidates) == 0 {
+		return WorkInput{}, false
+	}
+	latest := candidates[0]
+	for _, candidate := range candidates[1:] {
+		if !rawMessageEq(latest.Value, candidate.Value) {
+			return WorkInput{}, false
+		}
+		if candidate.Revision > latest.Revision ||
+			(candidate.Revision == latest.Revision && candidate.UpdatedAt.After(latest.UpdatedAt)) ||
+			(candidate.Revision == latest.Revision && candidate.UpdatedAt.Equal(latest.UpdatedAt) &&
+				candidate.ID > latest.ID) {
+			latest = candidate
+		}
+	}
+	return latest, true
 }
 
 func projectKeptRuntime(

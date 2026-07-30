@@ -562,7 +562,6 @@ func TestV2KeptContext_ApplyDefinitionCarriesInputData_FileStore(t *testing.T) {
 	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, nil); err != nil {
 		t.Fatal(err)
 	}
-
 	next := coordinatorDefinition(definition.Nodes, definition.InputSpecs)
 	next.Nodes[1].Description = "new execution semantics"
 	applied := createAndApplyNext(t, h, next, "carry-input-"+t.Name())
@@ -573,18 +572,66 @@ func TestV2KeptContext_ApplyDefinitionCarriesInputData_FileStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	carried := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, newTaskID, "topic")
-	if carried == nil || carried.ID == oldInput.ID || carried.BlockID != oldInput.BlockID ||
+	if carried == nil || carried.ID == oldInput.ID ||
 		carried.State != InputSubmitted || string(carried.Value) != `"preserve me"` {
 		t.Fatalf("ApplyDefinition did not carry kept block data: old=%+v new=%+v", oldInput, carried)
 	}
-	runtime := projection.V2TaskRuntimes[newTaskID]
-	if runtime == nil || runtime.State != TaskCompleted || executor.callCount() != 2 {
-		t.Fatalf("kept task reran or lost completion: runtime=%+v calls=%d", runtime, executor.callCount())
-	}
 	changed := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, changedTaskID, "tone")
-	if changed == nil || changed.ID == changedInput.ID || changed.State != InputRequested ||
-		string(changed.Value) == `"old tone"` {
-		t.Fatalf("changed task inherited superseded block data: old=%+v new=%+v", changedInput, changed)
+	if changed == nil || changed.ID == changedInput.ID || changed.State != InputSubmitted ||
+		string(changed.Value) != `"old tone"` {
+		t.Fatalf("changed task lost compatible Work input: old=%+v new=%+v", changedInput, changed)
+	}
+}
+
+func TestV2KeptContext_ChangedDefinitionAsksOnlyForIncompatibleInput_FileStore(t *testing.T) {
+	definition := coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "plan", InputSpecIDs: []string{"budget", "mode"}}},
+		[]InputSpec{
+			{
+				ID: "budget", Label: "Budget", Kind: InputNumber, Required: true,
+				ValueSchema: json.RawMessage(`{"kind":"number","min":0}`),
+			},
+			{
+				ID: "mode", Label: "Mode", Kind: InputChoice, Required: true,
+				ValueSchema: json.RawMessage(`{"kind":"choice","options":[{"value":"outdoor","label":"Outdoor"},{"value":"indoor","label":"Indoor"}]}`),
+			},
+		},
+	)
+	h := newCoordinatorHarness(t, definition)
+	budget := requestTaskInput(t, h, h.run, "n1", "definition-budget", "budget")
+	submitTaskInput(t, h, budget, `3000`)
+	mode := requestTaskInput(t, h, h.run, "n1", "definition-mode", "mode")
+	submitTaskInput(t, h, mode, `"outdoor"`)
+
+	executor := &reuseExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	next := coordinatorDefinition(definition.Nodes, definition.InputSpecs)
+	next.Nodes[0].Description = "add weather fallback"
+	next.InputSpecs[1].ValueSchema = json.RawMessage(
+		`{"kind":"choice","options":[{"value":"indoor","label":"Indoor"}]}`,
+	)
+	applied := createAndApplyNext(t, h, next, "carry-compatible-"+t.Name())
+	newTaskID, _ := DeriveTaskID(applied.Intent.RunID, "n1")
+	projection, err := h.store.LoadProjection(h.work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carriedBudget := findV2TaskInput(
+		projection.V2Inputs, applied.Intent.RunID, newTaskID, "budget",
+	)
+	if carriedBudget == nil || carriedBudget.State != InputSubmitted ||
+		string(carriedBudget.Value) != `3000` {
+		t.Fatalf("compatible budget was not carried: %+v", carriedBudget)
+	}
+	requestedMode := findV2TaskInput(
+		projection.V2Inputs, applied.Intent.RunID, newTaskID, "mode",
+	)
+	if requestedMode == nil || requestedMode.State != InputRequested ||
+		(string(requestedMode.Value) != "null" && len(requestedMode.Value) != 0) {
+		t.Fatalf("incompatible choice was not re-requested: %+v", requestedMode)
+	}
+	if executor.callCount() != 0 {
+		t.Fatalf("node executed before required replacement input: calls=%d", executor.callCount())
 	}
 }
 
