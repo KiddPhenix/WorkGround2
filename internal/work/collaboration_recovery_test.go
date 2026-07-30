@@ -131,10 +131,21 @@ func TestRetryArtifactSlotTwoFileStoresConcurrentReplayAndRestart(t *testing.T) 
 		t.Fatalf("restart replay repeated producer side effect: %d", executor.callCount())
 	}
 
-	conflict := request
-	conflict.ExpectedRevision++
-	if _, err := restarted.RetryArtifactSlot(context.Background(), conflict); !errors.Is(err, ErrWorkRequestIDConflict) {
-		t.Fatalf("different intent with same requestID must conflict, got %v", err)
+	refreshed := request
+	refreshed.ExpectedRevision++
+	if replay, err := restarted.RetryArtifactSlot(context.Background(), refreshed); err != nil ||
+		replay == nil || !replay.Duplicate || !replay.Committed {
+		t.Fatalf("refreshed revision must replay same intent: result=%+v err=%v", replay, err)
+	}
+	differentSlot := request
+	differentSlot.SlotID = "different-slot"
+	if _, err := restarted.RetryArtifactSlot(context.Background(), differentSlot); !errors.Is(err, ErrWorkRequestIDConflict) {
+		t.Fatalf("different slot with same requestID must conflict, got %v", err)
+	}
+	differentDefinition := request
+	differentDefinition.DefinitionRevision++
+	if _, err := restarted.RetryArtifactSlot(context.Background(), differentDefinition); !errors.Is(err, ErrWorkRequestIDConflict) {
+		t.Fatalf("different definition with same requestID must conflict, got %v", err)
 	}
 	projection, err := restartedStore.LoadProjection(h.work)
 	if err != nil {
@@ -142,6 +153,177 @@ func TestRetryArtifactSlotTwoFileStoresConcurrentReplayAndRestart(t *testing.T) 
 	}
 	if got := projection.V2TaskRuntimes[runtime.TaskID]; got == nil || got.RunID != h.run {
 		t.Fatalf("active task identity changed: %+v", got)
+	}
+}
+
+func TestRetryArtifactSlotRebasesUnrelatedAggregateRevisionAndReplaysAfterRefresh(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "producer", ProducesSlotIDs: []string{"slot"}}},
+		nil,
+	))
+	failedCoordinatorRuntime(t, h)
+	_, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	generating, err := h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+		WorkID: h.work, SlotID: "slot", RequestID: "rebase-generating",
+		State: SlotGenerating, Revision: 2, ExpectedRevision: state.Revision,
+		DefinitionRev: h.def.Revision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+		WorkID: h.work, SlotID: "slot", RequestID: "rebase-failed",
+		State: SlotFailed, Error: &ArtifactError{Code: "render", Message: "failed", Retryable: true},
+		Revision: 3, ExpectedRevision: generating.WorkRevision, DefinitionRev: h.def.Revision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inactive := CopyOnWriteRevision(h.def)
+	inactive.Nodes[0].Title = "inactive candidate change"
+	if _, err := h.svc.CreateCandidateRevision(
+		context.Background(), h.work, inactive, "rebase-unrelated-candidate", failed.WorkRevision,
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, latest, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Revision <= failed.WorkRevision {
+		t.Fatalf("unrelated event did not advance aggregate revision: %d <= %d", latest.Revision, failed.WorkRevision)
+	}
+
+	executor := &coordinatorExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	request := RetryArtifactSlotRequest{
+		WorkID: h.work, SlotID: "slot", DefinitionRevision: h.def.Revision,
+		ExpectedRevision: failed.WorkRevision, RequestID: "rebase-unrelated-retry",
+	}
+	result, err := h.svc.RetryArtifactSlot(context.Background(), request)
+	if err != nil || result == nil || !result.Committed || result.Slot == nil ||
+		result.Slot.State != SlotGenerating {
+		t.Fatalf("rebased retry result=%+v err=%v", result, err)
+	}
+
+	replayed, err := h.svc.RetryArtifactSlot(context.Background(), request)
+	if err != nil || replayed == nil || !replayed.Duplicate || !replayed.Committed {
+		t.Fatalf("rebased retry replay=%+v err=%v", replayed, err)
+	}
+	refreshed := request
+	refreshed.ExpectedRevision = latest.Revision
+	if replayed, err := h.svc.RetryArtifactSlot(context.Background(), refreshed); err != nil ||
+		replayed == nil || !replayed.Duplicate || !replayed.Committed {
+		t.Fatalf("same requestID after refresh must replay: result=%+v err=%v", replayed, err)
+	}
+}
+
+func TestRetryArtifactSlotAlreadyGeneratingOrReadyIsSuccessfulNoop(t *testing.T) {
+	for _, target := range []ArtifactSlotState{SlotGenerating, SlotReady} {
+		t.Run(string(target), func(t *testing.T) {
+			h := newCoordinatorHarness(t, coordinatorDefinition(
+				[]NodeDef{{ID: "n1", Title: "producer", ProducesSlotIDs: []string{"slot"}}},
+				nil,
+			))
+			_, state, err := h.store.LoadState(h.work, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+				WorkID: h.work, SlotID: "slot", RequestID: "noop-generating-" + string(target),
+				State: SlotGenerating, Revision: 2, ExpectedRevision: state.Revision,
+				DefinitionRev: h.def.Revision,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target == SlotReady {
+				current, err = h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+					WorkID: h.work, SlotID: "slot", RequestID: "noop-ready",
+					State: SlotReady, Revision: 3, ExpectedRevision: current.WorkRevision,
+					DefinitionRev: h.def.Revision,
+					Refs: []ArtifactRef{{
+						ID: "final", Name: "final.md", Type: "markdown",
+						Status: ArtifactRefStatusAvailable, BlobDigest: "sha256:final",
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeSlotRevision := current.Slot.Revision
+			executor := &coordinatorExecutor{}
+			h.svc.SetTaskExecutor(executor)
+			request := RetryArtifactSlotRequest{
+				WorkID: h.work, SlotID: "slot", DefinitionRevision: h.def.Revision,
+				ExpectedRevision: current.WorkRevision, RequestID: "noop-retry-" + string(target),
+			}
+			result, err := h.svc.RetryArtifactSlot(context.Background(), request)
+			if err != nil || result == nil || !result.Committed || result.Slot == nil ||
+				result.Slot.State != target || result.Slot.Revision != beforeSlotRevision {
+				t.Fatalf("noop retry result=%+v err=%v", result, err)
+			}
+			if executor.callCount() != 0 {
+				t.Fatalf("noop retry scheduled producer %d times", executor.callCount())
+			}
+
+			replayed, err := h.svc.RetryArtifactSlot(context.Background(), request)
+			if err != nil || replayed == nil || !replayed.Duplicate || replayed.Slot == nil ||
+				replayed.Slot.State != target || replayed.Slot.Revision != beforeSlotRevision {
+				t.Fatalf("noop replay result=%+v err=%v", replayed, err)
+			}
+			if executor.callCount() != 0 {
+				t.Fatalf("noop replay scheduled producer %d times", executor.callCount())
+			}
+		})
+	}
+}
+
+func TestRetryArtifactSlotRejectsActiveDefinitionChange(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "producer-v1", ProducesSlotIDs: []string{"slot"}}},
+		nil,
+	))
+	_, beforeCandidate, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := RetryArtifactSlotRequest{
+		WorkID: h.work, SlotID: "slot", DefinitionRevision: h.def.Revision,
+		ExpectedRevision: beforeCandidate.Revision, RequestID: "retry-after-definition-change",
+	}
+	candidate := CopyOnWriteRevision(h.def)
+	candidate.Nodes[0].Title = "producer-v2"
+	candidate, err = h.svc.CreateCandidateRevision(
+		context.Background(), h.work, candidate, "retry-definition-change-candidate", beforeCandidate.Revision,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, applyState, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := h.svc.ApplyDefinition(context.Background(), ApplyDefinitionInput{
+		WorkID: h.work, Revision: candidate.Revision,
+		ExpectedRevision: applyState.Revision, RequestID: "retry-definition-change-apply",
+	}); applied == nil || !applied.Committed {
+		t.Fatalf("apply result=%+v err=%v", applied, err)
+	}
+
+	result, err := h.svc.RetryArtifactSlot(context.Background(), request)
+	var conflict *ErrWorkEventConflict
+	if result == nil || result.Committed || !errors.As(err, &conflict) ||
+		conflict.Kind != WorkEventRequestConflict {
+		t.Fatalf("definition change result=%+v err=%T %v", result, err, err)
+	}
+	_, receipt, loadErr := h.store.LoadState(h.work, request.RequestID+"/slot/artifact-slot")
+	if loadErr != nil || receipt.RequestFound {
+		t.Fatalf("definition conflict wrote retry receipt=%+v err=%v", receipt, loadErr)
 	}
 }
 

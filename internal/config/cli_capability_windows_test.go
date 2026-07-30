@@ -32,8 +32,9 @@ func TestProbeCLICapabilitiesCachesFailedWindowsCommand(t *testing.T) {
 	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake Codex CLI: %v", err)
 	}
-	cliCapabilityCache.Delete(command)
-	t.Cleanup(func() { cliCapabilityCache.Delete(command) })
+	key := cliCapabilityCacheKey(command, false)
+	cliCapabilityCache.Delete(key)
+	t.Cleanup(func() { cliCapabilityCache.Delete(key) })
 	entry := &ProviderEntry{Kind: "cli", Command: command}
 
 	for attempt := 0; attempt < 2; attempt++ {
@@ -47,5 +48,29 @@ func TestProbeCLICapabilitiesCachesFailedWindowsCommand(t *testing.T) {
 	}
 	if got := strings.Count(string(data), "run"); got != 1 {
 		t.Fatalf("failed probe process starts = %d, want 1", got)
+	}
+}
+
+func TestProbeCLICapabilitiesIsolatesIgnoredUserConfig(t *testing.T) {
+	dir := t.TempDir()
+	command := filepath.Join(dir, "codex.cmd")
+	userHome := filepath.Join(dir, "user-config")
+	script := "@echo off\r\nif /i \"%CODEX_HOME%\"==\"" + userHome + "\" exit /b 2\r\necho browser_use stable true\r\n"
+	if err := os.WriteFile(command, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake Codex CLI: %v", err)
+	}
+	t.Setenv("CODEX_HOME", userHome)
+	key := cliCapabilityCacheKey(command, true)
+	cliCapabilityCache.Delete(key)
+	t.Cleanup(func() { cliCapabilityCache.Delete(key) })
+
+	got, err := ProbeCLICapabilities(context.Background(), &ProviderEntry{
+		Kind: "cli", Command: command, Args: []string{"exec", "--ignore-user-config"},
+	})
+	if err != nil {
+		t.Fatalf("ProbeCLICapabilities: %v", err)
+	}
+	if len(got) != 1 || got[0] != "web_search" {
+		t.Fatalf("capabilities = %v, want [web_search]", got)
 	}
 }

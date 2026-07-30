@@ -237,7 +237,7 @@ func scanLocalCLIOptionsWithPresets(presets []onboardingLocalCLIPreset) []LocalC
 			version = readLocalCLIVersion(command)
 			probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			probed, _ := config.ProbeCLICapabilities(probeCtx, &config.ProviderEntry{
-				Kind: "cli", Command: command, Model: model,
+				Kind: "cli", Command: command, Args: preset.Args, Model: model,
 			})
 			cancel()
 			capabilities = append(capabilities, probed...)

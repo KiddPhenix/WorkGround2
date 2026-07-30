@@ -274,6 +274,25 @@ async function testRenderers(): Promise<void> {
   const cb = container().querySelector('input[type="checkbox"]') as HTMLInputElement;
   ok(!cb.checked, 'checkbox starts unchecked');
   contains(container().textContent ?? '', 'Details', 'checklist detail renders');
+  ok(container().querySelector('.wg2-checklist-compact-detail') !== null, 'short checklist detail renders inline');
+  ok(container().querySelector('.wg2-checklist-details') === null, 'short checklist detail avoids a disclosure control');
+
+  await render(<BlockHost
+    block={block({
+      kind: 'checklist',
+      data: {
+        items: [{
+          id: 'c2',
+          text: 'Task 2',
+          checked: false,
+          detail: 'This explanation is intentionally long enough to require disclosure.',
+        }],
+      },
+    })}
+    context={context}
+  />);
+  await waitFor(() => container().querySelector('.wg2-checklist-details') !== null, 'long checklist detail uses disclosure');
+  contains(container().textContent ?? '', '详情', 'long checklist disclosure uses localized label');
 
   await render(<BlockHost
     block={block({

@@ -226,7 +226,10 @@ the backing model.
   `codex features list` under a two-second timeout: an enabled `browser_use` or
   `standalone_web_search` adds `web_search`; an enabled `image_generation` adds
   `image_generation`. Probe failure is warned and does not block startup.
-  Explicit capabilities disable probing.
+  Explicit capabilities disable probing. When the provider uses
+  `--ignore-user-config`, probing uses an empty temporary `CODEX_HOME` and a
+  separate cache key, so an incompatible user-level Codex option cannot hide
+  all capabilities from an otherwise isolated provider.
 - **Plumbing.** `request_help` reuses the same `RunSubAgentWithSession` entry
   point as `task` — it creates a fresh session, runs the prompt, and returns the
   helper's final answer. Tool activity nests under the parent call via the same

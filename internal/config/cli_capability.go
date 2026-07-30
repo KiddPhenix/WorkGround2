@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -34,23 +35,34 @@ func ProbeCLICapabilities(ctx context.Context, entry *ProviderEntry) ([]string, 
 	if command == "" || name != "codex" {
 		return nil, nil
 	}
-	if capabilities, err, ok := loadCLICapabilityCache(command, time.Now()); ok {
+	isolated := hasCLIArg(entry.Args, "--ignore-user-config")
+	cacheKey := cliCapabilityCacheKey(command, isolated)
+	if capabilities, err, ok := loadCLICapabilityCache(cacheKey, time.Now()); ok {
 		return capabilities, err
 	}
 
 	cmd := exec.CommandContext(ctx, command, "features", "list")
 	prepareCLICapabilityProbe(cmd)
+	cleanup := func() {}
+	if isolated {
+		var err error
+		cleanup, err = isolateCodexCapabilityProbe(cmd)
+		if err != nil {
+			return nil, fmt.Errorf("prepare isolated Codex CLI capability probe: %w", err)
+		}
+	}
+	defer cleanup()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("probe Codex CLI capabilities: %w", ctx.Err())
 		}
 		probeErr := fmt.Errorf("probe Codex CLI capabilities: %w", err)
-		storeCLICapabilityCache(command, nil, probeErr, time.Now())
+		storeCLICapabilityCache(cacheKey, nil, probeErr, time.Now())
 		return nil, probeErr
 	}
 	capabilities := parseCodexCapabilities(string(out))
-	storeCLICapabilityCache(command, capabilities, nil, time.Now())
+	storeCLICapabilityCache(cacheKey, capabilities, nil, time.Now())
 	return capabilities, nil
 }
 
@@ -58,14 +70,52 @@ func prepareCLICapabilityProbe(cmd *exec.Cmd) {
 	proc.HideWindow(cmd)
 }
 
-func loadCLICapabilityCache(command string, now time.Time) ([]string, error, bool) {
-	value, ok := cliCapabilityCache.Load(command)
+func isolateCodexCapabilityProbe(cmd *exec.Cmd) (func(), error) {
+	dir, err := os.MkdirTemp("", "workground2-codex-probe-*")
+	if err != nil {
+		return nil, err
+	}
+	// Match a provider launched with --ignore-user-config. Running `features
+	// list` against the user's config would otherwise let an unrelated,
+	// temporarily incompatible option hide every Codex action capability.
+	cmd.Env = setProcessEnv(os.Environ(), "CODEX_HOME", dir)
+	return func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func setProcessEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		name, _, found := strings.Cut(item, "=")
+		if found && strings.EqualFold(name, key) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return append(out, prefix+value)
+}
+
+func hasCLIArg(args []string, want string) bool {
+	for _, arg := range args {
+		if strings.EqualFold(strings.TrimSpace(arg), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func cliCapabilityCacheKey(command string, isolated bool) string {
+	return fmt.Sprintf("%s\x00isolated=%t", command, isolated)
+}
+
+func loadCLICapabilityCache(key string, now time.Time) ([]string, error, bool) {
+	value, ok := cliCapabilityCache.Load(key)
 	if !ok {
 		return nil, nil, false
 	}
 	entry, ok := value.(cliCapabilityCacheEntry)
 	if !ok || !now.Before(entry.expiresAt) {
-		cliCapabilityCache.Delete(command)
+		cliCapabilityCache.Delete(key)
 		return nil, nil, false
 	}
 	if entry.err != "" {
@@ -74,7 +124,7 @@ func loadCLICapabilityCache(command string, now time.Time) ([]string, error, boo
 	return append([]string(nil), entry.capabilities...), nil, true
 }
 
-func storeCLICapabilityCache(command string, capabilities []string, err error, now time.Time) {
+func storeCLICapabilityCache(key string, capabilities []string, err error, now time.Time) {
 	entry := cliCapabilityCacheEntry{
 		capabilities: append([]string(nil), capabilities...),
 		expiresAt:    now.Add(cliCapabilityCacheTTL),
@@ -82,7 +132,7 @@ func storeCLICapabilityCache(command string, capabilities []string, err error, n
 	if err != nil {
 		entry.err = err.Error()
 	}
-	cliCapabilityCache.Store(command, entry)
+	cliCapabilityCache.Store(key, entry)
 }
 
 // AddCapabilities merges detected capabilities with the provider's effective

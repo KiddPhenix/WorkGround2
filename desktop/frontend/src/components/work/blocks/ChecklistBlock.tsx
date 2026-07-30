@@ -205,6 +205,9 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
           const checked = effectiveChecked(item);
           const dirty = draft.has(item.id);
           const itemID = `checklist-${block.id}-${item.id}`;
+          const compactDetail = item.detail !== undefined
+            && !item.detail.includes('\n')
+            && Array.from(item.detail).length <= 24;
           return (
             <li
               key={item.id}
@@ -223,9 +226,13 @@ export const ChecklistBlock: React.FC<BlockRendererProps> = ({
                 />
                 <span className="wg2-checklist-text">{safeCrop(item.text, 512)}</span>
               </label>
-              {item.detail !== undefined && (
+              {compactDetail ? (
+                <span className="wg2-checklist-compact-detail">
+                  {safeCrop(item.detail ?? '', 24)}
+                </span>
+              ) : item.detail !== undefined && (
                 <details className="wg2-checklist-details">
-                  <summary className="wg2-checklist-detail-toggle">Detail</summary>
+                  <summary className="wg2-checklist-detail-toggle">详情</summary>
                   <p className="wg2-checklist-detail-text">{safeCrop(item.detail, 1024)}</p>
                 </details>
               )}
