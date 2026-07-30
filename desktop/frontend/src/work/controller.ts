@@ -170,6 +170,12 @@ function revisionConflict(error: unknown): { actualRevision?: number } | null {
   return Number.isSafeInteger(actual) ? { actualRevision: actual as number } : {};
 }
 
+function shouldReplayUnconfirmedPatch(result: ApplyWorkPatchResult): boolean {
+  if (result.committed || result.error) return false;
+  const code = result.transportError?.code;
+  return !code || code === 'transport_error' || code === 'contract_malformed' || code === 'work_error';
+}
+
 function isOverflowRecoveryFailure(event: WorkViewEvent): boolean {
   if (event.type !== 'attention' || typeof event.payload !== 'object' || event.payload === null || Array.isArray(event.payload)) return false;
   const payload = event.payload as Record<string, unknown>;
@@ -945,7 +951,16 @@ export class WorkControllerAdapter {
 
   applyWorkPatch = async (input: ApplyWorkPatchRequest): Promise<ApplyWorkPatchResult> => {
     if (!this.port.applyWorkPatch) throw new Error('Work 讨论补丁应用能力尚未连接。');
-    const result = await this.port.applyWorkPatch(input);
+    let result = await this.port.applyWorkPatch(input);
+    if (shouldReplayUnconfirmedPatch(result)) {
+      try {
+        await this.recoverSnapshot(input.workId);
+      } catch {
+        // recoverSnapshot keeps the failure observable; the exact request can
+        // still be replayed safely because ApplyWorkPatch is request-idempotent.
+      }
+      result = await this.port.applyWorkPatch(input);
+    }
     if (!result.committed) {
       if (result.transportError?.code === 'revision_conflict') {
         await this.recoverSnapshot(input.workId);

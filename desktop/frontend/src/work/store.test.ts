@@ -20,6 +20,8 @@ import {
 } from './store';
 import type { Attempt, BlockInstance, RetryTaskInput, ViewRecoveryIntent, Work, WorkView, WorkViewEvent, WorkflowRun } from './types';
 import type {
+  ApplyWorkPatchRequest,
+  ApplyWorkPatchResult,
   ArtifactSlot,
   ApplyDefinitionInput,
   ApplyDefinitionResult,
@@ -198,6 +200,8 @@ class TestPort implements WorkControllerPort {
   applyInputs: ApplyDefinitionInput[] = [];
   candidateNext: CreateCandidateRevisionResult | null = null;
   applyNext: ApplyDefinitionResult | null = null;
+  patchInputs: ApplyWorkPatchRequest[] = [];
+  patchNext: ApplyWorkPatchResult[] = [];
   fetchDeferreds: Array<() => Promise<WorkView | WorkViewV2>> = [];
 
   subscribe(workID: string, listener: (event: WorkViewEvent) => void): WorkPortSubscription {
@@ -262,6 +266,18 @@ class TestPort implements WorkControllerPort {
     }
     return {
       revision: input.expectedRevision + 1,
+      duplicate: false,
+      committed: true,
+      recoverable: false,
+    };
+  }
+
+  async applyWorkPatch(input: ApplyWorkPatchRequest): Promise<ApplyWorkPatchResult> {
+    this.patchInputs.push(input);
+    return this.patchNext.shift() ?? {
+      workRevision: input.expectedRevision + 1,
+      newRevision: input.expectedRevision + 1,
+      requiresRerun: false,
       duplicate: false,
       committed: true,
       recoverable: false,
@@ -2218,6 +2234,96 @@ test('submit input exposes authoritative rejection instead of generic unconfirme
     'definition revision mismatch: expected 7, current 0',
     'submit rejection keeps backend detail',
   );
+  adapter.dispose();
+});
+
+test('unconfirmed patch apply refreshes authority and safely replays the same request', async () => {
+  reset();
+  const workID = 'work-patch-replay';
+  const port = new TestPort();
+  port.fetch = async () => makeView(workID, 394);
+  port.patchNext = [
+    {
+      workRevision: 0,
+      newRevision: 0,
+      requiresRerun: false,
+      duplicate: false,
+      committed: false,
+      recoverable: true,
+    },
+    {
+      workRevision: 394,
+      newRevision: 3,
+      requiresRerun: true,
+      duplicate: true,
+      committed: true,
+      recoverable: false,
+    },
+  ];
+  const adapter = new WorkControllerAdapter(port);
+  const input: ApplyWorkPatchRequest = {
+    workId: workID,
+    patchId: 'patch-1',
+    previewDigest: 'sha256:preview',
+    scope: 'workflow',
+    expectedRevision: 388,
+    requestId: 'apply-stable-1',
+  };
+
+  const result = await adapter.applyWorkPatch(input);
+
+  equal(result.committed, true, 'idempotent replay confirms the durable patch');
+  equal(result.duplicate, true, 'second response is the authoritative replay');
+  equal(port.fetchCount, 1, 'one authoritative refresh occurs before replay');
+  equal(port.patchInputs.length, 2, 'unconfirmed response triggers one bounded replay');
+  equal(
+    JSON.stringify(port.patchInputs.map((item) => item.requestId)),
+    JSON.stringify(['apply-stable-1', 'apply-stable-1']),
+    'replay preserves the request ID',
+  );
+  adapter.dispose();
+});
+
+test('explicit patch revision conflict refreshes without replaying a stale intent', async () => {
+  reset();
+  const workID = 'work-patch-conflict';
+  const port = new TestPort();
+  port.fetch = async () => makeView(workID, 395);
+  port.patchNext = [{
+    workRevision: 395,
+    newRevision: 0,
+    requiresRerun: false,
+    duplicate: false,
+    committed: false,
+    recoverable: true,
+    transportError: {
+      code: 'revision_conflict',
+      message: 'patch revision conflict',
+      operation: 'ApplyWorkPatch',
+      workId: workID,
+      requestId: 'apply-conflict-1',
+      committed: false,
+      recoverable: true,
+    },
+  }];
+  const adapter = new WorkControllerAdapter(port);
+  let caught: (Error & { code?: string }) | null = null;
+  try {
+    await adapter.applyWorkPatch({
+      workId: workID,
+      patchId: 'patch-1',
+      previewDigest: 'sha256:preview',
+      scope: 'workflow',
+      expectedRevision: 388,
+      requestId: 'apply-conflict-1',
+    });
+  } catch (error) {
+    caught = error as Error & { code?: string };
+  }
+
+  equal(caught?.code, 'revision_conflict', 'explicit conflict stays visible');
+  equal(port.fetchCount, 1, 'conflict refreshes authoritative state');
+  equal(port.patchInputs.length, 1, 'stale patch intent is not replayed');
   adapter.dispose();
 });
 
