@@ -635,10 +635,10 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
 
   if (!ordered.length) {
     return (
-      <section className="wg2-el-frame" aria-label="AI 执行任务">
+      <section className="wg2-el-frame" aria-label="工作结构节点">
         <ExecutionListHeading />
         <div className="wg2-el-empty" data-testid="execution-list-empty" role="status" aria-live="polite">
-          暂无执行任务
+          暂无结构节点
         </div>
       </section>
     );
@@ -646,9 +646,9 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
 
   return (
     <>
-      <section className="wg2-el-frame" aria-label="AI 执行任务">
+      <section className="wg2-el-frame" aria-label="工作结构节点">
         <ExecutionListHeading />
-        <ul className="wg2-el-list" data-testid="execution-list" role="list" aria-label="执行任务列表">
+        <ul className="wg2-el-list" data-testid="execution-list" role="list" aria-label="工作结构节点列表">
           {ordered.map((task) => {
             const nd = nodeMap.get(task.nodeId);
             const isExpanded = expandedTaskId === task.id;
@@ -755,8 +755,8 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
 
 const ExecutionListHeading: React.FC = () => (
   <div className="wg2-el-heading">
-    <strong>AI 正在执行</strong>
-    <span>无需额外照看，各项任务将并行推进</span>
+    <strong>运行状态</strong>
+    <span>节点将按依赖关系自动推进</span>
   </div>
 );
 

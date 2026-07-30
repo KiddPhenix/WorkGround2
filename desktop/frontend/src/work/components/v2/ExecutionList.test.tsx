@@ -197,7 +197,7 @@ async function runTests(): Promise<void> {
     const { host, cleanup } = await mount(<ExecutionList workId={WORK_ID} />);
     const empty = host.querySelector('[data-testid="execution-list-empty"]');
     ok(empty !== null, 'empty: node exists');
-    contains(empty?.textContent ?? '', '暂无执行任务', 'empty: text');
+    contains(empty?.textContent ?? '', '暂无结构节点', 'empty: text');
     eq(empty?.getAttribute('role'), 'status', 'empty: role=status');
     await cleanup();
   }
@@ -288,7 +288,7 @@ async function runTests(): Promise<void> {
     const live = host.querySelector('[data-testid="execution-row-live-t1"]');
     ok(live !== null, 'single: running task always reserves the marquee region');
     contains(live?.textContent ?? '', '等待模型输出…', 'single: marquee remains visible before the first model token');
-    contains(host.querySelector('.wg2-el-heading')?.textContent ?? '', 'AI 正在执行', 'single: V2 execution heading');
+    contains(host.querySelector('.wg2-el-heading')?.textContent ?? '', '运行状态', 'single: V2 structure status heading');
     await cleanup();
   }
 
@@ -1324,7 +1324,7 @@ async function runTests(): Promise<void> {
 
     const list = host.querySelector('[data-testid="execution-list"]');
     eq(list?.getAttribute('role'), 'list', 'a11y: list role');
-    ok(list?.getAttribute('aria-label')?.includes('执行任务列表') ?? false, 'a11y: list aria-label');
+    ok(list?.getAttribute('aria-label')?.includes('工作结构节点列表') ?? false, 'a11y: list aria-label');
 
     const item = host.querySelector('[data-testid="execution-list-item-t-a11y"]');
     eq(item?.getAttribute('role'), 'listitem', 'a11y: item role=listitem');

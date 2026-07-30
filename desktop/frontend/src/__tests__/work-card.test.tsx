@@ -1278,6 +1278,15 @@ async function testV2CSSImportsProduceClasses(): Promise<void> {
   // ExecutionList CSS classes
   ok(Boolean(mounted.host.querySelector('.wg2-el-list')), 'wg2-el-list CSS class present');
   ok(Boolean(mounted.host.querySelector('[data-testid="execution-list-item-task-1"]')), 'ExecutionRow renders for task');
+  const structure = mounted.host.querySelector('[data-testid="work-execution"]');
+  eq(structure?.getAttribute('aria-label'), '工作结构', 'runtime rows are presented as the work structure');
+  eq(structure?.getAttribute('data-expanded'), 'true', 'work structure shows node runtime state by default');
+  eq(
+    structure?.querySelector('.wg2-work-execution-summary strong')?.textContent,
+    '工作结构',
+    'single structure heading replaces the separate execution heading',
+  );
+  ok(!mounted.host.querySelector('.work-definition-overview__panel--flow'), 'static definition node list is not duplicated');
 
   await interact(() => mounted.host.querySelector<HTMLElement>('[data-testid="execution-row-header-task-1"]')!.click());
   ok(Boolean(mounted.host.querySelector('[data-testid="expanded-block-task-1"]')), 'production ExecutionList opens real ExpandedBlock');
