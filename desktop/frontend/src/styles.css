@@ -37581,6 +37581,10 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
 }
 
+.wg2-work-execution__details .wg2-el-heading {
+  display: none;
+}
+
 .wg2-work-goal {
   position: sticky;
   z-index: var(--z-local-raised);

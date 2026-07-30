@@ -13,6 +13,7 @@ export interface WorkDefinitionOverviewProps {
   inputs: readonly WorkInput[];
   runId?: string;
   tasks: readonly PresentationTask[];
+  showStructure?: boolean;
 }
 
 function optionLabels(spec: InputSpec): Map<string, string> {
@@ -103,12 +104,15 @@ export function WorkDefinitionOverview({
   inputs,
   runId,
   tasks,
+  showStructure = true,
 }: WorkDefinitionOverviewProps) {
   const bySpec = currentInputs(inputs, runId);
+  const showInputs = definition.inputSpecs.length > 0;
   const filled = definition.inputSpecs.filter((spec) => {
     const input = bySpec.get(spec.id);
     return input?.state === 'submitted' || input?.state === 'accepted';
   }).length;
+  if (!showInputs && !showStructure) return null;
 
   return (
     <div
@@ -116,7 +120,7 @@ export function WorkDefinitionOverview({
       data-testid="work-definition-overview"
       data-has-inputs={definition.inputSpecs.length > 0 ? 'true' : 'false'}
     >
-      {definition.inputSpecs.length > 0 ? (
+      {showInputs ? (
         <section className="work-definition-overview__panel work-definition-overview__panel--inputs">
           <header className="work-definition-overview__header">
             <span className="work-definition-overview__title">
@@ -153,32 +157,34 @@ export function WorkDefinitionOverview({
         </section>
       ) : null}
 
-      <section className="work-definition-overview__panel work-definition-overview__panel--flow">
-        <header className="work-definition-overview__header">
-          <span className="work-definition-overview__title">
-            <GitBranch aria-hidden="true" size={17} strokeWidth={1.8} />
-            工作结构
-          </span>
-          <span className="work-definition-overview__count">{definition.nodes.length} 个步骤</span>
-        </header>
-        <ol className="work-definition-overview__nodes">
-          {definition.nodes.map((node, index) => {
-            const state = nodeState(node, tasks);
-            return (
-              <li key={node.id} data-state={state}>
-                <span className="work-definition-overview__node-index">{index + 1}</span>
-                <span className="work-definition-overview__node-copy">
-                  <strong>{node.title}</strong>
-                  {node.description ? <span>{node.description}</span> : null}
-                </span>
-                <span className="work-definition-overview__node-state">
-                  {nodeStateLabel(state)}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
+      {showStructure ? (
+        <section className="work-definition-overview__panel work-definition-overview__panel--flow">
+          <header className="work-definition-overview__header">
+            <span className="work-definition-overview__title">
+              <GitBranch aria-hidden="true" size={17} strokeWidth={1.8} />
+              工作结构
+            </span>
+            <span className="work-definition-overview__count">{definition.nodes.length} 个步骤</span>
+          </header>
+          <ol className="work-definition-overview__nodes">
+            {definition.nodes.map((node, index) => {
+              const state = nodeState(node, tasks);
+              return (
+                <li key={node.id} data-state={state}>
+                  <span className="work-definition-overview__node-index">{index + 1}</span>
+                  <span className="work-definition-overview__node-copy">
+                    <strong>{node.title}</strong>
+                    {node.description ? <span>{node.description}</span> : null}
+                  </span>
+                  <span className="work-definition-overview__node-state">
+                    {nodeStateLabel(state)}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      ) : null}
     </div>
   );
 }

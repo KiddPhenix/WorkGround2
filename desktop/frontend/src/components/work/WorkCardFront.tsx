@@ -163,13 +163,13 @@ const ArtifactSummary: React.FC<{ work: Work }> = ({ work }) => {
   );
 };
 
-interface ExecutionSummaryProps {
+interface WorkStructureSummaryProps {
   presentation: WorkPresentation;
   expanded: boolean;
   onToggle: () => void;
 }
 
-const ExecutionSummary: React.FC<ExecutionSummaryProps> = ({
+const WorkStructureSummary: React.FC<WorkStructureSummaryProps> = ({
   presentation,
   expanded,
   onToggle,
@@ -208,10 +208,10 @@ const ExecutionSummary: React.FC<ExecutionSummaryProps> = ({
       <span className="wg2-work-execution-summary__icon">
         <Icon aria-hidden="true" size={18} strokeWidth={1.8} />
       </span>
-      <strong>执行任务</strong>
+      <strong>工作结构</strong>
       <span className="wg2-work-execution-summary__detail">{detail}</span>
       <span className="wg2-work-execution-summary__action">
-        {expanded ? '收起运行详情' : '展开运行详情'}
+        {expanded ? '收起详情' : '展开详情'}
         <ChevronDown aria-hidden="true" size={17} strokeWidth={1.8} />
       </span>
     </button>
@@ -254,7 +254,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   const { work } = view;
   const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
   const [workflowChangeState, setWorkflowChangeState] = useState<WorkflowChangeState | null>(null);
-  const [executionExpanded, setExecutionExpanded] = useState(false);
+  const [executionExpanded, setExecutionExpanded] = useState(true);
   const canChangeWorkflow = Boolean(onPreviewPatch && onApplyPatch && onRefreshAuthoritative);
   const requestWorkflowChange = useCallback((request: ResultWorkflowChangeRequest) => {
     setWorkflowChangeState({ token: request.token, status: 'updating' });
@@ -287,6 +287,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
     () => work.blocks.filter((block) => !block.tombstone && !isAutomaticNodeSummary(block)),
     [isAutomaticNodeSummary, work.blocks],
   );
+  const hasPresentationCanvas = presentationBlocks.length > 0
+    || (v2Definition?.inputSpecs.length ?? 0) > 0;
   const pendingInputSpecs = useMemo(() => {
     const pending = new Set(presentation?.attentionTask?.waitingInputIds ?? []);
     return v2Definition?.inputSpecs.filter((spec) => pending.has(spec.id)) ?? [];
@@ -428,6 +430,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
           inputs={v2Inputs ?? []}
           runId={presentation?.runId}
           tasks={presentation?.tasks ?? []}
+          showStructure={false}
         />
       ) : null}
     </div>
@@ -494,17 +497,19 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onFocusTask={focusPresentationTask}
           />
 
-          <div className="wg2-work-presentation__canvas">
-            {presentationBlockCanvas}
-          </div>
+          {hasPresentationCanvas ? (
+            <div className="wg2-work-presentation__canvas">
+              {presentationBlockCanvas}
+            </div>
+          ) : null}
 
           <section
             className="wg2-work-execution"
             data-expanded={executionDetailsOpen ? 'true' : 'false'}
             data-testid="work-execution"
-            aria-label="执行任务"
+            aria-label="工作结构"
           >
-            <ExecutionSummary
+            <WorkStructureSummary
               presentation={presentation}
               expanded={executionDetailsOpen}
               onToggle={() => {

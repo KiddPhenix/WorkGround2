@@ -138,6 +138,21 @@ async function runTests(): Promise<void> {
   ok(host.textContent?.includes('等待信息') === true, 'shows runtime state without domain rules');
   ok(host.textContent?.includes('根据约束整理候选方案') === true, 'shows definition structure');
 
+  await act(async () => {
+    root.render(
+      <WorkDefinitionOverview
+        definition={definition}
+        inputs={inputs}
+        runId="run-current"
+        tasks={tasks}
+        showStructure={false}
+      />,
+    );
+  });
+  ok(host.textContent?.includes('工作信息') === true, 'keeps work information when structure runs elsewhere');
+  ok(host.textContent?.includes('工作结构') === false, 'omits the duplicate static structure list');
+  ok(host.textContent?.includes('等待信息') === false, 'runtime state is owned by the interactive structure');
+
   await act(async () => root.unmount());
   host.remove();
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
