@@ -49,39 +49,54 @@ func TestProbeCLICapabilitiesHonorsExplicitConfig(t *testing.T) {
 }
 
 func TestCLICapabilityCacheIncludesFailuresAndExpires(t *testing.T) {
-	command := "codex-cache-test"
-	cliCapabilityCache.Delete(command)
-	t.Cleanup(func() { cliCapabilityCache.Delete(command) })
+	key := cliCapabilityCacheKey("codex-cache-test", false)
+	cliCapabilityCache.Delete(key)
+	t.Cleanup(func() { cliCapabilityCache.Delete(key) })
 	now := time.Now()
 	wantErr := errors.New("probe failed")
 
-	storeCLICapabilityCache(command, nil, wantErr, now)
-	capabilities, err, ok := loadCLICapabilityCache(command, now.Add(time.Minute))
+	storeCLICapabilityCache(key, nil, wantErr, now)
+	capabilities, err, ok := loadCLICapabilityCache(key, now.Add(time.Minute))
 	if !ok || err == nil || err.Error() != wantErr.Error() || len(capabilities) != 0 {
 		t.Fatalf("cached failure = (%v, %v, %v), want visible failure", capabilities, err, ok)
 	}
-	if _, _, ok := loadCLICapabilityCache(command, now.Add(cliCapabilityCacheTTL)); ok {
+	if _, _, ok := loadCLICapabilityCache(key, now.Add(cliCapabilityCacheTTL)); ok {
 		t.Fatal("expired capability probe failure remained cached")
 	}
 }
 
 func TestCLICapabilityCacheCopiesCapabilities(t *testing.T) {
-	command := "codex-cache-copy-test"
-	cliCapabilityCache.Delete(command)
-	t.Cleanup(func() { cliCapabilityCache.Delete(command) })
+	key := cliCapabilityCacheKey("codex-cache-copy-test", false)
+	cliCapabilityCache.Delete(key)
+	t.Cleanup(func() { cliCapabilityCache.Delete(key) })
 	now := time.Now()
 	want := []string{"web_search"}
 
-	storeCLICapabilityCache(command, want, nil, now)
+	storeCLICapabilityCache(key, want, nil, now)
 	want[0] = "mutated"
-	got, err, ok := loadCLICapabilityCache(command, now)
+	got, err, ok := loadCLICapabilityCache(key, now)
 	if !ok || err != nil || !reflect.DeepEqual(got, []string{"web_search"}) {
 		t.Fatalf("cached capabilities = (%v, %v, %v)", got, err, ok)
 	}
 	got[0] = "mutated-again"
-	again, _, _ := loadCLICapabilityCache(command, now)
+	again, _, _ := loadCLICapabilityCache(key, now)
 	if !reflect.DeepEqual(again, []string{"web_search"}) {
 		t.Fatalf("cached capabilities exposed mutable state: %v", again)
+	}
+}
+
+func TestCLICapabilityCacheSeparatesConfigIsolation(t *testing.T) {
+	command := "codex-cache-isolation-test"
+	normal := cliCapabilityCacheKey(command, false)
+	isolated := cliCapabilityCacheKey(command, true)
+	t.Cleanup(func() {
+		cliCapabilityCache.Delete(normal)
+		cliCapabilityCache.Delete(isolated)
+	})
+	storeCLICapabilityCache(normal, nil, errors.New("user config failed"), time.Now())
+
+	if _, _, ok := loadCLICapabilityCache(isolated, time.Now()); ok {
+		t.Fatal("isolated probe reused the normal-config failure")
 	}
 }
 

@@ -565,7 +565,9 @@ capabilities = ["web_search"]
 Codex CLI 是一个受控例外：启动时会在 2 秒超时内读取 `codex features list`，当
 `browser_use` 或 `standalone_web_search` 实际启用时声明 `web_search`，当
 `image_generation` 实际启用时声明 `image_generation`。探测失败会输出警告并继续启动；
-显式 `capabilities`（含空数组）会关闭探测。Codex 以副作用生成图片时，CLI provider 会
+显式 `capabilities`（含空数组）会关闭探测。若 Provider 使用 `--ignore-user-config`，
+探测也在临时空 `CODEX_HOME` 中运行，并与普通探测分开缓存；用户级 Codex 配置暂时不兼容
+不会误删该 Provider 的全部能力。Codex 以副作用生成图片时，CLI provider 会
 从 JSONL 流中捕获 `thread.started` 的 thread ID，并通过请求作用域制品收集器报告
 `$CODEX_HOME/generated_images/<thread_id>/` 下的文件；环境变量未设置时回退到标准
 `~/.codex/generated_images/<thread_id>/`。`request_help` 对这些 Codex 制品
