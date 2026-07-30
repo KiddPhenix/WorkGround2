@@ -752,7 +752,13 @@ export class WorkControllerAdapter {
         expectedRevision: expectedRevision!,
       });
     }
-    if (result.committed) {
+    if (result.committed && !result.candidate) {
+      // A body-less commit cannot safely drive the next write, so recover the
+      // authoritative projection before returning. When Candidate is present,
+      // the mutation response already carries the complete committed fragment
+      // and its aggregate revision. Event delivery may legitimately lag behind
+      // that write; callers can continue with result.revision while the normal
+      // subscription converges the read-side projection.
       try {
         await this.recoverSnapshotToRevision(input.workId, result.revision);
       } catch (err) {

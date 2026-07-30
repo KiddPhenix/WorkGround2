@@ -2087,6 +2087,40 @@ test('candidate committed-recovery (ACK loss): fetches stale then fresh, returns
   adapter.dispose();
 });
 
+test('candidate committed with payload: late snapshot does not block the confirmed result', async () => {
+  reset();
+  const workID = 'work-cand-payload';
+  applySnapshot(makeView(workID, 513));
+
+  const candidate = structuredClone(parseWorkDefinitionRevision(fixtDefRevision));
+  candidate.workId = workID;
+  const port = new TestPort();
+  port.candidateNext = {
+    candidate,
+    revision: 514,
+    duplicate: false,
+    committed: true,
+    recoverable: false,
+  };
+  port.fetch = async () => makeView(workID, 513);
+
+  const adapter = new WorkControllerAdapter(port);
+  const result = await adapter.createCandidateRevision({
+    workId: workID,
+    intent: '先生成角色、世界观和情节大纲',
+    baseDefinitionRevision: 2,
+    expectedRevision: 513,
+    requestId: 'cand-payload-514',
+  });
+
+  equal(result.revision, 514, 'confirmed aggregate revision is returned');
+  equal(result.candidate?.workId, workID, 'committed candidate payload is returned');
+  equal(port.fetchCount, 0, 'late read-side projection is not polled as a completion gate');
+  equal(useWorkStore.getState().revisions[workID], 513, 'subscription remains responsible for read-side convergence');
+  equal(adapter.getStatus(workID).snapshotError, null, 'normal event lag is not exposed as a failure');
+  adapter.dispose();
+});
+
 test('late rev8 snapshot does not roll back rev9 store', () => {
   reset();
   const workID = 'work-late-snap';
