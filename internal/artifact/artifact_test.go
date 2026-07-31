@@ -564,6 +564,214 @@ func TestFileProducer_BashIndirectImageLoadsWithWorkspaceFile(t *testing.T) {
 	}
 }
 
+// ── FileProducer relative path discovery tests ─────────────────────────────
+
+func TestFileProducer_BashRelativeDocx_ChineseVerb(t *testing.T) {
+	// "路线指引.docx saved successfully." → the relative path with a
+	// non-source extension must be discovered even though the English
+	// verb "saved" is followed by "successfully.", not the file name.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"docgen.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "路线指引.docx saved successfully."},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	d := discovered[0]
+	if d.Name != "路线指引.docx" {
+		t.Errorf("Name = %q, want 路线指引.docx", d.Name)
+	}
+	if d.Path != "路线指引.docx" {
+		t.Errorf("Path = %q, want 路线指引.docx", d.Path)
+	}
+	if d.SlotKind() != "docx" {
+		t.Errorf("SlotKind = %q, want docx", d.SlotKind())
+	}
+}
+
+func TestFileProducer_BashRelativeDocx_ANSIPowerShell(t *testing.T) {
+	// PowerShell Get-Item table with ANSI green highlighting:
+	//   \x1b[32;1m路线指引.docx  37993 ...
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"Get-Item 路线指引.docx"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "\x1b[32;1m路线指引.docx  37993  2025-01-15  10:30\x1b[0m"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d: %+v", len(discovered), discovered)
+	}
+	d := discovered[0]
+	if d.Name != "路线指引.docx" {
+		t.Errorf("Name = %q, want 路线指引.docx", d.Name)
+	}
+	if d.Path != "路线指引.docx" {
+		t.Errorf("Path = %q, want 路线指引.docx", d.Path)
+	}
+	if d.SlotKind() != "docx" {
+		t.Errorf("SlotKind = %q, want docx", d.SlotKind())
+	}
+}
+
+func TestFileProducer_BashRelativeDocx_DedupVerbAndRelative(t *testing.T) {
+	// When both extractVerbPaths ("saved report.docx") and
+	// extractRelativeArtifactPaths find the same file, only one
+	// Discovered entry must be emitted.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"save.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "saved report.docx"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 deduplicated, got %d: %+v", len(discovered), discovered)
+	}
+	if discovered[0].Name != "report.docx" {
+		t.Errorf("Name = %q, want report.docx", discovered[0].Name)
+	}
+}
+
+func TestFileProducer_BashRelative_RejectsSourceFile(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"ls"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "main.go  utils_test.go  config.yaml"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0, got %d: %+v", len(discovered), discovered)
+	}
+}
+
+func TestFileProducer_BashRelative_RejectsURL(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"curl"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "download https://example.com/report.docx complete"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0, got %d: %+v", len(discovered), discovered)
+	}
+}
+
+func TestFileProducer_BashRelative_RejectsNonArtifactExtensions(t *testing.T) {
+	// Tokens whose extension is not in the artifact whitelist must never
+	// be treated as artifact paths, even if they pass looksLikePath.
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"version number", "deployed v1.2.3 to staging"},
+		{"date stamp", "built release.2026"},
+		{"unknown TLD", "ping example.io ok"},
+		{"custom unknown ext", "generated report.customext"},
+		{"bare domain .com", "ping example.com ok"},
+		{"bare domain .org", "see example.org for details"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msgs := []provider.Message{
+				{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+					{ID: "tc1", Name: "bash", Arguments: `{"command":"run"}`},
+				}},
+				{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+					Content: tt.content},
+			}
+			if len(Collect(msgs, []Producer{&FileProducer{}})) != 0 {
+				t.Errorf("expected 0 for %q", tt.content)
+			}
+		})
+	}
+}
+
+func TestFileProducer_BashRelative_QuotedPathWithSpace(t *testing.T) {
+	// "团队 路线.docx" saved successfully. → one artifact with the
+	// complete, space-preserving relative path.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"docgen.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: `"团队 路线.docx" saved successfully.`},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d: %+v", len(discovered), discovered)
+	}
+	d := discovered[0]
+	if d.Name != "团队 路线.docx" {
+		t.Errorf("Name = %q, want 团队 路线.docx", d.Name)
+	}
+	if d.Path != "团队 路线.docx" {
+		t.Errorf("Path = %q, want 团队 路线.docx", d.Path)
+	}
+	if d.SlotKind() != "docx" {
+		t.Errorf("SlotKind = %q, want docx", d.SlotKind())
+	}
+}
+
+func TestFileProducer_BashRelative_RejectsProse(t *testing.T) {
+	// Common prose with dots (U.S., etc.) should not produce artifacts.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"echo done"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "The build finished successfully. Everything is fine."},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0, got %d: %+v", len(discovered), discovered)
+	}
+}
+
+func TestFileProducer_BashRelative_IgnoresFailedResult(t *testing.T) {
+	// A failed bash result must not produce artifacts, even if it mentions
+	// a plausible file name.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"docgen.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "error: could not create 路线指引.docx"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0, got %d: %+v", len(discovered), discovered)
+	}
+}
+
+func TestFileProducer_BashRelative_PreservesAbsolutePath(t *testing.T) {
+	// Absolute paths must still be discovered as before.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"build.cmd"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: "Build done. D:\\out\\app.exe is ready."},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1, got %d: %+v", len(discovered), discovered)
+	}
+	if discovered[0].Path != "D:\\out\\app.exe" {
+		t.Errorf("Path = %q, want D:\\out\\app.exe", discovered[0].Path)
+	}
+}
+
 // ── CapabilityProducer / CollectSlotGuidance tests ──────────────────────────
 
 func TestImageProducerCapabilityProducer(t *testing.T) {
