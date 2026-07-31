@@ -629,11 +629,21 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	// at the depth cap only multiplies recovery files (#5993 reached 8 nested
 	// levels). The caller falls back to force-writing the branch it owns.
 	parentDepth := 0
-	if parentMeta, ok, metaErr := LoadBranchMeta(originalPath); metaErr == nil && ok && parentMeta.Recovered {
-		parentDepth = parentMeta.RecoveryDepth
-		if parentDepth <= 0 {
-			// Legacy recovery meta predating RecoveryDepth.
-			parentDepth = 1
+	parentMeta, parentMetaOK, parentMetaErr := LoadBranchMeta(originalPath)
+	if parentMetaErr == nil && parentMetaOK {
+		// Recovery is still the same logical session origin. Frontends may add
+		// richer scope/topic metadata through opts, but an omitted source must
+		// inherit from the parent instead of falling into the external-session
+		// migration path.
+		if strings.TrimSpace(opts.BranchMeta.SessionSource) == "" {
+			opts.BranchMeta.SessionSource = parentMeta.SessionSource
+		}
+		if parentMeta.Recovered {
+			parentDepth = parentMeta.RecoveryDepth
+			if parentDepth <= 0 {
+				// Legacy recovery meta predating RecoveryDepth.
+				parentDepth = 1
+			}
 		}
 	}
 	if parentDepth >= SessionRecoveryMaxDepth {
@@ -1832,6 +1842,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			SchemaVersion:  schemaVersion,
 		})
 	}
+	resolveLegacyRecoverySources(out)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
 			return out[i].Path < out[j].Path
@@ -1839,6 +1850,51 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		return out[i].LastActivityAt.After(out[j].LastActivityAt)
 	})
 	return out, nil
+}
+
+// resolveLegacyRecoverySources repairs the listing view for recovery branches
+// created before SaveRecoveryBranch inherited SessionSource. Some of those
+// branches were subsequently stamped "external" by Desktop migration even
+// though their parent was a Work Task or CLI session. ParentID is durable, so
+// resolving the lineage is deterministic and leaves genuine external sessions
+// unchanged.
+func resolveLegacyRecoverySources(infos []SessionOrderInfo) {
+	byID := make(map[string]int, len(infos))
+	for i := range infos {
+		if id := strings.TrimSpace(string(BranchID(infos[i].Path))); id != "" {
+			byID[id] = i
+		}
+	}
+
+	resolved := make(map[int]string, len(infos))
+	resolving := make(map[int]bool, len(infos))
+	var resolve func(int) string
+	resolve = func(index int) string {
+		if source, ok := resolved[index]; ok {
+			return source
+		}
+		info := infos[index]
+		source := strings.TrimSpace(info.SessionSource)
+		if !info.Recovered || (source != "" && !strings.EqualFold(source, "external")) || resolving[index] {
+			resolved[index] = source
+			return source
+		}
+
+		resolving[index] = true
+		if parent, ok := byID[strings.TrimSpace(info.ParentID)]; ok {
+			parentSource := resolve(parent)
+			if parentSource != "" && !strings.EqualFold(parentSource, "external") {
+				source = parentSource
+			}
+		}
+		delete(resolving, index)
+		resolved[index] = source
+		return source
+	}
+
+	for i := range infos {
+		infos[i].SessionSource = resolve(i)
+	}
 }
 
 // ListSessions returns every non-empty *.jsonl session under dir,
