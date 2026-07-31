@@ -66,6 +66,95 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRecoveryBranchInheritsAndListsParentSource(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "work-task.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "persisted task"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	parentMeta, err := EnsureBranchMeta(parentPath)
+	if err != nil {
+		t.Fatalf("ensure parent meta: %v", err)
+	}
+	const workSource = "work:work-1/run:run-1/stage:v2-dag/task:task-1/attempt:0/request:req-1"
+	parentMeta.SessionSource = workSource
+	if err := SaveBranchMetaPreserveUpdated(parentPath, parentMeta); err != nil {
+		t.Fatalf("save parent source: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "recovered task"})
+	recovery, err := stale.SaveRecoveryBranch(RecoveryBranchOptions{OriginalPath: parentPath})
+	if err != nil {
+		t.Fatalf("save recovery branch: %v", err)
+	}
+	if recovery.Meta.SessionSource != workSource {
+		t.Fatalf("recovery source = %q, want inherited %q", recovery.Meta.SessionSource, workSource)
+	}
+
+	// Simulate a historical recovery branch that Desktop already migrated to
+	// external. Listing must still recover the durable parent source.
+	legacyMeta, ok, err := LoadBranchMeta(recovery.Path)
+	if err != nil || !ok {
+		t.Fatalf("load recovery meta: ok=%v err=%v", ok, err)
+	}
+	legacyMeta.SessionSource = "external"
+	if err := SaveBranchMetaPreserveUpdated(recovery.Path, legacyMeta); err != nil {
+		t.Fatalf("save legacy recovery source: %v", err)
+	}
+
+	externalPath := filepath.Join(dir, "external.jsonl")
+	external := NewSession("sys")
+	external.Add(provider.Message{Role: provider.RoleUser, Content: "real external"})
+	if err := external.Save(externalPath); err != nil {
+		t.Fatalf("save external session: %v", err)
+	}
+	externalMeta, err := EnsureBranchMeta(externalPath)
+	if err != nil {
+		t.Fatalf("ensure external meta: %v", err)
+	}
+	externalMeta.SessionSource = "external"
+	if err := SaveBranchMetaPreserveUpdated(externalPath, externalMeta); err != nil {
+		t.Fatalf("save external source: %v", err)
+	}
+	externalRecoveryPath := filepath.Join(dir, "external-recovery.jsonl")
+	externalRecovery := NewSession("sys")
+	externalRecovery.Add(provider.Message{Role: provider.RoleUser, Content: "real external recovery"})
+	if err := externalRecovery.Save(externalRecoveryPath); err != nil {
+		t.Fatalf("save external recovery: %v", err)
+	}
+	externalRecoveryMeta, err := EnsureBranchMeta(externalRecoveryPath)
+	if err != nil {
+		t.Fatalf("ensure external recovery meta: %v", err)
+	}
+	externalRecoveryMeta.Recovered = true
+	externalRecoveryMeta.ParentID = string(BranchID(externalPath))
+	externalRecoveryMeta.SessionSource = "external"
+	if err := SaveBranchMetaPreserveUpdated(externalRecoveryPath, externalRecoveryMeta); err != nil {
+		t.Fatalf("save external recovery source: %v", err)
+	}
+
+	infos, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	sources := make(map[string]string, len(infos))
+	for _, info := range infos {
+		sources[filepath.Clean(info.Path)] = info.SessionSource
+	}
+	if got := sources[filepath.Clean(recovery.Path)]; got != workSource {
+		t.Fatalf("listed legacy recovery source = %q, want %q", got, workSource)
+	}
+	if got := sources[filepath.Clean(externalPath)]; got != "external" {
+		t.Fatalf("genuine external source = %q, want external", got)
+	}
+	if got := sources[filepath.Clean(externalRecoveryPath)]; got != "external" {
+		t.Fatalf("genuine external recovery source = %q, want external", got)
+	}
+}
+
 func TestSaveRedactsProtectedSkillBody(t *testing.T) {
 	protected := skill.Render(skill.Skill{
 		Name:        "remote-secret",

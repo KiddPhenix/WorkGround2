@@ -74,6 +74,22 @@ func TestListProjectTreeExcludesWorkTaskSessions(t *testing.T) {
 		t.Fatalf("save work task source: %v", err)
 	}
 
+	// Historical snapshot-conflict recovery branches lost the work source and
+	// were later stamped external. Parent lineage must still keep them out of
+	// the general SessionList.
+	recoveryPath := writeTopicSession(t, sessionDir, "20250101-140000.000000000-recovery.jsonl",
+		"topic-recovery", "Recovered Work Task", projectRoot)
+	recoveryMeta, ok, err := agent.LoadBranchMeta(recoveryPath)
+	if err != nil || !ok {
+		t.Fatalf("load recovery meta: err=%v ok=%v", err, ok)
+	}
+	recoveryMeta.Recovered = true
+	recoveryMeta.ParentID = string(agent.BranchID(workTaskPath))
+	recoveryMeta.SessionSource = "external"
+	if err := agent.SaveBranchMetaPreserveUpdated(recoveryPath, recoveryMeta); err != nil {
+		t.Fatalf("save recovery source: %v", err)
+	}
+
 	// Manually verify infos listing excludes work: sessions.
 	infos, err := agent.ListSessions(sessionDir)
 	if err != nil {
@@ -108,13 +124,20 @@ func TestListProjectTreeExcludesWorkTaskSessions(t *testing.T) {
 	if visibleSessionTopics[topicSummaryKey("project", projectRoot, "topic-work")] {
 		t.Error("work task-only topic should not be recorded as visible")
 	}
+	if _, ok := topicSummaries[topicSummaryKey("project", projectRoot, "topic-recovery")]; ok {
+		t.Error("recovered work task topic should be excluded from topicSummaries")
+	}
+	if !workTaskTopics[topicSummaryKey("project", projectRoot, "topic-recovery")] {
+		t.Error("recovered work task topic should be recorded as hidden")
+	}
 
-	if err := prependTopicsInProjectsFile(projectRoot, []string{"topic-normal", "topic-work"}, false); err != nil {
+	if err := prependTopicsInProjectsFile(projectRoot, []string{"topic-normal", "topic-work", "topic-recovery"}, false); err != nil {
 		t.Fatalf("persist topic list: %v", err)
 	}
 	if err := saveTopicTitles(projectRoot, map[string]string{
-		"topic-normal": "Normal Topic",
-		"topic-work":   "Work Task Topic",
+		"topic-normal":   "Normal Topic",
+		"topic-work":     "Work Task Topic",
+		"topic-recovery": "Recovered Work Task",
 	}); err != nil {
 		t.Fatalf("persist topic titles: %v", err)
 	}
@@ -125,6 +148,9 @@ func TestListProjectTreeExcludesWorkTaskSessions(t *testing.T) {
 	}
 	if projectTreeContainsTopic(tree, "topic-work") {
 		t.Error("already-migrated work task topic should be hidden from project tree")
+	}
+	if projectTreeContainsTopic(tree, "topic-recovery") {
+		t.Error("legacy external recovery of a work task should be hidden from project tree")
 	}
 }
 
