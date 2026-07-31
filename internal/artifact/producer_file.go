@@ -185,20 +185,22 @@ func completeStepEvidencePaths(argsJSON string) []string {
 }
 
 func extractResultPaths(output string) []string {
+	output = stripANSI(output)
 	paths := extractVerbPaths(output)
-	raw := extractRawFilePaths(output)
-	if len(raw) > 0 {
+	addNew := func(candidates []string) {
 		seen := make(map[string]bool, len(paths))
 		for _, p := range paths {
 			seen[p] = true
 		}
-		for _, p := range raw {
+		for _, p := range candidates {
 			if !seen[p] {
 				seen[p] = true
 				paths = append(paths, p)
 			}
 		}
 	}
+	addNew(extractRawFilePaths(output))
+	addNew(extractRelativeArtifactPaths(output))
 	return paths
 }
 
@@ -244,9 +246,17 @@ func extractVerbPaths(output string) []string {
 			}
 			rest = strings.TrimSpace(rest)
 			rest = strings.TrimRight(rest, ".,;:!?\"'")
-			if rest != "" && !isSourceFile(rest) && looksLikePath(rest) {
-				paths = append(paths, rest)
+			if rest == "" || isSourceFile(rest) || !looksLikePath(rest) {
+				continue
 			}
+			// Bare filenames (no path separator) must carry a recognised
+			// artifact extension so that version stamps, dates, TLDs and
+			// unknown extensions are not mistaken for artifact paths.
+			hasSep := strings.Contains(rest, string(filepath.Separator)) || strings.Contains(rest, "/")
+			if !hasSep && !isArtifactExtension(filepath.Ext(rest)) {
+				continue
+			}
+			paths = append(paths, rest)
 		}
 	}
 	return paths
@@ -274,6 +284,98 @@ func extractRawFilePaths(output string) []string {
 		paths = append(paths, token)
 	}
 	return paths
+}
+
+// stripANSI removes ANSI escape sequences (e.g. "\x1b[32;1m") from s.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && ((s[j] >= '0' && s[j] <= '9') || s[j] == ';') {
+				j++
+			}
+			if j < len(s) && s[j] == 'm' {
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// extractRelativeArtifactPaths scans output line-by-line with quote-aware
+// tokenization (shellFields) for relative paths whose extension is in the
+// artifact extension whitelist. Absolute paths, source files, URLs, and
+// tokens without a recognised artifact extension are skipped.
+func extractRelativeArtifactPaths(output string) []string {
+	var paths []string
+	for _, line := range strings.Split(output, "\n") {
+		for _, token := range shellFields(line) {
+			token = strings.Trim(token, "\"',;:!?()[]{}<>")
+			if token == "" {
+				continue
+			}
+			if looksLikeAbsolutePath(token) {
+				continue
+			}
+			if !looksLikePath(token) {
+				continue
+			}
+			if isSourceFile(token) {
+				continue
+			}
+			if strings.HasPrefix(token, "http://") || strings.HasPrefix(token, "https://") {
+				continue
+			}
+			if !isArtifactExtension(filepath.Ext(token)) {
+				continue
+			}
+			paths = append(paths, token)
+		}
+	}
+	return paths
+}
+
+// isArtifactExtension reports whether ext is a recognised artifact file
+// extension (document, image, video, audio, archive, executable, font,
+// or binary). The whitelist is intentionally closed; unknown or numeric
+// extensions are rejected so that prose tokens (v1.2.3, release.2026,
+// example.io) are never mistaken for artifact paths.
+func isArtifactExtension(ext string) bool {
+	switch strings.ToLower(ext) {
+	// ── documents ──
+	case ".docx", ".xlsx", ".xls", ".pptx", ".pdf":
+		return true
+	// ── images ──
+	case ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp",
+		".ico", ".tiff", ".tif":
+		return true
+	// ── video ──
+	case ".mp4", ".webm", ".mov", ".avi", ".mkv":
+		return true
+	// ── audio ──
+	case ".mp3", ".wav", ".ogg", ".flac", ".aac", ".wma":
+		return true
+	// ── archives ──
+	case ".zip", ".tar", ".gz", ".7z", ".rar":
+		return true
+	// ── executables / libraries ──
+	case ".exe", ".dll", ".so", ".dylib":
+		return true
+	// ── scripts (SlotKind-visible) ──
+	case ".sh", ".bat", ".cmd", ".ps1":
+		return true
+	// ── fonts ──
+	case ".ttf", ".otf", ".woff", ".woff2":
+		return true
+	// ── disk / database / binary ──
+	case ".bin", ".dat", ".iso", ".img", ".db", ".sqlite":
+		return true
+	}
+	return false
 }
 
 // looksLikeAbsolutePath reports whether s starts with a Windows drive letter
