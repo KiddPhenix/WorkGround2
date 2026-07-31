@@ -533,31 +533,26 @@ func (s *Service) RetryArtifactSlot(
 				break
 			}
 
-			nextState := SlotGenerating
-			nextSlotRevision := slot.Revision + 1
-			var nextError *ArtifactError
 			if attemptSatisfied {
-				nextState = slot.State
-				nextSlotRevision = slot.Revision
-				nextError = slot.Error
+				slotResult = artifactSlotResult(slot, slotState.Revision)
+				slotCommitted = true
+				alreadySatisfied = true
+				err = nil
+				break
 			}
 			slotIntent := UpdateArtifactSlotInput{
 				WorkID:           input.WorkID,
 				SlotID:           input.SlotID,
 				RequestID:        input.RequestID + "/slot",
-				State:            nextState,
+				State:            SlotGenerating,
 				Refs:             append([]ArtifactRef(nil), slot.ArtifactRefs...),
 				UpstreamDigest:   slot.UpstreamDigest,
 				Progress:         slot.Progress,
 				Summary:          slot.Summary,
-				Error:            nextError,
-				Revision:         nextSlotRevision,
+				Revision:         slot.Revision + 1,
 				ExpectedRevision: slotState.Revision,
 				DefinitionRev:    input.DefinitionRevision,
 				intentDigest:     retryIntentDigest,
-			}
-			if attemptSatisfied {
-				slotIntent.intentDigest = noopIntentDigest
 			}
 			slotResult, err = s.UpdateArtifactSlot(ctx, slotIntent)
 			if err == nil {

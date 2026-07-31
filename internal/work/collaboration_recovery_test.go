@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -256,6 +257,7 @@ func TestRetryArtifactSlotAlreadyGeneratingOrReadyIsSuccessfulNoop(t *testing.T)
 				}
 			}
 			beforeSlotRevision := current.Slot.Revision
+			beforeWorkRevision := current.WorkRevision
 			executor := &coordinatorExecutor{}
 			h.svc.SetTaskExecutor(executor)
 			request := RetryArtifactSlotRequest{
@@ -267,17 +269,116 @@ func TestRetryArtifactSlotAlreadyGeneratingOrReadyIsSuccessfulNoop(t *testing.T)
 				result.Slot.State != target || result.Slot.Revision != beforeSlotRevision {
 				t.Fatalf("noop retry result=%+v err=%v", result, err)
 			}
+			if result.Revision != beforeWorkRevision {
+				t.Fatalf("noop retry advanced Work revision %d → %d", beforeWorkRevision, result.Revision)
+			}
+			_, receipt, err := h.store.LoadState(h.work, request.RequestID+"/slot/artifact-slot")
+			if err != nil || receipt.RequestFound {
+				t.Fatalf("noop retry wrote request receipt: found=%v err=%v", receipt.RequestFound, err)
+			}
 			if executor.callCount() != 0 {
 				t.Fatalf("noop retry scheduled producer %d times", executor.callCount())
 			}
 
 			replayed, err := h.svc.RetryArtifactSlot(context.Background(), request)
-			if err != nil || replayed == nil || !replayed.Duplicate || replayed.Slot == nil ||
+			if err != nil || replayed == nil || replayed.Slot == nil ||
 				replayed.Slot.State != target || replayed.Slot.Revision != beforeSlotRevision {
 				t.Fatalf("noop replay result=%+v err=%v", replayed, err)
 			}
+			if replayed.Revision != beforeWorkRevision {
+				t.Fatalf("noop replay advanced Work revision %d → %d", beforeWorkRevision, replayed.Revision)
+			}
+			_, receipt, err = h.store.LoadState(h.work, request.RequestID+"/slot/artifact-slot")
+			if err != nil || receipt.RequestFound {
+				t.Fatalf("noop replay wrote request receipt: found=%v err=%v", receipt.RequestFound, err)
+			}
 			if executor.callCount() != 0 {
 				t.Fatalf("noop replay scheduled producer %d times", executor.callCount())
+			}
+		})
+	}
+}
+
+func TestRetryArtifactSlotAlreadySatisfiedConcurrentDifferentRequestIDs(t *testing.T) {
+	for _, target := range []ArtifactSlotState{SlotGenerating, SlotReady} {
+		t.Run(string(target), func(t *testing.T) {
+			h := newCoordinatorHarness(t, coordinatorDefinition(
+				[]NodeDef{{ID: "n1", Title: "producer", ProducesSlotIDs: []string{"slot"}}},
+				nil,
+			))
+			_, state, err := h.store.LoadState(h.work, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+				WorkID: h.work, SlotID: "slot", RequestID: "conc-gen-" + string(target),
+				State: SlotGenerating, Revision: 2, ExpectedRevision: state.Revision,
+				DefinitionRev: h.def.Revision,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target == SlotReady {
+				current, err = h.svc.UpdateArtifactSlot(context.Background(), UpdateArtifactSlotInput{
+					WorkID: h.work, SlotID: "slot", RequestID: "conc-ready",
+					State: SlotReady, Revision: 3, ExpectedRevision: current.WorkRevision,
+					DefinitionRev: h.def.Revision,
+					Refs: []ArtifactRef{{
+						ID: "final", Name: "final.md", Type: "markdown",
+						Status: ArtifactRefStatusAvailable, BlobDigest: "sha256:final",
+					}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeWorkRevision := current.WorkRevision
+			beforeSlotRevision := current.Slot.Revision
+			executor := &coordinatorExecutor{}
+			h.svc.SetTaskExecutor(executor)
+
+			const concurrency = 8
+			var wg sync.WaitGroup
+			results := make([]*RetryArtifactSlotResult, concurrency)
+			errs := make([]error, concurrency)
+			for i := 0; i < concurrency; i++ {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					req := RetryArtifactSlotRequest{
+						WorkID: h.work, SlotID: "slot", DefinitionRevision: h.def.Revision,
+						ExpectedRevision: current.WorkRevision, RequestID: fmt.Sprintf("conc-%s-%d", string(target), idx),
+					}
+					results[idx], errs[idx] = h.svc.RetryArtifactSlot(context.Background(), req)
+				}(i)
+			}
+			wg.Wait()
+
+			for i := 0; i < concurrency; i++ {
+				r, e := results[i], errs[i]
+				if e != nil || r == nil || !r.Committed || r.Slot == nil ||
+					r.Slot.State != target || r.Slot.Revision != beforeSlotRevision {
+					t.Fatalf("concurrent[%d] result=%+v err=%v", i, r, e)
+				}
+				if r.Revision != beforeWorkRevision {
+					t.Fatalf("concurrent[%d] advanced Work revision %d → %d", i, beforeWorkRevision, r.Revision)
+				}
+				requestID := fmt.Sprintf("conc-%s-%d", string(target), i)
+				_, receipt, loadErr := h.store.LoadState(h.work, requestID+"/slot/artifact-slot")
+				if loadErr != nil || receipt.RequestFound {
+					t.Fatalf("concurrent[%d] wrote request receipt: found=%v err=%v", i, receipt.RequestFound, loadErr)
+				}
+			}
+			if executor.callCount() != 0 {
+				t.Fatalf("concurrent retries scheduled producer %d times", executor.callCount())
+			}
+
+			_, finalState, err := h.store.LoadState(h.work, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if finalState.Revision != beforeWorkRevision {
+				t.Fatalf("final Work revision advanced %d → %d", beforeWorkRevision, finalState.Revision)
 			}
 		})
 	}
