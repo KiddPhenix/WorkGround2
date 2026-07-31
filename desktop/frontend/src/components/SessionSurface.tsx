@@ -91,6 +91,8 @@ export interface SessionSurfaceProps {
   ready: boolean;
   readOnly: boolean;
   composerDisabled: boolean;
+  workSendAvailable: boolean;
+  workSendSelected: boolean;
 
   // Header state
   sidebarCollapsed: boolean;
@@ -107,6 +109,8 @@ export interface SessionSurfaceProps {
 
   // Callbacks
   onSend: ComposerProps['onSend'];
+  onSendAsWork: NonNullable<ComposerProps['onSendAsWork']>;
+  onWorkSendChange: NonNullable<ComposerProps['onWorkSendChange']>;
   onCancel: ComposerProps['onCancel'];
   onApprove: (id: string, allow: boolean, session: boolean, persist: boolean) => void;
   onAnswerQuestion: AskProps['onAnswer'];
@@ -199,6 +203,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   ready,
   readOnly,
   composerDisabled,
+  workSendAvailable,
+  workSendSelected,
   sidebarCollapsed,
   sidebarToggleTitle,
   sidebarTogglePressed,
@@ -209,6 +215,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   runtimeMode,
   foregroundActive,
   onSend,
+  onSendAsWork,
+  onWorkSendChange,
   onCancel,
   onApprove,
   onAnswerQuestion,
@@ -389,6 +397,10 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             onEnterWidgetMode={onEnterWidgetMode}
             effort={effort}
             onSend={onSend}
+            onSendAsWork={onSendAsWork}
+            workSendAvailable={workSendAvailable}
+            workSendSelected={workSendSelected}
+            onWorkSendChange={onWorkSendChange}
             onCancel={onCancel}
             onCycleMode={onCycleMode}
             onSetMode={onSetMode}

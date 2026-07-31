@@ -15,7 +15,6 @@ function ok(value: boolean, label: string) {
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
-const treeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
 const bridgeSource = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
 const typesSource = readFileSync(resolve(testDir, "../lib/types.ts"), "utf8");
 const availabilitySource = readFileSync(resolve(testDir, "../components/work/WorkAvailabilitySurface.tsx"), "utf8");
@@ -26,6 +25,7 @@ process.stdout.write("\nApp Work Session integration contract\n");
 
 ok(!appSource.includes('data-testid="work-sidebar-btn"'), "独立侧栏 Work 入口已移除");
 ok(!appSource.includes("<WorkPage"), "App 不再挂载独立 Work 列表页");
+ok(!appSource.includes("<WorkStartSurface"), "App 不再用独立任务说明页替换 Session");
 ok(
   appSource.includes('activeTab?.sessionKind === "work"')
     && appSource.includes("activeTab?.workId")
@@ -35,14 +35,15 @@ ok(
 ok(
   appSource.includes("app.CreateWorkSession")
     && appSource.includes("crypto.randomUUID()")
-    && appSource.includes("workCreateRequestsRef"),
-  "新建意图使用唯一 requestId，失败重试复用同一幂等键",
+    && appSource.includes("workCreateRequestsRef")
+    && appSource.includes("tabId: bootstrap.tabID"),
+  "首条消息沿当前 tab 原地创建，使用唯一 requestId 且失败重试复用同一幂等键",
 );
 ok(
-  appSource.includes("setWorkBootstrap(bootstrap)")
-    && appSource.includes("void beginWorkInitialization(bootstrap)")
-    && appSource.includes("<WorkStartSurface"),
-  "新建 Work 先挂载输入首屏，再把初始化作为后台任务派发",
+  appSource.includes("handleSendAsWork")
+    && appSource.includes("<WorkSessionTransition")
+    && appSource.includes('? "error" : "planning"'),
+  "Composer 首条消息可发送为工作，结构规划期间保留 Session 过渡面",
 );
 ok(
   appSource.includes("workInitTaskRef")
@@ -51,36 +52,32 @@ ok(
   "重复开始复用同一 requestId 的后台初始化任务",
 );
 ok(
-  appSource.includes("let workID = current.result?.tabMeta?.workId")
-    && appSource.includes("workID = result?.tabMeta?.workId")
-    && !appSource.includes("const result = workBootstrapRef.current?.result"),
-  "准备中单击开始直接消费后台任务返回结果，不等待 React 状态回写后再次点击",
+  appSource.includes("result.tabMeta?.workId")
+    && appSource.includes("setWorkStartIntent")
+    && appSource.includes("revealWorkPanel"),
+  "后台创建结果直接驱动结构生成，结构完成后显现工作面板",
 );
 ok(
-  appSource.includes("ui.setDraft(workID, \"back\", prompt)")
+  appSource.includes("ui.setDraft(workID, \"back\", bootstrap.submitPrompt)")
     && appSource.includes("startIntent={workStartIntent?.workID === activeTab.workId ? workStartIntent : undefined}"),
-  "单击开始把输入交给 WorkCard 现有生成应用流程",
+  "发送为工作把首条消息交给 WorkCard 现有生成应用流程",
 );
 ok(
-  appSource.includes("await enqueueTabSwitch(result.tabMeta.id")
+  appSource.includes("result.tabMeta.id !== activeTabId")
     && appSource.includes("await refreshProjectsAndTabs()"),
-  "创建完成后切换到返回的 Work Session 并刷新树",
+  "原地转换不重开当前 tab，恢复到其他 tab 时仍可切换并刷新树",
 );
 ok(
   /const topicbarCanRename = !sidebarImDetailConnection\s*&& activeTab\?\.sessionKind !== "work"\s*&& Boolean\(activeTab\?\.topicId\)/.test(appSource),
   "Work Session 标题由任务说明自动生成，不提供 TopicBar 手动重命名入口",
 );
-ok(
-  treeSource.includes("onCreateWork")
-    && treeSource.includes('className="project-tree__new-topic project-tree__new-work"')
-    && treeSource.includes("<BriefcaseBusiness"),
-  "Workspace 行在普通新建会话旁提供新建工作按钮",
-);
+ok(!appSource.includes("onCreateWork={"), "Workspace 不再暴露独立新建工作入口");
 ok(
   bridgeSource.includes("CreateWorkSession(input:")
+    && bridgeSource.includes("tabId?: string")
     && typesSource.includes('sessionKind?: "normal" | "work"')
     && typesSource.includes("workRequestId?: string"),
-  "Bridge 与前端类型包含 Work Session 创建和恢复字段",
+  "Bridge 与前端类型包含原地转换及 Work Session 恢复字段",
 );
 ok(
   linkedSessionSource.includes("void handleNavigate()")
@@ -138,7 +135,7 @@ ok(
 // handleRetryActiveWork already handles the half-completed case: reuses workRequestId
 ok(
   appSource.includes('activeTab?.sessionKind === "work" && !activeTab.workId && activeTab.workRequestId')
-    && appSource.includes("workCreateRequestsRef.current.set(requestKey, activeTab.workRequestId)"),
+    && appSource.includes("workCreateRequestsRef.current.set(activeTab.id, activeTab.workRequestId)"),
   "handleRetryActiveWork 对半完成 Work Session 复用原 workRequestId 重试",
 );
 

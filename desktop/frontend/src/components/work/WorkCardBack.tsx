@@ -55,6 +55,7 @@ export interface WorkCardBackProps {
     prompt: string;
   };
   onStartIntentConsumed?: (id: string) => void;
+  onStartIntentNeedsAttention?: (id: string) => void;
   readonly: boolean;
   archived: boolean;
   slots?: WorkCardBackSlots;
@@ -161,6 +162,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
   onDraftChange,
   startIntent,
   onStartIntentConsumed,
+  onStartIntentNeedsAttention,
   readonly,
   archived,
   slots,
@@ -313,6 +315,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       } else {
         setGenerateError(`这次调整暂未完成：${error instanceof Error ? error.message : String(error)}`);
       }
+      if (startIntent) onStartIntentNeedsAttention?.(startIntent.id);
       return false;
     } finally {
       setGenerateState('idle');
@@ -343,6 +346,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
       } catch (error) {
         setGenerateState('idle');
         setGenerateError(error instanceof Error ? error.message : String(error));
+        if (startIntent) onStartIntentNeedsAttention?.(startIntent.id);
         return;
       }
     }
@@ -389,6 +393,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         });
         generationOwnedRef.current = false;
         setGenerateState('idle');
+        if (startIntent) onStartIntentNeedsAttention?.(startIntent.id);
         return;
       }
       if (!result.candidate) throw new Error('候选结构已提交，但响应缺少候选 Definition。');
@@ -420,6 +425,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         if (clarification) setClarificationError(message);
       }
       setGenerateState('idle');
+      if (startIntent) onStartIntentNeedsAttention?.(startIntent.id);
     }
   };
 

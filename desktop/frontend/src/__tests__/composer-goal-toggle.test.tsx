@@ -242,11 +242,43 @@ console.log("\ncomposer goal toggle");
 
 {
   const dom = installDom();
+  const workCalls: string[] = [];
+  let selected = false;
+  const { root, rerender } = await renderComposer({
+    workSendAvailable: true,
+    workSendSelected: false,
+    onWorkSendChange: (next) => { selected = next; },
+    onSendAsWork: (displayText) => { workCalls.push(displayText); },
+  });
+
+  const workButton = document.querySelector<HTMLButtonElement>('.composer-work-send');
+  if (!workButton) throw new Error('send-as-work option did not render');
+  eq(workButton.getAttribute('aria-pressed'), 'false', 'send-as-work starts as an explicit opt-in');
+  await act(async () => { workButton.click(); });
+  eq(selected, true, 'send-as-work option reports the selected intent');
+
+  await rerender({
+    workSendSelected: true,
+    insertRequest: { id: 101, text: '生成一份发布计划', mode: 'replace' },
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('.composer__btn--send')?.click();
+    await flushTimers();
+  });
+  eq(workCalls.join(','), '生成一份发布计划', 'selected first message uses the Work send path');
+
+  await act(async () => { root.unmount(); });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
   const { root, calls } = await renderComposer({
     running: true,
     collaborationMode: "goal",
     goal: "finish the migration",
     turnStartAt: Date.now(),
+    activityStage: "thinking",
   });
 
   const stopButton = document.querySelector(".composer-runstatus__stop") as HTMLButtonElement | null;

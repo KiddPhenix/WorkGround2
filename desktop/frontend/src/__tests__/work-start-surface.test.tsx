@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { WorkStartSurface } from '../components/work/WorkStartSurface';
+import { WorkSessionTransition } from '../components/work/WorkSessionTransition';
 import { LocaleProvider } from '../lib/i18n';
 
 let passed = 0;
@@ -27,72 +27,49 @@ Object.assign(globalThis, {
   Node: dom.window.Node,
   Element: dom.window.Element,
   HTMLElement: dom.window.HTMLElement,
-  HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
   SVGElement: dom.window.SVGElement,
   Event: dom.window.Event,
   MouseEvent: dom.window.MouseEvent,
-  requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
-  cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
 });
 Object.defineProperty(globalThis, 'navigator', { configurable: true, value: dom.window.navigator });
-Object.assign(dom.window.HTMLElement.prototype, {
-  attachEvent: () => undefined,
-  detachEvent: () => undefined,
-});
 
-let prompt = '';
-let starts = 0;
+let retries = 0;
 const host = document.getElementById('root')!;
 const root = createRoot(host);
 
-function render(phase: 'initializing' | 'ready' | 'starting' | 'error', error?: string): void {
+function render(phase: 'initializing' | 'planning' | 'revealing' | 'error', error?: string): void {
   root.render(
     <LocaleProvider>
-      <WorkStartSurface
-        prompt={prompt}
+      <WorkSessionTransition
+        prompt="生成一份发布计划"
         phase={phase}
         error={error}
-        onPromptChange={(value) => {
-          prompt = value;
-          render(phase, error);
-        }}
-        onStart={() => { starts++; }}
+        onRetry={() => { retries++; }}
       />
     </LocaleProvider>,
   );
 }
 
 async function main(): Promise<void> {
-  process.stdout.write('\nWork start surface\n');
-  await act(async () => { render('initializing'); });
-  const editor = host.querySelector<HTMLTextAreaElement>('[data-testid="work-start-prompt"]')!;
-  const button = host.querySelector<HTMLButtonElement>('[data-testid="work-start-submit"]')!;
-  const dragRegion = host.querySelector<HTMLElement>('[data-testid="work-start-drag-region"]');
+  process.stdout.write('\nSession to Work transition\n');
+  await act(async () => { render('planning'); });
+  const surface = host.querySelector<HTMLElement>('[data-testid="work-session-transition"]');
+  ok(surface?.dataset.phase === 'planning', 'planning is represented inside the Session transition surface');
+  ok(host.textContent?.includes('生成一份发布计划') ?? false, 'the first message remains visible while structure planning runs');
+  ok(Boolean(host.querySelector('.work-session-transition__progress strong')?.textContent?.trim()), 'planning progress is explicit');
+  ok(!host.querySelector('button'), 'planning does not expose a duplicate submit action');
+
+  await act(async () => { render('error', '模型暂时不可用'); });
+  ok(host.textContent?.includes('模型暂时不可用') ?? false, 'initialization failure stays visible');
+  await act(async () => { host.querySelector<HTMLButtonElement>('button')?.click(); });
+  ok(retries === 1, 'failure exposes one retry intent');
+
+  await act(async () => { render('revealing'); });
+  ok(surface?.getAttribute('aria-hidden') === 'true', 'transition copy leaves the accessibility tree while Work is revealed');
+
   const styles = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
-  ok(Boolean(dragRegion) && dragRegion?.getAttribute('aria-hidden') === 'true', 'creation surface exposes a non-interactive titlebar drag region');
-  ok(
-    /\.work-start-surface__drag-region\s*\{[^}]*--wails-draggable:\s*drag;/s.test(styles)
-      && /\.work-start-surface\s*>\s*\.wg2-work-draft-editor\s*\{[^}]*--wails-draggable:\s*no-drag;/s.test(styles),
-    'drag rail and interactive editor keep separate Wails drag behavior',
-  );
-  ok(Boolean(editor) && !editor.disabled, 'background initialization does not block typing');
-  ok(button.disabled, 'Start is disabled until the prompt is non-empty');
-
-  prompt = '生成一份发布计划';
-  await act(async () => { render('initializing'); });
-  ok(host.querySelector<HTMLTextAreaElement>('[data-testid="work-start-prompt"]')!.value === prompt, 'typed prompt is kept while initialization runs');
-  ok(!host.querySelector<HTMLButtonElement>('[data-testid="work-start-submit"]')!.disabled, 'Start is available before initialization completes');
-
-  await act(async () => { host.querySelector<HTMLButtonElement>('[data-testid="work-start-submit"]')!.click(); });
-  ok(starts === 1, 'one click emits one start intent');
-
-  await act(async () => { render('starting'); });
-  ok(host.querySelector<HTMLTextAreaElement>('[data-testid="work-start-prompt"]')!.disabled, 'starting freezes the submitted prompt');
-  ok(host.querySelector<HTMLButtonElement>('[data-testid="work-start-submit"]')!.disabled, 'duplicate Start is blocked while joining the background task');
-
-  await act(async () => { render('error', '初始化失败'); });
-  ok(host.querySelector<HTMLTextAreaElement>('[data-testid="work-start-prompt"]')!.value === prompt, 'failure keeps the prompt for retry');
-  ok(host.textContent?.includes('初始化失败') ?? false, 'background failure is explicit');
+  ok(styles.includes('@keyframes work-session-panel-reveal'), 'Work uses a dedicated Session-to-panel reveal animation');
+  ok(styles.includes('@keyframes work-session-fold-away'), 'the old Session has a paired exit animation');
 
   await act(async () => { root.unmount(); });
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
