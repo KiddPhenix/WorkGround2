@@ -3548,6 +3548,14 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       await handleOpenTopic(topicTarget.scope, topicTarget.workspaceRoot || "", topicTarget.topicId, sessionRef.sessionPath);
       return;
     }
+    // Task sessions are intentionally hidden from the normal session list, so
+    // they usually have no topic metadata of their own. Reuse the owning Work
+    // tab/topic and replace only its active transcript; this keeps the WorkCard
+    // mounted and lets the back face render the linked SessionSurface directly.
+    if (activeTab?.sessionKind === "work" && activeTab.topicId) {
+      await handleOpenTopic(activeTab.scope, activeTab.workspaceRoot || "", activeTab.topicId, sessionRef.sessionPath);
+      return;
+    }
     const noFailure = Symbol("no linked navigation failure");
     let failure: unknown | typeof noFailure = noFailure;
     await enqueueNavigation({

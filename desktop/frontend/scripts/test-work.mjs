@@ -27,6 +27,7 @@ const tests = [
   'src/__tests__/block-renderers.test.tsx',
   'src/__tests__/block-action-renderers.test.tsx',
   'src/__tests__/work-card.test.tsx',
+  'src/__tests__/linked-session-card.test.tsx',
   'src/__tests__/work-chat-input.test.tsx',
   'src/__tests__/work-control-bar.test.tsx',
   'src/__tests__/work-start-surface.test.tsx',

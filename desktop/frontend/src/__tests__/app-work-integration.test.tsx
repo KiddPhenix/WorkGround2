@@ -20,6 +20,7 @@ const bridgeSource = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
 const typesSource = readFileSync(resolve(testDir, "../lib/types.ts"), "utf8");
 const availabilitySource = readFileSync(resolve(testDir, "../components/work/WorkAvailabilitySurface.tsx"), "utf8");
 const workCardSource = readFileSync(resolve(testDir, "../components/work/WorkCard.tsx"), "utf8");
+const linkedSessionSource = readFileSync(resolve(testDir, "../components/work/LinkedSessionCard.tsx"), "utf8");
 
 process.stdout.write("\nApp Work Session integration contract\n");
 
@@ -80,6 +81,16 @@ ok(
     && typesSource.includes('sessionKind?: "normal" | "work"')
     && typesSource.includes("workRequestId?: string"),
   "Bridge 与前端类型包含 Work Session 创建和恢复字段",
+);
+ok(
+  linkedSessionSource.includes("void handleNavigate()")
+    && linkedSessionSource.includes("autoTargetRef.current === target"),
+  "点击任务信息翻到背面后自动且幂等地打开关联会话",
+);
+ok(
+  appSource.includes('activeTab?.sessionKind === "work" && activeTab.topicId')
+    && appSource.includes('handleOpenTopic(activeTab.scope, activeTab.workspaceRoot || "", activeTab.topicId, sessionRef.sessionPath)'),
+  "隐藏的 Task Session 复用所属 Work tab/topic 打开，不依赖普通会话列表",
 );
 
 const workNode: ProjectNode = {
