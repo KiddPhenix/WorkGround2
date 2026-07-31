@@ -52,6 +52,7 @@ type TurnControl interface {
 	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
 	SubmitUserTurn(input, display string)
+	SubmitWorkChat(display, userText, contextBlock string)
 	Send(input string)
 	SendWithRaw(input, raw string)
 	Run(ctx context.Context, input string) error

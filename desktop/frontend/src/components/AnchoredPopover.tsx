@@ -79,7 +79,7 @@ export function AnchoredPopover({
     if (phaseRef.current === "closed") return undefined;
     phaseRef.current = "closing";
     setPhase("closing");
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     id = window.setTimeout(() => {
       phaseRef.current = "closed";
       setPhase("closed");

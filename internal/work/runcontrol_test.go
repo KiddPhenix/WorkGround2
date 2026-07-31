@@ -364,6 +364,41 @@ func TestCancelRunWaitingHasNoActiveTask(t *testing.T) {
 	}
 }
 
+func TestRestartRunIdempotent(t *testing.T) {
+	f := newRunnerFixture(t)
+	bp := testBlueprint("blueprint:test-restart-idem", 1, testWorkflowWithGate("gate", "run", "approval"))
+	f.registerBlueprint(t, bp)
+
+	value := f.createWork(t, BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1}, "create-restart-idem")
+	first, err := f.svc.RunWork(context.Background(), value.ID, "run-restart-idem")
+	if err != nil {
+		t.Fatalf("RunWork: %v", err)
+	}
+
+	restarted, err := f.svc.RestartRun(context.Background(), value.ID, first.ID, "restart-idem")
+	if err != nil {
+		t.Fatalf("RestartRun: %v", err)
+	}
+	duplicate, err := f.svc.RestartRun(context.Background(), value.ID, first.ID, "restart-idem")
+	if err != nil {
+		t.Fatalf("duplicate RestartRun: %v", err)
+	}
+	if duplicate.ID != restarted.ID {
+		t.Fatalf("duplicate restart IDs = %q, %q", restarted.ID, duplicate.ID)
+	}
+
+	view, err := f.svc.Get(context.Background(), value.ID)
+	if err != nil {
+		t.Fatalf("Get after restart: %v", err)
+	}
+	if len(view.Work.Runs) != 2 {
+		t.Fatalf("runs after duplicate restart = %d, want 2", len(view.Work.Runs))
+	}
+	if view.Work.Runs[0].State != RunCancelled {
+		t.Fatalf("original run state = %s, want %s", view.Work.Runs[0].State, RunCancelled)
+	}
+}
+
 // ── PauseRun tests ─────────────────────────────────────────────────────────
 
 func TestPauseRunRejectsNonRunning(t *testing.T) {

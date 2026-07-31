@@ -8,6 +8,7 @@ import {
   Info,
   LoaderCircle,
   MessageCircle,
+  Pause,
   PencilLine,
   RefreshCw,
   RotateCcw,
@@ -77,6 +78,8 @@ export interface ExecutionRowProps {
   onDiscuss?: () => void;
   /** Opens the linked execution session on the back face. */
   onInfo?: () => void;
+  /** Presentation-only pause overlay; the Task remains running for resume. */
+  paused?: boolean;
 }
 
 export const ExecutionRow: React.FC<ExecutionRowProps> = ({
@@ -87,6 +90,7 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
   onRetry,
   onDiscuss,
   onInfo,
+  paused = false,
 }) => {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -123,7 +127,9 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
     handleClick();
   }, [handleClick]);
 
-  const badgeClass = STATE_BADGE[task.state];
+  const pausedRunning = paused && task.state === 'running';
+  const stateLabel = pausedRunning ? '已暂停' : STATE_LABELS[task.state];
+  const badgeClass = pausedRunning ? 'warn' : STATE_BADGE[task.state];
   const progressValue = task.state === 'running' ? progressPercent(task.progress) : null;
   const liveOutput = task.state === 'running' && progressValue === null
     ? task.progress?.trim() ?? ''
@@ -133,9 +139,10 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
     <div
       className="wg2-er-row"
       data-task-state={task.state}
+      data-paused={pausedRunning ? 'true' : undefined}
       data-task-id={task.id}
       data-testid={`execution-row-${task.id}`}
-      aria-label={`${task.title} — ${STATE_LABELS[task.state]}${isExpanded ? '（已展开）' : ''}`}
+      aria-label={`${task.title} — ${stateLabel}${isExpanded ? '（已展开）' : ''}`}
     >
       {/* ── Header (always visible, clickable) ───────────────────── */}
       <div
@@ -150,7 +157,7 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
           aria-hidden="true"
           data-testid={`execution-row-icon-${task.id}`}
         >
-          {stateIcon(task.state)}
+          {pausedRunning ? <Pause size={19} /> : stateIcon(task.state)}
         </span>
 
         <span className="wg2-er-copy">
@@ -163,7 +170,7 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
               data-badge={badgeClass}
               data-testid={`execution-row-badge-${task.id}`}
             >
-              {STATE_LABELS[task.state]}
+              {stateLabel}
             </span>
             {task.progress && progressValue === null && task.state !== 'running' && (
               <span className="wg2-er-progress-copy"> · {task.progress}</span>
@@ -175,16 +182,21 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
           <div
             className="wg2-er-live"
             data-has-output={liveOutput ? 'true' : 'false'}
+            data-paused={pausedRunning ? 'true' : undefined}
             data-testid={`execution-row-live-${task.id}`}
           >
             <div
               className="wg2-er-live-viewport"
-              aria-label={liveOutput ? `模型输出：${liveOutput}` : '等待模型输出'}
+              aria-label={pausedRunning
+                ? `已暂停：${liveOutput || '等待继续'}`
+                : liveOutput ? `模型输出：${liveOutput}` : '等待模型输出'}
               aria-live="polite"
             >
               <span className="wg2-er-live-track">
-                <span className="wg2-er-live-copy">{liveOutput || '等待模型输出…'}</span>
-                <span className="wg2-er-live-copy" aria-hidden="true">{liveOutput || '等待模型输出…'}</span>
+                <span className="wg2-er-live-copy">{pausedRunning ? liveOutput || '已暂停' : liveOutput || '等待模型输出…'}</span>
+                {!pausedRunning && (
+                  <span className="wg2-er-live-copy" aria-hidden="true">{liveOutput || '等待模型输出…'}</span>
+                )}
               </span>
             </div>
             {onInfo && (

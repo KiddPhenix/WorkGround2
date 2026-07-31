@@ -879,6 +879,93 @@ func TestV2Coordinator_SubmitInputAutoSchedulesOnlyAffected_FileStore(t *testing
 	}
 }
 
+func TestV2Coordinator_EditCompletedInputRerunsAffectedSubgraph_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{
+			{ID: "n1", Title: "producer", InputSpecIDs: []string{"topic"}},
+			{ID: "n2", Title: "consumer", DependsOn: []string{"n1"}},
+			{ID: "n3", Title: "unrelated"},
+		},
+		[]InputSpec{{
+			ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+			ValueSchema: json.RawMessage(`{"type":"string"}`),
+		}},
+	))
+	input := requestCoordinatorInput(t, h, "topic")
+	executor := &coordinatorExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := submitCoordinatorInput(t, h, input, "submit-initial-"+t.Name()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.callCount() != 2 {
+		t.Fatalf("initial affected execution calls=%d, want 2", executor.callCount())
+	}
+
+	projection, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := findInputIndex(projection, input.ID)
+	if index < 0 {
+		t.Fatalf("submitted input %q is missing", input.ID)
+	}
+	edited, err := h.svc.SubmitV2Input(context.Background(), SubmitInputRequest{
+		WorkID:           h.work,
+		InputID:          input.ID,
+		Value:            json.RawMessage(`"changed again"`),
+		DefinitionRev:    h.def.Revision,
+		InputRevision:    projection.V2Inputs[index].Revision,
+		ExpectedRevision: state.Revision,
+		RequestID:        "submit-edit-" + t.Name(),
+	})
+	if err != nil || edited == nil || edited.Error != "" || !edited.Committed {
+		t.Fatalf("completed edit failed: result=%+v err=%v", edited, err)
+	}
+	if executor.callCount() != 4 {
+		t.Fatalf("completed edit execution calls=%d, want 4", executor.callCount())
+	}
+
+	after, _, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nodeID := range []string{"n1", "n2"} {
+		taskID, _ := DeriveTaskID(h.run, nodeID)
+		runtime := after.V2TaskRuntimes[taskID]
+		if runtime == nil || runtime.State != TaskCompleted || len(runtime.Attempts) != 2 {
+			t.Fatalf("affected runtime %s=%+v, want completed with two attempts", nodeID, runtime)
+		}
+	}
+	unrelatedID, _ := DeriveTaskID(h.run, "n3")
+	if runtime := after.V2TaskRuntimes[unrelatedID]; runtime != nil {
+		t.Fatalf("unrelated runtime must remain untouched: %+v", runtime)
+	}
+
+	index = findInputIndex(after, input.ID)
+	_, latest, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := h.svc.SubmitV2Input(context.Background(), SubmitInputRequest{
+		WorkID:           h.work,
+		InputID:          input.ID,
+		Value:            json.RawMessage(`"changed again"`),
+		DefinitionRev:    h.def.Revision,
+		InputRevision:    after.V2Inputs[index].Revision,
+		ExpectedRevision: latest.Revision,
+		RequestID:        "submit-unchanged-" + t.Name(),
+	})
+	if err != nil || unchanged == nil || !unchanged.Committed || len(unchanged.AffectedTaskIDs) != 0 {
+		t.Fatalf("unchanged save result=%+v err=%v", unchanged, err)
+	}
+	if executor.callCount() != 4 {
+		t.Fatalf("unchanged save reran work: calls=%d", executor.callCount())
+	}
+}
+
 func TestV2Coordinator_SubmitInputPublishesRunningBeforeExecutionCompletes_FileStore(t *testing.T) {
 	sink := &serviceSink{next: make(chan WorkViewEvent, 256)}
 	h := newCoordinatorHarnessWithSink(t, coordinatorDefinition(

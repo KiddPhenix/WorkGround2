@@ -3409,7 +3409,10 @@ func invalidateV2RuntimeContexts(
 			continue
 		}
 		switch runtime.State {
-		case TaskCompleted, TaskFailedTerminal, TaskCanceled:
+		case TaskCompleted:
+			runtime.State = TaskInvalidated
+			runtime.Error = fmt.Sprintf("work: completed task invalidated by %s", event.Type)
+		case TaskFailedTerminal, TaskCanceled:
 			continue
 		}
 		if definitionRev > 0 {

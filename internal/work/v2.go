@@ -164,7 +164,9 @@ type WorkInput struct {
 	TaskID        string          `json:"taskId"`
 	BlockID       string          `json:"blockId"`
 	SpecID        string          `json:"specId"`
+	CustomSpec    *InputSpec      `json:"customSpec,omitempty"`
 	Value         json.RawMessage `json:"value"`
+	Extra         string          `json:"extra,omitempty"`
 	State         InputState      `json:"state"`
 	CornerstoneID string          `json:"cornerstoneId,omitempty"`
 	Error         string          `json:"error,omitempty"`
@@ -277,8 +279,24 @@ type SubmitWorkInputRequest struct {
 	BlockID            string          `json:"blockId"`
 	InputID            string          `json:"inputId"`
 	Value              json.RawMessage `json:"value"`
+	Extra              string          `json:"extra,omitempty"`
 	DefinitionRevision int64           `json:"definitionRevision"`
 	InputRevision      int64           `json:"inputRevision"`
+	ExpectedRevision   int64           `json:"expectedRevision"`
+	RequestID          string          `json:"requestId"`
+}
+
+// AddCustomWorkInputRequest adds user-owned Work information without mutating
+// the immutable active definition. Kind is intentionally limited to text/file.
+type AddCustomWorkInputRequest struct {
+	WorkID             string          `json:"workId"`
+	RunID              string          `json:"runId"`
+	InputID            string          `json:"inputId"`
+	Name               string          `json:"name"`
+	Description        string          `json:"description,omitempty"`
+	Kind               InputKind       `json:"kind"`
+	Value              json.RawMessage `json:"value"`
+	DefinitionRevision int64           `json:"definitionRevision"`
 	ExpectedRevision   int64           `json:"expectedRevision"`
 	RequestID          string          `json:"requestId"`
 }

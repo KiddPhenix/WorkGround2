@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Work 独立填写信息面板
+- Status: done
+- Branch: `developping/work-info-entry-panel+2026-07-30`
+- Location: `desktop/frontend/src/components/work/WorkCardFront.tsx`, `desktop/frontend/src/work/components/presentation/WorkDefinitionOverview.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/wailsAdapter.ts`, `internal/work`, `desktop/works.go`
+- Summary: 保留两列“工作信息”常驻列表和上层填写面板；已填写项可重新打开修改。用户可新增名称、可选解释、文本或文件内容的自定义工作信息；新增项以带内联规格的 WorkInput 原子持久化，并作为 Work 级上下文供后续任务读取。数字范围继续只给软 warning。
+- Keywords: WorkInformationPanel, WorkInputHost, stacked cards, advanced context, file drop, number warning
+- Source: user-requested+verified-by-tests-and-production-build
+- Updated: 2026-07-31
+
 ### Work 任务说明底板中性化
 - Status: done
 - Branch: `main`（共享脏工作树，未提交）

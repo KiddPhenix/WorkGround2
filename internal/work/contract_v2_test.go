@@ -83,11 +83,22 @@ func TestGoV2DTOFieldsMatchContract(t *testing.T) {
 // frozen field list.
 func v2FrozenFields(name string, fields []string) []string {
 	addendum := map[string]map[string]bool{
-		"NodeDef":                    {"blockIds": true, "producesSlotIds": true, "consumesSlotIds": true, "globalGate": true},
+		"NodeDef":                    {"blockIds": true, "producesSlotIds": true, "consumesSlotIds": true, "globalGate": true, "acceptanceCriteria": true},
 		"ArtifactSlot":               {"upstreamDigest": true},
 		"ArtifactSlotUpdatedPayload": {"upstreamDigest": true, "receipt": true},
-		"DefRevisionCreatedPayload":  {"suggestedName": true},
-		"WorkInput":                  {"error": true, "source": true, "updatedBy": true},
+		"DefPlanningStartedPayload":  {"blueprintRef": true},
+		"DefRevisionCreatedPayload":  {"suggestedName": true, "receipt": true},
+		"WorkInput":                  {"customSpec": true, "extra": true, "error": true, "source": true, "updatedBy": true},
+		"SubmitWorkInputRequest":     {"extra": true},
+		"SubmitInputResult":          {"receipt": true},
+		"CornerstonePinResult":       {"receipt": true},
+		"PreviewWorkPatchResult":     {"receipt": true},
+		"ApplyWorkPatchResult":       {"receipt": true},
+		"TaskV2View":                 {"sessionRef": true},
+		"InputRequestedPayload":      {"customSpec": true},
+		"InputDraftSavedPayload":     {"extra": true},
+		"InputSubmittedPayload":      {"extra": true},
+		"InputRejectedPayload":       {"extra": true},
 		"PatchPreviewedPayload":      {"baseDefinitionRev": true, "baseBlockRev": true, "operations": true, "digest": true, "expiresAt": true, "receipt": true},
 		"PatchAppliedPayload":        {"receipt": true},
 	}

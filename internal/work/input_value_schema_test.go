@@ -126,7 +126,7 @@ func TestValidateNumberValue_NaN(t *testing.T) {
 	}
 }
 
-func TestValidateNumberValue_Constraints(t *testing.T) {
+func TestValidateNumberValue_ConstraintHintsDoNotBlock(t *testing.T) {
 	minv := 0.0
 	maxv := 100.0
 	spec := InputSpec{ID: "in", Kind: InputNumber, ValueSchema: mustJSONRaw(NumberConstraints{Min: &minv, Max: &maxv})}
@@ -139,11 +139,11 @@ func TestValidateNumberValue_Constraints(t *testing.T) {
 	if err := ValidateInputValue(spec, mustJSONRaw(100.0)); err != nil {
 		t.Fatalf("at max: %v", err)
 	}
-	if err := ValidateInputValue(spec, mustJSONRaw(-1.0)); err == nil {
-		t.Fatal("below min should fail")
+	if err := ValidateInputValue(spec, mustJSONRaw(-1.0)); err != nil {
+		t.Fatalf("below min remains submittable: %v", err)
 	}
-	if err := ValidateInputValue(spec, mustJSONRaw(101.0)); err == nil {
-		t.Fatal("above max should fail")
+	if err := ValidateInputValue(spec, mustJSONRaw(101.0)); err != nil {
+		t.Fatalf("above max remains submittable: %v", err)
 	}
 }
 
@@ -152,8 +152,8 @@ func TestValidateNumberValue_Integer(t *testing.T) {
 	if err := ValidateInputValue(spec, mustJSONRaw(42.0)); err != nil {
 		t.Fatalf("integer 42: %v", err)
 	}
-	if err := ValidateInputValue(spec, mustJSONRaw(3.14)); err == nil {
-		t.Fatal("non-integer should fail")
+	if err := ValidateInputValue(spec, mustJSONRaw(3.14)); err != nil {
+		t.Fatalf("integer hint must not block a decimal: %v", err)
 	}
 }
 
@@ -163,15 +163,15 @@ func TestValidateNumberValue_AmountAndRatio(t *testing.T) {
 		t.Fatal(err)
 	}
 	ratio := InputSpec{ID: "ratio", Kind: InputNumber, Required: true, ValueSchema: json.RawMessage(`{"kind":"number","unit":"ratio"}`)}
-	if err := ValidateInputValue(ratio, json.RawMessage(`1.1`)); err == nil {
-		t.Fatal("ratio above one must fail")
+	if err := ValidateInputValue(ratio, json.RawMessage(`1.1`)); err != nil {
+		t.Fatalf("ratio hint must not block submission: %v", err)
 	}
 	percent := InputSpec{ID: "percent", Kind: InputNumber, Required: true, ValueSchema: json.RawMessage(`{"kind":"number","unit":"percent"}`)}
 	if err := ValidateInputValue(percent, json.RawMessage(`75`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateInputValue(percent, json.RawMessage(`101`)); err == nil {
-		t.Fatal("percent above 100 must fail")
+	if err := ValidateInputValue(percent, json.RawMessage(`101`)); err != nil {
+		t.Fatalf("percent hint must not block submission: %v", err)
 	}
 	badCurrency := amount
 	badCurrency.ValueSchema = json.RawMessage(`{"kind":"number","unit":"amount","currency":"usd"}`)

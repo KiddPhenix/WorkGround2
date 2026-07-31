@@ -23,7 +23,10 @@ func promoteV2View(view *WorkView, definition *WorkDefinitionRevision) *WorkView
 		}
 		return view.ArtifactSlots[i].ID < view.ArtifactSlots[j].ID
 	})
-	view.Inputs = append([]WorkInput{}, view.Work.V2Inputs...)
+	view.Inputs = make([]WorkInput, len(view.Work.V2Inputs))
+	for i := range view.Work.V2Inputs {
+		view.Inputs[i] = cloneWorkInput(view.Work.V2Inputs[i])
+	}
 	sort.SliceStable(view.Inputs, func(i, j int) bool {
 		if view.Inputs[i].ID != view.Inputs[j].ID {
 			return view.Inputs[i].ID < view.Inputs[j].ID

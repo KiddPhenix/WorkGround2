@@ -1,6 +1,12 @@
 // Run: tsx src/__tests__/bridge-drag-rejection.test.ts
 
-import { isTransientWailsIPCError, isWailsNonFileDragError, isWailsNonFileDragErrorEvent } from "../lib/bridge";
+import {
+  isTransientWailsIPCError,
+  isWailsNonFileDragError,
+  isWailsNonFileDragErrorEvent,
+  onFilesDropped,
+  onFilesDroppedIn,
+} from "../lib/bridge";
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +79,34 @@ eq(
   false,
   "keeps ordinary bridge failures visible",
 );
+
+let nativeDrop: ((x: number, y: number, paths: string[]) => void) | undefined;
+let offCalls = 0;
+const fakeWindow = {
+  runtime: {
+    OnFileDrop: (callback: (x: number, y: number, paths: string[]) => void) => { nativeDrop = callback; },
+    OnFileDropOff: () => { offCalls += 1; },
+  },
+  addEventListener: () => {},
+  removeEventListener: () => {},
+};
+(globalThis as unknown as { window: typeof fakeWindow }).window = fakeWindow;
+const target = {
+  isConnected: true,
+  getBoundingClientRect: () => ({ left: 0, top: 0, right: 20, bottom: 20 }),
+} as HTMLElement;
+let globalDrops = 0;
+let targetedDrops = 0;
+const offGlobal = onFilesDropped(() => { globalDrops += 1; });
+const offTarget = onFilesDroppedIn(() => target, () => { targetedDrops += 1; });
+nativeDrop?.(10, 10, ["input.csv"]);
+eq(targetedDrops, 1, "targeted Work file drop receives the native path");
+eq(globalDrops, 0, "targeted Work file drop is not duplicated into the composer");
+nativeDrop?.(50, 50, ["other.csv"]);
+eq(globalDrops, 1, "drop outside the Work target reaches the global composer fallback");
+offTarget();
+offGlobal();
+eq(offCalls, 1, "native bridge detaches after the last subscriber");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

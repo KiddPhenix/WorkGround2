@@ -59,6 +59,9 @@ export interface WailsWorkBindings {
   RecoverWorkView(tabID: string, workID: string, input: ViewRecoveryIntent): Promise<WorkViewEvent>;
   RunWork(tabID: string, workID: string, requestID: string): Promise<WorkflowRun>;
   ResumeRun(tabID: string, input: ResumeRunInput): Promise<WorkflowRun>;
+  PauseRun(tabID: string, workID: string, runID: string, requestID: string): Promise<void>;
+  CancelRun(tabID: string, workID: string, runID: string, requestID: string): Promise<void>;
+  RestartRun(tabID: string, workID: string, runID: string, requestID: string): Promise<WorkflowRun>;
   RetryWorkTask(tabID: string, input: RetryTaskInput): Promise<Attempt>;
   ArchiveWork(tabID: string, workID: string, requestID: string): Promise<WorkRecord>;
   RestoreWork(tabID: string, workID: string, requestID: string): Promise<WorkView>;
@@ -110,6 +113,14 @@ export interface WailsWorkBindings {
     tabID: string,
     input: import('./types_v2').SelectWorkInputFileRequest,
   ): Promise<GoSelectWorkInputFileResult>;
+  SelectWorkInformationFile(
+    tabID: string,
+    input: import('./types_v2').SelectWorkInformationFileRequest,
+  ): Promise<GoSelectWorkInputFileResult>;
+  AddCustomWorkInput(
+    tabID: string,
+    input: import('./types_v2').AddCustomWorkInputRequest,
+  ): Promise<GoSubmitInputResult>;
   SubmitWorkInput(
     tabID: string,
     input: import('./types_v2').SubmitWorkInputRequest,
@@ -582,6 +593,12 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
     runWork: (input) => app.RunWork(tabID, input.workId, input.requestId),
 
     resumeRun: (input) => app.ResumeRun(tabID, input),
+
+    pauseRun: (input) => app.PauseRun(tabID, input.workId, input.runId, input.requestId),
+
+    cancelRun: (input) => app.CancelRun(tabID, input.workId, input.runId, input.requestId),
+
+    restartRun: (input) => app.RestartRun(tabID, input.workId, input.runId, input.requestId),
     updateDraft: (input) => app.UpdateDraft(tabID, input),
     upsertBlock: (input) => app.UpsertWorkBlock(tabID, input),
 
@@ -1186,6 +1203,98 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
             message: error instanceof Error ? error.message : String(error),
             operation: 'SelectWorkInputFile',
             workId: input.workId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    selectWorkInformationFile: async (input) => {
+      try {
+        const go = await app.SelectWorkInformationFile(tabID, input);
+        if (typeof go.canceled !== 'boolean') {
+          return {
+            canceled: false,
+            error: {
+              code: 'contract_malformed',
+              message: 'SelectWorkInformationFile: required scalar canceled missing/wrong-type (boolean)',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        if (!go.canceled && !go.error && !go.artifactRef?.id) {
+          return {
+            canceled: false,
+            error: {
+              code: 'contract_malformed',
+              message: 'SelectWorkInformationFile: artifactRef invalid',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          artifactRef: go.artifactRef,
+          canceled: go.canceled,
+          error: go.error,
+        };
+      } catch (error) {
+        return {
+          canceled: false,
+          error: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'SelectWorkInformationFile',
+            workId: input.workId,
+            committed: false,
+            recoverable: true,
+          },
+        };
+      }
+    },
+
+    addCustomWorkInput: async (input) => {
+      try {
+        const go = await app.AddCustomWorkInput(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number' || !Number.isFinite(go.revision)) {
+          return {
+            revision: 0,
+            duplicate: false,
+            committed: false,
+            recoverable: true,
+            transportError: {
+              code: 'contract_malformed',
+              message: 'AddCustomWorkInput: required scalar missing/wrong-type',
+              operation: 'AddCustomWorkInput',
+              committed: false,
+              recoverable: true,
+            },
+          };
+        }
+        return {
+          input: go.input,
+          revision: go.revision,
+          duplicate: go.duplicate,
+          committed: go.committed,
+          recoverable: go.recoverable,
+          error: go.error,
+          transportError: go.transportError,
+          receipt: go.receipt,
+        };
+      } catch (error) {
+        return {
+          revision: 0,
+          duplicate: false,
+          committed: false,
+          recoverable: true,
+          transportError: {
+            code: 'transport_error',
+            message: error instanceof Error ? error.message : String(error),
+            operation: 'AddCustomWorkInput',
+            workId: input.workId,
+            requestId: input.requestId,
             committed: false,
             recoverable: true,
           },

@@ -2318,6 +2318,41 @@ test('unconfirmed patch apply refreshes authority and safely replays the same re
   adapter.dispose();
 });
 
+test('patch apply exposes authoritative business rejection instead of generic unconfirmed error', async () => {
+  const port = new TestPort();
+  port.patchNext = [{
+    workRevision: 12,
+    newRevision: 0,
+    requiresRerun: false,
+    duplicate: false,
+    committed: false,
+    recoverable: true,
+    error: 'definition revision mismatch: expected 11, current 12',
+  }];
+  const adapter = new WorkControllerAdapter(port);
+  let caught: Error | null = null;
+  try {
+    await adapter.applyWorkPatch({
+      workId: 'work-patch-error',
+      patchId: 'patch-1',
+      previewDigest: 'sha256:preview',
+      scope: 'workflow',
+      expectedRevision: 11,
+      requestId: 'apply-error-1',
+    });
+  } catch (error) {
+    caught = error as Error;
+  }
+  ok(caught, 'patch rejection must throw');
+  equal(
+    caught.message,
+    'definition revision mismatch: expected 11, current 12',
+    'patch rejection keeps backend detail',
+  );
+  equal(port.patchInputs.length, 1, 'authoritative business rejection is not replayed');
+  adapter.dispose();
+});
+
 test('explicit patch revision conflict refreshes without replaying a stale intent', async () => {
   reset();
   const workID = 'work-patch-conflict';

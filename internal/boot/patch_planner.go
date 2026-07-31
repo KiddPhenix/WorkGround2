@@ -137,7 +137,7 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 			targetNodeID,
 			targetNodeID,
 		))
-		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"artifactSlots/route_guide/title\",\"newValue\":\"Route guide.docx\"},{\"op\":\"replace\",\"path\":\"artifactSlots/route_guide/kind\",\"newValue\":\"docx\"}],\"actions\":[{\"action\":\"reformat\",\"artifactSlotId\":\"route_guide\",\"reason\":\"content and search evidence remain valid\"}]}\n")
+		b.WriteString("{\"operations\":[{\"op\":\"replace\",\"path\":\"artifactSlots/<existingSlotID>/title\",\"newValue\":\"Result.docx\"},{\"op\":\"replace\",\"path\":\"artifactSlots/<existingSlotID>/kind\",\"newValue\":\"docx\"}],\"actions\":[{\"action\":\"reformat\",\"artifactSlotId\":\"<existingSlotID>\",\"reason\":\"content and search evidence remain valid\"}]}\n")
 		b.WriteString("{\"operations\":[{\"op\":\"add\",\"path\":\"artifactSlots/new_report\",\"newValue\":{\"id\":\"new_report\",\"title\":\"New report\",\"kind\":\"document\",\"expectedCount\":1,\"required\":true}},{\"op\":\"replace\",\"path\":\"nodes/<producerNodeID>/producesSlotIds\",\"newValue\":[\"existing_slot\",\"new_report\"]}],\"actions\":[{\"action\":\"rerun\",\"nodeId\":\"<producerNodeID>\",\"reason\":\"new output content is required\"}]}\n")
 	}
 
@@ -293,6 +293,8 @@ func parsePatchPlanResponse(raw string) (*work.PatchPlan, error) {
 	}
 
 	data := []byte(raw)
+	var lastObject *work.PatchPlan
+	var lastArray *work.PatchPlan
 	for i, b := range data {
 		if b != '[' && b != '{' {
 			continue
@@ -303,8 +305,18 @@ func parsePatchPlanResponse(raw string) (*work.PatchPlan, error) {
 			continue
 		}
 		if plan, err := decodePatchPlan(candidate); err == nil {
-			return plan, nil
+			if b == '{' {
+				lastObject = plan
+			} else {
+				lastArray = plan
+			}
 		}
+	}
+	if lastObject != nil {
+		return lastObject, nil
+	}
+	if lastArray != nil {
+		return lastArray, nil
 	}
 	return nil, fmt.Errorf("boot: PlanPatch: no valid PatchPlan JSON found")
 }
@@ -318,6 +330,11 @@ func decodePatchPlan(raw json.RawMessage) (*work.PatchPlan, error) {
 		var ops []work.PatchOp
 		if err := json.Unmarshal(raw, &ops); err != nil || ops == nil {
 			return nil, fmt.Errorf("operations must be a JSON array")
+		}
+		for _, op := range ops {
+			if strings.TrimSpace(op.Op) == "" || strings.TrimSpace(op.Path) == "" {
+				return nil, fmt.Errorf("operations array contains a non-operation value")
+			}
 		}
 		return &work.PatchPlan{Operations: ops}, nil
 	}
@@ -366,7 +383,11 @@ func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) err
 		return fmt.Errorf("boot: PlanPatch: semantic actions are required for every non-empty patch")
 	}
 	for i, op := range plan.Operations {
-		isBlockPath := strings.HasPrefix(op.Path, "blocks/")
+		path, err := work.CompilePatchPath(op.Path)
+		if err != nil {
+			return fmt.Errorf("boot: PlanPatch: op[%d] path %q is invalid: %w", i, op.Path, err)
+		}
+		isBlockPath := path.Kind == work.PathBlocks
 		switch input.Scope {
 		case work.PatchBlock:
 			if !isBlockPath {
@@ -385,6 +406,9 @@ func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) err
 				)
 			}
 		}
+		if err := validatePatchPlanTarget(input, path, op.Op); err != nil {
+			return fmt.Errorf("boot: PlanPatch: op[%d] path %q: %w", i, op.Path, err)
+		}
 	}
 	if len(plan.Actions) > 64 {
 		return fmt.Errorf("boot: PlanPatch: more than 64 semantic actions")
@@ -395,9 +419,16 @@ func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) err
 			if strings.TrimSpace(action.NodeID) == "" || strings.TrimSpace(action.ArtifactSlotID) != "" {
 				return fmt.Errorf("boot: PlanPatch: action[%d] %q requires only nodeId", i, action.Action)
 			}
+			if input.Scope == work.PatchWorkflow && input.Definition != nil &&
+				!patchDefinitionHasNode(input.Definition, action.NodeID) {
+				return fmt.Errorf("boot: PlanPatch: action[%d] references unknown node ID %q in current definition", i, action.NodeID)
+			}
 		case work.PatchActionReformat:
 			if strings.TrimSpace(action.ArtifactSlotID) == "" || strings.TrimSpace(action.NodeID) != "" {
 				return fmt.Errorf("boot: PlanPatch: action[%d] reformat requires only artifactSlotId", i)
+			}
+			if input.Definition != nil && !patchDefinitionHasSlot(input.Definition, action.ArtifactSlotID) {
+				return fmt.Errorf("boot: PlanPatch: action[%d] references unknown artifact slot ID %q in current definition", i, action.ArtifactSlotID)
 			}
 		case work.PatchActionAskUser:
 			if strings.TrimSpace(action.Question) == "" || len(plan.Operations) != 0 {
@@ -408,6 +439,60 @@ func validatePatchPlanScope(input work.PatchPlanInput, plan *work.PatchPlan) err
 		}
 	}
 	return nil
+}
+
+func validatePatchPlanTarget(input work.PatchPlanInput, path work.PatchPath, op string) error {
+	if path.Kind == work.PathBlocks {
+		if input.Block != nil && path.Segments[1] != input.Block.ID {
+			return fmt.Errorf("unknown block ID %q; target block is %q", path.Segments[1], input.Block.ID)
+		}
+		return nil
+	}
+	if input.Definition == nil {
+		return nil
+	}
+	switch path.Kind {
+	case work.PathNodes:
+		id := path.Segments[1]
+		if !patchDefinitionHasNode(input.Definition, id) {
+			return fmt.Errorf("unknown node ID %q in current definition", id)
+		}
+	case work.PathSlots:
+		id := path.Segments[1]
+		if len(path.Segments) == 2 && op == "add" {
+			return nil
+		}
+		if !patchDefinitionHasSlot(input.Definition, id) {
+			return fmt.Errorf("unknown artifact slot ID %q in current definition", id)
+		}
+	case work.PathSpecs:
+		id := path.Segments[1]
+		for _, spec := range input.Definition.InputSpecs {
+			if spec.ID == id {
+				return nil
+			}
+		}
+		return fmt.Errorf("unknown input spec ID %q in current definition", id)
+	}
+	return nil
+}
+
+func patchDefinitionHasNode(def *work.WorkDefinitionRevision, id string) bool {
+	for _, node := range def.Nodes {
+		if node.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func patchDefinitionHasSlot(def *work.WorkDefinitionRevision, id string) bool {
+	for _, slot := range def.ArtifactSlots {
+		if slot.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func patchParseErrorCategory(err error) string {

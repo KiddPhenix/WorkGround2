@@ -408,17 +408,26 @@ function validateText(label: string, value: DraftValue, c: ParsedTextConstraints
   return null;
 }
 
-function validateNumber(label: string, value: DraftValue, c: ParsedNumberConstraints | undefined): string | null {
+function validateNumber(label: string, value: DraftValue, _c: ParsedNumberConstraints | undefined): string | null {
   const n = typeof value === 'number' ? value : Number(value);
   if (Number.isNaN(n)) return `${label} 必须是数字`;
   if (!Number.isFinite(n)) return `${label} 必须是有限数字`;
-  if (!c) return null;
-  if (c.min !== undefined && n < c.min) return `${label} 不能小于 ${c.min}`;
-  if (c.max !== undefined && n > c.max) return `${label} 不能大于 ${c.max}`;
-  if (c.integer && !Number.isInteger(n)) return `${label} 必须是整数`;
-  if (c.unit === 'ratio' && (n < 0 || n > 1)) return `${label} 比例必须在 0~1 之间`;
-  if (c.unit === 'percent' && (n < 0 || n > 100)) return `${label} 百分比必须在 0~100 之间`;
   return null;
+}
+
+/** Numeric schema hints are advisory: they never block submission. */
+export function numberDraftWarning(
+  value: DraftValue,
+  c: ParsedNumberConstraints | undefined,
+): string | null {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || !c) return null;
+  const outsideHint = (c.min !== undefined && n < c.min)
+    || (c.max !== undefined && n > c.max)
+    || (c.integer === true && !Number.isInteger(n))
+    || (c.unit === 'ratio' && (n < 0 || n > 1))
+    || (c.unit === 'percent' && (n < 0 || n > 100));
+  return outsideHint ? '这个数值可能不合理，请确认' : null;
 }
 
 function validateDate(label: string, value: DraftValue, c: ParsedDateConstraints | undefined): string | null {

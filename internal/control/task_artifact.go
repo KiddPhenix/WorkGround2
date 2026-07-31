@@ -24,7 +24,7 @@ func materializeTaskArtifact(
 ) (body []byte, name, mediaType string, supported bool, err error) {
 	if discovered != nil {
 		pathOnly := len(discovered.Data) == 0
-		item, loadErr := artifact.LoadWorkspaceFile(*discovered, workspaceRoot)
+		item, loadErr := artifact.LoadFile(*discovered, workspaceRoot)
 		if loadErr != nil {
 			return nil, "", "", false, fmt.Errorf("load artifact %q: %w", discovered.Name, loadErr)
 		}
@@ -81,7 +81,12 @@ func taskArtifactRelativePath(discovered *artifact.Discovered, workspaceRoot str
 	if discovered == nil || strings.TrimSpace(discovered.Path) == "" || strings.TrimSpace(workspaceRoot) == "" {
 		return ""
 	}
-	relative, err := filepath.Rel(workspaceRoot, discovered.Path)
+	root := filepath.Clean(strings.TrimSpace(workspaceRoot))
+	path := filepath.Clean(strings.TrimSpace(discovered.Path))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	relative, err := filepath.Rel(root, path)
 	if err != nil || relative == "." || relative == ".." ||
 		strings.HasPrefix(relative, ".."+string(filepath.Separator)) ||
 		filepath.IsAbs(relative) {

@@ -186,6 +186,16 @@ func TestSelectWorkInputFileValidatesFullIdentityAndReturnsTypedArtifactRef(t *t
 	if dialogCalls != 1 {
 		t.Fatalf("dialog calls=%d, want 1", dialogCalls)
 	}
+	droppedRequest := request
+	droppedRequest.Path = selected
+	dropped, err := app.SelectWorkInputFile("test", droppedRequest)
+	if err != nil || dropped == nil || dropped.Error != nil || dropped.ArtifactRef == nil ||
+		dropped.ArtifactRef.RelativePath != "input.csv" {
+		t.Fatalf("dropped selection result=%+v err=%v", dropped, err)
+	}
+	if dialogCalls != 1 {
+		t.Fatalf("native drop unexpectedly opened dialog: calls=%d", dialogCalls)
+	}
 	if result.ArtifactRef.LastVerifiedAt == nil ||
 		time.Since(*result.ArtifactRef.LastVerifiedAt) > time.Minute {
 		t.Fatalf("missing typed verification time: %+v", result.ArtifactRef)

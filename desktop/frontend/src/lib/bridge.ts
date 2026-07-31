@@ -285,6 +285,7 @@ export interface AppBindings extends WailsWorkBindings {
   SubmitDisplay(display: string, input: string): Promise<void>;
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitEditedDisplayToTab(tabID: string, display: string, input: string, original: string): Promise<void>;
+  SendWorkChat(tabID: string, workID: string, display: string, text: string): Promise<void>;
   RunShell(command: string): Promise<void>;
   RunShellForTab(tabID: string, command: string): Promise<void>;
   Steer(text: string): Promise<void>;
@@ -790,25 +791,72 @@ export function installWailsNonFileDragErrorSuppression(): () => void {
   };
 }
 
-// onFilesDropped subscribes to native OS file drops landing on the composer (the
-// --wails-drop-target element); the callback gets the dropped files' absolute
-// paths. No-op in the browser dev mock, where the runtime is absent.
-export function onFilesDropped(cb: (paths: string[]) => void): () => void {
+type NativeDropListener = {
+  target?: () => HTMLElement | null;
+  callback: (paths: string[]) => void;
+};
+
+const nativeDropListeners = new Set<NativeDropListener>();
+let nativeDropUninstall: (() => void) | null = null;
+
+function ensureNativeDropBridge(): boolean {
   const rt = typeof window !== "undefined" ? window.runtime : undefined;
-  if (!rt?.OnFileDrop) return () => {};
+  if (!rt?.OnFileDrop) return false;
+  if (nativeDropUninstall) return true;
 
   // Wails' internal ResolveFilePaths throws when a non-file object (e.g. the
   // window icon) is dragged onto the webview. The error is uncaught and crashes
   // the app. Intercept it here so only real file drops reach the callback.
   const uninstallDragSuppression = installWailsNonFileDragErrorSuppression();
 
-  rt.OnFileDrop((_x, _y, paths) => {
-    if (Array.isArray(paths) && paths.length > 0) cb(paths);
+  rt.OnFileDrop((x, y, paths) => {
+    if (!Array.isArray(paths) || paths.length === 0) return;
+    const listeners = [...nativeDropListeners];
+    const targeted = listeners.find((listener) => {
+      const element = listener.target?.();
+      if (!element?.isConnected) return false;
+      const rect = element.getBoundingClientRect();
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    });
+    if (targeted) {
+      targeted.callback(paths);
+      return;
+    }
+    listeners.filter((listener) => !listener.target).forEach((listener) => listener.callback(paths));
   }, true);
-  return () => {
+  nativeDropUninstall = () => {
     rt.OnFileDropOff?.();
     uninstallDragSuppression();
+    nativeDropUninstall = null;
   };
+  return true;
+}
+
+function subscribeNativeDrop(listener: NativeDropListener): () => void {
+  nativeDropListeners.add(listener);
+  if (!ensureNativeDropBridge()) {
+    nativeDropListeners.delete(listener);
+    return () => {};
+  }
+  return () => {
+    nativeDropListeners.delete(listener);
+    if (nativeDropListeners.size === 0) nativeDropUninstall?.();
+  };
+}
+
+// Global fallback used by the composer when no more-specific drop target owns
+// the native OS drop.
+export function onFilesDropped(cb: (paths: string[]) => void): () => void {
+  return subscribeNativeDrop({ callback: cb });
+}
+
+// Targeted native file drop. The target wins over global listeners, preventing
+// one file from being attached to both the Work input and the composer.
+export function onFilesDroppedIn(
+  target: () => HTMLElement | null,
+  cb: (paths: string[]) => void,
+): () => void {
+  return subscribeNativeDrop({ target, callback: cb });
 }
 
 // onReady subscribes to the agent:ready event fired when boot.Build completes.
@@ -2469,6 +2517,9 @@ function makeMockApp(): AppBindings {
         },
         async SubmitEditedDisplayToTab(_tabID, display, input, _original) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
+        },
+        async SendWorkChat(_tabID, _workID, display, text) {
+          await withMockTabScope(_tabID, () => this.SubmitDisplay(display, text));
         },
         async RunShell(command) {
           cancelled = false;
@@ -4701,6 +4752,9 @@ function makeMockApp(): AppBindings {
     RecoverWorkView: () => Promise.reject(workUnavailableError()),
     RunWork: () => Promise.reject(workUnavailableError()),
     ResumeRun: () => Promise.reject(workUnavailableError()),
+    PauseRun: () => Promise.reject(workUnavailableError()),
+    CancelRun: () => Promise.reject(workUnavailableError()),
+    RestartRun: () => Promise.reject(workUnavailableError()),
     RetryWorkTask: () => Promise.reject(workUnavailableError()),
     ArchiveWork: () => Promise.reject(workUnavailableError()),
     RestoreWork: () => Promise.reject(workUnavailableError()),
@@ -4728,6 +4782,8 @@ function makeMockApp(): AppBindings {
     PreviewArtifact: () => Promise.reject(workUnavailableError()),
     RequestArtifactConversion: () => Promise.reject(workUnavailableError()),
     SelectWorkInputFile: () => Promise.reject(workUnavailableError()),
+    SelectWorkInformationFile: () => Promise.reject(workUnavailableError()),
+    AddCustomWorkInput: () => Promise.reject(workUnavailableError()),
     SubmitWorkInput: () => Promise.reject(workUnavailableError()),
     SetInputCornerstone: () => Promise.reject(workUnavailableError()),
     PreviewWorkPatch: () => Promise.reject(workUnavailableError()),

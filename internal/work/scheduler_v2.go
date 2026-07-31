@@ -1239,12 +1239,40 @@ func v2NodePromptLocale(
 					line += fmt.Sprintf(", kind: %s", kind)
 				}
 				line += fmt.Sprintf("): %s", valueStr)
+				if extra := strings.TrimSpace(in.Extra); extra != "" {
+					line += fmt.Sprintf("\n  Additional context: %s", extra)
+				}
 				parts = append(parts, line)
 			}
 		}
 		if len(parts) > 0 {
 			prompt += "\n\n--- Submitted inputs ---\n" + strings.Join(parts, "\n")
 		}
+	}
+
+	var customParts []string
+	for _, in := range inputs {
+		if in.WorkID != workID || in.CustomSpec == nil ||
+			(in.State != InputSubmitted && in.State != InputAccepted) {
+			continue
+		}
+		valueStr := string(in.Value)
+		if !json.Valid(in.Value) {
+			valueStr = fmt.Sprintf("%q", valueStr)
+		}
+		line := fmt.Sprintf("Information %q (kind: %s): %s",
+			in.CustomSpec.Label, in.CustomSpec.Kind, valueStr)
+		if description := strings.TrimSpace(in.CustomSpec.Description); description != "" {
+			line += fmt.Sprintf("\n  Explanation: %s", description)
+		}
+		if extra := strings.TrimSpace(in.Extra); extra != "" {
+			line += fmt.Sprintf("\n  Additional context: %s", extra)
+		}
+		customParts = append(customParts, line)
+	}
+	sort.Strings(customParts)
+	if len(customParts) > 0 {
+		prompt += "\n\n--- User-added Work information ---\n" + strings.Join(customParts, "\n")
 	}
 
 	if len(node.ProducesSlotIDs) == 0 {

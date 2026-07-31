@@ -44,6 +44,10 @@ export interface ExecutionListProps {
   onTaskInfo?: (runId: string, taskId: string) => void;
   /** Run+Task identities that have session refs — only these rows show the info action. */
   taskInfoTaskKeys?: Set<string>;
+  /** Standalone Work information panel owns input collection in production. */
+  showTaskInputs?: boolean;
+  /** Work pause is rendered without rewriting authoritative Task states. */
+  paused?: boolean;
 }
 
 function inputIdentity(wid: string, rid: string, tid: string, bid: string, iid: string, sid: string, dr: number, ir: number) {
@@ -80,6 +84,8 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   onPreviewPatch, onApplyPatch, onDiscussionDraftChange, externalWorkflowDiscussion,
   onWorkflowChangeState,
   onTaskInfo, taskInfoTaskKeys,
+  showTaskInputs = true,
+  paused = false,
 }) => {
   const allTasks = useWorkStore((s) => selectV2Tasks(s.v2Tasks, workId));
   const definition = useWorkStore((s) =>
@@ -365,6 +371,7 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
             throw new Error('工作状态已变化，AI 未采用过期的调整结果');
           }
           if (previewResult?.committed) setCommittedRequestId(workId, previewKey, previewRid);
+          currentWorkRevision = Math.max(currentWorkRevision, previewResult?.revision ?? 0);
 
           const applyKey = wfChangeCommittedKey(workId, token, 'apply');
           const committedApplyId = cardState?.committedRequestIds?.[applyKey];
@@ -680,11 +687,13 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                 className="wg2-el-item"
                 data-expanded={isExpanded}
                 data-task-state={task.state}
+                data-paused={paused && task.state === 'running' ? 'true' : undefined}
                 role="listitem"
                 data-testid={`execution-list-item-${task.id}`}
               >
                 <ExecutionRow
                   task={task}
+                  paused={paused}
                   workId={workId}
                   nodeDef={nd}
                   isExpanded={isExpanded}
@@ -709,7 +718,9 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                 {isExpanded && (
                   <ExpandedBlock
                     task={task} workId={workId} runId={task.runId} sessionId={sessionId ?? ''}
-                    nodeDef={nd} inputSpecs={inputSpecs} workInputs={taskInputs}
+                    nodeDef={nd}
+                    inputSpecs={showTaskInputs ? inputSpecs : []}
+                    workInputs={showTaskInputs ? taskInputs : []}
                     definitionRevision={defRev} workRevision={workRevision ?? 1}
                     hasTypedInput={hasFullTypedInput}
                     onRetry={onRetryTask}

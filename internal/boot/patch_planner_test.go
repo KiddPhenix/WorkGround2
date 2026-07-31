@@ -168,6 +168,70 @@ func TestPatchPlannerParsesJSONWithNaturalLanguageWrapper(t *testing.T) {
 	}
 }
 
+func TestPatchPlannerUsesLastStructuredPlanAfterReasoningExample(t *testing.T) {
+	raw := `先参考示例：{"operations":[{"op":"replace","path":"artifactSlots/route_guide/title","newValue":"Route guide.docx"}],"actions":[{"action":"reformat","artifactSlotId":"route_guide"}]}` +
+		"\n最终答案：" +
+		`{"operations":[{"op":"replace","path":"artifactSlots/plan_doc/title","newValue":"团建方案.docx"}],"actions":[{"action":"reformat","artifactSlotId":"plan_doc"}]}`
+	plan, err := parsePatchPlanResponse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Operations) != 1 || plan.Operations[0].Path != "artifactSlots/plan_doc/title" ||
+		len(plan.Actions) != 1 || plan.Actions[0].ArtifactSlotID != "plan_doc" {
+		t.Fatalf("plan=%+v", plan)
+	}
+}
+
+func TestPatchPlannerRepairsUnknownWorkflowTargetOnce(t *testing.T) {
+	input := patchPlannerInput()
+	input.Scope = work.PatchWorkflow
+	input.TargetNodeID = "design_plan"
+	input.Definition = &work.WorkDefinitionRevision{
+		WorkID:   "team-building",
+		Revision: 2,
+		Nodes:    []work.NodeDef{{ID: "design_plan", ProducesSlotIDs: []string{"plan_doc"}}},
+		ArtifactSlots: []work.ArtifactSlotDef{{
+			ID: "plan_doc", Title: "团建方案", Kind: "document",
+		}},
+	}
+	unknown := `{"operations":[{"op":"replace","path":"artifactSlots/route_guide/title","newValue":"团建方案.docx"}],"actions":[{"action":"reformat","artifactSlotId":"route_guide"}]}`
+	repaired := `{"operations":[{"op":"replace","path":"artifactSlots/plan_doc/title","newValue":"团建方案.docx"}],"actions":[{"action":"reformat","artifactSlotId":"plan_doc"}]}`
+	prov := &patchPlannerProviderStub{sequences: [][]provider.Chunk{
+		patchChunks(unknown),
+		patchChunks(repaired),
+	}}
+
+	plan, err := newBootPatchPlanner(prov, 0, 2048, nil).PlanPatch(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.requests) != 2 || plan.Operations[0].Path != "artifactSlots/plan_doc/title" {
+		t.Fatalf("plan=%+v calls=%d", plan, len(prov.requests))
+	}
+	if !strings.Contains(prov.requests[1].Messages[3].Content, `unknown artifact slot ID "route_guide"`) {
+		t.Fatalf("repair request missing authoritative target error: %+v", prov.requests[1].Messages)
+	}
+}
+
+func TestPatchPlannerValidatesWorkflowRootWithoutObjectID(t *testing.T) {
+	input := patchPlannerInput()
+	input.Scope = work.PatchWorkflow
+	input.Definition = &work.WorkDefinitionRevision{
+		Nodes: []work.NodeDef{{ID: "design_plan"}},
+	}
+	plan := &work.PatchPlan{
+		Operations: []work.PatchOp{{
+			Op: "replace", Path: "goal", NewValue: json.RawMessage(`"更新后的目标"`),
+		}},
+		Actions: []work.PatchAction{{
+			Action: work.PatchActionRerun, NodeID: "design_plan",
+		}},
+	}
+	if err := validatePatchPlanScope(input, plan); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPatchPlannerRejectsUnrelatedJSONObject(t *testing.T) {
 	if _, err := parsePatchPlanResponse(`说明：{"goal":"只是一段摘要"}`); err == nil {
 		t.Fatal("unrelated JSON object must not become an empty PatchPlan")

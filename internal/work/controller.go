@@ -44,6 +44,9 @@ type WorkController interface {
 	// ResumeRun 恢复暂停/等待用户的 WorkflowRun，可选附带 gate resolution 上下文。
 	ResumeRun(ctx context.Context, input ResumeRunInput) (*WorkflowRun, error)
 
+	// RestartRun 安全终止指定 Run 后重新启动，重复请求复用同一新 Run。
+	RestartRun(ctx context.Context, workID, runID, requestID string) (*WorkflowRun, error)
+
 	// ArchiveWork 归档 Work，生成不可变 WorkRecord。
 	ArchiveWork(ctx context.Context, workID, requestID string) (*WorkRecord, error)
 
@@ -119,6 +122,10 @@ type WorkController interface {
 	// overwriting a concurrent update. On success the affected task subgraph
 	// is automatically resumed.
 	SubmitWorkInput(ctx context.Context, input SubmitInputRequest) (*SubmitInputResult, error)
+
+	// AddCustomWorkInput adds user-owned text/file information without
+	// changing the active WorkDefinitionRevision.
+	AddCustomWorkInput(ctx context.Context, input AddCustomWorkInputRequest) (*SubmitInputResult, error)
 
 	// SetInputCornerstone pins or unpins a submitted input as a Cornerstone.
 	// Pin and input submission are independent operations; pin failure does

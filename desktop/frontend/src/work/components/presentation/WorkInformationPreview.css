@@ -1,0 +1,61 @@
+:root {
+  color-scheme: dark;
+}
+
+body {
+  min-width: 780px;
+  min-height: 100vh;
+  margin: 0;
+  background: #090908;
+}
+
+.wg2-info-preview {
+  width: min(940px, calc(100vw - 64px));
+  margin: 0 auto;
+  padding: 42px 0 80px;
+}
+
+.wg2-info-preview__title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.wg2-info-preview__title span {
+  color: rgba(240, 238, 233, 0.42);
+  font-size: 12px;
+}
+
+.wg2-info-preview__title strong {
+  color: rgba(240, 238, 233, 0.78);
+  font-size: 14px;
+}
+
+.wg2-info-preview nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.wg2-info-preview nav button {
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 7px;
+  background: #121210;
+  color: rgba(240, 238, 233, 0.58);
+  cursor: pointer;
+}
+
+.wg2-info-preview nav button:hover {
+  border-color: rgba(232, 161, 27, 0.4);
+  color: #e8ba61;
+}
+
+.wg2-info-preview__surface {
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  background: #0c0c0b;
+}

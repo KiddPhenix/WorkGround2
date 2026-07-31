@@ -10,6 +10,7 @@
 
 export { WorkCard } from './WorkCard';
 export { WorkCardFront } from './WorkCardFront';
+export { WorkChatInput } from './WorkChatInput';
 export { WorkCardBack } from './WorkCardBack';
 export { WorkFlipControl } from './WorkFlipControl';
 export { WorkWorkspace } from './WorkWorkspace';
@@ -19,6 +20,7 @@ export { WorkRunEntry } from './WorkRunEntry';
 
 export type { WorkCardProps, WorkDeepLink } from './WorkCard';
 export type { WorkCardFrontProps } from './WorkCardFront';
+export type { WorkChatInputProps } from './WorkChatInput';
 export type {
   WorkCardBackProps,
   WorkCardBackSlot,

@@ -60,6 +60,7 @@ type WorkService interface {
 	CancelRun(context.Context, string, string, string) error
 	PauseRun(context.Context, string, string, string) error
 	ResumeRun(context.Context, work.ResumeRunInput) (*work.WorkflowRun, error)
+	RestartRun(context.Context, string, string, string) (*work.WorkflowRun, error)
 	Archive(context.Context, string, string) (*work.WorkRecord, error)
 	Restore(context.Context, string, string) (*work.WorkView, error)
 	Delete(context.Context, string, string) error
@@ -83,6 +84,7 @@ type WorkService interface {
 	ApplyDefinition(context.Context, work.ApplyDefinitionInput) (*work.ApplyDefinitionResult, error)
 	CreateCandidateRevisionWithResult(context.Context, work.CreateCandidateRevisionInput) (*work.CreateCandidateRevisionResult, error)
 	SubmitWorkInput(context.Context, work.SubmitInputRequest) (*work.SubmitInputResult, error)
+	AddCustomWorkInput(context.Context, work.AddCustomWorkInputRequest) (*work.SubmitInputResult, error)
 	SetInputCornerstone(context.Context, work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error)
 	PreviewWorkPatch(context.Context, work.PreviewWorkPatchInput) (*work.PreviewWorkPatchResult, error)
 	ApplyWorkPatch(context.Context, work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error)
@@ -345,6 +347,13 @@ func (w workMethods) ResumeRun(ctx context.Context, input work.ResumeRunInput) (
 		return nil, errWorkDisabled
 	}
 	return w.svc.ResumeRun(ctx, input)
+}
+
+func (w workMethods) RestartRun(ctx context.Context, workID, runID, requestID string) (*work.WorkflowRun, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RestartRun(ctx, workID, runID, requestID)
 }
 
 func (w workMethods) ArchiveWork(ctx context.Context, workID, requestID string) (*work.WorkRecord, error) {
@@ -761,6 +770,13 @@ func (w workMethods) SubmitWorkInput(ctx context.Context, input work.SubmitInput
 		return nil, err
 	}
 	return w.svc.SubmitWorkInput(ctx, input)
+}
+
+func (w workMethods) AddCustomWorkInput(ctx context.Context, input work.AddCustomWorkInputRequest) (*work.SubmitInputResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.AddCustomWorkInput(ctx, input)
 }
 
 func (w workMethods) SetInputCornerstone(ctx context.Context, input work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error) {

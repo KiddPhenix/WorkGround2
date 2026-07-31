@@ -159,7 +159,8 @@ func extractArtifacts(msgs []provider.Message, workspaceRoot string) []ArtifactV
 			if abs == "" {
 				continue
 			}
-			appendArtifact(abs, d.SourceRunID, false)
+			_, inWorkspace := workspaceRelativeIn(abs, workspaceRoot)
+			appendArtifact(abs, d.SourceRunID, !inWorkspace)
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -20,6 +21,11 @@ type InputService struct {
 	defStore     DefinitionRevisionStore
 	clock        Clock
 }
+
+const (
+	customWorkInfoTaskID  = "work-information"
+	customWorkInfoBlockID = "work-information"
+)
 
 // NewInputService creates an InputService backed by the given store and
 // optional CornerstoneManager. Pass nil for cornerstones to disable pin/unpin.
@@ -161,6 +167,7 @@ type SaveDraftRequest struct {
 	WorkID           string          `json:"workId"`
 	InputID          string          `json:"inputId"`
 	Value            json.RawMessage `json:"value"`
+	Extra            string          `json:"extra,omitempty"`
 	Source           string          `json:"source,omitempty"`
 	UpdatedBy        string          `json:"updatedBy,omitempty"`
 	DefinitionRev    int64           `json:"definitionRev"`
@@ -235,6 +242,7 @@ func (s *InputService) SaveDraft(ctx context.Context, req SaveDraftRequest) (*Sa
 	now := s.clock.Now().UTC()
 	resultInput := existing
 	resultInput.Value = append(json.RawMessage(nil), req.Value...)
+	resultInput.Extra = strings.TrimSpace(req.Extra)
 	resultInput.State, resultInput.Source, resultInput.UpdatedBy = InputDraft, req.Source, req.UpdatedBy
 	resultInput.Revision, resultInput.Error, resultInput.UpdatedAt = newRevision, "", now
 	receipt := &InputIntentReceipt{RequestID: req.RequestID, Operation: "SaveDraft", IntentDigest: intentDigest,
@@ -248,6 +256,7 @@ func (s *InputService) SaveDraft(ctx context.Context, req SaveDraftRequest) (*Sa
 		BlockID:          existing.BlockID,
 		SpecID:           existing.SpecID,
 		Value:            req.Value,
+		Extra:            strings.TrimSpace(req.Extra),
 		Source:           req.Source,
 		UpdatedBy:        req.UpdatedBy,
 		Revision:         newRevision,
@@ -289,6 +298,7 @@ type SubmitInputRequest struct {
 	WorkID           string          `json:"workId"`
 	InputID          string          `json:"inputId"`
 	Value            json.RawMessage `json:"value"`
+	Extra            string          `json:"extra,omitempty"`
 	Source           string          `json:"source,omitempty"`
 	UpdatedBy        string          `json:"updatedBy,omitempty"`
 	DefinitionRev    int64           `json:"definitionRev"`
@@ -369,7 +379,7 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 	}
 
 	// Validate value against InputSpec.
-	spec, resolveErr := s.resolveInputSpecAt(req.WorkID, req.DefinitionRev, existing.SpecID)
+	spec, resolveErr := s.resolveInputSpecForInput(req.WorkID, req.DefinitionRev, existing)
 	if resolveErr != nil {
 		return &SubmitInputResult{Input: &existing, Revision: state.Revision, Error: resolveErr.Error()}, nil
 	}
@@ -380,10 +390,27 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 	newRevision := existing.Revision + 1
 
 	affectedTaskIDs := []string{existing.TaskID}
+	if existing.CustomSpec != nil {
+		// Custom Work information is optional context shared with future tasks.
+		// Saving it must not invalidate or restart an in-flight task.
+		affectedTaskIDs = nil
+	} else if (existing.State == InputSubmitted || existing.State == InputAccepted) &&
+		jsonValuesEqual(existing.Value, req.Value) &&
+		strings.TrimSpace(existing.Extra) == strings.TrimSpace(req.Extra) {
+		// A new request ID with unchanged content is still recorded as a
+		// successful save, but it must not restart completed work.
+		affectedTaskIDs = nil
+	} else if existing.State == InputSubmitted || existing.State == InputAccepted {
+		affectedTaskIDs, err = s.affectedInputTaskIDs(current, existing, req.DefinitionRev)
+		if err != nil {
+			return nil, fmt.Errorf("work: SubmitInput: resolve affected tasks: %w", err)
+		}
+	}
 
 	now := s.clock.Now().UTC()
 	resultInput := existing
 	resultInput.Value = append(json.RawMessage(nil), req.Value...)
+	resultInput.Extra = strings.TrimSpace(req.Extra)
 	resultInput.State, resultInput.Source, resultInput.UpdatedBy = InputSubmitted, req.Source, req.UpdatedBy
 	resultInput.Revision, resultInput.Error, resultInput.UpdatedAt = newRevision, "", now
 	receipt := &InputIntentReceipt{
@@ -400,6 +427,7 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 		BlockID:          existing.BlockID,
 		SpecID:           existing.SpecID,
 		Value:            req.Value,
+		Extra:            strings.TrimSpace(req.Extra),
 		Source:           req.Source,
 		UpdatedBy:        req.UpdatedBy,
 		Revision:         newRevision,
@@ -446,6 +474,184 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 		fmt.Errorf("work: SubmitInput: input %q missing from projection after commit", req.InputID)
 }
 
+// affectedInputTaskIDs expands a changed, previously-submitted input through
+// the active run's existing downstream runtimes. The scheduler still derives
+// the DAG subgraph from the owning task; including materialized descendants
+// here lets the same committed input event invalidate their completed states.
+func (s *InputService) affectedInputTaskIDs(
+	current *Work,
+	input WorkInput,
+	definitionRev int64,
+) ([]string, error) {
+	ids := map[string]bool{input.TaskID: true}
+	if current == nil || input.RunID == "" {
+		return []string{input.TaskID}, nil
+	}
+	runtime := current.V2TaskRuntimes[input.TaskID]
+	if runtime == nil || runtime.NodeID == "" {
+		return []string{input.TaskID}, nil
+	}
+	if s == nil || s.defStore == nil {
+		return nil, errors.New("definition store is not configured")
+	}
+	if current.V2CurrentRevision != definitionRev {
+		return nil, fmt.Errorf(
+			"definition revision conflict: expected %d, current %d",
+			definitionRev,
+			current.V2CurrentRevision,
+		)
+	}
+	definition, err := s.defStore.LoadRevision(input.WorkID, definitionRev)
+	if err != nil {
+		return nil, err
+	}
+	for _, nodeID := range AffectedNodes(definition.Nodes, []string{runtime.NodeID}) {
+		taskID, deriveErr := DeriveTaskID(input.RunID, nodeID)
+		if deriveErr != nil {
+			return nil, deriveErr
+		}
+		if current.V2TaskRuntimes[taskID] != nil {
+			ids[taskID] = true
+		}
+	}
+	result := make([]string, 0, len(ids))
+	for taskID := range ids {
+		result = append(result, taskID)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+// AddCustomInput atomically creates and submits one user-owned Work
+// information item. The inline InputSpec keeps the active definition immutable
+// while allowing the normal input editor and validation path to be reused.
+func (s *InputService) AddCustomInput(ctx context.Context, req AddCustomWorkInputRequest) (*SubmitInputResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
+	req.WorkID = strings.TrimSpace(req.WorkID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	req.InputID = strings.TrimSpace(req.InputID)
+	req.Name = strings.TrimSpace(req.Name)
+	req.Description = strings.TrimSpace(req.Description)
+	req.RequestID = strings.TrimSpace(req.RequestID)
+	if req.WorkID == "" || req.RunID == "" || req.InputID == "" || req.Name == "" || req.RequestID == "" {
+		return nil, errors.New("work: AddCustomInput: workID/runID/inputID/name/requestID are required")
+	}
+	if req.Kind != InputText && req.Kind != InputFile {
+		return nil, fmt.Errorf("work: AddCustomInput: kind %q must be text or file", req.Kind)
+	}
+	spec := InputSpec{
+		ID:          "custom:" + req.InputID,
+		Label:       req.Name,
+		Description: req.Description,
+		Kind:        req.Kind,
+		Required:    true,
+	}
+	if valErr := ValidateInputValue(spec, req.Value); valErr != nil {
+		return &SubmitInputResult{Revision: req.ExpectedRevision, Error: valErr.Error()}, nil
+	}
+
+	eventRequestID := req.RequestID + "/submit"
+	current, state, err := s.store.LoadState(req.WorkID, eventRequestID)
+	if err != nil {
+		return nil, err
+	}
+	intentDigest := hashInputOperation("AddCustomWorkInput", req)
+	if state.RequestFound {
+		if state.RequestType != EventInputSubmitted {
+			return nil, fmt.Errorf("%w: AddCustomInput requestID %q already used for %q", ErrWorkRequestIDConflict, req.RequestID, state.RequestType)
+		}
+		receipt, receiptErr := inputReceiptReplay(current, req.RequestID, "AddCustomWorkInput", intentDigest)
+		if receiptErr != nil {
+			return nil, receiptErr
+		}
+		if receipt.ResultInput == nil {
+			return nil, fmt.Errorf("%w: AddCustomInput result is unavailable", ErrWorkNeedsRepair)
+		}
+		cp := cloneWorkInput(*receipt.ResultInput)
+		return &SubmitInputResult{
+			Input: &cp, Receipt: cloneInputIntentReceipt(receipt),
+			Revision: receipt.ResultRevision, Duplicate: true,
+		}, nil
+	}
+	if err := validateInputWrite(current, state, req.ExpectedRevision, req.DefinitionRevision); err != nil {
+		return &SubmitInputResult{Revision: state.Revision, Error: err.Error()}, nil
+	}
+	if findInputIndex(current, req.InputID) >= 0 {
+		return nil, fmt.Errorf("%w: inputID %q already exists", ErrWorkRequestIDConflict, req.InputID)
+	}
+
+	now := s.clock.Now().UTC()
+	resultInput := WorkInput{
+		ID: req.InputID, WorkID: req.WorkID, RunID: req.RunID,
+		TaskID: customWorkInfoTaskID, BlockID: customWorkInfoBlockID,
+		SpecID: spec.ID, CustomSpec: cloneInputSpec(&spec),
+		Value: append(json.RawMessage(nil), req.Value...), State: InputSubmitted,
+		Source: "user", UpdatedBy: "user", Revision: 1, UpdatedAt: now,
+	}
+	receipt := &InputIntentReceipt{
+		RequestID: req.RequestID, Operation: "AddCustomWorkInput", IntentDigest: intentDigest,
+		InputID: req.InputID, ResultRevision: state.Revision + 2,
+		ResultDigest: hashInputOperation("WorkInput", &resultInput),
+		ResultInput:  &resultInput, CreatedAt: now,
+	}
+	requestPayload, err := json.Marshal(InputRequestedPayload{
+		InputID: req.InputID, WorkID: req.WorkID, RunID: req.RunID,
+		TaskID: customWorkInfoTaskID, BlockID: customWorkInfoBlockID,
+		SpecID: spec.ID, CustomSpec: &spec,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("work: AddCustomInput: encode request event: %w", err)
+	}
+	submitPayload, err := json.Marshal(InputSubmittedPayload{
+		InputID: req.InputID, WorkID: req.WorkID, RunID: req.RunID,
+		TaskID: customWorkInfoTaskID, BlockID: customWorkInfoBlockID,
+		SpecID: spec.ID, Value: req.Value, Source: "user", UpdatedBy: "user",
+		Revision: 1, ExpectedRevision: 0, Receipt: receipt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("work: AddCustomInput: encode submit event: %w", err)
+	}
+	requestEvent := newServiceEventV2(req.WorkID, req.RequestID+"/request", EventInputRequested, requestPayload, now)
+	requestEvent.BaseRevision, requestEvent.Revision = state.Revision, state.Revision+1
+	requestEvent.Object = ObjectContext{
+		Kind: ObjectInput, ID: req.InputID, WorkID: req.WorkID,
+		RunID: req.RunID, TaskID: customWorkInfoTaskID, BlockID: customWorkInfoBlockID,
+		InputID: req.InputID, SpecID: spec.ID, DefinitionRevision: int64Ptr(req.DefinitionRevision),
+	}
+	submitEvent := newServiceEventV2(req.WorkID, eventRequestID, EventInputSubmitted, submitPayload, now)
+	submitEvent.BaseRevision, submitEvent.Revision = state.Revision+1, state.Revision+2
+	submitEvent.Object = ObjectContext{
+		Kind: ObjectInput, ID: req.InputID, WorkID: req.WorkID,
+		RunID: req.RunID, TaskID: customWorkInfoTaskID, BlockID: customWorkInfoBlockID,
+		InputID: req.InputID, SpecID: spec.ID, ExpectedRevision: int64Ptr(0),
+		DefinitionRevision: int64Ptr(req.DefinitionRevision),
+	}
+	revisions, err := s.store.CommitEvents(req.WorkID, []WorkEvent{requestEvent, submitEvent})
+	if err != nil {
+		return nil, fmt.Errorf("work: AddCustomInput: commit: %w", err)
+	}
+	revision := revisions[len(revisions)-1]
+	if receiptStore, ok := s.store.(InputReceiptStore); ok {
+		if receiptErr := receiptStore.StoreInputReceipt(req.WorkID, receipt); receiptErr != nil {
+			return &SubmitInputResult{Receipt: cloneInputIntentReceipt(receipt), Revision: revision},
+				committedRecovery("add-custom-input-receipt", req.WorkID, req.RequestID, revision, receiptErr)
+		}
+	}
+	reloaded, _, reloadErr := s.store.LoadState(req.WorkID, "")
+	if reloadErr != nil {
+		return &SubmitInputResult{Receipt: cloneInputIntentReceipt(receipt), Revision: revision},
+			committedRecovery("add-custom-input-reload", req.WorkID, req.RequestID, revision, reloadErr)
+	}
+	if idx := findInputIndex(reloaded, req.InputID); idx >= 0 {
+		cp := cloneWorkInput(reloaded.V2Inputs[idx])
+		return &SubmitInputResult{Input: &cp, Receipt: cloneInputIntentReceipt(receipt), Revision: revision}, nil
+	}
+	return &SubmitInputResult{Receipt: cloneInputIntentReceipt(receipt), Revision: revision},
+		fmt.Errorf("work: AddCustomInput: input %q missing after commit", req.InputID)
+}
+
 func (s *InputService) commitSubmitRejection(req SubmitInputRequest, existing WorkInput, state WorkEventState, intentDigest string, validationErr error) (*SubmitInputResult, error) {
 	if !json.Valid(req.Value) {
 		return &SubmitInputResult{Input: &existing, Revision: state.Revision, Error: validationErr.Error()}, nil
@@ -453,6 +659,7 @@ func (s *InputService) commitSubmitRejection(req SubmitInputRequest, existing Wo
 	now := s.clock.Now().UTC()
 	resultInput := existing
 	resultInput.Value = append(json.RawMessage(nil), req.Value...)
+	resultInput.Extra = strings.TrimSpace(req.Extra)
 	resultInput.State, resultInput.Error = InputRejected, validationErr.Error()
 	resultInput.Source, resultInput.UpdatedBy = req.Source, req.UpdatedBy
 	resultInput.Revision, resultInput.UpdatedAt = existing.Revision+1, now
@@ -465,7 +672,7 @@ func (s *InputService) commitSubmitRejection(req SubmitInputRequest, existing Wo
 	payload, err := json.Marshal(InputRejectedPayload{
 		InputID: req.InputID, WorkID: req.WorkID,
 		RunID: existing.RunID, TaskID: existing.TaskID, BlockID: existing.BlockID, SpecID: existing.SpecID,
-		Value:  req.Value,
+		Value: req.Value, Extra: strings.TrimSpace(req.Extra),
 		Reason: validationErr.Error(), Source: req.Source, UpdatedBy: req.UpdatedBy,
 		Revision: resultInput.Revision, ExpectedRevision: req.InputRevision, Receipt: receipt,
 	})
@@ -565,6 +772,7 @@ func (s *InputService) RejectInput(ctx context.Context, req RejectInputRequest) 
 		BlockID:          existing.BlockID,
 		SpecID:           existing.SpecID,
 		Value:            existing.Value,
+		Extra:            existing.Extra,
 		Reason:           req.Reason,
 		Source:           req.Source,
 		UpdatedBy:        req.Source,
@@ -898,6 +1106,22 @@ func (s *InputService) resolveInputSpecAt(workID string, revision int64, specID 
 		}
 	}
 	return nil, fmt.Errorf("InputSpec %q not found in definition revision %d", specID, revision)
+}
+
+func (s *InputService) resolveInputSpecForInput(workID string, revision int64, input WorkInput) (*InputSpec, error) {
+	if input.CustomSpec != nil {
+		if input.CustomSpec.ID != input.SpecID {
+			return nil, fmt.Errorf("custom InputSpec %q does not match input specId %q", input.CustomSpec.ID, input.SpecID)
+		}
+		return cloneInputSpec(input.CustomSpec), nil
+	}
+	return s.resolveInputSpecAt(workID, revision, input.SpecID)
+}
+
+func cloneWorkInput(input WorkInput) WorkInput {
+	input.Value = append(json.RawMessage(nil), input.Value...)
+	input.CustomSpec = cloneInputSpec(input.CustomSpec)
+	return input
 }
 
 func validateInputDefinition(current *Work, definitionRev int64) error {

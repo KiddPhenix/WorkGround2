@@ -401,8 +401,114 @@ func TestLoadWorkspaceFileRejectsOutsideWorkspace(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadWorkspaceFile(Discovered{Path: outside}, root); err == nil {
+	rel, err := filepath.Rel(root, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadWorkspaceFile(Discovered{Path: rel}, root); err == nil {
 		t.Fatal("expected outside-workspace artifact to be rejected")
+	}
+}
+
+func TestLoadFileLoadsExternalViaDotDot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.bin")
+	if err := os.WriteFile(outside, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(root, outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFile(Discovered{Path: rel}, root)
+	if err != nil {
+		t.Fatalf("LoadFile should load external '..' path: %v", err)
+	}
+	if string(got.Data) != "outside" {
+		t.Fatalf("Data = %q, want %q", got.Data, "outside")
+	}
+	if got.Path != outside {
+		t.Errorf("Path = %q, want %q", got.Path, outside)
+	}
+}
+
+func TestLoadWorkspaceFileRejectsEmptyPath(t *testing.T) {
+	root := t.TempDir()
+	if _, err := LoadWorkspaceFile(Discovered{Path: ""}, root); err == nil {
+		t.Fatal("expected error for empty path")
+	}
+}
+
+func TestLoadFileRejectsEmptyBaseDir(t *testing.T) {
+	if _, err := LoadFile(Discovered{Path: "x.bin"}, ""); err == nil {
+		t.Fatal("expected error for empty base directory")
+	}
+}
+
+func TestLoadFileRejectsRelativeBaseDir(t *testing.T) {
+	if _, err := LoadFile(Discovered{Path: "x.bin"}, "relative/root"); err == nil {
+		t.Fatal("expected error for relative base directory")
+	}
+}
+
+func TestLoadFileAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "external_output.bin")
+	want := []byte("external artifact payload")
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadFile(Discovered{Name: "external_output.bin", Path: path}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Data) != string(want) {
+		t.Fatalf("Data = %q, want %q", got.Data, want)
+	}
+	if got.Path != path {
+		t.Errorf("Path = %q, want %q", got.Path, path)
+	}
+	if got.Name != "external_output.bin" {
+		t.Errorf("Name = %q, want external_output.bin", got.Name)
+	}
+	if got.Type == "" {
+		t.Error("Type should be detected")
+	}
+}
+
+func TestLoadFileRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlink creation requires privileges on this platform")
+	}
+	_, err := LoadFile(Discovered{Path: link}, dir)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("error = %v, want symlink rejection", err)
+	}
+}
+
+func TestLoadFileRejectsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadFile(Discovered{Path: dir}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("error = %v, want regular file rejection", err)
+	}
+}
+
+func TestLoadFileRejectsEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.bin")
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadFile(Discovered{Path: path}, dir)
+	if err == nil || !strings.Contains(err.Error(), "between 1 byte") {
+		t.Fatalf("error = %v, want size rejection", err)
 	}
 }
 
@@ -629,5 +735,186 @@ func TestCollectSlotGuidance_CustomProducerNormalizesContract(t *testing.T) {
 	if got.Kind != "video" || got.Capability != "video_generation" ||
 		got.Guidance != "use video helper" {
 		t.Fatalf("guidance = %+v", got)
+	}
+}
+
+// ── FileProducer bash inline output API tests ──────────────────────────────
+// These verify that shell-embedded Python file-output calls (e.g.
+// doc.save('file.docx')) are discovered as artifacts even when the
+// tool result is garbled or lacks a recognisable path pattern.
+
+func TestFileProducer_BashPythonSaveDocx(t *testing.T) {
+	// Reproduces the real incident: doc.save('路线指引.docx') in bash,
+	// garbled terminal output, ls confirms the file exists on disk.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"from docx import Document; doc = Document(); doc.save('路线指引.docx')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash",
+			Content: "\ufffd\u03ff\ufffd\u07ff\ufffd\ufffd\ufffd\ufffd\r\n"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	d := discovered[0]
+	if d.Name != "路线指引.docx" {
+		t.Errorf("Name = %q, want 路线指引.docx", d.Name)
+	}
+	if d.SlotKind() != "docx" {
+		t.Errorf("SlotKind = %q, want docx", d.SlotKind())
+	}
+	if d.Path != "路线指引.docx" {
+		t.Errorf("Path = %q, want 路线指引.docx", d.Path)
+	}
+	if d.SourceRunID != "tc-bash" {
+		t.Errorf("SourceRunID = %q, want tc-bash", d.SourceRunID)
+	}
+}
+
+func TestFileProducer_BashPythonSaveDocxDoubleQuoted(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c 'from docx import Document; doc = Document(); doc.save(\"报告.docx\")'"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	if discovered[0].Name != "报告.docx" {
+		t.Errorf("Name = %q, want 报告.docx", discovered[0].Name)
+	}
+}
+
+func TestFileProducer_BashPythonSaveWithPath(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"doc.save('output/路线指引.docx')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	if discovered[0].Name != "路线指引.docx" {
+		t.Errorf("Name = %q, want 路线指引.docx", discovered[0].Name)
+	}
+}
+
+func TestFileProducer_BashSavefigPng(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"import matplotlib.pyplot as plt; plt.plot([1,2]); plt.savefig('chart.png')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	if discovered[0].Name != "chart.png" {
+		t.Errorf("Name = %q, want chart.png", discovered[0].Name)
+	}
+	if discovered[0].SlotKind() != "image" {
+		t.Errorf("SlotKind = %q, want image", discovered[0].SlotKind())
+	}
+}
+
+func TestFileProducer_BashToExcelXlsx(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"df.to_excel('report.xlsx')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	if discovered[0].SlotKind() != "xlsx" {
+		t.Errorf("SlotKind = %q, want xlsx", discovered[0].SlotKind())
+	}
+}
+
+func TestFileProducer_BashOnlyReadsNotProduced(t *testing.T) {
+	// Reading a .docx must not be mistaken for producing one.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"from docx import Document; doc = Document('input.docx'); print(doc.paragraphs[0].text)\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: "Hello from docx"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0 discovered, got %d: reading should not produce artifacts", len(discovered))
+	}
+}
+
+func TestFileProducer_BashOnlyEchoMentionNotProduced(t *testing.T) {
+	// Mentioning a filename in an echo/print is not output — must not match.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"echo \"generated file: report.docx\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: "generated file: report.docx"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 0 {
+		t.Fatalf("expected 0 discovered, got %d: echo output should not match inline save patterns", len(discovered))
+	}
+}
+
+func TestFileProducer_BashOutputFlagStillWorks(t *testing.T) {
+	// Regression: -o flag extraction must still work.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"ffmpeg -i input.mp4 -o output.mp4"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 discovered, got %d", len(discovered))
+	}
+	if discovered[0].Name != "output.mp4" {
+		t.Errorf("Name = %q, want output.mp4", discovered[0].Name)
+	}
+}
+
+func TestFileProducer_BashMultipleSavesDeduped(t *testing.T) {
+	// Same file saved twice in one command → one artifact.
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"doc.save('out.docx'); doc2.save('out.docx')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 1 {
+		t.Fatalf("expected 1 deduped, got %d", len(discovered))
+	}
+}
+
+func TestFileProducer_BashMultipleSavesDistinctPaths(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc-bash", Name: "bash", Arguments: `{"command":"python -c \"plt.savefig('a.png'); doc.save('b.docx')\""}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc-bash", Name: "bash", Content: ""},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	if len(discovered) != 2 {
+		t.Fatalf("expected 2 distinct, got %d", len(discovered))
+	}
+	// Order must be deterministic (discovery order).
+	names := make([]string, len(discovered))
+	for i, d := range discovered {
+		names[i] = d.Name
+	}
+	if names[0] != "a.png" || names[1] != "b.docx" {
+		t.Errorf("unexpected order: %v", names)
 	}
 }

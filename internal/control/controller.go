@@ -849,6 +849,39 @@ func (c *Controller) SubmitDisplay(display, input string) {
 	c.submit(input, display, "")
 }
 
+// SubmitWorkChat sends a Work Chat turn with structured Work context injected
+// into the model input. The userText is command-parsed normally (goals, shell,
+// memory notes); the contextBlock is injected into the model input only — it never
+// appears in the UI transcript and never touches the cache-stable system prompt.
+//
+// Repeated calls are safe: the context is read-only and built from an
+// authoritative WorkView snapshot taken before the call.
+func (c *Controller) SubmitWorkChat(display, userText, contextBlock string) {
+	trimmed := strings.TrimSpace(userText)
+	if note, ok := MemoryQuickAddNote(trimmed); ok {
+		c.rememberProjectNote(note)
+		return
+	}
+	if note, ok := RememberCommandNote(trimmed); ok {
+		c.rememberProjectNote(note)
+		return
+	}
+	if c.applyGoalCommand(trimmed, display) {
+		return
+	}
+	if strings.HasPrefix(trimmed, "!") {
+		c.RunShell(trimmed[1:])
+		return
+	}
+	input := userText
+	if contextBlock != "" {
+		input = "<work_context>\n" + contextBlock +
+			"\n</work_context>\n\nUse the Work context above as the current authoritative snapshot.\n\n" +
+			"<user_request>\n" + userText + "\n</user_request>"
+	}
+	c.submitCommandOrTurn(trimmed, input, display, false, "")
+}
+
 // SubmitEditedDisplay is SubmitDisplay for an inline-edited prompt. The model
 // sees input; the saved user message also keeps the pre-edit prompt as local UI
 // metadata so the edit survives session rewrites.

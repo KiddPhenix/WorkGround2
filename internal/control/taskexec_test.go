@@ -1069,6 +1069,9 @@ func TestTaskArtifactRelativePathKeepsWorkspaceArtifactUsable(t *testing.T) {
 	if got != "outputs/report.pdf" {
 		t.Fatalf("relative artifact path = %q", got)
 	}
+	if got := taskArtifactRelativePath(&artifact.Discovered{Path: filepath.Join("outputs", "report.pdf")}, root); got != "outputs/report.pdf" {
+		t.Fatalf("workspace-relative artifact path = %q", got)
+	}
 	outside := filepath.Join(filepath.Dir(root), "outside.pdf")
 	if got := taskArtifactRelativePath(&artifact.Discovered{Path: outside}, root); got != "" {
 		t.Fatalf("outside artifact path leaked as %q", got)
@@ -1318,6 +1321,137 @@ func TestMaterializeTaskArtifactRejectsInvalidWorkspaceImage(t *testing.T) {
 	if _, _, _, _, err := materializeTaskArtifact(slot, "", &discovered, root); err == nil ||
 		!strings.Contains(err.Error(), "validate image artifact") {
 		t.Fatalf("error = %v, want invalid workspace image rejection", err)
+	}
+}
+
+func TestTaskExecutorMaterializesExternalFileArtifact(t *testing.T) {
+	root := t.TempDir()
+	// External file in a different temp dir.
+	externalDir := t.TempDir()
+	externalPath := filepath.Join(externalDir, "output", "result.bin")
+	if err := os.MkdirAll(filepath.Dir(externalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("external file content")
+	if err := os.WriteFile(externalPath, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "external_file", WorkID: "work-ext", DefinitionRev: 1,
+		Title: "External File", Kind: "file", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts:     []artifact.Discovered{{Name: "result.bin", Path: externalPath, Kind: "file"}},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "result.bin" {
+		t.Errorf("Name = %q, want result.bin", ref.Name)
+	}
+	if ref.Status != work.ArtifactRefStatusAvailable {
+		t.Errorf("Status = %q, want available", ref.Status)
+	}
+	if ref.RelativePath != "" {
+		t.Errorf("RelativePath = %q, want empty for external artifact", ref.RelativePath)
+	}
+	if ref.BlobDigest == "" {
+		t.Fatal("BlobDigest is empty")
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("blob = %q, want %q", body, want)
+	}
+}
+
+func TestTaskExecutorMaterializesExternalFileArtifactViaDotDot(t *testing.T) {
+	root := t.TempDir()
+	// External file outside workspace, referenced via .. relative path.
+	externalDir := t.TempDir()
+	externalPath := filepath.Join(externalDir, "outside", "result.bin")
+	if err := os.MkdirAll(filepath.Dir(externalPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("external dotdot content")
+	if err := os.WriteFile(externalPath, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Compute a relative path with .. from workspace root.
+	relPath, err := filepath.Rel(root, externalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "ext_dotdot", WorkID: "work-ext-dotdot", DefinitionRev: 1,
+		Title: "External via DotDot", Kind: "file", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts:     []artifact.Discovered{{Name: "result.bin", Path: relPath, Kind: "file"}},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "result.bin" {
+		t.Errorf("Name = %q, want result.bin", ref.Name)
+	}
+	if ref.Status != work.ArtifactRefStatusAvailable {
+		t.Errorf("Status = %q, want available", ref.Status)
+	}
+	if ref.RelativePath != "" {
+		t.Errorf("RelativePath = %q, want empty for external artifact via ..", ref.RelativePath)
+	}
+	if ref.BlobDigest == "" {
+		t.Fatal("BlobDigest is empty")
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("blob = %q, want %q", body, want)
 	}
 }
 

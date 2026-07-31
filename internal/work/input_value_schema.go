@@ -321,25 +321,10 @@ func validateNumberValue(spec InputSpec, v json.RawMessage) error {
 	if err := json.Unmarshal(spec.ValueSchema, &c); err != nil {
 		return fmt.Errorf("work: input %q number constraints invalid: %w", spec.ID, err)
 	}
-	if c.Min != nil && f < *c.Min {
-		return fmt.Errorf("work: input %q number %v below min %v", spec.ID, f, *c.Min)
-	}
-	if c.Max != nil && f > *c.Max {
-		return fmt.Errorf("work: input %q number %v above max %v", spec.ID, f, *c.Max)
-	}
-	if c.Integer && f != math.Trunc(f) {
-		return fmt.Errorf("work: input %q number must be integer, got %v", spec.ID, f)
-	}
 	switch c.Unit {
 	case "", "number", "amount":
 	case "ratio":
-		if f < 0 || f > 1 {
-			return fmt.Errorf("work: input %q ratio must be 0..1", spec.ID)
-		}
 	case "percent":
-		if f < 0 || f > 100 {
-			return fmt.Errorf("work: input %q percent must be 0..100", spec.ID)
-		}
 	default:
 		return fmt.Errorf("work: input %q number unit %q is invalid", spec.ID, c.Unit)
 	}

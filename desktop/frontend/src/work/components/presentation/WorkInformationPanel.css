@@ -1,0 +1,593 @@
+.wg2-work-card-front--presentation {
+  position: relative;
+  isolation: isolate;
+}
+
+.wg2-info-entry {
+  min-width: 0;
+}
+
+.wg2-info-entry > .work-definition-overview {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.wg2-info-entry .work-definition-overview__field:is(button) {
+  width: 100%;
+  border-top: 0;
+  border-left: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wg2-info-entry .work-definition-overview__field:is(button):hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.wg2-info-entry .work-definition-overview__field:is(button):focus-visible {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.work-definition-overview__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.work-definition-overview__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: color-mix(in srgb, var(--accent) 78%, white);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.work-definition-overview__add:hover {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.wg2-info-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-popover);
+  display: flex;
+  min-height: 100%;
+  align-items: flex-start;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: clamp(28px, 6vh, 64px) clamp(18px, 5vw, 64px);
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(5px);
+}
+
+.wg2-info-panel {
+  --info-accent: #e8a11b;
+  --info-border: rgba(255, 255, 255, 0.11);
+  width: min(760px, 100%);
+  flex: 0 0 auto;
+  color: var(--text-primary, #f0eee9);
+  border: 1px solid var(--info-border);
+  border-radius: 14px;
+  background: #11110f;
+  overflow: hidden;
+  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.46);
+}
+
+.wg2-info-panel__bar,
+.wg2-info-panel--closed,
+.wg2-info-panel--complete {
+  min-height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+}
+
+.wg2-info-panel__bar > div,
+.wg2-info-panel--closed > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.wg2-info-panel__bar svg,
+.wg2-info-panel--closed svg {
+  color: var(--info-accent);
+}
+
+.wg2-info-panel__bar span,
+.wg2-info-panel--closed span,
+.wg2-info-panel--complete span {
+  color: rgba(240, 238, 233, 0.5);
+  font-size: 12px;
+}
+
+.wg2-info-panel__close,
+.wg2-info-panel--closed button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: rgba(240, 238, 233, 0.64);
+  cursor: pointer;
+}
+
+.wg2-info-panel__close {
+  width: 30px;
+  height: 30px;
+  justify-content: center;
+  border-radius: 7px;
+}
+
+.wg2-info-panel__close:hover,
+.wg2-info-panel--closed button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.wg2-info-panel--closed,
+.wg2-info-panel--complete {
+  border-color: rgba(232, 161, 27, 0.3);
+}
+
+.wg2-info-panel--complete {
+  justify-content: flex-start;
+  gap: 9px;
+  color: #9ac995;
+}
+
+.wg2-info-panel--complete span {
+  margin-left: auto;
+}
+
+.wg2-info-stack {
+  position: relative;
+  padding: 0 40px 44px 12px;
+}
+
+.wg2-info-stack__back {
+  position: absolute;
+  top: 24px;
+  bottom: 18px;
+  left: 30px;
+  right: 18px;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 22px 12px;
+  border: 1px solid rgba(232, 161, 27, 0.2);
+  border-radius: 12px;
+  background: #17150f;
+  color: rgba(240, 238, 233, 0.3);
+  font-size: 11px;
+}
+
+.wg2-info-stack__back--2 {
+  transform: translate(26px, 26px);
+  opacity: 0.44;
+}
+
+.wg2-info-stack__back--1 {
+  transform: translate(14px, 14px);
+  opacity: 0.72;
+}
+
+.wg2-info-card {
+  position: relative;
+  z-index: 1;
+  margin-top: 12px;
+  padding: 18px;
+  border: 1px solid rgba(232, 161, 27, 0.52);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 84% 0, rgba(232, 161, 27, 0.06), transparent 36%),
+    #15130f;
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.28);
+}
+
+.wg2-info-card__meta,
+.wg2-info-card__heading,
+.wg2-info-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.wg2-info-card__meta {
+  margin-bottom: 10px;
+  color: rgba(240, 238, 233, 0.46);
+  font-size: 11px;
+}
+
+.wg2-info-card__kind {
+  padding: 3px 8px;
+  color: #d8c090;
+  border: 1px solid rgba(232, 161, 27, 0.25);
+  border-radius: 999px;
+  background: rgba(232, 161, 27, 0.07);
+}
+
+.wg2-info-card__heading {
+  align-items: flex-start;
+}
+
+.wg2-info-card__heading h3 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.45;
+  color: #f3f0e9;
+}
+
+.wg2-info-card__heading p {
+  margin: 5px 0 0;
+  color: rgba(240, 238, 233, 0.52);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.wg2-info-card__heading button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: #191814;
+  color: rgba(240, 238, 233, 0.68);
+  cursor: pointer;
+}
+
+.wg2-info-card__heading button.is-open {
+  border-color: rgba(232, 161, 27, 0.45);
+  color: #e9bb63;
+}
+
+.wg2-info-card__heading button.is-open svg:last-child {
+  transform: rotate(180deg);
+}
+
+.wg2-info-card__control {
+  position: relative;
+  margin-top: 16px;
+}
+
+.wg2-info-card__control .wg2-wh-host {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  contain: none;
+}
+
+.wg2-info-card__control .wg2-wh-text,
+.wg2-info-card__control .wg2-wh-number,
+.wg2-info-card__control .wg2-wh-date,
+.wg2-info-card__control .wg2-wh-select {
+  min-height: 43px;
+  border-radius: 8px;
+  border-color: rgba(255, 255, 255, 0.13);
+  background: #0d0d0c;
+}
+
+.wg2-info-card__control .wg2-wh-file {
+  min-height: 118px;
+  border-style: dashed;
+  border-color: rgba(232, 161, 27, 0.36);
+  background: rgba(232, 161, 27, 0.025);
+}
+
+.wg2-info-card__control.is-drag-over .wg2-wh-file {
+  border-color: var(--info-accent);
+  background: rgba(232, 161, 27, 0.08);
+}
+
+.wg2-info-card__drop-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  border: 1px dashed var(--info-accent);
+  border-radius: 9px;
+  background: rgba(24, 20, 11, 0.94);
+  color: #f1bd57;
+  pointer-events: none;
+}
+
+.wg2-info-card__advanced {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.wg2-info-card__unavailable {
+  margin: 10px 0 0;
+  color: #d5a956;
+  font-size: 12px;
+}
+
+.wg2-info-card__advanced label {
+  display: block;
+  margin-bottom: 7px;
+  color: rgba(240, 238, 233, 0.62);
+  font-size: 12px;
+}
+
+.wg2-info-card__advanced textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  outline: 0;
+  background: #0d0d0c;
+  color: #f0eee9;
+  font: inherit;
+}
+
+.wg2-info-card__advanced textarea:focus {
+  border-color: var(--info-accent);
+  box-shadow: 0 0 0 2px rgba(232, 161, 27, 0.12);
+}
+
+.wg2-info-card__control .wg2-wh-warning {
+  margin-top: 9px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(232, 161, 27, 0.34);
+  border-radius: 7px;
+  background: rgba(232, 161, 27, 0.08);
+  color: #e4b75f;
+  font-size: 12px;
+}
+
+.wg2-info-card__control .wg2-wh-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.wg2-info-card__control .wg2-wh-submit-btn {
+  min-width: 122px;
+  min-height: 38px;
+  border-color: #e8a11b;
+  background: #e8a11b;
+  color: #17130a;
+  font-weight: 700;
+}
+
+.wg2-info-card__footer {
+  align-items: flex-end;
+  margin-top: 14px;
+}
+
+.wg2-info-card__footer > span {
+  max-width: 35%;
+  overflow: hidden;
+  color: rgba(240, 238, 233, 0.38);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wg2-info-card__mode {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: #0e0e0c;
+}
+
+.wg2-info-card__mode button {
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: rgba(240, 238, 233, 0.46);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wg2-info-card__mode button.is-selected {
+  background: rgba(232, 161, 27, 0.13);
+  color: #e9bb63;
+}
+
+.wg2-info-card--add {
+  min-height: 360px;
+}
+
+.wg2-info-add__fields {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.wg2-info-add__fields label {
+  display: grid;
+  gap: 7px;
+  color: rgba(240, 238, 233, 0.68);
+  font-size: 12px;
+}
+
+.wg2-info-add__fields label em {
+  color: rgba(240, 238, 233, 0.34);
+  font-style: normal;
+}
+
+.wg2-info-add__fields input,
+.wg2-info-add__fields textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  outline: 0;
+  background: #0d0d0c;
+  color: #f0eee9;
+  font: inherit;
+}
+
+.wg2-info-add__fields textarea {
+  resize: vertical;
+}
+
+.wg2-info-add__fields input:focus,
+.wg2-info-add__fields textarea:focus {
+  border-color: var(--info-accent);
+  box-shadow: 0 0 0 2px rgba(232, 161, 27, 0.12);
+}
+
+.wg2-info-add__kind {
+  display: inline-flex;
+  width: fit-content;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: #0e0e0c;
+}
+
+.wg2-info-add__kind button,
+.wg2-info-add__footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: rgba(240, 238, 233, 0.58);
+  cursor: pointer;
+}
+
+.wg2-info-add__kind button.is-selected {
+  background: rgba(232, 161, 27, 0.13);
+  color: #e9bb63;
+}
+
+.wg2-info-add__file {
+  min-height: 126px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 16px;
+  border: 1px dashed rgba(232, 161, 27, 0.4);
+  border-radius: 9px;
+  background: rgba(232, 161, 27, 0.025);
+  color: rgba(240, 238, 233, 0.42);
+  font-size: 12px;
+}
+
+.wg2-info-add__file > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 13px;
+  border: 1px solid rgba(232, 161, 27, 0.35);
+  border-radius: 8px;
+  background: rgba(232, 161, 27, 0.08);
+  color: #e9bb63;
+  cursor: pointer;
+}
+
+.wg2-info-add__file ul {
+  width: min(420px, 100%);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: rgba(240, 238, 233, 0.72);
+}
+
+.wg2-info-add__file li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.wg2-info-add__file li button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(240, 238, 233, 0.48);
+  cursor: pointer;
+}
+
+.wg2-info-add__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.wg2-info-add__footer button {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.wg2-info-add__footer button.is-primary {
+  border-color: #e8a11b;
+  background: #e8a11b;
+  color: #17130a;
+  font-weight: 700;
+}
+
+@media (max-width: 720px) {
+  .wg2-info-overlay {
+    padding: 14px 10px;
+  }
+
+  .wg2-info-stack {
+    padding-right: 24px;
+  }
+
+  .wg2-info-card {
+    padding: 15px;
+  }
+
+  .wg2-info-card__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wg2-info-card__mode {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .wg2-info-card__footer > span {
+    max-width: 100%;
+  }
+}

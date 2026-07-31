@@ -700,7 +700,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         )}
       </div>
 
-      {!readonly && !archived && (
+      {!readonly && !archived && !v2ActiveDefinition && (
         <div className="wg2-work-planning-editor">
           <section className="wg2-work-draft-editor" data-testid="work-draft-editor">
             <div className="wg2-work-draft-heading">

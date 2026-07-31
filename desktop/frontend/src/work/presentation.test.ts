@@ -119,6 +119,23 @@ function slot(
   assert.equal(model.primaryTask?.nodeId, 'first');
 }
 
+// Pausing is an authoritative Work-level presentation state. Runtime Tasks and
+// Artifact Slots remain untouched so Resume can continue from the same data.
+{
+  const model = deriveWorkPresentation(
+    definition([node('produce')], [artifactDef('result')]),
+    [task('produce', 'running')],
+    [slot('result', 'generating')],
+    { workState: 'paused' },
+  );
+
+  assert.equal(model.phase, 'paused');
+  assert.equal(model.layoutMode, 'balanced');
+  assert.equal(model.tasks[0]?.state, 'running');
+  assert.equal(model.artifactSlots[0]?.state, 'generating');
+  assert.equal(model.primaryTask?.nodeId, 'produce');
+}
+
 // Explicit current-run authority excludes a newer historical update. Runtime
 // gaps in that run are represented by deterministic pending rows.
 {

@@ -118,7 +118,9 @@ export interface WorkInput {
   taskId: string;
   blockId: string;
   specId: string;
+  customSpec?: InputSpec;
   value: unknown;
+  extra?: string;
   state: InputState;
   cornerstoneId?: string;
   error?: string;
@@ -194,8 +196,22 @@ export interface SubmitWorkInputRequest {
   blockId: string;
   inputId: string;
   value: unknown;
+  extra?: string;
   definitionRevision: number;
   inputRevision: number;
+  expectedRevision: number;
+  requestId: string;
+}
+
+export interface AddCustomWorkInputRequest {
+  workId: string;
+  runId: string;
+  inputId: string;
+  name: string;
+  description?: string;
+  kind: 'text' | 'file';
+  value: unknown;
+  definitionRevision: number;
   expectedRevision: number;
   requestId: string;
 }
@@ -510,12 +526,18 @@ export interface SelectWorkInputFileRequest {
   blockId: string;
   inputId: string;
   specId: string;
+  path?: string;
 }
 
 export interface SelectWorkInputFileResult {
   artifactRef?: ArtifactRef;
   canceled: boolean;
   error?: WorkTransportError;
+}
+
+export interface SelectWorkInformationFileRequest {
+  workId: string;
+  path?: string;
 }
 
 // ── V2 WorkView extension ──────────────────────────────────────────────────
@@ -664,6 +686,7 @@ export interface InputDraftSavedPayload {
   blockId: string;
   specId: string;
   value: unknown;
+  extra?: string;
   source?: string;
   updatedBy?: string;
   revision: number;
@@ -679,6 +702,7 @@ export interface InputSubmittedPayload {
   blockId: string;
   specId: string;
   value: unknown;
+  extra?: string;
   source?: string;
   updatedBy?: string;
   revision: number;
@@ -695,6 +719,7 @@ export interface InputRejectedPayload {
   blockId: string;
   specId: string;
   value: unknown;
+  extra?: string;
   reason?: string;
   source?: string;
   updatedBy?: string;

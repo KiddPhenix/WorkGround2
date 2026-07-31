@@ -203,8 +203,12 @@ async function runTests(): Promise<void> {
     );
     const failedCard = host.querySelector('[data-testid="result-card-slot-1"]');
     eq(failedCard?.getAttribute('data-slot-state'), 'failed', 'producer failure: generating artifact becomes failed');
-    contains(host.querySelector('[data-testid="result-card-error-slot-1"]')?.textContent ?? '', 'completion gate', 'producer failure: task error is visible');
-    ok(host.querySelector('[data-testid="result-card-retry-slot-1"]') !== null, 'producer failure: retryable artifact exposes retry');
+    ok(host.querySelector('[data-testid="result-card-error-slot-1"]') === null, 'producer failure: error does not resize the card');
+    const failureBadge = host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]');
+    eq(failureBadge?.getAttribute('aria-haspopup'), 'dialog', 'producer failure: badge exposes floating details');
+    await interact(() => failureBadge?.click());
+    contains(document.querySelector('[data-testid="result-card-error-slot-1"]')?.textContent ?? '', 'completion gate', 'producer failure: task error opens in floating details');
+    ok(document.querySelector('[data-testid="result-card-retry-slot-1"]') !== null, 'producer failure: floating details expose retry');
     ok(host.querySelector('[role="progressbar"]') === null, 'producer failure: stale generation progress is hidden');
 
     await act(async () => {
@@ -309,7 +313,8 @@ async function runTests(): Promise<void> {
         onRetry={async (intent) => { retried.push(intent.slotId); }}
       />,
     );
-    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-retry-partial-retry"]')?.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-partial-retry"]')?.click());
+    await interact(() => document.querySelector<HTMLButtonElement>('[data-testid="result-card-retry-partial-retry"]')?.click());
     await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-retry-stale-retry"]')?.click());
     eq(retried.join(','), 'partial-retry,stale-retry', 'slot-retry: partial and stale call the typed recovery port');
     await cleanup();
@@ -388,9 +393,10 @@ async function runTests(): Promise<void> {
         onRetry={async () => { retried++; }}
       />,
     );
-    const recovery = host.querySelector('[data-testid="result-card-partial-error-partial-no-error"]');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-partial-no-error"]')?.click());
+    const recovery = document.querySelector('[data-testid="result-card-partial-error-partial-no-error"]');
     contains(recovery?.textContent ?? '', '部分产物尚未完成', 'partial-no-error: state explanation is explicit');
-    const retry = host.querySelector<HTMLButtonElement>('[data-testid="result-card-retry-partial-no-error"]');
+    const retry = document.querySelector<HTMLButtonElement>('[data-testid="result-card-retry-partial-no-error"]');
     ok(retry !== null, 'partial-no-error: retry entry remains available');
     await interact(() => retry?.click());
     eq(retried, 1, 'partial-no-error: retry reaches typed recovery port');
@@ -424,6 +430,24 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
+  // Paused Work keeps the authoritative generating slot but removes all
+  // generating animation and exposes the resumable state.
+  {
+    const slot = makeSlot({ state: 'generating', progress: undefined, artifactRefs: [] });
+    const { host, cleanup } = await mount(<ResultCard slot={slot} paused />);
+    const card = host.querySelector('[data-testid="result-card-slot-1"]');
+    eq(card?.getAttribute('data-slot-state'), 'generating', 'paused: authoritative slot state is retained');
+    eq(card?.getAttribute('data-paused'), 'true', 'paused: card exposes pause overlay');
+    contains(
+      host.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent ?? '',
+      '已暂停',
+      'paused: badge replaces generating copy',
+    );
+    ok(host.querySelector('[role="status"][aria-label="正在生成"]') === null, 'paused: indeterminate generating bar is removed');
+    ok(host.querySelector('.wg2-rc-spin') === null, 'paused: generating spinner is removed');
+    await cleanup();
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // 4. ready — multi-file without unavailable actions
   // ════════════════════════════════════════════════════════════════════════
@@ -453,8 +477,10 @@ async function runTests(): Promise<void> {
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
     ok(host.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent?.includes('部分完成') ?? false, 'partial: badge');
     ok(host.querySelector('[data-testid="result-card-file-ref-p"]') !== null, 'partial: file ref visible');
-    const err = host.querySelector('[data-testid="result-card-partial-error-slot-1"]');
-    ok(err !== null, 'partial: error block');
+    ok(host.querySelector('[data-testid="result-card-partial-error-slot-1"]') === null, 'partial: error does not occupy card layout');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]')?.click());
+    const err = document.querySelector('[data-testid="result-card-partial-error-slot-1"]');
+    ok(err !== null, 'partial: floating error details');
     contains(err?.textContent ?? '', '部分失败', 'partial: error msg');
     await cleanup();
   }
@@ -466,11 +492,13 @@ async function runTests(): Promise<void> {
     const slot = makeSlot({ state: 'failed', artifactRefs: [], error: { code: 'GEN', message: '磁盘不足', retryable: true } });
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
     ok(host.querySelector('[data-testid="result-card-badge-slot-1"]')?.textContent?.includes('失败') ?? false, 'failed: badge');
-    const err = host.querySelector('[data-testid="result-card-error-slot-1"]');
-    ok(err !== null, 'failed: error block');
+    ok(host.querySelector('[data-testid="result-card-error-slot-1"]') === null, 'failed: error does not occupy card layout');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]')?.click());
+    const err = document.querySelector('[data-testid="result-card-error-slot-1"]');
+    ok(err !== null, 'failed: floating error details');
     contains(err?.textContent ?? '', '磁盘不足', 'failed: msg');
     contains(err?.textContent ?? '', 'GEN', 'failed: code');
-    ok(host.querySelector('[data-testid="result-card-retry-slot-1"]') === null, 'failed: unavailable retry is hidden');
+    ok(document.querySelector('[data-testid="result-card-retry-slot-1"]') === null, 'failed: unavailable retry is hidden');
     await cleanup();
   }
 
@@ -480,8 +508,9 @@ async function runTests(): Promise<void> {
   {
     const slot = makeSlot({ state: 'failed', artifactRefs: [], error: { code: 'FATAL', message: '不可恢复', retryable: false } });
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
-    ok(host.querySelector('[data-testid="result-card-retry-slot-1"]') === null, 'failed-nonretryable: no retry');
-    ok(host.querySelector('[data-testid="result-card-error-slot-1"]') !== null, 'failed-nonretryable: error visible');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]')?.click());
+    ok(document.querySelector('[data-testid="result-card-retry-slot-1"]') === null, 'failed-nonretryable: no retry');
+    ok(document.querySelector('[data-testid="result-card-error-slot-1"]') !== null, 'failed-nonretryable: floating error visible');
     await cleanup();
   }
 
@@ -726,7 +755,8 @@ async function runTests(): Promise<void> {
         onRetry={async () => { tryCount++; await d.promise; }}
       />,
     );
-    const btn = host.querySelector('[data-testid="result-card-retry-slot-1"]') as HTMLButtonElement;
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]')?.click());
+    const btn = document.querySelector('[data-testid="result-card-retry-slot-1"]') as HTMLButtonElement;
 
     // rapid double-click
     await interact(() => { btn.click(); btn.click(); });
@@ -752,7 +782,8 @@ async function runTests(): Promise<void> {
         onRetry={async () => { call++; if (call === 1) throw new Error('重试网络错误'); }}
       />,
     );
-    const btn = host.querySelector('[data-testid="result-card-retry-slot-1"]') as HTMLButtonElement;
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="result-card-badge-slot-1"]')?.click());
+    const btn = document.querySelector('[data-testid="result-card-retry-slot-1"]') as HTMLButtonElement;
 
     // first retry → reject
     await interact(() => btn.click());
@@ -761,7 +792,7 @@ async function runTests(): Promise<void> {
     eq(call, 1, 'retry-reject: called once');
     eq(btn.disabled, false, 'retry-reject: re-enabled');
     const retryKey = 'retry-slot-1';
-    const errEl = host.querySelector(`[data-testid="rc-action-error-${retryKey}"]`);
+    const errEl = document.querySelector(`[data-testid="rc-action-error-${retryKey}"]`);
     ok(errEl !== null, 'retry-reject: error alert visible');
     eq(errEl?.getAttribute('role'), 'alert', 'retry-reject: role=alert');
     contains(errEl?.textContent ?? '', '重试网络错误', 'retry-reject: error msg');
@@ -770,7 +801,7 @@ async function runTests(): Promise<void> {
     await interact(() => btn.click());
     await settle(50);
     eq(call, 2, 'retry-reject: called again');
-    const errEl2 = host.querySelector(`[data-testid="rc-action-error-${retryKey}"]`);
+    const errEl2 = document.querySelector(`[data-testid="rc-action-error-${retryKey}"]`);
     ok(errEl2 === null, 'retry-reject: error cleared after success');
     await cleanup();
   }

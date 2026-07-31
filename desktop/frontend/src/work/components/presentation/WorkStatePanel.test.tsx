@@ -115,6 +115,7 @@ async function runTests(): Promise<void> {
   const phaseCases: Array<[WorkPresentationPhase, string]> = [
     ['planning', '正在整理工作'],
     ['running', '工作正在推进'],
+    ['paused', '工作已暂停'],
     ['waiting', '需要你的回应'],
     ['failed', '工作遇到问题'],
     ['completed', '工作已经完成'],
@@ -138,6 +139,24 @@ async function runTests(): Promise<void> {
       );
     }
 
+    await view.cleanup();
+  }
+
+  {
+    const primary = makeTask({ progress: '已完成资料收集' });
+    const view = await renderPanel(
+      makePresentation('paused', {
+        tasks: [primary],
+        primaryTask: primary,
+      }),
+    );
+    eq(
+      view.host.querySelector('[data-testid="work-state-panel-primary-task"]')
+        ?.querySelector('.work-state-panel__task-label')?.textContent,
+      '暂停于',
+      'paused: current task is labeled as the pause point',
+    );
+    ok(!view.host.querySelector('.work-state-panel--running'), 'paused: does not use the spinning running phase');
     await view.cleanup();
   }
 

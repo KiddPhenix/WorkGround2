@@ -42,8 +42,7 @@ func cloneInputIntentReceipt(receipt *InputIntentReceipt) *InputIntentReceipt {
 	copy := *receipt
 	copy.AffectedTaskIDs = append([]string(nil), receipt.AffectedTaskIDs...)
 	if receipt.ResultInput != nil {
-		input := *receipt.ResultInput
-		input.Value = append(json.RawMessage(nil), receipt.ResultInput.Value...)
+		input := cloneWorkInput(*receipt.ResultInput)
 		copy.ResultInput = &input
 	}
 	return &copy

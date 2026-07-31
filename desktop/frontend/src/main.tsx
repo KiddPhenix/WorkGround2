@@ -14,6 +14,7 @@ import { initTheme } from "./lib/theme";
 import "./styles.css";
 // Single production CSS entry for Work collaboration workbench V2.
 import "./work/components/v2/input/WorkInputHost.css";
+import "./work/components/presentation/WorkInformationPanel.css";
 import "./work/components/v2/discussion/discussion.css";
 import "./work/components/v2/DefinitionDiff.css";
 import { StructureClarificationPreview } from "./components/work/StructureClarificationPreview";

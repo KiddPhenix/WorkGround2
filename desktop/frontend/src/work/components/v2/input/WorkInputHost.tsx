@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { TriangleAlert } from 'lucide-react';
 
 import type {
   InputSpec,
@@ -13,6 +14,7 @@ import type { FormFieldSpec } from './schema';
 import {
   parseValueSchema,
   validateDraft,
+  numberDraftWarning,
   validateFormField,
   toWireValue,
   kindLabel,
@@ -83,6 +85,12 @@ export interface WorkInputHostProps {
   submitTrigger?: number;
   /** Route Ctrl/Cmd+Enter to the owning Block's shared submit action. */
   onRequestGroupSubmit?: () => void;
+  /** Optional free-form context submitted with the typed value. */
+  extra?: string;
+  /** Used when a parent card owns the visible label and actions. */
+  hideHeader?: boolean;
+  submitLabel?: string;
+  onSubmitCommitted?: (result: SubmitInputResult) => void;
 }
 
 export interface WorkInputRefreshContext {
@@ -185,6 +193,10 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
   hideSubmit,
   submitTrigger,
   onRequestGroupSubmit,
+  extra,
+  hideHeader,
+  submitLabel,
+  onSubmitCommitted,
 }) => {
   const [ui, setUI] = useState<UIState>(INITIAL_UI);
   const submittingRef = useRef(false);
@@ -272,6 +284,20 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
     if (schemaError) return schemaError;
     return validateDraft(inputSpec, draftValue, schema);
   }, [inputSpec, draftValue, schema, ui.submitPhase, schemaError]);
+  const draftIsEmpty = draftValue == null
+    || draftValue === ''
+    || (Array.isArray(draftValue) && draftValue.length === 0)
+    || (!Array.isArray(draftValue)
+      && typeof draftValue === 'object'
+      && draftValue !== null
+      && Object.keys(draftValue).length === 0);
+  const visibleValidationError = draftIsEmpty ? null : validationError;
+  const advisoryWarning = useMemo(
+    () => inputSpec.kind === 'number'
+      ? numberDraftWarning(draftValue, schema.number)
+      : null,
+    [draftValue, inputSpec.kind, schema.number],
+  );
 
   // ── Submit handler (full DTO) ───────────────────────────────
   const handleSubmit = useCallback(async () => {
@@ -293,7 +319,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
 
     const startRev = workInput?.revision ?? inputRevision;
     const wireValue = toWireValue(inputSpec.kind, draftValue, schema);
-    const intentKey = JSON.stringify([authority.identity, startRev, wireValue]);
+    const intentKey = JSON.stringify([authority.identity, startRev, wireValue, extra?.trim() ?? '']);
     // Reuse existing requestId on retry after failure
     const reqId = ui.submitPhase === 'rejected' && ui.submitRequestId
       ? ui.submitRequestId
@@ -322,6 +348,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       blockId,
       inputId: workInput.id,
       value: wireValue,
+      extra: extra?.trim() || undefined,
       definitionRevision,
       inputRevision,
       expectedRevision: workRevision,
@@ -342,6 +369,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
 
       if (result.committed) {
         onRequestCommitted?.('submit', reqId);
+        onSubmitCommitted?.(result);
         setUI((prev) => ({
           ...prev,
           submitPhase: 'committed',
@@ -412,7 +440,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
     disabled, schemaError, inputSpec, draftValue, schema, ui.submitPhase,
     ui.submitRequestId, workInput, inputRevision, workRevision, onSubmit, workId, runId,
     taskId, blockId, definitionRevision, authority.identity, onRefreshAuthoritative,
-    committedRequestIds?.submit, onRequestCommitted,
+    committedRequestIds?.submit, onRequestCommitted, extra, onSubmitCommitted,
   ]);
 
   const lastSubmitTriggerRef = useRef(submitTrigger);
@@ -620,7 +648,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
     ? `wg2-wh-desc-${workId}-${taskId}-${inputSpec.id}`
     : undefined;
 
-  const describedBy = [descID, validationError || submitError || schemaError ? errorID : null]
+  const describedBy = [descID, visibleValidationError || submitError || schemaError ? errorID : null]
     .filter(Boolean)
     .join(' ') || undefined;
 
@@ -666,11 +694,12 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       data-input-state={workInput?.state ?? 'requested'}
       data-pinned={isPinned ? 'true' : 'false'}
       role="group"
-      aria-labelledby={`wg2-wh-label-${workId}-${taskId}-${inputSpec.id}`}
+      aria-labelledby={hideHeader ? undefined : `wg2-wh-label-${workId}-${taskId}-${inputSpec.id}`}
+      aria-label={hideHeader ? inputSpec.label : undefined}
       onKeyDown={handleKeyDown}
     >
       {/* ── Label row ─────────────────────────────────────────── */}
-      <div className="wg2-wh-label-row">
+      {!hideHeader && <div className="wg2-wh-label-row">
         <label
           id={`wg2-wh-label-${workId}-${taskId}-${inputSpec.id}`}
           htmlFor={controlID}
@@ -703,7 +732,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
             {isPinned ? '📌' : '📍'}
           </button>
         )}
-      </div>
+      </div>}
 
       {/* Description */}
       {inputSpec.description && (
@@ -716,7 +745,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
       <TypedControl {...controlProps} />
 
       {/* ── Validation / submit error ────────────────────────── */}
-      {(validationError || submitError) && (
+      {(visibleValidationError || submitError) && (
         <div
           id={errorID}
           className="wg2-wh-error"
@@ -724,7 +753,17 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
           data-testid={`work-input-error-${taskId}-${inputSpec.id}`}
         >
           <span className="wg2-wh-error-icon" aria-hidden="true">⚠</span>
-          <span className="wg2-wh-error-msg">{submitError ?? validationError}</span>
+          <span className="wg2-wh-error-msg">{submitError ?? visibleValidationError}</span>
+        </div>
+      )}
+      {advisoryWarning && !visibleValidationError && !submitError && (
+        <div
+          className="wg2-wh-warning"
+          role="status"
+          data-testid={`work-input-warning-${taskId}-${inputSpec.id}`}
+        >
+          <TriangleAlert className="wg2-wh-error-icon" size={14} aria-hidden="true" />
+          <span>{advisoryWarning}</span>
         </div>
       )}
 
@@ -786,7 +825,7 @@ export const WorkInputHost: React.FC<WorkInputHostProps> = ({
             aria-busy={isSubmitting}
             data-testid={`work-input-submit-${taskId}-${inputSpec.id}`}
           >
-            {isSubmitting ? '提交中...' : isCommitted ? '已提交 ✓' : '提交'}
+            {isSubmitting ? '提交中...' : isCommitted ? '已提交 ✓' : (submitLabel ?? '提交')}
           </button>
           {(isCommitted || ui.submitResult) && ui.submitResult?.revision !== undefined && (
             <span
@@ -902,9 +941,7 @@ const TypedControl: React.FC<TypedControlProps> = ({
             id={id}
             className="wg2-wh-number"
             type="number"
-            step={numSchema?.integer ? '1' : 'any'}
-            min={numSchema?.min ?? undefined}
-            max={numSchema?.max ?? undefined}
+            step="any"
             value={typeof draftValue === 'number' ? draftValue : (draftValue ?? '') as string | number}
             aria-describedby={describedBy}
             disabled={disabled}

@@ -3,6 +3,7 @@ package work
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,11 @@ func reduceInputRequested(current *Work, p InputRequestedPayload, now time.Time)
 		p.BlockID == "" || p.SpecID == "" {
 		return fmt.Errorf("work: reduce input.requested requires full input identity")
 	}
+	if p.CustomSpec != nil &&
+		(p.CustomSpec.ID != p.SpecID || strings.TrimSpace(p.CustomSpec.Label) == "" ||
+			(p.CustomSpec.Kind != InputText && p.CustomSpec.Kind != InputFile)) {
+		return fmt.Errorf("work: reduce input.requested custom spec is invalid")
+	}
 	if idx := findInputIndex(current, p.InputID); idx >= 0 {
 		if err := requireInputIdentity(&current.V2Inputs[idx], p.WorkID, p.RunID, p.TaskID, p.BlockID, p.SpecID); err != nil {
 			return err
@@ -32,18 +38,29 @@ func reduceInputRequested(current *Work, p InputRequestedPayload, now time.Time)
 		return nil
 	}
 	current.V2Inputs = append(current.V2Inputs, WorkInput{
-		ID:        p.InputID,
-		WorkID:    p.WorkID,
-		RunID:     p.RunID,
-		TaskID:    p.TaskID,
-		BlockID:   p.BlockID,
-		SpecID:    p.SpecID,
-		State:     InputRequested,
-		Revision:  0,
-		UpdatedAt: now,
+		ID:         p.InputID,
+		WorkID:     p.WorkID,
+		RunID:      p.RunID,
+		TaskID:     p.TaskID,
+		BlockID:    p.BlockID,
+		SpecID:     p.SpecID,
+		CustomSpec: cloneInputSpec(p.CustomSpec),
+		State:      InputRequested,
+		Revision:   0,
+		UpdatedAt:  now,
 	})
 	recordInputReceipt(current, p.Receipt)
 	return nil
+}
+
+func cloneInputSpec(spec *InputSpec) *InputSpec {
+	if spec == nil {
+		return nil
+	}
+	cloned := *spec
+	cloned.ValueSchema = append(json.RawMessage(nil), spec.ValueSchema...)
+	cloned.DefaultValue = append(json.RawMessage(nil), spec.DefaultValue...)
+	return &cloned
 }
 
 // reduceInputDraftSaved updates an existing input with a draft value.
@@ -72,6 +89,7 @@ func reduceInputDraftSaved(current *Work, p InputDraftSavedPayload, now time.Tim
 	}
 
 	existing.Value = p.Value
+	existing.Extra = p.Extra
 	existing.State = InputDraft
 	existing.Source = p.Source
 	existing.UpdatedBy = p.UpdatedBy
@@ -105,6 +123,7 @@ func reduceInputSubmitted(current *Work, p InputSubmittedPayload, now time.Time,
 	}
 
 	existing.Value = p.Value
+	existing.Extra = p.Extra
 	existing.State = InputSubmitted
 	existing.Source = p.Source
 	existing.UpdatedBy = p.UpdatedBy
@@ -132,6 +151,7 @@ func reduceInputRejected(current *Work, p InputRejectedPayload, now time.Time, r
 		return err
 	}
 	existing.Value = append(json.RawMessage(nil), p.Value...)
+	existing.Extra = p.Extra
 	existing.State = InputRejected
 	existing.Error = p.Reason
 	existing.Source = p.Source

@@ -202,6 +202,38 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
+  // Paused presentation keeps the running Task identity for Resume while
+  // removing running animation and duplicated marquee content.
+  {
+    resetStore();
+    const tasks = [makeTask({
+      id: 't-paused',
+      nodeId: 'n-paused',
+      title: '暂停任务',
+      state: 'running',
+      progress: '保留当前输出',
+    })];
+    seedStore(tasks, makeDefinition([makeNodeDef({ id: 'n-paused', title: '暂停任务' })]));
+    const { host, cleanup } = await mount(<ExecutionList workId={WORK_ID} paused />);
+    const row = host.querySelector('[data-testid="execution-row-t-paused"]');
+    const item = host.querySelector('[data-testid="execution-list-item-t-paused"]');
+    eq(row?.getAttribute('data-task-state'), 'running', 'paused: authoritative task state is retained');
+    eq(row?.getAttribute('data-paused'), 'true', 'paused: row exposes pause overlay');
+    eq(item?.getAttribute('data-paused'), 'true', 'paused: animated task border is frozen');
+    contains(
+      host.querySelector('[data-testid="execution-row-badge-t-paused"]')?.textContent ?? '',
+      '已暂停',
+      'paused: badge replaces running copy',
+    );
+    eq(host.querySelectorAll('.wg2-er-live-copy').length, 1, 'paused: marquee duplicate is removed');
+    ok(
+      /\.wg2-el-item\[data-paused="true"\]::before\s*\{[^}]*animation:\s*none/s.test(cssText)
+        && /\.wg2-er-live\[data-paused="true"\]\s+\.wg2-er-live-track\s*\{[^}]*animation:\s*none/s.test(cssText),
+      'paused: task border and live output animations are frozen by CSS',
+    );
+    await cleanup();
+  }
+
   // Active-run authority: historical tasks/inputs with the same spec never
   // leak into the current run and task identity is never rewritten.
   {
@@ -607,7 +639,7 @@ async function runTests(): Promise<void> {
         digest: 'digest-dir-1',
         expiresAt: new Date(Date.now() + 60000).toISOString(),
       },
-      revision: 1,
+      revision: 8,
       duplicate: false,
       committed: true,
       recoverable: false,
@@ -619,7 +651,7 @@ async function runTests(): Promise<void> {
     eq(applyCall?.previewDigest, 'digest-dir-1', 'dir apply: digest from preview');
     eq(applyCall?.scope, 'workflow', 'dir apply: scope is workflow');
     eq(applyCall?.requestId, 'wf-apply-add:dir:1', 'dir apply: apply requestId derived from token');
-    eq(applyCall?.expectedRevision, 7, 'dir apply: apply uses authoritative work revision');
+    eq(applyCall?.expectedRevision, 8, 'dir apply: apply uses the revision committed by preview');
 
     // 5. Resolve apply → refresh is called
     applyD.resolve({

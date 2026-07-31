@@ -6,6 +6,7 @@ import {
   CircleDashed,
   CircleHelp,
   LoaderCircle,
+  PauseCircle,
 } from 'lucide-react';
 
 import type {
@@ -40,6 +41,12 @@ const PHASE_META: Record<WorkPresentationPhase, PhaseMeta> = {
     emptyText: '执行已开始，新的进展会显示在这里。',
     Icon: LoaderCircle,
   },
+  paused: {
+    eyebrow: '已暂停',
+    title: '工作已暂停',
+    emptyText: '继续后将从当前进度恢复。',
+    Icon: PauseCircle,
+  },
   waiting: {
     eyebrow: '等待处理',
     title: '需要你的回应',
@@ -69,6 +76,7 @@ export interface WorkStatePanelProps {
 interface TaskSummaryProps {
   task: PresentationTask;
   kind: 'attention' | 'primary';
+  paused: boolean;
   onFocusTask: (taskId: string) => void;
 }
 
@@ -79,8 +87,8 @@ function progressPercent(progress?: string): number | undefined {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : undefined;
 }
 
-function TaskSummary({ task, kind, onFocusTask }: TaskSummaryProps) {
-  const label = kind === 'attention' ? '需要关注' : '当前处理';
+function TaskSummary({ task, kind, paused, onFocusTask }: TaskSummaryProps) {
+  const label = kind === 'attention' ? '需要关注' : paused ? '暂停于' : '当前处理';
   const actionLabel = kind === 'attention' ? '处理' : '查看';
   const percent = progressPercent(task.progress);
 
@@ -206,6 +214,7 @@ export function WorkStatePanel({
           <TaskSummary
             task={attentionTask}
             kind="attention"
+            paused={presentation.phase === 'paused'}
             onFocusTask={onFocusTask}
           />
         ) : null}
@@ -213,6 +222,7 @@ export function WorkStatePanel({
           <TaskSummary
             task={primaryTask}
             kind="primary"
+            paused={presentation.phase === 'paused'}
             onFocusTask={onFocusTask}
           />
         ) : null}

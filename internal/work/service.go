@@ -315,6 +315,52 @@ func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (
 	return result, err
 }
 
+// AddCustomWorkInput persists user-owned text/file information as a custom
+// WorkInput and emits the same authoritative V2 mutation view as normal input.
+func (s *Service) AddCustomWorkInput(ctx context.Context, input AddCustomWorkInputRequest) (*SubmitInputResult, error) {
+	if s.v2 == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	result, err := s.v2.AddCustomInput(ctx, input)
+	if result == nil {
+		result = &SubmitInputResult{}
+	}
+	if result.Revision > input.ExpectedRevision {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, requestState, stateErr := s.store.LoadState(
+		strings.TrimSpace(input.WorkID),
+		strings.TrimSpace(input.RequestID)+"/submit",
+	)
+	if stateErr != nil {
+		err = errors.Join(err, fmt.Errorf("work: verify AddCustomWorkInput receipt: %w", stateErr))
+	} else {
+		result.Committed = requestState.RequestFound && requestState.RequestType == EventInputSubmitted
+	}
+	if result.Committed {
+		result.Revision = requestState.Revision
+		projection, receiptErr := s.store.LoadProjection(strings.TrimSpace(input.WorkID))
+		if receiptErr != nil {
+			err = errors.Join(err, committedRecovery(
+				"add-custom-input-receipt", input.WorkID, input.RequestID, result.Revision, receiptErr,
+			))
+		} else if receipt, ok := projection.V2InputReceipts[strings.TrimSpace(input.RequestID)]; ok {
+			result.Receipt = cloneInputIntentReceipt(&receipt)
+		} else {
+			err = errors.Join(err, committedRecovery(
+				"add-custom-input-receipt", input.WorkID, input.RequestID, result.Revision,
+				fmt.Errorf("authoritative typed receipt %q is unavailable", input.RequestID),
+			))
+		}
+	}
+	result.TransportError = TransportErrorFrom(err)
+	if result.TransportError != nil {
+		result.Committed = result.Committed || result.TransportError.Committed
+		result.Recoverable = result.TransportError.Recoverable
+	}
+	return result, err
+}
+
 func (s *Service) emitV2RuntimeCommit(workID string, baseRevision int64, requestID string) error {
 	return s.emitV2MutationView(workID, baseRevision, requestID)
 }
@@ -1514,6 +1560,42 @@ func (s *Service) CancelRun(ctx context.Context, workID, runID, requestID string
 	}
 
 	return s.cancelRun(ctx, workID, runID, requestID)
+}
+
+// RestartRun cancels a non-terminal Run, then starts a new Run. The cancel
+// phase uses a derived request ID, so a partial failure can safely retry the
+// same two-phase operation without duplicating either mutation.
+func (s *Service) RestartRun(ctx context.Context, workID, runID, requestID string) (*WorkflowRun, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	requestID, err := requireRequestID("RestartRun", requestID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(runID) != "" {
+		if err := s.CancelRun(ctx, workID, runID, requestID+"/cancel"); err != nil {
+			return nil, fmt.Errorf("work: RestartRun: cancel phase: %w", err)
+		}
+	}
+	current, state, err := s.store.LoadState(workID, "")
+	if err != nil {
+		return nil, fmt.Errorf("work: RestartRun: load after cancel: %w", err)
+	}
+	if current.State == WorkCancelled {
+		if _, err := s.UpdateDraft(ctx, UpdateDraftInput{
+			WorkID:           workID,
+			Locale:           current.Locale,
+			ExpectedRevision: state.Revision,
+			RequestID:        requestID + "/reset",
+		}); err != nil {
+			return nil, fmt.Errorf("work: RestartRun: reset phase: %w", err)
+		}
+	}
+	return s.RunWork(ctx, workID, requestID)
 }
 
 func (s *Service) cancelRun(ctx context.Context, workID, runID, requestID string) error {

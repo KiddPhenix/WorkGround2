@@ -14,6 +14,7 @@ import {
   FileText,
   FolderOpen,
   LoaderCircle,
+  Pause,
   Presentation,
   RefreshCw,
 } from 'lucide-react';
@@ -24,6 +25,7 @@ import type {
   RequestArtifactConversionInput,
 } from '../../types_v2';
 import type { ArtifactRef } from '../../types';
+import { AnchoredPopover } from '../../../components/AnchoredPopover';
 
 // ── Handler intents (no direct Wails / file-system calls) ──────────────────
 
@@ -75,6 +77,9 @@ export interface SlotRetryIntent {
 
 export interface ResultCardProps {
   slot: ArtifactSlot;
+  /** Work pause is a presentation overlay. Keep the generating Slot state so
+   * resume can continue from the authoritative runtime snapshot. */
+  paused?: boolean;
   /** Called when the user wants to open a file with the system handler.
    *  May return void or Promise<void>. */
   onOpen?: (intent: FileOpenIntent) => void | Promise<void>;
@@ -139,7 +144,8 @@ function artifactTone(kind: string, type?: string): string {
   return 'generic';
 }
 
-function stateIcon(state: ArtifactSlot['state']): React.ReactNode {
+function stateIcon(state: ArtifactSlot['state'], paused: boolean): React.ReactNode {
+  if (paused && state === 'generating') return <Pause size={13} />;
   switch (state) {
     case 'ready':
       return <CheckCircle2 size={13} />;
@@ -261,6 +267,7 @@ const FileActions: React.FC<FileActionsProps> = ({
 
 export const ResultCard: React.FC<ResultCardProps> = ({
   slot,
+  paused = false,
   onOpen,
   onDownload,
   onLocate,
@@ -276,6 +283,8 @@ export const ResultCard: React.FC<ResultCardProps> = ({
 
   const actionErrorsRef = useRef<Record<string, string>>({});
   const [actionErrorsRender, setActionErrorsRender] = useState<Record<string, string>>({});
+  const [errorPopoverOpen, setErrorPopoverOpen] = useState(false);
+  const errorAnchorRef = useRef<HTMLButtonElement>(null);
 
   // Local preview state — per-artifact, epoch-gated.
   const [localPreview, setLocalPreview] = useState<ArtifactPreview | null>(null);
@@ -298,6 +307,10 @@ export const ResultCard: React.FC<ResultCardProps> = ({
     previewEpochRef.current++;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slot.workId, slot.definitionRev, slot.id, slot.revision]);
+
+  useEffect(() => {
+    setErrorPopoverOpen(false);
+  }, [slot.id, slot.revision, slot.state]);
 
   const firePreview = useCallback(async (refId: string) => {
     if (!onPreview) return;
@@ -501,18 +514,24 @@ export const ResultCard: React.FC<ResultCardProps> = ({
   const retryError = actionErrorsRender[retryKey];
   const singleRef = slot.artifactRefs?.length === 1 ? slot.artifactRefs[0] : undefined;
   const displayTitle = singleRef?.name ?? slot.title;
+  const pausedGenerating = paused && slot.state === 'generating';
+  const stateLabel = pausedGenerating ? '已暂停' : STATE_LABELS[slot.state];
+  const hasRecoveryDetails =
+    (slot.state === 'failed' || slot.state === 'partial')
+    && (Boolean(slot.error) || slot.state === 'partial');
 
-  const ariaLabel = `${slot.title} — ${STATE_LABELS[slot.state]}${slot.required ? '（必需）' : ''}`;
+  const ariaLabel = `${slot.title} — ${stateLabel}${slot.required ? '（必需）' : ''}`;
 
   return (
     <article
       className="wg2-rc-card"
       data-slot-state={slot.state}
+      data-paused={pausedGenerating ? 'true' : undefined}
       data-slot-id={slot.id}
       data-testid={`result-card-${slot.id}`}
       role="article"
       aria-label={ariaLabel}
-      aria-live={slot.state === 'generating' ? 'polite' : undefined}
+      aria-live={slot.state === 'generating' && !pausedGenerating ? 'polite' : undefined}
       tabIndex={0}
       key={slot.id}
     >
@@ -530,22 +549,39 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             {displayTitle}
           </span>
           <span className="wg2-rc-meta">
-            {STATE_LABELS[slot.state]}
+            {stateLabel}
             {slot.summary && singleRef && (
               <span data-testid={`result-card-summary-${slot.id}`}> · {slot.summary}</span>
             )}
           </span>
         </span>
         <span className="wg2-rc-header-side">
-          <span
-            className="wg2-rc-badge"
-            data-badge={slot.state}
-            data-testid={`result-card-badge-${slot.id}`}
-            aria-label={STATE_LABELS[slot.state]}
-          >
-            {stateIcon(slot.state)}
-            {slot.state !== 'ready' && <span>{STATE_LABELS[slot.state]}</span>}
-          </span>
+          {hasRecoveryDetails ? (
+            <button
+              ref={errorAnchorRef}
+              type="button"
+              className="wg2-rc-badge wg2-rc-badge--interactive"
+              data-badge={slot.state}
+              data-testid={`result-card-badge-${slot.id}`}
+              aria-label={`查看${stateLabel}详情`}
+              aria-haspopup="dialog"
+              aria-expanded={errorPopoverOpen}
+              onClick={() => setErrorPopoverOpen((open) => !open)}
+            >
+              {stateIcon(slot.state, paused)}
+              <span>{stateLabel}</span>
+            </button>
+          ) : (
+            <span
+              className="wg2-rc-badge"
+              data-badge={pausedGenerating ? 'paused' : slot.state}
+              data-testid={`result-card-badge-${slot.id}`}
+              aria-label={stateLabel}
+            >
+              {stateIcon(slot.state, paused)}
+              {slot.state !== 'ready' && <span>{stateLabel}</span>}
+            </span>
+          )}
           {managementActions && (
             <span className="wg2-rc-manage-actions" data-testid={`result-card-actions-${slot.id}`}>
               {managementActions}
@@ -556,7 +592,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
 
       {/* Progress bar for generating */}
       {showProgress && (
-        <div className="wg2-rc-progress" role="progressbar" aria-valuenow={Math.round(slot.progress! * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="生成进度">
+        <div className="wg2-rc-progress" role="progressbar" aria-valuenow={Math.round(slot.progress! * 100)} aria-valuemin={0} aria-valuemax={100} aria-label={pausedGenerating ? '暂停时进度' : '生成进度'}>
           <div className="wg2-rc-progress-bar">
             <div
               className="wg2-rc-progress-fill"
@@ -568,7 +604,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       )}
 
       {/* Generating spinner when no progress number */}
-      {slot.state === 'generating' && !showProgress && (
+      {slot.state === 'generating' && !showProgress && !pausedGenerating && (
         <div className="wg2-rc-progress" role="status" aria-label="正在生成">
           <div className="wg2-rc-progress-bar">
             <div className="wg2-rc-progress-fill" style={{ width: '100%', animation: 'wg2-rc-indeterminate 1.5s ease-in-out infinite' }} />
@@ -582,54 +618,61 @@ export const ResultCard: React.FC<ResultCardProps> = ({
           {slot.summary}
         </p>
       )}
-      {/* Slot-level recovery. A partial slot remains actionable even when the
-          projection has no ArtifactError payload. */}
-      {(slot.state === 'failed' || slot.state === 'partial') && (slot.error || slot.state === 'partial') && (
-        <div
-          className="wg2-rc-error"
-          role="alert"
-          data-testid={`${slot.state === 'partial' ? 'result-card-partial-error' : 'result-card-error'}-${slot.id}`}
+      {/* Slot-level recovery is portaled so long errors never resize the shelf. */}
+      {hasRecoveryDetails && (
+        <AnchoredPopover
+          open={errorPopoverOpen}
+          anchorRef={errorAnchorRef}
+          onClose={() => setErrorPopoverOpen(false)}
+          className="wg2-rc-error-popover"
+          align="end"
+          placement="bottom"
         >
-          <AlertTriangle className="wg2-rc-error-icon" size={14} aria-hidden="true" />
-          <span className="wg2-rc-error-msg">
-            {slot.error?.message ?? '部分产物尚未完成，可重新生成缺失部分。'}
-            {slot.error?.code && <span> ({slot.error.code})</span>}
-          </span>
-          {onRetry && (slot.error?.retryable === true || (slot.state === 'partial' && !slot.error)) && (
-            <button
-              type="button"
-              className={`wg2-rc-retry-btn${retryBusy ? ' wg2-rc-retry-btn--busy' : ''}`}
-              onClick={fireRetry}
-              disabled={retryBusy}
-              aria-busy={retryBusy ? 'true' : undefined}
-              aria-label={`重试 ${slot.title}`}
-              data-testid={`result-card-retry-${slot.id}`}
-            >
-              {retryBusy ? '重试中…' : '重试'}
-            </button>
-          )}
-          {!onRetry && (slot.error?.retryable === true || (slot.state === 'partial' && !slot.error)) && (
-            <span data-testid={`result-card-recovery-unavailable-${slot.id}`}>
-              当前无法自动重试，请刷新工作状态后重试。
+          <div
+            className="wg2-rc-error"
+            role="dialog"
+            aria-label={`${slot.title}${stateLabel}详情`}
+            data-testid={`${slot.state === 'partial' ? 'result-card-partial-error' : 'result-card-error'}-${slot.id}`}
+          >
+            <AlertTriangle className="wg2-rc-error-icon" size={14} aria-hidden="true" />
+            <span className="wg2-rc-error-msg">
+              {slot.error?.message ?? '部分产物尚未完成，可重新生成缺失部分。'}
+              {slot.error?.code && <span> ({slot.error.code})</span>}
+              {retryError && (
+                <span
+                  className="wg2-rc-error-action"
+                  role="alert"
+                  data-testid={`rc-action-error-${retryKey}`}
+                >
+                  {retryError}
+                </span>
+              )}
             </span>
-          )}
-          {slot.error?.retryable === false && (
-            <span data-testid={`result-card-recovery-manual-${slot.id}`}>
-              此失败无法安全自动重试，请检查错误后人工处理。
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Retry action error (from handler reject) */}
-      {retryError && (
-        <div
-          className="wg2-rc-action-error"
-          role="alert"
-          data-testid={`rc-action-error-${retryKey}`}
-        >
-          {retryError}
-        </div>
+            {onRetry && (slot.error?.retryable === true || (slot.state === 'partial' && !slot.error)) && (
+              <button
+                type="button"
+                className={`wg2-rc-retry-btn${retryBusy ? ' wg2-rc-retry-btn--busy' : ''}`}
+                onClick={fireRetry}
+                disabled={retryBusy}
+                aria-busy={retryBusy ? 'true' : undefined}
+                aria-label={`重试 ${slot.title}`}
+                data-testid={`result-card-retry-${slot.id}`}
+              >
+                {retryBusy ? '重试中…' : '重试'}
+              </button>
+            )}
+            {!onRetry && (slot.error?.retryable === true || (slot.state === 'partial' && !slot.error)) && (
+              <span data-testid={`result-card-recovery-unavailable-${slot.id}`}>
+                当前无法自动重试，请刷新工作状态后重试。
+              </span>
+            )}
+            {slot.error?.retryable === false && (
+              <span data-testid={`result-card-recovery-manual-${slot.id}`}>
+                此失败无法安全自动重试，请检查错误后人工处理。
+              </span>
+            )}
+          </div>
+        </AnchoredPopover>
       )}
 
       {/* Stale banner */}

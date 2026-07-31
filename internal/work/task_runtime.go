@@ -58,21 +58,18 @@ type V2Attempt struct {
 	StaleResult      bool            `json:"staleResult,omitempty"`
 }
 
-// ComputeInputDigest returns a deterministic digest of submitted WorkInput
-// values owned by exactly one Work/Run/Task. Inputs with the same SpecID from
-// another run or task are distinct objects and must never affect this digest.
+// ComputeInputDigest returns a deterministic digest of submitted declared
+// inputs for one Work/Run/Task plus Work-wide custom information.
 func ComputeInputDigest(
 	inputs []WorkInput,
 	workID, runID, taskID string,
 	specIDs []string,
 ) string {
-	if len(specIDs) == 0 {
-		return "inputs:none"
-	}
 	type inputEntry struct {
 		InputID string          `json:"i"`
 		SpecID  string          `json:"s"`
 		Value   json.RawMessage `json:"v"`
+		Extra   string          `json:"x,omitempty"`
 		Rev     int64           `json:"r"`
 	}
 	entries := make([]inputEntry, 0, len(specIDs))
@@ -81,19 +78,26 @@ func ComputeInputDigest(
 		specSet[id] = true
 	}
 	for _, in := range inputs {
-		if in.WorkID != workID || in.RunID != runID || in.TaskID != taskID ||
-			!specSet[in.SpecID] {
+		if in.WorkID != workID {
 			continue
 		}
 		if in.State != InputSubmitted && in.State != InputAccepted {
+			continue
+		}
+		if in.CustomSpec == nil &&
+			(in.RunID != runID || in.TaskID != taskID || !specSet[in.SpecID]) {
 			continue
 		}
 		entries = append(entries, inputEntry{
 			InputID: in.ID,
 			SpecID:  in.SpecID,
 			Value:   in.Value,
+			Extra:   in.Extra,
 			Rev:     in.Revision,
 		})
+	}
+	if len(entries) == 0 {
+		return "inputs:none"
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].SpecID != entries[j].SpecID {

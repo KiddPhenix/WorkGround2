@@ -1,4 +1,4 @@
-import { Check, CircleDashed, GitBranch, SlidersHorizontal } from 'lucide-react';
+import { Check, CircleDashed, GitBranch, Plus, SlidersHorizontal } from 'lucide-react';
 
 import type {
   InputSpec,
@@ -14,6 +14,9 @@ export interface WorkDefinitionOverviewProps {
   runId?: string;
   tasks: readonly PresentationTask[];
   showStructure?: boolean;
+  onSelectInput?: (specId: string) => void;
+  selectableInputSpecIds?: ReadonlySet<string>;
+  onAddInput?: () => void;
 }
 
 function optionLabels(spec: InputSpec): Map<string, string> {
@@ -68,9 +71,8 @@ function formatValue(spec: InputSpec, value: unknown): string {
 
 function currentInputs(inputs: readonly WorkInput[], runId?: string): Map<string, WorkInput> {
   const result = new Map<string, WorkInput>();
-  if (!runId) return result;
   for (const input of inputs) {
-    if (input.runId !== runId) continue;
+    if (!input.customSpec && (!runId || input.runId !== runId)) continue;
     const previous = result.get(input.specId);
     if (!previous || input.revision > previous.revision
       || (input.revision === previous.revision && input.updatedAt > previous.updatedAt)) {
@@ -105,10 +107,17 @@ export function WorkDefinitionOverview({
   runId,
   tasks,
   showStructure = true,
+  onSelectInput,
+  selectableInputSpecIds,
+  onAddInput,
 }: WorkDefinitionOverviewProps) {
+  const inputSpecs = [
+    ...definition.inputSpecs,
+    ...inputs.flatMap((input) => input.customSpec ? [input.customSpec] : []),
+  ].filter((spec, index, all) => all.findIndex((candidate) => candidate.id === spec.id) === index);
   const bySpec = currentInputs(inputs, runId);
-  const showInputs = definition.inputSpecs.length > 0;
-  const filled = definition.inputSpecs.filter((spec) => {
+  const showInputs = inputSpecs.length > 0 || !!onAddInput;
+  const filled = inputSpecs.filter((spec) => {
     const input = bySpec.get(spec.id);
     return input?.state === 'submitted' || input?.state === 'accepted';
   }).length;
@@ -118,7 +127,7 @@ export function WorkDefinitionOverview({
     <div
       className="work-definition-overview"
       data-testid="work-definition-overview"
-      data-has-inputs={definition.inputSpecs.length > 0 ? 'true' : 'false'}
+      data-has-inputs={inputSpecs.length > 0 ? 'true' : 'false'}
     >
       {showInputs ? (
         <section className="work-definition-overview__panel work-definition-overview__panel--inputs">
@@ -127,20 +136,26 @@ export function WorkDefinitionOverview({
               <SlidersHorizontal aria-hidden="true" size={17} strokeWidth={1.8} />
               工作信息
             </span>
-            <span className="work-definition-overview__count">
-              {filled}/{definition.inputSpecs.length} 已填写
+            <span className="work-definition-overview__header-actions">
+              <span className="work-definition-overview__count">
+                {filled}/{inputSpecs.length} 已填写
+              </span>
+              {onAddInput ? (
+                <button type="button" className="work-definition-overview__add" onClick={onAddInput}>
+                  <Plus size={14} aria-hidden="true" />
+                  添加信息
+                </button>
+              ) : null}
             </span>
           </header>
           <div className="work-definition-overview__fields">
-            {definition.inputSpecs.map((spec) => {
+            {inputSpecs.map((spec) => {
               const input = bySpec.get(spec.id);
               const complete = input?.state === 'submitted' || input?.state === 'accepted';
-              return (
-                <div
-                  className="work-definition-overview__field"
-                  data-state={complete ? 'complete' : input?.state ?? 'missing'}
-                  key={spec.id}
-                >
+              const selectable = !!onSelectInput
+                && (selectableInputSpecIds?.has(spec.id) ?? true);
+              const content = (
+                <>
                   <span>{spec.label}</span>
                   <strong>
                     {complete
@@ -150,6 +165,26 @@ export function WorkDefinitionOverview({
                   {complete
                     ? <Check aria-hidden="true" size={15} strokeWidth={2} />
                     : <CircleDashed aria-hidden="true" size={15} strokeWidth={1.8} />}
+                </>
+              );
+              return selectable ? (
+                <button
+                  type="button"
+                  className="work-definition-overview__field"
+                  data-state={complete ? 'complete' : input?.state ?? 'missing'}
+                  key={spec.id}
+                  onClick={() => onSelectInput(spec.id)}
+                  aria-label={`${complete ? '修改' : '填写'}：${spec.label}`}
+                >
+                  {content}
+                </button>
+              ) : (
+                <div
+                  className="work-definition-overview__field"
+                  data-state={complete ? 'complete' : input?.state ?? 'missing'}
+                  key={spec.id}
+                >
+                  {content}
                 </div>
               );
             })}

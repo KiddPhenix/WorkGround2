@@ -19,6 +19,7 @@ export interface ResultShelfProps {
   /** Current authoritative Run identity. */
   runId?: string;
   readonly?: boolean;
+  paused?: boolean;
   onRequestWorkflowChange?: (request: ResultWorkflowChangeRequest) => void;
   workflowChangeState?: WorkflowChangeState | null;
   /** Called when the user wants to open a file. */
@@ -172,6 +173,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   tasks,
   runId,
   readonly = false,
+  paused = false,
   onRequestWorkflowChange,
   workflowChangeState,
   onOpen,
@@ -375,6 +377,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
               >
                 <ResultCard
                   slot={slot}
+                  paused={paused}
                   onOpen={onOpen}
                   onDownload={onDownload}
                   onLocate={onLocate}

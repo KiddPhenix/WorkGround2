@@ -40,6 +40,7 @@ type SelectWorkInputFileRequest struct {
 	BlockID string `json:"blockId"`
 	InputID string `json:"inputId"`
 	SpecID  string `json:"specId"`
+	Path    string `json:"path,omitempty"`
 }
 
 // SelectWorkInputFileResult is a typed, side-effect-free selection result.
@@ -48,6 +49,14 @@ type SelectWorkInputFileResult struct {
 	ArtifactRef *work.ArtifactRef        `json:"artifactRef,omitempty"`
 	Canceled    bool                     `json:"canceled"`
 	Error       *work.WorkTransportError `json:"error,omitempty"`
+}
+
+// SelectWorkInformationFileRequest selects a file before a custom WorkInput
+// exists. The resulting ArtifactRef is still only submitted by
+// AddCustomWorkInput.
+type SelectWorkInformationFileRequest struct {
+	WorkID string `json:"workId"`
+	Path   string `json:"path,omitempty"`
 }
 
 var openWorkInputFileDialog = runtime.OpenFileDialog
@@ -724,6 +733,37 @@ func (a *App) ResumeRun(tabID string, input work.ResumeRunInput) (*work.Workflow
 	return wc.ResumeRun(a.bootContext(), input)
 }
 
+// PauseRun pauses an active WorkflowRun. The run transitions to paused and may
+// be resumed later via ResumeRun.
+func (a *App) PauseRun(tabID, workID, runID, requestID string) error {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return err
+	}
+	return wc.PauseRun(a.bootContext(), workID, runID, requestID)
+}
+
+// CancelRun cancels a running or waiting WorkflowRun. Terminal runs are a
+// no-op; the method is idempotent per requestID.
+func (a *App) CancelRun(tabID, workID, runID, requestID string) error {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return err
+	}
+	return wc.CancelRun(a.bootContext(), workID, runID, requestID)
+}
+
+// RestartRun safely cancels the current non-terminal run (if any), then starts
+// a new one. The restart requestID is used for run idempotency; cancel uses a
+// derived ID, so a partial failure can retry the same two-phase operation.
+func (a *App) RestartRun(tabID, workID, runID, requestID string) (*work.WorkflowRun, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.RestartRun(a.bootContext(), workID, runID, requestID)
+}
+
 // DeleteWork moves a Work to trash.
 func (a *App) DeleteWork(tabID, workID, requestID string) error {
 	wc, err := a.resolveWorkController(tabID)
@@ -906,11 +946,28 @@ func (a *App) SubmitWorkInput(tabID string, input work.SubmitWorkInputRequest) (
 	return result, nil
 }
 
+// AddCustomWorkInput adds user-owned text/file information.
+func (a *App) AddCustomWorkInput(tabID string, input work.AddCustomWorkInputRequest) (*work.SubmitInputResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result := &work.SubmitInputResult{}
+		bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, err)
+		return result, nil
+	}
+	result, callErr := wc.AddCustomWorkInput(a.bootContext(), input)
+	if result == nil {
+		result = &work.SubmitInputResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
+	return result, nil
+}
+
 func submitInputRequest(input work.SubmitWorkInputRequest) work.SubmitInputRequest {
 	return work.SubmitInputRequest{
 		WorkID:           input.WorkID,
 		InputID:          input.InputID,
 		Value:            input.Value,
+		Extra:            input.Extra,
 		DefinitionRev:    input.DefinitionRevision,
 		InputRevision:    input.InputRevision,
 		ExpectedRevision: input.ExpectedRevision,
@@ -954,11 +1011,13 @@ func (a *App) SelectWorkInputFile(tabID string, input SelectWorkInputFileRequest
 		return result, nil
 	}
 	foundInput := false
+	customFileSpec := false
 	for _, candidate := range view.Inputs {
 		if candidate.ID == input.InputID && candidate.WorkID == input.WorkID &&
 			candidate.RunID == input.RunID && candidate.TaskID == input.TaskID &&
 			candidate.BlockID == input.BlockID && candidate.SpecID == input.SpecID {
 			foundInput = true
+			customFileSpec = candidate.CustomSpec != nil && candidate.CustomSpec.Kind == work.InputFile
 			break
 		}
 	}
@@ -968,7 +1027,7 @@ func (a *App) SelectWorkInputFile(tabID string, input SelectWorkInputFileRequest
 		))
 		return result, nil
 	}
-	fileSpec := false
+	fileSpec := customFileSpec
 	for _, spec := range view.Definition.InputSpecs {
 		if spec.ID == input.SpecID && spec.Kind == work.InputFile {
 			fileSpec = true
@@ -981,7 +1040,40 @@ func (a *App) SelectWorkInputFile(tabID string, input SelectWorkInputFileRequest
 		))
 		return result, nil
 	}
+	return a.selectWorkFile(tabID, input.Path, "Choose file for Work input")
+}
 
+// SelectWorkInformationFile selects a file for a not-yet-created custom item.
+func (a *App) SelectWorkInformationFile(tabID string, input SelectWorkInformationFileRequest) (*SelectWorkInputFileResult, error) {
+	result := &SelectWorkInputFileResult{}
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	if input.WorkID == "" {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInformationFile: workID is required",
+		))
+		return result, nil
+	}
+	view, err := wc.GetWork(a.bootContext(), input.WorkID)
+	if err != nil {
+		result.Error = work.TransportErrorFrom(err)
+		return result, nil
+	}
+	if view == nil || view.Work == nil || view.Work.ArchiveState != work.ArchiveActive {
+		result.Error = work.TransportErrorFrom(errors.New(
+			"work: SelectWorkInformationFile: active Work is unavailable",
+		))
+		return result, nil
+	}
+	return a.selectWorkFile(tabID, input.Path, "Choose file for Work information")
+}
+
+func (a *App) selectWorkFile(tabID, selectedPath, title string) (*SelectWorkInputFileResult, error) {
+	result := &SelectWorkInputFileResult{}
 	root, _, ok := a.workspaceTargetForTab(tabID)
 	if !ok {
 		result.Error = work.TransportErrorFrom(errors.New(
@@ -994,16 +1086,19 @@ func (a *App) SelectWorkInputFile(tabID string, input SelectWorkInputFileRequest
 		result.Error = work.TransportErrorFrom(err)
 		return result, nil
 	}
-	path, err := openWorkInputFileDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:            "Choose file for Work input",
-		DefaultDirectory: dialogDefaultDirectory(base),
-		Filters: []runtime.FileFilter{
-			{DisplayName: "All files (*.*)", Pattern: "*.*"},
-		},
-	})
-	if err != nil {
-		result.Error = work.TransportErrorFrom(err)
-		return result, nil
+	path := strings.TrimSpace(selectedPath)
+	if path == "" {
+		path, err = openWorkInputFileDialog(a.ctx, runtime.OpenDialogOptions{
+			Title:            title,
+			DefaultDirectory: dialogDefaultDirectory(base),
+			Filters: []runtime.FileFilter{
+				{DisplayName: "All files (*.*)", Pattern: "*.*"},
+			},
+		})
+		if err != nil {
+			result.Error = work.TransportErrorFrom(err)
+			return result, nil
+		}
 	}
 	if strings.TrimSpace(path) == "" {
 		result.Canceled = true

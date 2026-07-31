@@ -178,6 +178,52 @@ func TestInputService_RequestInput(t *testing.T) {
 	}
 }
 
+func TestInputService_AddCustomInput_AtomicAndEditable(t *testing.T) {
+	inputSvc, svc, store, _ := newInputServiceTest(t)
+	workID, inputID := createV2WorkWithInput(t, svc, store)
+	workRev, _, defRev := inputGuards(t, store, workID, inputID)
+	request := AddCustomWorkInputRequest{
+		WorkID: workID, RunID: "run-1", InputID: "custom-reference",
+		Name: "参考资料", Description: "持续参考", Kind: InputText,
+		Value: json.RawMessage(`"第一版"`), DefinitionRevision: defRev,
+		ExpectedRevision: workRev, RequestID: "add-custom-reference",
+	}
+	result, err := inputSvc.AddCustomInput(context.Background(), request)
+	if err != nil {
+		t.Fatalf("AddCustomInput: %v", err)
+	}
+	if result.Input == nil || result.Input.CustomSpec == nil {
+		t.Fatalf("custom input/spec missing: %#v", result)
+	}
+	if result.Input.CustomSpec.Label != "参考资料" || result.Input.State != InputSubmitted {
+		t.Fatalf("unexpected custom input: %#v", result.Input)
+	}
+	duplicate, err := inputSvc.AddCustomInput(context.Background(), request)
+	if err != nil || !duplicate.Duplicate || duplicate.Input == nil {
+		t.Fatalf("idempotent AddCustomInput = %#v, %v", duplicate, err)
+	}
+
+	current, state, err := store.LoadState(workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := findInputIndex(current, request.InputID)
+	if idx < 0 {
+		t.Fatal("custom input missing from projection")
+	}
+	edit, err := inputSvc.SubmitInput(context.Background(), SubmitInputRequest{
+		WorkID: workID, InputID: request.InputID, Value: json.RawMessage(`"第二版"`),
+		DefinitionRev: defRev, InputRevision: current.V2Inputs[idx].Revision,
+		ExpectedRevision: state.Revision, RequestID: "edit-custom-reference",
+	})
+	if err != nil || edit.Error != "" {
+		t.Fatalf("edit custom input = %#v, %v", edit, err)
+	}
+	if string(edit.Input.Value) != `"第二版"` || len(edit.AffectedTaskIDs) != 0 {
+		t.Fatalf("edited custom input = %#v", edit)
+	}
+}
+
 // ── Test: SaveDraft ─────────────────────────────────────────────────────────
 
 func TestInputService_SaveDraft(t *testing.T) {
@@ -279,6 +325,7 @@ func TestInputService_SubmitInput(t *testing.T) {
 		WorkID:           workID,
 		InputID:          inputID,
 		Value:            json.RawMessage(`"my focus"`),
+		Extra:            "  unexpected but useful context  ",
 		Source:           "user",
 		ExpectedRevision: workRev, InputRevision: inputRev, DefinitionRev: defRev,
 		RequestID: "submit-1",
@@ -295,6 +342,9 @@ func TestInputService_SubmitInput(t *testing.T) {
 	}
 	if string(result.Input.Value) != `"my focus"` {
 		t.Fatalf("expected submitted value, got %s", string(result.Input.Value))
+	}
+	if result.Input.Extra != "unexpected but useful context" {
+		t.Fatalf("expected trimmed extra context, got %q", result.Input.Extra)
 	}
 	if len(result.AffectedTaskIDs) == 0 || result.AffectedTaskIDs[0] != "task-n1" {
 		t.Fatalf("expected affected task task-n1, got %v", result.AffectedTaskIDs)

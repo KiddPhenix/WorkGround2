@@ -153,6 +153,16 @@ func (c *V2Coordinator) SubmitInput(
 	return result, nil
 }
 
+func (c *V2Coordinator) AddCustomInput(
+	ctx context.Context,
+	request AddCustomWorkInputRequest,
+) (*SubmitInputResult, error) {
+	if c == nil || c.inputs == nil {
+		return nil, errors.New("work: V2 input coordinator is not configured")
+	}
+	return c.inputs.AddCustomInput(ctx, request)
+}
+
 // ApplyPatch commits through the real PatchService and automatically resumes
 // only the preview's invalidated task subgraph.
 func (c *V2Coordinator) ApplyPatch(
@@ -538,7 +548,9 @@ func (c *V2Coordinator) ScheduleRun(
 	prepared := false
 	for _, node := range definition.Nodes {
 		runtime := runtimes[node.ID]
-		if runtime == nil || runtime.State != TaskFailedRetryable || len(node.ProducesSlotIDs) == 0 {
+		if runtime == nil ||
+			(runtime.State != TaskFailedRetryable && runtime.State != TaskInvalidated) ||
+			len(node.ProducesSlotIDs) == 0 {
 			continue
 		}
 		if err := c.prepareV2NodeArtifacts(
@@ -811,7 +823,9 @@ func (c *V2Coordinator) continueRunAt(
 	prepared := false
 	for _, node := range definition.Nodes {
 		runtime := runtimes[node.ID]
-		if runtime == nil || runtime.State != TaskFailedRetryable || len(node.ProducesSlotIDs) == 0 {
+		if runtime == nil ||
+			(runtime.State != TaskFailedRetryable && runtime.State != TaskInvalidated) ||
+			len(node.ProducesSlotIDs) == 0 {
 			continue
 		}
 		if err := c.prepareV2NodeArtifacts(

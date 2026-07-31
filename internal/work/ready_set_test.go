@@ -238,6 +238,25 @@ func TestComputeInputDigest_SkipsNonSubmitted(t *testing.T) {
 	}
 }
 
+func TestComputeInputDigest_IncludesWorkWideCustomInformation(t *testing.T) {
+	spec := &InputSpec{ID: "custom:reference", Label: "参考资料", Kind: InputText, Required: true}
+	inputs := []WorkInput{{
+		ID: "reference", WorkID: "w", RunID: "older-run", TaskID: customWorkInfoTaskID,
+		SpecID: spec.ID, CustomSpec: spec, Value: json.RawMessage(`"version one"`),
+		State: InputSubmitted, Revision: 1,
+	}}
+	first := ComputeInputDigest(inputs, "w", "current-run", "current-task", nil)
+	inputs[0].Value = json.RawMessage(`"version two"`)
+	inputs[0].Revision = 2
+	second := ComputeInputDigest(inputs, "w", "current-run", "current-task", nil)
+	if first == "inputs:none" || first == second {
+		t.Fatalf("custom information must affect every task digest: %s vs %s", first, second)
+	}
+	if other := ComputeInputDigest(inputs, "other-work", "current-run", "current-task", nil); other != "inputs:none" {
+		t.Fatalf("custom information leaked across Work: %s", other)
+	}
+}
+
 func TestHasAllRequiredInputs_Missing(t *testing.T) {
 	specs := []InputSpec{
 		{ID: "s1", Required: true, Kind: InputText},

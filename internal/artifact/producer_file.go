@@ -3,6 +3,7 @@ package artifact
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"workground2/internal/provider"
@@ -38,7 +39,9 @@ func (p *FileProducer) Discover(call provider.ToolCall, result provider.Message)
 	case "complete_step":
 		paths = append(paths, completeStepEvidencePaths(call.Arguments)...)
 	case "bash", "shell", "powershell", "run_command":
-		paths = append(paths, extractBashOutputPaths(bashCommandArg(call.Arguments))...)
+		cmd := bashCommandArg(call.Arguments)
+		paths = append(paths, extractBashOutputPaths(cmd)...)
+		paths = append(paths, extractShellInlineOutputPaths(cmd)...)
 	default:
 		if p := fileToolArgsPath(call.Arguments); p != "" {
 			paths = append(paths, p)
@@ -296,6 +299,54 @@ func looksLikePath(s string) bool {
 	}
 	ext := filepath.Ext(s)
 	return ext != "" && len(ext) >= 2 && len(ext) <= 10
+}
+
+// reShellInlineOutput matches Python file-output API calls and captures
+// the first string-literal argument as the file path. It is used to
+// discover artifacts produced by shell-embedded scripts (e.g. Python
+// one-liners) where the output path does not appear in the tool result.
+//
+// Covered APIs:
+//   - .save('path') / .save("path")          — PIL, python-docx, openpyxl, …
+//   - .savefig('path') / .savefig("path")    — matplotlib
+//   - .to_excel('path') / .to_excel("path")  — pandas
+//   - .to_csv('path') / .to_csv("path")      — pandas
+//   - .to_json('path') / .to_json("path")    — pandas
+//   - .to_parquet('path')                    — pandas
+//
+// Boundaries:
+//   - Only the first string-literal argument is captured; f-strings,
+//     variables, and expressions are ignored.
+//   - open() is NOT matched (read/write ambiguity).
+//   - Paths are returned as-is (relative or absolute); callers must
+//     resolve against workspaceRoot and validate file existence.
+var reShellInlineOutput = regexp.MustCompile(
+	`\.(save|savefig|to_excel|to_csv|to_json|to_parquet)\s*\(\s*(['"])([^'"]+?)(['"])`,
+)
+
+func extractShellInlineOutputPaths(cmd string) []string {
+	matches := reShellInlineOutput.FindAllStringSubmatch(cmd, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var paths []string
+	for _, m := range matches {
+		if len(m) < 5 {
+			continue
+		}
+		// Verify opening and closing quotes match.
+		if m[2] != m[4] {
+			continue
+		}
+		p := strings.TrimSpace(m[3])
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		paths = append(paths, p)
+	}
+	return paths
 }
 
 func isSourceFile(path string) bool {

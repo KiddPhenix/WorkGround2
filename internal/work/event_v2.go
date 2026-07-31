@@ -519,19 +519,20 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 		}
 
 	case EventInputRequested:
-		var p struct {
-			InputID string `json:"inputId"`
-			WorkID  string `json:"workId"`
-			RunID   string `json:"runId"`
-			TaskID  string `json:"taskId"`
-			BlockID string `json:"blockId"`
-			SpecID  string `json:"specId"`
-		}
+		var p InputRequestedPayload
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return fmt.Errorf("work: %s payload: %w", typ, err)
 		}
 		if p.InputID == "" || p.WorkID == "" || p.RunID == "" || p.TaskID == "" || p.BlockID == "" || p.SpecID == "" {
 			return fmt.Errorf("work: %s requires inputId/workId/runId/taskId/blockId/specId", typ)
+		}
+		if p.CustomSpec != nil {
+			if p.CustomSpec.ID != p.SpecID || strings.TrimSpace(p.CustomSpec.Label) == "" {
+				return fmt.Errorf("work: %s customSpec must match specId and include label", typ)
+			}
+			if p.CustomSpec.Kind != InputText && p.CustomSpec.Kind != InputFile {
+				return fmt.Errorf("work: %s customSpec kind must be text or file", typ)
+			}
 		}
 
 	case EventInputDraftSaved:
@@ -939,13 +940,14 @@ type ArtifactSlotUpdatedPayload struct {
 
 // InputRequestedPayload is carried by EventInputRequested.
 type InputRequestedPayload struct {
-	InputID string              `json:"inputId"`
-	WorkID  string              `json:"workId"`
-	RunID   string              `json:"runId"`
-	TaskID  string              `json:"taskId"`
-	BlockID string              `json:"blockId"`
-	SpecID  string              `json:"specId"`
-	Receipt *InputIntentReceipt `json:"receipt,omitempty"`
+	InputID    string              `json:"inputId"`
+	WorkID     string              `json:"workId"`
+	RunID      string              `json:"runId"`
+	TaskID     string              `json:"taskId"`
+	BlockID    string              `json:"blockId"`
+	SpecID     string              `json:"specId"`
+	CustomSpec *InputSpec          `json:"customSpec,omitempty"`
+	Receipt    *InputIntentReceipt `json:"receipt,omitempty"`
 }
 
 // InputDraftSavedPayload is carried by EventInputDraftSaved.
@@ -957,6 +959,7 @@ type InputDraftSavedPayload struct {
 	BlockID          string              `json:"blockId"`
 	SpecID           string              `json:"specId"`
 	Value            json.RawMessage     `json:"value"`
+	Extra            string              `json:"extra,omitempty"`
 	Source           string              `json:"source,omitempty"`
 	UpdatedBy        string              `json:"updatedBy,omitempty"`
 	Revision         int64               `json:"revision"`
@@ -973,6 +976,7 @@ type InputSubmittedPayload struct {
 	BlockID          string              `json:"blockId"`
 	SpecID           string              `json:"specId"`
 	Value            json.RawMessage     `json:"value"`
+	Extra            string              `json:"extra,omitempty"`
 	Source           string              `json:"source,omitempty"`
 	UpdatedBy        string              `json:"updatedBy,omitempty"`
 	Revision         int64               `json:"revision"`
@@ -990,6 +994,7 @@ type InputRejectedPayload struct {
 	BlockID          string              `json:"blockId"`
 	SpecID           string              `json:"specId"`
 	Value            json.RawMessage     `json:"value"`
+	Extra            string              `json:"extra,omitempty"`
 	Reason           string              `json:"reason,omitempty"`
 	Source           string              `json:"source,omitempty"`
 	UpdatedBy        string              `json:"updatedBy,omitempty"`

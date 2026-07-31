@@ -4,6 +4,7 @@ import {
   ChevronDown,
   CircleDashed,
   ListChecks,
+  PauseCircle,
   Sparkles,
 } from 'lucide-react';
 
@@ -11,6 +12,7 @@ import type {
   BlockPlacement,
   BlockUpdateRequest,
   Conclusion,
+  ResumeRunInput,
   Work,
   WorkflowRun,
   WorkView,
@@ -28,11 +30,15 @@ import type {
   ApplyWorkPatchResult,
   SelectWorkInputFileRequest,
   SelectWorkInputFileResult,
+  SelectWorkInformationFileRequest,
+  AddCustomWorkInputRequest,
 } from '../../work/types_v2';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
+import { WorkControlBar } from './WorkControlBar';
+import { WorkChatInput } from './WorkChatInput';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
-import { WorkDefinitionOverview, WorkStatePanel } from '../../work/components/presentation';
+import { WorkInformationPanel } from '../../work/components/presentation';
 import { v2DiscussionBlockId } from '../../work/components/v2/discussionBlock';
 import {
   deriveWorkPresentation,
@@ -56,6 +62,8 @@ import type {
   DiscussionApplyIntent,
   DiscussionDraftIntent,
 } from '../../work/components/v2/discussion/DiscussionDrawer';
+import type { ComposerSubmitKey } from '../../lib/composerKeyboard';
+import type { Item, LiveStream } from '../../lib/useController';
 
 export interface WorkCardFrontProps {
   view: WorkView;
@@ -92,6 +100,8 @@ export interface WorkCardFrontProps {
   onUnsetCornerstone?: (req: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
   onRefreshAuthoritative?: (context: WorkInputRefreshContext) => Promise<void>;
   onSelectWorkInputFile?: (request: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
+  onSelectWorkInformationFile?: (request: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
+  onAddCustomWorkInput?: (request: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
   // ── Discussion callbacks ──────────────────────────────────────
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
@@ -100,6 +110,19 @@ export interface WorkCardFrontProps {
   onTaskInfo?: (runId: string, taskId: string) => void;
   /** Run+Task identities that have session refs — only these rows show the info action. */
   taskInfoTaskKeys?: Set<string>;
+  // ── Control bar callbacks ─────────────────────────────────────────
+  onControlStart?: (input: { workId: string; requestId: string }) => import('../../work/types').WorkflowRun | Promise<import('../../work/types').WorkflowRun>;
+  onControlResume?: (input: ResumeRunInput) => import('../../work/types').WorkflowRun | Promise<import('../../work/types').WorkflowRun>;
+  onControlPause?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
+  onControlStop?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
+  onControlRestart?: (input: { workId: string; runId: string; requestId: string }) => import('../../work/types').WorkflowRun | Promise<import('../../work/types').WorkflowRun>;
+  // ── Chat input props ───────────────────────────────────────────
+  displayItems: Item[];
+  live?: LiveStream;
+  running: boolean;
+  chatDisabled: boolean;
+  composerSubmitKey: ComposerSubmitKey;
+  onChatSend: (text: string) => void | Promise<void>;
 }
 
 function latestRun(runs: WorkflowRun[]): WorkflowRun | undefined {
@@ -185,10 +208,13 @@ const WorkStructureSummary: React.FC<WorkStructureSummaryProps> = ({
     (task) => task.state === 'failed_retryable' || task.state === 'failed_terminal',
   ).length;
   const Icon = presentation.phase === 'completed' ? CheckCircle2
+    : presentation.phase === 'paused' ? PauseCircle
     : presentation.phase === 'planning' ? CircleDashed
       : ListChecks;
   const detail = presentation.phase === 'completed'
     ? `${completed}/${presentation.tasks.length} 已完成`
+    : presentation.phase === 'paused'
+      ? running > 0 ? `${running} 项已暂停` : '已暂停'
     : [
         running > 0 ? `${running} 运行中` : '',
         waiting > 0 ? `${waiting} 等待处理` : '',
@@ -245,11 +271,24 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onUnsetCornerstone,
   onRefreshAuthoritative,
   onSelectWorkInputFile,
+  onSelectWorkInformationFile,
+  onAddCustomWorkInput,
   onPreviewPatch,
   onApplyPatch,
   onDiscussionDraftChange,
   onTaskInfo,
   taskInfoTaskKeys,
+  onControlStart,
+  onControlResume,
+  onControlPause,
+  onControlStop,
+  onControlRestart,
+  displayItems,
+  live,
+  running,
+  chatDisabled,
+  composerSubmitKey,
+  onChatSend,
 }) => {
   const { work } = view;
   const [resultWorkflowChange, setResultWorkflowChange] = useState<ResultWorkflowChangeRequest>();
@@ -267,9 +306,9 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       v2Definition,
       v2Tasks ?? [],
       artifactSlots ?? [],
-      { activeRunId: runId },
+      { activeRunId: runId, workState: work.state },
     );
-  }, [artifactSlots, runId, v2Definition, v2Tasks]);
+  }, [artifactSlots, runId, v2Definition, v2Tasks, work.state]);
   const automaticNodeSummaries = useMemo(() => {
     if (!v2Definition) return new Map<string, string>();
     return new Map(v2Definition.nodes.map((node) => [
@@ -287,20 +326,11 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
     () => work.blocks.filter((block) => !block.tombstone && !isAutomaticNodeSummary(block)),
     [isAutomaticNodeSummary, work.blocks],
   );
-  const hasPresentationCanvas = presentationBlocks.length > 0
-    || (v2Definition?.inputSpecs.length ?? 0) > 0;
-  const pendingInputSpecs = useMemo(() => {
-    const pending = new Set(presentation?.attentionTask?.waitingInputIds ?? []);
-    return v2Definition?.inputSpecs.filter((spec) => pending.has(spec.id)) ?? [];
-  }, [presentation?.attentionTask?.waitingInputIds, v2Definition]);
+  const hasPresentationCanvas = presentationBlocks.length > 0;
   const expandedTaskId = Object.entries(expanded)
     .find(([targetID, open]) => open && targetID.startsWith('v2-task:'))
     ?.[0].slice('v2-task:'.length);
   const executionDetailsOpen = executionExpanded || expandedTaskId !== undefined;
-  const focusPresentationTask = useCallback((taskID: string) => {
-    setExecutionExpanded(true);
-    onExecutionExpand(taskID, true);
-  }, [onExecutionExpand]);
   const hostContext = useMemo<BlockHostContext>(() => ({
     workId: work.id,
     workSchemaVersion: work.schemaVersion,
@@ -424,15 +454,6 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         : BLOCK_SLOTS.flatMap((slot) =>
           (blocksBySlot.get(slot) ?? []).filter(({ block }) => !isAutomaticNodeSummary(block)))
       ).map(renderBlock)}
-      {presentationBlocks.length === 0 && v2Definition ? (
-        <WorkDefinitionOverview
-          definition={v2Definition}
-          inputs={v2Inputs ?? []}
-          runId={presentation?.runId}
-          tasks={presentation?.tasks ?? []}
-          showStructure={false}
-        />
-      ) : null}
     </div>
   );
 
@@ -459,6 +480,8 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       onWorkflowChangeState={setWorkflowChangeState}
       onTaskInfo={onTaskInfo}
       taskInfoTaskKeys={taskInfoTaskKeys}
+      showTaskInputs={false}
+      paused={work.state === 'paused'}
     />
   );
 
@@ -470,6 +493,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
         data-work-id={work.id}
         data-readonly={readonly ? 'true' : 'false'}
         data-archived={archived ? 'true' : 'false'}
+        data-work-state={work.state}
         data-presentation-phase={presentation.phase}
         data-presentation-layout={presentation.layoutMode}
       >
@@ -479,8 +503,9 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             activeDefinitionRevision={v2Definition.revision}
             definition={v2Definition}
             tasks={v2Tasks}
-            runId={runId}
+            runId={presentation.runId ?? runId}
             readonly={readonly || archived}
+            paused={work.state === 'paused'}
             onRequestWorkflowChange={canChangeWorkflow ? requestWorkflowChange : undefined}
             workflowChangeState={workflowChangeState}
             onOpen={onArtifactOpen}
@@ -491,10 +516,21 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onConvert={onArtifactConvert}
           />
 
-          <WorkStatePanel
-            presentation={presentation}
-            pendingInputSpecs={pendingInputSpecs}
-            onFocusTask={focusPresentationTask}
+          <WorkInformationPanel
+            workId={work.id}
+            runId={presentation.runId ?? runId}
+            workRevision={view.revision}
+            definition={v2Definition}
+            tasks={v2Tasks ?? []}
+            inputs={v2Inputs ?? []}
+            readonly={readonly || archived}
+            onSubmit={onSubmitWorkInput}
+            onPin={onSetCornerstone}
+            onUnpin={onUnsetCornerstone}
+            onRefresh={onRefreshAuthoritative}
+            onSelectFile={onSelectWorkInputFile}
+            onSelectCustomFile={onSelectWorkInformationFile}
+            onAddCustom={onAddCustomWorkInput}
           />
 
           {hasPresentationCanvas ? (
@@ -534,6 +570,28 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             <Sparkles aria-hidden="true" size={18} strokeWidth={1.7} />
             <span>{v2Definition.goal}</span>
           </footer>
+          <div className="wg2-work-bottom" data-testid="work-bottom">
+            <WorkChatInput
+              disabled={readonly || archived || chatDisabled}
+              composerSubmitKey={composerSubmitKey}
+              onSend={onChatSend}
+              displayItems={displayItems}
+              live={live}
+              running={running}
+            />
+            <WorkControlBar
+              workId={work.id}
+              workState={work.state}
+              runs={work.runs}
+              readonly={readonly}
+              archived={archived}
+              onStart={onControlStart}
+              onResume={onControlResume}
+              onPause={onControlPause}
+              onStop={onControlStop}
+              onRestart={onControlRestart}
+            />
+          </div>
         </div>
       </div>
     );
@@ -550,6 +608,28 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       <ConclusionList conclusions={work.conclusions ?? []} />
       <ArtifactSummary work={work} />
       {blockCanvas}
+      <div className="wg2-work-bottom" data-testid="work-bottom">
+        <WorkChatInput
+          disabled={readonly || archived || chatDisabled}
+          composerSubmitKey={composerSubmitKey}
+          onSend={onChatSend}
+          displayItems={displayItems}
+          live={live}
+          running={running}
+        />
+        <WorkControlBar
+          workId={work.id}
+          workState={work.state}
+          runs={work.runs}
+          readonly={readonly}
+          archived={archived}
+          onStart={onControlStart}
+          onResume={onControlResume}
+          onPause={onControlPause}
+          onStop={onControlStop}
+          onRestart={onControlRestart}
+        />
+      </div>
     </div>
   );
 };

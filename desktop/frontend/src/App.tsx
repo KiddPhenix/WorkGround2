@@ -1518,6 +1518,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   runningRef.current = state.running;
   const activeTabIdRef = useRef(activeTabId);
   const commitThenSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
+  const commitThenWorkSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
   const preferredWorkspacePanelWidth = rightDockDetailActive ? rightDockPreviewWidth : rightDockTreeWidth;
   const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
@@ -1926,7 +1927,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   // (/skill, /hooks, /mcp) — goes straight to Submit, which the controller
   // resolves (a turn, or a listing Notice).
   const handleSend = useCallback(
-    async (displayText: string, submitText = displayText) => {
+    async (
+      displayText: string,
+      submitText = displayText,
+      sendTurn = commitThenSendRef.current,
+    ) => {
       const trimmed = displayText.trim();
       // "!<cmd>" runs a shell command directly, bypassing the model.
       if (trimmed.startsWith("!")) {
@@ -1970,12 +1975,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         } else if (["clear", "off", "stop", "done"].includes(displayGoal.toLowerCase())) {
           applyGoal("");
         }
-        await commitThenSendRef.current(trimmed, submitText.trim());
+        await sendTurn(trimmed, submitText.trim());
         return;
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         applyGoal(trimmed);
-        await commitThenSendRef.current(trimmed, `/goal ${submitText.trim()}`);
+        await sendTurn(trimmed, `/goal ${submitText.trim()}`);
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -2016,9 +2021,15 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       void setControllerCollaborationMode(controllerComposerProfileCollaborationMode(composerProfile));
       void setControllerToolApprovalMode(toolApprovalMode);
       if (goal.trim()) void setControllerGoal(goal);
-      await commitThenSendRef.current(trimmed, submitText.trim());
+      await sendTurn(trimmed, submitText.trim());
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, goal, runShell, notice, setControllerCollaborationMode, setControllerGoal, setControllerToolApprovalMode, steer, switchModel, t, toolApprovalMode, showToast],
+  );
+
+  const handleWorkChatSend = useCallback(
+    (displayText: string, submitText = displayText) =>
+      handleSend(displayText, submitText, commitThenWorkSendRef.current),
+    [handleSend],
   );
 
   const refreshTabMetas = useCallback(async (): Promise<TabMeta[]> => {
@@ -2588,8 +2599,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     return null;
   }, [state.items]);
 
-  // send wrapper: commits any pending optimistic rewind before sending.
-  const commitThenSend = useCallback(async (displayText: string, submitText?: string) => {
+  const commitRewindThen = useCallback(async (submit: () => Promise<void>) => {
     if (activeTab?.readOnly) throw new Error("channel session is read-only");
     const rs = rewindStateRef.current;
     if (rs) {
@@ -2615,8 +2625,30 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         setProjectRevision((v) => v + 1);
       }
     }
-    await send(displayText, submitText);
-  }, [activeTab?.readOnly, send, rewind]);
+    await submit();
+  }, [activeTab?.readOnly, rewind]);
+
+  // Send wrappers share the same deferred rewind transaction. Work chat changes
+  // only the final transport, keeping command handling and recovery identical.
+  const commitThenSend = useCallback(
+    (displayText: string, submitText?: string) =>
+      commitRewindThen(() => send(displayText, submitText)),
+    [commitRewindThen, send],
+  );
+  const commitThenWorkSend = useCallback(
+    (displayText: string, submitText = displayText) => {
+      const tabID = activeTabId;
+      const workID = activeTab?.workId;
+      if (!tabID || !workID) throw new Error("Work chat target is unavailable");
+      return commitRewindThen(async () => {
+        if (activeTabIdRef.current !== tabID) {
+          throw new Error("Work chat target changed before send");
+        }
+        await app.SendWorkChat(tabID, workID, displayText, submitText);
+      });
+    },
+    [activeTab?.workId, activeTabId, commitRewindThen],
+  );
 
   const handleTranscriptPrompt = useCallback((text: string) => {
     if (!controllerReady) return;
@@ -2628,6 +2660,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     setComposerInsertRequest({ id: Date.now(), text, mode: "replace" });
   }, []);
   commitThenSendRef.current = commitThenSend;
+  commitThenWorkSendRef.current = commitThenWorkSend;
 
   const handleMessageAction = useCallback((turn: number, scope: string) => {
     if (activeTab?.readOnly) return;
@@ -3803,6 +3836,15 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     />
                   ),
                 }}
+                chatItems={displayItems}
+                chatLive={state.live}
+                chatRunning={state.running || rewindCommitting}
+                chatDisabled={!sessionSurfaceProps.ready
+                  || sessionSurfaceProps.composerDisabled
+                  || sessionSurfaceProps.submitDisabled
+                  || sessionSurfaceProps.decisionPending}
+                chatComposerSubmitKey={composerSubmitKey}
+                onChatSend={handleWorkChatSend}
               />
             ) : showWorkSurface ? (
               <WorkAvailabilitySurface

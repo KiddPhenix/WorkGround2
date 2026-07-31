@@ -224,6 +224,7 @@ async function runTests(): Promise<void> {
         onPin={noopPin} onUnpin={noopUnpin}
         workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID}
         definitionRevision={DEF_REV} inputRevision={INPUT_REV}
+        extra="  这是额外背景  "
       />,
     );
 
@@ -259,6 +260,7 @@ async function runTests(): Promise<void> {
       eq(dto.inputRevision, INPUT_REV, 'text: DTO.inputRevision');
       ok(typeof dto.requestId === 'string' && dto.requestId.length > 0, 'text: DTO.requestId non-empty');
       eq(dto.value, 'hello', 'text: DTO.value');
+      eq(dto.extra, '这是额外背景', 'text: DTO.extra trimmed');
     }
 
     // Revision displayed
@@ -356,14 +358,13 @@ async function runTests(): Promise<void> {
       />,
     );
     const err = host.querySelector('[data-testid="work-input-error-task-fixture-req1"]');
-    ok(err !== null, 'required: error shown');
-    contains(err?.textContent ?? '', '是必填项', 'required: message');
+    ok(err === null, 'required: empty initial state stays calm');
 
     const btn = host.querySelector<HTMLButtonElement>('[data-testid="work-input-submit-task-fixture-req1"]');
     ok(btn?.disabled ?? false, 'required: submit disabled');
 
     const ctrl = host.querySelector<HTMLInputElement>('[data-testid="work-input-control-task-fixture-req1"]');
-    eq(ctrl?.getAttribute('aria-invalid'), 'true', 'required: aria-invalid=true');
+    eq(ctrl?.getAttribute('aria-invalid'), null, 'required: initial empty value is not marked invalid');
     await cleanup();
   }
 
@@ -388,7 +389,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 4. Number: basic, min/max, integer, unit validation
+  // 4. Number: schema hints warn without blocking
   // ════════════════════════════════════════════════════════════════════════
   {
     const valueSchema = JSON.stringify({ min: 0, max: 100, integer: true });
@@ -406,11 +407,12 @@ async function runTests(): Promise<void> {
 
     const ctrl = host.querySelector<HTMLInputElement>('[data-testid="work-input-control-task-fixture-n1"]');
     ok(ctrl !== null, 'number: control exists');
-    eq(ctrl?.step, '1', 'number: step=1');
+    eq(ctrl?.step, 'any', 'number: accepts decimals');
 
     const err = host.querySelector('[data-testid="work-input-error-task-fixture-n1"]');
-    ok(err !== null, 'number: error > max');
-    contains(err?.textContent ?? '', '不能大于 100', 'number: max msg');
+    ok(err === null, 'number: no hard error above hinted max');
+    const warning = host.querySelector('[data-testid="work-input-warning-task-fixture-n1"]');
+    contains(warning?.textContent ?? '', '可能不合理', 'number: advisory warning');
 
     await cleanup();
   }
@@ -424,8 +426,8 @@ async function runTests(): Promise<void> {
         workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID} definitionRevision={DEF_REV} inputRevision={INPUT_REV}
       />,
     );
-    const errR = h1.querySelector('[data-testid="work-input-error-task-fixture-ratio1"]');
-    ok(errR !== null, 'number-ratio: error for >1');
+    const warningR = h1.querySelector('[data-testid="work-input-warning-task-fixture-ratio1"]');
+    ok(warningR !== null, 'number-ratio: warning for >1');
 
     const { host: h2, cleanup: c2 } = await mount(
       <WorkInputHost
@@ -434,8 +436,8 @@ async function runTests(): Promise<void> {
         workId={WORK_ID} taskId={TASK_ID} runId={RUN_ID} blockId={BLOCK_ID} definitionRevision={DEF_REV} inputRevision={INPUT_REV}
       />,
     );
-    const errP = h2.querySelector('[data-testid="work-input-error-task-fixture-pct1"]');
-    ok(errP !== null, 'number-pct: error for >100');
+    const warningP = h2.querySelector('[data-testid="work-input-warning-task-fixture-pct1"]');
+    ok(warningP !== null, 'number-pct: warning for >100');
     await c1(); await c2();
   }
 
@@ -1047,7 +1049,7 @@ async function runTests(): Promise<void> {
     const ctrl = host.querySelector<HTMLInputElement>('[data-testid="work-input-control-task-fixture-a11y"]');
     ok(ctrl?.getAttribute('aria-describedby')?.includes('wg2-wh-desc-') ?? false, 'a11y: aria-describedby');
     eq(ctrl?.getAttribute('aria-required'), 'true', 'a11y: aria-required');
-    eq(ctrl?.getAttribute('aria-invalid'), 'true', 'a11y: aria-invalid on empty required');
+    eq(ctrl?.getAttribute('aria-invalid'), null, 'a11y: empty required stays calm before interaction');
     await cleanup();
   }
 

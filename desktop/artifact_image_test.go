@@ -280,7 +280,7 @@ func TestArtifactImageRejectsOversizeFile(t *testing.T) {
 	}
 }
 
-func TestArtifactImageRejectsOutsideWorkspace(t *testing.T) {
+func TestArtifactImageAllowsExternalImage(t *testing.T) {
 	dir := t.TempDir()
 	outsideDir := t.TempDir()
 	outsidePath := filepath.Join(outsideDir, "outside.png")
@@ -300,16 +300,22 @@ func TestArtifactImageRejectsOutsideWorkspace(t *testing.T) {
 	app.setTabNoCtrl("test", dir, sessionPath)
 
 	records := app.ArtifactsForTab("test")
-	// An absolute path outside workspace should be filtered by extractArtifacts.
-	// If somehow captured, readArtifactImage rejects it.
-	if len(records) == 0 {
-		return
+	if len(records) != 1 {
+		t.Fatalf("expected 1 external artifact, got %d", len(records))
 	}
-	for _, r := range records {
-		_, err := app.ArtifactImageDataURL("test", r.ArtifactID)
-		if err == nil {
-			t.Fatalf("expected error for artifact outside workspace: %+v", r)
-		}
+	if records[0].Type != "image" {
+		t.Fatalf("expected image type, got %q", records[0].Type)
+	}
+	if records[0].Status != "available" {
+		t.Fatalf("expected available status, got %q", records[0].Status)
+	}
+	// External image should be previewable.
+	dataURL, err := app.ArtifactImageDataURL("test", records[0].ArtifactID)
+	if err != nil {
+		t.Fatalf("ArtifactImageDataURL for external PNG: %v", err)
+	}
+	if !strings.HasPrefix(dataURL, "data:image/png;base64,") {
+		t.Errorf("unexpected data URL prefix: %s", dataURL[:50])
 	}
 }
 

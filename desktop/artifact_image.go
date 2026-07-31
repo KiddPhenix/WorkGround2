@@ -13,26 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"workground2/internal/artifact"
 )
 
 const maxArtifactImageBytes = 10 * 1024 * 1024
-
-// artifactImageAllowedRoots returns the set of directories where artifact images
-// may reside: the workspace root plus request_help image output directories.
-func (a *App) artifactImageAllowedRoots(tabID string) []string {
-	var roots []string
-	tab, _ := a.tabAndCtrlByID(tabID)
-	if tab != nil {
-		root := filepath.Clean(strings.TrimSpace(tab.WorkspaceRoot))
-		if root != "" && root != "." {
-			roots = append(roots, root)
-		}
-	}
-	roots = append(roots, artifact.AllowedImageRoots()...)
-	return roots
-}
 
 // readArtifactImage cross-references an artifact by tabID+artifactID via
 // ArtifactsForTab, validates it is a type=image / status=available artifact,
@@ -75,18 +58,6 @@ func (a *App) readArtifactImage(tabID, artifactID string) ([]byte, string, error
 	}
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxArtifactImageBytes {
 		return nil, "", fmt.Errorf("artifact image must be a regular file between 1 byte and 10 MB")
-	}
-
-	// Boundary check: workspace root or request_help allowed roots.
-	allowed := false
-	for _, root := range a.artifactImageAllowedRoots(tabID) {
-		if artifact.PathWithinAbsolute(cleaned, root) {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
-		return nil, "", fmt.Errorf("artifact image %q is outside allowed directories", cleaned)
 	}
 
 	f, err := os.Open(cleaned)

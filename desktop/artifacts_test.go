@@ -6,7 +6,6 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -167,20 +166,60 @@ func TestExtractArtifacts_SourceFiltered(t *testing.T) {
 	}
 }
 
-func TestExtractArtifacts_OutOfWorkspace(t *testing.T) {
+func TestExtractArtifacts_ExternalPathsAllowed(t *testing.T) {
 	dir := t.TempDir()
-	outside := `C:\outside\outside.exe`
-	if runtime.GOOS != "windows" {
-		outside = "/outside/outside.exe"
+	// Create a real external file.
+	outsideDir := t.TempDir()
+	extPath := filepath.Join(outsideDir, "outside.exe")
+	if err := os.WriteFile(extPath, []byte("ext"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	// Compute a .. relative path from workspace root to the external file.
+	relPath, err := filepath.Rel(dir, extPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Test 1: absolute external path discovered by write_file.
+	// Use forward slashes for valid JSON on Windows (filepath accepts both).
+	extPathJSON := filepath.ToSlash(extPath)
 	msgs := []provider.Message{
 		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
-			{ID: "tc1", Name: "write_file", Arguments: `{"path":"` + outside + `","content":"x"}`},
+			{ID: "tc1", Name: "write_file", Arguments: `{"path":"` + extPathJSON + `","content":"x"}`},
 		}},
 		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "write_file", Content: "ok"},
 	}
-	if len(extractArtifacts(msgs, dir)) != 0 {
-		t.Error("out-of-workspace paths should be filtered")
+	arts := extractArtifacts(msgs, dir)
+	if len(arts) != 1 {
+		t.Fatalf("expected 1 external artifact, got %d", len(arts))
+	}
+	if arts[0].Status != "available" {
+		t.Errorf("Status = %q, want available", arts[0].Status)
+	}
+	if arts[0].Path != extPath {
+		t.Errorf("Path = %q, want %q", arts[0].Path, extPath)
+	}
+	if arts[0].RelativePath != filepath.Base(extPath) {
+		t.Errorf("RelativePath = %q, want base name %q for external artifact", arts[0].RelativePath, filepath.Base(extPath))
+	}
+
+	// Test 2: .. relative path discovered by write_file.
+	relPathJSON := filepath.ToSlash(relPath)
+	msgs2 := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc2", Name: "write_file", Arguments: `{"path":"` + relPathJSON + `","content":"y"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc2", Name: "write_file", Content: "ok"},
+	}
+	arts2 := extractArtifacts(msgs2, dir)
+	if len(arts2) != 1 {
+		t.Fatalf("expected 1 external artifact from .. relative path, got %d", len(arts2))
+	}
+	if arts2[0].Status != "available" {
+		t.Errorf("Status = %q, want available", arts2[0].Status)
+	}
+	if arts2[0].Path != extPath {
+		t.Errorf("Path = %q, want %q", arts2[0].Path, extPath)
 	}
 }
 

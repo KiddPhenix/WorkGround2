@@ -1,5 +1,6 @@
 import type {
   ArtifactRef,
+  WorkState,
 } from './types';
 import type {
   ArtifactSlot,
@@ -12,6 +13,7 @@ import type {
 export type WorkPresentationPhase =
   | 'planning'
   | 'running'
+  | 'paused'
   | 'waiting'
   | 'failed'
   | 'completed';
@@ -28,6 +30,9 @@ export interface WorkPresentationOptions {
    * deterministically chooses the most recently updated relevant run.
    */
   activeRunId?: string;
+  /** Authoritative Work lifecycle state. Runtime Task/Artifact snapshots may
+   * remain running while a paused Work is resumable. */
+  workState?: WorkState;
 }
 
 export interface PresentationTask {
@@ -303,6 +308,7 @@ function derivePhase(
   tasks: readonly PresentationTask[],
   slots: readonly PresentationArtifactSlot[],
   artifacts: ArtifactPresentationSummary,
+  workState?: WorkState,
 ): WorkPresentationPhase {
   const tasksCompleted = tasks.length > 0
     && tasks.every((task) => task.state === 'completed');
@@ -312,6 +318,7 @@ function derivePhase(
     || slots.some((slot) => slot.required && slot.state === 'failed')) {
     return 'failed';
   }
+  if (workState === 'paused') return 'paused';
   if (tasks.some((task) => WAITING_STATES.has(task.state))) return 'waiting';
 
   const hasRuntime = tasks.some((task) => task.source === 'runtime');
@@ -325,6 +332,7 @@ function layoutModeForPhase(phase: WorkPresentationPhase): WorkLayoutMode {
     case 'planning':
       return 'structure';
     case 'running':
+    case 'paused':
       return 'balanced';
     case 'waiting':
     case 'failed':
@@ -348,7 +356,7 @@ export function deriveWorkPresentation(
   const projectedTasks = projectTasks(definition, tasks, options.activeRunId);
   const projectedSlots = projectArtifactSlots(definition, artifactSlots);
   const artifacts = summarizeArtifacts(projectedSlots);
-  const phase = derivePhase(projectedTasks.tasks, projectedSlots, artifacts);
+  const phase = derivePhase(projectedTasks.tasks, projectedSlots, artifacts, options.workState);
   const attentionTask = deriveAttentionTask(projectedTasks.tasks);
   const primaryTask = phase === 'completed'
     ? undefined

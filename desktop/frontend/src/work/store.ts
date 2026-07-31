@@ -1298,6 +1298,12 @@ export interface WorkCardLocalState {
   inputDrafts: Record<string, unknown>;
   inputDirtyFlags: Record<string, boolean>;
   committedRequestIds: Record<string, string>;
+  informationPanel: {
+    closed: boolean;
+    afterSubmit: 'next' | 'close';
+    activeInputId?: string;
+    advancedOpen: Record<string, boolean>;
+  };
   persistenceError?: string;
 }
 
@@ -1305,6 +1311,7 @@ export interface WorkUIPreference {
   activeFace: WorkFace;
   discussionDrafts?: Record<string, string>;
   inputDrafts?: Record<string, unknown>;
+  informationPanel?: WorkCardLocalState['informationPanel'];
 }
 
 function defaultFaceState(): WorkFaceLocalState {
@@ -1312,7 +1319,15 @@ function defaultFaceState(): WorkFaceLocalState {
 }
 
 export function defaultCardState(): WorkCardLocalState {
-  return { activeFace: 'front', faces: { front: defaultFaceState(), back: defaultFaceState() }, discussionDrafts: {}, inputDrafts: {}, inputDirtyFlags: {}, committedRequestIds: {} };
+  return {
+    activeFace: 'front',
+    faces: { front: defaultFaceState(), back: defaultFaceState() },
+    discussionDrafts: {},
+    inputDrafts: {},
+    inputDirtyFlags: {},
+    committedRequestIds: {},
+    informationPanel: { closed: false, afterSubmit: 'next', advancedOpen: {} },
+  };
 }
 
 const cardStorageErrors: Record<string, string | undefined> = {};
@@ -1331,6 +1346,7 @@ function persistCardState(workID: string, card: WorkCardLocalState): string | un
       inputDrafts: card.inputDrafts ?? {},
       inputDirtyFlags: card.inputDirtyFlags ?? {},
       committedRequestIds: card.committedRequestIds ?? {},
+      informationPanel: card.informationPanel,
     };
     window.localStorage?.setItem(key, JSON.stringify(payload));
     delete cardStorageErrors[workID];
@@ -1364,6 +1380,9 @@ export function restoreCardState(workID: string): Partial<WorkCardLocalState> | 
     if (parsed.committedRequestIds !== undefined && !isStringRecord(parsed.committedRequestIds)) {
       throw new Error('committedRequestIds 结构无效');
     }
+    if (parsed.informationPanel !== undefined && !isInformationPanelState(parsed.informationPanel)) {
+      throw new Error('informationPanel 结构无效');
+    }
     delete cardStorageErrors[workID];
     return {
       activeFace: parsed.activeFace,
@@ -1371,6 +1390,7 @@ export function restoreCardState(workID: string): Partial<WorkCardLocalState> | 
       inputDrafts: parsed.inputDrafts,
       inputDirtyFlags: parsed.inputDirtyFlags,
       committedRequestIds: parsed.committedRequestIds,
+      informationPanel: parsed.informationPanel,
     };
   } catch (e) {
     cardStorageErrors[workID] = storageErrorText('restore', e);
@@ -1385,6 +1405,14 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 
 function isBooleanRecord(value: unknown): value is Record<string, boolean> {
   return isRecord(value) && Object.values(value).every((item) => typeof item === 'boolean');
+}
+
+function isInformationPanelState(value: unknown): value is WorkCardLocalState['informationPanel'] {
+  if (!isRecord(value)) return false;
+  if (typeof value.closed !== 'boolean') return false;
+  if (value.afterSubmit !== 'next' && value.afterSubmit !== 'close') return false;
+  if (value.activeInputId !== undefined && typeof value.activeInputId !== 'string') return false;
+  return isBooleanRecord(value.advancedOpen);
 }
 
 export interface WorkUIStoreState {
@@ -1404,6 +1432,10 @@ export interface WorkUIStoreState {
   setInputDraft: (workID: string, key: string, value: unknown) => void;
   setInputDirtyFlag: (workID: string, key: string) => void;
   setCommittedRequestId: (workID: string, key: string, requestId: string) => void;
+  setInformationPanel: (
+    workID: string,
+    patch: Partial<WorkCardLocalState['informationPanel']>,
+  ) => void;
   removeCard: (workID: string) => void;
   clearAll: () => void;
 }
@@ -1427,6 +1459,7 @@ export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
           inputDrafts: restored.inputDrafts ?? {},
           inputDirtyFlags: restored.inputDirtyFlags ?? {},
           committedRequestIds: restored.committedRequestIds ?? {},
+          informationPanel: restored.informationPanel ?? defaultCardState().informationPanel,
           persistenceError: cardStorageErrors[workID],
         }
       : { ...defaultCardState(), persistenceError: cardStorageErrors[workID] };
@@ -1502,6 +1535,19 @@ export const useWorkUIStore = create<WorkUIStoreState>((set) => ({
   setCommittedRequestId: (workID, key, requestId) => set((state) => {
     const card = cardFor(state, workID);
     const next: WorkCardLocalState = { ...card, committedRequestIds: { ...card.committedRequestIds, [key]: requestId } };
+    next.persistenceError = persistCardState(workID, next);
+    return { cardByWork: { ...state.cardByWork, [workID]: next } };
+  }),
+  setInformationPanel: (workID, patch) => set((state) => {
+    const card = cardFor(state, workID);
+    const next: WorkCardLocalState = {
+      ...card,
+      informationPanel: {
+        ...card.informationPanel,
+        ...patch,
+        advancedOpen: patch.advancedOpen ?? card.informationPanel.advancedOpen,
+      },
+    };
     next.persistenceError = persistCardState(workID, next);
     return { cardByWork: { ...state.cardByWork, [workID]: next } };
   }),

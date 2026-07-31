@@ -35,6 +35,7 @@ import type {
   RunImpact,
   SelectWorkInputFileRequest,
   SelectWorkInputFileResult,
+  SelectWorkInformationFileRequest,
 } from '../../work/types_v2';
 import type {
   FileDownloadIntent,
@@ -46,6 +47,8 @@ import type {
 } from '../../work/components/v2/ResultCard';
 import type { TaskRetryIntent as V2TaskRetryIntent } from '../../work/components/v2/ExecutionRow';
 import type { BlockActionHandler } from './blocks/types';
+import type { ComposerSubmitKey } from '../../lib/composerKeyboard';
+import type { Item, LiveStream } from '../../lib/useController';
 import { CornerstoneDrawer } from './CornerstoneDrawer';
 import { WorkCardBack, type WorkCardBackSlots } from './WorkCardBack';
 import { WorkCardFront } from './WorkCardFront';
@@ -94,6 +97,13 @@ export interface WorkCardProps {
   onArtifactRetry?: (intent: SlotRetryIntent) => void | Promise<void>;
   onArtifactPreview?: (intent: FilePreviewIntent) => Promise<import('../../work/types_v2').ArtifactPreview>;
   onArtifactConvert?: (intent: FileConversionIntent) => Promise<import('../../work/types_v2').ArtifactPreview>;
+  // ── Chat input props ───────────────────────────────────────────
+  chatItems?: Item[];
+  chatLive?: LiveStream;
+  chatRunning?: boolean;
+  chatDisabled?: boolean;
+  chatComposerSubmitKey?: ComposerSubmitKey;
+  onChatSend?: (text: string) => void | Promise<void>;
 }
 
 const unavailablePort: WorkControllerPort = {
@@ -227,6 +237,12 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   onArtifactRetry,
   onArtifactConvert,
   onArtifactPreview,
+  chatItems = [],
+  chatLive,
+  chatRunning = false,
+  chatDisabled = false,
+  chatComposerSubmitKey = 'enter',
+  onChatSend,
 }) => {
   const { locale } = useI18n();
   const view = useWorkStore((state) => state.works[workID]);
@@ -581,6 +597,9 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const handleSelectWorkInputFile = useCallback(async (
     request: SelectWorkInputFileRequest,
   ): Promise<SelectWorkInputFileResult> => adapter.selectWorkInputFile(request), [adapter]);
+  const handleSelectWorkInformationFile = useCallback(async (
+    request: SelectWorkInformationFileRequest,
+  ): Promise<SelectWorkInputFileResult> => adapter.selectWorkInformationFile(request), [adapter]);
   const updateBlock = useCallback(async (request: BlockUpdateRequest) => {
     if (onBlockUpdate) {
       await onBlockUpdate(request);
@@ -653,6 +672,29 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     setSelection(workID, sel);
     void adapter.setActiveFace(workID, 'back').catch(() => undefined);
   }, [adapter, setSelection, v2Tasks, view, workID]);
+
+  const handleControlStart = useCallback((input: { workId: string; requestId: string }) => {
+    return adapter.runWork(input);
+  }, [adapter]);
+
+  const handleControlPause = useCallback(async (input: { workId: string; runId: string; requestId: string }) => {
+    if (!resolvedPort.pauseRun) throw new Error('暂停能力尚未连接。');
+    await resolvedPort.pauseRun(input);
+    await adapter.recoverSnapshot(input.workId);
+  }, [adapter, resolvedPort.pauseRun]);
+
+  const handleControlStop = useCallback(async (input: { workId: string; runId: string; requestId: string }) => {
+    if (!resolvedPort.cancelRun) throw new Error('停止能力尚未连接。');
+    await resolvedPort.cancelRun(input);
+    await adapter.recoverSnapshot(input.workId);
+  }, [adapter, resolvedPort.cancelRun]);
+
+  const handleControlRestart = useCallback(async (input: { workId: string; runId: string; requestId: string }) => {
+    if (!resolvedPort.restartRun) throw new Error('重启能力尚未连接。');
+    const result = await resolvedPort.restartRun(input);
+    await adapter.recoverSnapshot(input.workId);
+    return result;
+  }, [adapter, resolvedPort.restartRun]);
 
   const retrySync = useCallback(() => {
     adapter.retrySubscription(workID);
@@ -848,6 +890,12 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onSelectWorkInputFile={
                 resolvedPort.selectWorkInputFile ? handleSelectWorkInputFile : undefined
               }
+              onSelectWorkInformationFile={
+                resolvedPort.selectWorkInformationFile ? handleSelectWorkInformationFile : undefined
+              }
+              onAddCustomWorkInput={
+                resolvedPort.addCustomWorkInput ? (req) => adapter.addCustomWorkInput(req) : undefined
+              }
               onPreviewPatch={
                 resolvedPort.previewWorkPatch
                   ? (intent) => adapter.previewWorkPatch(intent)
@@ -860,6 +908,17 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               }
               onTaskInfo={taskInfoKeys.size > 0 ? handleTaskInfo : undefined}
               taskInfoTaskKeys={taskInfoKeys}
+              onControlStart={resolvedPort.runWork ? handleControlStart : undefined}
+              onControlResume={resolvedPort.resumeRun ? adapter.resumeRun : undefined}
+              onControlPause={resolvedPort.pauseRun ? handleControlPause : undefined}
+              onControlStop={resolvedPort.cancelRun ? handleControlStop : undefined}
+              onControlRestart={resolvedPort.restartRun ? handleControlRestart : undefined}
+              displayItems={chatItems}
+              live={chatLive}
+              running={chatRunning}
+              chatDisabled={chatDisabled || !onChatSend}
+              composerSubmitKey={chatComposerSubmitKey}
+              onChatSend={onChatSend ?? (() => undefined)}
             />
           </div>
           <div

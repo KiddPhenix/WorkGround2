@@ -35,6 +35,7 @@ import type {
   ApplyDefinitionResult,
   ApplyWorkPatchRequest,
   ApplyWorkPatchResult,
+  AddCustomWorkInputRequest,
   BeginWorkPlanningInput,
   BeginWorkPlanningResult,
   CornerstonePinResult,
@@ -54,6 +55,7 @@ import type {
   RetryArtifactSlotResult,
   SelectWorkInputFileRequest,
   SelectWorkInputFileResult,
+  SelectWorkInformationFileRequest,
   SetInputCornerstoneRequest,
   SubmitInputResult,
   SubmitWorkInputRequest,
@@ -85,6 +87,9 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   retryTask?: (input: RetryTaskInput) => Promise<Attempt>;
   runWork?: (input: { workId: string; requestId: string }) => Promise<WorkflowRun>;
   resumeRun?: (input: ResumeRunInput) => Promise<WorkflowRun>;
+  pauseRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
+  cancelRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
+  restartRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<WorkflowRun>;
   updateDraft?: (input: UpdateDraftInput) => Promise<WorkView>;
   upsertBlock?: (input: BlockUpsertInput) => Promise<WorkView>;
   beginWorkPlanning?: (input: BeginWorkPlanningInput) => Promise<BeginWorkPlanningResult>;
@@ -95,6 +100,8 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   previewArtifact?: (input: PreviewArtifactRequest) => Promise<PreviewArtifactResult>;
   requestArtifactConversion?: (input: RequestArtifactConversionInput) => Promise<RequestArtifactConversionResult>;
   selectWorkInputFile?: (input: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
+  selectWorkInformationFile?: (input: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
+  addCustomWorkInput?: (input: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
   submitWorkInput?: (input: SubmitWorkInputRequest) => Promise<SubmitInputResult>;
   setInputCornerstone?: (input: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
   previewWorkPatch?: (input: PreviewWorkPatchRequest) => Promise<PreviewWorkPatchResult>;
@@ -909,6 +916,32 @@ export class WorkControllerAdapter {
     return result;
   };
 
+  selectWorkInformationFile = async (
+    input: SelectWorkInformationFileRequest,
+  ): Promise<SelectWorkInputFileResult> => {
+    if (!this.port.selectWorkInformationFile) throw new Error('工作信息文件选择能力尚未连接。');
+    const result = await this.port.selectWorkInformationFile(input);
+    if (result.error) {
+      throw Object.assign(new Error(result.error.message), { code: result.error.code });
+    }
+    return result;
+  };
+
+  addCustomWorkInput = async (input: AddCustomWorkInputRequest): Promise<SubmitInputResult> => {
+    if (!this.port.addCustomWorkInput) throw new Error('新增工作信息能力尚未连接。');
+    const result = await this.port.addCustomWorkInput(input);
+    if (!result.committed) {
+      if (result.transportError?.code === 'revision_conflict') {
+        await this.recoverSnapshot(input.workId);
+      }
+      throw Object.assign(
+        new Error(result.transportError?.message || result.error || '新增工作信息未确认。'),
+        { code: result.transportError?.code },
+      );
+    }
+    return result;
+  };
+
   submitWorkInput = async (input: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
     if (!this.port.submitWorkInput) throw new Error('Work 输入提交能力尚未连接。');
     let result = await this.port.submitWorkInput(input);
@@ -1012,7 +1045,7 @@ export class WorkControllerAdapter {
         await this.recoverSnapshot(input.workId);
       }
       throw Object.assign(
-        new Error(result.transportError?.message || 'Work 补丁应用未确认。'),
+        new Error(result.transportError?.message || result.error || 'Work 补丁应用未确认。'),
         { code: result.transportError?.code },
       );
     }

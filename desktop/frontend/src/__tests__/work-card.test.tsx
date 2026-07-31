@@ -1287,6 +1287,7 @@ async function testV2CSSImportsProduceClasses(): Promise<void> {
     'single structure heading replaces the separate execution heading',
   );
   ok(!mounted.host.querySelector('.work-definition-overview__panel--flow'), 'static definition node list is not duplicated');
+  ok(!mounted.host.querySelector('[data-testid="work-state-panel"]'), 'redundant work state summary is omitted');
 
   await interact(() => mounted.host.querySelector<HTMLElement>('[data-testid="execution-row-header-task-1"]')!.click());
   ok(Boolean(mounted.host.querySelector('[data-testid="expanded-block-task-1"]')), 'production ExecutionList opens real ExpandedBlock');
@@ -1427,8 +1428,10 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
   eq(port.v2RetryInputs[3].expectedRevision, revisionBeforeConflict + 5, 'post-conflict retry uses refreshed Work revision');
 
   await interact(() => mounted.host.querySelector<HTMLElement>('[data-testid="execution-row-header-task-actions"]')!.click());
-  // V2 typed input unavailable message: shown when port lacks typed callbacks
-  ok(Boolean(mounted.host.querySelector('[data-testid="expanded-block-input-unavailable-task-actions"]')), 'typed input unavailable message is shown without port callbacks');
+  // The summary stays outside Work structure. This fixture has no requested WorkInput instance,
+  // so its definition-only row remains visible but cannot open a form yet.
+  ok(Boolean(mounted.host.querySelector('[data-testid="work-information-panel"]')), 'work information summary remains visible without a runtime input');
+  ok(!mounted.host.querySelector('[data-testid="expanded-block-inputs-task-actions"]'), 'work structure does not duplicate the information form');
   // Old inline input controls are replaced by WorkInputHost; no disabled <input> exists
   const oldInput = mounted.host.querySelector<HTMLInputElement>('[data-testid="expanded-block-control-task-actions-spec-1"]');
   eq(oldInput, null, 'old inline input control is removed — replaced by WorkInputHost');
@@ -1873,8 +1876,7 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   ok(Boolean(mounted.host.querySelector(`[data-testid="work-input-host-${taskID}-spec-1"]`)), 'default Wails mount enables typed input');
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="work-input-control-${taskID}-spec-1-select"]`)!.click());
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="work-input-submit-${taskID}-spec-1"]`)!.click());
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="work-input-pin-${taskID}-spec-1"]`)!.click());
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${taskID}"]`)!.click());
+  await interact(() => mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-discuss-${taskID}"]`)!.click());
   eq(document.querySelectorAll('[data-testid^="discussion-drawer-"]').length, 1, 'production mounts one discussion drawer');
   await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`)!.click());
   await settle(100);
@@ -1888,7 +1890,6 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
     'SelectWorkInputFile',
     'CreateCandidateRevision',
     'SubmitWorkInput',
-    'SetInputCornerstone',
     'PreviewWorkPatch',
     'ApplyWorkPatch',
   ]) {
