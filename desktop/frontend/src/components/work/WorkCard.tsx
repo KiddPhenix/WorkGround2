@@ -74,6 +74,7 @@ export interface WorkCardProps {
     prompt: string;
   };
   onStartIntentConsumed?: (id: string) => void;
+  onStartIntentNeedsAttention?: (id: string) => void;
   /** Tests/embedders may inject a complete port. Desktop production passes the
    * owning tabID and the WorkCard assembles the real Wails port itself. */
   port?: WorkControllerPort;
@@ -219,6 +220,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   ready = true,
   startIntent,
   onStartIntentConsumed,
+  onStartIntentNeedsAttention,
   port,
   tabID,
   sessionId,
@@ -937,6 +939,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onDraftChange={handleDraftChange}
               startIntent={startIntent}
               onStartIntentConsumed={onStartIntentConsumed}
+              onStartIntentNeedsAttention={onStartIntentNeedsAttention}
               readonly={readonly}
               archived={archived}
               slots={backSlots}

@@ -584,7 +584,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenProjectTab(workspaceRoot: string, topicID: string): Promise<TabMeta>;
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
   OpenTopicSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
-  CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
+  CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string; tabId?: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
   ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   EnsureBlankSurface(scope: string, workspaceRoot: string): Promise<TabMeta>;

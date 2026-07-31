@@ -68,7 +68,7 @@ import "./custom/features/heartbeat/heartbeat.css";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
 import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
-import { WorkStartSurface, type WorkStartPhase } from "./components/work/WorkStartSurface";
+import { WorkSessionTransition } from "./components/work/WorkSessionTransition";
 import { SessionSurface, type SessionSurfaceProps } from "./components/SessionSurface";
 import type { SessionRef, SessionSurfaceContext } from "./work/types";
 import { useWorkUIStore } from "./work/store";
@@ -258,12 +258,13 @@ type DesktopPlatform = "darwin" | "windows" | "linux";
 type WorkSessionResult = Awaited<ReturnType<typeof app.CreateWorkSession>>;
 type WorkBootstrap = {
   requestId: string;
+  tabID: string;
   scope: string;
   workspaceRoot: string;
   prompt: string;
-  phase: WorkStartPhase;
+  submitPrompt: string;
+  phase: "initializing" | "planning" | "revealing" | "error";
   error?: string;
-  tabID?: string;
   result?: WorkSessionResult;
 };
 
@@ -1145,6 +1146,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const workCreateRequestsRef = useRef(new Map<string, string>());
   const [workBootstrap, setWorkBootstrap] = useState<WorkBootstrap | null>(null);
   const workBootstrapRef = useRef<WorkBootstrap | null>(null);
+  const workRevealTimerRef = useRef<number | null>(null);
+  const [workSendByTab, setWorkSendByTab] = useState<Record<string, boolean>>({});
   const workInitTaskRef = useRef<{
     requestId: string;
     promise: Promise<WorkSessionResult | null>;
@@ -1161,6 +1164,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const currentWorkCapability = workCapability !== null && workCapability.tabID === activeTabId ? workCapability : null;
   const workCapable = currentWorkCapability?.capable ?? null;
   const workCapabilityFailed = currentWorkCapability?.failed === true;
+
+  useEffect(() => () => {
+    if (workRevealTimerRef.current !== null) window.clearTimeout(workRevealTimerRef.current);
+  }, []);
 
   // Configuration owns whether the navigation entry exists. It is loaded from
   // the tab's workspace without waiting for Controller startup.
@@ -1837,6 +1844,23 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const sessionTitle = topicTitle(activeTab);
   const sessionHasContent = state.items.length > 0 || Boolean(state.live?.text || state.live?.reasoning);
+  const workSendAvailable = Boolean(
+    activeTab
+    && desktopLayoutStyle === "workbench"
+    && activeTab.sessionKind !== "work"
+    && !activeTab.readOnly
+    && !sessionHasContent
+    && sessionTurns === 0
+    && workEnabled === true
+    && !workConfigFailed
+    && workCapable === true
+    && !workBootstrap,
+  );
+  const workSendSelected = workSendAvailable && Boolean(workSendByTab[activeTab?.id || ""]);
+  const handleWorkSendChange = useCallback((selected: boolean) => {
+    if (!activeTabId) return;
+    setWorkSendByTab((current) => ({ ...current, [activeTabId]: selected }));
+  }, [activeTabId]);
   const getSessionMarkdown = useCallback(
     () => sessionItemsToMarkdown(sessionTitle, state.items, state.live),
     [sessionTitle, state.items, state.live],
@@ -3206,7 +3230,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     const running = workInitTaskRef.current;
     if (running?.requestId === bootstrap.requestId) return running.promise;
     patchWorkBootstrap(bootstrap.requestId, {
-      phase: bootstrap.phase === "starting" ? "starting" : "initializing",
+      phase: "initializing",
       error: undefined,
     });
     const promise = (async (): Promise<WorkSessionResult | null> => {
@@ -3215,17 +3239,31 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
           scope: bootstrap.scope,
           workspaceRoot: bootstrap.workspaceRoot,
           requestId: bootstrap.requestId,
+          tabId: bootstrap.tabID,
         });
-        if (result.tabMeta?.id) {
+        if (result.tabMeta?.id && result.tabMeta.id !== activeTabId) {
           await enqueueTabSwitch(result.tabMeta.id, { ...result.tabMeta, active: true });
           setTabRevealSignal((signal) => signal + 1);
         }
         await refreshProjectsAndTabs();
+        const workID = result.tabMeta?.workId
+          || (result.workView as { work?: { id?: string } } | undefined)?.work?.id;
+        if (!result.error && workID) {
+          const ui = useWorkUIStore.getState();
+          ui.ensureCard(workID);
+          ui.setDraft(workID, "back", bootstrap.submitPrompt);
+          ui.setActiveFace(workID, "back");
+          setWorkStartIntent({
+            id: `${bootstrap.requestId}:start`,
+            workID,
+            prompt: bootstrap.submitPrompt,
+          });
+        }
         patchWorkBootstrap(bootstrap.requestId, {
-          tabID: result.tabMeta?.id,
+          tabID: result.tabMeta?.id || bootstrap.tabID,
           result,
-          phase: result.error ? "error" : "ready",
-          error: result.error,
+          phase: result.error || !workID ? "error" : "planning",
+          error: result.error || (!workID ? "Work 初始化完成，但没有返回工作标识。" : undefined),
         });
         return result;
       } catch (error) {
@@ -3242,18 +3280,19 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     })();
     workInitTaskRef.current = { requestId: bootstrap.requestId, promise };
     return promise;
-  }, [enqueueTabSwitch, patchWorkBootstrap, refreshProjectsAndTabs]);
+  }, [activeTabId, enqueueTabSwitch, patchWorkBootstrap, refreshProjectsAndTabs]);
 
-  const handleCreateWork = useCallback(async (scope: string, workspaceRoot: string) => {
+  const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
+    const tab = activeTab;
+    if (!tab || tab.sessionKind === "work" || sessionHasContent || sessionTurns > 0) {
+      throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
+    }
+    const prompt = displayText.trim();
+    const submitted = submitText.trim();
+    if (!prompt || !submitted) return;
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
-    const targetRoot = scope === "project" ? workspaceRoot : "";
-    const requestKey = `${scope}:${targetRoot.toLowerCase()}`;
-    const current = workBootstrapRef.current;
-    if (current) {
-      showToast("已有 Work 正在准备，请先完成当前任务说明。", "info");
-      return;
-    }
+    const requestKey = tab.id;
     let requestID = workCreateRequestsRef.current.get(requestKey);
     if (!requestID) {
       requestID = `work-session-${crypto.randomUUID()}`;
@@ -3261,61 +3300,39 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
     const bootstrap: WorkBootstrap = {
       requestId: requestID,
-      scope,
-      workspaceRoot: targetRoot,
-      prompt: readWorkDraft(requestID),
+      tabID: tab.id,
+      scope: tab.scope,
+      workspaceRoot: tab.scope === "project" ? tab.workspaceRoot || "" : "",
+      prompt,
+      submitPrompt: submitted,
       phase: "initializing",
     };
+    writeWorkDraft(requestID, submitted);
     workBootstrapRef.current = bootstrap;
     setWorkBootstrap(bootstrap);
-    void beginWorkInitialization(bootstrap);
-  }, [beginWorkInitialization, closeTransientOverlays, showToast]);
-
-  const handleWorkPromptChange = useCallback((prompt: string) => {
-    const current = workBootstrapRef.current;
-    if (!current) return;
-    writeWorkDraft(current.requestId, prompt);
-    patchWorkBootstrap(current.requestId, { prompt });
-  }, [patchWorkBootstrap]);
-
-  const handleStartWork = useCallback(async () => {
-    let current = workBootstrapRef.current;
-    if (!current || !current.prompt.trim()) return;
-    patchWorkBootstrap(current.requestId, { phase: "starting", error: undefined });
-    let workID = current.result?.tabMeta?.workId
-      || (current.result?.workView as { work?: { id?: string } } | undefined)?.work?.id;
-    if (!workID) {
-      const result = await beginWorkInitialization({ ...current, phase: "starting" });
-      current = workBootstrapRef.current;
-      workID = result?.tabMeta?.workId
-        || (result?.workView as { work?: { id?: string } } | undefined)?.work?.id;
-      if (!result || result.error || !workID || !current) {
-        if (current?.phase !== "error") {
-          patchWorkBootstrap(current?.requestId ?? "", {
-            phase: "error",
-            error: result?.error || "Work 后台初始化尚未完成，请重试。",
-          });
-        }
-        return;
-      }
+    setWorkSendByTab((current) => ({ ...current, [tab.id]: false }));
+    const result = await beginWorkInitialization(bootstrap);
+    if (!result || result.error) {
+      throw new Error(result?.error || "Work 初始化失败，请重试。");
     }
-    current = workBootstrapRef.current;
-    if (!current || !workID) return;
-    const prompt = current.prompt.trim();
-    const ui = useWorkUIStore.getState();
-    ui.ensureCard(workID);
-    ui.setDraft(workID, "back", prompt);
-    ui.setActiveFace(workID, "back");
+  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, sessionTurns]);
+
+  const revealWorkPanel = useCallback((intentID: string) => {
+    setWorkStartIntent((current) => current?.id === intentID ? null : current);
+    const current = workBootstrapRef.current;
+    if (!current || `${current.requestId}:start` !== intentID) return;
+    patchWorkBootstrap(current.requestId, { phase: "revealing", error: undefined });
     writeWorkDraft(current.requestId, "");
-    setWorkStartIntent({
-      id: `${current.requestId}:start`,
-      workID,
-      prompt,
-    });
-    workCreateRequestsRef.current.delete(`${current.scope}:${current.workspaceRoot.toLowerCase()}`);
-    workBootstrapRef.current = null;
-    setWorkBootstrap(null);
-  }, [beginWorkInitialization, patchWorkBootstrap]);
+    workCreateRequestsRef.current.delete(current.tabID);
+    if (workRevealTimerRef.current !== null) window.clearTimeout(workRevealTimerRef.current);
+    workRevealTimerRef.current = window.setTimeout(() => {
+      workRevealTimerRef.current = null;
+      const latest = workBootstrapRef.current;
+      if (!latest || `${latest.requestId}:start` !== intentID) return;
+      workBootstrapRef.current = null;
+      setWorkBootstrap(null);
+    }, 620);
+  }, [patchWorkBootstrap]);
 
   useEffect(() => {
     if (
@@ -3326,11 +3343,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     ) return;
     const bootstrap: WorkBootstrap = {
       requestId: activeTab.workRequestId,
+      tabID: activeTab.id,
       scope: activeTab.scope,
       workspaceRoot: activeTab.scope === "project" ? activeTab.workspaceRoot || "" : "",
       prompt: readWorkDraft(activeTab.workRequestId),
+      submitPrompt: readWorkDraft(activeTab.workRequestId),
       phase: "initializing",
-      tabID: activeTab.id,
     };
     workBootstrapRef.current = bootstrap;
     setWorkBootstrap(bootstrap);
@@ -3349,15 +3367,16 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (activeTab?.sessionKind === "work" && !activeTab.workId && activeTab.workRequestId) {
       const scope = activeTab.scope;
       const workspaceRoot = scope === "project" ? activeTab.workspaceRoot || "" : "";
-      const requestKey = `${scope}:${workspaceRoot.toLowerCase()}`;
-      workCreateRequestsRef.current.set(requestKey, activeTab.workRequestId);
+      workCreateRequestsRef.current.set(activeTab.id, activeTab.workRequestId);
+      const prompt = readWorkDraft(activeTab.workRequestId);
       const bootstrap: WorkBootstrap = {
         requestId: activeTab.workRequestId,
+        tabID: activeTab.id,
         scope,
         workspaceRoot,
-        prompt: readWorkDraft(activeTab.workRequestId),
+        prompt,
+        submitPrompt: prompt,
         phase: "initializing",
-        tabID: activeTab.id,
       };
       workBootstrapRef.current = bootstrap;
       setWorkBootstrap(bootstrap);
@@ -3487,6 +3506,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     ready: controllerReady,
     readOnly: Boolean(activeTab?.readOnly),
     composerDisabled: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
+    workSendAvailable,
+    workSendSelected,
     sidebarCollapsed,
     sidebarToggleTitle,
     sidebarTogglePressed,
@@ -3501,6 +3522,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     runtimeMode: state.runtimeMode,
     foregroundActive: irisFixtureActive || state.running,
     onSend: handleSend,
+    onSendAsWork: handleSendAsWork,
+    onWorkSendChange: handleWorkSendChange,
     onCancel: cancel,
     onApprove: (id, allow, session, persist) => approve(id, allow, session, persist),
     onAnswerQuestion: answerQuestion,
@@ -3600,11 +3623,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const showWorkSurface = activeTab?.sessionKind === "work";
   const showReadyWork = showWorkSurface && workEnabled === true && !workConfigFailed && workCapable === true;
   const workUnavailable = workEnabled === false || workConfigFailed || workCapabilityFailed;
-  const showWorkStartSurface = workBootstrap !== null && (
-    !workBootstrap.tabID
-    || workBootstrap.tabID === activeTab?.id
+  const activeWorkBootstrap = workBootstrap !== null && (
+    workBootstrap.tabID === activeTab?.id
     || workBootstrap.requestId === activeTab?.workRequestId
-  );
+  ) ? workBootstrap : null;
 
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
   useEffect(() => {
@@ -3784,7 +3806,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   onOpenCrewSession={handleOpenCrewSession}
                   onOpenProjectHistory={openProjectHistory}
                   onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
-                  onCreateWork={handleCreateWork}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
                   refreshSignal={projectRevision}
@@ -3814,46 +3835,77 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {showWorkStartSurface && workBootstrap ? (
-              <WorkStartSurface
-                prompt={workBootstrap.prompt}
-                phase={workBootstrap.phase}
-                error={workBootstrap.error}
-                onPromptChange={handleWorkPromptChange}
-                onStart={() => { void handleStartWork(); }}
-              />
-            ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
-              <WorkCard
-                workID={activeTab.workId}
-                ready={workEnabled === true && !workConfigFailed && workCapable === true}
-                startIntent={workStartIntent?.workID === activeTab.workId ? workStartIntent : undefined}
-                onStartIntentConsumed={(id) => {
-                  setWorkStartIntent((current) => current?.id === id ? null : current);
-                }}
-                tabID={activeTab.id}
-                sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
-                onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
-                onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
-                resolveSessionSurface={resolveSessionSurface}
-                backSlots={{
-                  surface: ({ readonly, archived }) => (
+            {showWorkSurface && activeTab?.workId && !workUnavailable ? (
+              <div
+                className={`work-session-host${activeWorkBootstrap ? " work-session-host--transition" : ""}`}
+                data-phase={activeWorkBootstrap?.phase}
+              >
+                {activeWorkBootstrap && (
+                  <div className="work-session-host__session" key="session-transition">
                     <SessionSurface
                       {...sessionSurfaceProps}
-                      variant="work"
-                      readOnly={sessionSurfaceProps.readOnly || readonly || archived}
+                      composerDisabled
+                      workSendAvailable={false}
+                      workSendSelected={false}
                     />
-                  ),
-                }}
-                chatItems={displayItems}
-                chatLive={state.live}
-                chatRunning={state.running || rewindCommitting}
-                chatDisabled={!sessionSurfaceProps.ready
-                  || sessionSurfaceProps.composerDisabled
-                  || sessionSurfaceProps.submitDisabled
-                  || sessionSurfaceProps.decisionPending}
-                chatComposerSubmitKey={composerSubmitKey}
-                onChatSend={handleWorkChatSend}
-              />
+                    <WorkSessionTransition
+                      prompt={activeWorkBootstrap.prompt}
+                      phase={activeWorkBootstrap.phase}
+                      error={activeWorkBootstrap.error}
+                      onRetry={() => { void beginWorkInitialization(activeWorkBootstrap); }}
+                    />
+                  </div>
+                )}
+                <div className="work-session-host__work" key="work-panel">
+                  <WorkCard
+                    workID={activeTab.workId}
+                    ready={workEnabled === true && !workConfigFailed && workCapable === true}
+                    startIntent={workStartIntent?.workID === activeTab.workId ? workStartIntent : undefined}
+                    onStartIntentConsumed={revealWorkPanel}
+                    onStartIntentNeedsAttention={revealWorkPanel}
+                    tabID={activeTab.id}
+                    sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
+                    onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
+                    onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
+                    resolveSessionSurface={resolveSessionSurface}
+                    backSlots={{
+                      surface: ({ readonly, archived }) => (
+                        <SessionSurface
+                          {...sessionSurfaceProps}
+                          variant="work"
+                          readOnly={sessionSurfaceProps.readOnly || readonly || archived}
+                        />
+                      ),
+                    }}
+                    chatItems={displayItems}
+                    chatLive={state.live}
+                    chatRunning={state.running || rewindCommitting}
+                    chatDisabled={!sessionSurfaceProps.ready
+                      || sessionSurfaceProps.composerDisabled
+                      || sessionSurfaceProps.submitDisabled
+                      || sessionSurfaceProps.decisionPending}
+                    chatComposerSubmitKey={composerSubmitKey}
+                    onChatSend={handleWorkChatSend}
+                  />
+                </div>
+              </div>
+            ) : activeWorkBootstrap ? (
+              <div className="work-session-host work-session-host--transition" data-phase={activeWorkBootstrap.phase}>
+                <div className="work-session-host__session">
+                  <SessionSurface
+                    {...sessionSurfaceProps}
+                    composerDisabled
+                    workSendAvailable={false}
+                    workSendSelected={false}
+                  />
+                  <WorkSessionTransition
+                    prompt={activeWorkBootstrap.prompt}
+                    phase={activeWorkBootstrap.phase}
+                    error={activeWorkBootstrap.error}
+                    onRetry={() => { void beginWorkInitialization(activeWorkBootstrap); }}
+                  />
+                </div>
+              </div>
             ) : showWorkSurface ? (
               <WorkAvailabilitySurface
                 state={
@@ -4019,7 +4071,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               onOpenCrewSession={handleOpenCrewSession}
               onOpenProjectHistory={openProjectHistory}
               onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
-              onCreateWork={handleCreateWork}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
               refreshSignal={projectRevision}
@@ -4523,6 +4574,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               onEnterWidgetMode={onEnterWidgetMode}
               effort={state.effort}
               onSend={handleSend}
+              onSendAsWork={handleSendAsWork}
+              workSendAvailable={workSendAvailable}
+              workSendSelected={workSendSelected}
+              onWorkSendChange={handleWorkSendChange}
               onCancel={cancel}
               onCycleMode={cycleMode}
               onSetMode={applyMode}

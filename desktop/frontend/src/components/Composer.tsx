@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowUp, BriefcaseBusiness, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -425,6 +425,10 @@ export function Composer({
   tabId,
   effort,
   onSend,
+  onSendAsWork,
+  workSendAvailable = false,
+  workSendSelected = false,
+  onWorkSendChange,
   onCancel,
   onCycleMode,
   onSetMode,
@@ -468,6 +472,10 @@ export function Composer({
   onEnterWidgetMode?: () => void | Promise<void>;
   effort?: EffortInfo;
   onSend: (displayText: string, submitText?: string) => void | Promise<void>;
+  onSendAsWork?: (displayText: string, submitText?: string) => void | Promise<void>;
+  workSendAvailable?: boolean;
+  workSendSelected?: boolean;
+  onWorkSendChange?: (selected: boolean) => void;
   // Returns the un-sent text when cancelling before the server replied (so it can
   // be restored to the input); undefined for a normal cancel.
   onCancel: () => string | undefined;
@@ -1251,7 +1259,11 @@ export function Composer({
         clearSubmittedDraft(submitDraftKey);
         return;
       }
-      await onSend(displayText, submitText);
+      if (workSendAvailable && workSendSelected && onSendAsWork) {
+        await onSendAsWork(displayText, submitText);
+      } else {
+        await onSend(displayText, submitText);
+      }
       clearSubmittedDraft(submitDraftKey);
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error), "warn");
@@ -2612,6 +2624,23 @@ export function Composer({
                 </Tooltip>
               )}
             </div>
+            {workSendAvailable && (
+              <div className="composer-meta__control composer-meta__control--work-send">
+                <Tooltip label={workSendSelected ? t("composer.sendAsWorkOnDesc") : t("composer.sendAsWorkDesc")}>
+                  <button
+                    type="button"
+                    className={`composer-work-send${workSendSelected ? " composer-work-send--active" : ""}`}
+                    onClick={() => onWorkSendChange?.(!workSendSelected)}
+                    disabled={disabled || running}
+                    aria-pressed={workSendSelected}
+                    aria-label={t("composer.sendAsWork")}
+                  >
+                    <BriefcaseBusiness size={14} aria-hidden="true" />
+                    <span>{t("composer.sendAsWork")}</span>
+                  </button>
+                </Tooltip>
+              </div>
+            )}
             <div className="composer-meta__control composer-meta__control--approval">
               <div className="composer-modebar composer-modebar--approval" data-mode={toolApprovalMode} title={t("composer.accessMenuTitle")}>
                 <span className="composer-modebar__thumb" aria-hidden="true" />

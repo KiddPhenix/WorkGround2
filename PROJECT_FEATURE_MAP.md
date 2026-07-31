@@ -149,6 +149,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-09
 
+### Session 首条消息发送为工作
+- Location: `desktop/works.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/work/WorkSessionTransition.tsx`
+- Summary: 空白普通 Session 的首条消息可原地转换为 Work；结构规划期间保留 Session 视觉，Definition 应用后以独立动画显现 WorkCard。
+- Keywords: send as work, Session, WorkSessionTransition, CreateWorkSession, tabId
+- Source: verified-by-search
+- Updated: 2026-08-01
+
 ### Tool 注册表与内置工具
 - Location: `internal/tool/tool.go`, `internal/tool/builtin`, `docs/TOOL_CONTRACT.md`
 - Summary: tool 包定义 Tool 接口、ReadOnly/Preview/SnipHint 等能力和每次运行的 Registry，builtin 子包用 init 注册读写文件、bash、grep 等内置工具。

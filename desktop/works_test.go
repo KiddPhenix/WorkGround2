@@ -77,6 +77,58 @@ func TestBindWorkSessionPersistsIdempotencyAndWorkIdentity(t *testing.T) {
 	}
 }
 
+func TestWorkSessionTabPromotesOnlyBlankOwnedSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	workspaceRoot := t.TempDir()
+	sessionDir := desktopSessionDir(workspaceRoot)
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blankPath := filepath.Join(sessionDir, "blank.jsonl")
+	if err := os.WriteFile(blankPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tab := &WorkspaceTab{
+		ID:            "blank-tab",
+		Scope:         "project",
+		WorkspaceRoot: workspaceRoot,
+		SessionPath:   blankPath,
+		sessionKind:   agent.SessionKindNormal,
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}
+
+	got, duplicate, err := app.workSessionTab(tab.ID, "project", normalizeProjectRoot(workspaceRoot), "request-1")
+	if err != nil || duplicate || got != tab {
+		t.Fatalf("blank Session selection = (%p, %v, %v), want original tab", got, duplicate, err)
+	}
+
+	if err := os.WriteFile(blankPath, []byte("not a session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := app.workSessionTab(tab.ID, "project", normalizeProjectRoot(workspaceRoot), "request-1"); err == nil {
+		t.Fatal("non-empty Session must not be promoted to Work")
+	}
+}
+
+func TestWorkSessionTabRetryReusesSameBinding(t *testing.T) {
+	tab := &WorkspaceTab{
+		ID:            "work-tab",
+		Scope:         "global",
+		WorkspaceRoot: globalTabWorkspaceRoot(),
+		sessionKind:   agent.SessionKindWork,
+		workRequestID: "request-1",
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}
+
+	got, duplicate, err := app.workSessionTab(tab.ID, "global", "", "request-1")
+	if err != nil || !duplicate || got != tab {
+		t.Fatalf("same request retry = (%p, %v, %v), want duplicate original tab", got, duplicate, err)
+	}
+	if _, _, err := app.workSessionTab(tab.ID, "global", "", "request-2"); err == nil {
+		t.Fatal("different request must not reuse an existing Work Session")
+	}
+}
+
 func TestWorkSessionTitleStaysAutomaticAndSyncsIdempotently(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	workspaceRoot := t.TempDir()
@@ -191,6 +243,34 @@ func TestCreateWorkSessionRequestIDReusesOnlyTheSameIntent(t *testing.T) {
 	}
 	if second.TabMeta.ID == "" || second.TabMeta.ID == first.TabMeta.ID {
 		t.Fatalf("new intent reused old session: first=%q second=%q", first.TabMeta.ID, second.TabMeta.ID)
+	}
+}
+
+func TestCreateWorkSessionPromotesRequestedBlankTabInPlace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	tab, err := app.ensureBlankBackgroundTab("global", "")
+	if err != nil {
+		t.Fatalf("ensure blank Session: %v", err)
+	}
+	result, err := app.CreateWorkSession(CreateWorkSessionInput{
+		Scope:     "global",
+		RequestID: "promote-request",
+		TabID:     tab.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkSession: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("CreateWorkSession result error: %s", result.Error)
+	}
+	if result.TabMeta.ID != tab.ID {
+		t.Fatalf("promoted tab = %q, want original %q", result.TabMeta.ID, tab.ID)
+	}
+	if result.TabMeta.SessionKind != string(agent.SessionKindWork) || result.TabMeta.WorkID == "" {
+		t.Fatalf("promoted Work Session metadata = %+v", result.TabMeta)
 	}
 }
 

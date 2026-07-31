@@ -152,6 +152,7 @@ type CreateWorkSessionInput struct {
 	Scope         string `json:"scope"`
 	WorkspaceRoot string `json:"workspaceRoot"`
 	RequestID     string `json:"requestId"`
+	TabID         string `json:"tabId,omitempty"`
 }
 
 // CreateWorkSessionResult carries the composite creation outcome.
@@ -200,17 +201,23 @@ func (a *App) CreateWorkSession(input CreateWorkSessionInput) (CreateWorkSession
 		return result, nil
 	}
 	if tab == nil {
-		tab, err = a.ensureBlankBackgroundTab(scope, workspaceRoot)
+		if tabID := strings.TrimSpace(input.TabID); tabID != "" {
+			tab, duplicate, err = a.workSessionTab(tabID, scope, workspaceRoot, requestID)
+		} else {
+			tab, err = a.ensureBlankBackgroundTab(scope, workspaceRoot)
+		}
 		if err != nil {
-			result.Error = fmt.Sprintf("create session: %v", err)
+			result.Error = fmt.Sprintf("prepare session: %v", err)
 			result.Recoverable = true
 			return result, nil
 		}
-		if err := a.bindWorkSession(tab, requestID, ""); err != nil {
-			result.TabMeta = a.tabMeta(tab, false)
-			result.Error = fmt.Sprintf("persist Work Session: %v", err)
-			result.Recoverable = true
-			return result, nil
+		if !duplicate {
+			if err := a.bindWorkSession(tab, requestID, ""); err != nil {
+				result.TabMeta = a.tabMeta(tab, false)
+				result.Error = fmt.Sprintf("persist Work Session: %v", err)
+				result.Recoverable = true
+				return result, nil
+			}
 		}
 	}
 	if err := a.nameWorkSession(tab, workspaceRoot); err != nil {
@@ -252,6 +259,51 @@ func (a *App) CreateWorkSession(input CreateWorkSessionInput) (CreateWorkSession
 	}
 	result.TabMeta = a.tabMeta(tab, false)
 	return result, nil
+}
+
+// workSessionTab resolves the caller-owned blank Session that should be
+// promoted in place. The check is intentionally repeated by the backend: the
+// Composer only advertises this action for a first message, but a stale UI or
+// duplicate delivery must never convert a Session that already has content.
+func (a *App) workSessionTab(tabID, scope, workspaceRoot, requestID string) (*WorkspaceTab, bool, error) {
+	a.mu.RLock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		a.mu.RUnlock()
+		return nil, false, fmt.Errorf("session %q is no longer available", tabID)
+	}
+	readOnly := tab.ReadOnly
+	tabScope := strings.TrimSpace(tab.Scope)
+	tabRoot := tab.WorkspaceRoot
+	sessionKind := tab.sessionKind
+	workRequestID := tab.workRequestID
+	a.mu.RUnlock()
+
+	if readOnly {
+		return nil, false, fmt.Errorf("session %q is read-only", tabID)
+	}
+	if tabScope == "" {
+		tabScope = "global"
+	}
+	if tabScope != scope {
+		return nil, false, fmt.Errorf("session scope changed from %q to %q", scope, tabScope)
+	}
+	if scope == "project" && normalizeProjectRoot(tabRoot) != workspaceRoot {
+		return nil, false, fmt.Errorf("session workspace changed")
+	}
+	if sessionKind == agent.SessionKindWork {
+		if workRequestID == requestID {
+			return tab, true, nil
+		}
+		return nil, false, fmt.Errorf("session is already bound to another Work request")
+	}
+	if sessionKind != "" && sessionKind != agent.SessionKindNormal {
+		return nil, false, fmt.Errorf("session kind %q cannot become Work", sessionKind)
+	}
+	if !blankTabSessionPathHasNoContent(tab) {
+		return nil, false, fmt.Errorf("only a blank Session can become Work")
+	}
+	return tab, false, nil
 }
 
 func (a *App) waitWorkSessionReady(tabID string, timeout time.Duration) error {
