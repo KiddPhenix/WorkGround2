@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Work 后新建 Session 回归修复
+- Status: done
+- Branch: `developping/session-new-session-regression+2026-08-01`
+- Location: `desktop/tabs.go`, `desktop/app_session_dedup_test.go`
+- Summary: Work Session 不再参与空白普通 Session 的幂等复用；从 Work 点击新建会话会创建独立的普通 Session，Work 元数据也不再标记为 blank。相关会话去重测试、Go vet、Diff 检查和 Wails 正式构建通过。
+- Keywords: EnsureBlankTab, Work Session, new session, blank reuse
+- Source: user-reported+verified-by-code-and-tests
+- Updated: 2026-08-01
+
 ### Work 独立填写信息面板
 - Status: done
 - Branch: `developping/work-info-entry-panel+2026-07-30`

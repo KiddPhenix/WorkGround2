@@ -87,6 +87,37 @@ func TestEnsureBlankTabReusesExistingBlankTab(t *testing.T) {
 	}
 }
 
+func TestEnsureBlankTabDoesNotReuseWorkSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	work, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.mu.Lock()
+	workTab := app.tabs[work.ID]
+	workTab.sessionKind = agent.SessionKindWork
+	workTab.workID = "work-1"
+	workTab.workRequestID = "request-1"
+	app.mu.Unlock()
+
+	created, err := app.EnsureBlankTab("global", "")
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	if created.ID == work.ID || created.TopicID == work.TopicID || created.SessionPath == work.SessionPath {
+		t.Fatalf("Work Session was reused as a blank Session: work=%+v created=%+v", work, created)
+	}
+	if created.SessionKind != string(agent.SessionKindNormal) || !created.Blank {
+		t.Fatalf("new Session meta = %+v, want blank normal Session", created)
+	}
+	workMeta := app.tabMeta(workTab, false)
+	if workMeta.Blank {
+		t.Fatalf("Work Session meta was marked blank: %+v", workMeta)
+	}
+}
+
 func TestEnsureBlankTabReusesPrecreatedBlankBeforeControllerReady(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
