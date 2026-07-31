@@ -390,6 +390,69 @@ func TestTaskExecutorMaterializesFinalResponseAsArtifact(t *testing.T) {
 	}
 }
 
+func TestTaskExecutorDocumentUsesTextBeforeDocxCandidate(t *testing.T) {
+	root := t.TempDir()
+	docxPath := filepath.Join(root, "路线指引.docx")
+	docxBody := []byte("structured docx bytes")
+	if err := os.WriteFile(docxPath, docxBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	plan := work.ArtifactSlot{
+		ID: "plan_doc", WorkID: "work-text-priority", DefinitionRev: 1,
+		Title: "团建方案", Kind: "document", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	route := work.ArtifactSlot{
+		ID: "route_docx", WorkID: plan.WorkID, DefinitionRev: 1,
+		Title: "路线指引.docx", Kind: "docx", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work: &work.Work{
+			ID: plan.WorkID, SchemaVersion: work.SchemaVersionV2,
+			V2ArtifactSlots: []work.ArtifactSlot{plan, route},
+		},
+		ArtifactSlots: []work.ArtifactSlot{plan, route},
+	}})
+	input := taskInput()
+	input.WorkID = plan.WorkID
+	input.ProducesSlotIDs = []string{plan.ID, route.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		text:          "完整团建方案正文",
+		artifacts: []artifact.Discovered{
+			{Name: "路线指引.docx", Path: docxPath, Kind: "docx"},
+		},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 2 || len(outputs[0].Refs) != 1 || len(outputs[1].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	planBody, err := blobs.Get(input.WorkID, outputs[0].Refs[0].BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(planBody) != "完整团建方案正文" {
+		t.Fatalf("plan body = %q", planBody)
+	}
+	routeBody, err := blobs.Get(input.WorkID, outputs[1].Refs[0].BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(routeBody, docxBody) || outputs[1].Refs[0].Name != "路线指引.docx" {
+		t.Fatalf("route ref = %+v, body = %q", outputs[1].Refs[0], routeBody)
+	}
+}
+
 func TestTaskExecutorMaterializesCodeFinalResponseAsArtifact(t *testing.T) {
 	const code = "```python\nprint(\"Hello, World!\")\n```"
 	prov := &taskProvider{name: "fake-provider", text: code}
@@ -1262,6 +1325,156 @@ func TestTaskExecutorMaterializesExpectedArtifactCount(t *testing.T) {
 		outputs[0].Refs[0].Name != "one.png" ||
 		outputs[0].Refs[1].Name != "two.png" {
 		t.Fatalf("refs were not assigned deterministically: %+v", outputs[0].Refs)
+	}
+}
+
+func TestTaskExecutorArtifactCandidateFallback_FirstMissingSecondValid(t *testing.T) {
+	// The first matching docx candidate path does not exist on disk, the
+	// second does. TaskArtifacts must skip the first and materialize the
+	// second instead of failing outright.
+	root := t.TempDir()
+	validPath := filepath.Join(root, "路线指引.docx")
+	if err := os.MkdirAll(filepath.Dir(validPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("valid docx content")
+	if err := os.WriteFile(validPath, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "report", WorkID: "work-fallback", DefinitionRev: 1,
+		Title: "Report", Kind: "docx", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts: []artifact.Discovered{
+			{Name: "missing.docx", Path: filepath.Join(root, "missing.docx"), Kind: "docx"},
+			{Name: "路线指引.docx", Path: validPath, Kind: "docx"},
+		},
+	}
+
+	outputs, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outputs) != 1 || len(outputs[0].Refs) != 1 {
+		t.Fatalf("outputs = %+v", outputs)
+	}
+	ref := outputs[0].Refs[0]
+	if ref.Name != "路线指引.docx" {
+		t.Errorf("Name = %q, want 路线指引.docx", ref.Name)
+	}
+	body, err := blobs.Get(input.WorkID, ref.BlobDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, want) {
+		t.Fatalf("blob = %q, want %q", body, want)
+	}
+}
+
+func TestTaskExecutorArtifactCandidateFallback_AllCandidatesFailDiagnosticError(t *testing.T) {
+	// When all matching candidates fail to materialize, the error must
+	// contain the slot ID, expected count, tried count, and error summary.
+	root := t.TempDir()
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "report", WorkID: "work-allfail", DefinitionRev: 1,
+		Title: "Report", Kind: "docx", ExpectedCount: 1, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts: []artifact.Discovered{
+			{Name: "missing1.docx", Path: filepath.Join(root, "missing1.docx"), Kind: "docx"},
+			{Name: "missing2.docx", Path: filepath.Join(root, "missing2.docx"), Kind: "docx"},
+		},
+	}
+
+	_, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, `"report"`) {
+		t.Errorf("error missing slot ID: %s", errStr)
+	}
+	if !strings.Contains(errStr, "requires 1") {
+		t.Errorf("error missing required count: %s", errStr)
+	}
+	if !strings.Contains(errStr, "tried 2 candidate") {
+		t.Errorf("error missing tried count: %s", errStr)
+	}
+	if !strings.Contains(errStr, "missing1.docx") || !strings.Contains(errStr, "missing2.docx") {
+		t.Errorf("error missing candidate names: %s", errStr)
+	}
+}
+
+func TestTaskExecutorArtifactCandidateFallback_ExpectedCountTwoNotPartialSuccess(t *testing.T) {
+	// When ExpectedCount=2 and only 1 candidate succeeds, the slot must
+	// not produce a partial success — it must fail with a diagnostic error.
+	root := t.TempDir()
+	validPath := filepath.Join(root, "valid.docx")
+	if err := os.WriteFile(validPath, []byte("valid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := NewTaskExecutorAdapter(TaskExecutorProfile{Provider: "fake", Model: "fake"}, nil)
+	blobs := newTaskBlobStore()
+	exec.SetArtifactStore(blobs)
+	slot := work.ArtifactSlot{
+		ID: "reports", WorkID: "work-partial", DefinitionRev: 1,
+		Title: "Reports", Kind: "docx", ExpectedCount: 2, Required: true,
+		State: work.SlotReserved, Revision: 1,
+	}
+	exec.SetWorkService(&taskCornerstoneWork{view: &work.WorkView{
+		Work:          &work.Work{ID: slot.WorkID, SchemaVersion: work.SchemaVersionV2, V2ArtifactSlots: []work.ArtifactSlot{slot}},
+		ArtifactSlots: []work.ArtifactSlot{slot},
+	}})
+	input := taskInput()
+	input.WorkID = slot.WorkID
+	input.ProducesSlotIDs = []string{slot.ID}
+	key := taskAttemptKey(input.WorkID, input.RunID, input.StageID, input.TaskID, input.AttemptID)
+	exec.taskArtifacts[key] = taskArtifactData{
+		workspaceRoot: root,
+		artifacts: []artifact.Discovered{
+			{Name: "valid.docx", Path: validPath, Kind: "docx"},
+			{Name: "missing.docx", Path: filepath.Join(root, "missing.docx"), Kind: "docx"},
+		},
+	}
+
+	_, err := exec.TaskArtifacts(context.Background(), input, nil)
+	if err == nil {
+		t.Fatal("expected error for partial success, got nil")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "requires 2") {
+		t.Errorf("error missing required count: %s", errStr)
+	}
+	if !strings.Contains(errStr, "tried 2 candidate") {
+		t.Errorf("error missing tried count: %s", errStr)
 	}
 }
 

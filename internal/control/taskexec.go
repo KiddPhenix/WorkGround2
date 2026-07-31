@@ -494,14 +494,10 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 		if expectedCount <= 0 {
 			expectedCount = 1
 		}
-		indexes := takeArtifacts(data.artifacts, usedArtifacts, slot.Kind, expectedCount)
-		useTextFallback := len(indexes) == 0 && textArtifactKind(slot.Kind) && strings.TrimSpace(data.text) != ""
-		if !useTextFallback && len(indexes) != expectedCount {
-			return nil, fmt.Errorf(
-				"artifact slot %q requires %d %q artifact(s); the task returned %d unconsumed match(es)",
-				slot.ID, expectedCount, slot.Kind, len(indexes),
-			)
-		}
+		candidates := takeAllMatchingArtifacts(data.artifacts, usedArtifacts, slot.Kind)
+		hasText := strings.TrimSpace(data.text) != ""
+		useTextFallback := hasText && (preferTextArtifactKind(slot.Kind) ||
+			(len(candidates) == 0 && textArtifactKind(slot.Kind)))
 		if useTextFallback && expectedCount != 1 {
 			return nil, fmt.Errorf(
 				"artifact slot %q requires %d %q artifact(s); one textual final response cannot satisfy the count",
@@ -509,11 +505,16 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 			)
 		}
 		if useTextFallback {
-			indexes = []int{-1}
+			candidates = []int{-1}
 		}
-		refs := make([]work.ArtifactRef, 0, len(indexes))
-		names := make([]string, 0, len(indexes))
-		for refIndex, artifactIndex := range indexes {
+
+		refs := make([]work.ArtifactRef, 0, expectedCount)
+		names := make([]string, 0, expectedCount)
+		var collectErrors []string
+		for _, artifactIndex := range candidates {
+			if len(refs) >= expectedCount {
+				break
+			}
 			var discovered *artifact.Discovered
 			if artifactIndex >= 0 {
 				discovered = &data.artifacts[artifactIndex]
@@ -522,19 +523,18 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 				slot, data.text, discovered, data.workspaceRoot,
 			)
 			if err != nil {
-				return nil, fmt.Errorf("materialize artifact slot %q as %q: %w", slot.ID, slot.Kind, err)
+				collectErrors = append(collectErrors, fmt.Sprintf("candidate %q: %v", artifactIndexName(discovered, artifactIndex), err))
+				continue
 			}
 			if !supported {
-				return nil, fmt.Errorf(
-					"artifact slot %q requires %q output; the task returned no matching artifact",
-					slot.ID, slot.Kind,
-				)
+				collectErrors = append(collectErrors, fmt.Sprintf("candidate %q: unsupported for slot kind %q", artifactIndexName(discovered, artifactIndex), slot.Kind))
+				continue
 			}
 			digest, err := a.blobs.Put(input.WorkID, body)
 			if err != nil {
 				return nil, fmt.Errorf("persist artifact slot %q content: %w", slot.ID, err)
 			}
-			refKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s", input.AttemptID, slot.ID, refIndex, digest)
+			refKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s", input.AttemptID, slot.ID, len(refs), digest)
 			refID := strings.TrimPrefix(work.ContentDigest([]byte(refKey)), "sha256:")
 			refs = append(refs, work.ArtifactRef{
 				ID:             "task-" + refID[:24],
@@ -550,6 +550,19 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 			if artifactIndex >= 0 {
 				usedArtifacts[artifactIndex] = true
 			}
+		}
+
+		if len(refs) < expectedCount {
+			if len(collectErrors) > 0 {
+				return nil, fmt.Errorf(
+					"artifact slot %q requires %d %q artifact(s); only %d succeeded; tried %d candidate(s); candidate errors: %s",
+					slot.ID, expectedCount, slot.Kind, len(refs), len(candidates), strings.Join(collectErrors, "; "),
+				)
+			}
+			return nil, fmt.Errorf(
+				"artifact slot %q requires %d %q artifact(s); the task returned %d unconsumed match(es)",
+				slot.ID, expectedCount, slot.Kind, len(candidates),
+			)
 		}
 		summary := firstLine(data.text, 120)
 		if summary == "" {

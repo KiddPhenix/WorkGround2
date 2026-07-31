@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"workground2/internal/provider"
 )
@@ -31,6 +32,7 @@ func (p *FileProducer) Discover(call provider.ToolCall, result provider.Message)
 	}
 
 	var paths []string
+	acceptResultPaths := true
 	switch name {
 	case "write_file", "edit_file", "multi_edit", "move_file", "create_file", "save_file":
 		if p := fileToolArgsPath(call.Arguments); p != "" {
@@ -42,12 +44,13 @@ func (p *FileProducer) Discover(call provider.ToolCall, result provider.Message)
 		cmd := bashCommandArg(call.Arguments)
 		paths = append(paths, extractBashOutputPaths(cmd)...)
 		paths = append(paths, extractShellInlineOutputPaths(cmd)...)
+		acceptResultPaths = !isOutputOnlyCommand(cmd)
 	default:
 		if p := fileToolArgsPath(call.Arguments); p != "" {
 			paths = append(paths, p)
 		}
 	}
-	if result.Content != "" {
+	if result.Content != "" && acceptResultPaths {
 		paths = append(paths, extractResultPaths(result.Content)...)
 	}
 
@@ -62,6 +65,9 @@ func (p *FileProducer) Discover(call provider.ToolCall, result provider.Message)
 			continue
 		}
 		seen[p] = true
+		if !utf8.ValidString(p) || strings.ContainsRune(p, utf8.RuneError) {
+			continue
+		}
 		out = append(out, Discovered{
 			Name:        filepath.Base(p),
 			Path:        filepath.Clean(p),
@@ -69,6 +75,23 @@ func (p *FileProducer) Discover(call provider.ToolCall, result provider.Message)
 		})
 	}
 	return out
+}
+
+func isOutputOnlyCommand(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" || strings.ContainsAny(cmd, ";|>\r\n") {
+		return false
+	}
+	fields := shellFields(cmd)
+	if len(fields) == 0 {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
+	case "echo", "printf", "write-output", "write-host":
+		return true
+	default:
+		return false
+	}
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

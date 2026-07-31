@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"workground2/internal/config"
 	"workground2/internal/provider"
@@ -875,6 +876,80 @@ func TestFileProducer_BashRelative_PreservesAbsolutePath(t *testing.T) {
 	}
 	if discovered[0].Path != "D:\\out\\app.exe" {
 		t.Errorf("Path = %q, want D:\\out\\app.exe", discovered[0].Path)
+	}
+}
+
+func TestFileProducer_RejectsInvalidUTF8Path(t *testing.T) {
+	// A path containing invalid UTF-8 bytes (e.g. GBK-encoded Chinese
+	// misinterpreted as Latin-1) must be filtered out so it never enters
+	// Discovered and never blocks subsequent valid candidates.
+	// 0x80 is a lone continuation byte — always invalid UTF-8.
+	invalidUTF8 := "D:\\Work\\test-wg2t\\" + string([]byte{0x80, 0x81, 0xfe}) + ".docx"
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"dir"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: invalidUTF8 + " saved to: " + invalidUTF8},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	for _, d := range discovered {
+		if !utf8.ValidString(d.Path) || strings.ContainsRune(d.Path, utf8.RuneError) {
+			t.Fatalf("invalid UTF-8 path leaked into Discovered: %+v", d)
+		}
+	}
+}
+
+func TestFileProducer_RejectsUFFFDReplacementPath(t *testing.T) {
+	// A path that is valid UTF-8 but contains U+FFFD (the Unicode replacement
+	// character) signals that the original bytes were already corrupted during
+	// decoding — it must be filtered out.
+	garbled := "D:\\Work\\test-wg2t\\\ufffd\ufffd\ufffd\ufffd.docx"
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"dir"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: garbled + " saved to: " + garbled},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	for _, d := range discovered {
+		if strings.Contains(d.Path, "\ufffd") {
+			t.Fatalf("U+FFFD path leaked into Discovered: %+v", d)
+		}
+	}
+}
+
+func TestFileProducer_GarbledThenValid_ValidStillDiscovered(t *testing.T) {
+	// When history contains first a garbled path and later a valid UTF-8
+	// Chinese .docx path from the same kind, the valid one must still be
+	// discovered — the garbled one is filtered and does not crowd it out.
+	garbled := "D:\\Work\\test-wg2t\\" + string([]byte{0x80, 0xfe}) + ".docx"
+	valid := "D:\\Work\\test-wg2t\\路线指引.docx"
+	msgs := []provider.Message{
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc1", Name: "bash", Arguments: `{"command":"docgen.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc1", Name: "bash",
+			Content: garbled + " saved to: " + garbled},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "tc2", Name: "bash", Arguments: `{"command":"docgen.ps1"}`},
+		}},
+		{Role: provider.RoleTool, ToolCallID: "tc2", Name: "bash",
+			Content: "路线指引.docx saved to: D:\\Work\\test-wg2t\\路线指引.docx"},
+	}
+	discovered := Collect(msgs, []Producer{&FileProducer{}})
+	var foundValid bool
+	for _, d := range discovered {
+		if strings.Contains(d.Path, "\ufffd") || !utf8.ValidString(d.Path) {
+			t.Fatalf("garbled path leaked: %+v", d)
+		}
+		if d.Name == "路线指引.docx" && d.Path == valid {
+			foundValid = true
+		}
+	}
+	if !foundValid {
+		t.Fatalf("valid 路线指引.docx not discovered; got %+v", discovered)
 	}
 }
 

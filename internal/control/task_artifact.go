@@ -107,6 +107,33 @@ func textArtifactKind(kind string) bool {
 	}
 }
 
+// preferTextArtifactKind reports kinds whose authoritative output is the task's
+// final response. File candidates must not steal these generic text slots from
+// later structured slots such as docx or pdf.
+func preferTextArtifactKind(kind string) bool {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "text", "txt", "plain_text", "text/plain",
+		"code", "source", "source_code",
+		"markdown", "md", "document", "text/markdown":
+		return true
+	default:
+		return false
+	}
+}
+
+// artifactIndexName returns a human-readable label for a candidate artifact
+// in error diagnostics. It prefers the artifact's own Name and falls back to
+// the text-fallback sentinel when idx is negative.
+func artifactIndexName(d *artifact.Discovered, idx int) string {
+	if d != nil && strings.TrimSpace(d.Name) != "" {
+		return d.Name
+	}
+	if idx < 0 {
+		return "text fallback"
+	}
+	return fmt.Sprintf("index %d", idx)
+}
+
 // takeArtifacts deterministically assigns unconsumed artifacts by declared
 // slot order and discovery order. A structured artifact can feed only one slot.
 // Specific file formats are matched by SlotKind and extension aliases, while
@@ -125,6 +152,24 @@ func takeArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind
 		if len(indexes) == count {
 			break
 		}
+	}
+	return indexes
+}
+
+// takeAllMatchingArtifacts returns every unconsumed artifact index whose kind
+// matches wantKind, in discovery order. Unlike takeArtifacts it does not cap
+// at a count, so callers can iterate candidates until expectedCount successes.
+func takeAllMatchingArtifacts(discovered []artifact.Discovered, used map[int]bool, wantKind string) []int {
+	want := strings.ToLower(strings.TrimSpace(wantKind))
+	if want == "" {
+		return nil
+	}
+	var indexes []int
+	for i := range discovered {
+		if used[i] || !artifactKindMatches(discovered[i], want) {
+			continue
+		}
+		indexes = append(indexes, i)
 	}
 	return indexes
 }
