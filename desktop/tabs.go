@@ -1408,7 +1408,6 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.ProjectColor = projectColor(tab.WorkspaceRoot)
 	}
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
-	m.Blank = !tab.ReadOnly && blankTabSessionPathHasNoContent(tab)
 
 	// Populate session kind and work ID from tab runtime state.
 	if tab.sessionKind != "" {
@@ -1459,6 +1458,11 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 			}
 		}
 	}
+	m.Blank = !tab.ReadOnly &&
+		m.SessionKind == string(agent.SessionKindNormal) &&
+		strings.TrimSpace(m.WorkID) == "" &&
+		strings.TrimSpace(m.WorkRequestID) == "" &&
+		blankTabSessionPathHasNoContent(tab)
 	// Fold in transient attention states that have not yet been persisted or
 	// are inherently runtime-only. CLI sessions are excluded from both.
 	if !strings.EqualFold(m.SessionSource, "cli") {
@@ -2002,6 +2006,11 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 // switch to an independent non-CLI blank instead.
 func (a *App) blankTabMatchesTargetLocked(tab *WorkspaceTab, scope, workspaceRoot string) bool {
 	if tab == nil || tab.Scope != scope {
+		return false
+	}
+	if (tab.sessionKind != "" && tab.sessionKind != agent.SessionKindNormal) ||
+		strings.TrimSpace(tab.workID) != "" ||
+		strings.TrimSpace(tab.workRequestID) != "" {
 		return false
 	}
 	if scope == "project" && tab.WorkspaceRoot != workspaceRoot {
