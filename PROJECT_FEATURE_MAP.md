@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### 发送为工作选中态强化
+- Status: done
+- Branch: `developping/work-send-selected-state+2026-08-01`
+- Location: `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, `desktop/frontend/src/styles.css`
+- Summary: 将低辨识度的细描边选中态改为实心强调色，并增加勾选图标和“工作模式已选”文案；Work 合约 36 项、TypeScript、CSS、前端生产构建、Wails 正式构建及真实点击视觉验收通过。
+- Keywords: send as Work, selected state, visual feedback, accessibility
+- Source: user-reported+screenshot
+- Updated: 2026-08-01
+
 ### Session 发送为工作入口稳定显示
 - Status: done
 - Branch: `developping/work-send-entry-stability+2026-08-01`

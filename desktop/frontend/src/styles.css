@@ -31591,16 +31591,24 @@ body > .mermaid-diagram--fullscreen {
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 140ms, border-color 140ms, color 140ms, box-shadow 140ms, transform 140ms;
 }
 .runtime-config-bar__work-send:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
   color: var(--fg);
+  transform: translateY(-1px);
 }
 .runtime-config-bar__work-send--active {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
-  color: var(--fg);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 650;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent), 0 5px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.runtime-config-bar__work-send--active:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--accent-fg);
 }
 .runtime-config-bar__work-send:focus-visible {
   outline: none;

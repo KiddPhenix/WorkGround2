@@ -3,6 +3,7 @@ import {
   ArrowUp,
   Brain,
   BriefcaseBusiness,
+  CheckCircle2,
   CornerDownRight,
   Gauge,
   Shield,
@@ -242,8 +243,10 @@ export function RuntimeConfigBar({
           disabled={workSendDisabled}
           onClick={() => onWorkSendChange?.(!workSendSelected)}
         >
-          <BriefcaseBusiness size={15} aria-hidden="true" />
-          <span>发送为工作</span>
+          {workSendSelected
+            ? <CheckCircle2 size={16} aria-hidden="true" />
+            : <BriefcaseBusiness size={15} aria-hidden="true" />}
+          <span>{workSendSelected ? "工作模式已选" : "发送为工作"}</span>
         </button>
       )}
 
