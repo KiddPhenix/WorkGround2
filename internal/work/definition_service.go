@@ -614,9 +614,11 @@ func (s *Service) ApplyDefinition(ctx context.Context, input ApplyDefinitionInpu
 		allEvents = append(allEvents, declareSlotEvents[i])
 	}
 
-	if _, err := s.store.CommitEvents(workID, allEvents); err != nil {
+	revisions, err := s.store.CommitEvents(workID, allEvents)
+	if err != nil {
 		return nil, fmt.Errorf("work: ApplyDefinition: batch commit: %w", err)
 	}
+	prevEventRev = revisions[len(revisions)-1]
 	if s.v2 != nil && s.v2.enabled() {
 		if wakeErr := s.v2.ContinueDefinition(
 			ctx,

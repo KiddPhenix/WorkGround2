@@ -144,14 +144,16 @@ func (s *InputService) RequestInput(ctx context.Context, req RequestInputRequest
 		ExpectedRevision: int64Ptr(req.ExpectedRevision), DefinitionRevision: int64Ptr(req.DefinitionRev),
 	}
 
-	if _, err := s.store.CommitEvent(req.WorkID, event); err != nil {
+	rev, err := s.store.CommitEvent(req.WorkID, event)
+	if err != nil {
 		return nil, fmt.Errorf("work: RequestInput: commit: %w", err)
 	}
+	receipt.ResultRevision = rev
 
 	// Reload to get the projected input.
 	reloaded, _, reloadErr := s.store.LoadState(req.WorkID, "")
 	if reloadErr != nil {
-		return nil, committedRecovery("request-input-reload", req.WorkID, req.RequestID, event.Revision, reloadErr)
+		return nil, committedRecovery("request-input-reload", req.WorkID, req.RequestID, rev, reloadErr)
 	}
 	if idx := findInputIndex(reloaded, req.InputID); idx >= 0 {
 		cp := reloaded.V2Inputs[idx]
@@ -450,6 +452,7 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("work: SubmitInput: commit: %w", err)
 	}
+	receipt.ResultRevision = rev
 
 	// A sidecar is only an optional cache; the receipt above is authoritative
 	// because it is committed in the event payload and reducer projection.
@@ -633,6 +636,7 @@ func (s *InputService) AddCustomInput(ctx context.Context, req AddCustomWorkInpu
 		return nil, fmt.Errorf("work: AddCustomInput: commit: %w", err)
 	}
 	revision := revisions[len(revisions)-1]
+	receipt.ResultRevision = revision
 	if receiptStore, ok := s.store.(InputReceiptStore); ok {
 		if receiptErr := receiptStore.StoreInputReceipt(req.WorkID, receipt); receiptErr != nil {
 			return &SubmitInputResult{Receipt: cloneInputIntentReceipt(receipt), Revision: revision},
@@ -690,6 +694,7 @@ func (s *InputService) commitSubmitRejection(req SubmitInputRequest, existing Wo
 	if err != nil {
 		return nil, fmt.Errorf("work: SubmitInput: commit validation rejection: %w", err)
 	}
+	receipt.ResultRevision = rev
 	if receiptStore, ok := s.store.(InputReceiptStore); ok {
 		if receiptErr := receiptStore.StoreInputReceipt(req.WorkID, receipt); receiptErr != nil {
 			return &SubmitInputResult{Input: &resultInput, Receipt: cloneInputIntentReceipt(receipt), Revision: rev, Error: validationErr.Error()},
@@ -791,13 +796,15 @@ func (s *InputService) RejectInput(ctx context.Context, req RejectInputRequest) 
 		ExpectedRevision: int64Ptr(req.InputRevision), DefinitionRevision: int64Ptr(req.DefinitionRev),
 	}
 
-	if _, err := s.store.CommitEvent(req.WorkID, event); err != nil {
+	rev, err := s.store.CommitEvent(req.WorkID, event)
+	if err != nil {
 		return nil, fmt.Errorf("work: RejectInput: commit: %w", err)
 	}
+	receipt.ResultRevision = rev
 
 	reloaded, _, reloadErr := s.store.LoadState(req.WorkID, "")
 	if reloadErr != nil {
-		return nil, committedRecovery("reject-input-reload", req.WorkID, req.RequestID, event.Revision, reloadErr)
+		return nil, committedRecovery("reject-input-reload", req.WorkID, req.RequestID, rev, reloadErr)
 	}
 	if idx := findInputIndex(reloaded, req.InputID); idx >= 0 {
 		cp := reloaded.V2Inputs[idx]
@@ -957,6 +964,7 @@ func (s *InputService) PinInput(ctx context.Context, req PinInputRequest) (*PinI
 			Error: fmt.Sprintf("input.cornerstone_changed event commit failed: %v", commitErr),
 		}, nil
 	}
+	receipt.ResultRevision = rev
 
 	reloaded, _, reloadErr := s.store.LoadState(req.WorkID, "")
 	if reloadErr != nil {
@@ -1073,6 +1081,7 @@ func (s *InputService) UnpinInput(ctx context.Context, req PinInputRequest) (*Pi
 	if commitErr != nil {
 		return nil, fmt.Errorf("work: UnpinInput: commit: %w", commitErr)
 	}
+	receipt.ResultRevision = rev
 
 	reloaded, _, reloadErr := s.store.LoadState(req.WorkID, "")
 	if reloadErr != nil {

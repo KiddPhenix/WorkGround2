@@ -193,7 +193,8 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 		CreatedAt:     now,
 	}
 
-	if _, err := m.store.CommitEvent(workID, event); err != nil {
+	revision, err := m.store.CommitEvent(workID, event)
+	if err != nil {
 		return nil, fmt.Errorf("cornerstone: Pin: commit: %w", err)
 	}
 	if blobDigest != "" {
@@ -202,7 +203,7 @@ func (m *CornerstoneManager) Pin(workID string, input PinCornerstoneInput) (*Cor
 
 	view, err := m.loadView(workID)
 	if err != nil {
-		return nil, committedRecovery("cornerstone-pin-view", workID, requestID, event.Revision, err)
+		return nil, committedRecovery("cornerstone-pin-view", workID, requestID, revision, err)
 	}
 
 	result := findCornerstone(view.Work, stableID)
@@ -273,7 +274,8 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 	if err != nil {
 		return nil, err
 	}
-	if _, err := m.store.CommitEvent(workID, event); err != nil {
+	revision, err := m.store.CommitEvent(workID, event)
+	if err != nil {
 		latest, latestState, loadErr := m.store.LoadState(workID, finalRequestID)
 		if loadErr == nil && latestState.RequestFound {
 			if replayErr := validateCornerstoneReplay("Pin", workID, requestID, latestState, EventCornerstoneUpserted, finalEventID); replayErr != nil {
@@ -286,7 +288,7 @@ func (m *CornerstoneManager) finalizeBlobPin(workID, requestID, stableID, conten
 	}
 	view, err := m.loadView(workID)
 	if err != nil {
-		return nil, committedRecovery("cornerstone-pin-blob-view", workID, requestID, event.Revision, err)
+		return nil, committedRecovery("cornerstone-pin-blob-view", workID, requestID, revision, err)
 	}
 	return &CornerstoneResult{Cornerstone: findCornerstone(view.Work, stableID), WorkView: view, Duplicate: duplicate, Revision: view.Revision}, nil
 }
@@ -370,13 +372,14 @@ func (m *CornerstoneManager) Remove(workID string, input RemoveCornerstoneInput)
 		CreatedAt:     now,
 	}
 
-	if _, err := m.store.CommitEvent(workID, event); err != nil {
+	revision, err := m.store.CommitEvent(workID, event)
+	if err != nil {
 		return nil, fmt.Errorf("cornerstone: Remove: commit: %w", err)
 	}
 
 	view, err := m.loadView(workID)
 	if err != nil {
-		return nil, committedRecovery("cornerstone-remove-view", workID, requestID, event.Revision, err)
+		return nil, committedRecovery("cornerstone-remove-view", workID, requestID, revision, err)
 	}
 	result := findCornerstone(view.Work, csID)
 	return &CornerstoneResult{Cornerstone: result, WorkView: view, Revision: view.Revision}, nil
@@ -469,13 +472,14 @@ func (m *CornerstoneManager) Undo(workID string, input UndoCornerstoneInput) (*C
 		CreatedAt:     now,
 	}
 
-	if _, err := m.store.CommitEvent(workID, event); err != nil {
+	revision, err := m.store.CommitEvent(workID, event)
+	if err != nil {
 		return nil, fmt.Errorf("cornerstone: Undo: commit: %w", err)
 	}
 
 	view, err := m.loadView(workID)
 	if err != nil {
-		return nil, committedRecovery("cornerstone-undo-view", workID, requestID, event.Revision, err)
+		return nil, committedRecovery("cornerstone-undo-view", workID, requestID, revision, err)
 	}
 	result := findCornerstone(view.Work, csID)
 	return &CornerstoneResult{Cornerstone: result, WorkView: view, Revision: view.Revision}, nil
@@ -553,10 +557,11 @@ func (m *CornerstoneManager) GC(workID string, input GCInput) (*GCResult, error)
 			WriterID:      WorkWriterID(),
 			CreatedAt:     now,
 		}
-		if _, err := m.store.CommitEvent(workID, event); err != nil {
+		revision, err := m.store.CommitEvent(workID, event)
+		if err != nil {
 			return nil, fmt.Errorf("cornerstone: GC: persist intent: %w", err)
 		}
-		state.Revision = event.Revision
+		state.Revision = revision
 	}
 
 	result := &GCResult{

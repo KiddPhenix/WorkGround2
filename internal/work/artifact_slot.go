@@ -232,10 +232,11 @@ func (s *Service) UpdateArtifactSlot(ctx context.Context, input UpdateArtifactSl
 	if err != nil {
 		return nil, fmt.Errorf("work: UpdateArtifactSlot: encode event receipt: %w", err)
 	}
-	if _, err := s.store.CommitEvent(input.WorkID, event); err != nil {
+	revision, err := s.store.CommitEvent(input.WorkID, event)
+	if err != nil {
 		return artifactSlotResult(slot, state.Revision), err
 	}
-	return artifactSlotResult(&updatedSlot, event.Revision), nil
+	return artifactSlotResult(&updatedSlot, revision), nil
 }
 
 func artifactSlotResult(slot *ArtifactSlot, workRevision int64) *ArtifactSlotResult {

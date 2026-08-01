@@ -454,6 +454,14 @@ func (s *Service) reconcileUpsertCommit(
 	cause error,
 ) (*WorkView, error) {
 	if !revisionChainConflict(cause) {
+		var blockConflict *ErrBlockConflict
+		if errors.As(cause, &blockConflict) {
+			view, loadErr := s.loadView(input.WorkID)
+			if loadErr != nil {
+				return nil, errors.Join(cause, loadErr)
+			}
+			return view, cause
+		}
 		var conflict *ErrWorkEventConflict
 		if errors.As(cause, &conflict) {
 			return s.latestBlockConflict(input.WorkID, input.BlockID, input.Revision, input.ExpectedRevision, cause, false)

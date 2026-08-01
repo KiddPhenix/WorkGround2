@@ -318,9 +318,12 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	}
 
 	events = append(events, event)
-	if _, err := s.store.CommitEvents(input.WorkID, events); err != nil {
+	revisions, err := s.store.CommitEvents(input.WorkID, events)
+	if err != nil {
 		return nil, fmt.Errorf("work: PreviewWorkPatch: commit: %w", err)
 	}
+	revision := revisions[len(revisions)-1]
+	receipt.ResultRevision = revision
 
 	cpy := *preview
 	cpy.Operations = clonePatchOps(preview.Operations)
@@ -330,7 +333,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	cpy.AffectedArtifactSlotIDs = clonePatchStrings(preview.AffectedArtifactSlotIDs)
 	cpy.StaleArtifactSlotIDs = clonePatchStrings(preview.StaleArtifactSlotIDs)
 	cpy.InvalidatedTaskIDs = clonePatchStrings(preview.InvalidatedTaskIDs)
-	return &PreviewWorkPatchResult{Preview: &cpy, Revision: event.Revision, Committed: true}, nil
+	return &PreviewWorkPatchResult{Preview: &cpy, Revision: revision, Committed: true}, nil
 }
 
 func (s *PatchService) replayPreview(current *Work, input PreviewWorkPatchInput, intentDigest string) (*PreviewWorkPatchResult, error) {

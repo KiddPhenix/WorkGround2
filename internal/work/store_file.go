@@ -892,8 +892,9 @@ func (s *FileWorkStore) Append(workID string, event WorkEvent) (revision int64, 
 }
 
 // CommitEvent serializes a Service event under both the lifecycle lock and the
-// event-log writer lease. Append intentionally retains its lower-level contract
-// that callers already hold the writer lease.
+// event-log writer lease, rebasing it onto the authoritative revision chain.
+// Append intentionally retains its strict lower-level contract that callers
+// already hold the writer lease and provide any explicit revision chain.
 func (s *FileWorkStore) CommitEvent(workID string, event WorkEvent) (revision int64, retErr error) {
 	if event.Type == EventDefRevisionApplied {
 		return 0, errors.New("work: definition.revision_applied requires the atomic definition apply commit seam")
@@ -957,7 +958,15 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 		}
 		existingRequest := false
 		if replay.Index != nil {
-			_, existingRequest = replay.Index.RequestIndex[event.RequestID]
+			entry, exists := replay.Index.RequestIndex[event.RequestID]
+			existingRequest = exists
+			if exists {
+				if err := sequenceServiceEvent(&event, entry.Revision-1); err != nil {
+					return 0, err
+				}
+			} else if err := sequenceServiceEvent(&event, replay.Index.Revision); err != nil {
+				return 0, err
+			}
 		}
 		if !existingRequest {
 			if guardErr := validateV2ActiveTaskCommit(current, event); guardErr != nil {
@@ -966,6 +975,14 @@ func (s *FileWorkStore) appendLocked(workID, wp string, event WorkEvent) (int64,
 			if _, reduceErr := DefaultReducer()(event, current); reduceErr != nil {
 				return 0, fmt.Errorf("work: reject state event before append: %w", reduceErr)
 			}
+		}
+	} else {
+		// CommitEvent is the service-level append seam. Let the low-level append
+		// assign the authoritative chain while the writer lease is held.
+		// draft.updated carries a whole-work edit and must retain its optimistic
+		// precondition; its services already reload and converge safe no-ops.
+		if event.Type != EventDraftUpdated {
+			event.BaseRevision, event.Revision = 0, 0
 		}
 	}
 	rev, err := AppendWorkEvent(wp, event, true)
@@ -1020,14 +1037,19 @@ func (s *FileWorkStore) appendIndexedLocked(
 		return 0, err
 	}
 	if event.RequestID != "" {
-		if _, exists := idx.RequestIndex[event.RequestID]; exists {
+		if entry, exists := idx.RequestIndex[event.RequestID]; exists {
+			if err := sequenceServiceEvent(&event, entry.Revision-1); err != nil {
+				return 0, err
+			}
 			result, err := appendIndexedWorkEvent(workDir, event, true, idx, workID)
 			return result.Revision, err
 		}
 	}
-	if event.Revision == 0 {
-		event.BaseRevision = idx.Revision
-		event.Revision = idx.Revision + 1
+	if event.Type == EventDraftUpdated && event.Revision > 0 && event.BaseRevision != idx.Revision {
+		return 0, workRevisionChainConflict(event, idx.Revision)
+	}
+	if err := sequenceServiceEvent(&event, idx.Revision); err != nil {
+		return 0, err
 	}
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
@@ -1164,8 +1186,93 @@ func activeDefinitionCommitConflict(event WorkEvent, reason string) error {
 	}
 }
 
+func workRevisionChainConflict(event WorkEvent, expectedBase int64) error {
+	return &ErrWorkEventConflict{
+		Reason:    fmt.Sprintf("revision chain broken: expected baseRevision=%d, got baseRevision=%d", expectedBase, event.BaseRevision),
+		RequestID: event.RequestID,
+		WorkID:    event.WorkID,
+		Kind:      WorkEventRevisionConflict,
+	}
+}
+
+// sequenceServiceEvent rebases a service event onto the authoritative Work
+// revision while the caller holds the writer lease. Object-level expected
+// revisions remain untouched, so reducers still reject real business conflicts.
+func sequenceServiceEvent(event *WorkEvent, baseRevision int64) error {
+	event.BaseRevision = baseRevision
+	event.Revision = baseRevision + 1
+	return stampEventReceiptRevision(event, event.Revision)
+}
+
+func stampEventReceiptRevision(event *WorkEvent, revision int64) error {
+	switch event.Type {
+	case EventArtifactSlotUpdated:
+		return rewriteEventPayload[ArtifactSlotUpdatedPayload](event, func(payload *ArtifactSlotUpdatedPayload) bool {
+			if payload.Receipt == nil {
+				return false
+			}
+			payload.Receipt.WorkRevision = revision
+			return true
+		})
+	case EventInputRequested:
+		return stampInputReceipt[InputRequestedPayload](event, revision, func(payload *InputRequestedPayload) **InputIntentReceipt { return &payload.Receipt })
+	case EventInputDraftSaved:
+		return stampInputReceipt[InputDraftSavedPayload](event, revision, func(payload *InputDraftSavedPayload) **InputIntentReceipt { return &payload.Receipt })
+	case EventInputSubmitted:
+		return stampInputReceipt[InputSubmittedPayload](event, revision, func(payload *InputSubmittedPayload) **InputIntentReceipt { return &payload.Receipt })
+	case EventInputRejected:
+		return stampInputReceipt[InputRejectedPayload](event, revision, func(payload *InputRejectedPayload) **InputIntentReceipt { return &payload.Receipt })
+	case EventInputCornerstoneChanged:
+		return stampInputReceipt[InputCornerstoneChangedPayload](event, revision, func(payload *InputCornerstoneChangedPayload) **InputIntentReceipt { return &payload.Receipt })
+	case EventPatchPreviewed:
+		return stampPatchReceipt[PatchPreviewedPayload](event, revision, func(payload *PatchPreviewedPayload) **PatchIntentReceipt { return &payload.Receipt })
+	case EventPatchApplied:
+		return stampPatchReceipt[PatchAppliedPayload](event, revision, func(payload *PatchAppliedPayload) **PatchIntentReceipt { return &payload.Receipt })
+	default:
+		return nil
+	}
+}
+
+func stampInputReceipt[T any](event *WorkEvent, revision int64, receipt func(*T) **InputIntentReceipt) error {
+	return rewriteEventPayload[T](event, func(payload *T) bool {
+		value := receipt(payload)
+		if value == nil || *value == nil {
+			return false
+		}
+		(*value).ResultRevision = revision
+		return true
+	})
+}
+
+func stampPatchReceipt[T any](event *WorkEvent, revision int64, receipt func(*T) **PatchIntentReceipt) error {
+	return rewriteEventPayload[T](event, func(payload *T) bool {
+		value := receipt(payload)
+		if value == nil || *value == nil {
+			return false
+		}
+		(*value).ResultRevision = revision
+		return true
+	})
+}
+
+func rewriteEventPayload[T any](event *WorkEvent, rewrite func(*T) bool) error {
+	var payload T
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return fmt.Errorf("work: rebase %s payload: %w", event.Type, err)
+	}
+	if !rewrite(&payload) {
+		return nil
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("work: encode rebased %s payload: %w", event.Type, err)
+	}
+	event.Payload = raw
+	return nil
+}
+
 // CommitEvents atomically commits multiple events under a single work lock.
-// All events are validated and their BaseRevision/Revision chain is verified
+// All events are validated and rebased onto the authoritative revision chain
 // before any is appended. If the batch fails, no events are committed.
 func (s *FileWorkStore) CommitEvents(workID string, events []WorkEvent) (revisions []int64, retErr error) {
 	if len(events) == 0 {
@@ -1207,8 +1314,12 @@ func (s *FileWorkStore) CommitEvents(workID string, events []WorkEvent) (revisio
 			}
 		}
 	}()
-	if err := s.preflightEventBatch(wp, events); err != nil {
+	duplicateRevisions, duplicate, err := s.preflightEventBatch(wp, events)
+	if err != nil {
 		return nil, err
+	}
+	if duplicate {
+		return duplicateRevisions, nil
 	}
 
 	// Build the complete successor log in an isolated sibling directory. No
@@ -1289,44 +1400,101 @@ func (s *FileWorkStore) CommitEvents(workID string, events []WorkEvent) (revisio
 	return revisions, nil
 }
 
-func (s *FileWorkStore) preflightEventBatch(workPath string, events []WorkEvent) error {
+func (s *FileWorkStore) preflightEventBatch(workPath string, events []WorkEvent) ([]int64, bool, error) {
 	replay, current, err := ReplayWithReducer(workPath, DefaultReducer())
 	if err != nil {
-		return fmt.Errorf("work: preflight event batch: %w", err)
+		return nil, false, fmt.Errorf("work: preflight event batch: %w", err)
 	}
-	requests := make(map[string]bool)
+	requests := make(map[string]WorkRequestEntry)
 	if replay != nil && replay.Index != nil {
-		for requestID := range replay.Index.RequestIndex {
-			requests[requestID] = true
+		for requestID, entry := range replay.Index.RequestIndex {
+			requests[requestID] = entry
 		}
 	}
 	for i := range events {
-		event := events[i]
+		if events[i].WorkID == "" && current != nil {
+			events[i].WorkID = current.ID
+		}
+	}
+	existing := make([]WorkRequestEntry, len(events))
+	existingCount := 0
+	for i := range events {
+		if entry, ok := requests[events[i].RequestID]; events[i].RequestID != "" && ok {
+			existing[i] = entry
+			existingCount++
+		}
+	}
+	if existingCount > 0 && existingCount != len(events) {
+		return nil, false, &ErrWorkEventConflict{
+			Reason: "event batch mixes already committed and uncommitted request IDs",
+			WorkID: events[0].WorkID,
+			Kind:   WorkEventRequestConflict,
+		}
+	}
+	if existingCount == len(events) {
+		revisions := make([]int64, len(events))
+		for i := range events {
+			if err := sequenceServiceEvent(&events[i], existing[i].Revision-1); err != nil {
+				return nil, false, err
+			}
+			digest, digestErr := workEventIdempotentDigest(recordFromEvent(events[i]))
+			if digestErr != nil {
+				return nil, false, fmt.Errorf("work: validate duplicate event %d in batch: %w", i, digestErr)
+			}
+			if digest != existing[i].Digest {
+				return nil, false, &ErrWorkEventConflict{
+					Reason:    fmt.Sprintf("requestID %q already used at revision %d with different content", events[i].RequestID, existing[i].Revision),
+					RequestID: events[i].RequestID,
+					WorkID:    events[i].WorkID,
+					Kind:      WorkEventRequestConflict,
+				}
+			}
+			revisions[i] = existing[i].Revision
+		}
+		return revisions, true, nil
+	}
+	currentRevision := int64(0)
+	if replay != nil && replay.Index != nil {
+		currentRevision = replay.Index.Revision
+	}
+	seen := make(map[string]bool, len(events))
+	for i := range events {
+		event := &events[i]
 		if event.WorkID == "" && current != nil {
 			event.WorkID = current.ID
 		}
-		if event.RequestID != "" && requests[event.RequestID] {
-			continue
+		if event.RequestID != "" && seen[event.RequestID] {
+			return nil, false, &ErrWorkEventConflict{
+				Reason:    fmt.Sprintf("requestID %q is repeated inside one event batch", event.RequestID),
+				RequestID: event.RequestID,
+				WorkID:    event.WorkID,
+				Kind:      WorkEventRequestConflict,
+			}
+		}
+		seen[event.RequestID] = event.RequestID != ""
+		if event.Type == EventDraftUpdated && event.Revision > 0 && event.BaseRevision != currentRevision {
+			return nil, false, workRevisionChainConflict(*event, currentRevision)
+		}
+		if err := sequenceServiceEvent(event, currentRevision); err != nil {
+			return nil, false, err
 		}
 		if eventNeedsReducerPreflight(event.Type) {
 			if IsV2EventType(event.Type) {
-				if err := ValidateV2WorkEvent(event); err != nil {
-					return fmt.Errorf("work: reject V2 event %d before batch append: %w", i, err)
+				if err := ValidateV2WorkEvent(*event); err != nil {
+					return nil, false, fmt.Errorf("work: reject V2 event %d before batch append: %w", i, err)
 				}
 			}
-			if err := validateV2ActiveTaskCommit(current, event); err != nil {
-				return fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
+			if err := validateV2ActiveTaskCommit(current, *event); err != nil {
+				return nil, false, fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
 			}
 		}
-		current, err = DefaultReducer()(event, current)
+		current, err = DefaultReducer()(*event, current)
 		if err != nil {
-			return fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
+			return nil, false, fmt.Errorf("work: reject state event %d before batch append: %w", i, err)
 		}
-		if event.RequestID != "" {
-			requests[event.RequestID] = true
-		}
+		currentRevision = event.Revision
 	}
-	return nil
+	return nil, false, nil
 }
 
 func eventNeedsReducerPreflight(eventType WorkEventType) bool {

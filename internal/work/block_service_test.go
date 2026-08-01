@@ -1202,15 +1202,16 @@ func TestBlockLateRemoveRetryDoesNotRetombstone(t *testing.T) {
 
 func TestBlockConcurrentUpsertConverges(t *testing.T) {
 	tests := []struct {
-		name        string
-		sameDigest  bool
-		sameRequest bool
-		wantErrors  int
+		name         string
+		sameDigest   bool
+		sameRequest  bool
+		wantErrors   int
+		wantRevision int64
 	}{
-		{"same-digest-different-request", true, false, 0},
-		{"same-digest-same-request", true, true, 0},
-		{"different-digest-different-request", false, false, 1},
-		{"different-digest-same-request", false, true, 1},
+		{"same-digest-different-request", true, false, 0, 4},
+		{"same-digest-same-request", true, true, 0, 3},
+		{"different-digest-different-request", false, false, 1, 3},
+		{"different-digest-same-request", false, true, 1, 3},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1247,7 +1248,7 @@ func TestBlockConcurrentUpsertConverges(t *testing.T) {
 			for range 2 {
 				result := <-results
 				if result.err == nil {
-					if result.view == nil || result.view.Revision != 3 {
+					if result.view == nil || result.view.Revision < 3 || result.view.Revision > tc.wantRevision {
 						t.Fatalf("successful concurrent view = %+v", result.view)
 					}
 					continue
@@ -1265,8 +1266,8 @@ func TestBlockConcurrentUpsertConverges(t *testing.T) {
 				t.Fatalf("concurrent errors = %d, want %d", errorCount, tc.wantErrors)
 			}
 			latest := mustServiceView(t, svc, value.ID)
-			if latest.Revision != 3 || latest.Work.Blocks[0].Revision != 2 {
-				t.Fatalf("concurrent upsert appended duplicate event: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
+			if latest.Revision != tc.wantRevision || latest.Work.Blocks[0].Revision != 2 {
+				t.Fatalf("concurrent upsert final state: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
 			}
 		})
 	}
@@ -1350,7 +1351,7 @@ func TestBlockConcurrentRemoveConverges(t *testing.T) {
 		}
 	}
 	latest := mustServiceView(t, svc, value.ID)
-	if latest.Revision != 3 || !latest.Work.Blocks[0].Tombstone || latest.Work.Blocks[0].Revision != 2 {
+	if latest.Revision != 4 || !latest.Work.Blocks[0].Tombstone || latest.Work.Blocks[0].Revision != 2 {
 		t.Fatalf("concurrent remove did not converge: revision=%d block=%+v", latest.Revision, latest.Work.Blocks[0])
 	}
 }

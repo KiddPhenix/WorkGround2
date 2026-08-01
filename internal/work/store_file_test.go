@@ -124,6 +124,91 @@ func createTestWork(t *testing.T, store *FileWorkStore, workID string) *Work {
 	return w
 }
 
+func testBlockEvent(workID, requestID, blockID string, baseRevision int64) WorkEvent {
+	now := time.Now().UTC()
+	payload, _ := json.Marshal(BlockInstance{
+		ID: blockID, Kind: "markdown", SchemaVersion: 1, Revision: 1,
+		Status: BlockReady, Data: json.RawMessage(`{"text":"test"}`),
+		Source:   BlockSource{Provider: "controller", Mode: "snapshot", Verified: true},
+		Fallback: BlockFallback{Summary: "test"}, CreatedAt: now, UpdatedAt: now,
+	})
+	event := newServiceEvent(workID, requestID, EventBlockUpserted, payload, now)
+	event.BaseRevision, event.Revision = baseRevision, baseRevision+1
+	return event
+}
+
+func TestFileWorkStore_CommitEventRebasesStaleServiceRevision(t *testing.T) {
+	store := newTestStore(t)
+	const workID = "work-rebase-service-event"
+	createTestWork(t, store, workID)
+	workPath, err := store.workPath(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseWorkLease(workPath); err != nil {
+		t.Fatal(err)
+	}
+
+	first := testBlockEvent(workID, "rebase-first", "block-first", 1)
+	stale := testBlockEvent(workID, "rebase-stale", "block-stale", 1)
+	if revision, err := store.CommitEvent(workID, first); err != nil || revision != 2 {
+		t.Fatalf("first commit = %d, %v; want revision 2", revision, err)
+	}
+	if revision, err := store.CommitEvent(workID, stale); err != nil || revision != 3 {
+		t.Fatalf("stale commit = %d, %v; want rebased revision 3", revision, err)
+	}
+	if revision, err := store.CommitEvent(workID, stale); err != nil || revision != 3 {
+		t.Fatalf("duplicate stale commit = %d, %v; want original revision 3", revision, err)
+	}
+
+	current, state, err := store.LoadState(workID, "rebase-stale")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Revision != 3 || !state.RequestFound || len(current.Blocks) != 2 {
+		t.Fatalf("replayed state = revision %d found %v blocks %d", state.Revision, state.RequestFound, len(current.Blocks))
+	}
+}
+
+func TestFileWorkStore_CommitEventsRebasesAndReplaysWholeBatch(t *testing.T) {
+	store := newTestStore(t)
+	const workID = "work-rebase-service-batch"
+	createTestWork(t, store, workID)
+	workPath, err := store.workPath(workID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReleaseWorkLease(workPath); err != nil {
+		t.Fatal(err)
+	}
+
+	batch := []WorkEvent{
+		testBlockEvent(workID, "batch-first", "batch-block-first", 1),
+		testBlockEvent(workID, "batch-second", "batch-block-second", 2),
+	}
+	if revision, err := store.CommitEvent(workID, testBlockEvent(workID, "batch-race", "batch-race-block", 1)); err != nil || revision != 2 {
+		t.Fatalf("race commit = %d, %v; want revision 2", revision, err)
+	}
+	revisions, err := store.CommitEvents(workID, batch)
+	if err != nil || len(revisions) != 2 || revisions[0] != 3 || revisions[1] != 4 {
+		t.Fatalf("rebased batch = %v, %v; want [3 4]", revisions, err)
+	}
+	if revision, err := store.CommitEvent(workID, testBlockEvent(workID, "batch-tail", "batch-tail-block", 4)); err != nil || revision != 5 {
+		t.Fatalf("tail commit = %d, %v; want revision 5", revision, err)
+	}
+	revisions, err = store.CommitEvents(workID, batch)
+	if err != nil || len(revisions) != 2 || revisions[0] != 3 || revisions[1] != 4 {
+		t.Fatalf("duplicate batch = %v, %v; want original [3 4]", revisions, err)
+	}
+	_, state, err := store.LoadState(workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Revision != 5 {
+		t.Fatalf("duplicate batch changed revision to %d; want 5", state.Revision)
+	}
+}
+
 // ── NewFileWorkStore validation ────────────────────────────────────────────
 
 func TestNewFileWorkStore_RejectsEmpty(t *testing.T) {

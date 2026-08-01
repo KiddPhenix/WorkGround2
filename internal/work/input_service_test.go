@@ -47,6 +47,34 @@ type failInputLinkStore struct {
 	fail bool
 }
 
+type raceInputBatchStore struct {
+	WorkStore
+	store    *FileWorkStore
+	injected bool
+}
+
+func (s *raceInputBatchStore) CommitEvents(workID string, events []WorkEvent) ([]int64, error) {
+	if !s.injected {
+		s.injected = true
+		_, state, err := s.store.LoadState(workID, "")
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.store.CommitEvent(workID, testBlockEvent(workID, "race-between-load-and-batch", "race-block", state.Revision)); err != nil {
+			return nil, err
+		}
+	}
+	return s.WorkStore.CommitEvents(workID, events)
+}
+
+func (s *raceInputBatchStore) StoreInputReceipt(workID string, receipt *InputIntentReceipt) error {
+	return s.store.StoreInputReceipt(workID, receipt)
+}
+
+func (s *raceInputBatchStore) LoadInputReceipt(workID, requestID string) (*InputIntentReceipt, error) {
+	return s.store.LoadInputReceipt(workID, requestID)
+}
+
 func (s *failInputLinkStore) CommitEvent(workID string, event WorkEvent) (int64, error) {
 	if s.fail && event.Type == EventInputCornerstoneChanged {
 		s.fail = false
@@ -221,6 +249,39 @@ func TestInputService_AddCustomInput_AtomicAndEditable(t *testing.T) {
 	}
 	if string(edit.Input.Value) != `"第二版"` || len(edit.AffectedTaskIDs) != 0 {
 		t.Fatalf("edited custom input = %#v", edit)
+	}
+}
+
+func TestInputService_AddCustomInput_RebasesConcurrentWorkEvent(t *testing.T) {
+	_, svc, store, _ := newInputServiceTest(t)
+	workID, inputID := createV2WorkWithInput(t, svc, store)
+	workRev, _, defRev := inputGuards(t, store, workID, inputID)
+	raceStore := &raceInputBatchStore{WorkStore: store, store: store}
+	inputSvc := NewInputService(raceStore, svc.cornerstones)
+	request := AddCustomWorkInputRequest{
+		WorkID: workID, RunID: "run-1", InputID: "custom-race",
+		Name: "并发资料", Kind: InputText, Value: json.RawMessage(`"内容"`),
+		DefinitionRevision: defRev, ExpectedRevision: workRev, RequestID: "add-custom-race",
+	}
+
+	result, err := inputSvc.AddCustomInput(context.Background(), request)
+	if err != nil {
+		t.Fatalf("AddCustomInput with concurrent event: %v", err)
+	}
+	if result.Input == nil || result.Revision != workRev+3 {
+		t.Fatalf("rebased result = %#v; want revision %d", result, workRev+3)
+	}
+	receipt, err := store.LoadInputReceipt(workID, request.RequestID)
+	if err != nil {
+		t.Fatalf("LoadInputReceipt: %v", err)
+	}
+	if receipt.ResultRevision != result.Revision {
+		t.Fatalf("receipt revision = %d, want %d", receipt.ResultRevision, result.Revision)
+	}
+
+	duplicate, err := inputSvc.AddCustomInput(context.Background(), request)
+	if err != nil || duplicate == nil || !duplicate.Duplicate || duplicate.Revision != result.Revision {
+		t.Fatalf("duplicate result = %#v, %v", duplicate, err)
 	}
 }
 
