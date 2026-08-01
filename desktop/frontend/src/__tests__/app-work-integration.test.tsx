@@ -50,11 +50,24 @@ const workSendGate = appSource.slice(
   appSource.indexOf("const workSendSelected =", appSource.indexOf("const workSendAvailable = Boolean(")),
 );
 ok(
-  workSendGate.includes("activeTab.blank === true")
+  workSendGate.includes("!sessionHasContent")
+    && workSendGate.includes("!state.historyLoading")
     && workSendGate.includes("workEnabled !== false")
+    && !workSendGate.includes("activeTab.blank")
+    && !workSendGate.includes("desktopLayoutStyle")
     && !workSendGate.includes("workCapable")
     && !workSendGate.includes("sessionTurns"),
-  "空白普通 Session 始终显示发送为工作入口，不再被异步能力与轮次探测隐藏",
+  "无可见内容的普通 Session 始终显示发送为工作入口，不再被异步 Tab、布局、能力与轮次元数据隐藏",
+);
+const workSendSubmitGate = appSource.slice(
+  appSource.indexOf("const handleSendAsWork = useCallback(async"),
+  appSource.indexOf("const prompt = displayText.trim()", appSource.indexOf("const handleSendAsWork = useCallback(async")),
+);
+ok(
+  workSendSubmitGate.includes("sessionHasContent")
+    && workSendSubmitGate.includes("state.historyLoading")
+    && !workSendSubmitGate.includes("tab.blank"),
+  "发送时按当前 Session 内容与加载状态预检，最终空白判定交给 CreateWorkSession",
 );
 ok(
   appSource.includes("const handleWorkSendChange = useCallback(async")

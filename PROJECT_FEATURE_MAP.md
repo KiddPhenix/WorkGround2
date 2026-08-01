@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session 发送为工作入口运行时修复
+- Status: in_progress
+- Branch: `developping/work-send-entry-runtime+2026-08-01`
+- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
+- Summary: 真实正式 EXE 中入口仍会被异步 Tab/Work 元数据门槛短路；调整为无可见内容的普通可写 Session 常驻，后端保留最终空白和幂等校验，并通过运行窗口可访问性树验收。
+- Keywords: send as Work, runtime visibility, blank Session, authoritative backend
+- Source: user-reported+verified-in-running-window
+- Updated: 2026-08-01
+
 ### Session 发送为工作入口常驻
 - Status: done
 - Branch: `developping/work-send-entry-visibility+2026-08-01`

@@ -1843,14 +1843,24 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [scopedTodoKey]);
 
   const sessionTitle = topicTitle(activeTab);
-  const sessionHasContent = state.items.length > 0 || Boolean(state.live?.text || state.live?.reasoning);
+  const hydratePlaceholderActive = Boolean(
+    state.hydrating
+    && state.items.length === 0
+    && state.hydratePlaceholderItems?.length,
+  );
+  const sessionHasContent = state.items.length > 0
+    || Boolean(state.live?.text || state.live?.reasoning)
+    || hydratePlaceholderActive;
+  // TabMeta.blank is an asynchronously refreshed backend hint and can be
+  // absent while an already-open blank tab is otherwise ready. Render from the
+  // visible Session state; CreateWorkSession remains the authoritative blank
+  // and idempotency boundary when the first message is actually submitted.
   const workSendAvailable = Boolean(
     activeTab
-    && desktopLayoutStyle === "workbench"
     && activeTab.sessionKind !== "work"
     && !activeTab.readOnly
-    && activeTab.blank === true
     && !sessionHasContent
+    && !state.historyLoading
     && workEnabled !== false
     && !workBootstrap,
   );
@@ -2625,11 +2635,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const rewindStateRef = useRef(rewindState);
   rewindStateRef.current = rewindState;
 
-  const hydratePlaceholderActive = Boolean(
-    state.hydrating &&
-    state.items.length === 0 &&
-    state.hydratePlaceholderItems?.length,
-  );
   // Runtime/ancillary hydration may repeat after agent:ready. Only unresolved
   // history should replace the transcript surface with its loading state.
   const transcriptHydrating = state.historyLoading;
@@ -3312,7 +3317,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
     const tab = activeTab;
-    if (!tab || tab.sessionKind === "work" || tab.blank !== true || sessionHasContent) {
+    if (!tab || tab.sessionKind === "work" || tab.readOnly || sessionHasContent || state.historyLoading) {
       throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
     }
     if (workEnabled !== true || workConfigFailed || workCapable !== true) {
@@ -3346,7 +3351,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (!result || result.error) {
       throw new Error(result?.error || "Work 初始化失败，请重试。");
     }
-  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, t, workCapable, workConfigFailed, workEnabled]);
+  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, state.historyLoading, t, workCapable, workConfigFailed, workEnabled]);
 
   const revealWorkPanel = useCallback((intentID: string) => {
     setWorkStartIntent((current) => current?.id === intentID ? null : current);
