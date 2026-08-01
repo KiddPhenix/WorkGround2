@@ -1849,18 +1849,46 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     && desktopLayoutStyle === "workbench"
     && activeTab.sessionKind !== "work"
     && !activeTab.readOnly
+    && activeTab.blank === true
     && !sessionHasContent
-    && sessionTurns === 0
-    && workEnabled === true
-    && !workConfigFailed
-    && workCapable === true
+    && workEnabled !== false
     && !workBootstrap,
   );
   const workSendSelected = workSendAvailable && Boolean(workSendByTab[activeTab?.id || ""]);
-  const handleWorkSendChange = useCallback((selected: boolean) => {
+  const handleWorkSendChange = useCallback(async (selected: boolean) => {
     if (!activeTabId) return;
+    if (!selected) {
+      setWorkSendByTab((current) => ({ ...current, [activeTabId]: false }));
+      return;
+    }
+    if (workConfigFailed) {
+      handleRetryWorkConfig();
+      showToast(t("work.initializing"), "info");
+      return;
+    }
+    if (workEnabled !== true || !workControllerReady) {
+      showToast(t("work.initializing"), "info");
+      return;
+    }
+    if (workCapable !== true) {
+      const tabID = activeTabId;
+      const gen = workGenRef.current;
+      setWorkCapability({ tabID, capable: null, failed: false });
+      let capable = false;
+      try {
+        capable = await app.WorkCapable(tabID);
+      } catch {
+        capable = false;
+      }
+      if (workGenRef.current !== gen) return;
+      setWorkCapability({ tabID, capable, failed: !capable });
+      if (!capable) {
+        showToast(t("work.unavailable"), "warn");
+        return;
+      }
+    }
     setWorkSendByTab((current) => ({ ...current, [activeTabId]: selected }));
-  }, [activeTabId]);
+  }, [activeTabId, handleRetryWorkConfig, showToast, t, workCapable, workConfigFailed, workControllerReady, workEnabled]);
   const getSessionMarkdown = useCallback(
     () => sessionItemsToMarkdown(sessionTitle, state.items, state.live),
     [sessionTitle, state.items, state.live],
@@ -3284,8 +3312,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
     const tab = activeTab;
-    if (!tab || tab.sessionKind === "work" || sessionHasContent || sessionTurns > 0) {
+    if (!tab || tab.sessionKind === "work" || tab.blank !== true || sessionHasContent) {
       throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
+    }
+    if (workEnabled !== true || workConfigFailed || workCapable !== true) {
+      throw new Error(t("work.unavailable"));
     }
     const prompt = displayText.trim();
     const submitted = submitText.trim();
@@ -3315,7 +3346,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (!result || result.error) {
       throw new Error(result?.error || "Work 初始化失败，请重试。");
     }
-  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, sessionTurns]);
+  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, t, workCapable, workConfigFailed, workEnabled]);
 
   const revealWorkPanel = useCallback((intentID: string) => {
     setWorkStartIntent((current) => current?.id === intentID ? null : current);
