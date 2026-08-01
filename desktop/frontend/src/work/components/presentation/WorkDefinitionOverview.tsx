@@ -17,9 +17,12 @@ export interface WorkDefinitionOverviewProps {
   onSelectInput?: (specId: string) => void;
   selectableInputSpecIds?: ReadonlySet<string>;
   onAddInput?: () => void;
-  onInferInputs?: () => void;
-  inferBusy?: boolean;
-  inferDisabled?: boolean;
+  onSuggestInput?: (inputId: string) => void;
+  suggestingInputIds?: ReadonlySet<string>;
+  suggestionFeedback?: Readonly<Record<string, {
+    tone: 'info' | 'error';
+    message: string;
+  }>>;
 }
 
 function optionLabels(spec: InputSpec): Map<string, string> {
@@ -113,16 +116,16 @@ export function WorkDefinitionOverview({
   onSelectInput,
   selectableInputSpecIds,
   onAddInput,
-  onInferInputs,
-  inferBusy,
-  inferDisabled,
+  onSuggestInput,
+  suggestingInputIds,
+  suggestionFeedback,
 }: WorkDefinitionOverviewProps) {
   const inputSpecs = [
     ...definition.inputSpecs,
     ...inputs.flatMap((input) => input.customSpec ? [input.customSpec] : []),
   ].filter((spec, index, all) => all.findIndex((candidate) => candidate.id === spec.id) === index);
   const bySpec = currentInputs(inputs, runId);
-  const showInputs = inputSpecs.length > 0 || !!onAddInput || !!onInferInputs;
+  const showInputs = inputSpecs.length > 0 || !!onAddInput || !!onSuggestInput;
   const filled = inputSpecs.filter((spec) => {
     const input = bySpec.get(spec.id);
     return input?.state === 'submitted' || input?.state === 'accepted';
@@ -146,17 +149,6 @@ export function WorkDefinitionOverview({
               <span className="work-definition-overview__count">
                 {filled}/{inputSpecs.length} 已填写
               </span>
-              {onInferInputs ? (
-                <button
-                  type="button"
-                  className="work-definition-overview__add work-definition-overview__infer"
-                  onClick={onInferInputs}
-                  disabled={inferBusy || inferDisabled}
-                >
-                  <Sparkles size={14} aria-hidden="true" />
-                  {inferBusy ? '推断中…' : '自己推断'}
-                </button>
-              ) : null}
               {onAddInput ? (
                 <button type="button" className="work-definition-overview__add" onClick={onAddInput}>
                   <Plus size={14} aria-hidden="true" />
@@ -171,6 +163,9 @@ export function WorkDefinitionOverview({
               const complete = input?.state === 'submitted' || input?.state === 'accepted';
               const selectable = !!onSelectInput
                 && (selectableInputSpecIds?.has(spec.id) ?? true);
+              const suggesting = !!input && !!suggestingInputIds?.has(input.id);
+              const feedback = input ? suggestionFeedback?.[input.id] : undefined;
+              const canSuggest = !!input && !!onSuggestInput;
               const content = (
                 <>
                   <span>{spec.label}</span>
@@ -184,6 +179,46 @@ export function WorkDefinitionOverview({
                     : <CircleDashed aria-hidden="true" size={15} strokeWidth={1.8} />}
                 </>
               );
+              if (selectable && onSuggestInput) {
+                return (
+                  <div
+                    className="work-definition-overview__field-row"
+                    data-state={complete ? 'complete' : input?.state ?? 'missing'}
+                    key={spec.id}
+                  >
+                    <button
+                      type="button"
+                      className="work-definition-overview__field"
+                      onClick={() => onSelectInput(spec.id)}
+                      aria-label={`${complete ? '修改' : '填写'}：${spec.label}`}
+                    >
+                      {content}
+                    </button>
+                    {canSuggest ? (
+                      <button
+                        type="button"
+                        className={`work-definition-overview__field-suggest${suggesting ? ' is-busy' : ''}`}
+                        onClick={() => onSuggestInput(input.id)}
+                        disabled={suggesting}
+                        aria-label={`为“${spec.label}”生成建议`}
+                        aria-busy={suggesting}
+                        title="生成建议"
+                      >
+                        <Sparkles size={13} aria-hidden="true" />
+                      </button>
+                    ) : null}
+                    {feedback?.tone === 'error' ? (
+                      <span
+                        className="work-definition-overview__field-feedback"
+                        data-tone={feedback.tone}
+                        role={feedback.tone === 'error' ? 'alert' : 'status'}
+                      >
+                        {feedback.message}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              }
               return selectable ? (
                 <button
                   type="button"

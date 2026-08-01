@@ -31,6 +31,83 @@
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 62%, transparent);
 }
 
+.wg2-info-entry .work-definition-overview__field-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.wg2-info-entry .work-definition-overview__field-row:nth-child(odd) {
+  border-right: 1px solid var(--border-soft);
+}
+
+.wg2-info-entry .work-definition-overview__field-row:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.wg2-info-entry .work-definition-overview__field-row > .work-definition-overview__field {
+  min-height: 50px;
+  border: 0;
+}
+
+.work-definition-overview__field-suggest {
+  align-self: center;
+  display: inline-flex;
+  width: 26px;
+  height: 26px;
+  align-items: center;
+  justify-content: center;
+  margin-right: 10px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+  font: inherit;
+  cursor: pointer;
+}
+
+.work-definition-overview__field-suggest:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
+}
+
+.work-definition-overview__field-suggest:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
+.work-definition-overview__field-suggest:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.work-definition-overview__field-suggest.is-busy svg {
+  animation: wg2-info-suggest-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes wg2-info-suggest-pulse {
+  to {
+    opacity: 0.35;
+    transform: scale(0.88);
+  }
+}
+
+.work-definition-overview__field-feedback {
+  grid-column: 1 / -1;
+  padding: 0 14px 7px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.work-definition-overview__field-feedback[data-tone="error"] {
+  color: var(--danger);
+}
+
 .work-definition-overview__header-actions {
   display: inline-flex;
   align-items: center;
@@ -59,22 +136,6 @@
 .work-definition-overview__add:disabled {
   cursor: default;
   opacity: 0.5;
-}
-
-.work-definition-overview__infer {
-  border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
-  background: color-mix(in srgb, var(--fg-muted) 6%, transparent);
-  color: var(--fg-muted);
-}
-
-.wg2-info-inference-note {
-  margin: 7px 2px 0;
-  color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.wg2-info-inference-note.is-error {
-  color: var(--danger);
 }
 
 .wg2-info-overlay {
@@ -279,6 +340,32 @@
 
 .wg2-info-card__heading button.is-open svg:last-child {
   transform: rotate(180deg);
+}
+
+.wg2-info-card__suggestion {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wg2-info-card__suggestion svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.wg2-info-card__suggestion[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  color: var(--danger);
 }
 
 .wg2-info-card__control {
@@ -610,5 +697,13 @@
 
   .wg2-info-card__footer > span {
     max-width: 100%;
+  }
+
+  .wg2-info-entry .work-definition-overview__field-row:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .wg2-info-entry .work-definition-overview__field-row:nth-last-child(2) {
+    border-bottom: 1px solid var(--border-soft);
   }
 }

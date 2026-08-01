@@ -14,8 +14,10 @@ var (
 	ErrInputInferenceFailed = errors.New("work: input inference failed")
 )
 
-// InferWorkInputs proposes typed drafts for pending inputs from one coherent
-// Work projection. It never commits values or changes runtime readiness.
+// InferWorkInputs proposes typed drafts from one coherent Work projection. An
+// omitted InputIDs list keeps the legacy pending-only behavior; explicit IDs
+// may also request replacement suggestions for submitted or accepted inputs.
+// It never commits values or changes runtime readiness.
 func (s *Service) InferWorkInputs(ctx context.Context, req InferWorkInputsRequest) (*InferWorkInputsResult, error) {
 	if err := checkServiceContext(ctx); err != nil {
 		return nil, err
@@ -51,6 +53,7 @@ func (s *Service) InferWorkInputs(ctx context.Context, req InferWorkInputsReques
 			requested[id] = struct{}{}
 		}
 	}
+	explicitTargets := len(requested) > 0
 	specs := make(map[string]InputSpec, len(definition.InputSpecs))
 	for _, spec := range definition.InputSpecs {
 		specs[spec.ID] = spec
@@ -59,16 +62,23 @@ func (s *Service) InferWorkInputs(ctx context.Context, req InferWorkInputsReques
 	targets := make([]InputInferenceTarget, 0)
 	seen := make(map[string]struct{})
 	for _, input := range projection.V2Inputs {
-		if input.RunID != req.RunID || input.CustomSpec != nil ||
-			(input.State != InputRequested && input.State != InputDraft && input.State != InputRejected) {
+		if input.RunID != req.RunID {
 			continue
 		}
-		if len(requested) > 0 {
+		pending := input.State == InputRequested || input.State == InputDraft || input.State == InputRejected
+		reviewable := input.State == InputSubmitted || input.State == InputAccepted
+		if (!explicitTargets && !pending) || (explicitTargets && !pending && !reviewable) {
+			continue
+		}
+		if explicitTargets {
 			if _, ok := requested[input.ID]; !ok {
 				continue
 			}
 		}
 		spec, ok := specs[input.SpecID]
+		if input.CustomSpec != nil {
+			spec, ok = *input.CustomSpec, true
+		}
 		if !ok {
 			return nil, fmt.Errorf("work: InferWorkInputs: input %q references unknown spec %q", input.ID, input.SpecID)
 		}
@@ -84,7 +94,7 @@ func (s *Service) InferWorkInputs(ctx context.Context, req InferWorkInputsReques
 	}
 	for id := range requested {
 		if _, ok := seen[id]; !ok {
-			return nil, fmt.Errorf("work: InferWorkInputs: pending input %q not found in run %q", id, req.RunID)
+			return nil, fmt.Errorf("work: InferWorkInputs: input %q is unavailable in run %q", id, req.RunID)
 		}
 	}
 	if len(targets) == 0 {

@@ -127,11 +127,15 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   const [addFiles, setAddFiles] = useState<ArtifactRef[]>([]);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
-  const [inferBusy, setInferBusy] = useState(false);
-  const [inferError, setInferError] = useState<string | null>(null);
-  const [inferNotice, setInferNotice] = useState<string | null>(null);
+  const [suggestingInputIds, setSuggestingInputIds] = useState<Set<string>>(() => new Set());
+  const [suggestionFeedback, setSuggestionFeedback] = useState<Record<string, {
+    tone: 'info' | 'error';
+    message: string;
+  }>>({});
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const editAuthorityRef = useRef<{ inputId: string; revision: number } | null>(null);
+  const suggestingRef = useRef(new Set<string>());
+  const currentInputsRef = useRef<WorkInput[]>([]);
 
   useEffect(() => ensureCard(workId), [ensureCard, workId]);
 
@@ -167,6 +171,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     [definition.inputSpecs, effectiveRunId, inputs, specs, taskById, taskOrder],
   );
   const pending = useMemo(() => currentInputs.filter((input) => !isDone(input)), [currentInputs]);
+  currentInputsRef.current = currentInputs;
   const done = currentInputs.length - pending.length;
   const panelState = card?.informationPanel ?? {
     closed: false,
@@ -379,37 +384,74 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     }
   };
 
-  const inferPending = async () => {
-    if (!onInfer || !effectiveRunId || pending.length === 0) return;
-    setInferBusy(true);
-    setInferError(null);
-    setInferNotice(null);
+  const suggestInput = async (inputId: string) => {
+    if (!onInfer || !effectiveRunId || suggestingRef.current.has(inputId)) return;
+    const target = currentInputsRef.current.find((input) => input.id === inputId);
+    if (!target) return;
+    suggestingRef.current.add(inputId);
+    setSuggestingInputIds((current) => new Set(current).add(inputId));
+    setSuggestionFeedback((current) => {
+      const next = { ...current };
+      delete next[inputId];
+      return next;
+    });
     try {
       const result = await onInfer({
         workId,
         runId: effectiveRunId,
-        inputIds: pending.map((input) => input.id),
+        inputIds: [inputId],
         definitionRevision: definition.revision,
       });
-      for (const item of result.items) {
-        const input = pending.find((candidate) => candidate.id === item.inputId);
-        if (!input) continue;
-        const draftKey = inputKey(workId, effectiveRunId, input, definition.revision);
+      const latest = currentInputsRef.current.find((input) => input.id === inputId);
+      if (!latest || latest.revision !== target.revision || latest.state !== target.state) {
+        setSuggestionFeedback((current) => ({
+          ...current,
+          [inputId]: { tone: 'error', message: '该项已经更新，未覆盖最新内容。' },
+        }));
+        return;
+      }
+      const item = result.items.find((candidate) => candidate.inputId === inputId);
+      if (item) {
+        const draftKey = inputKey(workId, effectiveRunId, latest, definition.revision);
         setInputDirtyFlag(workId, draftKey);
         setInputDraft(workId, draftKey, item.value as DraftValue);
+        setSuggestionFeedback((current) => ({
+          ...current,
+          [inputId]: {
+            tone: 'info',
+            message: item.reason?.trim()
+              ? `建议依据：${item.reason.trim()}`
+              : '已生成建议，请确认后保存。',
+          },
+        }));
+        setPanel(workId, { activeInputId: inputId, closed: false });
+        return;
       }
-      const skipped = result.skipped?.length ?? 0;
-      if (result.items.length > 0) {
-        const first = pending.find((input) => input.id === result.items[0].inputId);
-        setInferNotice(`已推断 ${result.items.length} 项${skipped ? `，另有 ${skipped} 项需要你提供` : ''}；请确认后保存。`);
-        if (first) setPanel(workId, { activeInputId: first.id, closed: false });
-      } else {
-        setInferNotice(skipped ? `${skipped} 项均缺少可靠依据，需要你提供。` : '没有可推断的待填写信息。');
-      }
+      const skipped = result.skipped?.find((candidate) => candidate.inputId === inputId);
+      setSuggestionFeedback((current) => ({
+        ...current,
+        [inputId]: {
+          tone: 'error',
+          message: skipped?.reason?.trim()
+            ? `暂时无法建议：${skipped.reason.trim()}`
+            : '暂时没有可靠建议，可以补充信息后重试。',
+        },
+      }));
     } catch (error) {
-      setInferError(error instanceof Error ? error.message : '工作信息推断失败，请重试');
+      setSuggestionFeedback((current) => ({
+        ...current,
+        [inputId]: {
+          tone: 'error',
+          message: error instanceof Error ? `${error.message}，可以重试。` : '生成建议失败，可以重试。',
+        },
+      }));
     } finally {
-      setInferBusy(false);
+      suggestingRef.current.delete(inputId);
+      setSuggestingInputIds((current) => {
+        const next = new Set(current);
+        next.delete(inputId);
+        return next;
+      });
     }
   };
 
@@ -424,12 +466,10 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
         onSelectInput={openInput}
         selectableInputSpecIds={selectableInputSpecIds}
         onAddInput={!readonly && onAddCustom ? openAdd : undefined}
-        onInferInputs={!readonly && onInfer ? () => void inferPending() : undefined}
-        inferBusy={inferBusy}
-        inferDisabled={pending.length === 0}
+        onSuggestInput={!readonly && onInfer ? (inputId) => void suggestInput(inputId) : undefined}
+        suggestingInputIds={suggestingInputIds}
+        suggestionFeedback={suggestionFeedback}
       />
-      {inferError ? <div className="wg2-info-inference-note is-error" role="alert">{inferError}</div> : null}
-      {inferNotice ? <div className="wg2-info-inference-note" role="status">{inferNotice}</div> : null}
     </>
   );
 
@@ -619,6 +659,16 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
               <ChevronDown size={14} aria-hidden="true" />
             </button>
           </div>
+          {suggestionFeedback[active.id] ? (
+            <div
+              className="wg2-info-card__suggestion"
+              data-tone={suggestionFeedback[active.id].tone}
+              role={suggestionFeedback[active.id].tone === 'error' ? 'alert' : 'status'}
+            >
+              <Sparkles size={14} aria-hidden="true" />
+              <span>{suggestionFeedback[active.id].message}</span>
+            </div>
+          ) : null}
 
           <div
             ref={dropTargetRef}

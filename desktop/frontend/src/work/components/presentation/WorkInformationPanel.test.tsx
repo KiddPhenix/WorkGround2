@@ -5,6 +5,8 @@ import { createRoot } from 'react-dom/client';
 import { useWorkUIStore } from '../../store';
 import type {
   CornerstonePinResult,
+  InferWorkInputsRequest,
+  InferWorkInputsResult,
   SubmitInputResult,
   WorkDefinitionRevision,
   WorkInput,
@@ -92,6 +94,24 @@ async function main(): Promise<void> {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
+  const inferRequests: InferWorkInputsRequest[] = [];
+  let budgetAttempts = 0;
+  let resolveNameSuggestion: ((result: InferWorkInputsResult) => void) | undefined;
+  const nameSuggestion = new Promise<InferWorkInputsResult>((resolve) => {
+    resolveNameSuggestion = resolve;
+  });
+  const inferInput = async (request: InferWorkInputsRequest) => {
+    inferRequests.push(request);
+    if (request.inputIds?.[0] === 'input-2') {
+      budgetAttempts++;
+      if (budgetAttempts === 1) throw new Error('模型暂时不可用');
+      return {
+        items: [],
+        skipped: [{ inputId: 'input-2', reason: '预算需要用户决定' }],
+      };
+    }
+    return nameSuggestion;
+  };
 
   await act(async () => {
     root.render(
@@ -114,10 +134,7 @@ async function main(): Promise<void> {
         onPin={async () => pinResult}
         onUnpin={async () => pinResult}
         onRefresh={async () => {}}
-        onInfer={async () => ({
-          items: [{ inputId: 'input-1', value: '自动推断的活动名称', reason: '依据工作目标' }],
-          skipped: [{ inputId: 'input-2', reason: '预算需要用户决定' }],
-        })}
+        onInfer={inferInput}
       />,
     );
   });
@@ -127,14 +144,33 @@ async function main(): Promise<void> {
   ok(host.querySelector('[role="dialog"]') === null, 'form layer starts closed');
   ok(host.querySelectorAll('.work-definition-overview__field').length === 2, 'renders each information entry');
 
-  const inferButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
-    button.textContent?.includes('自己推断'));
-  await act(async () => inferButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-  ok(host.textContent?.includes('已推断 1 项，另有 1 项需要你提供') === true, 'reports inferred and skipped inputs');
-  ok(host.querySelector<HTMLInputElement>('input')?.value === '自动推断的活动名称', 'stages inferred value as a reviewable draft');
+  ok(host.textContent?.includes('自己推断') === false, 'removes the panel-wide inference action');
+  ok(host.querySelectorAll('.work-definition-overview__field-suggest').length === 2, 'shows one suggestion icon per pending field');
+  ok([...host.querySelectorAll('.work-definition-overview__field-suggest')]
+    .every((button) => button.textContent?.trim() === ''), 'keeps suggestion actions icon-only');
+  const nameSuggest = host.querySelector<HTMLButtonElement>('[aria-label="为“活动名称”生成建议"]');
+  await act(async () => nameSuggest?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(inferRequests.length === 1 && inferRequests[0]?.inputIds?.join(',') === 'input-1', 'requests only the selected field');
+  ok(nameSuggest?.disabled === true
+    && host.querySelector<HTMLButtonElement>('[aria-label="为“预算”生成建议"]')?.disabled === false,
+  'busy state disables only the selected field');
+  await act(async () => resolveNameSuggestion?.({
+    items: [{ inputId: 'input-1', value: '自动建议的活动名称', reason: '依据工作目标' }],
+    skipped: [],
+  }));
+  ok(host.textContent?.includes('建议依据：依据工作目标') === true, 'shows the selected field suggestion reason');
+  ok(host.querySelector<HTMLInputElement>('input')?.value === '自动建议的活动名称', 'stages only the selected field as a reviewable draft');
   const inferredClose = host.querySelector<HTMLButtonElement>('[aria-label="关闭填写信息"]');
   await act(async () => inferredClose?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   ok(host.querySelector('[role="dialog"]') === null, 'inferred draft remains reviewable without auto-submit');
+
+  let budgetSuggest = host.querySelector<HTMLButtonElement>('[aria-label="为“预算”生成建议"]');
+  await act(async () => budgetSuggest?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(host.textContent?.includes('模型暂时不可用，可以重试') === true, 'isolates a field failure and keeps retry visible');
+  budgetSuggest = host.querySelector<HTMLButtonElement>('[aria-label="为“预算”生成建议"]');
+  await act(async () => budgetSuggest?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(inferRequests.length === 3 && inferRequests.every((request) => request.inputIds?.length === 1), 'retries only the failed field');
+  ok(host.textContent?.includes('暂时无法建议：预算需要用户决定') === true, 'shows a field-specific skip reason');
 
   const firstEntry = host.querySelector<HTMLButtonElement>('[aria-label="填写：活动名称"]');
   await act(async () => firstEntry?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
@@ -173,9 +209,16 @@ async function main(): Promise<void> {
         onSubmit={() => editSubmit}
         onRefresh={async () => {}}
         onAddCustom={async () => submitResult}
+        onInfer={inferInput}
       />,
     );
   });
+  const completedSuggest = host.querySelector<HTMLButtonElement>('[aria-label="为“活动名称”生成建议"]');
+  ok(completedSuggest?.textContent?.trim() === '', 'completed information keeps the same additive suggestion icon');
+  await act(async () => completedSuggest?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(host.querySelector<HTMLInputElement>('input')?.value === '自动建议的活动名称', 'replacement suggestion opens as a draft without overwriting the saved value');
+  const completedSuggestClose = host.querySelector<HTMLButtonElement>('[aria-label="关闭填写信息"]');
+  await act(async () => completedSuggestClose?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   const completedEntry = host.querySelector<HTMLButtonElement>('[aria-label="修改：活动名称"]');
   await act(async () => completedEntry?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
   ok(host.textContent?.includes('修改已填写信息') === true, 'completed information opens in edit mode');

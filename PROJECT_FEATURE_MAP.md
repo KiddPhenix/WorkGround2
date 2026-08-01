@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### 工作信息单项建议
+- Status: done
+- Branch: `developping/work-input-field-inference+2026-08-01`
+- Location: `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/components/presentation/WorkDefinitionOverview.tsx`, 对应样式与测试
+- Summary: 移除面板级批量推断入口，为定义字段和自定义字段统一增加无文字的小星光图标；单次只生成目标字段的候选草稿，保存前不改原值，并支持独立忙碌、失败与重试。后端定向测试、前端组件 33 项、TypeScript、CSS、Wails 正式构建及正式 EXE 五字段视觉验收通过。
+- Keywords: Work information, per-field inference, suggestion, retry
+- Source: user-reported+screenshot
+- Updated: 2026-08-01
+
 ### Session 工作入口文案柔化
 - Status: done
 - Branch: `developping/work-entry-copy+2026-08-01`

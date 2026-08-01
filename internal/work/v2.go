@@ -302,8 +302,9 @@ type AddCustomWorkInputRequest struct {
 }
 
 // InferWorkInputsRequest asks the configured model to propose draft values for
-// pending inputs. It is read-only: callers must review and submit the returned
-// values through SubmitWorkInput.
+// selected inputs. When InputIDs is omitted, only pending inputs are targeted;
+// explicit IDs may also request a replacement suggestion for an existing value.
+// It is read-only: callers must review and submit returned values separately.
 type InferWorkInputsRequest struct {
 	WorkID             string   `json:"workId"`
 	RunID              string   `json:"runId"`
