@@ -442,6 +442,10 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             onPrimaryAction={() => {
               document.querySelector<HTMLButtonElement>(".session-footer-dock .composer__btn--send")?.click();
             }}
+            workSendAvailable={workSendAvailable}
+            workSendSelected={workSendSelected}
+            workSendDisabled={composerDisabled || running || readOnly}
+            onWorkSendChange={onWorkSendChange}
             onSwitchModel={onSwitchModel}
             onCycleCollaboration={onCycleMode}
             onSetApprovalMode={onSetToolApprovalMode}

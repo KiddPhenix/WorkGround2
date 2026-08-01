@@ -243,6 +243,9 @@ const configEl = render(
     toolApprovalMode="ask"
     controllerReady={true}
     onPrimaryAction={() => {}}
+    workSendAvailable={true}
+    workSendSelected={false}
+    onWorkSendChange={() => {}}
     onSwitchModel={async () => {}}
     onCycleCollaboration={() => {}}
     onSetApprovalMode={() => {}}
@@ -251,6 +254,7 @@ const configEl = render(
 ok(hasText(configEl, "DeepSeek-R1"), "ConfigBar: shows model");
 ok(hasText(configEl, "33%"), "ConfigBar: shows context percent");
 ok(hasText(configEl, "运行中"), "ConfigBar: shows runtime status");
+ok(hasText(configEl, "发送为工作"), "ConfigBar: shows Work intent beside send action");
 cleanup();
 
 // ── Test: Run stream renders terminal and active states ─────────────────────

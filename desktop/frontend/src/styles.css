@@ -31575,6 +31575,42 @@ body > .mermaid-diagram--fullscreen {
   white-space: nowrap;
 }
 
+.runtime-config-bar__work-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 11px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface-2));
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.runtime-config-bar__work-send:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  color: var(--fg);
+}
+.runtime-config-bar__work-send--active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+  color: var(--fg);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.runtime-config-bar__work-send:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.runtime-config-bar__work-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .runtime-config-bar__primary-action {
   display: inline-flex;
   align-items: center;

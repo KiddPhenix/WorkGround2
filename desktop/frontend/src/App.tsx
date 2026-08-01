@@ -1158,10 +1158,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     prompt: string;
   } | null>(null);
   workBootstrapRef.current = workBootstrap;
-  const activeWorkConfig = workConfig !== null && workConfig.tabID === activeTabId ? workConfig : null;
+  const workTargetID = activeTabId || activeSessionId || state.meta?.sessionId || "";
+  const workTargetKey = workTargetID || "__active__";
+  const activeWorkConfig = workConfig !== null && workConfig.tabID === workTargetKey ? workConfig : null;
   const workEnabled = activeWorkConfig?.enabled ?? null;
   const workConfigFailed = activeWorkConfig?.failed === true;
-  const currentWorkCapability = workCapability !== null && workCapability.tabID === activeTabId ? workCapability : null;
+  const currentWorkCapability = workCapability !== null && workCapability.tabID === workTargetKey ? workCapability : null;
   const workCapable = currentWorkCapability?.capable ?? null;
   const workCapabilityFailed = currentWorkCapability?.failed === true;
 
@@ -1175,47 +1177,44 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     workGenRef.current++;
     setWorkConfig(null);
     setWorkCapability(null);
-    if (!activeTabId) {
-      return;
-    }
     const gen = workGenRef.current;
-    app.WorkEnabled(activeTabId)
+    app.WorkEnabled(workTargetID)
       .then((enabled) => {
         if (workGenRef.current !== gen) return;
-        setWorkConfig({ tabID: activeTabId, enabled, failed: false });
-        if (!enabled) setWorkCapability({ tabID: activeTabId, capable: false, failed: false });
+        setWorkConfig({ tabID: workTargetKey, enabled, failed: false });
+        if (!enabled) setWorkCapability({ tabID: workTargetKey, capable: false, failed: false });
       })
       .catch(() => {
         if (workGenRef.current !== gen) return;
-        setWorkConfig({ tabID: activeTabId, enabled: true, failed: true });
-        setWorkCapability({ tabID: activeTabId, capable: false, failed: true });
+        setWorkConfig({ tabID: workTargetKey, enabled: true, failed: true });
+        setWorkCapability({ tabID: workTargetKey, capable: false, failed: true });
       });
-  }, [activeTabId]);
+  }, [workTargetID, workTargetKey]);
 
   // Runtime capability controls which Work surface is mounted. It never owns
   // whether the configured navigation entry exists or can be clicked.
   useEffect(() => {
-    if (!activeTabId || workEnabled !== true || workConfigFailed) return;
+    if (workEnabled !== true || workConfigFailed) return;
     const gen = workGenRef.current;
-    const tabID = activeTabId;
+    const tabID = workTargetID;
     const retryDelays = [120, 300];
     let retryTimer: number | undefined;
     let cancelled = false;
-    setWorkCapability({ tabID: activeTabId, capable: null, failed: false });
+    setWorkCapability({ tabID: workTargetKey, capable: null, failed: false });
     if (!workControllerReady) return;
     const probe = (attempt: number) => {
       app.WorkCapable(tabID)
         .then((capable) => {
           if (cancelled || workGenRef.current !== gen) return;
           if (capable) {
-            setWorkCapability({ tabID, capable: true, failed: false });
+            setWorkCapability({ tabID: workTargetKey, capable: true, failed: false });
             return;
           }
           if (attempt < retryDelays.length) {
             retryTimer = window.setTimeout(() => probe(attempt + 1), retryDelays[attempt]);
             return;
           }
-          setWorkCapability({ tabID, capable: false, failed: true });
+          setWorkCapability({ tabID: workTargetKey, capable: false, failed: true });
         })
         .catch(() => {
           if (cancelled || workGenRef.current !== gen) return;
@@ -1223,7 +1222,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
             retryTimer = window.setTimeout(() => probe(attempt + 1), retryDelays[attempt]);
             return;
           }
-          setWorkCapability({ tabID, capable: false, failed: true });
+          setWorkCapability({ tabID: workTargetKey, capable: false, failed: true });
         });
     };
     probe(0);
@@ -1231,43 +1230,43 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       cancelled = true;
       if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
-  }, [activeTabId, workConfigFailed, workControllerReady, workEnabled]);
+  }, [workConfigFailed, workControllerReady, workEnabled, workTargetID, workTargetKey]);
 
   // Configuration is the sole owner of whether Work exists in this tab. A
   // capability failure keeps the lightweight Work error surface open.
   const handleRetryWorkConfig = useCallback(() => {
-    if (!activeTabId || !workConfigFailed) return;
-    const tabID = activeTabId;
+    if (!workConfigFailed) return;
+    const tabID = workTargetID;
     const gen = ++workGenRef.current;
-    setWorkCapability({ tabID, capable: null, failed: false });
+    setWorkCapability({ tabID: workTargetKey, capable: null, failed: false });
     app.WorkEnabled(tabID)
       .then((enabled) => {
         if (workGenRef.current !== gen) return;
-        setWorkConfig({ tabID, enabled, failed: false });
-        if (!enabled) setWorkCapability({ tabID, capable: false, failed: false });
+        setWorkConfig({ tabID: workTargetKey, enabled, failed: false });
+        if (!enabled) setWorkCapability({ tabID: workTargetKey, capable: false, failed: false });
       })
       .catch(() => {
         if (workGenRef.current !== gen) return;
-        setWorkConfig({ tabID, enabled: true, failed: true });
-        setWorkCapability({ tabID, capable: false, failed: true });
+        setWorkConfig({ tabID: workTargetKey, enabled: true, failed: true });
+        setWorkCapability({ tabID: workTargetKey, capable: false, failed: true });
       });
-  }, [activeTabId, workConfigFailed]);
+  }, [workConfigFailed, workTargetID, workTargetKey]);
 
   const handleRetryWorkCapability = useCallback(() => {
-    if (!activeTabId || workConfigFailed || !workCapabilityFailed || !workControllerReady) return;
-    const tabID = activeTabId;
+    if (workConfigFailed || !workCapabilityFailed || !workControllerReady) return;
+    const tabID = workTargetID;
     const gen = workGenRef.current;
-    setWorkCapability({ tabID, capable: null, failed: false });
+    setWorkCapability({ tabID: workTargetKey, capable: null, failed: false });
     app.WorkCapable(tabID)
       .then((capable) => {
         if (workGenRef.current !== gen) return;
-        setWorkCapability({ tabID, capable, failed: !capable });
+        setWorkCapability({ tabID: workTargetKey, capable, failed: !capable });
       })
       .catch(() => {
         if (workGenRef.current !== gen) return;
-        setWorkCapability({ tabID, capable: false, failed: true });
+        setWorkCapability({ tabID: workTargetKey, capable: false, failed: true });
       });
-  }, [activeTabId, workCapabilityFailed, workConfigFailed, workControllerReady]);
+  }, [workCapabilityFailed, workConfigFailed, workControllerReady, workTargetID, workTargetKey]);
 
   useEffect(() => {
     try { localStorage.setItem("projectTree:timeFilter", topicTimeFilter); } catch { /* ignore */ }
@@ -1567,8 +1566,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     [chatReservedWidth, sidebarCollapsed, sidebarWidth, viewportWidth, workspacePanelMaximized, workspacePanelMinWidth, workspacePanelOpen],
   );
   const activeTab = useMemo(
-    () => tabMetas.find((tab) => tab.id === activeTabId) ?? tabMetas.find((tab) => tab.active),
-    [activeTabId, tabMetas],
+    () => tabMetas.find((tab) => tab.id === activeTabId)
+      ?? tabMetas.find((tab) => tab.sessionId === activeSessionId)
+      ?? tabMetas.find((tab) => tab.sessionId === state.meta?.sessionId)
+      ?? tabMetas.find((tab) => tab.active),
+    [activeSessionId, activeTabId, state.meta?.sessionId, tabMetas],
   );
   const composerSessionKey = useMemo(() => {
     return composerDraftKeyForTab(activeTab, activeTabId);
@@ -1851,24 +1853,23 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const sessionHasContent = state.items.length > 0
     || Boolean(state.live?.text || state.live?.reasoning)
     || hydratePlaceholderActive;
-  // TabMeta.blank is an asynchronously refreshed backend hint and can be
-  // absent while an already-open blank tab is otherwise ready. Render from the
-  // visible Session state; CreateWorkSession remains the authoritative blank
-  // and idempotency boundary when the first message is actually submitted.
-  const workSendAvailable = Boolean(
-    activeTab
-    && activeTab.sessionKind !== "work"
-    && !activeTab.readOnly
+  const activeWorkBootstrap = workBootstrap !== null && (
+    workBootstrap.tabID === activeTab?.id
+    || workBootstrap.requestId === activeTab?.workRequestId
+    || (!activeTab && workBootstrap.tabID === workTargetID)
+  ) ? workBootstrap : null;
+  // The visible Session state decides whether this is still the first message.
+  // CreateWorkSession repeats the blank-path check atomically at conversion.
+  const workSendAvailable = (activeTab?.sessionKind ?? "normal") === "normal"
+    && !activeTab?.readOnly
     && !sessionHasContent
     && !state.historyLoading
     && workEnabled !== false
-    && !workBootstrap,
-  );
-  const workSendSelected = workSendAvailable && Boolean(workSendByTab[activeTab?.id || ""]);
+    && !activeWorkBootstrap;
+  const workSendSelected = workSendAvailable && Boolean(workSendByTab[workTargetKey]);
   const handleWorkSendChange = useCallback(async (selected: boolean) => {
-    if (!activeTabId) return;
     if (!selected) {
-      setWorkSendByTab((current) => ({ ...current, [activeTabId]: false }));
+      setWorkSendByTab((current) => ({ ...current, [workTargetKey]: false }));
       return;
     }
     if (workConfigFailed) {
@@ -1881,9 +1882,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       return;
     }
     if (workCapable !== true) {
-      const tabID = activeTabId;
+      const tabID = workTargetID;
       const gen = workGenRef.current;
-      setWorkCapability({ tabID, capable: null, failed: false });
+      setWorkCapability({ tabID: workTargetKey, capable: null, failed: false });
       let capable = false;
       try {
         capable = await app.WorkCapable(tabID);
@@ -1891,14 +1892,14 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         capable = false;
       }
       if (workGenRef.current !== gen) return;
-      setWorkCapability({ tabID, capable, failed: !capable });
+      setWorkCapability({ tabID: workTargetKey, capable, failed: !capable });
       if (!capable) {
         showToast(t("work.unavailable"), "warn");
         return;
       }
     }
-    setWorkSendByTab((current) => ({ ...current, [activeTabId]: selected }));
-  }, [activeTabId, handleRetryWorkConfig, showToast, t, workCapable, workConfigFailed, workControllerReady, workEnabled]);
+    setWorkSendByTab((current) => ({ ...current, [workTargetKey]: selected }));
+  }, [handleRetryWorkConfig, showToast, t, workCapable, workConfigFailed, workControllerReady, workEnabled, workTargetID, workTargetKey]);
   const getSessionMarkdown = useCallback(
     () => sessionItemsToMarkdown(sessionTitle, state.items, state.live),
     [sessionTitle, state.items, state.live],
@@ -3316,8 +3317,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [activeTabId, enqueueTabSwitch, patchWorkBootstrap, refreshProjectsAndTabs]);
 
   const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
-    const tab = activeTab;
-    if (!tab || tab.sessionKind === "work" || tab.readOnly || sessionHasContent || state.historyLoading) {
+    const tabID = activeTab?.id || workTargetID;
+    if (activeTab?.sessionKind === "work" || activeTab?.readOnly || sessionHasContent || state.historyLoading) {
       throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
     }
     if (workEnabled !== true || workConfigFailed || workCapable !== true) {
@@ -3328,7 +3329,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (!prompt || !submitted) return;
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
-    const requestKey = tab.id;
+    const scope = activeTab?.scope || (state.meta?.workspaceRoot ? "project" : "global");
+    const workspaceRoot = activeTab?.workspaceRoot || state.meta?.workspaceRoot || "";
+    const requestKey = tabID || workTargetKey;
     let requestID = workCreateRequestsRef.current.get(requestKey);
     if (!requestID) {
       requestID = `work-session-${crypto.randomUUID()}`;
@@ -3336,9 +3339,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
     const bootstrap: WorkBootstrap = {
       requestId: requestID,
-      tabID: tab.id,
-      scope: tab.scope,
-      workspaceRoot: tab.scope === "project" ? tab.workspaceRoot || "" : "",
+      tabID,
+      scope,
+      workspaceRoot: scope === "project" ? workspaceRoot : "",
       prompt,
       submitPrompt: submitted,
       phase: "initializing",
@@ -3346,12 +3349,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     writeWorkDraft(requestID, submitted);
     workBootstrapRef.current = bootstrap;
     setWorkBootstrap(bootstrap);
-    setWorkSendByTab((current) => ({ ...current, [tab.id]: false }));
+    setWorkSendByTab((current) => ({ ...current, [workTargetKey]: false }));
     const result = await beginWorkInitialization(bootstrap);
     if (!result || result.error) {
       throw new Error(result?.error || "Work 初始化失败，请重试。");
     }
-  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, state.historyLoading, t, workCapable, workConfigFailed, workEnabled]);
+  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, state.historyLoading, state.meta?.workspaceRoot, t, workCapable, workConfigFailed, workEnabled, workTargetID, workTargetKey]);
 
   const revealWorkPanel = useCallback((intentID: string) => {
     setWorkStartIntent((current) => current?.id === intentID ? null : current);
@@ -3659,11 +3662,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const showWorkSurface = activeTab?.sessionKind === "work";
   const showReadyWork = showWorkSurface && workEnabled === true && !workConfigFailed && workCapable === true;
   const workUnavailable = workEnabled === false || workConfigFailed || workCapabilityFailed;
-  const activeWorkBootstrap = workBootstrap !== null && (
-    workBootstrap.tabID === activeTab?.id
-    || workBootstrap.requestId === activeTab?.workRequestId
-  ) ? workBootstrap : null;
-
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
   useEffect(() => {
     if (typeof window === "undefined") return;
