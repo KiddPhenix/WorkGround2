@@ -35,6 +35,10 @@ func (p *patchPlannerFake) PlanPatch(_ context.Context, in PatchPlanInput) (*Pat
 		return &PatchPlan{Operations: []PatchOp{{
 			Op: "replace", Path: "artifactSlots/report/title", NewValue: json.RawMessage(`"Final report"`),
 		}}}, nil
+	case "pending-workflow-title":
+		return &PatchPlan{Operations: []PatchOp{{
+			Op: "replace", Path: "nodes/n2/title", NewValue: json.RawMessage(`"Updated pending node"`),
+		}}}, nil
 	case "wrong-before":
 		return &PatchPlan{Operations: []PatchOp{{
 			Op: "replace", Path: "nodes/n1/title", OldValue: json.RawMessage(`"wrong"`),
@@ -350,6 +354,109 @@ func TestPatchPreviewPlannerContextAndRestartReplay(t *testing.T) {
 	if planner.calls != 0 || replay.Revision != result.Revision ||
 		replay.Preview.Digest != result.Preview.Digest || replay.Preview.ExpiresAt != result.Preview.ExpiresAt {
 		t.Fatalf("preview replay changed result: first=%+v replay=%+v calls=%d", result, replay, planner.calls)
+	}
+}
+
+func TestPatchPendingDefinitionTaskPreviewAndApply(t *testing.T) {
+	h := newPatchHarness(t)
+	current, _, err := h.store.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID, err := DeriveTaskID(h.runID, "n2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.V2TaskRuntimes[taskID] != nil {
+		t.Fatalf("fixture unexpectedly materialized pending runtime: %+v", current.V2TaskRuntimes[taskID])
+	}
+	input := PreviewWorkPatchInput{
+		WorkID: h.workID, RunID: h.runID, TaskID: taskID,
+		BlockID: V2DiscussionBlockID("n2"), BlockRevision: 1,
+		SessionID: "discussion-session", Instruction: "pending-workflow-title",
+		DefinitionRevision: current.V2CurrentRevision,
+		Scope:              PatchWorkflow, RequestID: "preview-pending-definition-task",
+	}
+
+	preview, err := h.service.PreviewWorkPatch(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.planner.last.TargetNodeID != "n2" || h.planner.last.Task == nil ||
+		h.planner.last.Task.ID != taskID || h.planner.last.Task.Name != "n2" {
+		t.Fatalf("planner pending task context=%+v", h.planner.last)
+	}
+	apply := ApplyWorkPatchInput{
+		WorkID: h.workID, PatchID: preview.Preview.ID, PreviewDigest: preview.Preview.Digest,
+		Scope: PatchWorkflow, ExpectedRevision: preview.Revision, RequestID: "apply-pending-definition-task",
+	}
+	result, err := h.service.ApplyWorkPatch(context.Background(), apply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.NewRevision != current.V2CurrentRevision+1 {
+		t.Fatalf("pending task apply result=%+v", result)
+	}
+	applied, err := h.store.LoadRevision(h.workID, result.NewRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Nodes[1].Title != "Updated pending node" {
+		t.Fatalf("pending node title=%q", applied.Nodes[1].Title)
+	}
+	replay, err := h.service.ApplyWorkPatch(context.Background(), apply)
+	if err != nil || !replay.Duplicate || replay.WorkRevision != result.WorkRevision {
+		t.Fatalf("pending task apply replay=%+v err=%v", replay, err)
+	}
+}
+
+func TestPatchPendingDefinitionTaskRejectsForgedIdentity(t *testing.T) {
+	otherRunTaskID, err := DeriveTaskID("another-run", "n2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRunTaskID, err := DeriveTaskID("missing-run", "n2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		runID  string
+		taskID string
+	}{
+		{name: "forged task", taskID: "forged-task"},
+		{name: "task derived for another run", taskID: otherRunTaskID},
+		{name: "missing run", runID: "missing-run", taskID: missingRunTaskID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPatchHarness(t)
+			current, before, err := h.store.LoadState(h.workID, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			runID := tc.runID
+			if runID == "" {
+				runID = h.runID
+			}
+			_, err = h.service.PreviewWorkPatch(context.Background(), PreviewWorkPatchInput{
+				WorkID: h.workID, RunID: runID, TaskID: tc.taskID,
+				BlockID: V2DiscussionBlockID("n2"), BlockRevision: 1,
+				SessionID: "discussion-session", Instruction: "pending-workflow-title",
+				DefinitionRevision: current.V2CurrentRevision,
+				Scope:              PatchWorkflow, RequestID: "preview-" + strings.ReplaceAll(tc.name, " ", "-"),
+			})
+			if err == nil || (!strings.Contains(err.Error(), "task") && !strings.Contains(err.Error(), "run")) {
+				t.Fatalf("expected identity rejection, got %v", err)
+			}
+			_, after, loadErr := h.store.LoadState(h.workID, "")
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if h.planner.calls != 0 || after.Revision != before.Revision {
+				t.Fatalf("invalid identity reached planner or mutated state: calls=%d before=%d after=%d",
+					h.planner.calls, before.Revision, after.Revision)
+			}
+		})
 	}
 }
 
@@ -913,5 +1020,177 @@ func TestPatchWorkflowOrphanRejectsDifferentIntent(t *testing.T) {
 	if after.Digest != orphan.Digest || current.V2CurrentRevision != 2 || state.Revision != second.Revision {
 		t.Fatalf("conflict polluted state: orphan=%+v after=%+v current=%d rev=%d",
 			orphan, after, current.V2CurrentRevision, state.Revision)
+	}
+}
+
+// ── Pending-node (unmaterialized V2TaskRuntime) tests ──────────────────────
+
+func TestPatchPreviewForPendingNode(t *testing.T) {
+	h := newLegacyPatchHarness(t)
+	current, _, err := h.store.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedTaskID, err := DeriveTaskID(h.runID, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rt := current.V2TaskRuntimes[derivedTaskID]; rt != nil {
+		t.Fatalf("harness unexpectedly has V2TaskRuntime for %q: %+v", derivedTaskID, rt)
+	}
+
+	input := PreviewWorkPatchInput{
+		WorkID:             h.workID,
+		RunID:              h.runID,
+		TaskID:             derivedTaskID,
+		BlockID:            V2DiscussionBlockID("n1"),
+		BlockRevision:      1,
+		SessionID:          "discussion-session",
+		Instruction:        "derived-block-title",
+		DefinitionRevision: current.V2CurrentRevision,
+		Scope:              PatchBlock,
+		RequestID:          "preview-pending-" + t.Name(),
+	}
+	result, err := h.service.PreviewWorkPatch(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Duplicate {
+		t.Fatal("unexpected duplicate on first call")
+	}
+	if result.Preview == nil {
+		t.Fatal("preview is nil")
+	}
+	if h.planner.calls != 1 {
+		t.Fatalf("planner calls=%d want 1", h.planner.calls)
+	}
+	if h.planner.last.Task == nil || h.planner.last.Task.ID != derivedTaskID {
+		t.Fatalf("planner task %+v, want ID=%q", h.planner.last.Task, derivedTaskID)
+	}
+	if h.planner.last.TargetNodeID != "n1" {
+		t.Fatalf("planner targetNodeID=%q want n1", h.planner.last.TargetNodeID)
+	}
+	if h.planner.last.Block == nil || h.planner.last.Block.ID != V2DiscussionBlockID("n1") {
+		t.Fatalf("planner block %+v", h.planner.last.Block)
+	}
+
+	// Idempotent replay.
+	replay, err := h.service.PreviewWorkPatch(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.Duplicate || replay.Preview == nil || h.planner.calls != 1 {
+		t.Fatalf("replay duplicate=%v preview=%v calls=%d", replay.Duplicate, replay.Preview != nil, h.planner.calls)
+	}
+}
+
+func TestPatchPreviewRejectsForgedStableID(t *testing.T) {
+	h := newLegacyPatchHarness(t)
+	current, _, err := h.store.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Forged: correct run but a node ID that doesn't exist in definition.
+	forgedTaskID, err := DeriveTaskID(h.runID, "nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := PreviewWorkPatchInput{
+		WorkID:             h.workID,
+		RunID:              h.runID,
+		TaskID:             forgedTaskID,
+		BlockID:            V2DiscussionBlockID("n1"),
+		BlockRevision:      1,
+		SessionID:          "discussion-session",
+		Instruction:        "derived-block-title",
+		DefinitionRevision: current.V2CurrentRevision,
+		Scope:              PatchBlock,
+		RequestID:          "preview-forged-node-" + t.Name(),
+	}
+	if _, err := h.service.PreviewWorkPatch(context.Background(), forged); err == nil ||
+		!strings.Contains(err.Error(), "does not match any node") {
+		t.Fatalf("expected forged node rejection, got %v", err)
+	}
+
+	// Forged: wrong run ID embedded in DeriveTaskID.
+	forgedTaskID2, err := DeriveTaskID("wrong-run", "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedRun := PreviewWorkPatchInput{
+		WorkID:             h.workID,
+		RunID:              h.runID,
+		TaskID:             forgedTaskID2,
+		BlockID:            V2DiscussionBlockID("n1"),
+		BlockRevision:      1,
+		SessionID:          "discussion-session",
+		Instruction:        "derived-block-title",
+		DefinitionRevision: current.V2CurrentRevision,
+		Scope:              PatchBlock,
+		RequestID:          "preview-forged-run-" + t.Name(),
+	}
+	if _, err := h.service.PreviewWorkPatch(context.Background(), forgedRun); err == nil ||
+		!strings.Contains(err.Error(), "does not match any node") {
+		t.Fatalf("expected cross-run rejection, got %v", err)
+	}
+}
+
+func TestPatchApplyForPendingNode(t *testing.T) {
+	h := newLegacyPatchHarness(t)
+	current, _, err := h.store.LoadState(h.workID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	derivedTaskID, err := DeriveTaskID(h.runID, "n1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: Preview.
+	previewInput := PreviewWorkPatchInput{
+		WorkID:             h.workID,
+		RunID:              h.runID,
+		TaskID:             derivedTaskID,
+		BlockID:            V2DiscussionBlockID("n1"),
+		BlockRevision:      1,
+		SessionID:          "discussion-session",
+		Instruction:        "derived-block-title",
+		DefinitionRevision: current.V2CurrentRevision,
+		Scope:              PatchBlock,
+		RequestID:          "preview-apply-pending-" + t.Name(),
+	}
+	previewResult, err := h.service.PreviewWorkPatch(context.Background(), previewInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Apply.
+	applyInput := ApplyWorkPatchInput{
+		WorkID:           h.workID,
+		PatchID:          previewResult.Preview.ID,
+		PreviewDigest:    previewResult.Preview.Digest,
+		Scope:            PatchBlock,
+		ExpectedRevision: previewResult.Revision,
+		RequestID:        "apply-pending-" + t.Name(),
+	}
+	applyResult, err := h.service.ApplyWorkPatch(context.Background(), applyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applyResult.Committed {
+		t.Fatal("apply not committed")
+	}
+	if len(applyResult.AffectedBlockIDs) == 0 {
+		t.Fatal("no affected blocks")
+	}
+
+	// Step 3: Idempotent replay.
+	replay, err := h.service.ApplyWorkPatch(context.Background(), applyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.Duplicate {
+		t.Fatal("apply replay not duplicate")
 	}
 }

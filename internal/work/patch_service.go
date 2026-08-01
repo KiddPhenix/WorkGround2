@@ -473,7 +473,23 @@ func (s *PatchService) ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchI
 		return nil, fmt.Errorf("work: ApplyWorkPatch: base definition revision mismatch: preview %d, current %d",
 			preview.BaseDefinitionRev, current.V2CurrentRevision)
 	}
-	_, _, block, resolveErr := resolvePatchContext(current, preview.RunID, preview.TaskID, preview.BlockID)
+	baseDefinition, err := s.loadDefinition(input.WorkID, preview.BaseDefinitionRev)
+	if err != nil {
+		return nil, fmt.Errorf("work: ApplyWorkPatch: load base definition: %w", err)
+	}
+	_, _, node, resolveErr := resolveDiscussionTask(current, baseDefinition, preview.RunID, preview.TaskID)
+	if resolveErr != nil {
+		return nil, fmt.Errorf("work: ApplyWorkPatch: %w", resolveErr)
+	}
+	if !discussionBlockBound(current, preview.RunID, preview.TaskID, node, preview.BlockID) {
+		return nil, fmt.Errorf(
+			"work: ApplyWorkPatch: block %q is not bound to task %q node %q",
+			preview.BlockID,
+			preview.TaskID,
+			node.ID,
+		)
+	}
+	block, resolveErr := resolveBlockForApply(current, preview.BlockID)
 	if resolveErr != nil {
 		return nil, fmt.Errorf("work: ApplyWorkPatch: %w", resolveErr)
 	}
@@ -486,10 +502,6 @@ func (s *PatchService) ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchI
 	if preview.Digest == "" || input.PreviewDigest != preview.Digest ||
 		hashPatchPreviewDigest(preview) != preview.Digest {
 		return nil, fmt.Errorf("work: ApplyWorkPatch: preview digest mismatch")
-	}
-	baseDefinition, err := s.loadDefinition(input.WorkID, preview.BaseDefinitionRev)
-	if err != nil {
-		return nil, fmt.Errorf("work: ApplyWorkPatch: load base definition: %w", err)
 	}
 	if _, err := normalizePatchOps(baseDefinition, block, preview.Scope, preview.BlockID, preview.Operations); err != nil {
 		return nil, fmt.Errorf("work: ApplyWorkPatch: invalid preview body: %w", err)
@@ -523,7 +535,7 @@ func (s *PatchService) ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchI
 
 func (s *PatchService) applyBlockPatch(ctx context.Context, current *Work, preview *WorkPatchPreview,
 	input ApplyWorkPatchInput, eventRequestID, intentDigest string, state WorkEventState, now time.Time) (int64, error) {
-	_, _, block, err := resolvePatchContext(current, preview.RunID, preview.TaskID, preview.BlockID)
+	block, err := resolveBlockForApply(current, preview.BlockID)
 	if err != nil {
 		return 0, fmt.Errorf("work: ApplyWorkPatch: %w", err)
 	}
@@ -1491,18 +1503,21 @@ func resolvePatchRunTask(current *Work, runID, taskID string) (*WorkflowRun, *Ta
 	return run, task, nil
 }
 
-func resolvePatchContext(current *Work, runID, taskID, blockID string) (*WorkflowRun, *Task, *BlockInstance, error) {
-	run, task, err := resolvePatchRunTask(current, runID, taskID)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+// resolveBlockForApply looks up a block in current.Blocks without requiring
+// task resolution. It is used in ApplyWorkPatch paths where only the block
+// is needed and the task may not be materialized yet (e.g. a pending node
+// whose block was materialized during preview).
+func resolveBlockForApply(current *Work, blockID string) (*BlockInstance, error) {
 	for i := range current.Blocks {
-		if current.Blocks[i].ID == blockID && !current.Blocks[i].Tombstone {
+		if current.Blocks[i].ID == blockID {
+			if current.Blocks[i].Tombstone {
+				return nil, fmt.Errorf("block %q was removed", blockID)
+			}
 			blockCopy := cloneDiscussionBlock(current.Blocks[i])
-			return run, task, &blockCopy, nil
+			return &blockCopy, nil
 		}
 	}
-	return nil, nil, nil, fmt.Errorf("block %q not found", blockID)
+	return nil, fmt.Errorf("block %q not found", blockID)
 }
 
 func cloneWorkForPatch(current *Work) *Work {

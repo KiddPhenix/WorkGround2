@@ -16,33 +16,65 @@ func V2DiscussionBlockID(nodeID string) string {
 	return v2DiscussionBlockPrefix + hex.EncodeToString([]byte(nodeID))
 }
 
+func resolveDiscussionTask(
+	current *Work,
+	def *WorkDefinitionRevision,
+	runID, taskID string,
+) (*WorkflowRun, *Task, *NodeDef, error) {
+	run, task, resolveErr := resolvePatchRunTask(current, runID, taskID)
+	if resolveErr == nil {
+		nodeID := task.ID
+		if runtime := current.V2TaskRuntimes[taskID]; runtime != nil && runtime.RunID == runID {
+			nodeID = runtime.NodeID
+		}
+		for i := range def.Nodes {
+			if def.Nodes[i].ID == nodeID {
+				return run, task, &def.Nodes[i], nil
+			}
+		}
+		return nil, nil, nil, fmt.Errorf(
+			"task %q does not resolve to a node in definition revision %d",
+			taskID,
+			def.Revision,
+		)
+	}
+
+	// The complete DAG is visible before every runtime is materialized. Accept
+	// only the exact stable ID of a node in this run's authoritative definition.
+	var pendingRun *WorkflowRun
+	for i := range current.Runs {
+		if current.Runs[i].ID == runID {
+			runCopy := current.Runs[i]
+			pendingRun = &runCopy
+			break
+		}
+	}
+	if pendingRun == nil {
+		return nil, nil, nil, resolveErr
+	}
+	for i := range def.Nodes {
+		candidateID, err := DeriveTaskID(runID, def.Nodes[i].ID)
+		if err == nil && candidateID == taskID {
+			return pendingRun, &Task{
+				ID: taskID, Name: def.Nodes[i].ID, State: RunPending,
+			}, &def.Nodes[i], nil
+		}
+	}
+	return nil, nil, nil, fmt.Errorf(
+		"task %q does not match any node in definition revision %d for run %q",
+		taskID, def.Revision, runID,
+	)
+}
+
 func resolveDiscussionBlock(
 	current *Work,
 	def *WorkDefinitionRevision,
 	runID, taskID, blockID string,
 	now time.Time,
 ) (*WorkflowRun, *Task, *BlockInstance, string, bool, error) {
-	run, task, err := resolvePatchRunTask(current, runID, taskID)
+	run, task, node, err := resolveDiscussionTask(current, def, runID, taskID)
 	if err != nil {
 		return nil, nil, nil, "", false, err
-	}
-	nodeID := task.ID
-	if runtime := current.V2TaskRuntimes[taskID]; runtime != nil && runtime.RunID == runID {
-		nodeID = runtime.NodeID
-	}
-	var node *NodeDef
-	for i := range def.Nodes {
-		if def.Nodes[i].ID == nodeID {
-			node = &def.Nodes[i]
-			break
-		}
-	}
-	if node == nil {
-		return nil, nil, nil, "", false, fmt.Errorf(
-			"task %q does not resolve to a node in definition revision %d",
-			taskID,
-			def.Revision,
-		)
 	}
 	if !discussionBlockBound(current, runID, taskID, node, blockID) {
 		return nil, nil, nil, "", false, fmt.Errorf(

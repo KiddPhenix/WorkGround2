@@ -277,6 +277,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-30
 
+### Work 未物化任务调整恢复
+- Location: `internal/work/discussion_block.go`, `internal/work/patch_service.go`, `internal/work/patch_service_test.go`
+- Summary: PreviewWorkPatch 和 ApplyWorkPatch 对尚未物化 V2TaskRuntime 的 Definition 节点使用当前 Run 的稳定 Task ID 精确解析，并保持 Block 绑定、伪造身份拒绝与幂等回放。
+- Keywords: PreviewWorkPatch, ApplyWorkPatch, DeriveTaskID, pending node, V2TaskRuntime
+- Source: verified-by-search
+- Updated: 2026-08-01
+
 ### Work 结构化产物能力预执行
 - Location: `internal/work/ports.go`, `internal/work/scheduler_v2.go`, `internal/agent/agent.go`, `internal/control/controller.go`, `internal/control/taskexec.go`
 - Summary: 带能力要求（如 image_generation）的 ArtifactSlot 在 TaskExecutor 主模型运行前，通过标准 Agent 工具路径串行执行 request_help preflight；SlotPreflight 由 ArtifactSlotDef + CapabilityProducer 自动生成，失败结果可观察并允许主模型 fallback；无能力槽保持旧路径。
