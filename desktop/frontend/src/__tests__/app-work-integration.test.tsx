@@ -75,12 +75,12 @@ ok(
   sessionSurfaceSource.includes("workSendAvailable={workSendAvailable}")
     && sessionSurfaceSource.includes("onWorkSendChange={onWorkSendChange}")
     && runtimeConfigSource.includes("runtime-config-bar__work-send")
-    && runtimeConfigSource.includes('aria-label="发送为工作"'),
+    && runtimeConfigSource.includes('workSendSelected ? "将作为工作发送" : "作为工作开始"'),
   "工作台隐藏 Composer 元数据栏时，发送为工作入口由可见的 RuntimeConfigBar 承载",
 );
 ok(
   runtimeConfigSource.includes("? <CheckCircle2")
-    && runtimeConfigSource.includes('workSendSelected ? "工作模式已选" : "发送为工作"')
+    && runtimeConfigSource.includes('workSendSelected ? "将作为工作发送" : "作为工作开始"')
     && stylesSource.includes(".runtime-config-bar__work-send--active")
     && stylesSource.includes("background: var(--accent);"),
   "发送为工作的选中态同时使用实心强调色、勾选图标和明确状态文案",

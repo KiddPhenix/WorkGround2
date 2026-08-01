@@ -3327,7 +3327,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
     const tabID = activeTab?.id || workTargetID;
     if (activeTab?.sessionKind === "work" || activeTab?.readOnly || activeTab?.blank === false || sessionHasUserMessage) {
-      throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
+      throw new Error("只有空白 Session 的第一条消息可以作为工作开始。");
     }
     if (workEnabled !== true || workConfigFailed || workCapable !== true) {
       throw new Error(t("work.unavailable"));

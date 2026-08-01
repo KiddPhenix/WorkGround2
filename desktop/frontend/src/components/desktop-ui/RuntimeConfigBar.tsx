@@ -238,7 +238,7 @@ export function RuntimeConfigBar({
         <button
           type="button"
           className={`runtime-config-bar__work-send${workSendSelected ? " runtime-config-bar__work-send--active" : ""}`}
-          aria-label="发送为工作"
+          aria-label={workSendSelected ? "将作为工作发送" : "作为工作开始"}
           aria-pressed={workSendSelected}
           disabled={workSendDisabled}
           onClick={() => onWorkSendChange?.(!workSendSelected)}
@@ -246,7 +246,7 @@ export function RuntimeConfigBar({
           {workSendSelected
             ? <CheckCircle2 size={16} aria-hidden="true" />
             : <BriefcaseBusiness size={15} aria-hidden="true" />}
-          <span>{workSendSelected ? "工作模式已选" : "发送为工作"}</span>
+          <span>{workSendSelected ? "将作为工作发送" : "作为工作开始"}</span>
         </button>
       )}
 

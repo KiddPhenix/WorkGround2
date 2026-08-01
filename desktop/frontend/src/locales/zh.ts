@@ -595,7 +595,7 @@ export const zh: Record<DictKey, string> = {
   "composer.tokenEconomyExitTitle": "关闭省 token 模式",
   "composer.goalInputPlaceholder": "请输入目标…",
   "composer.goalInputRequired": "请输入目标",
-  "composer.sendAsWork": "发送为工作",
+  "composer.sendAsWork": "作为工作开始",
   "composer.sendAsWorkDesc": "把这个空白 Session 的第一条消息作为工作说明发送。",
   "composer.sendAsWorkOnDesc": "已选择：发送后原地转换为工作 Session。",
   "composer.planHint": "shift+tab",

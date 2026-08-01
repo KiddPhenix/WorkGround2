@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session 工作入口文案柔化
+- Status: done
+- Branch: `developping/work-entry-copy+2026-08-01`
+- Location: `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/App.tsx`
+- Summary: 将偏命令式的“发送为工作”调整为“作为工作开始”，选中后显示“将作为工作发送”，让入口更自然并保持状态明确；Work 合约 37 项、Iris 合约 17 项、TypeScript、Wails 正式构建及正式 EXE 双状态验收通过。
+- Keywords: Work entry, copywriting, send as Work, selected state
+- Source: user-reported
+- Updated: 2026-08-01
+
 ### Session 输入区左右留白恢复
 - Status: done
 - Branch: `developping/composer-horizontal-spacing+2026-08-01`
