@@ -45,6 +45,23 @@ ok(
     && appSource.includes('? "error" : "planning"'),
   "Composer 首条消息可发送为工作，结构规划期间保留 Session 过渡面",
 );
+const workSendGate = appSource.slice(
+  appSource.indexOf("const workSendAvailable = Boolean("),
+  appSource.indexOf("const workSendSelected =", appSource.indexOf("const workSendAvailable = Boolean(")),
+);
+ok(
+  workSendGate.includes("activeTab.blank === true")
+    && workSendGate.includes("workEnabled !== false")
+    && !workSendGate.includes("workCapable")
+    && !workSendGate.includes("sessionTurns"),
+  "空白普通 Session 始终显示发送为工作入口，不再被异步能力与轮次探测隐藏",
+);
+ok(
+  appSource.includes("const handleWorkSendChange = useCallback(async")
+    && appSource.includes("capable = await app.WorkCapable(tabID)")
+    && appSource.includes('showToast(t("work.unavailable"), "warn")'),
+  "选择发送为工作时按需确认能力，失败显式提示且不会转换 Session",
+);
 ok(
   appSource.includes("workInitTaskRef")
     && appSource.includes("running?.requestId === bootstrap.requestId")

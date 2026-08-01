@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session 发送为工作入口常驻
+- Status: done
+- Branch: `developping/work-send-entry-visibility+2026-08-01`
+- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
+- Summary: 空白普通 Session 始终显示“发送为工作”；入口由后端 blank 状态决定，Work 能力在用户选择时按需确认，失败显式提示且不会提前转换 Session。Work 集成契约 31 项、TypeScript、CSS、前端生产构建和 Wails 正式构建通过。
+- Keywords: send as Work, blank Session, WorkCapable, first message, visibility
+- Source: user-reported+verified-by-code-and-tests
+- Updated: 2026-08-01
+
 ### Work 后新建 Session 回归修复
 - Status: done
 - Branch: `developping/session-new-session-regression+2026-08-01`
