@@ -85,6 +85,7 @@ type WorkService interface {
 	CreateCandidateRevisionWithResult(context.Context, work.CreateCandidateRevisionInput) (*work.CreateCandidateRevisionResult, error)
 	SubmitWorkInput(context.Context, work.SubmitInputRequest) (*work.SubmitInputResult, error)
 	AddCustomWorkInput(context.Context, work.AddCustomWorkInputRequest) (*work.SubmitInputResult, error)
+	InferWorkInputs(context.Context, work.InferWorkInputsRequest) (*work.InferWorkInputsResult, error)
 	SetInputCornerstone(context.Context, work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error)
 	PreviewWorkPatch(context.Context, work.PreviewWorkPatchInput) (*work.PreviewWorkPatchResult, error)
 	ApplyWorkPatch(context.Context, work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error)
@@ -777,6 +778,13 @@ func (w workMethods) AddCustomWorkInput(ctx context.Context, input work.AddCusto
 		return nil, err
 	}
 	return w.svc.AddCustomWorkInput(ctx, input)
+}
+
+func (w workMethods) InferWorkInputs(ctx context.Context, input work.InferWorkInputsRequest) (*work.InferWorkInputsResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.InferWorkInputs(ctx, input)
 }
 
 func (w workMethods) SetInputCornerstone(ctx context.Context, input work.SetInputCornerstoneRequest) (*work.CornerstonePinResult, error) {

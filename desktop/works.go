@@ -1014,6 +1014,16 @@ func (a *App) AddCustomWorkInput(tabID string, input work.AddCustomWorkInputRequ
 	return result, nil
 }
 
+// InferWorkInputs returns reviewable model-proposed drafts without committing
+// them to the Work event log.
+func (a *App) InferWorkInputs(tabID string, input work.InferWorkInputsRequest) (*work.InferWorkInputsResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.InferWorkInputs(a.bootContext(), input)
+}
+
 func submitInputRequest(input work.SubmitWorkInputRequest) work.SubmitInputRequest {
 	return work.SubmitInputRequest{
 		WorkID:           input.WorkID,

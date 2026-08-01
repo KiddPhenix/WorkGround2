@@ -114,6 +114,10 @@ async function main(): Promise<void> {
         onPin={async () => pinResult}
         onUnpin={async () => pinResult}
         onRefresh={async () => {}}
+        onInfer={async () => ({
+          items: [{ inputId: 'input-1', value: '自动推断的活动名称', reason: '依据工作目标' }],
+          skipped: [{ inputId: 'input-2', reason: '预算需要用户决定' }],
+        })}
       />,
     );
   });
@@ -122,6 +126,15 @@ async function main(): Promise<void> {
   ok(host.textContent?.includes('0/2 已填写') === true, 'shows progress');
   ok(host.querySelector('[role="dialog"]') === null, 'form layer starts closed');
   ok(host.querySelectorAll('.work-definition-overview__field').length === 2, 'renders each information entry');
+
+  const inferButton = [...host.querySelectorAll<HTMLButtonElement>('button')].find((button) =>
+    button.textContent?.includes('自己推断'));
+  await act(async () => inferButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(host.textContent?.includes('已推断 1 项，另有 1 项需要你提供') === true, 'reports inferred and skipped inputs');
+  ok(host.querySelector<HTMLInputElement>('input')?.value === '自动推断的活动名称', 'stages inferred value as a reviewable draft');
+  const inferredClose = host.querySelector<HTMLButtonElement>('[aria-label="关闭填写信息"]');
+  await act(async () => inferredClose?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(host.querySelector('[role="dialog"]') === null, 'inferred draft remains reviewable without auto-submit');
 
   const firstEntry = host.querySelector<HTMLButtonElement>('[aria-label="填写：活动名称"]');
   await act(async () => firstEntry?.dispatchEvent(new MouseEvent('click', { bubbles: true })));

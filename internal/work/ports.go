@@ -94,6 +94,27 @@ type DefinitionPlanner interface {
 	PlanDefinition(context.Context, DefinitionPlanInput) (*DefinitionPlan, error)
 }
 
+// InputInferrer proposes typed draft values from authoritative Work context.
+// Implementations may call a model, but never mutate Work state.
+type InputInferrer interface {
+	InferInputs(context.Context, InputInferencePlanInput) (*InferWorkInputsResult, error)
+}
+
+// InputInferenceTarget binds a runtime input identity to its immutable spec.
+type InputInferenceTarget struct {
+	InputID string    `json:"inputId"`
+	Spec    InputSpec `json:"spec"`
+}
+
+// InputInferencePlanInput is the bounded, authoritative context available to
+// an InputInferrer.
+type InputInferencePlanInput struct {
+	Work       *Work
+	Definition *WorkDefinitionRevision
+	Inputs     []WorkInput
+	Targets    []InputInferenceTarget
+}
+
 // DefinitionPlanInput is the immutable authoritative context supplied to a
 // DefinitionPlanner. Base is loaded by Service; callers cannot provide it.
 type DefinitionPlanInput struct {

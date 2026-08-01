@@ -15,6 +15,8 @@ import type {
   CornerstonePinResult,
   AddCustomWorkInputRequest,
   InputSpec,
+  InferWorkInputsRequest,
+  InferWorkInputsResult,
   SelectWorkInputFileRequest,
   SelectWorkInputFileResult,
   SelectWorkInformationFileRequest,
@@ -51,6 +53,7 @@ export interface WorkInformationPanelProps {
   onSelectFile?: (request: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
   onSelectCustomFile?: (request: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
   onAddCustom?: (request: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
+  onInfer?: (request: InferWorkInputsRequest) => Promise<InferWorkInputsResult>;
 }
 
 function inputKey(
@@ -105,6 +108,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   onSelectFile,
   onSelectCustomFile,
   onAddCustom,
+  onInfer,
 }) => {
   const effectiveRunId = runId ?? '';
   const ensureCard = useWorkUIStore((state) => state.ensureCard);
@@ -123,6 +127,9 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   const [addFiles, setAddFiles] = useState<ArtifactRef[]>([]);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [inferBusy, setInferBusy] = useState(false);
+  const [inferError, setInferError] = useState<string | null>(null);
+  const [inferNotice, setInferNotice] = useState<string | null>(null);
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const editAuthorityRef = useRef<{ inputId: string; revision: number } | null>(null);
 
@@ -372,17 +379,58 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     }
   };
 
+  const inferPending = async () => {
+    if (!onInfer || !effectiveRunId || pending.length === 0) return;
+    setInferBusy(true);
+    setInferError(null);
+    setInferNotice(null);
+    try {
+      const result = await onInfer({
+        workId,
+        runId: effectiveRunId,
+        inputIds: pending.map((input) => input.id),
+        definitionRevision: definition.revision,
+      });
+      for (const item of result.items) {
+        const input = pending.find((candidate) => candidate.id === item.inputId);
+        if (!input) continue;
+        const draftKey = inputKey(workId, effectiveRunId, input, definition.revision);
+        setInputDirtyFlag(workId, draftKey);
+        setInputDraft(workId, draftKey, item.value as DraftValue);
+      }
+      const skipped = result.skipped?.length ?? 0;
+      if (result.items.length > 0) {
+        const first = pending.find((input) => input.id === result.items[0].inputId);
+        setInferNotice(`已推断 ${result.items.length} 项${skipped ? `，另有 ${skipped} 项需要你提供` : ''}；请确认后保存。`);
+        if (first) setPanel(workId, { activeInputId: first.id, closed: false });
+      } else {
+        setInferNotice(skipped ? `${skipped} 项均缺少可靠依据，需要你提供。` : '没有可推断的待填写信息。');
+      }
+    } catch (error) {
+      setInferError(error instanceof Error ? error.message : '工作信息推断失败，请重试');
+    } finally {
+      setInferBusy(false);
+    }
+  };
+
   const summary = (
-    <WorkDefinitionOverview
-      definition={definition}
-      inputs={currentInputs}
-      runId={effectiveRunId}
-      tasks={[]}
-      showStructure={false}
-      onSelectInput={openInput}
-      selectableInputSpecIds={selectableInputSpecIds}
-      onAddInput={!readonly && onAddCustom ? openAdd : undefined}
-    />
+    <>
+      <WorkDefinitionOverview
+        definition={definition}
+        inputs={currentInputs}
+        runId={effectiveRunId}
+        tasks={[]}
+        showStructure={false}
+        onSelectInput={openInput}
+        selectableInputSpecIds={selectableInputSpecIds}
+        onAddInput={!readonly && onAddCustom ? openAdd : undefined}
+        onInferInputs={!readonly && onInfer ? () => void inferPending() : undefined}
+        inferBusy={inferBusy}
+        inferDisabled={pending.length === 0}
+      />
+      {inferError ? <div className="wg2-info-inference-note is-error" role="alert">{inferError}</div> : null}
+      {inferNotice ? <div className="wg2-info-inference-note" role="status">{inferNotice}</div> : null}
+    </>
   );
 
   if (!overlayOpen) {

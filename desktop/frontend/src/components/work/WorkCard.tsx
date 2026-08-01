@@ -898,6 +898,9 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onAddCustomWorkInput={
                 resolvedPort.addCustomWorkInput ? (req) => adapter.addCustomWorkInput(req) : undefined
               }
+              onInferWorkInputs={
+                resolvedPort.inferWorkInputs ? (req) => adapter.inferWorkInputs(req) : undefined
+              }
               onPreviewPatch={
                 resolvedPort.previewWorkPatch
                   ? (intent) => adapter.previewWorkPatch(intent)

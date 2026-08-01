@@ -56,6 +56,27 @@
   background: color-mix(in srgb, var(--accent) 13%, transparent);
 }
 
+.work-definition-overview__add:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.work-definition-overview__infer {
+  border-color: color-mix(in srgb, var(--fg-muted) 30%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 6%, transparent);
+  color: var(--fg-muted);
+}
+
+.wg2-info-inference-note {
+  margin: 7px 2px 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.wg2-info-inference-note.is-error {
+  color: var(--danger);
+}
+
 .wg2-info-overlay {
   position: absolute;
   inset: 0;

@@ -121,6 +121,10 @@ export interface WailsWorkBindings {
     tabID: string,
     input: import('./types_v2').AddCustomWorkInputRequest,
   ): Promise<GoSubmitInputResult>;
+  InferWorkInputs(
+    tabID: string,
+    input: import('./types_v2').InferWorkInputsRequest,
+  ): Promise<import('./types_v2').InferWorkInputsResult>;
   SubmitWorkInput(
     tabID: string,
     input: import('./types_v2').SubmitWorkInputRequest,
@@ -1300,6 +1304,15 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
           },
         };
       }
+    },
+
+    inferWorkInputs: async (input) => {
+      const result = await app.InferWorkInputs(tabID, input);
+      if (!result || !Array.isArray(result.items)
+        || (result.skipped != null && !Array.isArray(result.skipped))) {
+        throw new Error('InferWorkInputs: response contract malformed');
+      }
+      return result;
     },
 
     submitWorkInput: async (input) => {

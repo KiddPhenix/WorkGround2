@@ -1220,6 +1220,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 			workSvc.SetV2PatchPlanner(newBootPatchPlanner(execProv, cfg.Agent.Temperature, 4096, workLLMLog))
 			workSvc.SetV2DefinitionPlanner(newBootDefinitionPlanner(workDefinitionProv, cfg.Agent.Temperature, 8192, workLLMLog))
+			workSvc.SetInputInferrer(newBootInputInferrer(workDefinitionProv, cfg.Agent.Temperature, 4096, workLLMLog))
 			artifactSources := opts.ArtifactSourceResolver
 			if artifactSources == nil {
 				artifactSources = work.NewStoreArtifactSourceResolver(store, store, root)

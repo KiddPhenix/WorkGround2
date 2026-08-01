@@ -1,4 +1,4 @@
-import { Check, CircleDashed, GitBranch, Plus, SlidersHorizontal } from 'lucide-react';
+import { Check, CircleDashed, GitBranch, Plus, SlidersHorizontal, Sparkles } from 'lucide-react';
 
 import type {
   InputSpec,
@@ -17,6 +17,9 @@ export interface WorkDefinitionOverviewProps {
   onSelectInput?: (specId: string) => void;
   selectableInputSpecIds?: ReadonlySet<string>;
   onAddInput?: () => void;
+  onInferInputs?: () => void;
+  inferBusy?: boolean;
+  inferDisabled?: boolean;
 }
 
 function optionLabels(spec: InputSpec): Map<string, string> {
@@ -110,13 +113,16 @@ export function WorkDefinitionOverview({
   onSelectInput,
   selectableInputSpecIds,
   onAddInput,
+  onInferInputs,
+  inferBusy,
+  inferDisabled,
 }: WorkDefinitionOverviewProps) {
   const inputSpecs = [
     ...definition.inputSpecs,
     ...inputs.flatMap((input) => input.customSpec ? [input.customSpec] : []),
   ].filter((spec, index, all) => all.findIndex((candidate) => candidate.id === spec.id) === index);
   const bySpec = currentInputs(inputs, runId);
-  const showInputs = inputSpecs.length > 0 || !!onAddInput;
+  const showInputs = inputSpecs.length > 0 || !!onAddInput || !!onInferInputs;
   const filled = inputSpecs.filter((spec) => {
     const input = bySpec.get(spec.id);
     return input?.state === 'submitted' || input?.state === 'accepted';
@@ -140,6 +146,17 @@ export function WorkDefinitionOverview({
               <span className="work-definition-overview__count">
                 {filled}/{inputSpecs.length} 已填写
               </span>
+              {onInferInputs ? (
+                <button
+                  type="button"
+                  className="work-definition-overview__add work-definition-overview__infer"
+                  onClick={onInferInputs}
+                  disabled={inferBusy || inferDisabled}
+                >
+                  <Sparkles size={14} aria-hidden="true" />
+                  {inferBusy ? '推断中…' : '自己推断'}
+                </button>
+              ) : null}
               {onAddInput ? (
                 <button type="button" className="work-definition-overview__add" onClick={onAddInput}>
                   <Plus size={14} aria-hidden="true" />

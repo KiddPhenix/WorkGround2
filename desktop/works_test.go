@@ -1935,6 +1935,7 @@ func TestV2WailsBindingsStayThin(t *testing.T) {
 	for method, delegate := range map[string]string{
 		"BeginWorkPlanning": "BeginWorkPlanningWithResult",
 		"ApplyDefinition":   "ApplyDefinition", "SubmitWorkInput": "SubmitWorkInput",
+		"InferWorkInputs":     "InferWorkInputs",
 		"SetInputCornerstone": "SetInputCornerstone", "PreviewWorkPatch": "PreviewWorkPatch",
 		"ApplyWorkPatch": "ApplyWorkPatch", "RetryWorkNode": "RetryWorkNode",
 	} {

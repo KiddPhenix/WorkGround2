@@ -4784,6 +4784,7 @@ function makeMockApp(): AppBindings {
     SelectWorkInputFile: () => Promise.reject(workUnavailableError()),
     SelectWorkInformationFile: () => Promise.reject(workUnavailableError()),
     AddCustomWorkInput: () => Promise.reject(workUnavailableError()),
+    InferWorkInputs: () => Promise.reject(workUnavailableError()),
     SubmitWorkInput: () => Promise.reject(workUnavailableError()),
     SetInputCornerstone: () => Promise.reject(workUnavailableError()),
     PreviewWorkPatch: () => Promise.reject(workUnavailableError()),

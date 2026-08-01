@@ -32,6 +32,8 @@ import type {
   SelectWorkInputFileResult,
   SelectWorkInformationFileRequest,
   AddCustomWorkInputRequest,
+  InferWorkInputsRequest,
+  InferWorkInputsResult,
 } from '../../work/types_v2';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
@@ -102,6 +104,7 @@ export interface WorkCardFrontProps {
   onSelectWorkInputFile?: (request: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
   onSelectWorkInformationFile?: (request: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
   onAddCustomWorkInput?: (request: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
+  onInferWorkInputs?: (request: InferWorkInputsRequest) => Promise<InferWorkInputsResult>;
   // ── Discussion callbacks ──────────────────────────────────────
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
@@ -273,6 +276,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onSelectWorkInputFile,
   onSelectWorkInformationFile,
   onAddCustomWorkInput,
+  onInferWorkInputs,
   onPreviewPatch,
   onApplyPatch,
   onDiscussionDraftChange,
@@ -531,6 +535,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onSelectFile={onSelectWorkInputFile}
             onSelectCustomFile={onSelectWorkInformationFile}
             onAddCustom={onAddCustomWorkInput}
+            onInfer={onInferWorkInputs}
           />
 
           {hasPresentationCanvas ? (

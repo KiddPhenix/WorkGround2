@@ -137,6 +137,18 @@ function Preview(): React.ReactElement {
     setInputs((current) => [...current, input]);
     return { input, revision: request.expectedRevision + 2, duplicate: false, committed: true, recoverable: false };
   };
+  const infer = async () => ({
+    items: [
+      { inputId: 'preview-input-short', value: '夏日协作营', reason: '依据团建方案目标生成可编辑名称' },
+      { inputId: 'preview-input-list', value: 'outdoor', reason: '默认采用适合团队协作的户外活动' },
+      { inputId: 'preview-input-multi', value: ['game', 'meal'], reason: '采用协作游戏与聚餐的常见组合' },
+    ],
+    skipped: [
+      { inputId: 'preview-input-date', reason: '具体日期需要用户确认' },
+      { inputId: 'preview-input-number', reason: '预算需要用户决定' },
+      { inputId: 'preview-input-file', reason: '需要用户提供真实文件' },
+    ],
+  });
 
   return (
     <main className="wg2-info-preview">
@@ -175,6 +187,7 @@ function Preview(): React.ReactElement {
           onSelectFile={selectFile}
           onSelectCustomFile={selectFile}
           onAddCustom={addCustom}
+          onInfer={infer}
         />
       </div>
     </main>

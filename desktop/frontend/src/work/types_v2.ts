@@ -130,6 +130,29 @@ export interface WorkInput {
   updatedAt: string;
 }
 
+export interface InferWorkInputsRequest {
+  workId: string;
+  runId: string;
+  inputIds?: string[];
+  definitionRevision: number;
+}
+
+export interface InferredWorkInput {
+  inputId: string;
+  value: unknown;
+  reason?: string;
+}
+
+export interface SkippedWorkInput {
+  inputId: string;
+  reason: string;
+}
+
+export interface InferWorkInputsResult {
+  items: InferredWorkInput[];
+  skipped?: SkippedWorkInput[];
+}
+
 // ── V2 discussion patches ──────────────────────────────────────────────────
 
 export type PatchScope = 'block' | 'workflow';

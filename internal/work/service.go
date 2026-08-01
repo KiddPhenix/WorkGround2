@@ -18,32 +18,34 @@ import (
 // projections, manifests, indexes and archive files are derived side effects
 // repaired by WorkStore on retry or reload.
 type Service struct {
-	store         WorkStore
-	blueprint     *BlueprintRegistry
-	blockSchemas  *BlockSchemaRegistry
-	blockSchemaMu sync.RWMutex
-	tools         ToolCatalog
-	sink          ViewSink
-	actions       *ActionRegistry
-	permissions   PermissionChecker
-	runner        *WorkRunner
-	runMu         sync.Mutex
-	runFlights    map[string]*runFlight
-	cornerstones  *CornerstoneManager
-	defStore      DefinitionRevisionStore
-	defStoreMu    sync.Mutex
-	defPlanner    DefinitionPlanner
-	defPlannerMu  sync.RWMutex
-	actionCfgMu   sync.RWMutex
-	actionMu      sync.Mutex
-	actionRuns    map[string]*actionFlight
-	sessionRefs   *SessionRefCoordinator
-	refScope      string
-	rerunMu       sync.Mutex
-	rerunPlans    map[string]preparedRerun
-	v2            *V2Coordinator
-	v2Transport   atomic.Bool
-	previewSvc    *PreviewService
+	store           WorkStore
+	blueprint       *BlueprintRegistry
+	blockSchemas    *BlockSchemaRegistry
+	blockSchemaMu   sync.RWMutex
+	tools           ToolCatalog
+	sink            ViewSink
+	actions         *ActionRegistry
+	permissions     PermissionChecker
+	runner          *WorkRunner
+	runMu           sync.Mutex
+	runFlights      map[string]*runFlight
+	cornerstones    *CornerstoneManager
+	defStore        DefinitionRevisionStore
+	defStoreMu      sync.Mutex
+	defPlanner      DefinitionPlanner
+	defPlannerMu    sync.RWMutex
+	inputInferrer   InputInferrer
+	inputInferrerMu sync.RWMutex
+	actionCfgMu     sync.RWMutex
+	actionMu        sync.Mutex
+	actionRuns      map[string]*actionFlight
+	sessionRefs     *SessionRefCoordinator
+	refScope        string
+	rerunMu         sync.Mutex
+	rerunPlans      map[string]preparedRerun
+	v2              *V2Coordinator
+	v2Transport     atomic.Bool
+	previewSvc      *PreviewService
 }
 
 type runFlight struct{ done chan struct{} }
@@ -205,6 +207,26 @@ func (s *Service) definitionPlanner() DefinitionPlanner {
 	s.defPlannerMu.RLock()
 	defer s.defPlannerMu.RUnlock()
 	return s.defPlanner
+}
+
+// SetInputInferrer configures read-only model inference for pending Work
+// inputs. Nil keeps the capability unavailable and retryable.
+func (s *Service) SetInputInferrer(inferrer InputInferrer) {
+	if s == nil {
+		return
+	}
+	s.inputInferrerMu.Lock()
+	s.inputInferrer = inferrer
+	s.inputInferrerMu.Unlock()
+}
+
+func (s *Service) inputInferencePlanner() InputInferrer {
+	if s == nil {
+		return nil
+	}
+	s.inputInferrerMu.RLock()
+	defer s.inputInferrerMu.RUnlock()
+	return s.inputInferrer
 }
 
 // SetTaskExecutor replaces the narrow task execution adapter. Nil and typed-nil

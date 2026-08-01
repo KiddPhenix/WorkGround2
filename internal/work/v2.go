@@ -301,6 +301,35 @@ type AddCustomWorkInputRequest struct {
 	RequestID          string          `json:"requestId"`
 }
 
+// InferWorkInputsRequest asks the configured model to propose draft values for
+// pending inputs. It is read-only: callers must review and submit the returned
+// values through SubmitWorkInput.
+type InferWorkInputsRequest struct {
+	WorkID             string   `json:"workId"`
+	RunID              string   `json:"runId"`
+	InputIDs           []string `json:"inputIds,omitempty"`
+	DefinitionRevision int64    `json:"definitionRevision"`
+}
+
+// InferredWorkInput is one model-proposed draft value.
+type InferredWorkInput struct {
+	InputID string          `json:"inputId"`
+	Value   json.RawMessage `json:"value"`
+	Reason  string          `json:"reason,omitempty"`
+}
+
+// SkippedWorkInput explains why an input was not safe to infer.
+type SkippedWorkInput struct {
+	InputID string `json:"inputId"`
+	Reason  string `json:"reason"`
+}
+
+// InferWorkInputsResult contains uncommitted drafts and explicit skips.
+type InferWorkInputsResult struct {
+	Items   []InferredWorkInput `json:"items"`
+	Skipped []SkippedWorkInput  `json:"skipped,omitempty"`
+}
+
 // InputSubmissionResult reports the outcome of a SubmitWorkInput call.
 type InputSubmissionResult struct {
 	Input     *WorkInput `json:"input"`

@@ -127,6 +127,9 @@ type WorkController interface {
 	// changing the active WorkDefinitionRevision.
 	AddCustomWorkInput(ctx context.Context, input AddCustomWorkInputRequest) (*SubmitInputResult, error)
 
+	// InferWorkInputs proposes reviewable drafts without mutating Work state.
+	InferWorkInputs(ctx context.Context, input InferWorkInputsRequest) (*InferWorkInputsResult, error)
+
 	// SetInputCornerstone pins or unpins a submitted input as a Cornerstone.
 	// Pin and input submission are independent operations; pin failure does
 	// not roll back the input.

@@ -36,6 +36,8 @@ import type {
   ApplyWorkPatchRequest,
   ApplyWorkPatchResult,
   AddCustomWorkInputRequest,
+  InferWorkInputsRequest,
+  InferWorkInputsResult,
   BeginWorkPlanningInput,
   BeginWorkPlanningResult,
   CornerstonePinResult,
@@ -102,6 +104,7 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   selectWorkInputFile?: (input: SelectWorkInputFileRequest) => Promise<SelectWorkInputFileResult>;
   selectWorkInformationFile?: (input: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
   addCustomWorkInput?: (input: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
+  inferWorkInputs?: (input: InferWorkInputsRequest) => Promise<InferWorkInputsResult>;
   submitWorkInput?: (input: SubmitWorkInputRequest) => Promise<SubmitInputResult>;
   setInputCornerstone?: (input: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
   previewWorkPatch?: (input: PreviewWorkPatchRequest) => Promise<PreviewWorkPatchResult>;
@@ -940,6 +943,11 @@ export class WorkControllerAdapter {
       );
     }
     return result;
+  };
+
+  inferWorkInputs = async (input: InferWorkInputsRequest): Promise<InferWorkInputsResult> => {
+	if (!this.port.inferWorkInputs) throw new Error('工作信息推断能力尚未连接。');
+	return this.port.inferWorkInputs(input);
   };
 
   submitWorkInput = async (input: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
