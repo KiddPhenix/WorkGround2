@@ -20,6 +20,8 @@ const typesSource = readFileSync(resolve(testDir, "../lib/types.ts"), "utf8");
 const availabilitySource = readFileSync(resolve(testDir, "../components/work/WorkAvailabilitySurface.tsx"), "utf8");
 const workCardSource = readFileSync(resolve(testDir, "../components/work/WorkCard.tsx"), "utf8");
 const linkedSessionSource = readFileSync(resolve(testDir, "../components/work/LinkedSessionCard.tsx"), "utf8");
+const sessionSurfaceSource = readFileSync(resolve(testDir, "../components/SessionSurface.tsx"), "utf8");
+const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
 
 process.stdout.write("\nApp Work Session integration contract\n");
 
@@ -46,15 +48,37 @@ ok(
   "Composer 首条消息可发送为工作，结构规划期间保留 Session 过渡面",
 );
 const workSendGate = appSource.slice(
-  appSource.indexOf("const workSendAvailable = Boolean("),
-  appSource.indexOf("const workSendSelected =", appSource.indexOf("const workSendAvailable = Boolean(")),
+  appSource.indexOf("const workSendAvailable ="),
+  appSource.indexOf("const workSendSelected =", appSource.indexOf("const workSendAvailable =")),
 );
 ok(
-  workSendGate.includes("activeTab.blank === true")
-    && workSendGate.includes("workEnabled !== false")
-    && !workSendGate.includes("workCapable")
-    && !workSendGate.includes("sessionTurns"),
-  "空白普通 Session 始终显示发送为工作入口，不再被异步能力与轮次探测隐藏",
+  appSource.includes("tab.sessionId === activeSessionId")
+    && appSource.includes("tab.sessionId === state.meta?.sessionId"),
+  "恢复链路仅有 Hook 或 Controller Meta 的 Session 业务 ID 时仍能解析活动 TabMeta",
+);
+ok(
+  workSendGate.includes('(activeTab?.sessionKind ?? "normal") === "normal"')
+    && workSendGate.includes("!sessionHasContent")
+    && workSendGate.includes("!state.historyLoading")
+    && workSendGate.includes("!activeWorkBootstrap"),
+  "发送为工作只在普通空白 Session 的第一句话前显示，恢复期间和 Work 过渡时关闭",
+);
+ok(
+  sessionSurfaceSource.includes("workSendAvailable={workSendAvailable}")
+    && sessionSurfaceSource.includes("onWorkSendChange={onWorkSendChange}")
+    && runtimeConfigSource.includes("runtime-config-bar__work-send")
+    && runtimeConfigSource.includes('aria-label="发送为工作"'),
+  "工作台隐藏 Composer 元数据栏时，发送为工作入口由可见的 RuntimeConfigBar 承载",
+);
+const workSendSubmitGate = appSource.slice(
+  appSource.indexOf("const handleSendAsWork = useCallback(async"),
+  appSource.indexOf("const revealWorkPanel", appSource.indexOf("const handleSendAsWork = useCallback(async")),
+);
+ok(
+  workSendSubmitGate.includes("activeTab?.id || workTargetID")
+    && workSendSubmitGate.includes('state.meta?.workspaceRoot ? "project" : "global"')
+    && !workSendSubmitGate.includes("tab.blank"),
+  "TabMeta 缺失时允许空 ID 路由到后端活动 Tab，并由 CreateWorkSession 对当前路径做最终空白校验",
 );
 ok(
   appSource.includes("const handleWorkSendChange = useCallback(async")

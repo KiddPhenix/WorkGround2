@@ -2631,7 +2631,7 @@ export function Composer({
                     type="button"
                     className={`composer-work-send${workSendSelected ? " composer-work-send--active" : ""}`}
                     onClick={() => onWorkSendChange?.(!workSendSelected)}
-                    disabled={disabled || running}
+                    disabled={disabled || running || readOnly}
                     aria-pressed={workSendSelected}
                     aria-label={t("composer.sendAsWork")}
                   >

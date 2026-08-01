@@ -87,6 +87,36 @@ func TestEnsureBlankTabReusesExistingBlankTab(t *testing.T) {
 	}
 }
 
+func TestBlankTabUsesCurrentControllerSessionPath(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stalePath := agent.NewSessionPath(dir, "stale")
+	if err := os.WriteFile(stalePath, []byte("stale conversation"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	currentPath := agent.NewSessionPath(dir, "current")
+	if err := os.WriteFile(currentPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tab := &WorkspaceTab{
+		WorkspaceRoot: projectRoot,
+		SessionPath:   stalePath,
+		Ctrl:          carryingController(nil, currentPath),
+	}
+	if got := tab.currentSessionPath(); got != currentPath {
+		t.Fatalf("current session path = %q, want %q", got, currentPath)
+	}
+	if !blankTabSessionPathHasNoContent(tab) {
+		t.Fatal("blank detection used stale tab.SessionPath instead of controller SessionPath")
+	}
+}
+
 func TestEnsureBlankTabDoesNotReuseWorkSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

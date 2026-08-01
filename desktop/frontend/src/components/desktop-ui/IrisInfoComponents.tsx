@@ -345,6 +345,10 @@ export function SessionConfigBar({
   controllerReady,
   tabId,
   onPrimaryAction,
+  workSendAvailable,
+  workSendSelected,
+  workSendDisabled,
+  onWorkSendChange,
   onSwitchModel,
   onCycleCollaboration,
   onSetApprovalMode,
@@ -358,6 +362,10 @@ export function SessionConfigBar({
   controllerReady: boolean;
   tabId?: string;
   onPrimaryAction?: () => void;
+  workSendAvailable?: boolean;
+  workSendSelected?: boolean;
+  workSendDisabled?: boolean;
+  onWorkSendChange?: (selected: boolean) => void;
   onSwitchModel?: (name: string) => Promise<void>;
   onCycleCollaboration?: () => void;
   onSetApprovalMode?: (mode: ToolApprovalMode) => void;
@@ -379,6 +387,10 @@ export function SessionConfigBar({
       hasQueue={hasQueue}
       tabId={tabId}
       onPrimaryAction={controllerReady ? onPrimaryAction : undefined}
+      workSendAvailable={workSendAvailable}
+      workSendSelected={workSendSelected}
+      workSendDisabled={workSendDisabled}
+      onWorkSendChange={onWorkSendChange}
       onSwitchModel={onSwitchModel}
       onCycleCollaboration={onCycleCollaboration}
       onSetApprovalMode={onSetApprovalMode}

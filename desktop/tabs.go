@@ -2078,10 +2078,11 @@ func blankTabSessionPathHasNoContent(tab *WorkspaceTab) bool {
 	if tab == nil {
 		return false
 	}
-	if strings.TrimSpace(tab.SessionPath) == "" {
+	sessionPath := tab.currentSessionPath()
+	if sessionPath == "" {
 		return true
 	}
-	path, ok := pinnedTabSessionPath(tabSessionDir(tab), tab.SessionPath)
+	path, ok := pinnedTabSessionPath(tabSessionDir(tab), sessionPath)
 	if !ok {
 		return false
 	}

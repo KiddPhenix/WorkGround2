@@ -2,6 +2,7 @@ import {
   Activity,
   ArrowUp,
   Brain,
+  BriefcaseBusiness,
   CornerDownRight,
   Gauge,
   Shield,
@@ -32,6 +33,11 @@ export interface RuntimeConfigBarProps {
   tabId?: string;
   /** Fired when the user clicks the primary action button. */
   onPrimaryAction?: () => void;
+  /** Whether the first message should be submitted as a Work session. */
+  workSendAvailable?: boolean;
+  workSendSelected?: boolean;
+  workSendDisabled?: boolean;
+  onWorkSendChange?: (selected: boolean) => void;
   /** Switch model via the embedded ModelSwitcher. */
   onSwitchModel?: (name: string) => Promise<void>;
   /** Cycle collaboration mode (normal ↔ plan). */
@@ -168,6 +174,10 @@ export function RuntimeConfigBar({
   hasQueue,
   tabId,
   onPrimaryAction,
+  workSendAvailable = false,
+  workSendSelected = false,
+  workSendDisabled = false,
+  onWorkSendChange,
   onSwitchModel,
   onCycleCollaboration,
   onSetApprovalMode,
@@ -221,6 +231,20 @@ export function RuntimeConfigBar({
         }} ariaLabel="工具批准模式" />
       ) : (
         <StaticPill icon={approvalIcon(config.approvalMode)} label={`审批：${approvalLabel(config.approvalMode)}`} ariaLabel="工具批准模式" />
+      )}
+
+      {workSendAvailable && (
+        <button
+          type="button"
+          className={`runtime-config-bar__work-send${workSendSelected ? " runtime-config-bar__work-send--active" : ""}`}
+          aria-label="发送为工作"
+          aria-pressed={workSendSelected}
+          disabled={workSendDisabled}
+          onClick={() => onWorkSendChange?.(!workSendSelected)}
+        >
+          <BriefcaseBusiness size={15} aria-hidden="true" />
+          <span>发送为工作</span>
+        </button>
       )}
 
       {/* Primary Action */}
