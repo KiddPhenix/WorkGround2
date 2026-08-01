@@ -88,6 +88,63 @@ const pinResult: CornerstonePinResult = {
   recoverable: true,
 };
 
+async function testSaveAndContinueFollowsAuthoritativeProjection(): Promise<void> {
+  window.localStorage.clear();
+  useWorkUIStore.setState((state) => ({ ...state, cardByWork: {} }));
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  let resolveSubmit: ((result: SubmitInputResult) => void) | undefined;
+  const pendingSubmit = new Promise<SubmitInputResult>((resolve) => {
+    resolveSubmit = resolve;
+  });
+  const render = async (currentInputs: WorkInput[], workRevision: number) => {
+    await act(async () => {
+      root.render(
+        <WorkInformationPanel
+          workId="work-1"
+          runId="run-1"
+          workRevision={workRevision}
+          definition={definition}
+          tasks={[]}
+          inputs={currentInputs}
+          onSubmit={() => pendingSubmit}
+          onRefresh={async () => {}}
+        />,
+      );
+    });
+  };
+
+  await render(inputs, 3);
+  const firstEntry = host.querySelector<HTMLButtonElement>('[aria-label="填写：活动名称"]');
+  await act(async () => firstEntry?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await act(async () => {
+    const key = ['work-1', 'run-1', 'task-1', 'block-1', 'input-1', 'name', 2, 0].join('\u0000');
+    useWorkUIStore.getState().setInputDirtyFlag('work-1', key);
+    useWorkUIStore.getState().setInputDraft('work-1', key, '夏日团建');
+  });
+  const save = host.querySelector<HTMLButtonElement>('[data-testid="work-input-submit-task-1-name"]');
+  ok(save?.disabled === false, 'save-and-continue regression setup has a valid first answer');
+  await act(async () => save?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+  await render([
+    { ...inputs[0], value: '夏日团建', state: 'submitted', revision: 1 },
+    inputs[1],
+  ], 4);
+  ok(
+    host.querySelector('[role="dialog"] h3')?.textContent === '预算',
+    'authoritative first-item commit advances to the next pending item',
+  );
+  await act(async () => resolveSubmit?.(submitResult));
+  ok(
+    host.querySelector('[role="dialog"] h3')?.textContent === '预算',
+    'late submit acknowledgement cannot move the panel back to the completed item',
+  );
+
+  await act(async () => root.unmount());
+  host.remove();
+}
+
 async function main(): Promise<void> {
   window.localStorage.clear();
   useWorkUIStore.setState((state) => ({ ...state, cardByWork: {} }));
@@ -261,6 +318,7 @@ async function main(): Promise<void> {
 
   await act(async () => root.unmount());
   host.remove();
+  await testSaveAndContinueFollowsAuthoritativeProjection();
   process.stdout.write(`\n${passed} passed, ${failed} failed, ${passed + failed} total\n`);
   if (failed) process.exit(1);
 }

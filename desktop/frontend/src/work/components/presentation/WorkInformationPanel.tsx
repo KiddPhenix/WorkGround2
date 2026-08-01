@@ -134,6 +134,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   }>>({});
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const editAuthorityRef = useRef<{ inputId: string; revision: number } | null>(null);
+  const pendingSnapshotRef = useRef<{ scope: string; ids: Set<string> } | null>(null);
   const suggestingRef = useRef(new Set<string>());
   const currentInputsRef = useRef<WorkInput[]>([]);
 
@@ -200,6 +201,41 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     () => new Set(currentInputs.map((input) => input.specId)),
     [currentInputs],
   );
+
+  // The authoritative projection can mark the submitted input complete before
+  // WorkInputHost observes its submit response. In that ordering the host
+  // intentionally discards its stale callback, so advance from the durable
+  // pending-set transition as well. The active ID guard prevents a late commit
+  // from overriding a panel the user already closed or moved elsewhere.
+  useEffect(() => {
+    const scope = `${effectiveRunId}\u0000${definition.revision}`;
+    const ids = new Set(pending.map((input) => input.id));
+    const previous = pendingSnapshotRef.current;
+    pendingSnapshotRef.current = { scope, ids };
+    const activeInputId = panelState.activeInputId;
+    if (
+      !previous
+      || previous.scope !== scope
+      || panelState.closed
+      || !activeInputId
+      || !previous.ids.has(activeInputId)
+      || ids.has(activeInputId)
+    ) return;
+    if (panelState.afterSubmit === 'close' || pending.length === 0) {
+      setPanel(workId, { closed: true, activeInputId: undefined });
+      return;
+    }
+    setPanel(workId, { closed: false, activeInputId: pending[0].id });
+  }, [
+    definition.revision,
+    effectiveRunId,
+    panelState.activeInputId,
+    panelState.afterSubmit,
+    panelState.closed,
+    pending,
+    setPanel,
+    workId,
+  ]);
 
   // SubmitWorkInput waits for synchronous V2 rescheduling before its promise
   // resolves. The input revision itself is the earlier durable commit signal:
