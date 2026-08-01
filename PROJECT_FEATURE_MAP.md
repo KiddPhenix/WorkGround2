@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session 发送为工作入口稳定显示
+- Status: done
+- Branch: `developping/work-send-entry-stability+2026-08-01`
+- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
+- Summary: 入口可见性只由普通可写 Session 的真实用户首条消息、后端 blank 和 Work 过渡状态决定；内部 Item、历史恢复、WorkEnabled/WorkCapable 异步结果不再撤销入口。后端探测只传 Tab ID，缺失时用空 ID 活动路由；配置和能力在点击时显式校验。Work 合约 35 项、TypeScript、Wails 正式构建及 27 秒延时实机验收通过。
+- Keywords: send as Work, stable visibility, WorkEnabled, first message
+- Source: user-reported+verified-by-code-tests-and-running-window
+- Updated: 2026-08-01
+
 ### Session 发送为工作入口运行时修复
 - Status: done
 - Branch: `developping/work-send-entry-runtime+2026-08-01`
