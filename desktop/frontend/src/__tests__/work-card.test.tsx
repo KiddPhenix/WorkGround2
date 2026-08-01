@@ -853,6 +853,11 @@ async function testBackgroundSyncGate(): Promise<void> {
   const pending = await mount(<WorkCard workID="work-pending" port={pendingPort} ready={false} />);
   ok(Boolean(pending.host.querySelector('[data-testid="work-card-pending"]')), 'pending Work mounts inside the Work card hierarchy');
   ok(!pending.host.textContent?.includes('Work 不可用'), 'pending Work is not reported as unavailable');
+  eq(pending.host.querySelector('[role="status"]')?.getAttribute('aria-busy'), 'true', 'pending Work exposes an accessible busy state');
+  ok(Boolean(pending.host.querySelector('.wg2-work-pending-visual')), 'pending Work renders an animated visual indicator');
+  ok(pending.host.textContent?.includes('正在载入工作'), 'pending Work explains the current loading action');
+  ok(pending.host.textContent?.includes('连接完成后会自动进入'), 'pending Work explains what happens next');
+  eq(pending.host.querySelector('.wg2-work-pending-id code')?.textContent, 'work-pending', 'pending Work keeps its diagnostic ID visible');
   eq(pendingPort.subscribeCalls, 0, 'pending Work defers the backend subscription');
   eq(pendingPort.operations.length, 0, 'pending Work defers the snapshot request');
   await pending.cleanup();

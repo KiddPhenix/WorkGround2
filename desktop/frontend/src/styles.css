@@ -36735,6 +36735,212 @@ body > .mermaid-diagram--fullscreen {
   padding: 24px 16px;
 }
 
+.wg2-work-card-pending {
+  position: relative;
+  align-items: center;
+  justify-content: center;
+  min-height: 240px;
+  padding: clamp(24px, 6vw, 64px) 20px;
+  background:
+    radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%),
+    var(--bg, #111);
+}
+
+.wg2-work-card-pending::before {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--fg-faint) 16%, transparent) 0.75px, transparent 0.8px);
+  background-size: 20px 20px;
+  content: '';
+  mask-image: linear-gradient(to bottom, transparent, #000 30%, #000 70%, transparent);
+  pointer-events: none;
+}
+
+.wg2-work-pending-notice {
+  position: relative;
+  display: grid;
+  width: min(100%, 560px);
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 24px;
+  padding: 24px 28px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, var(--accent));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-elev, #181818) 94%, transparent);
+  box-shadow: 0 22px 60px rgb(0 0 0 / 22%);
+}
+
+.wg2-work-pending-visual {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.wg2-work-pending-orbit,
+.wg2-work-pending-core {
+  position: absolute;
+  border-radius: 50%;
+}
+
+.wg2-work-pending-orbit {
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.wg2-work-pending-orbit::after {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 78%, transparent);
+  content: '';
+}
+
+.wg2-work-pending-orbit--outer {
+  inset: 6px;
+  animation: wg2-work-pending-spin 2.8s linear infinite;
+}
+
+.wg2-work-pending-orbit--inner {
+  inset: 19px;
+  animation: wg2-work-pending-spin 2s linear infinite reverse;
+}
+
+.wg2-work-pending-core {
+  inset: 32px;
+  background: var(--accent);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent) 12%, transparent), 0 0 22px color-mix(in srgb, var(--accent) 48%, transparent);
+  animation: wg2-work-pending-breathe 1.8s ease-in-out infinite;
+}
+
+.wg2-work-pending-content {
+  min-width: 0;
+}
+
+.wg2-work-pending-kicker {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.wg2-work-pending-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
+  animation: wg2-work-pending-pulse 1.8s ease-out infinite;
+}
+
+.wg2-work-pending-notice h3 {
+  margin: 0;
+  color: var(--fg, #eee);
+  font-size: clamp(1.1rem, 2.4vw, 1.35rem);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+}
+
+.wg2-work-pending-copy {
+  margin: 7px 0 16px;
+  color: var(--fg-muted, #999);
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.wg2-work-pending-progress {
+  position: relative;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--fg-faint) 18%, transparent);
+}
+
+.wg2-work-pending-progress span {
+  position: absolute;
+  inset-block: 0;
+  width: 42%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent), var(--accent-strong, var(--accent)), transparent);
+  animation: wg2-work-pending-progress 1.7s ease-in-out infinite;
+}
+
+.wg2-work-pending-id {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  color: var(--fg-faint, #777);
+  font-size: 0.7rem;
+}
+
+.wg2-work-pending-id span {
+  flex: 0 0 auto;
+}
+
+.wg2-work-pending-id code {
+  overflow: hidden;
+  color: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes wg2-work-pending-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes wg2-work-pending-breathe {
+  50% { transform: scale(0.72); opacity: 0.7; }
+}
+
+@keyframes wg2-work-pending-pulse {
+  70% { box-shadow: 0 0 0 7px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@keyframes wg2-work-pending-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(340%); }
+}
+
+@media (max-width: 520px) {
+  .wg2-work-pending-notice {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    padding: 24px 20px;
+    text-align: center;
+  }
+
+  .wg2-work-pending-kicker,
+  .wg2-work-pending-id {
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wg2-work-pending-orbit,
+  .wg2-work-pending-core,
+  .wg2-work-pending-pulse,
+  .wg2-work-pending-progress span {
+    animation: none;
+  }
+
+  .wg2-work-pending-progress span {
+    inset-inline: 0;
+    width: 56%;
+  }
+}
+
 .wg2-work-unknown-notice {
   text-align: center;
   color: var(--fg-muted, #999);

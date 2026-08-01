@@ -709,10 +709,32 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     if (!ready) {
       return (
         <div className="wg2-work-card wg2-work-card-unknown wg2-work-card-pending" data-testid="work-card-pending" data-work-id={workID}>
-          <div className="wg2-work-unknown-notice wg2-work-pending-notice" role="status" aria-live="polite">
-            <h3>后台同步中…</h3>
-            <p>Work 投影尚未载入，连接就绪后自动开始同步。</p>
-            <p>Work ID: {workID}</p>
+          <div
+            className="wg2-work-pending-notice"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div className="wg2-work-pending-visual" aria-hidden="true">
+              <span className="wg2-work-pending-orbit wg2-work-pending-orbit--outer" />
+              <span className="wg2-work-pending-orbit wg2-work-pending-orbit--inner" />
+              <span className="wg2-work-pending-core" />
+            </div>
+            <div className="wg2-work-pending-content">
+              <div className="wg2-work-pending-kicker">
+                <span className="wg2-work-pending-pulse" aria-hidden="true" />
+                正在连接工作空间
+              </div>
+              <h3>正在载入工作</h3>
+              <p className="wg2-work-pending-copy">正在恢复工作进度，连接完成后会自动进入。</p>
+              <div className="wg2-work-pending-progress" aria-hidden="true">
+                <span />
+              </div>
+              <p className="wg2-work-pending-id">
+                <span>工作标识</span>
+                <code title={workID}>{workID}</code>
+              </p>
+            </div>
           </div>
         </div>
       );

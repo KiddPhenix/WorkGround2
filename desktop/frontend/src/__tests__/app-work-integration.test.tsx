@@ -243,12 +243,14 @@ ok(
   "WorkCardProps 包含 ready?: boolean 并说明其延迟订阅语义",
 );
 
-// WorkCard 在 ready=false 且无缓存投影时显示后台同步中状态
+// WorkCard 在 ready=false 且无缓存投影时显示独立的载入状态
 ok(
   workCardSource.includes("work-card-pending")
     && workCardSource.includes('role="status"')
-    && workCardSource.includes("后台同步中"),
-  "ready=false 无缓存时 WorkCard 显示轻量后台同步状态而非 Work 不可用",
+    && workCardSource.includes('aria-busy="true"')
+    && workCardSource.includes("正在载入工作")
+    && workCardSource.includes("连接完成后会自动进入"),
+  "ready=false 无缓存时 WorkCard 显示友好载入状态而非 Work 不可用",
 );
 
 // WorkCard 在 ready=false 时保持只读
