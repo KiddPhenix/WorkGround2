@@ -58,10 +58,17 @@ ok(
 );
 ok(
   workSendGate.includes('(activeTab?.sessionKind ?? "normal") === "normal"')
-    && workSendGate.includes("!sessionHasContent")
-    && workSendGate.includes("!state.historyLoading")
-    && workSendGate.includes("!activeWorkBootstrap"),
-  "发送为工作只在普通空白 Session 的第一句话前显示，恢复期间和 Work 过渡时关闭",
+    && workSendGate.includes("activeTab?.blank !== false")
+    && workSendGate.includes("!sessionHasUserMessage")
+    && workSendGate.includes("!activeWorkBootstrap")
+    && !workSendGate.includes("workEnabled")
+    && !workSendGate.includes("workCapable"),
+  "发送为工作只由真实用户首条消息状态控制，内部 Item 与异步能力结果不会让入口闪退",
+);
+ok(
+  appSource.includes('const workTargetID = activeTab?.id || activeTabId || ""')
+    && appSource.includes('const workTargetKey = activeTab?.id || activeTabId || activeSessionId || state.meta?.sessionId || "__active__"'),
+  "后端 Work 探测只使用 Tab ID 或空 ID 活动路由，Session ID 仅作前端稳定状态键",
 );
 ok(
   sessionSurfaceSource.includes("workSendAvailable={workSendAvailable}")

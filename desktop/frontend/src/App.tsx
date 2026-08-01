@@ -1071,6 +1071,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
+  const activeTab = useMemo(
+    () => tabMetas.find((tab) => tab.id === activeTabId)
+      ?? tabMetas.find((tab) => tab.sessionId === activeSessionId)
+      ?? tabMetas.find((tab) => tab.sessionId === state.meta?.sessionId)
+      ?? tabMetas.find((tab) => tab.active),
+    [activeSessionId, activeTabId, state.meta?.sessionId, tabMetas],
+  );
   const startupSplashVisible = useOverlayStore((s) => s.startupSplashVisible);
   const setStartupSplashVisible = useOverlayStore((s) => s.setStartupSplashVisible);
   // null until the mount probe resolves; true shows the overlay. Probed once —
@@ -1158,8 +1165,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     prompt: string;
   } | null>(null);
   workBootstrapRef.current = workBootstrap;
-  const workTargetID = activeTabId || activeSessionId || state.meta?.sessionId || "";
-  const workTargetKey = workTargetID || "__active__";
+  // Backend routing accepts a Tab ID or an empty string for the active tab.
+  // Controller Session IDs remain useful only as stable frontend state keys.
+  const workTargetID = activeTab?.id || activeTabId || "";
+  const workTargetKey = activeTab?.id || activeTabId || activeSessionId || state.meta?.sessionId || "__active__";
   const activeWorkConfig = workConfig !== null && workConfig.tabID === workTargetKey ? workConfig : null;
   const workEnabled = activeWorkConfig?.enabled ?? null;
   const workConfigFailed = activeWorkConfig?.failed === true;
@@ -1565,13 +1574,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       }),
     [chatReservedWidth, sidebarCollapsed, sidebarWidth, viewportWidth, workspacePanelMaximized, workspacePanelMinWidth, workspacePanelOpen],
   );
-  const activeTab = useMemo(
-    () => tabMetas.find((tab) => tab.id === activeTabId)
-      ?? tabMetas.find((tab) => tab.sessionId === activeSessionId)
-      ?? tabMetas.find((tab) => tab.sessionId === state.meta?.sessionId)
-      ?? tabMetas.find((tab) => tab.active),
-    [activeSessionId, activeTabId, state.meta?.sessionId, tabMetas],
-  );
   const composerSessionKey = useMemo(() => {
     return composerDraftKeyForTab(activeTab, activeTabId);
   }, [activeTab, activeTabId]);
@@ -1853,18 +1855,20 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const sessionHasContent = state.items.length > 0
     || Boolean(state.live?.text || state.live?.reasoning)
     || hydratePlaceholderActive;
+  const sessionHasUserMessage = state.items.some((item) => item.kind === "user")
+    || Boolean(state.hydratePlaceholderItems?.some((item) => item.kind === "user"));
   const activeWorkBootstrap = workBootstrap !== null && (
     workBootstrap.tabID === activeTab?.id
     || workBootstrap.requestId === activeTab?.workRequestId
     || (!activeTab && workBootstrap.tabID === workTargetID)
   ) ? workBootstrap : null;
-  // The visible Session state decides whether this is still the first message.
+  // Only a real user turn consumes the first-message Work intent. Internal
+  // notices, hydration phases and capability updates must not make it flicker.
   // CreateWorkSession repeats the blank-path check atomically at conversion.
   const workSendAvailable = (activeTab?.sessionKind ?? "normal") === "normal"
     && !activeTab?.readOnly
-    && !sessionHasContent
-    && !state.historyLoading
-    && workEnabled !== false
+    && activeTab?.blank !== false
+    && !sessionHasUserMessage
     && !activeWorkBootstrap;
   const workSendSelected = workSendAvailable && Boolean(workSendByTab[workTargetKey]);
   const handleWorkSendChange = useCallback(async (selected: boolean) => {
@@ -1875,6 +1879,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (workConfigFailed) {
       handleRetryWorkConfig();
       showToast(t("work.initializing"), "info");
+      return;
+    }
+    if (workEnabled === false) {
+      showToast(t("work.unavailable"), "warn");
       return;
     }
     if (workEnabled !== true || !workControllerReady) {
@@ -3318,7 +3326,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const handleSendAsWork = useCallback(async (displayText: string, submitText = displayText) => {
     const tabID = activeTab?.id || workTargetID;
-    if (activeTab?.sessionKind === "work" || activeTab?.readOnly || sessionHasContent || state.historyLoading) {
+    if (activeTab?.sessionKind === "work" || activeTab?.readOnly || activeTab?.blank === false || sessionHasUserMessage) {
       throw new Error("只有空白 Session 的第一条消息可以发送为工作。");
     }
     if (workEnabled !== true || workConfigFailed || workCapable !== true) {
@@ -3354,7 +3362,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (!result || result.error) {
       throw new Error(result?.error || "Work 初始化失败，请重试。");
     }
-  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasContent, state.historyLoading, state.meta?.workspaceRoot, t, workCapable, workConfigFailed, workEnabled, workTargetID, workTargetKey]);
+  }, [activeTab, beginWorkInitialization, closeTransientOverlays, sessionHasUserMessage, state.meta?.workspaceRoot, t, workCapable, workConfigFailed, workEnabled, workTargetID, workTargetKey]);
 
   const revealWorkPanel = useCallback((intentID: string) => {
     setWorkStartIntent((current) => current?.id === intentID ? null : current);
