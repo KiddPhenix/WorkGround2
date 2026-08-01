@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 import React, { act, useEffect, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
-import { WorkCard } from '../components/work/WorkCard';
+import { WorkCard, workStartDraftRequestID } from '../components/work/WorkCard';
 import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
 import { LinkedSessionCard } from '../components/work/LinkedSessionCard';
@@ -2521,10 +2521,35 @@ async function testV2StartIntentRunsCombinedFlowOnce(): Promise<void> {
   eq(consumed.join(','), 'start-once', 'start intent is consumed exactly once');
   eq(port.draftInputs.length, 1, 'start intent saves the visible prompt without a second click');
   eq(port.draftInputs[0]?.prompt, prompt, 'start intent preserves the user prompt');
+  eq(port.draftInputs[0]?.requestId, 'work-draft-start-once', 'initial start draft preserves its legacy recovery key');
   eq(port.candidateInputs.length, 1, 'start intent generates one candidate');
   eq(port.applyInputs.length, 1, 'start intent applies the generated definition');
 
   await mounted.cleanup();
+}
+
+function testStartDraftRequestIDTracksIntentContent(): void {
+  const startIntent = { id: 'start-stable', prompt: '初始草稿' };
+  const initial = JSON.stringify(['初始草稿', null, 'zh']);
+  const changedPrompt = JSON.stringify(['修改后的草稿', null, 'zh']);
+  const changedName = JSON.stringify(['初始草稿', '自定义标题', 'zh']);
+
+  eq(
+    workStartDraftRequestID(startIntent, initial, 'zh'),
+    'work-draft-start-stable',
+    'initial start intent keeps the persisted legacy request ID',
+  );
+  const changedPromptID = workStartDraftRequestID(startIntent, changedPrompt, 'zh');
+  ok(changedPromptID !== 'work-draft-start-stable', 'changed prompt receives a new request ID');
+  eq(
+    workStartDraftRequestID(startIntent, changedPrompt, 'zh'),
+    changedPromptID,
+    'changed prompt request ID is stable across retries and remounts',
+  );
+  ok(
+    workStartDraftRequestID(startIntent, changedName, 'zh') !== changedPromptID,
+    'changed name has an independent request ID',
+  );
 }
 
 // ── Production Wails chain: blank draft through real window.go.main.App mock → createWailsWorkControllerPort → parser → Store ──
@@ -3286,6 +3311,7 @@ async function main(): Promise<void> {
   await testV2ScrollDraftExpandPerWork();
   await testV2ApplyFailurePreservesDraft();
   await testV2StartIntentRunsCombinedFlowOnce();
+  testStartDraftRequestIDTracksIntentContent();
   await testV2DraftSaveRefreshesAuthoritativeLocale();
   await testV2ComponentsA11y();
   await testV2FlipDoesNotInterruptRunning();

@@ -56,6 +56,7 @@ import { WorkFlipControl } from './WorkFlipControl';
 import { RunProgressPopover } from './RunProgressPopover';
 import { WorkRunEntry } from './WorkRunEntry';
 import { WorkWorkspace } from './WorkWorkspace';
+import { digestIntent } from './blocks/intentDigest';
 
 export interface WorkDeepLink {
   face: WorkFace;
@@ -105,6 +106,18 @@ export interface WorkCardProps {
   chatDisabled?: boolean;
   chatComposerSubmitKey?: ComposerSubmitKey;
   onChatSend?: (text: string) => void | Promise<void>;
+}
+
+export function workStartDraftRequestID(
+  startIntent: NonNullable<WorkCardProps['startIntent']>,
+  signature: string,
+  locale: string,
+): string {
+  const initialSignature = JSON.stringify([startIntent.prompt.trim(), null, locale]);
+  const suffix = signature === initialSignature
+    ? startIntent.id
+    : `${startIntent.id}-${digestIntent(signature)}`;
+  return `work-draft-${suffix}`;
 }
 
 const unavailablePort: WorkControllerPort = {
@@ -498,10 +511,11 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     if (!current) throw new Error('Work 投影尚未载入。');
     const signature = JSON.stringify([prompt, name ?? null, locale]);
     if (draftIntentRef.current?.signature !== signature) {
-      const suffix = startIntent?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       draftIntentRef.current = {
         signature,
-        requestId: `work-draft-${suffix}`,
+        requestId: startIntent
+          ? workStartDraftRequestID(startIntent, signature, locale)
+          : `work-draft-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       };
     }
     const result = await adapter.updateDraft({
@@ -514,7 +528,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     });
     draftIntentRef.current = null;
     return result.revision;
-  }, [adapter, locale, startIntent?.id, workID]);
+  }, [adapter, locale, startIntent?.id, startIntent?.prompt, workID]);
   const handleApplyDefinition = useCallback(async (input: ApplyDefinitionInput): Promise<ApplyDefinitionResult> => {
     const result = await adapter.applyDefinition(input);
     if (result.impact) setDefinitionImpact(result.impact);

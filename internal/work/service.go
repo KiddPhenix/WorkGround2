@@ -1131,12 +1131,63 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	if current.ArchiveState != ArchiveActive {
 		return nil, fmt.Errorf("work: UpdateDraft: Work %s is %s", workID, current.ArchiveState)
 	}
+	if strings.TrimSpace(input.Locale) != "" {
+		input.Locale, err = NormalizeLocale(input.Locale)
+		if err != nil {
+			return viewFromState(current, state), fmt.Errorf("work: UpdateDraft: %w", err)
+		}
+	} else {
+		input.Locale = ""
+	}
+	if input.Name == nil && input.Prompt == nil && input.Inputs == nil && input.Locale == "" {
+		return viewFromState(current, state), errors.New("work: UpdateDraft: at least one editable field is required")
+	}
+	intentDigest, err := draftUpdateIntentDigest(input)
+	if err != nil {
+		return nil, fmt.Errorf("work: UpdateDraft: encode intent: %w", err)
+	}
+	if state.RequestFound {
+		if state.RequestType != EventDraftUpdated {
+			return s.latestOnConflict(workID, draftUpdateRequestConflict(
+				workID, eventRequestID, fmt.Sprintf("requestID already used by %s", state.RequestType),
+			))
+		}
+		loader, ok := s.store.(interface {
+			LoadRequestEvent(string, string) (WorkEvent, error)
+		})
+		if !ok {
+			return viewFromState(current, state), fmt.Errorf(
+				"%w: UpdateDraft store cannot reconstruct request %q", ErrWorkNeedsRepair, eventRequestID,
+			)
+		}
+		original, loadErr := loader.LoadRequestEvent(workID, eventRequestID)
+		if loadErr != nil {
+			return viewFromState(current, state), fmt.Errorf(
+				"%w: UpdateDraft load request %q: %v", ErrWorkNeedsRepair, eventRequestID, loadErr,
+			)
+		}
+		matches, matchErr := draftUpdateIntentMatches(original, input, intentDigest)
+		if matchErr != nil {
+			return viewFromState(current, state), fmt.Errorf(
+				"%w: UpdateDraft inspect request %q: %v", ErrWorkNeedsRepair, eventRequestID, matchErr,
+			)
+		}
+		if !matches {
+			return s.latestOnConflict(workID, draftUpdateRequestConflict(
+				workID, eventRequestID, "requestID already used by a different draft update",
+			))
+		}
+		return s.loadView(workID)
+	}
 
 	targetState, err := updateDraftTargetState(current)
 	if err != nil {
 		return nil, err
 	}
-	payload := map[string]any{"expectedRevision": input.ExpectedRevision}
+	payload := map[string]any{
+		"expectedRevision": input.ExpectedRevision,
+		"intentDigest":     intentDigest,
+	}
 	if input.Prompt != nil {
 		payload["prompt"] = *input.Prompt
 		// Keep following the prompt while the title is still automatic. Once
@@ -1153,18 +1204,11 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	if input.Inputs != nil {
 		payload["inputs"] = input.Inputs
 	}
-	if strings.TrimSpace(input.Locale) != "" {
-		locale, normalizeErr := NormalizeLocale(input.Locale)
-		if normalizeErr != nil {
-			return viewFromState(current, state), fmt.Errorf("work: UpdateDraft: %w", normalizeErr)
-		}
-		payload["locale"] = locale
+	if input.Locale != "" {
+		payload["locale"] = input.Locale
 	}
 	if targetState != current.State {
 		payload["state"] = targetState
-	}
-	if len(payload) == 1 {
-		return viewFromState(current, state), errors.New("work: UpdateDraft: at least one editable field is required")
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -1172,12 +1216,6 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 	}
 	event := newServiceEvent(workID, eventRequestID, EventDraftUpdated, payloadBytes, time.Now().UTC())
 
-	if state.RequestFound {
-		if _, err := s.store.CommitEvent(workID, event); err != nil {
-			return s.latestOnConflict(workID, err)
-		}
-		return s.loadView(workID)
-	}
 	if input.ExpectedRevision != state.Revision {
 		return viewFromState(current, state), revisionConflict(workID, input.ExpectedRevision, state.Revision)
 	}
@@ -1194,6 +1232,113 @@ func (s *Service) UpdateDraft(ctx context.Context, input UpdateDraftInput) (*Wor
 		return nil, committedRecovery("draft-view", workID, requestID, view.Revision, err)
 	}
 	return view, nil
+}
+
+type draftUpdateIntent struct {
+	Name   *string        `json:"name"`
+	Prompt *string        `json:"prompt"`
+	Inputs map[string]any `json:"inputs"`
+	Locale string         `json:"locale"`
+}
+
+func draftUpdateIntentDigest(input UpdateDraftInput) (string, error) {
+	return hashCanonical(draftUpdateIntent{
+		Name: input.Name, Prompt: input.Prompt, Inputs: input.Inputs, Locale: input.Locale,
+	})
+}
+
+func draftUpdateIntentMatches(event WorkEvent, input UpdateDraftInput, intentDigest string) (bool, error) {
+	if event.Type != EventDraftUpdated {
+		return false, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return false, fmt.Errorf("decode draft event: %w", err)
+	}
+	if raw, ok := payload["intentDigest"]; ok {
+		var persisted string
+		if err := json.Unmarshal(raw, &persisted); err != nil {
+			return false, fmt.Errorf("decode intentDigest: %w", err)
+		}
+		return persisted == intentDigest, nil
+	}
+
+	// Events written before intentDigest existed included optimistic concurrency
+	// and server-derived projection fields in their payload. Compare only the
+	// original caller intent so retries after an ACK loss remain recoverable.
+	if matches, err := draftPayloadString(payload, "prompt", input.Prompt); err != nil || !matches {
+		return matches, err
+	}
+	if input.Name != nil {
+		if matches, err := draftPayloadString(payload, "name", input.Name); err != nil || !matches {
+			return matches, err
+		}
+	} else if input.Prompt == nil {
+		if _, found := payload["name"]; found {
+			return false, nil
+		}
+	}
+	if matches, err := draftPayloadInputs(payload, input.Inputs); err != nil || !matches {
+		return matches, err
+	}
+	var locale *string
+	if input.Locale != "" {
+		locale = &input.Locale
+	}
+	return draftPayloadString(payload, "locale", locale)
+}
+
+func draftPayloadString(payload map[string]json.RawMessage, field string, expected *string) (bool, error) {
+	raw, found := payload[field]
+	if expected == nil {
+		return !found, nil
+	}
+	if !found {
+		return false, nil
+	}
+	var actual string
+	if err := json.Unmarshal(raw, &actual); err != nil {
+		return false, fmt.Errorf("decode %s: %w", field, err)
+	}
+	if field == "locale" {
+		normalized, err := NormalizeLocale(actual)
+		if err != nil {
+			return false, fmt.Errorf("normalize persisted locale: %w", err)
+		}
+		actual = normalized
+	}
+	return actual == *expected, nil
+}
+
+func draftPayloadInputs(payload map[string]json.RawMessage, expected map[string]any) (bool, error) {
+	raw, found := payload["inputs"]
+	if expected == nil {
+		return !found, nil
+	}
+	if !found {
+		return false, nil
+	}
+	var actual any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&actual); err != nil {
+		return false, fmt.Errorf("decode inputs: %w", err)
+	}
+	actualDigest, err := hashCanonical(actual)
+	if err != nil {
+		return false, err
+	}
+	expectedDigest, err := hashCanonical(expected)
+	if err != nil {
+		return false, err
+	}
+	return actualDigest == expectedDigest, nil
+}
+
+func draftUpdateRequestConflict(workID, requestID, reason string) *ErrWorkEventConflict {
+	return &ErrWorkEventConflict{
+		WorkID: workID, RequestID: requestID, Kind: WorkEventRequestConflict, Reason: reason,
+	}
 }
 
 // RunWork starts or resumes execution of a Work's frozen WorkflowDef. It is

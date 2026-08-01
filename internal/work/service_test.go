@@ -225,10 +225,8 @@ func TestServiceUpdateDraftPromptDerivesNameIdempotently(t *testing.T) {
 	f := newServiceFixture(t)
 	value := mustServiceCreate(t, f.svc, "service-update-prompt-create")
 	prompt := "  公司团建吃烤肉，KTV 周五晚上，预算不超过3000\n生成可执行安排  "
-	manual := "不应覆盖自动名称"
 	input := UpdateDraftInput{
 		WorkID:           value.ID,
-		Name:             &manual,
 		Prompt:           &prompt,
 		ExpectedRevision: 2,
 		RequestID:        "service-update-prompt-once",
@@ -302,6 +300,114 @@ func TestServiceUpdateDraftIdempotentAndConflict(t *testing.T) {
 	}
 	if latest == nil || latest.Revision != 3 || latest.Work.Name != name {
 		t.Fatalf("revision conflict latest = %+v", latest)
+	}
+}
+
+func TestServiceUpdateDraftRetryIgnoresRefreshedRevision(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-update-refresh-create")
+	prompt := "生成一份稳定的发布清单"
+	input := UpdateDraftInput{
+		WorkID: value.ID, Prompt: &prompt, Locale: "zh-CN",
+		ExpectedRevision: 2, RequestID: "service-update-refresh",
+	}
+	first, err := f.svc.UpdateDraft(context.Background(), input)
+	if err != nil || first.Revision != 3 {
+		t.Fatalf("first UpdateDraft = %+v err=%v", first, err)
+	}
+	name := "后续修改"
+	advanced, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID: value.ID, Name: &name, ExpectedRevision: 3, RequestID: "service-update-advance",
+	})
+	if err != nil || advanced.Revision != 4 {
+		t.Fatalf("advance UpdateDraft = %+v err=%v", advanced, err)
+	}
+
+	input.ExpectedRevision = advanced.Revision
+	retried, err := f.restart(t).UpdateDraft(context.Background(), input)
+	if err != nil {
+		t.Fatalf("retry with refreshed revision: %v", err)
+	}
+	if retried.Revision != advanced.Revision || retried.Work.Name != name || retried.Work.Prompt != prompt {
+		t.Fatalf("retry changed latest projection: %+v", retried)
+	}
+	original, err := f.store.LoadRequestEvent(value.ID, input.RequestID+"/draft")
+	if err != nil {
+		t.Fatalf("LoadRequestEvent: %v", err)
+	}
+	var payload struct {
+		IntentDigest     string `json:"intentDigest"`
+		ExpectedRevision int64  `json:"expectedRevision"`
+	}
+	if err := json.Unmarshal(original.Payload, &payload); err != nil {
+		t.Fatalf("decode original payload: %v", err)
+	}
+	if payload.IntentDigest == "" || payload.ExpectedRevision != 2 {
+		t.Fatalf("original payload = %+v", payload)
+	}
+
+	changed := prompt + "（修改）"
+	input.Prompt = &changed
+	latest, err := f.svc.UpdateDraft(context.Background(), input)
+	var conflict *ErrWorkEventConflict
+	if !errors.As(err, &conflict) || conflict.Kind != WorkEventRequestConflict {
+		t.Fatalf("changed intent error = %v, want request conflict", err)
+	}
+	if latest == nil || latest.Revision != advanced.Revision || latest.Work.Prompt != prompt {
+		t.Fatalf("changed intent latest = %+v", latest)
+	}
+}
+
+func TestServiceUpdateDraftRecoversLegacyRequestIntent(t *testing.T) {
+	f := newServiceFixture(t)
+	value := mustServiceCreate(t, f.svc, "service-update-legacy-create")
+	prompt := "恢复旧版启动草稿"
+	requestID := "service-update-legacy/draft"
+	payload, err := json.Marshal(map[string]any{
+		"expectedRevision": int64(2),
+		"prompt":           prompt,
+		"name":             workNameFromPrompt(prompt, value.Name),
+		"locale":           "zh-CN",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := newServiceEvent(value.ID, requestID, EventDraftUpdated, payload, time.Now().UTC())
+	event.BaseRevision = 2
+	event.Revision = 3
+	if _, err := f.store.CommitEvent(value.ID, event); err != nil {
+		t.Fatalf("commit legacy draft event: %v", err)
+	}
+	name := "旧事件后的标题"
+	advanced, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID: value.ID, Name: &name, ExpectedRevision: 3, RequestID: "service-update-legacy-advance",
+	})
+	if err != nil || advanced.Revision != 4 {
+		t.Fatalf("advance after legacy event = %+v err=%v", advanced, err)
+	}
+
+	retried, err := f.restart(t).UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID: value.ID, Prompt: &prompt, Locale: "zh",
+		ExpectedRevision: advanced.Revision, RequestID: "service-update-legacy",
+	})
+	if err != nil {
+		t.Fatalf("legacy retry: %v", err)
+	}
+	if retried.Revision != advanced.Revision || retried.Work.Name != name || retried.Work.Prompt != prompt {
+		t.Fatalf("legacy retry changed latest projection: %+v", retried)
+	}
+
+	changed := prompt + "（新内容）"
+	latest, err := f.svc.UpdateDraft(context.Background(), UpdateDraftInput{
+		WorkID: value.ID, Prompt: &changed, Locale: "zh",
+		ExpectedRevision: advanced.Revision, RequestID: "service-update-legacy",
+	})
+	var conflict *ErrWorkEventConflict
+	if !errors.As(err, &conflict) || conflict.Kind != WorkEventRequestConflict {
+		t.Fatalf("changed legacy intent error = %v, want request conflict", err)
+	}
+	if latest == nil || latest.Revision != advanced.Revision || latest.Work.Prompt != prompt {
+		t.Fatalf("changed legacy intent latest = %+v", latest)
 	}
 }
 

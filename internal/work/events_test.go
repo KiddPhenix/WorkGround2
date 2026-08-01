@@ -933,6 +933,9 @@ func TestCompactWorkEventLog_ProjectionEquivalence(t *testing.T) {
 	if idx.RequestIndex["req-cmp-2"].Revision != 2 {
 		t.Fatalf("requestIndex lost req-cmp-2: %+v", idx.RequestIndex)
 	}
+	if entry := idx.RequestIndex["req-cmp-2"]; entry.Event == nil || entry.Event.Payload == nil {
+		t.Fatalf("requestIndex lost draft intent envelope req-cmp-2: %+v", entry)
+	}
 	if idx.RequestIndex["req-cmp-3"].Revision != 3 {
 		t.Fatalf("requestIndex lost req-cmp-3: %+v", idx.RequestIndex)
 	}

@@ -227,7 +227,7 @@ type WorkRequestEntry struct {
 	EventID  string        `json:"eventId,omitempty"`
 	Type     WorkEventType `json:"type,omitempty"`
 	// Event preserves the immutable retry intent across event-log compaction.
-	// It is intentionally populated only for task.ready request receipts.
+	// It is populated only for receipts whose replay requires their full intent.
 	Event *WorkEvent `json:"event,omitempty"`
 }
 
@@ -857,7 +857,7 @@ func appendWorkEventValidated(
 			EventID:  rec.ID,
 			Type:     rec.Type,
 		}
-		if rec.Type == EventTaskReady {
+		if rec.Type == EventTaskReady || rec.Type == EventDraftUpdated {
 			value := eventFromRecord(rec)
 			entry.Event = &value
 		}
@@ -1758,7 +1758,7 @@ func buildIndexFromReplay(revision int64, digest string, logSize int64, eventCou
 					EventID:  e.ID,
 					Type:     e.Type,
 				}
-				if e.Type == EventTaskReady {
+				if e.Type == EventTaskReady || e.Type == EventDraftUpdated {
 					value := e
 					entry.Event = &value
 				}
