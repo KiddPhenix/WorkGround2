@@ -33280,10 +33280,10 @@ body > .mermaid-diagram--fullscreen {
   min-height: 40px;
 }
 
-.session-footer-dock > .artifact-shelf,
-.session-footer-dock > .queue-tray,
-.session-footer-dock > .composer-wrap,
-.session-footer-dock > .runtime-config-bar {
+.session-footer-dock .artifact-shelf,
+.session-footer-dock .queue-tray,
+.session-footer-dock .composer-wrap,
+.session-footer-dock .runtime-config-bar {
   margin-right: 48px;
   margin-left: 48px;
   width: auto;
@@ -33296,8 +33296,8 @@ body > .mermaid-diagram--fullscreen {
   border-bottom: none;
 }
 
-.layout--workbench .session-footer-dock > .composer-wrap,
-.layout--workbench .session-footer-dock > .runtime-config-bar {
+.layout--workbench .session-footer-dock .composer-wrap,
+.layout--workbench .session-footer-dock .runtime-config-bar {
   margin-right: 48px;
   margin-left: 48px;
   width: auto;

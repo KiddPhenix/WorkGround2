@@ -85,6 +85,12 @@ ok(
     && stylesSource.includes("background: var(--accent);"),
   "发送为工作的选中态同时使用实心强调色、勾选图标和明确状态文案",
 );
+ok(
+  stylesSource.includes(".session-footer-dock .composer-wrap,")
+    && stylesSource.includes(".session-footer-dock .runtime-config-bar {")
+    && !stylesSource.includes(".session-footer-dock > .composer-wrap"),
+  "页脚插槽使用 display contents 包装时，输入框与配置栏仍保留左右留白",
+);
 const workSendSubmitGate = appSource.slice(
   appSource.indexOf("const handleSendAsWork = useCallback(async"),
   appSource.indexOf("const revealWorkPanel", appSource.indexOf("const handleSendAsWork = useCallback(async")),

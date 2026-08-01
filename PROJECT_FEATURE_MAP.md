@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session 输入区左右留白恢复
+- Status: done
+- Branch: `developping/composer-horizontal-spacing+2026-08-01`
+- Location: `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
+- Summary: 修复页脚 `display: contents` 插槽导致直接子元素选择器失效的问题，恢复输入框和运行配置栏左右各 48px 留白；Work 合约 37 项、CSS、TypeScript、前端生产构建、Wails 正式构建及正式 EXE 视觉验收通过。
+- Keywords: composer, footer dock, horizontal spacing, display contents
+- Source: user-reported+screenshot
+- Updated: 2026-08-01
+
 ### 发送为工作选中态强化
 - Status: done
 - Branch: `developping/work-send-selected-state+2026-08-01`
