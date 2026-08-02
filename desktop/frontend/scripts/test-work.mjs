@@ -12,6 +12,7 @@ const tests = [
   'src/work/presentation.test.ts',
   'src/work/components/presentation/WorkStatePanel.test.tsx',
   'src/work/components/presentation/WorkDefinitionOverview.test.tsx',
+  'src/work/components/presentation/WorkAutoStartCountdown.test.tsx',
   'src/work/components/presentation/WorkInformationPanel.test.tsx',
   'src/work/store.test.ts',
   'src/work/components/v2/ResultShelf.test.tsx',

@@ -34,6 +34,7 @@ import {
   type WorkInputRefreshContext,
 } from '../v2/input/WorkInputHost';
 import { kindLabel } from '../v2/input/schema';
+import { WorkAutoStartCountdown } from './WorkAutoStartCountdown';
 import { WorkDefinitionOverview } from './WorkDefinitionOverview';
 
 type AfterSubmit = 'next' | 'close';
@@ -90,7 +91,9 @@ function initialDraft(spec: InputSpec, input: WorkInput): DraftValue {
 }
 
 function isDone(input: WorkInput): boolean {
-  return input.state === 'submitted' || input.state === 'accepted';
+  return input.state === 'submitted'
+    || input.state === 'accepted'
+    || (input.state === 'draft' && input.readyForStart === true);
 }
 
 export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
@@ -132,6 +135,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     tone: 'info' | 'error';
     message: string;
   }>>({});
+  const [autoStartPaused, setAutoStartPaused] = useState(false);
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const editAuthorityRef = useRef<{ inputId: string; revision: number } | null>(null);
   const pendingSnapshotRef = useRef<{ scope: string; ids: Set<string> } | null>(null);
@@ -172,6 +176,10 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     [definition.inputSpecs, effectiveRunId, inputs, specs, taskById, taskOrder],
   );
   const pending = useMemo(() => currentInputs.filter((input) => !isDone(input)), [currentInputs]);
+  const readyForStartInputs = useMemo(
+    () => currentInputs.filter((input) => input.state === 'draft' && input.readyForStart === true),
+    [currentInputs],
+  );
   currentInputsRef.current = currentInputs;
   const done = currentInputs.length - pending.length;
   const panelState = card?.informationPanel ?? {
@@ -201,6 +209,61 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     () => new Set(currentInputs.map((input) => input.specId)),
     [currentInputs],
   );
+  const autoStartScope = `${effectiveRunId}\u0000${readyForStartInputs.map((input) => input.id).join('\u0000')}`;
+
+  useEffect(() => {
+    setAutoStartPaused(false);
+  }, [autoStartScope]);
+
+  const submitInput = useCallback(async (request: SubmitWorkInputRequest) => {
+    if (!onSubmit) throw new Error('当前无法提交');
+    const hasStartGate = currentInputsRef.current.some(
+      (input) => input.state === 'draft' && input.readyForStart === true,
+    );
+    const currentPending = currentInputsRef.current.filter((input) => !isDone(input));
+    const completesInformation = currentPending.length === 1
+      && currentPending[0]?.id === request.inputId;
+    return onSubmit({
+      ...request,
+      deferStart: hasStartGate || completesInformation,
+    });
+  }, [onSubmit]);
+
+  const startReadyWork = useCallback(async () => {
+    if (!onSubmit) throw new Error('当前无法开始工作');
+    const staged = currentInputsRef.current.filter(
+      (input) => input.state === 'draft' && input.readyForStart === true,
+    );
+    if (staged.length === 0) return;
+    let expectedRevision = workRevision;
+    for (const input of staged) {
+      const requestId = `work-start-input-${workId}-${effectiveRunId}-${input.id}-${input.revision}`;
+      const result = await onSubmit({
+        workId,
+        runId: input.runId,
+        taskId: input.taskId,
+        blockId: input.blockId,
+        inputId: input.id,
+        value: input.value,
+        extra: input.extra,
+        definitionRevision: definition.revision,
+        inputRevision: input.revision,
+        expectedRevision,
+        requestId,
+      });
+      if (!result.committed || result.error) {
+        throw new Error(result.transportError?.message || result.error || '启动请求未确认');
+      }
+      expectedRevision = result.revision;
+      await onRefresh?.({
+        workId,
+        inputId: input.id,
+        requestId,
+        revision: result.revision,
+        operation: 'submit',
+      });
+    }
+  }, [definition.revision, effectiveRunId, onRefresh, onSubmit, workId, workRevision]);
 
   // The authoritative projection can mark the submitted input complete before
   // WorkInputHost observes its submit response. In that ordering the host
@@ -362,11 +425,13 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   const openInput = (specId: string) => {
     const input = currentInputs.find((candidate) => candidate.specId === specId);
     if (!input) return;
+    setAutoStartPaused(true);
     setAdding(false);
     setPanel(workId, { activeInputId: input.id, closed: false });
   };
 
   const openAdd = () => {
+    setAutoStartPaused(true);
     setPanel(workId, { activeInputId: undefined, closed: true });
     setAddName('');
     setAddDescription('');
@@ -505,6 +570,14 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
         onSuggestInput={!readonly && onInfer ? (inputId) => void suggestInput(inputId) : undefined}
         suggestingInputIds={suggestingInputIds}
         suggestionFeedback={suggestionFeedback}
+        headerAside={readyForStartInputs.length > 0 && pending.length === 0 && !readonly && onSubmit ? (
+          <WorkAutoStartCountdown
+            scope={autoStartScope}
+            paused={autoStartPaused}
+            onPausedChange={setAutoStartPaused}
+            onStart={startReadyWork}
+          />
+        ) : undefined}
       />
     </>
   );
@@ -743,7 +816,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
               workInput={active}
               draftValue={draft}
               onDraftChange={changeDraft}
-              onSubmit={onSubmit ?? (async () => { throw new Error('当前无法提交'); })}
+              onSubmit={submitInput}
               onPin={onPin ?? (async () => { throw new Error('当前无法固定'); })}
               onUnpin={onUnpin ?? (async () => { throw new Error('当前无法取消固定'); })}
               onRefreshAuthoritative={onRefresh ?? (async () => {})}

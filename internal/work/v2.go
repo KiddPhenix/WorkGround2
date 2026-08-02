@@ -172,6 +172,7 @@ type WorkInput struct {
 	Error         string          `json:"error,omitempty"`
 	Source        string          `json:"source,omitempty"`
 	UpdatedBy     string          `json:"updatedBy,omitempty"`
+	ReadyForStart bool            `json:"readyForStart,omitempty"`
 	Revision      int64           `json:"revision"`
 	UpdatedAt     time.Time       `json:"updatedAt" ts_type:"string"`
 }
@@ -280,6 +281,7 @@ type SubmitWorkInputRequest struct {
 	InputID            string          `json:"inputId"`
 	Value              json.RawMessage `json:"value"`
 	Extra              string          `json:"extra,omitempty"`
+	DeferStart         bool            `json:"deferStart,omitempty"`
 	DefinitionRevision int64           `json:"definitionRevision"`
 	InputRevision      int64           `json:"inputRevision"`
 	ExpectedRevision   int64           `json:"expectedRevision"`
@@ -472,9 +474,9 @@ func ValidateArtifactSlotTransition(from, to ArtifactSlotState) error {
 var validInputTransitions = map[InputState]map[InputState]bool{
 	InputRequested: {InputDraft: true, InputSubmitted: true, InputRejected: true},
 	InputDraft:     {InputSubmitted: true, InputRejected: true},
-	InputSubmitted: {InputAccepted: true, InputRejected: true},
+	InputSubmitted: {InputDraft: true, InputAccepted: true, InputRejected: true},
 	InputRejected:  {InputDraft: true, InputSubmitted: true},
-	InputAccepted:  {InputSubmitted: true},
+	InputAccepted:  {InputDraft: true, InputSubmitted: true},
 }
 
 // ValidateInputTransition returns nil if from→to is legal.

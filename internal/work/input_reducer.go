@@ -93,6 +93,7 @@ func reduceInputDraftSaved(current *Work, p InputDraftSavedPayload, now time.Tim
 	existing.State = InputDraft
 	existing.Source = p.Source
 	existing.UpdatedBy = p.UpdatedBy
+	existing.ReadyForStart = p.ReadyForStart
 	existing.Revision = p.Revision
 	existing.Error = ""
 	existing.UpdatedAt = now
@@ -127,6 +128,7 @@ func reduceInputSubmitted(current *Work, p InputSubmittedPayload, now time.Time,
 	existing.State = InputSubmitted
 	existing.Source = p.Source
 	existing.UpdatedBy = p.UpdatedBy
+	existing.ReadyForStart = false
 	existing.Revision = p.Revision
 	existing.Error = ""
 	existing.UpdatedAt = now
@@ -156,6 +158,7 @@ func reduceInputRejected(current *Work, p InputRejectedPayload, now time.Time, r
 	existing.Error = p.Reason
 	existing.Source = p.Source
 	existing.UpdatedBy = p.UpdatedBy
+	existing.ReadyForStart = false
 	existing.Revision = p.Revision
 	existing.UpdatedAt = now
 	recordInputReceipt(current, p.Receipt)

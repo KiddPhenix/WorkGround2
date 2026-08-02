@@ -879,6 +879,154 @@ func TestV2Coordinator_SubmitInputAutoSchedulesOnlyAffected_FileStore(t *testing
 	}
 }
 
+func TestV2Coordinator_DeferredInputWaitsForExplicitStart_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{{ID: "n1", Title: "target", InputSpecIDs: []string{"topic"}}},
+		[]InputSpec{{
+			ID: "topic", Label: "Topic", Kind: InputText, Required: true,
+			ValueSchema: json.RawMessage(`{"type":"string"}`),
+		}},
+	))
+	input := requestCoordinatorInput(t, h, "topic")
+	executor := &coordinatorExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	projection, state, err := h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputIndex := findInputIndex(projection, input.ID)
+	if inputIndex < 0 {
+		t.Fatalf("input %q missing after scheduling", input.ID)
+	}
+	input = &projection.V2Inputs[inputIndex]
+	request := SubmitInputRequest{
+		WorkID: h.work, InputID: input.ID, Value: json.RawMessage(`"ready"`),
+		DefinitionRev: h.def.Revision, InputRevision: input.Revision,
+		ExpectedRevision: state.Revision, RequestID: "defer-" + t.Name(), DeferStart: true,
+	}
+	deferred, err := h.svc.SubmitV2Input(context.Background(), request)
+	if err != nil || deferred == nil || !deferred.Committed || deferred.Input == nil {
+		t.Fatalf("deferred submit=%+v err=%v", deferred, err)
+	}
+	if deferred.Input.State != InputDraft || !deferred.Input.ReadyForStart {
+		t.Fatalf("deferred input=%+v, want ready-for-start draft", deferred.Input)
+	}
+	if executor.callCount() != 0 {
+		t.Fatalf("deferred input started execution: calls=%d", executor.callCount())
+	}
+	duplicate, err := h.svc.SubmitV2Input(context.Background(), request)
+	if err != nil || duplicate == nil || !duplicate.Duplicate || !duplicate.Committed {
+		t.Fatalf("deferred replay=%+v err=%v", duplicate, err)
+	}
+	if err := h.svc.RecoverV2Scheduling(context.Background(), h.work); err != nil {
+		t.Fatal(err)
+	}
+	if executor.callCount() != 0 {
+		t.Fatalf("recovery bypassed deferred start: calls=%d", executor.callCount())
+	}
+
+	projection, state, err = h.store.LoadState(h.work, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputIndex = findInputIndex(projection, input.ID)
+	if inputIndex < 0 {
+		t.Fatalf("input %q missing before explicit start", input.ID)
+	}
+	input = &projection.V2Inputs[inputIndex]
+	started, err := h.svc.SubmitV2Input(context.Background(), SubmitInputRequest{
+		WorkID: h.work, InputID: input.ID, Value: append(json.RawMessage(nil), input.Value...),
+		Extra: input.Extra, DefinitionRev: h.def.Revision, InputRevision: input.Revision,
+		ExpectedRevision: state.Revision, RequestID: "start-" + t.Name(),
+	})
+	if err != nil || started == nil || !started.Committed || started.Input == nil {
+		t.Fatalf("explicit start=%+v err=%v", started, err)
+	}
+	if started.Input.State != InputSubmitted || started.Input.ReadyForStart {
+		t.Fatalf("started input=%+v, want submitted", started.Input)
+	}
+	if executor.callCount() != 1 {
+		t.Fatalf("explicit start calls=%d, want 1", executor.callCount())
+	}
+}
+
+func TestV2Coordinator_ReleasesAllDeferredInputsBeforeScheduling_FileStore(t *testing.T) {
+	h := newCoordinatorHarness(t, coordinatorDefinition(
+		[]NodeDef{
+			{ID: "n1", Title: "first", InputSpecIDs: []string{"first"}},
+			{ID: "n2", Title: "second", InputSpecIDs: []string{"second"}},
+		},
+		[]InputSpec{
+			{ID: "first", Label: "First", Kind: InputText, Required: true, ValueSchema: json.RawMessage(`{"type":"string"}`)},
+			{ID: "second", Label: "Second", Kind: InputText, Required: true, ValueSchema: json.RawMessage(`{"type":"string"}`)},
+		},
+	))
+	request := func(nodeID, specID string) *WorkInput {
+		t.Helper()
+		_, state, err := h.store.LoadState(h.work, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		taskID, err := DeriveTaskID(h.run, nodeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, err := NewInputService(h.store, nil).RequestInput(context.Background(), RequestInputRequest{
+			WorkID: h.work, RunID: h.run, TaskID: taskID, BlockID: "b1",
+			InputID: "input-" + specID, SpecID: specID, DefinitionRev: h.def.Revision,
+			ExpectedRevision: state.Revision, RequestID: "request-input-" + specID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return input
+	}
+	first := request("n1", "first")
+	second := request("n2", "second")
+	executor := &coordinatorExecutor{}
+	h.svc.SetTaskExecutor(executor)
+	if _, err := h.svc.ScheduleV2Run(context.Background(), h.work, h.run, []string{"n1", "n2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	submit := func(inputID string, value json.RawMessage, deferStart bool, requestID string) *SubmitInputResult {
+		t.Helper()
+		projection, state, err := h.store.LoadState(h.work, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputIndex := findInputIndex(projection, inputID)
+		if inputIndex < 0 {
+			t.Fatalf("input %q missing", inputID)
+		}
+		input := projection.V2Inputs[inputIndex]
+		result, err := h.svc.SubmitV2Input(context.Background(), SubmitInputRequest{
+			WorkID: h.work, InputID: input.ID, Value: value,
+			DefinitionRev: h.def.Revision, InputRevision: input.Revision,
+			ExpectedRevision: state.Revision, RequestID: requestID, DeferStart: deferStart,
+		})
+		if err != nil || result == nil || !result.Committed || result.Input == nil {
+			t.Fatalf("submit %q result=%+v err=%v", inputID, result, err)
+		}
+		return result
+	}
+
+	submit(first.ID, json.RawMessage(`"one"`), true, "defer-first")
+	submit(second.ID, json.RawMessage(`"two"`), true, "defer-second")
+	submit(first.ID, json.RawMessage(`"one"`), false, "start-first")
+	if executor.callCount() != 0 {
+		t.Fatalf("first release started a partial batch: calls=%d", executor.callCount())
+	}
+	submit(second.ID, json.RawMessage(`"two"`), false, "start-second")
+	if executor.callCount() != 2 {
+		t.Fatalf("final release calls=%d, want both tasks scheduled", executor.callCount())
+	}
+}
+
 func TestV2Coordinator_EditCompletedInputRerunsAffectedSubgraph_FileStore(t *testing.T) {
 	h := newCoordinatorHarness(t, coordinatorDefinition(
 		[]NodeDef{

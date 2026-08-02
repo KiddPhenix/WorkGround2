@@ -301,6 +301,7 @@ type SubmitInputRequest struct {
 	InputID          string          `json:"inputId"`
 	Value            json.RawMessage `json:"value"`
 	Extra            string          `json:"extra,omitempty"`
+	DeferStart       bool            `json:"deferStart,omitempty"`
 	Source           string          `json:"source,omitempty"`
 	UpdatedBy        string          `json:"updatedBy,omitempty"`
 	DefinitionRev    int64           `json:"definitionRev"`
@@ -349,7 +350,7 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 
 	// Idempotency: replay from the event log / receipt.
 	if state.RequestFound {
-		if state.RequestType != EventInputSubmitted && state.RequestType != EventInputRejected {
+		if state.RequestType != EventInputDraftSaved && state.RequestType != EventInputSubmitted && state.RequestType != EventInputRejected {
 			return nil, fmt.Errorf("%w: SubmitInput requestID %q already used for %q", ErrWorkRequestIDConflict, req.RequestID, state.RequestType)
 		}
 		receipt, receiptErr := inputReceiptReplay(current, req.RequestID, "SubmitInput", intentDigest)
@@ -414,6 +415,11 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 	resultInput.Value = append(json.RawMessage(nil), req.Value...)
 	resultInput.Extra = strings.TrimSpace(req.Extra)
 	resultInput.State, resultInput.Source, resultInput.UpdatedBy = InputSubmitted, req.Source, req.UpdatedBy
+	resultInput.ReadyForStart = false
+	if req.DeferStart {
+		resultInput.State = InputDraft
+		resultInput.ReadyForStart = true
+	}
 	resultInput.Revision, resultInput.Error, resultInput.UpdatedAt = newRevision, "", now
 	receipt := &InputIntentReceipt{
 		RequestID: req.RequestID, Operation: "SubmitInput", IntentDigest: intentDigest,
@@ -421,26 +427,49 @@ func (s *InputService) SubmitInput(ctx context.Context, req SubmitInputRequest) 
 		ResultInput:     &resultInput,
 		AffectedTaskIDs: append([]string(nil), affectedTaskIDs...), CreatedAt: now,
 	}
-	payload, err := json.Marshal(InputSubmittedPayload{
-		InputID:          req.InputID,
-		WorkID:           req.WorkID,
-		RunID:            existing.RunID,
-		TaskID:           existing.TaskID,
-		BlockID:          existing.BlockID,
-		SpecID:           existing.SpecID,
-		Value:            req.Value,
-		Extra:            strings.TrimSpace(req.Extra),
-		Source:           req.Source,
-		UpdatedBy:        req.UpdatedBy,
-		Revision:         newRevision,
-		ExpectedRevision: req.InputRevision,
-		AffectedTaskIDs:  affectedTaskIDs,
-		Receipt:          receipt,
-	})
+	eventType := EventInputSubmitted
+	var payload []byte
+	if req.DeferStart {
+		eventType = EventInputDraftSaved
+		payload, err = json.Marshal(InputDraftSavedPayload{
+			InputID:          req.InputID,
+			WorkID:           req.WorkID,
+			RunID:            existing.RunID,
+			TaskID:           existing.TaskID,
+			BlockID:          existing.BlockID,
+			SpecID:           existing.SpecID,
+			Value:            req.Value,
+			Extra:            strings.TrimSpace(req.Extra),
+			Source:           req.Source,
+			UpdatedBy:        req.UpdatedBy,
+			ReadyForStart:    true,
+			AffectedTaskIDs:  affectedTaskIDs,
+			Revision:         newRevision,
+			ExpectedRevision: req.InputRevision,
+			Receipt:          receipt,
+		})
+	} else {
+		payload, err = json.Marshal(InputSubmittedPayload{
+			InputID:          req.InputID,
+			WorkID:           req.WorkID,
+			RunID:            existing.RunID,
+			TaskID:           existing.TaskID,
+			BlockID:          existing.BlockID,
+			SpecID:           existing.SpecID,
+			Value:            req.Value,
+			Extra:            strings.TrimSpace(req.Extra),
+			Source:           req.Source,
+			UpdatedBy:        req.UpdatedBy,
+			Revision:         newRevision,
+			ExpectedRevision: req.InputRevision,
+			AffectedTaskIDs:  affectedTaskIDs,
+			Receipt:          receipt,
+		})
+	}
 	if err != nil {
 		return nil, fmt.Errorf("work: SubmitInput: encode event: %w", err)
 	}
-	event := newServiceEventV2(req.WorkID, eventRequestID, EventInputSubmitted, payload, now)
+	event := newServiceEventV2(req.WorkID, eventRequestID, eventType, payload, now)
 	event.BaseRevision, event.Revision = state.Revision, state.Revision+1
 	event.Object = ObjectContext{
 		Kind: ObjectInput, ID: req.InputID, WorkID: req.WorkID,

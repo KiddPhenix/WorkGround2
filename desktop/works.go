@@ -1030,6 +1030,7 @@ func submitInputRequest(input work.SubmitWorkInputRequest) work.SubmitInputReque
 		InputID:          input.InputID,
 		Value:            input.Value,
 		Extra:            input.Extra,
+		DeferStart:       input.DeferStart,
 		DefinitionRev:    input.DefinitionRevision,
 		InputRevision:    input.InputRevision,
 		ExpectedRevision: input.ExpectedRevision,

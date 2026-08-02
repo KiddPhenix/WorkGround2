@@ -962,6 +962,8 @@ type InputDraftSavedPayload struct {
 	Extra            string              `json:"extra,omitempty"`
 	Source           string              `json:"source,omitempty"`
 	UpdatedBy        string              `json:"updatedBy,omitempty"`
+	ReadyForStart    bool                `json:"readyForStart,omitempty"`
+	AffectedTaskIDs  []string            `json:"affectedTaskIds,omitempty"`
 	Revision         int64               `json:"revision"`
 	ExpectedRevision int64               `json:"expectedRevision"`
 	Receipt          *InputIntentReceipt `json:"receipt,omitempty"`

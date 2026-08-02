@@ -128,9 +128,22 @@ func (c *V2Coordinator) SubmitInput(
 	if c == nil || c.inputs == nil {
 		return nil, errors.New("work: V2 input coordinator is not configured")
 	}
+	wasReadyForStart := false
+	if !request.DeferStart {
+		before, loadErr := c.store.LoadProjection(request.WorkID)
+		if loadErr != nil {
+			return nil, fmt.Errorf("work: load input start gate: %w", loadErr)
+		}
+		if index := findInputIndex(before, request.InputID); index >= 0 {
+			wasReadyForStart = before.V2Inputs[index].ReadyForStart
+		}
+	}
 	result, err := c.inputs.SubmitInput(ctx, request)
 	if err != nil || result == nil || result.Error != "" {
 		return result, err
+	}
+	if request.DeferStart {
+		return result, nil
 	}
 	runID := ""
 	if result.Input != nil {
@@ -146,6 +159,21 @@ func (c *V2Coordinator) SubmitInput(
 	cause := V2WakeInput
 	if c.inputKind(request.WorkID, result.Input) == InputApproval {
 		cause = V2WakeApproval
+	}
+	if wasReadyForStart {
+		projection, loadErr := c.store.LoadProjection(request.WorkID)
+		if loadErr != nil {
+			return result, committedRecovery("v2-ready-input-reload", request.WorkID, request.RequestID, result.Revision, loadErr)
+		}
+		for _, input := range projection.V2Inputs {
+			if input.RunID == runID && input.ReadyForStart {
+				return result, nil
+			}
+		}
+		if wakeErr := c.RecoverScheduling(ctx, request.WorkID); wakeErr != nil {
+			return result, committedRecovery("v2-ready-input-wake", request.WorkID, request.RequestID, result.Revision, wakeErr)
+		}
+		return result, nil
 	}
 	if wakeErr := c.continueRun(ctx, request.WorkID, runID, result.AffectedTaskIDs, cause); wakeErr != nil {
 		return result, committedRecovery("v2-input-wake", request.WorkID, request.RequestID, result.Revision, wakeErr)

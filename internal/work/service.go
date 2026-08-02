@@ -306,7 +306,8 @@ func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (
 		err = errors.Join(err, fmt.Errorf("work: verify SubmitV2Input receipt: %w", stateErr))
 	} else {
 		result.Committed = requestState.RequestFound &&
-			(requestState.RequestType == EventInputSubmitted || requestState.RequestType == EventInputRejected)
+			(requestState.RequestType == EventInputDraftSaved ||
+				requestState.RequestType == EventInputSubmitted || requestState.RequestType == EventInputRejected)
 	}
 	if result.Committed {
 		// SubmitInput may synchronously wake the scheduler, which can append
