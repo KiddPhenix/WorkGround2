@@ -59,9 +59,9 @@ func TestValidateInputTransition_Valid(t *testing.T) {
 	pairs := [][2]InputState{
 		{InputRequested, InputDraft}, {InputRequested, InputSubmitted},
 		{InputDraft, InputSubmitted}, {InputDraft, InputRejected},
-		{InputSubmitted, InputAccepted}, {InputSubmitted, InputRejected},
+		{InputSubmitted, InputDraft}, {InputSubmitted, InputAccepted}, {InputSubmitted, InputRejected},
 		{InputRejected, InputDraft}, {InputRejected, InputSubmitted},
-		{InputAccepted, InputSubmitted},
+		{InputAccepted, InputDraft}, {InputAccepted, InputSubmitted},
 	}
 	for _, p := range pairs {
 		if err := ValidateInputTransition(p[0], p[1]); err != nil {

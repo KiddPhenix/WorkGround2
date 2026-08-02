@@ -383,3 +383,10 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: WorkGround2, SPEC, WorkGround2.md, project memory
 - Source: verified-by-search
 - Updated: 2026-07-03
+
+### Work 信息完成后倒计时启动
+- Location: `internal/work/input_service.go`, `internal/work/v2_coordinator.go`, `desktop/works.go`, `desktop/frontend/src/work/components/presentation/WorkAutoStartCountdown.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.css`, `design-qa.md`
+- Summary: 状态 done；工作信息全部填写后在原标题行显示 20 秒自动开始倒计时，支持暂停、继续、打开信息自动暂停和立即开始。最终值先持久化为 readyForStart 草稿，全部释放后统一恢复调度，重启与重复请求均可安全恢复。
+- Keywords: Work information, countdown, auto start, pause, readyForStart, deferStart, scheduling recovery
+- Source: verified-by-search
+- Updated: 2026-08-02

@@ -126,6 +126,7 @@ export interface WorkInput {
   error?: string;
   source?: string;
   updatedBy?: string;
+  readyForStart?: boolean;
   revision: number;
   updatedAt: string;
 }
@@ -220,6 +221,7 @@ export interface SubmitWorkInputRequest {
   inputId: string;
   value: unknown;
   extra?: string;
+  deferStart?: boolean;
   definitionRevision: number;
   inputRevision: number;
   expectedRevision: number;

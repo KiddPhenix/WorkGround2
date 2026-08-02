@@ -551,3 +551,22 @@ final result: passed
 - 旧回执缺失 workspace 选择字段时按 Auto 兼容；手动选择、无效选择和短暂 workspace 均有显式测试。
 
 final result: passed
+
+---
+
+# Work 信息自动开始 Design QA（2026-08-02）
+
+- 设计目标：`D:\\Codex\\.codex\\generated_images\\019fbbce-29be-7d90-a0cb-9bee64394e60\\exec-3cc77733-b602-48a3-a4f6-05689c3ab8ae.png`
+- 实现对照：`design-qa-comparison.png`
+- 验收主题：Carbon（深色、青绿色强调色）
+
+## 对照结论
+
+- 布局：倒计时、状态文案、暂停与立即开始均保持在 Work 信息标题行内；实际实现压缩设计稿的演示留白，不增加画布纵向占用。
+- 视觉：沿用项目主题 token、边框、圆角、字体和 Lucide 图标；Carbon 主题与设计稿的青绿色语义一致，其他主题自动继承各自强调色。
+- 行为：20 秒自动开始；暂停后时间停止；打开任意信息自动暂停；立即开始可跳过等待；失败保留信息并显式提供重试。
+- 响应式：1440、1024、600 宽度下无横向溢出；窄屏时标题和倒计时分行，按钮保持可操作。
+- 可访问性：按钮可键盘聚焦，状态使用 `aria-live`，进度使用原生 `progress`，支持 `prefers-reduced-motion`。
+- 数据可靠性：最终信息先持久化为 `readyForStart` 草稿，倒计时结束才释放调度；重启恢复不会绕过等待，重复开始请求可幂等重放。
+
+final result: passed

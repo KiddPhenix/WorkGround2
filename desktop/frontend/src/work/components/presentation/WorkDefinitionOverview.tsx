@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Check, CircleDashed, GitBranch, Plus, SlidersHorizontal, Sparkles } from 'lucide-react';
 
 import type {
@@ -23,6 +24,7 @@ export interface WorkDefinitionOverviewProps {
     tone: 'info' | 'error';
     message: string;
   }>>;
+  headerAside?: ReactNode;
 }
 
 function optionLabels(spec: InputSpec): Map<string, string> {
@@ -88,6 +90,12 @@ function currentInputs(inputs: readonly WorkInput[], runId?: string): Map<string
   return result;
 }
 
+function inputDone(input?: WorkInput): boolean {
+  return input?.state === 'submitted'
+    || input?.state === 'accepted'
+    || (input?.state === 'draft' && input.readyForStart === true);
+}
+
 function nodeState(node: NodeDef, tasks: readonly PresentationTask[]): PresentationTask['state'] {
   return tasks.find((task) => task.nodeId === node.id)?.state ?? 'pending';
 }
@@ -119,6 +127,7 @@ export function WorkDefinitionOverview({
   onSuggestInput,
   suggestingInputIds,
   suggestionFeedback,
+  headerAside,
 }: WorkDefinitionOverviewProps) {
   const inputSpecs = [
     ...definition.inputSpecs,
@@ -128,7 +137,7 @@ export function WorkDefinitionOverview({
   const showInputs = inputSpecs.length > 0 || !!onAddInput || !!onSuggestInput;
   const filled = inputSpecs.filter((spec) => {
     const input = bySpec.get(spec.id);
-    return input?.state === 'submitted' || input?.state === 'accepted';
+    return inputDone(input);
   }).length;
   if (!showInputs && !showStructure) return null;
 
@@ -140,27 +149,30 @@ export function WorkDefinitionOverview({
     >
       {showInputs ? (
         <section className="work-definition-overview__panel work-definition-overview__panel--inputs">
-          <header className="work-definition-overview__header">
-            <span className="work-definition-overview__title">
-              <SlidersHorizontal aria-hidden="true" size={17} strokeWidth={1.8} />
-              工作信息
-            </span>
-            <span className="work-definition-overview__header-actions">
-              <span className="work-definition-overview__count">
-                {filled}/{inputSpecs.length} 已填写
+          <header className="work-definition-overview__header" data-has-aside={headerAside ? 'true' : 'false'}>
+            <span className="work-definition-overview__header-main">
+              <span className="work-definition-overview__title">
+                <SlidersHorizontal aria-hidden="true" size={17} strokeWidth={1.8} />
+                工作信息
               </span>
-              {onAddInput ? (
-                <button type="button" className="work-definition-overview__add" onClick={onAddInput}>
-                  <Plus size={14} aria-hidden="true" />
-                  添加信息
-                </button>
-              ) : null}
+              <span className="work-definition-overview__header-actions">
+                <span className="work-definition-overview__count">
+                  {filled}/{inputSpecs.length} 已填写
+                </span>
+                {onAddInput ? (
+                  <button type="button" className="work-definition-overview__add" onClick={onAddInput}>
+                    <Plus size={14} aria-hidden="true" />
+                    添加信息
+                  </button>
+                ) : null}
+              </span>
             </span>
+            {headerAside}
           </header>
           <div className="work-definition-overview__fields">
             {inputSpecs.map((spec) => {
               const input = bySpec.get(spec.id);
-              const complete = input?.state === 'submitted' || input?.state === 'accepted';
+              const complete = inputDone(input);
               const selectable = !!onSelectInput
                 && (selectableInputSpecIds?.has(spec.id) ?? true);
               const suggesting = !!input && !!suggestingInputIds?.has(input.id);
@@ -171,7 +183,7 @@ export function WorkDefinitionOverview({
                   <span>{spec.label}</span>
                   <strong>
                     {complete
-                      ? formatValue(spec, input.value)
+                      ? formatValue(spec, input!.value)
                       : input?.state === 'draft' ? '填写中' : '待填写'}
                   </strong>
                   {complete

@@ -114,6 +114,156 @@
   gap: 12px;
 }
 
+.work-definition-overview__header-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
+}
+
+.work-definition-overview__header[data-has-aside="true"] {
+  position: relative;
+  min-height: 68px;
+  padding-block: 8px;
+}
+
+.work-auto-start {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 48px minmax(130px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.work-auto-start__timer {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-content: center;
+  border: 2px solid color-mix(in srgb, var(--accent) 82%, white);
+  border-radius: 50%;
+  color: var(--fg);
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.work-auto-start__timer strong {
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.work-auto-start__timer span {
+  margin-top: 2px;
+  color: var(--fg-muted);
+  font-size: 9px;
+}
+
+.work-auto-start__copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.work-auto-start__copy strong {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-auto-start__copy span {
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-auto-start__pause,
+.work-auto-start__start {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font: inherit;
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.work-auto-start__pause {
+  background: color-mix(in srgb, var(--bg-elev) 88%, var(--bg-soft));
+  color: var(--fg-muted);
+}
+
+.work-auto-start__start {
+  border-color: color-mix(in srgb, var(--accent) 72%, white);
+  background: var(--accent);
+  color: var(--bg);
+  font-weight: 650;
+}
+
+.work-auto-start__pause:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  color: var(--fg);
+}
+
+.work-auto-start__start:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.work-auto-start button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent);
+  outline-offset: 2px;
+}
+
+.work-auto-start button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.work-auto-start__progress {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  appearance: none;
+  border: 0;
+  background: transparent;
+}
+
+.work-auto-start__progress::-webkit-progress-bar {
+  background: transparent;
+}
+
+.work-auto-start__progress::-webkit-progress-value {
+  background: var(--accent);
+  transition: width 220ms linear;
+}
+
+.work-auto-start__progress::-moz-progress-bar {
+  background: var(--accent);
+  transition: width 220ms linear;
+}
+
+.work-auto-start__error {
+  position: absolute;
+  right: 14px;
+  bottom: 2px;
+  color: var(--danger);
+  font-size: 10px;
+}
+
 .work-definition-overview__add {
   display: inline-flex;
   align-items: center;
@@ -705,5 +855,50 @@
 
   .wg2-info-entry .work-definition-overview__field-row:nth-last-child(2) {
     border-bottom: 1px solid var(--border-soft);
+  }
+}
+
+@media (max-width: 1080px) {
+  .work-definition-overview__header[data-has-aside="true"] {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .work-definition-overview__header[data-has-aside="true"] .work-definition-overview__header-main {
+    justify-content: space-between;
+  }
+
+  .work-auto-start {
+    grid-template-columns: 44px minmax(120px, 1fr) auto auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .work-auto-start {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+  }
+
+  .work-auto-start__timer {
+    width: 38px;
+    height: 38px;
+  }
+
+  .work-auto-start__pause {
+    grid-column: 2;
+  }
+
+  .work-auto-start__start {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .work-auto-start__progress::-webkit-progress-value {
+    transition: none;
+  }
+
+  .work-auto-start__progress::-moz-progress-bar {
+    transition: none;
   }
 }

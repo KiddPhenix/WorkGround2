@@ -8,6 +8,7 @@ import type {
   InferWorkInputsRequest,
   InferWorkInputsResult,
   SubmitInputResult,
+  SubmitWorkInputRequest,
   WorkDefinitionRevision,
   WorkInput,
 } from '../../types_v2';
@@ -140,6 +141,81 @@ async function testSaveAndContinueFollowsAuthoritativeProjection(): Promise<void
     host.querySelector('[role="dialog"] h3')?.textContent === '预算',
     'late submit acknowledgement cannot move the panel back to the completed item',
   );
+
+  await act(async () => root.unmount());
+  host.remove();
+}
+
+async function testFinalInputStagesUntilCountdownStart(): Promise<void> {
+  window.localStorage.clear();
+  useWorkUIStore.setState((state) => ({ ...state, cardByWork: {} }));
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  const requests: SubmitWorkInputRequest[] = [];
+  const firstComplete: WorkInput = {
+    ...inputs[0],
+    value: '夏日团建',
+    state: 'submitted',
+    revision: 1,
+  };
+  const submit = async (request: SubmitWorkInputRequest): Promise<SubmitInputResult> => {
+    requests.push(request);
+    return { ...submitResult, revision: 4 + requests.length };
+  };
+  const render = async (currentInputs: WorkInput[], revision: number) => {
+    await act(async () => {
+      root.render(
+        <WorkInformationPanel
+          workId="work-1"
+          runId="run-1"
+          workRevision={revision}
+          definition={definition}
+          tasks={[]}
+          inputs={currentInputs}
+          onSubmit={submit}
+          onRefresh={async () => {}}
+        />,
+      );
+    });
+  };
+
+  await render([firstComplete, inputs[1]], 4);
+  const budgetEntry = host.querySelector<HTMLButtonElement>('[aria-label="填写：预算"]');
+  await act(async () => budgetEntry?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  await act(async () => {
+    const key = ['work-1', 'run-1', 'task-1', 'block-1', 'input-2', 'budget', 2, 0].join('\u0000');
+    useWorkUIStore.getState().setInputDirtyFlag('work-1', key);
+    useWorkUIStore.getState().setInputDraft('work-1', key, 50);
+  });
+  const save = host.querySelector<HTMLButtonElement>('[data-testid="work-input-submit-task-1-budget"]');
+  await act(async () => save?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(requests[0]?.deferStart === true, 'the final answer is durably staged without waking execution');
+
+  const staged: WorkInput = {
+    ...inputs[1],
+    value: 50,
+    state: 'draft',
+    readyForStart: true,
+    revision: 1,
+  };
+  await render([firstComplete, staged], 5);
+  ok(host.textContent?.includes('2/2 已填写') === true, 'staged final information counts as filled');
+  ok(host.querySelector('[data-testid="work-auto-start"]') !== null, 'shows the 20-second start countdown');
+
+  const editStaged = host.querySelector<HTMLButtonElement>('[aria-label="修改：预算"]');
+  await act(async () => editStaged?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(
+    host.querySelector('[data-testid="work-auto-start"]')?.getAttribute('data-state') === 'paused',
+    'opening information automatically pauses the countdown',
+  );
+  const close = host.querySelector<HTMLButtonElement>('[aria-label="关闭填写信息"]');
+  await act(async () => close?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  const startNow = [...host.querySelectorAll<HTMLButtonElement>('button')]
+    .find((button) => button.textContent?.includes('立即开始'));
+  await act(async () => startNow?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  ok(requests[1]?.deferStart !== true, 'immediate start releases the staged input');
+  ok(requests[1]?.requestId === 'work-start-input-work-1-run-1-input-2-1', 'start retry identity is stable for the staged revision');
 
   await act(async () => root.unmount());
   host.remove();
@@ -319,6 +395,7 @@ async function main(): Promise<void> {
   await act(async () => root.unmount());
   host.remove();
   await testSaveAndContinueFollowsAuthoritativeProjection();
+  await testFinalInputStagesUntilCountdownStart();
   process.stdout.write(`\n${passed} passed, ${failed} failed, ${passed + failed} total\n`);
   if (failed) process.exit(1);
 }

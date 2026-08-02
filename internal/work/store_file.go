@@ -4264,6 +4264,7 @@ func DefaultReducer() WorkEventReducer {
 			if err := reduceInputDraftSaved(current, p, event.CreatedAt, event.RequestID); err != nil {
 				return nil, err
 			}
+			invalidateV2RuntimeContexts(current, p.AffectedTaskIDs, "", 0, true, event)
 
 		case EventInputSubmitted:
 			var p InputSubmittedPayload
