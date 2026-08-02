@@ -53,6 +53,9 @@ type WorkService interface {
 	List(context.Context, work.WorkFilter) (work.WorkPage, error)
 	ListBlueprints(context.Context) ([]work.WorkBlueprint, error)
 	CopyWork(context.Context, work.CopyWorkInput) (*work.Work, error)
+	PrepareReusableFlow(context.Context, work.PrepareReusableFlowInput) (*work.ReusableFlowSetup, error)
+	SaveReusableFlow(context.Context, work.SaveReusableFlowInput) (*work.ReusableFlow, error)
+	RunReusableFlow(context.Context, work.RunReusableFlowInput) (*work.ReusableFlowRun, error)
 	UpdateDraft(context.Context, work.UpdateDraftInput) (*work.WorkView, error)
 	UpsertBlock(context.Context, work.BlockUpsertInput) (*work.WorkView, error)
 	RunWork(context.Context, string, string) (*work.WorkflowRun, error)
@@ -299,6 +302,27 @@ func (w workMethods) CopyWork(ctx context.Context, input work.CopyWorkInput) (*w
 		return nil, errWorkDisabled
 	}
 	return w.svc.CopyWork(ctx, input)
+}
+
+func (w workMethods) PrepareReusableFlow(ctx context.Context, input work.PrepareReusableFlowInput) (*work.ReusableFlowSetup, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.PrepareReusableFlow(ctx, input)
+}
+
+func (w workMethods) SaveReusableFlow(ctx context.Context, input work.SaveReusableFlowInput) (*work.ReusableFlow, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.SaveReusableFlow(ctx, input)
+}
+
+func (w workMethods) RunReusableFlow(ctx context.Context, input work.RunReusableFlowInput) (*work.ReusableFlowRun, error) {
+	if nilutil.IsNil(w.svc) {
+		return nil, errWorkDisabled
+	}
+	return w.svc.RunReusableFlow(ctx, input)
 }
 
 func (w workMethods) UpdateDraft(ctx context.Context, input work.UpdateDraftInput) (*work.WorkView, error) {

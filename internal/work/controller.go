@@ -23,6 +23,15 @@ type WorkController interface {
 	// CopyWork 从现有 Work 创建独立草稿副本。
 	CopyWork(ctx context.Context, input CopyWorkInput) (*Work, error)
 
+	// PrepareReusableFlow 返回可复用字段，并识别当前 Work 是否已保存。
+	PrepareReusableFlow(ctx context.Context, input PrepareReusableFlowInput) (*ReusableFlowSetup, error)
+
+	// SaveReusableFlow 将当前 Work 冻结为常用流程。
+	SaveReusableFlow(ctx context.Context, input SaveReusableFlowInput) (*ReusableFlow, error)
+
+	// RunReusableFlow 从常用流程创建并启动独立 Work。
+	RunReusableFlow(ctx context.Context, input RunReusableFlowInput) (*ReusableFlowRun, error)
+
 	// UpdateDraft 更新草稿 Work 的可编辑字段。
 	UpdateDraft(ctx context.Context, input UpdateDraftInput) (*WorkView, error)
 

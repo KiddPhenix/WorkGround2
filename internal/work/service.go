@@ -1754,8 +1754,13 @@ func (s *Service) RestartRun(ctx context.Context, workID, runID, requestID strin
 		return nil, fmt.Errorf("work: RestartRun: load after cancel: %w", err)
 	}
 	if current.State == WorkCancelled {
+		// UpdateDraft also carries the cancelled -> draft transition. Supplying
+		// the current name keeps that transition valid when older Works have no
+		// persisted locale, while leaving user-visible draft data unchanged.
+		name := current.Name
 		if _, err := s.UpdateDraft(ctx, UpdateDraftInput{
 			WorkID:           workID,
+			Name:             &name,
 			Locale:           current.Locale,
 			ExpectedRevision: state.Revision,
 			RequestID:        requestID + "/reset",

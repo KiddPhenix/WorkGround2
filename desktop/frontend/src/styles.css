@@ -41055,6 +41055,341 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
 }
 
+/* ── Work restart / reusable flow dialog ───────────────────────── */
+
+.wg2-restart-dialog__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(4, 7, 10, 0.58);
+  backdrop-filter: blur(3px);
+  pointer-events: auto;
+}
+
+.wg2-restart-dialog {
+  width: min(390px, calc(100vw - 32px));
+  max-height: min(680px, calc(100vh - 40px));
+  overflow: auto;
+  color: var(--fg, #e8ecef);
+  background: color-mix(in srgb, var(--bg-elev, #171b20) 96%, #000);
+  border: 1px solid color-mix(in srgb, var(--border, #2b333b) 88%, #fff 12%);
+  border-radius: 12px;
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.46);
+}
+
+.wg2-restart-dialog__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 18px 13px;
+}
+
+.wg2-restart-dialog__header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.wg2-restart-dialog__header p {
+  min-height: 18px;
+  margin: 5px 0 0;
+  color: var(--fg-muted, #8e979f);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wg2-restart-dialog__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: -5px -6px 0 0;
+  padding: 0;
+  color: var(--fg-muted, #8e979f);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.wg2-restart-dialog__close:hover:not(:disabled) {
+  color: var(--fg, #e8ecef);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.wg2-restart-dialog__choices {
+  display: grid;
+  gap: 8px;
+  padding: 2px 14px 16px;
+}
+
+.wg2-restart-dialog__choices > button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  color: var(--fg, #e8ecef);
+  text-align: left;
+  background: color-mix(in srgb, var(--bg, #101419) 70%, transparent);
+  border: 1px solid var(--border, #2b333b);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.wg2-restart-dialog__choices > button:hover:not(:disabled),
+.wg2-restart-dialog__choices > button:focus-visible {
+  outline: none;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+}
+
+.wg2-restart-dialog__choices strong,
+.wg2-restart-dialog__choices small {
+  display: block;
+}
+
+.wg2-restart-dialog__choices strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wg2-restart-dialog__choices small {
+  margin-top: 4px;
+  color: var(--fg-muted, #8e979f);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.wg2-restart-dialog__choice-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  color: color-mix(in srgb, var(--accent) 86%, #fff);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: 8px;
+}
+
+.wg2-restart-dialog__loading {
+  padding: 2px 4px 0;
+  color: var(--fg-muted, #8e979f);
+  font-size: 11px;
+}
+
+.wg2-restart-dialog__body {
+  display: grid;
+  gap: 11px;
+  padding: 1px 14px 14px;
+}
+
+.wg2-restart-dialog__label {
+  display: grid;
+  gap: 6px;
+  color: var(--fg-muted, #9aa2aa);
+  font-size: 11px;
+}
+
+.wg2-restart-dialog__label > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.wg2-restart-dialog__label em {
+  color: color-mix(in srgb, var(--accent) 78%, #fff);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.wg2-restart-dialog__label input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  color: var(--fg, #e8ecef);
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg, #101419);
+  border: 1px solid var(--border, #2b333b);
+  border-radius: 7px;
+}
+
+.wg2-restart-dialog__label input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.wg2-restart-dialog__rule-group {
+  padding: 11px;
+  background: color-mix(in srgb, var(--bg, #101419) 62%, transparent);
+  border: 1px solid var(--border, #2b333b);
+  border-radius: 8px;
+}
+
+.wg2-restart-dialog__rule-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.wg2-restart-dialog__rule-title strong {
+  flex: 0 0 58px;
+  color: var(--fg, #e8ecef);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.wg2-restart-dialog__rule-title span {
+  color: var(--fg-muted, #8e979f);
+  font-size: 10px;
+}
+
+.wg2-restart-dialog__field-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.wg2-restart-dialog__field-pills label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  color: var(--fg-muted, #9aa2aa);
+  font-size: 10px;
+  border: 1px solid var(--border, #2b333b);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.wg2-restart-dialog__field-pills label[data-selected="true"] {
+  color: var(--fg, #e8ecef);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+
+.wg2-restart-dialog__field-pills input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.wg2-restart-dialog__check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  color: #07120f;
+  background: var(--border, #2b333b);
+  border-radius: 3px;
+}
+
+.wg2-restart-dialog__field-pills label[data-selected="true"] .wg2-restart-dialog__check {
+  background: var(--accent);
+}
+
+.wg2-restart-dialog__rule-group--fixed {
+  padding-block: 10px;
+}
+
+.wg2-restart-dialog__run-fields {
+  gap: 10px;
+}
+
+.wg2-restart-dialog__empty {
+  margin: 0;
+  padding: 11px;
+  color: var(--fg-muted, #8e979f);
+  font-size: 11px;
+  line-height: 1.55;
+  background: color-mix(in srgb, var(--bg, #101419) 62%, transparent);
+  border: 1px solid var(--border, #2b333b);
+  border-radius: 8px;
+}
+
+.wg2-restart-dialog__fixed-details {
+  color: var(--fg-muted, #8e979f);
+  font-size: 10px;
+  border-top: 1px solid var(--border, #2b333b);
+}
+
+.wg2-restart-dialog__fixed-details summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-top: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.wg2-restart-dialog__fixed-details[open] summary svg {
+  transform: rotate(180deg);
+}
+
+.wg2-restart-dialog__fixed-details p {
+  margin: 7px 0 0 19px;
+  line-height: 1.5;
+}
+
+.wg2-restart-dialog__error {
+  margin: 0 14px 10px;
+  padding: 8px 9px;
+  color: var(--danger, #f87171);
+  font-size: 10px;
+  line-height: 1.45;
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
+  border-radius: 6px;
+}
+
+.wg2-restart-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 14px 14px;
+  border-top: 1px solid var(--border, #2b333b);
+}
+
+.wg2-restart-dialog__footer button {
+  min-width: 66px;
+  height: 32px;
+  padding: 0 14px;
+  font-size: 11px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.wg2-restart-dialog__secondary {
+  color: var(--fg, #e8ecef);
+  background: color-mix(in srgb, var(--bg, #101419) 72%, transparent);
+  border: 1px solid var(--border, #2b333b);
+}
+
+.wg2-restart-dialog__primary {
+  color: var(--accent-contrast, #06110f);
+  font-weight: 600;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.wg2-restart-dialog button:disabled {
+  opacity: 0.48;
+  cursor: default;
+}
+
 .wg2-work-control-bar__action-error {
   max-width: 180px;
   padding: 0 4px;

@@ -31,6 +31,7 @@ const tests = [
   'src/__tests__/linked-session-card.test.tsx',
   'src/__tests__/work-chat-input.test.tsx',
   'src/__tests__/work-control-bar.test.tsx',
+  'src/__tests__/work-restart-dialog.test.tsx',
   'src/__tests__/work-start-surface.test.tsx',
   'src/__tests__/work-page.test.tsx',
   'src/__tests__/app-work-integration.test.tsx',

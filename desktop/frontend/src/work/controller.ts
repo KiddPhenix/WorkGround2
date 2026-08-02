@@ -20,6 +20,12 @@ import type {
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  PrepareReusableFlowInput,
+  ReusableFlow,
+  ReusableFlowRun,
+  ReusableFlowSetup,
+  RunReusableFlowInput,
+  SaveReusableFlowInput,
   ResumeRunInput,
   RetryTaskInput,
   UndoCornerstoneInput,
@@ -92,6 +98,9 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   pauseRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
   cancelRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
   restartRun?: (input: { workId: string; runId: string; requestId: string }) => Promise<WorkflowRun>;
+  prepareReusableFlow?: (input: PrepareReusableFlowInput) => Promise<ReusableFlowSetup>;
+  saveReusableFlow?: (input: SaveReusableFlowInput) => Promise<ReusableFlow>;
+  runReusableFlow?: (input: RunReusableFlowInput) => Promise<ReusableFlowRun>;
   updateDraft?: (input: UpdateDraftInput) => Promise<WorkView>;
   upsertBlock?: (input: BlockUpsertInput) => Promise<WorkView>;
   beginWorkPlanning?: (input: BeginWorkPlanningInput) => Promise<BeginWorkPlanningResult>;

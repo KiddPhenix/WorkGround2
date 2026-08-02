@@ -20,9 +20,15 @@ import type {
   CreateWorkInput,
   FreezeCornerstoneInput,
   PinCornerstoneInput,
+  PrepareReusableFlowInput,
+  ReusableFlow,
+  ReusableFlowRun,
+  ReusableFlowSetup,
   RefreshCornerstoneInput,
   RemoveCornerstoneInput,
   RepairCornerstoneInput,
+  RunReusableFlowInput,
+  SaveReusableFlowInput,
   ResumeRunInput,
   RetryTaskInput,
   RevisionConflict,
@@ -54,6 +60,9 @@ export interface WailsWorkBindings {
   ListWorks(tabID: string, filter: WorkFilter): Promise<WorkPage>;
   ListWorkBlueprints(tabID: string): Promise<WorkBlueprint[]>;
   CopyWork(tabID: string, input: CopyWorkInput): Promise<Work>;
+  PrepareReusableFlow(tabID: string, input: PrepareReusableFlowInput): Promise<ReusableFlowSetup>;
+  SaveReusableFlow(tabID: string, input: SaveReusableFlowInput): Promise<ReusableFlow>;
+  RunReusableFlow(tabID: string, input: RunReusableFlowInput): Promise<ReusableFlowRun>;
   UpdateDraft(tabID: string, input: UpdateDraftInput): Promise<WorkView>;
   UpsertWorkBlock(tabID: string, input: BlockUpsertInput): Promise<WorkView>;
   RecoverWorkView(tabID: string, workID: string, input: ViewRecoveryIntent): Promise<WorkViewEvent>;
@@ -603,6 +612,9 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
     cancelRun: (input) => app.CancelRun(tabID, input.workId, input.runId, input.requestId),
 
     restartRun: (input) => app.RestartRun(tabID, input.workId, input.runId, input.requestId),
+    prepareReusableFlow: (input) => app.PrepareReusableFlow(tabID, input),
+    saveReusableFlow: (input) => app.SaveReusableFlow(tabID, input),
+    runReusableFlow: (input) => app.RunReusableFlow(tabID, input),
     updateDraft: (input) => app.UpdateDraft(tabID, input),
     upsertBlock: (input) => app.UpsertWorkBlock(tabID, input),
 

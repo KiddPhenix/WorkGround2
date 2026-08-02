@@ -585,6 +585,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
   OpenTopicSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string; tabId?: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
+  CreateReusableWorkSession(tabID: string, input: { flowId: string; values?: Record<string, unknown>; requestId: string }): Promise<import("../work/types").CreateReusableWorkSessionResult>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
   ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   EnsureBlankSurface(scope: string, workspaceRoot: string): Promise<TabMeta>;
@@ -4742,11 +4743,15 @@ function makeMockApp(): AppBindings {
     WorkCapable: () => Promise.resolve(false),
     WorkCollaborationV2Enabled: () => Promise.resolve(false),
     CreateWorkSession: () => Promise.reject(workUnavailableError()),
+    CreateReusableWorkSession: () => Promise.reject(workUnavailableError()),
     CreateWork: () => Promise.reject(workUnavailableError()),
     GetWork: () => Promise.reject(workUnavailableError()),
     ListWorks: () => Promise.reject(workUnavailableError()),
     ListWorkBlueprints: () => Promise.reject(workUnavailableError()),
     CopyWork: () => Promise.reject(workUnavailableError()),
+    PrepareReusableFlow: () => Promise.reject(workUnavailableError()),
+    SaveReusableFlow: () => Promise.reject(workUnavailableError()),
+    RunReusableFlow: () => Promise.reject(workUnavailableError()),
     UpdateDraft: () => Promise.reject(workUnavailableError()),
     UpsertWorkBlock: () => Promise.reject(workUnavailableError()),
     RecoverWorkView: () => Promise.reject(workUnavailableError()),

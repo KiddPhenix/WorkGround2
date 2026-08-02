@@ -23,6 +23,29 @@ type CopyWorkInput struct {
 	RequestID    string `json:"requestId"`
 }
 
+// PrepareReusableFlowInput reads the reusable fields for one Work and returns
+// an existing saved flow when the Work has already been captured.
+type PrepareReusableFlowInput struct {
+	SourceWorkID string `json:"sourceWorkId"`
+}
+
+// SaveReusableFlowInput freezes one Work as a reusable flow. VariableKeys are
+// the only values callers may replace on later runs.
+type SaveReusableFlowInput struct {
+	SourceWorkID string   `json:"sourceWorkId"`
+	Name         string   `json:"name"`
+	VariableKeys []string `json:"variableKeys"`
+	RequestID    string   `json:"requestId"`
+}
+
+// RunReusableFlowInput creates and starts an independent Work from a saved
+// flow. Values are JSON values keyed by ReusableField.Key.
+type RunReusableFlowInput struct {
+	FlowID    string                     `json:"flowId"`
+	Values    map[string]json.RawMessage `json:"values,omitempty"`
+	RequestID string                     `json:"requestId"`
+}
+
 // UpdateDraftInput 是更新草稿 Work 的输入参数。
 // ExpectedRevision 用于乐观并发控制。
 type UpdateDraftInput struct {

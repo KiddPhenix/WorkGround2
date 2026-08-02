@@ -42,6 +42,14 @@ type WorkStore interface {
 	RestoreFromTrash(workID, requestID string) error
 }
 
+// ReusableFlowStore persists immutable reusable-flow snapshots separately
+// from Work runtime history. FileWorkStore implements this optional port.
+type ReusableFlowStore interface {
+	SaveReusableFlow(flow *reusableFlowRecord) (*reusableFlowRecord, error)
+	LoadReusableFlow(flowID string) (*reusableFlowRecord, error)
+	FindReusableFlowBySource(sourceWorkID string) (*reusableFlowRecord, error)
+}
+
 // WorkEventState 是 Service 执行幂等和乐观并发校验所需的持久化状态。
 type WorkEventState struct {
 	Revision          int64         `json:"revision"`

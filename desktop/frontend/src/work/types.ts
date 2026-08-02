@@ -115,6 +115,8 @@ export interface Work {
   conclusions?: Conclusion[];
   rerunOf?: string;
   copiedFrom?: string;
+  reusableFlowId?: string;
+  reusableRunHash?: string;
   referencedWorks?: string[];
   rerunUpgraded?: boolean;
   migrationPath?: number[];
@@ -469,6 +471,64 @@ export interface CopyWorkInput {
   sourceWorkId: string;
   name?: string;
   requestId: string;
+}
+
+export interface ReusableField {
+  key: string;
+  label: string;
+  kind: string;
+  required: boolean;
+  variable: boolean;
+  value?: unknown;
+}
+
+export interface ReusableFlow {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  sourceWorkId: string;
+  fields: ReusableField[];
+  digest: string;
+  createdAt: string;
+}
+
+export interface ReusableFlowSetup {
+  existing?: ReusableFlow;
+  suggestedName: string;
+  fields: ReusableField[];
+  fixedItems: string[];
+}
+
+export interface PrepareReusableFlowInput {
+  sourceWorkId: string;
+}
+
+export interface SaveReusableFlowInput {
+  sourceWorkId: string;
+  name: string;
+  variableKeys: string[];
+  requestId: string;
+}
+
+export interface RunReusableFlowInput {
+  flowId: string;
+  values?: Record<string, unknown>;
+  requestId: string;
+}
+
+export interface ReusableFlowRun {
+  flow: ReusableFlow;
+  work: Work;
+  run?: WorkflowRun;
+  duplicate: boolean;
+}
+
+export interface CreateReusableWorkSessionResult {
+  tabMeta: { id: string };
+  run?: ReusableFlowRun;
+  duplicate: boolean;
+  error?: string;
+  recoverable: boolean;
 }
 
 export interface UpdateDraftInput {

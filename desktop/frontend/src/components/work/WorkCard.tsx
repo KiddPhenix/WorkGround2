@@ -22,6 +22,7 @@ import type {
   SessionRef,
   SessionSurfaceContext,
   Work,
+  CreateReusableWorkSessionResult,
   WorkView,
 } from '../../work/types';
 import type {
@@ -56,6 +57,7 @@ import { WorkFlipControl } from './WorkFlipControl';
 import { RunProgressPopover } from './RunProgressPopover';
 import { WorkRunEntry } from './WorkRunEntry';
 import { WorkWorkspace } from './WorkWorkspace';
+import { WorkRestartDialog } from './WorkRestartDialog';
 import { digestIntent } from './blocks/intentDigest';
 
 export interface WorkDeepLink {
@@ -106,6 +108,11 @@ export interface WorkCardProps {
   chatDisabled?: boolean;
   chatComposerSubmitKey?: ComposerSubmitKey;
   onChatSend?: (text: string) => void | Promise<void>;
+  onCreateReusableWorkSession?: (input: {
+    flowId: string;
+    values: Record<string, unknown>;
+    requestId: string;
+  }) => Promise<CreateReusableWorkSessionResult>;
 }
 
 export function workStartDraftRequestID(
@@ -258,6 +265,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   chatDisabled = false,
   chatComposerSubmitKey = 'enter',
   onChatSend,
+  onCreateReusableWorkSession,
 }) => {
   const { locale } = useI18n();
   const view = useWorkStore((state) => state.works[workID]);
@@ -300,6 +308,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   const [preferenceReady, setPreferenceReady] = useState(false);
   const [hasStoredPreference, setHasStoredPreference] = useState<boolean | null>(null);
   const [deepLinkState, setDeepLinkState] = useState<DeepLinkState>({ kind: 'idle' });
+  const [restartTargetRunID, setRestartTargetRunID] = useState<string | null>(null);
   const faceRefs = useRef<Partial<Record<WorkFace, HTMLDivElement>>>({});
   const restoredScroll = useRef<Partial<Record<WorkFace, string>>>({});
   const draftIntentRef = useRef<{ signature: string; requestId: string } | null>(null);
@@ -712,6 +721,10 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     return result;
   }, [adapter, resolvedPort.restartRun]);
 
+  const handleRestartRequest = useCallback((run: import('../../work/types').WorkflowRun) => {
+    setRestartTargetRunID(run.id);
+  }, []);
+
   const retrySync = useCallback(() => {
     adapter.retrySubscription(workID);
   }, [adapter, workID]);
@@ -780,7 +793,8 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   );
 
   return (
-    <WorkWorkspace
+    <>
+      <WorkWorkspace
       name={view.work.name}
       state={view.work.state}
       archiveState={view.work.archiveState}
@@ -954,6 +968,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onControlPause={resolvedPort.pauseRun ? handleControlPause : undefined}
               onControlStop={resolvedPort.cancelRun ? handleControlStop : undefined}
               onControlRestart={resolvedPort.restartRun ? handleControlRestart : undefined}
+              onControlRestartRequest={resolvedPort.restartRun ? handleRestartRequest : undefined}
               displayItems={chatItems}
               live={chatLive}
               running={chatRunning}
@@ -998,6 +1013,29 @@ export const WorkCard: React.FC<WorkCardProps> = ({
           </div>
         </div>
       </div>
-    </WorkWorkspace>
+      </WorkWorkspace>
+      {restartTargetRunID && (
+        <WorkRestartDialog
+          open
+          workId={view.work.id}
+          workName={view.work.name}
+          runId={restartTargetRunID}
+          onClose={() => setRestartTargetRunID(null)}
+          onRestartCurrent={handleControlRestart}
+          onPrepareFlow={async (input) => {
+            if (!resolvedPort.prepareReusableFlow) throw new Error('常用流程能力尚未连接。');
+            return resolvedPort.prepareReusableFlow(input);
+          }}
+          onSaveFlow={async (input) => {
+            if (!resolvedPort.saveReusableFlow) throw new Error('常用流程保存能力尚未连接。');
+            return resolvedPort.saveReusableFlow(input);
+          }}
+          onCreateSession={async (input) => {
+            if (!onCreateReusableWorkSession) throw new Error('新工作 Session 能力尚未连接。');
+            return onCreateReusableWorkSession(input);
+          }}
+        />
+      )}
+    </>
   );
 };

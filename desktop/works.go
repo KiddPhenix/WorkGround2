@@ -164,6 +164,24 @@ type CreateWorkSessionResult struct {
 	Recoverable bool           `json:"recoverable"`
 }
 
+// CreateReusableWorkSessionInput creates a new Work Session from an immutable
+// reusable flow. RequestID covers both Session and Work creation.
+type CreateReusableWorkSessionInput struct {
+	FlowID    string                     `json:"flowId"`
+	Values    map[string]json.RawMessage `json:"values,omitempty"`
+	RequestID string                     `json:"requestId"`
+}
+
+// CreateReusableWorkSessionResult exposes partial recovery in the same shape
+// as first-time Work Session creation.
+type CreateReusableWorkSessionResult struct {
+	TabMeta     TabMeta               `json:"tabMeta"`
+	Run         *work.ReusableFlowRun `json:"run,omitempty"`
+	Duplicate   bool                  `json:"duplicate"`
+	Error       string                `json:"error,omitempty"`
+	Recoverable bool                  `json:"recoverable"`
+}
+
 var createWorkSessionMu sync.Mutex
 
 // CreateWorkSession creates a Work Session and calls BeginWorkPlanning.
@@ -258,6 +276,120 @@ func (a *App) CreateWorkSession(input CreateWorkSessionInput) (CreateWorkSession
 		result.WorkView = planResult.Result
 	}
 	result.TabMeta = a.tabMeta(tab, false)
+	return result, nil
+}
+
+// CreateReusableWorkSession creates a separate Session, runs the saved flow
+// through that Session's Controller, and binds both identities durably. A retry
+// resumes whichever of those phases already committed.
+func (a *App) CreateReusableWorkSession(sourceTabID string, input CreateReusableWorkSessionInput) (CreateReusableWorkSessionResult, error) {
+	result := CreateReusableWorkSessionResult{}
+	requestID := strings.TrimSpace(input.RequestID)
+	if requestID == "" {
+		result.Error = "requestId is required"
+		return result, nil
+	}
+	if strings.TrimSpace(input.FlowID) == "" {
+		result.Error = "flowId is required"
+		return result, nil
+	}
+	a.mu.RLock()
+	source := a.tabByIDLocked(strings.TrimSpace(sourceTabID))
+	if source == nil {
+		a.mu.RUnlock()
+		result.Error = "source Work Session is no longer available"
+		return result, nil
+	}
+	scope := strings.TrimSpace(source.Scope)
+	workspaceRoot := source.WorkspaceRoot
+	a.mu.RUnlock()
+	if scope == "" {
+		scope = "global"
+	}
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			result.Error = "source Work Session workspace is unavailable"
+			return result, nil
+		}
+	} else {
+		scope = "global"
+		workspaceRoot = ""
+	}
+
+	createWorkSessionMu.Lock()
+	defer createWorkSessionMu.Unlock()
+	tab, duplicate, err := a.findWorkSessionByRequest(scope, workspaceRoot, requestID)
+	if err != nil {
+		result.Error = fmt.Sprintf("find existing reusable Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if tab == nil {
+		tab, err = a.ensureBlankBackgroundTab(scope, workspaceRoot)
+		if err != nil {
+			result.Error = fmt.Sprintf("prepare reusable Work Session: %v", err)
+			result.Recoverable = true
+			return result, nil
+		}
+		if err := a.bindWorkSession(tab, requestID, ""); err != nil {
+			result.TabMeta = a.tabMeta(tab, false)
+			result.Error = fmt.Sprintf("persist reusable Work Session: %v", err)
+			result.Recoverable = true
+			return result, nil
+		}
+	}
+	if err := a.nameWorkSession(tab, workspaceRoot); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("name reusable Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if err := a.waitWorkSessionReady(tab.ID, 30*time.Second); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("start reusable Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	wc, err := a.resolveWorkController(tab.ID)
+	if err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = err.Error()
+		result.Recoverable = true
+		return result, nil
+	}
+	run, err := wc.RunReusableFlow(a.bootContext(), work.RunReusableFlowInput{
+		FlowID: input.FlowID, Values: input.Values, RequestID: requestID,
+	})
+	if err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = fmt.Sprintf("run reusable flow: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if run == nil || run.Work == nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Error = "reusable flow completed without a Work"
+		result.Recoverable = true
+		return result, nil
+	}
+	if err := a.bindWorkSession(tab, requestID, run.Work.ID); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Run = run
+		result.Error = fmt.Sprintf("bind reusable Work Session: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	if err := a.syncWorkSessionTitle(tab.ID, run.Work.ID, run.Work.Name); err != nil {
+		result.TabMeta = a.tabMeta(tab, false)
+		result.Run = run
+		result.Error = fmt.Sprintf("sync reusable Work Session title: %v", err)
+		result.Recoverable = true
+		return result, nil
+	}
+	result.TabMeta = a.tabMeta(tab, false)
+	result.Run = run
+	result.Duplicate = duplicate || run.Duplicate
 	return result, nil
 }
 
@@ -540,6 +672,34 @@ func (a *App) CopyWork(tabID string, input work.CopyWorkInput) (*work.Work, erro
 		return nil, err
 	}
 	return wc.CopyWork(a.bootContext(), input)
+}
+
+// PrepareReusableFlow reads the repeatable fields for one Work.
+func (a *App) PrepareReusableFlow(tabID string, input work.PrepareReusableFlowInput) (*work.ReusableFlowSetup, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.PrepareReusableFlow(a.bootContext(), input)
+}
+
+// SaveReusableFlow freezes one Work as an immutable common workflow.
+func (a *App) SaveReusableFlow(tabID string, input work.SaveReusableFlowInput) (*work.ReusableFlow, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.SaveReusableFlow(a.bootContext(), input)
+}
+
+// RunReusableFlow creates a new Work in the current Controller. Desktop UI
+// normally uses CreateReusableWorkSession so the new Work has its own Session.
+func (a *App) RunReusableFlow(tabID string, input work.RunReusableFlowInput) (*work.ReusableFlowRun, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	return wc.RunReusableFlow(a.bootContext(), input)
 }
 
 // UpdateDraft updates editable draft fields with optimistic concurrency.

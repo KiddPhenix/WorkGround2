@@ -3259,6 +3259,22 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [activeTabId, refreshTabMetas, syncActiveTab]);
 
+  const handleCreateReusableWorkSession = useCallback(async (input: {
+    flowId: string;
+    values: Record<string, unknown>;
+    requestId: string;
+  }) => {
+    const sourceTabID = activeTab?.id;
+    if (!sourceTabID) throw new Error('当前 Work Session 不可用。');
+    const result = await app.CreateReusableWorkSession(sourceTabID, input);
+    if (result.error || !result.tabMeta?.id) {
+      throw new Error(result.error || '没有返回新的 Work Session。');
+    }
+    await refreshProjectsAndTabs();
+    await enqueueTabSwitch(result.tabMeta.id);
+    return result;
+  }, [activeTab?.id, enqueueTabSwitch, refreshProjectsAndTabs]);
+
   const patchWorkBootstrap = useCallback((requestID: string, patch: Partial<WorkBootstrap>) => {
     setWorkBootstrap((current) => {
       if (!current || current.requestId !== requestID) return current;
@@ -3928,6 +3944,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                       || sessionSurfaceProps.decisionPending}
                     chatComposerSubmitKey={composerSubmitKey}
                     onChatSend={handleWorkChatSend}
+                    onCreateReusableWorkSession={handleCreateReusableWorkSession}
                   />
                 </div>
               </div>

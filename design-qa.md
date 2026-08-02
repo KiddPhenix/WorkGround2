@@ -570,3 +570,17 @@ final result: passed
 - 数据可靠性：最终信息先持久化为 `readyForStart` 草稿，倒计时结束才释放调度；重启恢复不会绕过等待，重复开始请求可幂等重放。
 
 final result: passed
+
+---
+
+# Design QA — Work 重新开始与流程复用（2026-08-02）
+
+- Scope: Work 底部“重新开始”入口、选择弹窗、首次保存常用工作弹窗。
+- Reference: 用户提供的底部按钮区与“保存为常用工作”截图。
+- Runtime: `desktop/build/bin/WorkGround2.exe`，生产构建，真实 Work 运行态。
+- Interaction: 播放、暂停、停止、重新开始四个原按钮均保留；圆箭头打开二选一弹窗；选择“保存流程并再次运行”进入首次保存状态；关闭弹窗不会触发重启或保存。
+- Visual: 弹窗沿用现有色板、边框、圆角、层级和按钮规格；状态承载于原按钮区和弹窗，没有新增横向通知条；窄内容使用省略与换行，未发现裁切或重叠。
+- Accessibility: 四个运行控制和弹窗操作均暴露可访问名称；不可用状态由原控制逻辑保留；弹窗支持关闭且忙碌态阻止重复提交。
+- Comparison: `D:/Codex/.codex/visualizations/2026/08/01/019fbd42-57a1-7721-a940-695c37c7c869/work-restart-comparison.png`。
+
+final result: passed

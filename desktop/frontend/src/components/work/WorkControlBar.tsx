@@ -19,6 +19,8 @@ export interface WorkControlBarProps {
   onStop?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
   /** Called for Restart (RestartRun). */
   onRestart?: (input: { workId: string; runId: string; requestId: string }) => WorkflowRun | Promise<WorkflowRun>;
+  /** Opens the unified restart choice without removing the existing control. */
+  onRestartRequest?: (run: WorkflowRun) => void;
 }
 
 type BusyAction = 'start' | 'pause' | 'stop' | 'restart' | null;
@@ -103,6 +105,7 @@ export const WorkControlBar: React.FC<WorkControlBarProps> = ({
   onPause,
   onStop,
   onRestart,
+  onRestartRequest,
 }) => {
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -189,6 +192,10 @@ export const WorkControlBar: React.FC<WorkControlBarProps> = ({
 
   const doRestart = useCallback(async () => {
     if (!onRestart || !restartRun || !canRestart || busyAction) return;
+    if (onRestartRequest) {
+      onRestartRequest(restartRun);
+      return;
+    }
     setBusyAction('restart');
     setActionError(null);
     const intent = actionIntent('restart', restartRun.id);
@@ -204,7 +211,7 @@ export const WorkControlBar: React.FC<WorkControlBarProps> = ({
     } finally {
       setBusyAction(null);
     }
-  }, [actionIntent, busyAction, canRestart, onRestart, restartRun, workId]);
+  }, [actionIntent, busyAction, canRestart, onRestart, onRestartRequest, restartRun, workId]);
 
   const busy = busyAction !== null;
 
@@ -265,8 +272,8 @@ export const WorkControlBar: React.FC<WorkControlBarProps> = ({
           type="button"
           className="wg2-work-control-bar__btn wg2-work-control-bar__btn--restart"
           data-testid="work-ctrl-restart"
-          title="重启 — 终止当前运行并重新开始"
-          aria-label="重启"
+          title="重新开始…"
+          aria-label="重新开始"
           disabled={!canRestart || busy}
           aria-busy={busyAction === 'restart'}
           onClick={doRestart}

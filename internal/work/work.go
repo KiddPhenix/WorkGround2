@@ -154,6 +154,8 @@ type Work struct {
 	Conclusions     []Conclusion           `json:"conclusions,omitempty"`
 	RerunOf         string                 `json:"rerunOf,omitempty"`
 	CopiedFrom      string                 `json:"copiedFrom,omitempty"`
+	ReusableFlowID  string                 `json:"reusableFlowId,omitempty"`
+	ReusableRunHash string                 `json:"reusableRunHash,omitempty"`
 	ReferencedWorks []string               `json:"referencedWorks,omitempty"`
 	RerunUpgraded   bool                   `json:"rerunUpgraded,omitempty"`
 	MigrationPath   []int                  `json:"migrationPath,omitempty"`

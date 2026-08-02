@@ -119,6 +119,7 @@ export interface WorkCardFrontProps {
   onControlPause?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
   onControlStop?: (input: { workId: string; runId: string; requestId: string }) => Promise<void>;
   onControlRestart?: (input: { workId: string; runId: string; requestId: string }) => import('../../work/types').WorkflowRun | Promise<import('../../work/types').WorkflowRun>;
+  onControlRestartRequest?: (run: WorkflowRun) => void;
   // ── Chat input props ───────────────────────────────────────────
   displayItems: Item[];
   live?: LiveStream;
@@ -287,6 +288,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onControlPause,
   onControlStop,
   onControlRestart,
+  onControlRestartRequest,
   displayItems,
   live,
   running,
@@ -595,6 +597,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
               onPause={onControlPause}
               onStop={onControlStop}
               onRestart={onControlRestart}
+              onRestartRequest={onControlRestartRequest}
             />
           </div>
         </div>
@@ -633,6 +636,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
           onPause={onControlPause}
           onStop={onControlStop}
           onRestart={onControlRestart}
+          onRestartRequest={onControlRestartRequest}
         />
       </div>
     </div>
