@@ -455,6 +455,72 @@ func TestCollaborationReconnectBackoffIsBoundedAndJittered(t *testing.T) {
 	}
 }
 
+func TestCollaborationHeartbeatIsLowFrequencyAndToleratesMisses(t *testing.T) {
+	if collaborationHeartbeatInterval < 90*time.Second {
+		t.Fatalf("heartbeat interval = %v; want at least 90s", collaborationHeartbeatInterval)
+	}
+	if collaborationMemberStaleAfter < 3*collaborationHeartbeatInterval {
+		t.Fatalf("stale threshold = %v; want at least three heartbeat intervals", collaborationMemberStaleAfter)
+	}
+}
+
+func TestCollaborationHostInviteExportsLocalAddressesOnDemand(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	conn := testConnection(&fakeCollaborationPeer{}, "host", "session-a")
+	conn.hostName = "0.0.0.0"
+	conn.joinToken = "room-secret"
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Mode: "host", Host: conn.hostName, Port: conn.port, Room: conn.room, SessionID: conn.sessionID}
+	invite, err := c.invite()
+	if err != nil || invite.Room != conn.room || invite.Port != conn.port || invite.Token != conn.joinToken {
+		t.Fatalf("invite=%+v err=%v", invite, err)
+	}
+	foundLoopback := false
+	for _, host := range invite.Hosts {
+		if host == "127.0.0.1" {
+			foundLoopback = true
+		}
+		if host == "0.0.0.0" || host == "::" {
+			t.Fatalf("invite exposed an unspecified address: %+v", invite.Hosts)
+		}
+	}
+	if !foundLoopback {
+		t.Fatalf("invite has no local double-open address: %+v", invite.Hosts)
+	}
+	c.state.Mode = "client"
+	if _, err := c.invite(); err == nil {
+		t.Fatal("client exported a Host invite using its own IP")
+	}
+}
+
+func TestCollaborationRejoinAutomaticallyRetriesCachedOutbox(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "client", "session-a")
+	conn.rejoined = true
+	c.outbox = []collab.CommandEnvelope{{
+		RequestID: "cached-chat", Room: conn.room, MemberID: conn.memberID,
+		Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "cached"}},
+	}}
+	state, err := c.installConnection(conn)
+	if err != nil || state.Status != "syncing" {
+		t.Fatalf("install state=%+v err=%v", state, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		peer.mu.Lock()
+		submitted := len(peer.submitted)
+		peer.mu.Unlock()
+		if submitted == 1 && c.snapshot().OutboxCount == 0 && c.snapshot().Status == "connected" {
+			c.close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	c.close()
+	t.Fatalf("cached outbox was not retried automatically: state=%+v outbox=%+v", c.snapshot(), c.outbox)
+}
+
 func TestNormalizeCollaborationHostIPv6Brackets(t *testing.T) {
 	for input, want := range map[string]string{"[::1]": "::1", "::1": "::1", "127.0.0.1": "127.0.0.1", "devbox.local": "devbox.local"} {
 		got, err := normalizeCollaborationHost(input)

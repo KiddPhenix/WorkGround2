@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, ChevronRight, Circle, CircleAlert, LogOut, RefreshCw, Users, X } from "lucide-react";
+import { Bot, Check, ChevronRight, Circle, CircleAlert, Copy, LogOut, RefreshCw, Share2, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { collabCopy } from "./copy";
 import { useCollabController } from "./useCollabController";
@@ -7,6 +7,8 @@ import type { CollaborationTimelineItem } from "./types";
 import { CollaborationComposer } from "./components/CollaborationComposer";
 import { ConnectionPanel } from "./components/ConnectionPanel";
 import { CollaborationTimeline } from "./components/CollaborationTimeline";
+import { buildCollaborationInvite } from "./invite";
+import type { CollaborationInvite } from "./types";
 import "./collab.css";
 
 interface CollaborationWorkspaceProps {
@@ -32,6 +34,22 @@ function handleAction(promise: Promise<unknown>) {
   void promise.catch(() => {});
 }
 
+async function copyText(value: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+  const input = document.createElement("textarea");
+  input.value = value;
+  input.style.position = "fixed";
+  input.style.opacity = "0";
+  document.body.appendChild(input);
+  input.select();
+  const copied = document.execCommand("copy");
+  input.remove();
+  if (!copied) throw new Error("copy failed");
+}
+
 export function CollaborationWorkspace({ sessionID, mode = "session", onClose, onConnected, onConnectRequest }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
@@ -39,6 +57,10 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
   const { state, self, agentBusy, selectedItems } = controller;
   const [prefill, setPrefill] = useState("");
   const [batchInstruction, setBatchInstruction] = useState("");
+  const [invite, setInvite] = useState<CollaborationInvite>();
+  const [inviteHost, setInviteHost] = useState("");
+  const [inviteError, setInviteError] = useState("");
+  const [inviteCopied, setInviteCopied] = useState(false);
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
   const usable = ownsRoom && Boolean(state.room);
 
@@ -82,6 +104,32 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
       controller.clearSelection();
     }));
   };
+  const toggleInvite = async () => {
+    if (invite) {
+      setInvite(undefined);
+      return;
+    }
+    setInviteError("");
+    try {
+      const next = await controller.invite();
+      setInvite(next);
+      setInviteHost(next.hosts[0] || "127.0.0.1");
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const inviteString = invite && inviteHost ? buildCollaborationInvite({ host: inviteHost, port: invite.port, room: invite.room, token: invite.token }) : "";
+  const copyInvite = async () => {
+    if (!inviteString) return;
+    try {
+      await copyText(inviteString);
+      setInviteCopied(true);
+      setInviteError("");
+      window.setTimeout(() => setInviteCopied(false), 1500);
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return <section className="collab-surface" aria-label={c("title")}>
     <div className="collab-workspace">
@@ -89,6 +137,18 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
         <header className="collab-topicbar">
           <div><div className="collab-topic-title"><h1>{state.room.title || state.room.room}</h1><span><Users size={14} />{state.members.length}</span></div><p>{state.room.description || c("subtitle")}</p></div>
           <div className={`collab-connection collab-connection--${state.status}`}><Circle size={9} fill="currentColor" />{statusLabel(state.status, c)}</div>
+          {state.mode === "host" && <div className="collab-invite-wrap">
+            <button type="button" className="collab-icon-button" aria-label={c("exportConnection")} title={c("exportConnection")} onClick={() => void toggleInvite()}><Share2 size={17} /></button>
+            {(invite || inviteError) && <div className="collab-invite-popover" role="dialog" aria-label={c("exportConnection")}>
+              <strong>{c("exportConnection")}</strong>
+              {invite && <>
+                <label><span>{c("selectLocalIP")}</span><select value={inviteHost} onChange={(event) => { setInviteHost(event.target.value); setInviteCopied(false); }}>{invite.hosts.map((host) => <option key={host} value={host}>{host}</option>)}</select></label>
+                <div className="collab-invite-value"><input readOnly value={inviteString} aria-label={c("connectionString")} /><button type="button" onClick={() => void copyInvite()} aria-label={c("copyConnection")} title={c("copyConnection")}>{inviteCopied ? <Check size={15} /> : <Copy size={15} />}</button></div>
+                <small>{c("connectionTokenNotice")}</small>
+              </>}
+              {inviteError && <span className="collab-invite-error">{inviteError}</span>}
+            </div>}
+          </div>}
           <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
         </header>
 
