@@ -87,6 +87,7 @@
 .collab-status-banner span { flex: 1; }
 .collab-status-banner button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
 .collab-status-banner--failed { color: #ff9ba7; background: rgba(180, 43, 60, .13); }
+.collab-status-banner--action { color: #ffc178; background: rgba(170, 103, 26, .14); }
 .collab-scroll { grid-row: 3; min-height: 0; overflow: auto; scrollbar-color: #343d4d transparent; }
 .collab-timeline-list { width: min(900px, 100%); margin: 0 auto; padding: 13px 22px 28px; }
 .collab-empty { display: grid; place-items: center; min-height: 300px; color: var(--collab-muted); }

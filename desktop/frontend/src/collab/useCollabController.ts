@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
@@ -17,8 +17,13 @@ function requestID(prefix: string): string {
   return `${prefix}-${id}`;
 }
 
-function actionError(result: CollaborationActionResult, fallback: string): Error | null {
-  return result.ok ? null : new Error(result.error || fallback);
+interface CollaborationActionError extends Error {
+  code?: string;
+}
+
+function actionError(result: CollaborationActionResult, fallback: string): CollaborationActionError | null {
+  if (result.ok) return null;
+  return Object.assign(new Error(result.error || fallback), { code: result.code });
 }
 
 export function buildAgreeMessageInput(item: CollaborationTimelineItem, id: string): PostCollaborationMessageInput {
@@ -28,6 +33,7 @@ export function buildAgreeMessageInput(item: CollaborationTimelineItem, id: stri
 export interface CollabController {
   state: ReturnType<typeof collabReducer>;
   self: ReturnType<typeof ownMember>;
+  agentBusy: boolean;
   selectedItems: CollaborationTimelineItem[];
   host(input: HostCollaborationRoomInput): Promise<void>;
   join(input: JoinCollaborationRoomInput): Promise<void>;
@@ -51,7 +57,11 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const t = useT();
   const transport = useMemo(() => suppliedTransport || defaultCollaborationTransport(sessionID), [sessionID, suppliedTransport]);
   const [state, dispatch] = useReducer(collabReducer, initialCollabState);
+  const [agentStarting, setAgentStarting] = useState(false);
   const refreshEpoch = useRef(0);
+  const agentStartRef = useRef<Promise<void> | null>(null);
+  const self = ownMember(state);
+  const agentBusy = agentStarting || self?.agent.status === "running" || self?.agent.status === "waiting";
 
   const acceptResult = useCallback((result: CollaborationActionResult) => {
     const error = actionError(result, t("collab.operationFailed"));
@@ -61,15 +71,18 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   }, [t]);
 
   const perform = useCallback(async (operation: Promise<CollaborationActionResult>) => {
+    dispatch({ type: "ACTION_START" });
     try {
       const result = await operation;
       acceptResult(result);
       return result;
     } catch (error) {
-      dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error instanceof Error ? (error as CollaborationActionError).code : undefined;
+      dispatch({ type: "ACTION_FAILED", error: code === "agent_busy" ? t("collab.agentBusy") : message });
       throw error;
     }
-  }, [acceptResult]);
+  }, [acceptResult, t]);
 
   const refresh = useCallback(async (reconnecting = false) => {
     const epoch = ++refreshEpoch.current;
@@ -156,11 +169,27 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     await perform(transport.post(buildAgreeMessageInput(item, requestID("agree"))));
   }, [perform, transport]);
 
-  const startAgent = useCallback(async (value: string, referenceIDs: string[], sourceRequestID?: string) => {
+  const startAgent = useCallback((value: string, referenceIDs: string[], sourceRequestID?: string): Promise<void> => {
     const instruction = value.trim();
-    if (!instruction || !sessionID) throw new Error(t("collab.agentNotBound"));
-    await perform(transport.startAgent({ requestID: requestID("agent"), sessionID, instruction, referenceIDs, agentRequestID: sourceRequestID }));
-  }, [perform, sessionID, t, transport]);
+    if (!instruction || !sessionID) return Promise.reject(new Error(t("collab.agentNotBound")));
+    if (agentStartRef.current) return agentStartRef.current;
+    if (agentBusy) {
+      const error = new Error(t("collab.agentBusy"));
+      dispatch({ type: "ACTION_FAILED", error: error.message });
+      return Promise.reject(error);
+    }
+    setAgentStarting(true);
+    const pending = perform(transport.startAgent({ requestID: requestID("agent"), sessionID, instruction, referenceIDs, agentRequestID: sourceRequestID }))
+      .then(() => undefined)
+      .finally(() => {
+        if (agentStartRef.current === pending) {
+          agentStartRef.current = null;
+          setAgentStarting(false);
+        }
+      });
+    agentStartRef.current = pending;
+    return pending;
+  }, [agentBusy, perform, sessionID, t, transport]);
 
   const startPending = useCallback(async (intent: PendingIntent) => {
     if (intent.status !== "pending") return;
@@ -186,8 +215,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
 
   const toggleSelection = useCallback((id: string) => dispatch({ type: "TOGGLE_SELECT", id }), []);
   const clearSelection = useCallback(() => dispatch({ type: "CLEAR_SELECTION" }), []);
-  const self = ownMember(state);
   const selectedItems = selectedTimelineItems(state);
 
-  return { state, self, selectedItems, host, join, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, toggleSelection, clearSelection, startPending, stopPending, editPending };
+  return { state, self, agentBusy, selectedItems, host, join, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, toggleSelection, clearSelection, startPending, stopPending, editPending };
 }

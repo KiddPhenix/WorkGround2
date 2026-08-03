@@ -10,6 +10,7 @@ interface CollaborationComposerProps {
   members: CollaborationMember[];
   selfMemberId?: string;
   disabled?: boolean;
+  agentBusy?: boolean;
   prefill: string;
   onPrefillConsumed(): void;
   onChat(text: string): Promise<void>;
@@ -27,6 +28,7 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const [sending, setSending] = useState(false);
   const value = props.prefill || draft;
   const others = props.members.filter((member) => member.id !== props.selfMemberId);
+  const agentMode = mode === "agent" || mode === "both";
 
   const update = (next: string) => {
     if (props.prefill) props.onPrefillConsumed();
@@ -43,6 +45,8 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
       else if (mode === "request") await props.onRequest(target, text);
       else await props.onChat(text);
       setDraft(""); props.onPrefillConsumed();
+    } catch {
+      // The controller projects the actionable error into the collaboration surface.
     } finally { setSending(false); }
   };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -68,7 +72,7 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
     </div>
     <div className="collab-composer-row">
       <textarea rows={2} value={value} placeholder={c("messagePlaceholder")} onChange={(event) => update(event.target.value)} onKeyDown={keyDown} disabled={props.disabled} />
-      <button type="button" className="collab-primary-button" onClick={() => void submit()} disabled={props.disabled || sending || !value.trim() || (mode === "request" && !target)}>
+      <button type="button" className="collab-primary-button" title={agentMode && props.agentBusy ? c("agentBusy") : undefined} onClick={() => void submit()} disabled={props.disabled || sending || (agentMode && props.agentBusy) || !value.trim() || (mode === "request" && !target)}>
         {mode === "agent" || mode === "both" ? <Bot size={16} /> : mode === "request" ? <Users size={16} /> : <Send size={16} />}{c("send")}
       </button>
     </div>

@@ -202,6 +202,10 @@ func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	if routedSession != "session-a" || strings.Index(routedInput, "第一条") > strings.Index(routedInput, "第二条") || !strings.Contains(routedInput, "author=Alice revision=2") {
 		t.Fatalf("explicit route/context mismatch: session=%q input=%q", routedSession, routedInput)
 	}
+	busy, err := c.startAgent(context.Background(), StartCollaborationAgentInput{RequestID: "start-2", SessionID: "session-a", Instruction: "另一个任务"})
+	if err != nil || busy.Code != "agent_busy" || !busy.Retryable || busy.Error == "" || submits != 1 {
+		t.Fatalf("busy result=%+v submits=%d err=%v", busy, submits, err)
+	}
 	changed := input
 	changed.Instruction = "不同指令"
 	if _, err := c.startAgent(context.Background(), changed); err == nil {

@@ -153,6 +153,7 @@ export function normalizeCollaborationAction(value: unknown): CollaborationActio
   return {
     ok: queued || bool(raw.ok ?? raw.OK, !text(raw.error ?? raw.Error)),
     requestID: text(raw.requestID ?? raw.RequestID) || undefined,
+    code: text(raw.code ?? raw.Code) || undefined,
     item: raw.item || raw.Item ? normalizeCollaborationItem(raw.item ?? raw.Item) : undefined,
     state: raw.state || raw.State ? normalizeCollaborationState(raw.state ?? raw.State) : undefined,
     error: text(raw.error ?? raw.Error) || undefined,

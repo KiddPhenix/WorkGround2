@@ -115,6 +115,7 @@ type RespondCollaborationRequestInput struct {
 
 type CollaborationActionResult struct {
 	RequestID string                `json:"requestId"`
+	Code      string                `json:"code,omitempty"`
 	RunID     string                `json:"runId,omitempty"`
 	Receipt   collab.CommandReceipt `json:"receipt"`
 	Item      *collab.TimelineItem  `json:"item,omitempty"`
@@ -766,7 +767,12 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 	}
 	if c.runs[sessionID] != nil {
 		c.mu.Unlock()
-		return CollaborationActionResult{}, fmt.Errorf("Personal Agent already has a collaboration run")
+		return CollaborationActionResult{
+			RequestID: requestID,
+			Code:      "agent_busy",
+			Retryable: true,
+			Error:     "Personal Agent already has a collaboration run",
+		}, nil
 	}
 	c.mu.Unlock()
 

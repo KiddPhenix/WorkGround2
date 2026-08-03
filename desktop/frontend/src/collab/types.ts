@@ -134,6 +134,7 @@ export interface RespondCollaborationRequestInput {
 export interface CollaborationActionResult {
   ok: boolean;
   requestID?: string;
+  code?: string;
   item?: CollaborationTimelineItem;
   state?: CollaborationState;
   error?: string;

@@ -9,6 +9,7 @@ export interface CollabViewState extends CollaborationState {
   selectedIds: string[];
   pendingIntents: Record<string, PendingIntent>;
   operation?: "host" | "join" | "sync" | "leave";
+  actionError?: string;
 }
 
 export type CollabAction =
@@ -17,6 +18,8 @@ export type CollabAction =
   | { type: "STATE"; state: CollaborationState }
   | { type: "EVENT"; item: CollaborationTimelineItem }
   | { type: "FAILED"; error: string; retryable?: boolean }
+  | { type: "ACTION_START" }
+  | { type: "ACTION_FAILED"; error: string }
   | { type: "DISCONNECTED" }
   | { type: "TOGGLE_SELECT"; id: string }
   | { type: "CLEAR_SELECTION" }
@@ -62,6 +65,10 @@ export function collabReducer(state: CollabViewState, action: CollabAction): Col
       return { ...state, timeline: mergeTimeline(state.timeline, [action.item]) };
     case "FAILED":
       return { ...state, status: "failed", lastError: action.error, retryable: action.retryable ?? true, operation: undefined, pendingIntents: cancelPending(state.pendingIntents) };
+    case "ACTION_START":
+      return { ...state, actionError: undefined };
+    case "ACTION_FAILED":
+      return { ...state, actionError: action.error };
     case "DISCONNECTED":
       return { ...initialCollabState };
     case "TOGGLE_SELECT":

@@ -8,9 +8,9 @@ import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimelineItems } from "../collab/state";
-import type { CollaborationTimelineItem, PendingIntent } from "../collab/types";
+import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
 import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem } from "../collab/transport";
-import { buildAgreeMessageInput } from "../collab/useCollabController";
+import { buildAgreeMessageInput, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
 let passed = 0;
@@ -66,11 +66,64 @@ async function testSessionTransportIsolation() {
   offSecond();
 }
 
+async function testAgentBusyGuard() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const connected: CollaborationState = {
+    status: "connected",
+    room: { room: "busy-room", host: "127.0.0.1", port: 39170, latestSequence: 0 },
+    selfMemberId: "self",
+    selfSessionId: "busy-session",
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle", sessionId: "busy-session" } }],
+    timeline: [],
+  };
+  let startCalls = 0;
+  let finishStart: ((value: { ok: boolean }) => void) | undefined;
+  const transport: CollaborationTransport = {
+    async getState() { return connected; },
+    async retry() { return connected; },
+    async host() { return connected; },
+    async join() { return connected; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    startAgent() {
+      startCalls++;
+      return new Promise((resolve) => { finishStart = resolve; });
+    },
+    async respond() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let controller: CollabController | undefined;
+  function Harness() {
+    controller = useCollabController("busy-session", transport);
+    return null;
+  }
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
+  let first!: Promise<void>;
+  let second!: Promise<void>;
+  await act(async () => {
+    first = controller!.startAgent("first", []);
+    second = controller!.startAgent("second", []);
+    await Promise.resolve();
+  });
+  equal([startCalls, first === second, controller!.agentBusy], [1, true, true], "concurrent Agent starts share one in-flight request");
+  await act(async () => { finishStart?.({ ok: true }); await Promise.all([first, second]); });
+  equal(controller!.agentBusy, false, "Agent start latch releases after the request settles");
+
+  transport.startAgent = async () => ({ ok: false, code: "agent_busy", error: "backend wording may change" });
+  await act(async () => { try { await controller!.startAgent("busy", []); } catch { /* expected business rejection */ } });
+  equal([controller!.state.status, Boolean(controller!.state.actionError), controller!.state.retryable], ["connected", true, undefined], "Agent busy is a non-fatal action error and does not corrupt Room connection state");
+  await act(async () => root.unmount());
+}
+
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
   const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
+  const composerSource = readFileSync(new URL("../collab/components/CollaborationComposer.tsx", import.meta.url), "utf8");
   const connectionSource = readFileSync(new URL("../collab/components/ConnectionPanel.tsx", import.meta.url), "utf8");
   for (const [selector, row] of [["collab-topicbar", 1], ["collab-status-banner", 2], ["collab-scroll", 3], ["collab-footer", 4]] as const) {
     ok(new RegExp(`\\.${selector}\\s*\\{[^}]*grid-row:\\s*${row}(?:;|\\s)`).test(layoutCSS), `${selector} stays in grid row ${row} when the optional status banner is absent`);
@@ -81,6 +134,7 @@ async function main() {
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
+  ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
   equal(detectSelfAgentIntent("帮我检查这个接口的错误日志"), "self_agent", "detects an explicit self-Agent instruction");
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
@@ -98,6 +152,9 @@ async function main() {
   equal(state.pendingIntents.m1.status, "pending", "a newer message revision may be detected again");
   state = collabReducer(state, { type: "SYNCING", reconnecting: true });
   equal(state.pendingIntents.m1.status, "dismissed", "disconnect/reconnect cancels pending auto-starts");
+  const connectedState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", members: [], timeline: [item("kept", 1)] } });
+  const actionFailed = collabReducer(connectedState, { type: "ACTION_FAILED", error: "Agent busy" });
+  equal([actionFailed.status, actionFailed.timeline.length, actionFailed.actionError], ["connected", 1, "Agent busy"], "business action failure preserves Room connection and cached timeline");
 
   let timelineState = collabReducer(initialCollabState, { type: "EVENT", item: item("same", 1, "old") });
   timelineState = collabReducer(timelineState, { type: "EVENT", item: { ...item("same", 1, "new"), revision: 2 } });
@@ -119,8 +176,11 @@ async function main() {
   equal([wrappedEvent.id, wrappedEvent.kind, wrappedEvent.text], ["timeline-9", "agent_result", "verified"], "desktop event wrapper normalizes its item projection");
   const queued = normalizeCollaborationAction({ requestId: "queued-1", queued: true, retryable: true, error: "host temporarily unavailable" });
   equal([queued.ok, queued.queued, queued.error], [true, true, "host temporarily unavailable"], "queued Outbox action is accepted while keeping its observable warning");
+  const busy = normalizeCollaborationAction({ requestId: "busy-1", code: "agent_busy", retryable: true, error: "wording-independent" });
+  equal([busy.ok, busy.code, busy.retryable], [false, "agent_busy", true], "structured Agent busy code survives transport normalization");
 
   await testSessionTransportIsolation();
+  await testAgentBusyGuard();
   await testCountdown();
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);

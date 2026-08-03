@@ -11,6 +11,7 @@ interface CollaborationTimelineProps {
   selectedIds: string[];
   pendingIntents: Record<string, PendingIntent>;
   connected: boolean;
+  agentBusy: boolean;
   onToggle(id: string): void;
   onReply(item: CollaborationTimelineItem): void;
   onAgree(item: CollaborationTimelineItem): void;
@@ -71,18 +72,18 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
             <div className="collab-message-actions">
               <button type="button" onClick={() => props.onReply(item)}><Reply size={13} />{c("reply")}</button>
               <button type="button" onClick={() => props.onAgree(item)}><ThumbsUp size={13} />{c("agree")}</button>
-              <button type="button" onClick={() => props.onAgreeRun(item)}><Bot size={13} />{c("agreeRun")}</button>
-              <button type="button" onClick={() => props.onAgent(item)}><Bot size={13} />{c("agentRespond")}</button>
+              <button type="button" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAgreeRun(item)}><Bot size={13} />{c("agreeRun")}</button>
+              <button type="button" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAgent(item)}><Bot size={13} />{c("agentRespond")}</button>
               {incomingRequest && <>
-                <button type="button" className="collab-action-accent" onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>
-                <button type="button" onClick={() => {
+                <button type="button" className="collab-action-accent" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>
+                <button type="button" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => {
                   const next = window.prompt(c("modifyAccept"), item.text);
                   if (next?.trim()) props.onAccept({ ...item, text: next.trim() });
                 }}>{c("modifyAccept")}</button>
                 <button type="button" onClick={() => props.onReject(item)}>{c("reject")}</button>
               </>}
             </div>
-            {uncertain && <button type="button" className="collab-suggestion" onClick={() => props.onAgent(item)}><Bot size={13} />{c("uncertain")} · {c("agentRespond")}</button>}
+            {uncertain && <button type="button" className="collab-suggestion" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAgent(item)}><Bot size={13} />{c("uncertain")} · {c("agentRespond")}</button>}
             {pending && <IntentCountdown intent={pending} connected={props.connected} onStart={props.onStartPending} onStop={() => props.onStopPending(item.id)} onEdit={(instruction) => props.onEditPending(item.id, instruction)} />}
           </div>
         </article>

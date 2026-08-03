@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, ChevronRight, Circle, LogOut, RefreshCw, Users, X } from "lucide-react";
+import { Bot, ChevronRight, Circle, CircleAlert, LogOut, RefreshCw, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { collabCopy } from "./copy";
 import { useCollabController } from "./useCollabController";
@@ -28,11 +28,15 @@ function agentStatusLabel(status: "idle" | "running" | "waiting" | "completed" |
   return c(status);
 }
 
+function handleAction(promise: Promise<unknown>) {
+  void promise.catch(() => {});
+}
+
 export function CollaborationWorkspace({ sessionID, mode = "session", onClose, onConnected, onConnectRequest }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
   const controller = useCollabController(sessionID);
-  const { state, self, selectedItems } = controller;
+  const { state, self, agentBusy, selectedItems } = controller;
   const [prefill, setPrefill] = useState("");
   const [batchInstruction, setBatchInstruction] = useState("");
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
@@ -69,14 +73,14 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
 
   const runForItem = (item: CollaborationTimelineItem) => {
     const instruction = c("agentInstructionReference", { text: item.text });
-    void controller.startAgent(instruction, [item.id]);
+    handleAction(controller.startAgent(instruction, [item.id]));
   };
   const runSelected = () => {
     const instruction = batchInstruction.trim() || c("agentInstructionBatch");
-    void controller.startAgent(instruction, selectedItems.map((item) => item.id)).then(() => {
+    handleAction(controller.startAgent(instruction, selectedItems.map((item) => item.id)).then(() => {
       setBatchInstruction("");
       controller.clearSelection();
-    });
+    }));
   };
 
   return <section className="collab-surface" aria-label={c("title")}>
@@ -88,10 +92,10 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
           <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
         </header>
 
-        {(state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.status}`} role="status">
-          <RefreshCw size={14} />
-          <span>{state.lastError || statusLabel(state.status, c)}{state.status === "reconnecting" || state.status === "failed" ? ` · ${c("cachedBackground")}` : ""}{state.unsyncedCount ? ` · ${c("unsynced", { n: state.unsyncedCount })}` : ""}</span>
-          {state.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}
+        {(state.actionError || state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.actionError ? "action" : state.status}`} role="status">
+          {state.actionError ? <CircleAlert size={14} /> : <RefreshCw size={14} />}
+          <span>{state.actionError || state.lastError || statusLabel(state.status, c)}{!state.actionError && (state.status === "reconnecting" || state.status === "failed") ? ` · ${c("cachedBackground")}` : ""}{!state.actionError && state.unsyncedCount ? ` · ${c("unsynced", { n: state.unsyncedCount })}` : ""}</span>
+          {!state.actionError && state.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}
         </div>}
 
         <div className="collab-scroll" aria-label={c("timeline")}>
@@ -100,14 +104,15 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
             selfMemberId={state.selfMemberId}
             selectedIds={state.selectedIds}
             pendingIntents={state.pendingIntents}
-            connected={usable}
+            connected={usable && !agentBusy}
+            agentBusy={agentBusy}
             onToggle={controller.toggleSelection}
             onReply={(item) => setPrefill(`> ${item.actorName}: ${item.text}\n\n`)}
-            onAgree={(item) => void controller.agree(item)}
-            onAgreeRun={(item) => void controller.agree(item).then(() => controller.startAgent(c("agentInstructionAgree", { text: item.text }), [item.id]))}
+            onAgree={(item) => handleAction(controller.agree(item))}
+            onAgreeRun={(item) => handleAction(controller.agree(item).then(() => controller.startAgent(c("agentInstructionAgree", { text: item.text }), [item.id])))}
             onAgent={runForItem}
-            onAccept={(item) => void controller.acceptRequest(item)}
-            onReject={(item) => void controller.rejectRequest(item)}
+            onAccept={(item) => handleAction(controller.acceptRequest(item))}
+            onReject={(item) => handleAction(controller.rejectRequest(item))}
             onStartPending={(intent) => void controller.startPending(intent)}
             onStopPending={controller.stopPending}
             onEditPending={controller.editPending}
@@ -118,13 +123,14 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
           {selectedItems.length > 0 && <div className="collab-selection-bar">
             <span>{c("selected", { n: selectedItems.length })}</span>
             <input value={batchInstruction} onChange={(event) => setBatchInstruction(event.target.value)} placeholder={c("instruction")} aria-label={c("instruction")} />
-            <button type="button" className="collab-primary-button" disabled={!usable || !sessionID} onClick={runSelected}><Bot size={15} />{c("agentRespond")}</button>
+            <button type="button" className="collab-primary-button" disabled={!usable || !sessionID || agentBusy} title={agentBusy ? c("agentBusy") : undefined} onClick={runSelected}><Bot size={15} />{c("agentRespond")}</button>
             <button type="button" className="collab-icon-button" aria-label={c("clear")} onClick={controller.clearSelection}><X size={16} /></button>
           </div>}
           <CollaborationComposer
             members={state.members}
             selfMemberId={state.selfMemberId}
             disabled={!usable}
+            agentBusy={agentBusy}
             prefill={prefill}
             onPrefillConsumed={() => setPrefill("")}
             onChat={controller.postChat}
