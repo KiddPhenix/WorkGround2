@@ -82,6 +82,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		c.state.Retryable = true
 		return
 	}
+	p = c.repairPersisted(p)
 	if c.ownerSessionID != "" && strings.TrimSpace(p.SessionID) != c.ownerSessionID {
 		if migrated {
 			return
@@ -103,6 +104,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		}
 	}
 	c.recoveredRuns = append([]collaborationPersistedRun(nil), p.Runs...)
+	c.recovery = p
 	snapshot := p.Snapshot
 	if snapshot.LatestSequence == 0 {
 		snapshot.LatestSequence = p.AfterSequence
@@ -141,21 +143,24 @@ func (c *desktopCollaboration) persistLocked() {
 	if strings.TrimSpace(c.persistPath) == "" {
 		return
 	}
-	value := collaborationPersistedState{
-		Mode:           c.state.Mode,
-		Host:           c.state.Host,
-		Port:           c.state.Port,
-		Room:           c.state.Room,
-		MemberID:       c.state.MemberID,
-		AgentID:        c.state.AgentID,
-		SessionID:      c.state.SessionID,
-		AfterSequence:  c.state.Snapshot.LatestSequence,
-		Snapshot:       cloneCollaborationState(CollaborationState{Snapshot: c.state.Snapshot}).Snapshot,
-		Outbox:         persistedCollaborationOutbox(c.outbox),
-		OutboxFailures: cloneStringMap(c.outboxFailures),
-		Starts:         cloneStartMap(c.starts),
-		Runs:           c.persistedRunsLocked(),
+	value := c.recovery
+	if strings.TrimSpace(c.state.Room) == "" {
+		value = collaborationPersistedState{}
 	}
+	value.Mode = c.state.Mode
+	value.Host = c.state.Host
+	value.Port = c.state.Port
+	value.Room = c.state.Room
+	value.MemberID = c.state.MemberID
+	value.AgentID = c.state.AgentID
+	value.SessionID = c.state.SessionID
+	value.AfterSequence = c.state.Snapshot.LatestSequence
+	value.Snapshot = cloneCollaborationState(CollaborationState{Snapshot: c.state.Snapshot}).Snapshot
+	value.Outbox = persistedCollaborationOutbox(c.outbox)
+	value.OutboxFailures = cloneStringMap(c.outboxFailures)
+	value.Starts = cloneStartMap(c.starts)
+	value.Runs = c.persistedRunsLocked()
+	value = c.repairPersisted(value)
 	if c.conn != nil && c.conn.connectionSession != "" {
 		value.RoomName, value.Description = c.conn.roomName, c.conn.description
 		value.MemberName, value.MemberRole = c.conn.memberName, c.conn.memberRole
@@ -192,7 +197,58 @@ func (c *desktopCollaboration) persistLocked() {
 	if err := write(c.persistPath, data, 0o600); err != nil {
 		c.state.LastError = "save collaboration state: " + err.Error()
 		c.state.Retryable = true
+		return
 	}
+	c.recovery = value
+}
+
+func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState) collaborationPersistedState {
+	if strings.TrimSpace(value.Room) == "" {
+		value.Room = strings.TrimSpace(value.Snapshot.Room.ID)
+	}
+	if strings.TrimSpace(value.RoomName) == "" {
+		value.RoomName = strings.TrimSpace(value.Snapshot.Room.Name)
+	}
+	if strings.TrimSpace(value.Description) == "" {
+		value.Description = strings.TrimSpace(value.Snapshot.Room.Description)
+	}
+	if strings.TrimSpace(value.SessionID) == "" {
+		value.SessionID = c.ownerSessionID
+	}
+	for _, member := range value.Snapshot.Members {
+		if member.ID != value.MemberID {
+			continue
+		}
+		if strings.TrimSpace(value.MemberName) == "" {
+			value.MemberName = member.Name
+		}
+		if strings.TrimSpace(value.MemberRole) == "" {
+			value.MemberRole = member.Role
+		}
+		if strings.TrimSpace(value.AgentID) == "" {
+			value.AgentID = member.Agent.ID
+		}
+		if strings.TrimSpace(value.AgentName) == "" {
+			value.AgentName = member.Agent.Name
+		}
+		if strings.TrimSpace(value.AgentRole) == "" {
+			value.AgentRole = member.Agent.Role
+		}
+		break
+	}
+	if strings.TrimSpace(value.ConnectionSecretRef) == "" && value.Host != "" && value.Port > 0 && value.Room != "" && value.MemberID != "" {
+		ref := collaborationSecretRef(value.Host, value.Port, value.Room, value.MemberID)
+		if c.getSecret != nil && c.getSecret(ref) != "" {
+			value.ConnectionSecretRef = ref
+		}
+	}
+	if strings.TrimSpace(value.JoinTokenSecretRef) == "" && value.Host != "" && value.Port > 0 && value.Room != "" && value.MemberID != "" {
+		ref := collaborationTokenRef(value.Host, value.Port, value.Room, value.MemberID)
+		if c.getSecret != nil && c.getSecret(ref) != "" {
+			value.JoinTokenSecretRef = ref
+		}
+	}
+	return value
 }
 
 // persistedCollaborationOutbox preserves idempotency keys and command payloads,

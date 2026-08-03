@@ -158,6 +158,7 @@ type desktopCollaboration struct {
 	runs           map[string]*collaborationAgentRun
 	recoveredRuns  []collaborationPersistedRun
 	leaveError     string
+	recovery       collaborationPersistedState
 
 	persistPath       string
 	legacyPersistPath string
@@ -822,7 +823,7 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 	}
 	c.mu.Unlock()
 	if conn == nil {
-		p := c.readPersisted()
+		p := c.repairPersisted(c.readPersisted())
 		if p.Mode == "" || p.Host == "" || p.Room == "" || p.SessionID == "" {
 			return c.snapshot(), fmt.Errorf("collaboration connection must be joined again")
 		}

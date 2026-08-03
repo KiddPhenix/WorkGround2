@@ -331,6 +331,61 @@ func TestCollaborationRestartRecoveryKeepsSecretReferenceAndCursor(t *testing.T)
 	}
 }
 
+func TestCollaborationRetryRepairsLegacyHostIdentityFromSnapshot(t *testing.T) {
+	_, c, secrets := newTestDesktopCollaboration(t)
+	connectionRef := collaborationSecretRef("127.0.0.1", 39170, "room-a", "member-a")
+	secrets[connectionRef] = "cs1.recover-me"
+	persisted := collaborationPersistedState{
+		Mode: "host", Host: "127.0.0.1", Port: 39170, Room: "room-a", MemberID: "member-a", AgentID: "agent-a",
+		Snapshot: collab.Snapshot{
+			Room:    collab.Room{ID: "room-a", Name: "Room A", Description: "cached"},
+			Members: []collab.Member{{ID: "member-a", Name: "Alice", Role: "Backend", Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Alice Agent", Role: "Coder"}}},
+		},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.loadPersisted()
+	var got HostCollaborationRoomInput
+	var gotResume string
+	c.openHost = func(_ context.Context, input HostCollaborationRoomInput, _ collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
+		got, gotResume = input, resume
+		return testConnection(&fakeCollaborationPeer{}, "host", input.SessionID), nil
+	}
+	state, err := c.retry(context.Background())
+	if err != nil || state.Status != "connected" {
+		t.Fatalf("retry repaired Host state=%+v err=%v", state, err)
+	}
+	defer c.close()
+	if got.MemberName != "Alice" || got.MemberRole != "Backend" || got.AgentName != "Alice Agent" || got.AgentRole != "Coder" || got.SessionID != "session-a" || gotResume != "cs1.recover-me" {
+		t.Fatalf("repaired Host input=%+v resume=%q", got, gotResume)
+	}
+}
+
+func TestCollaborationOfflinePersistKeepsRecoveryIdentity(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	conn := testConnection(&fakeCollaborationPeer{}, "host", "session-a")
+	conn.memberRole, conn.agentRole = "Backend", "Coder"
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Mode: "host", Host: conn.hostName, Port: conn.port, Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
+	c.mu.Lock()
+	c.persistLocked()
+	c.conn = nil
+	c.state.Status = "failed"
+	c.mu.Unlock()
+	if _, err := c.post(context.Background(), PostCollaborationMessageInput{RequestID: "offline-after-restart", SessionID: "session-a", Kind: "chat", Text: "commit changes"}); err != nil {
+		t.Fatal(err)
+	}
+	persisted := c.readPersisted()
+	if persisted.MemberName != conn.memberName || persisted.MemberRole != conn.memberRole || persisted.AgentName != conn.agentName || persisted.AgentRole != conn.agentRole || persisted.SessionID != conn.sessionID || persisted.ConnectionSecretRef == "" {
+		t.Fatalf("offline persist erased recovery identity: %+v", persisted)
+	}
+}
+
 func TestCollaborationOfflineCacheSupportsAgentAndIdempotentOutbox(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	c.state = CollaborationState{
