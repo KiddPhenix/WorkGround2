@@ -886,6 +886,9 @@ type closeableEventSink interface {
 
 func (s *tabEventSink) Emit(e event.Event) {
 	if s.app != nil {
+		s.app.observeCollaborationAgentEvent(s.tabID, e)
+	}
+	if s.app != nil {
 		switch e.Kind {
 		case event.TurnStarted:
 			s.resetPlannerDisplayTurn()

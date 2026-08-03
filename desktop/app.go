@@ -183,6 +183,12 @@ type App struct {
 	sessionWatcher *sessionWatcher // filesystem watcher for session dir changes
 	remoteAPI      *remoteAPI      // localhost HTTP API for CLI control
 
+	// collaboration owns the process-local Room connection and its bridge to
+	// one explicitly selected Personal Agent Session. It has its own lock so
+	// network reconnects and Wails calls never contend with tab selection.
+	collaborationMu sync.Mutex
+	collaboration   *desktopCollaboration
+
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
 
 	// widgetMu owns the pager-style compact window mode and its idempotent
@@ -720,6 +726,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.closeCollaboration()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
 	}
