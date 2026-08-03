@@ -9,6 +9,15 @@
 // typecheck green by falling back to a disabled drift check below.
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { WailsWorkBindings } from "../work/wailsAdapter";
+import type {
+  CollaborationActionResult,
+  CollaborationState,
+  HostCollaborationRoomInput,
+  JoinCollaborationRoomInput,
+  PostCollaborationMessageInput,
+  RespondCollaborationRequestInput,
+  StartCollaborationAgentInput,
+} from "../collab/types";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
@@ -274,6 +283,14 @@ export interface AppBindings extends WailsWorkBindings {
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
   CloseMainWindow(): Promise<void>;
+  GetCollaborationState(): Promise<CollaborationState>;
+  RetryCollaboration(): Promise<CollaborationState>;
+  HostCollaborationRoom(input: HostCollaborationRoomInput): Promise<CollaborationState>;
+  JoinCollaborationRoom(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
+  LeaveCollaborationRoom(): Promise<void>;
+  PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
+  StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
+  RespondCollaborationRequest(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
   // ── Heartbeat ──
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
@@ -882,6 +899,20 @@ export interface SessionActivatedEvent {
 export function onSessionActivated(cb: (event: SessionActivatedEvent) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("session:activated", (payload?: unknown) => cb(sessionActivatedEvent(payload)));
+  }
+  return () => {};
+}
+
+export function onCollaborationState(cb: (payload: unknown) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("collaboration:state", (payload?: unknown) => cb(payload));
+  }
+  return () => {};
+}
+
+export function onCollaborationEvent(cb: (payload: unknown) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("collaboration:event", (payload?: unknown) => cb(payload));
   }
   return () => {};
 }
@@ -2226,6 +2257,14 @@ function makeMockApp(): AppBindings {
       "Run the desktop app (wails dev / wails build) to use Work.",
     );
   return {
+    async GetCollaborationState() { return { status: "disconnected", members: [], timeline: [] }; },
+    async RetryCollaboration() { return { status: "disconnected", members: [], timeline: [] }; },
+    async HostCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
+    async JoinCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
+    async LeaveCollaborationRoom() {},
+    async PostCollaborationMessage(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
+    async StartCollaborationAgent(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
+    async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async EnterWidgetMode() {
       widgetMode = true;
       return mockWidgetSnapshot();

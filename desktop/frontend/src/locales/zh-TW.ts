@@ -3,6 +3,7 @@
 // 呼叫時由 lib/i18n.tsx 填充，需與英文保持同名。
 
 import type { DictKey } from "./en";
+import { collabZhTW } from "./collab";
 
 export const zhTW: Record<DictKey, string> = {
   // 產品
@@ -26,6 +27,7 @@ export const zhTW: Record<DictKey, string> = {
   "common.loading": "載入中…",
   "composer.readOnlyChannel": "渠道會話唯讀",
   "app.splashSubtitle": "Agent Workspace",
+  ...collabZhTW,
 
   // 頂欄
   "topbar.history": "歷史",

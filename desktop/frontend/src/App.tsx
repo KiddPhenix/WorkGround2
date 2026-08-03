@@ -34,6 +34,7 @@ import {
   Cpu,
   Palette,
 	RadioTower,
+  Users,
   X,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
@@ -175,6 +176,7 @@ import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
 import { WidgetMode } from "./components/widget/WidgetMode";
 import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
+import { CollaborationWorkspace } from "./collab/CollaborationWorkspace";
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
@@ -1079,6 +1081,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   } = useController();
   const { locale, setPref: setLocalePref } = useI18n();
   const t = useT();
+  const collaborationLabel = t("collab.title");
   const [composerProfilesByTab, setComposerProfilesByTab] = useState<Record<string, ComposerProfile>>({});
   const yoloRestoreToolApprovalModesRef = useRef<Record<string, RestorableToolApprovalMode>>({});
   const userPlanModeByTabRef = useRef<UserPlanModeIntents>({});
@@ -1144,6 +1147,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const setSidebarCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
+  const [collaborationOpen, setCollaborationOpen] = useState(false);
   type TimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   const [topicTimeFilter, setTopicTimeFilter] = useState<TimeFilter>(() => {
     try {
@@ -3908,6 +3912,16 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{t("topbar.newSession")}</span>
               </button>
 
+              <button
+                type="button"
+                className="workspace-sidebar__new-session"
+                aria-label={collaborationLabel}
+                onClick={() => setCollaborationOpen(true)}
+              >
+                <Users size={18} aria-hidden="true" />
+                <span>{collaborationLabel}</span>
+              </button>
+
               <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
                 {irisFixtureActive ? (
                   <nav className="iris-fixture-tree" aria-label="工作区与会话">
@@ -4147,6 +4161,15 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </>
           )}
+
+          <button
+            className="sidebar__new"
+            type="button"
+            onClick={() => setCollaborationOpen(true)}
+          >
+            <Users size={18} aria-hidden="true" />
+            <span>{collaborationLabel}</span>
+          </button>
 
           {sidebarCreation && (
             <section className="sidebar-feature-zone" aria-label={t("settings.title")}>
@@ -4943,6 +4966,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       <HeartbeatPanel open={heartbeatOpen} onClose={() => setHeartbeatOpen(false)} onOpenTopic={(scope, workspaceRoot, topicId) => {
         void handleOpenTopic(scope, workspaceRoot, topicId);
       }} />
+      {collaborationOpen && (
+        <CollaborationWorkspace
+          sessionID={activeSessionId || state.meta?.sessionId || activeTab?.sessionId || ""}
+          onClose={() => setCollaborationOpen(false)}
+        />
+      )}
       {windowsFramelessChrome && <WindowsResizeHandles />}
       {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} />}
     </div>

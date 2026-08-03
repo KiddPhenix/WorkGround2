@@ -3,6 +3,7 @@
 // 调用时由 lib/i18n.tsx 填充，需与英文保持同名。
 
 import type { DictKey } from "./en";
+import { collabZh } from "./collab";
 
 export const zh: Record<DictKey, string> = {
   // 产品
@@ -26,6 +27,7 @@ export const zh: Record<DictKey, string> = {
   "common.loading": "加载中…",
   "composer.readOnlyChannel": "渠道会话只读",
   "app.splashSubtitle": "Agent Workspace",
+  ...collabZh,
 
   // 顶栏
   "topbar.history": "历史",

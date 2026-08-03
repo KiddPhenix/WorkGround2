@@ -12,6 +12,7 @@
     "test:activity": "tsx src/__tests__/activity.test.ts",
     "test:request-help": "tsx src/__tests__/request-help-display.test.tsx",
     "test:session-status": "tsx src/__tests__/session-status-indicators.test.tsx",
+    "test:collab": "tsx src/__tests__/collaboration.test.tsx",
     "test:widget-info": "tsx src/__tests__/widget-info-carousel.test.ts",
     "test:widget-i18n": "tsx src/__tests__/widget-i18n.test.ts",
     "test:widget-layout": "tsx src/__tests__/widget-layout-contract.test.ts",

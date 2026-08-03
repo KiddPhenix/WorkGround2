@@ -3,6 +3,8 @@
 // mirror this key set exactly (its `Record<DictKey, string>` annotation enforces
 // it at compile time), so adding a key here makes the build fail until zh has it.
 
+import { collabEn } from "./collab";
+
 export const en = {
   // product
   "product.name": "WorkGround2",
@@ -25,6 +27,7 @@ export const en = {
   "common.loading": "Loading…",
   "composer.readOnlyChannel": "Channel conversation is read-only",
   "app.splashSubtitle": "Agent Workspace",
+  ...collabEn,
 
   // top bar
   "topbar.history": "History",
