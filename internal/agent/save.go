@@ -638,6 +638,21 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		if strings.TrimSpace(opts.BranchMeta.SessionSource) == "" {
 			opts.BranchMeta.SessionSource = parentMeta.SessionSource
 		}
+		// Inherit Work identity from the parent when the caller
+		// did not provide one, so recovery branches keep the same
+		// logical session ownership and frontends can restore Work tab
+		// bindings without guessing.
+		if opts.BranchMeta.SessionKind == "" && parentMeta.SessionKind != "" {
+			opts.BranchMeta.SessionKind = parentMeta.SessionKind
+		}
+		if opts.BranchMeta.SessionKind == SessionKindWork {
+			if opts.BranchMeta.WorkID == "" && parentMeta.WorkID != "" {
+				opts.BranchMeta.WorkID = parentMeta.WorkID
+			}
+			if opts.BranchMeta.WorkRequestID == "" && parentMeta.WorkRequestID != "" {
+				opts.BranchMeta.WorkRequestID = parentMeta.WorkRequestID
+			}
+		}
 		if parentMeta.Recovered {
 			parentDepth = parentMeta.RecoveryDepth
 			if parentDepth <= 0 {

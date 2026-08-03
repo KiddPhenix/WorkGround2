@@ -77,6 +77,128 @@ func TestBindWorkSessionPersistsIdempotencyAndWorkIdentity(t *testing.T) {
 	}
 }
 
+func writeRecoveryMeta(t *testing.T, path string, meta agent.BranchMeta) {
+	t.Helper()
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("write session %s: %v", path, err)
+	}
+	if err := agent.SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatalf("save meta %s: %v", path, err)
+	}
+}
+
+func TestApplySessionBindingRepairsLegacyRecoveryWorkIdentity(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "work-root.jsonl")
+	first := filepath.Join(dir, "recovery-1.jsonl")
+	second := filepath.Join(dir, "recovery-2.jsonl")
+	current := filepath.Join(dir, "recovery-3.jsonl")
+	writeRecoveryMeta(t, root, agent.BranchMeta{
+		SessionKind:   agent.SessionKindWork,
+		WorkID:        "work-66a8b8810ba844236ccbaf97",
+		WorkRequestID: "work-session-51148a54-597c-4342-b94f-0896c34249a6",
+	})
+	writeRecoveryMeta(t, first, agent.BranchMeta{ParentID: agent.BranchID(root), Recovered: true})
+	writeRecoveryMeta(t, second, agent.BranchMeta{ParentID: agent.BranchID(first), Recovered: true})
+	writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: agent.BranchID(second), Recovered: true})
+
+	tab := &WorkspaceTab{ID: "legacy-work", SessionPath: current}
+	app := &App{}
+	app.applySessionBindingToTab(tab, sessionBinding{scope: "global", path: current})
+	if tab.sessionKind != agent.SessionKindWork || tab.workID != "work-66a8b8810ba844236ccbaf97" || tab.workRequestID == "" {
+		t.Fatalf("restored legacy Work identity = kind %q, work %q, request %q", tab.sessionKind, tab.workID, tab.workRequestID)
+	}
+
+	repaired, ok, err := agent.LoadBranchMeta(current)
+	if err != nil || !ok {
+		t.Fatalf("load repaired meta: ok=%v err=%v", ok, err)
+	}
+	if repaired.SessionKind != agent.SessionKindWork || repaired.WorkID != tab.workID || repaired.WorkRequestID != tab.workRequestID {
+		t.Fatalf("persisted repair = %+v", repaired)
+	}
+	updated := repaired.UpdatedAt
+	tab.sessionKind, tab.workID, tab.workRequestID = "", "", ""
+	app.applySessionBindingToTab(tab, sessionBinding{scope: "global", path: current})
+	repairedAgain, _, err := agent.LoadBranchMeta(current)
+	if err != nil || !repairedAgain.UpdatedAt.Equal(updated) {
+		t.Fatalf("idempotent reload changed repair metadata: updated %v -> %v, err=%v", updated, repairedAgain.UpdatedAt, err)
+	}
+}
+
+func TestLegacyRecoveryWorkRepairStopsSafely(t *testing.T) {
+	t.Run("normal ancestor", func(t *testing.T) {
+		dir := t.TempDir()
+		root := filepath.Join(dir, "normal.jsonl")
+		current := filepath.Join(dir, "recovery.jsonl")
+		writeRecoveryMeta(t, root, agent.BranchMeta{SessionKind: agent.SessionKindNormal})
+		writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: agent.BranchID(root), Recovered: true})
+		tab := &WorkspaceTab{SessionPath: current}
+		(&App{}).resolveWorkIdentityFromAncestors(tab, agent.BranchMeta{ParentID: agent.BranchID(root)})
+		if tab.sessionKind != "" {
+			t.Fatalf("normal ancestor restored as %q", tab.sessionKind)
+		}
+	})
+
+	t.Run("missing parent", func(t *testing.T) {
+		current := filepath.Join(t.TempDir(), "recovery.jsonl")
+		writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: "missing", Recovered: true})
+		tab := &WorkspaceTab{SessionPath: current}
+		(&App{}).resolveWorkIdentityFromAncestors(tab, agent.BranchMeta{ParentID: "missing"})
+		if tab.sessionKind != "" {
+			t.Fatalf("missing parent restored as %q", tab.sessionKind)
+		}
+	})
+
+	t.Run("cycle", func(t *testing.T) {
+		dir := t.TempDir()
+		current := filepath.Join(dir, "current.jsonl")
+		parent := filepath.Join(dir, "parent.jsonl")
+		writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: agent.BranchID(parent), Recovered: true})
+		writeRecoveryMeta(t, parent, agent.BranchMeta{ParentID: agent.BranchID(current), Recovered: true})
+		tab := &WorkspaceTab{SessionPath: current}
+		(&App{}).resolveWorkIdentityFromAncestors(tab, agent.BranchMeta{ParentID: agent.BranchID(parent)})
+		if tab.sessionKind != "" {
+			t.Fatalf("cyclic chain restored as %q", tab.sessionKind)
+		}
+	})
+
+	t.Run("outside directory", func(t *testing.T) {
+		dir := t.TempDir()
+		sessions := filepath.Join(dir, "sessions")
+		if err := os.MkdirAll(sessions, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		outside := filepath.Join(dir, "outside.jsonl")
+		current := filepath.Join(sessions, "recovery.jsonl")
+		writeRecoveryMeta(t, outside, agent.BranchMeta{SessionKind: agent.SessionKindWork, WorkID: "outside"})
+		writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: filepath.Join("..", "outside"), Recovered: true})
+		tab := &WorkspaceTab{SessionPath: current}
+		(&App{}).resolveWorkIdentityFromAncestors(tab, agent.BranchMeta{ParentID: filepath.Join("..", "outside")})
+		if tab.sessionKind != "" {
+			t.Fatalf("outside parent restored as %q", tab.sessionKind)
+		}
+	})
+
+	t.Run("depth limit", func(t *testing.T) {
+		dir := t.TempDir()
+		root := filepath.Join(dir, "work-root.jsonl")
+		writeRecoveryMeta(t, root, agent.BranchMeta{SessionKind: agent.SessionKindWork, WorkID: "too-deep"})
+		parentID := agent.BranchID(root)
+		for i := 10; i >= 1; i-- {
+			path := filepath.Join(dir, fmt.Sprintf("recovery-%d.jsonl", i))
+			writeRecoveryMeta(t, path, agent.BranchMeta{ParentID: parentID, Recovered: true})
+			parentID = agent.BranchID(path)
+		}
+		current := filepath.Join(dir, "current.jsonl")
+		writeRecoveryMeta(t, current, agent.BranchMeta{ParentID: parentID, Recovered: true})
+		tab := &WorkspaceTab{SessionPath: current}
+		(&App{}).resolveWorkIdentityFromAncestors(tab, agent.BranchMeta{ParentID: parentID})
+		if tab.sessionKind != "" {
+			t.Fatalf("over-depth chain restored as %q", tab.sessionKind)
+		}
+	})
+}
+
 func TestWorkSessionTabPromotesOnlyBlankOwnedSession(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	workspaceRoot := t.TempDir()

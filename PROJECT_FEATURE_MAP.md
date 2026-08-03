@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Work Recovery 身份继承
+- Status: done
+- Branch: `developping/work-recovery-identity+2026-08-03`
+- Location: `internal/agent/save.go`, `desktop/tabs.go`, 对应 Go 回归测试
+- Summary: recovery branch 继承 `session_kind/work_id/work_request_id`；历史 recovery 在 Desktop 恢复时沿同目录 ParentID 链自愈并写回，异常链安全停止且显式记录。
+- Keywords: Work Session, recovery branch, snapshot conflict, session_kind, work_id, ParentID
+- Source: user-reported+screenshot+verified-by-sidecar
+- Updated: 2026-08-03
+
 ### Work Session 协作模式标签
 - Status: done
 - Branch: `developping/work-mode-label+2026-08-03`

@@ -399,3 +399,208 @@ func TestListSessionsMissingDir(t *testing.T) {
 		t.Errorf("missing dir = %v / %v, want nil/nil", got, err)
 	}
 }
+
+// TestRecoveryBranchInheritsWorkIdentity verifies that SaveRecoveryBranch
+// inherits SessionKind/WorkID/WorkRequestID from the parent BranchMeta
+// when the caller does not provide them.
+func TestRecoveryBranchInheritsWorkIdentity(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "work-task.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "work item"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	parentMeta, err := EnsureBranchMeta(parentPath)
+	if err != nil {
+		t.Fatalf("ensure parent meta: %v", err)
+	}
+	parentMeta.SessionKind = SessionKindWork
+	parentMeta.WorkID = "work-1"
+	parentMeta.WorkRequestID = "req-abc"
+	if err := SaveBranchMetaPreserveUpdated(parentPath, parentMeta); err != nil {
+		t.Fatalf("save parent work identity: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "recovered"})
+	recovery, err := stale.SaveRecoveryBranch(RecoveryBranchOptions{OriginalPath: parentPath})
+	if err != nil {
+		t.Fatalf("save recovery branch: %v", err)
+	}
+	if recovery.Meta.SessionKind != SessionKindWork {
+		t.Fatalf("recovery SessionKind = %q, want %q", recovery.Meta.SessionKind, SessionKindWork)
+	}
+	if recovery.Meta.WorkID != "work-1" {
+		t.Fatalf("recovery WorkID = %q, want work-1", recovery.Meta.WorkID)
+	}
+	if recovery.Meta.WorkRequestID != "req-abc" {
+		t.Fatalf("recovery WorkRequestID = %q, want req-abc", recovery.Meta.WorkRequestID)
+	}
+
+	// Round-trip through disk: reload and verify persistence.
+	loaded, ok, err := LoadBranchMeta(recovery.Path)
+	if err != nil || !ok {
+		t.Fatalf("load recovery meta: ok=%v err=%v", ok, err)
+	}
+	if loaded.SessionKind != SessionKindWork {
+		t.Fatalf("persisted SessionKind = %q, want %q", loaded.SessionKind, SessionKindWork)
+	}
+	if loaded.WorkID != "work-1" {
+		t.Fatalf("persisted WorkID = %q", loaded.WorkID)
+	}
+	if loaded.WorkRequestID != "req-abc" {
+		t.Fatalf("persisted WorkRequestID = %q", loaded.WorkRequestID)
+	}
+}
+
+// TestRecoveryBranchInheritsWorkIdentityNested verifies that nested
+// recovery branches also inherit Work identity from the root ancestor.
+func TestRecoveryBranchInheritsWorkIdentityNested(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "work-task.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "root"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	parentMeta, err := EnsureBranchMeta(parentPath)
+	if err != nil {
+		t.Fatalf("ensure parent meta: %v", err)
+	}
+	parentMeta.SessionKind = SessionKindWork
+	parentMeta.WorkID = "work-nested"
+	parentMeta.WorkRequestID = "req-nested"
+	if err := SaveBranchMetaPreserveUpdated(parentPath, parentMeta); err != nil {
+		t.Fatalf("save parent work identity: %v", err)
+	}
+
+	// First recovery.
+	r1 := NewSession("sys")
+	r1.Add(provider.Message{Role: provider.RoleUser, Content: "recovery 1"})
+	info1, err := r1.SaveRecoveryBranch(RecoveryBranchOptions{OriginalPath: parentPath})
+	if err != nil {
+		t.Fatalf("first recovery: %v", err)
+	}
+
+	// Second recovery from the first recovery.
+	r2 := NewSession("sys")
+	r2.Add(provider.Message{Role: provider.RoleUser, Content: "recovery 2"})
+	info2, err := r2.SaveRecoveryBranch(RecoveryBranchOptions{OriginalPath: info1.Path})
+	if err != nil {
+		t.Fatalf("second recovery: %v", err)
+	}
+	if info2.Meta.SessionKind != SessionKindWork {
+		t.Fatalf("nested recovery SessionKind = %q, want %q", info2.Meta.SessionKind, SessionKindWork)
+	}
+	if info2.Meta.WorkID != "work-nested" {
+		t.Fatalf("nested recovery WorkID = %q, want work-nested", info2.Meta.WorkID)
+	}
+	if info2.Meta.WorkRequestID != "req-nested" {
+		t.Fatalf("nested recovery WorkRequestID = %q, want req-nested", info2.Meta.WorkRequestID)
+	}
+}
+
+// TestRecoveryBranchDoesNotInventWorkIdentity verifies that a normal
+// session recovery does not pick up a spurious Work identity.
+func TestRecoveryBranchDoesNotInventWorkIdentity(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "chat.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "recovered chat"})
+	recovery, err := stale.SaveRecoveryBranch(RecoveryBranchOptions{OriginalPath: parentPath})
+	if err != nil {
+		t.Fatalf("save recovery branch: %v", err)
+	}
+	if recovery.Meta.SessionKind != "" && recovery.Meta.SessionKind != SessionKindNormal {
+		t.Fatalf("normal session recovery got SessionKind = %q, want empty or normal", recovery.Meta.SessionKind)
+	}
+	if recovery.Meta.WorkID != "" {
+		t.Fatalf("normal session recovery got WorkID = %q, want empty", recovery.Meta.WorkID)
+	}
+	if recovery.Meta.WorkRequestID != "" {
+		t.Fatalf("normal session recovery got WorkRequestID = %q, want empty", recovery.Meta.WorkRequestID)
+	}
+}
+
+// TestRecoveryBranchCallerProvidedWorkIdentityWins verifies that when the
+// caller explicitly provides Work identity in opts.BranchMeta, it is
+// preserved (not overwritten by parent inheritance).
+func TestRecoveryBranchCallerProvidedWorkIdentityWins(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "work-old.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "old work"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	parentMeta, err := EnsureBranchMeta(parentPath)
+	if err != nil {
+		t.Fatalf("ensure parent meta: %v", err)
+	}
+	parentMeta.SessionKind = SessionKindWork
+	parentMeta.WorkID = "old-work"
+	parentMeta.WorkRequestID = "old-req"
+	if err := SaveBranchMetaPreserveUpdated(parentPath, parentMeta); err != nil {
+		t.Fatalf("save parent old work: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "recovered"})
+	recovery, err := stale.SaveRecoveryBranch(RecoveryBranchOptions{
+		OriginalPath: parentPath,
+		BranchMeta: BranchMeta{
+			SessionKind:   SessionKindWork,
+			WorkID:        "caller-work",
+			WorkRequestID: "caller-req",
+		},
+	})
+	if err != nil {
+		t.Fatalf("save recovery branch: %v", err)
+	}
+	if recovery.Meta.WorkID != "caller-work" {
+		t.Fatalf("caller WorkID should win: got %q, want caller-work", recovery.Meta.WorkID)
+	}
+	if recovery.Meta.WorkRequestID != "caller-req" {
+		t.Fatalf("caller WorkRequestID should win: got %q, want caller-req", recovery.Meta.WorkRequestID)
+	}
+}
+
+func TestRecoveryBranchExplicitNormalDoesNotInheritWorkIdentity(t *testing.T) {
+	dir := t.TempDir()
+	parentPath := filepath.Join(dir, "work-parent.jsonl")
+	parent := NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "work"})
+	if err := parent.Save(parentPath); err != nil {
+		t.Fatalf("save parent: %v", err)
+	}
+	meta, err := EnsureBranchMeta(parentPath)
+	if err != nil {
+		t.Fatalf("ensure parent meta: %v", err)
+	}
+	meta.SessionKind = SessionKindWork
+	meta.WorkID = "work-parent"
+	meta.WorkRequestID = "request-parent"
+	if err := SaveBranchMetaPreserveUpdated(parentPath, meta); err != nil {
+		t.Fatalf("save parent meta: %v", err)
+	}
+
+	stale := NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "normal recovery"})
+	recovery, err := stale.SaveRecoveryBranch(RecoveryBranchOptions{
+		OriginalPath: parentPath,
+		BranchMeta:   BranchMeta{SessionKind: SessionKindNormal},
+	})
+	if err != nil {
+		t.Fatalf("save recovery: %v", err)
+	}
+	if recovery.Meta.SessionKind != SessionKindNormal || recovery.Meta.WorkID != "" || recovery.Meta.WorkRequestID != "" {
+		t.Fatalf("explicit normal recovery inherited Work identity: %+v", recovery.Meta)
+	}
+}

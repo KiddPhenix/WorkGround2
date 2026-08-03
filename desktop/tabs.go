@@ -3138,7 +3138,78 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 		tab.workID = meta.WorkID
 		tab.workRequestID = meta.WorkRequestID
 		a.mu.Unlock()
+		// Historical recovery branches may lack Work identity in their
+		// own meta; walk the parent chain to find it from ancestors.
+		if meta.SessionKind == "" && meta.ParentID != "" {
+			a.resolveWorkIdentityFromAncestors(tab, meta)
+		}
 	}
+}
+
+// resolveWorkIdentityFromAncestors walks the ParentID chain to find
+// SessionKind/WorkID/WorkRequestID from ancestor BranchMeta entries.
+// This repairs historical recovery branches whose own sidecar predates
+// the Work-identity-inheritance fix. Found identity is persisted back
+// into the current meta so the walk is a one-time repair.
+func (a *App) resolveWorkIdentityFromAncestors(tab *WorkspaceTab, meta agent.BranchMeta) {
+	if meta.ParentID == "" {
+		return
+	}
+	dir := filepath.Dir(tab.SessionPath)
+	visited := map[string]bool{agent.BranchID(tab.SessionPath): true}
+	parentID := strings.TrimSpace(meta.ParentID)
+	const maxDepth = 10
+	for range maxDepth {
+		if parentID == "" {
+			return
+		}
+		if parentID != filepath.Base(parentID) || parentID == "." || parentID == ".." {
+			slog.Warn("skip invalid recovery parent id", "session", tab.SessionPath, "parent_id", parentID)
+			return
+		}
+		if visited[parentID] {
+			slog.Warn("stop cyclic recovery parent chain", "session", tab.SessionPath, "parent_id", parentID)
+			return // cycle detected
+		}
+		visited[parentID] = true
+		parentPath := filepath.Join(dir, parentID+".jsonl")
+		parentMeta, ok, err := agent.LoadBranchMeta(parentPath)
+		if err != nil {
+			slog.Warn("load recovery parent meta", "session", tab.SessionPath, "parent", parentPath, "error", err)
+			return
+		}
+		if !ok {
+			slog.Warn("recovery parent meta missing", "session", tab.SessionPath, "parent", parentPath)
+			return
+		}
+		if parentMeta.SessionKind == agent.SessionKindWork {
+			a.mu.Lock()
+			if tab.sessionKind == "" {
+				tab.sessionKind = agent.SessionKindWork
+				tab.workID = parentMeta.WorkID
+				tab.workRequestID = parentMeta.WorkRequestID
+			}
+			a.mu.Unlock()
+			// Persist the repair so future restarts skip the walk.
+			meta.SessionKind = agent.SessionKindWork
+			meta.WorkID = parentMeta.WorkID
+			meta.WorkRequestID = parentMeta.WorkRequestID
+			if err := agent.SaveBranchMetaPreserveUpdated(tab.SessionPath, meta); err != nil {
+				slog.Warn("persist recovered Work identity", "session", tab.SessionPath, "error", err)
+			}
+			return
+		}
+		if parentMeta.SessionKind == agent.SessionKindNormal {
+			return
+		}
+		// Not a Work session; keep walking unless this is a
+		// non-recovery normal session, which is a definitive stop.
+		if !parentMeta.Recovered && parentMeta.ParentID == "" {
+			return
+		}
+		parentID = strings.TrimSpace(parentMeta.ParentID)
+	}
+	slog.Warn("recovery parent chain exceeded repair depth", "session", tab.SessionPath, "max_depth", maxDepth)
 }
 
 func (a *App) resolveSessionBinding(sessionPath string) (sessionBinding, bool) {
@@ -5233,6 +5304,9 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 		mode := normalizeTabMode(tab.mode)
 		toolApprovalMode := normalizeToolApprovalMode(tab.toolApprovalMode)
 		goal := strings.TrimSpace(tab.goal)
+		sessionKind := tab.sessionKind
+		workID := tab.workID
+		workRequestID := tab.workRequestID
 		a.mu.RUnlock()
 		if ctrl != nil {
 			mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
@@ -5260,6 +5334,9 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 			Mode:             persistedTabMode(mode),
 			ToolApprovalMode: persistedToolApprovalMode(toolApprovalMode),
 			Goal:             goal,
+			SessionKind:      sessionKind,
+			WorkID:           workID,
+			WorkRequestID:    workRequestID,
 		}
 	}
 }
