@@ -110,7 +110,7 @@ export function collabReducer(state: CollabViewState, action: CollabAction): Col
 
 const directedAtOther = /(?:^|\s)@[\p{L}\p{N}_-]+|(?:小王|小李|大家|你们|你来|麻烦你)/u;
 const completionStatement = /(?:已经|已|刚刚).{0,8}(?:完成|修好|解决|提交|更新)|(?:done|fixed|shipped|completed)\b/i;
-const highIntent = /(?:帮我|请|麻烦).{0,12}(?:检查|修复|实现|修改|更新|运行|验证|分析|重命名|生成)|(?:检查|修复|实现|修改|更新|运行|验证|分析|重命名|生成)(?:一下|这个|这些|刚才)|\b(?:check|fix|implement|update|run|verify|analy[sz]e|rename|generate)\b/i;
+const highIntent = /(?:帮我|请|麻烦|把|将).{0,20}(?:检查|修复|实现|修改|更新|运行|验证|分析|重命名|生成|提交|构建|测试|部署|发布|同步)|(?:检查|修复|实现|修改|更新|运行|验证|分析|重命名|生成|提交|构建|测试|部署|发布|同步).{0,8}(?:一下|这个|这些|刚才|现有)|\b(?:check|fix|implement|update|run|verify|analy[sz]e|rename|generate|commit|build|test|deploy|publish|sync)\b/i;
 const uncertainIntent = /(?:是不是|是否|怎么|为什么|好像|可能).{0,20}(?:问题|错误|失败|不对|异常)|\b(?:issue|error|wrong|why|how)\b/i;
 
 export function detectSelfAgentIntent(text: string): CollaborationIntentClass {
