@@ -4,6 +4,7 @@ import { JSDOM } from "jsdom";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimelineItems } from "../collab/state";
@@ -49,6 +50,10 @@ async function testCountdown() {
 
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
+  const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
+  for (const [selector, row] of [["collab-topicbar", 1], ["collab-status-banner", 2], ["collab-scroll", 3], ["collab-footer", 4]] as const) {
+    ok(new RegExp(`\\.${selector}\\s*\\{[^}]*grid-row:\\s*${row}(?:;|\\s)`).test(layoutCSS), `${selector} stays in grid row ${row} when the optional status banner is absent`);
+  }
   equal(detectSelfAgentIntent("帮我检查这个接口的错误日志"), "self_agent", "detects an explicit self-Agent instruction");
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
   equal(detectSelfAgentIntent("小王，你检查一下这个接口"), "chat", "does not hijack instructions directed at another person");
