@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
-import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, selectedTimelineItems } from "./state";
+import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
 import type {
   CollaborationActionResult,
@@ -149,6 +149,10 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
       intent: { messageId: item.id, revision: item.revision, instruction: item.text, deadline: Date.now() + 5_000, status: "pending" },
     });
   }, []);
+
+  useEffect(() => {
+    for (const item of replayableSelfAgentItems(state)) createPendingIntent(item);
+  }, [createPendingIntent, state]);
 
   const postChat = useCallback(async (value: string) => {
     const text = value.trim();

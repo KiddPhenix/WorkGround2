@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
-import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimelineItems } from "../collab/state";
+import { collabReducer, detectSelfAgentIntent, initialCollabState, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
 import { buildCollaborationInvite, parseCollaborationInvite } from "../collab/invite";
 import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
@@ -133,7 +133,7 @@ async function testOfflineSelfAgentIntervention() {
     selfMemberId: "self",
     selfSessionId: "solo-session",
     members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle", sessionId: "solo-session" } }],
-    timeline: [],
+    timeline: [{ ...item("outbox:old-chat", 2, "把现有修改提交一下"), localPending: true, syncStatus: "pending" }],
   };
   let agentStarts = 0;
   const transport: CollaborationTransport = {
@@ -159,7 +159,7 @@ async function testOfflineSelfAgentIntervention() {
   }
   const root = createRoot(document.getElementById("root")!);
   await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
-  await act(async () => { await controller!.postChat("把现有修改提交一下"); });
+  await act(async () => { await Promise.resolve(); });
   const intent = Object.values(controller!.state.pendingIntents)[0];
   ok(Boolean(intent), "offline solo Host still detects a local Agent instruction");
   await act(async () => { await controller!.startPending(intent); });
@@ -218,6 +218,10 @@ async function main() {
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
   equal(detectSelfAgentIntent("小王，你检查一下这个接口"), "chat", "does not hijack instructions directed at another person");
   equal(detectSelfAgentIntent("接口已经修好了"), "chat", "does not execute completion statements");
+  const replayChat = { ...item("outbox:queued-chat", 12, "把现有修改提交一下"), localPending: true, syncStatus: "pending" as const };
+  const replayRun = { ...item("outbox:queued-run", 13, "把现有修改提交一下"), kind: "agent_command" as const, actorAgent: true, localPending: true, syncStatus: "pending" as const, referenceIds: [replayChat.id], agentRunStatus: "running" as const };
+  equal(replayableSelfAgentItems({ ...initialCollabState, selfMemberId: "self", timeline: [replayChat] }).map((entry) => entry.id), [replayChat.id], "restored Outbox chat replays a missing local Agent intent");
+  equal(replayableSelfAgentItems({ ...initialCollabState, selfMemberId: "self", timeline: [replayChat, replayRun] }).length, 0, "restored Agent run reference prevents duplicate intervention");
   equal(contributionLabel(collabCopy(t), "verified"), "Verified", "known contribution kind uses its localized badge");
   equal(contributionLabel(collabCopy(t), "future_kind"), "Contribution", "unknown contribution kind falls back safely");
 

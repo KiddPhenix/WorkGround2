@@ -121,6 +121,23 @@ export function detectSelfAgentIntent(text: string): CollaborationIntentClass {
   return "chat";
 }
 
+export function replayableSelfAgentItems(state: Pick<CollabViewState, "timeline" | "selfMemberId" | "pendingIntents">): CollaborationTimelineItem[] {
+  if (!state.selfMemberId) return [];
+  const handled = new Set(
+    state.timeline
+      .filter((item) => item.kind === "agent_command")
+      .flatMap((item) => item.referenceIds),
+  );
+  return state.timeline.filter((item) =>
+    item.localPending &&
+    item.kind === "chat" &&
+    item.actorId === state.selfMemberId &&
+    !state.pendingIntents[item.id] &&
+    !handled.has(item.id) &&
+    detectSelfAgentIntent(item.text) !== "chat",
+  );
+}
+
 export function selectedTimelineItems(state: CollabViewState): CollaborationTimelineItem[] {
   const selected = new Set(state.selectedIds);
   return state.timeline.filter((item) => selected.has(item.id));
