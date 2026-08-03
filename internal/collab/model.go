@@ -262,6 +262,7 @@ type CommandEnvelope struct {
 	Room      string  `json:"room"`
 	MemberID  string  `json:"memberId"`
 	Session   string  `json:"connectionSession,omitempty"`
+	QueuedAt  string  `json:"queuedAt,omitempty"`
 	Command   Command `json:"command"`
 }
 

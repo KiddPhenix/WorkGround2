@@ -44,10 +44,11 @@ type CollaborationState struct {
 }
 
 type CollaborationOutboxView struct {
-	RequestID string `json:"requestId"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	LastError string `json:"lastError,omitempty"`
+	RequestID string               `json:"requestId"`
+	Type      string               `json:"type"`
+	Status    string               `json:"status"`
+	LastError string               `json:"lastError,omitempty"`
+	Item      *collab.TimelineItem `json:"item,omitempty"`
 }
 
 // CollaborationInvite is returned only after an explicit export action. The
@@ -530,15 +531,58 @@ func (c *desktopCollaboration) snapshot() CollaborationState {
 
 func (c *desktopCollaboration) outboxViewsLocked() []CollaborationOutboxView {
 	result := make([]CollaborationOutboxView, 0, len(c.outbox))
+	sequence := c.state.Snapshot.LatestSequence
 	for _, env := range c.outbox {
 		status := "pending"
 		lastError := c.outboxFailures[env.RequestID]
 		if lastError != "" {
 			status = "failed"
 		}
-		result = append(result, CollaborationOutboxView{RequestID: env.RequestID, Type: string(env.Command.Type), Status: status, LastError: lastError})
+		item := collaborationQueuedItem(env, sequence+1)
+		if item != nil {
+			sequence++
+		}
+		result = append(result, CollaborationOutboxView{RequestID: env.RequestID, Type: string(env.Command.Type), Status: status, LastError: lastError, Item: item})
 	}
 	return result
+}
+
+func collaborationQueuedItem(env collab.CommandEnvelope, sequence uint64) *collab.TimelineItem {
+	id := "outbox:" + env.RequestID
+	createdAt, _ := time.Parse(time.RFC3339Nano, env.QueuedAt)
+	switch env.Command.Type {
+	case collab.CommandPostChat:
+		if env.Command.Chat == nil {
+			return nil
+		}
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: id, AuthorID: env.MemberID, Text: env.Command.Chat.Text, Revision: 1, CreatedAt: createdAt}}
+	case collab.CommandPublishContribution:
+		if env.Command.Contribution == nil {
+			return nil
+		}
+		value := env.Command.Contribution
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineContribution, Contribution: &collab.Contribution{ID: id, AuthorID: env.MemberID, Kind: value.Kind, Title: value.Title, Body: value.Body, Scope: append([]string(nil), value.Scope...), TargetIDs: append([]string(nil), value.TargetIDs...), RelatedItem: value.RelatedItem, Dependencies: append([]string(nil), value.Dependencies...), ActionNeeded: value.ActionNeeded, Revision: 1, CreatedAt: createdAt}}
+	case collab.CommandCreateAgentRequest:
+		if env.Command.AgentRequest == nil {
+			return nil
+		}
+		value := env.Command.AgentRequest
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentRequest, AgentRequest: &collab.AgentRequest{ID: id, AuthorID: env.MemberID, TargetMemberID: value.TargetMemberID, Instruction: value.Instruction, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), Status: collab.RequestPending, CreatedAt: createdAt, UpdatedAt: createdAt}}
+	case collab.CommandPublishAgentRun:
+		if env.Command.AgentRun == nil {
+			return nil
+		}
+		value := env.Command.AgentRun
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentRun, AgentRun: &collab.AgentRun{ID: value.RunID, OwnerID: env.MemberID, AgentID: value.AgentID, CommandID: value.CommandID, RequestRef: value.RequestRef, Instruction: value.Instruction, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), Status: value.Status, Summary: value.Summary, Error: value.Error, UpdatedAt: createdAt}}
+	case collab.CommandPublishAgentResult:
+		if env.Command.AgentResult == nil {
+			return nil
+		}
+		value := env.Command.AgentResult
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentResult, AgentResult: &collab.AgentResult{ID: value.ResultID, OwnerID: env.MemberID, AgentID: value.AgentID, RunID: value.RunID, Revision: value.Revision, Summary: value.Summary, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), CreatedAt: createdAt}}
+	default:
+		return nil
+	}
 }
 
 func cloneCollaborationState(state CollaborationState) CollaborationState {

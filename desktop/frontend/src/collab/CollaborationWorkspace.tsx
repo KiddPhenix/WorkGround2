@@ -9,14 +9,19 @@ import { ConnectionPanel } from "./components/ConnectionPanel";
 import { CollaborationTimeline } from "./components/CollaborationTimeline";
 import { buildCollaborationInvite } from "./invite";
 import type { CollaborationInvite } from "./types";
+import type { ComposerSubmitKey } from "../lib/composerKeyboard";
 import "./collab.css";
 
 interface CollaborationWorkspaceProps {
   sessionID: string;
+  tabID?: string;
   mode?: "session" | "dialog";
   onClose?(): void;
   onConnected?(): Promise<void> | void;
   onConnectRequest?(): void;
+  submitKey?: ComposerSubmitKey;
+  modelLabel?: string;
+  onSwitchModel?(name: string): Promise<void>;
 }
 
 function statusLabel(status: string, c: ReturnType<typeof collabCopy>) {
@@ -50,7 +55,7 @@ async function copyText(value: string): Promise<void> {
   if (!copied) throw new Error("copy failed");
 }
 
-export function CollaborationWorkspace({ sessionID, mode = "session", onClose, onConnected, onConnectRequest }: CollaborationWorkspaceProps) {
+export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onClose, onConnected, onConnectRequest, submitKey = "enter", modelLabel = "—", onSwitchModel = async () => {} }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
   const controller = useCollabController(sessionID);
@@ -191,12 +196,16 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
             selfMemberId={state.selfMemberId}
             disabled={!usable}
             agentBusy={agentBusy}
+            tabID={tabID}
+            modelLabel={modelLabel}
+            submitKey={submitKey}
             prefill={prefill}
             onPrefillConsumed={() => setPrefill("")}
             onChat={controller.postChat}
             onContribution={controller.postContribution}
             onAgent={(text) => controller.startAgent(text, [])}
             onRequest={(memberId, text) => controller.requestAgent(memberId, text)}
+            onSwitchModel={onSwitchModel}
           />
         </footer>
       </main>

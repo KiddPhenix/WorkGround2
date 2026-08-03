@@ -128,6 +128,22 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
   const memberNames = new Map(members.map((member) => [member.id, member.name]));
   const selfMemberId = text(raw.selfMemberId ?? raw.SelfMemberID ?? raw.memberId ?? raw.MemberID);
   for (const member of members) member.isSelf = member.id === selfMemberId;
+  const timeline = list(snapshot.timeline ?? snapshot.Timeline ?? raw.timeline ?? raw.Timeline ?? raw.items ?? raw.Items)
+    .map((item) => normalizeCollaborationItem(item, memberNames))
+    .filter((item) => item.id);
+  const queued = list(raw.outbox ?? raw.Outbox).flatMap((value) => {
+    const entry = record(value);
+    const itemValue = entry.item ?? entry.Item;
+    if (!itemValue) return [];
+    const item = normalizeCollaborationItem(itemValue, memberNames);
+    if (!item.id) return [];
+    return [{
+      ...item,
+      localPending: true,
+      requestID: text(entry.requestId ?? entry.RequestID) || undefined,
+      syncStatus: (text(entry.status ?? entry.Status) === "failed" ? "failed" : "pending") as CollaborationTimelineItem["syncStatus"],
+    }];
+  });
   return {
     status: (text(raw.status ?? raw.Status, roomName ? "connected" : "disconnected") || "disconnected") as CollaborationState["status"],
     mode: (text(raw.mode ?? raw.Mode) || undefined) as CollaborationState["mode"],
@@ -145,7 +161,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     selfMemberId: selfMemberId || undefined,
     selfSessionId: text(raw.selfSessionId ?? raw.SelfSessionID ?? raw.sessionId ?? raw.SessionID) || undefined,
     members,
-    timeline: list(snapshot.timeline ?? snapshot.Timeline ?? raw.timeline ?? raw.Timeline ?? raw.items ?? raw.Items).map((item) => normalizeCollaborationItem(item, memberNames)).filter((item) => item.id),
+    timeline: [...timeline, ...queued],
     lastError: text(raw.lastError ?? raw.LastError ?? raw.error ?? raw.Error) || undefined,
     retryable: bool(raw.retryable ?? raw.Retryable, true),
     unsyncedCount: number(raw.outboxCount ?? raw.OutboxCount ?? raw.unsyncedCount ?? raw.UnsyncedCount),
@@ -162,15 +178,21 @@ function normalizeCollaborationInvite(value: unknown): CollaborationInvite {
   };
 }
 
-export function normalizeCollaborationAction(value: unknown): CollaborationActionResult {
+export function normalizeCollaborationAction(value: unknown, memberNames: Map<string, string> = new Map()): CollaborationActionResult {
   const raw = record(value);
   const receipt = record(raw.receipt ?? raw.Receipt);
   const queued = bool(raw.queued ?? raw.Queued);
+  const item = raw.item || raw.Item ? normalizeCollaborationItem(raw.item ?? raw.Item, memberNames) : undefined;
   return {
     ok: queued || bool(raw.ok ?? raw.OK, !text(raw.error ?? raw.Error)),
     requestID: text(raw.requestID ?? raw.RequestID) || undefined,
     code: text(raw.code ?? raw.Code) || undefined,
-    item: raw.item || raw.Item ? normalizeCollaborationItem(raw.item ?? raw.Item) : undefined,
+    item: item ? {
+      ...item,
+      localPending: queued || undefined,
+      requestID: queued ? text(raw.requestId ?? raw.RequestID) || undefined : undefined,
+      syncStatus: queued ? "pending" : item.syncStatus,
+    } : undefined,
     state: raw.state || raw.State ? normalizeCollaborationState(raw.state ?? raw.State) : undefined,
     error: text(raw.error ?? raw.Error) || undefined,
     retryable: bool(raw.retryable ?? raw.Retryable, true),
@@ -199,9 +221,9 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     join: async (input) => normalizeState(await app.JoinCollaborationRoom(input)),
     invite: async () => normalizeCollaborationInvite(await app.GetCollaborationInvite(sessionID)),
     leave: () => app.LeaveCollaborationRoom(sessionID),
-    post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID })),
-    startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input)),
-    respond: async (input) => normalizeCollaborationAction(await app.RespondCollaborationRequest(input)),
+    post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID }), names),
+    startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input), names),
+    respond: async (input) => normalizeCollaborationAction(await app.RespondCollaborationRequest(input), names),
     subscribeState: (listener) => onCollaborationState((payload) => {
       const raw = record(payload);
       if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;

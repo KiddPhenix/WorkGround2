@@ -4004,6 +4004,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
             {showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
                 sessionID={activeTab.sessionId}
+                tabID={activeTabId || undefined}
+                submitKey={composerSubmitKey}
+                modelLabel={state.meta?.label ?? t("status.connecting")}
+                onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
               />
             ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
@@ -4649,6 +4653,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
             ) : showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
                 sessionID={activeTab.sessionId}
+                tabID={activeTabId || undefined}
+                submitKey={composerSubmitKey}
+                modelLabel={state.meta?.label ?? t("status.connecting")}
+                onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
               />
             ) : (

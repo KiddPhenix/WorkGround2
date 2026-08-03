@@ -47,6 +47,8 @@ export interface CollaborationTimelineItem {
   createdAt: string;
   referenceIds: string[];
   syncStatus?: CollaborationSyncStatus;
+  localPending?: boolean;
+  requestID?: string;
   requestStatus?: "waiting" | "accepted" | "rejected" | "completed";
   agentRunStatus?: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted";
   agentRunSummary?: string;

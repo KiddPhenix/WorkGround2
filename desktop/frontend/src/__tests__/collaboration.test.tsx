@@ -11,7 +11,7 @@ import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimel
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
 import { buildCollaborationInvite, parseCollaborationInvite } from "../collab/invite";
 import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
-import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem } from "../collab/transport";
+import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
 import { buildAgreeMessageInput, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
@@ -145,6 +145,8 @@ async function main() {
   ok(connectionSource.includes("parseCollaborationInvite") && connectionSource.includes("loadCollaborationIdentity"), "connection popup imports invite strings and guides cached local identity");
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
   ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
+  ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
+  ok(composerSource.includes("isComposerSubmitKey") && composerSource.includes("ModelSwitcher") && appSource.includes("submitKey={composerSubmitKey}"), "collaboration composer reuses configured send shortcut and active Session model selection");
 
   const invite = buildCollaborationInvite({ host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" });
   equal(parseCollaborationInvite(invite), { host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" }, "connection string round-trips Room and token");
@@ -209,6 +211,15 @@ async function main() {
   equal([rejoinedEvent.systemKind, rejoinedEvent.actorName], ["member.rejoined", "Alice"], "member.rejoined remains typed for lightweight notice rendering");
   const queued = normalizeCollaborationAction({ requestId: "queued-1", queued: true, retryable: true, error: "host temporarily unavailable" });
   equal([queued.ok, queued.queued, queued.error], [true, true, "host temporarily unavailable"], "queued Outbox action is accepted while keeping its observable warning");
+  const queuedState = normalizeCollaborationState({
+    status: "reconnecting", room: "room-a", memberId: "self", sessionId: "session-a",
+    snapshot: { room: { id: "room-a", latestSequence: 3 }, latestSequence: 3, members: [{ id: "self", name: "Me", status: "online", agent: { id: "agent", name: "Agent", status: "idle" } }], timeline: [] },
+    outbox: [{ requestId: "queued-chat", status: "pending", item: { id: "outbox:queued-chat", sequence: 4, type: "chat", chat: { id: "outbox:queued-chat", authorId: "self", text: "not swallowed", revision: 1, createdAt: "2026-08-03T10:00:00Z" } } }],
+  });
+  equal([queuedState.timeline[0].text, queuedState.timeline[0].syncStatus, queuedState.timeline[0].localPending, queuedState.timeline[0].actorName], ["not swallowed", "pending", true, "Me"], "persisted Outbox is visible as a local pending timeline message");
+  let pendingState = collabReducer(initialCollabState, { type: "STATE", state: queuedState });
+  pendingState = collabReducer(pendingState, { type: "STATE", state: { ...queuedState, status: "connected", timeline: [item("synced-chat", 4, "not swallowed")] } });
+  equal(pendingState.timeline.map((entry) => entry.id), ["synced-chat"], "authoritative sync replaces the local pending projection without a ghost duplicate");
   const busy = normalizeCollaborationAction({ requestId: "busy-1", code: "agent_busy", retryable: true, error: "wording-independent" });
   equal([busy.ok, busy.code, busy.retryable], [false, "agent_busy", true], "structured Agent busy code survives transport normalization");
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"workground2/internal/collab"
 	"workground2/internal/fileutil"
@@ -24,7 +25,7 @@ func (c *desktopCollaboration) recoverInterruptedRunsLocked(conn *collaborationC
 			continue
 		}
 		c.outbox = append(c.outbox, collab.CommandEnvelope{
-			RequestID: requestID, Room: conn.room, MemberID: conn.memberID,
+			RequestID: requestID, Room: conn.room, MemberID: conn.memberID, QueuedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			Command: collab.Command{Type: collab.CommandPublishAgentRun, AgentRun: &collab.PublishAgentRunInput{
 				RunID: run.RunID, AgentID: conn.agentID, CommandID: run.CommandID,
 				RequestRef: run.AgentRequestID, Instruction: sanitizeCollaborationText(run.Instruction),
@@ -96,6 +97,11 @@ func (c *desktopCollaboration) loadPersisted() {
 		c.outboxFailures = p.OutboxFailures
 	}
 	c.outbox = append([]collab.CommandEnvelope(nil), p.Outbox...)
+	for i := range c.outbox {
+		if c.outbox[i].QueuedAt == "" {
+			c.outbox[i].QueuedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+	}
 	c.recoveredRuns = append([]collaborationPersistedRun(nil), p.Runs...)
 	snapshot := p.Snapshot
 	if snapshot.LatestSequence == 0 {
