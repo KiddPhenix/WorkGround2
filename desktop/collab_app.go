@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,15 @@ type CollaborationOutboxView struct {
 	Type      string `json:"type"`
 	Status    string `json:"status"`
 	LastError string `json:"lastError,omitempty"`
+}
+
+// CollaborationInvite is returned only after an explicit export action. The
+// normal Room state intentionally continues to omit the join token.
+type CollaborationInvite struct {
+	Hosts []string `json:"hosts"`
+	Port  int      `json:"port"`
+	Room  string   `json:"room"`
+	Token string   `json:"token,omitempty"`
 }
 
 type HostCollaborationRoomInput struct {
@@ -180,6 +190,7 @@ type collaborationConnection struct {
 	joinToken         string
 	connectionSession string
 	initialSnapshot   collab.Snapshot
+	rejoined          bool
 	sweep             func(context.Context) error
 	cancel            context.CancelFunc
 	done              chan struct{}
@@ -341,6 +352,14 @@ func (a *App) GetCollaborationState(sessionID string) (CollaborationState, error
 		return CollaborationState{}, err
 	}
 	return runtime.snapshot(), nil
+}
+
+func (a *App) GetCollaborationInvite(sessionID string) (CollaborationInvite, error) {
+	runtime, err := a.collaborationRuntime(sessionID)
+	if err != nil {
+		return CollaborationInvite{}, err
+	}
+	return runtime.invite()
 }
 
 func (a *App) HostCollaborationRoom(input HostCollaborationRoomInput) (CollaborationState, error) {
@@ -583,6 +602,76 @@ func normalizeCollaborationHost(value string) (string, error) {
 		}
 	}
 	return value, nil
+}
+
+func (c *desktopCollaboration) invite() (CollaborationInvite, error) {
+	c.mu.RLock()
+	state := cloneCollaborationState(c.state)
+	conn := c.conn
+	token := ""
+	if conn != nil {
+		token = conn.joinToken
+	}
+	c.mu.RUnlock()
+	if state.Mode != "host" || state.Room == "" || state.Port < 1 {
+		return CollaborationInvite{}, fmt.Errorf("only the Room Host can export a collaboration connection")
+	}
+	if token == "" {
+		persisted := c.readPersisted()
+		if persisted.JoinTokenSecretRef != "" && c.getSecret != nil {
+			token = c.getSecret(persisted.JoinTokenSecretRef)
+		}
+	}
+	return CollaborationInvite{
+		Hosts: collaborationLocalHosts(state.Host),
+		Port:  state.Port,
+		Room:  state.Room,
+		Token: token,
+	}, nil
+}
+
+func collaborationLocalHosts(bindHost string) []string {
+	bindHost = strings.Trim(strings.TrimSpace(bindHost), "[]")
+	bindIP := net.ParseIP(strings.Split(bindHost, "%")[0])
+	if bindHost != "" && (bindIP == nil || !bindIP.IsUnspecified()) {
+		return []string{bindHost}
+	}
+	seen := map[string]bool{}
+	var ipv4, ipv6 []string
+	add := func(value string) {
+		value = strings.Trim(strings.TrimSpace(value), "[]")
+		ip := net.ParseIP(strings.Split(value, "%")[0])
+		if ip == nil || ip.IsUnspecified() || seen[value] {
+			return
+		}
+		seen[value] = true
+		if ip.To4() != nil {
+			ipv4 = append(ipv4, value)
+		} else {
+			ipv6 = append(ipv6, value)
+		}
+	}
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			host, _, err := net.ParseCIDR(address.String())
+			if err != nil || host.IsLinkLocalUnicast() || host.IsLinkLocalMulticast() {
+				continue
+			}
+			add(host.String())
+		}
+	}
+	add("127.0.0.1")
+	sort.Strings(ipv4)
+	sort.Strings(ipv6)
+	return append(ipv4, ipv6...)
 }
 
 func (c *desktopCollaboration) leave(ctx context.Context) error {
@@ -986,8 +1075,12 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	c.mu.Lock()
 	previous := c.conn
 	c.conn = conn
+	status := "connected"
+	if conn.rejoined || len(c.outbox) > 0 || len(c.recoveredRuns) > 0 {
+		status = "syncing"
+	}
 	c.state = CollaborationState{
-		Status:      "connected",
+		Status:      status,
 		Mode:        conn.mode,
 		Host:        conn.hostName,
 		Port:        conn.port,

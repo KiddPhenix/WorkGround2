@@ -8,6 +8,8 @@ import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimelineItems } from "../collab/state";
+import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
+import { buildCollaborationInvite, parseCollaborationInvite } from "../collab/invite";
 import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
 import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem } from "../collab/transport";
 import { buildAgreeMessageInput, useCollabController, type CollabController } from "../collab/useCollabController";
@@ -84,8 +86,9 @@ async function testAgentBusyGuard() {
     async retry() { return connected; },
     async host() { return connected; },
     async join() { return connected; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "busy-room" }; },
     async leave() {},
-    async post() { return { ok: true }; },
+    async post(input) { return { ok: true, item: { ...item(input.requestID, 1, input.text), kind: input.kind } }; },
     startAgent() {
       startCalls++;
       return new Promise((resolve) => { finishStart = resolve; });
@@ -101,6 +104,8 @@ async function testAgentBusyGuard() {
   }
   const root = createRoot(document.getElementById("root")!);
   await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
+  await act(async () => { await controller!.postChat("这个接口是不是有问题？"); });
+  ok(Object.keys(controller!.state.pendingIntents).length === 1, "uncertain self message receives a stoppable Agent countdown");
   let first!: Promise<void>;
   let second!: Promise<void>;
   await act(async () => {
@@ -125,6 +130,7 @@ async function main() {
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
   const composerSource = readFileSync(new URL("../collab/components/CollaborationComposer.tsx", import.meta.url), "utf8");
   const connectionSource = readFileSync(new URL("../collab/components/ConnectionPanel.tsx", import.meta.url), "utf8");
+  const timelineSource = readFileSync(new URL("../collab/components/CollaborationTimeline.tsx", import.meta.url), "utf8");
   for (const [selector, row] of [["collab-topicbar", 1], ["collab-status-banner", 2], ["collab-scroll", 3], ["collab-footer", 4]] as const) {
     ok(new RegExp(`\\.${selector}\\s*\\{[^}]*grid-row:\\s*${row}(?:;|\\s)`).test(layoutCSS), `${selector} stays in grid row ${row} when the optional status banner is absent`);
   }
@@ -136,6 +142,29 @@ async function main() {
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
+  ok(connectionSource.includes("parseCollaborationInvite") && connectionSource.includes("loadCollaborationIdentity"), "connection popup imports invite strings and guides cached local identity");
+  ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
+  ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
+
+  const invite = buildCollaborationInvite({ host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" });
+  equal(parseCollaborationInvite(invite), { host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" }, "connection string round-trips Room and token");
+  const ipv6Invite = buildCollaborationInvite({ host: "::1", port: 39170, room: "room-v6" });
+  equal(parseCollaborationInvite(ipv6Invite), { host: "::1", port: 39170, room: "room-v6", token: undefined }, "connection string preserves bracketed IPv6 hosts");
+  let invalidInvite = false;
+  try { parseCollaborationInvite("https://example.com/room"); } catch { invalidInvite = true; }
+  ok(invalidInvite, "non-WorkGround2 URLs are rejected as Room invites");
+
+  const identityDOM = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  Object.assign(globalThis, { localStorage: identityDOM.window.localStorage });
+  equal(loadCollaborationIdentity(), undefined, "first collaboration connection has no silent placeholder identity");
+  localStorage.setItem("collab:memberName", "成员");
+  localStorage.setItem("collab:agentName", "Personal Agent");
+  equal(loadCollaborationIdentity(), undefined, "legacy placeholder names still trigger first-time identity guidance");
+  localStorage.clear();
+  const draftIdentity = { ...newCollaborationIdentity(), memberName: "Alice", agentName: "Alice Agent", memberRole: "Backend" };
+  saveCollaborationIdentity(draftIdentity);
+  const cachedIdentity = loadCollaborationIdentity();
+  equal([cachedIdentity?.memberID, cachedIdentity?.memberName, cachedIdentity?.memberRole, cachedIdentity?.agentID, cachedIdentity?.agentName], [draftIdentity.memberID, "Alice", "Backend", draftIdentity.agentID, "Alice Agent"], "completed local identity is cached with stable member and Agent ids");
   equal(detectSelfAgentIntent("帮我检查这个接口的错误日志"), "self_agent", "detects an explicit self-Agent instruction");
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
   equal(detectSelfAgentIntent("小王，你检查一下这个接口"), "chat", "does not hijack instructions directed at another person");
@@ -174,6 +203,10 @@ async function main() {
   equal([agree.targetItemID, agree.reactionKind, agree.targetMemberID], ["target-item", "agree", undefined], "reaction targets a timeline item without polluting member targeting");
   const wrappedEvent = normalizeCollaborationItem({ event: { eventId: "event-9", sequence: 9 }, item: { id: "timeline-9", sequence: 9, type: "agent_result", agentResult: { id: "timeline-9", ownerId: "member-a", summary: "verified", revision: 1, createdAt: "2026-08-03T09:00:00Z" } } }, new Map([["member-a", "Alice"]]));
   equal([wrappedEvent.id, wrappedEvent.kind, wrappedEvent.text], ["timeline-9", "agent_result", "verified"], "desktop event wrapper normalizes its item projection");
+  const runningEvent = normalizeCollaborationItem({ id: "run-1", sequence: 10, type: "agent_run", agentRun: { id: "run-1", ownerId: "member-a", instruction: "fix it", status: "running", summary: "reading files" } }, new Map([["member-a", "Alice"]]));
+  equal([runningEvent.kind, runningEvent.agentRunStatus, runningEvent.agentRunSummary], ["agent_command", "running", "reading files"], "Agent run status survives timeline normalization for the animated card");
+  const rejoinedEvent = normalizeCollaborationItem({ id: "system-1", sequence: 11, type: "system", system: { kind: "member.rejoined", memberId: "member-a" } }, new Map([["member-a", "Alice"]]));
+  equal([rejoinedEvent.systemKind, rejoinedEvent.actorName], ["member.rejoined", "Alice"], "member.rejoined remains typed for lightweight notice rendering");
   const queued = normalizeCollaborationAction({ requestId: "queued-1", queued: true, retryable: true, error: "host temporarily unavailable" });
   equal([queued.ok, queued.queued, queued.error], [true, true, "host temporarily unavailable"], "queued Outbox action is accepted while keeping its observable warning");
   const busy = normalizeCollaborationAction({ requestId: "busy-1", code: "agent_busy", retryable: true, error: "wording-independent" });

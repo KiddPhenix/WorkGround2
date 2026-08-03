@@ -11,6 +11,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
   CollaborationActionResult,
+  CollaborationInvite,
   CollaborationState,
   HostCollaborationRoomInput,
   JoinCollaborationRoomInput,
@@ -287,6 +288,7 @@ export interface AppBindings extends WailsWorkBindings {
   RetryCollaboration(sessionID: string): Promise<CollaborationState>;
   HostCollaborationRoom(input: HostCollaborationRoomInput): Promise<CollaborationState>;
   JoinCollaborationRoom(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
+  GetCollaborationInvite(sessionID: string): Promise<CollaborationInvite>;
   LeaveCollaborationRoom(sessionID: string): Promise<void>;
   PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
@@ -2261,6 +2263,7 @@ function makeMockApp(): AppBindings {
     async RetryCollaboration() { return { status: "disconnected", members: [], timeline: [] }; },
     async HostCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
     async JoinCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
+    async GetCollaborationInvite() { throw new Error("Use the collaboration browser transport in preview mode"); },
     async LeaveCollaborationRoom() {},
     async PostCollaborationMessage(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async StartCollaborationAgent(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },

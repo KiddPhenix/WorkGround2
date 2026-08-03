@@ -2,6 +2,7 @@ import { app, onCollaborationEvent, onCollaborationState } from "../lib/bridge";
 import { t } from "../lib/i18n";
 import type {
   CollaborationActionResult,
+  CollaborationInvite,
   CollaborationMember,
   CollaborationState,
   CollaborationTimelineItem,
@@ -110,6 +111,10 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
     referenceIds: list(references).map((item) => text(item)).filter(Boolean),
     syncStatus: (text(raw.syncStatus ?? raw.SyncStatus) || undefined) as CollaborationTimelineItem["syncStatus"],
     requestStatus: (text(typed.status ?? typed.Status ?? raw.requestStatus ?? raw.RequestStatus).replace("pending", "waiting") || undefined) as CollaborationTimelineItem["requestStatus"],
+    agentRunStatus: (kind === "agent_command" ? text(typed.status ?? typed.Status) || undefined : undefined) as CollaborationTimelineItem["agentRunStatus"],
+    agentRunSummary: kind === "agent_command" ? text(typed.summary ?? typed.Summary) || undefined : undefined,
+    agentRunError: kind === "agent_command" ? text(typed.error ?? typed.Error) || undefined : undefined,
+    systemKind: kind === "system" ? text(typed.kind ?? typed.Kind) || undefined : undefined,
     reactions: record(raw.reactions ?? raw.Reactions) as Record<string, string[]>,
   };
 }
@@ -125,6 +130,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
   for (const member of members) member.isSelf = member.id === selfMemberId;
   return {
     status: (text(raw.status ?? raw.Status, roomName ? "connected" : "disconnected") || "disconnected") as CollaborationState["status"],
+    mode: (text(raw.mode ?? raw.Mode) || undefined) as CollaborationState["mode"],
     room: roomName
       ? {
           room: roomName,
@@ -143,6 +149,16 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     lastError: text(raw.lastError ?? raw.LastError ?? raw.error ?? raw.Error) || undefined,
     retryable: bool(raw.retryable ?? raw.Retryable, true),
     unsyncedCount: number(raw.outboxCount ?? raw.OutboxCount ?? raw.unsyncedCount ?? raw.UnsyncedCount),
+  };
+}
+
+function normalizeCollaborationInvite(value: unknown): CollaborationInvite {
+  const raw = record(value);
+  return {
+    hosts: list(raw.hosts ?? raw.Hosts).map((item) => text(item)).filter(Boolean),
+    port: number(raw.port ?? raw.Port),
+    room: text(raw.room ?? raw.Room),
+    token: text(raw.token ?? raw.Token) || undefined,
   };
 }
 
@@ -181,6 +197,7 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     retry: async () => normalizeState(await app.RetryCollaboration(sessionID)),
     host: async (input) => normalizeState(await app.HostCollaborationRoom(input)),
     join: async (input) => normalizeState(await app.JoinCollaborationRoom(input)),
+    invite: async () => normalizeCollaborationInvite(await app.GetCollaborationInvite(sessionID)),
     leave: () => app.LeaveCollaborationRoom(sessionID),
     post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID })),
     startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input)),
@@ -247,6 +264,7 @@ function connectMock(runtime: MockCollaborationRuntime, input: HostCollaboration
   const host = "host" in input ? input.host : input.listenHost;
   runtime.state = {
     status: "connected",
+    mode: "host" in input ? "client" : "host",
     room: { room: input.room, title: "角色换装联调", description: "多人协作对话流", host, port: input.port, tokenRequired: Boolean(input.token?.trim()), latestSequence: 4 },
     selfMemberId: "self",
     selfSessionId: input.sessionID,
@@ -265,6 +283,10 @@ export function createMockCollaborationTransport(sessionID = "preview-session"):
     async retry() { emitMockState(runtime); return runtime.state; },
     async host(input) { return connectMock(runtime, input); },
     async join(input) { return connectMock(runtime, input); },
+    async invite() {
+      if (!runtime.state.room) throw new Error("collaboration Room is unavailable");
+      return { hosts: [runtime.state.room.host || "127.0.0.1"], port: runtime.state.room.port, room: runtime.state.room.room };
+    },
     async leave() { runtime.state = { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] }; emitMockState(runtime); },
     async post(input) {
       const self = runtime.state.members.find((member) => member.isSelf);
@@ -298,6 +320,7 @@ export function createMockCollaborationTransport(sessionID = "preview-session"):
         text: input.instruction,
         createdAt: now(),
         referenceIds: input.referenceIDs,
+        agentRunStatus: "running",
         syncStatus: "synced",
       };
       emitMockItem(runtime, item);

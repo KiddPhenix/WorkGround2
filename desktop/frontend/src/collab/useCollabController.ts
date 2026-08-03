@@ -4,6 +4,7 @@ import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, se
 import { defaultCollaborationTransport } from "./transport";
 import type {
   CollaborationActionResult,
+  CollaborationInvite,
   CollaborationTimelineItem,
   CollaborationTransport,
   HostCollaborationRoomInput,
@@ -37,6 +38,7 @@ export interface CollabController {
   selectedItems: CollaborationTimelineItem[];
   host(input: HostCollaborationRoomInput): Promise<void>;
   join(input: JoinCollaborationRoomInput): Promise<void>;
+  invite(): Promise<CollaborationInvite>;
   leave(): Promise<void>;
   refresh(reconnecting?: boolean): Promise<void>;
   postChat(text: string): Promise<void>;
@@ -138,8 +140,10 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     }
   }, [transport]);
 
+  const invite = useCallback(() => transport.invite(), [transport]);
+
   const createPendingIntent = useCallback((item: CollaborationTimelineItem) => {
-    if (detectSelfAgentIntent(item.text) !== "self_agent") return;
+    if (detectSelfAgentIntent(item.text) === "chat") return;
     dispatch({
       type: "PENDING_INTENT",
       intent: { messageId: item.id, revision: item.revision, instruction: item.text, deadline: Date.now() + 5_000, status: "pending" },
@@ -217,5 +221,5 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const clearSelection = useCallback(() => dispatch({ type: "CLEAR_SELECTION" }), []);
   const selectedItems = selectedTimelineItems(state);
 
-  return { state, self, agentBusy, selectedItems, host, join, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, toggleSelection, clearSelection, startPending, stopPending, editPending };
+  return { state, self, agentBusy, selectedItems, host, join, invite, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, toggleSelection, clearSelection, startPending, stopPending, editPending };
 }

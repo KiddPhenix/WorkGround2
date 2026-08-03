@@ -48,6 +48,10 @@ export interface CollaborationTimelineItem {
   referenceIds: string[];
   syncStatus?: CollaborationSyncStatus;
   requestStatus?: "waiting" | "accepted" | "rejected" | "completed";
+  agentRunStatus?: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted";
+  agentRunSummary?: string;
+  agentRunError?: string;
+  systemKind?: string;
   reactions?: Record<string, string[]>;
 }
 
@@ -63,6 +67,7 @@ export interface CollaborationRoom {
 
 export interface CollaborationState {
   status: CollaborationConnectionStatus;
+  mode?: "host" | "client";
   room?: CollaborationRoom;
   selfMemberId?: string;
   selfSessionId?: string;
@@ -71,6 +76,13 @@ export interface CollaborationState {
   lastError?: string;
   retryable?: boolean;
   unsyncedCount?: number;
+}
+
+export interface CollaborationInvite {
+  hosts: string[];
+  port: number;
+  room: string;
+  token?: string;
 }
 
 export interface HostCollaborationRoomInput {
@@ -158,6 +170,7 @@ export interface CollaborationTransport {
   retry(): Promise<CollaborationState>;
   host(input: HostCollaborationRoomInput): Promise<CollaborationState>;
   join(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
+  invite(): Promise<CollaborationInvite>;
   leave(): Promise<void>;
   post(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   startAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;

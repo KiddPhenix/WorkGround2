@@ -21,6 +21,11 @@ import (
 	"workground2/internal/config"
 )
 
+const (
+	collaborationHeartbeatInterval = 95 * time.Second
+	collaborationMemberStaleAfter  = 4 * collaborationHeartbeatInterval
+)
+
 func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCollaborationRoomInput, identity collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
 	listenHost := strings.TrimSpace(input.ListenHost)
 	if listenHost == "" {
@@ -79,10 +84,10 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		port: actualPort, room: room, memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
-		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token),
+		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined,
 		sweep: func(sweepCtx context.Context) error {
 			_, sweepErr := service.SweepStale(sweepCtx, collab.SweepInput{
-				RequestID: newCollaborationRequestID("sweep"), Room: room, Before: time.Now().UTC().Add(-30 * time.Second),
+				RequestID: newCollaborationRequestID("sweep"), Room: room, Before: time.Now().UTC().Add(-collaborationMemberStaleAfter),
 			})
 			return sweepErr
 		},
@@ -104,7 +109,7 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 		memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
-		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token),
+		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined,
 	}, nil
 }
 
@@ -503,7 +508,7 @@ func collaborationReconnectDelay(attempt int, entropy uint64) time.Duration {
 }
 
 func (c *desktopCollaboration) connectionHeartbeatLoop(ctx context.Context, conn *collaborationConnection) {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(collaborationHeartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
