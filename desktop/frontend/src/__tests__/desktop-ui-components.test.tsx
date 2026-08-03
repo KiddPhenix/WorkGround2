@@ -19,6 +19,7 @@ import { RunBlock, CompletedRunTab, ActiveRunView } from "../components/desktop-
 import { ArtifactShelf, ArtifactItem } from "../components/desktop-ui/ArtifactShelf";
 import { QueueTray } from "../components/desktop-ui/QueueTray";
 import { RuntimeConfigBar, connectionStatusFromRuntime, derivePrimaryActionLabel, runtimeStatusLabel } from "../components/desktop-ui/RuntimeConfigBar";
+import type { SurfaceKind } from "../components/desktop-ui/RuntimeConfigBar";
 import { LocaleProvider } from "../lib/i18n";
 import { AddOnWorkbench, WorkbenchHeader, InstanceHeader, AddOnInstanceView } from "../components/desktop-ui/AddOnWorkbench";
 import { recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
@@ -801,6 +802,45 @@ installDom();
     <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="foreground" hasQueue={false} onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
   );
   ok(hasText(container, "加入队列"), "RuntimeConfigBar: shows 加入队列 for foreground");
+  cleanup();
+}
+
+{
+  // Work surface: normal → "工作"
+  const container = render(
+    <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="idle" hasQueue={false} surfaceKind="work" onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
+  );
+  ok(hasText(container, "工作"), "RuntimeConfigBar: work surface normal → 工作");
+  ok(!hasText(container, "对话"), "RuntimeConfigBar: work surface normal does NOT show 对话");
+  cleanup();
+}
+
+{
+  // Work surface: plan and goal labels unchanged
+  const planConfig = { ...BASE_CONFIG, collaborationMode: "plan" as const };
+  const container = render(
+    <LocaleProvider><RuntimeConfigBar config={planConfig} connectionStatus="idle" hasQueue={false} surfaceKind="work" onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
+  );
+  ok(hasText(container, "规划"), "RuntimeConfigBar: work surface plan → 规划");
+  cleanup();
+}
+
+{
+  // Work surface: goal label unchanged
+  const goalConfig = { ...BASE_CONFIG, collaborationMode: "goal" as const };
+  const container = render(
+    <LocaleProvider><RuntimeConfigBar config={goalConfig} connectionStatus="idle" hasQueue={false} surfaceKind="work" onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
+  );
+  ok(hasText(container, "目标"), "RuntimeConfigBar: work surface goal → 目标");
+  cleanup();
+}
+
+{
+  // Workspace surface (explicit): normal → "对话"
+  const container = render(
+    <LocaleProvider><RuntimeConfigBar config={BASE_CONFIG} connectionStatus="idle" hasQueue={false} surfaceKind="workspace" onSwitchModel={async () => {}} onCycleCollaboration={() => {}} onSetApprovalMode={() => {}} /></LocaleProvider>,
+  );
+  ok(hasText(container, "对话"), "RuntimeConfigBar: workspace surface normal → 对话");
   cleanup();
 }
 

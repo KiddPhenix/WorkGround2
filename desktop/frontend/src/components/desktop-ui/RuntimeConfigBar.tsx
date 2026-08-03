@@ -18,6 +18,9 @@ import { ModelSwitcher } from "../ModelSwitcher";
 /** Connection / runtime status for the primary action derivation. */
 export type ConnectionStatus = "idle" | "foreground" | "waiting_user" | "background_only" | "cancelling" | "offline";
 
+/** Which kind of surface is hosting the bar — used to tune labels per context. */
+export type SurfaceKind = "work" | "workspace";
+
 /** RuntimeConfig holds the five config pill values. */
 export interface RuntimeConfig {
   modelId: string;
@@ -45,6 +48,8 @@ export interface RuntimeConfigBarProps {
   onCycleCollaboration?: () => void;
   /** Directly set tool approval mode. */
   onSetApprovalMode?: (mode: ToolApprovalMode) => void;
+  /** Surface kind: "work" uses Work-specific labels (e.g. normal → 工作). */
+  surfaceKind?: SurfaceKind;
 }
 
 // ── Primary action label derivation ────────────────────────────────────────
@@ -123,14 +128,14 @@ export function runtimeStatusLabel(runtimeMode: RuntimeMode): string {
 
 // ── Label mapping ───────────────────────────────────────────────────────────
 
-function collaborationLabel(mode: CollaborationMode): string {
+function collaborationLabel(mode: CollaborationMode, surfaceKind?: SurfaceKind): string {
   switch (mode) {
     case "plan":
       return "规划";
     case "goal":
       return "目标";
     default:
-      return "对话";
+      return surfaceKind === "work" ? "工作" : "对话";
   }
 }
 
@@ -182,6 +187,7 @@ export function RuntimeConfigBar({
   onSwitchModel,
   onCycleCollaboration,
   onSetApprovalMode,
+  surfaceKind,
 }: RuntimeConfigBarProps) {
   const actionLabel = derivePrimaryActionLabel(connectionStatus, hasQueue);
 
@@ -216,9 +222,9 @@ export function RuntimeConfigBar({
 
       {/* 4. Collaboration — clickable, cycles modes */}
       {onCycleCollaboration ? (
-        <Pill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode)} onClick={onCycleCollaboration} ariaLabel="协作模式" />
+        <Pill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode, surfaceKind)} onClick={onCycleCollaboration} ariaLabel="协作模式" />
       ) : (
-        <StaticPill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode)} ariaLabel="协作模式" />
+        <StaticPill icon={<Shield size={16} />} label={collaborationLabel(config.collaborationMode, surfaceKind)} ariaLabel="协作模式" />
       )}
 
       {/* 5. Approval — clickable, cycles 询问/自动/全部允许 */}

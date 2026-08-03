@@ -468,6 +468,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             onSwitchModel={onSwitchModel}
             onCycleCollaboration={onCycleMode}
             onSetApprovalMode={onSetToolApprovalMode}
+            surfaceKind={variant}
           />
         </div>
       </div>

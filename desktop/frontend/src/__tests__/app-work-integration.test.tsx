@@ -78,6 +78,11 @@ ok(
   "工作台隐藏 Composer 元数据栏时，发送为工作入口由可见的 RuntimeConfigBar 承载",
 );
 ok(
+  sessionSurfaceSource.includes("surfaceKind={variant}")
+    && runtimeConfigSource.includes('surfaceKind === "work" ? "工作" : "对话"'),
+  "Work Surface 将自身类型透传到底栏，normal 协作模式显示为工作而非对话",
+);
+ok(
   runtimeConfigSource.includes("? <CheckCircle2")
     && runtimeConfigSource.includes('workSendSelected ? "将作为工作发送" : "作为工作开始"')
     && stylesSource.includes(".runtime-config-bar__work-send--active")

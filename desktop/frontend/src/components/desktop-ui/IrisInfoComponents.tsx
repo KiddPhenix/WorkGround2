@@ -18,7 +18,7 @@ import {
 import { TaskMemoryBar } from "../desktop-ui/TaskMemoryBar";
 import { ArtifactShelf } from "../desktop-ui/ArtifactShelf";
 import { QueueTray } from "../desktop-ui/QueueTray";
-import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type ConnectionStatus } from "../desktop-ui/RuntimeConfigBar";
+import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type ConnectionStatus, type SurfaceKind } from "../desktop-ui/RuntimeConfigBar";
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
 import { useRunStore, type RunRecord, type RunStatus } from "../../store/run";
@@ -352,6 +352,7 @@ export function SessionConfigBar({
   onSwitchModel,
   onCycleCollaboration,
   onSetApprovalMode,
+  surfaceKind,
 }: {
   modelLabel: string;
   contextPercent: number;
@@ -369,6 +370,7 @@ export function SessionConfigBar({
   onSwitchModel?: (name: string) => Promise<void>;
   onCycleCollaboration?: () => void;
   onSetApprovalMode?: (mode: ToolApprovalMode) => void;
+  surfaceKind?: SurfaceKind;
 }) {
   const hasQueue = useComposerQueueStore((s) => s.items.length > 0);
   const connectionStatus: ConnectionStatus = controllerReady
@@ -394,6 +396,7 @@ export function SessionConfigBar({
       onSwitchModel={onSwitchModel}
       onCycleCollaboration={onCycleCollaboration}
       onSetApprovalMode={onSetApprovalMode}
+      surfaceKind={surfaceKind}
     />
   );
 }

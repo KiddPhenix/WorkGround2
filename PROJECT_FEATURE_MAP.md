@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Work Session 协作模式标签
+- Status: done
+- Branch: `developping/work-mode-label+2026-08-03`
+- Location: `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, 对应前端测试
+- Summary: Work Session 保持独立工作身份；底栏内部 normal 协作模式在 Work Surface 显示为“工作”，普通 Session 仍显示“对话”，同时保留规划、目标和审批控制。组件测试 176 项、Work 集成合约 40 项及前端生产构建通过；test tsconfig 仍有与本改动无关的既有类型错误。
+- Keywords: Work Session, collaboration mode, normal, 对话, 工作, RuntimeConfigBar
+- Source: user-reported+screenshot+verified-by-code-and-tests
+- Updated: 2026-08-03
+
 ### 工作信息单项建议
 - Status: done
 - Branch: `developping/work-input-field-inference+2026-08-01`
