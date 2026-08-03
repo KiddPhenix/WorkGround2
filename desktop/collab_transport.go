@@ -70,11 +70,15 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 			c.failState("failed", fmt.Errorf("collaboration host stopped: %w", serveErr), true)
 		}
 	}()
-	connectHost := listenHost
-	if connectHost == "0.0.0.0" || connectHost == "::" || connectHost == "[::]" {
-		connectHost = "127.0.0.1"
+	joined, err := service.Join(ctx, collab.JoinInput{
+		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
+	})
+	if err != nil {
+		_ = server.Shutdown(context.Background())
+		return nil, err
 	}
-	peer, joined, snapshot, err := joinCollaborationPeer(ctx, connectHost, actualPort, room, strings.TrimSpace(input.Token), identity, resume)
+	peer := &serviceCollaborationPeer{service: service, hub: hub, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
+	snapshot, err := peer.Snapshot(ctx)
 	if err != nil {
 		_ = server.Shutdown(context.Background())
 		return nil, err
@@ -144,6 +148,81 @@ type httpCollaborationPeer struct {
 	room         string
 	member       string
 	session      string
+}
+
+// serviceCollaborationPeer keeps the Host's own session on the authoritative
+// in-process service. Remote members still use HTTP/SSE, while a transient
+// loopback transport failure can no longer make a healthy local Host appear
+// offline or divert its messages into the retry queue.
+type serviceCollaborationPeer struct {
+	service *collab.Service
+	hub     *collab.Hub
+	room    string
+	member  string
+	session string
+}
+
+func (p *serviceCollaborationPeer) Snapshot(ctx context.Context) (collab.Snapshot, error) {
+	return p.service.Snapshot(ctx, p.room, p.session)
+}
+
+func (p *serviceCollaborationPeer) Events(ctx context.Context, after uint64) ([]collab.RoomEvent, error) {
+	return p.service.Events(ctx, p.room, p.session, after)
+}
+
+func (p *serviceCollaborationPeer) Stream(ctx context.Context, after uint64, handle func(collab.RoomEvent) error) error {
+	wake, unsubscribe, err := p.hub.TrySubscribe(p.room)
+	if err != nil {
+		return err
+	}
+	defer unsubscribe()
+	last := after
+	drain := func() error {
+		events, eventsErr := p.Events(ctx, last)
+		if eventsErr != nil {
+			return eventsErr
+		}
+		for _, value := range events {
+			if handle != nil {
+				if handleErr := handle(value); handleErr != nil {
+					return handleErr
+				}
+			}
+			last = value.Sequence
+		}
+		return nil
+	}
+	if err := drain(); err != nil {
+		return err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case _, ok := <-wake:
+			if !ok {
+				return &collaborationTransportError{message: "collaboration host stream closed", retryable: true}
+			}
+			if err := drain(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (p *serviceCollaborationPeer) Submit(ctx context.Context, env collab.CommandEnvelope) (collab.CommandReceipt, error) {
+	env.Room, env.MemberID, env.Session = p.room, p.member, p.session
+	return p.service.Submit(ctx, env)
+}
+
+func (p *serviceCollaborationPeer) Heartbeat(ctx context.Context, requestID string) error {
+	_, err := p.service.Heartbeat(ctx, collab.SessionInput{RequestID: requestID, Room: p.room, MemberID: p.member, Session: p.session})
+	return err
+}
+
+func (p *serviceCollaborationPeer) Leave(ctx context.Context, requestID string) error {
+	_, err := p.service.Leave(ctx, collab.SessionInput{RequestID: requestID, Room: p.room, MemberID: p.member, Session: p.session})
+	return err
 }
 
 func joinCollaborationPeer(ctx context.Context, host string, port int, room, token string, identity collab.MemberDescriptor, resume string) (*httpCollaborationPeer, collab.JoinResult, collab.Snapshot, error) {
@@ -356,13 +435,15 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 	}
 	env := collab.CommandEnvelope{
 		RequestID: strings.TrimSpace(requestID), Room: state.Room, MemberID: state.MemberID,
-		Command: command,
+		QueuedAt: time.Now().UTC().Format(time.RFC3339Nano), Command: command,
 	}
 	if conn == nil || state.Status == "disconnected" || state.Status == "failed" {
 		c.mu.Lock()
 		duplicate := outboxContains(c.outbox, env.RequestID)
 		if !duplicate {
 			c.outbox = append(c.outbox, env)
+		} else if existing, ok := outboxEnvelope(c.outbox, env.RequestID); ok {
+			env = existing
 		}
 		if c.conn == nil {
 			c.state.Status = "failed"
@@ -372,10 +453,11 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 		c.state.LastError = "offline: collaboration update is queued for retry"
 		c.state.Retryable = true
 		c.state.OutboxCount = len(c.outbox)
+		item := collaborationQueuedItem(env, c.state.Snapshot.LatestSequence+uint64(len(c.outbox)))
 		c.persistLocked()
 		c.mu.Unlock()
 		c.emitState()
-		return CollaborationActionResult{RequestID: requestID, Duplicate: duplicate, Queued: true, Retryable: true, Error: "waiting for collaboration Room reconnect"}, nil
+		return CollaborationActionResult{RequestID: requestID, Duplicate: duplicate, Queued: true, Retryable: true, Error: "waiting for collaboration Room reconnect", Item: item}, nil
 	}
 	env.Session = conn.connectionSession
 	receipt, err := conn.peer.Submit(ctx, env)
@@ -393,11 +475,15 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 		return CollaborationActionResult{}, err
 	}
 	c.mu.Lock()
+	var item *collab.TimelineItem
 	if c.conn == conn {
 		env.Session = ""
 		if !outboxContains(c.outbox, env.RequestID) {
 			c.outbox = append(c.outbox, env)
+		} else if existing, ok := outboxEnvelope(c.outbox, env.RequestID); ok {
+			env = existing
 		}
+		item = collaborationQueuedItem(env, c.state.Snapshot.LatestSequence+uint64(len(c.outbox)))
 		c.state.Status = "reconnecting"
 		c.state.LastError = err.Error()
 		c.state.Retryable = true
@@ -406,7 +492,7 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 	}
 	c.mu.Unlock()
 	c.emitState()
-	return CollaborationActionResult{RequestID: requestID, Queued: true, Retryable: true, Error: err.Error()}, nil
+	return CollaborationActionResult{RequestID: requestID, Queued: true, Retryable: true, Error: err.Error(), Item: item}, nil
 }
 
 func (c *desktopCollaboration) submitRunCommand(ctx context.Context, run *collaborationAgentRun, requestID string, command collab.Command) (CollaborationActionResult, error) {
@@ -417,7 +503,7 @@ func (c *desktopCollaboration) submitRunCommand(ctx context.Context, run *collab
 	if matching {
 		return c.submit(ctx, requestID, command)
 	}
-	env := collab.CommandEnvelope{RequestID: requestID, Room: run.Room, MemberID: run.MemberID, Command: command}
+	env := collab.CommandEnvelope{RequestID: requestID, Room: run.Room, MemberID: run.MemberID, QueuedAt: time.Now().UTC().Format(time.RFC3339Nano), Command: command}
 	c.mu.Lock()
 	if !outboxContains(c.outbox, requestID) {
 		c.outbox = append(c.outbox, env)
@@ -437,6 +523,15 @@ func outboxContains(values []collab.CommandEnvelope, requestID string) bool {
 		}
 	}
 	return false
+}
+
+func outboxEnvelope(values []collab.CommandEnvelope, requestID string) (collab.CommandEnvelope, bool) {
+	for _, value := range values {
+		if value.RequestID == requestID {
+			return value, true
+		}
+	}
+	return collab.CommandEnvelope{}, false
 }
 
 func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collaborationConnection) {

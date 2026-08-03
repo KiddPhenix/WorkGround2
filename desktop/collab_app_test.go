@@ -168,6 +168,33 @@ func TestCollaborationHostJoinLeaveLifecycle(t *testing.T) {
 	}
 }
 
+func TestCollaborationHostUsesInProcessAuthoritativePeer(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	_, c, _ := newTestDesktopCollaboration(t)
+	identity := collab.MemberDescriptor{ID: "member-host", Name: "Host", Agent: collab.AgentDescriptor{ID: "agent-host", Name: "Host Agent", Status: collab.AgentIdle}}
+	conn, err := c.openHostedRoom(context.Background(), HostCollaborationRoomInput{ListenHost: "127.0.0.1", Port: 0, Room: "host-room", RoomName: "Host Room", SessionID: "session-a"}, identity, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := conn.peer.(*serviceCollaborationPeer); !ok {
+		t.Fatalf("host peer = %T, want in-process service peer", conn.peer)
+	}
+	if err := conn.host.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	conn.host = nil
+	receipt, err := conn.peer.Submit(context.Background(), collab.CommandEnvelope{
+		RequestID: "host-chat", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "still available"}},
+	})
+	if err != nil || receipt.LatestSequence == 0 {
+		t.Fatalf("local Host submit after HTTP shutdown = %+v, %v", receipt, err)
+	}
+	snapshot, err := conn.peer.Snapshot(context.Background())
+	if err != nil || len(snapshot.Timeline) == 0 || snapshot.Timeline[len(snapshot.Timeline)-1].Chat == nil || snapshot.Timeline[len(snapshot.Timeline)-1].Chat.Text != "still available" {
+		t.Fatalf("local Host snapshot after HTTP shutdown = %+v, %v", snapshot, err)
+	}
+}
+
 func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	peer := &fakeCollaborationPeer{}
@@ -328,8 +355,12 @@ func TestCollaborationOfflineCacheSupportsAgentAndIdempotentOutbox(t *testing.T)
 	}
 	post := PostCollaborationMessageInput{RequestID: "offline-chat", SessionID: "session-a", Kind: "chat", Text: "local update"}
 	first, err := c.post(context.Background(), post)
-	if err != nil || !first.Queued || first.Duplicate {
+	if err != nil || !first.Queued || first.Duplicate || first.Item == nil || first.Item.ID != "outbox:offline-chat" || first.Item.Chat == nil || first.Item.Chat.Text != "local update" {
 		t.Fatalf("first offline post=%+v err=%v", first, err)
+	}
+	state := c.snapshot()
+	if len(state.Outbox) != 1 || state.Outbox[0].Item == nil || state.Outbox[0].Item.ID != first.Item.ID || state.Outbox[0].Status != "pending" {
+		t.Fatalf("offline post is not projected from persisted Outbox: %+v", state.Outbox)
 	}
 	second, err := c.post(context.Background(), post)
 	if err != nil || !second.Queued || !second.Duplicate || len(c.outbox) != 1 {
