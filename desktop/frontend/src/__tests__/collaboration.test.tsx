@@ -47,6 +47,11 @@ async function testCountdown() {
   await act(async () => root.render(countdown(dismissed, true)));
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
   equal(starts, 1, "disconnect dismissal prevents delayed execution after reconnect");
+
+  const failed: PendingIntent = { messageId: "failed", revision: 1, instruction: "retry", deadline: Date.now(), status: "failed", error: "workspace is still starting" };
+  await act(async () => root.render(countdown(failed, true)));
+  await act(async () => { (document.querySelector(".collab-intent-actions button") as HTMLButtonElement).click(); });
+  equal(starts, 2, "failed countdown allows Start now to retry the Agent request");
   await act(async () => root.unmount());
 }
 
@@ -146,6 +151,7 @@ async function testOfflineSelfAgentIntervention() {
     async post(input) { return { ok: true, queued: true, item: { ...item(`outbox:${input.requestID}`, 2, input.text), localPending: true, syncStatus: "pending" } }; },
     async startAgent(input) {
       agentStarts++;
+      if (agentStarts === 1) return { ok: false, error: "workspace is still starting", retryable: true };
       return { ok: true, queued: true, item: { ...item(`outbox:${input.requestID}`, 3, input.instruction), kind: "agent_command", actorAgent: true, localPending: true, syncStatus: "pending", agentRunStatus: "running" } };
     },
     async respond() { return { ok: true }; },
@@ -163,7 +169,9 @@ async function testOfflineSelfAgentIntervention() {
   const intent = Object.values(controller!.state.pendingIntents)[0];
   ok(Boolean(intent), "offline solo Host still detects a local Agent instruction");
   await act(async () => { await controller!.startPending(intent); });
-  equal([agentStarts, controller!.state.status], [1, "failed"], "offline solo Host can run its own Agent while Room sync remains retryable");
+  equal(controller!.state.pendingIntents[intent.messageId]?.status, "failed", "workspace startup failure remains visible and retryable");
+  await act(async () => { await controller!.startPending(controller!.state.pendingIntents[intent.messageId]); });
+  equal([agentStarts, controller!.state.status, controller!.state.pendingIntents[intent.messageId]?.status], [2, "failed", "dismissed"], "offline solo Host can retry and run its own Agent while Room sync remains retryable");
   await act(async () => root.unmount());
 }
 

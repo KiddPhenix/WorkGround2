@@ -42,7 +42,7 @@ export function IntentCountdown({ intent, connected, onStart, onStop, onEdit }: 
       <span>{intent.status === "failed" ? intent.error : c("detected", { n: remaining })}</span>
       <div className="collab-intent-actions">
         <button type="button" disabled={!connected || intent.status === "starting"} onClick={() => {
-          if (startedRef.current) return;
+          if (startedRef.current && intent.status !== "failed") return;
           startedRef.current = true;
           onStart(intent);
         }}>{c("startNow")}</button>

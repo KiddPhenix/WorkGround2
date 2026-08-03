@@ -167,6 +167,8 @@ type desktopCollaboration struct {
 	getSecret         func(string) string
 	removeSecret      func(string) error
 	validateAgent     func(string) error
+	agentReady        func(string) (bool, error)
+	waitAgentReady    func(context.Context, string) error
 	submitAgent       func(string, string, string) error
 	openHost          func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 	openJoin          func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
@@ -288,6 +290,8 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	c.getSecret = func(key string) string { return config.ResolveCredential(key).Value }
 	c.removeSecret = config.RemoveCredential
 	c.validateAgent = c.validateLocalController
+	c.agentReady = app.collaborationAgentReady
+	c.waitAgentReady = app.waitCollaborationAgentReady
 	c.submitAgent = func(sessionID, display, input string) error {
 		return app.SubmitDisplayToTab(sessionID, display, input)
 	}
@@ -910,7 +914,14 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 	}
 	c.mu.Unlock()
 
-	if err := c.validateAgent(sessionID); err != nil {
+	ready := true
+	var err error
+	if c.agentReady != nil {
+		ready, err = c.agentReady(sessionID)
+	} else if c.validateAgent != nil {
+		err = c.validateAgent(sessionID)
+	}
+	if err != nil {
 		return CollaborationActionResult{}, err
 	}
 	contextText, err := collaborationContext(state.Snapshot, input.ReferenceIDs)
@@ -949,26 +960,68 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 		c.mu.Unlock()
 		return CollaborationActionResult{}, err
 	}
-	if _, err := c.publishRun(ctx, run, collab.RunRunning, "", ""); err != nil {
-		c.mu.Lock()
-		delete(c.starts, requestID)
-		delete(c.runs, sessionID)
-		c.persistLocked()
-		c.mu.Unlock()
-		return CollaborationActionResult{}, err
-	}
-	if err := c.submitAgent(sessionID, instruction, fullInput); err != nil {
-		c.mu.Lock()
-		delete(c.runs, sessionID)
-		c.persistLocked()
-		c.mu.Unlock()
-		_, _ = c.publishRun(ctx, run, collab.RunFailed, "", sanitizeCollaborationText(err.Error()))
-		return CollaborationActionResult{}, err
-	}
-	go c.runPublisher(run)
 	queued.RunID = runID
 	queued.RequestID = requestID
+	if !ready {
+		queued.Queued = true
+		go c.resumeQueuedAgent(run, fullInput)
+		return queued, nil
+	}
+	if err := c.launchAgent(ctx, run, fullInput); err != nil {
+		return CollaborationActionResult{}, err
+	}
 	return queued, nil
+}
+
+func (c *desktopCollaboration) resumeQueuedAgent(run *collaborationAgentRun, fullInput string) {
+	if run == nil || c.waitAgentReady == nil {
+		return
+	}
+	ctx := context.Background()
+	if c.app != nil {
+		ctx = c.app.bootContext()
+	}
+	if err := c.waitAgentReady(ctx, run.SessionID); err != nil {
+		if ctx.Err() == nil {
+			c.failAgentRun(ctx, run, err)
+		}
+		return
+	}
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.mu.RLock()
+	current := c.runs[run.SessionID]
+	c.mu.RUnlock()
+	if current != run {
+		return
+	}
+	_ = c.launchAgent(ctx, run, fullInput)
+}
+
+func (c *desktopCollaboration) launchAgent(ctx context.Context, run *collaborationAgentRun, fullInput string) error {
+	if _, err := c.publishRun(ctx, run, collab.RunRunning, "", ""); err != nil {
+		c.failAgentRun(ctx, run, err)
+		return err
+	}
+	if err := c.submitAgent(run.SessionID, run.Instruction, fullInput); err != nil {
+		c.failAgentRun(ctx, run, err)
+		return err
+	}
+	go c.runPublisher(run)
+	return nil
+}
+
+func (c *desktopCollaboration) failAgentRun(ctx context.Context, run *collaborationAgentRun, err error) {
+	if run == nil || err == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.runs[run.SessionID] == run {
+		delete(c.runs, run.SessionID)
+	}
+	c.persistLocked()
+	c.mu.Unlock()
+	_, _ = c.publishRun(ctx, run, collab.RunFailed, "", sanitizeCollaborationText(err.Error()))
 }
 
 func (c *desktopCollaboration) respond(ctx context.Context, input RespondCollaborationRequestInput) (CollaborationActionResult, error) {
@@ -1064,20 +1117,56 @@ func (c *desktopCollaboration) validateLocalController(sessionID string) error {
 	if c.app == nil {
 		return fmt.Errorf("desktop application is unavailable")
 	}
-	tab, ctrl := c.app.sessionAndCtrl(sessionID)
-	if tab == nil {
-		return fmt.Errorf("session %q does not exist", sessionID)
+	_, err := c.app.collaborationAgentReady(sessionID)
+	return err
+}
+
+func (a *App) collaborationAgentReady(sessionID string) (bool, error) {
+	if a == nil {
+		return false, fmt.Errorf("desktop application is unavailable")
 	}
-	if tab.ReadOnly {
-		return readOnlyChannelErr()
+	tab := a.sessionByID(sessionID)
+	if tab == nil {
+		return false, fmt.Errorf("session %q does not exist", sessionID)
+	}
+	a.mu.RLock()
+	ctrl := tab.Ctrl
+	readOnly := tab.ReadOnly
+	startupErr := strings.TrimSpace(tab.StartupErr)
+	ready := tab.Ready
+	a.mu.RUnlock()
+	if readOnly {
+		return false, readOnlyChannelErr()
 	}
 	if ctrl == nil {
-		return workspaceNotReadyErr(tab)
+		if startupErr != "" {
+			return false, fmt.Errorf("workspace failed to start: %s", startupErr)
+		}
+		if ready {
+			return false, fmt.Errorf("session controller is unavailable after startup")
+		}
+		return false, nil
 	}
 	if ctrl.RuntimeStatus().ActiveRuntimeWork {
-		return fmt.Errorf("Personal Agent is already running")
+		return false, fmt.Errorf("Personal Agent is already running")
 	}
-	return nil
+	return true, nil
+}
+
+func (a *App) waitCollaborationAgentReady(ctx context.Context, sessionID string) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		ready, err := a.collaborationAgentReady(sessionID)
+		if err != nil || ready {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func stableCollaborationID(prefix, value string) string {

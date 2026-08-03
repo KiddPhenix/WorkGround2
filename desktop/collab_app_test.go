@@ -240,6 +240,68 @@ func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	}
 }
 
+func TestCollaborationAgentWaitsForStartingWorkspaceAndRunsOnce(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "host", "session-a")
+	peer.snapshot = conn.initialSnapshot
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "connected", Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID,
+		SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	c.agentReady = func(string) (bool, error) { return false, nil }
+	workspaceReady := make(chan struct{})
+	c.waitAgentReady = func(ctx context.Context, sessionID string) error {
+		if sessionID != "session-a" {
+			t.Fatalf("wait routed to %q", sessionID)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-workspaceReady:
+			return nil
+		}
+	}
+	submitted := make(chan string, 2)
+	c.submitAgent = func(sessionID, _, input string) error {
+		if sessionID != "session-a" {
+			t.Fatalf("Agent routed to %q", sessionID)
+		}
+		submitted <- input
+		return nil
+	}
+
+	input := StartCollaborationAgentInput{RequestID: "startup-agent", SessionID: "session-a", Instruction: "提交现有修改"}
+	result, err := c.startAgent(context.Background(), input)
+	if err != nil || !result.Queued || result.RunID == "" {
+		t.Fatalf("starting workspace result=%+v err=%v", result, err)
+	}
+	select {
+	case value := <-submitted:
+		t.Fatalf("Agent started before workspace was ready: %q", value)
+	default:
+	}
+	close(workspaceReady)
+	select {
+	case value := <-submitted:
+		if value != input.Instruction {
+			t.Fatalf("submitted input=%q", value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued Agent did not start when workspace became ready")
+	}
+	duplicate, err := c.startAgent(context.Background(), input)
+	if err != nil || !duplicate.Duplicate || duplicate.RunID != result.RunID {
+		t.Fatalf("duplicate result=%+v err=%v", duplicate, err)
+	}
+	select {
+	case value := <-submitted:
+		t.Fatalf("duplicate Agent start submitted again: %q", value)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestCollaborationRequestAcceptControlsOnlyLocalAgentAndIsIdempotent(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	peer := &fakeCollaborationPeer{}

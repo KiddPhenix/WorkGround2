@@ -200,7 +200,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   }, [agentBusy, perform, sessionID, t, transport]);
 
   const startPending = useCallback(async (intent: PendingIntent) => {
-    if (intent.status !== "pending") return;
+    if (intent.status !== "pending" && intent.status !== "failed") return;
     dispatch({ type: "PENDING_STATUS", id: intent.messageId, status: "starting" });
     try {
       await startAgent(intent.instruction, [intent.messageId]);
