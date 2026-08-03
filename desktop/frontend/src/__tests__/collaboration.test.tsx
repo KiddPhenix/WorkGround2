@@ -9,7 +9,7 @@ import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, selectedTimelineItems } from "../collab/state";
 import type { CollaborationTimelineItem, PendingIntent } from "../collab/types";
-import { normalizeCollaborationAction, normalizeCollaborationItem } from "../collab/transport";
+import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem } from "../collab/transport";
 import { buildAgreeMessageInput } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
@@ -48,6 +48,24 @@ async function testCountdown() {
   await act(async () => root.unmount());
 }
 
+async function testSessionTransportIsolation() {
+  const first = createMockCollaborationTransport("multi-session-a");
+  const second = createMockCollaborationTransport("multi-session-b");
+  await first.host({ listenHost: "127.0.0.1", port: 39170, room: "room-a", memberName: "Alice", agentName: "A Agent", sessionID: "multi-session-a" });
+  await second.join({ host: "10.0.0.8", port: 39171, room: "room-b", memberName: "Bob", agentName: "B Agent", sessionID: "multi-session-b" });
+  let firstEvents = 0;
+  let secondEvents = 0;
+  const offFirst = first.subscribeEvent(() => firstEvents++);
+  const offSecond = second.subscribeEvent(() => secondEvents++);
+  await first.post({ requestID: "only-a", kind: "chat", text: "A update" });
+  const [firstState, secondState] = await Promise.all([first.getState(), second.getState()]);
+  equal([firstState.selfSessionId, firstState.room?.room, firstState.timeline.at(-1)?.text], ["multi-session-a", "room-a", "A update"], "first collaboration Session owns its Room state");
+  equal([secondState.selfSessionId, secondState.room?.room, secondState.timeline.some((entry) => entry.id === "only-a")], ["multi-session-b", "room-b", false], "second collaboration Session does not receive another Session's timeline");
+  equal([firstEvents, secondEvents], [1, 0], "event subscribers are isolated by collaboration Session");
+  offFirst();
+  offSecond();
+}
+
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
@@ -62,6 +80,7 @@ async function main() {
   ok(appSource.includes('activeTab?.sessionKind === "collaboration"') && appSource.includes("ensureBlankTab(target.scope, target.workspaceRoot)"), "Room starts from a workspace-owned blank Session");
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
+  ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
   equal(detectSelfAgentIntent("帮我检查这个接口的错误日志"), "self_agent", "detects an explicit self-Agent instruction");
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
@@ -101,6 +120,7 @@ async function main() {
   const queued = normalizeCollaborationAction({ requestId: "queued-1", queued: true, retryable: true, error: "host temporarily unavailable" });
   equal([queued.ok, queued.queued, queued.error], [true, true, "host temporarily unavailable"], "queued Outbox action is accepted while keeping its observable warning");
 
+  await testSessionTransportIsolation();
   await testCountdown();
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);

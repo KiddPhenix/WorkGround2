@@ -81,6 +81,7 @@ type JoinCollaborationRoomInput struct {
 
 type PostCollaborationMessageInput struct {
 	RequestID        string                  `json:"requestId"`
+	SessionID        string                  `json:"sessionId"`
 	Kind             string                  `json:"kind"`
 	Text             string                  `json:"text"`
 	Title            string                  `json:"title,omitempty"`
@@ -124,14 +125,16 @@ type CollaborationActionResult struct {
 }
 
 type CollaborationEventView struct {
-	Event collab.RoomEvent     `json:"event"`
-	Item  *collab.TimelineItem `json:"item,omitempty"`
+	SessionID string               `json:"sessionId"`
+	Event     collab.RoomEvent     `json:"event"`
+	Item      *collab.TimelineItem `json:"item,omitempty"`
 }
 
 // desktopCollaboration is deliberately above Controller. It owns Room
 // transport state, while the selected Controller continues to own the turn.
 type desktopCollaboration struct {
-	app *App
+	app            *App
+	ownerSessionID string
 
 	opMu           sync.Mutex
 	mu             sync.RWMutex
@@ -144,15 +147,16 @@ type desktopCollaboration struct {
 	recoveredRuns  []collaborationPersistedRun
 	leaveError     string
 
-	persistPath   string
-	writeState    func(string, []byte, os.FileMode) error
-	setSecret     func(string, string) error
-	getSecret     func(string) string
-	removeSecret  func(string) error
-	validateAgent func(string) error
-	submitAgent   func(string, string, string) error
-	openHost      func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
-	openJoin      func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
+	persistPath       string
+	legacyPersistPath string
+	writeState        func(string, []byte, os.FileMode) error
+	setSecret         func(string, string) error
+	getSecret         func(string) string
+	removeSecret      func(string) error
+	validateAgent     func(string) error
+	submitAgent       func(string, string, string) error
+	openHost          func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
+	openJoin          func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 }
 
 type collaborationConnection struct {
@@ -234,6 +238,7 @@ type collaborationPersistedState struct {
 	ConnectionSecretRef string                              `json:"connectionSecretRef,omitempty"`
 	JoinTokenSecretRef  string                              `json:"joinTokenSecretRef,omitempty"`
 	AfterSequence       uint64                              `json:"afterSequence,omitempty"`
+	Snapshot            collab.Snapshot                     `json:"snapshot,omitempty"`
 	Outbox              []collab.CommandEnvelope            `json:"outbox,omitempty"`
 	OutboxFailures      map[string]string                   `json:"outboxFailures,omitempty"`
 	Starts              map[string]collaborationStartRecord `json:"starts,omitempty"`
@@ -252,10 +257,12 @@ type collaborationPersistedRun struct {
 	ReferenceIDs   []string `json:"referenceIds,omitempty"`
 }
 
-func newDesktopCollaboration(app *App) *desktopCollaboration {
+func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
+	sessionID = strings.TrimSpace(sessionID)
 	c := &desktopCollaboration{
 		app:            app,
-		state:          CollaborationState{Status: "disconnected"},
+		ownerSessionID: sessionID,
+		state:          CollaborationState{Status: "disconnected", SessionID: sessionID},
 		starts:         map[string]collaborationStartRecord{},
 		runs:           map[string]*collaborationAgentRun{},
 		outboxFailures: map[string]string{},
@@ -272,37 +279,74 @@ func newDesktopCollaboration(app *App) *desktopCollaboration {
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root != "" {
-		c.persistPath = filepath.Join(root, "desktop-collaboration-v1.json")
-		c.loadPersisted()
+		c.legacyPersistPath = filepath.Join(root, "desktop-collaboration-v1.json")
+		stateDir := filepath.Join(root, "desktop-collaboration-v2")
+		if err := os.MkdirAll(stateDir, 0o700); err != nil {
+			c.state.LastError = "create collaboration state directory: " + err.Error()
+			c.state.Retryable = true
+		} else {
+			c.persistPath = filepath.Join(stateDir, collaborationSessionStateName(sessionID))
+			c.loadPersisted()
+		}
 	}
 	return c
 }
 
-func (a *App) collaborationRuntime() *desktopCollaboration {
+func collaborationSessionStateName(sessionID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID)))
+	return hex.EncodeToString(sum[:16]) + ".json"
+}
+
+func (a *App) collaborationRuntime(sessionID string) (*desktopCollaboration, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
 	a.collaborationMu.Lock()
 	defer a.collaborationMu.Unlock()
-	if a.collaboration == nil {
-		a.collaboration = newDesktopCollaboration(a)
+	if a.collaborations == nil {
+		a.collaborations = make(map[string]*desktopCollaboration)
 	}
-	return a.collaboration
+	if runtime := a.collaborations[sessionID]; runtime != nil {
+		return runtime, nil
+	}
+	runtime := newDesktopCollaboration(a, sessionID)
+	a.collaborations[sessionID] = runtime
+	return runtime, nil
 }
 
-func (a *App) closeCollaboration() {
+func (a *App) closeCollaborations() {
 	a.collaborationMu.Lock()
-	runtime := a.collaboration
-	a.collaboration = nil
-	a.collaborationMu.Unlock()
-	if runtime != nil {
-		runtime.close()
+	runtimes := make([]*desktopCollaboration, 0, len(a.collaborations))
+	for _, runtime := range a.collaborations {
+		runtimes = append(runtimes, runtime)
 	}
+	a.collaborations = nil
+	a.collaborationMu.Unlock()
+	var wg sync.WaitGroup
+	for _, runtime := range runtimes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runtime.close()
+		}()
+	}
+	wg.Wait()
 }
 
-func (a *App) GetCollaborationState() CollaborationState {
-	return a.collaborationRuntime().snapshot()
+func (a *App) GetCollaborationState(sessionID string) (CollaborationState, error) {
+	runtime, err := a.collaborationRuntime(sessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
+	return runtime.snapshot(), nil
 }
 
 func (a *App) HostCollaborationRoom(input HostCollaborationRoomInput) (CollaborationState, error) {
-	runtime := a.collaborationRuntime()
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
 	state, err := runtime.host(a.bootContext(), input)
 	if err != nil {
 		return state, err
@@ -315,7 +359,10 @@ func (a *App) HostCollaborationRoom(input HostCollaborationRoomInput) (Collabora
 }
 
 func (a *App) JoinCollaborationRoom(input JoinCollaborationRoomInput) (CollaborationState, error) {
-	runtime := a.collaborationRuntime()
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
 	state, err := runtime.join(a.bootContext(), input)
 	if err != nil {
 		return state, err
@@ -409,30 +456,53 @@ func (a *App) bindCollaborationSession(sessionID, title string) error {
 	return nil
 }
 
-func (a *App) LeaveCollaborationRoom() error {
-	return a.collaborationRuntime().leave(a.bootContext())
+func (a *App) LeaveCollaborationRoom(sessionID string) error {
+	runtime, err := a.collaborationRuntime(sessionID)
+	if err != nil {
+		return err
+	}
+	return runtime.leave(a.bootContext())
 }
 
 func (a *App) PostCollaborationMessage(input PostCollaborationMessageInput) (CollaborationActionResult, error) {
-	return a.collaborationRuntime().post(a.bootContext(), input)
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationActionResult{}, err
+	}
+	return runtime.post(a.bootContext(), input)
 }
 
 func (a *App) StartCollaborationAgent(input StartCollaborationAgentInput) (CollaborationActionResult, error) {
-	return a.collaborationRuntime().startAgent(a.bootContext(), input)
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationActionResult{}, err
+	}
+	return runtime.startAgent(a.bootContext(), input)
 }
 
 func (a *App) RespondCollaborationRequest(input RespondCollaborationRequestInput) (CollaborationActionResult, error) {
-	return a.collaborationRuntime().respond(a.bootContext(), input)
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationActionResult{}, err
+	}
+	return runtime.respond(a.bootContext(), input)
 }
 
-func (a *App) RetryCollaboration() (CollaborationState, error) {
-	return a.collaborationRuntime().retry(a.bootContext())
+func (a *App) RetryCollaboration(sessionID string) (CollaborationState, error) {
+	runtime, err := a.collaborationRuntime(sessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
+	return runtime.retry(a.bootContext())
 }
 
 func (c *desktopCollaboration) snapshot() CollaborationState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	state := cloneCollaborationState(c.state)
+	if state.SessionID == "" {
+		state.SessionID = c.ownerSessionID
+	}
 	state.OutboxCount = len(c.outbox)
 	state.Outbox = c.outboxViewsLocked()
 	return state
@@ -559,7 +629,7 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 	if c.conn == conn {
 		c.conn = nil
 	}
-	c.state = CollaborationState{Status: "disconnected", OutboxCount: len(c.outbox)}
+	c.state = CollaborationState{Status: "disconnected", SessionID: c.ownerSessionID, OutboxCount: len(c.outbox)}
 	c.persistLocked()
 	c.mu.Unlock()
 	c.emitState()
@@ -585,6 +655,9 @@ func (c *desktopCollaboration) post(ctx context.Context, input PostCollaboration
 	requestID := strings.TrimSpace(input.RequestID)
 	if requestID == "" {
 		return CollaborationActionResult{}, fmt.Errorf("requestId is required")
+	}
+	if inputSessionID := strings.TrimSpace(input.SessionID); inputSessionID != "" && inputSessionID != c.ownerSessionID {
+		return CollaborationActionResult{}, fmt.Errorf("sessionId does not match collaboration runtime")
 	}
 	command, err := collaborationPostCommand(input)
 	if err != nil {
@@ -673,14 +746,13 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 		return CollaborationActionResult{RequestID: requestID, RunID: existing.RunID, Duplicate: true}, nil
 	}
 	state := cloneCollaborationState(c.state)
-	conn := c.conn
-	if conn == nil || state.Status != "connected" {
-		c.mu.Unlock()
-		return CollaborationActionResult{}, fmt.Errorf("collaboration client is not connected")
-	}
 	if state.SessionID != sessionID {
 		c.mu.Unlock()
 		return CollaborationActionResult{}, fmt.Errorf("sessionId does not match this member's Personal Agent")
+	}
+	if strings.TrimSpace(state.Room) == "" || strings.TrimSpace(state.MemberID) == "" || strings.TrimSpace(state.AgentID) == "" {
+		c.mu.Unlock()
+		return CollaborationActionResult{}, fmt.Errorf("collaboration Room has no cached identity; join it once before working offline")
 	}
 	if existingRun := collaborationRunForCommand(state.Snapshot, requestID); existingRun != nil {
 		if existingRun.Instruction != instruction || existingRun.RequestRef != strings.TrimSpace(input.AgentRequestID) || !equalStrings(existingRun.ReferenceIDs, input.ReferenceIDs) {

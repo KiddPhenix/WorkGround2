@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useT } from "../lib/i18n";
 import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
@@ -49,8 +49,9 @@ export interface CollabController {
 
 export function useCollabController(sessionID: string, suppliedTransport?: CollaborationTransport): CollabController {
   const t = useT();
-  const transport = useMemo(() => suppliedTransport || defaultCollaborationTransport(), [suppliedTransport]);
+  const transport = useMemo(() => suppliedTransport || defaultCollaborationTransport(sessionID), [sessionID, suppliedTransport]);
   const [state, dispatch] = useReducer(collabReducer, initialCollabState);
+  const refreshEpoch = useRef(0);
 
   const acceptResult = useCallback((result: CollaborationActionResult) => {
     const error = actionError(result, t("collab.operationFailed"));
@@ -71,11 +72,13 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   }, [acceptResult]);
 
   const refresh = useCallback(async (reconnecting = false) => {
+    const epoch = ++refreshEpoch.current;
     dispatch({ type: "SYNCING", reconnecting });
     try {
-      dispatch({ type: "STATE", state: reconnecting ? await transport.retry() : await transport.getState() });
+      const next = reconnecting ? await transport.retry() : await transport.getState();
+      if (epoch === refreshEpoch.current) dispatch({ type: "STATE", state: next });
     } catch (error) {
-      dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
+      if (epoch === refreshEpoch.current) dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
     }
   }, [transport]);
 
@@ -87,6 +90,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
 
   useEffect(() => {
     void refresh();
+    return () => { refreshEpoch.current++; };
   }, [refresh]);
 
   const host = useCallback(async (input: HostCollaborationRoomInput) => {

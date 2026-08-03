@@ -283,11 +283,11 @@ export interface AppBindings extends WailsWorkBindings {
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
   CloseMainWindow(): Promise<void>;
-  GetCollaborationState(): Promise<CollaborationState>;
-  RetryCollaboration(): Promise<CollaborationState>;
+  GetCollaborationState(sessionID: string): Promise<CollaborationState>;
+  RetryCollaboration(sessionID: string): Promise<CollaborationState>;
   HostCollaborationRoom(input: HostCollaborationRoomInput): Promise<CollaborationState>;
   JoinCollaborationRoom(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
-  LeaveCollaborationRoom(): Promise<void>;
+  LeaveCollaborationRoom(sessionID: string): Promise<void>;
   PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
   RespondCollaborationRequest(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;

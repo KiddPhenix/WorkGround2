@@ -105,6 +105,7 @@ export interface JoinCollaborationRoomInput {
 
 export interface PostCollaborationMessageInput {
   requestID: string;
+  sessionID?: string;
   kind: "chat" | "contribution" | "agent_request" | "reaction";
   text: string;
   targetMemberID?: string;

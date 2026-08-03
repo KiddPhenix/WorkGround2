@@ -63,6 +63,11 @@ func (c *desktopCollaboration) loadPersisted() {
 		return
 	}
 	data, err := os.ReadFile(c.persistPath)
+	migrated := false
+	if os.IsNotExist(err) && strings.TrimSpace(c.legacyPersistPath) != "" {
+		data, err = os.ReadFile(c.legacyPersistPath)
+		migrated = err == nil
+	}
 	if err != nil {
 		if !os.IsNotExist(err) {
 			c.state.LastError = "load collaboration state: " + err.Error()
@@ -76,6 +81,14 @@ func (c *desktopCollaboration) loadPersisted() {
 		c.state.Retryable = true
 		return
 	}
+	if c.ownerSessionID != "" && strings.TrimSpace(p.SessionID) != c.ownerSessionID {
+		if migrated {
+			return
+		}
+		c.state.LastError = "load collaboration state: persisted sessionId does not match runtime"
+		c.state.Retryable = false
+		return
+	}
 	if p.Starts != nil {
 		c.starts = p.Starts
 	}
@@ -84,15 +97,22 @@ func (c *desktopCollaboration) loadPersisted() {
 	}
 	c.outbox = append([]collab.CommandEnvelope(nil), p.Outbox...)
 	c.recoveredRuns = append([]collaborationPersistedRun(nil), p.Runs...)
+	snapshot := p.Snapshot
+	if snapshot.LatestSequence == 0 {
+		snapshot.LatestSequence = p.AfterSequence
+	}
 	c.state = CollaborationState{
 		Status: "disconnected", Mode: p.Mode, Host: p.Host, Port: p.Port, Room: p.Room,
 		MemberID: p.MemberID, AgentID: p.AgentID, SessionID: p.SessionID,
-		Snapshot:    collab.Snapshot{LatestSequence: p.AfterSequence},
+		Snapshot:    snapshot,
 		OutboxCount: len(c.outbox),
 	}
 	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
 		c.state.Status = "failed"
 		c.state.Retryable = true
+	}
+	if migrated {
+		c.persistLocked()
 	}
 }
 
@@ -124,6 +144,7 @@ func (c *desktopCollaboration) persistLocked() {
 		AgentID:        c.state.AgentID,
 		SessionID:      c.state.SessionID,
 		AfterSequence:  c.state.Snapshot.LatestSequence,
+		Snapshot:       cloneCollaborationState(CollaborationState{Snapshot: c.state.Snapshot}).Snapshot,
 		Outbox:         persistedCollaborationOutbox(c.outbox),
 		OutboxFailures: cloneStringMap(c.outboxFailures),
 		Starts:         cloneStartMap(c.starts),

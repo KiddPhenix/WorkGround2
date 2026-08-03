@@ -168,7 +168,7 @@ export function normalizeCollaborationAction(value: unknown): CollaborationActio
   };
 }
 
-export function createWailsCollaborationTransport(): CollaborationTransport {
+export function createWailsCollaborationTransport(sessionID: string): CollaborationTransport {
   let names = new Map<string, string>();
   const normalizeState = (value: unknown) => {
     const state = normalizeCollaborationState(value);
@@ -176,23 +176,44 @@ export function createWailsCollaborationTransport(): CollaborationTransport {
     return state;
   };
   return {
-    getState: async () => normalizeState(await app.GetCollaborationState()),
-    retry: async () => normalizeState(await app.RetryCollaboration()),
+    getState: async () => normalizeState(await app.GetCollaborationState(sessionID)),
+    retry: async () => normalizeState(await app.RetryCollaboration(sessionID)),
     host: async (input) => normalizeState(await app.HostCollaborationRoom(input)),
     join: async (input) => normalizeState(await app.JoinCollaborationRoom(input)),
-    leave: () => app.LeaveCollaborationRoom(),
-    post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage(input)),
+    leave: () => app.LeaveCollaborationRoom(sessionID),
+    post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID })),
     startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input)),
     respond: async (input) => normalizeCollaborationAction(await app.RespondCollaborationRequest(input)),
-    subscribeState: (listener) => onCollaborationState((payload) => listener(normalizeState(payload))),
-    subscribeEvent: (listener) => onCollaborationEvent((payload) => listener(normalizeCollaborationItem(payload, names))),
+    subscribeState: (listener) => onCollaborationState((payload) => {
+      const raw = record(payload);
+      if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;
+      listener(normalizeState(payload));
+    }),
+    subscribeEvent: (listener) => onCollaborationEvent((payload) => {
+      const raw = record(payload);
+      if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;
+      listener(normalizeCollaborationItem(payload, names));
+    }),
   };
 }
 
-const mockStateListeners = new Set<(state: CollaborationState) => void>();
-const mockEventListeners = new Set<(item: CollaborationTimelineItem) => void>();
-let mockSequence = 4;
-let mockState: CollaborationState = { status: "disconnected", members: [], timeline: [] };
+type MockCollaborationRuntime = {
+  stateListeners: Set<(state: CollaborationState) => void>;
+  eventListeners: Set<(item: CollaborationTimelineItem) => void>;
+  sequence: number;
+  state: CollaborationState;
+};
+
+const mockRuntimes = new Map<string, MockCollaborationRuntime>();
+
+function mockRuntime(sessionID: string): MockCollaborationRuntime {
+  let runtime = mockRuntimes.get(sessionID);
+  if (!runtime) {
+    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] } };
+    mockRuntimes.set(sessionID, runtime);
+  }
+  return runtime;
+}
 
 const now = () => new Date().toISOString();
 const sampleMembers = (selfName: string, agentName: string, sessionID: string): CollaborationMember[] => [
@@ -210,20 +231,20 @@ function sampleTimeline(): CollaborationTimelineItem[] {
   ];
 }
 
-function emitMockState() {
-  const snapshot = { ...mockState, members: [...mockState.members], timeline: [...mockState.timeline] };
-  for (const listener of mockStateListeners) listener(snapshot);
+function emitMockState(runtime: MockCollaborationRuntime) {
+  const snapshot = { ...runtime.state, members: [...runtime.state.members], timeline: [...runtime.state.timeline] };
+  for (const listener of runtime.stateListeners) listener(snapshot);
 }
 
-function emitMockItem(item: CollaborationTimelineItem) {
-  mockState = { ...mockState, timeline: [...mockState.timeline, item], room: mockState.room ? { ...mockState.room, latestSequence: item.sequence } : undefined };
-  for (const listener of mockEventListeners) listener(item);
-  emitMockState();
+function emitMockItem(runtime: MockCollaborationRuntime, item: CollaborationTimelineItem) {
+  runtime.state = { ...runtime.state, timeline: [...runtime.state.timeline, item], room: runtime.state.room ? { ...runtime.state.room, latestSequence: item.sequence } : undefined };
+  for (const listener of runtime.eventListeners) listener(item);
+  emitMockState(runtime);
 }
 
-function connectMock(input: HostCollaborationRoomInput | JoinCollaborationRoomInput): CollaborationState {
+function connectMock(runtime: MockCollaborationRuntime, input: HostCollaborationRoomInput | JoinCollaborationRoomInput): CollaborationState {
   const host = "host" in input ? input.host : input.listenHost;
-  mockState = {
+  runtime.state = {
     status: "connected",
     room: { room: input.room, title: "角色换装联调", description: "多人协作对话流", host, port: input.port, tokenRequired: Boolean(input.token?.trim()), latestSequence: 4 },
     selfMemberId: "self",
@@ -231,23 +252,24 @@ function connectMock(input: HostCollaborationRoomInput | JoinCollaborationRoomIn
     members: sampleMembers(input.memberName || "陈程序", input.agentName || "程序 Agent", input.sessionID),
     timeline: sampleTimeline(),
   };
-  mockSequence = 4;
-  emitMockState();
-  return mockState;
+  runtime.sequence = 4;
+  emitMockState(runtime);
+  return runtime.state;
 }
 
-export function createMockCollaborationTransport(): CollaborationTransport {
+export function createMockCollaborationTransport(sessionID = "preview-session"): CollaborationTransport {
+  const runtime = mockRuntime(sessionID);
   return {
-    async getState() { return mockState; },
-    async retry() { emitMockState(); return mockState; },
-    async host(input) { return connectMock(input); },
-    async join(input) { return connectMock(input); },
-    async leave() { mockState = { status: "disconnected", members: [], timeline: [] }; emitMockState(); },
+    async getState() { return runtime.state; },
+    async retry() { emitMockState(runtime); return runtime.state; },
+    async host(input) { return connectMock(runtime, input); },
+    async join(input) { return connectMock(runtime, input); },
+    async leave() { runtime.state = { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] }; emitMockState(runtime); },
     async post(input) {
-      const self = mockState.members.find((member) => member.isSelf);
+      const self = runtime.state.members.find((member) => member.isSelf);
       const item: CollaborationTimelineItem = {
         id: input.requestID,
-        sequence: ++mockSequence,
+        sequence: ++runtime.sequence,
         revision: 1,
         kind: input.kind,
         contributionKind: input.contributionKind,
@@ -260,14 +282,14 @@ export function createMockCollaborationTransport(): CollaborationTransport {
         requestStatus: input.kind === "agent_request" ? "waiting" : undefined,
         syncStatus: "synced",
       };
-      emitMockItem(item);
+      emitMockItem(runtime, item);
       return { ok: true, requestID: input.requestID, item };
     },
     async startAgent(input) {
-      const self = mockState.members.find((member) => member.isSelf);
+      const self = runtime.state.members.find((member) => member.isSelf);
       const item: CollaborationTimelineItem = {
         id: input.requestID,
-        sequence: ++mockSequence,
+        sequence: ++runtime.sequence,
         revision: 1,
         kind: "agent_command",
         actorId: self?.id || "self",
@@ -277,7 +299,7 @@ export function createMockCollaborationTransport(): CollaborationTransport {
         referenceIds: input.referenceIDs,
         syncStatus: "synced",
       };
-      emitMockItem(item);
+      emitMockItem(runtime, item);
       return { ok: true, requestID: input.requestID, item };
     },
     async respond(input) {
@@ -286,12 +308,12 @@ export function createMockCollaborationTransport(): CollaborationTransport {
       }
       return { ok: true, requestID: input.requestID };
     },
-    subscribeState(listener) { mockStateListeners.add(listener); return () => mockStateListeners.delete(listener); },
-    subscribeEvent(listener) { mockEventListeners.add(listener); return () => mockEventListeners.delete(listener); },
+    subscribeState(listener) { runtime.stateListeners.add(listener); return () => runtime.stateListeners.delete(listener); },
+    subscribeEvent(listener) { runtime.eventListeners.add(listener); return () => runtime.eventListeners.delete(listener); },
   };
 }
 
-export function defaultCollaborationTransport(): CollaborationTransport {
+export function defaultCollaborationTransport(sessionID: string): CollaborationTransport {
   const live = typeof window !== "undefined" && Boolean(window.go?.main?.App?.GetCollaborationState);
-  return live ? createWailsCollaborationTransport() : createMockCollaborationTransport();
+  return live ? createWailsCollaborationTransport(sessionID) : createMockCollaborationTransport(sessionID);
 }

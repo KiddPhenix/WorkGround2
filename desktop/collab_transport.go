@@ -346,13 +346,33 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 	conn := c.conn
 	state := c.state
 	c.mu.RUnlock()
-	if conn == nil || state.Status == "disconnected" || state.Status == "failed" {
-		return CollaborationActionResult{}, fmt.Errorf("collaboration client is not connected")
+	if strings.TrimSpace(state.Room) == "" || strings.TrimSpace(state.MemberID) == "" {
+		return CollaborationActionResult{}, fmt.Errorf("collaboration Room has no cached identity; join it once before working offline")
 	}
 	env := collab.CommandEnvelope{
 		RequestID: strings.TrimSpace(requestID), Room: state.Room, MemberID: state.MemberID,
-		Session: conn.connectionSession, Command: command,
+		Command: command,
 	}
+	if conn == nil || state.Status == "disconnected" || state.Status == "failed" {
+		c.mu.Lock()
+		duplicate := outboxContains(c.outbox, env.RequestID)
+		if !duplicate {
+			c.outbox = append(c.outbox, env)
+		}
+		if c.conn == nil {
+			c.state.Status = "failed"
+		} else {
+			c.state.Status = "reconnecting"
+		}
+		c.state.LastError = "offline: collaboration update is queued for retry"
+		c.state.Retryable = true
+		c.state.OutboxCount = len(c.outbox)
+		c.persistLocked()
+		c.mu.Unlock()
+		c.emitState()
+		return CollaborationActionResult{RequestID: requestID, Duplicate: duplicate, Queued: true, Retryable: true, Error: "waiting for collaboration Room reconnect"}, nil
+	}
+	env.Session = conn.connectionSession
 	receipt, err := conn.peer.Submit(ctx, env)
 	if err == nil {
 		result := CollaborationActionResult{RequestID: requestID, Receipt: receipt, Duplicate: receipt.Duplicate}
@@ -659,14 +679,14 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 	c.mu.Unlock()
 	if c.app != nil && c.app.ctx != nil {
 		for _, value := range events {
-			c.app.runtimeEvents.Emit(c.app.ctx, collaborationEventChannel, collaborationEventView(value))
+			c.app.runtimeEvents.Emit(c.app.ctx, collaborationEventChannel, collaborationEventView(c.ownerSessionID, value))
 		}
 	}
 	c.emitState()
 }
 
-func collaborationEventView(value collab.RoomEvent) CollaborationEventView {
-	view := CollaborationEventView{Event: value}
+func collaborationEventView(sessionID string, value collab.RoomEvent) CollaborationEventView {
+	view := CollaborationEventView{SessionID: strings.TrimSpace(sessionID), Event: value}
 	var item collab.TimelineItem
 	if len(value.Payload) > 0 && json.Unmarshal(value.Payload, &item) == nil && item.ID != "" {
 		view.Item = &item

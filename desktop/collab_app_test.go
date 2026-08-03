@@ -80,7 +80,7 @@ func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map
 	app := &App{}
 	secrets := map[string]string{}
 	c := &desktopCollaboration{
-		app: app, state: CollaborationState{Status: "disconnected"},
+		app: app, ownerSessionID: "session-a", state: CollaborationState{Status: "disconnected", SessionID: "session-a"},
 		starts: map[string]collaborationStartRecord{}, runs: map[string]*collaborationAgentRun{},
 		outboxFailures: map[string]string{},
 		persistPath:    filepath.Join(t.TempDir(), "collaboration.json"), writeState: fileutil.AtomicWriteFile,
@@ -89,8 +89,39 @@ func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map
 	c.setSecret = func(key, value string) error { secrets[key] = value; return nil }
 	c.getSecret = func(key string) string { return secrets[key] }
 	c.removeSecret = func(key string) error { delete(secrets, key); return nil }
-	app.collaboration = c
+	app.collaborations = map[string]*desktopCollaboration{"session-a": c}
 	return app, c, secrets
+}
+
+func TestCollaborationRuntimesAreIsolatedPerSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{}
+	first, err := app.collaborationRuntime("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.collaborationRuntime("session-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAgain, err := app.collaborationRuntime("session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || firstAgain != first || first.persistPath == second.persistPath {
+		t.Fatalf("runtimes are not isolated: first=%p second=%p paths=%q/%q", first, second, first.persistPath, second.persistPath)
+	}
+	first.mu.Lock()
+	first.state.Room = "room-a"
+	first.state.Snapshot.Timeline = []collab.TimelineItem{{ID: "a-1", Sequence: 1, Type: collab.TimelineChat}}
+	first.mu.Unlock()
+	if state := second.snapshot(); state.SessionID != "session-b" || state.Room != "" || len(state.Snapshot.Timeline) != 0 {
+		t.Fatalf("second runtime observed first runtime state: %+v", state)
+	}
+	if _, err := app.collaborationRuntime(" "); err == nil {
+		t.Fatal("empty SessionID created a runtime")
+	}
+	app.closeCollaborations()
 }
 
 func testConnection(peer collaborationPeer, mode, sessionID string) *collaborationConnection {
@@ -239,6 +270,10 @@ func TestCollaborationRestartRecoveryKeepsSecretReferenceAndCursor(t *testing.T)
 	peer := &fakeCollaborationPeer{}
 	conn := testConnection(peer, "client", "session-a")
 	conn.joinToken = "room-token-secret"
+	conn.initialSnapshot.Timeline = []collab.TimelineItem{{
+		ID: "cached-chat", Sequence: 2, Type: collab.TimelineChat,
+		Chat: &collab.ChatMessage{ID: "cached-chat", AuthorID: "member-a", Text: "cached background", Revision: 1},
+	}}
 	c.conn = conn
 	c.state = CollaborationState{Status: "connected", Host: conn.hostName, Port: conn.port, Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
 	c.mu.Lock()
@@ -256,11 +291,70 @@ func TestCollaborationRestartRecoveryKeepsSecretReferenceAndCursor(t *testing.T)
 	c2.getSecret = func(key string) string { return secrets[key] }
 	c2.loadPersisted()
 	state := c2.snapshot()
-	if state.Host != conn.hostName || state.Room != conn.room || state.SessionID != conn.sessionID || state.Snapshot.LatestSequence != conn.initialSnapshot.LatestSequence {
+	if state.Host != conn.hostName || state.Room != conn.room || state.SessionID != conn.sessionID || state.Snapshot.LatestSequence != conn.initialSnapshot.LatestSequence ||
+		len(state.Snapshot.Members) != 1 || len(state.Snapshot.Timeline) != 1 || state.Snapshot.Timeline[0].Chat.Text != "cached background" {
 		t.Fatalf("recovered state = %+v", state)
 	}
 	if got := c2.resumeSession(conn.hostName, conn.port, conn.room, conn.memberID, conn.sessionID); got != conn.connectionSession {
 		t.Fatalf("resume session = %q", got)
+	}
+}
+
+func TestCollaborationOfflineCacheSupportsAgentAndIdempotentOutbox(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	c.state = CollaborationState{
+		Status: "failed", Host: "10.0.0.8", Port: 39170, Room: "room-a",
+		MemberID: "member-a", AgentID: "agent-a", SessionID: "session-a",
+		Snapshot: collab.Snapshot{
+			Room: collab.Room{ID: "room-a", Name: "Cached Room", LatestSequence: 7}, LatestSequence: 7,
+			Members: []collab.Member{{ID: "member-a", Name: "Alice"}, {ID: "member-b", Name: "Bob"}},
+			Timeline: []collab.TimelineItem{{
+				ID: "remote-7", Sequence: 7, Type: collab.TimelineChat,
+				Chat: &collab.ChatMessage{ID: "remote-7", AuthorID: "member-b", Text: "please inspect cached API notes", Revision: 1},
+			}},
+		},
+	}
+	var submittedInput string
+	c.submitAgent = func(sessionID, _, input string) error {
+		if sessionID != "session-a" {
+			t.Fatalf("Agent routed to %q", sessionID)
+		}
+		submittedInput = input
+		return nil
+	}
+	post := PostCollaborationMessageInput{RequestID: "offline-chat", SessionID: "session-a", Kind: "chat", Text: "local update"}
+	first, err := c.post(context.Background(), post)
+	if err != nil || !first.Queued || first.Duplicate {
+		t.Fatalf("first offline post=%+v err=%v", first, err)
+	}
+	second, err := c.post(context.Background(), post)
+	if err != nil || !second.Queued || !second.Duplicate || len(c.outbox) != 1 {
+		t.Fatalf("duplicate offline post=%+v outbox=%+v err=%v", second, c.outbox, err)
+	}
+	result, err := c.startAgent(context.Background(), StartCollaborationAgentInput{
+		RequestID: "offline-agent", SessionID: "session-a", Instruction: "检查并给出修复建议", ReferenceIDs: []string{"remote-7"},
+	})
+	if err != nil || !result.Queued || result.RunID == "" || !strings.Contains(submittedInput, "please inspect cached API notes") {
+		t.Fatalf("offline Agent result=%+v input=%q err=%v", result, submittedInput, err)
+	}
+	if len(c.outbox) != 3 {
+		t.Fatalf("offline chat and Agent state were not queued independently: %+v", c.outbox)
+	}
+	c.observeAgentEvent("session-a", event.Event{Kind: event.Message, Text: "cached analysis complete"})
+	c.observeAgentEvent("session-a", event.Event{Kind: event.TurnDone})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c.mu.RLock()
+		runDone := c.runs["session-a"] == nil
+		outboxCount := len(c.outbox)
+		c.mu.RUnlock()
+		if runDone && outboxCount >= 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("offline Agent completion was not queued: runDone=%v outbox=%d", runDone, outboxCount)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -375,7 +469,10 @@ func TestCollaborationEventWrapperAndSequenceGap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view := collaborationEventView(collab.RoomEvent{EventID: "event-3", Sequence: 3, Type: "chat.posted", Payload: payload})
+	view := collaborationEventView("session-a", collab.RoomEvent{EventID: "event-3", Sequence: 3, Type: "chat.posted", Payload: payload})
+	if view.SessionID != "session-a" {
+		t.Fatalf("event session = %q", view.SessionID)
+	}
 	if view.Item == nil || view.Item.Type != collab.TimelineChat || view.Item.Chat.Text != "hello" {
 		t.Fatalf("event view = %+v", view)
 	}

@@ -36,7 +36,7 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
   const [prefill, setPrefill] = useState("");
   const [batchInstruction, setBatchInstruction] = useState("");
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
-  const connected = ownsRoom && state.status === "connected";
+  const usable = ownsRoom && Boolean(state.room);
 
   if (mode === "dialog") {
     return <div className="collab-modal" role="dialog" aria-modal="true" aria-label={c("title")}>
@@ -90,7 +90,7 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
 
         {(state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.status}`} role="status">
           <RefreshCw size={14} />
-          <span>{state.lastError || statusLabel(state.status, c)}{state.unsyncedCount ? ` · ${c("unsynced", { n: state.unsyncedCount })}` : ""}</span>
+          <span>{state.lastError || statusLabel(state.status, c)}{state.status === "reconnecting" || state.status === "failed" ? ` · ${c("cachedBackground")}` : ""}{state.unsyncedCount ? ` · ${c("unsynced", { n: state.unsyncedCount })}` : ""}</span>
           {state.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}
         </div>}
 
@@ -100,7 +100,7 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
             selfMemberId={state.selfMemberId}
             selectedIds={state.selectedIds}
             pendingIntents={state.pendingIntents}
-            connected={connected}
+            connected={usable}
             onToggle={controller.toggleSelection}
             onReply={(item) => setPrefill(`> ${item.actorName}: ${item.text}\n\n`)}
             onAgree={(item) => void controller.agree(item)}
@@ -118,13 +118,13 @@ export function CollaborationWorkspace({ sessionID, mode = "session", onClose, o
           {selectedItems.length > 0 && <div className="collab-selection-bar">
             <span>{c("selected", { n: selectedItems.length })}</span>
             <input value={batchInstruction} onChange={(event) => setBatchInstruction(event.target.value)} placeholder={c("instruction")} aria-label={c("instruction")} />
-            <button type="button" className="collab-primary-button" disabled={!connected || !sessionID} onClick={runSelected}><Bot size={15} />{c("agentRespond")}</button>
+            <button type="button" className="collab-primary-button" disabled={!usable || !sessionID} onClick={runSelected}><Bot size={15} />{c("agentRespond")}</button>
             <button type="button" className="collab-icon-button" aria-label={c("clear")} onClick={controller.clearSelection}><X size={16} /></button>
           </div>}
           <CollaborationComposer
             members={state.members}
             selfMemberId={state.selfMemberId}
-            disabled={!connected}
+            disabled={!usable}
             prefill={prefill}
             onPrefillConsumed={() => setPrefill("")}
             onChat={controller.postChat}

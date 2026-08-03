@@ -41,6 +41,19 @@ Clientᵢ = {
 }
 ~~~
 
+一个桌面实例可以同时拥有多个协作 Session。每个协作 Session 在 Client 闭包内形成更小的运行时闭包：
+
+~~~text
+CollaborationRuntime(sessionId) = {
+    RoomConnection   独立连接、心跳和重连
+    SharedCache      最近一次远端 Room 快照和增量
+    Outbox           该 Room 尚未确认的本地更新
+    AgentRuns        该 Session 发起的本地 Agent 执行
+}
+~~~
+
+`sessionId → CollaborationRuntime` 是一对一关系；不同 Session 的连接、缓存、Outbox、AgentRun 和事件不能互相读取或覆盖。切换前台 Session 不会关闭其他 Room，其他协作连接继续在后台同步。
+
 外部信息只能通过 Client 的公开入口进入：
 
 ~~~text
@@ -67,6 +80,8 @@ Publish()   发布经过筛选和脱敏的公共结果
 - 接口、资源、文档、Bug、修复和验证结果能够自动路由到相关成员。
 - 重复消息、重连和重试不会重复启动 Agent 或重复产生副作用。
 - V1 只需知道 Host IP、Port、Room 和可选 Token 即可加入。
+- 同一桌面实例可同时连接多个 Room；每个 Room 都是一条归属于某个 Workspace 的普通 Session List 会话。
+- Host 与加入者都将远端 Room 信息持久化为可更新的共享背景缓存；断线后仍可查看、引用并交给自己的 Agent 处理。
 
 ### 3.2 非目标
 
@@ -135,6 +150,8 @@ flowchart LR
 Host 是 Room 公共状态的唯一写入者。每个 Client 是自己 Personal Agent 状态的唯一写入者。
 
 Room 可以知道某个 Agent 在线、运行中、等待确认或已经完成，但 Room 不拥有该 Agent 的完整 Session。
+
+每个 Client 保存所加入 Room 的本地只读投影。Host 快照和事件仍是公共事实的权威来源，本地投影是允许过期、可被后续增量更新的共享背景缓存。网络中断不会清空该投影，也不会阻断基于缓存的本地 Agent 工作；离线产生的公共更新进入对应 Session 的 Outbox，重连后再与 Host 达成最终一致。
 
 ---
 
@@ -577,8 +594,8 @@ disconnected → connecting → syncing → connected
 connected → reconnecting → syncing → connected
 ~~~
 
-- syncing 完成前不允许基于远端信息自动启动 Agent。
-- 断线期间，本地已开始的 AgentRun 可以继续。
+- 从未成功加入、尚无 Room 身份和共享背景缓存时，不允许基于远端信息启动 Agent。
+- 已有共享背景缓存时，断线前已开始或断线后新发起的本地 AgentRun 都可以继续；界面必须显式标记背景可能不是最新版本。
 - 待发布结果进入本地 Outbox。
 - 重连后按 requestId 和 runId 幂等补发。
 - Host 不可达时，用户仍可停止自己的 Agent。
@@ -642,6 +659,7 @@ Host 对 requestId 做持久幂等。相同 requestId 重复提交时返回第�
 | 状态 | 权威所有者 |
 |---|---|
 | Room、成员、公共 Timeline | Host |
+| Room 的本地共享背景缓存 | 各协作 Session Runtime（Host 快照/事件为权威来源） |
 | Personal Agent Session | 对应 Client |
 | 本地 Workspace 和工具状态 | 对应 Client |
 | PendingIntent 和倒计时 | 发送者 Client |
@@ -663,7 +681,7 @@ Host 对 requestId 做持久幂等。相同 requestId 重复提交时返回第�
 
 - 消息已被 Host 接受但响应丢失：客户端用同一 requestId 重试。
 - SSE 丢帧：通过 afterSequence 补读。
-- Client 崩溃：重启后恢复 Outbox、未完成 AgentRun 和最后消费游标。
+- Client 崩溃：重启后按 sessionId 分别恢复 Room 共享背景缓存、Outbox、未完成 AgentRun 和最后消费游标。
 - Host 崩溃：重启后回放 Room EventStore；Client 重连并补发未确认命令。
 - AgentResult 发布失败：结果保留在本地 Outbox，不能因为网络失败重新执行 AgentRun。
 - 重复接受 AgentRequest：返回已有 AgentCommand，不创建第二次执行。
@@ -684,7 +702,7 @@ Host 对 requestId 做持久幂等。相同 requestId 重复提交时返回第�
 
 ~~~text
 DesktopShell
-├── 左栏：Workspace / Room 导航
+├── 左栏：Workspace / Session List（个人与多人会话并列）
 ├── 中央：多人协作 Timeline
 │   ├── Room 标题和在线人数
 │   ├── ChatMessage / Contribution / AgentResult
@@ -707,6 +725,7 @@ DesktopShell
 - PendingIntent：使用紧凑倒计时条，不遮挡 Timeline。
 - 多选模式：被选消息显示统一选择标记，底部操作栏显示数量。
 - 未同步信息：显示本地状态，不伪装为已经发布。
+- 断线状态：保留缓存 Timeline 和成员投影，显示“共享背景缓存仍可用”，并允许本地 Agent 继续处理；新更新标记为待同步。
 
 ### 16.4 人的介入点
 
@@ -760,6 +779,8 @@ Room 位于 Controller 上层。Collab 服务不能接管 Controller 的 turn �
 - 多个成员不能共写同一个 Agent Session 文件。
 - Host Room EventStore 与个人 Session EventLog 分离。
 - Room Transport 的断线重连不能导致 AgentRun 重复执行。
+- Desktop 以稳定 sessionId 路由 CollaborationRuntime；禁止使用进程级“当前 Room”隐式状态。
+- 远端 Snapshot、消费游标和 Outbox 按 sessionId 隔离持久化，支持多 Room 后台连接和独立恢复。
 - Agent 结果发布前经过独立脱敏和可见范围检查。
 - 前端从 Room 快照和事件推导 UI，网络回包不直接操作具体消息组件。
 
@@ -781,6 +802,8 @@ Room 位于 Controller 上层。Collab 服务不能接管 Controller 的 turn �
 - 结构化 Contribution：意见、交付物、问题、修复和验证。
 - requestId 幂等、sequence 补读、Outbox 重试。
 - Host 和 Client 重启后的可恢复状态。
+- 一个桌面实例同时连接多个 Room，各 Room 归属自己的 Workspace Session，并在后台独立同步。
+- 断线或重启后继续使用持久化的共享背景缓存运行自己的 Agent，结果进入对应 Room 的 Outbox。
 
 ### 18.2 后续版本
 
@@ -802,6 +825,8 @@ Room 位于 Controller 上层。Collab 服务不能接管 Controller 的 turn �
 - Token 留空时可以连接，并展示无 Token 风险提示。
 - Token 错误、Room 不存在和 Host 不可达均提供明确错误。
 - 断线重连后不丢失已持久化消息，也不重复显示事件。
+- 同一桌面同时连接 Room A 和 Room B 时，切换 Session 不会断开任一连接，消息、成员、事件和 Outbox 不会串 Room。
+- Host 或加入者断线后仍能看到缓存的 Timeline，引用缓存消息运行自己的 Agent；离线结果重连后只补发到原 Room。
 
 ### 19.2 控制权
 

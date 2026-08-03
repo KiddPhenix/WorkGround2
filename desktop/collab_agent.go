@@ -171,12 +171,6 @@ func (c *desktopCollaboration) runPublisher(run *collaborationAgentRun) {
 }
 
 func (a *App) observeCollaborationAgentEvent(tabID string, value event.Event) {
-	a.collaborationMu.Lock()
-	runtime := a.collaboration
-	a.collaborationMu.Unlock()
-	if runtime == nil {
-		return
-	}
 	a.mu.RLock()
 	tab := a.tabByEventSinkIDLocked(tabID)
 	var sessionID string
@@ -185,6 +179,12 @@ func (a *App) observeCollaborationAgentEvent(tabID string, value event.Event) {
 	}
 	a.mu.RUnlock()
 	if sessionID == "" {
+		return
+	}
+	a.collaborationMu.Lock()
+	runtime := a.collaborations[sessionID]
+	a.collaborationMu.Unlock()
+	if runtime == nil {
 		return
 	}
 	runtime.observeAgentEvent(sessionID, value)
