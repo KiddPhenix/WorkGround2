@@ -79,6 +79,8 @@
 
 .collab-main { position: relative; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: rgba(9, 14, 21, .72); }
 .collab-topicbar { grid-row: 1; min-height: 74px; display: flex; align-items: center; gap: 18px; padding: 12px 22px; border-bottom: 1px solid var(--collab-border); }
+.collab-topicbar { --wails-draggable: drag; user-select: none; }
+.collab-topicbar button, .collab-topicbar input, .collab-topicbar select, .collab-topicbar .collab-invite-popover { --wails-draggable: no-drag; }
 .collab-topicbar > div:first-child { min-width: 0; flex: 1; }
 .collab-topic-title { display: flex; align-items: center; gap: 12px; }
 .collab-topic-title h1 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 19px; }
@@ -108,6 +110,8 @@
 .collab-empty { display: grid; place-items: center; min-height: 300px; color: var(--collab-muted); }
 .collab-message { position: relative; display: grid; grid-template-columns: 25px 38px minmax(0, 1fr); gap: 10px; padding: 13px 10px; border: 1px solid transparent; border-radius: 10px; }
 .collab-message:hover, .collab-message--selected { border-color: rgba(155, 114, 255, .2); background: rgba(103, 75, 163, .07); }
+.collab-message--pending { border-color: rgba(203, 172, 95, .16); background: rgba(127, 91, 28, .055); }
+.collab-message--pending .collab-message-select { visibility: hidden; }
 .collab-message-select { padding-top: 8px; }
 .collab-message-select input { position: absolute; opacity: 0; pointer-events: none; }
 .collab-message-select span { display: grid; place-items: center; width: 17px; height: 17px; border: 1px solid #465268; border-radius: 50%; color: transparent; cursor: pointer; }
@@ -166,6 +170,9 @@
 .collab-composer { padding: 9px 14px 12px; }
 .collab-composer-mode { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
 .collab-composer select { min-height: 28px; padding: 0 7px; color: #aeb7c5; font-size: 11px; }
+.collab-composer .modelsw { min-width: 0; }
+.collab-composer .modelsw__trigger { max-width: 220px; min-height: 28px; }
+.collab-composer-shortcut { color: #647184; font-size: 10px; white-space: nowrap; }
 .collab-composer-owner { margin-left: auto; display: flex; align-items: center; gap: 5px; color: #657285; font-size: 10px; }
 .collab-composer-row { display: flex; align-items: end; gap: 9px; }
 .collab-composer textarea { min-height: 53px; max-height: 160px; flex: 1; resize: vertical; padding: 10px 12px; line-height: 1.4; }

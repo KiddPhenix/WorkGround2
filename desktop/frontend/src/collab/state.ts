@@ -56,7 +56,7 @@ export function collabReducer(state: CollabViewState, action: CollabAction): Col
         ...state,
         ...action.state,
         status: action.state.status || "connected",
-        timeline: mergeTimeline(state.timeline, action.state.timeline || []),
+        timeline: mergeTimeline(state.timeline.filter((item) => !item.localPending), action.state.timeline || []),
         members: action.state.members || [],
         operation: undefined,
         pendingIntents: action.state.status === "connected" ? state.pendingIntents : cancelPending(state.pendingIntents),

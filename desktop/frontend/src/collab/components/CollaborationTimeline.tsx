@@ -86,9 +86,9 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
       const pending = props.pendingIntents[item.id];
       const incomingRequest = item.kind === "agent_request" && item.targetMemberId === props.selfMemberId && item.requestStatus !== "accepted" && item.requestStatus !== "rejected";
       return (
-        <article key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}`}>
+        <article key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}${item.localPending ? " collab-message--pending" : ""}`}>
           <label className="collab-message-select">
-            <input type="checkbox" checked={selected} onChange={() => props.onToggle(item.id)} aria-label={`${c("agentRespond")}: ${item.actorName}`} />
+            <input type="checkbox" checked={selected} disabled={item.localPending} onChange={() => props.onToggle(item.id)} aria-label={`${c("agentRespond")}: ${item.actorName}`} />
             <span><Check size={11} /></span>
           </label>
           <div className={`collab-avatar${item.actorAgent ? " collab-avatar--agent" : ""}`}>{item.actorAgent ? <Bot size={17} /> : item.actorName.slice(0, 1)}</div>
@@ -103,7 +103,7 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
             {item.kind === "agent_command" ? <AgentRunCard item={item} c={c} /> : <p>{item.text}</p>}
             {item.referenceIds.length > 0 && <div className="collab-references"><Reply size={12} />{c("references", { n: item.referenceIds.length })}</div>}
             {item.kind === "agent_request" && !incomingRequest && <div className="collab-request-state">{c("waitingOwner")}</div>}
-            <div className="collab-message-actions">
+            {!item.localPending && <div className="collab-message-actions">
               <button type="button" aria-label={c("reply")} title={c("reply")} onClick={() => props.onReply(item)}><Reply size={14} /><span>{c("reply")}</span></button>
               <button type="button" aria-label={c("agree")} title={c("agree")} onClick={() => props.onAgree(item)}><ThumbsUp size={14} /><span>{c("agree")}</span></button>
               <button type="button" aria-label={c("agentRespond")} title={props.agentBusy ? c("agentBusy") : c("agentRespond")} disabled={props.agentBusy} onClick={() => props.onAgent(item)}><Bot size={14} /><span>{c("agentRespond")}</span></button>
@@ -111,7 +111,7 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
                 <summary aria-label={c("moreActions")} title={c("moreActions")}><MoreHorizontal size={15} /></summary>
                 <div><button type="button" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAgreeRun(item)}><Bot size={13} />{c("agreeRun")}</button></div>
               </details>
-            </div>
+            </div>}
             {incomingRequest && <div className="collab-request-actions">
               <button type="button" className="collab-action-accent" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>
               <button type="button" disabled={props.agentBusy} title={props.agentBusy ? c("agentBusy") : undefined} onClick={() => {
