@@ -411,6 +411,14 @@ async function runTests(): Promise<void> {
     eq(live?.querySelectorAll('.wg2-er-live-copy').length, 2, 'live output: duplicated copies form a seamless marquee');
     contains(live?.textContent ?? '', task.progress ?? '', 'live output: model output is visible');
     ok(host.querySelector('[role="progressbar"]') === null, 'live output: textual output is not parsed as numeric progress');
+    ok(
+      /\.wg2-er-live-track\s*\{[^}]*animation:\s*wg2-er-live-marquee 18s linear forwards/s.test(cssText),
+      'live output: marquee plays once and holds its final frame',
+    );
+    ok(
+      !/\.wg2-er-live-track\s*\{[^}]*animation:[^;}]*infinite/s.test(cssText),
+      'live output: marquee does not loop',
+    );
     const info = host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${task.id}"]`);
     ok(info !== null, 'live output: hidden Session info action renders');
     await interact(() => info?.click());

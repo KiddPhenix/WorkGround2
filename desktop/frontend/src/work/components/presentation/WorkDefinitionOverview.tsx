@@ -82,8 +82,11 @@ function currentInputs(inputs: readonly WorkInput[], runId?: string): Map<string
   for (const input of inputs) {
     if (!input.customSpec && (!runId || input.runId !== runId)) continue;
     const previous = result.get(input.specId);
-    if (!previous || input.revision > previous.revision
-      || (input.revision === previous.revision && input.updatedAt > previous.updatedAt)) {
+    // Revisions belong to one input identity, not to the shared spec. A later
+    // task can request the same spec with revision 0 after an earlier task has
+    // submitted revision 2; the later request is the value users must answer.
+    if (!previous || input.updatedAt > previous.updatedAt
+      || (input.updatedAt === previous.updatedAt && input.revision > previous.revision)) {
       result.set(input.specId, input);
     }
   }

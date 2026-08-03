@@ -19,7 +19,6 @@ const bridgeSource = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
 const typesSource = readFileSync(resolve(testDir, "../lib/types.ts"), "utf8");
 const availabilitySource = readFileSync(resolve(testDir, "../components/work/WorkAvailabilitySurface.tsx"), "utf8");
 const workCardSource = readFileSync(resolve(testDir, "../components/work/WorkCard.tsx"), "utf8");
-const linkedSessionSource = readFileSync(resolve(testDir, "../components/work/LinkedSessionCard.tsx"), "utf8");
 const sessionSurfaceSource = readFileSync(resolve(testDir, "../components/SessionSurface.tsx"), "utf8");
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
@@ -142,14 +141,29 @@ ok(
   "Bridge 与前端类型包含原地转换及 Work Session 恢复字段",
 );
 ok(
-  linkedSessionSource.includes("void handleNavigate()")
-    && linkedSessionSource.includes("autoTargetRef.current === target"),
-  "点击任务信息翻到背面后自动且幂等地打开关联会话",
+  workCardSource.includes("onOpenSession(v2Task.sessionRef, context)")
+    && appSource.includes('kind: "linked-session"')
+    && bridgeSource.includes("OpenLinkedSession(scope:")
+    && bridgeSource.includes("ActivateLinkedSession(scope:"),
+  "点击任务信息直接打开独立隐藏会话，不再依赖 Work 背面",
 );
 ok(
-  appSource.includes('activeTab?.sessionKind === "work" && activeTab.topicId')
-    && appSource.includes('handleOpenTopic(activeTab.scope, activeTab.workspaceRoot || "", activeTab.topicId, sessionRef.sessionPath)'),
-  "隐藏的 Task Session 复用所属 Work tab/topic 打开，不依赖普通会话列表",
+  appSource.includes("targetSessionPath: sessionRef.sessionPath")
+    && appSource.includes("handleReturnToLinkedWork")
+    && sessionSurfaceSource.includes('data-testid="session-work-return"')
+    && sessionSurfaceSource.includes("workReturn.onReturn"),
+  "隐藏会话保留来源 Work，并提供明确返回入口",
+);
+ok(
+  appSource.includes("currentPath && currentPath !== originPath && currentPath !== targetPath")
+    && !appSource.includes('currentPath === originPath && activeTab?.sessionKind === "work"'),
+  "进入隐藏会话的过渡帧不会提前清除返回上下文",
+);
+ok(
+  appSource.includes("linkedSessionOwnerWorkID(activeTab?.sessionSource)")
+    && appSource.includes('tab.sessionKind === "work" && tab.workId === linkedOwnerWorkID')
+    && appSource.includes("storedLinkedWorkReturn ??"),
+  "返回上下文丢失时可从隐藏会话来源反查仍保留的 Work tab",
 );
 
 const workNode: ProjectNode = {

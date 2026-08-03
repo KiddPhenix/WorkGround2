@@ -8,7 +8,6 @@ import { createRoot, type Root } from 'react-dom/client';
 import { WorkCard, workStartDraftRequestID } from '../components/work/WorkCard';
 import type { WorkCardBackSlots } from '../components/work/WorkCardBack';
 import { WorkFlipControl } from '../components/work/WorkFlipControl';
-import { LinkedSessionCard } from '../components/work/LinkedSessionCard';
 import { LocaleProvider } from '../lib/i18n';
 import { WorkControllerAdapter, type WorkControllerPort, type WorkPortSubscription, type WorkUIPreference } from '../work/controller';
 import { DefinitionDiff } from '../work/components/v2';
@@ -3194,27 +3193,26 @@ async function testV2RunningTaskOpensProjectedHiddenSession(): Promise<void> {
   }));
 
   const openedPaths: string[] = [];
+  let openedTaskID = '';
   const mounted = await mount(
     <WorkCard
       workID={workID}
       port={new TestPort()}
-      resolveSessionSurface={(ref, context) => (
-        <LinkedSessionCard
-          sessionRef={ref}
-          context={context}
-          onNavigate={async (target) => { openedPaths.push(target.sessionPath); }}
-        />
-      )}
+      onOpenSession={async (target, context) => {
+        openedPaths.push(target.sessionPath);
+        openedTaskID = context.taskId;
+      }}
     />,
   );
   const info = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-info-${taskID}"]`);
   ok(Boolean(info), 'running V2 task: info is available from projected SessionRef');
   await interact(() => info?.click());
   await settle(30);
-  eq(openedPaths.length, 1, 'running V2 task: info click requests the hidden Session automatically');
-  eq(openedPaths[0], sessionRef.sessionPath, 'running V2 task: automatic navigation keeps the SessionRef path');
-  ok(Boolean(mounted.host.querySelector('[data-testid="linked-session-card"]')), 'running V2 task: linked surface preserves Task context while navigation settles');
-  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'back', 'running V2 task: opens inside the Work back face');
+  eq(openedPaths.length, 1, 'running V2 task: info click opens the hidden Session directly');
+  eq(openedPaths[0], sessionRef.sessionPath, 'running V2 task: direct navigation keeps the SessionRef path');
+  eq(openedTaskID, taskID, 'running V2 task: direct navigation keeps task context');
+  eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'running V2 task: direct navigation does not flip the Work');
+  ok(!mounted.host.querySelector('[data-testid="linked-session-card"]'), 'running V2 task: linked Session is not rendered on the Work back face');
   ok(!useWorkUIStore.getState().selectionByWork[workID], 'running V2 task: does not fabricate a legacy Attempt selection');
   await mounted.cleanup();
 }

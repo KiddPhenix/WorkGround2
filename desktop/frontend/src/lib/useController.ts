@@ -2468,6 +2468,25 @@ export function useController() {
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
 
+  const openLinkedSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => {
+    const meta = await app.OpenLinkedSession(scope, workspaceRoot, topicId, sessionPath);
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    const prevState = statesRef.current.get(meta.id);
+    const isNewTab = !prevState;
+    const preserveCachedHistory = hasReusableCachedTranscript(prevState, meta.sessionPath);
+    setActiveTabId(meta.id);
+    activeTabIdRef.current = meta.id;
+    confirmBackendActiveTab(meta.id);
+    dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
+    void loadSessionDataForTab(meta.id, isNewTab, "open-topic", {
+      placeholderItems: isNewTab ? prevItems : undefined,
+      preserveCachedHistory,
+      sessionPath: meta.sessionPath,
+    });
+    seedOpenTabRuntime(meta);
+    return meta;
+  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
+
   const openChannelTab = useCallback(async (path: string): Promise<TabMeta> => {
     const meta = await app.OpenChannelSession(path);
     const prevState = statesRef.current.get(meta.id);
@@ -2498,6 +2517,21 @@ export function useController() {
     confirmBackendActiveTab(meta.id);
     dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
     void loadSessionDataForTab(meta.id, true, "open-topic", { placeholderItems: prevItems });
+    seedOpenTabRuntime(meta);
+    return meta;
+  }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
+
+  const activateLinkedSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => {
+    const meta = await app.ActivateLinkedSession(scope, workspaceRoot, topicId, sessionPath);
+    const prevItems = activeTabIdRef.current ? statesRef.current.get(activeTabIdRef.current)?.items : undefined;
+    for (const id of Array.from(statesRef.current.keys())) {
+      if (id !== meta.id) statesRef.current.delete(id);
+    }
+    setActiveTabId(meta.id);
+    activeTabIdRef.current = meta.id;
+    confirmBackendActiveTab(meta.id);
+    dispatchTo(meta.id, { type: "optimistic_meta", meta: metaFromTab(meta, statesRef.current.get(meta.id)?.meta) });
+    void loadSessionDataForTab(meta.id, true, "open-topic", { placeholderItems: prevItems, sessionPath: meta.sessionPath });
     seedOpenTabRuntime(meta);
     return meta;
   }, [confirmBackendActiveTab, dispatchTo, loadSessionDataForTab, seedOpenTabRuntime]);
@@ -2577,7 +2611,7 @@ export function useController() {
     loadOlderHistory,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc, pinMemory,
-    switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, activateTopic, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
+    switchTab, openProjectTab, openGlobalTab, openTopicSession, openLinkedSession, ensureBlankTab, activateTopic, activateLinkedSession, ensureBlankSurface, closeTab, reorderTabs, retryTabStartup,
     syncActiveTab: syncActiveTabFromBackend,
   };
 }

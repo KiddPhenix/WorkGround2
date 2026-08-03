@@ -287,14 +287,15 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 		}
 	}
 
-	// Execute capability preflights for RequiredCapabilities that the model
-	// lacks natively and for which no direct tool is available. Each preflight
-	// calls request_help through the standard tool path so the result (success
-	// or failure) is visible in session history. Failures are non-blocking:
-	// the main model sees the error and can attempt direct search or report
-	// the failure.
+	// Execute capability preflights for RequiredCapabilities before the first
+	// provider call. Each preflight calls request_help through the standard tool
+	// path so the result (success or failure) is visible in session history and
+	// provides a host-driven capability evidence path for the V2 completion gate.
+	// Native web_search models are the only exception: they produce
+	// evidence directly in assistant text.
+	// Failures are non-blocking: the main model sees the error and can
+	// attempt direct search or report the failure.
 	if len(input.RequiredCapabilities) > 0 {
-		directToolNames := directToolNamesFromController(ctrl)
 		var capTerminal []string
 		seen := make(map[string]bool, len(input.RequiredCapabilities))
 		for _, cap := range input.RequiredCapabilities {
@@ -313,12 +314,6 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 
 			// Model has native support — no preflight needed.
 			if hasNativeCapability(a.profile.NativeCapabilities, cap) {
-				continue
-			}
-
-			// A direct tool is available (e.g. web_search or mcp__*__web_search)
-			// that the model can call itself.
-			if hasDirectCapabilityTool(directToolNames, cap) {
 				continue
 			}
 
@@ -969,12 +964,18 @@ func taskSuccessfulCapabilities(messages []provider.Message, nativeCapabilities 
 		}
 	}
 	capabilities := make(map[string]bool)
-	finalText := taskLastAssistantText(messages)
 	for _, capability := range nativeCapabilities {
 		switch strings.ToLower(strings.TrimSpace(capability)) {
 		case "web_search":
-			if strings.Contains(finalText, "https://") || strings.Contains(finalText, "http://") {
-				capabilities["web_search"] = true
+			// Scan all assistant messages, not just the last one: a
+			// quality-pass turn may replace the final response without
+			// repeating URLs from the initial delivery.
+			for _, message := range messages {
+				if message.Role == provider.RoleAssistant &&
+					(strings.Contains(message.Content, "https://") || strings.Contains(message.Content, "http://")) {
+					capabilities["web_search"] = true
+					break
+				}
 			}
 		}
 	}
@@ -1118,34 +1119,6 @@ func hasNativeCapability(native []string, cap string) bool {
 		}
 	}
 	return false
-}
-
-// hasDirectCapabilityTool reports whether any tool named `cap` or
-// `mcp__*__cap` is among the provided tool names, making a preflight
-// unnecessary because the model can call it directly.
-func hasDirectCapabilityTool(toolNames []string, cap string) bool {
-	cap = strings.ToLower(cap)
-	for _, name := range toolNames {
-		lower := strings.ToLower(strings.TrimSpace(name))
-		if lower == cap || strings.HasSuffix(lower, "__"+cap) {
-			return true
-		}
-	}
-	return false
-}
-
-// directToolNamesFromController extracts the current tool names from a
-// Controller's combined (builtin + MCP) registry.
-func directToolNamesFromController(ctrl *Controller) []string {
-	if ctrl == nil {
-		return nil
-	}
-	entries := ctrl.ToolContractEntries()
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = e.Name
-	}
-	return names
 }
 
 // capabilityPreflightCallID generates a stable, deterministic tool-call ID

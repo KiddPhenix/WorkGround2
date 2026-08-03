@@ -632,6 +632,7 @@ func (a *App) restoreOrBuildTabs() {
 			}
 			tab.SessionPath = strings.TrimSpace(entry.SessionPath)
 			tab.SessionID = strings.TrimSpace(entry.SessionID)
+			tab.pendingRemoteInput = entry.PendingRemoteInput
 			a.trackSession(tab)
 			tab.ReadOnly = entry.ReadOnly
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}

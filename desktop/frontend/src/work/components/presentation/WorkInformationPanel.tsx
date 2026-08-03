@@ -139,6 +139,7 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   const dropTargetRef = useRef<HTMLDivElement>(null);
   const editAuthorityRef = useRef<{ inputId: string; revision: number } | null>(null);
   const pendingSnapshotRef = useRef<{ scope: string; ids: Set<string> } | null>(null);
+  const openedAttentionRef = useRef('');
   const suggestingRef = useRef(new Set<string>());
   const currentInputsRef = useRef<WorkInput[]>([]);
 
@@ -176,6 +177,15 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     [definition.inputSpecs, effectiveRunId, inputs, specs, taskById, taskOrder],
   );
   const pending = useMemo(() => currentInputs.filter((input) => !isDone(input)), [currentInputs]);
+  const waitingTaskIds = useMemo(
+    () => new Set(tasks.filter((task) => task.state === 'waiting_input').map((task) => task.id)),
+    [tasks],
+  );
+  const attentionPending = useMemo(
+    () => pending.filter((input) => waitingTaskIds.has(input.taskId)),
+    [pending, waitingTaskIds],
+  );
+  const attentionScope = `${workId}\u0000${effectiveRunId}\u0000${definition.revision}\u0000${[...waitingTaskIds].sort().join('\u0000')}`;
   const readyForStartInputs = useMemo(
     () => currentInputs.filter((input) => input.state === 'draft' && input.readyForStart === true),
     [currentInputs],
@@ -276,6 +286,11 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
     const previous = pendingSnapshotRef.current;
     pendingSnapshotRef.current = { scope, ids };
     const activeInputId = panelState.activeInputId;
+    if (!activeInputId && attentionPending.length > 0 && openedAttentionRef.current !== attentionScope) {
+      openedAttentionRef.current = attentionScope;
+      setPanel(workId, { closed: false, activeInputId: attentionPending[0].id });
+      return;
+    }
     if (
       !previous
       || previous.scope !== scope
@@ -292,6 +307,8 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   }, [
     definition.revision,
     effectiveRunId,
+    attentionPending,
+    attentionScope,
     panelState.activeInputId,
     panelState.afterSubmit,
     panelState.closed,
@@ -423,7 +440,9 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   if (definition.inputSpecs.length === 0 && currentInputs.length === 0 && !onAddCustom) return null;
 
   const openInput = (specId: string) => {
-    const input = currentInputs.find((candidate) => candidate.specId === specId);
+    const input = attentionPending.find((candidate) => candidate.specId === specId)
+      ?? pending.find((candidate) => candidate.specId === specId)
+      ?? currentInputs.find((candidate) => candidate.specId === specId);
     if (!input) return;
     setAutoStartPaused(true);
     setAdding(false);

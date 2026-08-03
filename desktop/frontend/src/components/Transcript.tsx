@@ -143,6 +143,7 @@ export function Transcript({
     scrollRef,
     scrollEl,
     stick,
+    scrollbarDragging,
     onScroll,
     isAtBottom,
     smoothScrollTo,
@@ -210,11 +211,11 @@ export function Transcript({
   const contentVersion = useMemo(() => scrollVersion(items), [items]);
   useEffect(() => {
     if (items.length === 0) return;
-    if (!stick.current) return;
+    if (!stick.current || scrollbarDragging.current) return;
     if (autoScrollFrame.current !== null) return;
     autoScrollFrame.current = requestAnimationFrame(() => {
       autoScrollFrame.current = null;
-      if (!stick.current) return;
+      if (!stick.current || scrollbarDragging.current) return;
       const el = scrollEl();
       if (el) el.scrollTop = el.scrollHeight;
     });

@@ -151,6 +151,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-21
 
+### Desktop 异步派发握手
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/ai_collaboration_skill/scripts/dispatch.ps1`
+- Summary: 外部 Session 创建后立即返回可查询的 starting SessionID；启动期任务持久排队，Controller Ready 后幂等重放；Worker 派发与 PollOnly 拆成短命令快照。
+- Keywords: desktop new, starting, pendingRemoteInput, SessionID, PollOnly, dispatch.ps1
+- Source: verified-by-search
+- Updated: 2026-08-03
+
 ### Desktop 会话来源标识
 - Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/session_source_test.go`
 - Summary: desktop new 新建会话写入 sessionSource=cli；复用既有会话不重分类，Desktop 接管会清除 CLI 来源；侧栏按 sessionSource/channel/titleSource 渲染来源标签。

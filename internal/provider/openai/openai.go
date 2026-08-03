@@ -77,12 +77,23 @@ func New(cfg provider.Config) (provider.Provider, error) {
 	case protocol == "none":
 		effort = ""
 	case deepseek:
-		switch effort {
-		case "", "off": // "off" is a retired level (disabled thinking); fall back to the default depth
-			effort = "high"
-		case "high", "max":
+		switch {
+		case isDeepSeekFlashModel(cfg.Model):
+			switch effort {
+			case "", "off": // "off" is a retired level (disabled thinking); fall back to the default depth
+				effort = "high"
+			case "low", "high", "max":
+			default:
+				return nil, fmt.Errorf("openai: provider %q uses DeepSeek Flash; effort must be low, high, or max", name)
+			}
 		default:
-			return nil, fmt.Errorf("openai: provider %q uses DeepSeek thinking; effort must be high or max", name)
+			switch effort {
+			case "", "off": // "off" is a retired level (disabled thinking); fall back to the default depth
+				effort = "high"
+			case "high", "max":
+			default:
+				return nil, fmt.Errorf("openai: provider %q uses DeepSeek reasoning; effort must be high or max", name)
+			}
 		}
 	case minimax:
 		// M3's knob is binary. The config effort layer normalises user input

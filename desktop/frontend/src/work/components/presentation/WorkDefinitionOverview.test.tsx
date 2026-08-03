@@ -153,6 +153,47 @@ async function runTests(): Promise<void> {
   ok(host.textContent?.includes('工作结构') === false, 'omits the duplicate static structure list');
   ok(host.textContent?.includes('等待信息') === false, 'runtime state is owned by the interactive structure');
 
+  await act(async () => {
+    root.render(
+      <WorkDefinitionOverview
+        definition={definition}
+        inputs={[
+          ...inputs,
+          {
+            id: 'input-prior-task',
+            workId: 'work-1',
+            runId: 'run-current',
+            taskId: 'task-prior',
+            blockId: 'block-prior',
+            specId: 'size',
+            value: 18,
+            state: 'submitted',
+            revision: 4,
+            updatedAt: '2026-07-30T08:01:00Z',
+          },
+          {
+            id: 'input-new-request',
+            workId: 'work-1',
+            runId: 'run-current',
+            taskId: 'task-current',
+            blockId: 'block-current',
+            specId: 'size',
+            value: null,
+            state: 'requested',
+            revision: 0,
+            updatedAt: '2026-07-30T08:02:00Z',
+          },
+        ]}
+        runId="run-current"
+        tasks={tasks}
+        showStructure={false}
+        onSelectInput={() => {}}
+      />,
+    );
+  });
+  ok(host.textContent?.includes('1/2 已填写') === true, 'new task request replaces an older submitted value for the same spec');
+  ok(host.querySelector('[aria-label="填写：参与人数"]') !== null, 'new task request exposes a fill action even with a lower local revision');
+
   await act(async () => root.unmount());
   host.remove();
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);

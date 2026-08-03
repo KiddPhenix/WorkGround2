@@ -224,6 +224,7 @@ async function testFinalInputStagesUntilCountdownStart(): Promise<void> {
 async function main(): Promise<void> {
   window.localStorage.clear();
   useWorkUIStore.setState((state) => ({ ...state, cardByWork: {} }));
+  useWorkUIStore.getState().setInformationPanel('work-1', { closed: true, activeInputId: undefined });
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -274,7 +275,7 @@ async function main(): Promise<void> {
 
   ok(host.textContent?.includes('工作信息') === true, 'keeps persistent work information list');
   ok(host.textContent?.includes('0/2 已填写') === true, 'shows progress');
-  ok(host.querySelector('[role="dialog"]') === null, 'form layer starts closed');
+  ok(host.querySelector('[role="dialog"] h3')?.textContent === '活动名称', 'new waiting task reopens its first requested input after the prior panel closed');
   ok(host.querySelectorAll('.work-definition-overview__field').length === 2, 'renders each information entry');
 
   ok(host.textContent?.includes('自己推断') === false, 'removes the panel-wide inference action');

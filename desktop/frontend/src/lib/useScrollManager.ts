@@ -21,6 +21,17 @@ export function snapElementToBottom(el: Pick<HTMLElement, "scrollTop" | "scrollH
   el.scrollTop = el.scrollHeight;
 }
 
+export function isVerticalScrollbarPointer(el: HTMLElement, clientX: number, clientY: number): boolean {
+  if (el.scrollHeight <= el.clientHeight) return false;
+  const rect = el.getBoundingClientRect();
+  const scrollbarLeft = rect.left + el.clientLeft + el.clientWidth;
+  return clientX >= scrollbarLeft && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+}
+
+export function shouldAutoScroll(sticky: boolean, scrollbarDragging: boolean, force = false): boolean {
+  return !scrollbarDragging && (sticky || force);
+}
+
 export function shouldAutoScrollForQuestionChange(prev: QuestionScrollSnapshot, next: QuestionScrollSnapshot): boolean {
   if (next.count <= prev.count) return false;
   if (prev.count === 0 && prev.lastId === "") return false;
@@ -48,6 +59,7 @@ function nextFrame(): Promise<void> {
 export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const scrollbarDragging = useRef(false);
   const gsapCtx = useRef<gsap.Context | null>(null);
   const questionSnapshot = useRef<QuestionScrollSnapshot>({ count: 0, lastId: "" });
   const resizeFrame = useRef<number | null>(null);
@@ -123,18 +135,18 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const scrollToBottom = useCallback((force = false) => {
     const el = scrollEl();
     if (!el) return;
+    if (!shouldAutoScroll(stick.current, scrollbarDragging.current, force)) return;
     if (force) {
       stick.current = true;
       setIsAtBottom(true);
     }
-    if (!stick.current && !force) return;
     if (resizeFrame.current !== null) {
       cancelAnimationFrame(resizeFrame.current);
       resizeFrame.current = null;
     }
     resizeFrame.current = requestAnimationFrame(() => {
       resizeFrame.current = null;
-      if (!stick.current && !force) return;
+      if (!shouldAutoScroll(stick.current, scrollbarDragging.current, force)) return;
       if (force) {
         stick.current = true;
         setIsAtBottom(true);
@@ -155,7 +167,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   const snapToBottom = useCallback(() => {
     const el = scrollEl();
-    if (!el) return;
+    if (!el || scrollbarDragging.current) return;
     if (resizeFrame.current !== null) {
       cancelAnimationFrame(resizeFrame.current);
       resizeFrame.current = null;
@@ -189,12 +201,14 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const scrollToBottomAfterLayout = useCallback((frames = 4) => {
     for (const frame of layoutScrollFrames.current) cancelAnimationFrame(frame);
     layoutScrollFrames.current = [];
+    if (scrollbarDragging.current) return;
     snapToBottom();
     let remaining = Math.max(0, frames);
     const tick = () => {
       if (remaining <= 0) return;
       const frame = requestAnimationFrame(() => {
         layoutScrollFrames.current = layoutScrollFrames.current.filter((id) => id !== frame);
+        if (scrollbarDragging.current) return;
         snapToBottom();
         remaining -= 1;
         tick();
@@ -206,9 +220,47 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   /** Call when a new question is submitted — overrides stick state. */
   const onNewQuestion = useCallback(() => {
+    if (scrollbarDragging.current) return;
     stick.current = true;
     scrollToBottom(true);
   }, [scrollToBottom]);
+
+  // Native scrollbar drags do not change the sticky state until the thumb
+  // actually moves. Track the mouse hold separately so incoming content cannot
+  // win that race and pull the viewport back to the bottom.
+  useEffect(() => {
+    const el = scrollEl();
+    if (!el) return;
+    const endDrag = () => {
+      if (!scrollbarDragging.current) return;
+      scrollbarDragging.current = false;
+      updateBottomState(el);
+    };
+    const startDrag = (event: MouseEvent) => {
+      if (event.button !== 0 || !isVerticalScrollbarPointer(el, event.clientX, event.clientY)) return;
+      scrollbarDragging.current = true;
+      gsap.killTweensOf?.(el);
+      if (resizeFrame.current !== null) {
+        cancelAnimationFrame(resizeFrame.current);
+        resizeFrame.current = null;
+      }
+      if (repinFrame.current !== null) {
+        cancelAnimationFrame(repinFrame.current);
+        repinFrame.current = null;
+      }
+      pendingRepinHeightDelta.current = 0;
+      for (const frame of layoutScrollFrames.current) cancelAnimationFrame(frame);
+      layoutScrollFrames.current = [];
+    };
+    el.addEventListener("mousedown", startDrag);
+    window.addEventListener("mouseup", endDrag);
+    window.addEventListener("blur", endDrag);
+    return () => {
+      el.removeEventListener("mousedown", startDrag);
+      window.removeEventListener("mouseup", endDrag);
+      window.removeEventListener("blur", endDrag);
+    };
+  }, [scrollEl, updateBottomState]);
 
   /**
    * Refresh pin state on resize — call from a ResizeObserver on the container.
@@ -216,7 +268,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
   const repinIfWasPinned = useCallback(
     (containerHeightDelta: number) => {
       const el = scrollEl();
-      if (!el) return;
+      if (!el || scrollbarDragging.current) return;
       const bottomDistance = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (!stick.current && bottomDistance + containerHeightDelta >= BOTTOM_THRESHOLD_PX) return;
       stick.current = true;
@@ -228,6 +280,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
 
   const scheduleRepinIfWasPinned = useCallback(
     (containerHeightDelta: number) => {
+      if (scrollbarDragging.current) return;
       pendingRepinHeightDelta.current += containerHeightDelta;
       if (repinFrame.current !== null) return;
       repinFrame.current = requestAnimationFrame(() => {
@@ -263,6 +316,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
     scrollRef,
     scrollEl,
     stick,
+    scrollbarDragging,
     onScroll,
     isAtBottom,
     smoothScrollTo,

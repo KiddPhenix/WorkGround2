@@ -1549,7 +1549,7 @@ func TestEffortCapabilityUsesKnownModelRegistry(t *testing.T) {
 	if !cap.Supported {
 		t.Fatalf("deepseek model behind proxy should expose effort, got %+v", cap)
 	}
-	wantLevels := []string{"auto", "high", "max"}
+	wantLevels := []string{"auto", "low", "high", "max"}
 	if len(cap.Levels) != len(wantLevels) {
 		t.Fatalf("levels = %v, want %v", cap.Levels, wantLevels)
 	}
@@ -1566,6 +1566,19 @@ func TestEffortCapabilityUsesKnownModelRegistry(t *testing.T) {
 	}
 	if got, err := NormalizeEffort(e, "max"); err != nil || got != "max" {
 		t.Fatalf("NormalizeEffort(max) = %q/%v, want max/nil", got, err)
+	}
+	// Flash proxy endpoint should accept low through NormalizeEffort.
+	if got, err := NormalizeEffort(e, "low"); err != nil || got != "low" {
+		t.Fatalf("NormalizeEffort(low) = %q/%v, want low/nil", got, err)
+	}
+
+	pro := &ProviderEntry{Name: "deepseek-proxy", Kind: "openai", BaseURL: "https://proxy.example.com/v1", Model: "deepseek-v4-pro"}
+	proCap := EffortCapabilityForEntry(pro)
+	if got, want := proCap.Levels, []string{"auto", "high", "max"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Pro levels = %v, want %v", got, want)
+	}
+	if got, err := NormalizeEffort(pro, "low"); err != nil || got != "high" {
+		t.Fatalf("Pro NormalizeEffort(low) = %q/%v, want high/nil", got, err)
 	}
 }
 

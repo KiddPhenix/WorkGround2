@@ -20,7 +20,8 @@ var aiCollaborationSkillRaw embed.FS
 const (
 	aiCollaborationStart         = "<!-- WORKGROUND2_AI_COLLABORATION_BEGIN -->"
 	aiCollaborationEnd           = "<!-- WORKGROUND2_AI_COLLABORATION_END -->"
-	aiCollaborationBundleVersion = "1.0.1"
+	aiCollaborationBundleVersion = "1.1.0"
+	aiCollaborationProtocol      = "desktop-async-dispatch-v2"
 )
 
 type AICollaborationInjectResult struct {
@@ -384,7 +385,7 @@ func writeManifest(skillDir string) error {
 func bundleManifestJSON() string {
 	m := manifestEntry{
 		Version:         aiCollaborationBundleVersion,
-		ProtocolVersion: "desktop-session-id-v1",
+		ProtocolVersion: aiCollaborationProtocol,
 		Files:           make(map[string]string),
 	}
 	for _, bf := range canonicalBundle {

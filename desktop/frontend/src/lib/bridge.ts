@@ -584,10 +584,12 @@ export interface AppBindings extends WailsWorkBindings {
   OpenProjectTab(workspaceRoot: string, topicID: string): Promise<TabMeta>;
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
   OpenTopicSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
+  OpenLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   CreateWorkSession(input: { scope: string; workspaceRoot: string; requestId: string; tabId?: string }): Promise<{ tabMeta: TabMeta; workView?: unknown; duplicate: boolean; error?: string; recoverable: boolean }>;
   CreateReusableWorkSession(tabID: string, input: { flowId: string; values?: Record<string, unknown>; requestId: string }): Promise<import("../work/types").CreateReusableWorkSessionResult>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
   ActivateTopic(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
+  ActivateLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   EnsureBlankSurface(scope: string, workspaceRoot: string): Promise<TabMeta>;
   SetActiveTab(tabID: string): Promise<void>;
   ReorderTabs(tabIDs: string[]): Promise<void>;
@@ -919,7 +921,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
   if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow)$/.test(method)) return `window ${method}`;
-  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|EnsureBlankTab|ActivateTopic|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
+  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
     return `nav ${method}`;
   return "";
 }
@@ -4476,6 +4478,15 @@ function makeMockApp(): AppBindings {
       mockTabs = mockTabs.map((item) => (item.id === tab.id ? active : item));
       return { ...active };
     },
+    async OpenLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string) {
+      const topic = await this.CreateTopic(scope, workspaceRoot, "");
+      const tab = scope === "project"
+        ? await this.OpenProjectTab(workspaceRoot, topic.id)
+        : await this.OpenGlobalTab(topic.id);
+      const active = { ...tab, topicId: topicID, sessionPath, sessionKind: "normal" as const, workId: undefined };
+      mockTabs = mockTabs.map((item) => (item.id === tab.id ? active : item));
+      return { ...active };
+    },
     async EnsureBlankTab(scope: string, workspaceRoot: string) {
       const targetScope = scope === "project" && workspaceRoot ? "project" : "global";
       const targetRoot = targetScope === "project" ? workspaceRoot : "";
@@ -4498,6 +4509,11 @@ function makeMockApp(): AppBindings {
         : scope === "project"
           ? await this.OpenProjectTab(workspaceRoot, topicID)
           : await this.OpenGlobalTab(topicID);
+      mockTabs = mockTabs.filter((item) => item.id === tab.id).map((item) => ({ ...item, active: true }));
+      return { ...mockTabs[0] };
+    },
+    async ActivateLinkedSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string) {
+      const tab = await this.OpenLinkedSession(scope, workspaceRoot, topicID, sessionPath);
       mockTabs = mockTabs.filter((item) => item.id === tab.id).map((item) => ({ ...item, active: true }));
       return { ...mockTabs[0] };
     },

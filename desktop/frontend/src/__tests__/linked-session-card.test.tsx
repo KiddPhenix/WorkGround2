@@ -47,20 +47,32 @@ const onNavigate = async (target: SessionRef): Promise<void> => {
 };
 
 const root = createRoot(host);
+
+// Mount: no automatic navigation.
 await act(async () => {
   root.render(<LinkedSessionCard sessionRef={sessionRef} context={context} onNavigate={onNavigate} />);
 });
-
-if (calls !== 1) throw new Error(`automatic navigation calls = ${calls}, want 1`);
-if (!host.querySelector('[data-testid="linked-session-error"]')?.textContent?.includes('injected open failure')) {
-  throw new Error('automatic navigation failure is not visible');
+if (calls !== 0) throw new Error(`mount navigation calls = ${calls}, want 0`);
+if (host.querySelector('[data-testid="linked-session-error"]')) {
+  throw new Error('mount should not show an error when no navigation is attempted');
 }
 
+// Rerender with same path: still no automatic navigation.
 await act(async () => {
   root.render(<LinkedSessionCard sessionRef={{ ...sessionRef }} context={context} onNavigate={onNavigate} />);
 });
-if (calls !== 1) throw new Error(`same-path rerender repeated automatic navigation: ${calls}`);
+if (calls !== 0) throw new Error(`rerender navigation calls = ${calls}, want 0`);
 
+// Explicit "打开关联会话" button: navigate fails, error is visible.
+await act(async () => {
+  host.querySelector<HTMLButtonElement>('[data-testid="linked-session-navigate"]')?.click();
+});
+if (calls !== 1) throw new Error(`explicit navigate calls = ${calls}, want 1`);
+if (!host.querySelector('[data-testid="linked-session-error"]')?.textContent?.includes('injected open failure')) {
+  throw new Error('explicit navigation failure is not visible');
+}
+
+// Retry button: navigate now succeeds, error is cleared.
 fail = false;
 await act(async () => {
   host.querySelector<HTMLButtonElement>('[data-testid="linked-session-retry"]')?.click();
@@ -70,4 +82,4 @@ if (host.querySelector('[data-testid="linked-session-error"]')) throw new Error(
 
 await act(async () => root.unmount());
 dom.window.close();
-process.stdout.write('\nLinkedSessionCard: 6 passed, 0 failed\n');
+process.stdout.write('\nLinkedSessionCard: 8 passed, 0 failed\n');

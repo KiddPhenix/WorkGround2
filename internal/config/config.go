@@ -1214,7 +1214,8 @@ type ProviderEntry struct {
 	// via Config.Extra. The anthropic provider reads Thinking="adaptive" to enable
 	// extended thinking and Effort ("low".."max") to tune depth. The
 	// openai-compatible provider forwards Effort as reasoning_effort for
-	// thinking-capable models; DeepSeek accepts high|max.
+	// thinking-capable models; DeepSeek V4 Flash accepts low|high|max while
+	// V4 Pro currently exposes high|max.
 	// Empty = provider default.
 	Thinking string `toml:"thinking"`
 	Effort   string `toml:"effort"`

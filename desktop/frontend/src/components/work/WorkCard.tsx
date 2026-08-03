@@ -12,7 +12,7 @@ import React, {
 import { useI18n } from '../../lib/i18n';
 import { WorkControllerAdapter, type WorkControllerPort, type WorkControllerStatus } from '../../work/controller';
 import { createWailsWorkControllerPort } from '../../work/wailsAdapter';
-import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectV2Tasks, selectV2Inputs, selectArtifactSlots, type FaceScrollState, type WorkFace } from '../../work/store';
+import { useWorkStore, useWorkUIStore, selectV2Definition, selectV2ActiveDefinition, selectV2Tasks, selectV2Inputs, selectArtifactSlots, resolveSelection, type FaceScrollState, type WorkFace } from '../../work/store';
 import type {
   BlockUpdateRequest,
   DeepLinkTarget,
@@ -95,6 +95,7 @@ export interface WorkCardProps {
   onBlockUpdate?: (request: BlockUpdateRequest) => void | Promise<void>;
   onRetry?: RetryHandler;
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
+  onOpenSession?: (sessionRef: SessionRef, context: SessionSurfaceContext) => void | Promise<void>;
   onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
   onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
   onArtifactLocate?: (intent: FileLocateIntent) => void | Promise<void>;
@@ -253,6 +254,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   onBlockUpdate,
   onRetry,
   resolveSessionSurface,
+  onOpenSession,
   onArtifactOpen,
   onArtifactDownload,
   onArtifactLocate,
@@ -687,16 +689,47 @@ export const WorkCard: React.FC<WorkCardProps> = ({
     const v2Task = v2Tasks.find((candidate) =>
       candidate.runId === runId && candidate.id === taskId && Boolean(candidate.sessionRef?.sessionPath));
     if (v2Task) {
+      if (onOpenSession && v2Task.sessionRef) {
+        const context: SessionSurfaceContext = {
+          workId: workID,
+          runId,
+          stageId: 'v2-dag',
+          taskId,
+          attemptIndex: 0,
+          sessionRef: v2Task.sessionRef,
+          readonly,
+          archived,
+        };
+        void Promise.resolve(onOpenSession(v2Task.sessionRef, context)).catch(() => undefined);
+        return;
+      }
       setTaskSessionIdentity({ runId, taskId });
       void adapter.setActiveFace(workID, 'back').catch(() => undefined);
       return;
     }
     const sel = findTaskSessionSelection(view.work, runId, taskId);
     if (!sel) return;
+    const resolved = resolveSelection(view.work, sel);
+    if (onOpenSession && resolved?.attempt?.sessionRef && resolved.stage && resolved.task) {
+      const sessionRef = resolved.attempt.sessionRef;
+      const context: SessionSurfaceContext = {
+        workId: workID,
+        runId: resolved.run.id,
+        stageId: resolved.stage.id || resolved.stage.name,
+        taskId: resolved.task.id || resolved.task.name,
+        attemptId: resolved.attempt.id,
+        attemptIndex: resolved.attempt.index,
+        sessionRef,
+        readonly,
+        archived,
+      };
+      void Promise.resolve(onOpenSession(sessionRef, context)).catch(() => undefined);
+      return;
+    }
     setTaskSessionIdentity(null);
     setSelection(workID, sel);
     void adapter.setActiveFace(workID, 'back').catch(() => undefined);
-  }, [adapter, setSelection, v2Tasks, view, workID]);
+  }, [adapter, archived, onOpenSession, readonly, setSelection, v2Tasks, view, workID]);
 
   const handleControlStart = useCallback((input: { workId: string; requestId: string }) => {
     return adapter.runWork(input);

@@ -2259,7 +2259,7 @@ func taskExecutorWithWebSearch(t *testing.T, prov provider.Provider, modelRef st
 	)
 }
 
-func TestCapabilityPreflightDirectToolSkip(t *testing.T) {
+func TestCapabilityPreflightDirectToolStillRuns(t *testing.T) {
 	prov := &taskProvider{name: "fake-provider", text: "result"}
 	fakeTool := &fakeRequestHelpTool{}
 	exec := taskExecutorWithWebSearch(t, prov, "fake/model", fakeTool)
@@ -2275,12 +2275,27 @@ func TestCapabilityPreflightDirectToolSkip(t *testing.T) {
 		t.Fatalf("state = %s", attempt.State)
 	}
 
-	// No preflight because a direct web_search tool exists.
+	// Preflight now runs regardless of direct tool presence, so a successful
+	// host-routed search records capability evidence even when the model does
+	// not call the direct tool.
 	fakeTool.mu.Lock()
-	if len(fakeTool.calls) != 0 {
-		t.Fatalf("request_help was called %d times despite direct web_search tool", len(fakeTool.calls))
+	if len(fakeTool.calls) != 1 || fakeTool.calls[0].Capability != "web_search" {
+		t.Fatalf("request_help calls = %+v, want 1 web_search preflight", fakeTool.calls)
 	}
 	fakeTool.mu.Unlock()
+
+	// web_search must appear in SuccessfulCapabilities because the preflight
+	// succeeded.
+	var found bool
+	for _, c := range attempt.SuccessfulCapabilities {
+		if c == "web_search" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("SuccessfulCapabilities = %v, want web_search", attempt.SuccessfulCapabilities)
+	}
 }
 
 func TestCapabilityPreflightDedup(t *testing.T) {
@@ -2323,5 +2338,28 @@ func TestWebFetchNotWebSearchEvidence(t *testing.T) {
 		if c == "web_search" {
 			t.Fatalf("web_fetch + URL should not produce web_search capability; got %v", caps)
 		}
+	}
+}
+
+func TestNativeSearchEvidenceSurvivesQualityPass(t *testing.T) {
+	// Two-turn session: turn 1 has native search with URLs, turn 2
+	// (quality pass) replaces the text without URLs. After the fix,
+	// native search scans all assistant messages, so turn 1 evidence
+	// survives.
+	messages := []provider.Message{
+		{Role: provider.RoleAssistant, Content: "Found at https://example.com/source — the answer is 42."},
+		{Role: provider.RoleUser, Content: "Perform the mandatory final quality pass now."},
+		{Role: provider.RoleAssistant, Content: "Corrected delivery: the answer is 42."},
+	}
+	got := taskSuccessfulCapabilities(messages, []string{"web_search"})
+	found := false
+	for _, c := range got {
+		if c == "web_search" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("native web_search with URLs should survive quality pass; got %v", got)
 	}
 }

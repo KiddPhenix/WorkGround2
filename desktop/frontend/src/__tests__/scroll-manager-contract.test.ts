@@ -1,6 +1,18 @@
 // Run: tsx src/__tests__/scroll-manager-contract.test.ts
 
-import { resolveScrollElement, shouldAutoScrollForQuestionChange, snapElementToBottom, type QuestionScrollSnapshot } from "../lib/useScrollManager";
+import { JSDOM } from "jsdom";
+import React, { useRef } from "react";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  isVerticalScrollbarPointer,
+  resolveScrollElement,
+  shouldAutoScroll,
+  shouldAutoScrollForQuestionChange,
+  snapElementToBottom,
+  useScrollManager,
+  type QuestionScrollSnapshot,
+} from "../lib/useScrollManager";
 
 let passed = 0;
 let failed = 0;
@@ -49,6 +61,68 @@ ok(resolved === workbenchHost, "workbench outer viewport is the single scroll ow
 if (resolved) snapElementToBottom(resolved);
 ok(workbenchHost.scrollTop === 960, "session restore bottom-anchors the outer viewport");
 ok(inner.scrollTop === 0, "session restore does not scroll the overflow-visible inner transcript");
+
+const scrollbarHost = {
+  clientHeight: 400,
+  clientWidth: 788,
+  clientLeft: 0,
+  scrollHeight: 1200,
+  getBoundingClientRect: () => ({ left: 0, right: 800, top: 0, bottom: 400 }),
+} as HTMLElement;
+ok(isVerticalScrollbarPointer(scrollbarHost, 795, 200), "pointer inside the vertical scrollbar starts drag protection");
+ok(!isVerticalScrollbarPointer(scrollbarHost, 600, 200), "pointer inside transcript content does not start drag protection");
+ok(!shouldAutoScroll(true, true), "streaming content cannot auto-scroll while the scrollbar is held");
+ok(!shouldAutoScroll(false, true, true), "forced new-question scrolling is also blocked during a scrollbar drag");
+ok(shouldAutoScroll(true, false), "auto-scroll resumes after release only when the viewport remains sticky");
+ok(!shouldAutoScroll(false, false), "release away from the bottom preserves the reader's position");
+
+const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", { pretendToBeVisual: true });
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.window = dom.window as unknown as Window & typeof globalThis;
+globalThis.document = dom.window.document;
+globalThis.HTMLElement = dom.window.HTMLElement;
+globalThis.MouseEvent = dom.window.MouseEvent;
+globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
+globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
+
+let manager: ReturnType<typeof useScrollManager> | null = null;
+function Harness() {
+  const hostRef = useRef<HTMLDivElement>(null);
+  manager = useScrollManager(hostRef);
+  return React.createElement("div", { ref: hostRef, "data-testid": "scroll-host" });
+}
+
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("missing root");
+const root = createRoot(rootElement);
+await act(async () => { root.render(React.createElement(Harness)); });
+const renderedHost = document.querySelector<HTMLElement>("[data-testid='scroll-host']");
+if (!renderedHost || !manager) throw new Error("scroll manager harness did not render");
+Object.defineProperties(renderedHost, {
+  clientHeight: { configurable: true, value: 400 },
+  clientWidth: { configurable: true, value: 788 },
+  scrollHeight: { configurable: true, value: 1200 },
+});
+renderedHost.getBoundingClientRect = () => ({ left: 0, right: 800, top: 0, bottom: 400 }) as DOMRect;
+
+manager.stick.current = false;
+await act(async () => {
+  renderedHost.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 795, clientY: 200 }));
+  manager?.onNewQuestion();
+});
+ok(!manager.stick.current, "new-question handler preserves non-sticky state while the native scrollbar is held");
+await act(async () => { window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); });
+ok(!manager.stick.current, "releasing away from the bottom keeps automatic following disabled");
+
+renderedHost.scrollTop = 800;
+await act(async () => {
+  renderedHost.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, clientX: 795, clientY: 200 }));
+  window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+});
+ok(manager.stick.current, "releasing at the bottom restores automatic following");
+
+await act(async () => { root.unmount(); });
+dom.window.close();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

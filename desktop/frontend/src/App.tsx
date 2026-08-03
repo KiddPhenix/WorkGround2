@@ -389,11 +389,21 @@ type SidebarImConnection = {
   allowlistMatched: boolean;
 };
 type DesktopNavigationInput =
-  | { kind: "topic"; scope: string; workspaceRoot: string; topicId: string; sessionPath?: string; runtimeHint?: ProjectTopicRuntimeHint }
+  | { kind: "topic"; scope: string; workspaceRoot: string; topicId: string; sessionPath?: string; runtimeHint?: ProjectTopicRuntimeHint; onOpened?: (tab: TabMeta) => void; onFailure?: (error: unknown) => void }
+  | { kind: "linked-session"; scope: string; workspaceRoot: string; topicId: string; sessionPath: string; onOpened?: (tab: TabMeta) => void; onFailure?: (error: unknown) => void }
   | { kind: "blank"; scope: string; workspaceRoot: string }
   | { kind: "sidebar-im"; connection: SidebarImConnection }
   | { kind: "resume-session"; session: SessionMeta; onFailure?: (error: unknown) => void };
 type PendingDesktopNavigationRequest = PendingNavigationRequest<DesktopNavigationInput>;
+type LinkedWorkReturn = {
+  scope: string;
+  workspaceRoot: string;
+  topicId: string;
+  sessionPath: string;
+  workId: string;
+  label: string;
+  targetSessionPath: string;
+};
 type SidebarImTopicSource = {
   platform: SidebarImPlatform;
   label: string;
@@ -1012,6 +1022,10 @@ function comparableSessionPath(path: string | undefined): string {
   return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
+function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
+  return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
+}
+
 function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
   const {
     state,
@@ -1055,7 +1069,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     closeTab,
     reorderTabs,
     openTopicSession,
+    openLinkedSession,
     activateTopic,
+    activateLinkedSession,
     syncActiveTab,
     ensureBlankTab,
     ensureBlankSurface,
@@ -1071,6 +1087,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const [tabOrderIds, setTabOrderIds] = useState<string[]>([]);
   const [tabRevealSignal, setTabRevealSignal] = useState(0);
   const [transcriptRevealSignal, setTranscriptRevealSignal] = useState(0);
+  const [linkedWorkReturn, setLinkedWorkReturn] = useState<LinkedWorkReturn | null>(null);
+  const [linkedWorkReturning, setLinkedWorkReturning] = useState(false);
+  const linkedWorkReturningRef = useRef(false);
   const activeTab = useMemo(
     () => tabMetas.find((tab) => tab.id === activeTabId)
       ?? tabMetas.find((tab) => tab.sessionId === activeSessionId)
@@ -2889,6 +2908,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       if (scope === "global") return openGlobalTab(topicId, runtimeHint);
       return openProjectTab(workspaceRoot, topicId, runtimeHint);
     };
+    const openLinkedTarget = (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => (
+      singleSurfaceLayout
+        ? activateLinkedSession(scope, workspaceRoot, topicId, sessionPath)
+        : openLinkedSession(scope, workspaceRoot, topicId, sessionPath)
+    );
     const openBlankTarget = async (scope: string, workspaceRoot: string): Promise<TabMeta> => {
       const root = scope === "project" ? workspaceRoot : "";
       return singleSurfaceLayout ? ensureBlankSurface(scope, root) : ensureBlankTab(scope, root);
@@ -2904,6 +2928,18 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         const openedTab = await openTopicTarget(request.scope, request.workspaceRoot, request.topicId, request.sessionPath, request.runtimeHint);
         if (!latest()) return;
         seedActiveTabMeta(openedTab);
+        request.onOpened?.(openedTab);
+        void refreshLatestTabMetas();
+        setTabRevealSignal((signal) => signal + 1);
+        setTranscriptRevealSignal((signal) => signal + 1);
+        return;
+      }
+
+      if (request.kind === "linked-session") {
+        const openedTab = await openLinkedTarget(request.scope, request.workspaceRoot, request.topicId, request.sessionPath);
+        if (!latest()) return;
+        seedActiveTabMeta(openedTab);
+        request.onOpened?.(openedTab);
         void refreshLatestTabMetas();
         setTabRevealSignal((signal) => signal + 1);
         setTranscriptRevealSignal((signal) => signal + 1);
@@ -2985,7 +3021,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     } catch (err: any) {
       if (!latest()) return;
       if (request.kind === "resume-session") request.onFailure?.(err);
-      if (request.kind === "topic" || request.kind === "blank") {
+      if (request.kind === "topic" || request.kind === "linked-session") request.onFailure?.(err);
+      if (request.kind === "topic" || request.kind === "linked-session" || request.kind === "blank") {
         console.warn("desktop navigation failed", err);
         showToast(t("history.failedOpenSession"), "error");
         void refreshLatestTabMetas();
@@ -3008,7 +3045,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         showToast(err?.message || String(err));
       }
     }
-  }, [activateTopic, closeTab, ensureBlankSurface, ensureBlankTab, openChannelTab, openGlobalTab, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
+  }, [activateLinkedSession, activateTopic, closeTab, ensureBlankSurface, ensureBlankTab, openChannelTab, openGlobalTab, openLinkedSession, openProjectTab, openTopicSession, refreshHistoryView, resumeSession, seedActiveTabMeta, showToast, singleSurfaceLayout, t]);
 
   const enqueueNavigation = useCallback((input: DesktopNavigationInput): Promise<void> => enqueueNavigationRequest(
     { seqRef: navigationSeqRef, runningRef: navigationRunningRef, pendingRef: navigationPendingRef },
@@ -3621,47 +3658,63 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     widgetEnabled,
   };
 
-  // ── Linked session navigation (for WorkCardBack resolveSessionSurface) ─
+  // ── Linked task Session navigation with an explicit Work return path ─
   const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
-    const targetPath = comparableSessionPath(sessionRef.sessionPath);
-    const existingTab = tabMetas.find((tab) => comparableSessionPath(tab.sessionPath) === targetPath);
-    if (existingTab) {
-      await handleOpenRuntimeTab(existingTab);
-      return;
+    if (activeTab?.sessionKind !== "work" || !activeTab.workId || !activeTab.topicId || !activeTab.sessionPath) {
+      throw new Error("当前隐藏会话没有可恢复的 Work 来源。");
     }
-    const topicTarget = runtimeTabMetas.find((tab) => comparableSessionPath(tab.sessionPath) === targetPath);
-    if (topicTarget?.topicId) {
-      await handleOpenTopic(topicTarget.scope, topicTarget.workspaceRoot || "", topicTarget.topicId, sessionRef.sessionPath);
-      return;
-    }
-    // Task sessions are intentionally hidden from the normal session list, so
-    // they usually have no topic metadata of their own. Reuse the owning Work
-    // tab/topic and replace only its active transcript; this keeps the WorkCard
-    // mounted and lets the back face render the linked SessionSurface directly.
-    if (activeTab?.sessionKind === "work" && activeTab.topicId) {
-      await handleOpenTopic(activeTab.scope, activeTab.workspaceRoot || "", activeTab.topicId, sessionRef.sessionPath);
-      return;
-    }
+    const origin: LinkedWorkReturn = {
+      scope: activeTab.scope,
+      workspaceRoot: activeTab.workspaceRoot || "",
+      topicId: activeTab.topicId,
+      sessionPath: activeTab.sessionPath,
+      workId: activeTab.workId,
+      label: activeTab.sessionDisplayTitle || activeTab.topicTitle || "Work",
+      targetSessionPath: sessionRef.sessionPath,
+    };
     const noFailure = Symbol("no linked navigation failure");
     let failure: unknown | typeof noFailure = noFailure;
     await enqueueNavigation({
-      kind: "resume-session",
+      kind: "linked-session",
+      scope: origin.scope,
+      workspaceRoot: origin.workspaceRoot,
+      topicId: origin.topicId,
+      sessionPath: sessionRef.sessionPath,
+      onOpened: () => setLinkedWorkReturn(origin),
       onFailure: (error) => { failure = error; },
-      session: {
-        path: sessionRef.sessionPath,
-        preview: sessionRef.preview || "",
-        turns: sessionRef.turnCount,
-        createdAt: 0,
-        lastActivityAt: 0,
-        modTime: 0,
-        current: false,
-        open: false,
-        scope: activeTab?.scope || (state.meta?.workspaceRoot ? "project" : "global"),
-        workspaceRoot: activeTab?.workspaceRoot || state.meta?.workspaceRoot || "",
-      },
     });
     if (failure !== noFailure) throw failure;
-  }, [activeTab?.scope, activeTab?.workspaceRoot, enqueueNavigation, handleOpenRuntimeTab, handleOpenTopic, runtimeTabMetas, state.meta?.workspaceRoot, tabMetas]);
+  }, [activeTab, enqueueNavigation]);
+
+  const handleReturnToLinkedWork = useCallback(async (target?: LinkedWorkReturn | null): Promise<void> => {
+    const destination = target ?? linkedWorkReturn;
+    if (!destination || linkedWorkReturningRef.current) return;
+    linkedWorkReturningRef.current = true;
+    setLinkedWorkReturning(true);
+    try {
+      await enqueueNavigation({
+        kind: "topic",
+        scope: destination.scope,
+        workspaceRoot: destination.workspaceRoot,
+        topicId: destination.topicId,
+        sessionPath: destination.sessionPath,
+        onOpened: () => setLinkedWorkReturn(null),
+      });
+    } finally {
+      linkedWorkReturningRef.current = false;
+      setLinkedWorkReturning(false);
+    }
+  }, [enqueueNavigation, linkedWorkReturn]);
+
+  useEffect(() => {
+    if (!linkedWorkReturn) return;
+    const currentPath = comparableSessionPath(activeTab?.sessionPath);
+    const originPath = comparableSessionPath(linkedWorkReturn.sessionPath);
+    const targetPath = comparableSessionPath(linkedWorkReturn.targetSessionPath);
+    if (currentPath && currentPath !== originPath && currentPath !== targetPath) {
+      setLinkedWorkReturn(null);
+    }
+  }, [activeTab?.sessionPath, linkedWorkReturn]);
 
   const resolveSessionSurface = useCallback((sessionRef: SessionRef, context: SessionSurfaceContext): ReactNode => {
     const targetPath = comparableSessionPath(sessionRef.sessionPath);
@@ -3684,6 +3737,23 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [activeTab?.sessionPath, handleNavigateToLinkedSession, sessionSurfaceProps, state.historyResolvedPath]);
 
   const showWorkSurface = activeTab?.sessionKind === "work";
+  const storedLinkedWorkReturn = linkedWorkReturn
+    && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedWorkReturn.targetSessionPath)
+    ? linkedWorkReturn
+    : null;
+  const linkedOwnerWorkID = linkedSessionOwnerWorkID(activeTab?.sessionSource);
+  const linkedOwnerTab = linkedOwnerWorkID
+    ? tabMetas.find((tab) => tab.sessionKind === "work" && tab.workId === linkedOwnerWorkID && Boolean(tab.sessionPath))
+    : undefined;
+  const activeLinkedWorkReturn = storedLinkedWorkReturn ?? (linkedOwnerTab && activeTab?.sessionPath ? {
+    scope: linkedOwnerTab.scope,
+    workspaceRoot: linkedOwnerTab.workspaceRoot || "",
+    topicId: linkedOwnerTab.topicId,
+    sessionPath: linkedOwnerTab.sessionPath!,
+    workId: linkedOwnerWorkID,
+    label: linkedOwnerTab.sessionDisplayTitle || linkedOwnerTab.topicTitle || "Work",
+    targetSessionPath: activeTab.sessionPath,
+  } : null);
   const showReadyWork = showWorkSurface && workEnabled === true && !workConfigFailed && workCapable === true;
   const workUnavailable = workEnabled === false || workConfigFailed || workCapabilityFailed;
   // ── Dev-only: ?uiFixture=iris seeds stores with chapter 16 data ────────
@@ -3926,6 +3996,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
                     onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
                     resolveSessionSurface={resolveSessionSurface}
+                    onOpenSession={handleNavigateToLinkedSession}
                     backSlots={{
                       surface: ({ readonly, archived }) => (
                         <SessionSurface
@@ -3977,7 +4048,14 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 onRetry={workEnabled === false ? undefined : handleRetryActiveWork}
               />
             ) : (
-              <SessionSurface {...sessionSurfaceProps} />
+              <SessionSurface
+                {...sessionSurfaceProps}
+                workReturn={activeLinkedWorkReturn ? {
+                  label: activeLinkedWorkReturn.label,
+                  pending: linkedWorkReturning,
+                  onReturn: () => { void handleReturnToLinkedWork(activeLinkedWorkReturn); },
+                } : undefined}
+              />
             )}
 
             {/* AddOnWorkbench overlay */}

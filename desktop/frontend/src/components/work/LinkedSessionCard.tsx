@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 
 import type { SessionRef, SessionSurfaceContext } from '../../work/types';
 
@@ -15,7 +15,6 @@ export const LinkedSessionCard: React.FC<LinkedSessionCardProps> = ({
 }) => {
   const [navigating, setNavigating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const autoTargetRef = useRef('');
 
   const handleNavigate = useCallback(async () => {
     setNavigating(true);
@@ -28,13 +27,6 @@ export const LinkedSessionCard: React.FC<LinkedSessionCardProps> = ({
       setNavigating(false);
     }
   }, [onNavigate, sessionRef]);
-
-  useEffect(() => {
-    const target = sessionRef.sessionPath.trim();
-    if (!target || autoTargetRef.current === target) return;
-    autoTargetRef.current = target;
-    void handleNavigate();
-  }, [handleNavigate, sessionRef.sessionPath]);
 
   return (
     <div

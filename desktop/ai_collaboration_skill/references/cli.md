@@ -10,7 +10,7 @@ Check Desktop reachability:
 & $wg desktop workspaces
 ```
 
-Create a new session and dispatch asynchronously. The name is display-only; every `desktop new` creates a fresh SessionID:
+Create a new session and dispatch asynchronously. The name is display-only; every `desktop new` creates a fresh SessionID. A starting controller accepts the prompt into a durable queue, so this command returns without waiting for model or controller startup:
 
 ```powershell
 $dispatch = @(& $wg desktop new --workspace '<repo-root>' --session-name '<display-name>' --yolo --no-wait '<packet>' 2>&1)
@@ -18,10 +18,17 @@ $sessionID = ($dispatch | Select-String '^SessionID:\s*(.+)$' | Select-Object -F
 if (-not $sessionID) { throw 'desktop new did not return SessionID' }
 ```
 
-Read that exact session state:
+The bundled dispatch script wraps the same command and returns one immediate structured acknowledgement:
 
 ```powershell
-& $wg desktop status --session $sessionID --json
+& '<skill-root>\scripts\dispatch.ps1' -Workspace '<repo-root>' -SessionName '<display-name>' -PacketFile '<utf8-packet>' -CliPath $wg
+# {"outcome":"dispatched","sessionId":"..."}
+```
+
+Read one bounded snapshot for that exact session. Repeat only when the outcome is `running`; `starting=true` means the prompt is accepted and waiting for its Controller:
+
+```powershell
+& '<skill-root>\scripts\dispatch.ps1' -Workspace '<repo-root>' -PollOnly -SessionID $sessionID -CliPath $wg
 ```
 
 Continue an existing session without creating another one:
@@ -86,6 +93,6 @@ If `answer` or `approve` reports an invalid or expired ID, immediately run `desk
 
 If `pendingPrompt=true` but `pendingInteraction` is absent, read status again once. If it persists, run `desktop focus`, preserve the session, and expose the missing interaction. Do not guess an ID or submit another prompt over the blocked turn.
 
-After a dispatch timeout, inspect `desktop status --session <id> --json` and focus Desktop if needed. Keep the existing SessionID; do not issue another `desktop new` while its state is ambiguous.
+After a caller timeout, run a fresh `PollOnly` snapshot or inspect `desktop status --session <id> --json` and focus Desktop if needed. Keep the existing SessionID; do not issue another `desktop new` while its state is ambiguous. `startup_failed` and `submit_failed` retain the same ID and queued prompt for retry.
 
 For an empty or unchanged session, verify the returned session path and repository diff. If the session exists and the original prompt was never submitted, use `desktop submit --session ...`; otherwise preserve evidence and report failed delegation.

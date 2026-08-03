@@ -1025,6 +1025,167 @@ func TestRemoteAPITargetStartingStatusHasStableSchema(t *testing.T) {
 	}
 }
 
+func TestRemoteAPISessionNewReturnsStartingSessionWithoutWaiting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "starting.jsonl")
+	tab := &WorkspaceTab{
+		ID:          "starting",
+		SessionID:   "session-starting",
+		Scope:       "project",
+		SessionPath: path,
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}
+	app.trackSession(tab)
+	api := &remoteAPI{
+		app: app,
+		newSession: func(scope, workspace, name string) (*WorkspaceTab, string, bool, error) {
+			if scope != "project" || workspace != filepath.Dir(path) || name != "worker" {
+				t.Fatalf("create args = %q %q %q", scope, workspace, name)
+			}
+			return tab, path, true, nil
+		},
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"workspace":   filepath.Dir(path),
+		"sessionName": "worker",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/new", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	api.handleSessionNew(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["sessionId"] != tab.SessionID || got["starting"] != true || got["ready"] != false || got["mode"] != "starting" {
+		t.Fatalf("new response = %+v, want addressable starting session", got)
+	}
+}
+
+func TestRemoteAPISessionSubmitQueuesUntilControllerReady(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	dir := t.TempDir()
+	path := agent.NewSessionPath(dir, "queued")
+	tab := &WorkspaceTab{
+		ID:            "queued",
+		SessionID:     "session-queued",
+		Scope:         "project",
+		WorkspaceRoot: root,
+		SessionPath:   path,
+		TopicID:       "topic-queued",
+		TopicTitle:    "Queued",
+		disabledMCP:   map[string]ServerView{},
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}, activeTabID: tab.ID}
+	app.trackSession(tab)
+	api := &remoteAPI{app: app}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"sessionId":"session-queued","prompt":"run after startup"}`))
+	rec := httptest.NewRecorder()
+	api.handleSessionSubmit(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("submit status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var accepted map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&accepted); err != nil {
+		t.Fatal(err)
+	}
+	if accepted["queued"] != true || accepted["starting"] != true || accepted["sessionId"] != tab.SessionID {
+		t.Fatalf("queued response = %+v", accepted)
+	}
+	if tab.pendingRemoteInput != "run after startup" {
+		t.Fatalf("pending input = %q", tab.pendingRemoteInput)
+	}
+	stored := loadTabsFile()
+	if len(stored.Tabs) != 1 || stored.Tabs[0].PendingRemoteInput != "run after startup" {
+		t.Fatalf("persisted queue = %+v", stored.Tabs)
+	}
+	rec = httptest.NewRecorder()
+	api.handleSessionSubmit(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"sessionId":"session-queued","prompt":"run after startup"}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same queued submit status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	api.handleSessionSubmit(rec, httptest.NewRequest(http.MethodPost, "/api/v1/session/submit", bytes.NewBufferString(`{"sessionId":"session-queued","prompt":"replace task"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("different queued submit status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{{Role: provider.RoleSystem, Content: "sys"}})
+	ag := agent.New(remoteReplyProvider{}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{
+		Runner:        ag,
+		Executor:      ag,
+		SystemPrompt:  "sys",
+		Label:         "queued",
+		WorkspaceRoot: root,
+		SessionDir:    dir,
+		SessionPath:   path,
+		Sink:          event.Discard,
+	})
+	defer ctrl.Close()
+	app.mu.Lock()
+	tab.Ctrl = ctrl
+	tab.Ready = true
+	app.mu.Unlock()
+	app.drainRemoteSubmit(tab)
+
+	waitForControllerIdle(t, ctrl)
+	waitForFile(t, path, "run after startup")
+	app.mu.RLock()
+	pending := tab.pendingRemoteInput
+	submitErr := tab.remoteSubmitErr
+	app.mu.RUnlock()
+	if pending != "" || submitErr != "" {
+		t.Fatalf("queue after drain: pending=%q err=%q", pending, submitErr)
+	}
+}
+
+func TestRemoteAPIStartingSessionReportsStartupFailure(t *testing.T) {
+	tab := &WorkspaceTab{
+		ID:                 "failed",
+		SessionID:          "session-failed",
+		Scope:              "project",
+		SessionPath:        filepath.Join(t.TempDir(), "failed.jsonl"),
+		Ready:              true,
+		StartupErr:         "provider unavailable",
+		pendingRemoteInput: "preserved task",
+	}
+	app := &App{tabs: map[string]*WorkspaceTab{tab.ID: tab}}
+	app.trackSession(tab)
+	got := (&remoteAPI{app: app}).sessionResponseForTab(tab, "ok")
+	if got["mode"] != "startup_failed" || got["startupError"] != "provider unavailable" || got["queued"] != true {
+		t.Fatalf("startup failure status = %+v", got)
+	}
+	if got["foregroundActive"] != false || got["activeRuntimeWork"] != false {
+		t.Fatalf("startup failure must be terminal and retryable: %+v", got)
+	}
+}
+
+func TestRemoteInputSubmittedDetectsPersistedAcceptedTurn(t *testing.T) {
+	sess := &agent.Session{}
+	sess.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "accepted task"},
+	})
+	ag := agent.New(stubProvider{}, tool.NewRegistry(), sess, agent.Options{}, event.Discard)
+	ctrl := control.New(control.Options{Executor: ag, Label: "recovery"})
+	defer ctrl.Close()
+	if !remoteInputSubmitted(ctrl, "accepted task") {
+		t.Fatal("persisted accepted turn was not detected")
+	}
+	if remoteInputSubmitted(ctrl, "different task") {
+		t.Fatal("different input was incorrectly treated as accepted")
+	}
+}
+
 func TestRemoteAPIStatusRequiresKnownSessionID(t *testing.T) {
 	api := &remoteAPI{app: &App{tabs: map[string]*WorkspaceTab{}}}
 	for _, target := range []struct {

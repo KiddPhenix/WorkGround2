@@ -29,7 +29,7 @@ type modelReasoningCapability struct {
 }
 
 var modelReasoningCapabilities = map[string]modelReasoningCapability{
-	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
+	"deepseek-v4-flash": {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"low", "high", "max"}, Default: "high"},
 	"deepseek-v4-pro":   {Protocol: ReasoningProtocolDeepSeek, Levels: []string{"high", "max"}, Default: "high"},
 }
 
@@ -103,6 +103,19 @@ func NormalizeEffort(e *ProviderEntry, raw string) (string, error) {
 	}
 	switch ReasoningProtocolForEntry(e) {
 	case ReasoningProtocolDeepSeek:
+		if cap, ok := resolvedModelReasoningCapability(e); ok {
+			if containsString(cap.Levels, level) {
+				return level, nil
+			}
+			switch level {
+			case "low", "medium":
+				return "high", nil
+			case "xhigh":
+				return "max", nil
+			default:
+				return "", fmt.Errorf("usage: /effort auto|%s", strings.Join(cap.Levels, "|"))
+			}
+		}
 		switch level {
 		case "high", "max":
 			return level, nil

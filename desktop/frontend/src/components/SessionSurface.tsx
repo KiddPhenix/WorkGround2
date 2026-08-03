@@ -11,7 +11,7 @@ import { SessionBackground } from './SessionBackground';
 import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
 import { SessionStatusIndicators } from './SessionStatusIndicators';
 import { AddOnLauncherButton } from './desktop-ui/IrisInfoComponents';
-import { PanelRight, Command } from 'lucide-react';
+import { ArrowLeft, PanelRight, Command } from 'lucide-react';
 
 import type {
   CollaborationMode,
@@ -101,6 +101,11 @@ export interface SessionSurfaceProps {
   headerTitle: string;
   irisFixtureActive: boolean;
   sidebarImDetailConnection: { title: string } | null;
+  workReturn?: {
+    label: string;
+    pending: boolean;
+    onReturn: () => void;
+  };
 
   // Context
   contextPercent: number;
@@ -211,6 +216,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   headerTitle,
   irisFixtureActive,
   sidebarImDetailConnection,
+  workReturn,
   contextPercent,
   runtimeMode,
   foregroundActive,
@@ -273,6 +279,19 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
                 <PanelRight size={15} aria-hidden="true" />
               </button>
             </Tooltip>
+          )}
+          {workReturn && (
+            <button
+              type="button"
+              className="session-header__work-return"
+              data-testid="session-work-return"
+              disabled={workReturn.pending}
+              aria-label={`返回 ${workReturn.label}`}
+              onClick={workReturn.onReturn}
+            >
+              <ArrowLeft size={16} aria-hidden="true" />
+              <span>{workReturn.pending ? '正在返回…' : '返回 Work'}</span>
+            </button>
           )}
           <h1 className="session-header__title" title={headerTitle}>
             {headerTitle}

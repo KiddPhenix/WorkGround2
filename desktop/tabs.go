@@ -55,6 +55,9 @@ type WorkspaceTab struct {
 	Ready               bool               // true once boot.Build completes
 	StartupErr          string             // build error, surfaced to the frontend
 	StartupErrLeaseHeld bool               // true when StartupErr can be retried after a session lease releases
+	pendingRemoteInput  string             // durable CLI input accepted while Ctrl is still starting
+	remoteSubmitErr     string             // last queued-submit error; cleared by a successful retry
+	remoteSubmitting    bool               // transient drain guard; protected by App.mu
 	sink                *tabEventSink      // routes events with this tab's ID
 	buildCancel         context.CancelFunc // cancels in-flight boot for tabs removed before Ready
 	buildGeneration     uint64             // identifies the current in-flight build
@@ -461,6 +464,8 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 		Ready:               tab.Ready,
 		StartupErr:          tab.StartupErr,
 		StartupErrLeaseHeld: tab.StartupErrLeaseHeld,
+		pendingRemoteInput:  tab.pendingRemoteInput,
+		remoteSubmitErr:     tab.remoteSubmitErr,
 		sink:                tab.sink,
 		ActivityStatus:      tab.ActivityStatus,
 		readTelemetry:       readTelemetry,
@@ -534,6 +539,11 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	target.Label = source.Label
 	target.Ready = true
 	clearTabStartupError(target)
+	if target.pendingRemoteInput == "" {
+		target.pendingRemoteInput = source.pendingRemoteInput
+		target.remoteSubmitErr = source.remoteSubmitErr
+	}
+	target.remoteSubmitting = false
 	target.ActivityStatus = source.ActivityStatus
 	target.model = source.model
 	target.effort = cloneStringPtr(source.effort)
@@ -576,6 +586,7 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 		if tab.Ctrl != nil {
 			tab.Ctrl.ReplayPendingPrompts()
 		}
+		a.drainRemoteSubmit(tab)
 		return true
 	}
 
@@ -611,6 +622,7 @@ func (a *App) attachExistingSessionRuntime(tab *WorkspaceTab, path string, wails
 	if tab.Ctrl != nil {
 		tab.Ctrl.ReplayPendingPrompts()
 	}
+	a.drainRemoteSubmit(tab)
 	return true
 }
 
@@ -1613,6 +1625,21 @@ func (a *App) openGlobalTabInactive(topicID string) (TabMeta, error) {
 }
 
 func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionPath string, activate bool) (TabMeta, error) {
+	return a.openSessionTabWithActivation(scope, workspaceRoot, topicID, sessionPath, activate, true, false)
+}
+
+// openLinkedSessionTabWithActivation opens a concrete task Session without
+// reusing another tab merely because it belongs to the same topic. A Work tab
+// and its hidden task Sessions share topic context but are distinct navigation
+// surfaces, so rebinding the Work tab would destroy the user's return path.
+// Completed task Sessions open as read-only previews: starting another full
+// Controller would contend with history loading on the same Session file and
+// make the transcript wait behind model/MCP startup.
+func (a *App) openLinkedSessionTabWithActivation(scope, workspaceRoot, topicID, sessionPath string, activate bool) (TabMeta, error) {
+	return a.openSessionTabWithActivation(scope, workspaceRoot, topicID, sessionPath, activate, false, true)
+}
+
+func (a *App) openSessionTabWithActivation(scope, workspaceRoot, topicID, sessionPath string, activate, reuseTopic, previewOnly bool) (TabMeta, error) {
 	actualRoot := workspaceRoot
 	if scope == "global" {
 		actualRoot = globalWorkspaceRoot()
@@ -1626,6 +1653,9 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 			tab.Scope = scope
 			tab.WorkspaceRoot = actualRoot
 			tab.TopicID = topicID
+			if previewOnly {
+				tab.ReadOnly = true
+			}
 			if title := topicTitleForTab(scope, workspaceRoot, topicID); strings.TrimSpace(title) != "" {
 				tab.TopicTitle = title
 			}
@@ -1662,6 +1692,9 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 			}
 			if sessionRuntimeKey(tab.currentSessionPath()) == targetKey {
 				var sessionToClear string
+				if previewOnly {
+					tab.ReadOnly = true
+				}
 				if activate {
 					a.activeTabID = tab.ID
 					sessionToClear = strings.TrimSpace(tab.currentSessionPath())
@@ -1679,8 +1712,11 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 		}
 	}
 
-	for _, tab := range a.tabs {
-		if tabMatchesTopicTarget(tab, scope, workspaceRoot, topicID) {
+	if reuseTopic {
+		for _, tab := range a.tabs {
+			if !tabMatchesTopicTarget(tab, scope, workspaceRoot, topicID) {
+				continue
+			}
 			var sessionToClear string
 			if activate {
 				a.activeTabID = tab.ID
@@ -1732,9 +1768,17 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 		TopicID:       topicID,
 		TopicTitle:    topicTitle,
 		SessionPath:   sessionPath,
+		ReadOnly:      previewOnly,
+		Ready:         previewOnly,
 		disabledMCP:   map[string]ServerView{},
 	}
 	applyTabSessionProfile(tab, profile)
+	if previewOnly {
+		if model, ok := agent.LoadSessionModel(sessionPath); ok {
+			tab.model = model
+			tab.Label = model
+		}
+	}
 	tab.sink = &tabEventSink{tabID: tabID, app: a}
 
 	a.tabs[tabID] = tab
@@ -1746,7 +1790,11 @@ func (a *App) openTopicTabWithActivation(scope, workspaceRoot, topicID, sessionP
 	meta := a.tabMeta(tab, tab.ID == a.activeTabID)
 	a.mu.Unlock()
 
-	a.startTabControllerBuild(tab)
+	if previewOnly {
+		a.trackSession(tab)
+	} else {
+		a.startTabControllerBuild(tab)
+	}
 	if scope == "project" {
 		a.emitProjectTreeChanged()
 	}
@@ -1789,6 +1837,29 @@ func (a *App) OpenTopicSession(scope, workspaceRoot, topicID, sessionPath string
 	return a.openTopicTab(scope, workspaceRoot, topicID, validPath)
 }
 
+// OpenLinkedSession opens a hidden task Session as its own visible surface.
+// It never rebinds the owning Work tab solely because both share a topic.
+func (a *App) OpenLinkedSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
+	scope = strings.TrimSpace(scope)
+	if scope != "project" {
+		scope = "global"
+		workspaceRoot = ""
+	}
+	if scope == "project" {
+		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+		if workspaceRoot == "" {
+			return TabMeta{}, fmt.Errorf("workspaceRoot is required")
+		}
+		saveWorkspace(workspaceRoot)
+		_ = addProject(workspaceRoot, "")
+	}
+	_, validPath, err := a.sessionDirForPath(sessionPath)
+	if err != nil {
+		return TabMeta{}, err
+	}
+	return a.openLinkedSessionTabWithActivation(scope, workspaceRoot, topicID, validPath, true)
+}
+
 // ActivateTopic opens a topic into the single visible conversation surface used
 // by layouts without a tab strip. It delegates the actual open/reuse behavior to
 // the classic tab path, then prunes every non-active visible tab so historical
@@ -1810,6 +1881,17 @@ func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (
 		return TabMeta{}, err
 	}
 	return a.keepOnlyVisibleTab(meta.ID)
+}
+
+// ActivateLinkedSession is the single-surface counterpart of
+// OpenLinkedSession. The owning Work remains in the visible tab set so the
+// sidebar and explicit return path stay recoverable while the linked Session
+// is active.
+func (a *App) ActivateLinkedSession(scope, workspaceRoot, topicID, sessionPath string) (TabMeta, error) {
+	a.singleSurfaceMu.Lock()
+	defer a.singleSurfaceMu.Unlock()
+
+	return a.OpenLinkedSession(scope, workspaceRoot, topicID, sessionPath)
 }
 
 // EnsureBlankSurface mirrors EnsureBlankTab for no-tab-strip layouts: after
@@ -2943,6 +3025,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	clearTabStartupError(tab)
 	keepBuildContext = true
 	a.mu.Unlock()
+	a.drainRemoteSubmit(tab)
 	a.emitReady(wailsCtx, tab.ID)
 }
 
@@ -4087,19 +4170,20 @@ type desktopProjectFile struct {
 }
 
 type desktopTabEntry struct {
-	ID               string  `json:"id"`
-	SessionID        string  `json:"sessionId,omitempty"`
-	Scope            string  `json:"scope"`
-	WorkspaceRoot    string  `json:"workspaceRoot"`
-	TopicID          string  `json:"topicId"`
-	SessionPath      string  `json:"sessionPath,omitempty"`
-	ReadOnly         bool    `json:"readOnly,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	Effort           *string `json:"effort,omitempty"`
-	TokenMode        string  `json:"tokenMode,omitempty"`
-	Mode             string  `json:"mode,omitempty"`
-	Goal             string  `json:"goal,omitempty"`
-	ToolApprovalMode string  `json:"toolApprovalMode,omitempty"`
+	ID                 string  `json:"id"`
+	SessionID          string  `json:"sessionId,omitempty"`
+	Scope              string  `json:"scope"`
+	WorkspaceRoot      string  `json:"workspaceRoot"`
+	TopicID            string  `json:"topicId"`
+	SessionPath        string  `json:"sessionPath,omitempty"`
+	ReadOnly           bool    `json:"readOnly,omitempty"`
+	Model              string  `json:"model,omitempty"`
+	Effort             *string `json:"effort,omitempty"`
+	TokenMode          string  `json:"tokenMode,omitempty"`
+	Mode               string  `json:"mode,omitempty"`
+	Goal               string  `json:"goal,omitempty"`
+	ToolApprovalMode   string  `json:"toolApprovalMode,omitempty"`
+	PendingRemoteInput string  `json:"pendingRemoteInput,omitempty"`
 }
 
 type desktopTabsFile struct {
@@ -4156,19 +4240,20 @@ func (a *App) saveTabsCollectLocked() (string, []desktopTabEntry, string, uint64
 	for _, id := range a.orderedTabIDsLocked() {
 		if tab := a.tabs[id]; tab != nil {
 			entries = append(entries, desktopTabEntry{
-				ID:               tab.ID,
-				SessionID:        tab.SessionID,
-				Scope:            tab.Scope,
-				WorkspaceRoot:    tab.WorkspaceRoot,
-				TopicID:          tab.TopicID,
-				SessionPath:      tab.currentSessionPath(),
-				ReadOnly:         tab.ReadOnly,
-				Model:            tab.model,
-				Effort:           cloneStringPtr(tab.effort),
-				TokenMode:        persistedTabTokenMode(currentTabTokenMode(tab)),
-				Mode:             persistedTabMode(currentTabMode(tab)),
-				Goal:             persistedTabGoal(tab),
-				ToolApprovalMode: persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
+				ID:                 tab.ID,
+				SessionID:          tab.SessionID,
+				Scope:              tab.Scope,
+				WorkspaceRoot:      tab.WorkspaceRoot,
+				TopicID:            tab.TopicID,
+				SessionPath:        tab.currentSessionPath(),
+				ReadOnly:           tab.ReadOnly,
+				Model:              tab.model,
+				Effort:             cloneStringPtr(tab.effort),
+				TokenMode:          persistedTabTokenMode(currentTabTokenMode(tab)),
+				Mode:               persistedTabMode(currentTabMode(tab)),
+				Goal:               persistedTabGoal(tab),
+				ToolApprovalMode:   persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
+				PendingRemoteInput: tab.pendingRemoteInput,
 			})
 		}
 	}
@@ -6622,7 +6707,19 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		seenRuntimePaths[sessionKey] = true
 		info := sessionInfos[sessionKey]
-		if isWorkTaskSessionSource(info.SessionSource) {
+		sessionSource := strings.TrimSpace(info.SessionSource)
+		if sessionSource == "" {
+			sessionSource = tabRuntimeSource(tab)
+		}
+		// The project session cache can briefly lag a newly-created Work task
+		// session. Its sidecar remains the authoritative identity, so consult it
+		// before projecting an open runtime into the general Session list.
+		if sessionSource == "" {
+			if meta, ok, err := agent.LoadBranchMeta(sessionPath); err == nil && ok {
+				sessionSource = strings.TrimSpace(meta.SessionSource)
+			}
+		}
+		if isWorkTaskSessionSource(sessionSource) {
 			return
 		}
 		label := runtimeSessionTreeLabel(tab, info, sessionTitles[sessionKey])
@@ -6653,7 +6750,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
 			sessionPath:    sessionPath,
 			label:          label,
-			sessionSource:  strings.TrimSpace(info.SessionSource),
+			sessionSource:  sessionSource,
 			channel:        strings.TrimSpace(info.Channel),
 			channelLabel:   strings.TrimSpace(info.ChannelLabel),
 			turns:          info.Turns,

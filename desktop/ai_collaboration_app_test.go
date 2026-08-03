@@ -168,6 +168,29 @@ func TestAICollaborationPromptDeclaresSessionIDSemantics(t *testing.T) {
 	}
 }
 
+func TestBundledSkillDeclaresImmediateDispatchAndBoundedPolling(t *testing.T) {
+	skill := bundleFile(t, "SKILL.md").content
+	cli := bundleFile(t, "references/cli.md").content
+	dispatch := bundleFile(t, "scripts/dispatch.ps1").content
+	for _, want := range []string{
+		"immediate `dispatched` SessionID",
+		"Each call returns one bounded status snapshot",
+		"starting",
+		"startup_failed",
+		"submit_failed",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Fatalf("bundled skill missing async dispatch contract %q", want)
+		}
+	}
+	if !strings.Contains(cli, `"outcome":"dispatched"`) || !strings.Contains(cli, "Repeat only when the outcome is `running`") {
+		t.Fatalf("CLI reference missing dispatch/poll split:\n%s", cli)
+	}
+	if !strings.Contains(dispatch, "Write-Outcome -Outcome 'dispatched'") || !strings.Contains(dispatch, "Write-Outcome -Outcome 'running'") {
+		t.Fatal("dispatch script missing immediate acknowledgement or bounded snapshot")
+	}
+}
+
 func TestAICollaborationPromptDoesNotContainMetaContract(t *testing.T) {
 	prompt := aiCollaborationPrompt(`D:\wg.exe`)
 
@@ -587,7 +610,7 @@ func TestManifestJSONIsValid(t *testing.T) {
 	if err := json.Unmarshal(data, &entry); err != nil {
 		t.Fatal(err)
 	}
-	if entry.ProtocolVersion != "desktop-session-id-v1" {
+	if entry.ProtocolVersion != aiCollaborationProtocol {
 		t.Fatalf("unexpected protocol version %q", entry.ProtocolVersion)
 	}
 }

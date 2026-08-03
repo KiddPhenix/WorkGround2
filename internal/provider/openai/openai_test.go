@@ -549,6 +549,7 @@ func TestBuildRequestDeepSeekThinking(t *testing.T) {
 		wantThinking  string
 		wantReasoning string
 	}{
+		{name: "low", effort: "low", wantThinking: "enabled", wantReasoning: "low"},
 		{name: "high", effort: "high", wantThinking: "enabled", wantReasoning: "high"},
 		{name: "max", effort: "max", wantThinking: "enabled", wantReasoning: "max"},
 	} {
@@ -683,6 +684,28 @@ func TestNewDeepSeekThinkingDefaultsAndValidation(t *testing.T) {
 	}
 	if got := p.(*client).effort; got != "high" {
 		t.Fatalf("retired effort=off should fall back to high, got %q", got)
+	}
+}
+
+func TestNewDeepSeekFlashLowEffort(t *testing.T) {
+	// Flash model accepts low effort.
+	p, err := New(provider.Config{
+		Name: "flash", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash",
+		Extra: map[string]any{"effort": "low"},
+	})
+	if err != nil {
+		t.Fatalf("Flash New low: %v", err)
+	}
+	if got := p.(*client).effort; got != "low" {
+		t.Fatalf("Flash effort = %q, want low", got)
+	}
+
+	// Pro model still rejects low.
+	if _, err := New(provider.Config{
+		Name: "pro", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro",
+		Extra: map[string]any{"effort": "low"},
+	}); err == nil {
+		t.Fatal("Pro should reject low effort")
 	}
 }
 

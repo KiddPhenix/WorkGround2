@@ -108,7 +108,8 @@ function Invoke-WorkGround2 {
     try {
         $ErrorActionPreference = 'Continue'
         $lines = @(& $script:ResolvedCli @Arguments 2>&1 | ForEach-Object { $_.ToString() })
-        $code = $LASTEXITCODE
+        $exitCodeVariable = Get-Variable -Name LASTEXITCODE -ErrorAction SilentlyContinue
+        $code = if ($null -eq $exitCodeVariable) { 0 } else { $exitCodeVariable.Value }
     }
     finally {
         $ErrorActionPreference = $previousErrorPreference
@@ -298,6 +299,10 @@ if ($PSCmdlet.ParameterSetName -eq 'Dispatch') {
         }
     }
     $SessionID = $sessionIDs[0]
+    Write-Outcome -Outcome 'dispatched' -ExitCode 0 -Fields @{
+        sessionId = $SessionID
+        message = 'Task accepted; use PollOnly with this SessionID for status snapshots.'
+    }
 }
 elseif ([string]::IsNullOrWhiteSpace($SessionID)) {
     Write-Outcome -Outcome 'invalid_argument' -ExitCode 2 -Fields @{
@@ -306,102 +311,109 @@ elseif ([string]::IsNullOrWhiteSpace($SessionID)) {
     }
 }
 
-$deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-$lastStatus = $null
-do {
-    $status = Read-Status -TargetSessionID $SessionID
-    $lastStatus = $status
+$status = Read-Status -TargetSessionID $SessionID
 
-    $hasForegroundActive = Has-Property $status 'foregroundActive'
-    $hasRunning = Has-Property $status 'running'
-    if (($hasForegroundActive -and $status.foregroundActive -isnot [bool]) -or
-        (-not $hasForegroundActive -and (-not $hasRunning -or $status.running -isnot [bool])) -or
-        ($hasRunning -and $status.running -isnot [bool]) -or
-        -not (Has-Property $status 'pendingPrompt') -or $status.pendingPrompt -isnot [bool]) {
-        Write-Outcome -Outcome 'empty_session' -ExitCode 3 -Fields @{
-            message = 'Status requires boolean foregroundActive (or legacy running) and pendingPrompt fields.'
-            path = if (Has-Property $status 'path') { [string]$status.path } else { '' }
-        }
+$hasForegroundActive = Has-Property $status 'foregroundActive'
+$hasRunning = Has-Property $status 'running'
+if (($hasForegroundActive -and $status.foregroundActive -isnot [bool]) -or
+    (-not $hasForegroundActive -and (-not $hasRunning -or $status.running -isnot [bool])) -or
+    ($hasRunning -and $status.running -isnot [bool]) -or
+    -not (Has-Property $status 'pendingPrompt') -or $status.pendingPrompt -isnot [bool]) {
+    Write-Outcome -Outcome 'empty_session' -ExitCode 3 -Fields @{
+        message = 'Status requires boolean foregroundActive (or legacy running) and pendingPrompt fields.'
+        path = if (Has-Property $status 'path') { [string]$status.path } else { '' }
     }
+}
 
-    $foregroundActive = if ($hasForegroundActive) { [bool]$status.foregroundActive } else { [bool]$status.running }
-    $running = if ($hasRunning) { [bool]$status.running } else { $foregroundActive }
-    $backgroundOnly = if ((Has-Property $status 'backgroundOnly') -and $status.backgroundOnly -is [bool]) {
-        [bool]$status.backgroundOnly
-    }
-    else {
-        $false
-    }
+$foregroundActive = if ($hasForegroundActive) { [bool]$status.foregroundActive } else { [bool]$status.running }
+$running = if ($hasRunning) { [bool]$status.running } else { $foregroundActive }
+$backgroundOnly = if ((Has-Property $status 'backgroundOnly') -and $status.backgroundOnly -is [bool]) {
+    [bool]$status.backgroundOnly
+}
+else {
+    $false
+}
 
-    $path = if (Has-Property $status 'path') { [string]$status.path } else { '' }
-    $hasInteraction = Has-Property $status 'pendingInteraction'
-    if ($hasInteraction -and $null -ne $status.pendingInteraction) {
-        $interactionError = Validate-Interaction -Interaction $status.pendingInteraction
-        if ($null -ne $interactionError) {
-            Write-Outcome -Outcome 'malformed_interaction' -ExitCode 3 -Fields @{
-                message = $interactionError
-                path = $path
-                pendingInteraction = $status.pendingInteraction
-            }
-        }
-        Write-Outcome -Outcome 'interaction_required' -ExitCode 0 -Fields @{
-            sessionId = $SessionID
+$path = if (Has-Property $status 'path') { [string]$status.path } else { '' }
+$hasInteraction = Has-Property $status 'pendingInteraction'
+if ($hasInteraction -and $null -ne $status.pendingInteraction) {
+    $interactionError = Validate-Interaction -Interaction $status.pendingInteraction
+    if ($null -ne $interactionError) {
+        Write-Outcome -Outcome 'malformed_interaction' -ExitCode 3 -Fields @{
+            message = $interactionError
             path = $path
-            foregroundActive = $foregroundActive
-            running = $running
-            backgroundOnly = $backgroundOnly
-            pendingPrompt = $status.pendingPrompt
             pendingInteraction = $status.pendingInteraction
         }
     }
+    Write-Outcome -Outcome 'interaction_required' -ExitCode 0 -Fields @{
+        sessionId = $SessionID
+        path = $path
+        foregroundActive = $foregroundActive
+        running = $running
+        backgroundOnly = $backgroundOnly
+        pendingPrompt = $status.pendingPrompt
+        pendingInteraction = $status.pendingInteraction
+    }
+}
 
-    if ($status.pendingPrompt) {
-        Write-Outcome -Outcome 'interaction_missing' -ExitCode 3 -Fields @{
-            sessionId = $SessionID
-            message = 'pendingPrompt is true but pendingInteraction is absent.'
-            path = $path
-            foregroundActive = $foregroundActive
-            running = $running
-            backgroundOnly = $backgroundOnly
-            pendingPrompt = $status.pendingPrompt
+if ($status.pendingPrompt) {
+    Write-Outcome -Outcome 'interaction_missing' -ExitCode 3 -Fields @{
+        sessionId = $SessionID
+        message = 'pendingPrompt is true but pendingInteraction is absent.'
+        path = $path
+        foregroundActive = $foregroundActive
+        running = $running
+        backgroundOnly = $backgroundOnly
+        pendingPrompt = $status.pendingPrompt
+    }
+}
+
+if ((Has-Property $status 'startupError') -and -not [string]::IsNullOrWhiteSpace([string]$status.startupError)) {
+    Write-Outcome -Outcome 'startup_failed' -ExitCode 3 -Fields @{
+        sessionId = $SessionID
+        path = $path
+        startupError = [string]$status.startupError
+        queued = if (Has-Property $status 'queued') { $status.queued } else { $false }
+    }
+}
+
+if ((Has-Property $status 'submitError') -and -not [string]::IsNullOrWhiteSpace([string]$status.submitError)) {
+    Write-Outcome -Outcome 'submit_failed' -ExitCode 3 -Fields @{
+        sessionId = $SessionID
+        path = $path
+        submitError = [string]$status.submitError
+        queued = if (Has-Property $status 'queued') { $status.queued } else { $false }
+    }
+}
+
+if (-not $foregroundActive -and -not $status.pendingPrompt) {
+    if ([string]::IsNullOrWhiteSpace($path)) {
+        Write-Outcome -Outcome 'empty_session' -ExitCode 3 -Fields @{
+            message = 'The active session completed without a session path.'
         }
     }
-
-    if (-not $foregroundActive -and -not $status.pendingPrompt) {
-        if ([string]::IsNullOrWhiteSpace($path)) {
-            Write-Outcome -Outcome 'empty_session' -ExitCode 3 -Fields @{
-                message = 'The active session completed without a session path.'
-            }
-        }
-        Write-Outcome -Outcome 'completed' -ExitCode 0 -Fields @{
-            sessionId = $SessionID
-            path = $path
-            foregroundActive = $foregroundActive
-            running = $running
-            backgroundOnly = $backgroundOnly
-            pendingPrompt = $status.pendingPrompt
-            mode = if (Has-Property $status 'mode') { [string]$status.mode } else { '' }
-            report = if (Has-Property $status 'report') { $status.report } else { $null }
-        }
+    Write-Outcome -Outcome 'completed' -ExitCode 0 -Fields @{
+        sessionId = $SessionID
+        path = $path
+        foregroundActive = $foregroundActive
+        running = $running
+        backgroundOnly = $backgroundOnly
+        pendingPrompt = $status.pendingPrompt
+        mode = if (Has-Property $status 'mode') { [string]$status.mode } else { '' }
+        report = if (Has-Property $status 'report') { $status.report } else { $null }
     }
+}
 
-    if ([DateTime]::UtcNow -lt $deadline) {
-        Start-Sleep -Seconds $PollSeconds
-    }
-} while ([DateTime]::UtcNow -lt $deadline)
-
-$timeoutPath = if ($null -ne $lastStatus -and (Has-Property $lastStatus 'path')) { [string]$lastStatus.path } else { '' }
-$timeoutHasForeground = $null -ne $lastStatus -and (Has-Property $lastStatus 'foregroundActive') -and $lastStatus.foregroundActive -is [bool]
-$timeoutHasRunning = $null -ne $lastStatus -and (Has-Property $lastStatus 'running') -and $lastStatus.running -is [bool]
-$timeoutForeground = if ($timeoutHasForeground) { [bool]$lastStatus.foregroundActive } elseif ($timeoutHasRunning) { [bool]$lastStatus.running } else { $null }
-Write-Outcome -Outcome 'timeout' -ExitCode 4 -Fields @{
+Write-Outcome -Outcome 'running' -ExitCode 0 -Fields @{
     sessionId = $SessionID
-    message = 'Polling timed out; the session was preserved and desktop new was not retried.'
-    path = $timeoutPath
-    foregroundActive = $timeoutForeground
-    running = if ($timeoutHasRunning) { [bool]$lastStatus.running } else { $timeoutForeground }
-    backgroundOnly = if ($null -ne $lastStatus -and (Has-Property $lastStatus 'backgroundOnly') -and $lastStatus.backgroundOnly -is [bool]) { [bool]$lastStatus.backgroundOnly } else { $false }
-    pendingPrompt = if ($null -ne $lastStatus -and (Has-Property $lastStatus 'pendingPrompt')) { $lastStatus.pendingPrompt } else { $null }
+    path = $path
+    foregroundActive = $foregroundActive
+    running = $running
+    backgroundOnly = $backgroundOnly
+    pendingPrompt = $status.pendingPrompt
+    starting = if (Has-Property $status 'starting') { $status.starting } else { $false }
+    queued = if (Has-Property $status 'queued') { $status.queued } else { $false }
+    mode = if (Has-Property $status 'mode') { [string]$status.mode } else { '' }
 }
 }
 catch {

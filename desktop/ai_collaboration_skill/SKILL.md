@@ -16,8 +16,9 @@ Even when WorkGround2 is explicitly requested, install, create, or update Skills
 3. Do only enough inspection to define outcome, scope, constraints, and acceptance; do not pre-solve work the worker can inspect locally.
 4. Build a bounded UTF-8 packet, preferably under 1200 tokens. Avoid repeating AGENTS.md or repository background.
 5. Require WorkGround2 to avoid unrelated changes, secrets, commits, staging, pushes, and releases.
-6. Use the current repository root and a display-only session name, pass the runtime AGENTS `CLI` value as `-CliPath`, then run `scripts/dispatch.ps1` and preserve its returned SessionID.
-7. Parallelize only independent packets with unambiguous session routing. Exit code 0 means dispatched, not completed.
+6. Use the current repository root and a display-only session name, pass the runtime AGENTS `CLI` value as `-CliPath`, then run `scripts/dispatch.ps1` and preserve its immediate `dispatched` SessionID.
+7. Poll with `scripts/dispatch.ps1 -PollOnly -SessionID <id>`. Each call returns one bounded status snapshot; repeat only while the outcome is `running`.
+8. Parallelize only independent packets with unambiguous session routing. Exit code 0 from dispatch means accepted, not completed.
 
 ## Interactions
 
@@ -28,14 +29,14 @@ When polling returns `pendingInteraction`:
 3. For `approval`, inspect tool, subject, reason, and authorization before allowing or denying.
 4. Ask the user only when current instructions cannot determine a safe choice.
 5. Use the exact commands in `references/cli.md`.
-6. After answering or approving, run the dispatch script in `PollOnly` mode with the same SessionID.
+6. After answering or approving, run the dispatch script in `PollOnly` mode with the same SessionID; repeat snapshots only while it reports `running`.
 7. If the interaction command fails, re-read status and never retry a stale ID blindly.
 8. Expose missing, malformed, expired, or unknown interaction states explicitly.
 
 ## Completion
 
-Finish when `foregroundActive=false` (fall back to `running=false`), `pendingPrompt=false`, and no interaction remains. `backgroundOnly` does not block worker completion.
+Finish when `PollOnly` returns `completed`. A `starting` snapshot is still active even when the Controller is not ready; `startup_failed` and `submit_failed` preserve the SessionID and queued input for explicit retry or recovery. `backgroundOnly` does not block worker completion.
 
 Use the returned, size-limited `report`. Inspect `git diff --stat` first, then only scoped diffs; run acceptance validation once. Read full files, transcripts, or logs only when validation fails. Repair only incomplete in-scope work and treat unchanged targets or empty sessions as failed delegation.
 
-On timeout or ambiguous failure, preserve the session, inspect status, and avoid repeating `desktop new`. Load `references/cli.md` only for interaction handling, troubleshooting, or session recovery.
+On timeout or ambiguous failure, preserve the session, inspect status with the same SessionID, and avoid repeating `desktop new`. Load `references/cli.md` only for interaction handling, troubleshooting, or session recovery.

@@ -8,14 +8,18 @@ import (
 )
 
 func newClient(t *testing.T, baseURL, effort string) *client {
+	return newClientWithModel(t, baseURL, "m", effort)
+}
+
+func newClientWithModel(t *testing.T, baseURL, model, effort string) *client {
 	t.Helper()
 	extra := map[string]any{}
 	if effort != "" {
 		extra["effort"] = effort
 	}
-	p, err := New(provider.Config{Name: "p", BaseURL: baseURL, Model: "m", APIKey: "k", Extra: extra})
+	p, err := New(provider.Config{Name: "p", BaseURL: baseURL, Model: model, APIKey: "k", Extra: extra})
 	if err != nil {
-		t.Fatalf("New(%q, effort=%q): %v", baseURL, effort, err)
+		t.Fatalf("New(%q, model=%q, effort=%q): %v", baseURL, model, effort, err)
 	}
 	return p.(*client)
 }
@@ -53,6 +57,67 @@ func TestEffortInvalidRejected(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "low, medium, or high") {
 		t.Fatalf("expected a low/medium/high validation error, got: %v", err)
+	}
+}
+
+func TestDeepSeekFlashEffortLowAccepted(t *testing.T) {
+	const deepseek = "https://api.deepseek.com/v1"
+
+	tests := []struct {
+		effort, want string
+	}{
+		{"low", "low"},
+		{"high", "high"},
+		{"max", "max"},
+		{"auto", "high"},
+		{"", "high"},
+		{"off", "high"},
+	}
+	for _, tc := range tests {
+		c := newClientWithModel(t, deepseek, "deepseek-v4-flash", tc.effort)
+		if c.effort != tc.want {
+			t.Errorf("Flash effort=%q: got %q, want %q", tc.effort, c.effort, tc.want)
+		}
+	}
+
+	// Flash rejects invalid efforts.
+	if _, err := New(provider.Config{
+		Name: "flash", BaseURL: deepseek, Model: "deepseek-v4-flash", APIKey: "k",
+		Extra: map[string]any{"effort": "medium"},
+	}); err == nil || !strings.Contains(err.Error(), "low, high, or max") {
+		t.Fatalf("Flash should reject medium effort, got: %v", err)
+	}
+}
+
+func TestDeepSeekProRejectsLowEffort(t *testing.T) {
+	const deepseek = "https://api.deepseek.com/v1"
+
+	// Pro accepts high and max.
+	for _, effort := range []string{"high", "max"} {
+		c := newClientWithModel(t, deepseek, "deepseek-v4-pro", effort)
+		if c.effort != effort {
+			t.Errorf("Pro effort=%q: got %q, want %q", effort, c.effort, effort)
+		}
+	}
+
+	// Pro rejects low.
+	if _, err := New(provider.Config{
+		Name: "pro", BaseURL: deepseek, Model: "deepseek-v4-pro", APIKey: "k",
+		Extra: map[string]any{"effort": "low"},
+	}); err == nil || !strings.Contains(err.Error(), "high or max") {
+		t.Fatalf("Pro should reject low effort, got: %v", err)
+	}
+}
+
+func TestDeepSeekUnknownModelRejectsLowEffort(t *testing.T) {
+	const deepseek = "https://api.deepseek.com/v1"
+
+	// Unknown DeepSeek model (not in known model list) follows the conservative path.
+	if _, err := New(provider.Config{
+		Name: "unknown", BaseURL: deepseek, Model: "deepseek-v4", APIKey: "k",
+		Extra: map[string]any{"effort": "low"},
+	}); err == nil || !strings.Contains(err.Error(), "high or max") {
+		t.Fatalf("unknown DeepSeek model should reject low effort, got: %v", err)
 	}
 }
 

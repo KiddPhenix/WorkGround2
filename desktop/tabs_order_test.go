@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/config"
 	"workground2/internal/control"
 	"workground2/internal/event"
@@ -361,6 +362,125 @@ func TestConcurrentActivateTopicSerializesSingleSurfacePruning(t *testing.T) {
 	}
 	if !tabs[0].Active {
 		t.Fatalf("remaining tab is not active: %+v", tabs[0])
+	}
+}
+
+func TestOpenLinkedSessionKeepsOwningWorkTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	root := t.TempDir()
+	owner, err := app.OpenProjectTab(root, "topic-work")
+	if err != nil {
+		t.Fatalf("OpenProjectTab: %v", err)
+	}
+	app.mu.Lock()
+	ownerTab := app.tabs[owner.ID]
+	ownerTab.sessionKind = agent.SessionKindWork
+	ownerTab.workID = "work-1"
+	originalPath := ownerTab.SessionPath
+	app.mu.Unlock()
+
+	targetPath := writeTopicSession(t, desktopSessionDir(root), "linked-task.jsonl", "topic-work", "Work topic", root)
+	if err := stampSessionSource(targetPath, "work:work-1/run:run-1/stage:design/task:task-1/attempt:0/request:req-1"); err != nil {
+		t.Fatalf("save linked Session source: %v", err)
+	}
+	linked, err := app.OpenLinkedSession("project", root, "topic-work", targetPath)
+	if err != nil {
+		t.Fatalf("OpenLinkedSession: %v", err)
+	}
+	if linked.ID == owner.ID {
+		t.Fatalf("linked Session reused owning Work tab %q", owner.ID)
+	}
+	if canonicalTabSessionPath(linked.SessionPath) != canonicalTabSessionPath(targetPath) {
+		t.Fatalf("linked Session path = %q, want %q", linked.SessionPath, targetPath)
+	}
+	if !linked.ReadOnly || !linked.Ready {
+		t.Fatalf("linked Session should open as a ready read-only preview: %+v", linked)
+	}
+	app.mu.RLock()
+	linkedCtrl := app.tabs[linked.ID].Ctrl
+	app.mu.RUnlock()
+	if linkedCtrl != nil {
+		t.Fatal("completed linked Session started a full Controller instead of previewing history")
+	}
+	page := app.HistoryPageForTab(linked.ID, 0, 60)
+	if len(page.Messages) != 1 || page.Messages[0].Content != "hello" {
+		t.Fatalf("linked Session preview history = %+v, want immediate persisted content", page.Messages)
+	}
+
+	app.mu.RLock()
+	if ownerTab.SessionPath != originalPath {
+		app.mu.RUnlock()
+		t.Fatalf("owning Work path changed to %q, want %q", ownerTab.SessionPath, originalPath)
+	}
+	if ownerTab.sessionKind != agent.SessionKindWork || ownerTab.workID != "work-1" {
+		app.mu.RUnlock()
+		t.Fatalf("owning Work identity changed: kind=%q workID=%q", ownerTab.sessionKind, ownerTab.workID)
+	}
+	app.mu.RUnlock()
+
+	if err := saveTabSessionMeta(ownerTab, originalPath); err != nil {
+		t.Fatalf("persist owning Work identity: %v", err)
+	}
+	if _, err := app.ActivateLinkedSession("project", root, "topic-work", targetPath); err != nil {
+		t.Fatalf("ActivateLinkedSession: %v", err)
+	}
+	visible := app.ListTabs()
+	if len(visible) != 2 {
+		t.Fatalf("linked navigation kept %d visible tabs, want owning Work + linked Session: %+v", len(visible), visible)
+	}
+	var ownerVisible, linkedVisible, linkedActive bool
+	for _, tab := range visible {
+		ownerVisible = ownerVisible || tab.ID == owner.ID
+		linkedVisible = linkedVisible || canonicalTabSessionPath(tab.SessionPath) == canonicalTabSessionPath(targetPath)
+		linkedActive = linkedActive || (tab.Active && canonicalTabSessionPath(tab.SessionPath) == canonicalTabSessionPath(targetPath))
+	}
+	if !ownerVisible || !linkedVisible || !linkedActive {
+		t.Fatalf("linked navigation lost an endpoint or active target: owner=%v linked=%v active=%v tabs=%+v", ownerVisible, linkedVisible, linkedActive, visible)
+	}
+	// Reproduce the runtime race: the sidebar cache knows the owning Work but
+	// has not observed the newly-created hidden task Session yet.
+	infos, err := agent.ListSessions(desktopSessionDir(root))
+	if err != nil {
+		t.Fatalf("list project Sessions: %v", err)
+	}
+	staleInfos := make([]agent.SessionInfo, 0, len(infos))
+	for _, info := range infos {
+		if sessionRuntimeKey(info.Path) != sessionRuntimeKey(targetPath) {
+			staleInfos = append(staleInfos, info)
+		}
+	}
+	projectSessionCache.invalidate()
+	projectSessionCache.put(desktopSessionDir(root), staleInfos, map[string]string{}, projectSessionCache.versionToken())
+	var workInTree bool
+	var linkedInTree bool
+	var visit func([]ProjectNode)
+	visit = func(nodes []ProjectNode) {
+		for _, node := range nodes {
+			if (node.Kind == "work_session" || node.Kind == "global_work_session") && node.WorkID == "work-1" {
+				workInTree = true
+			}
+			if sessionRuntimeKey(node.SessionPath) == sessionRuntimeKey(targetPath) {
+				linkedInTree = true
+			}
+			visit(node.Children)
+		}
+	}
+	visit(app.ListProjectTree())
+	if !workInTree {
+		t.Fatal("linked navigation removed the owning Work from the project Session list")
+	}
+	if linkedInTree {
+		t.Fatal("hidden task Session leaked into the project Session list while open")
+	}
+	returned, err := app.ActivateTopic("project", root, "topic-work", originalPath)
+	if err != nil {
+		t.Fatalf("return to Work: %v", err)
+	}
+	if returned.SessionKind != string(agent.SessionKindWork) || returned.WorkID != "work-1" {
+		t.Fatalf("returned surface lost Work identity: kind=%q workID=%q", returned.SessionKind, returned.WorkID)
 	}
 }
 

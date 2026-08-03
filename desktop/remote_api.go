@@ -25,10 +25,11 @@ import (
 // focus the window. The port is written to ~/.WorkGround2/desktop-port so the
 // CLI can discover it.
 type remoteAPI struct {
-	app    *App
-	srv    *http.Server
-	port   int
-	closed chan struct{}
+	app        *App
+	srv        *http.Server
+	port       int
+	closed     chan struct{}
+	newSession func(scope, workspace, name string) (*WorkspaceTab, string, bool, error) // test seam
 
 	mu        sync.Mutex
 	submitted map[string]remoteSubmittedSession
@@ -170,17 +171,17 @@ func (api *remoteAPI) handleSessionNew(w http.ResponseWriter, r *http.Request) {
 	if workspace != "" {
 		scope = "project"
 	}
-	tab, _, created, err := api.app.newBackgroundSession(scope, workspace, sessionName)
+	create := api.newSession
+	if create == nil {
+		create = api.app.newBackgroundSession
+	}
+	tab, _, created, err := create(scope, workspace, sessionName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if body.ToolApprovalMode != "" {
 		api.app.SetToolApprovalModeForTab(tab.ID, body.ToolApprovalMode)
-	}
-	if err := api.waitForTabReady(r.Context(), tab.ID, remoteWorkspaceReadyTimeout); err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
 	}
 	out := api.sessionResponseForTab(tab, "ok")
 	if sessionName != "" {
@@ -259,8 +260,17 @@ func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) ma
 	if path != "" {
 		out["path"] = path
 	}
-	if tab.Ctrl != nil {
-		rs := tab.Ctrl.RuntimeStatus()
+	api.app.mu.RLock()
+	ctrl := tab.Ctrl
+	ready := tab.Ready && ctrl != nil
+	buildDone := tab.Ready
+	startupErr := strings.TrimSpace(tab.StartupErr)
+	queued := strings.TrimSpace(tab.pendingRemoteInput) != ""
+	submitErr := strings.TrimSpace(tab.remoteSubmitErr)
+	api.app.mu.RUnlock()
+	out["ready"] = ready
+	if ctrl != nil {
+		rs := ctrl.RuntimeStatus()
 		out["running"] = rs.ActiveRuntimeWork || rs.ForegroundActive || rs.PendingPrompt
 		out["pendingPrompt"] = rs.PendingPrompt
 		if rs.Mode != "" {
@@ -274,6 +284,32 @@ func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) ma
 	}
 	api.applyPendingInteractionForTab(tab, out)
 	api.applySubmittedState(out, path, tabHasActiveRuntimeWork(tab))
+	if queued {
+		out["queued"] = true
+		out["submitted"] = true
+	}
+	switch {
+	case startupErr != "" && ctrl == nil:
+		delete(out, "starting")
+		out["mode"] = "startup_failed"
+		out["startupError"] = startupErr
+		out["foregroundActive"] = false
+		out["activeRuntimeWork"] = false
+	case buildDone && ctrl == nil:
+		delete(out, "starting")
+		out["mode"] = "startup_failed"
+		out["startupError"] = "controller unavailable after startup"
+		out["foregroundActive"] = false
+		out["activeRuntimeWork"] = false
+	case submitErr != "":
+		delete(out, "starting")
+		out["mode"] = "submit_failed"
+		out["submitError"] = submitErr
+		out["foregroundActive"] = false
+		out["activeRuntimeWork"] = false
+	case ctrl == nil || (queued && !tabHasActiveRuntimeWork(tab)):
+		applyRemoteStarting(out)
+	}
 	_, starting := out["starting"]
 	if !starting && !tabHasActiveRuntimeWork(tab) && !tabHasPendingPrompt(tab) {
 		if report := api.app.lastAssistantReport(tab.ID, 2000); report != "" {
@@ -281,6 +317,17 @@ func (api *remoteAPI) sessionResponseForTab(tab *WorkspaceTab, status string) ma
 		}
 	}
 	return out
+}
+
+func applyRemoteStarting(out map[string]any) {
+	out["running"] = false
+	out["pendingPrompt"] = false
+	out["foregroundActive"] = true
+	out["backgroundOnly"] = false
+	out["activeRuntimeWork"] = true
+	out["cancelRequested"] = false
+	out["starting"] = true
+	out["mode"] = "starting"
 }
 
 func tabHasActiveRuntimeWork(tab *WorkspaceTab) bool {
@@ -516,6 +563,113 @@ func remoteSessionFileChangedSince(path string, since time.Time) bool {
 	return !info.ModTime().Before(since)
 }
 
+type remoteSubmitError struct {
+	status  int
+	message string
+}
+
+func (e *remoteSubmitError) Error() string { return e.message }
+
+// submitRemote accepts one durable initial input while a session controller is
+// still starting. Repeating the same input is idempotent; a different queued
+// input is rejected so callers cannot silently replace accepted work.
+func (a *App) submitRemote(tab *WorkspaceTab, input string) (bool, error) {
+	if tab == nil || strings.TrimSpace(input) == "" {
+		return false, &remoteSubmitError{status: http.StatusBadRequest, message: "session and prompt are required"}
+	}
+
+	a.mu.Lock()
+	if tab.ReadOnly {
+		a.mu.Unlock()
+		return false, &remoteSubmitError{status: http.StatusConflict, message: readOnlyChannelErr().Error()}
+	}
+	if pending := strings.TrimSpace(tab.pendingRemoteInput); pending != "" && pending != input {
+		a.mu.Unlock()
+		return false, &remoteSubmitError{status: http.StatusConflict, message: "session already has a different queued submission"}
+	}
+	if tab.Ctrl == nil {
+		if startupErr := strings.TrimSpace(tab.StartupErr); startupErr != "" {
+			a.mu.Unlock()
+			return false, &remoteSubmitError{status: http.StatusServiceUnavailable, message: "workspace failed to start: " + startupErr}
+		}
+		if tab.Ready {
+			a.mu.Unlock()
+			return false, &remoteSubmitError{status: http.StatusServiceUnavailable, message: "session controller is unavailable after startup"}
+		}
+		tab.pendingRemoteInput = input
+		tab.remoteSubmitErr = ""
+		a.saveTabsLocked()
+		a.mu.Unlock()
+		return true, nil
+	}
+	if tab.remoteSubmitting {
+		a.mu.Unlock()
+		return true, nil
+	}
+	tab.pendingRemoteInput = input
+	tab.remoteSubmitErr = ""
+	tab.remoteSubmitting = true
+	a.saveTabsLocked()
+	a.mu.Unlock()
+
+	err := a.submitToTab(tab.ID, input, false)
+	a.finishRemoteSubmit(tab, input, err)
+	return false, err
+}
+
+// drainRemoteSubmit resumes a persisted starting-phase submission after the
+// controller becomes ready. Failures keep the input and remain retryable.
+func (a *App) drainRemoteSubmit(tab *WorkspaceTab) {
+	if tab == nil {
+		return
+	}
+	a.mu.Lock()
+	input := tab.pendingRemoteInput
+	if input == "" || tab.Ctrl == nil || tab.remoteSubmitting {
+		a.mu.Unlock()
+		return
+	}
+	tab.remoteSubmitting = true
+	tab.remoteSubmitErr = ""
+	ctrl := tab.Ctrl
+	a.mu.Unlock()
+
+	if remoteInputSubmitted(ctrl, input) {
+		a.finishRemoteSubmit(tab, input, nil)
+		return
+	}
+	err := a.submitToTab(tab.ID, input, false)
+	a.finishRemoteSubmit(tab, input, err)
+}
+
+func remoteInputSubmitted(ctrl control.SessionAPI, input string) bool {
+	if ctrl == nil {
+		return false
+	}
+	for _, message := range ctrl.History() {
+		if string(message.Role) == "user" && message.Content == input {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) finishRemoteSubmit(tab *WorkspaceTab, input string, submitErr error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if tab.pendingRemoteInput != input {
+		return
+	}
+	tab.remoteSubmitting = false
+	if submitErr != nil {
+		tab.remoteSubmitErr = submitErr.Error()
+	} else {
+		tab.pendingRemoteInput = ""
+		tab.remoteSubmitErr = ""
+	}
+	a.saveTabsLocked()
+}
+
 func (api *remoteAPI) handleSessionSubmit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -539,12 +693,21 @@ func (api *remoteAPI) handleSessionSubmit(w http.ResponseWriter, r *http.Request
 		api.app.SetToolApprovalModeForTab(targetTab.ID, body.ToolApprovalMode)
 	}
 	submittedAt := time.Now()
-	if err := api.app.submitToTab(targetTab.ID, body.Prompt, false); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	queued, err := api.app.submitRemote(targetTab, body.Prompt)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if remoteErr, ok := err.(*remoteSubmitError); ok {
+			status = remoteErr.status
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	api.markSubmitted(targetTab.currentSessionPath(), submittedAt)
-	api.writeJSON(w, api.sessionResponseForTab(targetTab, "ok"))
+	out := api.sessionResponseForTab(targetTab, "ok")
+	if queued {
+		out["queued"] = true
+	}
+	api.writeJSON(w, out)
 }
 
 func (api *remoteAPI) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
