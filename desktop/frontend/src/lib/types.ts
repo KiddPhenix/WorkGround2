@@ -257,7 +257,7 @@ export interface TabMeta {
   sessionSource?: string;
   needsAttention?: boolean;
   needsAttentionAt?: number;
-  sessionKind?: "normal" | "work";
+  sessionKind?: "normal" | "work" | "collaboration";
   workId?: string;
   workRequestId?: string;
 }
@@ -282,7 +282,7 @@ export interface ProjectNode {
   status?: ProjectTopicStatus;
   turnStartedAt?: number;
   pinned?: boolean;
-  sessionKind?: "normal" | "work";
+  sessionKind?: "normal" | "work" | "collaboration";
   workId?: string;
   children?: ProjectNode[];
 }

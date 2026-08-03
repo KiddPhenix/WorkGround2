@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/collab"
 	"workground2/internal/config"
 	"workground2/internal/fileutil"
@@ -301,11 +302,111 @@ func (a *App) GetCollaborationState() CollaborationState {
 }
 
 func (a *App) HostCollaborationRoom(input HostCollaborationRoomInput) (CollaborationState, error) {
-	return a.collaborationRuntime().host(a.bootContext(), input)
+	runtime := a.collaborationRuntime()
+	state, err := runtime.host(a.bootContext(), input)
+	if err != nil {
+		return state, err
+	}
+	if err := a.bindCollaborationSession(input.SessionID, collaborationSessionTitle(state, input.RoomName, input.Room)); err != nil {
+		_ = runtime.leave(a.bootContext())
+		return state, fmt.Errorf("bind collaboration session: %w", err)
+	}
+	return state, nil
 }
 
 func (a *App) JoinCollaborationRoom(input JoinCollaborationRoomInput) (CollaborationState, error) {
-	return a.collaborationRuntime().join(a.bootContext(), input)
+	runtime := a.collaborationRuntime()
+	state, err := runtime.join(a.bootContext(), input)
+	if err != nil {
+		return state, err
+	}
+	if err := a.bindCollaborationSession(input.SessionID, collaborationSessionTitle(state, "", input.Room)); err != nil {
+		_ = runtime.leave(a.bootContext())
+		return state, fmt.Errorf("bind collaboration session: %w", err)
+	}
+	return state, nil
+}
+
+func collaborationSessionTitle(state CollaborationState, preferred, fallback string) string {
+	for _, value := range []string{preferred, state.Snapshot.Room.Name, fallback, state.Room} {
+		if title := strings.TrimSpace(value); title != "" {
+			return title
+		}
+	}
+	return "多人协作"
+}
+
+// bindCollaborationSession converts one blank session in-place so Room state
+// keeps the same workspace, topic, session identity, and agent controller.
+// Repeating the same bind is safe; other specialized session kinds are rejected.
+func (a *App) bindCollaborationSession(sessionID, title string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	title = strings.TrimSpace(title)
+	if sessionID == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	tab, _ := a.sessionAndCtrl(sessionID)
+	if tab == nil {
+		return fmt.Errorf("session %q is unavailable", sessionID)
+	}
+
+	a.mu.RLock()
+	kind := tab.sessionKind
+	readOnly := tab.ReadOnly
+	sessionPath := strings.TrimSpace(tab.currentSessionPath())
+	scope := tab.Scope
+	workspaceRoot := tab.WorkspaceRoot
+	topicID := tab.TopicID
+	a.mu.RUnlock()
+	if readOnly {
+		return fmt.Errorf("session %q is read-only", sessionID)
+	}
+	if kind != "" && kind != agent.SessionKindNormal && kind != agent.SessionKindCollaboration {
+		return fmt.Errorf("session kind %q cannot become collaboration", kind)
+	}
+	if kind != agent.SessionKindCollaboration && !blankTabSessionPathHasNoContent(tab) {
+		return fmt.Errorf("session %q already has conversation content", sessionID)
+	}
+	if sessionPath == "" {
+		return fmt.Errorf("session %q path is empty", sessionID)
+	}
+	if title == "" {
+		title = "多人协作"
+	}
+
+	meta, err := agent.EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	meta.SessionKind = agent.SessionKindCollaboration
+	meta.SessionSource = "collaboration"
+	meta.Scope = scope
+	meta.WorkspaceRoot = workspaceRoot
+	meta.TopicID = topicID
+	meta.CustomTitle = title
+	meta.TopicTitle = title
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		return err
+	}
+	if err := a.RenameSession(sessionPath, title); err != nil {
+		return err
+	}
+	titleRoot := workspaceRoot
+	if scope == "global" {
+		titleRoot = ""
+	}
+	if err := ensureTopicIndexed(scope, titleRoot, topicID, title, topicTitleSourceAuto); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	tab.sessionKind = agent.SessionKindCollaboration
+	tab.TopicTitle = title
+	a.saveTabsLocked()
+	a.mu.Unlock()
+	a.updateTopicSessionTitles(topicID, title)
+	a.emitProjectTreeChanged()
+	return nil
 }
 
 func (a *App) LeaveCollaborationRoom() error {

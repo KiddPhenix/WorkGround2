@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, ChevronRight, Circle, DoorOpen, LogOut, MessageSquare, RefreshCw, Users, X } from "lucide-react";
+import { Bot, ChevronRight, Circle, LogOut, RefreshCw, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { collabCopy } from "./copy";
 import { useCollabController } from "./useCollabController";
@@ -11,7 +11,10 @@ import "./collab.css";
 
 interface CollaborationWorkspaceProps {
   sessionID: string;
-  onClose(): void;
+  mode?: "session" | "dialog";
+  onClose?(): void;
+  onConnected?(): Promise<void> | void;
+  onConnectRequest?(): void;
 }
 
 function statusLabel(status: string, c: ReturnType<typeof collabCopy>) {
@@ -25,18 +28,42 @@ function agentStatusLabel(status: "idle" | "running" | "waiting" | "completed" |
   return c(status);
 }
 
-export function CollaborationWorkspace({ sessionID, onClose }: CollaborationWorkspaceProps) {
+export function CollaborationWorkspace({ sessionID, mode = "session", onClose, onConnected, onConnectRequest }: CollaborationWorkspaceProps) {
   const { t } = useI18n();
   const c = collabCopy(t);
   const controller = useCollabController(sessionID);
   const { state, self, selectedItems } = controller;
   const [prefill, setPrefill] = useState("");
   const [batchInstruction, setBatchInstruction] = useState("");
-  const connected = state.status === "connected";
+  const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
+  const connected = ownsRoom && state.status === "connected";
 
-  if (!state.room || state.status === "disconnected") {
-    return <section className="collab-surface" aria-label={c("title")}>
-      <ConnectionPanel sessionID={sessionID} status={state.status} error={state.lastError} initial={state.room} onHost={controller.host} onJoin={controller.join} onClose={onClose} />
+  if (mode === "dialog") {
+    return <div className="collab-modal" role="dialog" aria-modal="true" aria-label={c("title")}>
+      <div className="collab-modal__backdrop" onClick={onClose} />
+      <section className="collab-surface collab-surface--dialog">
+        <ConnectionPanel
+          sessionID={sessionID}
+          status={state.status}
+          error={state.lastError}
+          initial={ownsRoom ? state.room : undefined}
+          onHost={controller.host}
+          onJoin={controller.join}
+          onClose={() => onClose?.()}
+          onConnected={onConnected}
+        />
+      </section>
+    </div>;
+  }
+
+  if (!ownsRoom || !state.room) {
+    return <section className="collab-surface collab-surface--empty" aria-label={c("title")}>
+      <div className="collab-session-empty">
+        <Users size={30} aria-hidden="true" />
+        <h2>{c("title")}</h2>
+        <p>{state.lastError || c("failed")}</p>
+        <button type="button" className="collab-primary-button" onClick={onConnectRequest}>{c("connect")}</button>
+      </div>
     </section>;
   }
 
@@ -54,23 +81,11 @@ export function CollaborationWorkspace({ sessionID, onClose }: CollaborationWork
 
   return <section className="collab-surface" aria-label={c("title")}>
     <div className="collab-workspace">
-      <aside className="collab-room-rail">
-        <div className="collab-brand"><span>W2</span><strong>WorkGround2</strong></div>
-        <div className="collab-rail-heading">{c("rooms")}</div>
-        <button className="collab-room-item collab-room-item--active" type="button">
-          <MessageSquare size={16} /><span><strong>{state.room.title || state.room.room}</strong><small>{state.room.description || `${state.room.host}:${state.room.port}`}</small></span>
-        </button>
-        <div className="collab-room-meta"><span>{state.room.host}:{state.room.port}</span><span>#{state.room.room}</span></div>
-        <div className="collab-rail-spacer" />
-        <button type="button" className="collab-rail-action" onClick={() => void controller.leave()}><LogOut size={15} />{c("leave")}</button>
-        <button type="button" className="collab-rail-action" onClick={onClose}><DoorOpen size={15} />{c("close")}</button>
-      </aside>
-
       <main className="collab-main">
         <header className="collab-topicbar">
           <div><div className="collab-topic-title"><h1>{state.room.title || state.room.room}</h1><span><Users size={14} />{state.members.length}</span></div><p>{state.room.description || c("subtitle")}</p></div>
           <div className={`collab-connection collab-connection--${state.status}`}><Circle size={9} fill="currentColor" />{statusLabel(state.status, c)}</div>
-          <button type="button" className="collab-icon-button" aria-label={c("close")} title={c("close")} onClick={onClose}><X size={18} /></button>
+          <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
         </header>
 
         {(state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.status}`} role="status">

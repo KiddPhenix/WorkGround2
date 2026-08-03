@@ -96,6 +96,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
       dispatch({ type: "STATE", state: next });
     } catch (error) {
       dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
+      throw error;
     }
   }, [sessionID, transport]);
 
@@ -107,6 +108,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
       dispatch({ type: "STATE", state: next });
     } catch (error) {
       dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
+      throw error;
     }
   }, [sessionID, transport]);
 

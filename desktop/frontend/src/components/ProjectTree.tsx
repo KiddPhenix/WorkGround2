@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, Pencil, Plus, MoreHorizontal, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Tag } from "lucide-react";
+import { Archive, Pencil, Plus, MoreHorizontal, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Tag, Users } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -1191,6 +1191,7 @@ export function ProjectTree({
       const unread = isCrewSessionNode(node) ? false : projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const visualState = projectTreeTopicVisualState(node, unread, status);
       const workSession = node.sessionKind === "work";
+      const collaborationSession = node.sessionKind === "collaboration";
       const topicId = node.topicId ?? "";
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
@@ -1276,7 +1277,7 @@ export function ProjectTree({
       }
       const row = (
         <div
-          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${workSession ? " project-tree__topic--work-session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
+          className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${workSession ? " project-tree__topic--work-session" : ""}${collaborationSession ? " project-tree__topic--collaboration-session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
           onContextMenu={isSessionNode && !workSession ? undefined : openTopicMenu}
         >
@@ -1331,6 +1332,11 @@ export function ProjectTree({
             {workSession && (
               <span className="project-tree__work-icon" title={t("projectTree.workSession")} aria-label={t("projectTree.workSession")}>
                 <BriefcaseBusiness size={12} aria-hidden="true" />
+              </span>
+            )}
+            {collaborationSession && (
+              <span className="project-tree__work-icon" title={t("collab.title")} aria-label={t("collab.title")}>
+                <Users size={12} aria-hidden="true" />
               </span>
             )}
             <span className="project-tree__topic-copy">

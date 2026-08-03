@@ -17,8 +17,9 @@ import (
 type SessionKind string
 
 const (
-	SessionKindNormal SessionKind = "normal"
-	SessionKindWork   SessionKind = "work"
+	SessionKindNormal        SessionKind = "normal"
+	SessionKindWork          SessionKind = "work"
+	SessionKindCollaboration SessionKind = "collaboration"
 )
 
 // BranchMeta is the small sidecar record that turns flat session files into a
@@ -81,7 +82,7 @@ type BranchMeta struct {
 	Turns        int               `json:"turns,omitempty"`
 	Preview      string            `json:"preview,omitempty"`
 	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
-	// SessionKind classifies this session as "normal" or "work".
+	// SessionKind classifies this session as normal, work, or collaboration.
 	// Old data without this field defaults to "normal".
 	SessionKind SessionKind `json:"session_kind,omitempty"`
 	// WorkID is the primary Work ID bound to this session (only set when SessionKind == "work").

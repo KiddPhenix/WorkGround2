@@ -1147,7 +1147,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const setSidebarCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
-  const [collaborationOpen, setCollaborationOpen] = useState(false);
+  const [collaborationDialog, setCollaborationDialog] = useState<{ sessionID: string } | null>(null);
   type TimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   const [topicTimeFilter, setTopicTimeFilter] = useState<TimeFilter>(() => {
     try {
@@ -3300,6 +3300,29 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [activeTabId, refreshTabMetas, syncActiveTab]);
 
+  const openCollaborationDialog = useCallback(async (sessionID?: string) => {
+    closeTransientOverlays();
+    setSidebarImDetailConnectionId("");
+    if (sessionID) {
+      setCollaborationDialog({ sessionID });
+      return;
+    }
+    const target = blankSessionTarget();
+    const meta = await ensureBlankTab(target.scope, target.workspaceRoot);
+    seedActiveTabMeta(meta);
+    await refreshProjectsAndTabs();
+    if (!meta.sessionId) {
+      showToast("协作 Session 尚未准备好，请重试。", "error");
+      return;
+    }
+    setCollaborationDialog({ sessionID: meta.sessionId });
+  }, [blankSessionTarget, closeTransientOverlays, ensureBlankTab, refreshProjectsAndTabs, seedActiveTabMeta, showToast]);
+
+  const finishCollaborationConnect = useCallback(async () => {
+    await refreshProjectsAndTabs();
+    setCollaborationDialog(null);
+  }, [refreshProjectsAndTabs]);
+
   const handleCreateReusableWorkSession = useCallback(async (input: {
     flowId: string;
     values: Record<string, unknown>;
@@ -3740,6 +3763,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     );
   }, [activeTab?.sessionPath, handleNavigateToLinkedSession, sessionSurfaceProps, state.historyResolvedPath]);
 
+  const showCollaborationSurface = activeTab?.sessionKind === "collaboration";
   const showWorkSurface = activeTab?.sessionKind === "work";
   const storedLinkedWorkReturn = linkedWorkReturn
     && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedWorkReturn.targetSessionPath)
@@ -3916,7 +3940,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 type="button"
                 className="workspace-sidebar__new-session"
                 aria-label={collaborationLabel}
-                onClick={() => setCollaborationOpen(true)}
+                onClick={() => { void openCollaborationDialog(); }}
               >
                 <Users size={18} aria-hidden="true" />
                 <span>{collaborationLabel}</span>
@@ -3977,7 +4001,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {showWorkSurface && activeTab?.workId && !workUnavailable ? (
+            {showCollaborationSurface && activeTab?.sessionId ? (
+              <CollaborationWorkspace
+                sessionID={activeTab.sessionId}
+                onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+              />
+            ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
               <div
                 className={`work-session-host${activeWorkBootstrap ? " work-session-host--transition" : ""}`}
                 data-phase={activeWorkBootstrap?.phase}
@@ -4165,7 +4194,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
           <button
             className="sidebar__new"
             type="button"
-            onClick={() => setCollaborationOpen(true)}
+            onClick={() => { void openCollaborationDialog(); }}
           >
             <Users size={18} aria-hidden="true" />
             <span>{collaborationLabel}</span>
@@ -4617,6 +4646,11 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 onManageAllowlist={() => openBotAllowlistSettings(sidebarImDetailConnection.connectionId)}
                 onOpenSession={() => void openSidebarImConnectionSession(sidebarImDetailConnection)}
               />
+            ) : showCollaborationSurface && activeTab?.sessionId ? (
+              <CollaborationWorkspace
+                sessionID={activeTab.sessionId}
+                onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+              />
             ) : (
               <Transcript
                 items={displayItems}
@@ -4650,7 +4684,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
             )}
           </main>
 
-          {!sidebarImDetailConnection && (
+          {!sidebarImDetailConnection && !showCollaborationSurface && (
           <footer className="footer" ref={footerRef}>
             {showTodos && (
               <TodoPanel
@@ -4966,10 +5000,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       <HeartbeatPanel open={heartbeatOpen} onClose={() => setHeartbeatOpen(false)} onOpenTopic={(scope, workspaceRoot, topicId) => {
         void handleOpenTopic(scope, workspaceRoot, topicId);
       }} />
-      {collaborationOpen && (
+      {collaborationDialog && (
         <CollaborationWorkspace
-          sessionID={activeSessionId || state.meta?.sessionId || activeTab?.sessionId || ""}
-          onClose={() => setCollaborationOpen(false)}
+          mode="dialog"
+          sessionID={collaborationDialog.sessionID}
+          onClose={() => setCollaborationDialog(null)}
+          onConnected={finishCollaborationConnect}
         />
       )}
       {windowsFramelessChrome && <WindowsResizeHandles />}

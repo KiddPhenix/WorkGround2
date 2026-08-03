@@ -107,7 +107,7 @@ type WorkspaceTab struct {
 	toolApprovalMode  string
 	disabledMCP       map[string]ServerView
 	mcpOrder          []string
-	sessionKind       agent.SessionKind // "normal" or "work"
+	sessionKind       agent.SessionKind // "normal", "work", or "collaboration"
 	workID            string            // bound Work ID (only when sessionKind == "work")
 	workRequestID     string            // idempotency key that created the Work Session
 }
@@ -1368,7 +1368,7 @@ type TabMeta struct {
 	SessionSource       string                   `json:"sessionSource,omitempty"`
 	NeedsAttention      bool                     `json:"needsAttention"`
 	NeedsAttentionAt    int64                    `json:"needsAttentionAt,omitempty"`
-	SessionKind         string                   `json:"sessionKind,omitempty"` // "normal" | "work"
+	SessionKind         string                   `json:"sessionKind,omitempty"` // "normal" | "work" | "collaboration"
 	WorkID              string                   `json:"workId,omitempty"`      // bound Work ID
 	WorkRequestID       string                   `json:"workRequestId,omitempty"`
 }
@@ -5559,7 +5559,7 @@ type ProjectNode struct {
 	Status         string        `json:"status,omitempty"`
 	TurnStartedAt  int64         `json:"turnStartedAt,omitempty"`
 	Pinned         bool          `json:"pinned,omitempty"`
-	SessionKind    string        `json:"sessionKind,omitempty"` // "normal" | "work"
+	SessionKind    string        `json:"sessionKind,omitempty"` // "normal" | "work" | "collaboration"
 	WorkID         string        `json:"workId,omitempty"`      // bound Work ID
 	Children       []ProjectNode `json:"children,omitempty"`
 }
@@ -6777,7 +6777,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		if tab == nil || strings.TrimSpace(tab.TopicID) == "" {
 			return
 		}
-		if !tab.ReadOnly && tab.sessionKind != agent.SessionKindWork && blankTabSessionPathHasNoContent(tab) {
+		if !tab.ReadOnly && (tab.sessionKind == "" || tab.sessionKind == agent.SessionKindNormal) && blankTabSessionPathHasNoContent(tab) {
 			return
 		}
 		sessionPath := canonicalTabSessionPath(tab.currentSessionPath())
@@ -6910,7 +6910,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 	}
 	topicWorkBinding := func(key string) (sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
-		if len(sessions) == 1 && sessions[0].sessionKind == string(agent.SessionKindWork) {
+		if len(sessions) == 1 && (sessions[0].sessionKind == string(agent.SessionKindWork) || sessions[0].sessionKind == string(agent.SessionKindCollaboration)) {
 			session := sessions[0]
 			return session.sessionPath, session.sessionKind, session.workID
 		}
@@ -6922,10 +6922,14 @@ func (a *App) ListProjectTree() []ProjectNode {
 			return "", "", ""
 		}
 		selected := persisted[0]
+		identityKind := selected.SessionKind
+		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration {
+			return "", "", ""
+		}
 		identityWorkID := ""
 		identityRequestID := ""
 		for _, info := range persisted {
-			if info.SessionKind != agent.SessionKindWork {
+			if info.SessionKind != identityKind {
 				return "", "", ""
 			}
 			if info.WorkID != "" {
@@ -6944,7 +6948,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				selected = info
 			}
 		}
-		return selected.Path, string(agent.SessionKindWork), identityWorkID
+		return selected.Path, string(identityKind), identityWorkID
 	}
 	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)

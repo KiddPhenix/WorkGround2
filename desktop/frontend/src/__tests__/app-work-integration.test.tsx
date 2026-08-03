@@ -141,7 +141,7 @@ ok(!appSource.includes("onCreateWork={"), "Workspace 不再暴露独立新建工
 ok(
   bridgeSource.includes("CreateWorkSession(input:")
     && bridgeSource.includes("tabId?: string")
-    && typesSource.includes('sessionKind?: "normal" | "work"')
+    && typesSource.includes('sessionKind?: "normal" | "work" | "collaboration"')
     && typesSource.includes("workRequestId?: string"),
   "Bridge 与前端类型包含原地转换及 Work Session 恢复字段",
 );

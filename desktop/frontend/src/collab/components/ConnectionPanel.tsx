@@ -12,9 +12,10 @@ interface ConnectionPanelProps {
   onHost(input: HostCollaborationRoomInput): Promise<void>;
   onJoin(input: JoinCollaborationRoomInput): Promise<void>;
   onClose(): void;
+  onConnected?(): Promise<void> | void;
 }
 
-export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJoin, onClose }: ConnectionPanelProps) {
+export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJoin, onClose, onConnected }: ConnectionPanelProps) {
   const c = collabCopy(useT());
   const [mode, setMode] = useState<"host" | "join">("join");
   const readSaved = (key: string, fallback: string) => {
@@ -36,7 +37,7 @@ export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJ
   const [description, setDescription] = useState(() => initial?.description || "");
   const busy = status === "connecting" || status === "syncing";
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     const resolvedMemberName = memberName.trim() || c("defaultMember");
     const resolvedAgentName = agentName.trim() || c("defaultAgent");
@@ -45,8 +46,11 @@ export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJ
       localStorage.setItem("collab:memberName", resolvedMemberName); localStorage.setItem("collab:agentName", resolvedAgentName); localStorage.setItem("collab:memberID", memberID);
     } catch { /* private mode: the backend still returns a recoverable member identity */ }
     const shared = { port: Number(port), room: room.trim(), token: token.trim() || undefined, memberID, memberName: resolvedMemberName, agentName: resolvedAgentName, sessionID };
-    if (mode === "host") void onHost({ ...shared, listenHost: host.trim(), roomName: roomName.trim() || undefined, description: description.trim() || undefined });
-    else void onJoin({ ...shared, host: host.trim() });
+    try {
+      if (mode === "host") await onHost({ ...shared, listenHost: host.trim(), roomName: roomName.trim() || undefined, description: description.trim() || undefined });
+      else await onJoin({ ...shared, host: host.trim() });
+      await onConnected?.();
+    } catch { /* the controller keeps the recoverable error visible in this form */ }
   };
 
   return (
