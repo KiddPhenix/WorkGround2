@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### 多人多 Agent 协作
+- Status: done
+- Branch: `developping/multi-client-agent-collaboration+2026-08-03`
+- Location: `docs/MULTI_CLIENT_AGENT_COLLABORATION.zh-CN.md`, `internal/collab`, `desktop/collab_app.go`, `desktop/collab_transport.go`, `desktop/collab_persist.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab`
+- Summary: V1 以 Host IP、Port、Room、可空 Token 连接独立 Client 闭包，使用公共时间线、AgentRequest、SSE 补读、幂等 outbox 与本地 Personal Agent 路由完成双人联调和多人协作。
+- Keywords: 多人协作, Client 闭包, Host Room, Personal Agent, AgentRequest, SSE, outbox
+- Source: user-requested+verified-by-code-and-tests
+- Updated: 2026-08-03
+
 ### Session List Work 图标首屏同步
 - Status: done
 - Branch: `developping/session-list-work-icon+2026-08-03`
