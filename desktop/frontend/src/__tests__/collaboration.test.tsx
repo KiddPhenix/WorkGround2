@@ -123,6 +123,50 @@ async function testAgentBusyGuard() {
   await act(async () => root.unmount());
 }
 
+async function testOfflineSelfAgentIntervention() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const offline: CollaborationState = {
+    status: "failed",
+    mode: "host",
+    room: { room: "solo-room", host: "127.0.0.1", port: 39170, latestSequence: 1 },
+    selfMemberId: "self",
+    selfSessionId: "solo-session",
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle", sessionId: "solo-session" } }],
+    timeline: [],
+  };
+  let agentStarts = 0;
+  const transport: CollaborationTransport = {
+    async getState() { return offline; },
+    async retry() { return offline; },
+    async host() { return offline; },
+    async join() { return offline; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "solo-room" }; },
+    async leave() {},
+    async post(input) { return { ok: true, queued: true, item: { ...item(`outbox:${input.requestID}`, 2, input.text), localPending: true, syncStatus: "pending" } }; },
+    async startAgent(input) {
+      agentStarts++;
+      return { ok: true, queued: true, item: { ...item(`outbox:${input.requestID}`, 3, input.instruction), kind: "agent_command", actorAgent: true, localPending: true, syncStatus: "pending", agentRunStatus: "running" } };
+    },
+    async respond() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let controller: CollabController | undefined;
+  function Harness() {
+    controller = useCollabController("solo-session", transport);
+    return null;
+  }
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
+  await act(async () => { await controller!.postChat("把现有修改提交一下"); });
+  const intent = Object.values(controller!.state.pendingIntents)[0];
+  ok(Boolean(intent), "offline solo Host still detects a local Agent instruction");
+  await act(async () => { await controller!.startPending(intent); });
+  equal([agentStarts, controller!.state.status], [1, "failed"], "offline solo Host can run its own Agent while Room sync remains retryable");
+  await act(async () => root.unmount());
+}
+
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
@@ -168,6 +212,9 @@ async function main() {
   const cachedIdentity = loadCollaborationIdentity();
   equal([cachedIdentity?.memberID, cachedIdentity?.memberName, cachedIdentity?.memberRole, cachedIdentity?.agentID, cachedIdentity?.agentName], [draftIdentity.memberID, "Alice", "Backend", draftIdentity.agentID, "Alice Agent"], "completed local identity is cached with stable member and Agent ids");
   equal(detectSelfAgentIntent("帮我检查这个接口的错误日志"), "self_agent", "detects an explicit self-Agent instruction");
+  equal(detectSelfAgentIntent("把现有修改提交一下"), "self_agent", "detects a Chinese commit instruction for the local Agent");
+  equal(detectSelfAgentIntent("把现有的修改 commit 一下"), "self_agent", "detects a mixed-language commit instruction for the local Agent");
+  equal(detectSelfAgentIntent("build and test the current changes"), "self_agent", "detects an English build instruction for the local Agent");
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
   equal(detectSelfAgentIntent("小王，你检查一下这个接口"), "chat", "does not hijack instructions directed at another person");
   equal(detectSelfAgentIntent("接口已经修好了"), "chat", "does not execute completion statements");
@@ -225,6 +272,7 @@ async function main() {
 
   await testSessionTransportIsolation();
   await testAgentBusyGuard();
+  await testOfflineSelfAgentIntervention();
   await testCountdown();
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);
