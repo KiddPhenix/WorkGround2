@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -603,4 +604,211 @@ func TestRecoveryBranchExplicitNormalDoesNotInheritWorkIdentity(t *testing.T) {
 	if recovery.Meta.SessionKind != SessionKindNormal || recovery.Meta.WorkID != "" || recovery.Meta.WorkRequestID != "" {
 		t.Fatalf("explicit normal recovery inherited Work identity: %+v", recovery.Meta)
 	}
+}
+
+func TestResolveLegacyWorkIdentities_ParentChain(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build: work-parent → recovery-1 → recovery-2 (deep chain)
+	// Only work-parent has SessionKind=Work; the recoveries were saved
+	// before the inheritance fix so their sidecars lack the field.
+	parentPath := filepath.Join(dir, "work-parent.jsonl")
+	saveSessionWithMeta(t, parentPath, BranchMeta{
+		SessionKind: SessionKindWork, WorkID: "w-1", WorkRequestID: "r-1",
+		ParentID: "",
+	})
+
+	r1Path := filepath.Join(dir, "recovery-1.jsonl")
+	saveSessionWithMeta(t, r1Path, BranchMeta{
+		ParentID: BranchID(parentPath), Recovered: true,
+		// SessionKind intentionally empty — simulates pre-fix sidecar.
+	})
+
+	r2Path := filepath.Join(dir, "recovery-2.jsonl")
+	saveSessionWithMeta(t, r2Path, BranchMeta{
+		ParentID: BranchID(r1Path), Recovered: true,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	// resolveLegacyWorkIdentities is called inside ListSessionOrder.
+	for _, info := range infos {
+		switch info.Path {
+		case parentPath:
+			if info.SessionKind != SessionKindWork || info.WorkID != "w-1" {
+				t.Fatalf("parent SessionKind=%q WorkID=%q, want work/w-1", info.SessionKind, info.WorkID)
+			}
+		case r1Path:
+			if info.SessionKind != SessionKindWork || info.WorkID != "w-1" {
+				t.Fatalf("r1 SessionKind=%q WorkID=%q, want work/w-1 (chain resolve)", info.SessionKind, info.WorkID)
+			}
+		case r2Path:
+			if info.SessionKind != SessionKindWork || info.WorkID != "w-1" {
+				t.Fatalf("r2 SessionKind=%q WorkID=%q, want work/w-1 (nested resolve)", info.SessionKind, info.WorkID)
+			}
+		}
+	}
+}
+
+func TestResolveLegacyWorkIdentities_NormalUnaffected(t *testing.T) {
+	dir := t.TempDir()
+
+	// Normal chat session with a recovery child.
+	chatPath := filepath.Join(dir, "chat.jsonl")
+	saveSessionWithMeta(t, chatPath, BranchMeta{
+		SessionKind: SessionKindNormal, ParentID: "",
+	})
+
+	recPath := filepath.Join(dir, "chat-recovery.jsonl")
+	saveSessionWithMeta(t, recPath, BranchMeta{
+		ParentID: BranchID(chatPath), Recovered: true,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	for _, info := range infos {
+		if info.SessionKind == SessionKindWork {
+			t.Fatalf("%s got SessionKind=work from normal parent", info.Path)
+		}
+		if info.WorkID != "" {
+			t.Fatalf("%s got WorkID=%q from normal parent", info.Path, info.WorkID)
+		}
+	}
+}
+
+func TestResolveLegacyWorkIdentities_ExplicitNormalStops(t *testing.T) {
+	dir := t.TempDir()
+
+	// Work parent → recovery with explicit SessionKind=normal.
+	workPath := filepath.Join(dir, "work.jsonl")
+	saveSessionWithMeta(t, workPath, BranchMeta{
+		SessionKind: SessionKindWork, WorkID: "w-stop",
+	})
+
+	recPath := filepath.Join(dir, "work-recovery-normal.jsonl")
+	saveSessionWithMeta(t, recPath, BranchMeta{
+		ParentID: BranchID(workPath), Recovered: true,
+		SessionKind: SessionKindNormal,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	for _, info := range infos {
+		if info.Path == recPath && info.SessionKind == SessionKindWork {
+			t.Fatalf("explicit normal recovery should not inherit Work identity")
+		}
+	}
+}
+
+func TestResolveLegacyWorkIdentities_CycleSafe(t *testing.T) {
+	dir := t.TempDir()
+
+	// Self-referencing ParentID should not crash or infinite-loop.
+	aPath := filepath.Join(dir, "a.jsonl")
+	saveSessionWithMeta(t, aPath, BranchMeta{
+		ParentID: BranchID(aPath), Recovered: true,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(infos))
+	}
+	// Just verifying no panic — the function should return safely.
+}
+
+func TestResolveLegacyWorkIdentities_MissingParent(t *testing.T) {
+	dir := t.TempDir()
+
+	// Session with ParentID pointing to a non-existent session.
+	orphanPath := filepath.Join(dir, "orphan.jsonl")
+	saveSessionWithMeta(t, orphanPath, BranchMeta{
+		ParentID: "nonexistent-id", Recovered: true,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(infos))
+	}
+	// Orphan should stay as-is, no crash.
+	if infos[0].SessionKind == SessionKindWork {
+		t.Fatalf("orphan with missing parent should not get Work identity")
+	}
+}
+
+func TestResolveLegacyWorkIdentities_InvalidParentID(t *testing.T) {
+	dir := t.TempDir()
+
+	// ParentID with path separators should be rejected safely.
+	badPath := filepath.Join(dir, "bad.jsonl")
+	saveSessionWithMeta(t, badPath, BranchMeta{
+		ParentID: "../../etc/passwd", Recovered: true,
+	})
+
+	infos := mustListSessionOrder(t, dir)
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(infos))
+	}
+	// Should not crash and should not resolve.
+}
+
+func TestResolveLegacyWorkIdentities_DepthLimited(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := filepath.Join(dir, "work-root.jsonl")
+	saveSessionWithMeta(t, rootPath, BranchMeta{SessionKind: SessionKindWork, WorkID: "too-deep"})
+	parentID := BranchID(rootPath)
+	for i := 10; i >= 1; i-- {
+		path := filepath.Join(dir, fmt.Sprintf("recovery-%d.jsonl", i))
+		saveSessionWithMeta(t, path, BranchMeta{ParentID: parentID, Recovered: true})
+		parentID = BranchID(path)
+	}
+	currentPath := filepath.Join(dir, "current.jsonl")
+	saveSessionWithMeta(t, currentPath, BranchMeta{ParentID: parentID, Recovered: true})
+
+	infos := mustListSessionOrder(t, dir)
+	for _, info := range infos {
+		if info.Path == currentPath && info.SessionKind == SessionKindWork {
+			t.Fatal("over-depth recovery chain inherited Work identity")
+		}
+	}
+}
+
+// saveSessionWithMeta writes a minimal .jsonl + .jsonl.meta pair.
+func saveSessionWithMeta(t *testing.T, path string, meta BranchMeta) {
+	t.Helper()
+	s := NewSession("")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	if err := s.Save(path); err != nil {
+		t.Fatalf("save %s: %v", path, err)
+	}
+	// Load the metadata EnsureBranchMeta just wrote, then merge in our fields.
+	existing, err := EnsureBranchMeta(path)
+	if err != nil {
+		t.Fatalf("ensure meta %s: %v", path, err)
+	}
+	// Merge: keep existing non-empty values unless overridden by meta param.
+	if meta.SessionKind != "" {
+		existing.SessionKind = meta.SessionKind
+	}
+	if meta.WorkID != "" {
+		existing.WorkID = meta.WorkID
+	}
+	if meta.WorkRequestID != "" {
+		existing.WorkRequestID = meta.WorkRequestID
+	}
+	if meta.ParentID != "" {
+		existing.ParentID = meta.ParentID
+	}
+	if meta.Recovered {
+		existing.Recovered = true
+	}
+	existing.SessionSource = meta.SessionSource
+	if err := SaveBranchMetaPreserveUpdated(path, existing); err != nil {
+		t.Fatalf("save meta %s: %v", path, err)
+	}
+}
+
+func mustListSessionOrder(t *testing.T, dir string) []SessionOrderInfo {
+	t.Helper()
+	infos, err := ListSessionOrder(dir)
+	if err != nil {
+		t.Fatalf("ListSessionOrder: %v", err)
+	}
+	return infos
 }

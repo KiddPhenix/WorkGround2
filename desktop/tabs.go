@@ -6858,6 +6858,18 @@ func (a *App) ListProjectTree() []ProjectNode {
 			return left.sessionPath < right.sessionPath
 		})
 	}
+	// Keep persisted sessions grouped by topic so a coherent Work lineage can
+	// project its identity before any runtime is opened. Mixed normal/Work or
+	// distinct Work identities remain ambiguous and are not promoted.
+	persistedSessionsByTopic := map[string][]agent.SessionInfo{}
+	for _, info := range sessionInfos {
+		tid := strings.TrimSpace(info.TopicID)
+		if tid == "" || isWorkTaskSessionSource(info.SessionSource) {
+			continue
+		}
+		topicKey := topicSummaryKey(info.Scope, info.WorkspaceRoot, tid)
+		persistedSessionsByTopic[topicKey] = append(persistedSessionsByTopic[topicKey], info)
+	}
 	topicRuntimeStatus := func(key string) (open, running bool, status string, turnStartedAt int64) {
 		sessions := runtimeSessionsByTopic[key]
 		if len(sessions) == 0 {
@@ -6895,11 +6907,41 @@ func (a *App) ListProjectTree() []ProjectNode {
 	}
 	topicWorkBinding := func(key string) (sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
-		if len(sessions) != 1 || sessions[0].sessionKind != string(agent.SessionKindWork) {
+		if len(sessions) == 1 && sessions[0].sessionKind == string(agent.SessionKindWork) {
+			session := sessions[0]
+			return session.sessionPath, session.sessionKind, session.workID
+		}
+		if len(sessions) != 0 {
 			return "", "", ""
 		}
-		session := sessions[0]
-		return session.sessionPath, session.sessionKind, session.workID
+		persisted := persistedSessionsByTopic[key]
+		if len(persisted) == 0 {
+			return "", "", ""
+		}
+		selected := persisted[0]
+		identityWorkID := ""
+		identityRequestID := ""
+		for _, info := range persisted {
+			if info.SessionKind != agent.SessionKindWork {
+				return "", "", ""
+			}
+			if info.WorkID != "" {
+				if identityWorkID != "" && identityWorkID != info.WorkID {
+					return "", "", ""
+				}
+				identityWorkID = info.WorkID
+			}
+			if info.WorkRequestID != "" {
+				if identityRequestID != "" && identityRequestID != info.WorkRequestID {
+					return "", "", ""
+				}
+				identityRequestID = info.WorkRequestID
+			}
+			if info.LastActivityAt.After(selected.LastActivityAt) {
+				selected = info
+			}
+		}
+		return selected.Path, string(agent.SessionKindWork), identityWorkID
 	}
 	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)

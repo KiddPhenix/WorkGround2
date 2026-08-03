@@ -1818,9 +1818,6 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			recoveryDigest = meta.RecoveryDigest
 			parentID = meta.ParentID
 			sessionKind = meta.SessionKind
-			if sessionKind == "" {
-				sessionKind = SessionKindNormal
-			}
 			workID = meta.WorkID
 			workRequestID = meta.WorkRequestID
 			turns = meta.Turns
@@ -1858,6 +1855,14 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		})
 	}
 	resolveLegacyRecoverySources(out)
+	resolveLegacyWorkIdentities(out)
+	// Normalize empty SessionKind after resolution so legacy chains
+	// that inherit Work identity are resolved first.
+	for i := range out {
+		if out[i].SessionKind == "" {
+			out[i].SessionKind = SessionKindNormal
+		}
+	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].LastActivityAt.Equal(out[j].LastActivityAt) {
 			return out[i].Path < out[j].Path
@@ -1909,6 +1914,54 @@ func resolveLegacyRecoverySources(infos []SessionOrderInfo) {
 
 	for i := range infos {
 		infos[i].SessionSource = resolve(i)
+	}
+}
+
+// resolveLegacyWorkIdentities repairs Work identity for recovered sessions
+// whose own sidecar predates the inheritance fix in SaveRecoveryBranch. It
+// walks the ParentID chain (up to 10 levels) looking for an ancestor whose
+// SessionKind == SessionKindWork, and propagates the identity down.
+// Sessions that already carry Work identity or have no parent are left alone;
+// cyclic chains and invalid ParentIDs stop safely.
+func resolveLegacyWorkIdentities(infos []SessionOrderInfo) {
+	original := append([]SessionOrderInfo(nil), infos...)
+	byID := make(map[string]int, len(infos))
+	for i := range original {
+		if id := strings.TrimSpace(string(BranchID(original[i].Path))); id != "" {
+			byID[id] = i
+		}
+	}
+
+	const maxDepth = 10
+	for i := range original {
+		if original[i].SessionKind != "" || strings.TrimSpace(original[i].ParentID) == "" {
+			continue
+		}
+		current := i
+		visited := map[int]bool{i: true}
+		for range maxDepth {
+			parentID := strings.TrimSpace(original[current].ParentID)
+			if parentID == "" || parentID != filepath.Base(parentID) || parentID == "." || parentID == ".." {
+				break
+			}
+			parent, ok := byID[parentID]
+			if !ok || visited[parent] {
+				break
+			}
+			visited[parent] = true
+			switch original[parent].SessionKind {
+			case SessionKindWork:
+				infos[i].SessionKind = SessionKindWork
+				infos[i].WorkID = original[parent].WorkID
+				infos[i].WorkRequestID = original[parent].WorkRequestID
+			case SessionKindNormal:
+				current = -1
+			}
+			if infos[i].SessionKind == SessionKindWork || current < 0 {
+				break
+			}
+			current = parent
+		}
 	}
 }
 

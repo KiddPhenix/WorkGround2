@@ -10,6 +10,15 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
+### Session List Work 图标首屏同步
+- Status: done
+- Branch: `developping/session-list-work-icon+2026-08-03`
+- Location: `internal/agent/save.go`, `desktop/tabs.go`, 对应 Go 回归测试
+- Summary: Session List 首次加载即从持久化 sidecar/recovery 祖先投影一致的 Work 身份；混合或冲突身份保持普通 topic，无需点击后才刷新小公文包图标。
+- Keywords: Session List, Work icon, ProjectTree, session_kind, recovery, cold start
+- Source: user-reported+screenshot
+- Updated: 2026-08-03
+
 ### Work Recovery 身份继承
 - Status: done
 - Branch: `developping/work-recovery-identity+2026-08-03`
