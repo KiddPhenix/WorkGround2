@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
-import { collabReducer, detectSelfAgentIntent, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
+import { collabReducer, detectSelfAgentIntentRule, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
 import type {
   CollaborationActionResult,
@@ -61,6 +61,8 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const [state, dispatch] = useReducer(collabReducer, initialCollabState);
   const [agentStarting, setAgentStarting] = useState(false);
   const refreshEpoch = useRef(0);
+  const intentEpoch = useRef(0);
+  const intentChecks = useRef(new Set<string>());
   const agentStartRef = useRef<Promise<void> | null>(null);
   const self = ownMember(state);
   const agentBusy = agentStarting || self?.agent.status === "running" || self?.agent.status === "waiting";
@@ -108,6 +110,12 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     return () => { refreshEpoch.current++; };
   }, [refresh]);
 
+  useEffect(() => {
+    intentEpoch.current++;
+    intentChecks.current.clear();
+    return () => { intentEpoch.current++; };
+  }, [transport]);
+
   const host = useCallback(async (input: HostCollaborationRoomInput) => {
     dispatch({ type: "CONNECTING", operation: "host" });
     try {
@@ -143,12 +151,48 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const invite = useCallback(() => transport.invite(), [transport]);
 
   const createPendingIntent = useCallback((item: CollaborationTimelineItem) => {
-    if (detectSelfAgentIntent(item.text) === "chat") return;
-    dispatch({
-      type: "PENDING_INTENT",
-      intent: { messageId: item.id, revision: item.revision, instruction: item.text, deadline: Date.now() + 5_000, status: "pending" },
+    const rule = detectSelfAgentIntentRule(item.text);
+    if (rule.covered) {
+      if (rule.intent === "chat") return;
+      dispatch({
+        type: "PENDING_INTENT",
+        intent: { messageId: item.id, revision: item.revision, instruction: item.text, deadline: Date.now() + 5_000, status: "pending" },
+      });
+      return;
+    }
+    if (!transport.classifyIntent) return;
+    const key = `${item.id}:${item.revision}`;
+    if (intentChecks.current.has(key)) return;
+    intentChecks.current.add(key);
+    const epoch = intentEpoch.current;
+    void transport.classifyIntent(item.text).then((result) => {
+      if (epoch !== intentEpoch.current || (result.intent === "chat" && !result.error)) return;
+      dispatch({
+        type: "PENDING_INTENT",
+        intent: {
+          messageId: item.id,
+          revision: item.revision,
+          instruction: item.text,
+          deadline: Date.now() + 5_000,
+          status: result.error ? "failed" : "pending",
+          error: result.error ? `${t("collab.semanticIntentFailed")}: ${result.error}` : undefined,
+        },
+      });
+    }).catch((error) => {
+      if (epoch !== intentEpoch.current) return;
+      dispatch({
+        type: "PENDING_INTENT",
+        intent: {
+          messageId: item.id,
+          revision: item.revision,
+          instruction: item.text,
+          deadline: Date.now(),
+          status: "failed",
+          error: `${t("collab.semanticIntentFailed")}: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      });
     });
-  }, []);
+  }, [t, transport]);
 
   useEffect(() => {
     for (const item of replayableSelfAgentItems(state)) createPendingIntent(item);

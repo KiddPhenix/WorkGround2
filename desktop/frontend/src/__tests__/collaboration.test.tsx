@@ -7,11 +7,11 @@ import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
-import { collabReducer, detectSelfAgentIntent, initialCollabState, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
+import { collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
 import { buildCollaborationInvite, parseCollaborationInvite } from "../collab/invite";
 import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
-import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
+import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
 import { buildAgreeMessageInput, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
@@ -85,6 +85,7 @@ async function testAgentBusyGuard() {
     timeline: [],
   };
   let startCalls = 0;
+  let semanticCalls = 0;
   let finishStart: ((value: { ok: boolean }) => void) | undefined;
   const transport: CollaborationTransport = {
     async getState() { return connected; },
@@ -93,6 +94,11 @@ async function testAgentBusyGuard() {
     async join() { return connected; },
     async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "busy-room" }; },
     async leave() {},
+    async classifyIntent(text) {
+      semanticCalls++;
+      if (text.includes("外部")) return { intent: "uncertain", source: "llm" };
+      return { intent: "chat", source: "fallback", error: "model temporarily unavailable", retryable: true };
+    },
     async post(input) { return { ok: true, item: { ...item(input.requestID, 1, input.text), kind: input.kind } }; },
     startAgent() {
       startCalls++;
@@ -111,6 +117,13 @@ async function testAgentBusyGuard() {
   await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
   await act(async () => { await controller!.postChat("这个接口是不是有问题？"); });
   ok(Object.keys(controller!.state.pendingIntents).length === 1, "uncertain self message receives a stoppable Agent countdown");
+  await act(async () => { await controller!.postChat("现在 多人协作room, 在session里会有一个\"外部\"的标签"); await Promise.resolve(); });
+  equal([semanticCalls, Object.values(controller!.state.pendingIntents).filter((entry) => entry.status === "pending").length], [1, 2], "uncovered statement uses LLM semantic intent and receives a countdown");
+  await act(async () => { await controller!.postChat("帮我检查这个接口"); await Promise.resolve(); });
+  equal(semanticCalls, 1, "covered instruction does not spend an LLM classification call");
+  await act(async () => { await controller!.postChat("今天同步窗口是下午三点"); await Promise.resolve(); });
+  const failedIntent = Object.values(controller!.state.pendingIntents).find((entry) => entry.instruction.includes("下午三点"));
+  equal([semanticCalls, failedIntent?.status, Boolean(failedIntent?.error)], [2, "failed", true], "LLM failure stays visible and recoverable without failing the Room send");
   let first!: Promise<void>;
   let second!: Promise<void>;
   await act(async () => {
@@ -226,6 +239,8 @@ async function main() {
   equal(detectSelfAgentIntent("这个接口是不是有问题？"), "uncertain", "keeps ambiguous questions as suggestions");
   equal(detectSelfAgentIntent("小王，你检查一下这个接口"), "chat", "does not hijack instructions directed at another person");
   equal(detectSelfAgentIntent("接口已经修好了"), "chat", "does not execute completion statements");
+  equal(detectSelfAgentIntentRule("现在 多人协作room, 在session里会有一个\"外部\"的标签"), { intent: "chat", covered: false }, "plain statement is explicitly marked for semantic fallback");
+  equal(detectSelfAgentIntentRule("接口已经修好了"), { intent: "chat", covered: true }, "completion statement is a covered negative and skips semantic fallback");
   const replayChat = { ...item("outbox:queued-chat", 12, "把现有修改提交一下"), localPending: true, syncStatus: "pending" as const };
   const replayRun = { ...item("outbox:queued-run", 13, "把现有修改提交一下"), kind: "agent_command" as const, actorAgent: true, localPending: true, syncStatus: "pending" as const, referenceIds: [replayChat.id], agentRunStatus: "running" as const };
   equal(replayableSelfAgentItems({ ...initialCollabState, selfMemberId: "self", timeline: [replayChat] }).map((entry) => entry.id), [replayChat.id], "restored Outbox chat replays a missing local Agent intent");
@@ -281,6 +296,8 @@ async function main() {
   equal(pendingState.timeline.map((entry) => entry.id), ["synced-chat"], "authoritative sync replaces the local pending projection without a ghost duplicate");
   const busy = normalizeCollaborationAction({ requestId: "busy-1", code: "agent_busy", retryable: true, error: "wording-independent" });
   equal([busy.ok, busy.code, busy.retryable], [false, "agent_busy", true], "structured Agent busy code survives transport normalization");
+  equal(normalizeCollaborationIntent({ Intent: "uncertain", Source: "llm" }), { intent: "uncertain", source: "llm", error: undefined, retryable: false }, "semantic intent bridge normalizes strict model output");
+  equal(normalizeCollaborationIntent({ Intent: "maybe", Source: "llm" }).intent, "chat", "invalid semantic intent safely falls back to chat");
 
   await testSessionTransportIsolation();
   await testAgentBusyGuard();

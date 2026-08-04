@@ -116,6 +116,18 @@ type StartCollaborationAgentInput struct {
 	AgentRequestID string   `json:"agentRequestId,omitempty"`
 }
 
+type ClassifyCollaborationIntentInput struct {
+	SessionID string `json:"sessionId"`
+	Text      string `json:"text"`
+}
+
+type CollaborationIntentResult struct {
+	Intent    string `json:"intent"`
+	Source    string `json:"source"`
+	Error     string `json:"error,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
 type RespondCollaborationRequestInput struct {
 	RequestID      string `json:"requestId"`
 	AgentRequestID string `json:"agentRequestId"`
@@ -496,6 +508,46 @@ func (a *App) PostCollaborationMessage(input PostCollaborationMessageInput) (Col
 		return CollaborationActionResult{}, err
 	}
 	return runtime.post(a.bootContext(), input)
+}
+
+// ClassifyCollaborationIntent is a read-only semantic fallback for Room
+// messages that were not covered by deterministic frontend rules.
+func (a *App) ClassifyCollaborationIntent(input ClassifyCollaborationIntentInput) CollaborationIntentResult {
+	text := strings.TrimSpace(input.Text)
+	if text == "" {
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "rule"}
+	}
+	tab := a.sessionByID(strings.TrimSpace(input.SessionID))
+	if tab == nil {
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: "collaboration Session is unavailable", Retryable: true}
+	}
+	a.mu.RLock()
+	ctrl := tab.Ctrl
+	readOnly := tab.ReadOnly
+	startupErr := strings.TrimSpace(tab.StartupErr)
+	a.mu.RUnlock()
+	if readOnly {
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: readOnlyChannelErr().Error()}
+	}
+	if ctrl == nil {
+		if startupErr == "" {
+			startupErr = "Session model is still starting"
+		}
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: startupErr, Retryable: true}
+	}
+	classifier, ok := ctrl.(interface {
+		ClassifySemanticIntent(context.Context, string) (agent.SemanticIntent, error)
+	})
+	if !ok {
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: "Session model does not support semantic intent classification"}
+	}
+	ctx, cancel := context.WithTimeout(a.bootContext(), 4*time.Second)
+	defer cancel()
+	intent, err := classifier.ClassifySemanticIntent(ctx, text)
+	if err != nil {
+		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: err.Error(), Retryable: true}
+	}
+	return CollaborationIntentResult{Intent: string(intent), Source: "llm"}
 }
 
 func (a *App) StartCollaborationAgent(input StartCollaborationAgentInput) (CollaborationActionResult, error) {

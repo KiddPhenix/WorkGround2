@@ -19,6 +19,13 @@ export type CollaborationSyncStatus = "synced" | "pending" | "failed";
 export type CollaborationAgentStatus = "idle" | "running" | "waiting" | "completed" | "error" | "offline";
 export type CollaborationIntentClass = "chat" | "uncertain" | "self_agent";
 
+export interface CollaborationIntentResult {
+  intent: CollaborationIntentClass;
+  source: "rule" | "llm" | "fallback";
+  error?: string;
+  retryable?: boolean;
+}
+
 export interface CollaborationMember {
   id: string;
   name: string;
@@ -174,6 +181,7 @@ export interface CollaborationTransport {
   join(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
   invite(): Promise<CollaborationInvite>;
   leave(): Promise<void>;
+  classifyIntent?(text: string): Promise<CollaborationIntentResult>;
   post(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   startAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
   respond(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
