@@ -144,7 +144,11 @@ func (c *semanticIntentClassifier) request(ctx context.Context, input string) (S
 			response.WriteString(chunk.Text)
 		}
 	}
-	intent := SemanticIntent(strings.ToLower(strings.TrimSpace(response.String())))
+	raw := strings.TrimSpace(response.String())
+	if raw == "" {
+		return SemanticIntentChat, nil
+	}
+	intent := SemanticIntent(strings.ToLower(raw))
 	switch intent {
 	case SemanticIntentChat, SemanticIntentUncertain, SemanticIntentSelfAgent:
 		return intent, nil
