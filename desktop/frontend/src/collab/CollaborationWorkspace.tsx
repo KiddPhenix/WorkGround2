@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Bot, Check, ChevronRight, Circle, CircleAlert, Copy, LogOut, RefreshCw, Share2, Users, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useState } from "react";
+import { Bot, Check, ChevronRight, Circle, CircleAlert, Copy, LogOut, RefreshCw, Save, Settings2, Share2, Users, X } from "lucide-react";
 import { useI18n } from "../lib/i18n";
 import { collabCopy } from "./copy";
 import { useCollabController } from "./useCollabController";
@@ -10,6 +10,7 @@ import { CollaborationTimeline } from "./components/CollaborationTimeline";
 import { buildCollaborationInvite } from "./invite";
 import type { CollaborationInvite } from "./types";
 import type { ComposerSubmitKey } from "../lib/composerKeyboard";
+import { useScrollManager } from "../lib/useScrollManager";
 import "./collab.css";
 
 interface CollaborationWorkspaceProps {
@@ -66,8 +67,23 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const [inviteHost, setInviteHost] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [aliasDraft, setAliasDraft] = useState("");
+  const [configSaving, setConfigSaving] = useState(false);
+  const { scrollRef: timelineRef, stick: timelineStick, onScroll: onTimelineScroll, snapToBottom: snapTimelineToBottom } = useScrollManager();
   const ownsRoom = Boolean(sessionID) && state.selfSessionId === sessionID;
   const usable = ownsRoom && Boolean(state.room);
+
+  useLayoutEffect(() => {
+    snapTimelineToBottom();
+  }, [snapTimelineToBottom, sessionID, state.room?.room]);
+
+  useLayoutEffect(() => {
+    if (timelineStick.current) snapTimelineToBottom();
+  }, [snapTimelineToBottom, state.timeline, state.transfers, timelineStick]);
+
+  useEffect(() => {
+    setAliasDraft(state.agentConfig.alias || self?.agent.name || "");
+  }, [self?.agent.name, state.agentConfig.alias]);
 
   if (mode === "dialog") {
     return <div className="collab-modal" role="dialog" aria-modal="true" aria-label={c("title")}>
@@ -135,6 +151,19 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
       setInviteError(error instanceof Error ? error.message : String(error));
     }
   };
+  const saveAgentConfig = async (next = state.agentConfig) => {
+    setConfigSaving(true);
+    try {
+      await controller.updateAgentConfig(next);
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+  const saveAlias = async () => {
+    const alias = aliasDraft.trim();
+    if (!alias || alias === state.agentConfig.alias) return;
+    await saveAgentConfig({ ...state.agentConfig, alias });
+  };
 
   return <section className="collab-surface" aria-label={c("title")}>
     <div className="collab-workspace">
@@ -163,7 +192,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
           {!state.actionError && state.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}
         </div>}
 
-        <div className="collab-scroll" aria-label={c("timeline")}>
+        <div ref={timelineRef} className="collab-scroll" aria-label={c("timeline")} onScroll={onTimelineScroll}>
           <CollaborationTimeline
             items={state.timeline}
             selfMemberId={state.selfMemberId}
@@ -171,6 +200,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             pendingIntents={state.pendingIntents}
             connected={usable && !agentBusy}
             agentBusy={agentBusy}
+            transfers={state.transfers || []}
             onToggle={controller.toggleSelection}
             onReply={(item) => setPrefill(`> ${item.actorName}: ${item.text}\n\n`)}
             onAgree={(item) => handleAction(controller.agree(item))}
@@ -181,6 +211,10 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onStartPending={(intent) => void controller.startPending(intent)}
             onStopPending={controller.stopPending}
             onEditPending={controller.editPending}
+            onReceiveFile={(id) => handleAction(controller.receiveFile(id))}
+            onPauseFile={(id) => handleAction(controller.pauseFile(id))}
+            onResumeFile={(id) => handleAction(controller.resumeFile(id))}
+            onRevokeFile={(id) => handleAction(controller.revokeFile(id))}
           />
         </div>
 
@@ -206,21 +240,38 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onAgent={(text) => controller.startAgent(text, [])}
             onRequest={(memberId, text) => controller.requestAgent(memberId, text)}
             onSwitchModel={onSwitchModel}
+            onShareFiles={controller.shareFiles}
           />
         </footer>
       </main>
 
       <aside className="collab-members">
-        <h2>{c("members")}</h2>
-        <div className="collab-member-list">
+        {self && <section className="collab-agent-config" aria-labelledby="collab-agent-config-title">
+          <header>
+            <span><Settings2 size={15} aria-hidden="true" /></span>
+            <div><h2 id="collab-agent-config-title">{c("agentSettings")}</h2><p>{c("agentSettingsHint")}</p></div>
+          </header>
+          <form className="collab-agent-alias" onSubmit={(event) => { event.preventDefault(); handleAction(saveAlias()); }}>
+            <label htmlFor="collab-agent-alias">{c("agentAlias")}</label>
+            <div><input id="collab-agent-alias" value={aliasDraft} maxLength={256} disabled={configSaving} onChange={(event) => setAliasDraft(event.target.value)} /><button type="submit" disabled={configSaving || !aliasDraft.trim() || aliasDraft.trim() === state.agentConfig.alias} aria-label={c("saveAgentAlias")} title={c("saveAgentAlias")}><Save size={14} /></button></div>
+          </form>
+          <div className="collab-agent-options">
+            <label><span><strong>{c("autoQuestions")}</strong><small>{c("autoQuestionsHint")}</small></span><input type="checkbox" checked={state.agentConfig.autoRespondQuestions} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, autoRespondQuestions: event.target.checked }))} /></label>
+            <label><span><strong>{c("autoRequests")}</strong><small>{c("autoRequestsHint")}</small></span><input type="checkbox" checked={state.agentConfig.autoRespondRequests} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, autoRespondRequests: event.target.checked }))} /></label>
+          </div>
+          <label className="collab-agent-scan"><span>{c("recognitionMode")}</span><select value={state.agentConfig.recognitionMode} disabled={configSaving} onChange={(event) => handleAction(saveAgentConfig({ ...state.agentConfig, recognitionMode: event.target.value as typeof state.agentConfig.recognitionMode }))}><option value="message">{c("recognitionMessage")}</option><option value="interval">{c("recognitionInterval")}</option><option value="off">{c("recognitionOff")}</option></select></label>
+        </section>}
+        <section className="collab-member-section">
+          <h2>{c("members")} <span>{state.members.length}</span></h2>
+          <div className="collab-member-list">
           {state.members.map((member) => <article key={member.id} className={`collab-member${member.id === state.selfMemberId || member.isSelf ? " collab-member--self" : ""}`}>
             <div className="collab-avatar">{member.name.slice(0, 1)}</div>
             <div><strong>{member.name}{member.id === state.selfMemberId || member.isSelf ? ` (${c("you")})` : ""}</strong><span>{member.agent.name}</span></div>
             <span className={`collab-member-status collab-member-status--${member.online ? member.agent.status : "offline"}`} title={`${member.online ? c("online") : c("offline")} · ${agentStatusLabel(member.agent.status, c)}`}><Circle size={8} fill="currentColor" />{member.online ? agentStatusLabel(member.agent.status, c) : c("offline")}</span>
             <ChevronRight size={15} aria-hidden="true" />
           </article>)}
-        </div>
-        {self && <div className="collab-owner-note"><Bot size={15} /><span><strong>{self.agent.name}</strong>{c("subtitle")}</span></div>}
+          </div>
+        </section>
       </aside>
     </div>
   </section>;

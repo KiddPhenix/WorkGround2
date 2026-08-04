@@ -12,12 +12,21 @@ export type CollaborationItemKind =
   | "agent_command"
   | "agent_request"
   | "agent_result"
+  | "file"
   | "reaction"
   | "system";
 
 export type CollaborationSyncStatus = "synced" | "pending" | "failed";
 export type CollaborationAgentStatus = "idle" | "running" | "waiting" | "completed" | "error" | "offline";
 export type CollaborationIntentClass = "chat" | "uncertain" | "self_agent";
+export type CollaborationRecognitionMode = "message" | "interval" | "off";
+
+export interface CollaborationAgentConfig {
+  alias: string;
+  autoRespondQuestions: boolean;
+  autoRespondRequests: boolean;
+  recognitionMode: CollaborationRecognitionMode;
+}
 
 export interface CollaborationIntentResult {
   intent: CollaborationIntentClass;
@@ -62,6 +71,26 @@ export interface CollaborationTimelineItem {
   agentRunError?: string;
   systemKind?: string;
   reactions?: Record<string, string[]>;
+  fileName?: string;
+  fileSize?: number;
+  fileMime?: string;
+  fileSHA256?: string;
+  fileRevoked?: boolean;
+}
+
+export type CollaborationFileTransferStatus = "preparing" | "pending" | "available" | "unavailable" | "source_changed" | "revoked" | "negotiating" | "downloading" | "paused" | "waiting_sender" | "verifying" | "completed" | "failed";
+
+export interface CollaborationFileTransfer {
+  id: string;
+  fileId: string;
+  direction: "share" | "receive";
+  name: string;
+  status: CollaborationFileTransferStatus;
+  transferred: number;
+  total: number;
+  destination?: string;
+  error?: string;
+  retryable?: boolean;
 }
 
 export interface CollaborationRoom {
@@ -85,6 +114,8 @@ export interface CollaborationState {
   lastError?: string;
   retryable?: boolean;
   unsyncedCount?: number;
+  transfers?: CollaborationFileTransfer[];
+  agentConfig?: CollaborationAgentConfig;
 }
 
 export interface CollaborationInvite {
@@ -152,6 +183,11 @@ export interface RespondCollaborationRequestInput {
   sessionID: string;
 }
 
+export interface UpdateCollaborationAgentConfigInput {
+  requestID: string;
+  config: CollaborationAgentConfig;
+}
+
 export interface CollaborationActionResult {
   ok: boolean;
   requestID?: string;
@@ -185,6 +221,12 @@ export interface CollaborationTransport {
   post(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   startAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
   respond(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
+  updateAgentConfig(input: UpdateCollaborationAgentConfigInput): Promise<CollaborationState>;
+  shareFiles(paths: string[]): Promise<CollaborationFileTransfer[]>;
+  receiveFile(fileId: string): Promise<CollaborationFileTransfer>;
+  pauseFile(fileId: string): Promise<CollaborationFileTransfer>;
+  resumeFile(fileId: string): Promise<CollaborationFileTransfer>;
+  revokeFile(fileId: string): Promise<CollaborationActionResult>;
   subscribeState(listener: (state: CollaborationState) => void): () => void;
   subscribeEvent(listener: (item: CollaborationTimelineItem) => void): () => void;
 }

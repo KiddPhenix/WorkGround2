@@ -7,12 +7,12 @@ import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { collabCopy, contributionLabel } from "../collab/copy";
-import { collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
+import { collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
 import { buildCollaborationInvite, parseCollaborationInvite } from "../collab/invite";
 import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
 import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
-import { buildAgreeMessageInput, useCollabController, type CollabController } from "../collab/useCollabController";
+import { buildAgreeMessageInput, loadCollaborationState, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
 let passed = 0;
@@ -105,6 +105,12 @@ async function testAgentBusyGuard() {
       return new Promise((resolve) => { finishStart = resolve; });
     },
     async respond() { return { ok: true }; },
+    async updateAgentConfig(input) { connected.agentConfig = input.config; return connected; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
     subscribeState() { return () => {}; },
     subscribeEvent() { return () => {}; },
   };
@@ -168,6 +174,12 @@ async function testOfflineSelfAgentIntervention() {
       return { ok: true, queued: true, item: { ...item(`outbox:${input.requestID}`, 3, input.instruction), kind: "agent_command", actorAgent: true, localPending: true, syncStatus: "pending", agentRunStatus: "running" } };
     },
     async respond() { return { ok: true }; },
+    async updateAgentConfig(input) { offline.agentConfig = input.config; return offline; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
     subscribeState() { return () => {}; },
     subscribeEvent() { return () => {}; },
   };
@@ -196,6 +208,7 @@ async function main() {
   const composerSource = readFileSync(new URL("../collab/components/CollaborationComposer.tsx", import.meta.url), "utf8");
   const connectionSource = readFileSync(new URL("../collab/components/ConnectionPanel.tsx", import.meta.url), "utf8");
   const timelineSource = readFileSync(new URL("../collab/components/CollaborationTimeline.tsx", import.meta.url), "utf8");
+  const projectTreeSource = readFileSync(new URL("../components/ProjectTree.tsx", import.meta.url), "utf8");
   for (const [selector, row] of [["collab-topicbar", 1], ["collab-status-banner", 2], ["collab-scroll", 3], ["collab-footer", 4]] as const) {
     ok(new RegExp(`\\.${selector}\\s*\\{[^}]*grid-row:\\s*${row}(?:;|\\s)`).test(layoutCSS), `${selector} stays in grid row ${row} when the optional status banner is absent`);
   }
@@ -204,6 +217,7 @@ async function main() {
   ok(appSource.includes('activeTab?.sessionKind === "collaboration"') && appSource.includes("ensureBlankTab(target.scope, target.workspaceRoot)"), "Room starts from a workspace-owned blank Session");
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
+  ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null : projectTreeSourceBadge(node, t)"), "Room Session keeps its dedicated icon without an external-source badge");
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
@@ -216,7 +230,13 @@ async function main() {
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
   ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
+  ok(/\.app--windows-frameless \.collab-members\s*\{[^}]*padding-top:\s*calc\(var\(--windows-window-controls-height/.test(layoutCSS), "Room right panel clears the Windows window controls");
+  ok(workspaceSource.indexOf("collab-agent-config") < workspaceSource.indexOf("collab-member-section"), "own Agent configuration is placed above the member list");
+  ok(workspaceSource.includes('c("autoQuestions")') && workspaceSource.includes('c("autoRequests")') && workspaceSource.includes('c("recognitionMode")'), "Agent panel exposes question, operation-request, and recognition-cycle controls");
   ok(composerSource.includes("isComposerSubmitKey") && composerSource.includes("ModelSwitcher") && appSource.includes("submitKey={composerSubmitKey}"), "collaboration composer reuses configured send shortcut and active Session model selection");
+  ok(workspaceSource.includes("useScrollManager") && workspaceSource.includes("timelineStick.current") && workspaceSource.includes("snapTimelineToBottom()") && workspaceSource.includes("onScroll={onTimelineScroll}"), "Room timeline follows new messages while reusing the shared sticky-bottom guard");
+  ok(composerSource.includes("onFilesDroppedIn") && composerSource.includes('"--wails-drop-target": "drop"') && workspaceSource.includes("onShareFiles={controller.shareFiles}"), "Room composer owns native file drops and routes paths to sharing");
+  ok(timelineSource.includes("FileCard") && timelineSource.includes("onReceiveFile") && /\.collab-file-progress\s*\{/.test(layoutCSS), "file cards expose receive and resumable progress controls");
 
   const invite = buildCollaborationInvite({ host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" });
   equal(parseCollaborationInvite(invite), { host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" }, "connection string round-trips Room and token");
@@ -286,6 +306,8 @@ async function main() {
   equal([wrappedEvent.id, wrappedEvent.kind, wrappedEvent.text], ["timeline-9", "agent_result", "verified"], "desktop event wrapper normalizes its item projection");
   const runningEvent = normalizeCollaborationItem({ id: "run-1", sequence: 10, type: "agent_run", agentRun: { id: "run-1", ownerId: "member-a", instruction: "fix it", status: "running", summary: "reading files" } }, new Map([["member-a", "Alice"]]));
   equal([runningEvent.kind, runningEvent.agentRunStatus, runningEvent.agentRunSummary], ["agent_command", "running", "reading files"], "Agent run status survives timeline normalization for the animated card");
+  const fileEvent = normalizeCollaborationItem({ id: "file-1", sequence: 11, type: "file", file: { id: "file-1", ownerId: "member-a", name: "report.zip", size: 4194305, mime: "application/zip", sha256: "abc", revision: 2, revokedAt: "2026-08-04T00:00:00Z" } }, new Map([["member-a", "Alice"]]));
+  equal([fileEvent.kind, fileEvent.actorName, fileEvent.fileName, fileEvent.fileSize, fileEvent.fileRevoked, fileEvent.revision], ["file", "Alice", "report.zip", 4194305, true, 2], "file offer metadata and revocation survive timeline normalization");
   const rejoinedEvent = normalizeCollaborationItem({ id: "system-1", sequence: 11, type: "system", system: { kind: "member.rejoined", memberId: "member-a" } }, new Map([["member-a", "Alice"]]));
   equal([rejoinedEvent.systemKind, rejoinedEvent.actorName], ["member.rejoined", "Alice"], "member.rejoined remains typed for lightweight notice rendering");
   const queued = normalizeCollaborationAction({ requestId: "queued-1", queued: true, retryable: true, error: "host temporarily unavailable" });
@@ -296,6 +318,8 @@ async function main() {
     outbox: [{ requestId: "queued-chat", status: "pending", item: { id: "outbox:queued-chat", sequence: 4, type: "chat", chat: { id: "outbox:queued-chat", authorId: "self", text: "not swallowed", revision: 1, createdAt: "2026-08-03T10:00:00Z" } } }],
   });
   equal([queuedState.timeline[0].text, queuedState.timeline[0].syncStatus, queuedState.timeline[0].localPending, queuedState.timeline[0].actorName], ["not swallowed", "pending", true, "Me"], "persisted Outbox is visible as a local pending timeline message");
+  const transferState = normalizeCollaborationState({ status: "connected", room: "room-a", snapshot: { room: { id: "room-a" }, members: [], timeline: [] }, transfers: [{ id: "receive-1", fileId: "file-1", direction: "receive", name: "report.zip", status: "paused", transferred: 4, total: 10, retryable: true }] });
+  equal(transferState.transfers?.map((value) => [value.fileId, value.status, value.transferred, value.total, value.retryable]), [["file-1", "paused", 4, 10, true]], "persisted file transfer state remains resumable after normalization");
   let pendingState = collabReducer(initialCollabState, { type: "STATE", state: queuedState });
   pendingState = collabReducer(pendingState, { type: "STATE", state: { ...queuedState, status: "connected", timeline: [item("synced-chat", 4, "not swallowed")] } });
   equal(pendingState.timeline.map((entry) => entry.id), ["synced-chat"], "authoritative sync replaces the local pending projection without a ghost duplicate");
@@ -303,11 +327,64 @@ async function main() {
   equal([busy.ok, busy.code, busy.retryable], [false, "agent_busy", true], "structured Agent busy code survives transport normalization");
   equal(normalizeCollaborationIntent({ Intent: "uncertain", Source: "llm" }), { intent: "uncertain", source: "llm", error: undefined, retryable: false }, "semantic intent bridge normalizes strict model output");
   equal(normalizeCollaborationIntent({ Intent: "maybe", Source: "llm" }).intent, "chat", "invalid semantic intent safely falls back to chat");
+  const configured = normalizeCollaborationState({ status: "connected", memberId: "self", snapshot: { members: [{ id: "self", name: "Me", agent: { id: "agent", name: "Old" } }], timeline: [] }, agentConfig: { alias: "Kite", autoRespondQuestions: true, autoRespondRequests: true, recognitionMode: "interval" } });
+  equal(configured.agentConfig, { alias: "Kite", autoRespondQuestions: true, autoRespondRequests: true, recognitionMode: "interval" }, "Agent response policy survives desktop state normalization");
+  const automaticBase = {
+    ...initialCollabState,
+    selfMemberId: "self",
+    agentConfig: { alias: "Kite", autoRespondQuestions: true, autoRespondRequests: true, recognitionMode: "message" as const },
+    timeline: [
+      { ...item("question-1", 1, "这个接口能重试吗？"), actorId: "other", actorName: "Other" },
+      { ...item("request-1", 2, "请运行测试"), kind: "agent_request" as const, actorId: "other", actorName: "Other", targetMemberId: "self", requestStatus: "waiting" as const },
+    ],
+  };
+  equal(nextAutomaticAgentItem(automaticBase)?.kind, "request", "automatic policy prioritizes explicit operation requests");
+  equal(nextAutomaticAgentItem({ ...automaticBase, agentConfig: { ...automaticBase.agentConfig, autoRespondRequests: false } })?.item.id, "question-1", "automatic question response selects an unanswered external question");
+  equal(nextAutomaticAgentItem({ ...automaticBase, agentConfig: { ...automaticBase.agentConfig, recognitionMode: "off" } }), undefined, "recognition off disables every automatic response");
+
+  const restoreTransport = createMockCollaborationTransport("restore-host");
+  let restoreCalls = 0;
+  restoreTransport.getState = async () => ({
+    status: "failed", mode: "host", retryable: true,
+    room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, members: [], timeline: [],
+  });
+  restoreTransport.retry = async () => {
+    restoreCalls++;
+    return { status: "connected", mode: "host", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 4 }, members: [], timeline: [] };
+  };
+  const restoredHost = await loadCollaborationState(restoreTransport);
+  equal([restoredHost.status, restoreCalls], ["connected", 1], "persisted Host automatically restores once after app restart");
 
   await testSessionTransportIsolation();
   await testAgentBusyGuard();
   await testOfflineSelfAgentIntervention();
   await testCountdown();
+
+  // Regression: switching rooms isolates timeline
+  let roomAState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("synced-a", 1, "room A synced")] } });
+  roomAState = collabReducer(roomAState, { type: "STATE", state: { ...roomAState, timeline: [...roomAState.timeline, { ...item("outbox:pending-a", 2, "room A pending"), localPending: true, syncStatus: "pending" }] } });
+  equal(roomAState.timeline.map((entry) => entry.id), ["synced-a", "outbox:pending-a"], "room A has both synced and pending items");
+
+  // Switch to room B — same host/port, different room
+  const roomBState = collabReducer(roomAState, { type: "STATE", state: { status: "connected", room: { room: "room-b", host: "127.0.0.1", port: 39170, latestSequence: 1 }, selfMemberId: "self", members: [], timeline: [item("synced-b", 1, "room B synced")] } });
+  equal(roomBState.timeline.map((entry) => entry.id), ["synced-b"], "switching rooms drops all old-room items (synced and pending)");
+
+  // Same room update preserves items (regression check for same-room merge)
+  const roomBSame = collabReducer(roomBState, { type: "STATE", state: { ...roomBState, room: { ...roomBState.room!, latestSequence: 2 }, timeline: [...roomBState.timeline, item("synced-b2", 2, "room B second")] } });
+  equal(roomBSame.timeline.map((entry) => [entry.id, entry.sequence]), [["synced-b", 1], ["synced-b2", 2]], "same-room updates preserve existing items and append new ones");
+
+  // Room switch also clears pendingIntents
+  const withIntent = collabReducer(roomBState, { type: "PENDING_INTENT", intent: { messageId: "m1", revision: 1, instruction: "fix", deadline: Date.now() + 60000, status: "pending" } });
+  equal(withIntent.pendingIntents.m1?.status, "pending", "pending intent is registered");
+  const afterSwitch = collabReducer(withIntent, { type: "STATE", state: { status: "connected", room: { room: "room-c", host: "10.0.0.1", port: 39172, latestSequence: 1 }, selfMemberId: "self", members: [], timeline: [] } });
+  equal(afterSwitch.pendingIntents.m1?.status ?? "dismissed", "dismissed", "room switch cancels pending intents to prevent auto-start in wrong room");
+
+  // Rejoining a recreated room at the same endpoint and with the same ID is a new authoritative lifetime.
+  const reconnectingSameRoom = collabReducer(roomAState, { type: "CONNECTING", operation: "join" });
+  equal(reconnectingSameRoom.timeline.length, 0, "new join fences the previous timeline before same-room reconnect");
+  const recreatedRoom = collabReducer(reconnectingSameRoom, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 1 }, selfMemberId: "self", members: [], timeline: [item("new-room-a", 1, "recreated room A")] } });
+  equal(recreatedRoom.timeline.map((entry) => entry.id), ["new-room-a"], "same endpoint and room ID reuse replaces the old authoritative timeline");
+
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);
 }

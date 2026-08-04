@@ -21,6 +21,7 @@ const (
 type Handler struct {
 	service *Service
 	hub     *Hub
+	files   *fileTransferRegistry
 }
 
 // NewHandler exposes the V1 HTTP/JSON and SSE transport. When hub is omitted,
@@ -31,7 +32,7 @@ func NewHandler(service *Service, hubs ...*Hub) http.Handler {
 		hub = hubs[0]
 		service.hub = hub
 	}
-	return &Handler{service: service, hub: hub}
+	return &Handler{service: service, hub: hub, files: newFileTransferRegistry(service)}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +56,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rest := strings.TrimPrefix(r.URL.Path, prefix)
 	parts := strings.Split(rest, "/")
+	if len(parts) >= 4 && parts[0] != "" && parts[1] == "files" {
+		room, err := url.PathUnescape(parts[0])
+		if err != nil {
+			writeError(w, fail(CodeInvalid, "invalid room path"))
+			return
+		}
+		h.files.serve(w, r, room, parts[2:])
+		return
+	}
 	if len(parts) != 2 || parts[0] == "" {
 		writeError(w, fail(CodeNotFound, "endpoint does not exist"))
 		return
@@ -330,7 +340,7 @@ func writeError(w http.ResponseWriter, err error) {
 	switch value.Code {
 	case CodeInvalid:
 		status = http.StatusBadRequest
-	case CodeUnauthorized:
+	case CodeUnauthorized, CodeResumeNeeded:
 		status = http.StatusUnauthorized
 	case CodeForbidden:
 		status = http.StatusForbidden

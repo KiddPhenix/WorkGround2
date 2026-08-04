@@ -107,6 +107,41 @@ func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map
 	return app, c, secrets
 }
 
+func TestCollaborationAgentConfigRenamesAndPersists(t *testing.T) {
+	_, runtime, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{snapshot: collab.Snapshot{
+		Room: collab.Room{ID: "room-a", Name: "Room A", LatestSequence: 1}, LatestSequence: 1,
+		Members: []collab.Member{{ID: "member-a", Name: "Alice", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Old", Status: collab.AgentIdle}}},
+	}}
+	conn := &collaborationConnection{peer: peer, room: "room-a", memberID: "member-a", agentID: "agent-a", agentName: "Old", sessionID: "session-a", connectionSession: "cs1.test"}
+	runtime.conn = conn
+	runtime.state = CollaborationState{Status: "connected", Room: "room-a", MemberID: "member-a", AgentID: "agent-a", SessionID: "session-a", Snapshot: peer.snapshot, AgentConfig: defaultCollaborationAgentConfig()}
+
+	want := CollaborationAgentConfig{Alias: "Kite", AutoRespondQuestions: true, AutoRespondRequests: true, RecognitionMode: "message"}
+	state, err := runtime.updateAgentConfig(context.Background(), UpdateCollaborationAgentConfigInput{SessionID: "session-a", RequestID: "agent-config-1", Config: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.AgentConfig != want || state.Snapshot.Members[0].Agent.Name != "Kite" || conn.agentName != "Kite" {
+		t.Fatalf("Agent config projection mismatch: %+v", state)
+	}
+	if len(peer.submitted) != 1 || peer.submitted[0].Command.Type != collab.CommandUpdateAgent || peer.submitted[0].Command.AgentUpdate.Name != "Kite" {
+		t.Fatalf("Agent alias was not submitted once: %+v", peer.submitted)
+	}
+	if _, err := runtime.updateAgentConfig(context.Background(), UpdateCollaborationAgentConfigInput{SessionID: "session-a", RequestID: "agent-config-1", Config: want}); err != nil || len(peer.submitted) != 1 {
+		t.Fatalf("repeated Agent config was not idempotent: submits=%d err=%v", len(peer.submitted), err)
+	}
+
+	data, err := os.ReadFile(runtime.persistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted collaborationPersistedState
+	if err := json.Unmarshal(data, &persisted); err != nil || persisted.AgentConfig != want || persisted.AgentName != "Kite" {
+		t.Fatalf("Agent config was not persisted: %+v, %v", persisted, err)
+	}
+}
+
 func TestClassifyCollaborationIntentUsesOwningSessionModel(t *testing.T) {
 	ctrl := &semanticIntentSession{intent: agent.SemanticIntentUncertain}
 	app := &App{}
@@ -199,6 +234,129 @@ func TestCollaborationHostJoinLeaveLifecycle(t *testing.T) {
 	}
 	if got := c.snapshot().Status; got != "disconnected" {
 		t.Fatalf("status after leave = %q", got)
+	}
+}
+
+func TestCollaborationJoinScopesCachedIdentityAfterResumeCollision(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	input := JoinCollaborationRoomInput{
+		Host: "10.0.0.8", Port: 39170, Room: "room-a", SessionID: "session-b",
+		MemberID: "shared-member", MemberName: "Alice", AgentID: "shared-agent", AgentName: "Alice Agent",
+	}
+	calls := 0
+	c.openJoin = func(_ context.Context, _ JoinCollaborationRoomInput, identity collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
+		calls++
+		if resume != "" {
+			t.Fatalf("unexpected resume credential %q", resume)
+		}
+		if calls == 1 {
+			if identity.ID != input.MemberID || identity.Agent.ID != input.AgentID {
+				t.Fatalf("first identity = %+v", identity)
+			}
+			return nil, &collab.Error{Code: collab.CodeResumeNeeded, Message: "resume session is required for this member"}
+		}
+		if identity.ID == input.MemberID || identity.Agent.ID == input.AgentID {
+			t.Fatalf("collision identity was not scoped: %+v", identity)
+		}
+		conn := testConnection(&fakeCollaborationPeer{}, "client", input.SessionID)
+		conn.hostName, conn.memberID, conn.agentID = input.Host, identity.ID, identity.Agent.ID
+		conn.memberName, conn.agentName = identity.Name, identity.Agent.Name
+		conn.initialSnapshot.Members = []collab.Member{{ID: identity.ID, Name: identity.Name, Agent: identity.Agent}}
+		return conn, nil
+	}
+	state, err := c.join(context.Background(), input)
+	if err != nil || calls != 2 || state.Status != "connected" || state.MemberID == input.MemberID || state.AgentID == input.AgentID {
+		t.Fatalf("scoped join state=%+v calls=%d err=%v", state, calls, err)
+	}
+	c.close()
+}
+
+func TestCollaborationJoinDoesNotRotateIdentityForOtherUnauthorizedErrors(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	calls := 0
+	c.openJoin = func(_ context.Context, _ JoinCollaborationRoomInput, _ collab.MemberDescriptor, _ string) (*collaborationConnection, error) {
+		calls++
+		return nil, &collab.Error{Code: collab.CodeUnauthorized, Message: "room token is invalid"}
+	}
+	_, err := c.join(context.Background(), JoinCollaborationRoomInput{
+		Host: "10.0.0.8", Port: 39170, Room: "room-a", SessionID: "session-b",
+		MemberID: "shared-member", MemberName: "Alice", AgentID: "shared-agent", AgentName: "Alice Agent",
+	})
+	if err == nil || calls != 1 {
+		t.Fatalf("unauthorized join calls=%d err=%v", calls, err)
+	}
+}
+
+func TestCollaborationRecognizesLegacyResumeRequirement(t *testing.T) {
+	err := &collab.Error{Code: collab.CodeUnauthorized, Message: collab.ResumeRequiredMessage}
+	if !collaborationMemberResumeRequired(err) {
+		t.Fatalf("legacy resume error was not recognized: %v", err)
+	}
+}
+
+func TestCollaborationJoinCanResumeMemberFromAnotherWorkspace(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	current := testConnection(&fakeCollaborationPeer{}, "client", "session-a")
+	current.hostName = "10.0.0.8"
+	c.conn = current
+	c.state = CollaborationState{
+		Status: "connected", Mode: "client", Host: current.hostName, Port: current.port, Room: current.room,
+		MemberID: current.memberID, AgentID: current.agentID, SessionID: current.sessionID, Snapshot: current.initialSnapshot,
+	}
+	gotResume := ""
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
+		gotResume = resume
+		next := testConnection(&fakeCollaborationPeer{}, "client", input.SessionID)
+		next.hostName = current.hostName
+		next.rejoined = true
+		return next, nil
+	}
+	state, err := c.join(context.Background(), JoinCollaborationRoomInput{
+		Host: current.hostName, Port: current.port, Room: current.room, SessionID: "session-b",
+		MemberID: current.memberID, MemberName: current.memberName, AgentID: current.agentID, AgentName: current.agentName,
+	})
+	if err != nil || state.Status != "syncing" || state.SessionID != "session-b" || gotResume != current.connectionSession {
+		t.Fatalf("resume-before-fence state=%+v resume=%q err=%v", state, gotResume, err)
+	}
+	c.close()
+}
+
+func TestCollaborationJoinLoadsResumeCredentialAcrossWorkspaceRuntimes(t *testing.T) {
+	_, c, secrets := newTestDesktopCollaboration(t)
+	const resume = "cs1.saved-for-member"
+	secrets[collaborationSecretRef("10.0.0.8", 39170, "room-a", "member-a")] = resume
+	gotResume := ""
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, identity collab.MemberDescriptor, value string) (*collaborationConnection, error) {
+		gotResume = value
+		conn := testConnection(&fakeCollaborationPeer{}, "client", input.SessionID)
+		conn.hostName, conn.memberID, conn.agentID = input.Host, identity.ID, identity.Agent.ID
+		conn.rejoined = true
+		return conn, nil
+	}
+	state, err := c.join(context.Background(), JoinCollaborationRoomInput{
+		Host: "10.0.0.8", Port: 39170, Room: "room-a", SessionID: "different-workspace",
+		MemberID: "member-a", MemberName: "Alice", AgentID: "agent-a", AgentName: "Alice Agent",
+	})
+	if err != nil || state.Status != "syncing" || state.SessionID != "different-workspace" || gotResume != resume {
+		t.Fatalf("cross-workspace credential state=%+v resume=%q err=%v", state, gotResume, err)
+	}
+	c.close()
+}
+
+func TestCollaborationRevokedSessionCannotOverwriteNewWorkspaceCredential(t *testing.T) {
+	_, c, secrets := newTestDesktopCollaboration(t)
+	conn := testConnection(&fakeCollaborationPeer{}, "client", "old-workspace")
+	ref := collaborationSecretRef(conn.hostName, conn.port, conn.room, conn.memberID)
+	secrets[ref] = "cs1.new-workspace-session"
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "connected", Mode: "client", Host: conn.hostName, Port: conn.port, Room: conn.room,
+		MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	c.markReconnect(conn, &collab.Error{Code: collab.CodeUnauthorized, Message: "connection session is invalid"})
+	state := c.snapshot()
+	if state.Status != "failed" || !state.Retryable || c.conn != nil || secrets[ref] != "cs1.new-workspace-session" {
+		t.Fatalf("revoked session state=%+v conn=%p credential=%q", state, c.conn, secrets[ref])
 	}
 }
 
@@ -861,5 +1019,131 @@ func TestCollaborationSummaryTruncationKeepsUTF8Valid(t *testing.T) {
 	got := sanitizeCollaborationText(value)
 	if !strings.Contains(got, "…") || strings.ContainsRune(got, '\uFFFD') {
 		t.Fatalf("invalid UTF-8 truncation suffix=%q", got[len(got)-8:])
+	}
+}
+
+func TestCollaborationOutboxFilteredByRoom(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "client", "session-a")
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "connected", Host: conn.hostName, Port: conn.port,
+		Room: "room-a", MemberID: "member-a", AgentID: conn.agentID,
+		SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	c.outbox = []collab.CommandEnvelope{
+		{RequestID: "room-a-chat", Room: "room-a", MemberID: "member-a", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "current room"}}},
+		{RequestID: "room-b-chat", Room: "room-b", MemberID: "member-b", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "other room"}}},
+		{RequestID: "diff-member", Room: "room-a", MemberID: "member-b", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "different member"}}},
+	}
+	state := c.snapshot()
+	if len(state.Outbox) != 1 || state.Outbox[0].RequestID != "room-a-chat" {
+		t.Fatalf("outbox should only contain items matching current room and member: %+v", state.Outbox)
+	}
+
+	// Verify drainOutbox also respects room/member filter
+	c.conn = conn
+	c.outboxFailures = map[string]string{}
+	ctx := context.Background()
+	if !c.drainOutbox(ctx, conn) {
+		t.Fatal("drainOutbox should succeed")
+	}
+	peer.mu.Lock()
+	submitted := len(peer.submitted)
+	peer.mu.Unlock()
+	if submitted != 1 || peer.submitted[0].RequestID != "room-a-chat" {
+		t.Fatalf("drainOutbox submitted wrong items: submitted=%d ids=%v", submitted, peer.submitted)
+	}
+}
+
+func TestCollaborationSetConnectingFencesOldConnection(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "client", "session-a")
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "connected", Host: conn.hostName, Port: conn.port,
+		Room: "room-a", MemberID: conn.memberID, AgentID: conn.agentID,
+		SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	identity := collab.MemberDescriptor{ID: "member-b", Name: "Bob", Agent: collab.AgentDescriptor{ID: "agent-b", Name: "Bob Agent"}}
+	c.setConnecting("client", "10.0.0.9", 9999, "room-b", identity, "session-a")
+
+	// Verify c.conn is nil (fenced)
+	c.mu.RLock()
+	connAfter := c.conn
+	c.mu.RUnlock()
+	if connAfter != nil {
+		t.Fatalf("c.conn should be nil after setConnecting, got %v", connAfter)
+	}
+
+	// Old connection's markConnected must not overwrite new state
+	oldSnapshot := collab.Snapshot{Room: collab.Room{ID: "room-a", Name: "Room A", LatestSequence: 10}, LatestSequence: 10}
+	c.markConnected(conn, &oldSnapshot, nil)
+	state := c.snapshot()
+	if state.Room != "room-b" || state.Snapshot.LatestSequence != 0 {
+		t.Fatalf("old connection markConnected should not change new room state: %+v", state)
+	}
+
+	// Old connection's markReconnect must not overwrite new state or emit
+	c.markReconnect(conn, &collaborationTransportError{message: "stale heartbeat failure", retryable: true})
+	state = c.snapshot()
+	if state.Status != "connecting" || state.LastError != "" {
+		t.Fatalf("old connection markReconnect changed state: %+v", state)
+	}
+}
+
+func TestCollaborationHostFencesBeforeNewConnection(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	defer c.close()
+	firstPeer := &fakeCollaborationPeer{}
+	firstConn := testConnection(firstPeer, "client", "session-a")
+	firstConn.cancel = func() {} // no-op cancel for fencing test
+	c.conn = firstConn
+	c.state = CollaborationState{
+		Status: "connected", Host: "10.0.0.8", Port: 39170,
+		Room: "room-a", MemberID: "member-a", AgentID: "agent-a",
+		SessionID: "session-a", Snapshot: firstConn.initialSnapshot,
+	}
+	c.outbox = []collab.CommandEnvelope{
+		{RequestID: "old-room-chat", Room: "room-a", MemberID: "member-a", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "old room"}}},
+	}
+
+	// Host a new room to trigger fenceCurrentConnection
+	secondPeer := &fakeCollaborationPeer{}
+	snapshotB := collab.Snapshot{
+		Room: collab.Room{ID: "room-b", Name: "Room B", LatestSequence: 1}, LatestSequence: 1,
+		Members: []collab.Member{{ID: "member-a", Name: "Alice", Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Alice Agent"}}},
+	}
+	secondPeer.snapshot = snapshotB
+	c.openHost = func(_ context.Context, input HostCollaborationRoomInput, _ collab.MemberDescriptor, _ string) (*collaborationConnection, error) {
+		if input.Room != "room-b" {
+			t.Fatalf("expected room-b, got %q", input.Room)
+		}
+		return &collaborationConnection{
+			peer: secondPeer, mode: "host", hostName: "127.0.0.1", port: 39171, room: "room-b",
+			memberID: "member-a", agentID: "agent-a", sessionID: "session-a",
+			memberName: "Alice", agentName: "Alice Agent",
+			connectionSession: "cs-room-b", initialSnapshot: snapshotB,
+		}, nil
+	}
+	state, err := c.host(context.Background(), HostCollaborationRoomInput{
+		ListenHost: "127.0.0.1", Port: 39171, Room: "room-b", RoomName: "Room B",
+		MemberName: "Alice", SessionID: "session-a",
+	})
+	if err != nil || (state.Status != "connected" && state.Status != "syncing") || state.Room != "room-b" {
+		t.Fatalf("host new room failed: state=%+v err=%v", state, err)
+	}
+	if firstPeer.leaveCount != 1 {
+		t.Fatalf("old connection leave count = %d; want 1", firstPeer.leaveCount)
+	}
+
+	// Old room's outbox item must not appear in the new room's snapshot
+	finalState := c.snapshot()
+	for _, item := range finalState.Outbox {
+		if item.RequestID == "old-room-chat" {
+			t.Fatalf("old room outbox leaked into new room: %+v", finalState.Outbox)
+		}
 	}
 }

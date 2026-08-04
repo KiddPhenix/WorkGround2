@@ -1,8 +1,9 @@
-import { useRef, useState, type KeyboardEvent } from "react";
-import { Bot, Send, Users } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
+import { Bot, FileUp, Send, Users } from "lucide-react";
 import { ModelSwitcher } from "../../components/ModelSwitcher";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import { useT } from "../../lib/i18n";
+import { onFilesDroppedIn } from "../../lib/bridge";
 import { collabCopy, contributionKinds, contributionLabel } from "../copy";
 import type { CollaborationMember } from "../types";
 
@@ -23,6 +24,7 @@ interface CollaborationComposerProps {
   onContribution(text: string, kind: string): Promise<void>;
   onRequest(memberId: string, text: string): Promise<void>;
   onSwitchModel(name: string): Promise<void>;
+  onShareFiles(paths: string[]): Promise<void>;
 }
 
 export function CollaborationComposer(props: CollaborationComposerProps) {
@@ -32,6 +34,9 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const [target, setTarget] = useState("");
   const [contributionKind, setContributionKind] = useState("proposal");
   const [sending, setSending] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const value = props.prefill || draft;
   const others = props.members.filter((member) => member.id !== props.selfMemberId);
@@ -60,7 +65,22 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
     if (isComposerSubmitKey(event, normalizeComposerSubmitKey(props.submitKey), composingRef.current)) { event.preventDefault(); void submit(); }
   };
 
-  return <div className="collab-composer">
+  useEffect(() => onFilesDroppedIn(() => rootRef.current, (paths) => {
+    if (props.disabled || sharing || paths.length === 0) return;
+    setDragging(false);
+    setSharing(true);
+    void props.onShareFiles(paths).catch(() => {}).finally(() => setSharing(false));
+  }), [props.disabled, props.onShareFiles, sharing]);
+
+  const dragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDragging(true);
+  };
+
+  return <div ref={rootRef} className={`collab-composer${dragging ? " collab-composer--dragging" : ""}`} style={{ "--wails-drop-target": "drop" } as CSSProperties} onDragEnter={dragOver} onDragOver={dragOver} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); }}>
+    {(dragging || sharing) && <div className="collab-file-drop" role="status"><FileUp size={18} />{sharing ? c("filePreparing") : c("fileDrop")}</div>}
     <div className="collab-composer-mode">
       <select value={mode} onChange={(event) => setMode(event.target.value as ComposerMode)} aria-label={c("messageType")}>
         <option value="chat">{c("teamChat")}</option>

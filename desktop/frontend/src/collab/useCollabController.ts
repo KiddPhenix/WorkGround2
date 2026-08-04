@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
-import { collabReducer, detectSelfAgentIntentRule, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
+import { collabReducer, detectSelfAgentIntentRule, initialCollabState, nextAutomaticAgentItem, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
 import type {
   CollaborationActionResult,
+  CollaborationAgentConfig,
   CollaborationInvite,
+  CollaborationState,
   CollaborationTimelineItem,
   CollaborationTransport,
   HostCollaborationRoomInput,
@@ -25,6 +27,14 @@ interface CollaborationActionError extends Error {
 function actionError(result: CollaborationActionResult, fallback: string): CollaborationActionError | null {
   if (result.ok) return null;
   return Object.assign(new Error(result.error || fallback), { code: result.code });
+}
+
+export async function loadCollaborationState(transport: CollaborationTransport, reconnecting = false): Promise<CollaborationState> {
+  let state = reconnecting ? await transport.retry() : await transport.getState();
+  if (!reconnecting && state.mode === "host" && state.status === "failed" && state.retryable !== false && state.room) {
+    state = await transport.retry();
+  }
+  return state;
 }
 
 export function buildAgreeMessageInput(item: CollaborationTimelineItem, id: string): PostCollaborationMessageInput {
@@ -48,6 +58,12 @@ export interface CollabController {
   startAgent(instruction: string, referenceIDs: string[], sourceRequestID?: string): Promise<void>;
   acceptRequest(item: CollaborationTimelineItem, instruction?: string): Promise<void>;
   rejectRequest(item: CollaborationTimelineItem): Promise<void>;
+  updateAgentConfig(config: CollaborationAgentConfig): Promise<void>;
+  shareFiles(paths: string[]): Promise<void>;
+  receiveFile(fileId: string): Promise<void>;
+  pauseFile(fileId: string): Promise<void>;
+  resumeFile(fileId: string): Promise<void>;
+  revokeFile(fileId: string): Promise<void>;
   toggleSelection(id: string): void;
   clearSelection(): void;
   startPending(intent: PendingIntent): Promise<void>;
@@ -64,6 +80,8 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const intentEpoch = useRef(0);
   const intentChecks = useRef(new Set<string>());
   const agentStartRef = useRef<Promise<void> | null>(null);
+  const autoRunningRef = useRef("");
+  const automaticScanRef = useRef<() => void>(() => {});
   const self = ownMember(state);
   const agentBusy = agentStarting || self?.agent.status === "running" || self?.agent.status === "waiting";
 
@@ -92,7 +110,7 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     const epoch = ++refreshEpoch.current;
     dispatch({ type: "SYNCING", reconnecting });
     try {
-      const next = reconnecting ? await transport.retry() : await transport.getState();
+      const next = await loadCollaborationState(transport, reconnecting);
       if (epoch === refreshEpoch.current) dispatch({ type: "STATE", state: next });
     } catch (error) {
       if (epoch === refreshEpoch.current) dispatch({ type: "FAILED", error: error instanceof Error ? error.message : String(error), retryable: true });
@@ -265,9 +283,65 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     await perform(transport.respond({ requestID: requestID("reject"), agentRequestID: item.id, action: "reject", sessionID }));
   }, [perform, sessionID, transport]);
 
+  const updateAgentConfig = useCallback(async (config: CollaborationAgentConfig) => {
+    dispatch({ type: "ACTION_START" });
+    try {
+      const next = await transport.updateAgentConfig({ requestID: requestID("agent-config"), config });
+      dispatch({ type: "STATE", state: next });
+    } catch (error) {
+      dispatch({ type: "ACTION_FAILED", error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }, [transport]);
+
+  const scanAutomaticResponses = useCallback(() => {
+    if (state.status !== "connected" || agentBusy || autoRunningRef.current) return;
+    const next = nextAutomaticAgentItem(state);
+    if (!next) return;
+    autoRunningRef.current = next.item.id;
+    const operation = next.kind === "request"
+      ? acceptRequest(next.item)
+      : startAgent(t("collab.autoAnswerInstruction", { text: next.item.text }), [next.item.id]);
+    void operation.catch(() => undefined).finally(() => {
+      if (autoRunningRef.current === next.item.id) autoRunningRef.current = "";
+    });
+  }, [acceptRequest, agentBusy, startAgent, state, t]);
+
+  useEffect(() => {
+    automaticScanRef.current = scanAutomaticResponses;
+  }, [scanAutomaticResponses]);
+
+  useEffect(() => {
+    if (state.agentConfig.recognitionMode === "message") scanAutomaticResponses();
+  }, [scanAutomaticResponses, state.agentConfig.recognitionMode]);
+
+  useEffect(() => {
+    if (state.agentConfig.recognitionMode !== "interval") return;
+    const timer = window.setInterval(() => automaticScanRef.current(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [state.agentConfig.recognitionMode]);
+
+  const runFileAction = useCallback(async (operation: Promise<unknown>) => {
+    dispatch({ type: "ACTION_START" });
+    try {
+      await operation;
+    } catch (error) {
+      dispatch({ type: "ACTION_FAILED", error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }, []);
+
+  const shareFiles = useCallback((paths: string[]) => runFileAction(transport.shareFiles(paths)), [runFileAction, transport]);
+  const receiveFile = useCallback((fileId: string) => runFileAction(transport.receiveFile(fileId)), [runFileAction, transport]);
+  const pauseFile = useCallback((fileId: string) => runFileAction(transport.pauseFile(fileId)), [runFileAction, transport]);
+  const resumeFile = useCallback((fileId: string) => runFileAction(transport.resumeFile(fileId)), [runFileAction, transport]);
+  const revokeFile = useCallback(async (fileId: string) => {
+    await perform(transport.revokeFile(fileId));
+  }, [perform, transport]);
+
   const toggleSelection = useCallback((id: string) => dispatch({ type: "TOGGLE_SELECT", id }), []);
   const clearSelection = useCallback(() => dispatch({ type: "CLEAR_SELECTION" }), []);
   const selectedItems = selectedTimelineItems(state);
 
-  return { state, self, agentBusy, selectedItems, host, join, invite, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, toggleSelection, clearSelection, startPending, stopPending, editPending };
+  return { state, self, agentBusy, selectedItems, host, join, invite, leave, refresh, postChat, postContribution, requestAgent, agree, startAgent, acceptRequest, rejectRequest, updateAgentConfig, shareFiles, receiveFile, pauseFile, resumeFile, revokeFile, toggleSelection, clearSelection, startPending, stopPending, editPending };
 }

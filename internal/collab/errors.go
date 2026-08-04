@@ -2,11 +2,14 @@ package collab
 
 import "fmt"
 
+const ResumeRequiredMessage = "resume session is required for this member"
+
 type ErrorCode string
 
 const (
 	CodeInvalid      ErrorCode = "invalid_request"
 	CodeUnauthorized ErrorCode = "unauthorized"
+	CodeResumeNeeded ErrorCode = "resume_required"
 	CodeForbidden    ErrorCode = "forbidden"
 	CodeNotFound     ErrorCode = "not_found"
 	CodeConflict     ErrorCode = "conflict"

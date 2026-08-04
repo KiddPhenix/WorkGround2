@@ -78,13 +78,18 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		return nil, err
 	}
 	peer := &serviceCollaborationPeer{service: service, hub: hub, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
+	httpHost := listenHost
+	if ip := net.ParseIP(strings.Split(strings.Trim(httpHost, "[]"), "%")[0]); ip != nil && ip.IsUnspecified() {
+		httpHost = "127.0.0.1"
+	}
+	filePeer := &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
 	snapshot, err := peer.Snapshot(ctx)
 	if err != nil {
 		_ = server.Shutdown(context.Background())
 		return nil, err
 	}
 	return &collaborationConnection{
-		peer: peer, host: server, listener: listener, mode: "host", roomName: roomName, description: strings.TrimSpace(input.Description), hostName: listenHost,
+		peer: peer, filePeer: filePeer, host: server, listener: listener, mode: "host", roomName: roomName, description: strings.TrimSpace(input.Description), hostName: listenHost,
 		port: actualPort, room: room, memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
@@ -109,7 +114,7 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 		return nil, err
 	}
 	return &collaborationConnection{
-		peer: peer, mode: "client", hostName: host, port: input.Port, room: room,
+		peer: peer, filePeer: peer, mode: "client", hostName: host, port: input.Port, room: room,
 		memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
@@ -703,6 +708,10 @@ func (c *desktopCollaboration) drainOutbox(ctx context.Context, conn *collaborat
 		}
 		env.Session = conn.connectionSession
 		if _, err := conn.peer.Submit(ctx, env); err != nil {
+			if collaborationSessionInvalid(err) {
+				c.markReconnect(conn, err)
+				return false
+			}
 			if collaborationErrorRetryable(err) {
 				c.markReconnect(conn, err)
 				return false
@@ -743,14 +752,30 @@ func (c *desktopCollaboration) markReconnect(conn *collaborationConnection, err 
 		return
 	}
 	c.mu.Lock()
-	if c.conn == conn {
-		c.state.Status = "reconnecting"
-		c.state.LastError = err.Error()
-		c.state.Retryable = true
-		c.persistLocked()
+	if c.conn != conn {
+		c.mu.Unlock()
+		return
 	}
+	invalidSession := collaborationSessionInvalid(err)
+	if invalidSession {
+		c.conn = nil
+		c.state.Status = "failed"
+	} else {
+		c.state.Status = "reconnecting"
+	}
+	c.state.LastError = err.Error()
+	c.state.Retryable = true
+	c.persistLocked()
 	c.mu.Unlock()
+	if invalidSession && conn.cancel != nil {
+		conn.cancel()
+	}
 	c.emitState()
+}
+
+func collaborationSessionInvalid(err error) bool {
+	var protocol *collab.Error
+	return errors.As(err, &protocol) && protocol.Code == collab.CodeUnauthorized
 }
 
 func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snapshot *collab.Snapshot, events []collab.RoomEvent) {
@@ -783,6 +808,9 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 		}
 	}
 	c.emitState()
+	if c.hasPendingFileOrigins(conn) {
+		go c.restoreFileOrigins(conn)
+	}
 }
 
 func collaborationEventView(sessionID string, value collab.RoomEvent) CollaborationEventView {

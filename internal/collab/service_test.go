@@ -144,6 +144,43 @@ func TestRequestIDConflictAcrossOperations(t *testing.T) {
 	requireCode(t, err, CodeConflict)
 }
 
+func TestJoinExposesTypedResumeRequirement(t *testing.T) {
+	service, _, _ := newTestService(t, "")
+	_, err := service.Join(context.Background(), JoinInput{RequestID: "join-a-again", Room: "room", Member: memberDesc("a", "agent-a")})
+	requireCode(t, err, CodeResumeNeeded)
+}
+
+func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
+	service, dir, joined := newTestService(t, "")
+	command := Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{Name: "Kite"}}
+	first, err := service.Submit(context.Background(), env("rename-agent-1", "a", joined.ConnectionSession, command))
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := service.Submit(context.Background(), env("rename-agent-1", "a", joined.ConnectionSession, command))
+	if err != nil || !duplicate.Duplicate || duplicate.LatestSequence != first.LatestSequence {
+		t.Fatalf("duplicate rename = %#v, %v", duplicate, err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), "room", joined.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Members) != 1 || snapshot.Members[0].Agent.Name != "Kite" {
+		t.Fatalf("renamed Agent missing from snapshot: %+v", snapshot.Members)
+	}
+
+	reopened, err := OpenFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = NewService(reopened).Snapshot(context.Background(), "room", joined.ConnectionSession)
+	if err != nil || snapshot.Members[0].Agent.Name != "Kite" {
+		t.Fatalf("renamed Agent was not recovered: %+v, %v", snapshot.Members, err)
+	}
+	_, err = service.Submit(context.Background(), env("rename-agent-empty", "a", joined.ConnectionSession, Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{}}))
+	requireCode(t, err, CodeInvalid)
+}
+
 func TestAgentOwnershipRequestDecisionAndRunTransitions(t *testing.T) {
 	service, dir, a := newTestService(t, "")
 	b, err := service.Join(context.Background(), JoinInput{RequestID: "join-b", Room: "room", Member: memberDesc("b", "agent-b")})
@@ -525,5 +562,66 @@ func TestHubSubscriberLimit(t *testing.T) {
 	}
 	for _, cancel := range cancels {
 		cancel()
+	}
+}
+
+func TestFileOfferPersistsAndOwnerCanRevoke(t *testing.T) {
+	service, _, owner := newTestService(t, "")
+	const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	offer := CommandEnvelope{RequestID: "file-offer-1", Room: "room", MemberID: owner.Member.ID, Session: owner.ConnectionSession, Command: Command{Type: CommandOfferFile, FileOffer: &OfferFileInput{
+		FileID: "file-1", Name: "report.txt", Size: 3, MIME: "text/plain", SHA256: hash, ManifestHash: hash, ChunkSize: MinFileChunkSize, ChunkCount: 1,
+	}}}
+	receipt, err := service.Submit(context.Background(), offer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := service.Submit(context.Background(), offer)
+	if err != nil || !duplicate.Duplicate || duplicate.LatestSequence != receipt.LatestSequence {
+		t.Fatalf("duplicate = %+v, %v", duplicate, err)
+	}
+	file, err := service.File(context.Background(), "room", "file-1")
+	if err != nil || file.OwnerID != owner.Member.ID || file.Name != "report.txt" || file.Revision != 1 {
+		t.Fatalf("file = %+v, %v", file, err)
+	}
+	revoke := CommandEnvelope{RequestID: "file-revoke-1", Room: "room", MemberID: owner.Member.ID, Session: owner.ConnectionSession, Command: Command{Type: CommandRevokeFile, FileRevoke: &RevokeFileInput{FileID: "file-1"}}}
+	if _, err := service.Submit(context.Background(), revoke); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.File(context.Background(), "room", "file-1"); err == nil {
+		t.Fatal("revoked file remained transferable")
+	}
+	snapshot, err := service.Snapshot(context.Background(), "room", owner.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *FileOffer
+	for i := range snapshot.Timeline {
+		if snapshot.Timeline[i].ID == "file-1" {
+			found = snapshot.Timeline[i].File
+		}
+	}
+	if found == nil || found.RevokedAt == nil || found.Revision != 2 {
+		t.Fatalf("revoked timeline = %+v", found)
+	}
+}
+
+func TestFileOfferRejectsUnsafeMetadataAndForeignRevoke(t *testing.T) {
+	service, _, owner := newTestService(t, "token")
+	other, err := service.Join(context.Background(), JoinInput{RequestID: "join-b", Room: "room", Token: "token", Member: memberDesc("b", "agent-b")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	bad := CommandEnvelope{RequestID: "bad-file", Room: "room", MemberID: owner.Member.ID, Session: owner.ConnectionSession, Command: Command{Type: CommandOfferFile, FileOffer: &OfferFileInput{FileID: "bad", Name: "../secret", SHA256: hash, ManifestHash: hash, ChunkSize: MinFileChunkSize}}}
+	if _, err := service.Submit(context.Background(), bad); err == nil {
+		t.Fatal("unsafe filename was accepted")
+	}
+	good := CommandEnvelope{RequestID: "good-file", Room: "room", MemberID: owner.Member.ID, Session: owner.ConnectionSession, Command: Command{Type: CommandOfferFile, FileOffer: &OfferFileInput{FileID: "owned", Name: "safe.bin", Size: 1, SHA256: hash, ManifestHash: hash, ChunkSize: MinFileChunkSize, ChunkCount: 1}}}
+	if _, err := service.Submit(context.Background(), good); err != nil {
+		t.Fatal(err)
+	}
+	foreign := CommandEnvelope{RequestID: "foreign-revoke", Room: "room", MemberID: other.Member.ID, Session: other.ConnectionSession, Command: Command{Type: CommandRevokeFile, FileRevoke: &RevokeFileInput{FileID: "owned"}}}
+	if _, err := service.Submit(context.Background(), foreign); err == nil {
+		t.Fatal("foreign revoke was accepted")
 	}
 }

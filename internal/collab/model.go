@@ -54,6 +54,7 @@ const (
 	TimelineAgentRequest TimelineType = "agent_request"
 	TimelineAgentRun     TimelineType = "agent_run"
 	TimelineAgentResult  TimelineType = "agent_result"
+	TimelineFile         TimelineType = "file"
 	TimelineReaction     TimelineType = "reaction"
 	TimelineSystem       TimelineType = "system"
 )
@@ -68,6 +69,9 @@ const (
 	CommandDecideAgentRequest  CommandType = "agent_request.decide"
 	CommandPublishAgentRun     CommandType = "agent_run.publish"
 	CommandPublishAgentResult  CommandType = "agent_result.publish"
+	CommandUpdateAgent         CommandType = "agent.update"
+	CommandOfferFile           CommandType = "file.offer"
+	CommandRevokeFile          CommandType = "file.revoke"
 )
 
 type AgentRequestStatus string
@@ -167,6 +171,21 @@ type AgentResult struct {
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
+type FileOffer struct {
+	ID           string     `json:"id"`
+	OwnerID      string     `json:"ownerId"`
+	Name         string     `json:"name"`
+	Size         int64      `json:"size"`
+	MIME         string     `json:"mime,omitempty"`
+	SHA256       string     `json:"sha256"`
+	ManifestHash string     `json:"manifestHash"`
+	ChunkSize    int64      `json:"chunkSize"`
+	ChunkCount   int        `json:"chunkCount"`
+	Revision     uint64     `json:"revision"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+}
+
 type Reaction struct {
 	ID        string    `json:"id"`
 	AuthorID  string    `json:"authorId"`
@@ -191,6 +210,7 @@ type TimelineItem struct {
 	AgentRequest *AgentRequest `json:"agentRequest,omitempty"`
 	AgentRun     *AgentRun     `json:"agentRun,omitempty"`
 	AgentResult  *AgentResult  `json:"agentResult,omitempty"`
+	File         *FileOffer    `json:"file,omitempty"`
 	Reaction     *Reaction     `json:"reaction,omitempty"`
 	System       *SystemEvent  `json:"system,omitempty"`
 }
@@ -276,6 +296,9 @@ type Command struct {
 	RequestDecision *DecideAgentRequestInput  `json:"requestDecision,omitempty"`
 	AgentRun        *PublishAgentRunInput     `json:"agentRun,omitempty"`
 	AgentResult     *PublishAgentResultInput  `json:"agentResult,omitempty"`
+	AgentUpdate     *UpdateAgentInput         `json:"agentUpdate,omitempty"`
+	FileOffer       *OfferFileInput           `json:"fileOffer,omitempty"`
+	FileRevoke      *RevokeFileInput          `json:"fileRevoke,omitempty"`
 }
 
 type PostChatInput struct {
@@ -331,6 +354,25 @@ type PublishAgentResultInput struct {
 	Revision     uint64   `json:"revision,omitempty"`
 	Summary      string   `json:"summary"`
 	ReferenceIDs []string `json:"referenceIds,omitempty"`
+}
+
+type UpdateAgentInput struct {
+	Name string `json:"name"`
+}
+
+type OfferFileInput struct {
+	FileID       string `json:"fileId"`
+	Name         string `json:"name"`
+	Size         int64  `json:"size"`
+	MIME         string `json:"mime,omitempty"`
+	SHA256       string `json:"sha256"`
+	ManifestHash string `json:"manifestHash"`
+	ChunkSize    int64  `json:"chunkSize"`
+	ChunkCount   int    `json:"chunkCount"`
+}
+
+type RevokeFileInput struct {
+	FileID string `json:"fileId"`
 }
 
 type CommandReceipt struct {

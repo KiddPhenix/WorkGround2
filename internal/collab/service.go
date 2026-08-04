@@ -26,6 +26,9 @@ const (
 	MaxIDBytes           = 256
 	MaxShortText         = 4096
 	MaxTransientRequests = 8192
+	MaxSharedFileSize    = int64(1) << 40
+	MinFileChunkSize     = int64(256 * 1024)
+	MaxFileChunkSize     = int64(8 * 1024 * 1024)
 )
 
 var roomIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -144,7 +147,7 @@ func (s *Service) Join(ctx context.Context, input JoinInput) (JoinResult, error)
 	}
 	if exists && !s.sessionMatchesLocked(state, input.Member.ID, input.ResumeSession) {
 		s.store.mu.Unlock()
-		return JoinResult{}, fail(CodeUnauthorized, "resume session is required for this member")
+		return JoinResult{}, fail(CodeResumeNeeded, ResumeRequiredMessage)
 	}
 	for id, member := range state.Members {
 		if id != input.Member.ID && member.Agent.ID == input.Member.Agent.ID {
@@ -408,7 +411,13 @@ func (s *Service) Submit(ctx context.Context, env CommandEnvelope) (CommandRecei
 	}
 	event := RoomEvent{EventID: newID("event"), Sequence: sequence, Room: env.Room, Type: eventTypeName, ActorID: env.MemberID, RequestID: env.RequestID, CausationID: causation, CreatedAt: now, Payload: payload}
 	receipt := CommandReceipt{RequestID: env.RequestID, EventIDs: []string{event.EventID}, LatestSequence: sequence}
-	if err := s.store.append(journalRecord{Event: event, Receipt: receipt, RequestHash: requestHash, Timeline: &item}); err != nil {
+	var updatedMember *Member
+	if env.Command.Type == CommandUpdateAgent {
+		member := state.Members[env.MemberID]
+		member.Agent.Name = strings.TrimSpace(env.Command.AgentUpdate.Name)
+		updatedMember = &member
+	}
+	if err := s.store.append(journalRecord{Event: event, Receipt: receipt, RequestHash: requestHash, Member: updatedMember, Timeline: &item}); err != nil {
 		s.store.mu.Unlock()
 		return CommandReceipt{}, err
 	}
@@ -544,6 +553,42 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 		}
 		value := AgentResult{ID: v.ResultID, OwnerID: actor, AgentID: v.AgentID, RunID: v.RunID, Revision: revision, Summary: v.Summary, ReferenceIDs: cloneStrings(v.ReferenceIDs), CreatedAt: now}
 		return TimelineItem{ID: v.ResultID, Sequence: sequence, Type: TimelineAgentResult, AgentResult: &value}, "agent_result.published", v.RunID, nil
+	case CommandUpdateAgent:
+		v := cmd.AgentUpdate
+		if v == nil || strings.TrimSpace(v.Name) == "" || len(strings.TrimSpace(v.Name)) > 256 {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "agent name is required and must not exceed 256 bytes")
+		}
+		id := newID("timeline")
+		value := SystemEvent{Kind: "agent.updated", MemberID: actor}
+		return TimelineItem{ID: id, Sequence: sequence, Type: TimelineSystem, System: &value}, "agent.updated", "", nil
+	case CommandOfferFile:
+		v := cmd.FileOffer
+		if v == nil || !validID(v.FileID) || !validFileName(v.Name) || v.Size < 0 || v.Size > MaxSharedFileSize || len(v.MIME) > 256 || !validSHA256(v.SHA256) || !validSHA256(v.ManifestHash) || v.ChunkSize < MinFileChunkSize || v.ChunkSize > MaxFileChunkSize || v.ChunkCount != expectedChunkCount(v.Size, v.ChunkSize) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "invalid file offer")
+		}
+		if _, exists := state.Files[v.FileID]; exists {
+			return TimelineItem{}, "", "", fail(CodeConflict, "file id already exists")
+		}
+		value := FileOffer{ID: v.FileID, OwnerID: actor, Name: v.Name, Size: v.Size, MIME: v.MIME, SHA256: strings.ToLower(v.SHA256), ManifestHash: strings.ToLower(v.ManifestHash), ChunkSize: v.ChunkSize, ChunkCount: v.ChunkCount, Revision: 1, CreatedAt: now}
+		return TimelineItem{ID: v.FileID, Sequence: sequence, Type: TimelineFile, File: &value}, "file.offered", "", nil
+	case CommandRevokeFile:
+		v := cmd.FileRevoke
+		if v == nil || !validID(v.FileID) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "file id is required")
+		}
+		file, exists := state.Files[v.FileID]
+		if !exists {
+			return TimelineItem{}, "", "", fail(CodeNotFound, "file offer does not exist")
+		}
+		if file.OwnerID != actor {
+			return TimelineItem{}, "", "", fail(CodeForbidden, "only the file owner can revoke it")
+		}
+		if file.RevokedAt != nil {
+			return TimelineItem{}, "", "", fail(CodeConflict, "file offer is already revoked")
+		}
+		file.Revision++
+		file.RevokedAt = &now
+		return TimelineItem{ID: file.ID, Sequence: sequence, Type: TimelineFile, File: &file}, "file.revoked", file.ID, nil
 	default:
 		return TimelineItem{}, "", "", fail(CodeInvalid, "unsupported command type")
 	}
@@ -710,7 +755,7 @@ func validRunStatus(v AgentRunStatus) bool {
 
 func validCommandUnion(cmd Command) bool {
 	count := 0
-	for _, set := range []bool{cmd.Chat != nil, cmd.Contribution != nil, cmd.Reaction != nil, cmd.AgentRequest != nil, cmd.RequestDecision != nil, cmd.AgentRun != nil, cmd.AgentResult != nil} {
+	for _, set := range []bool{cmd.Chat != nil, cmd.Contribution != nil, cmd.Reaction != nil, cmd.AgentRequest != nil, cmd.RequestDecision != nil, cmd.AgentRun != nil, cmd.AgentResult != nil, cmd.AgentUpdate != nil, cmd.FileOffer != nil, cmd.FileRevoke != nil} {
 		if set {
 			count++
 		}
@@ -733,6 +778,12 @@ func validCommandUnion(cmd Command) bool {
 		return cmd.AgentRun != nil
 	case CommandPublishAgentResult:
 		return cmd.AgentResult != nil
+	case CommandUpdateAgent:
+		return cmd.AgentUpdate != nil
+	case CommandOfferFile:
+		return cmd.FileOffer != nil
+	case CommandRevokeFile:
+		return cmd.FileRevoke != nil
 	default:
 		return false
 	}
@@ -786,3 +837,66 @@ func eventType(state *roomState, receipt CommandReceipt) string {
 }
 
 func resultKey(runID string, revision uint64) string { return fmt.Sprintf("%s/%d", runID, revision) }
+
+func validSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func validFileName(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 1024 && value != "." && value != ".." && !strings.ContainsAny(value, `/\\`)
+}
+
+func expectedChunkCount(size, chunkSize int64) int {
+	if size == 0 {
+		return 0
+	}
+	return int((size + chunkSize - 1) / chunkSize)
+}
+
+// Authenticate resolves an online member from a connection session without
+// exposing session hashes to transport-specific features such as file relay.
+func (s *Service) Authenticate(ctx context.Context, room, session string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	state, ok := s.store.room(strings.TrimSpace(room))
+	if !ok {
+		return "", fail(CodeNotFound, "room does not exist")
+	}
+	want := hashSecret(session)
+	for sessionHash, memberID := range state.Sessions {
+		member := state.Members[memberID]
+		if member.Status == MemberOnline && subtle.ConstantTimeCompare([]byte(sessionHash), []byte(want)) == 1 {
+			return memberID, nil
+		}
+	}
+	return "", fail(CodeUnauthorized, "connection session is invalid")
+}
+
+// File returns a persisted, active file offer for transfer authorization.
+func (s *Service) File(ctx context.Context, room, fileID string) (FileOffer, error) {
+	if err := ctx.Err(); err != nil {
+		return FileOffer{}, err
+	}
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	state, ok := s.store.room(strings.TrimSpace(room))
+	if !ok {
+		return FileOffer{}, fail(CodeNotFound, "room does not exist")
+	}
+	file, ok := state.Files[strings.TrimSpace(fileID)]
+	if !ok {
+		return FileOffer{}, fail(CodeNotFound, "file offer does not exist")
+	}
+	if file.RevokedAt != nil {
+		return FileOffer{}, fail(CodeConflict, "file offer is revoked")
+	}
+	return file, nil
+}

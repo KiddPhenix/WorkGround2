@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -28,19 +29,65 @@ const (
 // CollaborationState is the authoritative desktop projection consumed by the
 // collaboration surface. Connection credentials are intentionally omitted.
 type CollaborationState struct {
-	Status      string                    `json:"status"`
-	Mode        string                    `json:"mode,omitempty"`
-	Host        string                    `json:"host,omitempty"`
-	Port        int                       `json:"port,omitempty"`
-	Room        string                    `json:"room,omitempty"`
-	MemberID    string                    `json:"memberId,omitempty"`
-	AgentID     string                    `json:"agentId,omitempty"`
-	SessionID   string                    `json:"sessionId,omitempty"`
-	Snapshot    collab.Snapshot           `json:"snapshot"`
-	OutboxCount int                       `json:"outboxCount"`
-	Outbox      []CollaborationOutboxView `json:"outbox,omitempty"`
-	LastError   string                    `json:"lastError,omitempty"`
-	Retryable   bool                      `json:"retryable,omitempty"`
+	Status      string                      `json:"status"`
+	Mode        string                      `json:"mode,omitempty"`
+	Host        string                      `json:"host,omitempty"`
+	Port        int                         `json:"port,omitempty"`
+	Room        string                      `json:"room,omitempty"`
+	MemberID    string                      `json:"memberId,omitempty"`
+	AgentID     string                      `json:"agentId,omitempty"`
+	SessionID   string                      `json:"sessionId,omitempty"`
+	Snapshot    collab.Snapshot             `json:"snapshot"`
+	OutboxCount int                         `json:"outboxCount"`
+	Outbox      []CollaborationOutboxView   `json:"outbox,omitempty"`
+	LastError   string                      `json:"lastError,omitempty"`
+	Retryable   bool                        `json:"retryable,omitempty"`
+	Transfers   []CollaborationFileTransfer `json:"transfers,omitempty"`
+	AgentConfig CollaborationAgentConfig    `json:"agentConfig"`
+}
+
+type CollaborationAgentConfig struct {
+	Alias                string `json:"alias,omitempty"`
+	AutoRespondQuestions bool   `json:"autoRespondQuestions"`
+	AutoRespondRequests  bool   `json:"autoRespondRequests"`
+	RecognitionMode      string `json:"recognitionMode"`
+}
+
+type UpdateCollaborationAgentConfigInput struct {
+	SessionID string                   `json:"sessionId"`
+	RequestID string                   `json:"requestId"`
+	Config    CollaborationAgentConfig `json:"config"`
+}
+
+type CollaborationFileTransfer struct {
+	ID          string `json:"id"`
+	FileID      string `json:"fileId"`
+	Direction   string `json:"direction"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Transferred int64  `json:"transferred"`
+	Total       int64  `json:"total"`
+	Destination string `json:"destination,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Retryable   bool   `json:"retryable,omitempty"`
+	Completed   []bool `json:"completed,omitempty"`
+	PartPath    string `json:"partPath,omitempty"`
+}
+
+type ShareCollaborationFilesInput struct {
+	SessionID string   `json:"sessionId"`
+	Paths     []string `json:"paths"`
+}
+
+type ReceiveCollaborationFileInput struct {
+	SessionID   string `json:"sessionId"`
+	FileID      string `json:"fileId"`
+	Destination string `json:"destination,omitempty"`
+}
+
+type CollaborationFileActionInput struct {
+	SessionID string `json:"sessionId"`
+	FileID    string `json:"fileId"`
 }
 
 type CollaborationOutboxView struct {
@@ -171,6 +218,10 @@ type desktopCollaboration struct {
 	recoveredRuns  []collaborationPersistedRun
 	leaveError     string
 	recovery       collaborationPersistedState
+	shares         map[string]collaborationSharedFile
+	transfers      map[string]*CollaborationFileTransfer
+	transferCancel map[string]context.CancelFunc
+	fileOrigin     *collaborationFileOrigin
 
 	persistPath       string
 	legacyPersistPath string
@@ -188,6 +239,7 @@ type desktopCollaboration struct {
 
 type collaborationConnection struct {
 	peer              collaborationPeer
+	filePeer          *httpCollaborationPeer
 	host              *http.Server
 	listener          net.Listener
 	mode              string
@@ -271,6 +323,9 @@ type collaborationPersistedState struct {
 	OutboxFailures      map[string]string                   `json:"outboxFailures,omitempty"`
 	Starts              map[string]collaborationStartRecord `json:"starts,omitempty"`
 	Runs                []collaborationPersistedRun         `json:"runs,omitempty"`
+	Shares              []collaborationSharedFile           `json:"shares,omitempty"`
+	Transfers           []CollaborationFileTransfer         `json:"transfers,omitempty"`
+	AgentConfig         CollaborationAgentConfig            `json:"agentConfig,omitempty"`
 }
 
 type collaborationPersistedRun struct {
@@ -290,9 +345,12 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	c := &desktopCollaboration{
 		app:            app,
 		ownerSessionID: sessionID,
-		state:          CollaborationState{Status: "disconnected", SessionID: sessionID},
+		state:          CollaborationState{Status: "disconnected", SessionID: sessionID, AgentConfig: defaultCollaborationAgentConfig()},
 		starts:         map[string]collaborationStartRecord{},
 		runs:           map[string]*collaborationAgentRun{},
+		shares:         map[string]collaborationSharedFile{},
+		transfers:      map[string]*CollaborationFileTransfer{},
+		transferCancel: map[string]context.CancelFunc{},
 		outboxFailures: map[string]string{},
 	}
 	c.openHost = c.openHostedRoom
@@ -370,6 +428,85 @@ func (a *App) GetCollaborationState(sessionID string) (CollaborationState, error
 		return CollaborationState{}, err
 	}
 	return runtime.snapshot(), nil
+}
+
+func (a *App) UpdateCollaborationAgentConfig(input UpdateCollaborationAgentConfigInput) (CollaborationState, error) {
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
+	return runtime.updateAgentConfig(a.bootContext(), input)
+}
+
+func defaultCollaborationAgentConfig() CollaborationAgentConfig {
+	return CollaborationAgentConfig{RecognitionMode: "off"}
+}
+
+func normalizeCollaborationAgentConfig(value CollaborationAgentConfig, fallbackAlias string) CollaborationAgentConfig {
+	value.Alias = strings.TrimSpace(value.Alias)
+	if value.Alias == "" {
+		value.Alias = strings.TrimSpace(fallbackAlias)
+	}
+	switch value.RecognitionMode {
+	case "message", "interval", "off":
+	default:
+		value.RecognitionMode = "off"
+	}
+	return value
+}
+
+func (c *desktopCollaboration) updateAgentConfig(ctx context.Context, input UpdateCollaborationAgentConfigInput) (CollaborationState, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	input.RequestID = strings.TrimSpace(input.RequestID)
+
+	c.mu.RLock()
+	current := normalizeCollaborationAgentConfig(c.state.AgentConfig, c.currentAgentNameLocked())
+	c.mu.RUnlock()
+	next := normalizeCollaborationAgentConfig(input.Config, current.Alias)
+	if next.Alias == "" || len(next.Alias) > 256 {
+		return c.snapshot(), fmt.Errorf("Agent alias is required and must not exceed 256 bytes")
+	}
+	if next == current {
+		return c.snapshot(), nil
+	}
+	if next.Alias != current.Alias {
+		if input.RequestID == "" {
+			return c.snapshot(), fmt.Errorf("requestId is required when changing the Agent alias")
+		}
+		if _, err := c.submit(ctx, input.RequestID, collab.Command{Type: collab.CommandUpdateAgent, AgentUpdate: &collab.UpdateAgentInput{Name: next.Alias}}); err != nil {
+			return c.snapshot(), err
+		}
+	}
+
+	c.mu.Lock()
+	c.state.AgentConfig = next
+	if c.conn != nil {
+		c.conn.agentName = next.Alias
+	}
+	for i := range c.state.Snapshot.Members {
+		if c.state.Snapshot.Members[i].ID == c.state.MemberID {
+			c.state.Snapshot.Members[i].Agent.Name = next.Alias
+			break
+		}
+	}
+	c.persistLocked()
+	state := cloneCollaborationState(c.state)
+	c.mu.Unlock()
+	c.emitState()
+	return state, nil
+}
+
+func (c *desktopCollaboration) currentAgentNameLocked() string {
+	for _, member := range c.state.Snapshot.Members {
+		if member.ID == c.state.MemberID {
+			return member.Agent.Name
+		}
+	}
+	if c.conn != nil {
+		return c.conn.agentName
+	}
+	return c.recovery.AgentName
 }
 
 func (a *App) GetCollaborationInvite(sessionID string) (CollaborationInvite, error) {
@@ -583,13 +720,19 @@ func (c *desktopCollaboration) snapshot() CollaborationState {
 	}
 	state.OutboxCount = len(c.outbox)
 	state.Outbox = c.outboxViewsLocked()
+	state.Transfers = c.fileTransfersLocked()
 	return state
 }
 
 func (c *desktopCollaboration) outboxViewsLocked() []CollaborationOutboxView {
 	result := make([]CollaborationOutboxView, 0, len(c.outbox))
 	sequence := c.state.Snapshot.LatestSequence
+	room := c.state.Room
+	memberID := c.state.MemberID
 	for _, env := range c.outbox {
+		if env.Room != room || env.MemberID != memberID {
+			continue
+		}
 		status := "pending"
 		lastError := c.outboxFailures[env.RequestID]
 		if lastError != "" {
@@ -637,6 +780,12 @@ func collaborationQueuedItem(env collab.CommandEnvelope, sequence uint64) *colla
 		}
 		value := env.Command.AgentResult
 		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentResult, AgentResult: &collab.AgentResult{ID: value.ResultID, OwnerID: env.MemberID, AgentID: value.AgentID, RunID: value.RunID, Revision: value.Revision, Summary: value.Summary, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), CreatedAt: createdAt}}
+	case collab.CommandOfferFile:
+		if env.Command.FileOffer == nil {
+			return nil
+		}
+		value := env.Command.FileOffer
+		return &collab.TimelineItem{ID: value.FileID, Sequence: sequence, Type: collab.TimelineFile, File: &collab.FileOffer{ID: value.FileID, OwnerID: env.MemberID, Name: value.Name, Size: value.Size, MIME: value.MIME, SHA256: value.SHA256, ManifestHash: value.ManifestHash, ChunkSize: value.ChunkSize, ChunkCount: value.ChunkCount, Revision: 1, CreatedAt: createdAt}}
 	default:
 		return nil
 	}
@@ -646,6 +795,7 @@ func cloneCollaborationState(state CollaborationState) CollaborationState {
 	state.Snapshot.Members = append([]collab.Member(nil), state.Snapshot.Members...)
 	state.Snapshot.Timeline = append([]collab.TimelineItem(nil), state.Snapshot.Timeline...)
 	state.Outbox = append([]CollaborationOutboxView(nil), state.Outbox...)
+	state.Transfers = cloneCollaborationTransfers(state.Transfers)
 	return state
 }
 
@@ -661,8 +811,9 @@ func (c *desktopCollaboration) host(ctx context.Context, input HostCollaboration
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
-	c.setConnecting("host", input.ListenHost, input.Port, input.Room, identity, input.SessionID)
 	resume := c.resumeSession(input.ListenHost, input.Port, input.Room, identity.ID, input.SessionID)
+	c.fenceCurrentConnection()
+	c.setConnecting("host", input.ListenHost, input.Port, input.Room, identity, input.SessionID)
 	conn, err := c.openHost(ctx, input, identity, resume)
 	if err != nil {
 		return c.failState("failed", err, collaborationErrorRetryable(err)), err
@@ -682,13 +833,39 @@ func (c *desktopCollaboration) join(ctx context.Context, input JoinCollaboration
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
-	c.setConnecting("client", input.Host, input.Port, input.Room, identity, input.SessionID)
 	resume := c.resumeSession(input.Host, input.Port, input.Room, identity.ID, input.SessionID)
+	scopedIdentity := scopedCollaborationIdentity(identity, input.Room, input.SessionID)
+	if resume == "" {
+		if scopedResume := c.resumeSession(input.Host, input.Port, input.Room, scopedIdentity.ID, input.SessionID); scopedResume != "" {
+			identity, resume = scopedIdentity, scopedResume
+		}
+	}
+	c.fenceCurrentConnection()
+	c.setConnecting("client", input.Host, input.Port, input.Room, identity, input.SessionID)
 	conn, err := c.openJoin(ctx, input, identity, resume)
+	if err != nil && collaborationMemberResumeRequired(err) && identity.ID != scopedIdentity.ID {
+		identity = scopedIdentity
+		resume = c.resumeSession(input.Host, input.Port, input.Room, identity.ID, input.SessionID)
+		c.setConnecting("client", input.Host, input.Port, input.Room, identity, input.SessionID)
+		conn, err = c.openJoin(ctx, input, identity, resume)
+	}
 	if err != nil {
 		return c.failState("failed", err, collaborationErrorRetryable(err)), err
 	}
 	return c.installConnection(conn)
+}
+
+func scopedCollaborationIdentity(identity collab.MemberDescriptor, room, sessionID string) collab.MemberDescriptor {
+	scope := strings.TrimSpace(room) + "\x00" + strings.TrimSpace(sessionID)
+	identity.ID = stableCollaborationID("member", identity.ID+"\x00"+scope)
+	identity.Agent.ID = stableCollaborationID("agent", identity.Agent.ID+"\x00"+scope)
+	return identity
+}
+
+func collaborationMemberResumeRequired(err error) bool {
+	var protocol *collab.Error
+	return errors.As(err, &protocol) && (protocol.Code == collab.CodeResumeNeeded ||
+		(protocol.Code == collab.CodeUnauthorized && protocol.Message == collab.ResumeRequiredMessage))
 }
 
 func normalizeCollaborationHost(value string) (string, error) {
@@ -823,6 +1000,7 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 	c.state = CollaborationState{Status: "disconnected", SessionID: c.ownerSessionID, OutboxCount: len(c.outbox)}
 	c.persistLocked()
 	c.mu.Unlock()
+	c.closeFileTransfers()
 	c.emitState()
 	return nil
 }
@@ -840,6 +1018,7 @@ func (c *desktopCollaboration) close() {
 		_ = conn.close(ctx, false)
 		cancel()
 	}
+	c.closeFileTransfers()
 }
 
 func (c *desktopCollaboration) post(ctx context.Context, input PostCollaborationMessageInput) (CollaborationActionResult, error) {
@@ -1228,6 +1407,8 @@ func stableCollaborationID(prefix, value string) string {
 
 func (c *desktopCollaboration) setConnecting(mode, host string, port int, room string, identity collab.MemberDescriptor, sessionID string) {
 	c.mu.Lock()
+	config := normalizeCollaborationAgentConfig(c.state.AgentConfig, identity.Agent.Name)
+	c.conn = nil // fence old connection so late stream/snapshot updates cannot overwrite the new state
 	c.state = CollaborationState{
 		Status:      "connecting",
 		Mode:        mode,
@@ -1238,9 +1419,26 @@ func (c *desktopCollaboration) setConnecting(mode, host string, port int, room s
 		AgentID:     identity.Agent.ID,
 		SessionID:   strings.TrimSpace(sessionID),
 		OutboxCount: len(c.outbox),
+		AgentConfig: config,
 	}
 	c.mu.Unlock()
 	c.emitState()
+}
+
+// fenceCurrentConnection cancels the previous connection's context so its
+// goroutines stop delivering stale events before a new Host/Join starts.
+// Must be called while c.opMu is held.
+func (c *desktopCollaboration) fenceCurrentConnection() {
+	c.mu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	if conn == nil {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = conn.close(closeCtx, true)
+	cancel()
 }
 
 func (c *desktopCollaboration) failState(status string, err error, retryable bool) CollaborationState {
@@ -1259,6 +1457,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		return c.snapshot(), fmt.Errorf("collaboration connection is unavailable")
 	}
 	c.mu.Lock()
+	config := normalizeCollaborationAgentConfig(c.state.AgentConfig, conn.agentName)
 	previous := c.conn
 	c.conn = conn
 	status := "connected"
@@ -1276,6 +1475,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		SessionID:   conn.sessionID,
 		Snapshot:    conn.initialSnapshot,
 		OutboxCount: len(c.outbox),
+		AgentConfig: config,
 	}
 	c.recoverInterruptedRunsLocked(conn)
 	c.state.OutboxCount = len(c.outbox)
@@ -1291,6 +1491,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	conn.cancel = cancel
 	conn.done = make(chan struct{})
 	go c.connectionLoop(loopCtx, conn)
+	go c.restoreFileOrigins(conn)
 	c.emitState()
 	return state, nil
 }

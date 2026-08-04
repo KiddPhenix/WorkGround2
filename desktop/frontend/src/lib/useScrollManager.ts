@@ -321,6 +321,7 @@ export function useScrollManager(scrollHostRef?: RefObject<HTMLElement | null>) 
     isAtBottom,
     smoothScrollTo,
     scrollToBottom,
+    snapToBottom,
     scrollToBottomAfterLayout,
     preserveScrollAnchor,
     onNewQuestion,

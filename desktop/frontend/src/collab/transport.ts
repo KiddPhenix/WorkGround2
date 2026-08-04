@@ -2,7 +2,9 @@ import { app, onCollaborationEvent, onCollaborationState } from "../lib/bridge";
 import { t } from "../lib/i18n";
 import type {
   CollaborationActionResult,
+  CollaborationAgentConfig,
   CollaborationInvite,
+  CollaborationFileTransfer,
   CollaborationIntentResult,
   CollaborationMember,
   CollaborationState,
@@ -87,7 +89,7 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
     }
   }
   const actor = record(raw.actor ?? raw.Actor);
-  const typed = record(raw.chat ?? raw.Chat ?? raw.contribution ?? raw.Contribution ?? raw.agentRequest ?? raw.AgentRequest ?? raw.agentRun ?? raw.AgentRun ?? raw.agentResult ?? raw.AgentResult ?? raw.reaction ?? raw.Reaction ?? raw.system ?? raw.System);
+  const typed = record(raw.chat ?? raw.Chat ?? raw.contribution ?? raw.Contribution ?? raw.agentRequest ?? raw.AgentRequest ?? raw.agentRun ?? raw.AgentRun ?? raw.agentResult ?? raw.AgentResult ?? raw.file ?? raw.File ?? raw.reaction ?? raw.Reaction ?? raw.system ?? raw.System);
   const rawKind = text(raw.kind ?? raw.Kind ?? raw.type ?? raw.Type, "chat");
   const kind = rawKind === "agent_run" ? "agent_command" : rawKind;
   const references = typed.referenceIds ?? typed.ReferenceIDs ?? raw.referenceIds ?? raw.ReferenceIDs ?? raw.references ?? raw.References;
@@ -97,10 +99,11 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
   let content = text(typed.text ?? typed.Text ?? typed.body ?? typed.Body ?? typed.instruction ?? typed.Instruction ?? typed.summary ?? typed.Summary ?? typed.message ?? typed.Message ?? raw.text ?? raw.Text ?? raw.content ?? raw.Content);
   if (kind === "reaction" && !content) content = text(typed.kind ?? typed.Kind, "agree");
   if (kind === "system" && !content) content = text(typed.kind ?? typed.Kind, "system");
+  if (kind === "file" && !content) content = text(typed.name ?? typed.Name);
   return {
     id,
     sequence: number(raw.sequence ?? raw.Sequence),
-    revision: number(raw.revision ?? raw.Revision, 1),
+    revision: number(typed.revision ?? typed.Revision ?? raw.revision ?? raw.Revision, 1),
     kind: (kind || "chat") as CollaborationTimelineItem["kind"],
     contributionKind: text(typed.kind ?? typed.Kind ?? raw.contributionKind ?? raw.ContributionKind) || undefined,
     actorId,
@@ -117,6 +120,27 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
     agentRunError: kind === "agent_command" ? text(typed.error ?? typed.Error) || undefined : undefined,
     systemKind: kind === "system" ? text(typed.kind ?? typed.Kind) || undefined : undefined,
     reactions: record(raw.reactions ?? raw.Reactions) as Record<string, string[]>,
+    fileName: kind === "file" ? text(typed.name ?? typed.Name) : undefined,
+    fileSize: kind === "file" ? number(typed.size ?? typed.Size) : undefined,
+    fileMime: kind === "file" ? text(typed.mime ?? typed.MIME) || undefined : undefined,
+    fileSHA256: kind === "file" ? text(typed.sha256 ?? typed.SHA256) || undefined : undefined,
+    fileRevoked: kind === "file" ? Boolean(typed.revokedAt ?? typed.RevokedAt) : undefined,
+  };
+}
+
+function normalizeFileTransfer(value: unknown): CollaborationFileTransfer {
+  const raw = record(value);
+  return {
+    id: text(raw.id ?? raw.ID),
+    fileId: text(raw.fileId ?? raw.FileID),
+    direction: text(raw.direction ?? raw.Direction) === "share" ? "share" : "receive",
+    name: text(raw.name ?? raw.Name),
+    status: text(raw.status ?? raw.Status, "failed") as CollaborationFileTransfer["status"],
+    transferred: number(raw.transferred ?? raw.Transferred),
+    total: number(raw.total ?? raw.Total),
+    destination: text(raw.destination ?? raw.Destination) || undefined,
+    error: text(raw.error ?? raw.Error) || undefined,
+    retryable: bool(raw.retryable ?? raw.Retryable),
   };
 }
 
@@ -129,6 +153,15 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
   const memberNames = new Map(members.map((member) => [member.id, member.name]));
   const selfMemberId = text(raw.selfMemberId ?? raw.SelfMemberID ?? raw.memberId ?? raw.MemberID);
   for (const member of members) member.isSelf = member.id === selfMemberId;
+  const self = members.find((member) => member.id === selfMemberId);
+  const configRaw = record(raw.agentConfig ?? raw.AgentConfig);
+  const mode = text(configRaw.recognitionMode ?? configRaw.RecognitionMode, "off");
+  const agentConfig: CollaborationAgentConfig = {
+    alias: text(configRaw.alias ?? configRaw.Alias, self?.agent.name || t("collab.defaultAgent")),
+    autoRespondQuestions: bool(configRaw.autoRespondQuestions ?? configRaw.AutoRespondQuestions),
+    autoRespondRequests: bool(configRaw.autoRespondRequests ?? configRaw.AutoRespondRequests),
+    recognitionMode: mode === "message" || mode === "interval" ? mode : "off",
+  };
   const timeline = list(snapshot.timeline ?? snapshot.Timeline ?? raw.timeline ?? raw.Timeline ?? raw.items ?? raw.Items)
     .map((item) => normalizeCollaborationItem(item, memberNames))
     .filter((item) => item.id);
@@ -162,10 +195,12 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     selfMemberId: selfMemberId || undefined,
     selfSessionId: text(raw.selfSessionId ?? raw.SelfSessionID ?? raw.sessionId ?? raw.SessionID) || undefined,
     members,
+    agentConfig,
     timeline: [...timeline, ...queued],
     lastError: text(raw.lastError ?? raw.LastError ?? raw.error ?? raw.Error) || undefined,
     retryable: bool(raw.retryable ?? raw.Retryable, true),
     unsyncedCount: number(raw.outboxCount ?? raw.OutboxCount ?? raw.unsyncedCount ?? raw.UnsyncedCount),
+    transfers: list(raw.transfers ?? raw.Transfers).map(normalizeFileTransfer),
   };
 }
 
@@ -238,6 +273,12 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID }), names),
     startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input), names),
     respond: async (input) => normalizeCollaborationAction(await app.RespondCollaborationRequest(input), names),
+    updateAgentConfig: async (input) => normalizeState(await app.UpdateCollaborationAgentConfig({ ...input, sessionID })),
+    shareFiles: (paths) => app.ShareCollaborationFiles({ sessionID, paths }).then((values) => list(values).map(normalizeFileTransfer)),
+    receiveFile: (fileID) => app.ReceiveCollaborationFile({ sessionID, fileID }).then(normalizeFileTransfer),
+    pauseFile: (fileID) => app.PauseCollaborationFile({ sessionID, fileID }).then(normalizeFileTransfer),
+    resumeFile: (fileID) => app.ResumeCollaborationFile({ sessionID, fileID }).then(normalizeFileTransfer),
+    revokeFile: async (fileID) => normalizeCollaborationAction(await app.RevokeCollaborationFile({ sessionID, fileID }), names),
     subscribeState: (listener) => onCollaborationState((payload) => {
       const raw = record(payload);
       if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;
@@ -263,7 +304,7 @@ const mockRuntimes = new Map<string, MockCollaborationRuntime>();
 function mockRuntime(sessionID: string): MockCollaborationRuntime {
   let runtime = mockRuntimes.get(sessionID);
   if (!runtime) {
-    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] } };
+    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, recognitionMode: "off" } } };
     mockRuntimes.set(sessionID, runtime);
   }
   return runtime;
@@ -306,6 +347,7 @@ function connectMock(runtime: MockCollaborationRuntime, input: HostCollaboration
     selfSessionId: input.sessionID,
     members: sampleMembers(input.memberName || "陈程序", input.agentName || "程序 Agent", input.sessionID),
     timeline: sampleTimeline(),
+    agentConfig: { alias: input.agentName || "程序 Agent", autoRespondQuestions: false, autoRespondRequests: false, recognitionMode: "off" },
   };
   runtime.sequence = 4;
   emitMockState(runtime);
@@ -323,7 +365,7 @@ export function createMockCollaborationTransport(sessionID = "preview-session"):
       if (!runtime.state.room) throw new Error("collaboration Room is unavailable");
       return { hosts: [runtime.state.room.host || "127.0.0.1"], port: runtime.state.room.port, room: runtime.state.room.room };
     },
-    async leave() { runtime.state = { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] }; emitMockState(runtime); },
+    async leave() { runtime.state = { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], agentConfig: runtime.state.agentConfig }; emitMockState(runtime); },
     async classifyIntent() { return { intent: "chat", source: "llm" }; },
     async post(input) {
       const self = runtime.state.members.find((member) => member.isSelf);
@@ -369,6 +411,20 @@ export function createMockCollaborationTransport(sessionID = "preview-session"):
       }
       return { ok: true, requestID: input.requestID };
     },
+    async updateAgentConfig(input) {
+      runtime.state = {
+        ...runtime.state,
+        agentConfig: input.config,
+        members: runtime.state.members.map((member) => member.isSelf ? { ...member, agent: { ...member.agent, name: input.config.alias } } : member),
+      };
+      emitMockState(runtime);
+      return runtime.state;
+    },
+    async shareFiles() { return []; },
+    async receiveFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
     subscribeState(listener) { runtime.stateListeners.add(listener); return () => runtime.stateListeners.delete(listener); },
     subscribeEvent(listener) { runtime.eventListeners.add(listener); return () => runtime.eventListeners.delete(listener); },
   };

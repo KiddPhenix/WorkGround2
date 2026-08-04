@@ -18,7 +18,9 @@ import type {
   JoinCollaborationRoomInput,
   PostCollaborationMessageInput,
   RespondCollaborationRequestInput,
+  CollaborationFileTransfer,
   StartCollaborationAgentInput,
+  UpdateCollaborationAgentConfigInput,
 } from "../collab/types";
 
 import { addBreadcrumb } from "./breadcrumbs";
@@ -295,6 +297,12 @@ export interface AppBindings extends WailsWorkBindings {
   PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
   RespondCollaborationRequest(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
+  UpdateCollaborationAgentConfig(input: UpdateCollaborationAgentConfigInput & { sessionID: string }): Promise<CollaborationState>;
+  ShareCollaborationFiles(input: { sessionID: string; paths: string[] }): Promise<CollaborationFileTransfer[]>;
+  ReceiveCollaborationFile(input: { sessionID: string; fileID: string; destination?: string }): Promise<CollaborationFileTransfer>;
+  PauseCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFileTransfer>;
+  ResumeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFileTransfer>;
+  RevokeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationActionResult>;
   // ── Heartbeat ──
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
@@ -2271,6 +2279,12 @@ function makeMockApp(): AppBindings {
     async PostCollaborationMessage(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async StartCollaborationAgent(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
+    async UpdateCollaborationAgentConfig(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: input.config }; },
+    async ShareCollaborationFiles() { return []; },
+    async ReceiveCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async PauseCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async ResumeCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async RevokeCollaborationFile() { return { ok: false, error: "File transfer preview unavailable", retryable: true }; },
     async EnterWidgetMode() {
       widgetMode = true;
       return mockWidgetSnapshot();

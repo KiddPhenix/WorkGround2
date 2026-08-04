@@ -1197,7 +1197,7 @@ export function ProjectTree({
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
       const imSourcePlatform = (imSource?.platform || "im").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "im";
-      const sourceBadge = projectTreeSourceBadge(node, t);
+      const sourceBadge = collaborationSession ? null : projectTreeSourceBadge(node, t);
       const title = [label, imSourceTitle, sourceBadge?.title, statusLabel, meta, exactTimeLabel].filter(Boolean).join(" · ");
       const topicMenuOpen = (!isSessionNode || workSession) && menuTopic === key;
       const pinned = Boolean(node.pinned);

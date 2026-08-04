@@ -1,4 +1,5 @@
 import type {
+  CollaborationAgentConfig,
   CollaborationIntentClass,
   CollaborationState,
   CollaborationTimelineItem,
@@ -6,6 +7,7 @@ import type {
 } from "./types";
 
 export interface CollabViewState extends CollaborationState {
+  agentConfig: CollaborationAgentConfig;
   selectedIds: string[];
   pendingIntents: Record<string, PendingIntent>;
   operation?: "host" | "join" | "sync" | "leave";
@@ -33,6 +35,7 @@ export const initialCollabState: CollabViewState = {
   timeline: [],
   selectedIds: [],
   pendingIntents: {},
+  agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, recognitionMode: "off" },
 };
 
 function mergeTimeline(current: CollaborationTimelineItem[], incoming: CollaborationTimelineItem[]): CollaborationTimelineItem[] {
@@ -45,22 +48,44 @@ function cancelPending(pending: Record<string, PendingIntent>): Record<string, P
   return Object.fromEntries(Object.entries(pending).map(([id, intent]) => [id, intent.status === "pending" ? { ...intent, status: "dismissed" as const } : intent]));
 }
 
+function sameRoom(a: CollaborationState["room"], b: CollaborationState["room"]): boolean {
+  if (!a || !b) return !a && !b;
+  return a.room === b.room && a.host.trim().toLowerCase() === b.host.trim().toLowerCase() && a.port === b.port;
+}
+
 export function collabReducer(state: CollabViewState, action: CollabAction): CollabViewState {
   switch (action.type) {
     case "CONNECTING":
-      return { ...state, status: "connecting", operation: action.operation, lastError: undefined };
+      return {
+        ...state,
+        status: "connecting",
+        operation: action.operation,
+        room: undefined,
+        selfMemberId: undefined,
+        members: [],
+        timeline: [],
+        selectedIds: [],
+        pendingIntents: cancelPending(state.pendingIntents),
+        lastError: undefined,
+      };
     case "SYNCING":
       return { ...state, status: action.reconnecting ? "reconnecting" : "syncing", operation: "sync", lastError: undefined, pendingIntents: cancelPending(state.pendingIntents) };
-    case "STATE":
+    case "STATE": {
+      const keepRoomState = action.state.status !== "connecting" && sameRoom(action.state.room, state.room);
       return {
         ...state,
         ...action.state,
         status: action.state.status || "connected",
-        timeline: mergeTimeline(state.timeline.filter((item) => !item.localPending), action.state.timeline || []),
+        timeline: keepRoomState
+          ? mergeTimeline(state.timeline.filter((item) => !item.localPending), action.state.timeline || [])
+          : (action.state.timeline || []),
         members: action.state.members || [],
-        operation: undefined,
-        pendingIntents: action.state.status === "connected" ? state.pendingIntents : cancelPending(state.pendingIntents),
+        agentConfig: action.state.agentConfig || state.agentConfig,
+        selectedIds: keepRoomState ? state.selectedIds : [],
+        operation: action.state.status === "connecting" ? state.operation : undefined,
+        pendingIntents: keepRoomState && action.state.status === "connected" ? state.pendingIntents : cancelPending(state.pendingIntents),
       };
+    }
     case "EVENT":
       return { ...state, timeline: mergeTimeline(state.timeline, [action.item]) };
     case "FAILED":
@@ -147,6 +172,33 @@ export function replayableSelfAgentItems(state: Pick<CollabViewState, "timeline"
       !handled.has(item.id) &&
       (!rule.covered || rule.intent !== "chat");
   });
+}
+
+export function nextAutomaticAgentItem(
+  state: Pick<CollabViewState, "timeline" | "selfMemberId" | "agentConfig">,
+): { kind: "question" | "request"; item: CollaborationTimelineItem } | undefined {
+  if (!state.selfMemberId || state.agentConfig.recognitionMode === "off") return undefined;
+  const handled = new Set(
+    state.timeline
+      .filter((item) => item.kind === "agent_command")
+      .flatMap((item) => item.referenceIds),
+  );
+  if (state.agentConfig.autoRespondRequests) {
+    const request = state.timeline.find((item) => item.kind === "agent_request"
+      && item.targetMemberId === state.selfMemberId
+      && item.requestStatus === "waiting"
+      && !handled.has(item.id));
+    if (request) return { kind: "request", item: request };
+  }
+  if (state.agentConfig.autoRespondQuestions) {
+    const question = state.timeline.find((item) => item.actorId !== state.selfMemberId
+      && !item.actorAgent
+      && !handled.has(item.id)
+      && (item.kind === "contribution" && item.contributionKind === "question"
+        || item.kind === "chat" && /[?？]\s*$/.test(item.text)));
+    if (question) return { kind: "question", item: question };
+  }
+  return undefined;
 }
 
 export function selectedTimelineItems(state: CollabViewState): CollaborationTimelineItem[] {

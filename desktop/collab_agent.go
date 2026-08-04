@@ -97,6 +97,9 @@ func collaborationContext(snapshot collab.Snapshot, referenceIDs []string) (stri
 			ref.AuthorID, ref.Revision, ref.Text = item.AgentResult.OwnerID, item.AgentResult.Revision, item.AgentResult.Summary
 		case item.AgentRun != nil:
 			ref.AuthorID, ref.Text = item.AgentRun.OwnerID, item.AgentRun.Instruction
+		case item.File != nil:
+			ref.AuthorID, ref.Revision = item.File.OwnerID, item.File.Revision
+			ref.Text = fmt.Sprintf("Shared file metadata: %s (%d bytes, SHA-256 %s). The file contents are not automatically included.", item.File.Name, item.File.Size, item.File.SHA256)
 		default:
 			return "", fmt.Errorf("timeline item %q cannot be used as Agent context", item.ID)
 		}

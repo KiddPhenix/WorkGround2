@@ -45,6 +45,7 @@ type roomState struct {
 	Runs         map[string]AgentRun
 	Results      map[string]AgentResult
 	ResultKeys   map[string]AgentResult
+	Files        map[string]FileOffer
 	Transient    map[string]transientRequest
 	TransientIDs []string
 }
@@ -58,7 +59,7 @@ func newRoomState() *roomState {
 	return &roomState{
 		Members: map[string]Member{}, Sessions: map[string]string{},
 		Receipts: map[string]CommandReceipt{}, Fingerprints: map[string]string{},
-		Requests: map[string]AgentRequest{}, Runs: map[string]AgentRun{}, Results: map[string]AgentResult{}, ResultKeys: map[string]AgentResult{},
+		Requests: map[string]AgentRequest{}, Runs: map[string]AgentRun{}, Results: map[string]AgentResult{}, ResultKeys: map[string]AgentResult{}, Files: map[string]FileOffer{},
 		Transient: map[string]transientRequest{},
 	}
 }
@@ -279,7 +280,7 @@ func applyRecord(state *roomState, record journalRecord) error {
 	if record.Timeline != nil {
 		item := *record.Timeline
 		updated := false
-		if item.Type == TimelineAgentRequest || item.Type == TimelineAgentRun || item.Type == TimelineAgentResult {
+		if item.Type == TimelineAgentRequest || item.Type == TimelineAgentRun || item.Type == TimelineAgentResult || item.Type == TimelineFile {
 			for i := range state.Timeline {
 				if state.Timeline[i].ID == item.ID {
 					state.Timeline[i] = item
@@ -316,6 +317,9 @@ func applyRecord(state *roomState, record journalRecord) error {
 		if item.AgentResult != nil {
 			state.Results[item.AgentResult.ID] = *item.AgentResult
 			state.ResultKeys[resultKey(item.AgentResult.RunID, item.AgentResult.Revision)] = *item.AgentResult
+		}
+		if item.File != nil {
+			state.Files[item.File.ID] = *item.File
 		}
 	}
 	state.Room.LatestSequence = e.Sequence
@@ -381,6 +385,14 @@ func cloneTimelineItem(item TimelineItem) TimelineItem {
 		value := *item.AgentResult
 		value.ReferenceIDs = cloneStrings(value.ReferenceIDs)
 		item.AgentResult = &value
+	}
+	if item.File != nil {
+		value := *item.File
+		if item.File.RevokedAt != nil {
+			revokedAt := *item.File.RevokedAt
+			value.RevokedAt = &revokedAt
+		}
+		item.File = &value
 	}
 	if item.Reaction != nil {
 		value := *item.Reaction

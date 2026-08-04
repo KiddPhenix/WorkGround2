@@ -41,18 +41,23 @@ func (c *desktopCollaboration) recoverInterruptedRunsLocked(conn *collaborationC
 	}
 }
 
-func (c *desktopCollaboration) resumeSession(host string, port int, room, memberID, sessionID string) string {
+func (c *desktopCollaboration) resumeSession(host string, port int, room, memberID, _ string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if strings.EqualFold(strings.TrimSpace(c.state.Host), strings.TrimSpace(host)) &&
 		c.state.Port == port && c.state.Room == strings.TrimSpace(room) &&
-		c.state.MemberID == memberID && c.state.SessionID == strings.TrimSpace(sessionID) && c.conn != nil {
+		c.state.MemberID == memberID && c.conn != nil {
 		return c.conn.connectionSession
+	}
+	if c.getSecret != nil {
+		if secret := c.getSecret(collaborationSecretRef(host, port, room, memberID)); secret != "" {
+			return secret
+		}
 	}
 	p := c.readPersisted()
 	if strings.EqualFold(strings.TrimSpace(p.Host), strings.TrimSpace(host)) && p.Port == port &&
-		p.Room == strings.TrimSpace(room) && p.MemberID == memberID && p.SessionID == strings.TrimSpace(sessionID) {
-		if p.ConnectionSecretRef != "" {
+		p.Room == strings.TrimSpace(room) && p.MemberID == memberID {
+		if p.ConnectionSecretRef != "" && c.getSecret != nil {
 			return c.getSecret(p.ConnectionSecretRef)
 		}
 	}
@@ -104,6 +109,24 @@ func (c *desktopCollaboration) loadPersisted() {
 		}
 	}
 	c.recoveredRuns = append([]collaborationPersistedRun(nil), p.Runs...)
+	for _, share := range p.Shares {
+		c.shares[share.FileID] = share
+	}
+	for i := range p.Transfers {
+		transfer := p.Transfers[i]
+		if transfer.Direction != "receive" {
+			continue
+		}
+		if transfer.PartPath == "" && transfer.Destination != "" {
+			transfer.PartPath = transfer.Destination + ".wg2part"
+		}
+		if transfer.Status == "downloading" || transfer.Status == "negotiating" || transfer.Status == "verifying" {
+			transfer.Status = "paused"
+			transfer.Error = "应用已重启，可继续接收"
+			transfer.Retryable = true
+		}
+		c.transfers[transfer.FileID] = &transfer
+	}
 	c.recovery = p
 	snapshot := p.Snapshot
 	if snapshot.LatestSequence == 0 {
@@ -114,6 +137,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		MemberID: p.MemberID, AgentID: p.AgentID, SessionID: p.SessionID,
 		Snapshot:    snapshot,
 		OutboxCount: len(c.outbox),
+		AgentConfig: normalizeCollaborationAgentConfig(p.AgentConfig, p.AgentName),
 	}
 	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
 		c.state.Status = "failed"
@@ -160,6 +184,12 @@ func (c *desktopCollaboration) persistLocked() {
 	value.OutboxFailures = cloneStringMap(c.outboxFailures)
 	value.Starts = cloneStartMap(c.starts)
 	value.Runs = c.persistedRunsLocked()
+	value.Shares = make([]collaborationSharedFile, 0, len(c.shares))
+	for _, share := range c.shares {
+		value.Shares = append(value.Shares, share)
+	}
+	value.Transfers = c.persistedFileTransfersLocked()
+	value.AgentConfig = normalizeCollaborationAgentConfig(c.state.AgentConfig, value.AgentName)
 	value = c.repairPersisted(value)
 	if c.conn != nil && c.conn.connectionSession != "" {
 		value.RoomName, value.Description = c.conn.roomName, c.conn.description
@@ -248,6 +278,7 @@ func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState
 			value.JoinTokenSecretRef = ref
 		}
 	}
+	value.AgentConfig = normalizeCollaborationAgentConfig(value.AgentConfig, value.AgentName)
 	return value
 }
 
