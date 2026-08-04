@@ -12,6 +12,7 @@ import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
   CollaborationActionResult,
   CollaborationInvite,
+  CollaborationIntentResult,
   CollaborationState,
   HostCollaborationRoomInput,
   JoinCollaborationRoomInput,
@@ -290,6 +291,7 @@ export interface AppBindings extends WailsWorkBindings {
   JoinCollaborationRoom(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
   GetCollaborationInvite(sessionID: string): Promise<CollaborationInvite>;
   LeaveCollaborationRoom(sessionID: string): Promise<void>;
+  ClassifyCollaborationIntent(input: { sessionID: string; text: string }): Promise<CollaborationIntentResult>;
   PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
   RespondCollaborationRequest(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
@@ -2265,6 +2267,7 @@ function makeMockApp(): AppBindings {
     async JoinCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
     async GetCollaborationInvite() { throw new Error("Use the collaboration browser transport in preview mode"); },
     async LeaveCollaborationRoom() {},
+    async ClassifyCollaborationIntent() { return { intent: "chat", source: "fallback", error: "Semantic intent preview unavailable", retryable: true }; },
     async PostCollaborationMessage(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async StartCollaborationAgent(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },

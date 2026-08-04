@@ -15,10 +15,24 @@ import (
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/collab"
+	"workground2/internal/control"
 	"workground2/internal/event"
 	"workground2/internal/fileutil"
 )
+
+type semanticIntentSession struct {
+	control.SessionAPI
+	intent agent.SemanticIntent
+	err    error
+	calls  int
+}
+
+func (s *semanticIntentSession) ClassifySemanticIntent(context.Context, string) (agent.SemanticIntent, error) {
+	s.calls++
+	return s.intent, s.err
+}
 
 type fakeCollaborationPeer struct {
 	mu           sync.Mutex
@@ -91,6 +105,26 @@ func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map
 	c.removeSecret = func(key string) error { delete(secrets, key); return nil }
 	app.collaborations = map[string]*desktopCollaboration{"session-a": c}
 	return app, c, secrets
+}
+
+func TestClassifyCollaborationIntentUsesOwningSessionModel(t *testing.T) {
+	ctrl := &semanticIntentSession{intent: agent.SemanticIntentUncertain}
+	app := &App{}
+	app.trackSession(&WorkspaceTab{SessionID: "session-a", Ctrl: ctrl, Ready: true})
+
+	got := app.ClassifyCollaborationIntent(ClassifyCollaborationIntentInput{
+		SessionID: "session-a",
+		Text:      "现在多人协作 room，在 session 里会有一个外部标签",
+	})
+	if got.Intent != "uncertain" || got.Source != "llm" || got.Error != "" || ctrl.calls != 1 {
+		t.Fatalf("classification = %+v, calls = %d", got, ctrl.calls)
+	}
+
+	ctrl.err = context.DeadlineExceeded
+	failed := app.ClassifyCollaborationIntent(ClassifyCollaborationIntentInput{SessionID: "session-a", Text: "uncovered"})
+	if failed.Intent != "chat" || failed.Source != "fallback" || failed.Error == "" || !failed.Retryable {
+		t.Fatalf("failed classification should be visible and retryable: %+v", failed)
+	}
 }
 
 func TestCollaborationRuntimesAreIsolatedPerSession(t *testing.T) {

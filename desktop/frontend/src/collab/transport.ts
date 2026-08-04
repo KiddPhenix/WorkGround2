@@ -3,6 +3,7 @@ import { t } from "../lib/i18n";
 import type {
   CollaborationActionResult,
   CollaborationInvite,
+  CollaborationIntentResult,
   CollaborationMember,
   CollaborationState,
   CollaborationTimelineItem,
@@ -207,6 +208,18 @@ export function normalizeCollaborationAction(value: unknown, memberNames: Map<st
   };
 }
 
+export function normalizeCollaborationIntent(value: unknown): CollaborationIntentResult {
+  const raw = record(value);
+  const intent = text(raw.intent ?? raw.Intent);
+  const source = text(raw.source ?? raw.Source);
+  return {
+    intent: intent === "self_agent" || intent === "uncertain" || intent === "chat" ? intent : "chat",
+    source: source === "rule" || source === "llm" || source === "fallback" ? source : "fallback",
+    error: text(raw.error ?? raw.Error) || (intent ? undefined : "Semantic intent classifier returned an invalid result"),
+    retryable: bool(raw.retryable ?? raw.Retryable),
+  };
+}
+
 export function createWailsCollaborationTransport(sessionID: string): CollaborationTransport {
   let names = new Map<string, string>();
   const normalizeState = (value: unknown) => {
@@ -221,6 +234,7 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     join: async (input) => normalizeState(await app.JoinCollaborationRoom(input)),
     invite: async () => normalizeCollaborationInvite(await app.GetCollaborationInvite(sessionID)),
     leave: () => app.LeaveCollaborationRoom(sessionID),
+    classifyIntent: async (value) => normalizeCollaborationIntent(await app.ClassifyCollaborationIntent({ sessionID, text: value })),
     post: async (input) => normalizeCollaborationAction(await app.PostCollaborationMessage({ ...input, sessionID }), names),
     startAgent: async (input) => normalizeCollaborationAction(await app.StartCollaborationAgent(input), names),
     respond: async (input) => normalizeCollaborationAction(await app.RespondCollaborationRequest(input), names),
@@ -310,6 +324,7 @@ export function createMockCollaborationTransport(sessionID = "preview-session"):
       return { hosts: [runtime.state.room.host || "127.0.0.1"], port: runtime.state.room.port, room: runtime.state.room.room };
     },
     async leave() { runtime.state = { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [] }; emitMockState(runtime); },
+    async classifyIntent() { return { intent: "chat", source: "llm" }; },
     async post(input) {
       const self = runtime.state.members.find((member) => member.isSelf);
       const item: CollaborationTimelineItem = {

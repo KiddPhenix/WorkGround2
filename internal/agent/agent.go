@@ -232,6 +232,7 @@ func newMaxStepsPause(rounds int, key string) error {
 // into the main loop.
 type Agent struct {
 	prov        provider.Provider
+	intent      *semanticIntentClassifier
 	tools       *tool.Registry
 	session     *Session
 	sessMu      sync.Mutex // guards the session pointer for external Session()/SetSession
@@ -972,6 +973,9 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxSubagentDepth:        maxSubagentDepth,
 		memoryCompiler:          opts.MemoryCompiler,
 		memoryCompilerVerbosity: normalizeMemoryCompilerVerbosity(opts.MemoryCompilerVerbosity),
+	}
+	if prov != nil {
+		a.intent = newSemanticIntentClassifier(prov)
 	}
 	// 初始化分类器
 	if opts.UseMemoryCompilerLLMClassification && prov != nil {

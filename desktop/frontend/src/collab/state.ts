@@ -81,6 +81,7 @@ export function collabReducer(state: CollabViewState, action: CollabAction): Col
     case "CLEAR_SELECTION":
       return { ...state, selectedIds: [] };
     case "PENDING_INTENT":
+      if (state.timeline.some((item) => item.id === action.intent.messageId && item.revision !== action.intent.revision)) return state;
       if (state.pendingIntents[action.intent.messageId]?.revision === action.intent.revision) return state;
       return { ...state, pendingIntents: { ...state.pendingIntents, [action.intent.messageId]: action.intent } };
     case "PENDING_STATUS": {
@@ -114,11 +115,20 @@ const highIntent = /(?:帮我|请|麻烦|把|将).{0,20}(?:检查|修复|实现|
 const uncertainIntent = /(?:是不是|是否|怎么|为什么|好像|可能).{0,20}(?:问题|错误|失败|不对|异常)|\b(?:issue|error|wrong|why|how)\b/i;
 
 export function detectSelfAgentIntent(text: string): CollaborationIntentClass {
+  return detectSelfAgentIntentRule(text).intent;
+}
+
+export interface CollaborationIntentRuleResult {
+  intent: CollaborationIntentClass;
+  covered: boolean;
+}
+
+export function detectSelfAgentIntentRule(text: string): CollaborationIntentRuleResult {
   const value = text.trim();
-  if (!value || directedAtOther.test(value) || completionStatement.test(value)) return "chat";
-  if (highIntent.test(value)) return "self_agent";
-  if (uncertainIntent.test(value) || /[?？]$/.test(value)) return "uncertain";
-  return "chat";
+  if (!value || directedAtOther.test(value) || completionStatement.test(value)) return { intent: "chat", covered: true };
+  if (highIntent.test(value)) return { intent: "self_agent", covered: true };
+  if (uncertainIntent.test(value) || /[?？]$/.test(value)) return { intent: "uncertain", covered: true };
+  return { intent: "chat", covered: false };
 }
 
 export function replayableSelfAgentItems(state: Pick<CollabViewState, "timeline" | "selfMemberId" | "pendingIntents">): CollaborationTimelineItem[] {
@@ -128,14 +138,15 @@ export function replayableSelfAgentItems(state: Pick<CollabViewState, "timeline"
       .filter((item) => item.kind === "agent_command")
       .flatMap((item) => item.referenceIds),
   );
-  return state.timeline.filter((item) =>
-    item.localPending &&
-    item.kind === "chat" &&
-    item.actorId === state.selfMemberId &&
-    !state.pendingIntents[item.id] &&
-    !handled.has(item.id) &&
-    detectSelfAgentIntent(item.text) !== "chat",
-  );
+  return state.timeline.filter((item) => {
+    const rule = detectSelfAgentIntentRule(item.text);
+    return item.localPending &&
+      item.kind === "chat" &&
+      item.actorId === state.selfMemberId &&
+      !state.pendingIntents[item.id] &&
+      !handled.has(item.id) &&
+      (!rule.covered || rule.intent !== "chat");
+  });
 }
 
 export function selectedTimelineItems(state: CollabViewState): CollaborationTimelineItem[] {
