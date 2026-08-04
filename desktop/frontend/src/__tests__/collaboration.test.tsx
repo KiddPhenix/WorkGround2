@@ -208,6 +208,11 @@ async function main() {
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
   ok(connectionSource.includes("parseCollaborationInvite") && connectionSource.includes("loadCollaborationIdentity"), "connection popup imports invite strings and guides cached local identity");
+  ok(connectionSource.includes("open={identityOpen || !identityReady}") && connectionSource.includes("event.currentTarget.open = true"), "incomplete first-time identity stays expanded instead of silently disabling Room creation");
+  ok(connectionSource.includes('disabled={busy || !sessionID}') && !connectionSource.includes("|| !room.trim() || !identityReady"), "Room action remains clickable so native required-field validation can explain missing input");
+  ok(/\.collab-connect-shell\s*\{[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\)[^}]*overflow:\s*hidden/.test(layoutCSS) && /\.collab-connect-form\s*\{[^}]*overflow:\s*auto/.test(layoutCSS), "connection form scrolls inside the viewport instead of extending below it");
+  ok(/\.collab-connect-form > \.collab-primary-button\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/.test(layoutCSS), "Room action stays visible at the bottom of a tall form");
+  ok(/\.collab-advanced-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/.test(layoutCSS), "optional Room and identity fields use two columns to reduce form height");
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
   ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");

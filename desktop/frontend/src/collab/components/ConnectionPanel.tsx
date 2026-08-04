@@ -107,7 +107,18 @@ export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJ
               <label><span>{c("roomDescription")}</span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
             </div>
           </details>}
-          <details className={`collab-advanced collab-identity${identityReady ? "" : " collab-identity--required"}`} open={identityOpen} onToggle={(event) => setIdentityOpen(event.currentTarget.open)}>
+          <details
+            className={`collab-advanced collab-identity${identityReady ? "" : " collab-identity--required"}`}
+            open={identityOpen || !identityReady}
+            onToggle={(event) => {
+              if (!identityReady && !event.currentTarget.open) {
+                event.currentTarget.open = true;
+                setIdentityOpen(true);
+                return;
+              }
+              setIdentityOpen(event.currentTarget.open);
+            }}
+          >
             <summary><UserRound size={14} />{c("localIdentity")}{!savedIdentity && <span>{c("firstIdentity")}</span>}</summary>
             <div className="collab-advanced-fields">
               {!savedIdentity && <p className="collab-identity-guide">{c("firstIdentityGuide")}</p>}
@@ -119,7 +130,7 @@ export function ConnectionPanel({ sessionID, status, error, initial, onHost, onJ
           </details>
           {!token.trim() && <div className="collab-warning"><AlertTriangle size={16} />{c("noTokenWarning")}</div>}
           {(connectionError || error) && <div className="collab-error" role="alert">{connectionError || error}</div>}
-          <button className="collab-primary-button" type="submit" disabled={busy || !sessionID || !currentHost.trim() || Number(port) < (mode === "host" ? 0 : 1) || Number(port) > 65535 || !room.trim() || !identityReady}>{busy ? c("syncing") : mode === "host" ? c("create") : c("connect")}</button>
+          <button className="collab-primary-button" type="submit" disabled={busy || !sessionID}>{busy ? c("syncing") : mode === "host" ? c("create") : c("connect")}</button>
         </form>
       </main>
     </div>
