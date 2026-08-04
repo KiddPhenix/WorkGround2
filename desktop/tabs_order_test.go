@@ -276,6 +276,68 @@ func (*reentrantSnapshotController) SetSessionPath(string) {}
 func (*reentrantSnapshotController) Cancel()               {}
 func (*reentrantSnapshotController) Close()                {}
 
+type blockingCloseController struct {
+	control.SessionAPI
+	started chan struct{}
+	release chan struct{}
+}
+
+func (c *blockingCloseController) Close() {
+	close(c.started)
+	<-c.release
+}
+
+func TestKeepOnlyVisibleTabDoesNotWaitForRuntimeClose(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	base := control.New(control.Options{SessionDir: dir, Sink: event.Discard})
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	t.Cleanup(func() { close(releaseClose) })
+
+	source := &WorkspaceTab{
+		ID:          "source",
+		SessionID:   "session_source",
+		Scope:       "global",
+		Ready:       true,
+		Ctrl:        &blockingCloseController{SessionAPI: base, started: closeStarted, release: releaseClose},
+		disabledMCP: map[string]ServerView{},
+	}
+	target := &WorkspaceTab{
+		ID:          "target",
+		SessionID:   "session_target",
+		Scope:       "global",
+		Ready:       true,
+		disabledMCP: map[string]ServerView{},
+	}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{source.ID: source, target.ID: target},
+		tabOrder:    []string{source.ID, target.ID},
+		activeTabID: source.ID,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := app.keepOnlyVisibleTab(target.ID)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("keepOnlyVisibleTab: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("navigation waited for removed runtime Close")
+	}
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("removed runtime cleanup did not start")
+	}
+	assertTabIDs(t, app.ListTabs(), target.ID)
+}
+
 func TestKeepOnlyVisibleTabSnapshotsOutsideAppLock(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := &App{

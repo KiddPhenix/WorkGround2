@@ -2530,7 +2530,11 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 			}
 		}
 		for _, tab := range closed {
-			a.removeVisibleTabRuntime(tab)
+			// Closing a controller may wait on a provider or MCP runtime that is
+			// already being cancelled. The tab has been snapshotted, persisted,
+			// removed from every visible registry, and marked removed above, so
+			// cleanup no longer belongs on the navigation response path.
+			go a.removeVisibleTabRuntime(tab)
 		}
 		a.emitProjectTreeChanged()
 		return enrichTabMeta(meta), nil
