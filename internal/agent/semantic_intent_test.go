@@ -76,6 +76,23 @@ func TestSemanticIntentClassifierRejectsInvalidOutputAndRetries(t *testing.T) {
 	}
 }
 
+func TestSemanticIntentClassifierTreatsEmptyOutputAsCachedChat(t *testing.T) {
+	prov := &semanticIntentProvider{reply: " \n\t"}
+	classifier := newSemanticIntentClassifier(prov)
+	for i := 0; i < 2; i++ {
+		got, err := classifier.classify(context.Background(), "plain Room conversation")
+		if err != nil {
+			t.Fatalf("empty output should safely fall back to chat: %v", err)
+		}
+		if got != SemanticIntentChat {
+			t.Fatalf("intent = %q, want %q", got, SemanticIntentChat)
+		}
+	}
+	if got := prov.calls.Load(); got != 1 {
+		t.Fatalf("provider calls = %d, want 1 cached chat result", got)
+	}
+}
+
 func TestSemanticIntentClassifierCoalescesConcurrentRequests(t *testing.T) {
 	gate := make(chan struct{})
 	prov := &semanticIntentProvider{reply: "self_agent", gate: gate}
