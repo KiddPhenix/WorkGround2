@@ -46,6 +46,7 @@ mem.prof
 node_modules/
 .pnpm-store/
 .npm/
+/.codex-tmp/
 
 # Project-local Reasonix state; keep the checked-in review command.
 /.reasonix/*
