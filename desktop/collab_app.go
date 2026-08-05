@@ -18,45 +18,150 @@ import (
 	"workground2/internal/agent"
 	"workground2/internal/collab"
 	"workground2/internal/config"
+	"workground2/internal/control"
+	"workground2/internal/event"
 	"workground2/internal/fileutil"
 )
 
 const (
-	collaborationStateChannel = "collaboration:state"
-	collaborationEventChannel = "collaboration:event"
+	collaborationStateChannel  = "collaboration:state"
+	collaborationEventChannel  = "collaboration:event"
+	maxCollaborationAgentQueue = 20
 )
 
 // CollaborationState is the authoritative desktop projection consumed by the
 // collaboration surface. Connection credentials are intentionally omitted.
 type CollaborationState struct {
-	Status      string                      `json:"status"`
-	Mode        string                      `json:"mode,omitempty"`
-	Host        string                      `json:"host,omitempty"`
-	Port        int                         `json:"port,omitempty"`
-	Room        string                      `json:"room,omitempty"`
-	MemberID    string                      `json:"memberId,omitempty"`
-	AgentID     string                      `json:"agentId,omitempty"`
-	SessionID   string                      `json:"sessionId,omitempty"`
-	Snapshot    collab.Snapshot             `json:"snapshot"`
-	OutboxCount int                         `json:"outboxCount"`
-	Outbox      []CollaborationOutboxView   `json:"outbox,omitempty"`
-	LastError   string                      `json:"lastError,omitempty"`
-	Retryable   bool                        `json:"retryable,omitempty"`
-	Transfers   []CollaborationFileTransfer `json:"transfers,omitempty"`
-	AgentConfig CollaborationAgentConfig    `json:"agentConfig"`
+	Status           string                           `json:"status"`
+	Mode             string                           `json:"mode,omitempty"`
+	Host             string                           `json:"host,omitempty"`
+	Port             int                              `json:"port,omitempty"`
+	Room             string                           `json:"room,omitempty"`
+	MemberID         string                           `json:"memberId,omitempty"`
+	AgentID          string                           `json:"agentId,omitempty"`
+	SessionID        string                           `json:"sessionId,omitempty"`
+	Snapshot         collab.Snapshot                  `json:"snapshot"`
+	OutboxCount      int                              `json:"outboxCount"`
+	Outbox           []CollaborationOutboxView        `json:"outbox,omitempty"`
+	LastError        string                           `json:"lastError,omitempty"`
+	Retryable        bool                             `json:"retryable,omitempty"`
+	Transfers        []CollaborationFileTransfer      `json:"transfers,omitempty"`
+	AgentConfig      CollaborationAgentConfig         `json:"agentConfig"`
+	AgentSources     CollaborationAgentSources        `json:"agentSources"`
+	QueuedTasks      []CollaborationQueuedTask        `json:"queuedTasks,omitempty"`
+	ToolApprovalMode string                           `json:"toolApprovalMode"`
+	AgentPrompt      *CollaborationAgentPrompt        `json:"agentPrompt,omitempty"`
+	Routes           []CollaborationRouteState        `json:"routes,omitempty"`
+	Advertisement    *CollaborationAdvertisementState `json:"advertisement,omitempty"`
+	CurrentRun       *CollaborationCurrentRun         `json:"currentRun,omitempty"`
+}
+
+// CollaborationCurrentRun is the local owner-only projection of the Agent
+// currently using this workspace. It is never synchronized through the Room.
+type CollaborationCurrentRun struct {
+	SessionID   string `json:"sessionId"`
+	RunID       string `json:"runId"`
+	Phase       string `json:"phase"`
+	Instruction string `json:"instruction"`
+	Progress    string `json:"progress,omitempty"`
+	StartedAt   int64  `json:"startedAt,omitempty"`
+	QueueCount  int    `json:"queueCount"`
+}
+
+type CollaborationRouteInput struct {
+	ID              string `json:"id,omitempty"`
+	Kind            string `json:"kind"`
+	Host            string `json:"host,omitempty"`
+	Port            int    `json:"port,omitempty"`
+	RelayID         string `json:"relayId,omitempty"`
+	URL             string `json:"url,omitempty"`
+	TunnelID        string `json:"tunnelId,omitempty"`
+	GuestCapability string `json:"guestCapability,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+}
+
+type CollaborationRouteState struct {
+	CollaborationRouteInput
+	Status    string `json:"status"`
+	Active    bool   `json:"active"`
+	LatencyMS int64  `json:"latencyMs,omitempty"`
+	LastError string `json:"lastError,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
+type RoomAdvertisementInput struct {
+	Name            string   `json:"name"`
+	Description     string   `json:"description,omitempty"`
+	Tags            []string `json:"tags,omitempty"`
+	Capacity        int      `json:"capacity,omitempty"`
+	ShowOnlineCount bool     `json:"showOnlineCount,omitempty"`
+}
+
+type CollaborationAdvertisementRelayState struct {
+	RelayID   string `json:"relayId"`
+	Status    string `json:"status"`
+	LastError string `json:"lastError,omitempty"`
+	Retryable bool   `json:"retryable,omitempty"`
+}
+
+type CollaborationAdvertisementState struct {
+	Visibility string                                 `json:"visibility"`
+	Revision   uint64                                 `json:"revision"`
+	Relays     []CollaborationAdvertisementRelayState `json:"relays"`
+}
+
+type CollaborationQueuedTask struct {
+	ID             string   `json:"id"`
+	RequestID      string   `json:"requestId"`
+	Instruction    string   `json:"instruction"`
+	ReferenceIDs   []string `json:"referenceIds,omitempty"`
+	AgentRequestID string   `json:"agentRequestId,omitempty"`
+	QueuedAt       string   `json:"queuedAt"`
 }
 
 type CollaborationAgentConfig struct {
-	Alias                string `json:"alias,omitempty"`
-	AutoRespondQuestions bool   `json:"autoRespondQuestions"`
-	AutoRespondRequests  bool   `json:"autoRespondRequests"`
-	RecognitionMode      string `json:"recognitionMode"`
+	Alias                        string   `json:"alias,omitempty"`
+	AutoRespondQuestions         bool     `json:"autoRespondQuestions"`
+	AutoRespondRequests          bool     `json:"autoRespondRequests"`
+	AutoRespondAgents            bool     `json:"autoRespondAgents"`
+	AgentResponseIntervalSeconds int      `json:"agentResponseIntervalSeconds"`
+	AgentClockTurns              int      `json:"agentClockTurns"`
+	AgentClockUnlimited          bool     `json:"agentClockUnlimited"`
+	AgentClockWoundAt            string   `json:"agentClockWoundAt,omitempty"`
+	RecognitionMode              string   `json:"recognitionMode"`
+	ContextRefs                  []string `json:"contextRefs,omitempty"`
+}
+
+type CollaborationAgentSource struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	RunAs       string `json:"runAs,omitempty"`
+	Protected   bool   `json:"protected,omitempty"`
+	Available   bool   `json:"available"`
+}
+
+type CollaborationAgentSources struct {
+	Agents []CollaborationAgentSource `json:"agents"`
+	Skills []CollaborationAgentSource `json:"skills"`
 }
 
 type UpdateCollaborationAgentConfigInput struct {
 	SessionID string                   `json:"sessionId"`
 	RequestID string                   `json:"requestId"`
 	Config    CollaborationAgentConfig `json:"config"`
+}
+
+type UpdateCollaborationProfileInput struct {
+	SessionID    string `json:"sessionId"`
+	RequestID    string `json:"requestId"`
+	MemberName   string `json:"memberName"`
+	MemberAvatar string `json:"memberAvatar,omitempty"`
+	AgentName    string `json:"agentName"`
+	AgentAvatar  string `json:"agentAvatar,omitempty"`
 }
 
 type CollaborationFileTransfer struct {
@@ -101,40 +206,57 @@ type CollaborationOutboxView struct {
 // CollaborationInvite is returned only after an explicit export action. The
 // normal Room state intentionally continues to omit the join token.
 type CollaborationInvite struct {
-	Hosts []string `json:"hosts"`
-	Port  int      `json:"port"`
-	Room  string   `json:"room"`
-	Token string   `json:"token,omitempty"`
+	Version int                       `json:"version,omitempty"`
+	Invite  string                    `json:"invite,omitempty"`
+	Hosts   []string                  `json:"hosts"`
+	Port    int                       `json:"port"`
+	Room    string                    `json:"room"`
+	Token   string                    `json:"token,omitempty"`
+	HostKey string                    `json:"hostKey,omitempty"`
+	Routes  []CollaborationRouteInput `json:"routes,omitempty"`
 }
 
 type HostCollaborationRoomInput struct {
-	ListenHost  string `json:"listenHost"`
-	Port        int    `json:"port"`
-	Room        string `json:"room"`
-	RoomName    string `json:"roomName,omitempty"`
-	Description string `json:"description,omitempty"`
-	Token       string `json:"token,omitempty"`
-	MemberID    string `json:"memberId,omitempty"`
-	MemberName  string `json:"memberName"`
-	MemberRole  string `json:"memberRole,omitempty"`
-	AgentID     string `json:"agentId,omitempty"`
-	AgentName   string `json:"agentName,omitempty"`
-	AgentRole   string `json:"agentRole,omitempty"`
-	SessionID   string `json:"sessionId"`
+	ListenHost    string                  `json:"listenHost"`
+	Port          int                     `json:"port"`
+	Room          string                  `json:"room"`
+	RoomName      string                  `json:"roomName,omitempty"`
+	Description   string                  `json:"description,omitempty"`
+	Token         string                  `json:"token,omitempty"`
+	MemberID      string                  `json:"memberId,omitempty"`
+	MemberName    string                  `json:"memberName"`
+	MemberAvatar  string                  `json:"memberAvatar,omitempty"`
+	MemberRole    string                  `json:"memberRole,omitempty"`
+	AgentID       string                  `json:"agentId,omitempty"`
+	AgentName     string                  `json:"agentName,omitempty"`
+	AgentAvatar   string                  `json:"agentAvatar,omitempty"`
+	AgentRole     string                  `json:"agentRole,omitempty"`
+	SessionID     string                  `json:"sessionId"`
+	LANEnabled    *bool                   `json:"lanEnabled,omitempty"`
+	RelayIDs      []string                `json:"relayIDs,omitempty"`
+	PreferLAN     *bool                   `json:"preferLAN,omitempty"`
+	Visibility    string                  `json:"visibility,omitempty"`
+	Advertisement *RoomAdvertisementInput `json:"advertisement,omitempty"`
 }
 
 type JoinCollaborationRoomInput struct {
-	Host       string `json:"host"`
-	Port       int    `json:"port"`
-	Room       string `json:"room"`
-	Token      string `json:"token,omitempty"`
-	MemberID   string `json:"memberId,omitempty"`
-	MemberName string `json:"memberName"`
-	MemberRole string `json:"memberRole,omitempty"`
-	AgentID    string `json:"agentId,omitempty"`
-	AgentName  string `json:"agentName,omitempty"`
-	AgentRole  string `json:"agentRole,omitempty"`
-	SessionID  string `json:"sessionId"`
+	Host         string                    `json:"host"`
+	Port         int                       `json:"port"`
+	Room         string                    `json:"room"`
+	Token        string                    `json:"token,omitempty"`
+	MemberID     string                    `json:"memberId,omitempty"`
+	MemberName   string                    `json:"memberName"`
+	MemberAvatar string                    `json:"memberAvatar,omitempty"`
+	MemberRole   string                    `json:"memberRole,omitempty"`
+	AgentID      string                    `json:"agentId,omitempty"`
+	AgentName    string                    `json:"agentName,omitempty"`
+	AgentAvatar  string                    `json:"agentAvatar,omitempty"`
+	AgentRole    string                    `json:"agentRole,omitempty"`
+	SessionID    string                    `json:"sessionId"`
+	Invite       string                    `json:"invite,omitempty"`
+	Routes       []CollaborationRouteInput `json:"routes,omitempty"`
+	HostKey      string                    `json:"hostKey,omitempty"`
+	JoinRef      string                    `json:"joinRef,omitempty"`
 }
 
 type PostCollaborationMessageInput struct {
@@ -153,6 +275,8 @@ type PostCollaborationMessageInput struct {
 	Dependencies     []string                `json:"dependencies,omitempty"`
 	ActionNeeded     bool                    `json:"actionNeeded,omitempty"`
 	ReactionKind     string                  `json:"reactionKind,omitempty"`
+	MentionMemberIDs []string                `json:"mentionMemberIds,omitempty"`
+	MentionAgentIDs  []string                `json:"mentionAgentIds,omitempty"`
 }
 
 type StartCollaborationAgentInput struct {
@@ -161,6 +285,50 @@ type StartCollaborationAgentInput struct {
 	Instruction    string   `json:"instruction"`
 	ReferenceIDs   []string `json:"referenceIds,omitempty"`
 	AgentRequestID string   `json:"agentRequestId,omitempty"`
+	Automatic      bool     `json:"automatic,omitempty"`
+}
+
+type CancelCollaborationQueuedTaskInput struct {
+	SessionID string `json:"sessionId"`
+	TaskID    string `json:"taskId"`
+}
+
+type RespondCollaborationAgentRunInput struct {
+	SessionID string           `json:"sessionId"`
+	RunID     string           `json:"runId"`
+	Allow     bool             `json:"allow"`
+	Session   bool             `json:"session,omitempty"`
+	Persist   bool             `json:"persist,omitempty"`
+	Answering bool             `json:"answering,omitempty"`
+	Answers   []QuestionAnswer `json:"answers,omitempty"`
+}
+
+type UpdateCollaborationToolApprovalModeInput struct {
+	SessionID string `json:"sessionId"`
+	Mode      string `json:"mode"`
+}
+
+type CollaborationAgentPromptOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+type CollaborationAgentPromptQuestion struct {
+	ID      string                           `json:"id"`
+	Header  string                           `json:"header,omitempty"`
+	Prompt  string                           `json:"prompt"`
+	Options []CollaborationAgentPromptOption `json:"options"`
+	Multi   bool                             `json:"multi,omitempty"`
+}
+
+type CollaborationAgentPrompt struct {
+	RunID     string                             `json:"runId"`
+	Kind      string                             `json:"kind"`
+	ID        string                             `json:"id"`
+	Tool      string                             `json:"tool,omitempty"`
+	Subject   string                             `json:"subject,omitempty"`
+	Reason    string                             `json:"reason,omitempty"`
+	Questions []CollaborationAgentPromptQuestion `json:"questions,omitempty"`
 }
 
 type ClassifyCollaborationIntentInput struct {
@@ -181,6 +349,7 @@ type RespondCollaborationRequestInput struct {
 	Action         string `json:"action"`
 	Instruction    string `json:"instruction,omitempty"`
 	SessionID      string `json:"sessionId"`
+	Automatic      bool   `json:"automatic,omitempty"`
 }
 
 type CollaborationActionResult struct {
@@ -204,8 +373,10 @@ type CollaborationEventView struct {
 // desktopCollaboration is deliberately above Controller. It owns Room
 // transport state, while the selected Controller continues to own the turn.
 type desktopCollaboration struct {
-	app            *App
-	ownerSessionID string
+	app               *App
+	ownerSessionID    string
+	ownerSessionPath  string
+	ownerSessionTitle string
 
 	opMu           sync.Mutex
 	mu             sync.RWMutex
@@ -215,6 +386,8 @@ type desktopCollaboration struct {
 	outboxFailures map[string]string
 	starts         map[string]collaborationStartRecord
 	runs           map[string]*collaborationAgentRun
+	queuedRuns     []*collaborationAgentRun
+	queueWaiting   bool
 	recoveredRuns  []collaborationPersistedRun
 	leaveError     string
 	recovery       collaborationPersistedState
@@ -232,37 +405,60 @@ type desktopCollaboration struct {
 	validateAgent     func(string) error
 	agentReady        func(string) (bool, error)
 	waitAgentReady    func(context.Context, string) error
+	prepareAgentInput func(string, []string, string) (string, error)
 	submitAgent       func(string, string, string) error
+	respondAgent      func(string, RespondCollaborationAgentRunInput) (bool, error)
+	stopAgent         func(string) error
+	prepareAutoAgent  func(string) (string, error)
+	restoreAutoAgent  func(string, string)
 	openHost          func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 	openJoin          func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 }
 
 type collaborationConnection struct {
-	peer              collaborationPeer
-	filePeer          *httpCollaborationPeer
-	host              *http.Server
-	listener          net.Listener
-	mode              string
-	roomName          string
-	description       string
-	hostName          string
-	port              int
-	room              string
-	memberID          string
-	memberName        string
-	memberRole        string
-	agentID           string
-	agentName         string
-	agentRole         string
-	sessionID         string
-	joinToken         string
-	connectionSession string
-	initialSnapshot   collab.Snapshot
-	rejoined          bool
-	sweep             func(context.Context) error
-	cancel            context.CancelFunc
-	done              chan struct{}
-	closeOnce         sync.Once
+	peer                collaborationPeer
+	filePeer            collaborationFilePeer
+	host                *http.Server
+	listener            net.Listener
+	mode                string
+	roomName            string
+	description         string
+	hostName            string
+	port                int
+	room                string
+	memberID            string
+	memberName          string
+	memberAvatar        string
+	memberRole          string
+	agentID             string
+	agentName           string
+	agentAvatar         string
+	agentRole           string
+	sessionID           string
+	joinToken           string
+	connectionSession   string
+	initialSnapshot     collab.Snapshot
+	rejoined            bool
+	sweep               func(context.Context) error
+	cancel              context.CancelFunc
+	done                chan struct{}
+	closeOnce           sync.Once
+	authority           *collaborationAuthority
+	routes              []CollaborationRouteState
+	routeError          string
+	hostKey             string
+	relayBindings       []collaborationRelayBinding
+	advertisement       *CollaborationAdvertisementState
+	lanEnabled          bool
+	relayIDs            []string
+	preferLAN           bool
+	authorityKeyRef     string
+	hostCapabilityRefs  map[string]string
+	guestCapabilityRefs map[string]string
+}
+
+type collaborationRelayBinding interface {
+	Close(context.Context) error
 }
 
 type collaborationPeer interface {
@@ -272,6 +468,13 @@ type collaborationPeer interface {
 	Submit(context.Context, collab.CommandEnvelope) (collab.CommandReceipt, error)
 	Heartbeat(context.Context, string) error
 	Leave(context.Context, string) error
+}
+
+type collaborationFilePeer interface {
+	RegisterFileOrigin(context.Context, string, collab.RegisterFileOriginInput) error
+	fileTicket(context.Context, string) (collab.FileTransferTicket, error)
+	fetchFileManifest(context.Context, string) (collab.FileTransferTicket, collaborationFileManifest, error)
+	fetchFileChunk(context.Context, collab.FileTransferTicket, int) ([]byte, error)
 }
 
 type collaborationAgentRun struct {
@@ -284,9 +487,17 @@ type collaborationAgentRun struct {
 	AgentRequestID string
 	Instruction    string
 	ReferenceIDs   []string
+	ContextRefs    []string
+	QueuedAt       string
+	StartedAt      time.Time
 	Text           strings.Builder
 	PublishIndex   int
 	Updates        chan collaborationRunUpdate
+	Automatic      bool
+	RestoreMode    string
+	PromptOpen     bool
+	Prompt         *CollaborationAgentPrompt
+	StopRequested  bool
 }
 
 type collaborationStartRecord struct {
@@ -302,30 +513,45 @@ type collaborationRunUpdate struct {
 }
 
 type collaborationPersistedState struct {
-	Mode                string                              `json:"mode,omitempty"`
-	Host                string                              `json:"host,omitempty"`
-	Port                int                                 `json:"port,omitempty"`
-	Room                string                              `json:"room,omitempty"`
-	MemberID            string                              `json:"memberId,omitempty"`
-	AgentID             string                              `json:"agentId,omitempty"`
-	SessionID           string                              `json:"sessionId,omitempty"`
-	RoomName            string                              `json:"roomName,omitempty"`
-	Description         string                              `json:"description,omitempty"`
-	MemberName          string                              `json:"memberName,omitempty"`
-	MemberRole          string                              `json:"memberRole,omitempty"`
-	AgentName           string                              `json:"agentName,omitempty"`
-	AgentRole           string                              `json:"agentRole,omitempty"`
-	ConnectionSecretRef string                              `json:"connectionSecretRef,omitempty"`
-	JoinTokenSecretRef  string                              `json:"joinTokenSecretRef,omitempty"`
-	AfterSequence       uint64                              `json:"afterSequence,omitempty"`
-	Snapshot            collab.Snapshot                     `json:"snapshot,omitempty"`
-	Outbox              []collab.CommandEnvelope            `json:"outbox,omitempty"`
-	OutboxFailures      map[string]string                   `json:"outboxFailures,omitempty"`
-	Starts              map[string]collaborationStartRecord `json:"starts,omitempty"`
-	Runs                []collaborationPersistedRun         `json:"runs,omitempty"`
-	Shares              []collaborationSharedFile           `json:"shares,omitempty"`
-	Transfers           []CollaborationFileTransfer         `json:"transfers,omitempty"`
-	AgentConfig         CollaborationAgentConfig            `json:"agentConfig,omitempty"`
+	Mode                  string                              `json:"mode,omitempty"`
+	Host                  string                              `json:"host,omitempty"`
+	Port                  int                                 `json:"port,omitempty"`
+	Room                  string                              `json:"room,omitempty"`
+	MemberID              string                              `json:"memberId,omitempty"`
+	AgentID               string                              `json:"agentId,omitempty"`
+	SessionID             string                              `json:"sessionId,omitempty"`
+	SessionPath           string                              `json:"sessionPath,omitempty"`
+	RoomName              string                              `json:"roomName,omitempty"`
+	Description           string                              `json:"description,omitempty"`
+	MemberName            string                              `json:"memberName,omitempty"`
+	MemberAvatar          string                              `json:"memberAvatar,omitempty"`
+	MemberRole            string                              `json:"memberRole,omitempty"`
+	AgentName             string                              `json:"agentName,omitempty"`
+	AgentAvatar           string                              `json:"agentAvatar,omitempty"`
+	AgentRole             string                              `json:"agentRole,omitempty"`
+	ConnectionSecretRef   string                              `json:"connectionSecretRef,omitempty"`
+	JoinTokenSecretRef    string                              `json:"joinTokenSecretRef,omitempty"`
+	AfterSequence         uint64                              `json:"afterSequence,omitempty"`
+	Snapshot              collab.Snapshot                     `json:"snapshot,omitempty"`
+	Outbox                []collab.CommandEnvelope            `json:"outbox,omitempty"`
+	OutboxFailures        map[string]string                   `json:"outboxFailures,omitempty"`
+	Starts                map[string]collaborationStartRecord `json:"starts,omitempty"`
+	Runs                  []collaborationPersistedRun         `json:"runs,omitempty"`
+	Queue                 []collaborationPersistedRun         `json:"queue,omitempty"`
+	Shares                []collaborationSharedFile           `json:"shares,omitempty"`
+	Transfers             []CollaborationFileTransfer         `json:"transfers,omitempty"`
+	AgentConfig           CollaborationAgentConfig            `json:"agentConfig,omitempty"`
+	LANEnabled            bool                                `json:"lanEnabled,omitempty"`
+	ReachabilityVersion   int                                 `json:"reachabilityVersion,omitempty"`
+	RelayIDs              []string                            `json:"relayIds,omitempty"`
+	PreferLAN             bool                                `json:"preferLan,omitempty"`
+	Routes                []CollaborationRouteState           `json:"routes,omitempty"`
+	LastRouteID           string                              `json:"lastRouteId,omitempty"`
+	AuthorityKeySecretRef string                              `json:"authorityKeySecretRef,omitempty"`
+	HostCapabilityRefs    map[string]string                   `json:"hostCapabilityRefs,omitempty"`
+	GuestCapabilityRefs   map[string]string                   `json:"guestCapabilityRefs,omitempty"`
+	HostKey               string                              `json:"hostKey,omitempty"`
+	Advertisement         *CollaborationAdvertisementState    `json:"advertisement,omitempty"`
 }
 
 type collaborationPersistedRun struct {
@@ -338,20 +564,31 @@ type collaborationPersistedRun struct {
 	AgentRequestID string   `json:"agentRequestId,omitempty"`
 	Instruction    string   `json:"instruction"`
 	ReferenceIDs   []string `json:"referenceIds,omitempty"`
+	ContextRefs    []string `json:"contextRefs,omitempty"`
+	QueuedAt       string   `json:"queuedAt,omitempty"`
+	PublishIndex   int      `json:"publishIndex,omitempty"`
+	Automatic      bool     `json:"automatic,omitempty"`
 }
 
 func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	sessionID = strings.TrimSpace(sessionID)
+	var sessionPath, sessionTitle string
+	if tab, _ := app.tabAndCtrlByID(sessionID); tab != nil {
+		sessionPath = sessionRuntimeKey(tab.currentSessionPath())
+		sessionTitle = strings.TrimSpace(tab.TopicTitle)
+	}
 	c := &desktopCollaboration{
-		app:            app,
-		ownerSessionID: sessionID,
-		state:          CollaborationState{Status: "disconnected", SessionID: sessionID, AgentConfig: defaultCollaborationAgentConfig()},
-		starts:         map[string]collaborationStartRecord{},
-		runs:           map[string]*collaborationAgentRun{},
-		shares:         map[string]collaborationSharedFile{},
-		transfers:      map[string]*CollaborationFileTransfer{},
-		transferCancel: map[string]context.CancelFunc{},
-		outboxFailures: map[string]string{},
+		app:               app,
+		ownerSessionID:    sessionID,
+		ownerSessionPath:  sessionPath,
+		ownerSessionTitle: sessionTitle,
+		state:             CollaborationState{Status: "disconnected", SessionID: sessionID, AgentConfig: defaultCollaborationAgentConfig()},
+		starts:            map[string]collaborationStartRecord{},
+		runs:              map[string]*collaborationAgentRun{},
+		shares:            map[string]collaborationSharedFile{},
+		transfers:         map[string]*CollaborationFileTransfer{},
+		transferCancel:    map[string]context.CancelFunc{},
+		outboxFailures:    map[string]string{},
 	}
 	c.openHost = c.openHostedRoom
 	c.openJoin = c.openJoinedRoom
@@ -362,9 +599,21 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	c.validateAgent = c.validateLocalController
 	c.agentReady = app.collaborationAgentReady
 	c.waitAgentReady = app.waitCollaborationAgentReady
+	c.prepareAgentInput = app.prepareCollaborationAgentInput
 	c.submitAgent = func(sessionID, display, input string) error {
 		return app.SubmitDisplayToTab(sessionID, display, input)
 	}
+	c.respondAgent = app.respondCollaborationAgent
+	c.stopAgent = func(sessionID string) error {
+		_, ctrl := app.tabAndCtrlByID(sessionID)
+		if ctrl == nil {
+			return fmt.Errorf("collaboration Agent workspace is not ready")
+		}
+		ctrl.Cancel()
+		return nil
+	}
+	c.prepareAutoAgent = app.prepareCollaborationAutoAgent
+	c.restoreAutoAgent = app.restoreCollaborationAutoAgent
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root != "" {
 		c.legacyPersistPath = filepath.Join(root, "desktop-collaboration-v1.json")
@@ -373,11 +622,18 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 			c.state.LastError = "create collaboration state directory: " + err.Error()
 			c.state.Retryable = true
 		} else {
-			c.persistPath = filepath.Join(stateDir, collaborationSessionStateName(sessionID))
+			c.persistPath = filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(sessionID, sessionPath)))
 			c.loadPersisted()
 		}
 	}
 	return c
+}
+
+func collaborationPersistenceKey(sessionID, sessionPath string) string {
+	if key := sessionRuntimeKey(sessionPath); key != "" {
+		return "session-path:" + key
+	}
+	return strings.TrimSpace(sessionID)
 }
 
 func collaborationSessionStateName(sessionID string) string {
@@ -438,8 +694,153 @@ func (a *App) UpdateCollaborationAgentConfig(input UpdateCollaborationAgentConfi
 	return runtime.updateAgentConfig(a.bootContext(), input)
 }
 
+func (a *App) UpdateCollaborationProfile(input UpdateCollaborationProfileInput) (CollaborationState, error) {
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
+	return runtime.updateProfile(a.bootContext(), input)
+}
+
+func (a *App) UpdateCollaborationToolApprovalMode(input UpdateCollaborationToolApprovalModeInput) (CollaborationState, error) {
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationState{}, err
+	}
+	mode := strings.ToLower(strings.TrimSpace(input.Mode))
+	switch mode {
+	case control.ToolApprovalAsk, control.ToolApprovalAuto, control.ToolApprovalYolo:
+	default:
+		return runtime.snapshot(), fmt.Errorf("unsupported tool approval mode %q", input.Mode)
+	}
+	if _, ctrl := a.tabAndCtrlByID(input.SessionID); ctrl == nil {
+		return runtime.snapshot(), fmt.Errorf("collaboration Agent workspace is not ready")
+	}
+	a.SetToolApprovalModeForTab(input.SessionID, mode)
+	state := runtime.snapshot()
+	runtime.emitState()
+	return state, nil
+}
+
+func (a *App) collaborationToolApprovalMode(sessionID string) string {
+	a.mu.RLock()
+	tab := a.tabByIDLocked(sessionID)
+	mode := control.ToolApprovalAsk
+	if tab != nil {
+		mode = normalizeToolApprovalMode(tab.toolApprovalMode)
+	}
+	a.mu.RUnlock()
+	return mode
+}
+
+func collaborationAgentSourceID(kind, value string) string {
+	return kind + ":" + strings.TrimSpace(value)
+}
+
+func (a *App) collaborationAgentSources(sessionID string) CollaborationAgentSources {
+	result := CollaborationAgentSources{Agents: []CollaborationAgentSource{}, Skills: []CollaborationAgentSource{}}
+	_, ctrl := a.tabAndCtrlByID(sessionID)
+	if ctrl == nil {
+		return result
+	}
+	if set := ctrl.Memory(); set != nil {
+		for _, doc := range set.Docs {
+			if !strings.EqualFold(filepath.Base(doc.Path), "AGENTS.md") {
+				continue
+			}
+			result.Agents = append(result.Agents, CollaborationAgentSource{
+				ID: collaborationAgentSourceID("agents", doc.Path), Kind: "agents", Name: filepath.Base(doc.Path),
+				Path: doc.Path, Description: string(doc.Scope), Scope: string(doc.Scope), Available: true,
+			})
+		}
+	}
+	for _, sk := range ctrl.Skills() {
+		result.Skills = append(result.Skills, CollaborationAgentSource{
+			ID: collaborationAgentSourceID("skill", sk.Name), Kind: "skill", Name: sk.Name,
+			Path: sk.Path, Description: sk.Description, Scope: string(sk.Scope), RunAs: string(sk.RunAs), Protected: sk.IsProtected(), Available: true,
+		})
+	}
+	return result
+}
+
+func (a *App) collaborationAgentSourcesWithRefs(sessionID string, refs []string) CollaborationAgentSources {
+	result := a.collaborationAgentSources(sessionID)
+	available := collaborationAgentSourceMap(result)
+	for _, ref := range refs {
+		if _, ok := available[ref]; ok {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(ref, "agents:"):
+			path := strings.TrimPrefix(ref, "agents:")
+			result.Agents = append(result.Agents, CollaborationAgentSource{ID: ref, Kind: "agents", Name: filepath.Base(path), Path: path})
+		case strings.HasPrefix(ref, "skill:"):
+			name := strings.TrimPrefix(ref, "skill:")
+			result.Skills = append(result.Skills, CollaborationAgentSource{ID: ref, Kind: "skill", Name: name, Path: "SKILL.md"})
+		}
+	}
+	return result
+}
+
+func collaborationAgentSourceMap(sources CollaborationAgentSources) map[string]CollaborationAgentSource {
+	result := make(map[string]CollaborationAgentSource, len(sources.Agents)+len(sources.Skills))
+	for _, source := range sources.Agents {
+		result[source.ID] = source
+	}
+	for _, source := range sources.Skills {
+		result[source.ID] = source
+	}
+	return result
+}
+
+func (a *App) validateCollaborationAgentRefs(sessionID string, refs []string) error {
+	available := collaborationAgentSourceMap(a.collaborationAgentSources(sessionID))
+	for _, ref := range refs {
+		if _, ok := available[ref]; !ok {
+			return fmt.Errorf("Room Agent context source %q is unavailable", ref)
+		}
+	}
+	return nil
+}
+
+func (a *App) prepareCollaborationAgentInput(sessionID string, refs []string, input string) (string, error) {
+	if len(refs) == 0 {
+		return input, nil
+	}
+	_, ctrl := a.tabAndCtrlByID(sessionID)
+	if ctrl == nil {
+		return "", fmt.Errorf("collaboration Agent workspace is not ready")
+	}
+	available := collaborationAgentSourceMap(a.collaborationAgentSources(sessionID))
+	agents := make([]string, 0, len(refs))
+	skills := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		source, ok := available[ref]
+		if !ok {
+			return "", fmt.Errorf("Room Agent context source %q is unavailable", ref)
+		}
+		switch source.Kind {
+		case "agents":
+			agents = append(agents, source.Path)
+		case "skill":
+			rendered, found := ctrl.RunSkill("/" + source.Name)
+			if !found {
+				return "", fmt.Errorf("Room Agent skill %q is unavailable", source.Name)
+			}
+			skills = append(skills, rendered)
+		}
+	}
+	parts := make([]string, 0, len(skills)+2)
+	if len(agents) > 0 {
+		parts = append(parts, "<explicit-agents-md>\nThe following already-loaded AGENTS.md files are explicitly selected for this Room Agent run. Follow them for this task:\n- "+strings.Join(agents, "\n- ")+"\n</explicit-agents-md>")
+	}
+	parts = append(parts, skills...)
+	parts = append(parts, input)
+	return strings.Join(parts, "\n\n"), nil
+}
+
 func defaultCollaborationAgentConfig() CollaborationAgentConfig {
-	return CollaborationAgentConfig{RecognitionMode: "off"}
+	return CollaborationAgentConfig{RecognitionMode: "off", AgentResponseIntervalSeconds: 30, AgentClockTurns: 12}
 }
 
 func normalizeCollaborationAgentConfig(value CollaborationAgentConfig, fallbackAlias string) CollaborationAgentConfig {
@@ -452,13 +853,71 @@ func normalizeCollaborationAgentConfig(value CollaborationAgentConfig, fallbackA
 	default:
 		value.RecognitionMode = "off"
 	}
+	if value.AgentResponseIntervalSeconds == 0 {
+		value.AgentResponseIntervalSeconds = 30
+	}
+	if value.AgentResponseIntervalSeconds < 5 {
+		value.AgentResponseIntervalSeconds = 5
+	}
+	if value.AgentResponseIntervalSeconds > 3600 {
+		value.AgentResponseIntervalSeconds = 3600
+	}
+	if value.AgentClockTurns == 0 {
+		value.AgentClockTurns = 12
+	}
+	if value.AgentClockTurns < 1 {
+		value.AgentClockTurns = 1
+	}
+	if value.AgentClockTurns > 100 {
+		value.AgentClockTurns = 100
+	}
+	value.AgentClockWoundAt = strings.TrimSpace(value.AgentClockWoundAt)
+	if value.AgentClockWoundAt != "" {
+		if woundAt, err := time.Parse(time.RFC3339Nano, value.AgentClockWoundAt); err == nil {
+			value.AgentClockWoundAt = woundAt.UTC().Format(time.RFC3339Nano)
+		} else {
+			value.AgentClockWoundAt = ""
+		}
+	}
+	refs := make([]string, 0, len(value.ContextRefs))
+	seen := make(map[string]bool, len(value.ContextRefs))
+	for _, ref := range value.ContextRefs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] || len(refs) >= 32 {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	value.ContextRefs = refs
 	return value
+}
+
+func equalCollaborationAgentConfig(a, b CollaborationAgentConfig) bool {
+	return a.Alias == b.Alias &&
+		a.AutoRespondQuestions == b.AutoRespondQuestions &&
+		a.AutoRespondRequests == b.AutoRespondRequests &&
+		a.AutoRespondAgents == b.AutoRespondAgents &&
+		a.AgentResponseIntervalSeconds == b.AgentResponseIntervalSeconds &&
+		a.AgentClockTurns == b.AgentClockTurns &&
+		a.AgentClockUnlimited == b.AgentClockUnlimited &&
+		a.AgentClockWoundAt == b.AgentClockWoundAt &&
+		a.RecognitionMode == b.RecognitionMode &&
+		equalStrings(a.ContextRefs, b.ContextRefs)
 }
 
 func (c *desktopCollaboration) updateAgentConfig(ctx context.Context, input UpdateCollaborationAgentConfigInput) (CollaborationState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
 	input.RequestID = strings.TrimSpace(input.RequestID)
+	if len(input.Config.ContextRefs) > 32 {
+		return c.snapshot(), fmt.Errorf("Room Agent supports at most 32 explicit context sources")
+	}
+	if woundAt := strings.TrimSpace(input.Config.AgentClockWoundAt); woundAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, woundAt); err != nil {
+			return c.snapshot(), fmt.Errorf("Agent clock woundAt must be an RFC3339 timestamp")
+		}
+	}
 
 	c.mu.RLock()
 	current := normalizeCollaborationAgentConfig(c.state.AgentConfig, c.currentAgentNameLocked())
@@ -467,7 +926,12 @@ func (c *desktopCollaboration) updateAgentConfig(ctx context.Context, input Upda
 	if next.Alias == "" || len(next.Alias) > 256 {
 		return c.snapshot(), fmt.Errorf("Agent alias is required and must not exceed 256 bytes")
 	}
-	if next == current {
+	if c.app != nil {
+		if err := c.app.validateCollaborationAgentRefs(c.ownerSessionID, next.ContextRefs); err != nil {
+			return c.snapshot(), err
+		}
+	}
+	if equalCollaborationAgentConfig(next, current) {
 		return c.snapshot(), nil
 	}
 	if next.Alias != current.Alias {
@@ -487,6 +951,62 @@ func (c *desktopCollaboration) updateAgentConfig(ctx context.Context, input Upda
 	for i := range c.state.Snapshot.Members {
 		if c.state.Snapshot.Members[i].ID == c.state.MemberID {
 			c.state.Snapshot.Members[i].Agent.Name = next.Alias
+			break
+		}
+	}
+	c.persistLocked()
+	state := cloneCollaborationState(c.state)
+	c.mu.Unlock()
+	c.emitState()
+	return state, nil
+}
+
+func (c *desktopCollaboration) updateProfile(ctx context.Context, input UpdateCollaborationProfileInput) (CollaborationState, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	input.MemberName = strings.TrimSpace(input.MemberName)
+	input.MemberAvatar = strings.TrimSpace(input.MemberAvatar)
+	input.AgentName = strings.TrimSpace(input.AgentName)
+	input.AgentAvatar = strings.TrimSpace(input.AgentAvatar)
+	if input.RequestID == "" {
+		return c.snapshot(), fmt.Errorf("requestId is required when changing the Room identity")
+	}
+	if input.MemberName == "" || input.AgentName == "" || len(input.MemberName) > 256 || len(input.AgentName) > 256 {
+		return c.snapshot(), fmt.Errorf("member and Agent names are required and must not exceed 256 bytes")
+	}
+
+	c.mu.RLock()
+	var current collab.Member
+	for _, member := range c.state.Snapshot.Members {
+		if member.ID == c.state.MemberID {
+			current = member
+			break
+		}
+	}
+	c.mu.RUnlock()
+	if current.Name == input.MemberName && current.Avatar == input.MemberAvatar && current.Agent.Name == input.AgentName && current.Agent.Avatar == input.AgentAvatar {
+		return c.snapshot(), nil
+	}
+	memberAvatar, agentAvatar := input.MemberAvatar, input.AgentAvatar
+	if _, err := c.submit(ctx, input.RequestID, collab.Command{Type: collab.CommandUpdateAgent, AgentUpdate: &collab.UpdateAgentInput{
+		Name: input.AgentName, Avatar: &agentAvatar, MemberName: input.MemberName, MemberAvatar: &memberAvatar,
+	}}); err != nil {
+		return c.snapshot(), err
+	}
+
+	c.mu.Lock()
+	c.state.AgentConfig.Alias = input.AgentName
+	if c.conn != nil {
+		c.conn.memberName, c.conn.memberAvatar = input.MemberName, input.MemberAvatar
+		c.conn.agentName, c.conn.agentAvatar = input.AgentName, input.AgentAvatar
+	}
+	for i := range c.state.Snapshot.Members {
+		if c.state.Snapshot.Members[i].ID == c.state.MemberID {
+			c.state.Snapshot.Members[i].Name = input.MemberName
+			c.state.Snapshot.Members[i].Avatar = input.MemberAvatar
+			c.state.Snapshot.Members[i].Agent.Name = input.AgentName
+			c.state.Snapshot.Members[i].Agent.Avatar = input.AgentAvatar
 			break
 		}
 	}
@@ -695,6 +1215,95 @@ func (a *App) StartCollaborationAgent(input StartCollaborationAgentInput) (Colla
 	return runtime.startAgent(a.bootContext(), input)
 }
 
+// StopCollaborationAgentRun cancels the in-flight agent run for sessionID.
+// The runID must match the currently active run; otherwise the call is
+// rejected. Idempotent when no run is active or already stopping.
+func (a *App) StopCollaborationAgentRun(sessionID, runID string) error {
+	runtime, err := a.collaborationRuntime(sessionID)
+	if err != nil {
+		return err
+	}
+	return runtime.stopCurrentAgentRun(sessionID, runID)
+}
+
+func (c *desktopCollaboration) stopCurrentAgentRun(sessionID, runID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	runID = strings.TrimSpace(runID)
+	if sessionID == "" || runID == "" {
+		return fmt.Errorf("sessionId and runId are required")
+	}
+
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.Lock()
+	if c.state.SessionID != sessionID {
+		c.mu.Unlock()
+		return fmt.Errorf("sessionId does not match this member's Personal Agent")
+	}
+	run := c.runs[sessionID]
+	if run == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	if run.RunID != runID {
+		c.mu.Unlock()
+		return fmt.Errorf("runId does not match the current Agent run")
+	}
+	if run.StopRequested {
+		c.mu.Unlock()
+		return nil
+	}
+	previousPromptOpen := run.PromptOpen
+	previousPrompt := cloneCollaborationAgentPrompt(run.Prompt)
+	run.StopRequested = true
+	run.PromptOpen = false
+	run.Prompt = nil
+	c.persistLocked()
+	c.mu.Unlock()
+
+	if c.stopAgent == nil {
+		c.rollbackAgentStop(sessionID, run, previousPromptOpen, previousPrompt)
+		c.emitState()
+		return fmt.Errorf("collaboration Agent stop is unavailable")
+	}
+	if err := c.stopAgent(sessionID); err != nil {
+		c.rollbackAgentStop(sessionID, run, previousPromptOpen, previousPrompt)
+		c.emitState()
+		return err
+	}
+	c.emitState()
+	return nil
+}
+
+func (c *desktopCollaboration) rollbackAgentStop(sessionID string, run *collaborationAgentRun, promptOpen bool, prompt *CollaborationAgentPrompt) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.runs[sessionID] != run {
+		return
+	}
+	run.StopRequested = false
+	run.PromptOpen = promptOpen
+	run.Prompt = prompt
+	c.persistLocked()
+}
+
+func (a *App) CancelCollaborationQueuedTask(input CancelCollaborationQueuedTaskInput) (CollaborationActionResult, error) {
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationActionResult{}, err
+	}
+	return runtime.cancelQueuedTask(a.bootContext(), input)
+}
+
+func (a *App) RespondCollaborationAgentRun(input RespondCollaborationAgentRunInput) (CollaborationActionResult, error) {
+	runtime, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return CollaborationActionResult{}, err
+	}
+	return runtime.respondAgentRun(a.bootContext(), input)
+}
+
 func (a *App) RespondCollaborationRequest(input RespondCollaborationRequestInput) (CollaborationActionResult, error) {
 	runtime, err := a.collaborationRuntime(input.SessionID)
 	if err != nil {
@@ -713,7 +1322,6 @@ func (a *App) RetryCollaboration(sessionID string) (CollaborationState, error) {
 
 func (c *desktopCollaboration) snapshot() CollaborationState {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	state := cloneCollaborationState(c.state)
 	if state.SessionID == "" {
 		state.SessionID = c.ownerSessionID
@@ -721,7 +1329,62 @@ func (c *desktopCollaboration) snapshot() CollaborationState {
 	state.OutboxCount = len(c.outbox)
 	state.Outbox = c.outboxViewsLocked()
 	state.Transfers = c.fileTransfersLocked()
+	state.QueuedTasks = c.queuedTaskViewsLocked()
+	if run := c.runs[state.SessionID]; run != nil {
+		if run.PromptOpen {
+			state.AgentPrompt = cloneCollaborationAgentPrompt(run.Prompt)
+		}
+		state.CurrentRun = c.currentRunViewLocked(run)
+	}
+	c.mu.RUnlock()
+	state.ToolApprovalMode = control.ToolApprovalAsk
+	if c.app != nil {
+		state.ToolApprovalMode = c.app.collaborationToolApprovalMode(state.SessionID)
+		state.AgentSources = c.app.collaborationAgentSourcesWithRefs(state.SessionID, state.AgentConfig.ContextRefs)
+	}
 	return state
+}
+
+func (c *desktopCollaboration) currentRunViewLocked(run *collaborationAgentRun) *CollaborationCurrentRun {
+	if run == nil {
+		return nil
+	}
+	phase := "running"
+	if run.StopRequested {
+		phase = "stopping"
+	} else if run.PromptOpen {
+		phase = "waiting_approval"
+	}
+	queueCount := 0
+	for _, queued := range c.queuedRuns {
+		if queued != nil && queued.SessionID == run.SessionID {
+			queueCount++
+		}
+	}
+	view := &CollaborationCurrentRun{
+		SessionID: run.SessionID, RunID: run.RunID, Phase: phase,
+		Instruction: sanitizeCollaborationText(run.Instruction),
+		Progress:    sanitizeCollaborationText(run.Text.String()), QueueCount: queueCount,
+	}
+	if !run.StartedAt.IsZero() {
+		view.StartedAt = run.StartedAt.UnixMilli()
+	}
+	return view
+}
+
+func (c *desktopCollaboration) queuedTaskViewsLocked() []CollaborationQueuedTask {
+	result := make([]CollaborationQueuedTask, 0, len(c.queuedRuns))
+	for _, run := range c.queuedRuns {
+		if run == nil {
+			continue
+		}
+		result = append(result, CollaborationQueuedTask{
+			ID: run.RunID, RequestID: run.CommandID, Instruction: run.Instruction,
+			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), AgentRequestID: run.AgentRequestID,
+			QueuedAt: run.QueuedAt,
+		})
+	}
+	return result
 }
 
 func (c *desktopCollaboration) outboxViewsLocked() []CollaborationOutboxView {
@@ -755,7 +1418,7 @@ func collaborationQueuedItem(env collab.CommandEnvelope, sequence uint64) *colla
 		if env.Command.Chat == nil {
 			return nil
 		}
-		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: id, AuthorID: env.MemberID, Text: env.Command.Chat.Text, Revision: 1, CreatedAt: createdAt}}
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: id, AuthorID: env.MemberID, Text: env.Command.Chat.Text, MentionMemberIDs: append([]string(nil), env.Command.Chat.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), env.Command.Chat.MentionAgentIDs...), Revision: 1, CreatedAt: createdAt}}
 	case collab.CommandPublishContribution:
 		if env.Command.Contribution == nil {
 			return nil
@@ -796,7 +1459,33 @@ func cloneCollaborationState(state CollaborationState) CollaborationState {
 	state.Snapshot.Timeline = append([]collab.TimelineItem(nil), state.Snapshot.Timeline...)
 	state.Outbox = append([]CollaborationOutboxView(nil), state.Outbox...)
 	state.Transfers = cloneCollaborationTransfers(state.Transfers)
+	state.AgentConfig.ContextRefs = append([]string(nil), state.AgentConfig.ContextRefs...)
+	state.AgentSources.Agents = append([]CollaborationAgentSource(nil), state.AgentSources.Agents...)
+	state.AgentSources.Skills = append([]CollaborationAgentSource(nil), state.AgentSources.Skills...)
+	state.AgentPrompt = cloneCollaborationAgentPrompt(state.AgentPrompt)
+	if state.CurrentRun != nil {
+		current := *state.CurrentRun
+		state.CurrentRun = &current
+	}
+	state.Routes = append([]CollaborationRouteState(nil), state.Routes...)
+	if state.Advertisement != nil {
+		advertisement := *state.Advertisement
+		advertisement.Relays = append([]CollaborationAdvertisementRelayState(nil), state.Advertisement.Relays...)
+		state.Advertisement = &advertisement
+	}
 	return state
+}
+
+func cloneCollaborationAgentPrompt(value *CollaborationAgentPrompt) *CollaborationAgentPrompt {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	result.Questions = append([]CollaborationAgentPromptQuestion(nil), value.Questions...)
+	for i := range result.Questions {
+		result.Questions[i].Options = append([]CollaborationAgentPromptOption(nil), value.Questions[i].Options...)
+	}
+	return &result
 }
 
 func (c *desktopCollaboration) host(ctx context.Context, input HostCollaborationRoomInput) (CollaborationState, error) {
@@ -807,7 +1496,7 @@ func (c *desktopCollaboration) host(ctx context.Context, input HostCollaboration
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
-	identity, err := c.localIdentity(input.MemberID, input.MemberName, input.MemberRole, input.AgentID, input.AgentName, input.AgentRole, input.SessionID, input.Room)
+	identity, err := c.localIdentity(input.MemberID, input.MemberName, input.MemberAvatar, input.MemberRole, input.AgentID, input.AgentName, input.AgentAvatar, input.AgentRole, input.SessionID, input.Room)
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
@@ -824,20 +1513,24 @@ func (c *desktopCollaboration) host(ctx context.Context, input HostCollaboration
 func (c *desktopCollaboration) join(ctx context.Context, input JoinCollaborationRoomInput) (CollaborationState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
+	if err := applyCollaborationInvite(&input); err != nil {
+		return c.failState("failed", err, false), err
+	}
 	var err error
 	input.Host, err = normalizeCollaborationHost(input.Host)
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
-	identity, err := c.localIdentity(input.MemberID, input.MemberName, input.MemberRole, input.AgentID, input.AgentName, input.AgentRole, input.SessionID, input.Room)
+	baseIdentity, err := c.localIdentity(input.MemberID, input.MemberName, input.MemberAvatar, input.MemberRole, input.AgentID, input.AgentName, input.AgentAvatar, input.AgentRole, input.SessionID, input.Room)
 	if err != nil {
 		return c.failState("failed", err, false), err
 	}
+	scopedIdentity := scopedCollaborationIdentity(baseIdentity, input.Room, input.SessionID)
+	identity := scopedIdentity
 	resume := c.resumeSession(input.Host, input.Port, input.Room, identity.ID, input.SessionID)
-	scopedIdentity := scopedCollaborationIdentity(identity, input.Room, input.SessionID)
 	if resume == "" {
-		if scopedResume := c.resumeSession(input.Host, input.Port, input.Room, scopedIdentity.ID, input.SessionID); scopedResume != "" {
-			identity, resume = scopedIdentity, scopedResume
+		if legacyResume := c.resumeSession(input.Host, input.Port, input.Room, baseIdentity.ID, input.SessionID); legacyResume != "" {
+			identity, resume = baseIdentity, legacyResume
 		}
 	}
 	c.fenceCurrentConnection()
@@ -891,7 +1584,7 @@ func (c *desktopCollaboration) invite() (CollaborationInvite, error) {
 		token = conn.joinToken
 	}
 	c.mu.RUnlock()
-	if state.Mode != "host" || state.Room == "" || state.Port < 1 {
+	if state.Mode != "host" || state.Room == "" || conn == nil {
 		return CollaborationInvite{}, fmt.Errorf("only the Room Host can export a collaboration connection")
 	}
 	if token == "" {
@@ -900,12 +1593,43 @@ func (c *desktopCollaboration) invite() (CollaborationInvite, error) {
 			token = c.getSecret(persisted.JoinTokenSecretRef)
 		}
 	}
-	return CollaborationInvite{
-		Hosts: collaborationLocalHosts(state.Host),
-		Port:  state.Port,
-		Room:  state.Room,
-		Token: token,
-	}, nil
+	result := CollaborationInvite{
+		Version: 1,
+		Hosts:   collaborationLocalHosts(state.Host),
+		Port:    state.Port,
+		Room:    state.Room,
+		Token:   token,
+	}
+	for _, route := range conn.routes {
+		if route.Kind == "lan" && route.Status == "connected" {
+			for _, host := range collaborationLocalHosts(route.Host) {
+				result.Routes = append(result.Routes, CollaborationRouteInput{ID: "lan:" + host, Kind: "lan", Host: host, Port: route.Port, Priority: route.Priority})
+			}
+			continue
+		}
+		if route.Kind != "relay" || route.Status != "connected" {
+			continue
+		}
+		value := route.CollaborationRouteInput
+		if ref := conn.guestCapabilityRefs[route.RelayID]; ref != "" {
+			value.GuestCapability = c.getSecret(ref)
+		}
+		if value.GuestCapability != "" {
+			result.Routes = append(result.Routes, value)
+		}
+	}
+	if len(result.Routes) > 0 && conn.hostKey != "" {
+		result.Version, result.HostKey = 2, conn.hostKey
+		encoded, err := buildCollaborationInviteV2(collaborationInviteV2{Room: state.Room, HostKey: conn.hostKey, Routes: result.Routes, RoomToken: token})
+		if err != nil {
+			return CollaborationInvite{}, err
+		}
+		result.Invite = encoded
+	}
+	if result.Version < 2 && (result.Port < 1 || result.Port > 65535) {
+		return CollaborationInvite{}, fmt.Errorf("collaboration invite is not ready; relay routes or host key may still be connecting")
+	}
+	return result, nil
 }
 
 func collaborationLocalHosts(bindHost string) []string {
@@ -998,6 +1722,7 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 		c.conn = nil
 	}
 	c.state = CollaborationState{Status: "disconnected", SessionID: c.ownerSessionID, OutboxCount: len(c.outbox)}
+	c.queuedRuns = nil
 	c.persistLocked()
 	c.mu.Unlock()
 	c.closeFileTransfers()
@@ -1062,7 +1787,7 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		if p.Mode == "" || p.Host == "" || p.Room == "" || p.SessionID == "" {
 			return c.snapshot(), fmt.Errorf("collaboration connection must be joined again")
 		}
-		identity, err := c.localIdentity(p.MemberID, p.MemberName, p.MemberRole, p.AgentID, p.AgentName, p.AgentRole, p.SessionID, p.Room)
+		identity, err := c.localIdentity(p.MemberID, p.MemberName, p.MemberAvatar, p.MemberRole, p.AgentID, p.AgentName, p.AgentAvatar, p.AgentRole, p.SessionID, p.Room)
 		if err != nil {
 			return c.failState("failed", err, true), err
 		}
@@ -1075,16 +1800,32 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 			resume = c.getSecret(p.ConnectionSecretRef)
 		}
 		if p.Mode == "host" {
+			visibility := "private"
+			if p.Advertisement != nil {
+				visibility = p.Advertisement.Visibility
+			}
 			conn, err = c.openHost(ctx, HostCollaborationRoomInput{
 				ListenHost: p.Host, Port: p.Port, Room: p.Room, RoomName: p.RoomName, Description: p.Description, Token: token,
-				MemberID: p.MemberID, MemberName: p.MemberName, MemberRole: p.MemberRole,
-				AgentID: p.AgentID, AgentName: p.AgentName, AgentRole: p.AgentRole, SessionID: p.SessionID,
+				MemberID: p.MemberID, MemberName: p.MemberName, MemberAvatar: p.MemberAvatar, MemberRole: p.MemberRole,
+				AgentID: p.AgentID, AgentName: p.AgentName, AgentAvatar: p.AgentAvatar, AgentRole: p.AgentRole, SessionID: p.SessionID,
+				LANEnabled: boolPointer(p.LANEnabled), RelayIDs: append([]string(nil), p.RelayIDs...), PreferLAN: boolPointer(p.PreferLAN), Visibility: visibility,
 			}, identity, resume)
 		} else {
+			routes := make([]CollaborationRouteInput, 0, len(p.Routes))
+			for _, state := range p.Routes {
+				route := state.CollaborationRouteInput
+				if route.Kind == "relay" {
+					if ref := p.GuestCapabilityRefs[route.RelayID]; ref != "" {
+						route.GuestCapability = c.getSecret(ref)
+					}
+				}
+				routes = append(routes, route)
+			}
 			conn, err = c.openJoin(ctx, JoinCollaborationRoomInput{
 				Host: p.Host, Port: p.Port, Room: p.Room, Token: token,
-				MemberID: p.MemberID, MemberName: p.MemberName, MemberRole: p.MemberRole,
-				AgentID: p.AgentID, AgentName: p.AgentName, AgentRole: p.AgentRole, SessionID: p.SessionID,
+				MemberID: p.MemberID, MemberName: p.MemberName, MemberAvatar: p.MemberAvatar, MemberRole: p.MemberRole,
+				AgentID: p.AgentID, AgentName: p.AgentName, AgentAvatar: p.AgentAvatar, AgentRole: p.AgentRole, SessionID: p.SessionID,
+				Routes: routes, HostKey: p.HostKey,
 			}, identity, resume)
 		}
 		if err != nil {
@@ -1092,11 +1833,22 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		}
 		return c.installConnection(conn)
 	}
+	if conn.mode == "host" {
+		c.retryRelayBindings(ctx, conn)
+	}
 	c.syncConnection(ctx, conn)
 	return c.snapshot(), nil
 }
 
+func boolPointer(value bool) *bool { return &value }
+
 func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollaborationAgentInput) (CollaborationActionResult, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	return c.startAgentLocked(ctx, input)
+}
+
+func (c *desktopCollaboration) startAgentLocked(ctx context.Context, input StartCollaborationAgentInput) (CollaborationActionResult, error) {
 	requestID := strings.TrimSpace(input.RequestID)
 	sessionID := strings.TrimSpace(input.SessionID)
 	instruction := strings.TrimSpace(input.Instruction)
@@ -1104,8 +1856,6 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 		return CollaborationActionResult{}, fmt.Errorf("requestId, sessionId, and instruction are required")
 	}
 	fingerprint := collaborationStartFingerprint(input)
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
 
 	c.mu.Lock()
 	if existing := c.starts[requestID]; existing.RunID != "" {
@@ -1134,27 +1884,61 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 		c.mu.Unlock()
 		return CollaborationActionResult{RequestID: requestID, RunID: existingRun.ID, Duplicate: true}, nil
 	}
-	if c.runs[sessionID] != nil {
+	busy := c.runs[sessionID] != nil || len(c.queuedRuns) > 0
+	if len(c.queuedRuns) >= maxCollaborationAgentQueue {
 		c.mu.Unlock()
-		return CollaborationActionResult{
-			RequestID: requestID,
-			Code:      "agent_busy",
-			Retryable: true,
-			Error:     "Personal Agent already has a collaboration run",
-		}, nil
+		return CollaborationActionResult{RequestID: requestID, Code: "agent_queue_full", Error: "Personal Agent queue already has 20 tasks"}, nil
 	}
 	c.mu.Unlock()
+	if !busy {
+		ready := true
+		var err error
+		if c.agentReady != nil {
+			ready, err = c.agentReady(sessionID)
+		} else if c.validateAgent != nil {
+			err = c.validateAgent(sessionID)
+		}
+		if err != nil {
+			return CollaborationActionResult{}, err
+		}
+		busy = !ready
+	}
 
-	ready := true
-	var err error
-	if c.agentReady != nil {
-		ready, err = c.agentReady(sessionID)
-	} else if c.validateAgent != nil {
-		err = c.validateAgent(sessionID)
+	queuedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	runID := stableCollaborationID("run", state.MemberID+"\x00"+requestID)
+	run := &collaborationAgentRun{
+		Room: state.Room, MemberID: state.MemberID, AgentID: state.AgentID,
+		RunID: runID, CommandID: requestID, SessionID: sessionID,
+		AgentRequestID: strings.TrimSpace(input.AgentRequestID), Instruction: instruction,
+		ReferenceIDs: append([]string(nil), input.ReferenceIDs...), ContextRefs: append([]string(nil), state.AgentConfig.ContextRefs...), QueuedAt: queuedAt,
+		Automatic: input.Automatic,
+		Updates:   make(chan collaborationRunUpdate, 32),
 	}
-	if err != nil {
-		return CollaborationActionResult{}, err
+	if busy {
+		c.mu.Lock()
+		c.starts[requestID] = collaborationStartRecord{RunID: runID, Fingerprint: fingerprint}
+		c.queuedRuns = append(c.queuedRuns, run)
+		c.persistLocked()
+		c.mu.Unlock()
+
+		result, err := c.publishRun(ctx, run, collab.RunQueued, "", "")
+		if err != nil {
+			c.mu.Lock()
+			c.removeQueuedRunLocked(runID)
+			delete(c.starts, requestID)
+			c.persistLocked()
+			c.mu.Unlock()
+			c.emitState()
+			return CollaborationActionResult{}, err
+		}
+		result.RunID = runID
+		result.RequestID = requestID
+		result.Queued = true
+		c.emitState()
+		go c.startNextQueuedAgent(sessionID)
+		return result, nil
 	}
+
 	contextText, err := collaborationContext(state.Snapshot, input.ReferenceIDs)
 	if err != nil {
 		return CollaborationActionResult{}, err
@@ -1163,21 +1947,9 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 	if contextText != "" {
 		fullInput += "\n\n" + contextText
 	}
-	runID := stableCollaborationID("run", state.MemberID+"\x00"+requestID)
-	run := &collaborationAgentRun{
-		Room:           state.Room,
-		MemberID:       state.MemberID,
-		AgentID:        state.AgentID,
-		RunID:          runID,
-		CommandID:      requestID,
-		SessionID:      sessionID,
-		AgentRequestID: strings.TrimSpace(input.AgentRequestID),
-		Instruction:    instruction,
-		ReferenceIDs:   append([]string(nil), input.ReferenceIDs...),
-		Updates:        make(chan collaborationRunUpdate, 32),
-	}
 	c.mu.Lock()
 	c.starts[requestID] = collaborationStartRecord{RunID: runID, Fingerprint: fingerprint}
+	run.StartedAt = time.Now().UTC()
 	c.runs[sessionID] = run
 	c.persistLocked()
 	c.mu.Unlock()
@@ -1193,48 +1965,196 @@ func (c *desktopCollaboration) startAgent(ctx context.Context, input StartCollab
 	}
 	queued.RunID = runID
 	queued.RequestID = requestID
-	if !ready {
-		queued.Queued = true
-		go c.resumeQueuedAgent(run, fullInput)
-		return queued, nil
-	}
 	if err := c.launchAgent(ctx, run, fullInput); err != nil {
 		return CollaborationActionResult{}, err
 	}
 	return queued, nil
 }
 
-func (c *desktopCollaboration) resumeQueuedAgent(run *collaborationAgentRun, fullInput string) {
-	if run == nil || c.waitAgentReady == nil {
+func (c *desktopCollaboration) removeQueuedRunLocked(runID string) *collaborationAgentRun {
+	for i, run := range c.queuedRuns {
+		if run == nil || run.RunID != runID {
+			continue
+		}
+		c.queuedRuns = append(c.queuedRuns[:i], c.queuedRuns[i+1:]...)
+		return run
+	}
+	return nil
+}
+
+func (c *desktopCollaboration) cancelQueuedTask(ctx context.Context, input CancelCollaborationQueuedTaskInput) (CollaborationActionResult, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	taskID := strings.TrimSpace(input.TaskID)
+	if sessionID == "" || taskID == "" {
+		return CollaborationActionResult{}, fmt.Errorf("sessionId and taskId are required")
+	}
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.mu.Lock()
+	if c.state.SessionID != sessionID {
+		c.mu.Unlock()
+		return CollaborationActionResult{}, fmt.Errorf("sessionId does not match this member's Personal Agent")
+	}
+	run := c.removeQueuedRunLocked(taskID)
+	if run == nil {
+		c.mu.Unlock()
+		return CollaborationActionResult{RequestID: taskID, RunID: taskID, Duplicate: true}, nil
+	}
+	c.persistLocked()
+	c.mu.Unlock()
+	c.emitState()
+	result, err := c.publishRun(ctx, run, collab.RunCancelled, "", "cancelled by the Agent owner")
+	result.RequestID = run.CommandID
+	result.RunID = run.RunID
+	return result, err
+}
+
+func (c *desktopCollaboration) respondAgentRun(ctx context.Context, input RespondCollaborationAgentRunInput) (CollaborationActionResult, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	runID := strings.TrimSpace(input.RunID)
+	if sessionID == "" || runID == "" {
+		return CollaborationActionResult{}, fmt.Errorf("sessionId and runId are required")
+	}
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.mu.Lock()
+	run := c.runs[sessionID]
+	if run == nil {
+		c.mu.Unlock()
+		return CollaborationActionResult{RequestID: runID + ":respond", RunID: runID, Duplicate: true}, nil
+	}
+	if run.RunID != runID {
+		c.mu.Unlock()
+		return CollaborationActionResult{}, fmt.Errorf("Agent run changed: got %q, current %q", runID, run.RunID)
+	}
+	if !run.PromptOpen {
+		c.mu.Unlock()
+		return CollaborationActionResult{RequestID: runID + ":respond", RunID: runID, Duplicate: true}, nil
+	}
+	prompt := cloneCollaborationAgentPrompt(run.Prompt)
+	run.PromptOpen = false
+	run.Prompt = nil
+	c.mu.Unlock()
+	c.emitState()
+	if c.respondAgent == nil {
+		c.mu.Lock()
+		if c.runs[sessionID] == run {
+			run.PromptOpen = true
+			run.Prompt = prompt
+		}
+		c.mu.Unlock()
+		c.emitState()
+		return CollaborationActionResult{}, fmt.Errorf("collaboration Agent confirmation is unavailable")
+	}
+	cancelled, err := c.respondAgent(sessionID, input)
+	if err != nil {
+		c.mu.Lock()
+		if c.runs[sessionID] == run {
+			run.PromptOpen = true
+			run.Prompt = prompt
+		}
+		c.mu.Unlock()
+		c.emitState()
+		return CollaborationActionResult{}, err
+	}
+	if !cancelled {
+		result, err := c.publishRun(ctx, run, collab.RunRunning, "", "")
+		result.RequestID = runID + ":respond"
+		result.RunID = runID
+		return result, err
+	}
+	return CollaborationActionResult{RequestID: runID + ":respond", RunID: runID}, nil
+}
+
+func (a *App) respondCollaborationAgent(sessionID string, input RespondCollaborationAgentRunInput) (bool, error) {
+	_, ctrl := a.tabAndCtrlByID(sessionID)
+	if ctrl == nil {
+		return false, fmt.Errorf("collaboration Agent workspace is not ready")
+	}
+	pending, ok := ctrl.PendingInteraction()
+	if !ok {
+		return false, fmt.Errorf("collaboration Agent is no longer waiting for confirmation")
+	}
+	if pending.Kind == control.PendingInteractionApproval {
+		if input.Answering {
+			return false, fmt.Errorf("this Agent is waiting for tool approval, not an answer")
+		}
+		ctrl.Approve(pending.Approval.ID, input.Allow, input.Session, input.Persist)
+		return false, nil
+	}
+	if pending.Kind != control.PendingInteractionAsk {
+		return false, fmt.Errorf("unsupported pending interaction %q", pending.Kind)
+	}
+	if input.Answering {
+		answers := make([]event.AskAnswer, len(input.Answers))
+		for i, answer := range input.Answers {
+			answers[i] = event.AskAnswer{QuestionID: answer.QuestionID, Selected: append([]string(nil), answer.Selected...)}
+		}
+		ctrl.AnswerQuestion(pending.Ask.ID, answers)
+		return false, nil
+	}
+	if input.Allow {
+		return false, fmt.Errorf("this Agent is waiting for an answer, not approval")
+	}
+	ctrl.Cancel()
+	return true, nil
+}
+
+func (c *desktopCollaboration) waitForQueuedAgent(sessionID string) {
+	if c.waitAgentReady == nil {
 		return
 	}
+	c.mu.Lock()
+	if c.queueWaiting {
+		c.mu.Unlock()
+		return
+	}
+	c.queueWaiting = true
+	c.mu.Unlock()
+
 	ctx := context.Background()
 	if c.app != nil {
 		ctx = c.app.bootContext()
 	}
-	if err := c.waitAgentReady(ctx, run.SessionID); err != nil {
-		if ctx.Err() == nil {
-			c.failAgentRun(ctx, run, err)
+	go func() {
+		err := c.waitAgentReady(ctx, sessionID)
+		c.mu.Lock()
+		c.queueWaiting = false
+		if err != nil && ctx.Err() == nil {
+			c.state.LastError = "queued Agent is waiting for workspace recovery: " + err.Error()
+			c.state.Retryable = true
+			c.persistLocked()
 		}
-		return
-	}
-	c.opMu.Lock()
-	defer c.opMu.Unlock()
-	c.mu.RLock()
-	current := c.runs[run.SessionID]
-	c.mu.RUnlock()
-	if current != run {
-		return
-	}
-	_ = c.launchAgent(ctx, run, fullInput)
+		c.mu.Unlock()
+		if err != nil {
+			if ctx.Err() == nil {
+				c.emitState()
+			}
+			return
+		}
+		c.startNextQueuedAgent(sessionID)
+	}()
 }
 
 func (c *desktopCollaboration) launchAgent(ctx context.Context, run *collaborationAgentRun, fullInput string) error {
+	if c.prepareAgentInput != nil {
+		prepared, err := c.prepareAgentInput(run.SessionID, run.ContextRefs, fullInput)
+		if err != nil {
+			c.failAgentRun(ctx, run, err)
+			return err
+		}
+		fullInput = prepared
+	}
 	if _, err := c.publishRun(ctx, run, collab.RunRunning, "", ""); err != nil {
 		c.failAgentRun(ctx, run, err)
 		return err
 	}
+	if err := c.prepareAgentApproval(run); err != nil {
+		c.failAgentRun(ctx, run, err)
+		return err
+	}
 	if err := c.submitAgent(run.SessionID, run.Instruction, fullInput); err != nil {
+		c.restoreAgentApproval(run)
 		c.failAgentRun(ctx, run, err)
 		return err
 	}
@@ -1247,15 +2167,22 @@ func (c *desktopCollaboration) failAgentRun(ctx context.Context, run *collaborat
 		return
 	}
 	c.mu.Lock()
+	removed := false
 	if c.runs[run.SessionID] == run {
 		delete(c.runs, run.SessionID)
+		removed = true
 	}
 	c.persistLocked()
 	c.mu.Unlock()
 	_, _ = c.publishRun(ctx, run, collab.RunFailed, "", sanitizeCollaborationText(err.Error()))
+	if removed {
+		go c.startNextQueuedAgent(run.SessionID)
+	}
 }
 
 func (c *desktopCollaboration) respond(ctx context.Context, input RespondCollaborationRequestInput) (CollaborationActionResult, error) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
 	requestID := strings.TrimSpace(input.RequestID)
 	requestRef := strings.TrimSpace(input.AgentRequestID)
 	action := strings.ToLower(strings.TrimSpace(input.Action))
@@ -1269,12 +2196,23 @@ func (c *desktopCollaboration) respond(ctx context.Context, input RespondCollabo
 		return CollaborationActionResult{}, fmt.Errorf("requestId, agentRequestId, and accept/reject action are required")
 	}
 	state := c.snapshot()
+	if strings.TrimSpace(input.SessionID) != state.SessionID {
+		return CollaborationActionResult{}, fmt.Errorf("sessionId does not match this member's Personal Agent")
+	}
 	request := collaborationAgentRequest(state.Snapshot, requestRef)
 	if request == nil {
 		return CollaborationActionResult{}, fmt.Errorf("agent request %q does not exist", requestRef)
 	}
 	if request.TargetMemberID != state.MemberID {
 		return CollaborationActionResult{}, fmt.Errorf("agent request is assigned to another member")
+	}
+	if action == string(collab.RequestAccepted) {
+		c.mu.RLock()
+		queueFull := len(c.queuedRuns) >= maxCollaborationAgentQueue
+		c.mu.RUnlock()
+		if queueFull {
+			return CollaborationActionResult{RequestID: requestID, Code: "agent_queue_full", Error: "Personal Agent queue already has 20 tasks"}, nil
+		}
 	}
 	result, err := c.submit(ctx, requestID, collab.Command{
 		Type: collab.CommandDecideAgentRequest,
@@ -1291,18 +2229,50 @@ func (c *desktopCollaboration) respond(ctx context.Context, input RespondCollabo
 	if instruction == "" {
 		instruction = request.Instruction
 	}
-	started, err := c.startAgent(ctx, StartCollaborationAgentInput{
+	started, err := c.startAgentLocked(ctx, StartCollaborationAgentInput{
 		RequestID:      stableCollaborationID("agent_command", requestRef+"\x00"+state.MemberID),
 		SessionID:      input.SessionID,
 		Instruction:    instruction,
 		ReferenceIDs:   request.ReferenceIDs,
 		AgentRequestID: requestRef,
+		Automatic:      input.Automatic,
 	})
 	if err != nil {
 		return CollaborationActionResult{RequestID: requestID, Receipt: result.Receipt, Retryable: true, Error: err.Error()}, err
 	}
 	started.Receipt = result.Receipt
 	return started, nil
+}
+
+func (a *App) prepareCollaborationAutoAgent(sessionID string) (string, error) {
+	tab, ctrl := a.tabAndCtrlByID(sessionID)
+	if ctrl == nil {
+		return "", fmt.Errorf("collaboration Agent workspace is not ready")
+	}
+	previous := ctrl.ToolApprovalMode()
+	if previous != control.ToolApprovalAsk {
+		return previous, nil
+	}
+	if tab != nil {
+		tab.autoAgentActive.Store(true)
+	}
+	ctrl.SetToolApprovalMode(control.ToolApprovalAuto)
+	return previous, nil
+}
+
+func (a *App) restoreCollaborationAutoAgent(sessionID, previous string) {
+	tab, ctrl := a.tabAndCtrlByID(sessionID)
+	automatic := true
+	if tab != nil {
+		automatic = tab.autoAgentActive.Swap(false)
+	}
+	if ctrl == nil || !automatic || ctrl.ToolApprovalMode() != control.ToolApprovalAuto {
+		return
+	}
+	if tab != nil {
+		previous = normalizeToolApprovalMode(tab.toolApprovalMode)
+	}
+	ctrl.SetToolApprovalMode(previous)
 }
 
 func (c *desktopCollaboration) emitState() {
@@ -1312,7 +2282,7 @@ func (c *desktopCollaboration) emitState() {
 	c.app.runtimeEvents.Emit(c.app.ctx, collaborationStateChannel, c.snapshot())
 }
 
-func (c *desktopCollaboration) localIdentity(memberID, memberName, memberRole, agentID, agentName, agentRole, sessionID, room string) (collab.MemberDescriptor, error) {
+func (c *desktopCollaboration) localIdentity(memberID, memberName, memberAvatar, memberRole, agentID, agentName, agentAvatar, agentRole, sessionID, room string) (collab.MemberDescriptor, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	memberName = strings.TrimSpace(memberName)
 	room = strings.TrimSpace(room)
@@ -1332,13 +2302,9 @@ func (c *desktopCollaboration) localIdentity(memberID, memberName, memberRole, a
 		agentName = memberName + " Agent"
 	}
 	return collab.MemberDescriptor{
-		ID:   strings.TrimSpace(memberID),
-		Name: memberName,
-		Role: strings.TrimSpace(memberRole),
+		ID: strings.TrimSpace(memberID), Name: memberName, Avatar: strings.TrimSpace(memberAvatar), Role: strings.TrimSpace(memberRole),
 		Agent: collab.AgentDescriptor{
-			ID:     strings.TrimSpace(agentID),
-			Name:   strings.TrimSpace(agentName),
-			Role:   strings.TrimSpace(agentRole),
+			ID: strings.TrimSpace(agentID), Name: strings.TrimSpace(agentName), Avatar: strings.TrimSpace(agentAvatar), Role: strings.TrimSpace(agentRole),
 			Status: collab.AgentIdle,
 		},
 	}, nil
@@ -1379,7 +2345,7 @@ func (a *App) collaborationAgentReady(sessionID string) (bool, error) {
 		return false, nil
 	}
 	if ctrl.RuntimeStatus().ActiveRuntimeWork {
-		return false, fmt.Errorf("Personal Agent is already running")
+		return false, nil
 	}
 	return true, nil
 }
@@ -1465,17 +2431,23 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		status = "syncing"
 	}
 	c.state = CollaborationState{
-		Status:      status,
-		Mode:        conn.mode,
-		Host:        conn.hostName,
-		Port:        conn.port,
-		Room:        conn.room,
-		MemberID:    conn.memberID,
-		AgentID:     conn.agentID,
-		SessionID:   conn.sessionID,
-		Snapshot:    conn.initialSnapshot,
-		OutboxCount: len(c.outbox),
-		AgentConfig: config,
+		Status:        status,
+		Mode:          conn.mode,
+		Host:          conn.hostName,
+		Port:          conn.port,
+		Room:          conn.room,
+		MemberID:      conn.memberID,
+		AgentID:       conn.agentID,
+		SessionID:     conn.sessionID,
+		Snapshot:      conn.initialSnapshot,
+		OutboxCount:   len(c.outbox),
+		AgentConfig:   config,
+		Routes:        publicCollaborationRoutes(conn.routes),
+		Advertisement: conn.advertisement,
+	}
+	if conn.routeError != "" {
+		c.state.LastError = conn.routeError
+		c.state.Retryable = true
 	}
 	c.recoverInterruptedRunsLocked(conn)
 	c.state.OutboxCount = len(c.outbox)
@@ -1484,7 +2456,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	c.mu.Unlock()
 	if previous != nil {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		_ = previous.close(closeCtx, true)
+		_ = previous.close(closeCtx, false)
 		cancel()
 	}
 	loopCtx, cancel := context.WithCancel(c.app.bootContext())
@@ -1493,5 +2465,6 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	go c.connectionLoop(loopCtx, conn)
 	go c.restoreFileOrigins(conn)
 	c.emitState()
+	go c.startNextQueuedAgent(conn.sessionID)
 	return state, nil
 }

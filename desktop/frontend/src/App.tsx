@@ -177,6 +177,7 @@ import logoWordmark from "./assets/logo-wordmark.png";
 import { WidgetMode } from "./components/widget/WidgetMode";
 import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
 import { CollaborationWorkspace } from "./collab/CollaborationWorkspace";
+import type { CollaborationWorkspaceOption } from "./collab/types";
 
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
@@ -1024,6 +1025,10 @@ function comparableSessionPath(path: string | undefined): string {
   return /^[a-z]:/i.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
+function comparableWorkspaceRoot(root: string | undefined): string {
+  return comparableSessionPath((root ?? "").replace(/[\\/]+$/, ""));
+}
+
 function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
@@ -1147,7 +1152,14 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const setSidebarCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
-  const [collaborationDialog, setCollaborationDialog] = useState<{ sessionID: string } | null>(null);
+  const [collaborationDialog, setCollaborationDialog] = useState<{
+    sessionID?: string;
+    workspaces: CollaborationWorkspaceOption[];
+    workspaceRoot: string;
+    resolving: boolean;
+    resolveError?: string;
+  } | null>(null);
+  const collabResolveGen = useRef(0);
   type TimeFilter = "all" | "10" | "20" | "1h" | "3h" | "5h" | "1d";
   const [topicTimeFilter, setTopicTimeFilter] = useState<TimeFilter>(() => {
     try {
@@ -3300,23 +3312,57 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [activeTabId, refreshTabMetas, syncActiveTab]);
 
+  // Binds the connection form to an explicitly chosen local project Workspace:
+  // every selection resolves a blank Session for that Workspace, and only the
+  // latest selection may land (gen-guarded against switches and dialog close).
+  const selectCollaborationWorkspace = useCallback(async (root: string) => {
+    const gen = ++collabResolveGen.current;
+    const workspaceRoot = root.trim();
+    if (!workspaceRoot) {
+      setCollaborationDialog((cur) => cur ? { ...cur, workspaceRoot: "", resolving: false, resolveError: undefined, sessionID: undefined } : cur);
+      return;
+    }
+    setCollaborationDialog((cur) => cur ? { ...cur, workspaceRoot, resolving: true, resolveError: undefined, sessionID: undefined } : cur);
+    try {
+      const meta = await ensureBlankTab("project", workspaceRoot);
+      if (gen !== collabResolveGen.current) return;
+      setCollaborationDialog((cur) => cur ? { ...cur, sessionID: meta.sessionId, resolving: false } : cur);
+    } catch (error) {
+      if (gen !== collabResolveGen.current) return;
+      setCollaborationDialog((cur) => cur ? { ...cur, resolving: false, resolveError: error instanceof Error ? error.message : String(error) } : cur);
+    }
+  }, [ensureBlankTab]);
+
   const openCollaborationDialog = useCallback(async (sessionID?: string) => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
+    collabResolveGen.current++;
+    let workspaces: CollaborationWorkspaceOption[] = [];
+    try {
+      workspaces = (await app.ListWorkspaces())
+        .map((workspace) => ({ root: workspace.path, name: workspace.name }))
+        .filter((workspace) => workspace.root.trim());
+    } catch { /* bridge unavailable: the form shows the no-Workspace hint */ }
+    const seen = new Set<string>();
+    workspaces = workspaces.filter((workspace) => {
+      const key = comparableWorkspaceRoot(workspace.root);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    // Initial selection: the explicit Session's owning Workspace, else the
+    // current project. An empty selection stays visibly unset and blocks submit.
+    let initialRoot = "";
     if (sessionID) {
-      setCollaborationDialog({ sessionID });
-      return;
+      const ownerTab = tabMetas.find((tab) => tab.sessionId === sessionID);
+      if (ownerTab?.scope === "project" && ownerTab.workspaceRoot) initialRoot = ownerTab.workspaceRoot;
     }
-    const target = blankSessionTarget();
-    const meta = await ensureBlankTab(target.scope, target.workspaceRoot);
-    seedActiveTabMeta(meta);
-    await refreshProjectsAndTabs();
-    if (!meta.sessionId) {
-      showToast("协作 Session 尚未准备好，请重试。", "error");
-      return;
-    }
-    setCollaborationDialog({ sessionID: meta.sessionId });
-  }, [blankSessionTarget, closeTransientOverlays, ensureBlankTab, refreshProjectsAndTabs, seedActiveTabMeta, showToast]);
+    if (!initialRoot && activeTab?.scope === "project" && activeTab.workspaceRoot) initialRoot = activeTab.workspaceRoot;
+    const initial = workspaces.find((workspace) => comparableWorkspaceRoot(workspace.root) === comparableWorkspaceRoot(initialRoot));
+    const initialSession = sessionID && initial ? sessionID : undefined;
+    setCollaborationDialog({ sessionID: initialSession, workspaces, workspaceRoot: initial?.root ?? "", resolving: false, resolveError: undefined });
+    if (initial && !initialSession) void selectCollaborationWorkspace(initial.root);
+  }, [activeTab?.scope, activeTab?.workspaceRoot, closeTransientOverlays, selectCollaborationWorkspace, tabMetas]);
 
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
@@ -5012,6 +5058,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         <CollaborationWorkspace
           mode="dialog"
           sessionID={collaborationDialog.sessionID}
+          workspaces={collaborationDialog.workspaces}
+          workspaceRoot={collaborationDialog.workspaceRoot}
+          onWorkspaceChange={(root) => void selectCollaborationWorkspace(root)}
+          sessionResolving={collaborationDialog.resolving}
+          sessionError={collaborationDialog.resolveError}
+          onRetrySession={() => { if (collaborationDialog.workspaceRoot) void selectCollaborationWorkspace(collaborationDialog.workspaceRoot); }}
           onClose={() => setCollaborationDialog(null)}
           onConnected={finishCollaborationConnect}
         />

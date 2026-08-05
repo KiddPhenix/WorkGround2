@@ -10,141 +10,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
-### 多人多 Agent 协作
-- Status: done
-- Branch: `developping/multi-client-agent-collaboration+2026-08-03`
-- Location: `docs/MULTI_CLIENT_AGENT_COLLABORATION.zh-CN.md`, `internal/collab`, `desktop/collab_app.go`, `desktop/collab_transport.go`, `desktop/collab_persist.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab`
-- Summary: V1 以 Host IP、Port、Room、可空 Token 连接独立 Client 闭包，使用公共时间线、AgentRequest、SSE 补读、幂等 outbox 与本地 Personal Agent 路由完成双人联调和多人协作。
-- Keywords: 多人协作, Client 闭包, Host Room, Personal Agent, AgentRequest, SSE, outbox
-- Source: user-requested+verified-by-code-and-tests
-- Updated: 2026-08-03
-
-### Session List Work 图标首屏同步
-- Status: done
-- Branch: `developping/session-list-work-icon+2026-08-03`
-- Location: `internal/agent/save.go`, `desktop/tabs.go`, 对应 Go 回归测试
-- Summary: Session List 首次加载即从持久化 sidecar/recovery 祖先投影一致的 Work 身份；混合或冲突身份保持普通 topic，无需点击后才刷新小公文包图标。
-- Keywords: Session List, Work icon, ProjectTree, session_kind, recovery, cold start
-- Source: user-reported+screenshot
-- Updated: 2026-08-03
-
-### Work Recovery 身份继承
-- Status: done
-- Branch: `developping/work-recovery-identity+2026-08-03`
-- Location: `internal/agent/save.go`, `desktop/tabs.go`, 对应 Go 回归测试
-- Summary: recovery branch 继承 `session_kind/work_id/work_request_id`；历史 recovery 在 Desktop 恢复时沿同目录 ParentID 链自愈并写回，异常链安全停止且显式记录。
-- Keywords: Work Session, recovery branch, snapshot conflict, session_kind, work_id, ParentID
-- Source: user-reported+screenshot+verified-by-sidecar
-- Updated: 2026-08-03
-
-### Work Session 协作模式标签
-- Status: done
-- Branch: `developping/work-mode-label+2026-08-03`
-- Location: `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`, `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, 对应前端测试
-- Summary: Work Session 保持独立工作身份；底栏内部 normal 协作模式在 Work Surface 显示为“工作”，普通 Session 仍显示“对话”，同时保留规划、目标和审批控制。组件测试 176 项、Work 集成合约 40 项及前端生产构建通过；test tsconfig 仍有与本改动无关的既有类型错误。
-- Keywords: Work Session, collaboration mode, normal, 对话, 工作, RuntimeConfigBar
-- Source: user-reported+screenshot+verified-by-code-and-tests
-- Updated: 2026-08-03
-
-### 工作信息单项建议
-- Status: done
-- Branch: `developping/work-input-field-inference+2026-08-01`
-- Location: `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/components/presentation/WorkDefinitionOverview.tsx`, 对应样式与测试
-- Summary: 移除面板级批量推断入口，为定义字段和自定义字段统一增加无文字的小星光图标；单次只生成目标字段的候选草稿，保存前不改原值，并支持独立忙碌、失败与重试。后端定向测试、前端组件 33 项、TypeScript、CSS、Wails 正式构建及正式 EXE 五字段视觉验收通过。
-- Keywords: Work information, per-field inference, suggestion, retry
-- Source: user-reported+screenshot
-- Updated: 2026-08-01
-
-### Session 工作入口文案柔化
-- Status: done
-- Branch: `developping/work-entry-copy+2026-08-01`
-- Location: `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/App.tsx`
-- Summary: 将偏命令式的“发送为工作”调整为“作为工作开始”，选中后显示“将作为工作发送”，让入口更自然并保持状态明确；Work 合约 37 项、Iris 合约 17 项、TypeScript、Wails 正式构建及正式 EXE 双状态验收通过。
-- Keywords: Work entry, copywriting, send as Work, selected state
-- Source: user-reported
-- Updated: 2026-08-01
-
-### Session 输入区左右留白恢复
-- Status: done
-- Branch: `developping/composer-horizontal-spacing+2026-08-01`
-- Location: `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
-- Summary: 修复页脚 `display: contents` 插槽导致直接子元素选择器失效的问题，恢复输入框和运行配置栏左右各 48px 留白；Work 合约 37 项、CSS、TypeScript、前端生产构建、Wails 正式构建及正式 EXE 视觉验收通过。
-- Keywords: composer, footer dock, horizontal spacing, display contents
-- Source: user-reported+screenshot
-- Updated: 2026-08-01
-
-### 发送为工作选中态强化
-- Status: done
-- Branch: `developping/work-send-selected-state+2026-08-01`
-- Location: `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, `desktop/frontend/src/styles.css`
-- Summary: 将低辨识度的细描边选中态改为实心强调色，并增加勾选图标和“工作模式已选”文案；Work 合约 36 项、TypeScript、CSS、前端生产构建、Wails 正式构建及真实点击视觉验收通过。
-- Keywords: send as Work, selected state, visual feedback, accessibility
-- Source: user-reported+screenshot
-- Updated: 2026-08-01
-
-### Session 发送为工作入口稳定显示
-- Status: done
-- Branch: `developping/work-send-entry-stability+2026-08-01`
-- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
-- Summary: 入口可见性只由普通可写 Session 的真实用户首条消息、后端 blank 和 Work 过渡状态决定；内部 Item、历史恢复、WorkEnabled/WorkCapable 异步结果不再撤销入口。后端探测只传 Tab ID，缺失时用空 ID 活动路由；配置和能力在点击时显式校验。Work 合约 35 项、TypeScript、Wails 正式构建及 27 秒延时实机验收通过。
-- Keywords: send as Work, stable visibility, WorkEnabled, first message
-- Source: user-reported+verified-by-code-tests-and-running-window
-- Updated: 2026-08-01
-
-### Session 发送为工作入口运行时修复
-- Status: done
-- Branch: `developping/work-send-entry-runtime+2026-08-01`
-- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/SessionSurface.tsx`, `desktop/frontend/src/components/desktop-ui/RuntimeConfigBar.tsx`, `desktop/tabs.go`
-- Summary: 工作台会隐藏 Composer 自带元数据栏，因此入口改由实际可见的 RuntimeConfigBar 承载并复用同一 Work 发送状态；仅在空白普通 Session 的第一句话前显示。恢复链路可用 Session ID 或后端活动 Tab 路由，空白检测读取 Controller 当前路径，CreateWorkSession 保留最终原子校验。Work 合约 34 项、TypeScript、CSS、Go 定向测试、Wails 正式构建和运行窗口可访问性/选中态验收通过。
-- Keywords: send as Work, RuntimeConfigBar, first message, restored Session, currentSessionPath, authoritative backend
-- Source: user-reported+verified-by-code-tests-and-running-window
-- Updated: 2026-08-01
-
-### Session 发送为工作入口常驻
-- Status: done
-- Branch: `developping/work-send-entry-visibility+2026-08-01`
-- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/__tests__/app-work-integration.test.tsx`
-- Summary: 空白普通 Session 始终显示“发送为工作”；入口由后端 blank 状态决定，Work 能力在用户选择时按需确认，失败显式提示且不会提前转换 Session。Work 集成契约 31 项、TypeScript、CSS、前端生产构建和 Wails 正式构建通过。
-- Keywords: send as Work, blank Session, WorkCapable, first message, visibility
-- Source: user-reported+verified-by-code-and-tests
-- Updated: 2026-08-01
-
-### Work 后新建 Session 回归修复
-- Status: done
-- Branch: `developping/session-new-session-regression+2026-08-01`
-- Location: `desktop/tabs.go`, `desktop/app_session_dedup_test.go`
-- Summary: Work Session 不再参与空白普通 Session 的幂等复用；从 Work 点击新建会话会创建独立的普通 Session，Work 元数据也不再标记为 blank。相关会话去重测试、Go vet、Diff 检查和 Wails 正式构建通过。
-- Keywords: EnsureBlankTab, Work Session, new session, blank reuse
-- Source: user-reported+verified-by-code-and-tests
-- Updated: 2026-08-01
-
-### Work 独立填写信息面板
-- Status: done
-- Branch: `developping/work-info-entry-panel+2026-07-30`
-- Location: `desktop/frontend/src/components/work/WorkCardFront.tsx`, `desktop/frontend/src/work/components/presentation/WorkDefinitionOverview.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/wailsAdapter.ts`, `internal/work`, `desktop/works.go`
-- Summary: 保留两列“工作信息”常驻列表和上层填写面板；已填写项可重新打开修改。用户可新增名称、可选解释、文本或文件内容的自定义工作信息；新增项以带内联规格的 WorkInput 原子持久化，并作为 Work 级上下文供后续任务读取。数字范围继续只给软 warning。
-- Keywords: WorkInformationPanel, WorkInputHost, stacked cards, advanced context, file drop, number warning
-- Source: user-requested+verified-by-tests-and-production-build
-- Updated: 2026-07-31
-
-### Work 任务说明底板中性化
-- Status: done
-- Branch: `main`（共享脏工作树，未提交）
-- Location: `desktop/frontend/src/styles.css`, `desktop/frontend/src/__tests__/work-card.test.tsx`
-- Summary: 任务说明卡片、输入框运行态及规划覆盖层改用中性深灰底色，强调色仅用于边框、状态点与轻量光晕。
-- Keywords: Work, task prompt, planning overlay, neutral surface, accent
-- Source: user-requested+verified-by-tests
-- Updated: 2026-07-29
-
-### Work 失败任务成果状态同步
-- Status: done
-- Branch: `developping/work-failed-artifact-status+2026-07-30`
-- Location: `desktop/frontend/src/work/components/v2/ResultShelf.tsx`, `desktop/frontend/src/components/work/WorkCardFront.tsx`, `desktop/frontend/src/components/work/WorkCard.tsx`, `desktop/frontend/src/work/components/v2/ResultShelf.test.tsx`
-- Summary: 成果架使用活动 Definition 的生产关系与当前 Run Task 状态修正迟到或缺失的 ArtifactSlot 结算；生产任务失败时，仍处于生成态的成果即时显示失败并保留可重试入口，任务重新运行后恢复生成态。
-- Keywords: ResultShelf, ArtifactSlot, failed_retryable, TaskV2View, producesSlotIds
-- Source: user-requested+verified-by-tests
-- Updated: 2026-07-30
-
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, `D:\Work\wg2addons`, `D:\Work\WG2AddOnsExample`
 - Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。
@@ -187,19 +52,19 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-21
 
-### Desktop 异步派发握手
-- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/ai_collaboration_skill/scripts/dispatch.ps1`
-- Summary: 外部 Session 创建后立即返回可查询的 starting SessionID；启动期任务持久排队，Controller Ready 后幂等重放；Worker 派发与 PollOnly 拆成短命令快照。
-- Keywords: desktop new, starting, pendingRemoteInput, SessionID, PollOnly, dispatch.ps1
-- Source: verified-by-search
-- Updated: 2026-08-03
-
 ### Desktop 会话来源标识
 - Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/session_source_test.go`
 - Summary: desktop new 新建会话写入 sessionSource=cli；复用既有会话不重分类，Desktop 接管会清除 CLI 来源；侧栏按 sessionSource/channel/titleSource 渲染来源标签。
 - Keywords: sessionSource, CLI badge, setActiveSessionSource, takeoverFromCLI, ProjectTree
 - Source: verified-by-search
 - Updated: 2026-07-14
+
+### Desktop 异步派发握手
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/ai_collaboration_skill/scripts/dispatch.ps1`
+- Summary: 外部 Session 创建后立即返回可查询的 starting SessionID；启动期任务持久排队，Controller Ready 后幂等重放；Worker 派发与 PollOnly 拆成短命令快照。
+- Keywords: desktop new, starting, pendingRemoteInput, SessionID, PollOnly, dispatch.ps1
+- Source: verified-by-search
+- Updated: 2026-08-03
 
 ### Draw AddOn 画图工具
 - Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
@@ -257,6 +122,62 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### Room 我的 Agent 任务队列
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/collab_persist.go`, `internal/collab/store.go`, `desktop/frontend/src/collab`
+- Summary: Desktop 协作运行时持久化最多 20 个 Personal Agent 等待任务；统一就绪唤醒在 Controller 空闲、重连和重启恢复后幂等续跑，Room 状态从全部活跃 Run 投影，主人可关闭排队项。
+- Keywords: Room, Personal Agent, 任务队列, queuedTasks, queueWaiting, activeAgentStatus, CancelCollaborationQueuedTask
+- Source: verified-by-search
+- Updated: 2026-08-04
+
+### Room Host Session 重启可见性
+- Location: `internal/agent/save.go`, `desktop/collab_app.go`, `desktop/tabs.go`, `desktop/collab_session_test.go`
+- Summary: 已绑定 Room 的 collaboration Session 即使本地对话轮次仍为 0，也作为持久业务 Session 进入 Session List；普通空白 Session 继续隐藏，Host Room 在进程重启且未恢复原 tab 时仍可从原 Workspace/topic 找回。
+- Keywords: Room, Host, restart, Session List, collaboration Session, empty transcript
+- Source: verified-by-search
+- Updated: 2026-08-04
+
+### Room Agent 运行动态浮窗
+- Location: `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/agentActivity.ts`, `desktop/frontend/src/collab/components/AgentActivityPopover.tsx`, `desktop/frontend/src/collab/collab.css`
+- Summary: 成员列表的运行中状态从 Room timeline 按成员 ID 派生最近 Agent 输入、运行摘要和输出，并以可悬停/聚焦的 Portal 走马灯浮层展示。
+- Keywords: Room, Agent, running, hover, activity popover, marquee, timeline
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
+### Room 我的 Agent 当前运行与停止
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/collab/transport.ts`, `desktop/frontend/src/collab/collab.css`
+- Summary: “我的 Agent”面板常驻显示当前本地 Run 的运行、等待确认和停止中阶段，以及指令、可公开进度、开始时间和同 Session 队列数；停止按 Session/Run ID 精确取消所属 Controller，重复调用幂等，失败回滚可重试，完成后发布 cancelled 并继续队列。
+- Keywords: Room, Personal Agent, currentRun, stopping, StopCollaborationAgentRun, idempotent cancel, queue continuation
+- Source: user-stated+verified-by-tests
+- Updated: 2026-08-05
+
+### Room Agent 等待确认决策
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/collab/useCollabController.ts`
+- Summary: waiting_approval 卡片按所属 Session/Run ID 直接回答当前 Controller pending interaction；同意或拒绝均续接原执行且不创建新的 Agent 排队任务。
+- Keywords: Room, Agent, waiting_approval, RespondCollaborationAgentRun, PendingInteraction, 同意, 拒绝
+- Source: verified-by-search
+- Updated: 2026-08-04
+
+### Room @Agent 自动触发去重
+- Location: `desktop/frontend/src/collab/state.ts`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
+- Summary: 带问号的显式 `@成员/@Agent` 消息只由 mention 链路启动一次本机 Agent；自动回答问题扫描识别结构化目标 ID 并跳过，避免同一消息生成运行中与排队中两个任务。
+- Keywords: Room, Agent, mention, autoRespondQuestions, mentionMemberIds, mentionAgentIds, dedupe
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
+### Room 主人命令授权边界
+- Location: `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`, `desktop/collab_agent.go`
+- Summary: 主人命令本身直接启动；后续工具权限遵循同一 Session 的 ask/auto/yolo 策略。自动响应任务可在单次运行临时启用 scoped auto，完成后恢复原策略且不覆盖主人主动修改。
+- Keywords: Room, Agent, owner command, scoped auto approval, startAgent, tool approval mode
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
+### Room Agent 审批模式与确认详情
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`
+- Summary: “我的 Agent”可切换普通 Session 同源的 ask/auto/yolo 工具审批模式；待处理 Approval/Ask 只投影到主人本机，工具审批显示工具、对象和原因，Agent 提问显示真实问题与选项并可直接作答。
+- Keywords: Room, Agent, approval mode, PendingInteraction, ApprovalModal, AskCard, local-only prompt
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
 ### Session 持久化、后台任务与回滚
 - Location: `internal/store/session.go`, `internal/agent/save.go`, `internal/agent/session.go`, `internal/agent/session_lease.go`, `internal/agent/session_removal.go`, `internal/agent/recovery_gc.go`, `internal/checkpoint/checkpoint.go`, `internal/jobs/jobs.go`, `internal/control/controller.go`, `internal/control/checkpoint.go`, `internal/control/session_lease_keeper.go`, `internal/boot/boot.go`, `internal/cli/session_lease.go`, `internal/acp/service.go`, `internal/serve/serve.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/settings_app.go`, `desktop/sessions.go`, `desktop/recovery_gc.go`
 - Summary: store 集中 session sidecar 路径，checkpoint 记录编辑前快照支持 rewind/fork，jobs 管理跨 turn 的后台 bash/task 任务与 artifact；`codex/session-recovery-port-2026-07-09` 移植 Reasonix 的 session lease、CAS 保存冲突恢复、recovery branch、removal guard、desktop/CLI/serve/ACP 恢复回调与 lease 跟随，并把 intentional rewrite 路径切到 `SnapshotRewrite()`；CLI rename 使用 `CustomTitle`。AddOn 框架保持在 WorkGround2 现有入口上适配。
@@ -312,6 +233,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: Work V1, Work V2, collaboration_workbench_v2, BeginWorkPlanning, CreateWork, ApplyDefinition, RunWork, RetryWorkNode
 - Source: verified-by-search
 - Updated: 2026-07-27
+
+### Work 信息完成后倒计时启动
+- Location: `internal/work/input_service.go`, `internal/work/v2_coordinator.go`, `desktop/works.go`, `desktop/frontend/src/work/components/presentation/WorkAutoStartCountdown.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.css`, `design-qa.md`
+- Summary: 状态 done；工作信息全部填写后在原标题行显示 20 秒自动开始倒计时，支持暂停、继续、打开信息自动暂停和立即开始。最终值先持久化为 readyForStart 草稿，全部释放后统一恢复调度，重启与重复请求均可安全恢复。
+- Keywords: Work information, countdown, auto start, pause, readyForStart, deferStart, scheduling recovery
+- Source: verified-by-search
+- Updated: 2026-08-02
 
 ### Work 搜索硬能力自动预取
 - Location: `internal/control/taskexec.go`, `internal/control/taskexec_test.go`
@@ -376,14 +304,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### 桌面运行状态与待办提示
-- Location: `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/lib/activity.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/components/TodoPanel.tsx`, `desktop/frontend/src/lib/todoVisibility.ts`
-- Summary: 状态 done；桌面端运行提示由 useController 的 per-tab runtime state 驱动，Composer 渲染右下运行状态，activity 负责阶段趣味文案，TodoPanel 从最新 todo_write 快照渲染待办进度。
-- Note: 运行状态胶囊移除 `·` 前的通用阶段前缀，只保留具体任务文案。
-- Keywords: running, runstatus, todo_write, TodoPanel, tab switch, openProjectTab, detached runtime
-- Source: verified-by-search
-- Updated: 2026-07-15
-
 ### 桌面传呼机小组件模式
 - Location: `docs/desktop/widget-mode-design.md`, `desktop/widget_mode.go`, `desktop/widget_window_windows.go`, `desktop/window_state.go`, `desktop/app.go`, `desktop/widget_conversation.go`, `desktop/widget_info.go`, `desktop/widget_mode_test.go`, `desktop/widget_window_windows_test.go`, `desktop/widget_info_test.go`, `desktop/widget_conversation_test.go`, `desktop/frontend/src/assets/widget-mode`, `desktop/frontend/src/assets/widget-mode/skins`, `desktop/frontend/scripts/validate-widget-skins.py`, `desktop/frontend/src/components/widget`, `desktop/frontend/src/__tests__/widget-conversation-retry.test.ts`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales`, `desktop/settings_app.go`, `internal/config/config.go`, `internal/config/edit.go`, `internal/config/render.go`, `internal/config/edit_test.go`
 - Summary: 状态 done；桌面主窗口可缩为单消息小组件，保留稳定任务、路由、重试、几何恢复和三语交互。视觉层新增 BP机、拍立得、电子宠物、录音机四套完整设备外壳并保留经典皮肤；所有皮肤共用现有窗口画布与交互，通过注册表和九宫格资源切换。设置即时生效并持久化，未知值回退 classic；四套资源已通过尺寸、透明角和九宫格重建校验，前端生产构建、专项测试及 Go vet 通过。
@@ -412,24 +332,9 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Work 系统 V1 — Desktop 产品闭环
-- Status: done
-- Location: `internal/config/config.go`, `internal/boot/boot.go`, `internal/control/work.go`, `internal/work/service.go`, `internal/work/copy_rerun.go`, `desktop/works.go`, `desktop/frontend/src/components/work/WorkAvailabilitySurface.tsx`, `desktop/frontend/src/components/work/WorkPage.tsx`, `desktop/frontend/src/components/work/WorkCard.tsx`, `desktop/frontend/src/components/work/WorkCardBack.tsx`, `desktop/frontend/src/components/work/WorkRunEntry.tsx`, `desktop/frontend/src/work/wailsAdapter.ts`, `desktop/frontend/src/work/controller.ts`, `desktop/frontend/src/work/store.ts`, `desktop/frontend/src/lib/bridge.ts`
-- Summary: `work.enabled` 缺省开启；生产 WorkPage 从 Registry 读取 Blueprint 并填写 inputs。空 Prompt 在 UI 与 Service 提交事件前双重阻断；Draft 与可编辑 Block 使用 request ID 和 Work revision 持久化。列表覆盖进行中、历史、回收站，支持归档、恢复、删除、复制及原定义重执行；最新定义需要迁移且迁移器缺失时 RerunPlan 显式阻断。事件重放允许历史 writer，当前并发写仍由 OS lease 串行。
-- Keywords: WorkPage, Blueprint, UpdateDraft, UpsertBlock, Archive, Restore, Trash, CopyWork, PrepareRerun, ExecuteRerun, request ID, writer lease
-- Source: implementation+focused tests+frontend Work suite
-- Updated: 2026-07-23
-
 ### 项目说明与工程约定
 - Location: `README.md`, `README.zh-CN.md`, `docs/SPEC.md`, `WorkGround2.md`
 - Summary: README 说明产品定位和用法，SPEC 是工程合同，WorkGround2.md 是本项目会话常驻工程记忆。
 - Keywords: WorkGround2, SPEC, WorkGround2.md, project memory
 - Source: verified-by-search
 - Updated: 2026-07-03
-
-### Work 信息完成后倒计时启动
-- Location: `internal/work/input_service.go`, `internal/work/v2_coordinator.go`, `desktop/works.go`, `desktop/frontend/src/work/components/presentation/WorkAutoStartCountdown.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.tsx`, `desktop/frontend/src/work/components/presentation/WorkInformationPanel.css`, `design-qa.md`
-- Summary: 状态 done；工作信息全部填写后在原标题行显示 20 秒自动开始倒计时，支持暂停、继续、打开信息自动暂停和立即开始。最终值先持久化为 readyForStart 草稿，全部释放后统一恢复调度，重启与重复请求均可安全恢复。
-- Keywords: Work information, countdown, auto start, pause, readyForStart, deferStart, scheduling recovery
-- Source: verified-by-search
-- Updated: 2026-08-02

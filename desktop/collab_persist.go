@@ -4,7 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -41,22 +45,17 @@ func (c *desktopCollaboration) recoverInterruptedRunsLocked(conn *collaborationC
 	}
 }
 
-func (c *desktopCollaboration) resumeSession(host string, port int, room, memberID, _ string) string {
+func (c *desktopCollaboration) resumeSession(host string, port int, room, memberID, sessionID string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if strings.EqualFold(strings.TrimSpace(c.state.Host), strings.TrimSpace(host)) &&
 		c.state.Port == port && c.state.Room == strings.TrimSpace(room) &&
-		c.state.MemberID == memberID && c.conn != nil {
+		c.state.MemberID == memberID && c.state.SessionID == strings.TrimSpace(sessionID) && c.conn != nil {
 		return c.conn.connectionSession
-	}
-	if c.getSecret != nil {
-		if secret := c.getSecret(collaborationSecretRef(host, port, room, memberID)); secret != "" {
-			return secret
-		}
 	}
 	p := c.readPersisted()
 	if strings.EqualFold(strings.TrimSpace(p.Host), strings.TrimSpace(host)) && p.Port == port &&
-		p.Room == strings.TrimSpace(room) && p.MemberID == memberID {
+		p.Room == strings.TrimSpace(room) && p.MemberID == memberID && p.SessionID == strings.TrimSpace(sessionID) {
 		if p.ConnectionSecretRef != "" && c.getSecret != nil {
 			return c.getSecret(p.ConnectionSecretRef)
 		}
@@ -64,14 +63,90 @@ func (c *desktopCollaboration) resumeSession(host string, port int, room, member
 	return ""
 }
 
+// persistReadMaxRetries is the maximum number of additional read attempts
+// when a persist file appears truncated (empty or unexpected EOF).
+var persistReadMaxRetries = 3
+
+// persistReadRetryInterval is the wait between retry reads.
+var persistReadRetryInterval = 5 * time.Millisecond
+
+// readPersistFile reads a collaboration persist file and unmarshals it into v.
+// It retries a bounded number of times when the file is empty or ends
+// unexpectedly — symptoms of a concurrent writer that briefly truncated the
+// file before the writer-side atomic fix. Transient read failures are retried
+// as well because Windows may briefly deny a read during atomic replacement.
+// Stable parse errors and missing files are returned immediately without retry.
+func readPersistFile(path string, v interface{}) error {
+	for attempt := 0; ; attempt++ {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) && attempt < persistReadMaxRetries {
+				time.Sleep(persistReadRetryInterval)
+				continue
+			}
+			return err
+		}
+		if len(data) == 0 {
+			if attempt < persistReadMaxRetries {
+				time.Sleep(persistReadRetryInterval)
+				continue
+			}
+			return fmt.Errorf("persist file %s is empty after %d reads", path, persistReadMaxRetries+1)
+		}
+		// Validate before decoding into v. A truncated decode may partially
+		// mutate the destination, and a later successful retry would otherwise
+		// inherit fields that are absent from the complete document.
+		if !json.Valid(data) {
+			var raw json.RawMessage
+			err := json.Unmarshal(data, &raw)
+			if isTransientJSONError(err) && attempt < persistReadMaxRetries {
+				time.Sleep(persistReadRetryInterval)
+				continue
+			}
+			return err
+		}
+		if err := json.Unmarshal(data, v); err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+// isTransientJSONError reports whether err is a truncated-JSON error — empty
+// input or unexpected EOF — that may resolve on a re-read once the writer
+// completes. Stable syntax or type errors are not transient.
+func isTransientJSONError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return strings.Contains(syntaxErr.Error(), "unexpected end of JSON input")
+	}
+	return false
+}
+
 func (c *desktopCollaboration) loadPersisted() {
 	if strings.TrimSpace(c.persistPath) == "" {
 		return
 	}
-	data, err := os.ReadFile(c.persistPath)
+	var p collaborationPersistedState
+	err := readPersistFile(c.persistPath, &p)
+	adoptedV2 := false
+	if os.IsNotExist(err) {
+		adoptedV2, err = c.adoptLegacyV2Cache()
+		if err != nil {
+			c.state.LastError = "load collaboration state: " + err.Error()
+			c.state.Retryable = true
+			return
+		}
+		if adoptedV2 {
+			err = readPersistFile(c.persistPath, &p)
+		}
+	}
 	migrated := false
 	if os.IsNotExist(err) && strings.TrimSpace(c.legacyPersistPath) != "" {
-		data, err = os.ReadFile(c.legacyPersistPath)
+		err = readPersistFile(c.legacyPersistPath, &p)
 		migrated = err == nil
 	}
 	if err != nil {
@@ -81,20 +156,29 @@ func (c *desktopCollaboration) loadPersisted() {
 		}
 		return
 	}
-	var p collaborationPersistedState
-	if err := json.Unmarshal(data, &p); err != nil {
-		c.state.LastError = "load collaboration state: " + err.Error()
-		c.state.Retryable = true
-		return
-	}
 	p = c.repairPersisted(p)
-	if c.ownerSessionID != "" && strings.TrimSpace(p.SessionID) != c.ownerSessionID {
-		if migrated {
+	identityChanged := false
+	if c.ownerSessionPath != "" {
+		persistedPath := sessionRuntimeKey(p.SessionPath)
+		if persistedPath != "" && persistedPath != c.ownerSessionPath {
+			c.state.LastError = "load collaboration state: cached Room belongs to another session path"
+			c.state.Retryable = true
 			return
 		}
-		c.state.LastError = "load collaboration state: persisted sessionId does not match runtime"
-		c.state.Retryable = false
-		return
+		identityChanged = persistedPath != c.ownerSessionPath
+		p.SessionPath = c.ownerSessionPath
+	}
+	if c.ownerSessionID != "" && strings.TrimSpace(p.SessionID) != c.ownerSessionID {
+		if migrated {
+			// Legacy file belongs to a different session — skip
+			// migration to prevent cross-session data contamination.
+			return
+		}
+		// v2 file is per-session (keyed by hash of sessionID). A
+		// mismatched internal SessionID is a format-upgrade artefact;
+		// repair it instead of rejecting the cached Room/Snapshot.
+		p.SessionID = c.ownerSessionID
+		identityChanged = true
 	}
 	if p.Starts != nil {
 		c.starts = p.Starts
@@ -109,6 +193,27 @@ func (c *desktopCollaboration) loadPersisted() {
 		}
 	}
 	c.recoveredRuns = append([]collaborationPersistedRun(nil), p.Runs...)
+	queue := p.Queue
+	queueTruncated := false
+	if len(queue) > maxCollaborationAgentQueue {
+		queue = queue[:maxCollaborationAgentQueue]
+		queueTruncated = true
+	}
+	for _, value := range queue {
+		queuedAt := value.QueuedAt
+		if queuedAt == "" {
+			queuedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		c.queuedRuns = append(c.queuedRuns, &collaborationAgentRun{
+			Room: value.Room, MemberID: value.MemberID, AgentID: value.AgentID,
+			RunID: value.RunID, CommandID: value.CommandID, SessionID: value.SessionID,
+			AgentRequestID: value.AgentRequestID, Instruction: value.Instruction,
+			ReferenceIDs: append([]string(nil), value.ReferenceIDs...), ContextRefs: append([]string(nil), value.ContextRefs...), QueuedAt: queuedAt,
+			PublishIndex: value.PublishIndex,
+			Automatic:    value.Automatic,
+			Updates:      make(chan collaborationRunUpdate, 32),
+		})
+	}
 	for _, share := range p.Shares {
 		c.shares[share.FileID] = share
 	}
@@ -135,29 +240,95 @@ func (c *desktopCollaboration) loadPersisted() {
 	c.state = CollaborationState{
 		Status: "disconnected", Mode: p.Mode, Host: p.Host, Port: p.Port, Room: p.Room,
 		MemberID: p.MemberID, AgentID: p.AgentID, SessionID: p.SessionID,
-		Snapshot:    snapshot,
-		OutboxCount: len(c.outbox),
-		AgentConfig: normalizeCollaborationAgentConfig(p.AgentConfig, p.AgentName),
+		Snapshot:      snapshot,
+		OutboxCount:   len(c.outbox),
+		AgentConfig:   normalizeCollaborationAgentConfig(p.AgentConfig, p.AgentName),
+		Routes:        append([]CollaborationRouteState(nil), p.Routes...),
+		Advertisement: p.Advertisement,
+	}
+	if queueTruncated {
+		c.state.LastError = "collaboration Agent queue exceeded 20 tasks and was truncated during recovery"
+		c.state.Retryable = false
 	}
 	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
 		c.state.Status = "failed"
 		c.state.Retryable = true
 	}
-	if migrated {
+	if migrated || adoptedV2 || identityChanged {
 		c.persistLocked()
 	}
+}
+
+// adoptLegacyV2Cache moves the one old SessionID-keyed cache that can be
+// unambiguously associated with the current collaboration Session to its
+// stable SessionPath-keyed location. A title collision is surfaced instead of
+// guessing, so opening one old Room can never attach another Room's state.
+func (c *desktopCollaboration) adoptLegacyV2Cache() (bool, error) {
+	if c.ownerSessionPath == "" || strings.TrimSpace(c.ownerSessionTitle) == "" {
+		return false, nil
+	}
+	dir := filepath.Dir(c.persistPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	targetName := filepath.Base(c.persistPath)
+	type candidate struct {
+		path string
+	}
+	candidates := make([]candidate, 0, 1)
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == targetName || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			continue
+		}
+		var value collaborationPersistedState
+		if json.Unmarshal(data, &value) != nil || sessionRuntimeKey(value.SessionPath) != "" || !hasPersistedRoom(value) {
+			continue
+		}
+		if !strings.EqualFold(persistedRoomTitle(value), strings.TrimSpace(c.ownerSessionTitle)) {
+			continue
+		}
+		candidates = append(candidates, candidate{path: path})
+	}
+	if len(candidates) == 0 {
+		return false, nil
+	}
+	if len(candidates) > 1 {
+		return false, fmt.Errorf("multiple old Room caches match session %q; reconnect once to bind this session safely", c.ownerSessionTitle)
+	}
+	if err := os.Rename(candidates[0].path, c.persistPath); err != nil {
+		return false, fmt.Errorf("migrate old Room cache: %w", err)
+	}
+	return true, nil
+}
+
+func hasPersistedRoom(value collaborationPersistedState) bool {
+	return strings.TrimSpace(value.Room) != "" || strings.TrimSpace(value.Snapshot.Room.ID) != ""
+}
+
+func persistedRoomTitle(value collaborationPersistedState) string {
+	for _, title := range []string{value.RoomName, value.Snapshot.Room.Name} {
+		if title = strings.TrimSpace(title); title != "" {
+			return title
+		}
+	}
+	return ""
 }
 
 func (c *desktopCollaboration) readPersisted() collaborationPersistedState {
 	if strings.TrimSpace(c.persistPath) == "" {
 		return collaborationPersistedState{}
 	}
-	data, err := os.ReadFile(c.persistPath)
-	if err != nil {
-		return collaborationPersistedState{}
-	}
 	var value collaborationPersistedState
-	if json.Unmarshal(data, &value) != nil {
+	if readPersistFile(c.persistPath, &value) != nil {
 		return collaborationPersistedState{}
 	}
 	return value
@@ -178,23 +349,35 @@ func (c *desktopCollaboration) persistLocked() {
 	value.MemberID = c.state.MemberID
 	value.AgentID = c.state.AgentID
 	value.SessionID = c.state.SessionID
+	value.SessionPath = c.ownerSessionPath
 	value.AfterSequence = c.state.Snapshot.LatestSequence
 	value.Snapshot = cloneCollaborationState(CollaborationState{Snapshot: c.state.Snapshot}).Snapshot
 	value.Outbox = persistedCollaborationOutbox(c.outbox)
 	value.OutboxFailures = cloneStringMap(c.outboxFailures)
 	value.Starts = cloneStartMap(c.starts)
 	value.Runs = c.persistedRunsLocked()
+	value.Queue = c.persistedQueueLocked()
 	value.Shares = make([]collaborationSharedFile, 0, len(c.shares))
 	for _, share := range c.shares {
 		value.Shares = append(value.Shares, share)
 	}
 	value.Transfers = c.persistedFileTransfersLocked()
 	value.AgentConfig = normalizeCollaborationAgentConfig(c.state.AgentConfig, value.AgentName)
+	value.Routes = publicCollaborationRoutes(c.state.Routes)
+	value.Advertisement = c.state.Advertisement
 	value = c.repairPersisted(value)
 	if c.conn != nil && c.conn.connectionSession != "" {
 		value.RoomName, value.Description = c.conn.roomName, c.conn.description
-		value.MemberName, value.MemberRole = c.conn.memberName, c.conn.memberRole
-		value.AgentName, value.AgentRole = c.conn.agentName, c.conn.agentRole
+		value.MemberName, value.MemberAvatar, value.MemberRole = c.conn.memberName, c.conn.memberAvatar, c.conn.memberRole
+		value.AgentName, value.AgentAvatar, value.AgentRole = c.conn.agentName, c.conn.agentAvatar, c.conn.agentRole
+		value.LANEnabled = c.conn.lanEnabled
+		value.ReachabilityVersion = 1
+		value.RelayIDs = append([]string(nil), c.conn.relayIDs...)
+		value.PreferLAN = c.conn.preferLAN
+		value.AuthorityKeySecretRef = c.conn.authorityKeyRef
+		value.HostCapabilityRefs = cloneStringMap(c.conn.hostCapabilityRefs)
+		value.GuestCapabilityRefs = cloneStringMap(c.conn.guestCapabilityRefs)
+		value.HostKey = c.conn.hostKey
 		value.ConnectionSecretRef = collaborationSecretRef(c.state.Host, c.state.Port, c.state.Room, c.state.MemberID)
 		if c.getSecret(value.ConnectionSecretRef) != c.conn.connectionSession {
 			if err := c.setSecret(value.ConnectionSecretRef, c.conn.connectionSession); err != nil {
@@ -233,6 +416,10 @@ func (c *desktopCollaboration) persistLocked() {
 }
 
 func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState) collaborationPersistedState {
+	if value.ReachabilityVersion == 0 {
+		value.LANEnabled = value.Mode == "host" && value.Port > 0
+		value.PreferLAN = true
+	}
 	if strings.TrimSpace(value.Room) == "" {
 		value.Room = strings.TrimSpace(value.Snapshot.Room.ID)
 	}
@@ -252,6 +439,9 @@ func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState
 		if strings.TrimSpace(value.MemberName) == "" {
 			value.MemberName = member.Name
 		}
+		if strings.TrimSpace(value.MemberAvatar) == "" {
+			value.MemberAvatar = member.Avatar
+		}
 		if strings.TrimSpace(value.MemberRole) == "" {
 			value.MemberRole = member.Role
 		}
@@ -260,6 +450,9 @@ func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState
 		}
 		if strings.TrimSpace(value.AgentName) == "" {
 			value.AgentName = member.Agent.Name
+		}
+		if strings.TrimSpace(value.AgentAvatar) == "" {
+			value.AgentAvatar = member.Agent.Avatar
 		}
 		if strings.TrimSpace(value.AgentRole) == "" {
 			value.AgentRole = member.Agent.Role
@@ -306,7 +499,25 @@ func (c *desktopCollaboration) persistedRunsLocked() []collaborationPersistedRun
 			Room: run.Room, MemberID: run.MemberID, AgentID: run.AgentID,
 			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
 			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
-			ReferenceIDs: append([]string(nil), run.ReferenceIDs...),
+			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
+			Automatic: run.Automatic,
+		})
+	}
+	return result
+}
+
+func (c *desktopCollaboration) persistedQueueLocked() []collaborationPersistedRun {
+	result := make([]collaborationPersistedRun, 0, len(c.queuedRuns))
+	for _, run := range c.queuedRuns {
+		if run == nil {
+			continue
+		}
+		result = append(result, collaborationPersistedRun{
+			Room: run.Room, MemberID: run.MemberID, AgentID: run.AgentID,
+			RunID: run.RunID, CommandID: run.CommandID, SessionID: run.SessionID,
+			AgentRequestID: run.AgentRequestID, Instruction: run.Instruction,
+			ReferenceIDs: append([]string(nil), run.ReferenceIDs...), ContextRefs: append([]string(nil), run.ContextRefs...), QueuedAt: run.QueuedAt, PublishIndex: run.PublishIndex,
+			Automatic: run.Automatic,
 		})
 	}
 	return result

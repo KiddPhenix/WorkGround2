@@ -1274,3 +1274,68 @@ func TestSaveHooksSettingsForRootUsesDisplayedProjectRoot(t *testing.T) {
 		t.Fatal("active project root was written instead of displayed project root")
 	}
 }
+
+func TestSetCollaborationPersistsRelaySettingsAndInsecureConsent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+
+	secure := CollaborationSettingsView{PreferLAN: true, ConnectTimeoutSeconds: 10, RouteStableSeconds: 60, Relays: []RelayView{{
+		ID: "official-sg", Name: "Singapore", URL: "wss://relay.example.test/relay/v1/connect",
+		Enabled: true, Priority: 100, Discovery: true, AccessTokenEnv: "WG2_RELAY_TOKEN",
+	}}}
+	if err := app.SetCollaboration(secure); err != nil {
+		t.Fatalf("SetCollaboration secure: %v", err)
+	}
+	got := app.Settings().Collaboration
+	if !got.PreferLAN || got.ConnectTimeoutSeconds != 10 || got.RouteStableSeconds != 60 || len(got.Relays) != 1 || got.Relays[0].ID != "official-sg" || !got.Relays[0].Discovery || got.Relays[0].AllowInsecure {
+		t.Fatalf("Settings collaboration = %+v", got)
+	}
+
+	insecure := secure
+	insecure.Relays = append([]RelayView(nil), secure.Relays...)
+	insecure.Relays[0].URL = "ws://relay.example.test:8443"
+	if err := app.SetCollaboration(insecure); err == nil || !strings.Contains(err.Error(), "allow_insecure") {
+		t.Fatalf("SetCollaboration insecure error = %v, want explicit-risk error", err)
+	}
+	if persisted := config.LoadForEdit(config.UserConfigPath()).Collaboration.Relays; len(persisted) != 1 || persisted[0].URL != secure.Relays[0].URL {
+		t.Fatalf("rejected relay update changed persisted config: %+v", persisted)
+	}
+
+	insecure.Relays[0].AllowInsecure = true
+	if err := app.SetCollaboration(insecure); err != nil {
+		t.Fatalf("SetCollaboration insecure with consent: %v", err)
+	}
+	got = app.Settings().Collaboration
+	if len(got.Relays) != 1 || !got.Relays[0].AllowInsecure || got.Relays[0].URL != "ws://relay.example.test:8443" {
+		t.Fatalf("Settings insecure collaboration = %+v", got)
+	}
+}
+
+func TestSettingsDoesNotSeedRelaysFromProjectConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "WorkGround2.toml"), []byte(`
+[[collaboration.relays]]
+id = "project"
+name = "Project relay"
+url = "ws://192.168.1.2:8443"
+enabled = true
+priority = 100
+allow_insecure = true
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+
+	got := NewApp().Settings().Collaboration
+	if !got.PreferLAN || len(got.Relays) != 0 {
+		t.Fatalf("Settings collaboration = %+v, want user defaults", got)
+	}
+}

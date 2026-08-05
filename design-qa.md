@@ -1,3 +1,43 @@
+# Design QA — Room Agent 运行动态浮窗（2026-08-04）
+
+- Source visual truth: `D:\Temp\codex-clipboard-a85375df-70ad-4c2d-94bc-c90be88a8509.png`
+- Implementation screenshot: `D:\Temp\workground2-room-agent-activity-hover.png`
+- Source pixels: `410 × 142`；实现截图 pixels: `1280 × 720`
+- Implementation CSS viewport: `1280 × 720`；devicePixelRatio: `1.375`；浏览器截图后端按 CSS 像素输出
+- State: 右栏一名在线成员的 Agent 为 `running`；“运行中”获得 hover/focus 后显示最近输入输出浮层
+- Normalization: 参考图只提供成员行静态状态且没有目标浮层，因此同一比较输入用成员行校验原视觉基线，用实现截图的聚焦区域验证用户描述的新增悬停态；未对不同画布做伪精确缩放比较
+
+## Findings
+
+没有可执行的 P0/P1/P2 问题。
+
+- 字体与层级：成员名、Agent 名、运行状态沿用原字号与字重；浮层标题、输入/输出标签、时间和正文形成四级层次，长正文四行截断。
+- 间距与布局：成员行结构未改变；浮层宽 `326px`、高 `187px`，实际边界 `left=904/right=1230/top=248/bottom=435`，完整位于 `1280 × 720` 视口内，没有被右栏裁剪。
+- 色彩与 token：继续使用 Room 深色面板、蓝色运行态和紫色输出语义；边框与阴影强度低于主内容，不抢占时间线层级。
+- 图片与图标：没有新增位图或近似绘制资源；头像沿用现有成员头像，浮层使用项目现有 Lucide `Bot` 图标。
+- 文案：浮层明确标记“最近 Agent 动态”“输入/输出”、时间及 `当前/总数`，中英繁中均已补齐。
+
+## Full-view comparison evidence
+
+参考截图与实现悬停态已在同一比较输入中打开。成员行的头像、姓名、Agent 名、蓝色运行状态和右箭头保持原布局与视觉语言；新增浮层从运行状态下方展开，不改变成员行尺寸，也不覆盖主内容区的核心操作。
+
+## Focused interaction evidence
+
+- 实际点击可聚焦的“运行中”状态后，唯一 `role=tooltip` 浮层出现；源码同时覆盖鼠标 `onMouseEnter/onMouseLeave`。
+- 等待 3 秒后，内容从 `1 / 5 · 输出 · 已完成布局测量…` 自动轮播为 `2 / 5 · 输入 · 继续验证悬停浮层…`。
+- Window resize 或任意滚动会关闭浮层，防止锚点位置漂移；Agent 离线或退出 running 也会自动关闭。
+- `prefers-reduced-motion` 下停止自动轮播与入场动画；键盘 focus/blur 与鼠标 hover 行为一致。
+- 浏览器控制台 error/warning: `0`。
+
+## Comparison history
+
+- Pass 1：入口行与参考图匹配，浮层完整位于视口内，长文本、层级和对比度可读；未发现 P0/P1/P2。
+- Interaction pass：实际轮播从第 1 条切换到第 2 条，Portal 未受右栏 overflow 裁剪；无修正项。
+
+final result: passed
+
+---
+
 # Work 结构规划实时输出与结构确认 Design QA
 
 - source visual truth: `D:\Codex\.codex\generated_images\019face3-a142-7712-90e3-3b5256973ee9\call_k7TTbidAluoO0TbL6lP5GQis.png`

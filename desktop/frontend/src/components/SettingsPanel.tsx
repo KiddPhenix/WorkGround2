@@ -45,7 +45,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -778,6 +778,17 @@ function normalizeNetworkView(network: NetworkView): NetworkView {
   return { ...network, proxyMode: normalizeProxyMode(network.proxyMode) };
 }
 
+function relayNeedsInsecureConsent(rawURL: string): boolean {
+  const value = rawURL.trim();
+  if (!value.toLowerCase().startsWith("ws://")) return false;
+  try {
+    const hostname = new URL(value).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return hostname !== "localhost" && !/^127(?:\.\d{1,3}){3}$/.test(hostname) && hostname !== "::1";
+  } catch {
+    return true;
+  }
+}
+
 function normalizeAutoPlan(mode: string | undefined): AutoPlanMode {
   return mode === "ask" || mode === "on" ? "on" : "off";
 }
@@ -1061,6 +1072,21 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     network: {
       ...network,
       proxy: network.proxy ?? { type: "socks5", server: "", port: 0, username: "", password: "" },
+    },
+    collaboration: {
+      preferLAN: view.collaboration?.preferLAN ?? true,
+      connectTimeoutSeconds: Number.isFinite(view.collaboration?.connectTimeoutSeconds) ? Math.max(1, Math.min(120, Math.trunc(view.collaboration.connectTimeoutSeconds))) : 10,
+      routeStableSeconds: Number.isFinite(view.collaboration?.routeStableSeconds) ? Math.max(1, Math.min(3600, Math.trunc(view.collaboration.routeStableSeconds))) : 60,
+      relays: asArray(view.collaboration?.relays).map((relay) => ({
+        id: relay.id ?? "",
+        name: relay.name ?? "",
+        url: relay.url ?? "",
+        enabled: Boolean(relay.enabled),
+        priority: Number.isFinite(relay.priority) ? Math.max(0, Math.min(1000, Math.trunc(relay.priority))) : 100,
+        discovery: Boolean(relay.discovery),
+        allowInsecure: Boolean(relay.allowInsecure),
+        accessTokenEnv: relay.accessTokenEnv ?? "",
+      })),
     },
     agent,
     bot: normalizeBotSettings(view.bot),
@@ -1500,7 +1526,7 @@ function NetworkSection({ s, busy, apply }: SectionProps) {
     setDraft({ ...draft, proxy: { ...draft.proxy, ...next } });
   };
 
-  return (
+  return (<>
     <SettingsSection
       title={t("settings.tab.network")}
       actions={
@@ -1602,6 +1628,121 @@ function NetworkSection({ s, busy, apply }: SectionProps) {
           </SettingsField>
         </>
       )}
+    </SettingsSection>
+    <RelaySettingsSection collaboration={s.collaboration} busy={busy} apply={apply} />
+  </>);
+}
+
+function RelaySettingsSection({ collaboration, busy, apply }: {
+  collaboration: CollaborationSettingsView;
+  busy: boolean;
+  apply: (fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  const t = useT();
+  const saved = collaboration ?? { preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [] };
+  const [draft, setDraft] = useState<CollaborationSettingsView>(() => ({
+    preferLAN: saved.preferLAN ?? true,
+    connectTimeoutSeconds: saved.connectTimeoutSeconds ?? 10,
+    routeStableSeconds: saved.routeStableSeconds ?? 60,
+    relays: [...(saved.relays ?? [])],
+  }));
+  useEffect(() => setDraft({
+    preferLAN: collaboration?.preferLAN ?? true,
+    connectTimeoutSeconds: collaboration?.connectTimeoutSeconds ?? 10,
+    routeStableSeconds: collaboration?.routeStableSeconds ?? 60,
+    relays: [...(collaboration?.relays ?? [])],
+  }), [collaboration]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
+  const unsafe = draft.relays.some((relay) => relayNeedsInsecureConsent(relay.url) && !relay.allowInsecure);
+  const invalidTiming = draft.connectTimeoutSeconds < 1 || draft.connectTimeoutSeconds > 120 || draft.routeStableSeconds < 1 || draft.routeStableSeconds > 3600;
+  const patchRelay = (index: number, patch: Partial<RelayView>) => {
+    setDraft((current) => ({
+      ...current,
+      relays: current.relays.map((relay, i) => i === index ? { ...relay, ...patch } : relay),
+    }));
+  };
+  const addRelay = () => {
+    setDraft((current) => {
+      const ids = new Set(current.relays.map((relay) => relay.id));
+      let n = current.relays.length + 1;
+      while (ids.has(`relay-${n}`)) n++;
+      return { ...current, relays: [...current.relays, {
+        id: `relay-${n}`, name: "Local Relay", url: "ws://127.0.0.1:8443/relay/v1/connect", enabled: true, priority: 100,
+        discovery: false, allowInsecure: false, accessTokenEnv: "",
+      }] };
+    });
+  };
+
+  return (
+    <SettingsSection
+      title={t("settings.relay.title")}
+      description={t("settings.relay.desc")}
+      actions={<div className="settings-inline-controls">
+        <button className="btn btn--small" type="button" disabled={busy} onClick={addRelay}>{t("settings.relay.add")}</button>
+        <button
+          className="btn btn--primary btn--small"
+          type="button"
+          disabled={busy || !dirty || unsafe || invalidTiming}
+          onClick={() => void apply(() => app.SetCollaboration(draft))}
+        >
+          {t("settings.relay.save")}
+        </button>
+      </div>}
+    >
+      <SettingsField label={t("settings.relay.preferLAN")} hint={t("settings.relay.preferLANHint")}>
+        <label className="set-check"><input type="checkbox" checked={draft.preferLAN} disabled={busy} onChange={(e) => setDraft((current) => ({ ...current, preferLAN: e.target.checked }))} />{t("settings.relay.preferLANEnabled")}</label>
+      </SettingsField>
+      <details className="provider-editor-advanced relay-settings-advanced">
+        <summary>
+          <span className="provider-editor-advanced__title"><ChevronDown className="provider-editor-advanced__icon" size={16} aria-hidden="true" />{t("settings.relay.advanced")}</span>
+          <span className="provider-editor-advanced__hint">{t("settings.relay.advancedHint")}</span>
+        </summary>
+        <div className="provider-editor-advanced__body">
+          {invalidTiming && <div className="banner banner--error">{t("settings.relay.timingInvalid")}</div>}
+          <SettingsField label={t("settings.relay.connectTimeout")} hint={t("settings.relay.connectTimeoutHint")}>
+            <input className="mem-input set-narrow" type="number" min={1} max={120} value={draft.connectTimeoutSeconds} disabled={busy} onChange={(e) => setDraft((current) => ({ ...current, connectTimeoutSeconds: Number(e.target.value) || 0 }))} />
+          </SettingsField>
+          <SettingsField label={t("settings.relay.routeStable")} hint={t("settings.relay.routeStableHint")}>
+            <input className="mem-input set-narrow" type="number" min={1} max={3600} value={draft.routeStableSeconds} disabled={busy} onChange={(e) => setDraft((current) => ({ ...current, routeStableSeconds: Number(e.target.value) || 0 }))} />
+          </SettingsField>
+        </div>
+      </details>
+      {draft.relays.length === 0 && <div className="empty">{t("settings.relay.empty")}</div>}
+      <div className="relay-settings-list">
+        {draft.relays.map((relay, index) => {
+          const insecureURL = relayNeedsInsecureConsent(relay.url);
+          return (
+            <div className="relay-settings-card" key={index}>
+              <div className="relay-settings-card__head">
+                <strong>{relay.name.trim() || relay.id.trim() || t("settings.relay.unnamed")}</strong>
+                <button className="btn btn--small" type="button" disabled={busy} onClick={() => setDraft((current) => ({ ...current, relays: current.relays.filter((_, i) => i !== index) }))}>
+                  <Trash2 size={14} />{t("settings.relay.remove")}
+                </button>
+              </div>
+              <div className="relay-settings-grid">
+                <label className="set-label">{t("settings.relay.id")}<input className="mem-input" value={relay.id} disabled={busy} onChange={(e) => patchRelay(index, { id: e.target.value })} /></label>
+                <label className="set-label">{t("settings.relay.name")}<input className="mem-input" value={relay.name} disabled={busy} onChange={(e) => patchRelay(index, { name: e.target.value })} /></label>
+                <label className="set-label relay-settings-grid__wide">{t("settings.relay.url")}<input className="mem-input" placeholder="wss://relay.example.com/relay/v1/connect" value={relay.url} disabled={busy} onChange={(e) => patchRelay(index, { url: e.target.value, ...(!relayNeedsInsecureConsent(e.target.value) ? { allowInsecure: false } : {}) })} /></label>
+                <label className="set-label">{t("settings.relay.priority")}<input className="mem-input" type="number" min={0} max={1000} value={relay.priority} disabled={busy} onChange={(e) => patchRelay(index, { priority: Number(e.target.value) || 0 })} /></label>
+                <label className="set-label">{t("settings.relay.tokenEnv")}<input className="mem-input" placeholder="WORKGROUND2_RELAY_TOKEN" value={relay.accessTokenEnv} disabled={busy} onChange={(e) => patchRelay(index, { accessTokenEnv: e.target.value })} /></label>
+              </div>
+              <div className="set-row relay-settings-options">
+                <label className="set-check"><input type="checkbox" checked={relay.enabled} disabled={busy} onChange={(e) => patchRelay(index, { enabled: e.target.checked })} />{t("settings.relay.enabled")}</label>
+                <label className="set-check"><input type="checkbox" checked={relay.discovery} disabled={busy} onChange={(e) => patchRelay(index, { discovery: e.target.checked })} />{t("settings.relay.discovery")}</label>
+              </div>
+              {insecureURL && (
+                <div className={`banner ${relay.allowInsecure ? "banner--warning" : "banner--error"}`} role="alert">
+                  <label className="set-check">
+                    <input type="checkbox" checked={relay.allowInsecure} disabled={busy} onChange={(e) => patchRelay(index, { allowInsecure: e.target.checked })} />
+                    {t("settings.relay.allowInsecure")}
+                  </label>
+                  <span>{t("settings.relay.insecureWarning")}</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </SettingsSection>
   );
 }

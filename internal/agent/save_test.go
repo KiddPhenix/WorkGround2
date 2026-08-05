@@ -294,8 +294,8 @@ func TestListSessionsOrdersByLastActivityMeta(t *testing.T) {
 	now := time.Now().UTC()
 	olderActivity := now.Add(-2 * time.Hour)
 	newerActivity := now.Add(-1 * time.Hour)
-	writeBranchMeta(t, aPath, now.Add(-24*time.Hour), newerActivity)
-	writeBranchMeta(t, bPath, now.Add(-24*time.Hour), olderActivity)
+	writeBranchMeta(t, aPath, now.Add(-24*time.Hour), newerActivity, "")
+	writeBranchMeta(t, bPath, now.Add(-24*time.Hour), olderActivity, "")
 	if err := touch(aPath, now.Add(-3*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -321,8 +321,12 @@ func TestListSessionsOrdersByLastActivityMeta(t *testing.T) {
 func TestListSessionOrderIncludesEmptySessionsWithoutPreviewScan(t *testing.T) {
 	dir := t.TempDir()
 	emptyPath := filepath.Join(dir, "empty.jsonl")
+	collaborationPath := filepath.Join(dir, "collaboration.jsonl")
 	realPath := filepath.Join(dir, "real.jsonl")
 	if err := os.WriteFile(emptyPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(collaborationPath, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	s := NewSession("")
@@ -332,15 +336,16 @@ func TestListSessionOrderIncludesEmptySessionsWithoutPreviewScan(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	writeBranchMeta(t, emptyPath, now, now.Add(time.Hour))
-	writeBranchMeta(t, realPath, now, now)
+	writeBranchMeta(t, emptyPath, now, now.Add(time.Hour), "")
+	writeBranchMeta(t, collaborationPath, now, now.Add(30*time.Minute), SessionKindCollaboration)
+	writeBranchMeta(t, realPath, now, now, "")
 
 	ordered, err := ListSessionOrder(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ordered) != 2 {
-		t.Fatalf("lightweight order len = %d, want 2", len(ordered))
+	if len(ordered) != 3 {
+		t.Fatalf("lightweight order len = %d, want 3", len(ordered))
 	}
 	if ordered[0].Path != emptyPath {
 		t.Fatalf("lightweight order first = %s, want newer empty session %s", ordered[0].Path, emptyPath)
@@ -350,17 +355,18 @@ func TestListSessionOrderIncludesEmptySessionsWithoutPreviewScan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].Path != realPath {
-		t.Fatalf("ListSessions = %+v, want only the non-empty real session", listed)
+	if len(listed) != 2 || listed[0].Path != collaborationPath || listed[1].Path != realPath {
+		t.Fatalf("ListSessions = %+v, want the durable collaboration session and non-empty real session", listed)
 	}
 }
 
-func writeBranchMeta(t *testing.T, path string, createdAt, updatedAt time.Time) {
+func writeBranchMeta(t *testing.T, path string, createdAt, updatedAt time.Time, kind SessionKind) {
 	t.Helper()
 	meta := BranchMeta{
-		ID:        BranchID(path),
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:          BranchID(path),
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		SessionKind: kind,
 	}
 	b, err := json.Marshal(meta)
 	if err != nil {

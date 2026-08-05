@@ -33,9 +33,10 @@ export const initialCollabState: CollabViewState = {
   status: "disconnected",
   members: [],
   timeline: [],
+  toolApprovalMode: "ask",
   selectedIds: [],
   pendingIntents: {},
-  agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, recognitionMode: "off" },
+  agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off", contextRefs: [] },
 };
 
 function mergeTimeline(current: CollaborationTimelineItem[], incoming: CollaborationTimelineItem[]): CollaborationTimelineItem[] {
@@ -176,8 +177,10 @@ export function replayableSelfAgentItems(state: Pick<CollabViewState, "timeline"
 
 export function nextAutomaticAgentItem(
   state: Pick<CollabViewState, "timeline" | "selfMemberId" | "agentConfig">,
+  selfAgentId?: string,
 ): { kind: "question" | "request"; item: CollaborationTimelineItem } | undefined {
-  if (!state.selfMemberId || state.agentConfig.recognitionMode === "off") return undefined;
+  const selfMemberId = state.selfMemberId;
+  if (!selfMemberId || state.agentConfig.recognitionMode === "off") return undefined;
   const handled = new Set(
     state.timeline
       .filter((item) => item.kind === "agent_command")
@@ -185,20 +188,101 @@ export function nextAutomaticAgentItem(
   );
   if (state.agentConfig.autoRespondRequests) {
     const request = state.timeline.find((item) => item.kind === "agent_request"
-      && item.targetMemberId === state.selfMemberId
+      && item.targetMemberId === selfMemberId
       && item.requestStatus === "waiting"
       && !handled.has(item.id));
     if (request) return { kind: "request", item: request };
   }
   if (state.agentConfig.autoRespondQuestions) {
-    const question = state.timeline.find((item) => item.actorId !== state.selfMemberId
+    const question = state.timeline.find((item) => item.actorId !== selfMemberId
       && !item.actorAgent
       && !handled.has(item.id)
+      && !item.mentionMemberIds?.includes(selfMemberId)
+      && !(selfAgentId && item.mentionAgentIds?.includes(selfAgentId))
       && (item.kind === "contribution" && item.contributionKind === "question"
         || item.kind === "chat" && /[?？]\s*$/.test(item.text)));
     if (question) return { kind: "question", item: question };
   }
   return undefined;
+}
+
+const agentCollaborationBatchLimit = 8;
+const agentCollaborationRequestPrefix = "agent-collab-";
+
+function humanIntervention(item: CollaborationTimelineItem): boolean {
+  if (item.kind === "system" || item.kind === "agent_result") return false;
+  if (item.kind === "agent_command") return !item.agentCommandId?.startsWith(agentCollaborationRequestPrefix);
+  return item.actorAgent !== true;
+}
+
+function timelineAfter(item: CollaborationTimelineItem, boundary?: CollaborationTimelineItem): boolean {
+  if (!boundary) return true;
+  if (item.sequence !== boundary.sequence) return item.sequence > boundary.sequence;
+  if (item.createdAt !== boundary.createdAt) return item.createdAt > boundary.createdAt;
+  return item.id > boundary.id;
+}
+
+function afterClockReset(item: CollaborationTimelineItem, resetItem: CollaborationTimelineItem | undefined, woundAt: number): boolean {
+  if (!timelineAfter(item, resetItem)) return false;
+  if (!Number.isFinite(woundAt)) return true;
+  const itemTime = Date.parse(item.createdAt);
+  return Number.isFinite(itemTime) && itemTime > woundAt;
+}
+
+export function agentCollaborationClock(
+  state: Pick<CollabViewState, "timeline" | "agentConfig">,
+): { limit: number; used: number; remaining: number; unlimited: boolean; resetItem?: CollaborationTimelineItem; woundAt?: string } {
+  const limit = Math.min(100, Math.max(1, state.agentConfig.agentClockTurns || 12));
+  const woundAt = Date.parse(state.agentConfig.agentClockWoundAt || "");
+  const interventions = state.timeline.filter(humanIntervention).sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  const resetItem = interventions[interventions.length - 1];
+  const used = state.timeline.filter((item) => item.kind === "agent_command"
+    && item.agentCommandId?.startsWith(agentCollaborationRequestPrefix)
+    && afterClockReset(item, resetItem, woundAt)).length;
+  return { limit, used, remaining: Math.max(0, limit - used), unlimited: state.agentConfig.agentClockUnlimited, resetItem, woundAt: Number.isFinite(woundAt) ? state.agentConfig.agentClockWoundAt : undefined };
+}
+
+function stableHash(value: string, seed: number): string {
+  let current = seed >>> 0;
+  for (let index = 0; index < value.length; index++) {
+    current ^= value.charCodeAt(index);
+    current = Math.imul(current, 16777619) >>> 0;
+  }
+  return current.toString(16).padStart(8, "0");
+}
+
+export function agentCollaborationRequestID(items: CollaborationTimelineItem[], agentId: string): string {
+  const value = `${agentId}\0${items.map((item) => item.id).sort().join("\0")}`;
+  return `${agentCollaborationRequestPrefix}${stableHash(value, 2166136261)}${stableHash(value, 2246822519)}`;
+}
+
+export function nextAgentCollaborationBatch(
+  state: Pick<CollabViewState, "timeline" | "selfMemberId" | "agentConfig">,
+  now = Date.now(),
+): { items: CollaborationTimelineItem[]; waitMs: number } | undefined {
+  const selfMemberId = state.selfMemberId;
+  if (!selfMemberId || !state.agentConfig.autoRespondAgents) return undefined;
+  const clock = agentCollaborationClock(state);
+  if (!clock.unlimited && clock.remaining === 0) return undefined;
+  const byId = new Map(state.timeline.map((item) => [item.id, item]));
+  const ownCommands = state.timeline.filter((item) => item.kind === "agent_command" && item.actorId === selfMemberId);
+  const handled = new Set(ownCommands.flatMap((item) => item.referenceIds));
+  const candidates = state.timeline.filter((item) => item.kind === "agent_result"
+    && item.actorId !== selfMemberId
+    && !handled.has(item.id)
+    && afterClockReset(item, clock.resetItem, Date.parse(clock.woundAt || "")))
+    .sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt));
+  if (candidates.length === 0) return undefined;
+  const peerCommandTimes = ownCommands
+    .filter((item) => item.referenceIds.some((id) => byId.get(id)?.kind === "agent_result"))
+    .map((item) => Date.parse(item.createdAt))
+    .filter(Number.isFinite);
+  const lastStartedAt = peerCommandTimes.length > 0 ? Math.max(...peerCommandTimes) : 0;
+  const intervalMs = Math.min(3600, Math.max(5, state.agentConfig.agentResponseIntervalSeconds || 30)) * 1000;
+  return {
+    items: candidates.slice(-agentCollaborationBatchLimit),
+    waitMs: Math.max(0, lastStartedAt + intervalMs - now),
+  };
 }
 
 export function selectedTimelineItems(state: CollabViewState): CollaborationTimelineItem[] {

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,42 +38,40 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	if roomName == "" {
 		roomName = room
 	}
-	storeRoot := strings.TrimSpace(config.MemoryUserDir())
-	if storeRoot == "" {
-		return nil, fmt.Errorf("collaboration data directory is unavailable")
-	}
-	store, err := collab.OpenFileStore(filepath.Join(storeRoot, "collaboration-host-v1"))
+	authority, err := openCollaborationAuthority(ctx, input)
 	if err != nil {
 		return nil, err
 	}
-	hub := collab.NewHub()
-	service := collab.NewService(store, hub)
-	_, err = service.CreateRoom(ctx, collab.CreateRoomInput{
-		RequestID:   stableCollaborationID("create", room),
-		ID:          room,
-		Name:        roomName,
-		Description: strings.TrimSpace(input.Description),
-		Token:       strings.TrimSpace(input.Token),
-	})
-	if err != nil {
-		return nil, err
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(input.Port)))
-	if err != nil {
-		return nil, fmt.Errorf("listen collaboration host: %w", err)
-	}
-	actualPort := listener.Addr().(*net.TCPAddr).Port
-	server := &http.Server{Handler: collab.NewHandler(service, hub), ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			c.failState("failed", fmt.Errorf("collaboration host stopped: %w", serveErr), true)
+	service, hub := authority.service, authority.hub
+	lanEnabled := input.LANEnabled == nil || *input.LANEnabled
+	var listener net.Listener
+	var server *http.Server
+	actualPort := 0
+	routes := make([]CollaborationRouteState, 0, 1+len(input.RelayIDs))
+	if lanEnabled {
+		listener, err = net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(input.Port)))
+		if err != nil {
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port}, Status: "failed", LastError: err.Error(), Retryable: true})
+		} else {
+			actualPort = listener.Addr().(*net.TCPAddr).Port
+			server = &http.Server{Handler: collab.NewHandler(service, hub), ReadHeaderTimeout: 10 * time.Second}
+			go func() {
+				if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+					c.failState("failed", fmt.Errorf("collaboration host stopped: %w", serveErr), true)
+				}
+			}()
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: actualPort, Priority: 1000}, Status: "connected"})
 		}
-	}()
+	} else {
+		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port}, Status: "disabled"})
+	}
 	joined, err := service.Join(ctx, collab.JoinInput{
 		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
 	})
 	if err != nil {
-		_ = server.Shutdown(context.Background())
+		if server != nil {
+			_ = server.Shutdown(context.Background())
+		}
 		return nil, err
 	}
 	peer := &serviceCollaborationPeer{service: service, hub: hub, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
@@ -82,44 +79,147 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	if ip := net.ParseIP(strings.Split(strings.Trim(httpHost, "[]"), "%")[0]); ip != nil && ip.IsUnspecified() {
 		httpHost = "127.0.0.1"
 	}
-	filePeer := &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
+	var filePeer *httpCollaborationPeer
+	if actualPort > 0 {
+		filePeer = &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
+	}
 	snapshot, err := peer.Snapshot(ctx)
 	if err != nil {
-		_ = server.Shutdown(context.Background())
+		if server != nil {
+			_ = server.Shutdown(context.Background())
+		}
 		return nil, err
 	}
-	return &collaborationConnection{
+	conn := &collaborationConnection{
 		peer: peer, filePeer: filePeer, host: server, listener: listener, mode: "host", roomName: roomName, description: strings.TrimSpace(input.Description), hostName: listenHost,
 		port: actualPort, room: room, memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
-		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
+		memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
 		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined,
+		authority: authority, routes: routes, lanEnabled: lanEnabled, relayIDs: append([]string(nil), input.RelayIDs...),
+		preferLAN:          input.PreferLAN == nil || *input.PreferLAN,
+		hostCapabilityRefs: map[string]string{}, guestCapabilityRefs: map[string]string{},
 		sweep: func(sweepCtx context.Context) error {
 			_, sweepErr := service.SweepStale(sweepCtx, collab.SweepInput{
 				RequestID: newCollaborationRequestID("sweep"), Room: room, Before: time.Now().UTC().Add(-collaborationMemberStaleAfter),
 			})
 			return sweepErr
 		},
-	}, nil
+	}
+	if err := c.startRelayBindings(ctx, conn, input); err != nil && !lanEnabled {
+		// Authority and local Host stay available; individual Relay failures are
+		// projected through route state and remain retryable.
+		conn.routeError = err.Error()
+	}
+	return conn, nil
 }
 
 func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCollaborationRoomInput, identity collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
 	host := strings.TrimSpace(input.Host)
-	if host == "" || input.Port <= 0 || input.Port > 65535 {
-		return nil, fmt.Errorf("host and a valid port are required")
-	}
 	room := strings.TrimSpace(input.Room)
-	peer, joined, snapshot, err := joinCollaborationPeer(ctx, host, input.Port, room, strings.TrimSpace(input.Token), identity, resume)
-	if err != nil {
-		return nil, err
+	candidates := append([]CollaborationRouteInput(nil), input.Routes...)
+	if host != "" && input.Port > 0 && input.Port <= 65535 {
+		candidates = append([]CollaborationRouteInput{{ID: "lan", Kind: "lan", Host: host, Port: input.Port, Priority: 1000}}, candidates...)
 	}
-	return &collaborationConnection{
-		peer: peer, filePeer: peer, mode: "client", hostName: host, port: input.Port, room: room,
-		memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
-		memberName: identity.Name, memberRole: identity.Role, agentName: identity.Agent.Name, agentRole: identity.Agent.Role,
-		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
-		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined,
-	}, nil
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("a LAN endpoint or Relay route is required")
+	}
+	preferLAN := true
+	if cfg, loadErr := config.Load(); loadErr == nil {
+		preferLAN = cfg.Collaboration.PreferLAN
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		score := func(route CollaborationRouteInput) int {
+			if route.Priority < 0 {
+				return -1000
+			}
+			if strings.EqualFold(route.Kind, "lan") {
+				if preferLAN {
+					return 10000
+				}
+				return 0
+			}
+			return route.Priority
+		}
+		return score(candidates[i]) > score(candidates[j])
+	})
+	var routeStates []CollaborationRouteState
+	var failures []string
+	var causes []error
+	for index, route := range candidates {
+		if route.ID == "" {
+			route.ID = route.Kind + ":" + route.RelayID
+		}
+		state := CollaborationRouteState{CollaborationRouteInput: route, Status: "connecting"}
+		if strings.EqualFold(route.Kind, "lan") {
+			peer, joined, snapshot, err := joinCollaborationPeer(ctx, strings.TrimSpace(route.Host), route.Port, room, strings.TrimSpace(input.Token), identity, resume)
+			if err != nil {
+				state.Status, state.LastError, state.Retryable = "failed", err.Error(), collaborationErrorRetryable(err)
+				routeStates = append(routeStates, state)
+				failures = append(failures, route.ID+": "+err.Error())
+				causes = append(causes, err)
+				continue
+			}
+			state.Status, state.Active = "connected", true
+			routeStates = append(routeStates, state)
+			return &collaborationConnection{
+				peer: peer, filePeer: peer, mode: "client", hostName: route.Host, port: route.Port, room: room,
+				memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
+				memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
+				sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
+				initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), lanEnabled: true,
+			}, nil
+		}
+		if !strings.EqualFold(route.Kind, "relay") {
+			state.Status, state.LastError = "failed", "unsupported collaboration route kind"
+			routeStates = append(routeStates, state)
+			continue
+		}
+		peer, joined, snapshot, err := joinRelayCollaborationPeer(ctx, route, room, strings.TrimSpace(input.Token), strings.TrimSpace(input.HostKey), strings.TrimSpace(input.JoinRef), identity, resume)
+		if err != nil {
+			state.Status, state.LastError, state.Retryable = "failed", err.Error(), collaborationErrorRetryable(err)
+			routeStates = append(routeStates, state)
+			failures = append(failures, route.ID+": "+err.Error())
+			causes = append(causes, err)
+			continue
+		}
+		state.Status, state.Active = "connected", true
+		peer.fileSource = c
+		routeStates = append(routeStates, state)
+		guestRefs := map[string]string{}
+		if route.GuestCapability != "" && route.RelayID != "" {
+			ref := collaborationRelayCapabilityRef(room, route.RelayID, "guest")
+			if err := c.setSecret(ref, route.GuestCapability); err != nil {
+				_ = peer.Close(context.Background())
+				return nil, fmt.Errorf("save Relay guest capability: %w", err)
+			}
+			guestRefs[route.RelayID] = ref
+		}
+		return &collaborationConnection{
+			peer: peer, filePeer: peer, mode: "client", hostName: route.URL, room: room,
+			memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
+			memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
+			sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
+			initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), relayBindings: []collaborationRelayBinding{peer}, relayIDs: []string{route.RelayID}, hostKey: input.HostKey, guestCapabilityRefs: guestRefs,
+		}, nil
+	}
+	return nil, &collaborationTransportError{message: "all collaboration routes failed: " + strings.Join(failures, "; "), retryable: true, causes: causes}
+}
+
+func appendRemainingRouteStates(states []CollaborationRouteState, routes []CollaborationRouteInput) []CollaborationRouteState {
+	result := append([]CollaborationRouteState(nil), states...)
+	for _, route := range routes {
+		result = append(result, CollaborationRouteState{CollaborationRouteInput: route, Status: "disabled"})
+	}
+	return result
+}
+
+func publicCollaborationRoutes(routes []CollaborationRouteState) []CollaborationRouteState {
+	result := append([]CollaborationRouteState(nil), routes...)
+	for i := range result {
+		result[i].GuestCapability = ""
+	}
+	return result
 }
 
 func (conn *collaborationConnection) close(ctx context.Context, sendLeave bool) error {
@@ -133,6 +233,14 @@ func (conn *collaborationConnection) close(ctx context.Context, sendLeave bool) 
 		}
 		if conn.host != nil {
 			if err := conn.host.Shutdown(ctx); err != nil && result == nil {
+				result = err
+			}
+		}
+		for _, binding := range conn.relayBindings {
+			if binding == nil {
+				continue
+			}
+			if err := binding.Close(ctx); err != nil && result == nil {
 				result = err
 			}
 		}
@@ -374,17 +482,23 @@ func (p *httpCollaborationPeer) doJSON(ctx context.Context, method, path string,
 type collaborationTransportError struct {
 	message   string
 	retryable bool
+	causes    []error
 }
 
 func (e *collaborationTransportError) Error() string { return e.message }
 
+func (e *collaborationTransportError) Unwrap() []error { return e.causes }
+
 func collaborationErrorRetryable(err error) bool {
+	var transport *collaborationTransportError
+	if errors.As(err, &transport) {
+		return transport.retryable
+	}
 	var protocol *collab.Error
 	if errors.As(err, &protocol) {
 		return protocol.Retryable
 	}
-	var transport *collaborationTransportError
-	return errors.As(err, &transport) && transport.retryable
+	return false
 }
 
 func newCollaborationRequestID(prefix string) string {
@@ -399,7 +513,9 @@ func collaborationPostCommand(input PostCollaborationMessageInput) (collab.Comma
 		if text == "" {
 			return collab.Command{}, fmt.Errorf("chat text is required")
 		}
-		return collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: text}}, nil
+		return collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{
+			Text: text, MentionMemberIDs: append([]string(nil), input.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), input.MentionAgentIDs...),
+		}}, nil
 	case "contribution":
 		if text == "" || input.ContributionKind == "" {
 			return collab.Command{}, fmt.Errorf("contribution kind and text are required")
@@ -565,6 +681,9 @@ func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collabo
 			return
 		}
 		c.markReconnect(conn, err)
+		if conn.mode == "client" && c.startRouteFailover(conn) {
+			return
+		}
 		if streamed || time.Since(started) >= 5*time.Second {
 			attempt = 0
 		}
@@ -579,6 +698,58 @@ func (c *desktopCollaboration) connectionLoop(ctx context.Context, conn *collabo
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+func (c *desktopCollaboration) startRouteFailover(failed *collaborationConnection) bool {
+	if len(failed.routes) == 0 {
+		return false
+	}
+	go c.failoverConnection(failed)
+	return true
+}
+
+func (c *desktopCollaboration) failoverConnection(failed *collaborationConnection) {
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+	c.mu.RLock()
+	current := c.conn == failed
+	c.mu.RUnlock()
+	if !current {
+		return
+	}
+	routes := make([]CollaborationRouteInput, 0, len(failed.routes))
+	var active []CollaborationRouteInput
+	for _, state := range failed.routes {
+		route := state.CollaborationRouteInput
+		if route.Kind == "relay" && route.GuestCapability == "" {
+			if ref := failed.guestCapabilityRefs[route.RelayID]; ref != "" {
+				route.GuestCapability = c.getSecret(ref)
+			}
+		}
+		if state.Active {
+			route.Priority = -1
+			active = append(active, route)
+		} else {
+			routes = append(routes, route)
+		}
+	}
+	routes = append(routes, active...)
+	identity := collab.MemberDescriptor{
+		ID: failed.memberID, Name: failed.memberName, Avatar: failed.memberAvatar, Role: failed.memberRole,
+		Agent: collab.AgentDescriptor{ID: failed.agentID, Name: failed.agentName, Avatar: failed.agentAvatar, Role: failed.agentRole},
+	}
+	conn, err := c.openJoinedRoom(c.app.bootContext(), JoinCollaborationRoomInput{
+		Room: failed.room, Token: failed.joinToken, MemberID: failed.memberID, MemberName: failed.memberName,
+		MemberAvatar: failed.memberAvatar, MemberRole: failed.memberRole, AgentID: failed.agentID, AgentName: failed.agentName,
+		AgentAvatar: failed.agentAvatar, AgentRole: failed.agentRole, SessionID: failed.sessionID, Routes: routes, HostKey: failed.hostKey,
+	}, identity, failed.connectionSession)
+	if err != nil {
+		c.failState("failed", err, true)
+		return
+	}
+	if _, err := c.installConnection(conn); err != nil {
+		c.failState("failed", err, true)
 	}
 }
 
@@ -808,6 +979,7 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 		}
 	}
 	c.emitState()
+	go c.startNextQueuedAgent(conn.sessionID)
 	if c.hasPendingFileOrigins(conn) {
 		go c.restoreFileOrigins(conn)
 	}

@@ -94,6 +94,7 @@ type Room struct {
 type AgentDescriptor struct {
 	ID           string      `json:"id"`
 	Name         string      `json:"name"`
+	Avatar       string      `json:"avatar,omitempty"`
 	Role         string      `json:"role,omitempty"`
 	Capabilities []string    `json:"capabilities,omitempty"`
 	Status       AgentStatus `json:"status"`
@@ -102,6 +103,7 @@ type AgentDescriptor struct {
 type Member struct {
 	ID         string          `json:"id"`
 	Name       string          `json:"name"`
+	Avatar     string          `json:"avatar,omitempty"`
 	Role       string          `json:"role,omitempty"`
 	Agent      AgentDescriptor `json:"agent"`
 	Status     MemberStatus    `json:"status"`
@@ -110,11 +112,13 @@ type Member struct {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	AuthorID  string    `json:"authorId"`
-	Text      string    `json:"text"`
-	Revision  uint64    `json:"revision"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID               string    `json:"id"`
+	AuthorID         string    `json:"authorId"`
+	Text             string    `json:"text"`
+	MentionMemberIDs []string  `json:"mentionMemberIds,omitempty"`
+	MentionAgentIDs  []string  `json:"mentionAgentIds,omitempty"`
+	Revision         uint64    `json:"revision"`
+	CreatedAt        time.Time `json:"createdAt"`
 }
 
 type Contribution struct {
@@ -251,10 +255,11 @@ type JoinInput struct {
 }
 
 type MemberDescriptor struct {
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Role  string          `json:"role,omitempty"`
-	Agent AgentDescriptor `json:"agent"`
+	ID     string          `json:"id"`
+	Name   string          `json:"name"`
+	Avatar string          `json:"avatar,omitempty"`
+	Role   string          `json:"role,omitempty"`
+	Agent  AgentDescriptor `json:"agent"`
 }
 
 type JoinResult struct {
@@ -302,7 +307,9 @@ type Command struct {
 }
 
 type PostChatInput struct {
-	Text string `json:"text"`
+	Text             string   `json:"text"`
+	MentionMemberIDs []string `json:"mentionMemberIds,omitempty"`
+	MentionAgentIDs  []string `json:"mentionAgentIds,omitempty"`
 }
 
 type PublishContributionInput struct {
@@ -357,7 +364,10 @@ type PublishAgentResultInput struct {
 }
 
 type UpdateAgentInput struct {
-	Name string `json:"name"`
+	Name         string  `json:"name"`
+	Avatar       *string `json:"avatar,omitempty"`
+	MemberName   string  `json:"memberName,omitempty"`
+	MemberAvatar *string `json:"memberAvatar,omitempty"`
 }
 
 type OfferFileInput struct {

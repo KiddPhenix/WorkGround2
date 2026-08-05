@@ -76,6 +76,13 @@ type WorkspaceTab struct {
 	saveFailures       int
 	pendingAttentionAt int64
 
+	// autoAgentActive is set true while a Collaboration automatic Agent is
+	// running, to shield persistent/observable paths from the temporary auto
+	// tool-approval mode. The Controller still uses auto for real execution;
+	// currentTabToolApprovalMode, currentTabMode, and tabSessionRecoveryMeta
+	// read tab.toolApprovalMode instead when this flag is set.
+	autoAgentActive atomic.Bool
+
 	// closing is set under saveMu when the tab is being torn down. Once set,
 	// tabSnapshotLoop stops taking new snapshot work and CloseTab waits on
 	// saveCond until any in-flight snapshot finishes - so no background
@@ -5316,8 +5323,13 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 		workRequestID := tab.workRequestID
 		a.mu.RUnlock()
 		if ctrl != nil {
-			mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
-			toolApprovalMode = normalizeToolApprovalMode(ctrl.ToolApprovalMode())
+			if tab.autoAgentActive.Load() {
+				mode = tabModeFromAxes(ctrl.PlanMode(), normalizeToolApprovalMode(tab.toolApprovalMode) == control.ToolApprovalYolo)
+				toolApprovalMode = normalizeToolApprovalMode(tab.toolApprovalMode)
+			} else {
+				mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
+				toolApprovalMode = normalizeToolApprovalMode(ctrl.ToolApprovalMode())
+			}
 			if g := strings.TrimSpace(ctrl.Goal()); g != "" && ctrl.GoalStatus() == control.GoalStatusRunning {
 				goal = g
 			} else {
@@ -7398,6 +7410,9 @@ func currentTabMode(tab *WorkspaceTab) string {
 		return "normal"
 	}
 	if tab.Ctrl != nil {
+		if tab.autoAgentActive.Load() {
+			return tabModeFromAxes(tab.Ctrl.PlanMode(), normalizeToolApprovalMode(tab.toolApprovalMode) == control.ToolApprovalYolo)
+		}
 		return tabModeFromAxes(tab.Ctrl.PlanMode(), tab.Ctrl.AutoApproveTools())
 	}
 	return normalizeTabMode(tab.mode)
@@ -7444,6 +7459,9 @@ func currentTabToolApprovalMode(tab *WorkspaceTab) string {
 		return control.ToolApprovalAsk
 	}
 	if tab.Ctrl != nil {
+		if tab.autoAgentActive.Load() {
+			return normalizeToolApprovalMode(tab.toolApprovalMode)
+		}
 		return tab.Ctrl.ToolApprovalMode()
 	}
 	return normalizeToolApprovalMode(tab.toolApprovalMode)

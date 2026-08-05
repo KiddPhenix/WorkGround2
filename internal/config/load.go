@@ -37,6 +37,7 @@ func LoadForRoot(root string) (*Config, error) {
 	}
 
 	preferUser := isTruthyEnv("WorkGround2_PREFER_USER_CONFIG")
+	userCollaboration := cloneCollaboration(Default().Collaboration)
 
 	var tomlSources []string
 	if preferUser {
@@ -50,6 +51,11 @@ func LoadForRoot(root string) (*Config, error) {
 			if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
 				return nil, err
 			}
+			userOnly := Default()
+			if err := mergeRuntimeTOMLFile(userOnly, uc); err != nil {
+				return nil, err
+			}
+			userCollaboration = cloneCollaboration(userOnly.Collaboration)
 		}
 	} else {
 		if uc := userConfigLoadPath(); uc != "" {
@@ -57,6 +63,7 @@ func LoadForRoot(root string) (*Config, error) {
 			if err := mergeRuntimeTOMLFile(cfg, uc); err != nil {
 				return nil, err
 			}
+			userCollaboration = cloneCollaboration(cfg.Collaboration)
 		}
 		globalMaxSteps := cfg.Agent.MaxSteps
 		globalPlannerMaxSteps := cfg.Agent.PlannerMaxSteps
@@ -73,6 +80,9 @@ func LoadForRoot(root string) (*Config, error) {
 		cfg.Agent.PlannerMaxSteps = globalPlannerMaxSteps
 		cfg.Agent.MemoryCompiler = globalMemoryCompiler
 	}
+	// Relay endpoints and plaintext transport consent are user-level trust
+	// decisions. A project's WorkGround2.toml must never add or weaken them.
+	cfg.Collaboration = userCollaboration
 	// toml.DecodeFile replaces [[plugins]] wholesale, so cfg.Plugins now holds
 	// only the last file's. Re-merge by name across all sources (later wins) so a
 	// project WorkGround2.toml doesn't drop the global config's MCP servers.
@@ -122,6 +132,10 @@ func LoadForRoot(root string) (*Config, error) {
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
+	normalizeCollaborationConfig(cfg)
+	if err := ValidateCollaboration(cfg.Collaboration); err != nil {
+		return nil, fmt.Errorf("collaboration config: %w", err)
+	}
 	backfillDeepSeekPro(cfg)
 	cfg.Agent.AutoPlan = userAutoPlanMode()
 	cfg.CredentialsStore = credentialsStoreMode()
@@ -471,6 +485,7 @@ func normalizeConfigForEdit(cfg *Config) bool {
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
+	normalizeCollaborationConfig(cfg)
 	return migratedMimo
 }
 

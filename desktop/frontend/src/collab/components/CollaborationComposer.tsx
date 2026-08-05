@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
-import { Bot, FileUp, Send, Users } from "lucide-react";
-import { ModelSwitcher } from "../../components/ModelSwitcher";
+import { Bot, FileUp, Send, UserRound, Users } from "lucide-react";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import { useT } from "../../lib/i18n";
 import { onFilesDroppedIn } from "../../lib/bridge";
 import { collabCopy, contributionKinds, contributionLabel } from "../copy";
+import { activeMention, collaborationMentionCandidates, filterMentionCandidates, insertMention, mentionPayload, type CollaborationMention } from "../mentions";
 import type { CollaborationMember } from "../types";
 
 type ComposerMode = "chat" | "contribution" | "agent" | "both" | "request";
@@ -12,18 +12,16 @@ type ComposerMode = "chat" | "contribution" | "agent" | "both" | "request";
 interface CollaborationComposerProps {
   members: CollaborationMember[];
   selfMemberId?: string;
+  connected: boolean;
   disabled?: boolean;
   agentBusy?: boolean;
-  tabID?: string;
-  modelLabel: string;
   submitKey: ComposerSubmitKey;
   prefill: string;
   onPrefillConsumed(): void;
-  onChat(text: string): Promise<void>;
+  onChat(text: string, mentions: { mentionMemberIDs: string[]; mentionAgentIDs: string[] }): Promise<void>;
   onAgent(text: string): Promise<void>;
   onContribution(text: string, kind: string): Promise<void>;
   onRequest(memberId: string, text: string): Promise<void>;
-  onSwitchModel(name: string): Promise<void>;
   onShareFiles(paths: string[]): Promise<void>;
 }
 
@@ -36,34 +34,76 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const [sending, setSending] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [cursor, setCursor] = useState(0);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [selectedMentions, setSelectedMentions] = useState<CollaborationMention[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const value = props.prefill || draft;
-  const others = props.members.filter((member) => member.id !== props.selfMemberId);
+  const others = props.members.filter((member) => member.online && member.id !== props.selfMemberId);
   const agentMode = mode === "agent" || mode === "both";
+  const mentionEnabled = mode === "chat" || mode === "both";
+  const mentionCandidates = collaborationMentionCandidates(props.members, props.selfMemberId, props.connected);
+  const mention = mentionEnabled ? activeMention(value, cursor) : undefined;
+  const mentionMatches = mention ? filterMentionCandidates(mentionCandidates, mention.query) : [];
+  const mentionOpen = !mentionDismissed && Boolean(mention) && mentionMatches.length > 0;
 
-  const update = (next: string) => {
+  const update = (next: string, nextCursor = next.length) => {
     if (props.prefill) props.onPrefillConsumed();
     setDraft(next);
+    setCursor(nextCursor);
+    setMentionDismissed(false);
+  };
+  const chooseMention = (candidate: CollaborationMention) => {
+    if (!mention) return;
+    const next = insertMention(value, mention, candidate);
+    update(next.value, next.cursor);
+    setSelectedMentions((current) => [...current.filter((item) => item.key !== candidate.key), candidate]);
+    setMentionIndex(0);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(next.cursor, next.cursor);
+    });
   };
   const submit = async () => {
     const text = value.trim();
     if (!text || sending || props.disabled) return;
+    const mentions = mentionPayload(text, selectedMentions);
     setSending(true);
     try {
       if (mode === "agent") await props.onAgent(text);
       else if (mode === "contribution") await props.onContribution(text, contributionKind);
-      else if (mode === "both") { await props.onChat(text); await props.onAgent(text); }
+      else if (mode === "both") { await props.onChat(text, mentions); await props.onAgent(text); }
       else if (mode === "request") await props.onRequest(target, text);
-      else await props.onChat(text);
-      setDraft(""); props.onPrefillConsumed();
+      else await props.onChat(text, mentions);
+      setDraft(""); setCursor(0); setSelectedMentions([]); props.onPrefillConsumed();
     } catch {
       // The controller projects the actionable error into the collaboration surface.
     } finally { setSending(false); }
   };
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setMentionIndex((current) => (current + step + mentionMatches.length) % mentionMatches.length);
+      return;
+    }
+    if (mentionOpen && (event.key === "Enter" || event.key === "Tab")) {
+      event.preventDefault();
+      chooseMention(mentionMatches[mentionIndex] || mentionMatches[0]);
+      return;
+    }
+    if (mentionOpen && event.key === "Escape") {
+      event.preventDefault();
+      setMentionDismissed(true);
+      return;
+    }
     if (isComposerSubmitKey(event, normalizeComposerSubmitKey(props.submitKey), composingRef.current)) { event.preventDefault(); void submit(); }
   };
+
+  useEffect(() => { setMentionIndex(0); }, [mention?.query, mentionMatches.length]);
 
   useEffect(() => onFilesDroppedIn(() => rootRef.current, (paths) => {
     if (props.disabled || sharing || paths.length === 0) return;
@@ -95,13 +135,20 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
       {mode === "contribution" && <select value={contributionKind} onChange={(event) => setContributionKind(event.target.value)} aria-label={c("contribution")}>
         {contributionKinds.map((kind) => <option key={kind} value={kind}>{contributionLabel(c, kind)}</option>)}
       </select>}
-      <ModelSwitcher label={props.modelLabel} tabId={props.tabID} onPick={props.onSwitchModel} />
       <span className="collab-composer-shortcut">{normalizeComposerSubmitKey(props.submitKey) === "ctrl_enter" ? "Ctrl+Enter" : "Enter"}</span>
       <span className="collab-composer-owner"><Bot size={13} />{c("subtitle")}</span>
     </div>
     <div className="collab-composer-row">
-      <textarea rows={2} value={value} placeholder={c("messagePlaceholder")} onChange={(event) => update(event.target.value)} onKeyDown={keyDown} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} disabled={props.disabled} />
-      <button type="button" className="collab-primary-button" title={agentMode && props.agentBusy ? c("agentBusy") : undefined} onClick={() => void submit()} disabled={props.disabled || sending || (agentMode && props.agentBusy) || !value.trim() || (mode === "request" && !target)}>
+      <div className="collab-composer-input">
+        {mentionOpen && <div id="collab-mention-list" className="collab-mention-popup" role="listbox" aria-label={c("mentionList")}>
+          {mentionMatches.map((candidate, index) => <button key={candidate.key} id={`collab-mention-${index}`} type="button" role="option" aria-selected={index === mentionIndex} className={index === mentionIndex ? "collab-mention-option--active" : ""} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(candidate)}>
+            <span>{candidate.kind === "agent" ? <Bot size={15} /> : <UserRound size={15} />}</span>
+            <span><strong>@{candidate.label}</strong><small>{candidate.kind === "agent" ? c("mentionAgent", { name: candidate.ownerName }) : c("mentionMember")}</small></span>
+          </button>)}
+        </div>}
+        <textarea ref={textareaRef} rows={2} value={value} placeholder={c("messagePlaceholder")} aria-autocomplete="list" aria-controls={mentionOpen ? "collab-mention-list" : undefined} aria-expanded={mentionOpen} aria-activedescendant={mentionOpen ? `collab-mention-${mentionIndex}` : undefined} onChange={(event) => update(event.target.value, event.target.selectionStart)} onSelect={(event) => setCursor(event.currentTarget.selectionStart)} onKeyDown={keyDown} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }} disabled={props.disabled} />
+      </div>
+      <button type="button" className="collab-primary-button" title={agentMode && props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => void submit()} disabled={props.disabled || sending || !value.trim() || (mode === "request" && !target)}>
         {mode === "agent" || mode === "both" ? <Bot size={16} /> : mode === "request" ? <Users size={16} /> : <Send size={16} />}{c("send")}
       </button>
     </div>

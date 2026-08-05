@@ -101,6 +101,24 @@ type NetworkView struct {
 	Proxy     NetworkProxyView `json:"proxy"`
 }
 
+type RelayView struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	URL            string `json:"url"`
+	Enabled        bool   `json:"enabled"`
+	Priority       int    `json:"priority"`
+	Discovery      bool   `json:"discovery"`
+	AllowInsecure  bool   `json:"allowInsecure"`
+	AccessTokenEnv string `json:"accessTokenEnv"`
+}
+
+type CollaborationSettingsView struct {
+	PreferLAN             bool        `json:"preferLAN"`
+	ConnectTimeoutSeconds int         `json:"connectTimeoutSeconds"`
+	RouteStableSeconds    int         `json:"routeStableSeconds"`
+	Relays                []RelayView `json:"relays"`
+}
+
 type AgentView struct {
 	Temperature       float64 `json:"temperature"`
 	MaxSteps          int     `json:"maxSteps"`
@@ -165,37 +183,38 @@ type BotSettingsView struct {
 
 // SettingsView is the whole Settings panel payload.
 type SettingsView struct {
-	DefaultModel            string          `json:"defaultModel"`
-	PlannerModel            string          `json:"plannerModel"`
-	SubagentModel           string          `json:"subagentModel"`
-	SubagentEffort          string          `json:"subagentEffort"`
-	AutoPlan                string          `json:"autoPlan"`
-	Providers               []ProviderView  `json:"providers"`
-	OfficialProviders       []ProviderView  `json:"officialProviders"`
-	Permissions             PermissionsView `json:"permissions"`
-	Sandbox                 SandboxView     `json:"sandbox"`
-	Network                 NetworkView     `json:"network"`
-	Agent                   AgentView       `json:"agent"`
-	Bot                     BotSettingsView `json:"bot"`
-	DesktopLanguage         string          `json:"desktopLanguage"`
-	DesktopLayoutStyle      string          `json:"desktopLayoutStyle"`
-	DesktopTheme            string          `json:"desktopTheme"`
-	DesktopThemeStyle       string          `json:"desktopThemeStyle"`
-	CloseBehavior           string          `json:"closeBehavior"`
-	DisplayMode             string          `json:"displayMode"`
-	ComposerSubmitKey       string          `json:"composerSubmitKey"`
-	StatusBarStyle          string          `json:"statusBarStyle"`
-	StatusBarItems          []string        `json:"statusBarItems"`
-	DefaultToolApprovalMode string          `json:"defaultToolApprovalMode"`
-	CheckUpdates            bool            `json:"checkUpdates"`
-	Telemetry               bool            `json:"telemetry"`
-	Metrics                 bool            `json:"metrics"`
-	WidgetEnabled           bool            `json:"widgetEnabled"`
-	WidgetAlwaysOnTop       bool            `json:"widgetAlwaysOnTop"`
-	WidgetSkin              string          `json:"widgetSkin"`
-	MemoryCompiler          bool            `json:"memoryCompilerEnabled"`
-	ExpandThinking          bool            `json:"expandThinking"`
-	ConfigPath              string          `json:"configPath"`
+	DefaultModel            string                    `json:"defaultModel"`
+	PlannerModel            string                    `json:"plannerModel"`
+	SubagentModel           string                    `json:"subagentModel"`
+	SubagentEffort          string                    `json:"subagentEffort"`
+	AutoPlan                string                    `json:"autoPlan"`
+	Providers               []ProviderView            `json:"providers"`
+	OfficialProviders       []ProviderView            `json:"officialProviders"`
+	Permissions             PermissionsView           `json:"permissions"`
+	Sandbox                 SandboxView               `json:"sandbox"`
+	Network                 NetworkView               `json:"network"`
+	Collaboration           CollaborationSettingsView `json:"collaboration"`
+	Agent                   AgentView                 `json:"agent"`
+	Bot                     BotSettingsView           `json:"bot"`
+	DesktopLanguage         string                    `json:"desktopLanguage"`
+	DesktopLayoutStyle      string                    `json:"desktopLayoutStyle"`
+	DesktopTheme            string                    `json:"desktopTheme"`
+	DesktopThemeStyle       string                    `json:"desktopThemeStyle"`
+	CloseBehavior           string                    `json:"closeBehavior"`
+	DisplayMode             string                    `json:"displayMode"`
+	ComposerSubmitKey       string                    `json:"composerSubmitKey"`
+	StatusBarStyle          string                    `json:"statusBarStyle"`
+	StatusBarItems          []string                  `json:"statusBarItems"`
+	DefaultToolApprovalMode string                    `json:"defaultToolApprovalMode"`
+	CheckUpdates            bool                      `json:"checkUpdates"`
+	Telemetry               bool                      `json:"telemetry"`
+	Metrics                 bool                      `json:"metrics"`
+	WidgetEnabled           bool                      `json:"widgetEnabled"`
+	WidgetAlwaysOnTop       bool                      `json:"widgetAlwaysOnTop"`
+	WidgetSkin              string                    `json:"widgetSkin"`
+	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
+	ExpandThinking          bool                      `json:"expandThinking"`
+	ConfigPath              string                    `json:"configPath"`
 	// ProviderKinds lists the provider implementations the kernel actually
 	// registered (provider.Kinds()), so the editor's "kind" picker offers only
 	// kinds that resolve — selecting an unregistered one would fail the rebuild.
@@ -548,6 +567,7 @@ func (a *App) Settings() SettingsView {
 				Deny:  []string{},
 			},
 			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
+			Collaboration:           CollaborationSettingsView{PreferLAN: true, ConnectTimeoutSeconds: 10, RouteStableSeconds: 60, Relays: []RelayView{}},
 			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
@@ -610,6 +630,7 @@ func (a *App) Settings() SettingsView {
 				Password: cfg.Network.Proxy.Password,
 			},
 		},
+		Collaboration:           collaborationSettingsView(cfg.Collaboration),
 		Agent:                   AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, PlannerMaxSteps: cfg.Agent.PlannerMaxSteps, MaxSubagentDepth: desktopMaxSubagentDepth(cfg.Agent.MaxSubagentDepth), SystemPrompt: cfg.Agent.SystemPrompt, ColdResumePrune: cfg.ColdResumePruneEnabled(), ReasoningLanguage: cfg.ReasoningLanguage()},
 		Bot:                     botSettingsView(cfg.Bot),
 		DesktopLanguage:         cfg.DesktopLanguage(),
@@ -644,6 +665,21 @@ func (a *App) Settings() SettingsView {
 		v.Providers = append(v.Providers, providerViewFromEntryForRootWithResolver(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver))
 	}
 	return v
+}
+
+func collaborationSettingsView(c config.CollaborationConfig) CollaborationSettingsView {
+	relays := make([]RelayView, 0, len(c.Relays))
+	for _, relay := range c.Relays {
+		relays = append(relays, RelayView{
+			ID: relay.ID, Name: relay.Name, URL: relay.URL, Enabled: relay.Enabled,
+			Priority: relay.Priority, Discovery: relay.Discovery,
+			AllowInsecure: relay.AllowInsecure, AccessTokenEnv: relay.AccessTokenEnv,
+		})
+	}
+	return CollaborationSettingsView{
+		PreferLAN: c.PreferLAN, ConnectTimeoutSeconds: c.ConnectTimeout,
+		RouteStableSeconds: c.RouteStable, Relays: relays,
+	}
 }
 
 func botSettingsView(b config.BotConfig) BotSettingsView {
@@ -853,6 +889,7 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
 		return nil, "", err
 	}
+	legacyCfg.Collaboration = cfg.Collaboration
 	return legacyCfg, userPath, nil
 }
 
@@ -891,6 +928,7 @@ func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
 	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
 		return nil, "", err
 	}
+	legacyCfg.Collaboration = cfg.Collaboration
 	return legacyCfg, userPath, nil
 }
 
@@ -2034,6 +2072,26 @@ func (a *App) SetNetwork(n NetworkView) error {
 				Username: n.Proxy.Username,
 				Password: n.Proxy.Password,
 			},
+		})
+	})
+}
+
+// SetCollaboration persists the optional user-global Room relay list. Plaintext
+// non-loopback ws:// endpoints are rejected unless that relay explicitly
+// carries the allowInsecure consent set by the Settings risk control.
+func (a *App) SetCollaboration(next CollaborationSettingsView) error {
+	return a.applyConfigOnly(func(c *config.Config) error {
+		relays := make([]config.RelayConfig, 0, len(next.Relays))
+		for _, relay := range next.Relays {
+			relays = append(relays, config.RelayConfig{
+				ID: relay.ID, Name: relay.Name, URL: relay.URL, Enabled: relay.Enabled,
+				Priority: relay.Priority, Discovery: relay.Discovery,
+				AllowInsecure: relay.AllowInsecure, AccessTokenEnv: relay.AccessTokenEnv,
+			})
+		}
+		return c.SetCollaboration(config.CollaborationConfig{
+			PreferLAN: next.PreferLAN, ConnectTimeout: next.ConnectTimeoutSeconds,
+			RouteStable: next.RouteStableSeconds, Relays: relays,
 		})
 	})
 }

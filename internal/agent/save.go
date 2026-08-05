@@ -1965,10 +1965,12 @@ func resolveLegacyWorkIdentities(infos []SessionOrderInfo) {
 	}
 }
 
-// ListSessions returns every non-empty *.jsonl session under dir,
+// ListSessions returns every visible *.jsonl session under dir,
 // most-recently-active first, each with a preview line so the picker can show
-// something the user recognises. A missing directory is not an error — it just
-// means there's nothing to resume yet.
+// something the user recognises. Ordinary empty sessions stay hidden, while a
+// collaboration session remains visible because its durable Room state is
+// meaningful even before the local conversation records a user turn. A missing
+// directory is not an error — it just means there's nothing to resume yet.
 func ListSessions(dir string) ([]SessionInfo, error) {
 	ordered, err := ListSessionOrder(dir)
 	if err != nil {
@@ -1986,9 +1988,11 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			// Best-effort: a failure here just means we decode again next time.
 			_ = UpdateSessionMeta(session.Path, "", preview, turns, false)
 		}
-		if turns == 0 {
+		if turns == 0 && session.SessionKind != SessionKindCollaboration {
 			// Never had user interaction — an empty conversation that should not
-			// appear in the history panel or the resume picker.
+			// appear in the history panel or the resume picker. Collaboration
+			// sessions are the durable owner-side Room entry, so they must survive
+			// a restart even when their transcript is still empty.
 			continue
 		}
 		out = append(out, SessionInfo{

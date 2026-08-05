@@ -56,18 +56,19 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-// ReplaceFile renames tmp onto dest, falling back to a copy when the rename
-// fails — Windows encryption-software filter drivers report a cross-device link
-// (EXDEV) for a same-dir rename. A second Windows failure mode is a transient
-// lock on dest (antivirus, the search indexer, a second instance) that makes both
-// the rename and the copy fail with "Access is denied" for a few hundred ms, so
-// the replace is retried with a short backoff while the tmp source survives — a
-// missing tmp means the write itself failed and no retry can help. The rename
-// error surfaces only if every attempt fails.
+// ReplaceFile atomically replaces dest with tmp. On Windows it uses the
+// platform replaceFile (MoveFileEx with MOVEFILE_REPLACE_EXISTING) which
+// swaps the file atomically on NTFS. On Unix, os.Rename is the atomic
+// primitive. When the atomic rename fails — e.g. a transient antivirus lock
+// on Windows — the operation falls back to copyOnto which writes via a temp
+// file and then renames, never truncating dest in place. The operation is
+// retried with a short backoff as long as the tmp source survives; a missing
+// tmp means the write itself failed and no retry can help. The rename error
+// surfaces only if every attempt fails.
 func ReplaceFile(tmp, dest string) error {
 	var err error
 	for attempt := 0; ; attempt++ {
-		if err = os.Rename(tmp, dest); err == nil {
+		if err = replaceFile(tmp, dest); err == nil {
 			return nil
 		}
 		if copyOnto(tmp, dest) == nil {
@@ -85,21 +86,48 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// copyOnto copies tmp content onto dest without ever truncating dest in place.
+// It writes to a sibling temp file, syncs it, then atomically renames it onto
+// dest via replaceFile. If the rename fails the old dest is untouched and the
+// intermediate temp is cleaned up; the caller (ReplaceFile) retries with backoff.
+// The tmp source is removed only after the rename succeeds.
 func copyOnto(tmp, dest string) error {
-	info, err := os.Stat(tmp)
-	if err != nil {
-		return err
-	}
 	data, err := os.ReadFile(tmp)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dest, data, info.Mode().Perm()); err != nil {
+	info, err := os.Stat(tmp)
+	if err != nil {
 		return err
 	}
-	// WriteFile keeps an existing dest's mode, so re-apply tmp's mode to match
-	// what the rename would have done (a 0600 config tmp must not widen to 0644).
-	_ = os.Chmod(dest, info.Mode().Perm())
+	dir := filepath.Dir(dest)
+	tmp2, err := os.CreateTemp(dir, ".atomic-copy-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp2Path := tmp2.Name()
+	if _, err := tmp2.Write(data); err != nil {
+		tmp2.Close()
+		os.Remove(tmp2Path)
+		return err
+	}
+	if err := tmp2.Sync(); err != nil {
+		tmp2.Close()
+		os.Remove(tmp2Path)
+		return err
+	}
+	if err := tmp2.Close(); err != nil {
+		os.Remove(tmp2Path)
+		return err
+	}
+	if err := os.Chmod(tmp2Path, info.Mode().Perm()); err != nil {
+		os.Remove(tmp2Path)
+		return err
+	}
+	if err := replaceFile(tmp2Path, dest); err != nil {
+		os.Remove(tmp2Path)
+		return err
+	}
 	_ = os.Remove(tmp)
 	return nil
 }

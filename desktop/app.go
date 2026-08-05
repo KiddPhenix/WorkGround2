@@ -6074,6 +6074,7 @@ func (a *App) SetToolApprovalModeForTab(tabID, mode string) {
 		return
 	}
 	tab.toolApprovalMode = mode
+	tab.autoAgentActive.Store(false)
 	tab.mode = tabModeFromAxes(tabModeHasPlan(currentTabMode(tab)), mode == control.ToolApprovalYolo)
 	ctrl := tab.Ctrl
 	tabIDForSave := tab.ID

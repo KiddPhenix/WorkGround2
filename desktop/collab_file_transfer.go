@@ -98,6 +98,65 @@ func (a *App) RevokeCollaborationFile(input CollaborationFileActionInput) (Colla
 	return c.revokeFile(a.bootContext(), input.FileID)
 }
 
+var openCollaborationFilePath = openWorkspacePath
+var revealCollaborationFilePath = revealPath
+
+// OpenCollaborationFile opens a completed received file with its OS default app.
+func (a *App) OpenCollaborationFile(input CollaborationFileActionInput) error {
+	c, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return err
+	}
+	path, err := c.completedReceivedFilePath(input.FileID)
+	if err != nil {
+		return err
+	}
+	return openCollaborationFilePath(path)
+}
+
+// RevealCollaborationFile shows a completed received file in the native file manager.
+func (a *App) RevealCollaborationFile(input CollaborationFileActionInput) error {
+	c, err := a.collaborationRuntime(input.SessionID)
+	if err != nil {
+		return err
+	}
+	path, err := c.completedReceivedFilePath(input.FileID)
+	if err != nil {
+		return err
+	}
+	return revealCollaborationFilePath(path)
+}
+
+func (c *desktopCollaboration) completedReceivedFilePath(fileID string) (string, error) {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return "", fmt.Errorf("fileId is required")
+	}
+	c.mu.RLock()
+	transfer := c.transfers[fileID]
+	if transfer == nil || transfer.Direction != "receive" || transfer.Status != "completed" {
+		c.mu.RUnlock()
+		return "", fmt.Errorf("received file is not completed")
+	}
+	path := strings.TrimSpace(transfer.Destination)
+	c.mu.RUnlock()
+	if path == "" {
+		return "", fmt.Errorf("received file destination is unavailable")
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve received file: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("received file is unavailable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("received file is not a regular file")
+	}
+	return abs, nil
+}
+
 func (c *desktopCollaboration) shareFiles(ctx context.Context, paths []string) ([]CollaborationFileTransfer, error) {
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("at least one file is required")
@@ -193,6 +252,12 @@ func (c *desktopCollaboration) prepareSharedFile(path string) (collaborationShar
 }
 
 func (c *desktopCollaboration) ensureFileOrigin(conn *collaborationConnection) error {
+	if conn == nil {
+		return fmt.Errorf("collaboration connection changed")
+	}
+	if !collaborationFilePeerNeedsOrigin(conn.filePeer) {
+		return nil
+	}
 	c.mu.Lock()
 	if conn == nil || c.conn != conn {
 		c.mu.Unlock()
@@ -229,6 +294,17 @@ func (c *desktopCollaboration) ensureFileOrigin(conn *collaborationConnection) e
 		}
 	}()
 	return nil
+}
+
+func collaborationFilePeerNeedsOrigin(peer collaborationFilePeer) bool {
+	switch value := peer.(type) {
+	case *httpCollaborationPeer:
+		return true
+	case *fallbackCollaborationFilePeer:
+		return collaborationFilePeerNeedsOrigin(value.primary) || collaborationFilePeerNeedsOrigin(value.fallback)
+	default:
+		return false
+	}
 }
 
 func (c *desktopCollaboration) serveSharedFile(w http.ResponseWriter, r *http.Request) {
@@ -318,9 +394,7 @@ func (c *desktopCollaboration) registerFileOrigin(ctx context.Context, fileID st
 	if conn == nil || conn.filePeer == nil || origin == nil || !ok {
 		return fmt.Errorf("file origin is unavailable")
 	}
-	path := "/collab/v1/rooms/" + url.PathEscape(conn.room) + "/files/" + url.PathEscape(fileID) + "/origin"
-	var result map[string]any
-	return conn.filePeer.doJSON(ctx, http.MethodPost, path, collab.RegisterFileOriginInput{Port: origin.port, Secret: origin.secret, Hosts: collaborationLocalHosts("0.0.0.0")}, &result, true)
+	return conn.filePeer.RegisterFileOrigin(ctx, fileID, collab.RegisterFileOriginInput{Port: origin.port, Secret: origin.secret, Hosts: collaborationLocalHosts("0.0.0.0")})
 }
 
 func (c *desktopCollaboration) restoreFileOrigins(conn *collaborationConnection) {
@@ -566,6 +640,12 @@ func (p *httpCollaborationPeer) fetchFileManifest(ctx context.Context, fileID st
 		return ticket, collaborationFileManifest{}, fmt.Errorf("decode file manifest: %w", err)
 	}
 	return ticket, manifest, nil
+}
+
+func (p *httpCollaborationPeer) RegisterFileOrigin(ctx context.Context, fileID string, input collab.RegisterFileOriginInput) error {
+	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/files/" + url.PathEscape(fileID) + "/origin"
+	var result map[string]any
+	return p.doJSON(ctx, http.MethodPost, path, input, &result, true)
 }
 
 func (p *httpCollaborationPeer) fetchFileChunk(ctx context.Context, ticket collab.FileTransferTicket, index int) ([]byte, error) {

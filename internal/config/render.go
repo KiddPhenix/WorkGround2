@@ -190,6 +190,29 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		b.WriteString("\n")
 	}
+	if scope != RenderScopeProject {
+		b.WriteString("[collaboration]\n")
+		b.WriteString("# Optional user-global Room relays. Empty keeps LAN-only behavior.\n")
+		fmt.Fprintf(&b, "prefer_lan = %v   # probe local-network routes before relays\n", c.Collaboration.PreferLAN)
+		fmt.Fprintf(&b, "connect_timeout_seconds = %d   # 1..120 seconds per route connection attempt\n", c.Collaboration.ConnectTimeout)
+		fmt.Fprintf(&b, "route_stable_seconds = %d   # 1..3600 seconds before preferring a recovered route\n", c.Collaboration.RouteStable)
+		for _, relay := range NormalizeCollaboration(c.Collaboration).Relays {
+			b.WriteString("\n[[collaboration.relays]]\n")
+			fmt.Fprintf(&b, "id = %q\n", relay.ID)
+			fmt.Fprintf(&b, "name = %q\n", relay.Name)
+			fmt.Fprintf(&b, "url = %q   # wss:// recommended; non-loopback ws:// requires allow_insecure = true\n", relay.URL)
+			fmt.Fprintf(&b, "enabled = %v\n", relay.Enabled)
+			fmt.Fprintf(&b, "priority = %d   # 0..1000; higher values are preferred\n", relay.Priority)
+			fmt.Fprintf(&b, "discovery = %v   # query and advertise discoverable Rooms when supported\n", relay.Discovery)
+			fmt.Fprintf(&b, "allow_insecure = %v   # explicit plaintext ws:// risk acceptance\n", relay.AllowInsecure)
+			if relay.AccessTokenEnv != "" {
+				fmt.Fprintf(&b, "access_token_env = %q\n", relay.AccessTokenEnv)
+			} else {
+				b.WriteString("# access_token_env = \"WORKGROUND2_RELAY_TOKEN\"\n")
+			}
+		}
+		b.WriteString("\n")
+	}
 	if shouldRenderEnvironment(c, defaults, scope) {
 		renderEnvironmentConfig(&b, c.Environment)
 	}

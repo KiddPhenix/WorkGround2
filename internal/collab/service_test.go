@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,6 +102,38 @@ func TestPersistenceIdempotencyAndSecrets(t *testing.T) {
 	}
 }
 
+func TestChatMentionsUseTypedRoomTargets(t *testing.T) {
+	service, _, a := newTestService(t, "")
+	b, err := service.Join(context.Background(), JoinInput{RequestID: "join-b", Room: "room", Member: memberDesc("b", "agent-b")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := Command{Type: CommandPostChat, Chat: &PostChatInput{
+		Text: "@B @agent-a please inspect", MentionMemberIDs: []string{"b"}, MentionAgentIDs: []string{"agent-b", "agent-a"},
+	}}
+	receipt, err := service.Submit(context.Background(), env("mention-1", "a", a.ConnectionSession, command))
+	if err != nil || len(receipt.EventIDs) != 1 {
+		t.Fatalf("submit mention: receipt=%+v err=%v", receipt, err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), "room", b.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat := snapshot.Timeline[len(snapshot.Timeline)-1].Chat
+	if chat == nil || !slices.Equal(chat.MentionMemberIDs, []string{"b"}) || !slices.Equal(chat.MentionAgentIDs, []string{"agent-b", "agent-a"}) {
+		t.Fatalf("typed mentions missing from snapshot: %+v", chat)
+	}
+	chat.MentionAgentIDs[0] = "mutated"
+	again, err := service.Snapshot(context.Background(), "room", b.ConnectionSession)
+	if err != nil || again.Timeline[len(again.Timeline)-1].Chat.MentionAgentIDs[0] != "agent-b" {
+		t.Fatalf("mention slices escaped snapshot clone: %+v err=%v", again.Timeline, err)
+	}
+	_, err = service.Submit(context.Background(), env("mention-self", "a", a.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "self", MentionMemberIDs: []string{"a"}}}))
+	requireCode(t, err, CodeInvalid)
+	_, err = service.Submit(context.Background(), env("mention-missing", "a", a.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "missing", MentionAgentIDs: []string{"agent-missing"}}}))
+	requireCode(t, err, CodeNotFound)
+}
+
 func TestPublicValuesCannotMutateStoredState(t *testing.T) {
 	service, _, joined := newTestService(t, "")
 	receipt, err := service.Submit(context.Background(), env("chat-isolated", "a", joined.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "original"}}))
@@ -152,7 +185,9 @@ func TestJoinExposesTypedResumeRequirement(t *testing.T) {
 
 func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
 	service, dir, joined := newTestService(t, "")
-	command := Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{Name: "Kite"}}
+	memberAvatar := "data:image/png;base64,iVBORw0KGgo="
+	agentAvatar := "data:image/webp;base64,UklGRg=="
+	command := Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{Name: "Kite", Avatar: &agentAvatar, MemberName: "Alice", MemberAvatar: &memberAvatar}}
 	first, err := service.Submit(context.Background(), env("rename-agent-1", "a", joined.ConnectionSession, command))
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +200,7 @@ func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Members) != 1 || snapshot.Members[0].Agent.Name != "Kite" {
+	if len(snapshot.Members) != 1 || snapshot.Members[0].Name != "Alice" || snapshot.Members[0].Avatar != memberAvatar || snapshot.Members[0].Agent.Name != "Kite" || snapshot.Members[0].Agent.Avatar != agentAvatar {
 		t.Fatalf("renamed Agent missing from snapshot: %+v", snapshot.Members)
 	}
 
@@ -174,10 +209,13 @@ func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot, err = NewService(reopened).Snapshot(context.Background(), "room", joined.ConnectionSession)
-	if err != nil || snapshot.Members[0].Agent.Name != "Kite" {
+	if err != nil || snapshot.Members[0].Name != "Alice" || snapshot.Members[0].Agent.Name != "Kite" || snapshot.Members[0].Agent.Avatar != agentAvatar {
 		t.Fatalf("renamed Agent was not recovered: %+v, %v", snapshot.Members, err)
 	}
 	_, err = service.Submit(context.Background(), env("rename-agent-empty", "a", joined.ConnectionSession, Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{}}))
+	requireCode(t, err, CodeInvalid)
+	remoteAvatar := "https://example.com/tracking.png"
+	_, err = service.Submit(context.Background(), env("profile-remote-avatar", "a", joined.ConnectionSession, Command{Type: CommandUpdateAgent, AgentUpdate: &UpdateAgentInput{Name: "Kite", Avatar: &remoteAvatar}}))
 	requireCode(t, err, CodeInvalid)
 }
 
@@ -273,6 +311,38 @@ func TestAgentOwnershipRequestDecisionAndRunTransitions(t *testing.T) {
 	}
 	if !foundB || !foundRequest || !foundRun {
 		t.Fatalf("replayed state missing: member=%v request=%v run=%v", foundB, foundRequest, foundRun)
+	}
+}
+
+func TestAgentStaysRunningWhileAnotherRunIsQueued(t *testing.T) {
+	service, _, joined := newTestService(t, "")
+	for _, run := range []PublishAgentRunInput{
+		{RunID: "run-active", AgentID: "agent-a", CommandID: "command-active", Instruction: "active", Status: RunRunning},
+		{RunID: "run-queued", AgentID: "agent-a", CommandID: "command-queued", Instruction: "queued", Status: RunQueued},
+	} {
+		if _, err := service.Submit(context.Background(), env(run.RunID, "a", joined.ConnectionSession, Command{Type: CommandPublishAgentRun, AgentRun: &run})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completed := PublishAgentRunInput{RunID: "run-active", AgentID: "agent-a", CommandID: "command-active", Instruction: "active", Status: RunCompleted}
+	if _, err := service.Submit(context.Background(), env("run-active-done", "a", joined.ConnectionSession, Command{Type: CommandPublishAgentRun, AgentRun: &completed})); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), "room", joined.ConnectionSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, member := range snapshot.Members {
+		if member.ID == "a" {
+			found = true
+			if member.Agent.Status != AgentRunning {
+				t.Fatalf("queued run was projected as %q, want running", member.Agent.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Agent owner is missing from snapshot")
 	}
 }
 

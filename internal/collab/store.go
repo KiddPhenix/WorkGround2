@@ -298,19 +298,14 @@ func applyRecord(state *roomState, record journalRecord) error {
 		if item.AgentRun != nil {
 			state.Runs[item.AgentRun.ID] = *item.AgentRun
 			member := state.Members[item.AgentRun.OwnerID]
-			switch item.AgentRun.Status {
-			case RunQueued, RunRunning:
-				member.Agent.Status = AgentRunning
-			case RunWaitingApproval:
-				member.Agent.Status = AgentWaitingApproval
-			case RunFailed:
+			if status, active := activeAgentStatus(state.Runs, item.AgentRun.OwnerID); active {
+				member.Agent.Status = status
+			} else if item.AgentRun.Status == RunFailed {
 				member.Agent.Status = AgentError
-			default:
-				if member.Status == MemberOnline {
-					member.Agent.Status = AgentIdle
-				} else {
-					member.Agent.Status = AgentOffline
-				}
+			} else if member.Status == MemberOnline {
+				member.Agent.Status = AgentIdle
+			} else {
+				member.Agent.Status = AgentOffline
 			}
 			state.Members[member.ID] = member
 		}
@@ -327,6 +322,22 @@ func applyRecord(state *roomState, record journalRecord) error {
 	state.Receipts[e.RequestID] = cloneReceipt(record.Receipt)
 	state.Fingerprints[e.RequestID] = record.RequestHash
 	return nil
+}
+
+func activeAgentStatus(runs map[string]AgentRun, ownerID string) (AgentStatus, bool) {
+	status := AgentIdle
+	for _, run := range runs {
+		if run.OwnerID != ownerID {
+			continue
+		}
+		switch run.Status {
+		case RunWaitingApproval:
+			return AgentWaitingApproval, true
+		case RunQueued, RunRunning:
+			status = AgentRunning
+		}
+	}
+	return status, status == AgentRunning
 }
 
 func (s *FileStore) room(id string) (*roomState, bool) { state, ok := s.rooms[id]; return state, ok }
@@ -363,6 +374,8 @@ func eventsAfter(state *roomState, after uint64) []RoomEvent {
 func cloneTimelineItem(item TimelineItem) TimelineItem {
 	if item.Chat != nil {
 		value := *item.Chat
+		value.MentionMemberIDs = cloneStrings(value.MentionMemberIDs)
+		value.MentionAgentIDs = cloneStrings(value.MentionAgentIDs)
 		item.Chat = &value
 	}
 	if item.Contribution != nil {

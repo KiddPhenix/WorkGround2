@@ -145,3 +145,57 @@ func TestCollaborationFileTransferRestoresPausedWithBitmap(t *testing.T) {
 		t.Fatalf("restored transfer = %+v", transfer)
 	}
 }
+
+func TestCompletedReceivedFilePathRequiresCompletedRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "received.txt")
+	if err := os.WriteFile(path, []byte("received"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &desktopCollaboration{transfers: map[string]*CollaborationFileTransfer{
+		"file": {FileID: "file", Direction: "receive", Status: "completed", Destination: path},
+	}}
+	got, err := c.completedReceivedFilePath("file")
+	if err != nil || got != path {
+		t.Fatalf("completed path = %q, %v", got, err)
+	}
+	c.transfers["file"].Status = "failed"
+	if _, err := c.completedReceivedFilePath("file"); err == nil {
+		t.Fatal("incomplete received file was accepted")
+	}
+	c.transfers["file"].Status = "completed"
+	c.transfers["file"].Direction = "share"
+	if _, err := c.completedReceivedFilePath("file"); err == nil {
+		t.Fatal("shared source file was accepted as a received file")
+	}
+	c.transfers["file"].Direction = "receive"
+	c.transfers["file"].Destination = t.TempDir()
+	if _, err := c.completedReceivedFilePath("file"); err == nil {
+		t.Fatal("received directory was accepted as a file")
+	}
+}
+
+func TestCollaborationFileActionsUseAuthoritativeDestination(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "received.txt")
+	if err := os.WriteFile(path, []byte("received"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &desktopCollaboration{transfers: map[string]*CollaborationFileTransfer{
+		"file": {FileID: "file", Direction: "receive", Status: "completed", Destination: path},
+	}}
+	app := &App{collaborations: map[string]*desktopCollaboration{"session": runtime}}
+	oldOpen, oldReveal := openCollaborationFilePath, revealCollaborationFilePath
+	t.Cleanup(func() { openCollaborationFilePath, revealCollaborationFilePath = oldOpen, oldReveal })
+	var opened, revealed string
+	openCollaborationFilePath = func(value string) error { opened = value; return nil }
+	revealCollaborationFilePath = func(value string) error { revealed = value; return nil }
+	input := CollaborationFileActionInput{SessionID: "session", FileID: "file"}
+	if err := app.OpenCollaborationFile(input); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RevealCollaborationFile(input); err != nil {
+		t.Fatal(err)
+	}
+	if opened != path || revealed != path {
+		t.Fatalf("opened = %q, revealed = %q", opened, revealed)
+	}
+}

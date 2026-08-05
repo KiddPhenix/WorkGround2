@@ -66,6 +66,23 @@ func TestBindCollaborationSessionPersistsWorkspaceSession(t *testing.T) {
 	if !found {
 		t.Fatalf("collaboration session missing from project tree: %+v", nodes)
 	}
+
+	// Simulate a restart where this Room tab is not the single restored surface.
+	// The persisted collaboration session must still own a visible Session List
+	// entry even though its local transcript has no user turns yet.
+	restarted := &App{tabs: map[string]*WorkspaceTab{}}
+	nodes = restarted.ListProjectTree()
+	found = false
+	for _, project := range nodes {
+		for _, topic := range project.Children {
+			if topic.TopicID == tab.TopicID && topic.SessionKind == string(agent.SessionKindCollaboration) && topic.SessionPath == path {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("persisted collaboration session missing after restart: %+v", nodes)
+	}
 }
 
 func TestBindCollaborationSessionRejectsNonBlankAndWorkSessions(t *testing.T) {

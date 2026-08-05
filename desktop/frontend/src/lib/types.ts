@@ -1182,6 +1182,24 @@ export interface NetworkView {
   proxy: NetworkProxyView;
 }
 
+export interface RelayView {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+  priority: number;
+  discovery: boolean;
+  allowInsecure: boolean;
+  accessTokenEnv: string;
+}
+
+export interface CollaborationSettingsView {
+  preferLAN: boolean;
+  connectTimeoutSeconds: number;
+  routeStableSeconds: number;
+  relays: RelayView[];
+}
+
 export interface AgentView {
   temperature: number;
   maxSteps: number;
@@ -1363,6 +1381,7 @@ export interface SettingsView {
   permissions: PermissionsView;
   sandbox: SandboxView;
   network: NetworkView;
+  collaboration: CollaborationSettingsView;
   agent: AgentView;
   bot: BotSettingsView;
   desktopLanguage: string; // "" | "en" | "zh"; empty = auto

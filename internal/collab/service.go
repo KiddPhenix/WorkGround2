@@ -21,6 +21,7 @@ const (
 	MaxMembers           = 256
 	MaxTimelineItems     = 100000
 	MaxTextBytes         = 256 * 1024
+	MaxAvatarBytes       = 64 * 1024
 	MaxReferences        = 256
 	MaxMetadata          = 128
 	MaxIDBytes           = 256
@@ -100,11 +101,13 @@ func (s *Service) Join(ctx context.Context, input JoinInput) (JoinResult, error)
 	}
 	input.RequestID, input.Room, input.Token = strings.TrimSpace(input.RequestID), strings.TrimSpace(input.Room), strings.TrimSpace(input.Token)
 	input.Member.ID, input.Member.Name = strings.TrimSpace(input.Member.ID), strings.TrimSpace(input.Member.Name)
+	input.Member.Avatar = strings.TrimSpace(input.Member.Avatar)
 	input.Member.Agent.ID, input.Member.Agent.Name = strings.TrimSpace(input.Member.Agent.ID), strings.TrimSpace(input.Member.Agent.Name)
+	input.Member.Agent.Avatar = strings.TrimSpace(input.Member.Agent.Avatar)
 	if !validID(input.RequestID) || !roomIDPattern.MatchString(input.Room) || !validID(input.Member.ID) || input.Member.Name == "" || !validID(input.Member.Agent.ID) {
 		return JoinResult{}, fail(CodeInvalid, "requestId, room, member id/name, and agent id are required")
 	}
-	if len(input.Member.Name) > 256 || len(input.Member.Role) > 128 || len(input.Member.Agent.Name) > 256 || !validStringList(input.Member.Agent.Capabilities, 128, MaxShortText) {
+	if len(input.Member.Name) > 256 || len(input.Member.Role) > 128 || len(input.Member.Agent.Name) > 256 || !validAvatar(&input.Member.Avatar) || !validAvatar(&input.Member.Agent.Avatar) || !validStringList(input.Member.Agent.Capabilities, 128, MaxShortText) {
 		return JoinResult{}, fail(CodeInvalid, "member descriptor exceeds size limit")
 	}
 	requestHash := fingerprint(struct {
@@ -159,7 +162,7 @@ func (s *Service) Join(ctx context.Context, input JoinInput) (JoinResult, error)
 	if exists {
 		joinedAt = old.JoinedAt
 	}
-	member := Member{ID: input.Member.ID, Name: input.Member.Name, Role: input.Member.Role, Agent: input.Member.Agent, Status: MemberOnline, JoinedAt: joinedAt, LastSeenAt: now}
+	member := Member{ID: input.Member.ID, Name: input.Member.Name, Avatar: input.Member.Avatar, Role: input.Member.Role, Agent: input.Member.Agent, Status: MemberOnline, JoinedAt: joinedAt, LastSeenAt: now}
 	member.Agent.Capabilities = cloneStrings(input.Member.Agent.Capabilities)
 	if member.Agent.Name == "" {
 		member.Agent.Name = member.Name + " Agent"
@@ -415,6 +418,15 @@ func (s *Service) Submit(ctx context.Context, env CommandEnvelope) (CommandRecei
 	if env.Command.Type == CommandUpdateAgent {
 		member := state.Members[env.MemberID]
 		member.Agent.Name = strings.TrimSpace(env.Command.AgentUpdate.Name)
+		if name := strings.TrimSpace(env.Command.AgentUpdate.MemberName); name != "" {
+			member.Name = name
+		}
+		if env.Command.AgentUpdate.Avatar != nil {
+			member.Agent.Avatar = strings.TrimSpace(*env.Command.AgentUpdate.Avatar)
+		}
+		if env.Command.AgentUpdate.MemberAvatar != nil {
+			member.Avatar = strings.TrimSpace(*env.Command.AgentUpdate.MemberAvatar)
+		}
 		updatedMember = &member
 	}
 	if err := s.store.append(journalRecord{Event: event, Receipt: receipt, RequestHash: requestHash, Member: updatedMember, Timeline: &item}); err != nil {
@@ -429,11 +441,25 @@ func (s *Service) Submit(ctx context.Context, env CommandEnvelope) (CommandRecei
 func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64, now time.Time, cmd Command) (TimelineItem, string, string, error) {
 	switch cmd.Type {
 	case CommandPostChat:
-		if cmd.Chat == nil || blankOrLarge(cmd.Chat.Text) {
-			return TimelineItem{}, "", "", fail(CodeInvalid, "non-empty chat text is required")
+		if cmd.Chat == nil || blankOrLarge(cmd.Chat.Text) || !validStringList(cmd.Chat.MentionMemberIDs, MaxMembers, MaxIDBytes) || !validStringList(cmd.Chat.MentionAgentIDs, MaxMembers, MaxIDBytes) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "chat text and mentions are invalid")
+		}
+		for _, memberID := range cmd.Chat.MentionMemberIDs {
+			if memberID == actor {
+				return TimelineItem{}, "", "", fail(CodeInvalid, "chat cannot mention its own author")
+			}
+			if _, ok := state.Members[memberID]; !ok {
+				return TimelineItem{}, "", "", fail(CodeNotFound, "mentioned member does not exist")
+			}
+		}
+		for _, agentID := range cmd.Chat.MentionAgentIDs {
+			if !roomHasAgent(state, agentID) {
+				return TimelineItem{}, "", "", fail(CodeNotFound, "mentioned Agent does not exist")
+			}
 		}
 		id := newID("message")
-		return TimelineItem{ID: id, Sequence: sequence, Type: TimelineChat, Chat: &ChatMessage{ID: id, AuthorID: actor, Text: cmd.Chat.Text, Revision: 1, CreatedAt: now}}, "chat.posted", "", nil
+		value := ChatMessage{ID: id, AuthorID: actor, Text: cmd.Chat.Text, MentionMemberIDs: cloneStrings(cmd.Chat.MentionMemberIDs), MentionAgentIDs: cloneStrings(cmd.Chat.MentionAgentIDs), Revision: 1, CreatedAt: now}
+		return TimelineItem{ID: id, Sequence: sequence, Type: TimelineChat, Chat: &value}, "chat.posted", "", nil
 	case CommandPublishContribution:
 		v := cmd.Contribution
 		if v == nil || blankOrLarge(v.Body) || len(v.Title) > MaxShortText || !validContribution(v.Kind) || !validStringList(v.Scope, MaxReferences, MaxShortText) || !validStringList(v.TargetIDs, MaxMembers, MaxIDBytes) || !validStringList(v.Dependencies, MaxReferences, MaxIDBytes) || !validMetadata(v.Metadata) {
@@ -555,8 +581,8 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 		return TimelineItem{ID: v.ResultID, Sequence: sequence, Type: TimelineAgentResult, AgentResult: &value}, "agent_result.published", v.RunID, nil
 	case CommandUpdateAgent:
 		v := cmd.AgentUpdate
-		if v == nil || strings.TrimSpace(v.Name) == "" || len(strings.TrimSpace(v.Name)) > 256 {
-			return TimelineItem{}, "", "", fail(CodeInvalid, "agent name is required and must not exceed 256 bytes")
+		if v == nil || strings.TrimSpace(v.Name) == "" || len(strings.TrimSpace(v.Name)) > 256 || len(strings.TrimSpace(v.MemberName)) > 256 || !validAvatar(v.Avatar) || !validAvatar(v.MemberAvatar) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "member/Agent profile is invalid")
 		}
 		id := newID("timeline")
 		value := SystemEvent{Kind: "agent.updated", MemberID: actor}
@@ -592,6 +618,23 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 	default:
 		return TimelineItem{}, "", "", fail(CodeInvalid, "unsupported command type")
 	}
+}
+
+func validAvatar(value *string) bool {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return true
+	}
+	avatar := strings.TrimSpace(*value)
+	if len(avatar) > MaxAvatarBytes {
+		return false
+	}
+	for _, prefix := range []string{"data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"} {
+		if strings.HasPrefix(avatar, prefix) {
+			_, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(avatar, prefix))
+			return err == nil
+		}
+	}
+	return false
 }
 
 func (s *Service) deriveSession(room, member, request string) string {
@@ -698,6 +741,15 @@ func blankOrLarge(value string) bool {
 }
 
 func validID(value string) bool { return strings.TrimSpace(value) != "" && len(value) <= MaxIDBytes }
+
+func roomHasAgent(state *roomState, agentID string) bool {
+	for _, member := range state.Members {
+		if member.Agent.ID == agentID {
+			return true
+		}
+	}
+	return false
+}
 
 func validStringList(values []string, maxItems, maxItemBytes int) bool {
 	if len(values) > maxItems {

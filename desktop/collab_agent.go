@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"workground2/internal/collab"
+	"workground2/internal/control"
 	"workground2/internal/event"
 )
 
@@ -31,7 +32,8 @@ func collaborationStartFingerprint(input StartCollaborationAgentInput) string {
 		Instruction    string   `json:"instruction"`
 		ReferenceIDs   []string `json:"referenceIds"`
 		AgentRequestID string   `json:"agentRequestId"`
-	}{strings.TrimSpace(input.SessionID), strings.TrimSpace(input.Instruction), input.ReferenceIDs, strings.TrimSpace(input.AgentRequestID)})
+		Automatic      bool     `json:"automatic,omitempty"`
+	}{strings.TrimSpace(input.SessionID), strings.TrimSpace(input.Instruction), input.ReferenceIDs, strings.TrimSpace(input.AgentRequestID), input.Automatic})
 	return stableCollaborationID("start", string(data))
 }
 
@@ -162,15 +164,121 @@ func (c *desktopCollaboration) runPublisher(run *collaborationAgentRun) {
 		}
 		cancel()
 		if update.Final {
+			c.restoreAgentApproval(run)
 			c.mu.Lock()
+			removed := false
 			if c.runs[run.SessionID] == run {
 				delete(c.runs, run.SessionID)
+				removed = true
 			}
 			c.persistLocked()
 			c.mu.Unlock()
+			if removed {
+				c.emitState()
+				go c.startNextQueuedAgent(run.SessionID)
+			}
 			return
 		}
 	}
+}
+
+func (c *desktopCollaboration) prepareAgentApproval(run *collaborationAgentRun) error {
+	if run == nil || !run.Automatic || c.prepareAutoAgent == nil {
+		return nil
+	}
+	previous, err := c.prepareAutoAgent(run.SessionID)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	run.RestoreMode = previous
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *desktopCollaboration) restoreAgentApproval(run *collaborationAgentRun) {
+	if run == nil || c.restoreAutoAgent == nil {
+		return
+	}
+	c.mu.Lock()
+	previous := run.RestoreMode
+	run.RestoreMode = ""
+	c.mu.Unlock()
+	if previous != "" {
+		c.restoreAutoAgent(run.SessionID, previous)
+	}
+}
+
+func (c *desktopCollaboration) startNextQueuedAgent(sessionID string) {
+	ctx := context.Background()
+	if c.app != nil {
+		ctx = c.app.bootContext()
+	}
+	c.opMu.Lock()
+	defer c.opMu.Unlock()
+
+	c.mu.Lock()
+	if c.runs[sessionID] != nil || len(c.queuedRuns) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	var run *collaborationAgentRun
+	for _, candidate := range c.queuedRuns {
+		if candidate == nil || candidate.SessionID != sessionID {
+			continue
+		}
+		run = candidate
+		break
+	}
+	if run == nil {
+		c.mu.Unlock()
+		return
+	}
+	c.mu.Unlock()
+
+	ready := true
+	var err error
+	if c.agentReady != nil {
+		ready, err = c.agentReady(sessionID)
+	} else if c.validateAgent != nil {
+		err = c.validateAgent(sessionID)
+	}
+	if err != nil {
+		c.mu.Lock()
+		c.state.LastError = "queued Agent cannot start: " + err.Error()
+		c.state.Retryable = true
+		c.persistLocked()
+		c.mu.Unlock()
+		c.emitState()
+		return
+	}
+	if !ready {
+		c.waitForQueuedAgent(sessionID)
+		return
+	}
+
+	c.mu.Lock()
+	if c.runs[sessionID] != nil || c.removeQueuedRunLocked(run.RunID) != run {
+		c.mu.Unlock()
+		return
+	}
+	run.StartedAt = time.Now().UTC()
+	c.runs[sessionID] = run
+	state := cloneCollaborationState(c.state)
+	c.persistLocked()
+	c.mu.Unlock()
+	c.emitState()
+
+	contextText, err := collaborationContext(state.Snapshot, run.ReferenceIDs)
+	if err != nil {
+		c.failAgentRun(ctx, run, err)
+		return
+	}
+	fullInput := run.Instruction
+	if contextText != "" {
+		fullInput += "\n\n" + contextText
+	}
+	_ = c.launchAgent(ctx, run, fullInput)
 }
 
 func (a *App) observeCollaborationAgentEvent(tabID string, value event.Event) {
@@ -193,6 +301,34 @@ func (a *App) observeCollaborationAgentEvent(tabID string, value event.Event) {
 	runtime.observeAgentEvent(sessionID, value)
 }
 
+func collaborationAgentPromptFromEvent(runID string, value event.Event) *CollaborationAgentPrompt {
+	switch value.Kind {
+	case event.ApprovalRequest:
+		subject := strings.TrimSpace(value.Approval.Subject)
+		if subject == "" {
+			subject = strings.TrimSpace(value.Approval.Summary)
+		}
+		return &CollaborationAgentPrompt{
+			RunID: runID, Kind: control.PendingInteractionApproval, ID: value.Approval.ID,
+			Tool: value.Approval.Tool, Subject: subject, Reason: value.Approval.Reason,
+		}
+	case event.AskRequest:
+		questions := make([]CollaborationAgentPromptQuestion, 0, len(value.Ask.Questions))
+		for _, question := range value.Ask.Questions {
+			options := make([]CollaborationAgentPromptOption, 0, len(question.Options))
+			for _, option := range question.Options {
+				options = append(options, CollaborationAgentPromptOption{Label: option.Label, Description: option.Description})
+			}
+			questions = append(questions, CollaborationAgentPromptQuestion{
+				ID: question.ID, Header: question.Header, Prompt: question.Prompt, Options: options, Multi: question.Multi,
+			})
+		}
+		return &CollaborationAgentPrompt{RunID: runID, Kind: control.PendingInteractionAsk, ID: value.Ask.ID, Questions: questions}
+	default:
+		return nil
+	}
+}
+
 func (c *desktopCollaboration) observeAgentEvent(sessionID string, value event.Event) {
 	c.mu.Lock()
 	run := c.runs[sessionID]
@@ -212,18 +348,28 @@ func (c *desktopCollaboration) observeAgentEvent(sessionID string, value event.E
 			appendCollaborationText(&run.Text, value.Text)
 		}
 		c.mu.Unlock()
+		c.emitState()
 	case event.ApprovalRequest, event.AskRequest:
+		run.PromptOpen = true
+		run.Prompt = collaborationAgentPromptFromEvent(run.RunID, value)
 		c.mu.Unlock()
+		c.emitState()
 		run.Updates <- collaborationRunUpdate{Status: collab.RunWaitingApproval}
 	case event.TurnDone:
 		summary := sanitizeCollaborationText(run.Text.String())
 		status := collab.RunCompleted
 		errText := ""
-		if value.Err != nil {
+		if run.StopRequested {
+			status = collab.RunCancelled
+			errText = "cancelled by the Agent owner"
+		} else if value.Err != nil {
 			status = collab.RunFailed
 			errText = sanitizeCollaborationText(value.Err.Error())
 		}
+		run.PromptOpen = false
+		run.Prompt = nil
 		c.mu.Unlock()
+		c.emitState()
 		run.Updates <- collaborationRunUpdate{Status: status, Summary: summary, Error: errText, Final: true}
 	default:
 		// Reasoning, credentials, tool args and tool output never cross the

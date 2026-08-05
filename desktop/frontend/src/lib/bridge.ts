@@ -18,9 +18,12 @@ import type {
   JoinCollaborationRoomInput,
   PostCollaborationMessageInput,
   RespondCollaborationRequestInput,
+  CollaborationAgentRunResponse,
+  CollaborationToolApprovalMode,
   CollaborationFileTransfer,
   StartCollaborationAgentInput,
   UpdateCollaborationAgentConfigInput,
+  UpdateCollaborationProfileInput,
 } from "../collab/types";
 
 import { addBreadcrumb } from "./breadcrumbs";
@@ -48,6 +51,7 @@ import type {
   CapabilitiesView,
   CheckpointMeta,
   CommandInfo,
+  CollaborationSettingsView,
   ContextInfo,
   ContextPanelInfo,
   DirEntry,
@@ -291,18 +295,27 @@ export interface AppBindings extends WailsWorkBindings {
   RetryCollaboration(sessionID: string): Promise<CollaborationState>;
   HostCollaborationRoom(input: HostCollaborationRoomInput): Promise<CollaborationState>;
   JoinCollaborationRoom(input: JoinCollaborationRoomInput): Promise<CollaborationState>;
+  ListCollaborationRooms?(input: unknown): Promise<unknown>;
+  ProbeCollaborationRelay?(relayID: string): Promise<unknown>;
   GetCollaborationInvite(sessionID: string): Promise<CollaborationInvite>;
   LeaveCollaborationRoom(sessionID: string): Promise<void>;
   ClassifyCollaborationIntent(input: { sessionID: string; text: string }): Promise<CollaborationIntentResult>;
   PostCollaborationMessage(input: PostCollaborationMessageInput): Promise<CollaborationActionResult>;
   StartCollaborationAgent(input: StartCollaborationAgentInput): Promise<CollaborationActionResult>;
+  StopCollaborationAgentRun(sessionID: string, runID: string): Promise<void>;
+  CancelCollaborationQueuedTask(input: { sessionID: string; taskID: string }): Promise<CollaborationActionResult>;
+  RespondCollaborationAgentRun(input: { sessionID: string; runID: string; allow: boolean } & CollaborationAgentRunResponse): Promise<CollaborationActionResult>;
   RespondCollaborationRequest(input: RespondCollaborationRequestInput): Promise<CollaborationActionResult>;
   UpdateCollaborationAgentConfig(input: UpdateCollaborationAgentConfigInput & { sessionID: string }): Promise<CollaborationState>;
+  UpdateCollaborationProfile(input: UpdateCollaborationProfileInput & { sessionID: string }): Promise<CollaborationState>;
+  UpdateCollaborationToolApprovalMode(input: { sessionID: string; mode: CollaborationToolApprovalMode }): Promise<CollaborationState>;
   ShareCollaborationFiles(input: { sessionID: string; paths: string[] }): Promise<CollaborationFileTransfer[]>;
   ReceiveCollaborationFile(input: { sessionID: string; fileID: string; destination?: string }): Promise<CollaborationFileTransfer>;
   PauseCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFileTransfer>;
   ResumeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFileTransfer>;
   RevokeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationActionResult>;
+  OpenCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
+  RevealCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
   // ── Heartbeat ──
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
@@ -552,6 +565,7 @@ export interface AppBindings extends WailsWorkBindings {
   RemovePermissionRule(list: string, rule: string): Promise<void>;
   SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string): Promise<void>;
   SetNetwork(n: NetworkView): Promise<void>;
+  SetCollaboration(c: CollaborationSettingsView): Promise<void>;
   SetBotSettings(b: BotSettingsView): Promise<void>;
   SetBotConnectionToolApprovalMode(connID: string, mode: string): Promise<void>;
   SetBotSecret(envName: string, value: string): Promise<void>;
@@ -1628,6 +1642,7 @@ function makeMockApp(): AppBindings {
       noProxy: "",
       proxy: { type: "socks5", server: "127.0.0.1", port: 7890, username: "", password: "" },
     },
+    collaboration: { preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [] },
     agent: { temperature: 0.2, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "You are WorkGround2, a coding agent.", coldResumePrune: true, reasoningLanguage: "auto" },
     bot: {
       enabled: !freshMock,
@@ -2278,13 +2293,20 @@ function makeMockApp(): AppBindings {
     async ClassifyCollaborationIntent() { return { intent: "chat", source: "fallback", error: "Semantic intent preview unavailable", retryable: true }; },
     async PostCollaborationMessage(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async StartCollaborationAgent(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
+    async StopCollaborationAgentRun() { /* no-op in preview */ },
+    async CancelCollaborationQueuedTask(input) { return { ok: false, requestID: input.taskID, error: "Collaboration preview transport unavailable", retryable: true }; },
+    async RespondCollaborationAgentRun(input) { return { ok: false, requestID: `${input.runID}:respond`, error: "Collaboration preview transport unavailable", retryable: true }; },
     async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async UpdateCollaborationAgentConfig(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: input.config }; },
+    async UpdateCollaborationProfile(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: { alias: input.agentName, autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" } }; },
+    async UpdateCollaborationToolApprovalMode(input) { return { status: "disconnected", members: [], timeline: [], toolApprovalMode: input.mode }; },
     async ShareCollaborationFiles() { return []; },
     async ReceiveCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async PauseCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async ResumeCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async RevokeCollaborationFile() { return { ok: false, error: "File transfer preview unavailable", retryable: true }; },
+    async OpenCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async RevealCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async EnterWidgetMode() {
       widgetMode = true;
       return mockWidgetSnapshot();
@@ -4142,6 +4164,9 @@ function makeMockApp(): AppBindings {
         },
         async SetNetwork(n: NetworkView) {
           settings.network = n;
+        },
+        async SetCollaboration(c: CollaborationSettingsView) {
+          settings.collaboration = JSON.parse(JSON.stringify(c)) as CollaborationSettingsView;
         },
         async SetBotSettings(b: BotSettingsView) {
           settings.bot = JSON.parse(JSON.stringify(b)) as BotSettingsView;

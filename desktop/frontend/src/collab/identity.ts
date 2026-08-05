@@ -1,9 +1,11 @@
 export interface CollaborationIdentity {
   memberID: string;
   memberName: string;
+  memberAvatar?: string;
   memberRole?: string;
   agentID: string;
   agentName: string;
+  agentAvatar?: string;
   agentRole?: string;
 }
 
@@ -31,9 +33,11 @@ export function loadCollaborationIdentity(): CollaborationIdentity | undefined {
         return {
           memberID: value.memberID,
           memberName: value.memberName.trim(),
+          memberAvatar: value.memberAvatar?.trim() || undefined,
           memberRole: value.memberRole?.trim() || undefined,
           agentID: value.agentID,
           agentName: value.agentName.trim(),
+          agentAvatar: value.agentAvatar?.trim() || undefined,
           agentRole: value.agentRole?.trim() || undefined,
         };
       }
@@ -56,9 +60,11 @@ export function saveCollaborationIdentity(value: CollaborationIdentity): Collabo
   const identity = {
     memberID: value.memberID || localID("member"),
     memberName: value.memberName.trim(),
+    memberAvatar: value.memberAvatar?.trim() || undefined,
     memberRole: value.memberRole?.trim() || undefined,
     agentID: value.agentID || localID("agent"),
     agentName: value.agentName.trim(),
+    agentAvatar: value.agentAvatar?.trim() || undefined,
     agentRole: value.agentRole?.trim() || undefined,
   };
   if (!identity.memberName || !identity.agentName) throw new Error("collaboration identity is incomplete");

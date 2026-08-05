@@ -53,6 +53,7 @@ type Config struct {
 	Permissions      PermissionsConfig   `toml:"permissions"`
 	Sandbox          SandboxConfig       `toml:"sandbox"`
 	Network          NetworkConfig       `toml:"network"`
+	Collaboration    CollaborationConfig `toml:"collaboration"`
 	Environment      EnvironmentConfig   `toml:"environment"`
 	Plugins          []PluginEntry       `toml:"plugins"`
 	Skills           SkillsConfig        `toml:"skills"`
@@ -809,6 +810,29 @@ type NetworkProxyConfig struct {
 	Port     int    `toml:"port"`
 	Username string `toml:"username"`
 	Password string `toml:"password"`
+}
+
+// CollaborationConfig contains user-global Room connectivity preferences.
+// Projects cannot override this list: relay trust is an account-level security
+// decision shared by every desktop workspace.
+type CollaborationConfig struct {
+	PreferLAN      bool          `toml:"prefer_lan"`
+	ConnectTimeout int           `toml:"connect_timeout_seconds"`
+	RouteStable    int           `toml:"route_stable_seconds"`
+	Relays         []RelayConfig `toml:"relays"`
+}
+
+// RelayConfig describes one optional Room relay endpoint. AccessTokenEnv names
+// an environment variable; credentials are never stored in config.toml.
+type RelayConfig struct {
+	ID             string `toml:"id"`
+	Name           string `toml:"name"`
+	URL            string `toml:"url"`
+	Enabled        bool   `toml:"enabled"`
+	Priority       int    `toml:"priority"`
+	Discovery      bool   `toml:"discovery"`
+	AllowInsecure  bool   `toml:"allow_insecure"`
+	AccessTokenEnv string `toml:"access_token_env"`
 }
 
 // NetworkProxySpec returns the expanded proxy settings used by netclient.
@@ -1667,9 +1691,10 @@ func Default() *Config {
 		Sandbox: SandboxConfig{Bash: "enforce", Network: true},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.
-		LSP:     LSPConfig{Enabled: true},
-		Network: NetworkConfig{ProxyMode: netclient.ModeAuto},
-		Work:    WorkConfig{Enabled: true, CollaborationWorkbenchV2: true},
+		LSP:           LSPConfig{Enabled: true},
+		Network:       NetworkConfig{ProxyMode: netclient.ModeAuto},
+		Collaboration: CollaborationConfig{PreferLAN: true, ConnectTimeout: 10, RouteStable: 60},
+		Work:          WorkConfig{Enabled: true, CollaborationWorkbenchV2: true},
 		Bot: BotConfig{
 			ToolApprovalMode:   "ask",
 			MaxSteps:           25,
