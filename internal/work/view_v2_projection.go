@@ -59,6 +59,7 @@ func promoteV2View(view *WorkView, definition *WorkDefinitionRevision) *WorkView
 			Progress:        runtime.Progress,
 			SessionRef:      sessionRef,
 			WaitingInputIDs: append([]string{}, runtime.WaitingInputIDs...),
+			SkillName:       view.Work.V2NodeSkillBindings[runtime.NodeID],
 			Error:           runtime.Error,
 			Retryable:       runtime.State == TaskFailedRetryable || runtime.State == TaskInvalidated,
 			UpdatedAt:       runtime.UpdatedAt,

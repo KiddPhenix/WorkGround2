@@ -667,6 +667,7 @@ func (a *App) restoreOrBuildTabs() {
 		for _, tab := range toBuild {
 			a.startTabControllerBuild(tab)
 		}
+		a.restoreCollaborationRuntimes()
 		a.startRecoveryGC()
 		a.startExternalSessionGC()
 		return

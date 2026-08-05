@@ -890,6 +890,12 @@ type Options struct {
 	// UseMemoryCompilerLLMClassification 启用 LLM 分类来判断任务 vs 聊天
 	// 默认 false 时使用启发式分类器
 	UseMemoryCompilerLLMClassification bool
+
+	// SemanticIntentProvider is an independent lightweight provider for Room
+	// semantic intent classification. When nil the classifier is unavailable
+	// and ClassifySemanticIntent returns a safe fallback. The main session
+	// model is never used for this purpose.
+	SemanticIntentProvider provider.Provider
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -974,8 +980,8 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		memoryCompiler:          opts.MemoryCompiler,
 		memoryCompilerVerbosity: normalizeMemoryCompilerVerbosity(opts.MemoryCompilerVerbosity),
 	}
-	if prov != nil {
-		a.intent = newSemanticIntentClassifier(prov)
+	if opts.SemanticIntentProvider != nil {
+		a.intent = newSemanticIntentClassifier(opts.SemanticIntentProvider)
 	}
 	// 初始化分类器
 	if opts.UseMemoryCompilerLLMClassification && prov != nil {

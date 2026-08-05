@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent } from "react";
-import { Bot, FileUp, Send, UserRound, Users } from "lucide-react";
+import { Bot, FileUp, Reply, Send, UserRound, Users, X } from "lucide-react";
 import { isComposerSubmitKey, normalizeComposerSubmitKey, type ComposerSubmitKey } from "../../lib/composerKeyboard";
 import { useT } from "../../lib/i18n";
 import { onFilesDroppedIn } from "../../lib/bridge";
 import { collabCopy, contributionKinds, contributionLabel } from "../copy";
 import { activeMention, collaborationMentionCandidates, filterMentionCandidates, insertMention, mentionPayload, type CollaborationMention } from "../mentions";
-import type { CollaborationMember } from "../types";
+import type { CollaborationMember, CollaborationTimelineItem } from "../types";
 
 type ComposerMode = "chat" | "contribution" | "agent" | "both" | "request";
 
@@ -16,12 +16,12 @@ interface CollaborationComposerProps {
   disabled?: boolean;
   agentBusy?: boolean;
   submitKey: ComposerSubmitKey;
-  prefill: string;
-  onPrefillConsumed(): void;
-  onChat(text: string, mentions: { mentionMemberIDs: string[]; mentionAgentIDs: string[] }): Promise<void>;
-  onAgent(text: string): Promise<void>;
+  replyTo?: CollaborationTimelineItem;
+  onReplyClear(): void;
+  onChat(text: string, mentions: { mentionMemberIDs: string[]; mentionAgentIDs: string[] }, referenceIDs: string[]): Promise<void>;
+  onAgent(text: string, referenceIDs: string[]): Promise<void>;
   onContribution(text: string, kind: string): Promise<void>;
-  onRequest(memberId: string, text: string): Promise<void>;
+  onRequest(memberId: string, text: string, referenceIDs: string[]): Promise<void>;
   onShareFiles(paths: string[]): Promise<void>;
 }
 
@@ -41,7 +41,7 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
-  const value = props.prefill || draft;
+  const value = draft;
   const others = props.members.filter((member) => member.online && member.id !== props.selfMemberId);
   const agentMode = mode === "agent" || mode === "both";
   const mentionEnabled = mode === "chat" || mode === "both";
@@ -51,7 +51,6 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
   const mentionOpen = !mentionDismissed && Boolean(mention) && mentionMatches.length > 0;
 
   const update = (next: string, nextCursor = next.length) => {
-    if (props.prefill) props.onPrefillConsumed();
     setDraft(next);
     setCursor(nextCursor);
     setMentionDismissed(false);
@@ -71,14 +70,15 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
     const text = value.trim();
     if (!text || sending || props.disabled) return;
     const mentions = mentionPayload(text, selectedMentions);
+    const referenceIDs = props.replyTo ? [props.replyTo.id] : [];
     setSending(true);
     try {
-      if (mode === "agent") await props.onAgent(text);
+      if (mode === "agent") await props.onAgent(text, referenceIDs);
       else if (mode === "contribution") await props.onContribution(text, contributionKind);
-      else if (mode === "both") { await props.onChat(text, mentions); await props.onAgent(text); }
-      else if (mode === "request") await props.onRequest(target, text);
-      else await props.onChat(text, mentions);
-      setDraft(""); setCursor(0); setSelectedMentions([]); props.onPrefillConsumed();
+      else if (mode === "both") { await props.onChat(text, mentions, referenceIDs); await props.onAgent(text, referenceIDs); }
+      else if (mode === "request") await props.onRequest(target, text, referenceIDs);
+      else await props.onChat(text, mentions, referenceIDs);
+      setDraft(""); setCursor(0); setSelectedMentions([]); props.onReplyClear();
     } catch {
       // The controller projects the actionable error into the collaboration surface.
     } finally { setSending(false); }
@@ -121,6 +121,7 @@ export function CollaborationComposer(props: CollaborationComposerProps) {
 
   return <div ref={rootRef} className={`collab-composer${dragging ? " collab-composer--dragging" : ""}`} style={{ "--wails-drop-target": "drop" } as CSSProperties} onDragEnter={dragOver} onDragOver={dragOver} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); }}>
     {(dragging || sharing) && <div className="collab-file-drop" role="status"><FileUp size={18} />{sharing ? c("filePreparing") : c("fileDrop")}</div>}
+    {props.replyTo && <div className="collab-composer-reply"><Reply size={13} /><span><strong>{c("replyingTo", { name: props.replyTo.actorName })}</strong><small>{props.replyTo.text}</small></span><button type="button" aria-label={c("cancelReply")} title={c("cancelReply")} onClick={props.onReplyClear}><X size={14} /></button></div>}
     <div className="collab-composer-mode">
       <select value={mode} onChange={(event) => setMode(event.target.value as ComposerMode)} aria-label={c("messageType")}>
         <option value="chat">{c("teamChat")}</option>

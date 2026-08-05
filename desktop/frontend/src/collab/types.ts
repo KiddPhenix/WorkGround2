@@ -224,6 +224,15 @@ export interface CollaborationMember {
   };
 }
 
+export interface CollaborationAgentHandoff {
+  targetAgentId: string;
+  instruction: string;
+  referenceIds: string[];
+  reason?: string;
+  expectedOutcome?: string;
+  requiresResponse: boolean;
+}
+
 export interface CollaborationTimelineItem {
   id: string;
   sequence: number;
@@ -245,8 +254,11 @@ export interface CollaborationTimelineItem {
   requestStatus?: "waiting" | "accepted" | "rejected" | "completed";
   agentRunStatus?: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled" | "interrupted";
   agentRunSummary?: string;
+  agentRunOutput?: string;
   agentRunError?: string;
   agentCommandId?: string;
+  agentRunId?: string;
+  handoffs?: CollaborationAgentHandoff[];
   systemKind?: string;
   reactions?: Record<string, string[]>;
   fileName?: string;

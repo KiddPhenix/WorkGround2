@@ -33,7 +33,7 @@ import {
   Brain,
   Cpu,
   Palette,
-	RadioTower,
+	PictureInPicture2,
   Users,
   X,
 } from "lucide-react";
@@ -305,7 +305,7 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 		title="小组件模式"
 		onClick={() => void onEnterWidgetMode()}
 	  >
-		<RadioTower size={13} strokeWidth={1.8} />
+		<PictureInPicture2 size={13} strokeWidth={1.8} />
 	  </button>
       )}
       <button

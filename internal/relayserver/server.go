@@ -350,6 +350,7 @@ func (c *client) attachGuest(h relayproto.Header, payload []byte) {
 		return
 	}
 	var tunnelID string
+	var issuedGuestCap string
 	if req.JoinRef != "" {
 		claims, err := c.server.signer.Verify(req.JoinRef, relayproto.RoleJoin, h.TunnelID)
 		if err != nil {
@@ -357,6 +358,11 @@ func (c *client) attachGuest(h relayproto.Header, payload []byte) {
 			return
 		}
 		tunnelID = claims.TunnelID
+		issuedGuestCap, _, err = c.server.signer.Issue(tunnelID, relayproto.RoleGuest, c.server.cfg.CapabilityTTL, relayproto.CapabilityLimits{MaxStreams: c.server.cfg.MaxStreamsPerPeer})
+		if err != nil {
+			c.sendError("internal_error", "issue guest capability: "+err.Error(), true, h.RelayRequestID)
+			return
+		}
 		if err := c.server.discovery.consumeJoin(req.JoinRef, tunnelID); err != nil {
 			c.sendError(relayproto.ErrAuthFailed, err.Error(), false, h.RelayRequestID)
 			return
@@ -380,9 +386,9 @@ func (c *client) attachGuest(h relayproto.Header, payload []byte) {
 		return
 	}
 	c.tunnelID, c.peerID = tunnelID, peerID
-	opened := relayproto.PeerOpened{TunnelID: tunnelID, PeerID: peerID}
+	opened := relayproto.PeerOpened{TunnelID: tunnelID, PeerID: peerID, GuestCapability: issuedGuestCap}
 	c.sendPayload(relayproto.Header{Type: relayproto.TypePeerOpened, RelayRequestID: h.RelayRequestID, TunnelID: tunnelID, PeerID: peerID}, opened, true, true)
-	host.sendPayload(relayproto.Header{Type: relayproto.TypePeerOpened, TunnelID: tunnelID, PeerID: peerID}, opened, true, false)
+	host.sendPayload(relayproto.Header{Type: relayproto.TypePeerOpened, TunnelID: tunnelID, PeerID: peerID}, relayproto.PeerOpened{TunnelID: tunnelID, PeerID: peerID}, true, false)
 }
 
 func (c *client) route(h relayproto.Header, original []byte) {

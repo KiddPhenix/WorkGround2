@@ -984,6 +984,10 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               onInferWorkInputs={
                 resolvedPort.inferWorkInputs ? (req) => adapter.inferWorkInputs(req) : undefined
               }
+              onSetNodeSkill={resolvedPort.setNodeSkill ? (req) => resolvedPort.setNodeSkill!(req) : undefined}
+              onClearNodeSkill={resolvedPort.clearNodeSkill ? (req) => resolvedPort.clearNodeSkill!(req) : undefined}
+              onListWorkSkills={resolvedPort.listWorkSkills ? () => resolvedPort.listWorkSkills!() : undefined}
+              onCreateWorkSkill={resolvedPort.createWorkSkill ? (req) => resolvedPort.createWorkSkill!(req) : undefined}
               onPreviewPatch={
                 resolvedPort.previewWorkPatch
                   ? (intent) => adapter.previewWorkPatch(intent)

@@ -60,3 +60,22 @@ func (s *skillSet) byName(name string) (skill.Skill, bool) {
 func (s *skillSet) discovered() []skill.Skill {
 	return s.enabled
 }
+
+// resolve returns one enabled Skill by name, preferring the live store.
+// Returns (Skill, false) when missing or disabled.
+func (s *skillSet) resolve(name string) (skill.Skill, bool) {
+	if s.store != nil {
+		sk, ok := s.store.Read(name)
+		if !ok {
+			return skill.Skill{}, false
+		}
+		// store.Read already filters disabled names, but double-check.
+		return sk, true
+	}
+	for _, sk := range s.enabled {
+		if sk.Name == name {
+			return sk, true
+		}
+	}
+	return skill.Skill{}, false
+}

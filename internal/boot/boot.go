@@ -1088,6 +1088,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if cfg.MemoryCompilerEnabled() {
 		memCompiler = memorycompiler.New(config.MemoryCompilerDir(root))
 	}
+	var semanticIntentProv provider.Provider
 	newAgentOptions := func(sessionJobs *jobs.Manager) agent.Options {
 		return agent.Options{
 			MaxSteps:                           maxSteps,
@@ -1113,8 +1114,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			MemoryCompiler:                     memCompiler,
 			MemoryCompilerVerbosity:            cfg.MemoryCompilerVerbosity(),
 			UseMemoryCompilerLLMClassification: strings.TrimSpace(os.Getenv("WorkGround2_MEMORY_COMPILER_LLM_CLASSIFICATION")) == "true",
+			SemanticIntentProvider:             semanticIntentProv,
 		}
 	}
+
+	// Resolve a standalone semantic intent provider for Room message
+	// classification. It never shares the main session model and degrades
+	// safely when no lightweight model is available.
+	if !tokenEconomy {
+		semanticIntentProv, err = resolveSemanticIntentProvider(cfg, proxySpec)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	executor := agent.New(execProv, reg, execSess, newAgentOptions(jm), sink)
 
 	var runner agent.Runner = executor
@@ -1235,6 +1248,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			cornerstoneBlobs = store
 			workSvc.SetCornerstoneManager(cornerstoneManager)
 			workSvc.SetCornerstoneResolver(opts.CornerstoneResolver)
+			workSvc.SetSkillResolver(newBootSkillResolver(skillStore))
 			if opts.SessionRefs != nil {
 				if err := workSvc.SetSessionRefStore(opts.SessionRefs, work.SessionRefScopeID(workDir)); err != nil {
 					jm.Close()
@@ -2043,4 +2057,110 @@ func providerNames(cfg *config.Config) string {
 		names[i] = p.Name
 	}
 	return strings.Join(names, "/")
+}
+
+// resolveSemanticIntentProvider picks a standalone provider for Room semantic
+// intent classification. Resolution order:
+//  1. Explicit cfg.Agent.SemanticIntentModel — must resolve, or Build fails.
+//  2. Auto-plan classifier model, if configured and not reasoning-capable.
+//  3. Auto-select the first configured lightweight non-reasoning chat model
+//     (matching flash/mini/haiku/lite/small/nano in the model name).
+//  4. nil — classification unavailable, safe degradation.
+func resolveSemanticIntentProvider(cfg *config.Config, proxySpec netclient.ProxySpec) (provider.Provider, error) {
+	// 1. Explicit config.
+	if m := strings.TrimSpace(cfg.Agent.SemanticIntentModel); m != "" {
+		entry, ok := cfg.ResolveModel(m)
+		if !ok {
+			return nil, fmt.Errorf("semantic_intent_model %q is not a configured provider", m)
+		}
+		if entry.HasCapability(config.CapReasoning) {
+			return nil, fmt.Errorf("semantic_intent_model %q must be a non-reasoning model", m)
+		}
+		if !entry.Configured() {
+			return nil, fmt.Errorf("semantic_intent_model %q is not configured", m)
+		}
+		prov, err := NewProviderWithProxy(entry, proxySpec)
+		if err != nil {
+			return nil, fmt.Errorf("semantic_intent_model %q: %w", m, err)
+		}
+		return prov, nil
+	}
+
+	// 2. Reuse auto-plan classifier if it has no reasoning capability.
+	if ac := strings.TrimSpace(cfg.Agent.AutoPlanClassifier); ac != "" {
+		if entry, ok := cfg.ResolveModel(ac); ok && entry.Configured() && !entry.HasCapability(config.CapReasoning) {
+			prov, err := NewProviderWithProxy(entry, proxySpec)
+			if err == nil {
+				return prov, nil
+			}
+		}
+	}
+
+	// 3. Auto-select a lightweight non-reasoning chat model.
+	for i := range cfg.Providers {
+		entry := &cfg.Providers[i]
+		for _, model := range entry.ModelList() {
+			lower := strings.ToLower(model)
+			if !isLightweightModelName(lower) {
+				continue
+			}
+			resolved, ok := cfg.ResolveModel(entry.Name + "/" + model)
+			if !ok || !resolved.Configured() || resolved.HasCapability(config.CapReasoning) {
+				continue
+			}
+			prov, err := NewProviderWithProxy(resolved, proxySpec)
+			if err == nil {
+				return prov, nil
+			}
+		}
+	}
+
+	// 4. No qualified model — classifier unavailable.
+	return nil, nil
+}
+
+// lightweightModelKeywords lists model-name substrings that indicate a
+// lightweight/fast variant suitable for low-stakes classification.
+var lightweightModelKeywords = []string{
+	"flash",
+	"mini",
+	"haiku",
+	"lite",
+	"small",
+	"nano",
+}
+
+func isLightweightModelName(lower string) bool {
+	for _, kw := range lightweightModelKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// ── Boot SkillResolver adapter ────────────────────────────────────────────
+
+type bootSkillResolver struct {
+	store *skill.Store
+}
+
+func newBootSkillResolver(store *skill.Store) work.SkillResolver {
+	return &bootSkillResolver{store: store}
+}
+
+func (r *bootSkillResolver) Resolve(ctx context.Context, name string) (work.SkillBody, error) {
+	sk, ok := r.store.Read(name)
+	if !ok {
+		return work.SkillBody{}, fmt.Errorf("skill %q not found", name)
+	}
+	if sk.Name == "" {
+		return work.SkillBody{}, fmt.Errorf("skill %q resolved with empty name", name)
+	}
+	return work.SkillBody{
+		Name:        sk.Name,
+		Description: sk.Description,
+		Body:        sk.Body,
+		Enabled:     true, // store.Read already filters disabled names
+	}, nil
 }

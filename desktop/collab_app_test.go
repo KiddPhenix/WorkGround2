@@ -661,7 +661,7 @@ func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	if err != nil || !second.Duplicate || second.RunID != first.RunID || submits != 1 {
 		t.Fatalf("duplicate=%+v submits=%d err=%v", second, submits, err)
 	}
-	if routedSession != "session-a" || strings.Index(routedInput, "第一条") > strings.Index(routedInput, "第二条") || !strings.Contains(routedInput, "author=Alice revision=2") {
+	if routedSession != "session-a" || strings.Index(routedInput, "第一条") > strings.Index(routedInput, "第二条") || !strings.Contains(routedInput, "author=Alice revision=2") || !strings.Contains(routedInput, "<room-collaboration") || !strings.Contains(routedInput, `"agentId":"agent-a"`) {
 		t.Fatalf("explicit route/context mismatch: session=%q input=%q", routedSession, routedInput)
 	}
 	busy, err := c.startAgent(context.Background(), StartCollaborationAgentInput{RequestID: "start-2", SessionID: "session-a", Instruction: "另一个任务"})
@@ -672,6 +672,29 @@ func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	changed.Instruction = "不同指令"
 	if _, err := c.startAgent(context.Background(), changed); err == nil {
 		t.Fatal("same requestId with a different fingerprint was accepted")
+	}
+}
+
+func TestCollaborationAgentOutputExtractsDirectedHandoffs(t *testing.T) {
+	snapshot := collab.Snapshot{
+		Members: []collab.Member{
+			{ID: "member-a", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-a"}},
+			{ID: "member-b", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-b"}},
+		},
+		Timeline: []collab.TimelineItem{{ID: "message-1", Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "message-1", Text: "check this"}}},
+	}
+	output := `已完成当前分析。
+<room-handoffs>[{"targetAgentId":"agent-b","instruction":"复核边界条件","referenceIds":["message-1","missing"],"reason":"需要独立验证","expectedOutcome":"给出测试结论","requiresResponse":true},{"targetAgentId":"agent-a","instruction":"self","requiresResponse":true}]</room-handoffs>`
+	public, handoffs := collaborationAgentOutput(output, snapshot, "agent-a", nil)
+	if public != "已完成当前分析。" || len(handoffs) != 1 {
+		t.Fatalf("parsed output=%q handoffs=%+v", public, handoffs)
+	}
+	if handoffs[0].TargetAgentID != "agent-b" || handoffs[0].Instruction != "复核边界条件" || !handoffs[0].RequiresResponse || len(handoffs[0].ReferenceIDs) != 1 || handoffs[0].ReferenceIDs[0] != "message-1" {
+		t.Fatalf("directed handoff=%+v", handoffs[0])
+	}
+	malformed := `保留原文<room-handoffs>[bad]</room-handoffs>`
+	if text, parsed := collaborationAgentOutput(malformed, snapshot, "agent-a", nil); text != malformed || len(parsed) != 0 {
+		t.Fatalf("malformed marker was hidden: text=%q parsed=%+v", text, parsed)
 	}
 }
 
@@ -1212,7 +1235,7 @@ func TestCollaborationAgentWaitsForStartingWorkspaceAndRunsOnce(t *testing.T) {
 	close(workspaceReady)
 	select {
 	case value := <-submitted:
-		if value != input.Instruction {
+		if !strings.Contains(value, input.Instruction) || !strings.Contains(value, "<room-collaboration") {
 			t.Fatalf("submitted input=%q", value)
 		}
 	case <-time.After(2 * time.Second):

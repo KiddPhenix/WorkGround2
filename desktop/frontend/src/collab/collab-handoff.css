@@ -1,0 +1,29 @@
+.collab-reference-list { display: grid; gap: 5px; width: min(620px, 100%); margin: 3px 0 7px; }
+.collab-reference-card { display: grid; grid-template-columns: minmax(0, 1fr) 30px; overflow: hidden; border: 1px solid var(--collab-border-soft); border-left: 2px solid color-mix(in srgb, var(--collab-accent) 46%, var(--collab-border)); border-radius: 7px; background: var(--collab-control); }
+.collab-reference-card button { border: 0; color: var(--collab-muted); background: transparent; cursor: pointer; }
+.collab-reference-card__preview { display: grid; gap: 3px; min-width: 0; padding: 7px 9px; text-align: left; }
+.collab-reference-card__preview > span, .collab-reference-card__preview > small { display: flex; align-items: center; gap: 5px; }
+.collab-reference-card__preview strong { color: var(--collab-dim); font-size: 10px; }
+.collab-reference-card__preview p { display: -webkit-box; margin: 0; overflow: hidden; color: var(--collab-muted); font-size: 10.5px; line-height: 1.4; white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.collab-reference-card__preview p.collab-reference-card__text--open { display: block; overflow: visible; -webkit-line-clamp: initial; }
+.collab-reference-card__preview small { font-size: 9px; }
+.collab-reference-card__jump { display: grid; place-items: center; border-left: 1px solid var(--collab-border-soft) !important; }
+.collab-reference-card__jump:hover { color: var(--collab-accent); background: var(--collab-accent-soft); }
+.collab-handoffs { display: grid; gap: 4px; width: min(620px, 100%); margin: 3px 0 7px; }
+.collab-handoffs > div { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: 6px; color: var(--collab-muted); background: var(--collab-accent-soft); font-size: 10px; }
+.collab-handoffs span { display: grid; gap: 2px; }
+.collab-handoffs strong { color: var(--collab-accent); }
+.collab-message--referenced { animation: collab-reference-highlight 1.8s ease-out; }
+
+.collab-composer-reply { display: grid; grid-template-columns: 18px minmax(0, 1fr) 28px; align-items: center; gap: 5px; margin-bottom: 7px; padding: 6px 8px; border-left: 2px solid color-mix(in srgb, var(--collab-accent) 54%, var(--collab-border)); border-radius: 6px; color: var(--collab-accent); background: var(--collab-accent-soft); }
+.collab-composer-reply > span { display: grid; min-width: 0; gap: 1px; }
+.collab-composer-reply strong, .collab-composer-reply small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collab-composer-reply strong { color: var(--collab-accent); font-size: 10px; }
+.collab-composer-reply small { color: var(--collab-muted); font-size: 10px; }
+.collab-composer-reply button { display: grid; place-items: center; width: 25px; height: 25px; padding: 0; border: 0; border-radius: 5px; color: var(--collab-muted); background: transparent; cursor: pointer; }
+.collab-composer-reply button:hover { color: var(--collab-accent); background: var(--collab-accent-soft); }
+
+@keyframes collab-reference-highlight {
+  0%, 35% { background: color-mix(in srgb, var(--collab-accent) 20%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--collab-accent) 32%, transparent); }
+  100% { background: transparent; box-shadow: none; }
+}

@@ -2132,6 +2132,122 @@ async function runTests(): Promise<void> {
     await cleanup();
   }
 
+  // Optional Skill binding stays retryable and keeps failed saves visible.
+  {
+    resetStore();
+    seedStore([makeTask()], makeDefinition([makeNodeDef()]));
+    let listCalls = 0;
+    let setCalls = 0;
+    let clearCalls = 0;
+    const setRequestIds: string[] = [];
+    const { host, cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        runId="run-1"
+        workRevision={1}
+        nodeSkillBindings={{ 'node-1': 'demo' }}
+        onListWorkSkills={async () => {
+          listCalls++;
+          if (listCalls === 1) throw new Error('技能列表暂不可用');
+          return [{ name: 'demo', description: '演示技能', scope: 'project', enabled: true }];
+        }}
+        onSetNodeSkill={async (input) => {
+          setCalls++;
+          setRequestIds.push(input.requestId);
+          return setCalls === 1
+            ? { revision: 1, duplicate: false, committed: false, recoverable: true, error: { code: 'busy', message: '保存失败', committed: false, recoverable: true } }
+            : { revision: 2, duplicate: false, committed: true, recoverable: false };
+        }}
+        onClearNodeSkill={async () => {
+          clearCalls++;
+          return { revision: 3, duplicate: false, committed: true, recoverable: false };
+        }}
+        onCreateWorkSkill={async () => ({ committed: false, recoverable: true })}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-skill-btn-task-1"]')?.click());
+    contains(host.querySelector('[data-testid="skill-modal-error"]')?.textContent ?? '', '技能列表暂不可用', 'skill modal: load error stays visible');
+    await interact(() => host.querySelector<HTMLButtonElement>('.wg2-sm-retry-btn')?.click());
+    ok(!!host.querySelector('[data-testid="skill-modal-item-demo"]'), 'skill modal: list retry succeeds');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="skill-modal-item-demo"] button')?.click());
+    contains(host.querySelector('[data-testid="skill-modal-save-error"]')?.textContent ?? '', '保存失败', 'skill modal: failed binding remains retryable');
+    ok(!!host.querySelector('[data-testid="skill-modal"]'), 'skill modal: failed binding does not close');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="skill-modal-item-demo"] button')?.click());
+    ok(!host.querySelector('[data-testid="skill-modal"]'), 'skill modal: successful binding closes');
+    eq(setCalls, 2, 'skill modal: binding can be retried safely');
+    eq(setRequestIds[1], setRequestIds[0], 'skill modal: binding retry reuses the idempotency request id');
+
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-skill-btn-task-1"]')?.click());
+    await settle();
+    contains(host.querySelector('[data-testid="skill-modal-current"]')?.textContent ?? '', 'demo', 'skill modal: pending node restores authoritative binding');
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="skill-modal-clear"]')?.click());
+    eq(clearCalls, 1, 'skill modal: binding can be cleared');
+    ok(!host.querySelector('[data-testid="skill-modal"]'), 'skill modal: successful clear closes');
+    await cleanup();
+  }
+
+  // New project Skill creation immediately binds the returned Skill.
+  {
+    resetStore();
+    seedStore([makeTask()], makeDefinition([makeNodeDef()]));
+    let createdName = '';
+    let boundName = '';
+    const { host, cleanup } = await mount(
+      <ExecutionList
+        workId={WORK_ID}
+        runId="run-1"
+        workRevision={1}
+        onListWorkSkills={async () => []}
+        onCreateWorkSkill={async (input) => {
+          createdName = input.name;
+          return { skill: { name: input.name, description: input.description, scope: 'project', enabled: true }, committed: true, recoverable: false };
+        }}
+        onSetNodeSkill={async (input) => {
+          boundName = input.skillName;
+          return { revision: 2, duplicate: false, committed: true, recoverable: false };
+        }}
+      />,
+    );
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="execution-row-skill-btn-task-1"]')?.click());
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="skill-modal-new-btn"]')?.click());
+    const setField = (selector: string, value: string) => {
+      const field = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
+      if (!field) return;
+      const previous = field.value;
+      field.focus();
+      const setter = Object.getOwnPropertyDescriptor(
+        field instanceof window.HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(field, value);
+      (field as (HTMLInputElement | HTMLTextAreaElement) & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+      const InputEventCtor = window.InputEvent ?? window.Event;
+      field.dispatchEvent(new InputEventCtor('input', { bubbles: true, data: value, inputType: 'insertText' } as InputEventInit));
+      field.dispatchEvent(new window.Event('change', { bubbles: true }));
+    };
+    await interact(() => setField('[data-testid="skill-modal-create-name"]', 'new-skill'));
+    await interact(() => setField('[data-testid="skill-modal-create-desc"]', '新技能'));
+    await interact(() => setField('[data-testid="skill-modal-create-body"]', '执行附加规则'));
+    await interact(() => host.querySelector<HTMLButtonElement>('[data-testid="skill-modal-create-submit"]')?.click());
+    eq(createdName, 'new-skill', 'skill modal: new Skill is created in project scope');
+    eq(boundName, 'new-skill', 'skill modal: created Skill is immediately bound');
+    ok(!host.querySelector('[data-testid="skill-modal"]'), 'skill modal: create and bind closes after both commits');
+    await cleanup();
+  }
+
+  // Running tasks expose the bound Skill but cannot mutate it mid-execution.
+  {
+    resetStore();
+    seedStore([makeTask({ state: 'running', skillName: 'demo' })], makeDefinition([makeNodeDef()]));
+    const { host, cleanup } = await mount(
+      <ExecutionList workId={WORK_ID} runId="run-1" onSetNodeSkill={async () => ({ revision: 1, duplicate: false, committed: true, recoverable: false })} />,
+    );
+    const button = host.querySelector<HTMLButtonElement>('[data-testid="execution-row-skill-btn-task-1"]');
+    ok(button?.disabled, 'skill binding: running task edit is disabled');
+    contains(host.querySelector('[data-testid="execution-row-skill-task-1"]')?.textContent ?? '', 'demo', 'skill binding: running task still shows its Skill');
+    await cleanup();
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   // SUMMARY
   // ════════════════════════════════════════════════════════════════════════

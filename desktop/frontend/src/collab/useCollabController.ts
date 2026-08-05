@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useT } from "../lib/i18n";
-import { agentCollaborationRequestID, collabReducer, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
-import { mentionRequestID, nextMentionedAgentItem } from "./mentions";
+import { collabReducer, detectSelfAgentIntentRule, initialCollabState, ownMember, replayableSelfAgentItems, selectedTimelineItems } from "./state";
 import { defaultCollaborationTransport } from "./transport";
 import type {
   CollaborationActionResult,
@@ -74,7 +73,7 @@ export interface CollabController {
   saveRelayConfig(input: CollaborationRelayConfig): Promise<void>;
   leave(): Promise<void>;
   refresh(reconnecting?: boolean): Promise<void>;
-  postChat(text: string, mentions?: { mentionMemberIDs: string[]; mentionAgentIDs: string[] }): Promise<void>;
+  postChat(text: string, mentions?: { mentionMemberIDs: string[]; mentionAgentIDs: string[] }, referenceIDs?: string[]): Promise<void>;
   postContribution(text: string, contributionKind: string): Promise<void>;
   requestAgent(targetMemberID: string, text: string, referenceIDs?: string[]): Promise<void>;
   agree(item: CollaborationTimelineItem): Promise<void>;
@@ -106,7 +105,6 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const transport = useMemo(() => suppliedTransport || defaultCollaborationTransport(sessionID), [sessionID, suppliedTransport]);
   const [state, dispatch] = useReducer(collabReducer, initialCollabState);
   const [agentStarting, setAgentStarting] = useState(false);
-  const [mentionRetry, setMentionRetry] = useState(0);
   const [relayConfig, setRelayConfig] = useState<CollaborationRelayConfig>({ preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [] });
   const [roomQuery, setRoomQuery] = useState<CollaborationRoomQueryResult>({ rooms: [] });
   const [discoveryLoading, setDiscoveryLoading] = useState(false);
@@ -120,12 +118,6 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const intentEpoch = useRef(0);
   const intentChecks = useRef(new Set<string>());
   const agentStartsRef = useRef(0);
-  const autoRunningRef = useRef("");
-  const automaticScanRef = useRef<() => void>(() => {});
-  const agentCollaborationScanRef = useRef<() => void>(() => {});
-  const agentCollaborationAttemptAtRef = useRef(0);
-  const mentionStartRef = useRef("");
-  const mentionRetryRef = useRef<number | undefined>(undefined);
   const self = ownMember(state);
   const agentBusy = agentStarting || self?.agent.status === "running" || self?.agent.status === "waiting";
 
@@ -230,12 +222,8 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   useEffect(() => {
     intentEpoch.current++;
     intentChecks.current.clear();
-    mentionStartRef.current = "";
-    if (mentionRetryRef.current !== undefined) window.clearTimeout(mentionRetryRef.current);
-    mentionRetryRef.current = undefined;
     return () => {
       intentEpoch.current++;
-      if (mentionRetryRef.current !== undefined) window.clearTimeout(mentionRetryRef.current);
     };
   }, [transport]);
 
@@ -316,7 +304,11 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     intentChecks.current.add(key);
     const epoch = intentEpoch.current;
     void transport.classifyIntent(item.text).then((result) => {
-      if (epoch !== intentEpoch.current || (result.intent === "chat" && !result.error)) return;
+      if (epoch !== intentEpoch.current) return;
+      // Only create a PendingIntent when classification succeeds with an
+      // actionable intent. Errors, timeouts, and unavailable classifiers
+      // must not create task cards — the message was already sent.
+      if (result.error || result.intent === "chat") return;
       dispatch({
         type: "PENDING_INTENT",
         intent: {
@@ -324,23 +316,12 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
           revision: item.revision,
           instruction: item.text,
           deadline: Date.now() + 5_000,
-          status: result.error ? "failed" : "pending",
-          error: result.error ? `${t("collab.semanticIntentFailed")}: ${result.error}` : undefined,
+          status: "pending",
         },
       });
-    }).catch((error) => {
-      if (epoch !== intentEpoch.current) return;
-      dispatch({
-        type: "PENDING_INTENT",
-        intent: {
-          messageId: item.id,
-          revision: item.revision,
-          instruction: item.text,
-          deadline: Date.now(),
-          status: "failed",
-          error: `${t("collab.semanticIntentFailed")}: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      });
+    }).catch(() => {
+      // Classification transport failure (network, timeout, etc.).
+      // The message was already sent; do not create a PendingIntent.
     });
   }, [t, transport]);
 
@@ -348,11 +329,11 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
     for (const item of replayableSelfAgentItems(state)) createPendingIntent(item);
   }, [createPendingIntent, state]);
 
-  const postChat = useCallback(async (value: string, mentions = { mentionMemberIDs: [], mentionAgentIDs: [] }) => {
+  const postChat = useCallback(async (value: string, mentions = { mentionMemberIDs: [], mentionAgentIDs: [] }, referenceIDs: string[] = []) => {
     const text = value.trim();
     if (!text) return;
     const epoch = sessionEpoch.current;
-    const result = await perform(transport.post({ requestID: requestID("chat"), kind: "chat", text, ...mentions }));
+    const result = await perform(transport.post({ requestID: requestID("chat"), kind: "chat", text, referenceIDs, ...mentions }));
     if (epoch === sessionEpoch.current && result.item) createPendingIntent(result.item);
   }, [createPendingIntent, perform, transport]);
 
@@ -391,28 +372,6 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
   const startAgent = useCallback((value: string, referenceIDs: string[], sourceRequestID?: string) => (
     startAgentWithID(value, referenceIDs, sourceRequestID)
   ), [startAgentWithID]);
-
-  useEffect(() => {
-    const item = nextMentionedAgentItem(state.timeline, state.selfMemberId, self?.agent.id);
-    if (!item || mentionStartRef.current === item.id) return;
-    mentionStartRef.current = item.id;
-    const references = item.localPending ? [] : [item.id];
-    void startAgentWithID(
-      t("collab.mentionInstruction", { name: item.actorName, text: item.text }),
-      references,
-      undefined,
-      mentionRequestID(item.id, self?.agent.id || ""),
-      true,
-    ).catch((error) => {
-      if (error instanceof Error && (error as CollaborationActionError).code === "agent_queue_full") return;
-      if (mentionRetryRef.current !== undefined) window.clearTimeout(mentionRetryRef.current);
-      mentionRetryRef.current = window.setTimeout(() => {
-        if (mentionStartRef.current === item.id) mentionStartRef.current = "";
-        mentionRetryRef.current = undefined;
-        setMentionRetry((value) => value + 1);
-      }, 5_000);
-    });
-  }, [mentionRetry, self?.agent.id, startAgentWithID, state.selfMemberId, state.timeline, t]);
 
   const cancelQueuedTask = useCallback(async (taskId: string) => {
     await perform(transport.cancelQueuedTask(taskId));
@@ -493,70 +452,6 @@ export function useCollabController(sessionID: string, suppliedTransport?: Colla
       throw error;
     }
   }, [t, transport]);
-
-  const scanAutomaticResponses = useCallback(() => {
-    if (state.status !== "connected" || autoRunningRef.current) return;
-    const next = nextAutomaticAgentItem(state, self?.agent.id);
-    if (!next) return;
-    autoRunningRef.current = next.item.id;
-    const operation = next.kind === "request"
-      ? acceptRequest(next.item, undefined, true)
-      : startAgentWithID(t("collab.autoAnswerInstruction", { text: next.item.text }), [next.item.id], undefined, undefined, true);
-    void operation.catch(() => undefined).finally(() => {
-      if (autoRunningRef.current === next.item.id) autoRunningRef.current = "";
-    });
-  }, [acceptRequest, self?.agent.id, startAgentWithID, state, t]);
-
-  useEffect(() => {
-    automaticScanRef.current = scanAutomaticResponses;
-  }, [scanAutomaticResponses]);
-
-  useEffect(() => {
-    if (state.agentConfig.recognitionMode === "message") scanAutomaticResponses();
-  }, [scanAutomaticResponses, state.agentConfig.recognitionMode]);
-
-  useEffect(() => {
-    if (state.agentConfig.recognitionMode !== "interval") return;
-    const timer = window.setInterval(() => automaticScanRef.current(), 30_000);
-    return () => window.clearInterval(timer);
-  }, [state.agentConfig.recognitionMode]);
-
-  const scanAgentCollaboration = useCallback(() => {
-    if (state.status !== "connected" || autoRunningRef.current) return;
-    const now = Date.now();
-    const intervalMs = Math.min(3600, Math.max(5, state.agentConfig.agentResponseIntervalSeconds || 30)) * 1000;
-    if (now - agentCollaborationAttemptAtRef.current < intervalMs) return;
-    const batch = nextAgentCollaborationBatch(state, now);
-    if (!batch || batch.waitMs > 0) return;
-    const key = batch.items.map((item) => item.id).join("\0");
-    agentCollaborationAttemptAtRef.current = now;
-    autoRunningRef.current = key;
-    const messages = batch.items.map((item) => `[${item.actorName}] ${item.text}`).join("\n\n");
-    void startAgentWithID(
-      t("collab.autoAgentCollaborationInstruction", { messages }),
-      batch.items.map((item) => item.id),
-      undefined,
-      agentCollaborationRequestID(batch.items, self?.agent.id || ""),
-      true,
-    ).catch(() => undefined).finally(() => {
-      if (autoRunningRef.current === key) autoRunningRef.current = "";
-    });
-  }, [self?.agent.id, startAgentWithID, state, t]);
-
-  useEffect(() => {
-    agentCollaborationScanRef.current = scanAgentCollaboration;
-  }, [scanAgentCollaboration]);
-
-  useEffect(() => {
-    agentCollaborationAttemptAtRef.current = 0;
-  }, [sessionID, state.room?.host, state.room?.port, state.room?.room]);
-
-  useEffect(() => {
-    if (!state.agentConfig.autoRespondAgents) return;
-    agentCollaborationScanRef.current();
-    const timer = window.setInterval(() => agentCollaborationScanRef.current(), 1_000);
-    return () => window.clearInterval(timer);
-  }, [state.agentConfig.autoRespondAgents]);
 
   const runFileAction = useCallback(async (operation: Promise<unknown>) => {
     const epoch = sessionEpoch.current;

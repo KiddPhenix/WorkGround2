@@ -128,6 +128,17 @@ func TestChatMentionsUseTypedRoomTargets(t *testing.T) {
 	if err != nil || again.Timeline[len(again.Timeline)-1].Chat.MentionAgentIDs[0] != "agent-b" {
 		t.Fatalf("mention slices escaped snapshot clone: %+v err=%v", again.Timeline, err)
 	}
+	referenceID := chat.ID
+	reply := Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "follow-up", ReferenceIDs: []string{referenceID}}}
+	if _, err := service.Submit(context.Background(), env("reply-1", "b", b.ConnectionSession, reply)); err != nil {
+		t.Fatal(err)
+	}
+	replied, err := service.Snapshot(context.Background(), "room", b.ConnectionSession)
+	if err != nil || !slices.Equal(replied.Timeline[len(replied.Timeline)-1].Chat.ReferenceIDs, []string{referenceID}) {
+		t.Fatalf("typed reply reference missing: %+v err=%v", replied.Timeline, err)
+	}
+	_, err = service.Submit(context.Background(), env("reply-missing", "b", b.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "missing", ReferenceIDs: []string{"missing"}}}))
+	requireCode(t, err, CodeNotFound)
 	_, err = service.Submit(context.Background(), env("mention-self", "a", a.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "self", MentionMemberIDs: []string{"a"}}}))
 	requireCode(t, err, CodeInvalid)
 	_, err = service.Submit(context.Background(), env("mention-missing", "a", a.ConnectionSession, Command{Type: CommandPostChat, Chat: &PostChatInput{Text: "missing", MentionAgentIDs: []string{"agent-missing"}}}))
@@ -274,7 +285,10 @@ func TestAgentOwnershipRequestDecisionAndRunTransitions(t *testing.T) {
 	run.AgentRun.Status = RunRunning
 	_, err = service.Submit(context.Background(), env("run-backward", "b", b.ConnectionSession, run))
 	requireCode(t, err, CodeConflict)
-	result := Command{Type: CommandPublishAgentResult, AgentResult: &PublishAgentResultInput{ResultID: "result-1", AgentID: "agent-b", RunID: "run-1", Summary: "done"}}
+	result := Command{Type: CommandPublishAgentResult, AgentResult: &PublishAgentResultInput{
+		ResultID: "result-1", AgentID: "agent-b", RunID: "run-1", Summary: "done",
+		Handoffs: []AgentHandoff{{TargetAgentID: "agent-a", Instruction: "verify the retry path", ReferenceIDs: []string{requestID}, Reason: "independent check", ExpectedOutcome: "test result", RequiresResponse: true}},
+	}}
 	_, err = service.Submit(context.Background(), env("wrong-result", "a", a.ConnectionSession, result))
 	requireCode(t, err, CodeForbidden)
 	if _, err := service.Submit(context.Background(), env("result", "b", b.ConnectionSession, result)); err != nil {
@@ -295,7 +309,7 @@ func TestAgentOwnershipRequestDecisionAndRunTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var foundB, foundRequest, foundRun bool
+	var foundB, foundRequest, foundRun, foundHandoff bool
 	for _, member := range snapshot.Members {
 		if member.ID == "b" {
 			foundB = member.Agent.Status == AgentIdle
@@ -308,9 +322,12 @@ func TestAgentOwnershipRequestDecisionAndRunTransitions(t *testing.T) {
 		if value.AgentRun != nil && value.AgentRun.ID == "run-1" {
 			foundRun = value.AgentRun.Status == RunCompleted
 		}
+		if value.AgentResult != nil && value.AgentResult.ID == "result-1" {
+			foundHandoff = len(value.AgentResult.Handoffs) == 1 && value.AgentResult.Handoffs[0].TargetAgentID == "agent-a" && value.AgentResult.Handoffs[0].RequiresResponse
+		}
 	}
-	if !foundB || !foundRequest || !foundRun {
-		t.Fatalf("replayed state missing: member=%v request=%v run=%v", foundB, foundRequest, foundRun)
+	if !foundB || !foundRequest || !foundRun || !foundHandoff {
+		t.Fatalf("replayed state missing: member=%v request=%v run=%v handoff=%v", foundB, foundRequest, foundRun, foundHandoff)
 	}
 }
 

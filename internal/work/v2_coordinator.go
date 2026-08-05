@@ -24,6 +24,7 @@ type V2Coordinator struct {
 	patches        *PatchService
 	scheduler      *V2Scheduler
 	commitObserver v2CommitObserver
+	skillResolver  SkillResolver
 }
 
 type v2CommitObserver func(workID string, baseRevision int64, requestID string) error
@@ -80,6 +81,9 @@ func (c *V2Coordinator) SetExecutor(executor TaskExecutor) {
 		return
 	}
 	c.scheduler = NewV2Scheduler(executor)
+	if c.skillResolver != nil {
+		c.scheduler.SetSkillResolver(c.skillResolver)
+	}
 }
 
 func (c *V2Coordinator) SetCommitObserver(observer v2CommitObserver) {
@@ -89,6 +93,27 @@ func (c *V2Coordinator) SetCommitObserver(observer v2CommitObserver) {
 	c.mu.Lock()
 	c.commitObserver = observer
 	c.mu.Unlock()
+}
+
+func (c *V2Coordinator) SetSkillResolver(resolver SkillResolver) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.skillResolver = resolver
+	if c.scheduler != nil {
+		c.scheduler.SetSkillResolver(resolver)
+	}
+}
+
+func (c *V2Coordinator) skillResolverSnapshot() SkillResolver {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.skillResolver
 }
 
 func (c *V2Coordinator) SetPatchPlanner(planner PatchPlanner) {
@@ -537,6 +562,236 @@ func validateRetryNodeReplay(input RetryWorkNodeRequest, event WorkEvent) error 
 	if payload.WorkID != input.WorkID || payload.RunID != input.RunID || payload.TaskID != input.TaskID ||
 		expected != input.ExpectedRevision {
 		return fmt.Errorf("%w: RetryWorkNode request %q intent changed", ErrWorkRequestIDConflict, input.RequestID)
+	}
+	return nil
+}
+
+// SetNodeSkill binds a Skill name to a Work node. The binding is persisted as a
+// V2 event and projected onto Work.V2NodeSkillBindings. Repeated calls with the
+// same requestID+skillName are idempotent (duplicate); different skillName with
+// the same requestID is a conflict.
+func (c *V2Coordinator) SetNodeSkill(
+	ctx context.Context,
+	input SetNodeSkillRequest,
+) (*SetNodeSkillResult, error) {
+	if c == nil || c.store == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.NodeID = strings.TrimSpace(input.NodeID)
+	input.SkillName = strings.TrimSpace(input.SkillName)
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.WorkID == "" || input.NodeID == "" || input.SkillName == "" || input.RequestID == "" {
+		return nil, errors.New("work: SetNodeSkill: workID/nodeID/skillName/requestID are required")
+	}
+	if input.ExpectedRevision <= 0 {
+		return nil, errors.New("work: SetNodeSkill: expectedRevision must be positive")
+	}
+
+	projection, state, err := c.store.LoadState(input.WorkID, input.RequestID+"/set-node-skill")
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckSchemaVersionV2("Work", projection.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if projection.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: SetNodeSkill is not allowed while ArchiveState=%s", projection.ArchiveState)
+	}
+
+	payload, err := json.Marshal(NodeSkillBoundPayload{
+		WorkID:    input.WorkID,
+		NodeID:    input.NodeID,
+		SkillName: input.SkillName,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("work: SetNodeSkill: encode payload: %w", err)
+	}
+	event := newServiceEventV2(
+		input.WorkID,
+		input.RequestID+"/set-node-skill",
+		EventNodeSkillBound,
+		payload,
+		time.Now().UTC(),
+	)
+	event.Object = ObjectContext{
+		Kind:               ObjectNode,
+		ID:                 input.NodeID,
+		WorkID:             input.WorkID,
+		NodeID:             input.NodeID,
+		DefinitionID:       input.WorkID,
+		ExpectedRevision:   int64Ptr(input.ExpectedRevision),
+		DefinitionRevision: int64Ptr(projection.V2CurrentRevision),
+	}
+
+	result := &SetNodeSkillResult{}
+	if state.RequestFound {
+		if loader, ok := c.store.(interface {
+			LoadRequestEvent(string, string) (WorkEvent, error)
+		}); ok {
+			persisted, loadErr := loader.LoadRequestEvent(input.WorkID, event.RequestID)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			var p NodeSkillBoundPayload
+			if err := json.Unmarshal(persisted.Payload, &p); err != nil {
+				return nil, fmt.Errorf("%w: decode SetNodeSkill event: %v", ErrWorkNeedsRepair, err)
+			}
+			if p.SkillName != input.SkillName || p.NodeID != input.NodeID {
+				return nil, fmt.Errorf("%w: SetNodeSkill request %q intent changed", ErrWorkRequestIDConflict, input.RequestID)
+			}
+		} else {
+			if _, err := c.store.CommitEvent(input.WorkID, event); err != nil {
+				var conflict *ErrWorkEventConflict
+				if errors.As(err, &conflict) && conflict.Kind == WorkEventRequestConflict {
+					return nil, fmt.Errorf("%w: %w", ErrWorkRequestIDConflict, err)
+				}
+				return nil, err
+			}
+		}
+		result.Duplicate = true
+		result.Revision = state.RequestRevision
+		result.Committed = true
+		return result, nil
+	}
+	if err := c.validateNodeSkillMutation(projection, input.NodeID); err != nil {
+		return nil, err
+	}
+
+	if state.Revision != input.ExpectedRevision {
+		return nil, revisionConflict(input.WorkID, input.ExpectedRevision, state.Revision)
+	}
+
+	revision, err := c.store.CommitEvent(input.WorkID, event)
+	if err != nil {
+		return nil, err
+	}
+	result.Revision = revision
+	result.Committed = true
+	return result, nil
+}
+
+// ClearNodeSkill removes a Skill binding from a Work node. idempotent:
+// clearing an already-unbound node is a success (no-op).
+func (c *V2Coordinator) ClearNodeSkill(
+	ctx context.Context,
+	input ClearNodeSkillRequest,
+) (*ClearNodeSkillResult, error) {
+	if c == nil || c.store == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	if err := checkServiceContext(ctx); err != nil {
+		return nil, err
+	}
+	input.WorkID = strings.TrimSpace(input.WorkID)
+	input.NodeID = strings.TrimSpace(input.NodeID)
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.WorkID == "" || input.NodeID == "" || input.RequestID == "" {
+		return nil, errors.New("work: ClearNodeSkill: workID/nodeID/requestID are required")
+	}
+	if input.ExpectedRevision <= 0 {
+		return nil, errors.New("work: ClearNodeSkill: expectedRevision must be positive")
+	}
+
+	projection, state, err := c.store.LoadState(input.WorkID, input.RequestID+"/clear-node-skill")
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckSchemaVersionV2("Work", projection.SchemaVersion); err != nil {
+		return nil, err
+	}
+	if projection.ArchiveState != ArchiveActive {
+		return nil, fmt.Errorf("work: ClearNodeSkill is not allowed while ArchiveState=%s", projection.ArchiveState)
+	}
+
+	payload, err := json.Marshal(NodeSkillClearedPayload{
+		WorkID: input.WorkID,
+		NodeID: input.NodeID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("work: ClearNodeSkill: encode payload: %w", err)
+	}
+	event := newServiceEventV2(
+		input.WorkID,
+		input.RequestID+"/clear-node-skill",
+		EventNodeSkillCleared,
+		payload,
+		time.Now().UTC(),
+	)
+	event.Object = ObjectContext{
+		Kind:               ObjectNode,
+		ID:                 input.NodeID,
+		WorkID:             input.WorkID,
+		NodeID:             input.NodeID,
+		DefinitionID:       input.WorkID,
+		ExpectedRevision:   int64Ptr(input.ExpectedRevision),
+		DefinitionRevision: int64Ptr(projection.V2CurrentRevision),
+	}
+
+	result := &ClearNodeSkillResult{}
+	if state.RequestFound {
+		if loader, ok := c.store.(interface {
+			LoadRequestEvent(string, string) (WorkEvent, error)
+		}); ok {
+			persisted, loadErr := loader.LoadRequestEvent(input.WorkID, event.RequestID)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			if persisted.Type != EventNodeSkillCleared {
+				return nil, fmt.Errorf("%w: ClearNodeSkill request %q operation changed", ErrWorkRequestIDConflict, input.RequestID)
+			}
+			var p NodeSkillClearedPayload
+			if err := json.Unmarshal(persisted.Payload, &p); err != nil {
+				return nil, fmt.Errorf("%w: decode ClearNodeSkill event: %v", ErrWorkNeedsRepair, err)
+			}
+			if p.NodeID != input.NodeID {
+				return nil, fmt.Errorf("%w: ClearNodeSkill request %q intent changed", ErrWorkRequestIDConflict, input.RequestID)
+			}
+		}
+		result.Duplicate = true
+		result.Revision = state.RequestRevision
+		result.Committed = true
+		return result, nil
+	}
+	if err := c.validateNodeSkillMutation(projection, input.NodeID); err != nil {
+		return nil, err
+	}
+
+	if state.Revision != input.ExpectedRevision {
+		return nil, revisionConflict(input.WorkID, input.ExpectedRevision, state.Revision)
+	}
+
+	revision, err := c.store.CommitEvent(input.WorkID, event)
+	if err != nil {
+		return nil, err
+	}
+	result.Revision = revision
+	result.Committed = true
+	return result, nil
+}
+
+func (c *V2Coordinator) validateNodeSkillMutation(projection *Work, nodeID string) error {
+	if projection == nil || projection.V2CurrentRevision <= 0 {
+		return errors.New("work: node Skill binding requires an active V2 definition")
+	}
+	definition, err := c.loadDefinition(projection.ID, projection.V2CurrentRevision)
+	if err != nil {
+		return err
+	}
+	if findNodeDef(definition.Nodes, nodeID) == nil {
+		return fmt.Errorf("work: node %q does not exist in active definition", nodeID)
+	}
+	for _, runtime := range projection.V2TaskRuntimes {
+		if runtime == nil || runtime.NodeID != nodeID || runtime.DefinitionRev != projection.V2CurrentRevision {
+			continue
+		}
+		switch runtime.State {
+		case TaskRunning, TaskWaitingInput, TaskWaitingApproval:
+			return fmt.Errorf("work: node %q Skill cannot change while task state is %s", nodeID, runtime.State)
+		}
 	}
 	return nil
 }

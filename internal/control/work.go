@@ -94,6 +94,8 @@ type WorkService interface {
 	ApplyWorkPatch(context.Context, work.ApplyWorkPatchInput) (*work.ApplyWorkPatchResult, error)
 	RetryWorkNode(context.Context, work.RetryWorkNodeRequest) (*work.RetryWorkNodeResult, error)
 	RetryArtifactSlot(context.Context, work.RetryArtifactSlotRequest) (*work.RetryArtifactSlotResult, error)
+	SetNodeSkill(context.Context, work.SetNodeSkillRequest) (*work.SetNodeSkillResult, error)
+	ClearNodeSkill(context.Context, work.ClearNodeSkillRequest) (*work.ClearNodeSkillResult, error)
 	PreviewArtifact(context.Context, work.PreviewArtifactRequest) (*work.PreviewArtifactResult, error)
 	RequestArtifactConversion(context.Context, work.RequestArtifactConversionInput) (*work.RequestArtifactConversionResult, error)
 	RecoverArtifactConversions(context.Context, string) (int, error)
@@ -844,6 +846,20 @@ func (w workMethods) RetryArtifactSlot(ctx context.Context, input work.RetryArti
 		return nil, err
 	}
 	return w.svc.RetryArtifactSlot(ctx, input)
+}
+
+func (w workMethods) SetNodeSkill(ctx context.Context, input work.SetNodeSkillRequest) (*work.SetNodeSkillResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.SetNodeSkill(ctx, input)
+}
+
+func (w workMethods) ClearNodeSkill(ctx context.Context, input work.ClearNodeSkillRequest) (*work.ClearNodeSkillResult, error) {
+	if err := w.requireV2(); err != nil {
+		return nil, err
+	}
+	return w.svc.ClearNodeSkill(ctx, input)
 }
 
 func (w workMethods) PreviewArtifact(ctx context.Context, input work.PreviewArtifactRequest) (*work.PreviewArtifactResult, error) {

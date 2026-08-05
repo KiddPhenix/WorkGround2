@@ -72,6 +72,8 @@ var knownWorkEventTypes = map[WorkEventType]bool{
 	EventTaskRuntimeCreated:      true,
 	EventTaskRuntimeUpdated:      true,
 	EventTaskStaleResult:         true,
+	EventNodeSkillBound:          true,
+	EventNodeSkillCleared:        true,
 }
 
 // ── Path helpers ───────────────────────────────────────────────────────────

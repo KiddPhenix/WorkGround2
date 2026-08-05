@@ -42,8 +42,9 @@ type GuestAttach struct {
 }
 
 type PeerOpened struct {
-	TunnelID string `json:"tunnelId"`
-	PeerID   string `json:"peerId"`
+	TunnelID        string `json:"tunnelId"`
+	PeerID          string `json:"peerId"`
+	GuestCapability string `json:"guestCapability,omitempty"`
 }
 
 // StreamGrant is Relay-visible authorization for a short-lived peer stream.

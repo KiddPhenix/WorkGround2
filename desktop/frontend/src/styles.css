@@ -40684,6 +40684,286 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: var(--focus-ring);
 }
 
+/* ── Skill badge & button ──────────────────────────────────────── */
+
+.wg2-er-skill-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent, #818cf8);
+  margin-left: 6px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wg2-er-skill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--wg2-text-secondary, #909399);
+  font-size: 11px;
+  cursor: pointer;
+  margin-left: 4px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color .15s, color .15s;
+}
+
+.wg2-er-skill-btn:hover {
+  border-color: var(--accent, #6366f1);
+  color: var(--accent, #818cf8);
+}
+
+.wg2-er-skill-btn-disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.wg2-er-skill-btn-disabled:hover {
+  border-color: var(--border);
+  color: var(--wg2-text-secondary, #909399);
+}
+
+/* ── Skill modal ───────────────────────────────────────────────── */
+
+.wg2-sm-search {
+  margin-bottom: 10px;
+}
+
+.wg2-sm-search-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-input, #1a1a2e);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.wg2-sm-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: rgba(99, 102, 241, 0.08);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--wg2-text-secondary, #909399);
+}
+
+.wg2-sm-current strong {
+  color: var(--accent, #818cf8);
+}
+
+.wg2-sm-clear-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wg2-sm-clear-btn:hover {
+  color: var(--error, #ef4444);
+  border-color: var(--error, #ef4444);
+}
+
+.wg2-sm-status {
+  text-align: center;
+  padding: 12px;
+  font-size: 13px;
+  color: var(--wg2-text-secondary, #909399);
+}
+
+.wg2-sm-error {
+  color: var(--error, #ef4444);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.wg2-sm-retry-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.wg2-sm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.wg2-sm-empty {
+  text-align: center;
+  padding: 16px;
+  color: var(--wg2-text-secondary, #909399);
+  font-size: 13px;
+}
+
+.wg2-sm-item {
+  padding: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background .1s;
+}
+
+.wg2-sm-item-button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wg2-sm-item-button:focus-visible {
+  outline: 2px solid var(--accent, #6366f1);
+  outline-offset: -2px;
+}
+
+.wg2-sm-item-button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.wg2-sm-item:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+
+.wg2-sm-item-selected {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.wg2-sm-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.wg2-sm-item-desc {
+  font-size: 11px;
+  color: var(--wg2-text-secondary, #909399);
+  margin-top: 2px;
+}
+
+.wg2-sm-item-meta {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.wg2-sm-scope,
+.wg2-sm-runas {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-muted);
+}
+
+.wg2-sm-new-btn {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent, #818cf8);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+
+.wg2-sm-new-btn:hover {
+  border-color: var(--accent, #6366f1);
+}
+
+.wg2-sm-create h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.wg2-sm-create label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--wg2-text-secondary, #909399);
+}
+
+.wg2-sm-create input,
+.wg2-sm-create textarea {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-input, #1a1a2e);
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.wg2-sm-create-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.wg2-sm-create-actions button {
+  padding: 5px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wg2-sm-create-actions button:last-child {
+  background: var(--accent, #6366f1);
+  border-color: var(--accent, #6366f1);
+  color: #fff;
+}
+
+.wg2-sm-create-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ── ExpandedBlock ────────────────────────────────────────────── */
 
 .wg2-eb-panel {

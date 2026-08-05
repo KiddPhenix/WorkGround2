@@ -152,6 +152,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Agent.MaxSteps = 30
 	orig.Agent.PlannerMaxSteps = 0
 	orig.Agent.AutoPlanClassifier = "deepseek-flash"
+	orig.Agent.SemanticIntentModel = "openai/gpt-4o-mini"
 	orig.Agent.ReasoningLanguage = "zh"
 	orig.Agent.ToolResultSnipRatio = 0.65
 	orig.Agent.SubagentModel = "mimo-pro"
@@ -314,6 +315,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Agent.AutoPlanClassifier != "deepseek-flash" {
 		t.Errorf("auto_plan_classifier = %q, want deepseek-flash", got.Agent.AutoPlanClassifier)
+	}
+	if got.Agent.SemanticIntentModel != "openai/gpt-4o-mini" {
+		t.Errorf("semantic_intent_model = %q, want openai/gpt-4o-mini", got.Agent.SemanticIntentModel)
 	}
 	if got.Agent.ReasoningLanguage != "zh" {
 		t.Errorf("reasoning_language = %q, want zh", got.Agent.ReasoningLanguage)

@@ -128,6 +128,122 @@ func collaborationContext(snapshot collab.Snapshot, referenceIDs []string) (stri
 	return builder.String(), nil
 }
 
+const (
+	roomHandoffsStart = "<room-handoffs>"
+	roomHandoffsEnd   = "</room-handoffs>"
+)
+
+type roomAgentRosterEntry struct {
+	AgentID      string   `json:"agentId"`
+	AgentName    string   `json:"agentName"`
+	AgentRole    string   `json:"agentRole,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	MemberID     string   `json:"memberId"`
+	MemberName   string   `json:"memberName"`
+	MemberRole   string   `json:"memberRole,omitempty"`
+}
+
+func collaborationRoomPrompt(snapshot collab.Snapshot, selfAgentID string) string {
+	roster := make([]roomAgentRosterEntry, 0, len(snapshot.Members))
+	for _, member := range snapshot.Members {
+		if member.Status == collab.MemberOffline || strings.TrimSpace(member.Agent.ID) == "" {
+			continue
+		}
+		roster = append(roster, roomAgentRosterEntry{
+			AgentID: member.Agent.ID, AgentName: member.Agent.Name, AgentRole: member.Agent.Role,
+			Capabilities: append([]string(nil), member.Agent.Capabilities...),
+			MemberID:     member.ID, MemberName: member.Name, MemberRole: member.Role,
+		})
+	}
+	sort.Slice(roster, func(i, j int) bool { return roster[i].AgentID < roster[j].AgentID })
+	data, _ := json.Marshal(roster)
+	return fmt.Sprintf(`<room-collaboration self-agent-id=%q>
+Online Room Agents: %s
+Complete the current task yourself when you can. When a concrete follow-up requires another Room Agent's role, repository, verification, or decision, append one machine-readable JSON array inside %s and %s after your public answer. Do not wrap this block in a Markdown code fence. Each entry must use an exact agentId from the roster and contain targetAgentId, instruction, referenceIds, reason, expectedOutcome, and requiresResponse. Set requiresResponse=true only when that Agent must act or answer. Do not hand off acknowledgements, repeated conclusions, completed work, or messages with no concrete next action. Multi-step collaboration is allowed; each handoff must carry a specific new responsibility. Do not write the machine-readable block when no handoff is needed.
+</room-collaboration>`, selfAgentID, data, roomHandoffsStart, roomHandoffsEnd)
+}
+
+func collaborationAgentInput(snapshot collab.Snapshot, selfAgentID, instruction string, referenceIDs []string) (string, error) {
+	contextText, err := collaborationContext(snapshot, referenceIDs)
+	if err != nil {
+		return "", err
+	}
+	parts := []string{collaborationRoomPrompt(snapshot, selfAgentID), instruction}
+	if contextText != "" {
+		parts = append(parts, contextText)
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
+func collaborationAgentOutput(summary string, snapshot collab.Snapshot, selfAgentID string, fallbackReferences []string) (string, []collab.AgentHandoff) {
+	start := strings.LastIndex(summary, roomHandoffsStart)
+	if start < 0 {
+		return summary, nil
+	}
+	relativeEnd := strings.Index(summary[start+len(roomHandoffsStart):], roomHandoffsEnd)
+	if relativeEnd < 0 {
+		return summary, nil
+	}
+	end := start + len(roomHandoffsStart) + relativeEnd
+	var decoded []collab.AgentHandoff
+	if err := json.Unmarshal([]byte(strings.TrimSpace(summary[start+len(roomHandoffsStart):end])), &decoded); err != nil {
+		return summary, nil
+	}
+	agents := make(map[string]bool, len(snapshot.Members))
+	items := make(map[string]bool, len(snapshot.Timeline))
+	for _, member := range snapshot.Members {
+		if member.Status != collab.MemberOffline && member.Agent.ID != "" {
+			agents[member.Agent.ID] = true
+		}
+	}
+	for _, item := range snapshot.Timeline {
+		items[item.ID] = true
+	}
+	result := make([]collab.AgentHandoff, 0, len(decoded))
+	seen := map[string]bool{}
+	for _, handoff := range decoded {
+		if len(result) >= collab.MaxMembers {
+			break
+		}
+		handoff.TargetAgentID = strings.TrimSpace(handoff.TargetAgentID)
+		handoff.Instruction = sanitizeCollaborationText(handoff.Instruction)
+		handoff.Reason = truncateCollaborationUTF8(sanitizeCollaborationText(handoff.Reason), collab.MaxShortText)
+		handoff.ExpectedOutcome = truncateCollaborationUTF8(sanitizeCollaborationText(handoff.ExpectedOutcome), collab.MaxShortText)
+		if !agents[handoff.TargetAgentID] || handoff.TargetAgentID == selfAgentID || handoff.Instruction == "" {
+			continue
+		}
+		refs := make([]string, 0, len(handoff.ReferenceIDs))
+		seenRefs := map[string]bool{}
+		for _, id := range handoff.ReferenceIDs {
+			id = strings.TrimSpace(id)
+			if items[id] && !seenRefs[id] && len(refs) < collab.MaxReferences {
+				seenRefs[id] = true
+				refs = append(refs, id)
+			}
+		}
+		if len(refs) == 0 {
+			for _, id := range fallbackReferences {
+				if items[id] && !seenRefs[id] && len(refs) < collab.MaxReferences {
+					seenRefs[id] = true
+					refs = append(refs, id)
+				}
+			}
+		}
+		handoff.ReferenceIDs = refs
+		key := handoff.TargetAgentID + "\x00" + handoff.Instruction
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, handoff)
+	}
+	public := strings.TrimSpace(summary[:start] + summary[end+len(roomHandoffsEnd):])
+	if public == "" {
+		public = "Agent 已完成本地执行。"
+	}
+	return public, result
+}
+
 func (c *desktopCollaboration) publishRun(ctx context.Context, run *collaborationAgentRun, status collab.AgentRunStatus, summary, errText string) (CollaborationActionResult, error) {
 	if run == nil {
 		return CollaborationActionResult{}, fmt.Errorf("collaboration run is required")
@@ -146,20 +262,29 @@ func (c *desktopCollaboration) publishRun(ctx context.Context, run *collaboratio
 
 func (c *desktopCollaboration) runPublisher(run *collaborationAgentRun) {
 	for update := range run.Updates {
+		summary := update.Summary
+		var handoffs []collab.AgentHandoff
+		if update.Final && update.Status == collab.RunCompleted {
+			state := c.snapshot()
+			summary, handoffs = collaborationAgentOutput(summary, state.Snapshot, run.AgentID, run.ReferenceIDs)
+		}
 		ctx, cancel := context.WithTimeout(c.app.bootContext(), 20*time.Second)
-		_, publishErr := c.publishRun(ctx, run, update.Status, update.Summary, update.Error)
+		_, publishErr := c.publishRun(ctx, run, update.Status, summary, update.Error)
 		if update.Final && update.Status == collab.RunCompleted {
 			if publishErr != nil {
 				c.failState(c.snapshot().Status, publishErr, collaborationErrorRetryable(publishErr))
 			} else {
-				summary := sanitizeCollaborationText(update.Summary)
+				summary := sanitizeCollaborationText(summary)
 				if summary == "" {
 					summary = "Agent 已完成本地执行。"
 				}
-				_, _ = c.submitRunCommand(ctx, run, run.CommandID+":result:1", collab.Command{Type: collab.CommandPublishAgentResult, AgentResult: &collab.PublishAgentResultInput{
+				_, resultErr := c.submitRunCommand(ctx, run, run.CommandID+":result:1", collab.Command{Type: collab.CommandPublishAgentResult, AgentResult: &collab.PublishAgentResultInput{
 					ResultID: stableCollaborationID("result", run.RunID), AgentID: run.AgentID, RunID: run.RunID,
-					Revision: 1, Summary: summary, ReferenceIDs: append([]string(nil), run.ReferenceIDs...),
+					Revision: 1, Summary: summary, ReferenceIDs: append([]string(nil), run.ReferenceIDs...), Handoffs: cloneCollaborationHandoffs(handoffs),
 				}})
+				if resultErr != nil {
+					c.failState(c.snapshot().Status, resultErr, collaborationErrorRetryable(resultErr))
+				}
 			}
 		}
 		cancel()
@@ -269,14 +394,10 @@ func (c *desktopCollaboration) startNextQueuedAgent(sessionID string) {
 	c.mu.Unlock()
 	c.emitState()
 
-	contextText, err := collaborationContext(state.Snapshot, run.ReferenceIDs)
+	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, run.Instruction, run.ReferenceIDs)
 	if err != nil {
 		c.failAgentRun(ctx, run, err)
 		return
-	}
-	fullInput := run.Instruction
-	if contextText != "" {
-		fullInput += "\n\n" + contextText
 	}
 	_ = c.launchAgent(ctx, run, fullInput)
 }

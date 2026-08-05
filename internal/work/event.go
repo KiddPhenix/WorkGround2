@@ -114,6 +114,7 @@ type ObjectContext struct {
 	WorkID             string `json:"workID,omitempty"`
 	RunID              string `json:"runID,omitempty"`
 	TaskID             string `json:"taskID,omitempty"`
+	NodeID             string `json:"nodeID,omitempty"`
 	BlockID            string `json:"blockID,omitempty"`
 	InputID            string `json:"inputID,omitempty"`
 	SpecID             string `json:"specID,omitempty"`

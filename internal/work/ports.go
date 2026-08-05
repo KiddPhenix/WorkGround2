@@ -361,6 +361,23 @@ type RefreshBlockInput struct {
 	RetryAt   *time.Time
 }
 
+// ── Skill ─────────────────────────────────────────────────────────────────
+
+// SkillResolver resolves a Skill by name for node execution context
+// augmentation. It is injected by the Controller so the work package
+// never imports skill or control packages.
+type SkillResolver interface {
+	Resolve(ctx context.Context, name string) (SkillBody, error)
+}
+
+// SkillBody is the minimal skill representation the work package needs.
+type SkillBody struct {
+	Name        string
+	Description string
+	Body        string
+	Enabled     bool
+}
+
 // ── Clock ─────────────────────────────────────────────────────────────────
 
 // Clock abstracts time for deterministic scheduling tests.

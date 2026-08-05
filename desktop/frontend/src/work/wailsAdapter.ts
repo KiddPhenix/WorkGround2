@@ -150,6 +150,19 @@ export interface WailsWorkBindings {
     tabID: string,
     input: import('./types_v2').ApplyWorkPatchRequest,
   ): Promise<GoApplyWorkPatchResult>;
+  SetNodeSkill(
+    tabID: string,
+    input: import('./types_v2').SetNodeSkillRequest,
+  ): Promise<GoSetNodeSkillResult>;
+  ClearNodeSkill(
+    tabID: string,
+    input: import('./types_v2').ClearNodeSkillRequest,
+  ): Promise<GoClearNodeSkillResult>;
+  ListWorkSkills(tabID: string): Promise<GoSkillInfo[]>;
+  CreateWorkSkill(
+    tabID: string,
+    input: import('./types_v2').CreateSkillRequest,
+  ): Promise<GoCreateSkillResult>;
 }
 
 // --- Go DTO shapes (lowerCamelCase JSON tags matching Go json struct tags) ---
@@ -377,6 +390,39 @@ interface GoApplyWorkPatchResult {
   recoverable: boolean;
   transportError?: import('./types_v2').WorkTransportError;
   receipt?: import('./types_v2').PatchIntentReceipt;
+}
+
+// --- Skill binding Go DTOs ---
+
+interface GoSetNodeSkillResult {
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: import('./types_v2').WorkTransportError;
+}
+
+interface GoClearNodeSkillResult {
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: import('./types_v2').WorkTransportError;
+}
+
+interface GoSkillInfo {
+  name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  runAs?: string;
+}
+
+interface GoCreateSkillResult {
+  skill?: GoSkillInfo;
+  error?: import('./types_v2').WorkTransportError;
+  committed: boolean;
+  recoverable: boolean;
 }
 
 // --- Helpers ---
@@ -1562,6 +1608,50 @@ export function createWailsWorkControllerPort(tabID: string): WorkControllerPort
             recoverable: true,
           },
         };
+      }
+    },
+
+    // --- Skill node binding ---
+
+    setNodeSkill: async (input) => {
+      try {
+        const go = await app.SetNodeSkill(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number') {
+          return { revision: 0, duplicate: false, committed: false, recoverable: true, error: { code: 'contract_malformed', message: 'SetNodeSkill: required scalar missing', committed: false, recoverable: true } };
+        }
+        return { revision: go.revision, duplicate: go.duplicate, committed: go.committed, recoverable: go.recoverable, error: go.error };
+      } catch (error) {
+        return { revision: 0, duplicate: false, committed: false, recoverable: true, error: { code: 'transport_error', message: error instanceof Error ? error.message : String(error), committed: false, recoverable: true } };
+      }
+    },
+
+    clearNodeSkill: async (input) => {
+      try {
+        const go = await app.ClearNodeSkill(tabID, input);
+        if (typeof go.committed !== 'boolean' || typeof go.recoverable !== 'boolean' || typeof go.duplicate !== 'boolean' || typeof go.revision !== 'number') {
+          return { revision: 0, duplicate: false, committed: false, recoverable: true, error: { code: 'contract_malformed', message: 'ClearNodeSkill: required scalar missing', committed: false, recoverable: true } };
+        }
+        return { revision: go.revision, duplicate: go.duplicate, committed: go.committed, recoverable: go.recoverable, error: go.error };
+      } catch (error) {
+        return { revision: 0, duplicate: false, committed: false, recoverable: true, error: { code: 'transport_error', message: error instanceof Error ? error.message : String(error), committed: false, recoverable: true } };
+      }
+    },
+
+    listWorkSkills: async () => {
+      try {
+        const skills = await app.ListWorkSkills(tabID);
+        return (skills || []).map((s: GoSkillInfo) => ({ name: s.name, description: s.description, scope: s.scope, enabled: s.enabled, runAs: s.runAs } as import('./types_v2').SkillInfo));
+      } catch (error) {
+        throw error;
+      }
+    },
+
+    createWorkSkill: async (input) => {
+      try {
+        const go = await app.CreateWorkSkill(tabID, input);
+        return { skill: go.skill, committed: go.committed ?? false, recoverable: go.recoverable ?? false, error: go.error };
+      } catch (error) {
+        return { committed: false, recoverable: true, error: { code: 'transport_error', message: error instanceof Error ? error.message : String(error), committed: false, recoverable: true } };
       }
     },
   };

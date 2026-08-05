@@ -1106,6 +1106,12 @@ type AgentConfig struct {
 	// AutoPlanClassifier optionally names a provider/model used to classify
 	// borderline auto-plan decisions. Empty keeps the zero-cost heuristic path.
 	AutoPlanClassifier string `toml:"auto_plan_classifier"`
+	// SemanticIntentModel optionally names a provider/model for Room semantic
+	// intent classification. When empty, the system auto-selects a lightweight
+	// non-reasoning model from configured providers, or reuses the auto-plan
+	// classifier if it has no reasoning capability. Falls back to unavailable
+	// (safe degradation) rather than the main reasoning model.
+	SemanticIntentModel string `toml:"semantic_intent_model"`
 	// Compaction window fractions: soft = notice only, compact = trigger, force = hard ceiling.
 	SoftCompactRatio    float64 `toml:"soft_compact_ratio"`
 	ToolResultSnipRatio float64 `toml:"tool_result_snip_ratio"`

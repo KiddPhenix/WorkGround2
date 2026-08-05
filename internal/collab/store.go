@@ -376,6 +376,7 @@ func cloneTimelineItem(item TimelineItem) TimelineItem {
 		value := *item.Chat
 		value.MentionMemberIDs = cloneStrings(value.MentionMemberIDs)
 		value.MentionAgentIDs = cloneStrings(value.MentionAgentIDs)
+		value.ReferenceIDs = cloneStrings(value.ReferenceIDs)
 		item.Chat = &value
 	}
 	if item.Contribution != nil {
@@ -397,6 +398,7 @@ func cloneTimelineItem(item TimelineItem) TimelineItem {
 	if item.AgentResult != nil {
 		value := *item.AgentResult
 		value.ReferenceIDs = cloneStrings(value.ReferenceIDs)
+		value.Handoffs = cloneAgentHandoffs(value.Handoffs)
 		item.AgentResult = &value
 	}
 	if item.File != nil {

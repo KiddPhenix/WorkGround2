@@ -173,10 +173,15 @@ type Work struct {
 	// active run. Keyed by stable TaskID; schedulers normalize it to NodeID
 	// when evaluating a definition DAG.
 	V2TaskRuntimes map[string]*V2TaskRuntime `json:"v2TaskRuntimes,omitempty"`
-	CreatedWith    RuntimeFingerprint        `json:"createdWith"`
-	CreatedAt      time.Time                 `json:"createdAt" ts_type:"string"`
-	UpdatedAt      time.Time                 `json:"updatedAt" ts_type:"string"`
-	ArchivedAt     *time.Time                `json:"archivedAt,omitempty" ts_type:"string"`
+	// V2NodeSkillBindings maps stable node IDs to an optional Skill name that
+	// augments the node's execution context. Bindings survive definition
+	// revisions and runs. When a bound Skill is missing or disabled at
+	// execution time the node enters failed_retryable with a descriptive error.
+	V2NodeSkillBindings map[string]string  `json:"v2NodeSkillBindings,omitempty"`
+	CreatedWith         RuntimeFingerprint `json:"createdWith"`
+	CreatedAt           time.Time          `json:"createdAt" ts_type:"string"`
+	UpdatedAt           time.Time          `json:"updatedAt" ts_type:"string"`
+	ArchivedAt          *time.Time         `json:"archivedAt,omitempty" ts_type:"string"`
 }
 
 // WorkRecord is an immutable snapshot of an archived Work.

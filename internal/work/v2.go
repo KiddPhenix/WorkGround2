@@ -415,6 +415,25 @@ type RetryWorkNodeRequest struct {
 	RequestID        string `json:"requestId"`
 }
 
+// SetNodeSkillRequest binds an optional Skill to a Work node for execution
+// context augmentation. requestID makes repeated sets idempotent.
+type SetNodeSkillRequest struct {
+	WorkID           string `json:"workId"`
+	NodeID           string `json:"nodeId"`
+	SkillName        string `json:"skillName"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
+// ClearNodeSkillRequest removes a Skill binding from a Work node.
+// requestID makes repeated clears idempotent.
+type ClearNodeSkillRequest struct {
+	WorkID           string `json:"workId"`
+	NodeID           string `json:"nodeId"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+	RequestID        string `json:"requestId"`
+}
+
 // ── V2 WorkView extension ──────────────────────────────────────────────────
 
 // WorkViewV2 extends the V1 WorkView with V2-specific execution context.
@@ -441,6 +460,7 @@ type TaskV2View struct {
 	Progress        string      `json:"progress,omitempty"`
 	SessionRef      *SessionRef `json:"sessionRef,omitempty"`
 	WaitingInputIDs []string    `json:"waitingInputIds,omitempty"`
+	SkillName       string      `json:"skillName,omitempty"`
 	Error           string      `json:"error,omitempty"`
 	Retryable       bool        `json:"retryable"`
 	UpdatedAt       time.Time   `json:"updatedAt" ts_type:"string"`

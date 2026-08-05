@@ -59,6 +59,22 @@ const delta = parseWorkViewEvent(
 assert.equal(deltaAppliesTo(delta, 1), true);
 assert.equal(deltaAppliesTo(delta, 0), false);
 
+const nodeSkill = parseWorkViewEvent(JSON.stringify({
+  ...delta.event,
+  eventID: 'event-node-skill',
+  requestID: 'request-node-skill',
+  object: {
+    kind: 'node',
+    id: 'node-1',
+    workID: 'work-1',
+    nodeID: 'node-1',
+    definitionID: 'definition-1',
+  },
+  payload: { workId: 'work-1', nodeId: 'node-1', skillName: 'editor' },
+}));
+assert.equal(nodeSkill.event?.object.kind, 'node');
+assert.equal(nodeSkill.event?.object.nodeID, 'node-1');
+
 for (const invalid of [
   '{}',
   '{"schemaVersion":0}',

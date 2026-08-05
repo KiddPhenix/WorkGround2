@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"workground2/internal/agent"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/skill"
 	"workground2/internal/work"
 )
 
@@ -1433,6 +1435,131 @@ func (a *App) RetryArtifactSlot(tabID string, input work.RetryArtifactSlotReques
 	}
 	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.TransportError, callErr)
 	return result, nil
+}
+
+// SetNodeSkill binds a Skill to a Work node for execution context augmentation.
+func (a *App) SetNodeSkill(tabID string, input work.SetNodeSkillRequest) (*work.SetNodeSkillResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	result, callErr := wc.SetNodeSkill(a.bootContext(), input)
+	if result == nil {
+		result = &work.SetNodeSkillResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.Error, callErr)
+	return result, nil
+}
+
+// ClearNodeSkill removes a Skill binding from a Work node.
+func (a *App) ClearNodeSkill(tabID string, input work.ClearNodeSkillRequest) (*work.ClearNodeSkillResult, error) {
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return nil, err
+	}
+	result, callErr := wc.ClearNodeSkill(a.bootContext(), input)
+	if result == nil {
+		result = &work.ClearNodeSkillResult{}
+	}
+	bindWorkTransportError(&result.Revision, &result.Committed, &result.Recoverable, &result.Error, callErr)
+	return result, nil
+}
+
+// ListWorkSkills returns the available Skills for the current workspace.
+func (a *App) ListWorkSkills(tabID string) ([]work.SkillInfo, error) {
+	_, ctrl := a.tabAndCtrlByID(tabID)
+	if ctrl == nil {
+		return nil, fmt.Errorf("workspace is still starting")
+	}
+	all := ctrl.AllSkills()
+	out := make([]work.SkillInfo, 0, len(all))
+	for _, sk := range all {
+		out = append(out, work.SkillInfo{
+			Name:        sk.Name,
+			Description: sk.Description,
+			Scope:       string(sk.Scope),
+			Enabled:     ctrl.SkillEnabled(sk.Name),
+			RunAs:       string(sk.RunAs),
+		})
+	}
+	return out, nil
+}
+
+// CreateWorkSkill scaffolds a new Skill file in the project scope.
+func (a *App) CreateWorkSkill(tabID string, input work.CreateSkillRequest) (*work.CreateSkillResult, error) {
+	_, ctrl := a.tabAndCtrlByID(tabID)
+	if ctrl == nil {
+		return nil, fmt.Errorf("workspace is still starting")
+	}
+	result := &work.CreateSkillResult{}
+	input.Name = strings.TrimSpace(input.Name)
+	input.Description = strings.TrimSpace(input.Description)
+	input.Body = strings.TrimSpace(input.Body)
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" || !skill.IsValidName(input.Name) || input.Description == "" || input.Body == "" {
+		result.Error = &work.WorkTransportError{Code: "invalid_input", Message: "skill name、description、body 和 requestId 均为必填"}
+		return result, nil
+	}
+	if input.Scope != "" && input.Scope != string(skill.ScopeProject) {
+		result.Error = &work.WorkTransportError{Code: "invalid_scope", Message: "Work 步骤只能新建项目 Skill"}
+		return result, nil
+	}
+
+	store, hasStore := ctrl.GetSkillStore()
+	if !hasStore {
+		result.Error = &work.WorkTransportError{Code: "not_available", Message: "skill creation store not available"}
+		return result, nil
+	}
+
+	for _, existing := range ctrl.AllSkills() {
+		if existing.Name != input.Name {
+			continue
+		}
+		if existing.Scope == skill.ScopeProject &&
+			strings.TrimSpace(existing.Description) == input.Description &&
+			strings.TrimSpace(existing.Body) == input.Body {
+			result.Skill = workSkillInfo(existing, ctrl.SkillEnabled(existing.Name))
+			result.Committed = true
+			return result, nil
+		}
+		result.Error = &work.WorkTransportError{Code: "conflict", Message: fmt.Sprintf("skill %q 已存在且内容不同", input.Name)}
+		return result, nil
+	}
+	stubContent := fmt.Sprintf("---\ndescription: %s\n---\n\n%s\n", strconv.Quote(input.Description), input.Body)
+	_, createErr := store.CreateWithContent(input.Name, skill.ScopeProject, stubContent)
+	if createErr != nil {
+		if os.IsExist(createErr) || strings.Contains(createErr.Error(), "already exists") {
+			existing, ok := store.Read(input.Name)
+			if ok && strings.TrimSpace(existing.Description) == input.Description && strings.TrimSpace(existing.Body) == input.Body {
+				result.Skill = workSkillInfo(existing, true)
+				result.Committed = true
+				return result, nil
+			}
+			result.Error = &work.WorkTransportError{Code: "conflict", Message: createErr.Error()}
+			return result, nil
+		}
+		result.Error = &work.WorkTransportError{Code: "create_failed", Message: createErr.Error()}
+		return result, nil
+	}
+
+	sk, ok := store.Read(input.Name)
+	if !ok {
+		result.Error = &work.WorkTransportError{Code: "read_error", Message: fmt.Sprintf("skill %q not found after creation", input.Name)}
+		return result, nil
+	}
+	result.Skill = &work.SkillInfo{
+		Name: sk.Name, Description: sk.Description,
+		Scope: string(sk.Scope), Enabled: true, RunAs: string(sk.RunAs),
+	}
+	result.Committed = true
+	return result, nil
+}
+
+func workSkillInfo(sk skill.Skill, enabled bool) *work.SkillInfo {
+	return &work.SkillInfo{
+		Name: sk.Name, Description: sk.Description, Scope: string(sk.Scope),
+		Enabled: enabled, RunAs: string(sk.RunAs),
+	}
 }
 
 // PreviewArtifact produces a graded ArtifactPreview for the given artifact

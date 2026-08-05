@@ -264,6 +264,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# auto_plan_classifier = \"deepseek-flash\"   # optional; only used for borderline tasks\n")
 	}
+	if c.Agent.SemanticIntentModel != "" {
+		fmt.Fprintf(&b, "semantic_intent_model = %q   # optional provider/model for Room message classification\n", c.Agent.SemanticIntentModel)
+	} else {
+		b.WriteString("# semantic_intent_model = \"openai/gpt-4o-mini\"   # optional non-reasoning model; auto-selects one otherwise\n")
+	}
 	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
 	fmt.Fprintf(&b, "tool_result_snip_ratio = %s   # snip stale tool results at this fraction before summary compaction\n", formatFloat(c.Agent.ToolResultSnipRatio))
 	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
@@ -781,6 +786,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 	if c.Agent.AutoPlanClassifier != "" && c.Agent.AutoPlanClassifier != d.Agent.AutoPlanClassifier {
 		fmt.Fprintf(&agentBuf, "auto_plan_classifier = %q\n", c.Agent.AutoPlanClassifier)
+		anyAgent = true
+	}
+	if c.Agent.SemanticIntentModel != "" && c.Agent.SemanticIntentModel != d.Agent.SemanticIntentModel {
+		fmt.Fprintf(&agentBuf, "semantic_intent_model = %q\n", c.Agent.SemanticIntentModel)
 		anyAgent = true
 	}
 	if c.Agent.SoftCompactRatio != d.Agent.SoftCompactRatio {

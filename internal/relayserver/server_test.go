@@ -185,6 +185,75 @@ func TestDiscoveryAndSingleUseJoinRef(t *testing.T) {
 	}
 }
 
+func TestJoinRefReturnsReusableGuestCapability(t *testing.T) {
+	srv := newTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	host := dialRelay(t, ts)
+	defer host.Close()
+	writeFrame(t, host, relayproto.Header{Type: relayproto.TypeTunnelCreate, RelayRequestID: "create"}, relayproto.TunnelCreate{})
+	_, p := readFrame(t, host)
+	var bound relayproto.HostBound
+	_ = json.Unmarshal(p, &bound)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	ad := relayproto.Advertisement{PublicRoomID: "room_cap", Name: "Cap Room", Tags: []string{"test"}, Visibility: "public", HostPublicKey: base64.RawStdEncoding.EncodeToString(pub), HostKeyFingerprint: relayproto.HostKeyFingerprint(pub), AdvertisementRevision: 1, ExpiresAt: time.Now().Add(30 * time.Second).UTC()}
+	signed, _ := relayproto.AdvertisementSigningBytes(ad)
+	ad.Signature = base64.RawStdEncoding.EncodeToString(ed25519.Sign(priv, signed))
+	writeFrame(t, host, relayproto.Header{Type: relayproto.TypeAdvertisementUpsert, RelayRequestID: "ad", TunnelID: bound.TunnelID}, relayproto.AdvertisementUpsert{Advertisement: ad})
+	readFrame(t, host)
+	resp, err := http.Post(ts.URL+"/relay/v1/rooms/room_cap/join-ref", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref relayproto.JoinRefResult
+	_ = json.NewDecoder(resp.Body).Decode(&ref)
+	_ = resp.Body.Close()
+	if ref.JoinRef == "" {
+		t.Fatal("join-ref was not issued")
+	}
+	// Step 1: attach with JoinRef, verify PeerOpened includes a reusable GuestCapability.
+	guest := dialRelay(t, ts)
+	writeFrame(t, guest, relayproto.Header{Type: relayproto.TypeGuestAttach, TunnelID: ref.TunnelID}, relayproto.GuestAttach{JoinRef: ref.JoinRef})
+	gh, gp := readFrame(t, guest)
+	if gh.Type != relayproto.TypePeerOpened {
+		t.Fatalf("join-ref attach failed: %s %s", gh.Type, gp)
+	}
+	var opened relayproto.PeerOpened
+	if err := json.Unmarshal(gp, &opened); err != nil {
+		t.Fatal(err)
+	}
+	if opened.GuestCapability == "" {
+		t.Fatal("PeerOpened returned empty GuestCapability after JoinRef attach")
+	}
+	if opened.PeerID == "" {
+		t.Fatal("PeerOpened returned empty PeerID")
+	}
+	// Step 2: JoinRef is single-use — second attach with same JoinRef must fail.
+	guest2 := dialRelay(t, ts)
+	defer guest2.Close()
+	writeFrame(t, guest2, relayproto.Header{Type: relayproto.TypeGuestAttach, TunnelID: ref.TunnelID}, relayproto.GuestAttach{JoinRef: ref.JoinRef})
+	gh2, _ := readFrame(t, guest2)
+	if gh2.Type != relayproto.TypeError {
+		t.Fatalf("reused join-ref was accepted: %s", gh2.Type)
+	}
+	// Step 3: disconnect first guest and reconnect with the returned GuestCapability.
+	guest.Close()
+	reconnected := dialRelay(t, ts)
+	defer reconnected.Close()
+	writeFrame(t, reconnected, relayproto.Header{Type: relayproto.TypeGuestAttach, TunnelID: opened.TunnelID, RelayRequestID: "reconnect"}, relayproto.GuestAttach{Capability: opened.GuestCapability})
+	rh, rp := readFrame(t, reconnected)
+	if rh.Type != relayproto.TypePeerOpened {
+		t.Fatalf("reconnect with issued guest capability failed: %s %s", rh.Type, rp)
+	}
+	var reopened relayproto.PeerOpened
+	if err := json.Unmarshal(rp, &reopened); err != nil {
+		t.Fatal(err)
+	}
+	if reopened.PeerID == "" {
+		t.Fatal("reconnect PeerOpened returned empty PeerID")
+	}
+}
+
 func TestLoadOrCreateMasterKeyStable(t *testing.T) {
 	dir := t.TempDir()
 	first, err := LoadOrCreateMasterKey(dir)

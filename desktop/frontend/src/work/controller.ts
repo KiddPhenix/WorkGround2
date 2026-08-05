@@ -118,6 +118,10 @@ export interface WorkControllerPort extends CornerstoneControllerPort {
   setInputCornerstone?: (input: SetInputCornerstoneRequest) => Promise<CornerstonePinResult>;
   previewWorkPatch?: (input: PreviewWorkPatchRequest) => Promise<PreviewWorkPatchResult>;
   applyWorkPatch?: (input: ApplyWorkPatchRequest) => Promise<ApplyWorkPatchResult>;
+  setNodeSkill?: (input: import('./types_v2').SetNodeSkillRequest) => Promise<import('./types_v2').SetNodeSkillResult>;
+  clearNodeSkill?: (input: import('./types_v2').ClearNodeSkillRequest) => Promise<import('./types_v2').ClearNodeSkillResult>;
+  listWorkSkills?: () => Promise<import('./types_v2').SkillInfo[]>;
+  createWorkSkill?: (input: import('./types_v2').CreateSkillRequest) => Promise<import('./types_v2').CreateSkillResult>;
 }
 
 export type WorkStreamHealth =

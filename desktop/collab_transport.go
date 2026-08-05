@@ -175,7 +175,24 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 			routeStates = append(routeStates, state)
 			continue
 		}
-		peer, joined, snapshot, err := joinRelayCollaborationPeer(ctx, route, room, strings.TrimSpace(input.Token), strings.TrimSpace(input.HostKey), strings.TrimSpace(input.JoinRef), identity, resume)
+		joinRef := strings.TrimSpace(input.JoinRef)
+		if joinRef == "" && strings.TrimSpace(route.GuestCapability) == "" {
+			if relay, relayErr := relayConfigForRoute(route); relayErr == nil && relay.Discovery {
+				var tunnelID string
+				joinRef, tunnelID, relayErr = fetchRelayJoinRef(ctx, relay, room)
+				if relayErr != nil {
+					state.Status, state.LastError, state.Retryable = "failed", relayErr.Error(), collaborationErrorRetryable(relayErr)
+					routeStates = append(routeStates, state)
+					failures = append(failures, route.ID+": "+relayErr.Error())
+					causes = append(causes, relayErr)
+					continue
+				}
+				if tunnelID != "" {
+					route.TunnelID, state.TunnelID = tunnelID, tunnelID
+				}
+			}
+		}
+		peer, joined, snapshot, issuedGuestCap, err := joinRelayCollaborationPeer(ctx, route, room, strings.TrimSpace(input.Token), strings.TrimSpace(input.HostKey), joinRef, identity, resume)
 		if err != nil {
 			state.Status, state.LastError, state.Retryable = "failed", err.Error(), collaborationErrorRetryable(err)
 			routeStates = append(routeStates, state)
@@ -187,9 +204,13 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 		peer.fileSource = c
 		routeStates = append(routeStates, state)
 		guestRefs := map[string]string{}
-		if route.GuestCapability != "" && route.RelayID != "" {
+		guestCap := issuedGuestCap
+		if guestCap == "" {
+			guestCap = route.GuestCapability
+		}
+		if guestCap != "" && route.RelayID != "" {
 			ref := collaborationRelayCapabilityRef(room, route.RelayID, "guest")
-			if err := c.setSecret(ref, route.GuestCapability); err != nil {
+			if err := c.setSecret(ref, guestCap); err != nil {
 				_ = peer.Close(context.Background())
 				return nil, fmt.Errorf("save Relay guest capability: %w", err)
 			}
@@ -514,7 +535,7 @@ func collaborationPostCommand(input PostCollaborationMessageInput) (collab.Comma
 			return collab.Command{}, fmt.Errorf("chat text is required")
 		}
 		return collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{
-			Text: text, MentionMemberIDs: append([]string(nil), input.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), input.MentionAgentIDs...),
+			Text: text, MentionMemberIDs: append([]string(nil), input.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), input.MentionAgentIDs...), ReferenceIDs: append([]string(nil), input.ReferenceIDs...),
 		}}, nil
 	case "contribution":
 		if text == "" || input.ContributionKind == "" {
@@ -980,6 +1001,9 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 	}
 	c.emitState()
 	go c.startNextQueuedAgent(conn.sessionID)
+	if c.scheduler != nil {
+		c.scheduler.signal(wakeSignal)
+	}
 	if c.hasPendingFileOrigins(conn) {
 		go c.restoreFileOrigins(conn)
 	}

@@ -17,6 +17,7 @@ import type { CollaborationInvite, CollaborationTimelineItem, CollaborationToolA
 import type { ComposerSubmitKey } from "../lib/composerKeyboard";
 import { useScrollManager } from "../lib/useScrollManager";
 import "./collab.css";
+import "./collab-handoff.css";
 
 interface CollaborationWorkspaceProps {
   sessionID?: string;
@@ -72,7 +73,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const c = collabCopy(t);
   const controller = useCollabController(sessionID || "");
   const { state, self, agentBusy, selectedItems } = controller;
-  const [prefill, setPrefill] = useState("");
+  const [replyTo, setReplyTo] = useState<CollaborationTimelineItem>();
   const [batchInstruction, setBatchInstruction] = useState("");
   const [invite, setInvite] = useState<CollaborationInvite>();
   const [inviteHost, setInviteHost] = useState("");
@@ -316,7 +317,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             transfers={state.transfers || []}
             agentPrompt={state.agentPrompt}
             onToggle={controller.toggleSelection}
-            onReply={(item) => setPrefill(`> ${item.actorName}: ${item.text}\n\n`)}
+            onReply={setReplyTo}
             onAgree={(item) => handleAction(controller.agree(item))}
             onAgreeRun={(item) => handleAction(controller.agree(item).then(() => controller.startAgent(c("agentInstructionAgree", { text: item.text }), [item.id])))}
             onAgent={runForItem}
@@ -349,12 +350,12 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             disabled={!usable}
             agentBusy={agentBusy}
             submitKey={submitKey}
-            prefill={prefill}
-            onPrefillConsumed={() => setPrefill("")}
+            replyTo={replyTo}
+            onReplyClear={() => setReplyTo(undefined)}
             onChat={controller.postChat}
             onContribution={controller.postContribution}
-            onAgent={(text) => controller.startAgent(text, [])}
-            onRequest={(memberId, text) => controller.requestAgent(memberId, text)}
+            onAgent={(text, referenceIDs) => controller.startAgent(text, referenceIDs)}
+            onRequest={(memberId, text, referenceIDs) => controller.requestAgent(memberId, text, referenceIDs)}
             onShareFiles={controller.shareFiles}
           />
         </footer>

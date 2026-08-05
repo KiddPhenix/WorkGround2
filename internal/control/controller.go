@@ -3782,6 +3782,12 @@ func (c *Controller) SkillEnabled(name string) bool {
 	return !cfg.IsSkillDisabled(name)
 }
 
+// GetSkillStore returns the live skill.Store for file creation, or nil when
+// no reloadable store is available.
+func (c *Controller) GetSkillStore() (*skill.Store, bool) {
+	return c.skills.store, c.skills.store != nil
+}
+
 // SetSkillEnabled persists a skill enable/disable preference. The caller should
 // rebuild the controller for the prompt/tool registry to reflect it immediately.
 func (c *Controller) SetSkillEnabled(name string, enabled bool) error {

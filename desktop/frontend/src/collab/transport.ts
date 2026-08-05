@@ -131,6 +131,17 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
   const id = text(raw.id ?? raw.ID ?? raw.eventId ?? raw.EventID);
   const actorId = text(typed.authorId ?? typed.AuthorID ?? typed.ownerId ?? typed.OwnerID ?? raw.actorId ?? raw.ActorID ?? actor.id ?? actor.ID ?? typed.memberId ?? typed.MemberID);
   const actorAgent = bool(raw.actorAgent ?? raw.ActorAgent, kind === "agent_command" || kind === "agent_result");
+  const handoffs = list(typed.handoffs ?? typed.Handoffs).map((value) => {
+    const handoff = record(value);
+    return {
+      targetAgentId: text(handoff.targetAgentId ?? handoff.TargetAgentID),
+      instruction: text(handoff.instruction ?? handoff.Instruction),
+      referenceIds: list(handoff.referenceIds ?? handoff.ReferenceIDs).map((entry) => text(entry)).filter(Boolean),
+      reason: text(handoff.reason ?? handoff.Reason) || undefined,
+      expectedOutcome: text(handoff.expectedOutcome ?? handoff.ExpectedOutcome) || undefined,
+      requiresResponse: bool(handoff.requiresResponse ?? handoff.RequiresResponse),
+    };
+  }).filter((handoff) => handoff.targetAgentId && handoff.instruction);
   const explicitActorName = text(raw.actorName ?? raw.ActorName ?? actor.name ?? actor.Name);
   const createdAt = text(typed.createdAt ?? typed.CreatedAt ?? typed.updatedAt ?? typed.UpdatedAt ?? raw.createdAt ?? raw.CreatedAt, new Date().toISOString());
   let content = text(typed.text ?? typed.Text ?? typed.body ?? typed.Body ?? typed.instruction ?? typed.Instruction ?? typed.summary ?? typed.Summary ?? typed.message ?? typed.Message ?? raw.text ?? raw.Text ?? raw.content ?? raw.Content);
@@ -160,6 +171,8 @@ export function normalizeCollaborationItem(value: unknown, memberNames: Map<stri
     agentRunSummary: kind === "agent_command" ? text(typed.summary ?? typed.Summary) || undefined : undefined,
     agentRunError: kind === "agent_command" ? text(typed.error ?? typed.Error) || undefined : undefined,
     agentCommandId: kind === "agent_command" ? text(typed.commandId ?? typed.CommandID) || undefined : undefined,
+    agentRunId: kind === "agent_result" ? text(typed.runId ?? typed.RunID) || undefined : undefined,
+    handoffs: handoffs.length > 0 ? handoffs : undefined,
     systemKind: kind === "system" ? text(typed.kind ?? typed.Kind) || undefined : undefined,
     reactions: record(raw.reactions ?? raw.Reactions) as Record<string, string[]>,
     fileName: kind === "file" ? text(typed.name ?? typed.Name) : undefined,

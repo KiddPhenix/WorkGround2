@@ -126,3 +126,64 @@ func TestSemanticIntentClassifierCoalescesConcurrentRequests(t *testing.T) {
 		t.Fatalf("provider calls = %d, want 1 coalesced call", got)
 	}
 }
+
+func TestSemanticIntentClassifierNilProviderReturnsError(t *testing.T) {
+	classifier := newSemanticIntentClassifier(nil)
+	_, err := classifier.classify(context.Background(), "test message")
+	if err == nil {
+		t.Fatal("nil provider should return an observable error")
+	}
+}
+
+func TestSemanticIntentClassifierUsesOnlyOwnProvider(t *testing.T) {
+	// The classifier must only call its own provider — never the main session
+	// model. We verify this by giving it a dedicated provider and confirming
+	// the main provider (a different one) is never touched.
+	intentProv := &semanticIntentProvider{reply: "self_agent"}
+	mainProv := &semanticIntentProvider{reply: "chat"}
+
+	classifier := newSemanticIntentClassifier(intentProv)
+	got, err := classifier.classify(context.Background(), "please fix the login button")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != SemanticIntentSelfAgent {
+		t.Fatalf("intent = %q, want self_agent", got)
+	}
+	if intentProv.calls.Load() != 1 {
+		t.Fatalf("intent provider calls = %d, want 1", intentProv.calls.Load())
+	}
+	if mainProv.calls.Load() != 0 {
+		t.Fatalf("main provider was called %d times, want 0 — classifier must not use main session model", mainProv.calls.Load())
+	}
+}
+
+func TestSemanticIntentClassifierRespectsTimeout(t *testing.T) {
+	// The internal timeout is 10s. A context with a shorter deadline must
+	// cancel the request.
+	gate := make(chan struct{})
+	prov := &semanticIntentProvider{reply: "self_agent", gate: gate}
+	classifier := newSemanticIntentClassifier(prov)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	got, err := classifier.classify(ctx, "test")
+	close(gate) // unblock the provider so the goroutine can finish
+	if got != SemanticIntentChat {
+		t.Fatalf("intent = %q, want chat on timeout", got)
+	}
+	if err == nil {
+		t.Fatal("short deadline should produce a context error")
+	}
+}
+
+func TestAgentClassifySemanticIntentNilIntentReturnsError(t *testing.T) {
+	// An Agent without SemanticIntentProvider (nil intent) must return an
+	// observable error, not silently fall back to chat.
+	a := &Agent{intent: nil}
+	_, err := a.ClassifySemanticIntent(context.Background(), "test")
+	if err == nil {
+		t.Fatal("nil intent should return an observable error")
+	}
+}

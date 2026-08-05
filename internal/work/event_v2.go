@@ -49,6 +49,10 @@ const (
 	EventTaskRuntimeCreated WorkEventType = "task.runtime_created"
 	EventTaskRuntimeUpdated WorkEventType = "task.runtime_updated"
 	EventTaskStaleResult    WorkEventType = "task.stale_result"
+
+	// ── Node skill binding ─────────────────────────────────────────────
+	EventNodeSkillBound   WorkEventType = "node.skill.bound"
+	EventNodeSkillCleared WorkEventType = "node.skill.cleared"
 )
 
 // IsV2EventType reports whether t is a V2-only persisted event type.
@@ -76,6 +80,8 @@ var v2EventTypes = map[WorkEventType]bool{
 	EventTaskRuntimeCreated:      true,
 	EventTaskRuntimeUpdated:      true,
 	EventTaskStaleResult:         true,
+	EventNodeSkillBound:          true,
+	EventNodeSkillCleared:        true,
 }
 
 // ── V2 object kinds ────────────────────────────────────────────────────────
@@ -85,6 +91,7 @@ const (
 	ObjectArtifactSlot ObjectKind = "artifact_slot"
 	ObjectInput        ObjectKind = "input"
 	ObjectPatch        ObjectKind = "patch"
+	ObjectNode         ObjectKind = "node"
 )
 
 // ── V2 event validation ────────────────────────────────────────────────────
@@ -171,6 +178,8 @@ var v2ContextRules = map[WorkEventType]v2ContextRule{
 	EventTaskRuntimeCreated:      {Kind: ObjectTask, PrimaryID: "taskID", RequiresRunID: true, RequiresTaskID: true, RequiresExpectedRevision: true, RequiresDefinitionRev: true},
 	EventTaskRuntimeUpdated:      {Kind: ObjectTask, PrimaryID: "taskID", RequiresRunID: true, RequiresTaskID: true, RequiresExpectedRevision: true, RequiresDefinitionRev: true},
 	EventTaskStaleResult:         {Kind: ObjectTask, PrimaryID: "taskID", RequiresRunID: true, RequiresTaskID: true, RequiresExpectedRevision: true, RequiresDefinitionRev: true},
+	EventNodeSkillBound:          {Kind: ObjectNode, PrimaryID: "nodeID", RequiresDefinitionID: true, RequiresExpectedRevision: true, RequiresDefinitionRev: true},
+	EventNodeSkillCleared:        {Kind: ObjectNode, PrimaryID: "nodeID", RequiresDefinitionID: true, RequiresExpectedRevision: true, RequiresDefinitionRev: true},
 }
 
 func validateV2ObjectContext(typ WorkEventType, ctx ObjectContext) error {
@@ -242,6 +251,8 @@ func ctxIDMatches(primaryID string, ctx ObjectContext) bool {
 		return ctx.ID == ctx.PatchID
 	case "taskID":
 		return ctx.ID == ctx.TaskID
+	case "nodeID":
+		return ctx.ID == ctx.NodeID
 	}
 	return true
 }
@@ -329,6 +340,13 @@ func validateV2PayloadContextCrossCheck(typ WorkEventType, payload json.RawMessa
 		}
 		if p.TaskID != "" && p.TaskID != ctx.TaskID {
 			return fmt.Errorf("work: %s payload.taskId %q != ctx.taskID %q", typ, p.TaskID, ctx.TaskID)
+		}
+	case EventNodeSkillBound, EventNodeSkillCleared:
+		var p struct {
+			NodeID string `json:"nodeId"`
+		}
+		if json.Unmarshal(payload, &p) == nil && p.NodeID != "" && p.NodeID != ctx.NodeID {
+			return fmt.Errorf("work: %s payload.nodeId %q != ctx.nodeID %q", typ, p.NodeID, ctx.NodeID)
 		}
 	case EventTaskRuntimeCreated, EventTaskRuntimeUpdated, EventTaskStaleResult:
 		var p struct {
@@ -862,6 +880,24 @@ func ValidateV2WorkEventPayload(typ WorkEventType, payload json.RawMessage) erro
 			return fmt.Errorf("work: %s requires positive expectedRevision", typ)
 		}
 
+	case EventNodeSkillBound:
+		var p NodeSkillBoundPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return fmt.Errorf("work: %s payload: %w", typ, err)
+		}
+		if p.WorkID == "" || p.NodeID == "" || p.SkillName == "" {
+			return fmt.Errorf("work: %s requires workId/nodeId/skillName", typ)
+		}
+
+	case EventNodeSkillCleared:
+		var p NodeSkillClearedPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return fmt.Errorf("work: %s payload: %w", typ, err)
+		}
+		if p.WorkID == "" || p.NodeID == "" {
+			return fmt.Errorf("work: %s requires workId/nodeId", typ)
+		}
+
 	default:
 		return fmt.Errorf("work: unhandled V2 event type %q", typ)
 	}
@@ -1123,4 +1159,19 @@ type TaskStaleResultPayload struct {
 	CurrentToken     string          `json:"currentToken"`
 	ResultRef        string          `json:"resultRef,omitempty"`
 	PreviousReceipt  *AttemptReceipt `json:"previousReceipt,omitempty"`
+}
+
+// ── Node skill binding payloads ────────────────────────────────────────────
+
+// NodeSkillBoundPayload is carried by EventNodeSkillBound.
+type NodeSkillBoundPayload struct {
+	WorkID    string `json:"workId"`
+	NodeID    string `json:"nodeId"`
+	SkillName string `json:"skillName"`
+}
+
+// NodeSkillClearedPayload is carried by EventNodeSkillCleared.
+type NodeSkillClearedPayload struct {
+	WorkID string `json:"workId"`
+	NodeID string `json:"nodeId"`
 }

@@ -441,8 +441,8 @@ func (s *Service) Submit(ctx context.Context, env CommandEnvelope) (CommandRecei
 func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64, now time.Time, cmd Command) (TimelineItem, string, string, error) {
 	switch cmd.Type {
 	case CommandPostChat:
-		if cmd.Chat == nil || blankOrLarge(cmd.Chat.Text) || !validStringList(cmd.Chat.MentionMemberIDs, MaxMembers, MaxIDBytes) || !validStringList(cmd.Chat.MentionAgentIDs, MaxMembers, MaxIDBytes) {
-			return TimelineItem{}, "", "", fail(CodeInvalid, "chat text and mentions are invalid")
+		if cmd.Chat == nil || blankOrLarge(cmd.Chat.Text) || !validStringList(cmd.Chat.MentionMemberIDs, MaxMembers, MaxIDBytes) || !validStringList(cmd.Chat.MentionAgentIDs, MaxMembers, MaxIDBytes) || !validStringList(cmd.Chat.ReferenceIDs, MaxReferences, MaxIDBytes) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "chat text, mentions, and references are invalid")
 		}
 		for _, memberID := range cmd.Chat.MentionMemberIDs {
 			if memberID == actor {
@@ -457,8 +457,11 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 				return TimelineItem{}, "", "", fail(CodeNotFound, "mentioned Agent does not exist")
 			}
 		}
+		if !referencesExist(state, cmd.Chat.ReferenceIDs) {
+			return TimelineItem{}, "", "", fail(CodeNotFound, "one or more chat references do not exist")
+		}
 		id := newID("message")
-		value := ChatMessage{ID: id, AuthorID: actor, Text: cmd.Chat.Text, MentionMemberIDs: cloneStrings(cmd.Chat.MentionMemberIDs), MentionAgentIDs: cloneStrings(cmd.Chat.MentionAgentIDs), Revision: 1, CreatedAt: now}
+		value := ChatMessage{ID: id, AuthorID: actor, Text: cmd.Chat.Text, MentionMemberIDs: cloneStrings(cmd.Chat.MentionMemberIDs), MentionAgentIDs: cloneStrings(cmd.Chat.MentionAgentIDs), ReferenceIDs: cloneStrings(cmd.Chat.ReferenceIDs), Revision: 1, CreatedAt: now}
 		return TimelineItem{ID: id, Sequence: sequence, Type: TimelineChat, Chat: &value}, "chat.posted", "", nil
 	case CommandPublishContribution:
 		v := cmd.Contribution
@@ -552,11 +555,25 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 	case CommandPublishAgentResult:
 		v := cmd.AgentResult
 		member := state.Members[actor]
-		if v == nil || !validID(v.ResultID) || !validID(v.RunID) || !validID(v.AgentID) || v.AgentID != member.Agent.ID || blankOrLarge(v.Summary) || !validStringList(v.ReferenceIDs, MaxReferences, MaxIDBytes) {
+		if v == nil || !validID(v.ResultID) || !validID(v.RunID) || !validID(v.AgentID) || blankOrLarge(v.Summary) || !validStringList(v.ReferenceIDs, MaxReferences, MaxIDBytes) || !validAgentHandoffs(v.Handoffs) {
+			return TimelineItem{}, "", "", fail(CodeInvalid, "agent result fields are invalid")
+		}
+		if v.AgentID != member.Agent.ID {
 			return TimelineItem{}, "", "", fail(CodeForbidden, "agent result must belong to the current member's agent")
 		}
 		if !referencesExist(state, v.ReferenceIDs) {
 			return TimelineItem{}, "", "", fail(CodeNotFound, "one or more agent result references do not exist")
+		}
+		for _, handoff := range v.Handoffs {
+			if handoff.TargetAgentID == v.AgentID {
+				return TimelineItem{}, "", "", fail(CodeInvalid, "agent result cannot hand off to itself")
+			}
+			if !roomHasAgent(state, handoff.TargetAgentID) {
+				return TimelineItem{}, "", "", fail(CodeNotFound, "handoff target Agent does not exist")
+			}
+			if !referencesExist(state, handoff.ReferenceIDs) {
+				return TimelineItem{}, "", "", fail(CodeNotFound, "one or more handoff references do not exist")
+			}
 		}
 		run, ok := state.Runs[v.RunID]
 		if !ok || run.OwnerID != actor || run.AgentID != v.AgentID {
@@ -577,7 +594,7 @@ func (s *Service) buildTimeline(state *roomState, actor string, sequence uint64,
 		if _, exists := state.ResultKeys[resultKey(v.RunID, revision)]; exists {
 			return TimelineItem{}, "", "", fail(CodeConflict, "agent result revision already exists")
 		}
-		value := AgentResult{ID: v.ResultID, OwnerID: actor, AgentID: v.AgentID, RunID: v.RunID, Revision: revision, Summary: v.Summary, ReferenceIDs: cloneStrings(v.ReferenceIDs), CreatedAt: now}
+		value := AgentResult{ID: v.ResultID, OwnerID: actor, AgentID: v.AgentID, RunID: v.RunID, Revision: revision, Summary: v.Summary, ReferenceIDs: cloneStrings(v.ReferenceIDs), Handoffs: cloneAgentHandoffs(v.Handoffs), CreatedAt: now}
 		return TimelineItem{ID: v.ResultID, Sequence: sequence, Type: TimelineAgentResult, AgentResult: &value}, "agent_result.published", v.RunID, nil
 	case CommandUpdateAgent:
 		v := cmd.AgentUpdate
@@ -763,6 +780,18 @@ func validStringList(values []string, maxItems, maxItemBytes int) bool {
 	return true
 }
 
+func validAgentHandoffs(values []AgentHandoff) bool {
+	if len(values) > MaxMembers {
+		return false
+	}
+	for _, value := range values {
+		if !validID(value.TargetAgentID) || blankOrLarge(value.Instruction) || len(value.Reason) > MaxShortText || len(value.ExpectedOutcome) > MaxShortText || !validStringList(value.ReferenceIDs, MaxReferences, MaxIDBytes) {
+			return false
+		}
+	}
+	return true
+}
+
 func validMetadata(values map[string]string) bool {
 	if len(values) > MaxMetadata {
 		return false
@@ -780,6 +809,17 @@ func validMetadata(values map[string]string) bool {
 	return true
 }
 func cloneStrings(v []string) []string { return append([]string(nil), v...) }
+func cloneAgentHandoffs(values []AgentHandoff) []AgentHandoff {
+	if values == nil {
+		return nil
+	}
+	result := make([]AgentHandoff, len(values))
+	for i, value := range values {
+		value.ReferenceIDs = cloneStrings(value.ReferenceIDs)
+		result[i] = value
+	}
+	return result
+}
 func cloneMap(v map[string]string) map[string]string {
 	if v == nil {
 		return nil

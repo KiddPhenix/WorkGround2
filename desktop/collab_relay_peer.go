@@ -36,29 +36,29 @@ type relayCollaborationPeer struct {
 	fileSource *desktopCollaboration
 }
 
-func openRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInput, expectedHostKey, joinRef string) (*relayCollaborationPeer, error) {
+func openRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInput, expectedHostKey, joinRef string) (*relayCollaborationPeer, string, error) {
 	relay, err := relayConfigForRoute(route)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	socket, _, err := dialCollaborationRelay(ctx, relay)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	requestID := newCollaborationRequestID("relay-attach")
 	if err := socket.write(relayproto.Header{Type: relayproto.TypeGuestAttach, RelayRequestID: requestID, TunnelID: route.TunnelID}, relayproto.GuestAttach{Capability: route.GuestCapability, JoinRef: joinRef}); err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	header, payload, err := waitRelayControl(socket, requestID, relayproto.TypePeerOpened)
 	if err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	var opened relayproto.PeerOpened
 	if err := relayproto.UnmarshalPayload(payload, &opened); err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	if opened.PeerID == "" {
 		opened.PeerID = header.PeerID
@@ -69,32 +69,32 @@ func openRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInp
 	private, public, nonce, err := newRelayEphemeral()
 	if err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	hello := relayE2EHello{PublicKey: public, Nonce: nonce}
 	handshakeID := newCollaborationRequestID("relay-e2e")
 	if err := socket.write(relayproto.Header{Type: "e2e.hello", RelayRequestID: handshakeID, TunnelID: opened.TunnelID, PeerID: opened.PeerID}, hello); err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	_, acceptPayload, err := waitRelayControl(socket, handshakeID, "e2e.accept")
 	if err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	var accept relayE2EAccept
 	if err := json.Unmarshal(acceptPayload, &accept); err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	cipher, err := relayGuestAccept(private, opened.TunnelID, opened.PeerID, hello, accept, expectedHostKey)
 	if err != nil {
 		_ = socket.Close(context.Background())
-		return nil, err
+		return nil, "", err
 	}
 	peer := &relayCollaborationPeer{socket: socket, tunnelID: opened.TunnelID, peerID: opened.PeerID, cipher: cipher, epoch: uint64(time.Now().UnixNano()), pending: map[string]chan relayRPCResult{}, closed: make(chan struct{}), done: make(chan struct{})}
 	go peer.readLoop()
-	return peer, nil
+	return peer, opened.GuestCapability, nil
 }
 
 func relayConfigForRoute(route CollaborationRouteInput) (config.RelayConfig, error) {
@@ -280,24 +280,24 @@ func (p *relayCollaborationPeer) Close(ctx context.Context) error {
 	return err
 }
 
-func joinRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInput, room, token, hostKey, joinRef string, identity collab.MemberDescriptor, resume string) (*relayCollaborationPeer, collab.JoinResult, collab.Snapshot, error) {
-	peer, err := openRelayCollaborationPeer(ctx, route, hostKey, joinRef)
+func joinRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInput, room, token, hostKey, joinRef string, identity collab.MemberDescriptor, resume string) (*relayCollaborationPeer, collab.JoinResult, collab.Snapshot, string, error) {
+	peer, issuedGuestCap, err := openRelayCollaborationPeer(ctx, route, hostKey, joinRef)
 	if err != nil {
-		return nil, collab.JoinResult{}, collab.Snapshot{}, fmt.Errorf("attach Relay route: %w", err)
+		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("attach Relay route: %w", err)
 	}
 	var joined collab.JoinResult
 	err = peer.call(ctx, "collab.join", collab.JoinInput{RequestID: newCollaborationRequestID("join"), Room: room, Token: token, Member: identity, ResumeSession: strings.TrimSpace(resume)}, &joined)
 	if err != nil {
 		_ = peer.Close(context.Background())
-		return nil, collab.JoinResult{}, collab.Snapshot{}, fmt.Errorf("join Room through Relay: %w", err)
+		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("join Room through Relay: %w", err)
 	}
 	peer.room, peer.member, peer.session = room, joined.Member.ID, joined.ConnectionSession
 	snapshot, err := peer.Snapshot(ctx)
 	if err != nil {
 		_ = peer.Close(context.Background())
-		return nil, collab.JoinResult{}, collab.Snapshot{}, fmt.Errorf("load Room snapshot through Relay: %w", err)
+		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("load Room snapshot through Relay: %w", err)
 	}
-	return peer, joined, snapshot, nil
+	return peer, joined, snapshot, issuedGuestCap, nil
 }
 
 var _ collaborationPeer = (*relayCollaborationPeer)(nil)

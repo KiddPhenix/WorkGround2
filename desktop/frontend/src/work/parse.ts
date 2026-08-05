@@ -2,7 +2,7 @@ import { type ObjectKind, type ViewEventType, type WorkView, type WorkViewEvent 
 import { WORK_VIEW_SCHEMA_VERSION_V2, type ApplyWorkPatchResult, type ArtifactSlot, type PatchIntentReceipt, type TaskV2View, type WorkDefinitionRevision, type WorkInput, type WorkPatchPreview, type WorkViewV2 } from './types_v2';
 
 const viewTypes = new Set<ViewEventType>(['snapshot','delta','attention','removed']);
-const objectKinds = new Set<ObjectKind>(['work','block','run','stage','task','attempt','cornerstone','conclusion','artifact','definition','artifact_slot','input','patch']);
+const objectKinds = new Set<ObjectKind>(['work','block','run','stage','task','attempt','cornerstone','conclusion','artifact','definition','artifact_slot','input','patch','node']);
 
 export class ViewFutureSchemaError extends Error {
   constructor(readonly got:number, readonly current:number, readonly eventID:string, readonly subject='WorkViewEvent') { super(`${subject} schema version ${got} exceeds current max ${current} on event "${eventID}"; read-only access is required`); this.name='ViewFutureSchemaError'; }
@@ -59,7 +59,7 @@ function validateWorkViewEvent(value:Record<string,unknown>):void{
   const obj=value.object;
   if(obj.expectedRevision!=null){if(typeof obj.expectedRevision!=='number'||!Number.isSafeInteger(obj.expectedRevision)||obj.expectedRevision<0)throw new TypeError('work: ObjectContext.expectedRevision must be safe non-negative')}
   if(obj.definitionRevision!=null){if(typeof obj.definitionRevision!=='number'||!Number.isSafeInteger(obj.definitionRevision)||obj.definitionRevision<0)throw new TypeError('work: ObjectContext.definitionRevision must be safe non-negative')}
-  for(const f of['workID','runID','taskID','blockID','inputID','specID','definitionID','artifactSlotID','patchID']){const v=obj[f];if(v!=null&&(typeof v!=='string'||v.length===0))throw new TypeError(`work: ObjectContext.${f} must be a non-empty string`)}
+  for(const f of['workID','runID','taskID','nodeID','blockID','inputID','specID','definitionID','artifactSlotID','patchID']){const v=obj[f];if(v!=null&&(typeof v!=='string'||v.length===0))throw new TypeError(`work: ObjectContext.${f} must be a non-empty string`)}
   checkDate(value.createdAt);
   if(!('payload'in value))throw new TypeError('work: WorkViewEvent requires payload');
 }

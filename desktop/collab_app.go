@@ -413,6 +413,10 @@ type desktopCollaboration struct {
 	restoreAutoAgent  func(string, string)
 	openHost          func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
 	openJoin          func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error)
+
+	scheduler       *collaborationScheduler
+	schedulerCancel context.CancelFunc
+	startAgentHook  func(context.Context, StartCollaborationAgentInput) // test seam
 }
 
 type collaborationConnection struct {
@@ -614,6 +618,7 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	}
 	c.prepareAutoAgent = app.prepareCollaborationAutoAgent
 	c.restoreAutoAgent = app.restoreCollaborationAutoAgent
+	c.scheduler = newCollaborationScheduler()
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root != "" {
 		c.legacyPersistPath = filepath.Join(root, "desktop-collaboration-v1.json")
@@ -676,6 +681,82 @@ func (a *App) closeCollaborations() {
 		}()
 	}
 	wg.Wait()
+}
+
+// restoreCollaborationRuntimes scans the persisted collaboration states on
+// disk and reinstantiates a desktopCollaboration runtime for each one, then
+// attempts an async reconnection. This is called during Desktop startup so
+// inactive collaboration Sessions resume their Personal Agent scheduler
+// without requiring the Room tab to be mounted first.
+//
+// Each Session starts independently; a single failure does not block others.
+// Errors are recorded in the runtime state and surfaced to the frontend when
+// the user eventually opens that Room tab.
+func (a *App) restoreCollaborationRuntimes() {
+	root := strings.TrimSpace(config.MemoryUserDir())
+	if root == "" {
+		return
+	}
+	stateDir := filepath.Join(root, "desktop-collaboration-v2")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "collaboration restore: read state dir: %v\n", err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		persistPath := filepath.Join(stateDir, entry.Name())
+		a.restoreOneCollaboration(persistPath)
+	}
+}
+
+func (a *App) restoreOneCollaboration(persistPath string) {
+	var persisted collaborationPersistedState
+	if err := readPersistFile(persistPath, &persisted); err != nil {
+		fmt.Fprintf(os.Stderr, "collaboration restore: read %s: %v\n", persistPath, err)
+		return
+	}
+	if persisted.SessionID == "" {
+		return
+	}
+	tab := a.sessionByID(persisted.SessionID)
+	if tab == nil {
+		return
+	}
+	livePath := sessionRuntimeKey(tab.currentSessionPath())
+	persistedPath := sessionRuntimeKey(persisted.SessionPath)
+	if livePath != "" && persistedPath != "" && livePath != persistedPath {
+		return
+	}
+	// Skip sessions that have already been restored (idempotent).
+	runtime, err := a.collaborationRuntime(persisted.SessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "collaboration restore: runtime %s: %v\n", persisted.SessionID, err)
+		return
+	}
+	// Only restore sessions that are not currently connected.
+	state := runtime.snapshot()
+	if state.Status == "connected" || state.Status == "syncing" || state.Status == "connecting" {
+		return
+	}
+	// The runtime constructor loads the SessionPath-keyed cache exactly once.
+	// Loading it again here would duplicate recovered queue entries.
+	p := runtime.repairPersisted(runtime.readPersisted())
+	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
+		go func() {
+			readyCtx, cancel := context.WithTimeout(a.bootContext(), 2*time.Minute)
+			defer cancel()
+			if err := a.waitCollaborationAgentReady(readyCtx, persisted.SessionID); err != nil {
+				runtime.failState("failed", fmt.Errorf("restore collaboration Agent workspace: %w", err), true)
+				return
+			}
+			_, _ = runtime.retry(a.bootContext())
+		}()
+	}
 }
 
 func (a *App) GetCollaborationState(sessionID string) (CollaborationState, error) {
@@ -1198,7 +1279,7 @@ func (a *App) ClassifyCollaborationIntent(input ClassifyCollaborationIntentInput
 	if !ok {
 		return CollaborationIntentResult{Intent: string(agent.SemanticIntentChat), Source: "fallback", Error: "Session model does not support semantic intent classification"}
 	}
-	ctx, cancel := context.WithTimeout(a.bootContext(), 4*time.Second)
+	ctx, cancel := context.WithTimeout(a.bootContext(), 12*time.Second)
 	defer cancel()
 	intent, err := classifier.ClassifySemanticIntent(ctx, text)
 	if err != nil {
@@ -1418,7 +1499,7 @@ func collaborationQueuedItem(env collab.CommandEnvelope, sequence uint64) *colla
 		if env.Command.Chat == nil {
 			return nil
 		}
-		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: id, AuthorID: env.MemberID, Text: env.Command.Chat.Text, MentionMemberIDs: append([]string(nil), env.Command.Chat.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), env.Command.Chat.MentionAgentIDs...), Revision: 1, CreatedAt: createdAt}}
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: id, AuthorID: env.MemberID, Text: env.Command.Chat.Text, MentionMemberIDs: append([]string(nil), env.Command.Chat.MentionMemberIDs...), MentionAgentIDs: append([]string(nil), env.Command.Chat.MentionAgentIDs...), ReferenceIDs: append([]string(nil), env.Command.Chat.ReferenceIDs...), Revision: 1, CreatedAt: createdAt}}
 	case collab.CommandPublishContribution:
 		if env.Command.Contribution == nil {
 			return nil
@@ -1442,7 +1523,7 @@ func collaborationQueuedItem(env collab.CommandEnvelope, sequence uint64) *colla
 			return nil
 		}
 		value := env.Command.AgentResult
-		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentResult, AgentResult: &collab.AgentResult{ID: value.ResultID, OwnerID: env.MemberID, AgentID: value.AgentID, RunID: value.RunID, Revision: value.Revision, Summary: value.Summary, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), CreatedAt: createdAt}}
+		return &collab.TimelineItem{ID: id, Sequence: sequence, Type: collab.TimelineAgentResult, AgentResult: &collab.AgentResult{ID: value.ResultID, OwnerID: env.MemberID, AgentID: value.AgentID, RunID: value.RunID, Revision: value.Revision, Summary: value.Summary, ReferenceIDs: append([]string(nil), value.ReferenceIDs...), Handoffs: cloneCollaborationHandoffs(value.Handoffs), CreatedAt: createdAt}}
 	case collab.CommandOfferFile:
 		if env.Command.FileOffer == nil {
 			return nil
@@ -1486,6 +1567,18 @@ func cloneCollaborationAgentPrompt(value *CollaborationAgentPrompt) *Collaborati
 		result.Questions[i].Options = append([]CollaborationAgentPromptOption(nil), value.Questions[i].Options...)
 	}
 	return &result
+}
+
+func cloneCollaborationHandoffs(values []collab.AgentHandoff) []collab.AgentHandoff {
+	if values == nil {
+		return nil
+	}
+	result := make([]collab.AgentHandoff, len(values))
+	for i, value := range values {
+		value.ReferenceIDs = append([]string(nil), value.ReferenceIDs...)
+		result[i] = value
+	}
+	return result
 }
 
 func (c *desktopCollaboration) host(ctx context.Context, input HostCollaborationRoomInput) (CollaborationState, error) {
@@ -1726,6 +1819,10 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 	c.persistLocked()
 	c.mu.Unlock()
 	c.closeFileTransfers()
+	if c.schedulerCancel != nil {
+		c.schedulerCancel()
+		c.schedulerCancel = nil
+	}
 	c.emitState()
 	return nil
 }
@@ -1738,6 +1835,10 @@ func (c *desktopCollaboration) close() {
 	c.persistLocked()
 	c.conn = nil
 	c.mu.Unlock()
+	if c.schedulerCancel != nil {
+		c.schedulerCancel()
+		c.schedulerCancel = nil
+	}
 	if conn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		_ = conn.close(ctx, false)
@@ -1939,13 +2040,9 @@ func (c *desktopCollaboration) startAgentLocked(ctx context.Context, input Start
 		return result, nil
 	}
 
-	contextText, err := collaborationContext(state.Snapshot, input.ReferenceIDs)
+	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, instruction, input.ReferenceIDs)
 	if err != nil {
 		return CollaborationActionResult{}, err
-	}
-	fullInput := instruction
-	if contextText != "" {
-		fullInput += "\n\n" + contextText
 	}
 	c.mu.Lock()
 	c.starts[requestID] = collaborationStartRecord{RunID: runID, Fingerprint: fingerprint}
@@ -2459,6 +2556,17 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		_ = previous.close(closeCtx, false)
 		cancel()
 	}
+	// Stop any previous scheduler before starting a new one.
+	if c.schedulerCancel != nil {
+		c.schedulerCancel()
+		c.schedulerCancel = nil
+	}
+	if c.scheduler != nil {
+		schedCtx, schedCancel := context.WithCancel(c.app.bootContext())
+		c.schedulerCancel = schedCancel
+		go c.scheduler.run(schedCtx, c)
+	}
+
 	loopCtx, cancel := context.WithCancel(c.app.bootContext())
 	conn.cancel = cancel
 	conn.done = make(chan struct{})
@@ -2466,5 +2574,8 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	go c.restoreFileOrigins(conn)
 	c.emitState()
 	go c.startNextQueuedAgent(conn.sessionID)
+	if c.scheduler != nil {
+		c.scheduler.signal(wakeSignal)
+	}
 	return state, nil
 }

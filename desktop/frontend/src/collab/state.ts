@@ -258,10 +258,11 @@ export function agentCollaborationRequestID(items: CollaborationTimelineItem[], 
 
 export function nextAgentCollaborationBatch(
   state: Pick<CollabViewState, "timeline" | "selfMemberId" | "agentConfig">,
+  selfAgentId?: string,
   now = Date.now(),
-): { items: CollaborationTimelineItem[]; waitMs: number } | undefined {
+): { items: CollaborationTimelineItem[]; handoffs: NonNullable<CollaborationTimelineItem["handoffs"]>; waitMs: number } | undefined {
   const selfMemberId = state.selfMemberId;
-  if (!selfMemberId || !state.agentConfig.autoRespondAgents) return undefined;
+  if (!selfMemberId || !selfAgentId || !state.agentConfig.autoRespondAgents) return undefined;
   const clock = agentCollaborationClock(state);
   if (!clock.unlimited && clock.remaining === 0) return undefined;
   const byId = new Map(state.timeline.map((item) => [item.id, item]));
@@ -269,6 +270,7 @@ export function nextAgentCollaborationBatch(
   const handled = new Set(ownCommands.flatMap((item) => item.referenceIds));
   const candidates = state.timeline.filter((item) => item.kind === "agent_result"
     && item.actorId !== selfMemberId
+    && item.handoffs?.some((handoff) => handoff.targetAgentId === selfAgentId && handoff.requiresResponse)
     && !handled.has(item.id)
     && afterClockReset(item, clock.resetItem, Date.parse(clock.woundAt || "")))
     .sort((a, b) => a.sequence - b.sequence || a.createdAt.localeCompare(b.createdAt));
@@ -279,10 +281,30 @@ export function nextAgentCollaborationBatch(
     .filter(Number.isFinite);
   const lastStartedAt = peerCommandTimes.length > 0 ? Math.max(...peerCommandTimes) : 0;
   const intervalMs = Math.min(3600, Math.max(5, state.agentConfig.agentResponseIntervalSeconds || 30)) * 1000;
+  const items = candidates.slice(-agentCollaborationBatchLimit);
   return {
-    items: candidates.slice(-agentCollaborationBatchLimit),
+    items,
+    handoffs: items.flatMap((item) => item.handoffs?.filter((handoff) => handoff.targetAgentId === selfAgentId && handoff.requiresResponse) || []),
     waitMs: Math.max(0, lastStartedAt + intervalMs - now),
   };
+}
+
+export function visibleCollaborationTimeline(items: CollaborationTimelineItem[]): CollaborationTimelineItem[] {
+  const runs = new Map(items.filter((item) => item.kind === "agent_command").map((item) => [item.id, item]));
+  const results = new Map(items.filter((item) => item.kind === "agent_result" && item.agentRunId).map((item) => [item.agentRunId as string, item]));
+  return items.flatMap((item) => {
+    if (item.kind === "agent_result" && item.agentRunId && runs.has(item.agentRunId)) return [];
+    if (item.kind !== "agent_command") return [item];
+    const result = results.get(item.id);
+    if (!result) return [item];
+    return [{
+      ...item,
+      agentRunSummary: item.agentRunSummary,
+      agentRunOutput: result.text,
+      referenceIds: [...new Set([...item.referenceIds, ...result.referenceIds])],
+      handoffs: result.handoffs,
+    }];
+  });
 }
 
 export function selectedTimelineItems(state: CollabViewState): CollaborationTimelineItem[] {

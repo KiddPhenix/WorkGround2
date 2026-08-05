@@ -285,6 +285,13 @@ func (s *Service) SetV2TransportEnabled(enabled bool) {
 	}
 }
 
+// SetSkillResolver injects the Skill resolver for node execution augmentation.
+func (s *Service) SetSkillResolver(resolver SkillResolver) {
+	if s != nil && s.v2 != nil {
+		s.v2.SetSkillResolver(resolver)
+	}
+}
+
 // SubmitV2Input commits through InputService and automatically resumes only
 // the affected V2 task subgraph from authoritative storage.
 func (s *Service) SubmitV2Input(ctx context.Context, input SubmitInputRequest) (*SubmitInputResult, error) {
@@ -670,6 +677,74 @@ func (s *Service) RetryWorkNode(ctx context.Context, input RetryWorkNodeRequest)
 		err = errors.Join(err, stateErr)
 	}
 	err = errors.Join(retryErr, err)
+	result.Error = TransportErrorFrom(err)
+	if result.Error != nil {
+		result.Recoverable = result.Error.Recoverable
+		result.Committed = result.Committed || result.Error.Committed
+	}
+	return result, err
+}
+
+func (s *Service) SetNodeSkill(ctx context.Context, input SetNodeSkillRequest) (*SetNodeSkillResult, error) {
+	if s.v2 == nil || s.store == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	_, before, err := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/set-node-skill")
+	if err != nil {
+		return nil, err
+	}
+	result, setErr := s.v2.SetNodeSkill(ctx, input)
+	if result == nil {
+		result = &SetNodeSkillResult{}
+	}
+	if before.RequestFound {
+		result.Duplicate = true
+	}
+	if result.Committed {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, after, stateErr := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/set-node-skill")
+	if stateErr == nil {
+		result.Revision = after.Revision
+		result.Committed = result.Committed || after.RequestFound
+	} else {
+		err = errors.Join(err, stateErr)
+	}
+	err = errors.Join(setErr, err)
+	result.Error = TransportErrorFrom(err)
+	if result.Error != nil {
+		result.Recoverable = result.Error.Recoverable
+		result.Committed = result.Committed || result.Error.Committed
+	}
+	return result, err
+}
+
+func (s *Service) ClearNodeSkill(ctx context.Context, input ClearNodeSkillRequest) (*ClearNodeSkillResult, error) {
+	if s.v2 == nil || s.store == nil {
+		return nil, errors.New("work: V2 coordinator is not configured")
+	}
+	_, before, err := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/clear-node-skill")
+	if err != nil {
+		return nil, err
+	}
+	result, clearErr := s.v2.ClearNodeSkill(ctx, input)
+	if result == nil {
+		result = &ClearNodeSkillResult{}
+	}
+	if before.RequestFound {
+		result.Duplicate = true
+	}
+	if result.Committed {
+		err = errors.Join(err, s.emitV2MutationView(input.WorkID, input.ExpectedRevision, input.RequestID))
+	}
+	_, after, stateErr := s.store.LoadState(input.WorkID, strings.TrimSpace(input.RequestID)+"/clear-node-skill")
+	if stateErr == nil {
+		result.Revision = after.Revision
+		result.Committed = result.Committed || after.RequestFound
+	} else {
+		err = errors.Join(err, stateErr)
+	}
+	err = errors.Join(clearErr, err)
 	result.Error = TransportErrorFrom(err)
 	if result.Error != nil {
 		result.Recoverable = result.Error.Recoverable

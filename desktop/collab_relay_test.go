@@ -167,14 +167,65 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	}
 	route.TunnelID = tunnelID
 	guestIdentity := collab.MemberDescriptor{ID: "member-guest", Name: "Guest", Agent: collab.AgentDescriptor{ID: "agent-guest", Name: "Guest Agent", Status: collab.AgentIdle}}
-	guest, joined, snapshot, err := joinRelayCollaborationPeer(ctx, route, rooms.Rooms[0].PublicRoomID, "secret", rooms.Rooms[0].HostPublicKey, joinRef, guestIdentity, "")
+	guestRuntime := newRuntime()
+	guestConn, err := guestRuntime.openJoinedRoom(ctx, JoinCollaborationRoomInput{
+		Room: rooms.Rooms[0].PublicRoomID, Token: "secret", Routes: []CollaborationRouteInput{route},
+		HostKey: rooms.Rooms[0].HostPublicKey, JoinRef: joinRef,
+	}, guestIdentity, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer guest.Close(context.Background())
-	if joined.Member.ID != guestIdentity.ID || len(snapshot.Members) != 2 {
-		t.Fatalf("join = %#v, snapshot members = %d", joined, len(snapshot.Members))
+	guest, ok := guestConn.peer.(*relayCollaborationPeer)
+	if !ok {
+		t.Fatalf("guest peer = %T, want Relay peer", guestConn.peer)
 	}
+	defer guest.Close(context.Background())
+	snapshot := guestConn.initialSnapshot
+	if guestConn.memberID != guestIdentity.ID || len(snapshot.Members) != 2 {
+		t.Fatalf("join member = %q, snapshot members = %d", guestConn.memberID, len(snapshot.Members))
+	}
+	guestRef := guestConn.guestCapabilityRefs[route.RelayID]
+	issuedGuestCap := guestRuntime.getSecret(guestRef)
+	if issuedGuestCap == "" {
+		t.Fatalf("JoinRef attach did not persist guest capability; ref = %q", guestRef)
+	}
+	// Verify the returned capability supports reconnect.
+	guest.Close(context.Background())
+	route.GuestCapability = issuedGuestCap
+	reconnected, rejoined, resnapshot, _, err := joinRelayCollaborationPeer(ctx, route, rooms.Rooms[0].PublicRoomID, "secret", rooms.Rooms[0].HostPublicKey, "", guestIdentity, guestConn.connectionSession)
+	if err != nil {
+		t.Fatal("reconnect with issued guest capability:", err)
+	}
+	defer reconnected.Close(context.Background())
+	if !rejoined.Rejoined || len(resnapshot.Members) != 2 {
+		t.Fatalf("reconnect join = %#v, snapshot members = %d", rejoined, len(resnapshot.Members))
+	}
+	// Simulate a legacy persisted client that has neither Guest Capability nor
+	// JoinRef. A Discovery route must acquire a fresh JoinRef and restore the
+	// reusable secret automatically.
+	reconnected.Close(context.Background())
+	route.GuestCapability = ""
+	secretsMu.Lock()
+	delete(secrets, guestRef)
+	secretsMu.Unlock()
+	legacyRuntime := newRuntime()
+	recoveredConn, err := legacyRuntime.openJoinedRoom(ctx, JoinCollaborationRoomInput{
+		Room: rooms.Rooms[0].PublicRoomID, Token: "secret", Routes: []CollaborationRouteInput{route},
+		HostKey: rooms.Rooms[0].HostPublicKey,
+	}, guestIdentity, rejoined.ConnectionSession)
+	if err != nil {
+		t.Fatal("recover legacy Relay route:", err)
+	}
+	recovered, ok := recoveredConn.peer.(*relayCollaborationPeer)
+	if !ok {
+		t.Fatalf("recovered peer = %T, want Relay peer", recoveredConn.peer)
+	}
+	defer recovered.Close(context.Background())
+	if recoveredRef := recoveredConn.guestCapabilityRefs[route.RelayID]; recoveredRef == "" || legacyRuntime.getSecret(recoveredRef) == "" {
+		t.Fatalf("legacy Relay recovery did not persist guest capability; ref = %q", recoveredRef)
+	}
+	// Use the recovered peer for remaining tests.
+	guest = recovered
 	_, err = guest.Submit(ctx, collab.CommandEnvelope{RequestID: "chat-1", Command: collab.Command{Type: collab.CommandPostChat, Chat: &collab.PostChatInput{Text: "cross-network hello"}}})
 	if err != nil {
 		t.Fatal(err)

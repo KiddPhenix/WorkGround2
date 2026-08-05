@@ -80,6 +80,10 @@ export interface ExecutionRowProps {
   onInfo?: () => void;
   /** Presentation-only pause overlay; the Task remains running for resume. */
   paused?: boolean;
+  /** Whether the skill binding UI is editable (false for running/completed tasks). */
+  skillEditable?: boolean;
+  /** Opens the skill binding modal for this node. */
+  onOpenSkillModal?: () => void;
 }
 
 export const ExecutionRow: React.FC<ExecutionRowProps> = ({
@@ -91,6 +95,8 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
   onDiscuss,
   onInfo,
   paused = false,
+  skillEditable = false,
+  onOpenSkillModal,
 }) => {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
@@ -172,6 +178,15 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
             >
               {stateLabel}
             </span>
+            {task.skillName && (
+              <span
+                className="wg2-er-skill-badge"
+                title={`技能: ${task.skillName}`}
+                data-testid={`execution-row-skill-${task.id}`}
+              >
+                {task.skillName}
+              </span>
+            )}
             {task.progress && progressValue === null && task.state !== 'running' && (
               <span className="wg2-er-progress-copy"> · {task.progress}</span>
             )}
@@ -270,6 +285,20 @@ export const ExecutionRow: React.FC<ExecutionRowProps> = ({
           >
             <MessageCircle size={15} aria-hidden="true" />
             <span>{task.state === 'completed' ? '修改意见' : '讨论'}</span>
+          </button>
+        )}
+
+        {/* Skill binding button */}
+        {onOpenSkillModal && (
+          <button
+            type="button"
+            className={`wg2-er-skill-btn${!skillEditable ? ' wg2-er-skill-btn-disabled' : ''}`}
+            onClick={(e) => { e.stopPropagation(); onOpenSkillModal(); }}
+            disabled={!skillEditable}
+            aria-label={`${task.skillName ? `技能: ${task.skillName}` : '绑定技能'} ${task.title}`}
+            data-testid={`execution-row-skill-btn-${task.id}`}
+          >
+            {task.skillName ? task.skillName : 'Skill'}
           </button>
         )}
 

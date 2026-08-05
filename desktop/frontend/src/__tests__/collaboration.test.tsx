@@ -9,7 +9,7 @@ import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { ConnectionPanel } from "../collab/components/ConnectionPanel";
 import { CollaborationTimeline } from "../collab/components/CollaborationTimeline";
 import { collabCopy, contributionLabel } from "../collab/copy";
-import { agentCollaborationClock, agentCollaborationRequestID, collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems } from "../collab/state";
+import { agentCollaborationClock, agentCollaborationRequestID, collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems, visibleCollaborationTimeline } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
 import { buildCollaborationInvite, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
 import { recentAgentActivity } from "../collab/agentActivity";
@@ -87,6 +87,75 @@ async function testWaitingAgentRunDecisions() {
   await act(async () => root.unmount());
 }
 
+async function testReferenceAndRunResultPresentation() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const original = { ...item("original", 1, "第一行\n第二行\n第三行\n第四行") };
+  const run = { ...item("run-pair", 2, "执行复核"), kind: "agent_command" as const, actorAgent: true, agentRunStatus: "completed" as const, agentRunSummary: "正在运行中...", referenceIds: [original.id] };
+  const result = { ...item("result-pair", 3, "复核完成\n所有检查项已通过\n第三行结果在这里"), kind: "agent_result" as const, actorAgent: true, agentRunId: run.id, handoffs: [{ targetAgentId: "agent-b", instruction: "继续验证", referenceIds: [original.id], requiresResponse: true }] };
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[original, run, result]} members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
+    selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+  equal(document.querySelectorAll(".collab-message").length, 2, "paired Agent run/result renders as one message card");
+  const preview = document.querySelector<HTMLButtonElement>(".collab-reference-card__preview")!;
+  equal([preview.getAttribute("aria-expanded"), document.querySelector(".collab-reference-card__text--open")], ["false", null], "long reference starts collapsed at the three-line presentation");
+  await act(async () => preview.click());
+  equal(preview.getAttribute("aria-expanded"), "true", "reference preview expands in place when clicked");
+  ok((document.querySelector(".collab-handoffs")?.textContent || "").includes("@Verifier"), "directed handoff visibly addresses the target Agent");
+  const output = document.querySelector(".collab-agent-output")!;
+  ok(output !== null && output.tagName === "P", "completed Agent output uses the same paragraph element as normal chat content");
+  ok(output.parentElement?.classList.contains("collab-message-body") && !output.closest(".collab-agent-run"), "completed Agent output is direct message content rather than a nested run card");
+  ok((output.textContent || "").includes("复核完成") && (output.textContent || "").includes("所有检查项已通过"), "multi-line final output is fully visible in the message body");
+  const summaryDiv = document.querySelector(".collab-agent-run__summary");
+  ok(summaryDiv === null, "completed run with output does not render a single-line summary div");
+  ok(!(output.textContent || "").includes("正在运行中..."), "final output does not leak the run-time progress summary");
+  await act(async () => root.unmount());
+}
+
+async function testAgentRunResultOutput() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+
+  const completedRun: CollaborationTimelineItem = { ...item("cr", 1, "执行复核"), kind: "agent_command", actorAgent: true, agentRunStatus: "completed", agentRunSummary: "进度摘要" };
+  const completedResult: CollaborationTimelineItem = { ...item("cr-result", 2, "复核通过\n第二行\n第三行"), kind: "agent_result", actorAgent: true, agentRunId: "cr", handoffs: [{ targetAgentId: "agent-b", instruction: "继续", referenceIds: [], requiresResponse: true }] };
+  const failedRun: CollaborationTimelineItem = { ...item("fr", 3, "部署任务"), kind: "agent_command", actorAgent: true, agentRunStatus: "failed", agentRunError: "连接超时" };
+  const cancelledRun: CollaborationTimelineItem = { ...item("cancel", 4, "已取消的任务"), kind: "agent_command", actorAgent: true, agentRunStatus: "cancelled" };
+
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[completedRun, completedResult, failedRun, cancelledRun]}
+    members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
+    selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+
+  equal(document.querySelectorAll(".collab-message").length, 3, "merged completed pair + failed + cancelled = 3 cards");
+
+  const outputEls = document.querySelectorAll(".collab-agent-output");
+  equal(outputEls.length, 1, "only the completed run with result shows output");
+  ok(outputEls[0]?.parentElement?.classList.contains("collab-message-body") && !outputEls[0]?.closest(".collab-agent-run"), "completed output shares the normal chat content flow");
+  ok((outputEls[0]?.textContent || "").includes("复核通过"), "completed run output contains the result text");
+  ok((outputEls[0]?.textContent || "").includes("第三行"), "multi-line output preserves all lines");
+
+  const summaryEls = document.querySelectorAll(".collab-agent-run__summary");
+  const summaryTexts = [...summaryEls].map((el) => el.textContent);
+  ok(summaryTexts.includes("连接超时"), "failed run without output shows the error in summary");
+  ok(summaryTexts.includes("已取消"), "cancelled run without output shows the status label");
+
+  const handoffEl = document.querySelector(".collab-handoffs");
+  ok(handoffEl !== null, "handoffs remain visible on merged run/result card");
+  ok((handoffEl?.textContent || "").includes("@Verifier"), "handoff addresses target Agent");
+
+  await act(async () => root.unmount());
+}
+
 async function testSessionTransportIsolation() {
   const first = createMockCollaborationTransport("multi-session-a");
   const second = createMockCollaborationTransport("multi-session-b");
@@ -129,6 +198,7 @@ async function testAgentBusyGuard() {
     async classifyIntent(text) {
       semanticCalls++;
       if (text.includes("外部")) return { intent: "uncertain", source: "llm" };
+      if (text.includes("网络超时")) throw new Error("context deadline exceeded");
       return { intent: "chat", source: "fallback", error: "model temporarily unavailable", retryable: true };
     },
     async post(input) { return { ok: true, item: { ...item(input.requestID, 1, input.text), kind: input.kind } }; },
@@ -162,7 +232,11 @@ async function testAgentBusyGuard() {
   equal(semanticCalls, 1, "covered instruction does not spend an LLM classification call");
   await act(async () => { await controller!.postChat("今天同步窗口是下午三点"); await Promise.resolve(); });
   const failedIntent = Object.values(controller!.state.pendingIntents).find((entry) => entry.instruction.includes("下午三点"));
-  equal([semanticCalls, failedIntent?.status, Boolean(failedIntent?.error)], [2, "failed", true], "LLM failure stays visible and recoverable without failing the Room send");
+  ok(!failedIntent, "LLM classification failure must not create a PendingIntent — message was already sent");
+  await act(async () => { await controller!.postChat("现在测试网络超时的情况"); await Promise.resolve(); });
+  const timeoutIntent = Object.values(controller!.state.pendingIntents).find((entry) => entry.instruction.includes("网络超时"));
+  ok(!timeoutIntent, "network timeout must not create a PendingIntent");
+  equal(semanticCalls, 3, "classification failures still consume LLM calls but never create task cards");
   let first!: Promise<void>;
   let second!: Promise<void>;
   await act(async () => {
@@ -274,9 +348,8 @@ async function testMentionStartsAgent() {
   function Harness() { useCollabController("mention-session", transport); return null; }
   const root = createRoot(document.getElementById("root")!);
   await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); await Promise.resolve(); });
-  equal([starts.length, starts[0]?.requestID, starts[0]?.referenceIDs, starts[0]?.instruction.includes("Alice"), starts[0]?.automatic], [1, mentionRequestID("mention-1", "agent"), ["mention-1"], true, true], "explicit typed @member question starts only the mention Agent run when automatic question recognition is enabled");
-  await act(async () => { await Promise.resolve(); });
-  equal(starts.length, 1, "Agent run command identity suppresses duplicate mention execution");
+  // Backend scheduler handles auto-start; frontend must NOT auto-start on mention.
+  equal(starts.length, 0, "frontend does NOT auto-start Agent on @mention — backend scheduling handles this");
   await act(async () => root.unmount());
 }
 
@@ -320,9 +393,11 @@ async function testRoomAgentUsesScopedAutoApproval() {
   function Harness() { controller = useCollabController("auto-session", transport); return null; }
   const root = createRoot(document.getElementById("root")!);
   await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); await Promise.resolve(); });
-  equal(starts, [true], "automatic question response requests scoped auto tool approval");
+  // Backend scheduler handles auto-respond; frontend must NOT auto-start on question.
+  equal(starts, [], "frontend does NOT auto-start Agent on question — backend scheduling handles this");
+  // Manual startAgent still works and is NOT automatic.
   await act(async () => { await controller!.startAgent("手动分析", []); });
-  equal(starts, [true, false], "an owner's direct Room Agent command follows the selected Session tool approval mode");
+  equal(starts, [false], "manual Agent start is never automatic");
   await act(async () => root.unmount());
 }
 
@@ -718,6 +793,7 @@ async function testNoCacheSessionEntryWithoutAutoConnect() {
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
+  const handoffCSS = readFileSync(new URL("../collab/collab-handoff.css", import.meta.url), "utf8");
   const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
   const composerSource = readFileSync(new URL("../collab/components/CollaborationComposer.tsx", import.meta.url), "utf8");
@@ -752,14 +828,16 @@ async function main() {
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
   ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
-  ok(/\.app--windows-frameless \.collab-members\s*\{[^}]*padding-top:\s*calc\(var\(--windows-window-controls-height/.test(layoutCSS), "Room right panel clears the Windows window controls");
+  ok(/\.app--windows-frameless \.collab-members\s*\{[^}]*height:\s*calc\(100% - var\(--windows-window-controls-height[^}]*margin-top:\s*var\(--windows-window-controls-height/.test(layoutCSS) && !/\.app--windows-frameless \.collab-members\s*\{[^}]*padding-top:/.test(layoutCSS), "Room right panel shortens its scroll viewport below the Windows controls instead of scrolling padding behind them");
+  ok(/--collab-bg:\s*var\(--bg\)/.test(layoutCSS) && /--collab-panel:\s*var\(--surface/.test(layoutCSS) && /--collab-text:\s*var\(--fg\)/.test(layoutCSS) && /--collab-accent:\s*var\(--accent\)/.test(layoutCSS), "Room derives surfaces, text, and accents from the Settings theme tokens");
+  ok(handoffCSS.includes("var(--collab-accent)") && handoffCSS.includes("var(--collab-control)") && !handoffCSS.includes("rgba(155, 114, 255"), "Room handoff and reply additions reuse the same theme palette");
   ok(workspaceSource.indexOf("collab-agent-config") < workspaceSource.indexOf("collab-member-section"), "own Agent configuration is placed above the member list");
   ok(workspaceSource.includes("state.currentRun") && workspaceSource.includes("controller.stopCurrentRun") && workspaceSource.includes('data-phase={state.currentRun.phase}') && layoutCSS.includes(".collab-current-run__stop"), "My Agent panel exposes the current local run phase and an explicit stop control");
   ok(workspaceSource.includes('c("autoQuestionsShort")') && workspaceSource.includes('c("autoRequestsShort")') && workspaceSource.includes('c("recognitionMode")'), "Agent panel exposes question, operation-request, and recognition-cycle controls");
   ok(workspaceSource.includes('c("agentCollaboration")') && workspaceSource.includes('c("agentResponseFrequency")') && workspaceSource.includes("agentClockRemaining") && workspaceSource.includes("autoRespondAgents") && workspaceSource.includes("agentResponseIntervalSeconds") && workspaceSource.includes("agentClockTurns"), "Agent panel exposes independent Agent-to-Agent collaboration, frequency, and configurable clockwork controls");
   ok(workspaceSource.includes("agentCollaborationOpen") && workspaceSource.includes("aria-expanded={agentCollaborationOpen}") && workspaceSource.includes('c("agentClockWind")') && workspaceSource.includes("agentClockWoundAt") && workspaceSource.includes("agentClockUnlimited"), "Agent collaboration section folds and exposes persistent wind-up and unlimited controls");
   ok(/\.collab-agent-peer-policy--open \.collab-agent-peer-summary > svg\s*\{[^}]*rotate\(90deg\)/.test(layoutCSS) && /\.collab-agent-clock-row > button\s*\{/.test(layoutCSS), "fold and wind-up controls have explicit compact rail styling");
-  ok(controllerSource.includes("nextAgentCollaborationBatch") && controllerSource.includes("agentCollaborationRequestID") && controllerSource.includes("autoAgentCollaborationInstruction") && controllerSource.includes("window.setInterval"), "Agent collaboration scheduler batches peer outputs into idempotent automatic runs");
+  ok(!controllerSource.includes("nextAgentCollaborationBatch") && !controllerSource.includes("batch.handoffs") && !controllerSource.includes("agentCollaborationRequestID") && !controllerSource.includes("autoAgentCollaborationInstruction") && !controllerSource.includes("window.setInterval") && !controllerSource.includes("scanAutomaticResponses") && !controllerSource.includes("scanAgentCollaboration") && !controllerSource.includes("nextMentionedAgentItem"), "Agent collaboration scheduler moved to Go backend — frontend controller has no automatic scheduling");
   ok(workspaceSource.includes('chooseApprovalMode("ask")') && workspaceSource.includes('chooseApprovalMode("auto")') && workspaceSource.includes('chooseApprovalMode("yolo")') && workspaceSource.includes("controller.updateToolApprovalMode(next)"), "Agent panel exposes the same ask, auto, and YOLO approval modes as a normal Session");
   ok(/\.collab-workspace\s*\{[^}]*grid-template-columns:\s*minmax\(430px,\s*1fr\)\s+328px/.test(layoutCSS) && /\.collab-agent-alias input,\s*\.collab-agent-scan select,\s*\.collab-agent-scan input\s*\{[^}]*height:\s*38px/.test(layoutCSS) && /\.collab-agent-model \.modelsw__trigger\s*\{[^}]*height:\s*38px[^}]*font-size:\s*13px/.test(layoutCSS), "Agent panel uses a deliberate rail width and one form-control scale");
   ok(/\.collab-agent-approval \.composer-modebar\s*\{[^}]*height:\s*36px/.test(layoutCSS) && /\.collab-agent-approval \.composer-modebar__item\s*\{[^}]*height:\s*28px/.test(layoutCSS) && /\.collab-agent-policy\s*\{[^}]*grid-template-columns:\s*1fr/.test(layoutCSS) && /\.collab-agent-options\s*\{[^}]*grid-template-columns:\s*repeat\(2[^}]*width:\s*100%/.test(layoutCSS) && /\.collab-agent-options input,\s*\.collab-agent-peer-toggle input,\s*\.collab-agent-peer-switch input\s*\{[^}]*appearance:\s*none[^}]*width:\s*28px[^}]*height:\s*16px/.test(layoutCSS), "automatic-response labels keep a dedicated full-width row above two compact switches");
@@ -868,8 +946,8 @@ async function main() {
   equal([roomEvent.id, roomEvent.kind, roomEvent.text, roomEvent.actorName, roomEvent.sequence, roomEvent.mentionMemberIds, roomEvent.mentionAgentIds], ["timeline-8", "chat", "raw RoomEvent payload", "Alice", 8, ["member-b"], ["agent-b"]], "raw RoomEvent unwraps typed chat and mention targets");
   const agree = buildAgreeMessageInput(item("target-item", 9), "agree-request");
   equal([agree.targetItemID, agree.reactionKind, agree.targetMemberID], ["target-item", "agree", undefined], "reaction targets a timeline item without polluting member targeting");
-  const wrappedEvent = normalizeCollaborationItem({ event: { eventId: "event-9", sequence: 9 }, item: { id: "timeline-9", sequence: 9, type: "agent_result", actorName: "Alice", agentResult: { id: "timeline-9", ownerId: "member-a", agentId: "agent-a", summary: "verified", revision: 1, createdAt: "2026-08-03T09:00:00Z" } } }, new Map([["member-a", "Alice"]]), new Map([["member-a", "KBot"], ["agent-a", "KBot"]]));
-  equal([wrappedEvent.id, wrappedEvent.kind, wrappedEvent.text, wrappedEvent.actorName, wrappedEvent.actorAgent], ["timeline-9", "agent_result", "verified", "KBot", true], "Agent result uses the Agent alias even when its event carries the owning member name");
+  const wrappedEvent = normalizeCollaborationItem({ event: { eventId: "event-9", sequence: 9 }, item: { id: "timeline-9", sequence: 9, type: "agent_result", actorName: "Alice", agentResult: { id: "timeline-9", ownerId: "member-a", agentId: "agent-a", runId: "run-9", summary: "verified", revision: 1, createdAt: "2026-08-03T09:00:00Z", handoffs: [{ targetAgentId: "agent-b", instruction: "review", referenceIds: ["message-1"], requiresResponse: true }] } } }, new Map([["member-a", "Alice"]]), new Map([["member-a", "KBot"], ["agent-a", "KBot"]]));
+  equal([wrappedEvent.id, wrappedEvent.kind, wrappedEvent.text, wrappedEvent.actorName, wrappedEvent.actorAgent, wrappedEvent.agentRunId, wrappedEvent.handoffs?.[0]], ["timeline-9", "agent_result", "verified", "KBot", true, "run-9", { targetAgentId: "agent-b", instruction: "review", referenceIds: ["message-1"], reason: undefined, expectedOutcome: undefined, requiresResponse: true }], "Agent result preserves alias, run pairing, and directed handoff metadata");
   const runningEvent = normalizeCollaborationItem({ id: "run-1", sequence: 10, type: "agent_run", agentRun: { id: "run-1", ownerId: "member-a", instruction: "fix it", status: "running", summary: "reading files" } }, new Map([["member-a", "Alice"]]));
   equal([runningEvent.kind, runningEvent.agentRunStatus, runningEvent.agentRunSummary], ["agent_command", "running", "reading files"], "Agent run status survives timeline normalization for the animated card");
   equal(recentAgentActivity([wrappedEvent, runningEvent, { ...runningEvent, id: "other", actorId: "member-b", sequence: 11 }], "member-a").map((entry) => [entry.kind, entry.text]), [["output", "reading files"], ["input", "fix it"], ["output", "verified"]], "running Agent carousel derives recent input, progress output and final results from the authoritative member timeline");
@@ -929,17 +1007,19 @@ async function main() {
     selfMemberId: "self",
     agentConfig: { ...automaticBase.agentConfig, autoRespondAgents: true, agentResponseIntervalSeconds: 30 },
     timeline: [
-      { ...item("peer-1", 1, "先检查重试逻辑"), kind: "agent_result" as const, actorId: "other-a", actorName: "Planner Agent", actorAgent: true },
-      { ...item("peer-2", 2, "我来扮演异常服务"), kind: "agent_result" as const, actorId: "other-b", actorName: "Tester Agent", actorAgent: true },
+      { ...item("peer-1", 1, "先检查重试逻辑"), kind: "agent_result" as const, actorId: "other-a", actorName: "Planner Agent", actorAgent: true, handoffs: [{ targetAgentId: "agent-self", instruction: "检查重试逻辑", referenceIds: [], requiresResponse: true }] },
+      { ...item("peer-2", 2, "我来扮演异常服务"), kind: "agent_result" as const, actorId: "other-b", actorName: "Tester Agent", actorAgent: true, handoffs: [{ targetAgentId: "agent-self", instruction: "验证异常服务", referenceIds: [], requiresResponse: true }] },
       { ...item("self-result", 3, "本机输出"), kind: "agent_result" as const, actorId: "self", actorName: "Kite", actorAgent: true },
+      { ...item("untargeted", 4, "仅供参考"), kind: "agent_result" as const, actorId: "other-c", actorName: "Observer Agent", actorAgent: true, handoffs: [{ targetAgentId: "agent-other", instruction: "继续观察", referenceIds: [], requiresResponse: true }] },
     ],
   };
-  const peerBatch = nextAgentCollaborationBatch(peerBase, Date.parse("2026-08-03T00:00:10Z"));
-  equal(peerBatch?.items.map((entry) => entry.id), ["peer-1", "peer-2"], "Agent collaboration batches unhandled peer outputs and excludes its own result");
+  const peerBatch = nextAgentCollaborationBatch(peerBase, "agent-self", Date.parse("2026-08-03T00:00:10Z"));
+  equal(peerBatch?.items.map((entry) => entry.id), ["peer-1", "peer-2"], "Agent collaboration consumes only explicit handoffs addressed to the local Agent");
+  equal(peerBatch?.handoffs.map((entry) => entry.instruction), ["检查重试逻辑", "验证异常服务"], "directed handoff instructions remain structured");
   equal(peerBatch?.waitMs, 0, "first peer collaboration batch can start immediately");
   equal(agentCollaborationRequestID([peerBase.timeline[0], peerBase.timeline[1]], "agent-self"), agentCollaborationRequestID([peerBase.timeline[1], peerBase.timeline[0]], "agent-self"), "peer collaboration request id is stable across equivalent batch ordering");
   const ownPeerCommand = { ...item("own-peer-run", 4, "继续协作"), kind: "agent_command" as const, actorId: "self", actorAgent: true, agentCommandId: "agent-collab-first", referenceIds: ["peer-1"], createdAt: "2026-08-03T00:00:09Z" };
-  const coolingBatch = nextAgentCollaborationBatch({ ...peerBase, timeline: [...peerBase.timeline, ownPeerCommand] }, Date.parse("2026-08-03T00:00:10Z"));
+  const coolingBatch = nextAgentCollaborationBatch({ ...peerBase, timeline: [...peerBase.timeline, ownPeerCommand] }, "agent-self", Date.parse("2026-08-03T00:00:10Z"));
   equal([coolingBatch?.items.map((entry) => entry.id), coolingBatch?.waitMs], [["peer-2"], 29_000], "handled peer results stay deduplicated and the next batch respects the configured frequency");
   const spentClock = Array.from({ length: 12 }, (_, index): CollaborationTimelineItem => ({
     ...item(`auto-run-${index + 1}`, index + 1, `handoff ${index + 1}`),
@@ -950,24 +1030,44 @@ async function main() {
     agentCommandId: `agent-collab-${index + 1}`,
     createdAt: `2026-08-03T00:00:${String(index + 1).padStart(2, "0")}Z`,
   }));
-  const afterSpent = { ...item("after-spent", 13, "还要继续吗"), kind: "agent_result" as const, actorId: "other", actorName: "Loop Agent", actorAgent: true, createdAt: "2026-08-03T00:00:13Z" };
+  const afterSpent = { ...item("after-spent", 13, "还要继续吗"), kind: "agent_result" as const, actorId: "other", actorName: "Loop Agent", actorAgent: true, createdAt: "2026-08-03T00:00:13Z", handoffs: [{ targetAgentId: "agent-self", instruction: "继续验证", referenceIds: [], requiresResponse: true }] };
   const spentState = { ...peerBase, timeline: [...spentClock, afterSpent] };
   equal(agentCollaborationClock(spentState), { limit: 12, used: 12, remaining: 0, unlimited: false, resetItem: undefined, woundAt: undefined }, "twelve unattended Agent handoffs fully unwind the default collaboration clockwork");
-  equal(nextAgentCollaborationBatch(spentState, Date.parse("2026-08-03T00:02:00Z")), undefined, "an empty collaboration clockwork pauses further Agent handoffs");
+  equal(nextAgentCollaborationBatch(spentState, "agent-self", Date.parse("2026-08-03T00:02:00Z")), undefined, "an empty collaboration clockwork pauses further Agent handoffs");
   const unlimitedState = { ...spentState, agentConfig: { ...spentState.agentConfig, agentClockUnlimited: true } };
-  equal(nextAgentCollaborationBatch(unlimitedState, Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-spent"], "unlimited mode keeps Agent handoffs eligible after the configured clockwork is empty");
+  equal(nextAgentCollaborationBatch(unlimitedState, "agent-self", Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-spent"], "unlimited mode keeps Agent handoffs eligible after the configured clockwork is empty");
   const woundAt = "2026-08-03T00:00:12.500Z";
   const rewoundManually = { ...spentState, agentConfig: { ...spentState.agentConfig, agentClockWoundAt: woundAt } };
   equal(agentCollaborationClock(rewoundManually), { limit: 12, used: 0, remaining: 12, unlimited: false, resetItem: undefined, woundAt }, "manual winding persists a fresh clockwork boundary without adding Room chat noise");
-  equal(nextAgentCollaborationBatch(rewoundManually, Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-spent"], "manual winding resumes only peer results newer than its persisted boundary");
+  equal(nextAgentCollaborationBatch(rewoundManually, "agent-self", Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-spent"], "manual winding resumes only peer results newer than its persisted boundary");
   const humanMessage = { ...item("human-message", 14, "继续，但先验证边界"), actorId: "human", actorName: "Alice", actorAgent: false, createdAt: "2026-08-03T00:00:14Z" };
-  const afterHuman = { ...item("after-human", 15, "边界验证完成"), kind: "agent_result" as const, actorId: "other", actorName: "Tester Agent", actorAgent: true, createdAt: "2026-08-03T00:00:15Z" };
+  const afterHuman = { ...item("after-human", 15, "边界验证完成"), kind: "agent_result" as const, actorId: "other", actorName: "Tester Agent", actorAgent: true, createdAt: "2026-08-03T00:00:15Z", handoffs: [{ targetAgentId: "agent-self", instruction: "复核边界", referenceIds: [], requiresResponse: true }] };
   const rewoundByMessage = { ...peerBase, timeline: [...spentClock, afterSpent, humanMessage, afterHuman] };
   equal(agentCollaborationClock(rewoundByMessage), { limit: 12, used: 0, remaining: 12, unlimited: false, resetItem: humanMessage, woundAt: undefined }, "a human message fully rewinds the collaboration clockwork");
-  equal(nextAgentCollaborationBatch(rewoundByMessage, Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-human"], "only peer results after the latest human intervention enter the rewound cycle");
+  equal(nextAgentCollaborationBatch(rewoundByMessage, "agent-self", Date.parse("2026-08-03T00:02:00Z"))?.items.map((entry) => entry.id), ["after-human"], "only peer results after the latest human intervention enter the rewound cycle");
   const humanOperation = { ...item("human-operation", 16, "手动启动调试"), kind: "agent_command" as const, actorId: "human", actorAgent: true, agentCommandId: "manual-debug-1", createdAt: "2026-08-03T00:00:16Z" };
   equal(agentCollaborationClock({ ...peerBase, timeline: [...spentClock, humanOperation] }).remaining, 12, "a manually initiated Agent operation also rewinds the collaboration clockwork");
-  equal(nextAgentCollaborationBatch({ ...peerBase, agentConfig: { ...peerBase.agentConfig, autoRespondAgents: false } }), undefined, "peer collaboration switch disables the scheduler independently from human-message recognition");
+  equal(nextAgentCollaborationBatch({ ...peerBase, agentConfig: { ...peerBase.agentConfig, autoRespondAgents: false } }, "agent-self"), undefined, "peer collaboration switch disables the scheduler independently from human-message recognition");
+
+  const mergedLifecycle = visibleCollaborationTimeline([
+    { ...item("run-merge", 30, "执行验证"), kind: "agent_command", actorAgent: true, agentRunStatus: "completed" },
+    { ...item("result-merge", 31, "验证通过"), kind: "agent_result", actorAgent: true, agentRunId: "run-merge", referenceIds: ["peer-1"], handoffs: [{ targetAgentId: "agent-self", instruction: "继续检查", referenceIds: ["peer-1"], requiresResponse: true }] },
+    { ...item("orphan-result", 32, "旧结果"), kind: "agent_result", actorAgent: true },
+  ]);
+  equal([mergedLifecycle.map((entry) => entry.id), mergedLifecycle[0].agentRunOutput, mergedLifecycle[0].agentRunSummary, mergedLifecycle[0].handoffs?.length], [["run-merge", "orphan-result"], "验证通过", undefined, 1], "paired run/result render as one lifecycle item with agentRunOutput as authoritative final output while orphan results remain visible");
+
+  const summaryOverride = visibleCollaborationTimeline([
+    { ...item("run-with-summary", 40, "执行验证"), kind: "agent_command", actorAgent: true, agentRunStatus: "completed", agentRunSummary: "正在运行中..." },
+    { ...item("result-final", 41, "验证通过，三阶段已完成"), kind: "agent_result", actorAgent: true, agentRunId: "run-with-summary" },
+  ]);
+  equal(summaryOverride[0].agentRunOutput, "验证通过，三阶段已完成", "agentRunOutput is the authoritative final output even when run has its own summary");
+  equal(summaryOverride[0].agentRunSummary, "正在运行中...", "agentRunSummary preserves the run-time progress summary without being overwritten by result text");
+
+  const multilineOutput = visibleCollaborationTimeline([
+    { ...item("run-ml", 50, "多行输出测试"), kind: "agent_command", actorAgent: true, agentRunStatus: "completed" },
+    { ...item("result-ml", 51, "第一行结果\n第二行: 成功\n第三行: 待确认\n第四行很长很长的内容在这里展示完整输出"), kind: "agent_result", actorAgent: true, agentRunId: "run-ml" },
+  ]);
+  equal(multilineOutput[0].agentRunOutput, "第一行结果\n第二行: 成功\n第三行: 待确认\n第四行很长很长的内容在这里展示完整输出", "multi-line output preserves newlines verbatim in agentRunOutput");
 
   const restoreTransport = createMockCollaborationTransport("restore-host");
   let restoreCalls = 0;
@@ -992,6 +1092,8 @@ async function main() {
   await testMentionStartsAgent();
   await testRoomAgentUsesScopedAutoApproval();
   await testWaitingAgentRunDecisions();
+  await testReferenceAndRunResultPresentation();
+  await testAgentRunResultOutput();
   await testCountdown();
   await testConnectionPanelWorkspace();
   await testDiscoveryFailureIsHandled();

@@ -117,6 +117,7 @@ type ChatMessage struct {
 	Text             string    `json:"text"`
 	MentionMemberIDs []string  `json:"mentionMemberIds,omitempty"`
 	MentionAgentIDs  []string  `json:"mentionAgentIds,omitempty"`
+	ReferenceIDs     []string  `json:"referenceIds,omitempty"`
 	Revision         uint64    `json:"revision"`
 	CreatedAt        time.Time `json:"createdAt"`
 }
@@ -165,14 +166,26 @@ type AgentRun struct {
 }
 
 type AgentResult struct {
-	ID           string    `json:"id"`
-	OwnerID      string    `json:"ownerId"`
-	AgentID      string    `json:"agentId"`
-	RunID        string    `json:"runId"`
-	Revision     uint64    `json:"revision"`
-	Summary      string    `json:"summary"`
-	ReferenceIDs []string  `json:"referenceIds,omitempty"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID           string         `json:"id"`
+	OwnerID      string         `json:"ownerId"`
+	AgentID      string         `json:"agentId"`
+	RunID        string         `json:"runId"`
+	Revision     uint64         `json:"revision"`
+	Summary      string         `json:"summary"`
+	ReferenceIDs []string       `json:"referenceIds,omitempty"`
+	Handoffs     []AgentHandoff `json:"handoffs,omitempty"`
+	CreatedAt    time.Time      `json:"createdAt"`
+}
+
+// AgentHandoff is an explicit, addressable request for another Room Agent.
+// Display names remain presentation-only; routing always uses TargetAgentID.
+type AgentHandoff struct {
+	TargetAgentID    string   `json:"targetAgentId"`
+	Instruction      string   `json:"instruction"`
+	ReferenceIDs     []string `json:"referenceIds,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	ExpectedOutcome  string   `json:"expectedOutcome,omitempty"`
+	RequiresResponse bool     `json:"requiresResponse,omitempty"`
 }
 
 type FileOffer struct {
@@ -310,6 +323,7 @@ type PostChatInput struct {
 	Text             string   `json:"text"`
 	MentionMemberIDs []string `json:"mentionMemberIds,omitempty"`
 	MentionAgentIDs  []string `json:"mentionAgentIds,omitempty"`
+	ReferenceIDs     []string `json:"referenceIds,omitempty"`
 }
 
 type PublishContributionInput struct {
@@ -355,12 +369,13 @@ type PublishAgentRunInput struct {
 }
 
 type PublishAgentResultInput struct {
-	ResultID     string   `json:"resultId"`
-	AgentID      string   `json:"agentId"`
-	RunID        string   `json:"runId"`
-	Revision     uint64   `json:"revision,omitempty"`
-	Summary      string   `json:"summary"`
-	ReferenceIDs []string `json:"referenceIds,omitempty"`
+	ResultID     string         `json:"resultId"`
+	AgentID      string         `json:"agentId"`
+	RunID        string         `json:"runId"`
+	Revision     uint64         `json:"revision,omitempty"`
+	Summary      string         `json:"summary"`
+	ReferenceIDs []string       `json:"referenceIds,omitempty"`
+	Handoffs     []AgentHandoff `json:"handoffs,omitempty"`
 }
 
 type UpdateAgentInput struct {

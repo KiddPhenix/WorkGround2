@@ -1,8 +1,10 @@
-import { Ban, Bot, Check, CircleAlert, Download, ExternalLink, File, FolderOpen, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
+import { useState } from "react";
+import { Ban, Bot, Check, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, File, FolderOpen, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 import { ApprovalModal } from "../../components/ApprovalModal";
 import { AskCard } from "../../components/AskCard";
 import { collabCopy, contributionLabel, type CollabCopy } from "../copy";
+import { visibleCollaborationTimeline } from "../state";
 import type { CollaborationAgentPrompt, CollaborationAgentRunResponse, CollaborationFileTransfer, CollaborationMember, CollaborationTimelineItem, PendingIntent } from "../types";
 import { IntentCountdown } from "./IntentCountdown";
 import { CollaborationAvatar } from "./CollaborationAvatar";
@@ -116,16 +118,18 @@ function runStatusLabel(status: CollaborationTimelineItem["agentRunStatus"], c: 
 function AgentRunCard({ item, c, canRespond, prompt, onRespond }: { item: CollaborationTimelineItem; c: CollabCopy; canRespond: boolean; prompt?: CollaborationAgentPrompt; onRespond(response: CollaborationAgentRunResponse): void }) {
   const status = item.agentRunStatus || "running";
   const active = status === "queued" || status === "running" || status === "waiting_approval";
+  const hasOutput = !active && Boolean(item.agentRunOutput);
   const detailed = canRespond && prompt?.runId === item.id;
   return <div className={`collab-agent-run-stack${detailed ? " collab-agent-run-stack--prompt" : ""}`}>
-    <div className={`collab-agent-run collab-agent-run--${status}${active ? " collab-agent-run--active" : ""}`}>
+    <div className={`collab-agent-run collab-agent-run--${status}${active ? " collab-agent-run--active" : ""}${hasOutput ? " collab-agent-run--has-output" : ""}`}>
       <div className="collab-agent-run__head"><span className="collab-agent-run__pulse" aria-hidden="true" /><strong>{runStatusLabel(status, c)}</strong>{canRespond && !detailed && <span className="collab-agent-run__decision"><button type="button" className="collab-agent-run__allow" onClick={() => onRespond({ allow: true })}><Check size={12} />{c("agree")}</button><button type="button" onClick={() => onRespond({ allow: false })}><Ban size={12} />{c("reject")}</button></span>}</div>
-      <p>{item.text}</p>
       {active
-        ? <div className="collab-agent-run__marquee" aria-label={runStatusLabel(status, c)}><div>
+        ? <><p>{item.text}</p><div className="collab-agent-run__marquee" aria-label={runStatusLabel(status, c)}><div>
             <span>{c("agentStageContext")}</span><span>{c("agentStageTools")}</span><span>{c("agentStageShare")}</span><span>{c("agentStageContext")}</span>
-          </div></div>
-        : <div className="collab-agent-run__summary">{item.agentRunError || item.agentRunSummary || runStatusLabel(status, c)}</div>}
+          </div></div></>
+        : hasOutput
+          ? <p className="collab-agent-run__instruction">{item.text}</p>
+          : <><p>{item.text}</p><div className="collab-agent-run__summary">{item.agentRunError || item.agentRunSummary || runStatusLabel(status, c)}</div></>}
     </div>
     {detailed && prompt.kind === "approval" && <div className="collab-agent-prompt"><ApprovalModal
       key={prompt.id}
@@ -143,13 +147,46 @@ function AgentRunCard({ item, c, canRespond, prompt, onRespond }: { item: Collab
   </div>;
 }
 
+function timelineDOMID(id: string): string {
+  return `collab-item-${encodeURIComponent(id)}`;
+}
+
+function ReferenceCards({ item, items, c, expanded, onToggle, onJump }: { item: CollaborationTimelineItem; items: Map<string, CollaborationTimelineItem>; c: CollabCopy; expanded: Set<string>; onToggle(id: string): void; onJump(id: string): void }) {
+  if (item.referenceIds.length === 0) return null;
+  return <div className="collab-reference-list">
+    {item.referenceIds.map((id) => {
+      const reference = items.get(id);
+      const open = expanded.has(id);
+      return <div key={id} className="collab-reference-card">
+        <button type="button" className="collab-reference-card__preview" aria-expanded={open} onClick={() => onToggle(id)}>
+          <span><Reply size={12} /><strong>{reference?.actorName || c("referenceMissing")}</strong></span>
+          <p className={open ? "collab-reference-card__text--open" : ""}>{reference?.text || c("referenceMissing")}</p>
+          <small>{open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}{open ? c("referenceCollapse") : c("referenceExpand")}</small>
+        </button>
+        {reference && <button type="button" className="collab-reference-card__jump" aria-label={c("referenceJump")} title={c("referenceJump")} onClick={() => onJump(id)}><ExternalLink size={13} /></button>}
+      </div>;
+    })}
+  </div>;
+}
+
 export function CollaborationTimeline(props: CollaborationTimelineProps) {
   const { locale, t } = useI18n();
   const c = collabCopy(t);
+  const [expandedReferences, setExpandedReferences] = useState<Set<string>>(new Set());
   if (props.items.length === 0) return <div className="collab-empty">{c("empty")}</div>;
+  const rawItems = new Map(props.items.map((item) => [item.id, item]));
+  const visibleItems = visibleCollaborationTimeline(props.items);
+  const runByResult = new Map(props.items.filter((item) => item.kind === "agent_result" && item.agentRunId).map((item) => [item.id, item.agentRunId as string]));
+  const jumpTo = (id: string) => {
+    const target = document.getElementById(timelineDOMID(runByResult.get(id) || id));
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("collab-message--referenced");
+    window.setTimeout(() => target.classList.remove("collab-message--referenced"), 1800);
+  };
 
   return <div className="collab-timeline-list">
-    {props.items.map((item) => {
+    {visibleItems.map((item) => {
       const presence = presenceLabel(item, c);
       if (presence) return <div key={item.id} className="collab-presence-notice" role="status"><span aria-hidden="true" />{presence}<time dateTime={item.createdAt}>{timeLabel(item.createdAt, locale)}</time></div>;
 
@@ -161,7 +198,7 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
       const waitingAgentRun = own && item.kind === "agent_command" && item.agentRunStatus === "waiting_approval";
       const actor = (props.members || []).find((member) => member.id === item.actorId || member.agent.id === item.actorId);
       return (
-        <article key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}${item.localPending ? " collab-message--pending" : ""}`}>
+        <article id={timelineDOMID(item.id)} key={item.id} className={`collab-message collab-message--${item.kind}${selected ? " collab-message--selected" : ""}${item.localPending ? " collab-message--pending" : ""}`}>
           <CollaborationAvatar name={item.actorName} src={item.actorAgent ? actor?.agent.avatar : actor?.avatar} agent={item.actorAgent} />
           <div className="collab-message-body">
             <header>
@@ -171,8 +208,12 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
               {item.syncStatus === "pending" && <span className="collab-sync collab-sync--pending"><RefreshCw size={11} />{c("pending")}</span>}
               {item.syncStatus === "failed" && <span className="collab-sync collab-sync--failed"><CircleAlert size={11} />{c("failedItem")}</span>}
             </header>
-            {item.kind === "agent_command" ? <AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} /> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} /> : <p>{item.text}</p>}
-            {item.referenceIds.length > 0 && <div className="collab-references"><Reply size={12} />{c("references", { n: item.referenceIds.length })}</div>}
+            {item.kind === "agent_command" ? <><AgentRunCard item={item} c={c} canRespond={waitingAgentRun} prompt={props.agentPrompt} onRespond={(response) => props.onRespondAgentRun(item, response)} />{item.agentRunOutput && <p className="collab-agent-output">{item.agentRunOutput}</p>}</> : item.kind === "file" ? <FileCard item={item} own={own} transfer={transfer} c={c} onReceive={() => props.onReceiveFile(item.id)} onPause={() => props.onPauseFile(item.id)} onResume={() => props.onResumeFile(item.id)} onRevoke={() => props.onRevokeFile(item.id)} onOpen={() => props.onOpenFile(item.id)} onReveal={() => props.onRevealFile(item.id)} /> : <p>{item.text}</p>}
+            <ReferenceCards item={item} items={rawItems} c={c} expanded={expandedReferences} onToggle={(id) => setExpandedReferences((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; })} onJump={jumpTo} />
+            {(item.handoffs || []).length > 0 && <div className="collab-handoffs">{item.handoffs?.map((handoff, index) => {
+              const target = props.members?.find((member) => member.agent.id === handoff.targetAgentId);
+              return <div key={`${handoff.targetAgentId}:${index}`}><Bot size={12} /><span><strong>{c("handoffTo", { name: target?.agent.name || handoff.targetAgentId })}</strong>{handoff.instruction}</span></div>;
+            })}</div>}
             {item.kind === "agent_request" && !incomingRequest && <div className="collab-request-state">{c("waitingOwner")}</div>}
             {!item.localPending && !waitingAgentRun && <div className="collab-message-actions">
               <label className="collab-message-select">

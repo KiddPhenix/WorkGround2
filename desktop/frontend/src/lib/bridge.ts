@@ -4894,5 +4894,9 @@ function makeMockApp(): AppBindings {
     SetInputCornerstone: () => Promise.reject(workUnavailableError()),
     PreviewWorkPatch: () => Promise.reject(workUnavailableError()),
     ApplyWorkPatch: () => Promise.reject(workUnavailableError()),
+    SetNodeSkill: () => Promise.reject(workUnavailableError()),
+    ClearNodeSkill: () => Promise.reject(workUnavailableError()),
+    ListWorkSkills: () => Promise.reject(workUnavailableError()),
+    CreateWorkSkill: () => Promise.reject(workUnavailableError()),
   };
 }

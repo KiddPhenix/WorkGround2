@@ -20,22 +20,29 @@ import (
 // execute concurrently, while a scheduler instance admits at most one
 // execution for each stable task ID.
 type V2Scheduler struct {
-	executor TaskExecutor
-	clock    Clock
+	executor      TaskExecutor
+	clock         Clock
+	skillResolver SkillResolver
+}
+
+// NewV2Scheduler creates a scheduler with a real clock.
+func NewV2Scheduler(executor TaskExecutor) *V2Scheduler {
+	return &V2Scheduler{executor: executor, clock: RealClock{}}
+}
+
+// SetSkillResolver injects an optional Skill resolver for node execution
+// context augmentation. When nil, skill bindings are ignored (backward compat).
+func (s *V2Scheduler) SetSkillResolver(resolver SkillResolver) {
+	if s == nil {
+		return
+	}
+	s.skillResolver = resolver
 }
 
 var v2FlightRegistry = struct {
 	sync.Mutex
 	tasks map[string]struct{}
 }{tasks: make(map[string]struct{})}
-
-// NewV2Scheduler creates a V2 scheduler over the narrow task execution port.
-func NewV2Scheduler(executor TaskExecutor) *V2Scheduler {
-	return &V2Scheduler{
-		executor: executor,
-		clock:    RealClock{},
-	}
-}
 
 // V2ScheduleResult reports one scheduling invocation.
 type V2ScheduleResult struct {
@@ -530,6 +537,49 @@ func (s *V2Scheduler) executeNode(
 		return true, nil
 	}
 	taskPrompt = workContext + taskPrompt
+
+	// Append a bound Skill as optional context. A persisted binding must never be
+	// silently ignored: if the resolver or Skill is unavailable, record a
+	// retryable task failure while leaving unrelated nodes schedulable.
+	if promptWork != nil {
+		skillName := strings.TrimSpace(promptWork.V2NodeSkillBindings[node.ID])
+		if skillName != "" {
+			var sk SkillBody
+			var resolveErr error
+			if s.skillResolver == nil {
+				resolveErr = errors.New("skill resolver is unavailable")
+			} else {
+				sk, resolveErr = s.skillResolver.Resolve(ctx, skillName)
+			}
+			if resolveErr != nil || !sk.Enabled {
+				reason := fmt.Sprintf("bound skill %q is missing or disabled", skillName)
+				if resolveErr != nil {
+					reason = fmt.Sprintf("bound skill %q failed to resolve: %v", skillName, resolveErr)
+				}
+				if err := updateRuntime(emit, rt, TaskRunning, &attempt, now, setContext); err != nil {
+					return false, errors.Join(errors.New(reason), err)
+				}
+				finishedAt := s.clock.Now().UTC()
+				failedAttempt := rt.Attempts[len(rt.Attempts)-1]
+				failedAttempt.State = TaskFailedRetryable
+				failedAttempt.FinishedAt = &finishedAt
+				failedAttempt.Error = reason
+				err := updateRuntime(emit, rt, TaskFailedRetryable, nil, finishedAt, func(next *V2TaskRuntime) {
+					setContext(next)
+					next.Attempts[len(next.Attempts)-1] = failedAttempt
+					next.Error = failedAttempt.Error
+				})
+				if err != nil {
+					return true, errors.Join(errors.New(reason), err)
+				}
+				return true, nil
+			}
+			if sk.Body != "" {
+				taskPrompt = "## Bound skill: " + skillName + "\n\nThe following context from the bound skill '" + skillName + "' augments this task. Follow its constraints, but the primary task definition and acceptance criteria still take priority.\n\n" + sk.Body + "\n\n" + taskPrompt
+			}
+		}
+	}
+
 	if err := updateRuntime(emit, rt, TaskRunning, &attempt, now, setContext); err != nil {
 		return false, err
 	}

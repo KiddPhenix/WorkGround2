@@ -156,6 +156,7 @@ type Capabilities interface {
 	DisabledSkills() []skill.Skill
 	SkillEnabled(name string) bool
 	SetSkillEnabled(name string, enabled bool) error
+	GetSkillStore() (*skill.Store, bool)
 	HookRunner() *hook.Runner
 	CustomCommand(input string) (sent string, found bool)
 	MCPPrompt(ctx context.Context, input string) (sent string, found bool, err error)

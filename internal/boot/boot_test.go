@@ -3276,6 +3276,162 @@ func waitForMCPFailure(t *testing.T, h *plugin.Host, name string, timeout time.D
 	}
 }
 
+func TestResolveSemanticIntentProviderExplicitConfig(t *testing.T) {
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			SemanticIntentModel: "openai/gpt-4o-mini",
+		},
+		Providers: []config.ProviderEntry{
+			{Name: "openai", Kind: "openai", BaseURL: "http://127.0.0.1", Model: "gpt-4o-mini"},
+		},
+	}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov == nil {
+		t.Fatal("explicit semantic_intent_model should resolve a provider")
+	}
+}
+
+func TestResolveSemanticIntentProviderRejectsInvalidOrReasoningExplicitConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+	}{
+		{name: "missing", model: "missing/model"},
+		{name: "reasoning", model: "deepseek/deepseek-reasoner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Agent:     config.AgentConfig{SemanticIntentModel: tc.model},
+				Providers: []config.ProviderEntry{{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", Capabilities: []string{"reasoning"}, APIKeyEnv: "TEST_KEY"}},
+			}
+			t.Setenv("TEST_KEY", "sk-test")
+			if _, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto}); err == nil {
+				t.Fatalf("semantic_intent_model %q should fail explicitly", tc.model)
+			}
+		})
+	}
+}
+
+func TestResolveSemanticIntentProviderAutoSelectLightweight(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderEntry{
+			{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", Capabilities: []string{"reasoning"}, APIKeyEnv: "TEST_KEY"},
+			{Name: "openai", Kind: "openai", BaseURL: "http://127.0.0.1", Model: "gpt-4o-mini"},
+		},
+	}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov == nil {
+		t.Fatal("should auto-select gpt-4o-mini (lightweight, non-reasoning)")
+	}
+}
+
+func TestResolveSemanticIntentProviderUsesSelectedLightweightModel(t *testing.T) {
+	var gotReq map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"chat\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{Providers: []config.ProviderEntry{{
+		Name: "gateway", Kind: "openai", BaseURL: srv.URL,
+		Models: []string{"large-chat", "gpt-4o-mini"}, Default: "large-chat",
+	}}}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov == nil {
+		t.Fatal("expected lightweight classifier provider")
+	}
+	stream, err := prov.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "classify"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for chunk := range stream {
+		if chunk.Err != nil {
+			t.Fatal(chunk.Err)
+		}
+	}
+	if gotReq["model"] != "gpt-4o-mini" {
+		t.Fatalf("classifier model = %#v, want gpt-4o-mini", gotReq["model"])
+	}
+}
+
+func TestResolveSemanticIntentProviderSkipsReasoningModels(t *testing.T) {
+	cfg := &config.Config{
+		Providers: []config.ProviderEntry{
+			{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", Capabilities: []string{"reasoning"}, APIKeyEnv: "TEST_KEY"},
+		},
+	}
+	t.Setenv("TEST_KEY", "sk-test")
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov != nil {
+		t.Fatal("should return nil when only reasoning models are configured")
+	}
+}
+
+func TestResolveSemanticIntentProviderNoModels(t *testing.T) {
+	cfg := &config.Config{}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov != nil {
+		t.Fatal("should return nil with no configured providers")
+	}
+}
+
+func TestResolveSemanticIntentProviderReusesAutoPlanClassifier(t *testing.T) {
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			AutoPlanClassifier: "openai/gpt-4o-mini",
+		},
+		Providers: []config.ProviderEntry{
+			{Name: "openai", Kind: "openai", BaseURL: "http://127.0.0.1", Model: "gpt-4o-mini"},
+		},
+	}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov == nil {
+		t.Fatal("should reuse auto-plan classifier model when it has no reasoning capability")
+	}
+}
+
+func TestResolveSemanticIntentProviderSkipsReasoningAutoPlanAndFallsBack(t *testing.T) {
+	cfg := &config.Config{
+		Agent: config.AgentConfig{
+			AutoPlanClassifier: "deepseek/deepseek-reasoner",
+		},
+		Providers: []config.ProviderEntry{
+			{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-reasoner", Capabilities: []string{"reasoning"}, APIKeyEnv: "TEST_KEY"},
+			{Name: "openai", Kind: "openai", BaseURL: "http://127.0.0.1", Model: "gpt-4o-mini"},
+		},
+	}
+	prov, err := resolveSemanticIntentProvider(cfg, netclient.ProxySpec{Mode: netclient.ModeAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prov == nil {
+		t.Fatal("should skip reasoning auto-plan classifier and fall back to gpt-4o-mini")
+	}
+}
+
 // TestHelperProcess is invoked as a subprocess by TestBuildEagerStartsAtBoot
 // and TestBuildLazyDoesNotConnectAtBoot. It mirrors the minimal MCP stdio
 // server in internal/plugin/plugin_test.go so the boot package can drive an

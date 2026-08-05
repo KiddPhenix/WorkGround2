@@ -38,7 +38,7 @@ Examples:
 Reply with exactly one token: self_agent, uncertain, or chat.`
 
 const (
-	semanticIntentTimeout  = 3 * time.Second
+	semanticIntentTimeout  = 10 * time.Second
 	semanticIntentCacheTTL = 5 * time.Minute
 	semanticIntentCacheMax = 100
 	semanticIntentMaxRunes = 4_000
@@ -120,6 +120,9 @@ func (c *semanticIntentClassifier) classify(ctx context.Context, input string) (
 }
 
 func (c *semanticIntentClassifier) request(ctx context.Context, input string) (SemanticIntent, error) {
+	if c.provider == nil {
+		return SemanticIntentChat, fmt.Errorf("semantic intent classifier provider is unavailable")
+	}
 	ctx, cancel := context.WithTimeout(ctx, semanticIntentTimeout)
 	defer cancel()
 

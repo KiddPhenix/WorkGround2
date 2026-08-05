@@ -15,6 +15,7 @@ import type { TaskExpandIntent, TaskRetryIntent } from './ExecutionRow';
 import { ExpandedBlock } from './ExpandedBlock';
 import type { TaskCollapseIntent, WorkInputRefreshContext } from './ExpandedBlock';
 import { DiscussionDrawer } from './discussion/DiscussionDrawer';
+import { SkillBindingModal } from './SkillBindingModal';
 import type {
   DiscussionPreviewIntent, DiscussionApplyIntent,
   DiscussionDraftIntent,
@@ -48,6 +49,12 @@ export interface ExecutionListProps {
   showTaskInputs?: boolean;
   /** Work pause is rendered without rewriting authoritative Task states. */
   paused?: boolean;
+  nodeSkillBindings?: Readonly<Record<string, string>>;
+  // Skill binding callbacks.
+  onSetNodeSkill?: (input: import('../../types_v2').SetNodeSkillRequest) => Promise<import('../../types_v2').SetNodeSkillResult>;
+  onClearNodeSkill?: (input: import('../../types_v2').ClearNodeSkillRequest) => Promise<import('../../types_v2').ClearNodeSkillResult>;
+  onListWorkSkills?: () => Promise<import('../../types_v2').SkillInfo[]>;
+  onCreateWorkSkill?: (input: import('../../types_v2').CreateSkillRequest) => Promise<import('../../types_v2').CreateSkillResult>;
 }
 
 function inputIdentity(wid: string, rid: string, tid: string, bid: string, iid: string, sid: string, dr: number, ir: number) {
@@ -86,6 +93,8 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   onTaskInfo, taskInfoTaskKeys,
   showTaskInputs = true,
   paused = false,
+  nodeSkillBindings,
+  onSetNodeSkill, onClearNodeSkill, onListWorkSkills, onCreateWorkSkill,
 }) => {
   const allTasks = useWorkStore((s) => selectV2Tasks(s.v2Tasks, workId));
   const definition = useWorkStore((s) =>
@@ -96,6 +105,39 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
   const setInputDraft = useWorkUIStore((s) => s.setInputDraft);
   const setInputDirtyFlag = useWorkUIStore((s) => s.setInputDirtyFlag);
   const setCommittedRequestId = useWorkUIStore((s) => s.setCommittedRequestId);
+
+  // Skill modal state.
+  const [skillModalNodeId, setSkillModalNodeId] = useState<string | null>(null);
+  const [skillModalSkills, setSkillModalSkills] = useState<import('../../types_v2').SkillInfo[]>([]);
+  const [skillModalLoading, setSkillModalLoading] = useState(false);
+  const [skillModalError, setSkillModalError] = useState<string | null>(null);
+  const skillIntentIDs = useRef(new Map<string, string>());
+
+  const skillIntentID = useCallback((key: string) => {
+    const existing = skillIntentIDs.current.get(key);
+    if (existing) return existing;
+    const created = `node-skill-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    skillIntentIDs.current.set(key, created);
+    return created;
+  }, []);
+
+  const loadSkillModal = useCallback(() => {
+    setSkillModalError(null);
+    if (!onListWorkSkills) return;
+    setSkillModalLoading(true);
+    onListWorkSkills().then((s) => { setSkillModalSkills(s); setSkillModalLoading(false); })
+      .catch((e: unknown) => { setSkillModalError(e instanceof Error ? e.message : String(e)); setSkillModalLoading(false); });
+  }, [onListWorkSkills]);
+
+  const openSkillModal = useCallback((nodeId: string) => {
+    setSkillModalNodeId(nodeId);
+    void loadSkillModal();
+  }, [loadSkillModal]);
+
+  const isTaskEditable = useCallback(
+    (state: string) => !['running', 'waiting_input', 'waiting_approval'].includes(state),
+    [],
+  );
 
   const nodeMap = useMemo(() => {
     const m = new Map<string, NodeDef>();
@@ -127,7 +169,10 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
     const runtimeByNode = new Map(projectedTasks.map((task) => [task.nodeId, task]));
     const plannedNodeIds = new Set(definition.nodes.map((node) => node.id));
     return [
-      ...definition.nodes.map((node) => runtimeByNode.get(node.id) ?? {
+      ...definition.nodes.map((node) => {
+        const runtime = runtimeByNode.get(node.id);
+        if (runtime) return { ...runtime, skillName: runtime.skillName ?? nodeSkillBindings?.[node.id] };
+        return {
         id: deriveTaskId(effRunId, node.id),
         runId: effRunId,
         nodeId: node.id,
@@ -135,10 +180,12 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
         state: 'pending' as const,
         retryable: false,
         updatedAt: definition.createdAt,
+        skillName: nodeSkillBindings?.[node.id],
+      };
       }),
       ...projectedTasks.filter((task) => !plannedNodeIds.has(task.nodeId)),
     ];
-  }, [definition, effRunId, projectedTasks]);
+  }, [definition, effRunId, nodeSkillBindings, projectedTasks]);
   const resolvePatchLabel = useCallback((
     kind: 'node' | 'task' | 'slot' | 'block',
     id: string,
@@ -714,6 +761,8 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
                         task.state === 'completed' ? 'workflow' : 'block',
                       )
                     : undefined}
+                  skillEditable={isTaskEditable(task.state)}
+                  onOpenSkillModal={onSetNodeSkill ? () => openSkillModal(task.nodeId ?? task.id) : undefined}
                 />
                 {isExpanded && (
                   <ExpandedBlock
@@ -758,6 +807,43 @@ export const ExecutionList: React.FC<ExecutionListProps> = ({
            committedApplyRequestId={committedApplyRid}
           previewAvailable={Boolean(onPreviewPatch)}
           applyAvailable={Boolean(onApplyPatch && onRefreshAuthoritative)}
+        />
+      )}
+      {skillModalNodeId && (
+        <SkillBindingModal
+          nodeId={skillModalNodeId}
+          currentSkillName={tasks.find((t) => (t.nodeId ?? t.id) === skillModalNodeId)?.skillName ?? nodeSkillBindings?.[skillModalNodeId]}
+          skills={skillModalSkills}
+          loading={skillModalLoading}
+          error={skillModalError}
+          onRetry={loadSkillModal}
+          onSelect={async (skillName) => {
+            if (!onSetNodeSkill) throw new Error('当前环境不支持绑定技能');
+            const intentKey = `set\u0000${skillModalNodeId}\u0000${skillName}`;
+            const result = await onSetNodeSkill({
+                workId,
+                nodeId: skillModalNodeId,
+                skillName,
+                expectedRevision: workRevision ?? 1,
+                requestId: skillIntentID(intentKey),
+            });
+            if (!result.committed) throw new Error(result.error?.message ?? '绑定技能失败，请重试');
+            skillIntentIDs.current.delete(intentKey);
+          }}
+          onClear={async () => {
+            if (!onClearNodeSkill) throw new Error('当前环境不支持清除技能');
+            const intentKey = `clear\u0000${skillModalNodeId}`;
+            const result = await onClearNodeSkill({
+                workId,
+                nodeId: skillModalNodeId,
+                expectedRevision: workRevision ?? 1,
+                requestId: skillIntentID(intentKey),
+            });
+            if (!result.committed) throw new Error(result.error?.message ?? '清除技能失败，请重试');
+            skillIntentIDs.current.delete(intentKey);
+          }}
+          onCreate={onCreateWorkSkill ?? (async () => ({ committed: false, recoverable: true, error: { code: 'not_available', message: '创建不可用', committed: false, recoverable: false } }))}
+          onClose={() => setSkillModalNodeId(null)}
         />
       )}
     </>

@@ -15,9 +15,66 @@ import (
 
 	"workground2/internal/agent"
 	"workground2/internal/control"
+	"workground2/internal/skill"
 	"workground2/internal/work"
 	"workground2/internal/work/worktest"
 )
+
+func TestCreateWorkSkillIsProjectScopedAndIdempotent(t *testing.T) {
+	project := t.TempDir()
+	home := t.TempDir()
+	newStore := func() *skill.Store {
+		return skill.New(skill.Options{
+			ProjectRoot:     project,
+			HomeDir:         home,
+			DisableBuiltins: true,
+		})
+	}
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{
+		SkillStore:    newStore(),
+		AllSkillStore: newStore(),
+	}), "test")
+
+	input := work.CreateSkillRequest{
+		Name: "step-editor", Description: "Edit one Work step", Body: "Follow the editing checklist.",
+		Scope: "project", RequestID: "create-step-editor",
+	}
+	created, err := app.CreateWorkSkill("test", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Committed || created.Skill == nil || created.Skill.Name != input.Name {
+		t.Fatalf("created = %+v", created)
+	}
+	path := filepath.Join(project, ".WorkGround2", "skills", input.Name, "SKILL.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("project Skill path: %v", err)
+	}
+
+	replayed, err := app.CreateWorkSkill("test", input)
+	if err != nil || !replayed.Committed || replayed.Error != nil {
+		t.Fatalf("idempotent replay = %+v, %v", replayed, err)
+	}
+	conflictInput := input
+	conflictInput.Body = "Different body."
+	conflictInput.RequestID = "create-step-editor-conflict"
+	conflict, err := app.CreateWorkSkill("test", conflictInput)
+	if err != nil || conflict.Error == nil || conflict.Error.Code != "conflict" {
+		t.Fatalf("conflict = %+v, %v", conflict, err)
+	}
+	globalInput := input
+	globalInput.Name = "global-step-editor"
+	globalInput.Scope = "global"
+	globalInput.RequestID = "create-global-step-editor"
+	rejected, err := app.CreateWorkSkill("test", globalInput)
+	if err != nil || rejected.Error == nil || rejected.Error.Code != "invalid_scope" {
+		t.Fatalf("global scope = %+v, %v", rejected, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".WorkGround2", "skills", globalInput.Name, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("global Skill must not be created, stat err = %v", err)
+	}
+}
 
 func TestBindWorkSessionPersistsIdempotencyAndWorkIdentity(t *testing.T) {
 	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")

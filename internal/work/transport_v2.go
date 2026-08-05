@@ -28,6 +28,50 @@ type RetryWorkNodeResult struct {
 	Error       *WorkTransportError `json:"error,omitempty"`
 }
 
+// SetNodeSkillResult reports the outcome of binding a Skill to a node.
+type SetNodeSkillResult struct {
+	Revision    int64               `json:"revision"`
+	Duplicate   bool                `json:"duplicate"`
+	Committed   bool                `json:"committed"`
+	Recoverable bool                `json:"recoverable"`
+	Error       *WorkTransportError `json:"error,omitempty"`
+}
+
+// ClearNodeSkillResult reports the outcome of removing a Skill binding.
+type ClearNodeSkillResult struct {
+	Revision    int64               `json:"revision"`
+	Duplicate   bool                `json:"duplicate"`
+	Committed   bool                `json:"committed"`
+	Recoverable bool                `json:"recoverable"`
+	Error       *WorkTransportError `json:"error,omitempty"`
+}
+
+// SkillInfo is the narrow view of a Skill exposed to Work binding UIs.
+type SkillInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Scope       string `json:"scope"`
+	Enabled     bool   `json:"enabled"`
+	RunAs       string `json:"runAs,omitempty"`
+}
+
+// CreateSkillRequest carries the fields needed to scaffold a new Skill file.
+type CreateSkillRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Body        string `json:"body"`
+	Scope       string `json:"scope"`
+	RequestID   string `json:"requestId"`
+}
+
+// CreateSkillResult reports the outcome of creating a Skill.
+type CreateSkillResult struct {
+	Skill       *SkillInfo          `json:"skill,omitempty"`
+	Error       *WorkTransportError `json:"error,omitempty"`
+	Committed   bool                `json:"committed"`
+	Recoverable bool                `json:"recoverable"`
+}
+
 // TransportErrorFrom uses errors.As across wrapped/joined failures.
 func TransportErrorFrom(err error) *WorkTransportError {
 	if err == nil {

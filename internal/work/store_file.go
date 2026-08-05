@@ -4475,6 +4475,29 @@ func DefaultReducer() WorkEventReducer {
 			if !foundAttempt {
 				return nil, fmt.Errorf("work: task.stale_result attempt %q does not exist", p.AttemptID)
 			}
+
+		// ── Node skill binding events ────────────────────────────────────
+		case EventNodeSkillBound:
+			var p NodeSkillBoundPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal node.skill.bound: %w", err)
+			}
+			if current.V2NodeSkillBindings == nil {
+				current.V2NodeSkillBindings = make(map[string]string)
+			}
+			current.V2NodeSkillBindings[p.NodeID] = p.SkillName
+
+		case EventNodeSkillCleared:
+			var p NodeSkillClearedPayload
+			if err := json.Unmarshal(event.Payload, &p); err != nil {
+				return nil, fmt.Errorf("work: unmarshal node.skill.cleared: %w", err)
+			}
+			if current.V2NodeSkillBindings != nil {
+				delete(current.V2NodeSkillBindings, p.NodeID)
+				if len(current.V2NodeSkillBindings) == 0 {
+					current.V2NodeSkillBindings = nil
+				}
+			}
 		}
 
 		current.UpdatedAt = event.CreatedAt

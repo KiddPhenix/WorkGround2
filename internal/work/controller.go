@@ -161,6 +161,15 @@ type WorkController interface {
 	// authoritative producer task.
 	RetryArtifactSlot(ctx context.Context, input RetryArtifactSlotRequest) (*RetryArtifactSlotResult, error)
 
+	// SetNodeSkill binds an optional Skill to a Work node. The Skill name is
+	// resolved at execution time and appended to the node's prompt as
+	// additional context. requestID makes repeated sets idempotent.
+	SetNodeSkill(ctx context.Context, input SetNodeSkillRequest) (*SetNodeSkillResult, error)
+
+	// ClearNodeSkill removes a Skill binding from a Work node.
+	// requestID makes repeated clears idempotent.
+	ClearNodeSkill(ctx context.Context, input ClearNodeSkillRequest) (*ClearNodeSkillResult, error)
+
 	// PreviewArtifact produces a graded ArtifactPreview for the given artifact
 	// reference. This is read-only — no Work state is mutated. The preview is
 	// cached by content digest and converter version; repeated calls for the

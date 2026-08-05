@@ -118,6 +118,7 @@ export interface Work {
   reusableFlowId?: string;
   reusableRunHash?: string;
   referencedWorks?: string[];
+  v2NodeSkillBindings?: Record<string, string>;
   rerunUpgraded?: boolean;
   migrationPath?: number[];
   createdWith: RuntimeFingerprint;
@@ -414,7 +415,8 @@ export type ObjectKind =
   | 'definition'
   | 'artifact_slot'
   | 'input'
-  | 'patch';
+  | 'patch'
+  | 'node';
 
 export interface ObjectContext {
   kind: ObjectKind;
@@ -424,6 +426,7 @@ export interface ObjectContext {
   workID?: string;
   runID?: string;
   taskID?: string;
+  nodeID?: string;
   blockID?: string;
   inputID?: string;
   specID?: string;

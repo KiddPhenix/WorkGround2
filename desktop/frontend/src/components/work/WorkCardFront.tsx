@@ -34,6 +34,13 @@ import type {
   AddCustomWorkInputRequest,
   InferWorkInputsRequest,
   InferWorkInputsResult,
+  SetNodeSkillRequest,
+  SetNodeSkillResult,
+  ClearNodeSkillRequest,
+  ClearNodeSkillResult,
+  SkillInfo,
+  CreateSkillRequest,
+  CreateSkillResult,
 } from '../../work/types_v2';
 import { BlockHost } from './blocks/BlockHost';
 import type { BlockActionHandler, BlockHostContext } from './blocks/types';
@@ -105,6 +112,11 @@ export interface WorkCardFrontProps {
   onSelectWorkInformationFile?: (request: SelectWorkInformationFileRequest) => Promise<SelectWorkInputFileResult>;
   onAddCustomWorkInput?: (request: AddCustomWorkInputRequest) => Promise<SubmitInputResult>;
   onInferWorkInputs?: (request: InferWorkInputsRequest) => Promise<InferWorkInputsResult>;
+  // ── Optional Skill binding callbacks ─────────────────────────
+  onSetNodeSkill?: (request: SetNodeSkillRequest) => Promise<SetNodeSkillResult>;
+  onClearNodeSkill?: (request: ClearNodeSkillRequest) => Promise<ClearNodeSkillResult>;
+  onListWorkSkills?: () => Promise<SkillInfo[]>;
+  onCreateWorkSkill?: (request: CreateSkillRequest) => Promise<CreateSkillResult>;
   // ── Discussion callbacks ──────────────────────────────────────
   onPreviewPatch?: (intent: DiscussionPreviewIntent) => Promise<PreviewWorkPatchResult>;
   onApplyPatch?: (intent: DiscussionApplyIntent) => Promise<ApplyWorkPatchResult>;
@@ -278,6 +290,10 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   onSelectWorkInformationFile,
   onAddCustomWorkInput,
   onInferWorkInputs,
+  onSetNodeSkill,
+  onClearNodeSkill,
+  onListWorkSkills,
+  onCreateWorkSkill,
   onPreviewPatch,
   onApplyPatch,
   onDiscussionDraftChange,
@@ -488,6 +504,11 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       taskInfoTaskKeys={taskInfoTaskKeys}
       showTaskInputs={false}
       paused={work.state === 'paused'}
+      nodeSkillBindings={work.v2NodeSkillBindings}
+      onSetNodeSkill={onSetNodeSkill}
+      onClearNodeSkill={onClearNodeSkill}
+      onListWorkSkills={onListWorkSkills}
+      onCreateWorkSkill={onCreateWorkSkill}
     />
   );
 

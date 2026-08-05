@@ -483,6 +483,75 @@ export interface RetryArtifactSlotResult {
   transportError?: WorkTransportError;
 }
 
+// ── Skill binding ──────────────────────────────────────────────────────────
+
+export interface SetNodeSkillRequest {
+  workId: string;
+  nodeId: string;
+  skillName: string;
+  expectedRevision: number;
+  requestId: string;
+}
+
+export interface SetNodeSkillResult {
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: WorkTransportError;
+}
+
+export interface ClearNodeSkillRequest {
+  workId: string;
+  nodeId: string;
+  expectedRevision: number;
+  requestId: string;
+}
+
+export interface ClearNodeSkillResult {
+  revision: number;
+  duplicate: boolean;
+  committed: boolean;
+  recoverable: boolean;
+  error?: WorkTransportError;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  scope: string;
+  enabled: boolean;
+  runAs?: string;
+}
+
+export interface CreateSkillRequest {
+  name: string;
+  description: string;
+  body: string;
+  scope: string;
+  requestId: string;
+}
+
+export interface CreateSkillResult {
+  skill?: SkillInfo;
+  error?: WorkTransportError;
+  committed: boolean;
+  recoverable: boolean;
+}
+
+// ── Skill binding payloads ─────────────────────────────────────────────────
+
+export interface NodeSkillBoundPayload {
+  workId: string;
+  nodeId: string;
+  skillName: string;
+}
+
+export interface NodeSkillClearedPayload {
+  workId: string;
+  nodeId: string;
+}
+
 // ── Artifact Preview ───────────────────────────────────────────────────────
 
 export type PreviewGrade = 'inline' | 'filecard' | 'fallback';
@@ -589,6 +658,7 @@ export interface TaskV2View {
   progress?: string;
   sessionRef?: import('./types.js').SessionRef;
   waitingInputIds?: string[];
+  skillName?: string;
   error?: string;
   retryable: boolean;
   updatedAt: string;
@@ -615,9 +685,11 @@ export type V2WorkEventType =
   | 'task.waiting_approval'
   | 'task.runtime_created'
   | 'task.runtime_updated'
-  | 'task.stale_result';
+  | 'task.stale_result'
+  | 'node.skill.bound'
+  | 'node.skill.cleared';
 
-export type V2ObjectKind = 'definition' | 'artifact_slot' | 'input' | 'patch' | 'task';
+export type V2ObjectKind = 'definition' | 'artifact_slot' | 'input' | 'patch' | 'task' | 'node';
 
 export const V2_OBJECT_KINDS: ReadonlySet<string> = new Set([
   'definition',
@@ -625,6 +697,7 @@ export const V2_OBJECT_KINDS: ReadonlySet<string> = new Set([
   'input',
   'patch',
   'task',
+  'node',
 ]);
 
 export const V2_EVENT_TYPES: ReadonlySet<string> = new Set([
