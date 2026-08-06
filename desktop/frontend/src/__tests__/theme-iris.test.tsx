@@ -114,12 +114,12 @@ eq(root.getAttribute("data-theme-style"), "iris", "unrecognized style falls back
 console.log("\ntheme-iris: Real component selectors are present in CSS");
 
 // RunBlock
-includes(cssText, ".completed-run-tab--queued", "completed-run-tab mod queued");
-includes(cssText, ".completed-run-tab--running", "completed-run-tab mod running");
-includes(cssText, ".completed-run-tab--waiting_user", "completed-run-tab mod waiting_user");
+includes(cssText, ".run-work-window", "fixed run work window");
+includes(cssText, '.run-work-window[data-face="result"]', "run work window result flip");
+includes(cssText, ".run-result-face--failed", "result face failed state");
 includes(cssText, ".active-run-view--failed", "active-run-view mod failed");
 includes(cssText, ".run-step-tab--completed", "run-step-tab mod completed");
-includes(cssText, ".completed-run-tab:focus-visible", "completed-run-tab focus ring");
+includes(cssText, ".run-work-face .icon-button--text", "run face text action");
 
 // ArtifactShelf
 includes(cssText, ".artifact-item--stale", "artifact-item mod stale");
@@ -186,8 +186,8 @@ if (!lineGradMatch) {
 console.log("\ntheme-iris: Layout dimensions match spec");
 
 includes(cssText, "height: 64px;", "TaskMemoryBar 64px");
-includes(cssText, "height: 40px;", "CompletedRunTab 40px");
-includes(cssText, "height: 160px;", "ActiveRunView 160px");
+includes(cssText, "height: 220px;", "Run work window 220px");
+includes(cssText, "perspective: 1200px;", "Run work window has a flip perspective");
 includes(cssText, ".turn-collapse--active", "live Transcript run uses active collapse contract");
 includes(cssText, "max-height: 160px;", "live Transcript run is height-limited");
 includes(cssText, "padding: 0 48px", "TaskMemoryBar left 48px");

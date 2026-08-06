@@ -261,8 +261,9 @@ cleanup();
 const runEl = render(<SessionRunStream sessionId={FIXTURE_SESSION_ID} />);
 ok(hasText(runEl, "运行完成"), "RunStream: renders completed run tab");
 ok(hasText(runEl, "运行中"), "RunStream: renders active run window");
-ok(queryAllByClassName(runEl, "completed-run-tab").length === 1, "RunStream: one completed run is collapsed");
-ok(queryAllByClassName(runEl, "active-run-view").length === 1, "RunStream: one active run stays expanded");
+ok(queryAllByClassName(runEl, "run-work-window").length === 2, "RunStream: terminal and active runs use the same fixed work window");
+ok(queryAllByClassName(runEl, "run-result-face").length === 1, "RunStream: completed run exposes a result face");
+ok(queryAllByClassName(runEl, "active-run-view").length === 2, "RunStream: process history stays mounted on both windows");
 cleanup();
 
 // ── Test: AddOnLauncherButton shows active count ────────────────────────────

@@ -185,7 +185,7 @@ export const useRunStore = create<RunState & RunActions>((set) => ({
           [runId]: {
             ...existing,
             status,
-            ...(isTerminalStatus(status) ? { completedAt: now } : {}),
+            ...(isTerminalStatus(status) ? { completedAt: now, expanded: false } : {}),
             ...(meta?.errorMessage ? { errorMessage: meta.errorMessage } : {}),
           },
         },

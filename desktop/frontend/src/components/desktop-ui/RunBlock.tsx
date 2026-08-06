@@ -7,31 +7,19 @@ import {
   Loader2,
   RotateCcw,
   Square,
-  ChevronDown,
-  ChevronUp,
 } from "lucide-react";
+import { useCallback, useEffect, useRef } from "react";
 import type { RunRecord, RunStatus, RunStepStatus } from "../../store/run";
 
-import { useRef, useEffect, useCallback } from "react";
-
-// ── Props ──────────────────────────────────────────────────────────────────
-
 export interface RunBlockProps {
-  /** The run record to display. */
   run: RunRecord;
-  /** Callback to stop a running / queued run. */
   onStop?: (runId: string) => void;
-  /** Callback to retry a failed / cancelled run. */
   onRetry?: (runId: string) => void;
-  /** Callback to toggle collapsed / expanded. */
   onToggle?: (runId: string) => void;
-  /** Callback when the user selects a specific step tab (0-based index). */
   onStepSelect?: (runId: string, stepIndex: number) => void;
-  /** Optional elapsed-seconds override (e.g. from a timer). */
   elapsedSeconds?: number;
+  hidden?: boolean;
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 const STATUS_LABEL: Record<RunStatus, string> = {
   queued: "排队中",
@@ -43,17 +31,25 @@ const STATUS_LABEL: Record<RunStatus, string> = {
   cancelled: "已取消",
 };
 
+function isTerminal(status: RunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function elapsed(run: RunRecord, override?: number): number | undefined {
+  if (override !== undefined) return override;
+  if (!run.startedAt) return undefined;
+  return Math.max(0, Math.round(((run.completedAt ?? Date.now()) - run.startedAt) / 1000));
+}
+
 function statusIcon(status: RunStatus, size = 16): React.ReactNode {
-  const cls = status === "running" || status === "reconnecting" ? "animate-spin" : undefined;
   switch (status) {
     case "queued":
-      return <Clock size={size} className={cls} />;
+      return <Clock size={size} />;
     case "running":
-      return <Loader2 size={size} className={cls} />;
+    case "reconnecting":
+      return <Loader2 size={size} className="animate-spin" />;
     case "waiting_user":
       return <CircleHelp size={size} />;
-    case "reconnecting":
-      return <Loader2 size={size} className={cls} />;
     case "completed":
       return <CheckCircle2 size={size} />;
     case "failed":
@@ -63,70 +59,97 @@ function statusIcon(status: RunStatus, size = 16): React.ReactNode {
   }
 }
 
-// ── CompletedRunTab (collapsed mode) ────────────────────────────────────────
+function runMeta(run: RunRecord, elapsedSeconds?: number): string {
+  const seconds = elapsed(run, elapsedSeconds);
+  const parts = [`${run.events.length} 条记录`];
+  if (seconds !== undefined) parts.push(`${seconds} 秒`);
+  return parts.join(" · ");
+}
 
-export function CompletedRunTab({
-  run,
-  onStop,
-  onRetry,
-  onToggle,
-  elapsedSeconds,
-}: RunBlockProps) {
-  const isTerminal =
-    run.status === "completed" || run.status === "failed" || run.status === "cancelled";
-  const secs =
-    elapsedSeconds ??
-    (run.completedAt && run.startedAt
-      ? Math.round((run.completedAt - run.startedAt) / 1000)
-      : undefined);
+function resultCopy(run: RunRecord): { title: string; detail: string } {
+  const lastEvent = run.events[run.events.length - 1];
+  const meaningfulEvent = [...run.events]
+    .reverse()
+    .find((event) => event.content.trim() && !/^(?:运行完成|步骤确认完成|开始执行)$/.test(event.content.trim()));
+  if (run.status === "failed") {
+    return {
+      title: "本轮执行遇到问题",
+      detail: run.errorMessage || lastEvent?.content || "执行失败，可查看过程定位原因。",
+    };
+  }
+  if (run.status === "cancelled") {
+    return {
+      title: "本轮执行已停止",
+      detail: lastEvent?.content || "执行已由用户停止。",
+    };
+  }
+  return {
+    title: "本轮执行已完成",
+    detail: meaningfulEvent?.content || lastEvent?.content || "执行完成。",
+  };
+}
+
+/** Terminal result face. Kept under the legacy export name for API compatibility. */
+export function CompletedRunTab({ run, onRetry, onToggle, elapsedSeconds, hidden = false }: RunBlockProps) {
+  const copy = resultCopy(run);
+  const recentLabels = run.events
+    .map((event) => event.stepLabel?.trim())
+    .filter((label): label is string => Boolean(label) && label !== "完成")
+    .filter((label, index, labels) => labels.indexOf(label) === index)
+    .slice(-3);
 
   return (
-    <button
-      type="button"
-      className={`completed-run-tab completed-run-tab--${run.status}`}
-      aria-label={`${STATUS_LABEL[run.status]} · ${run.events.length} 步` + (secs !== undefined ? ` · ${secs} 秒` : "")}
-      aria-expanded={run.expanded}
-      onClick={() => onToggle?.(run.runId)}
+    <section
+      className={`run-work-face run-result-face run-result-face--${run.status}`}
+      aria-label={`执行结果 — ${STATUS_LABEL[run.status]}`}
+      aria-hidden={hidden}
     >
-      {statusIcon(run.status, 16)}
-
-      <span className="completed-run-tab__label">
-        <span className="completed-run-tab__status-text">{STATUS_LABEL[run.status]}</span>
-        {isTerminal && (
-          <span className="completed-run-tab__meta">
-            <span className="completed-run-tab__divider"> · </span>
-            {run.events.length} 步
-            {secs !== undefined ? <><span className="completed-run-tab__divider"> · </span>{secs} 秒</> : ""}
-          </span>
-        )}
-      </span>
-
-      <span className="completed-run-tab__actions">
-        {(run.status === "queued" || run.status === "running" || run.status === "waiting_user" || run.status === "reconnecting") &&
-          onStop && (
-              <IconButton
-              icon={<CircleStop size={14} />}
-              label="停止运行"
-              onClick={(e) => { e.stopPropagation(); onStop(run.runId); }}
+      <header className="run-work-face__header">
+        <span className="run-work-face__status">
+          {statusIcon(run.status, 15)}
+          <strong>{STATUS_LABEL[run.status]}</strong>
+          <span aria-hidden="true">·</span>
+          <span className="run-work-face__meta">{runMeta(run, elapsedSeconds)}</span>
+        </span>
+        <span className="run-work-face__actions">
+          {(run.status === "failed" || run.status === "cancelled") && onRetry && (
+            <IconButton
+              icon={<RotateCcw size={14} />}
+              label="重试"
+              tabIndex={hidden ? -1 : 0}
+              onClick={() => onRetry(run.runId)}
             />
           )}
-
-        {(run.status === "failed" || run.status === "cancelled") && onRetry && (
           <IconButton
             icon={<RotateCcw size={14} />}
-            label="重试"
-            onClick={(e) => { e.stopPropagation(); onRetry(run.runId); }}
+            label="查看执行过程"
+            text="查看过程"
+            tabIndex={hidden ? -1 : 0}
+            onClick={() => onToggle?.(run.runId)}
           />
-        )}
+        </span>
+      </header>
 
-        {run.expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-      </span>
-    </button>
+      <div className="run-result-face__body">
+        <span className={`run-result-face__marker run-result-face__marker--${run.status}`} aria-hidden="true" />
+        <div className="run-result-face__summary">
+          <h3>{copy.title}</h3>
+          <p>{copy.detail}</p>
+        </div>
+        {recentLabels.length > 0 && (
+          <div className="run-result-face__records" aria-label="最近执行记录">
+            <span className="run-result-face__records-title">最近记录</span>
+            <div className="run-result-face__record-list">
+              {recentLabels.map((label) => <span key={label}>{label}</span>)}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
-// ── ActiveRunView (expanded mode) ───────────────────────────────────────────
-
+/** Process face: only real events are shown; there are no future placeholders. */
 export function ActiveRunView({
   run,
   onStop,
@@ -134,273 +157,207 @@ export function ActiveRunView({
   onToggle,
   onStepSelect,
   elapsedSeconds,
+  hidden = false,
 }: RunBlockProps) {
-  const selectedStepIndex = run.selectedStepIndex ?? Math.max(0, run.events.length - 1);
-  const secs =
-    elapsedSeconds ??
-    (run.completedAt && run.startedAt
-      ? Math.round((run.completedAt - run.startedAt) / 1000)
-      : undefined);
-
-  // ── Drag-to-scroll state ──────────────────────────────────────────────────
+  const selectedIndex = run.selectedStepIndex ?? Math.max(0, run.events.length - 1);
   const tabsRef = useRef<HTMLDivElement>(null);
-  const dragState = useRef({ active: false, dragging: false, startX: 0, scrollLeft: 0 });
-  const wasDragging = useRef(false);
+  const drag = useRef({ active: false, moved: false, startX: 0, scrollLeft: 0 });
 
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    const el = tabsRef.current;
-    if (!el) return;
-    wasDragging.current = false;
-    dragState.current = {
-      active: true,
-      dragging: false,
-      startX: e.clientX,
-      scrollLeft: el.scrollLeft,
-    };
+  const handlePointerDown = useCallback((event: React.PointerEvent) => {
+    if (event.button !== 0 || !tabsRef.current) return;
+    drag.current = { active: true, moved: false, startX: event.clientX, scrollLeft: tabsRef.current.scrollLeft };
   }, []);
 
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!dragState.current.active) return;
-    const dx = e.clientX - dragState.current.startX;
-    if (!dragState.current.dragging && Math.abs(dx) > 6) {
-      dragState.current.dragging = true;
-      wasDragging.current = true;
-      const el = tabsRef.current;
-      el?.classList.add("active-run-view__tabs--dragging");
-      el?.setPointerCapture(e.pointerId);
-    }
-    if (dragState.current.dragging) {
-      const el = tabsRef.current;
-      if (el) {
-        el.scrollLeft = dragState.current.scrollLeft - dx;
-      }
-    }
+  const handlePointerMove = useCallback((event: React.PointerEvent) => {
+    if (!drag.current.active || !tabsRef.current) return;
+    const distance = event.clientX - drag.current.startX;
+    if (Math.abs(distance) > 6) drag.current.moved = true;
+    if (!drag.current.moved) return;
+    tabsRef.current.setPointerCapture(event.pointerId);
+    tabsRef.current.classList.add("active-run-view__tabs--dragging");
+    tabsRef.current.scrollLeft = drag.current.scrollLeft - distance;
   }, []);
 
-  const handlePointerUp = useCallback((e: React.PointerEvent) => {
-    const el = tabsRef.current;
-    if (el) {
-      el.classList.remove("active-run-view__tabs--dragging");
-      try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    }
-    dragState.current = { active: false, dragging: false, startX: 0, scrollLeft: 0 };
-    if (wasDragging.current) {
-      setTimeout(() => { wasDragging.current = false; }, 0);
-    }
+  const handlePointerUp = useCallback((event: React.PointerEvent) => {
+    const element = tabsRef.current;
+    element?.classList.remove("active-run-view__tabs--dragging");
+    if (element?.hasPointerCapture(event.pointerId)) element.releasePointerCapture(event.pointerId);
+    setTimeout(() => { drag.current = { active: false, moved: false, startX: 0, scrollLeft: 0 }; }, 0);
   }, []);
 
-  const handleTabClickCapture = useCallback((e: React.MouseEvent) => {
-    if (wasDragging.current) {
-      e.stopPropagation();
-    }
+  const handleWheel = useCallback((event: React.WheelEvent) => {
+    const element = tabsRef.current;
+    if (!element || element.scrollWidth <= element.clientWidth) return;
+    event.preventDefault();
+    element.scrollLeft += Math.abs(event.deltaX) >= Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
   }, []);
 
-  // ── Wheel horizontal scroll ───────────────────────────────────────────────
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    const el = tabsRef.current;
-    if (!el || el.scrollWidth <= el.clientWidth) return;
-    const delta = Math.abs(e.deltaX) >= Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-    if (!delta) return;
-    e.preventDefault();
-    el.scrollLeft += delta;
-  }, []);
-
-  // ── Scroll selected tab into view ─────────────────────────────────────────
   useEffect(() => {
-    const el = tabsRef.current;
-    if (!el) return;
-    const tabButtons = el.querySelectorAll<HTMLElement>(".run-step-tab");
-    const target = tabButtons[selectedStepIndex];
-    if (target) {
+    const element = tabsRef.current;
+    const target = element?.querySelectorAll<HTMLElement>(".run-step-tab")[selectedIndex];
+    if (typeof target?.scrollIntoView === "function") {
       target.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-    } else {
-      el.scrollLeft = el.scrollWidth;
     }
-  }, [selectedStepIndex, run.events.length]);
+  }, [run.events.length, selectedIndex]);
 
   return (
-    <div
-      className={`active-run-view active-run-view--${run.status}`}
-      role="region"
-      aria-label={`运行详情 — ${STATUS_LABEL[run.status]}`}
-      aria-busy={run.status === "running" || run.status === "reconnecting" || run.status === "queued"}
+    <section
+      className={`run-work-face run-process-face active-run-view active-run-view--${run.status}`}
+      aria-label={`思考与执行过程 — ${STATUS_LABEL[run.status]}`}
+      aria-busy={!isTerminal(run.status)}
+      aria-hidden={hidden}
     >
-      <div className="active-run-view__header">
-        <span className="active-run-view__header-status">
+      <header className="run-work-face__header active-run-view__header">
+        <span className="run-work-face__status active-run-view__header-status">
           {statusIcon(run.status, 16)}
-          <span className="active-run-view__status-text">{STATUS_LABEL[run.status]}</span>
+          <strong className="active-run-view__status-text">{STATUS_LABEL[run.status]}</strong>
+          <span aria-hidden="true">·</span>
+          <span className="run-work-face__meta">{runMeta(run, elapsedSeconds)}</span>
         </span>
-        {isTerminalLike(run.status) && (
-          <span className="active-run-view__meta">
-            · {run.events.length} 步
-            {secs !== undefined ? ` · ${secs} 秒` : ""}
-          </span>
-        )}
-
-        <span className="active-run-view__actions">
-          {(run.status === "queued" || run.status === "running" || run.status === "waiting_user" || run.status === "reconnecting") &&
-            onStop && (
-              <IconButton
-                icon={<CircleStop size={14} />}
-                label="停止运行"
-                onClick={() => onStop(run.runId)}
-              />
-            )}
+        <span className="run-work-face__actions active-run-view__actions">
+          {!isTerminal(run.status) && onStop && (
+            <IconButton
+              icon={<CircleStop size={14} />}
+              label="停止运行"
+              tabIndex={hidden ? -1 : 0}
+              onClick={() => onStop(run.runId)}
+            />
+          )}
           {(run.status === "failed" || run.status === "cancelled") && onRetry && (
             <IconButton
               icon={<RotateCcw size={14} />}
               label="重试"
+              tabIndex={hidden ? -1 : 0}
               onClick={() => onRetry(run.runId)}
             />
           )}
-          <IconButton
-            icon={<ChevronUp size={14} />}
-            label="收起"
-            onClick={() => onToggle?.(run.runId)}
-          />
+          {isTerminal(run.status) && (
+            <IconButton
+              icon={<RotateCcw size={14} />}
+              label="查看执行结果"
+              text="查看结果"
+              tabIndex={hidden ? -1 : 0}
+              onClick={() => onToggle?.(run.runId)}
+            />
+          )}
         </span>
+      </header>
+
+      <div
+        ref={tabsRef}
+        className="active-run-view__tabs"
+        role="tablist"
+        aria-label="已发生的执行记录"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onWheel={handleWheel}
+        onClickCapture={(event) => { if (drag.current.moved) event.stopPropagation(); }}
+      >
+        {run.events.map((event, index) => (
+          <RunStepTab
+            key={event.eventId}
+            index={index}
+            label={event.stepLabel ?? "执行记录"}
+            isLast={index === run.events.length - 1}
+            selected={selectedIndex === index}
+            runStatus={run.status}
+            eventStatus={event.status}
+            tabIndex={hidden ? -1 : 0}
+            onClick={() => onStepSelect?.(run.runId, index)}
+          />
+        ))}
       </div>
 
-      {run.events.length > 0 && (
-        <div
-          ref={tabsRef}
-          className="active-run-view__tabs"
-          role="tablist"
-          aria-label="运行步骤"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
-          onWheel={handleWheel}
-          onClickCapture={handleTabClickCapture}
-        >
-          {run.events.map((event, idx) => (
-            <RunStepTab
-              key={event.eventId}
-              index={idx}
-              label={event.stepLabel ?? `步骤 ${idx + 1}`}
-              isLast={idx === run.events.length - 1}
-              selected={selectedStepIndex === idx}
-              status={run.status}
-              eventStatus={event.status}
-              onClick={() => onStepSelect?.(run.runId, idx)}
-            />
-          ))}
-        </div>
-      )}
-
-      <RunDetailViewport events={run.events} selectedStepIndex={selectedStepIndex} />
-    </div>
+      <RunDetailViewport events={run.events} selectedStepIndex={selectedIndex} />
+    </section>
   );
 }
-
-// ── RunStepTab ──────────────────────────────────────────────────────────────
 
 function RunStepTab({
   index,
   label,
   isLast,
   selected,
-  status,
+  runStatus,
   eventStatus,
+  tabIndex,
   onClick,
 }: {
   index: number;
   label: string;
   isLast: boolean;
   selected: boolean;
-  status: RunStatus;
+  runStatus: RunStatus;
   eventStatus?: RunStepStatus;
+  tabIndex: number;
   onClick: () => void;
 }) {
-  const stepStatus: RunStatus = eventStatus ?? (isLast ? status : "completed");
-
+  const status: RunStatus = eventStatus ?? (isLast ? runStatus : "completed");
   return (
     <button
       type="button"
       role="tab"
-      className={`run-step-tab run-step-tab--${stepStatus}`}
+      className={`run-step-tab run-step-tab--${status}`}
       aria-selected={selected}
-      aria-label={`步骤 ${index + 1}: ${label}`}
+      aria-label={`记录 ${index + 1}: ${label}`}
+      tabIndex={tabIndex}
       onClick={onClick}
     >
       <span className="run-step-tab__number">{index + 1}</span>
       <span className="run-step-tab__label">{label}</span>
-      {stepStatus === "completed" && <CheckCircle2 size={12} />}
-      {stepStatus === "failed" && <AlertCircle size={12} />}
-      {(stepStatus === "running" || stepStatus === "queued" || stepStatus === "reconnecting") && (
+      {status === "completed" && <CheckCircle2 size={12} />}
+      {status === "failed" && <AlertCircle size={12} />}
+      {(status === "running" || status === "queued" || status === "reconnecting") && (
         <Loader2 size={12} className="animate-spin" />
       )}
     </button>
   );
 }
 
-// ── RunDetailViewport ───────────────────────────────────────────────────────
-
-export function RunDetailViewport({
-  events,
-  selectedStepIndex,
-}: {
+export function RunDetailViewport({ events, selectedStepIndex }: {
   events: RunRecord["events"];
   selectedStepIndex?: number;
 }) {
-  const visibleEvents = selectedStepIndex !== undefined
-    ? events.filter((_, idx) => idx === selectedStepIndex)
-    : events;
-
+  const event = selectedStepIndex === undefined ? events[events.length - 1] : events[selectedStepIndex];
   return (
-    <div
-      className="run-detail-viewport"
-      role="log"
-      aria-label="运行日志"
-      aria-live="polite"
-    >
-      {visibleEvents.length === 0 && <span className="run-detail-viewport__empty">暂无事件</span>}
-      {visibleEvents.map((event) => (
-        <div key={event.eventId} className="run-detail-viewport__event">
-          {event.content}
-        </div>
-      ))}
+    <div className="run-detail-viewport" role="log" aria-label="执行详情" aria-live="polite">
+      {event ? <div className="run-detail-viewport__event">{event.content}</div> : (
+        <span className="run-detail-viewport__empty">等待第一条执行记录…</span>
+      )}
     </div>
   );
 }
 
-// ── RunBlock (orchestrator) ─────────────────────────────────────────────────
-
-/**
- * RunBlock renders a run in either collapsed (CompletedRunTab) or expanded
- * (ActiveRunView) mode.
- *
- * This is a pure presentational primitive — it does NOT subscribe to stores.
- */
+/** Fixed-size two-sided work window. Process stays mounted so its scroll state survives flips. */
 export function RunBlock(props: RunBlockProps) {
-  return props.run.expanded ? <ActiveRunView {...props} /> : <CompletedRunTab {...props} />;
+  const terminal = isTerminal(props.run.status);
+  const showProcess = !terminal || props.run.expanded;
+  return (
+    <div
+      className={`run-work-window run-work-window--${props.run.status}`}
+      data-face={showProcess ? "process" : "result"}
+    >
+      <div className="run-work-window__inner">
+        <ActiveRunView {...props} hidden={!showProcess} />
+        {terminal && <CompletedRunTab {...props} hidden={showProcess} />}
+      </div>
+    </div>
+  );
 }
 
-// ── Shared helpers ─────────────────────────────────────────────────────────-
-
-function isTerminalLike(status: RunStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
-
-function IconButton({
-  icon,
-  label,
-  onClick,
-}: {
+function IconButton({ icon, label, text, tabIndex, onClick }: {
   icon: React.ReactNode;
   label: string;
-  onClick: (e: React.MouseEvent) => void;
+  text?: string;
+  tabIndex?: number;
+  onClick: (event: React.MouseEvent) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="icon-button"
-      aria-label={label}
-      onClick={onClick}
-    >
+    <button type="button" className={`icon-button${text ? " icon-button--text" : ""}`} aria-label={label} tabIndex={tabIndex} onClick={onClick}>
       {icon}
+      {text && <span>{text}</span>}
     </button>
   );
 }
