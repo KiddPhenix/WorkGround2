@@ -14,6 +14,8 @@ const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const projectTreeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
+const workWorkspaceSource = readFileSync(resolve(testDir, "../components/work/WorkWorkspace.tsx"), "utf8");
+const collaborationSource = readFileSync(resolve(testDir, "../collab/CollaborationWorkspace.tsx"), "utf8");
 
 let passed = 0;
 let failed = 0;
@@ -166,8 +168,88 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "top") === "4px" &&
     finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "right") ===
-      "calc(var(--windows-window-controls-width) + 8px)",
-  "CSS: workbench utilities share the top row immediately left of window controls",
+      "calc(var(--windows-window-controls-width) + 3px)" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "border-right") === "0",
+  "CSS: workbench utilities form the left half of the unified top-right rail",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .windows-window-controls", "top") === "15px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .windows-window-controls", "right") === "14px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .windows-window-controls", "border-left") === "0" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .windows-window-controls", "border-radius") === "0 7px 7px 0",
+  "CSS: native window controls complete the same inset rail without a detached window block",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions::before", "inset") ===
+      "0 calc(0px - var(--windows-window-controls-width)) 0 -3px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions::before", "border-radius") === "7px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions", "border") === "0" &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-session .windows-window-controls,") &&
+    includes(stylesSource, "border-left: 1px solid var(--border-soft);"),
+  "CSS: Session chrome uses one shared outer board with only an internal divider",
+);
+ok(
+  includes(workWorkspaceSource, 'className="wg2-work-top-actions"') &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions,") &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions", "top") === "4px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions", "right") ===
+      "calc(4px + var(--windows-window-controls-width))" &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,") &&
+    includes(stylesSource, "inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;"),
+  "CSS: Work actions stay joined and align to the real window top-right corner",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .windows-window-controls", "top") === "4px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .windows-window-controls", "right") === "4px",
+  "CSS: Work caption controls share the same top-right inset as its action rail",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .work-session-host .wg2-work-outer-header", "backdrop-filter") === "none" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host .wg2-work-outer-header::before", "backdrop-filter") === "blur(10px)" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host .wg2-work-outer-header::before", "pointer-events") === "none",
+  "CSS: Work header blur paints on a child layer and cannot rebase fixed caption actions",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .work-session-host", "background") === "transparent" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host", "backdrop-filter") === "none" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host::before", "background") ===
+      "color-mix(in srgb, var(--bg) 58%, transparent)" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host::before", "backdrop-filter") ===
+      "blur(6px) saturate(0.94)" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host .wg2-work-card", "background") ===
+      "color-mix(in srgb, var(--bg) 42%, transparent)" &&
+    finalDeclaration(stylesSource, ".app--workbench .work-session-host .wg2-work-card-front--presentation", "background") ===
+      "transparent",
+  "CSS: Work uses a translucent stacked plate instead of covering the wallpaper",
+);
+ok(
+  includes(stylesSource, "--wg2-accent: var(--accent);") &&
+    includes(stylesSource, "--wg2-surface: color-mix(in srgb, var(--bg) 84%, transparent);") &&
+    !includes(stylesSource, "--accent: #4ad6c4;") &&
+    !includes(stylesSource, "--accent: #2cc8b7;"),
+  "CSS: Work semantic colors inherit the active app theme without a fixed green accent",
+);
+ok(
+  includes(collaborationSource, 'className="collab-topic-actions"') &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions", "position") === "fixed" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions", "right") ===
+      "calc(14px + var(--windows-window-controls-width))" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions::before", "inset") ===
+      "0 calc(0px - var(--windows-window-controls-width)) 0 -3px",
+  "CSS: Room actions stay joined to caption controls independently of its member grid",
+);
+ok(
+  includes(collaborationSource, '<section className="collab-surface"') &&
+    includes(stylesSource, ".app--workbench .collab-surface {") &&
+    finalDeclaration(stylesSource, ".app--workbench .collab-surface", "border-radius") === "8px" &&
+    !includes(stylesSource, ".app--workbench .collaboration-workspace"),
+  "CSS: Room applies the same rounded outer plate to its real root element",
+);
+ok(
+  includes(stylesSource, ".app--windows-frameless.app--workbench-work .windows-window-controls,") &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-room .windows-window-controls") &&
+    includes(stylesSource, "border-left: 1px solid var(--border-soft);"),
+  "CSS: all three rails share the same caption-side internal divider",
 );
 
 // ── Workbench right-side layout contract ─────────────────────────────────
@@ -425,9 +507,17 @@ ok(
   "CSS: collapsed workbench sidebar is hidden",
 );
 
-// CSS: collapsed session-workspace spans full grid
-const collapsedGridCol = finalDeclaration(stylesSource, ".layout--workbench.layout--sidebar-collapsed .session-workspace", "grid-column");
-ok(collapsedGridCol === "1 / -1", `CSS: collapsed session-workspace spans 1 / -1 (got: ${collapsedGridCol})`);
+// CSS: collapsed workbench becomes a real single-column board
+const collapsedGridTpl = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "grid-template-columns");
+const collapsedGap = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed", "gap");
+ok(
+  collapsedGridTpl === "minmax(0, 1fr)" && collapsedGap === "0",
+  `CSS: collapsed workbench is one column with no orphan gap (grid=${collapsedGridTpl}, gap=${collapsedGap})`,
+);
+
+// CSS: collapsed session-workspace occupies that single column
+const collapsedGridCol = finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace", "grid-column");
+ok(collapsedGridCol === "1", `CSS: collapsed session-workspace occupies column 1 (got: ${collapsedGridCol})`);
 
 // App.tsx: collapse button exists in workspace-sidebar brand
 ok(

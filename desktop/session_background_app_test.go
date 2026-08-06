@@ -128,7 +128,7 @@ func TestSessionBackgroundAppPersistsSettingsAndSignsConfiguredImages(t *testing
 
 	app := NewApp()
 	view := SessionBackgroundSettingsView{
-		Enabled: true, MaskEnabled: true, RandomOnOpen: false, RotateSeconds: 60,
+		Mode: config.SessionBackgroundModeCustom, Enabled: true, MaskEnabled: true, RandomOnOpen: false, RotateSeconds: 60,
 		Sources: []SessionBackgroundSourceView{{Kind: config.SessionBackgroundSourceFolder, Path: root, Enabled: true}},
 	}
 	if err := app.SetSessionBackgroundSettings(view); err != nil {
@@ -138,7 +138,7 @@ func TestSessionBackgroundAppPersistsSettingsAndSignsConfiguredImages(t *testing
 	if err != nil {
 		t.Fatalf("SessionBackgroundSettings: %v", err)
 	}
-	if !persisted.Enabled || persisted.ImageCount != 2 || persisted.RotateSeconds != 60 || persisted.RandomOnOpen {
+	if persisted.Mode != config.SessionBackgroundModeCustom || !persisted.Enabled || persisted.ImageCount != 2 || persisted.RotateSeconds != 60 || persisted.RandomOnOpen {
 		t.Fatalf("persisted settings = %+v", persisted)
 	}
 
@@ -174,6 +174,23 @@ func TestSessionBackgroundAppDisabledAndEmptyTabAreExplicit(t *testing.T) {
 	}
 	if _, err := app.SessionBackground("  "); err == nil {
 		t.Fatal("empty tab id succeeded")
+	}
+}
+
+func TestSessionBackgroundAppPersistsSolidModeAcrossReload(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	if err := app.SetSessionBackgroundSettings(SessionBackgroundSettingsView{
+		Mode: config.SessionBackgroundModeSolid, MaskEnabled: true, RandomOnOpen: true,
+	}); err != nil {
+		t.Fatalf("SetSessionBackgroundSettings: %v", err)
+	}
+	persisted, err := NewApp().RefreshSessionBackgroundSettings()
+	if err != nil {
+		t.Fatalf("RefreshSessionBackgroundSettings: %v", err)
+	}
+	if persisted.Mode != config.SessionBackgroundModeSolid || persisted.Enabled {
+		t.Fatalf("solid mode after reload = %+v", persisted)
 	}
 }
 

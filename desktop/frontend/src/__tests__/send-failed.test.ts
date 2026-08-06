@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { initialState, reducer, replayPendingPromptsForActiveTab } from "../lib/useController";
 import type { WireEvent } from "../lib/types";
+import { isWorkChatDisabled, routeWorkChat } from "../lib/workChatRoute";
 
 let passed = 0;
 let failed = 0;
@@ -257,6 +258,108 @@ replayPendingPromptsForActiveTab("tab-b", () => {
 });
 await new Promise((resolve) => setTimeout(resolve, 0));
 eq(replayCalls, 2, "replay bridge failures are swallowed by the tab-switch effect");
+
+// ── Regression: Work chat routing decisions ────────────────────────
+//
+// When a Work task is waiting_input, the session state shows
+// running=true, runtimeMode="waiting_user". The Work chat input must
+// route to the dedicated Work transport (commitThenWorkSend), not
+// steer. Steer is used for real foreground model turns and pending decisions,
+// where front-face Work chat must remain available for additional guidance.
+//
+// Routing function (extracted from App.handleWorkChatSend logic):
+//   isWorkWaiting = runtimeMode === "waiting_user" && !approval && !ask
+//   if (running && !isWorkWaiting) → steer
+//   else → work_send (sendTurn)
+//   if (approval || ask) → steer (front composer stays enabled)
+
+const classifyRoute = (s: typeof initialState) => routeWorkChat({
+  running: s.running,
+  runtimeMode: s.runtimeMode,
+  decisionPending: s.approval != null || s.ask != null,
+});
+
+eq(isWorkChatDisabled({
+  ready: true,
+  rewindCommitting: false,
+  messageActionPending: false,
+  clearContextPending: false,
+}), false, "front Work chat remains enabled when no conflicting UI operation is active");
+eq(isWorkChatDisabled({
+  ready: true,
+  rewindCommitting: true,
+  messageActionPending: false,
+  clearContextPending: false,
+}), true, "rewind commit still disables front Work chat");
+
+{
+  // Idle → Work send
+  const idle = reducer(initialState, { type: "backend_status", running: false, pendingPrompt: false, backgroundJobs: 0, runtimeMode: "idle", foregroundActive: false });
+  eq(classifyRoute(idle), "work_send", "idle routes to work_send");
+
+  // waiting_user without approval/ask → Work send (the bug fix)
+  const waitingNoDecision = reducer(initialState, {
+    type: "backend_status",
+    running: true,
+    pendingPrompt: true,
+    backgroundJobs: 0,
+    cancelRequested: false,
+    cancellable: true,
+    runtimeMode: "waiting_user",
+    foregroundActive: true,
+  });
+  eq(classifyRoute(waitingNoDecision), "work_send", "waiting_user without approval/ask routes to work_send (not steer)");
+
+  // Foreground turn → steer
+  const foreground = reducer(initialState, {
+    type: "backend_status",
+    running: true,
+    pendingPrompt: false,
+    backgroundJobs: 0,
+    cancelRequested: false,
+    cancellable: true,
+    runtimeMode: "foreground",
+    foregroundActive: true,
+  });
+  eq(classifyRoute(foreground), "steer", "foreground running routes to steer");
+
+  // waiting_user with approval → steer while the prompt remains pending
+  const withApproval = reducer(waitingNoDecision, {
+    type: "event",
+    e: { kind: "approval_request", approval: { id: "ap-1", tool: "bash", subject: "Run test?" } } as WireEvent,
+  });
+  eq(classifyRoute(withApproval), "steer", "waiting_user with approval keeps front guidance enabled");
+  eq(withApproval.approval?.id, "ap-1", "approval is visible in state");
+
+  // waiting_user with ask → steer while the prompt remains pending
+  const withAsk = reducer(waitingNoDecision, {
+    type: "event",
+    e: { kind: "ask_request", ask: { id: "ask-1", questions: [{ id: "q1", header: "Confirm", prompt: "Proceed?", options: [] }] } } as WireEvent,
+  });
+  eq(classifyRoute(withAsk), "steer", "waiting_user with ask keeps front guidance enabled");
+  eq(withAsk.ask?.id, "ask-1", "ask is visible in state");
+
+  // After approval cleared → model continues running → steer is correct
+  const clearedApproval = reducer(withApproval, { type: "clearApproval" });
+  eq(clearedApproval.runtimeMode, "foreground", "after clearApproval while running, runtimeMode is foreground");
+  eq(classifyRoute(clearedApproval), "steer", "after clearApproval, model still running → steer");
+
+  // After ask cleared → model continues running → steer is correct
+  const clearedAsk = reducer(withAsk, { type: "clearAsk" });
+  eq(clearedAsk.runtimeMode, "foreground", "after clearAsk while running, runtimeMode is foreground");
+  eq(classifyRoute(clearedAsk), "steer", "after clearAsk, model still running → steer");
+
+  // After turn_done from foreground → idle → work_send
+  const turnDoneFromFg = reducer(foreground, { type: "event", e: { kind: "turn_done" } as WireEvent });
+  eq(classifyRoute(turnDoneFromFg), "work_send", "after turn_done, routes to work_send");
+
+  // Cancel recovery: unsend clears running, routes to work_send
+  const unsent = reducer(waitingNoDecision, { type: "unsend" });
+  eq(classifyRoute(unsent), "work_send", "after unsend, routes to work_send");
+  eq(unsent.running, false, "unsend clears running");
+  eq(unsent.approval, undefined, "unsend clears approval");
+  eq(unsent.ask, undefined, "unsend clears ask");
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

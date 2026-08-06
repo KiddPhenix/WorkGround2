@@ -1892,12 +1892,13 @@ func TestDesktopWidgetSkin(t *testing.T) {
 func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 	cfg := Default()
 	defaults := cfg.DesktopSessionBackground()
-	if defaults.Enabled || defaults.MaskEnabled == nil || !*defaults.MaskEnabled || defaults.RandomOnOpen == nil || !*defaults.RandomOnOpen || defaults.RotateSeconds != 0 {
+	if defaults.Mode != SessionBackgroundModePattern || defaults.Enabled || defaults.MaskEnabled == nil || !*defaults.MaskEnabled || defaults.RandomOnOpen == nil || !*defaults.RandomOnOpen || defaults.RotateSeconds != 0 {
 		t.Fatalf("unexpected background defaults: %+v", defaults)
 	}
 
 	disabled := false
 	input := DesktopSessionBackgroundConfig{
+		Mode:          SessionBackgroundModeCustom,
 		Enabled:       true,
 		MaskEnabled:   &disabled,
 		RandomOnOpen:  &disabled,
@@ -1912,7 +1913,7 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := cfg.DesktopSessionBackground()
-	if !got.Enabled || *got.MaskEnabled || *got.RandomOnOpen || got.RotateSeconds != 300 || len(got.Sources) != 2 {
+	if got.Mode != SessionBackgroundModeCustom || !got.Enabled || *got.MaskEnabled || *got.RandomOnOpen || got.RotateSeconds != 300 || len(got.Sources) != 2 {
 		t.Fatalf("normalized background = %+v", got)
 	}
 	wantFilePath, err := filepath.Abs(input.Sources[0].Path)
@@ -1927,7 +1928,7 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 	}
 
 	rendered := RenderTOMLForScope(cfg, RenderScopeUser)
-	if !strings.Contains(rendered, "[desktop.session_background]") || !strings.Contains(rendered, "[[desktop.session_background.sources]]") {
+	if !strings.Contains(rendered, "[desktop.session_background]") || !strings.Contains(rendered, `mode = "custom"`) || !strings.Contains(rendered, "[[desktop.session_background.sources]]") {
 		t.Fatalf("background tables missing from rendered config:\n%s", rendered)
 	}
 	var decoded Config
@@ -1938,12 +1939,28 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(got, roundTrip) {
 		t.Fatalf("round trip background = %#v, want %#v", roundTrip, got)
 	}
+
+	if err := cfg.SetDesktopSessionBackground(DesktopSessionBackgroundConfig{Mode: SessionBackgroundModeSolid}); err != nil {
+		t.Fatal(err)
+	}
+	rendered = RenderTOMLForScope(cfg, RenderScopeUser)
+	if !strings.Contains(rendered, `mode = "solid"`) {
+		t.Fatalf("solid background mode missing from rendered config:\n%s", rendered)
+	}
+	var solidDecoded Config
+	if _, err := toml.Decode(rendered, &solidDecoded); err != nil {
+		t.Fatalf("decode solid background config: %v", err)
+	}
+	if solid := solidDecoded.DesktopSessionBackground(); solid.Mode != SessionBackgroundModeSolid || solid.Enabled {
+		t.Fatalf("solid background round trip = %#v", solid)
+	}
 }
 
 func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testing.T) {
 	cfg := Default()
 	before := cfg.DesktopSessionBackground()
 	for _, input := range []DesktopSessionBackgroundConfig{
+		{Mode: "animated"},
 		{RotateSeconds: 29},
 		{RotateSeconds: 86_401},
 		{Sources: []DesktopSessionBackgroundSource{{Kind: "url", Path: "https://example.com/a.png"}}},

@@ -41,6 +41,7 @@ import { useToast } from "./lib/toast";
 import { asArray } from "./lib/array";
 import { clearLegacyLangPref, normalizeLangPref, readLegacyLangPref, useI18n, useT, type Translator } from "./lib/i18n";
 import { useController, type Item, type LiveStream } from "./lib/useController";
+import { isWorkChatDisabled, routeWorkChat } from "./lib/workChatRoute";
 import { app, onEvent, onProjectTreeChanged } from "./lib/bridge";
 import { generativeMusic, isGenerativeMusicEnabled } from "./lib/generative-music";
 import { playSuccessChime } from "./lib/sound";
@@ -1566,6 +1567,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const workspaceTreeRef = useRef<HTMLDivElement>(null);
   const runningRef = useRef(state.running);
   runningRef.current = state.running;
+  const runtimeModeRef = useRef(state.runtimeMode);
+  runtimeModeRef.current = state.runtimeMode;
+  const approvalRef = useRef(state.approval);
+  approvalRef.current = state.approval;
+  const askRef = useRef(state.ask);
+  askRef.current = state.ask;
   const activeTabIdRef = useRef(activeTabId);
   const commitThenSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const commitThenWorkSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
@@ -2037,6 +2044,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
       displayText: string,
       submitText = displayText,
       sendTurn = commitThenSendRef.current,
+      opts?: { skipRunningSteer?: boolean },
     ) => {
       const trimmed = displayText.trim();
       // "!<cmd>" runs a shell command directly, bypassing the model.
@@ -2123,7 +2131,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         notice(t("settings.themeUnknown", { name: arg }), "warn");
         return;
       }
-      if (runningRef.current) { await steer(submitText.trim()); return; }
+      if (runningRef.current && !opts?.skipRunningSteer) { await steer(submitText.trim()); return; }
       void setControllerCollaborationMode(controllerComposerProfileCollaborationMode(composerProfile));
       void setControllerToolApprovalMode(toolApprovalMode);
       if (goal.trim()) void setControllerGoal(goal);
@@ -2132,9 +2140,25 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, goal, runShell, notice, setControllerCollaborationMode, setControllerGoal, setControllerToolApprovalMode, steer, switchModel, t, toolApprovalMode, showToast],
   );
 
+  // Work chat routing: normally delegates to handleSend for slash/cmd
+  // processing. When the session only appears "running" because a Work
+  // task is waiting_input without a live controller decision, bypass the
+  // steer path and use the dedicated Work transport. Real foreground turns
+  // and pending decisions keep accepting guidance through steer.
   const handleWorkChatSend = useCallback(
-    (displayText: string, submitText = displayText) =>
-      handleSend(displayText, submitText, commitThenWorkSendRef.current),
+    async (displayText: string, submitText = displayText) => {
+      const route = routeWorkChat({
+        running: runningRef.current,
+        runtimeMode: runtimeModeRef.current,
+        decisionPending: Boolean(approvalRef.current || askRef.current),
+      });
+      return handleSend(
+        displayText,
+        submitText,
+        commitThenWorkSendRef.current,
+        { skipRunningSteer: route === "work_send" },
+      );
+    },
     [handleSend],
   );
 
@@ -3928,6 +3952,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         windowsFramelessChrome ? "app--windows-frameless" : "",
         browserPreviewChrome ? "app--browser-preview" : "",
         sidebarWorkbench ? "app--workbench" : "",
+        sidebarWorkbench
+          ? showCollaborationSurface
+            ? "app--workbench-room"
+            : showWorkSurface
+              ? "app--workbench-work"
+              : "app--workbench-session"
+          : "",
         sidebarCreation ? "app--creation" : "",
       ].filter(Boolean).join(" ")}
     >
@@ -3951,6 +3982,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         {sidebarWorkbench ? (
           <>
             {/* Iris layout — preserves controller state, overlays still render below */}
+            <SessionBackground tabId={activeTabId} />
             <aside className={`workspace-sidebar${sidebarCollapsed ? " workspace-sidebar--collapsed" : ""}`} aria-label="Workspace sidebar">
               <div className="workspace-sidebar__brand">
                 <img
@@ -4102,10 +4134,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     chatItems={displayItems}
                     chatLive={state.live}
                     chatRunning={state.running || rewindCommitting}
-                    chatDisabled={!sessionSurfaceProps.ready
-                      || sessionSurfaceProps.composerDisabled
-                      || sessionSurfaceProps.submitDisabled
-                      || sessionSurfaceProps.decisionPending}
+                    chatDisabled={isWorkChatDisabled({
+                      ready: sessionSurfaceProps.ready,
+                      rewindCommitting,
+                      messageActionPending: state.messageAction != null,
+                      clearContextPending,
+                    })}
                     chatComposerSubmitKey={composerSubmitKey}
                     onChatSend={handleWorkChatSend}
                     onCreateReusableWorkSession={handleCreateReusableWorkSession}

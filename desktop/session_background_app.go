@@ -38,6 +38,7 @@ type SessionBackgroundSourceView struct {
 }
 
 type SessionBackgroundSettingsView struct {
+	Mode          string                        `json:"mode"`
 	Enabled       bool                          `json:"enabled"`
 	MaskEnabled   bool                          `json:"maskEnabled"`
 	RandomOnOpen  bool                          `json:"randomOnOpen"`
@@ -98,6 +99,7 @@ func (a *App) ensureSessionBackground() *sessionBackgroundService {
 
 func sessionBackgroundConfigView(bg config.DesktopSessionBackgroundConfig) SessionBackgroundSettingsView {
 	view := SessionBackgroundSettingsView{
+		Mode:          bg.Mode,
 		Enabled:       bg.Enabled,
 		MaskEnabled:   bg.MaskEnabled == nil || *bg.MaskEnabled,
 		RandomOnOpen:  bg.RandomOnOpen == nil || *bg.RandomOnOpen,
@@ -117,8 +119,17 @@ func sessionBackgroundConfigView(bg config.DesktopSessionBackgroundConfig) Sessi
 
 func sessionBackgroundConfigFromView(view SessionBackgroundSettingsView) config.DesktopSessionBackgroundConfig {
 	mask, randomOnOpen := view.MaskEnabled, view.RandomOnOpen
+	mode := strings.ToLower(strings.TrimSpace(view.Mode))
+	if mode == "" {
+		if view.Enabled || len(view.Sources) > 0 {
+			mode = config.SessionBackgroundModeCustom
+		} else {
+			mode = config.SessionBackgroundModePattern
+		}
+	}
 	bg := config.DesktopSessionBackgroundConfig{
-		Enabled:       view.Enabled,
+		Mode:          mode,
+		Enabled:       mode == config.SessionBackgroundModeCustom,
 		MaskEnabled:   &mask,
 		RandomOnOpen:  &randomOnOpen,
 		RotateSeconds: view.RotateSeconds,

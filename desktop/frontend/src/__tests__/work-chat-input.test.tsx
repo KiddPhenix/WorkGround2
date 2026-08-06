@@ -245,6 +245,28 @@ async function main(): Promise<void> {
     await h.unmount();
   }
 
+  // ── Regression: input stays enabled when running (e.g. Work waiting_input) ──
+  {
+    const h = await mount({ running: true, disabled: false });
+    ok(!textarea(h.host).disabled, "textarea is enabled when running without disabled flag");
+    const sendBtn = h.host.querySelector<HTMLButtonElement>('[data-testid="work-chat-send"]');
+    ok(sendBtn !== null, "send button exists");
+    await type(h.host, '继续讨论');
+    ok(!textarea(h.host).disabled, "textarea remains enabled after typing while running");
+    ok(reactProps<{ disabled: boolean }>(sendBtn!).disabled === false,
+      "send button is enabled after typing while running");
+    await h.unmount();
+  }
+
+  // ── Regression: disabled prop locks input even when running ──
+  {
+    const h = await mount({ running: false, disabled: true });
+    ok(textarea(h.host).disabled, "textarea is disabled when disabled prop is true");
+    ok(h.host.querySelector('[data-testid="work-chat-send"]')?.getAttribute('disabled') !== null,
+      "send button is disabled when disabled prop is true");
+    await h.unmount();
+  }
+
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed > 0) process.exit(1);
 }

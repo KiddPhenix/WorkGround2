@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useMemo, useRef } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -8,6 +8,8 @@ import "katex/dist/katex.min.css";
 import { CodeViewer } from "./CodeViewer";
 import { normalizeMath } from "./mathNormalize";
 import { openExternal } from "../lib/bridge";
+import { isMessageImageSource } from "../lib/messageMedia";
+import { MarkdownMessageImage } from "./MessageImage";
 
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"));
 
@@ -87,7 +89,7 @@ function PlainMarkdownBlock({ text }: { text: string }) {
   );
 }
 
-function createComponents(plainStatusBlocks: boolean): Components {
+function createComponents(plainStatusBlocks: boolean, tabId?: string): Components {
   return {
     pre: ({ children }) => <>{children}</>,
     code: ({ className, children }) => {
@@ -127,25 +129,34 @@ function createComponents(plainStatusBlocks: boolean): Components {
         {children}
       </a>
     ),
+    img: ({ src, alt }) => <MarkdownMessageImage tabId={tabId} source={src ?? ""} alt={alt ?? ""} />,
   };
+}
+
+function messageUrlTransform(url: string, key: string, node: Readonly<{ tagName: string }>): string {
+  if (key === "src" && node.tagName === "img" && isMessageImageSource(url)) return url;
+  return defaultUrlTransform(url);
 }
 
 const MarkdownRenderer = memo(function MarkdownRenderer({
   text,
   plainStatusBlocks = false,
+  tabId,
 }: {
   text: string;
   plainStatusBlocks?: boolean;
+  tabId?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mathContent = useMemo(() => normalizeMath(text), [text]);
-  const components = useMemo(() => createComponents(plainStatusBlocks), [plainStatusBlocks]);
+  const components = useMemo(() => createComponents(plainStatusBlocks, tabId), [plainStatusBlocks, tabId]);
   return (
     <div className="md" ref={containerRef}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={components}
+        urlTransform={messageUrlTransform}
       >
         {mathContent}
       </ReactMarkdown>

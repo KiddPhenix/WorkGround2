@@ -1776,6 +1776,7 @@ function makeMockApp(): AppBindings {
   };
   settings.widgetSkin = desktopWidgetSkin;
   let sessionBackgroundSettings: SessionBackgroundSettingsView = {
+		mode: "pattern",
     enabled: false,
     maskEnabled: true,
     randomOnOpen: true,

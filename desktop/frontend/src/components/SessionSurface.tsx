@@ -8,7 +8,6 @@ import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
 import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
 import { Tooltip } from './Tooltip';
-import { SessionBackground } from './SessionBackground';
 import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
 import { SessionStatusIndicators } from './SessionStatusIndicators';
 import { AddOnLauncherButton } from './desktop-ui/IrisInfoComponents';
@@ -260,12 +259,12 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   const embedded = variant === 'work';
   return (
     <section
-      className={`session-workspace${embedded ? ' session-workspace--work-back' : ''}`}
+      className={`session-workspace${embedded ? ' session-workspace--work-back' : ''}${running ? ' session-workspace--running' : ''}`}
       aria-label={embedded ? 'Work session surface' : 'Session workspace'}
       data-testid="session-surface"
       data-session-surface-variant={variant}
+      data-running={running ? 'true' : 'false'}
     >
-      {!embedded && <SessionBackground tabId={activeTabId} />}
       {!embedded && <header className="session-header">
         <div className="session-header__identity">
           {sidebarCollapsed && (

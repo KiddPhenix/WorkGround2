@@ -28,12 +28,14 @@ const LiveStreamContext = createContext<LiveStream | undefined>(undefined);
 
 const LiveAssistantMessage = memo(function LiveAssistantMessage({
   item,
+  tabId,
   defaultExpanded = false,
   expandWhileStreaming = true,
   truncateStreamingReasoning = false,
   creationMode = false,
 }: {
   item: AssistantItem;
+  tabId?: string;
   defaultExpanded?: boolean;
   expandWhileStreaming?: boolean;
   truncateStreamingReasoning?: boolean;
@@ -50,6 +52,7 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
   return (
     <AssistantMessage
       item={shown}
+      tabId={tabId}
       defaultExpanded={defaultExpanded}
       expandWhileStreaming={expandWhileStreaming}
       truncateStreamingReasoning={truncateStreamingReasoning}
@@ -566,6 +569,7 @@ export function Transcript({
             <LiveAssistantMessage
               key={it.id}
               item={it as AssistantItem}
+              tabId={tabId}
               defaultExpanded={false}
               expandWhileStreaming={false}
               truncateStreamingReasoning={true}
@@ -648,7 +652,7 @@ export function Transcript({
             break;
           }
           case "assistant":
-            out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} defaultExpanded={false} creationMode={creationMode} />);
+            out.push(<LiveAssistantMessage key={it.id} item={it as AssistantItem} tabId={tabId} defaultExpanded={false} creationMode={creationMode} />);
             if (!it.streaming && it.text.trim() !== "") {
               actionText = it.text;
               actionReady = true;
@@ -1038,7 +1042,7 @@ function WarmTurnItems({
         break;
       }
       case "assistant": {
-        nodes.push(<AssistantMessage key={it.id} item={it} defaultExpanded={false} creationMode={creationMode} />);
+        nodes.push(<AssistantMessage key={it.id} item={it} tabId={tabId} defaultExpanded={false} creationMode={creationMode} />);
         if (!it.streaming && it.text.trim() !== "") {
           actionText = it.text;
           actionReady = true;
@@ -1234,7 +1238,7 @@ export function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creatio
       case "phase": body.push(<PhaseCard key={it.id} text={it.text} />); break;
       case "assistant": {
         const displayItem = it;
-        body.push(<AssistantMessage key={it.id} item={displayItem as AssistantItem} creationMode={creationMode} />);
+        body.push(<AssistantMessage key={it.id} item={displayItem as AssistantItem} tabId={tabId} creationMode={creationMode} />);
         break;
       }
     }

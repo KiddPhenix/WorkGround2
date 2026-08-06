@@ -237,6 +237,17 @@ func (c *Config) SetDesktopAppearance(theme, style string) error {
 // preference atomically. Missing files remain configured so removable or
 // temporarily unavailable sources can recover on a later scan.
 func (c *Config) SetDesktopSessionBackground(next DesktopSessionBackgroundConfig) error {
+	mode := normalizeSessionBackgroundMode(next.Mode)
+	if mode == "" {
+		if strings.TrimSpace(next.Mode) != "" {
+			return fmt.Errorf("desktop Session background mode %q: must be pattern|solid|custom", next.Mode)
+		}
+		if next.Enabled || len(next.Sources) > 0 {
+			mode = SessionBackgroundModeCustom
+		} else {
+			mode = SessionBackgroundModePattern
+		}
+	}
 	if next.RotateSeconds != 0 && (next.RotateSeconds < 30 || next.RotateSeconds > 86_400) {
 		return fmt.Errorf("desktop Session background rotate seconds %d: must be 0 or 30..86400", next.RotateSeconds)
 	}
@@ -283,7 +294,8 @@ func (c *Config) SetDesktopSessionBackground(next DesktopSessionBackgroundConfig
 		})
 	}
 	c.Desktop.SessionBackground = DesktopSessionBackgroundConfig{
-		Enabled:       next.Enabled,
+		Mode:          mode,
+		Enabled:       mode == SessionBackgroundModeCustom,
 		MaskEnabled:   boolValue(mask),
 		RandomOnOpen:  boolValue(random),
 		RotateSeconds: next.RotateSeconds,

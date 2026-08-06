@@ -7,8 +7,8 @@ import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from ".
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerRequiresKey } from "../lib/providerModels";
 import { useUpdater } from "../lib/useUpdater";
 import {
-  THEME_STYLES,
   applyTheme,
+  getResolvedTheme,
   getTheme,
   getThemeStyle,
   normalizeThemePreference,
@@ -45,7 +45,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -246,7 +246,6 @@ export function SettingsPanel({
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <AppearanceSection
                       theme={theme}
-                      themeStyle={themeStyle}
                       textSize={textSize}
                       showDisplayZoom={desktopPlatform === "windows"}
                       zoomPct={zoomPct}
@@ -258,11 +257,6 @@ export function SettingsPanel({
                         applyTheme(nextTheme, themeStyle, { persist: false });
                         setThemeState(nextTheme);
                         void apply(() => app.SetDesktopAppearance(nextTheme, themeStyle));
-                      }}
-                      onThemeStyle={(style) => {
-                        applyTheme(theme, style, { persist: false });
-                        setThemeStyleState(style);
-                        void apply(() => app.SetDesktopAppearance(theme, style));
                       }}
                       onTextSize={(size) => {
                         applyTextSize(size);
@@ -5916,28 +5910,8 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
   );
 }
 
-// Visual-style metadata for the appearance theme cards. The two surface
-// swatches + accent are read from CSS variables at render time so they always
-// reflect the live token values for the currently-resolved light/dark mode.
-const THEME_STYLE_META: Record<ThemeStyle, { name: string; zh: DictKey; note: DictKey; desc: DictKey }> = {
-  graphite: { name: "Graphite", zh: "settings.style.graphite.zh", note: "settings.style.graphite.note", desc: "settings.style.graphite.desc" },
-  aurora: { name: "Aurora", zh: "settings.style.aurora.zh", note: "settings.style.aurora.note", desc: "settings.style.aurora.desc" },
-  slate: { name: "Slate", zh: "settings.style.slate.zh", note: "settings.style.slate.note", desc: "settings.style.slate.desc" },
-  carbon: { name: "Carbon", zh: "settings.style.carbon.zh", note: "settings.style.carbon.note", desc: "settings.style.carbon.desc" },
-  nocturne: { name: "Nocturne", zh: "settings.style.nocturne.zh", note: "settings.style.nocturne.note", desc: "settings.style.nocturne.desc" },
-  amber: { name: "Amber", zh: "settings.style.amber.zh", note: "settings.style.amber.note", desc: "settings.style.amber.desc" },
-  iris: { name: "Iris", zh: "settings.style.iris.zh", note: "settings.style.iris.note", desc: "settings.style.iris.desc" },
-  verdant: { name: "Verdant", zh: "settings.style.verdant.zh", note: "settings.style.verdant.note", desc: "settings.style.verdant.desc" },
-  cobalt: { name: "Cobalt", zh: "settings.style.cobalt.zh", note: "settings.style.cobalt.note", desc: "settings.style.cobalt.desc" },
-  bordeaux: { name: "Bordeaux", zh: "settings.style.bordeaux.zh", note: "settings.style.bordeaux.note", desc: "settings.style.bordeaux.desc" },
-  "digital-rain": { name: "Digital Rain", zh: "settings.style.digital-rain.zh", note: "settings.style.digital-rain.note", desc: "settings.style.digital-rain.desc" },
-  "shinobi-flame": { name: "Shinobi Flame", zh: "settings.style.shinobi-flame.zh", note: "settings.style.shinobi-flame.note", desc: "settings.style.shinobi-flame.desc" },
-  "mecha-sakura": { name: "Mecha Sakura", zh: "settings.style.mecha-sakura.zh", note: "settings.style.mecha-sakura.note", desc: "settings.style.mecha-sakura.desc" },
-};
-
 function AppearanceSection({
   theme,
-  themeStyle,
   textSize,
   showDisplayZoom,
   zoomPct,
@@ -5946,7 +5920,6 @@ function AppearanceSection({
   customFontName,
   customMonoFontName,
   onTheme,
-  onThemeStyle,
   onTextSize,
   onRestartZoom,
   onFontFamily,
@@ -5955,7 +5928,6 @@ function AppearanceSection({
   onCustomMonoFontNameChange,
 }: {
   theme: Theme;
-  themeStyle: ThemeStyle;
   textSize: TextSize;
   showDisplayZoom: boolean;
   zoomPct: number;
@@ -5964,7 +5936,6 @@ function AppearanceSection({
   customFontName: string;
   customMonoFontName: string;
   onTheme: (t: Theme) => void;
-  onThemeStyle: (style: ThemeStyle) => void;
   onTextSize: (size: TextSize) => void;
   onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
   onFontFamily: (font: FontFamily) => void;
@@ -5973,7 +5944,7 @@ function AppearanceSection({
   onCustomMonoFontNameChange: (name: string) => void;
 }) {
   const t = useT();
-  const themeOptions: Theme[] = ["auto", "light", "dark"];
+  const themeOptions = ["light", "dark"] as const;
   const availableFontFamilies = useMemo(() => getAvailableFontFamilies(fontFamily), [fontFamily]);
   const availableMonoFontFamilies = useMemo(() => getAvailableMonoFontFamilies(monoFontFamily), [monoFontFamily]);
   return (
@@ -5984,46 +5955,12 @@ function AppearanceSection({
           {themeOptions.map((opt) => (
             <button
               key={opt}
-              className={`set-seg__btn${theme === opt ? " set-seg__btn--on" : ""}`}
+              className={`set-seg__btn${getResolvedTheme(theme) === opt ? " set-seg__btn--on" : ""}`}
               onClick={() => onTheme(opt)}
             >
               {themeName(opt, t)}
             </button>
           ))}
-        </div>
-      </SettingsField>
-      <SettingsField label={t("settings.themeStyle")} stacked>
-        <div className="theme-card-grid">
-          {THEME_STYLES.map((opt) => {
-            const meta = THEME_STYLE_META[opt];
-            const selected = themeStyle === opt;
-            return (
-              <button
-                key={opt}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                className={`theme-card${selected ? " theme-card--on" : ""}`}
-                onClick={() => onThemeStyle(opt)}
-              >
-                <span className="theme-card__head">
-                  <span className="theme-card__name">
-                    {meta.name} <span className="theme-card__zh">{t(meta.zh)}</span>
-                  </span>
-                  <span className="theme-card__tag">{t(meta.note)}</span>
-                </span>
-                <span className="theme-card__swatches" data-theme-style-card={opt}>
-                  <span className="theme-card__swatch theme-card__swatch--bg" />
-                  <span className="theme-card__swatch theme-card__swatch--surface" />
-                  <span className="theme-card__swatch theme-card__swatch--accent" />
-                </span>
-                <span className="theme-card__desc">{t(meta.desc)}</span>
-                <span className="theme-card__check" aria-hidden="true">
-                  <Check size={13} strokeWidth={3} />
-                </span>
-              </button>
-            );
-          })}
         </div>
       </SettingsField>
       <SettingsField label={t("settings.textSize")}>
@@ -6131,6 +6068,9 @@ function SessionBackgroundSettingsSection() {
   const [view, setView] = useState<SessionBackgroundSettingsView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const mode: SessionBackgroundMode = view?.mode === "pattern" || view?.mode === "solid" || view?.mode === "custom"
+    ? view.mode
+    : view?.enabled && view.imageCount > 0 ? "custom" : "pattern";
 
   const refresh = useCallback(async () => {
     setError("");
@@ -6169,7 +6109,7 @@ function SessionBackgroundSettingsSection() {
       seen.add(key);
       return true;
     });
-    if (unique.length > 0) void save({ ...view, sources: [...view.sources, ...unique] });
+    if (unique.length > 0) void save({ ...view, mode: "custom", enabled: true, sources: [...view.sources, ...unique] });
   }, [save, view]);
 
   const addFiles = async () => {
@@ -6206,20 +6146,43 @@ function SessionBackgroundSettingsSection() {
     <SettingsSection
       title={t("settings.sessionBackground")}
       description={t("settings.sessionBackgroundDesc")}
-      actions={(
+      actions={mode === "custom" ? (
         <>
           <button className="btn btn--small" type="button" disabled={busy || !view} onClick={() => void addFiles()}><Images size={14} />{t("settings.sessionBackgroundAddImages")}</button>
           <button className="btn btn--small" type="button" disabled={busy || !view} onClick={() => void addFolder()}><FolderPlus size={14} />{t("settings.sessionBackgroundAddFolder")}</button>
         </>
-      )}
+      ) : undefined}
     >
       {!view && !error && <div className="settings-background__loading"><Loader2 className="spin" size={16} />{t("common.loading")}</div>}
       {error && <div className="settings-background__error">{error}<button className="btn btn--small" type="button" onClick={() => void refresh()}>{t("common.retry")}</button></div>}
       {view && (
         <>
-          <SettingsField label={t("settings.sessionBackgroundEnabled")} hint={t("settings.sessionBackgroundCount", { count: view.imageCount })}>
-            <ToggleSegment value={view.enabled} disabled={busy} onChange={(enabled) => void save({ ...view, enabled })} />
+          <SettingsField label={t("settings.sessionBackgroundMode")} hint={t("settings.sessionBackgroundModeHint")} stacked>
+            <div className="settings-background__modes" role="radiogroup" aria-label={t("settings.sessionBackgroundMode")}>
+              {(["pattern", "solid", "custom"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={mode === option}
+                  className={`settings-background__mode${mode === option ? " settings-background__mode--active" : ""}`}
+                  disabled={busy}
+                  onClick={() => void save({ ...view, mode: option, enabled: option === "custom" })}
+                >
+                  <span className={`settings-background__preview settings-background__preview--${option}`} aria-hidden="true">
+                    {option === "pattern" && <><i /><i /></>}
+                  </span>
+                  <span className="settings-background__mode-copy">
+                    <strong>{t(`settings.sessionBackgroundMode.${option}` as DictKey)}</strong>
+                    <small>{t(`settings.sessionBackgroundMode.${option}.desc` as DictKey)}</small>
+                  </span>
+                  {mode === option && <Check size={14} strokeWidth={2.5} />}
+                </button>
+              ))}
+            </div>
           </SettingsField>
+          {mode === "custom" && (
+            <>
           <SettingsField label={t("settings.sessionBackgroundMask")} hint={t("settings.sessionBackgroundMaskHint")}>
             <ToggleSegment value={view.maskEnabled} disabled={busy} onChange={(maskEnabled) => void save({ ...view, maskEnabled })} />
           </SettingsField>
@@ -6273,6 +6236,8 @@ function SessionBackgroundSettingsSection() {
               ))}
             </div>
           </SettingsField>
+            </>
+          )}
         </>
       )}
     </SettingsSection>

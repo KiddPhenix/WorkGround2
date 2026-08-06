@@ -48,17 +48,19 @@ export const WorkWorkspace: React.FC<WorkWorkspaceProps> = ({
           </div>
         )}
       </div>
-      <div className="wg2-work-outer-header-right">
-        {status}
-        {actions}
-      </div>
-      <div className="wg2-work-cornerstone-entry" data-testid="work-cornerstone-entry">
-        {cornerstoneEntry ?? (cornerstoneCount > 0 && (
-          <span className="wg2-work-cornerstone-count">{cornerstoneCount} Cornerstone</span>
-        ))}
-      </div>
-      <div className="wg2-work-addon-area" data-testid="work-addon-area">
-        {addonPanel}
+      <div className="wg2-work-top-actions" data-testid="work-top-actions">
+        <div className="wg2-work-outer-header-right">
+          {status}
+          {actions}
+        </div>
+        <div className="wg2-work-cornerstone-entry" data-testid="work-cornerstone-entry">
+          {cornerstoneEntry ?? (cornerstoneCount > 0 && (
+            <span className="wg2-work-cornerstone-count">{cornerstoneCount} Cornerstone</span>
+          ))}
+        </div>
+        <div className="wg2-work-addon-area" data-testid="work-addon-area">
+          {addonPanel}
+        </div>
       </div>
     </header>
     {children}

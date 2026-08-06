@@ -90,6 +90,7 @@
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.28);
 
   /* z-index scale */
+  --z-local-behind: -1;
   --z-local-base: 0;
   --z-local-raised: 2;
   --z-local-handle: 4;
@@ -5298,6 +5299,140 @@ a[href] {
   flex-direction: column;
   gap: 8px;
 }
+.message-images {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.message-image {
+  width: fit-content;
+  max-width: min(720px, 100%);
+  margin: 12px 0 2px;
+}
+.message-images .message-image {
+  margin: 0;
+}
+.message-image__preview {
+  display: block;
+  max-width: 100%;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, var(--fg-faint));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg-elev) 84%, transparent);
+  box-shadow: 0 12px 30px color-mix(in srgb, #000 18%, transparent);
+  cursor: zoom-in;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+.message-image__preview:hover,
+.message-image__preview:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  box-shadow: 0 15px 34px color-mix(in srgb, #000 23%, transparent);
+  transform: translateY(-1px);
+}
+.message-image__preview img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  max-height: min(520px, 62vh);
+  border-radius: 9px;
+  object-fit: contain;
+}
+.message-image__caption {
+  max-width: 100%;
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-image-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  margin: 8px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-elev) 74%, transparent);
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.message-image-state--error {
+  color: var(--danger);
+}
+.message-image-state--unavailable {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.message-image-state button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: inherit;
+  cursor: pointer;
+}
+.message-image-state__spin {
+  animation: spin 1s linear infinite;
+}
+.message-image__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-overlay-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  background: color-mix(in srgb, #08090d 82%, transparent);
+  backdrop-filter: blur(12px);
+  cursor: zoom-out;
+}
+.message-image__overlay > img {
+  display: block;
+  max-width: 94vw;
+  max-height: 90vh;
+  border-radius: 12px;
+  object-fit: contain;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+.message-image__close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: var(--z-local-raised);
+  display: grid;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 11px;
+  background: rgba(16, 17, 23, 0.72);
+  color: #fff;
+  cursor: pointer;
+  place-items: center;
+}
+@media (max-width: 620px) {
+  .message-image {
+    width: 100%;
+  }
+  .message-image__preview img {
+    width: 100%;
+  }
+  .message-image__overlay {
+    padding: 16px;
+  }
+}
 .msg--process-only {
   margin-top: 6px;
   margin-bottom: 6px;
@@ -6419,9 +6554,33 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .session-background__image,
-.session-background__mask {
+.session-background__mask,
+.session-background__pattern,
+.session-background__solid {
   position: absolute;
   inset: 0;
+}
+
+.session-background__solid,
+.session-background__pattern {
+  background-color: var(--bg);
+}
+
+.session-background__pattern {
+  background-image: url("./assets/session-pattern-dark.svg");
+  background-position: center;
+  background-repeat: repeat;
+  background-size: 340px 340px;
+}
+
+:root[data-theme="light"] .session-background__pattern {
+  background-image: url("./assets/session-pattern-light.svg");
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .session-background__pattern {
+    background-image: url("./assets/session-pattern-light.svg");
+  }
 }
 
 .session-background__image {
@@ -32880,6 +33039,104 @@ body > .mermaid-diagram--fullscreen {
   color: var(--err);
 }
 
+.settings-background__modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.settings-background__mode {
+  position: relative;
+  display: grid;
+  grid-template-rows: 72px auto;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px;
+  color: var(--fg-dim);
+  text-align: left;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-elev) 68%, transparent);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) ease-out, background var(--dur-fast) ease-out;
+}
+
+.settings-background__mode:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+}
+
+.settings-background__mode--active {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-elev));
+}
+
+.settings-background__mode > svg {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 3px;
+  color: var(--accent-fg);
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.settings-background__preview {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background-color: var(--bg);
+}
+
+.settings-background__preview--pattern {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.settings-background__preview--pattern i:first-child {
+  background: #eef1f6 url("./assets/session-pattern-light.svg") center / 170px 170px;
+}
+
+.settings-background__preview--pattern i:last-child {
+  background: #0d0e12 url("./assets/session-pattern-dark.svg") center / 170px 170px;
+}
+
+.settings-background__preview--solid {
+  background: var(--bg);
+}
+
+.settings-background__preview--custom {
+  background:
+    linear-gradient(135deg, transparent 45%, color-mix(in srgb, var(--accent) 24%, transparent) 46% 54%, transparent 55%),
+    color-mix(in srgb, var(--bg-elev-2) 84%, transparent);
+}
+
+.settings-background__mode-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-background__mode-copy strong,
+.settings-background__mode-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-background__mode-copy strong {
+  color: inherit;
+  font-size: 12px;
+}
+
+.settings-background__mode-copy small {
+  color: var(--fg-faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .settings-background__rotate {
   display: flex;
   align-items: center;
@@ -32971,6 +33228,10 @@ body > .mermaid-diagram--fullscreen {
 }
 
 @media (max-width: 760px) {
+  .settings-background__modes {
+    grid-template-columns: 1fr;
+  }
+
   .settings-background__rotate,
   .settings-background__source-actions {
     align-items: flex-start;
@@ -35318,6 +35579,22 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
+.wg2-work-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
+.collab-topic-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
 .app--windows-frameless .wg2-work-outer-header {
   padding-right: calc(var(--windows-window-controls-safe) + 16px);
 }
@@ -36483,9 +36760,6 @@ body > .mermaid-diagram--fullscreen {
   min-height: 100vh;
   background: var(--bg);
   color: var(--fg);
-  --accent: #2cc8b7;
-  --accent-text: #071614;
-  --grad: linear-gradient(135deg, #38d7c5, #20b9aa);
 }
 
 .wg2-structure-preview__topbar {
@@ -37403,16 +37677,7 @@ body > .mermaid-diagram--fullscreen {
    Work presentation board — domain-neutral state composition
    ============================================================ */
 
-.wg2-work-card:has(.wg2-work-card-front--presentation) {
-  --accent: #4ad6c4;
-  --accent-strong: #70e5d4;
-  --ok: #4ad6c4;
-}
-
 .wg2-work-card-front--presentation {
-  --accent: #4ad6c4;
-  --accent-strong: #70e5d4;
-  --ok: #4ad6c4;
   min-height: 100%;
   padding: 12px 20px 14px;
   background: color-mix(in srgb, var(--bg) 96%, var(--bg-elev));
@@ -38089,22 +38354,27 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-goal {
-  position: sticky;
-  z-index: var(--z-local-raised);
-  bottom: 0;
+  position: static;
   display: flex;
-  min-height: 42px;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  min-height: 30px;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  color: var(--fg-muted);
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
-  font-size: var(--text-sm);
+  gap: 8px;
+  margin: 0 14px;
+  padding: 0;
+  color: var(--fg-faint);
+  background: transparent;
+  font-size: var(--text-xs);
+  line-height: 1.45;
 }
 
 .wg2-work-goal svg {
   flex: 0 0 auto;
-  color: var(--fg-faint);
+  width: 15px;
+  height: 15px;
+  color: color-mix(in srgb, var(--accent) 48%, var(--fg-faint));
 }
 
 .wg2-work-goal span {
@@ -41756,6 +42026,1023 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* ================================================================
+   Session graphite board — wallpaper / plates / active-state motion
+   ================================================================ */
+
+.app--workbench {
+  --bg: #0d0e12;
+  --bg-soft: #12141a;
+  --bg-elev: #171920;
+  --bg-elev-2: #1d2028;
+  --surface: #171920;
+  --surface-2: #20232c;
+  --panel: #171920;
+  --chat-bg: #0d0e12;
+  --sidebar-bg: #171920;
+  --sidebar-hover: rgba(255, 255, 255, 0.055);
+  --sidebar-active: var(--accent-soft);
+  --border: rgba(203, 210, 224, 0.18);
+  --border-soft: rgba(203, 210, 224, 0.11);
+  --border-2: rgba(221, 225, 235, 0.28);
+  --fg: #f1f0f4;
+  --fg-dim: #b7b6bf;
+  --fg-faint: #7d7d88;
+  --ok: #69a88a;
+  /* Work V2 uses its own semantic token names. Alias them to the active app
+     palette so Work, Session and Room change theme as one surface. */
+  --wg2-bg-secondary: var(--bg-soft);
+  --wg2-surface: color-mix(in srgb, var(--bg) 84%, transparent);
+  --wg2-surface-elev: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  --wg2-surface-elevated: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  --wg2-border: var(--border);
+  --wg2-text-primary: var(--fg);
+  --wg2-text-secondary: var(--fg-dim);
+  --wg2-text-tertiary: var(--fg-faint);
+  --wg2-accent: var(--accent);
+  --wg2-accent-strong: var(--accent-strong);
+  --wg2-accent-fg: var(--accent-fg);
+  --wg2-focus-ring: var(--accent);
+  --wg2-focus-ring-soft: color-mix(in srgb, var(--accent) 22%, transparent);
+  --wg2-button-bg: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  --wg2-button-hover: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
+  --wg2-badge-bg: color-mix(in srgb, var(--fg) 8%, transparent);
+  --wg2-pin-bg: var(--accent-soft);
+  --wg2-pin-border: var(--accent);
+  --wg2-pin-text: var(--accent);
+  --wg2-ok: var(--ok);
+  --wg2-ok-bg: color-mix(in srgb, var(--ok) 12%, transparent);
+  --wg2-ok-border: color-mix(in srgb, var(--ok) 48%, var(--border));
+  --wg2-ok-text: var(--ok);
+  --wg2-warn: var(--warn);
+  --wg2-warn-bg: color-mix(in srgb, var(--warn) 12%, transparent);
+  --wg2-warn-border: color-mix(in srgb, var(--warn) 48%, var(--border));
+  --wg2-warn-text: var(--warn);
+  --wg2-error-bg: color-mix(in srgb, var(--err) 12%, transparent);
+  --wg2-error-border: color-mix(in srgb, var(--err) 52%, var(--border));
+  --wg2-error-border-soft: color-mix(in srgb, var(--err) 28%, var(--border));
+  --wg2-error-text: var(--err);
+  --wg2-info-bg: color-mix(in srgb, var(--accent) 10%, transparent);
+  --wg2-info-text: var(--accent);
+  --wg2-badge-info-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --wg2-badge-info-text: var(--accent);
+  --wg2-badge-warn-bg: color-mix(in srgb, var(--warn) 12%, transparent);
+  --wg2-badge-warn-text: var(--warn);
+  --wg2-badge-error-bg: color-mix(in srgb, var(--err) 12%, transparent);
+  --wg2-badge-error-text: var(--err);
+  background: var(--bg);
+}
+
+.app--workbench .layout--workbench {
+  position: relative;
+  isolation: isolate;
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 12px;
+  height: 100%;
+  padding: 10px;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.app--workbench .layout--workbench.layout--sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.app--workbench .layout--workbench > .session-background {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-base);
+  border-radius: 0;
+}
+
+.app--workbench .layout--workbench > .session-background .session-background__image {
+  inset: -3px;
+  filter: blur(2px) saturate(0.88) brightness(0.88);
+  transform: scale(1.006);
+}
+
+.app--workbench .layout--workbench > .session-background .session-background__mask {
+  background: rgba(7, 8, 12, 0.32);
+}
+
+.app--workbench .layout--workbench > :not(.session-background) {
+  position: relative;
+  z-index: var(--z-local-raised);
+}
+
+.app--workbench .workspace-sidebar,
+.app--workbench .session-workspace,
+.app--workbench .work-session-host,
+.app--workbench .collab-surface {
+  border: 1px solid rgba(214, 218, 228, 0.21);
+  border-radius: 8px;
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.30),
+    0 2px 7px rgba(0, 0, 0, 0.34);
+}
+
+.app--workbench .workspace-sidebar {
+  width: 264px;
+  height: 100%;
+  padding: 16px 14px 12px;
+  background: rgba(19, 21, 27, 0.82);
+  border-right-color: rgba(214, 218, 228, 0.21);
+  backdrop-filter: blur(14px);
+}
+
+.app--workbench .session-workspace {
+  --session-heading-surface: rgba(17, 18, 24, 0.43);
+  grid-column: 2;
+  height: 100%;
+  background: rgba(11, 12, 17, 0.58);
+  backdrop-filter: blur(3px);
+}
+
+/* Work is a plate on the wallpaper, not an opaque page. The nested Work card
+   keeps its information surfaces legible while allowing the shared backdrop
+   and the current light/dark palette to remain visible. */
+.app--workbench .work-session-host {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+/* A filtered ancestor becomes the containing block for fixed descendants.
+   Keep the material on its own layer so Work titlebar actions remain fixed to
+   the viewport and share the exact baseline of native caption controls. */
+.app--workbench .work-session-host::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-base);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  backdrop-filter: blur(6px) saturate(0.94);
+  pointer-events: none;
+}
+
+.app--workbench .work-session-host .wg2-work-card {
+  --bg-surface: color-mix(in srgb, var(--bg-elev) 72%, transparent);
+  --surface-raised: color-mix(in srgb, var(--bg-elev-2) 78%, transparent);
+  --fg-muted: var(--fg-faint);
+  --fg-secondary: var(--fg-dim);
+  --button-hover-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-elev));
+  --badge-bg: color-mix(in srgb, var(--fg) 8%, transparent);
+  --badge-fg: var(--fg-dim);
+  --success: var(--ok);
+  background: color-mix(in srgb, var(--bg) 42%, transparent);
+  border: 0;
+  border-radius: inherit;
+}
+
+.app--workbench .work-session-host .wg2-work-outer-header {
+  isolation: isolate;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.app--workbench .work-session-host .wg2-work-outer-header::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-base);
+  background: color-mix(in srgb, var(--bg-elev) 58%, transparent);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.app--workbench .work-session-host .wg2-work-outer-header-left {
+  position: relative;
+  z-index: var(--z-local-raised);
+}
+
+.app--workbench .work-session-host .wg2-work-card-front--presentation {
+  background: transparent;
+}
+
+/* Room uses the same wallpaper plate as Session and Work. Keep the blur on a
+   paint-only layer so the fixed Room utilities still resolve to the window. */
+.app--workbench .collab-surface:not(.collab-surface--dialog) {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.app--workbench .collab-surface:not(.collab-surface--dialog)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-local-base);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg) 54%, transparent);
+  backdrop-filter: blur(7px) saturate(0.92);
+  pointer-events: none;
+}
+
+.app--workbench .collab-surface:not(.collab-surface--dialog) > * {
+  position: relative;
+  z-index: var(--z-local-raised);
+}
+
+.app--workbench .collab-surface .collab-main {
+  background: color-mix(in srgb, var(--bg) 38%, transparent);
+}
+
+.app--workbench .collab-surface .collab-members {
+  background: color-mix(in srgb, var(--bg-elev) 62%, transparent);
+  backdrop-filter: blur(10px) saturate(0.94);
+}
+
+.app--workbench .layout--workbench.layout--sidebar-collapsed .session-workspace {
+  grid-column: 1;
+}
+
+.app--workbench .layout--workbench.layout--sidebar-collapsed .work-session-host,
+.app--workbench .layout--workbench.layout--sidebar-collapsed .collab-surface {
+  grid-column: 1;
+}
+
+/* Keep application utilities and native caption actions on one continuous rail.
+   The rail sits inside the Session plate instead of introducing a second
+   window-shaped surface at the viewport edge. */
+.app--windows-frameless.app--workbench {
+  --windows-window-controls-width: 160px;
+  --windows-window-control-width: 40px;
+  --windows-window-controls-height: 32px;
+  --session-top-utility-width: 204px;
+}
+
+.app--windows-frameless.app--workbench .session-header {
+  padding-right: calc(48px + var(--windows-window-controls-width) + var(--session-top-utility-width));
+}
+
+.app--windows-frameless.app--workbench .session-header__actions {
+  top: 4px;
+  right: calc(var(--windows-window-controls-width) + 3px);
+  height: var(--windows-window-controls-height);
+  gap: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--border-soft);
+  border-right: 0;
+  border-radius: 7px 0 0 7px;
+  background: rgba(27, 29, 37, 0.74);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+.app--windows-frameless.app--workbench .session-header__actions .session-status-indicator,
+.app--windows-frameless.app--workbench .session-header__actions .session-header__addon-btn,
+.app--windows-frameless.app--workbench .session-header__actions .session-header__more-btn {
+  height: 30px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.app--windows-frameless.app--workbench .session-header__actions .session-status-indicator--attention:disabled:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.app--windows-frameless.app--workbench .windows-window-controls {
+  top: 15px;
+  right: 14px;
+  height: var(--windows-window-controls-height);
+  color: var(--fg-dim);
+  background: rgba(27, 29, 37, 0.74);
+  border: 1px solid var(--border-soft);
+  border-left: 0;
+  border-radius: 0 7px 7px 0;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+/* Each surface owns the action half of the same top-right rail. The backing
+   plate extends behind the root-level caption controls so sidebar width and
+   content grids cannot split the two halves apart. */
+.app--windows-frameless.app--workbench-session .session-header__actions::before {
+  content: "";
+  position: absolute;
+  inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;
+  z-index: var(--z-local-behind);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: rgba(27, 29, 37, 0.74);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.app--windows-frameless.app--workbench-session .session-header__actions {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-top-actions,
+.app--windows-frameless.app--workbench-room .collab-topic-actions {
+  position: fixed;
+  z-index: var(--z-dock);
+  top: 15px;
+  right: calc(14px + var(--windows-window-controls-width));
+  display: flex;
+  align-items: center;
+  height: var(--windows-window-controls-height);
+  gap: 4px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  --wails-draggable: no-drag;
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,
+.app--windows-frameless.app--workbench-room .collab-topic-actions::before {
+  content: "";
+  position: absolute;
+  inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;
+  z-index: var(--z-local-behind);
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: rgba(27, 29, 37, 0.74);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
+.app--windows-frameless.app--workbench-room .collab-topic-actions::before {
+  background: color-mix(in srgb, var(--bg-elev) 66%, transparent);
+}
+
+/* Extend the member plate behind the shared caption rail. Its content keeps
+   the same safe offset, but the former 32px black cut-out disappears. */
+.app--windows-frameless.app--workbench-room .collab-members {
+  height: 100%;
+  margin-top: 0;
+  padding-top: calc(20px + var(--windows-window-controls-height));
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-top-actions {
+  top: 4px;
+  right: calc(4px + var(--windows-window-controls-width));
+  gap: 2px;
+}
+
+.app--windows-frameless.app--workbench-work .windows-window-controls {
+  top: 4px;
+  right: 4px;
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-outer-header-right,
+.app--windows-frameless.app--workbench-work .wg2-work-cornerstone-entry,
+.app--windows-frameless.app--workbench-work .wg2-work-addon-area {
+  gap: 2px;
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-flip-button,
+.app--windows-frameless.app--workbench-work .cornerstone-drawer__toggle,
+.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-icon-button,
+.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-reachability > summary {
+  height: 30px;
+  border-color: transparent;
+  border-radius: 5px;
+  background: transparent;
+}
+
+.app--windows-frameless.app--workbench-work .wg2-work-flip-button {
+  padding: 0 10px;
+}
+
+.app--windows-frameless.app--workbench-work .cornerstone-drawer__toggle {
+  padding: 0 10px;
+}
+
+.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-icon-button,
+.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-reachability > summary {
+  width: 34px;
+}
+
+.app--windows-frameless.app--workbench-session .windows-window-controls,
+.app--windows-frameless.app--workbench-work .windows-window-controls,
+.app--windows-frameless.app--workbench-room .windows-window-controls {
+  border: 0;
+  border-left: 1px solid var(--border-soft);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  overflow: visible;
+}
+
+.app--workbench .workspace-sidebar__brand {
+  min-height: 38px;
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+.app--workbench .workspace-sidebar__new-session,
+.app--workbench .workspace-sidebar__settings,
+.app--workbench .workspace-sidebar .project-tree__folder,
+.app--workbench .workspace-sidebar .project-tree__topic {
+  border-radius: 7px;
+}
+
+.app--workbench .workspace-sidebar__new-session,
+.app--workbench .workspace-sidebar__settings {
+  min-height: 38px;
+  padding-right: 9px;
+  padding-left: 9px;
+}
+
+.app--workbench .workspace-sidebar__new-session svg {
+  padding: 0;
+  background: transparent;
+  color: var(--fg-dim);
+}
+
+.app--workbench .workspace-sidebar .project-tree__header {
+  height: 38px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+  padding: 0 4px 4px;
+  border-color: var(--border-soft);
+}
+
+.app--workbench .workspace-sidebar .project-tree__header-title,
+.app--workbench .workspace-sidebar .project-tree__folder-label {
+  color: #e7d0eb;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-main {
+  min-height: 38px;
+  padding: 0 6px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic {
+  position: relative;
+  min-height: 37px;
+  border-left: 0;
+  overflow: hidden;
+  transition: background 150ms ease-out, transform 150ms ease-out;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic:hover {
+  transform: translateY(-1px);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic:active {
+  transform: translateY(1px);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active,
+.app--workbench .workspace-sidebar .project-tree__topic--active:hover {
+  background: rgba(224, 172, 233, 0.10);
+  box-shadow: inset 3px 0 0 #d58ce2;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active:has(.project-tree__topic-visual--running)::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 5px;
+  width: 2px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f2c7f6;
+  box-shadow: 0 0 7px rgba(226, 145, 237, 0.72);
+  animation: session-active-marker 1800ms ease-in-out infinite alternate;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-main {
+  min-height: 37px;
+  padding-left: 22px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+  width: 9px;
+  height: 9px;
+  border: 1px solid #d78be4;
+  background: rgba(215, 139, 228, 0.16);
+  box-shadow: inset 0 0 0 2px rgba(18, 19, 24, 0.9);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--done {
+  width: 7px;
+  height: 7px;
+  background: #69a88a;
+  opacity: 0.78;
+}
+
+.app--workbench .session-header {
+  height: 64px;
+  box-sizing: border-box;
+  align-items: flex-start;
+  padding: 26px 48px 4px;
+  border-bottom: 0;
+  background: var(--session-heading-surface);
+}
+
+.app--workbench .session-header__title {
+  margin: 0;
+  font-size: 25px;
+  line-height: 34px;
+  font-weight: 590;
+  letter-spacing: 0.01em;
+  color: #f6f3f7;
+}
+
+.app--workbench .session-header__addon-btn,
+.app--workbench .session-status-indicator {
+  border-color: var(--border-soft);
+  background: rgba(27, 29, 37, 0.68);
+}
+
+.app--workbench .task-memory-bar {
+  height: 36px;
+  padding: 0 48px;
+  border-top: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--session-heading-surface);
+  backdrop-filter: none;
+}
+
+.app--workbench .session-workspace:has(> .session-background) .task-memory-bar {
+  background: var(--session-heading-surface);
+  backdrop-filter: none;
+}
+
+.app--workbench .conversation-viewport {
+  padding: 24px 48px 22px;
+}
+
+.app--workbench .iris-fixture-conversation,
+.app--workbench .session-run-stream {
+  width: 100%;
+  max-width: 1000px;
+}
+
+.app--workbench .conversation-viewport .markdown h1,
+.app--workbench .conversation-viewport .markdown h2,
+.app--workbench .conversation-viewport .markdown h3,
+.app--workbench .iris-fixture-conversation h1,
+.app--workbench .iris-fixture-conversation h2,
+.app--workbench .iris-fixture-conversation h3 {
+  color: #e4b4ea;
+}
+
+.app--workbench .conversation-viewport pre,
+.app--workbench .conversation-viewport .code-block,
+.app--workbench .conversation-viewport .process-card {
+  border: 1px solid rgba(217, 221, 231, 0.22);
+  background: rgba(20, 22, 28, 0.88);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+.app--workbench .msg--user .msg__body {
+  border-color: rgba(218, 156, 228, 0.28);
+  background: rgba(36, 30, 40, 0.78);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.17);
+}
+
+.app--workbench .run-work-window {
+  height: 132px;
+  min-height: 132px;
+  transition: transform 180ms ease-out, filter 180ms ease-out;
+}
+
+.app--workbench .run-work-window--running,
+.app--workbench .run-work-window--queued,
+.app--workbench .run-work-window--reconnecting {
+  transform: translateY(-1px);
+  filter: drop-shadow(0 11px 18px rgba(0, 0, 0, 0.28));
+}
+
+.app--workbench .run-work-face {
+  border-color: rgba(220, 224, 234, 0.25);
+  border-radius: 8px;
+  background: rgba(17, 19, 24, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.app--workbench .run-work-face__header {
+  min-height: 46px;
+  padding: 0 16px;
+  border-color: var(--border-soft);
+}
+
+.app--workbench .active-run-view--running::before,
+.app--workbench .active-run-view--queued::before,
+.app--workbench .active-run-view--reconnecting::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  background: rgba(205, 130, 220, 0.22);
+}
+
+.app--workbench .active-run-view--running::after,
+.app--workbench .active-run-view--queued::after,
+.app--workbench .active-run-view--reconnecting::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 58px;
+  height: 2px;
+  border-radius: 999px;
+  background: #db91e6;
+  box-shadow: 58px 0 0 -0.5px #f4c9f7;
+  animation: session-run-track 2400ms ease-in-out infinite;
+}
+
+.app--workbench .active-run-view--running .run-work-face__status > svg,
+.app--workbench .active-run-view--queued .run-work-face__status > svg,
+.app--workbench .active-run-view--reconnecting .run-work-face__status > svg,
+.app--workbench .active-run-view--running .active-run-view__status-text,
+.app--workbench .active-run-view--queued .active-run-view__status-text {
+  color: #d993e4;
+}
+
+.app--workbench .active-run-view--completed .run-work-face__status > svg,
+.app--workbench .run-step-tab--completed > svg {
+  color: #69a88a;
+}
+
+.app--workbench .active-run-view__tabs {
+  height: 44px;
+  padding: 0 8px;
+  border-color: var(--border-soft);
+}
+
+.app--workbench .run-step-tab {
+  padding: 0 9px;
+  color: #aaa9b2;
+}
+
+.app--workbench .run-step-tab[aria-selected="true"] {
+  color: #e2b2e8;
+  border-bottom-color: #d287df;
+}
+
+.app--workbench .run-step-tab__number,
+.app--workbench .run-step-tab--completed .run-step-tab__number {
+  background: rgba(105, 168, 138, 0.17);
+  color: #83b69a;
+}
+
+.app--workbench .run-step-tab--running .run-step-tab__number,
+.app--workbench .run-step-tab--queued .run-step-tab__number,
+.app--workbench .run-step-tab--reconnecting .run-step-tab__number {
+  background: rgba(203, 131, 220, 0.15);
+  color: #d993e4;
+}
+
+.app--workbench .run-detail-viewport {
+  padding: 13px 16px;
+  background: rgba(10, 11, 15, 0.44);
+}
+
+.app--workbench .session-footer-dock {
+  --composer-runstatus-lane: clamp(240px, 26vw, 360px);
+  padding-bottom: 16px;
+  background: rgba(11, 12, 16, 0.22);
+}
+
+.app--workbench .session-footer-dock .artifact-shelf {
+  height: 52px;
+  background: transparent;
+}
+
+/* The foreground control shares the artifact lane visually, but it must not
+   participate in Composer height: otherwise appearing/disappearing activity
+   shifts the entire artifact shelf vertically. Reserve only horizontal room. */
+.app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .artifact-shelf {
+  box-sizing: border-box;
+  padding-right: var(--composer-runstatus-lane);
+}
+
+.app--workbench .session-footer-dock .composer-wrap > .composer-toolbar--status-only {
+  position: absolute;
+  z-index: var(--z-local-handle);
+  right: 0;
+  bottom: calc(100% + 9px);
+  width: auto;
+  max-width: var(--composer-runstatus-lane);
+  margin: 0;
+}
+
+.app--workbench .session-footer-dock .composer-toolbar--status-only .composer-runstatus {
+  max-width: 100%;
+}
+
+.app--workbench .session-footer-dock .composer-wrap,
+.app--workbench .session-footer-dock .runtime-config-bar {
+  margin-right: 36px;
+  margin-left: 36px;
+}
+
+.app--workbench .session-footer-dock .composer-card {
+  min-height: 118px;
+  border-color: rgba(220, 224, 234, 0.26);
+  border-radius: 8px 8px 0 0;
+  background: rgba(18, 20, 26, 0.96);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.26);
+  transition: transform 160ms ease-out, border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.app--workbench .session-footer-dock .runtime-config-bar {
+  height: 48px;
+  border-color: rgba(220, 224, 234, 0.26);
+  background: rgba(18, 20, 26, 0.97);
+  transition: transform 160ms ease-out, border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.app--workbench .session-footer-dock:has(.composer-card:focus-within) .composer-card,
+.app--workbench .session-footer-dock:has(.composer-card:focus-within) .runtime-config-bar {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 76%, var(--border));
+}
+
+.app--workbench .session-footer-dock:has(.composer-card:focus-within) .composer-card {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 16px 32px rgba(0, 0, 0, 0.30);
+}
+
+.app--workbench .session-footer-dock:has(.composer-card:focus-within) .runtime-config-bar {
+  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.24);
+}
+
+.app--workbench .composer__caret {
+  color: var(--accent);
+}
+
+.app--workbench .runtime-config-bar__pill,
+.app--workbench .runtime-config-bar__model .modelsw__trigger {
+  border-color: rgba(216, 220, 231, 0.20);
+  background: rgba(28, 30, 38, 0.88);
+}
+
+.app--workbench .runtime-config-bar__primary-action,
+.app--workbench .runtime-config-bar__primary-action--idle {
+  min-width: 96px;
+  height: 34px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+  border-radius: 7px;
+  background: var(--control-primary-bg, var(--accent));
+  color: var(--control-primary-fg, var(--accent-fg));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  transition: background 140ms ease-out, transform 140ms ease-out, box-shadow 140ms ease-out;
+}
+
+.app--workbench .runtime-config-bar__primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--control-primary-bg, var(--accent)) 88%, var(--fg) 12%);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.20);
+}
+
+.app--workbench .runtime-config-bar__primary-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Light workbench keeps the same stacked-board hierarchy while restoring the
+   user's light theme as the authoritative palette. The late workbench rules
+   above intentionally own geometry, so the light override must live beside
+   them instead of relying on earlier root tokens that theme styles can shadow. */
+:root[data-theme="light"] .app--workbench {
+  --bg: #f7f8fb;
+  --bg-soft: #eef2f7;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #f2f5f9;
+  --surface: #ffffff;
+  --surface-2: #f2f5f9;
+  --surface-3: #eef2f7;
+  --panel: #ffffff;
+  --chat-bg: #ffffff;
+  --sidebar-bg: #f3f6fa;
+  --sidebar-hover: #e8edf4;
+  --sidebar-active: var(--accent-soft);
+  --border: #d8dee8;
+  --border-soft: #e4e9f1;
+  --border-2: #c7cfdb;
+  --fg: #111827;
+  --fg-dim: #4b5563;
+  --fg-faint: #8490a3;
+  --ok: #15803d;
+  --shadow-1: 0 1px 2px rgba(38, 47, 63, 0.08);
+  --shadow-2: 0 14px 34px rgba(38, 47, 63, 0.14);
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .app--workbench .layout--workbench {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .app--workbench .layout--workbench > .session-background .session-background__mask {
+  background: rgba(247, 248, 251, 0.22);
+}
+
+:root[data-theme="light"] .app--workbench .workspace-sidebar,
+:root[data-theme="light"] .app--workbench .session-workspace,
+:root[data-theme="light"] .app--workbench .work-session-host,
+:root[data-theme="light"] .app--workbench .collab-surface {
+  border-color: rgba(84, 96, 116, 0.20);
+  box-shadow:
+    0 18px 42px rgba(48, 59, 76, 0.13),
+    0 2px 7px rgba(48, 59, 76, 0.10);
+}
+
+:root[data-theme="light"] .app--workbench .workspace-sidebar {
+  background: rgba(248, 250, 253, 0.78);
+  border-right-color: rgba(84, 96, 116, 0.20);
+}
+
+:root[data-theme="light"] .app--workbench .session-workspace {
+  --session-heading-surface: rgba(255, 255, 255, 0.46);
+  background: rgba(250, 251, 253, 0.62);
+}
+
+:root[data-theme="light"] .app--workbench .session-header {
+  background: var(--session-heading-surface);
+}
+
+:root[data-theme="light"] .app--workbench .session-header__title,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__header-title,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__folder-label {
+  color: var(--fg);
+}
+
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active:hover {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active:has(.project-tree__topic-visual--running)::after {
+  background: var(--accent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 46%, transparent);
+}
+
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.86);
+}
+
+:root[data-theme="light"] .app--workbench .session-header__addon-btn,
+:root[data-theme="light"] .app--workbench .session-status-indicator,
+:root[data-theme="light"] .app--workbench .runtime-config-bar__pill,
+:root[data-theme="light"] .app--workbench .runtime-config-bar__model .modelsw__trigger {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+:root[data-theme="light"] .app--workbench .task-memory-bar {
+  background: var(--session-heading-surface);
+}
+
+:root[data-theme="light"] .app--workbench .session-footer-dock {
+  background: transparent;
+}
+
+:root[data-theme="light"] .app--workbench .conversation-viewport .markdown h1,
+:root[data-theme="light"] .app--workbench .conversation-viewport .markdown h2,
+:root[data-theme="light"] .app--workbench .conversation-viewport .markdown h3,
+:root[data-theme="light"] .app--workbench .iris-fixture-conversation h1,
+:root[data-theme="light"] .app--workbench .iris-fixture-conversation h2,
+:root[data-theme="light"] .app--workbench .iris-fixture-conversation h3 {
+  color: color-mix(in srgb, var(--accent) 68%, var(--fg));
+}
+
+:root[data-theme="light"] .app--workbench .conversation-viewport pre,
+:root[data-theme="light"] .app--workbench .conversation-viewport .code-block,
+:root[data-theme="light"] .app--workbench .conversation-viewport .process-card {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 8px 20px rgba(48, 59, 76, 0.10);
+}
+
+:root[data-theme="light"] .app--workbench .msg--user .msg__body {
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, rgba(255, 255, 255, 0.88));
+  box-shadow: 0 7px 18px rgba(48, 59, 76, 0.09);
+}
+
+:root[data-theme="light"] .app--workbench .run-work-window {
+  background: rgba(255, 255, 255, 0.20);
+}
+
+:root[data-theme="light"] .app--workbench .session-footer-dock .composer-card,
+:root[data-theme="light"] .app--workbench .session-footer-dock .runtime-config-bar {
+  border-color: rgba(84, 96, 116, 0.24);
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 12px 26px rgba(48, 59, 76, 0.12);
+}
+
+:root[data-theme="light"] .app--workbench .session-footer-dock:has(.composer-card:focus-within) .composer-card,
+:root[data-theme="light"] .app--workbench .session-footer-dock:has(.composer-card:focus-within) .runtime-config-bar {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+}
+
+:root[data-theme="light"] .app--workbench .composer__caret {
+  color: var(--accent);
+}
+
+:root[data-theme="light"] .app--workbench .runtime-config-bar__primary-action,
+:root[data-theme="light"] .app--workbench .runtime-config-bar__primary-action--idle {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: var(--control-primary-bg);
+  color: var(--control-primary-fg);
+}
+
+:root[data-theme="light"] .app--workbench .runtime-config-bar__primary-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 88%, #312a88);
+}
+
+:root[data-theme="light"] .app--windows-frameless.app--workbench .session-header__actions,
+:root[data-theme="light"] .app--windows-frameless.app--workbench .windows-window-controls,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-header__actions::before,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-room .collab-topic-actions::before {
+  background-color: rgba(255, 255, 255, 0.82);
+  border-color: rgba(84, 96, 116, 0.20);
+  box-shadow: 0 7px 18px rgba(48, 59, 76, 0.12);
+}
+
+:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-header__actions,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-session .windows-window-controls,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-work .windows-window-controls,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-room .windows-window-controls {
+  background: transparent;
+  box-shadow: none;
+}
+
+@keyframes session-active-marker {
+  from { transform: translateY(0); opacity: 0.72; }
+  to { transform: translateY(18px); opacity: 1; }
+}
+
+@keyframes session-run-track {
+  0% { transform: translateX(-70px); opacity: 0.48; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: translateX(calc(100% + 12px)); opacity: 0.48; }
+}
+
+@media (max-width: 820px) {
+  .app--workbench .layout--workbench {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 8px;
+  }
+
+  .app--workbench .session-workspace {
+    grid-column: 1;
+  }
+
+  .app--workbench .session-header,
+  .app--workbench .task-memory-bar {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+
+  .app--windows-frameless.app--workbench .session-header {
+    padding-right: calc(24px + var(--windows-window-controls-width) + var(--session-top-utility-width));
+  }
+
+  .app--workbench .conversation-viewport {
+    padding-right: 24px;
+    padding-left: 24px;
+  }
+
+  .app--workbench .session-footer-dock .composer-wrap,
+  .app--workbench .session-footer-dock .runtime-config-bar {
+    margin-right: 18px;
+    margin-left: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app--workbench .workspace-sidebar .project-tree__topic--active:has(.project-tree__topic-visual--running)::after,
+  .app--workbench .active-run-view--running::after,
+  .app--workbench .active-run-view--queued::after,
+  .app--workbench .active-run-view--reconnecting::after {
+    animation: none;
+  }
+
+  .app--workbench .workspace-sidebar .project-tree__topic,
+  .app--workbench .run-work-window,
+  .app--workbench .session-footer-dock .composer-card,
+  .app--workbench .session-footer-dock .runtime-config-bar,
+  .app--workbench .runtime-config-bar__primary-action {
+    transition: none;
+  }
+}
+
 /* ── Work bottom bar ──────────────────────────────────────────── */
 
 .wg2-work-bottom {
@@ -41876,6 +43163,15 @@ body > .mermaid-diagram--fullscreen {
   border: 1px solid var(--border, rgba(255,255,255,0.08));
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg) 88%, var(--bg-elev));
+  transition: transform 160ms ease-out, border-color 160ms ease-out, box-shadow 160ms ease-out;
+}
+
+.wg2-work-chat:focus-within .wg2-work-chat__input-row {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 76%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 16px 32px rgba(0, 0, 0, 0.30);
 }
 
 .wg2-work-chat__textarea {
@@ -41896,9 +43192,14 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .wg2-work-chat__textarea:focus {
-  border-color: var(--accent, #6c8cff);
+  border-color: transparent;
   outline: none;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .app--workbench .wg2-work-chat:focus-within .wg2-work-chat__input-row {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--border));
+  box-shadow: 0 12px 26px rgba(48, 59, 76, 0.12);
 }
 
 .wg2-work-chat__textarea:disabled {
@@ -42000,5 +43301,11 @@ body > .mermaid-diagram--fullscreen {
   .wg2-work-control-bar__btn {
     width: 36px;
     height: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wg2-work-chat__input-row {
+    transition: none;
   }
 }

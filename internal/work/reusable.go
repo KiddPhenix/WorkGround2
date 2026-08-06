@@ -310,7 +310,6 @@ func reusableTemplate(source *Work) (*Work, error) {
 	template.Runs = nil
 	template.ActionReceipts = nil
 	template.Conclusions = nil
-	template.Cornerstones = nil
 	template.ReferencedWorks = nil
 	template.RerunOf = ""
 	template.CopiedFrom = ""
@@ -327,12 +326,48 @@ func reusableTemplate(source *Work) (*Work, error) {
 	template.V2PatchReceipts = nil
 	template.V2TaskRuntimes = nil
 	if source.SchemaVersion < SchemaVersionV2 {
-		template.Blocks, template.Placements = buildInitialBlocks(source.Definition.BlockSpecs, time.Time{})
+		template.Blocks = cloneBlocks(source.Blocks)
+		template.Placements = append([]BlockPlacement(nil), source.Placements...)
 	} else {
 		template.Blocks = nil
 		template.Placements = nil
 	}
 	return template, nil
+}
+
+// rebindCornerstones rebuilds cornerstone stable IDs for a new target Work.
+// Content, status, tags and other business fields are preserved; only the
+// identity fields (ID and WorkID) are recomputed for the new owner.
+func rebindCornerstones(cs []Cornerstone, newWorkID string, blobs map[string][]byte) ([]Cornerstone, error) {
+	if len(cs) == 0 {
+		return cs, nil
+	}
+	result := make([]Cornerstone, len(cs))
+	seen := make(map[string]struct{}, len(cs))
+	for i := range cs {
+		result[i] = cs[i]
+		content := cs[i].Content
+		if digest := cs[i].Ref.BlobDigest; digest != "" {
+			data, ok := blobs[digest]
+			if !ok {
+				return nil, fmt.Errorf("rebind cornerstone %q: source blob %q is missing", cs[i].ID, digest)
+			}
+			content = string(data)
+		}
+		id, err := computeStableCornerstoneID(newWorkID, PinCornerstoneInput{
+			Type: cs[i].Type, Content: content, Ref: cs[i].Ref,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("rebind cornerstone %q: %w", cs[i].ID, err)
+		}
+		if _, exists := seen[id]; exists {
+			return nil, fmt.Errorf("rebind cornerstone %q: duplicate target ID %q", cs[i].ID, id)
+		}
+		seen[id] = struct{}{}
+		result[i].ID = id
+		result[i].WorkID = newWorkID
+	}
+	return result, nil
 }
 
 func (s *Service) runReusableV1(ctx context.Context, record *reusableFlowRecord, values map[string]json.RawMessage, requestID, runHash string) (*ReusableFlowRun, error) {
@@ -361,6 +396,14 @@ func (s *Service) runReusableV1(ctx context.Context, record *reusableFlowRecord,
 	applyReusableV1Values(value, values)
 	now := time.Now().UTC()
 	value.ID = workID
+	blobs, err := s.copySourceBlobs(record.Flow.SourceWorkID)
+	if err != nil {
+		return nil, fmt.Errorf("work: RunReusableFlow: copy source blobs: %w", err)
+	}
+	value.Cornerstones, err = rebindCornerstones(value.Cornerstones, workID, blobs)
+	if err != nil {
+		return nil, fmt.Errorf("work: RunReusableFlow: %w", err)
+	}
 	value.Name = record.Flow.Name + " - 再次运行"
 	value.State = WorkDraft
 	value.ArchiveState = ArchiveActive
@@ -378,7 +421,7 @@ func (s *Service) runReusableV1(ctx context.Context, record *reusableFlowRecord,
 		newServiceEvent(workID, createID+"/created", EventWorkCreated, createdPayload, now),
 		newServiceEvent(workID, createID+"/definition", EventDefinitionFrozen, definitionPayload, now),
 	}
-	if err := s.store.CreateWorkDir(CreateWorkDirInput{RequestID: createID, Work: value, Definition: &value.Definition, Events: events}); err != nil {
+	if err := s.store.CreateWorkDir(CreateWorkDirInput{RequestID: createID, Work: value, Definition: &value.Definition, Events: events, Blobs: blobs}); err != nil {
 		return nil, fmt.Errorf("work: RunReusableFlow: create V1 Work: %w", err)
 	}
 	run, err := s.RunWork(ctx, workID, requestID+"/run")

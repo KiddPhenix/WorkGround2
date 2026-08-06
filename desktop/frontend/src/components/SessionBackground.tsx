@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { app, onSessionBackgroundChanged } from "../lib/bridge";
-import type { SessionBackgroundImageView, SessionBackgroundSettingsView } from "../lib/types";
+import type { SessionBackgroundImageView, SessionBackgroundMode, SessionBackgroundSettingsView } from "../lib/types";
 
 type BackgroundLayers = {
   current: SessionBackgroundImageView | null;
   previous: SessionBackgroundImageView | null;
 };
+
+export function sessionBackgroundMode(settings: Pick<SessionBackgroundSettingsView, "mode" | "enabled" | "imageCount">): SessionBackgroundMode {
+  if (settings.mode === "pattern" || settings.mode === "solid" || settings.mode === "custom") return settings.mode;
+  return settings.enabled && settings.imageCount > 0 ? "custom" : "pattern";
+}
 
 function preloadBackground(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -57,6 +62,11 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
       const nextSettings = await app.SessionBackgroundSettings();
       if (generation !== generationRef.current) return;
       setSettings(nextSettings);
+      const mode = sessionBackgroundMode(nextSettings);
+      if (mode !== "custom") {
+        setLayers({ current: null, previous: null });
+        return;
+      }
       if (!nextSettings.enabled || nextSettings.imageCount === 0 || !tabId) {
         setLayers({ current: null, previous: null });
         return;
@@ -77,7 +87,7 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
   }, [show, tabId]);
 
   const rotate = useCallback(async () => {
-    if (!tabId || !settings?.enabled || settings.rotateSeconds <= 0) return;
+    if (!tabId || !settings?.enabled || sessionBackgroundMode(settings) !== "custom" || settings.rotateSeconds <= 0) return;
     const generation = ++generationRef.current;
     for (let attempt = 0; attempt < Math.max(1, settings.imageCount); attempt++) {
       try {
@@ -87,7 +97,7 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
         if (generation !== generationRef.current) return;
       }
     }
-  }, [settings?.enabled, settings?.imageCount, settings?.rotateSeconds, show, tabId]);
+  }, [settings?.enabled, settings?.imageCount, settings?.mode, settings?.rotateSeconds, show, tabId]);
 
   useEffect(() => {
     void load();
@@ -95,7 +105,7 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
   }, [load]);
 
   useEffect(() => {
-    if (!settings?.enabled || settings.rotateSeconds <= 0 || !tabId) return;
+    if (!settings?.enabled || sessionBackgroundMode(settings) !== "custom" || settings.rotateSeconds <= 0 || !tabId) return;
     const interval = settings.rotateSeconds * 1000;
     let timer: number | null = null;
     let dueAt = Date.now() + interval;
@@ -130,14 +140,30 @@ export function SessionBackground({ tabId }: { tabId?: string }) {
       clear();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [rotate, settings?.enabled, settings?.rotateSeconds, tabId]);
+  }, [rotate, settings?.enabled, settings?.mode, settings?.rotateSeconds, tabId]);
 
   useEffect(() => () => {
     generationRef.current++;
     if (clearPreviousRef.current !== null) window.clearTimeout(clearPreviousRef.current);
   }, []);
 
-  if (!settings?.enabled || !layers.current) return null;
+  if (!settings) return null;
+  const mode = sessionBackgroundMode(settings);
+  if (mode === "pattern") {
+    return (
+      <div className="session-background session-background--pattern" aria-hidden="true">
+        <div className="session-background__pattern" />
+      </div>
+    );
+  }
+  if (mode === "solid") {
+    return (
+      <div className="session-background session-background--solid" aria-hidden="true">
+        <div className="session-background__solid" />
+      </div>
+    );
+  }
+  if (!settings.enabled || !layers.current) return null;
   return (
     <div className="session-background" aria-hidden="true">
       {layers.previous && (

@@ -277,26 +277,28 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
         <header className="collab-topicbar">
           <div><div className="collab-topic-title"><h1>{state.room.title || state.room.room}</h1><span><Users size={14} />{onlineMembers.length}</span></div><p>{state.room.description || c("subtitle")}</p></div>
           <div className={`collab-connection collab-connection--${state.status}`}><Circle size={9} fill="currentColor" />{statusLabel(state.status, c)}</div>
-          {((state.routes?.length || 0) > 0 || (state.advertisement?.relays.length || 0) > 0) && <details className="collab-reachability">
-            <summary aria-label={c("reachabilityStatus")} title={c("reachabilityStatus")}><RadioTower size={16} /></summary>
-            <section aria-label={c("reachabilityStatus")}>
-              {(state.routes || []).map((route) => <div key={route.id} className={`collab-route-state collab-route-state--${route.status}`} title={route.lastError}><Circle size={8} fill="currentColor" /><span>{route.kind === "lan" ? c("lanRoute") : route.relayId || route.id}</span><small>{c(route.status === "connected" ? "routeConnected" : route.status === "connecting" ? "routeConnecting" : route.status === "degraded" ? "routeDegraded" : route.status === "failed" ? "routeFailed" : "routeDisabled")}{route.latencyMs !== undefined ? ` · ${route.latencyMs}ms` : ""}{route.active ? ` · ${c("activeRoute")}` : ""}</small>{route.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}</div>)}
-              {(state.advertisement?.relays || []).map((advertisement) => <div key={`ad:${advertisement.relayId}`} className={`collab-route-state collab-route-state--${advertisement.status}`} title={advertisement.lastError}><Circle size={8} fill="currentColor" /><span>{advertisement.relayId}</span><small>{c("advertisementStatus")} · {c(advertisement.status === "published" ? "advertisementPublished" : advertisement.status === "pending" ? "advertisementPending" : advertisement.status === "failed" ? "advertisementFailed" : advertisement.status === "revoking" ? "advertisementRevoking" : advertisement.status === "revoked" ? "advertisementRevoked" : "routeDisabled")}</small></div>)}
-            </section>
-          </details>}
-          {state.mode === "host" && <div className="collab-invite-wrap">
-            <button type="button" className="collab-icon-button" aria-label={c("exportConnection")} title={c("exportConnection")} onClick={() => void toggleInvite()}><Share2 size={17} /></button>
-            {(invite || inviteError) && <div className="collab-invite-popover" role="dialog" aria-label={c("exportConnection")}>
-              <strong>{c("exportConnection")}</strong>
-              {invite && <>
-                {invite.hosts.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteHost} onChange={(event) => { setInviteHost(event.target.value); setInviteCopied(false); }}>{invite.hosts.map((host) => <option key={host} value={host}>{host}</option>)}</select></label>}
-                <div className="collab-invite-value"><input readOnly value={inviteString} aria-label={c("connectionString")} /><button type="button" disabled={!inviteString} onClick={() => void copyInvite()} aria-label={c("copyConnection")} title={c("copyConnection")}>{inviteCopied ? <Check size={15} /> : <Copy size={15} />}</button></div>
-                <small>{c("connectionTokenNotice")}</small>
-              </>}
-              {(inviteError || inviteBuildError) && <span className="collab-invite-error">{inviteError || inviteBuildError}</span>}
+          <div className="collab-topic-actions">
+            {((state.routes?.length || 0) > 0 || (state.advertisement?.relays.length || 0) > 0) && <details className="collab-reachability">
+              <summary aria-label={c("reachabilityStatus")} title={c("reachabilityStatus")}><RadioTower size={16} /></summary>
+              <section aria-label={c("reachabilityStatus")}>
+                {(state.routes || []).map((route) => <div key={route.id} className={`collab-route-state collab-route-state--${route.status}`} title={route.lastError}><Circle size={8} fill="currentColor" /><span>{route.kind === "lan" ? c("lanRoute") : route.relayId || route.id}</span><small>{c(route.status === "connected" ? "routeConnected" : route.status === "connecting" ? "routeConnecting" : route.status === "degraded" ? "routeDegraded" : route.status === "failed" ? "routeFailed" : "routeDisabled")}{route.latencyMs !== undefined ? ` · ${route.latencyMs}ms` : ""}{route.active ? ` · ${c("activeRoute")}` : ""}</small>{route.retryable && <button type="button" onClick={() => void controller.refresh(true)}>{c("retry")}</button>}</div>)}
+                {(state.advertisement?.relays || []).map((advertisement) => <div key={`ad:${advertisement.relayId}`} className={`collab-route-state collab-route-state--${advertisement.status}`} title={advertisement.lastError}><Circle size={8} fill="currentColor" /><span>{advertisement.relayId}</span><small>{c("advertisementStatus")} · {c(advertisement.status === "published" ? "advertisementPublished" : advertisement.status === "pending" ? "advertisementPending" : advertisement.status === "failed" ? "advertisementFailed" : advertisement.status === "revoking" ? "advertisementRevoking" : advertisement.status === "revoked" ? "advertisementRevoked" : "routeDisabled")}</small></div>)}
+              </section>
+            </details>}
+            {state.mode === "host" && <div className="collab-invite-wrap">
+              <button type="button" className="collab-icon-button" aria-label={c("exportConnection")} title={c("exportConnection")} onClick={() => void toggleInvite()}><Share2 size={17} /></button>
+              {(invite || inviteError) && <div className="collab-invite-popover" role="dialog" aria-label={c("exportConnection")}>
+                <strong>{c("exportConnection")}</strong>
+                {invite && <>
+                  {invite.hosts.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteHost} onChange={(event) => { setInviteHost(event.target.value); setInviteCopied(false); }}>{invite.hosts.map((host) => <option key={host} value={host}>{host}</option>)}</select></label>}
+                  <div className="collab-invite-value"><input readOnly value={inviteString} aria-label={c("connectionString")} /><button type="button" disabled={!inviteString} onClick={() => void copyInvite()} aria-label={c("copyConnection")} title={c("copyConnection")}>{inviteCopied ? <Check size={15} /> : <Copy size={15} />}</button></div>
+                  <small>{c("connectionTokenNotice")}</small>
+                </>}
+                {(inviteError || inviteBuildError) && <span className="collab-invite-error">{inviteError || inviteBuildError}</span>}
+              </div>}
             </div>}
-          </div>}
-          <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
+            <button type="button" className="collab-icon-button" aria-label={c("leave")} title={c("leave")} onClick={() => void controller.leave()}><LogOut size={17} /></button>
+          </div>
         </header>
 
         {(state.actionError || state.status === "syncing" || state.status === "reconnecting" || state.status === "failed" || Boolean(state.unsyncedCount)) && <div className={`collab-status-banner collab-status-banner--${state.actionError ? "action" : state.status}`} role="status">

@@ -1416,7 +1416,10 @@ export interface SessionBackgroundSourceView {
   error?: string;
 }
 
+export type SessionBackgroundMode = "pattern" | "solid" | "custom";
+
 export interface SessionBackgroundSettingsView {
+	mode?: SessionBackgroundMode;
   enabled: boolean;
   maskEnabled: boolean;
   randomOnOpen: boolean;

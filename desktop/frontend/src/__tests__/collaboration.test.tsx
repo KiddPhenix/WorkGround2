@@ -793,6 +793,7 @@ async function testNoCacheSessionEntryWithoutAutoConnect() {
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
+  const workbenchCSS = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
   const handoffCSS = readFileSync(new URL("../collab/collab-handoff.css", import.meta.url), "utf8");
   const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
   const workspaceSource = readFileSync(new URL("../collab/CollaborationWorkspace.tsx", import.meta.url), "utf8");
@@ -828,8 +829,9 @@ async function main() {
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
   ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
-  ok(/\.app--windows-frameless \.collab-members\s*\{[^}]*height:\s*calc\(100% - var\(--windows-window-controls-height[^}]*margin-top:\s*var\(--windows-window-controls-height/.test(layoutCSS) && !/\.app--windows-frameless \.collab-members\s*\{[^}]*padding-top:/.test(layoutCSS), "Room right panel shortens its scroll viewport below the Windows controls instead of scrolling padding behind them");
-  ok(/--collab-bg:\s*var\(--bg\)/.test(layoutCSS) && /--collab-panel:\s*var\(--surface/.test(layoutCSS) && /--collab-text:\s*var\(--fg\)/.test(layoutCSS) && /--collab-accent:\s*var\(--accent\)/.test(layoutCSS), "Room derives surfaces, text, and accents from the Settings theme tokens");
+  ok(/\.app--windows-frameless\.app--workbench-room \.collab-members\s*\{[^}]*height:\s*100%[^}]*margin-top:\s*0[^}]*padding-top:\s*calc\(20px \+ var\(--windows-window-controls-height\)\)/.test(workbenchCSS), "Room right plate extends behind the caption rail while its content keeps the same safe offset");
+  ok(/--collab-bg:\s*var\(--bg\)/.test(layoutCSS) && /--collab-panel:\s*var\(--bg-elev/.test(layoutCSS) && /--collab-text:\s*var\(--fg\)/.test(layoutCSS) && /--collab-accent:\s*var\(--accent\)/.test(layoutCSS), "Room derives surfaces, text, and accents from light/dark Settings theme tokens");
+  ok(/\.collab-primary-button\s*\{[^}]*background-color:\s*var\(--control-primary-bg/.test(layoutCSS), "Room primary actions keep a solid accent fallback when a visual style disables gradients");
   ok(handoffCSS.includes("var(--collab-accent)") && handoffCSS.includes("var(--collab-control)") && !handoffCSS.includes("rgba(155, 114, 255"), "Room handoff and reply additions reuse the same theme palette");
   ok(workspaceSource.indexOf("collab-agent-config") < workspaceSource.indexOf("collab-member-section"), "own Agent configuration is placed above the member list");
   ok(workspaceSource.includes("state.currentRun") && workspaceSource.includes("controller.stopCurrentRun") && workspaceSource.includes('data-phase={state.currentRun.phase}') && layoutCSS.includes(".collab-current-run__stop"), "My Agent panel exposes the current local run phase and an explicit stop control");

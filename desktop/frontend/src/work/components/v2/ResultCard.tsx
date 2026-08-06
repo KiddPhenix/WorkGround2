@@ -2,6 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Archive,
+  BookOpen,
+  BookOpenText,
+  Braces,
   CheckCircle2,
   Clock3,
   Download,
@@ -9,9 +12,16 @@ import {
   Eye,
   EyeOff,
   File,
+  FileAudio,
+  FileCheck2,
+  FileCode2,
+  FileDiff,
   FileImage,
+  FilePenLine,
   FileSpreadsheet,
   FileText,
+  FileType2,
+  FileVideo,
   FolderOpen,
   LoaderCircle,
   Pause,
@@ -114,16 +124,35 @@ const STATE_LABELS: Record<ArtifactSlot['state'], string> = {
   stale: '已过期',
 };
 
-function fileIcon(kind: string, type?: string): React.ReactNode {
-  const key = `${type ?? ''} ${kind}`.toLowerCase();
+function artifactKey(kind: string, type?: string, name?: string): string {
+  return `${type ?? ''} ${name ?? ''} ${kind}`.toLowerCase();
+}
+
+function fileIcon(kind: string, type?: string, name?: string): React.ReactNode {
+  const key = artifactKey(kind, type, name);
   if (key.includes('image')) return <FileImage size={18} />;
-  if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) {
+  if (key.includes('audio')) return <FileAudio size={18} />;
+  if (key.includes('video')) return <FileVideo size={18} />;
+  if (key.includes('sheet') || key.includes('xls') || key.includes('excel') || key.includes('csv')) {
     return <FileSpreadsheet size={18} />;
   }
   if (key.includes('present') || key.includes('ppt')) return <Presentation size={18} />;
   if (key.includes('zip') || key.includes('tar') || key.includes('gzip')) return <Archive size={18} />;
   if (
-    key.includes('pdf') ||
+    key.includes('source') ||
+    key.includes('code') ||
+    key.includes('script') ||
+    /\.(?:[cm]?[jt]sx?|py|go|rs|java|cs|cpp|c|h|html|css|sh|ps1)(?:\s|$)/.test(key)
+  ) {
+    return <FileCode2 size={18} />;
+  }
+  if (key.includes('章节') || key.includes('chapter')) return <BookOpenText size={18} />;
+  if (key.includes('最终') || key.includes('定稿') || key.includes('final')) return <FileCheck2 size={18} />;
+  if (key.includes('初稿') || key.includes('草稿') || key.includes('draft')) return <FilePenLine size={18} />;
+  if (key.includes('修订') || key.includes('改稿') || key.includes('revision')) return <FileDiff size={18} />;
+  if (key.includes('故事') || key.includes('小说') || key.includes('story')) return <BookOpen size={18} />;
+  if (key.includes('pdf')) return <FileType2 size={18} />;
+  if (
     key.includes('word') ||
     key.includes('doc') ||
     key.includes('text') ||
@@ -131,11 +160,14 @@ function fileIcon(kind: string, type?: string): React.ReactNode {
   ) {
     return <FileText size={18} />;
   }
+  if (key.includes('json') || key.includes('yaml') || key.includes('yml') || key.includes('xml')) {
+    return <Braces size={18} />;
+  }
   return <File size={18} />;
 }
 
-function artifactTone(kind: string, type?: string): string {
-  const key = `${type ?? ''} ${kind}`.toLowerCase();
+function artifactTone(kind: string, type?: string, name?: string): string {
+  const key = artifactKey(kind, type, name);
   if (key.includes('pdf')) return 'pdf';
   if (key.includes('sheet') || key.includes('xls') || key.includes('excel')) return 'sheet';
   if (key.includes('present') || key.includes('ppt') || key.includes('image')) return 'image';
@@ -539,10 +571,10 @@ export const ResultCard: React.FC<ResultCardProps> = ({
       <div className="wg2-rc-header">
         <span
           className="wg2-rc-hero-icon"
-          data-artifact-tone={artifactTone(slot.kind, singleRef?.type)}
+          data-artifact-tone={artifactTone(slot.kind, singleRef?.type, singleRef?.name ?? slot.title)}
           aria-hidden="true"
         >
-          {fileIcon(slot.kind, singleRef?.type)}
+          {fileIcon(slot.kind, singleRef?.type, singleRef?.name ?? slot.title)}
         </span>
         <span className="wg2-rc-heading">
           <span className="wg2-rc-title" title={displayTitle}>
@@ -713,7 +745,7 @@ export const ResultCard: React.FC<ResultCardProps> = ({
                 data-testid={`result-card-file-${ref.id}`}
               >
               <span className="wg2-rc-file-icon" aria-hidden="true">
-                {fileIcon(slot.kind, ref.type)}
+                {fileIcon(slot.kind, ref.type, ref.name)}
               </span>
               <span
                 className="wg2-rc-file-name"
@@ -826,13 +858,6 @@ export const ResultCard: React.FC<ResultCardProps> = ({
             </p>
           )}
         </div>
-      )}
-
-      {/* Reserved with no refs: show placeholder */}
-      {!hasRefs && slot.state === 'reserved' && (
-        <p className="wg2-rc-summary" data-testid={`result-card-placeholder-${slot.id}`}>
-          文件尚未生成，生成后将在此显示。
-        </p>
       )}
 
     </article>

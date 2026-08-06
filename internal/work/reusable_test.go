@@ -1,8 +1,10 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -146,5 +148,174 @@ func TestReusableFlowRejectsFixedFieldOverride(t *testing.T) {
 	fields := []ReusableField{{Key: "goal", Label: "目标", Kind: "text", Variable: false, Value: json.RawMessage(`"固定"`)}}
 	if _, err := reusableRunValues(fields, map[string]json.RawMessage{"goal": json.RawMessage(`"篡改"`)}); err == nil {
 		t.Fatal("fixed field override was accepted")
+	}
+}
+
+func TestReusableFlowV1PreservesCurrentStructure(t *testing.T) {
+	f := newRunnerFixture(t)
+	bp := testBlueprint("blueprint:reusable-preserve", 1, testWorkflow("draft", "write"))
+	bp.InputSchema = json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string","title":"主题"}},"required":["topic"]}`)
+	// 标记 block 为可编辑，以便模拟用户创建后编辑
+	bp.BlockSpecs[0].Editable = true
+	f.registerBlueprint(t, bp)
+
+	source, err := f.svc.Create(context.Background(), CreateWorkInput{
+		BlueprintRef: BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1},
+		Name:         "保存测试", Prompt: "原始内容",
+		Inputs: map[string]any{"topic": "原始"}, RequestID: "reusable-preserve-source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟用户创建后编辑 block
+	modifiedData := json.RawMessage(`{"content":"用户编辑后的笔记内容"}`)
+	if _, err := f.svc.UpsertBlock(context.Background(), BlockUpsertInput{
+		WorkID: source.ID, BlockID: "notes", Kind: "markdown", SchemaVersion: 1,
+		Revision: 2, Status: BlockReady,
+		Data:             modifiedData,
+		Source:           BlockSource{Provider: "user", Mode: "snapshot"},
+		ExpectedRevision: 2, RequestID: "reusable-preserve-upsert",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 模拟用户 Pin 一个 snapshot Cornerstone
+	f.svc.SetCornerstoneManager(NewCornerstoneManager(f.store, f.store, RealClock{}))
+	cornerstoneContent := strings.Repeat("story-rule ", CornerstoneInlineThreshold)
+	csResult, err := f.svc.PinCornerstone(context.Background(), source.ID, PinCornerstoneInput{
+		Type: CornerstoneDecision, Title: "测试决策",
+		Content:          cornerstoneContent,
+		Ref:              CornerstoneRef{Kind: "inline"},
+		Mode:             CornerstoneSnapshot,
+		Required:         true,
+		Tags:             []string{"格式"},
+		ExpectedRevision: 3, RequestID: "reusable-preserve-cs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceCsID := csResult.Cornerstone.ID
+	if sourceCsID == "" || csResult.Cornerstone.WorkID != source.ID {
+		t.Fatalf("source cornerstone identity: id=%q workID=%q", sourceCsID, csResult.Cornerstone.WorkID)
+	}
+	if csResult.Cornerstone.Ref.BlobDigest == "" {
+		t.Fatal("source cornerstone was not stored as a blob")
+	}
+
+	// 保存为常用流程
+	flow, err := f.svc.SaveReusableFlow(context.Background(), SaveReusableFlowInput{
+		SourceWorkID: source.ID, Name: "保存测试流程",
+		VariableKeys: []string{"prompt", "input:topic"}, RequestID: "save-preserve",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 加载已保存的 flow 记录，验证 template 中的 blocks 和 cornerstones
+	record, err := f.store.LoadReusableFlow(flow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil {
+		t.Fatal("flow record not found")
+	}
+	if len(record.Template.Blocks) != 1 {
+		t.Fatalf("template blocks = %d, want 1", len(record.Template.Blocks))
+	}
+	if !bytes.Equal(record.Template.Blocks[0].Data, modifiedData) {
+		t.Fatalf("template block data = %s, want %s", record.Template.Blocks[0].Data, modifiedData)
+	}
+	if len(record.Template.Cornerstones) != 1 {
+		t.Fatalf("template cornerstones = %d, want 1", len(record.Template.Cornerstones))
+	}
+	templateCs := record.Template.Cornerstones[0]
+	if templateCs.Content != csResult.Cornerstone.Content || templateCs.Type != csResult.Cornerstone.Type {
+		t.Fatalf("template cornerstone content/type = %q/%s, want %q/%s",
+			templateCs.Content, templateCs.Type, csResult.Cornerstone.Content, csResult.Cornerstone.Type)
+	}
+
+	// 运行流程，验证新 Work
+	restarted := f.restart(t)
+	restarted.SetCornerstoneManager(NewCornerstoneManager(f.store, f.store, RealClock{}))
+	run, err := restarted.RunReusableFlow(context.Background(), RunReusableFlowInput{
+		FlowID: flow.ID,
+		Values: map[string]json.RawMessage{
+			"prompt":      json.RawMessage(`"新内容"`),
+			"input:topic": json.RawMessage(`"新主题"`),
+		},
+		RequestID: "run-preserve",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Work == nil {
+		t.Fatal("run.Work is nil")
+	}
+	if len(run.Work.Blocks) != 1 {
+		t.Fatalf("new work blocks = %d, want 1", len(run.Work.Blocks))
+	}
+	// 比较反序列化后的内容，避免 JSON 格式化差异
+	var gotContent, wantContent struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(run.Work.Blocks[0].Data, &gotContent); err != nil {
+		t.Fatalf("unmarshal block data: %v", err)
+	}
+	if err := json.Unmarshal(modifiedData, &wantContent); err != nil {
+		t.Fatalf("unmarshal modified data: %v", err)
+	}
+	if gotContent.Content != wantContent.Content {
+		t.Fatalf("new work block content = %q, want %q", gotContent.Content, wantContent.Content)
+	}
+	// 新 Work 必须有独立身份
+	if run.Work.ID == source.ID {
+		t.Fatal("new work has same ID as source")
+	}
+	// 源 Work 未被修改
+	if run.Work.CopiedFrom != "" {
+		t.Fatalf("new work CopiedFrom = %q, want empty (reusable flow uses RerunOf)", run.Work.CopiedFrom)
+	}
+	// Cornerstone 已重绑定到新 Work
+	if len(run.Work.Cornerstones) != 1 {
+		t.Fatalf("new work cornerstones = %d, want 1", len(run.Work.Cornerstones))
+	}
+	newCs := run.Work.Cornerstones[0]
+	if newCs.ID == sourceCsID {
+		t.Fatalf("new work cornerstone ID = %q, still matches source ID", newCs.ID)
+	}
+	wantCsID, err := computeStableCornerstoneID(run.Work.ID, PinCornerstoneInput{
+		Type: newCs.Type, Content: cornerstoneContent, Ref: newCs.Ref,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newCs.ID != wantCsID {
+		t.Fatalf("new work cornerstone ID = %q, want %q", newCs.ID, wantCsID)
+	}
+	if newCs.WorkID != run.Work.ID {
+		t.Fatalf("new work cornerstone WorkID = %q, want %q", newCs.WorkID, run.Work.ID)
+	}
+	if newCs.Content != csResult.Cornerstone.Content || newCs.Type != csResult.Cornerstone.Type ||
+		newCs.Mode != csResult.Cornerstone.Mode || newCs.Required != csResult.Cornerstone.Required {
+		t.Fatalf("new cornerstone content/type/mode/required mismatched: %+v vs %+v", newCs, csResult.Cornerstone)
+	}
+	if len(newCs.Tags) != 1 || newCs.Tags[0] != "格式" {
+		t.Fatalf("new cornerstone tags = %v, want [格式]", newCs.Tags)
+	}
+	gotBlob, err := f.store.Get(run.Work.ID, newCs.Ref.BlobDigest)
+	if err != nil {
+		t.Fatalf("get copied cornerstone blob: %v", err)
+	}
+	if string(gotBlob) != cornerstoneContent {
+		t.Fatal("copied cornerstone blob content mismatched")
+	}
+	after := mustServiceView(t, f.svc, source.ID)
+	if len(after.Work.Runs) != 0 {
+		t.Fatal("source Work runs was mutated")
+	}
+	// 源 Cornerstone 未被修改
+	if len(after.Work.Cornerstones) != 1 || after.Work.Cornerstones[0].ID != sourceCsID {
+		t.Fatal("source cornerstone was mutated")
 	}
 }

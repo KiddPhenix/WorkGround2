@@ -831,6 +831,15 @@ function testMotionCSSContract(): void {
   ok(/\.wg2-work-draft-actions\[data-busy="true"\][\s\S]*?justify-content:\s*flex-start/.test(css), 'busy status moves to the reading edge');
   ok(/\.wg2-work-generate-btn__spinner[\s\S]*?animation:\s*wg2-work-status-spin/.test(css), 'busy status has a compact progress icon');
   ok(/\.wg2-work-draft-actions \.wg2-work-generate-btn[\s\S]*?min-height:\s*44px/.test(css), 'generate action is a prominent 44px CTA');
+  ok(
+    /\.wg2-work-goal\s*\{[^}]*position:\s*static[^}]*align-self:\s*flex-start[^}]*width:\s*fit-content[^}]*background:\s*transparent/.test(css),
+    'Work goal stays a lightweight inline caption instead of a sticky full-width strip',
+  );
+  ok(
+    /\.wg2-work-chat:focus-within \.wg2-work-chat__input-row\s*\{[^}]*transform:\s*translateY\(-2px\)[^}]*border-color:\s*rgba\(221, 139, 232, 0\.82\)[^}]*0 16px 32px rgba\(0, 0, 0, 0\.30\)/.test(css) &&
+      /\.wg2-work-chat__textarea:focus\s*\{[^}]*border-color:\s*transparent[^}]*box-shadow:\s*none/.test(css),
+    'Work input reuses the Session whole-board focus lift without an inner double ring',
+  );
   ok(!planningCSS.includes('--color-'), 'planning controls use defined application theme tokens');
   ok(/\.wg2-work-prompt-field\s*\{[\s\S]*?border:\s*1px solid[\s\S]*?var\(--border\)/.test(planningCSS), 'prompt editor has a visible themed frame');
   ok(/\.wg2-work-generate-btn:disabled:not\(\[aria-busy="true"\]\)[\s\S]*?opacity:\s*1/.test(planningCSS), 'empty-state generate CTA keeps a visible button surface');

@@ -290,6 +290,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### 性能压力仅写日志
+- Location: `desktop/frontend/src/lib/crash.ts`, `desktop/frontend/src/__tests__/crash-reporting.test.ts`
+- Summary: 桌面前端继续监控长任务、事件循环延迟和 JS 堆压力，但不再显示报告弹窗；诊断按 10 分钟节流写入 Wails warning 日志，失败回退 console.warn。
+- Keywords: performance.longtask, PerformancePressure, recordPerformanceLog, LogWarning
+- Source: verified-by-search
+- Updated: 2026-08-07
+
 ### 权限与沙盒
 - Location: `internal/permission/permission.go`, `internal/sandbox/sandbox.go`, `internal/tool/builtin`
 - Summary: permission 做每个工具调用的 allow/ask/deny 规则判断，sandbox 对 bash 做 OS 级写入/读取/网络约束，文件写入工具另有 in-process 限制。

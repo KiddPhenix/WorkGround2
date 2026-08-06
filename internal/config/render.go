@@ -126,6 +126,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 
 		background := c.DesktopSessionBackground()
 		b.WriteString("[desktop.session_background]\n")
+		fmt.Fprintf(&b, "mode = %q   # pattern|solid|custom\n", background.Mode)
 		fmt.Fprintf(&b, "enabled = %v   # desktop Session background images\n", background.Enabled)
 		fmt.Fprintf(&b, "mask_enabled = %v   # theme-aware translucent readability mask\n", *background.MaskEnabled)
 		fmt.Fprintf(&b, "random_on_open = %v   # choose a random first image for each opened Session tab\n", *background.RandomOnOpen)

@@ -6,11 +6,10 @@ import {
   formatPerformanceContext,
   globalCrashReportReason,
   normalizeCrashError,
-  parseReportedPerf,
   performanceLabelForReason,
-  serializeReportedPerf,
+  recordPerformanceLog,
   shouldRecordEventLoopLagSample,
-  shouldPromptForPerformanceLabel,
+  shouldRecordPerformanceLog,
   shouldReportGlobalCrashEvent,
   shouldRecordLongTaskSample,
   topFrameFromStack,
@@ -132,6 +131,9 @@ eq(perfPayload.errorMessage.includes("1300"), false, "performance fingerprint me
 eq(perfPayload.label.includes("1300"), false, "performance fingerprint label avoids dynamic durations");
 eq(formatPerformanceContext(perf).includes("long tasks: 3"), true, "formats long task context");
 eq(perfPayload.message.includes("event loop lag 1300ms"), true, "payload message keeps lag context");
+const performanceLogs: string[] = [];
+recordPerformanceLog(perfPayload, { LogWarning: (message) => performanceLogs.push(message) });
+eq(performanceLogs, [perfPayload.message], "performance pressure writes to the Wails warning log");
 const breadcrumb: Breadcrumb = { t: Date.now() - 1500, cat: "tab.hydrate", msg: "ancillary jobs open-topic tab-x ms=524" };
 const perfWithBreadcrumbs = buildPerformancePayload({ ...perf, breadcrumbs: [breadcrumb] });
 eq(formatPerformanceContext({ ...perf, breadcrumbs: [breadcrumb] }).includes("recent breadcrumbs:"), true, "performance context surfaces breadcrumbs");
@@ -151,17 +153,10 @@ eq(shouldRecordEventLoopLagSample(false, 3_000), false, "ignores event-loop lag 
 eq(shouldRecordEventLoopLagSample(false, 6_000), true, "records event-loop lag after the visibility resume grace period");
 eq(shouldRecordEventLoopLagSample(false, 60_000, false), false, "ignores event-loop lag while unfocused");
 
-eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false), true, "prompts an unhandled label past cooldown while visible");
-eq(shouldPromptForPerformanceLabel(true, 11 * 60_000, false), false, "suppresses an already reported or dismissed label");
-eq(shouldPromptForPerformanceLabel(false, 5 * 60_000, false), false, "respects the prompt cooldown window");
-eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, true), false, "never prompts while the window is hidden");
-eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "never prompts while unfocused");
-
-const reportedPerf = serializeReportedPerf(new Set(["performance.lag"]), "abc123");
-eq([...parseReportedPerf(reportedPerf, "abc123")], ["performance.lag"], "round-trips reported labels for the same build");
-eq([...parseReportedPerf(reportedPerf, "def456")], [], "re-surfaces reported labels on a new build");
-eq([...parseReportedPerf(null, "abc123")], [], "tolerates missing storage");
-eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage");
+eq(shouldRecordPerformanceLog(11 * 60_000, false), true, "records performance pressure past cooldown while visible");
+eq(shouldRecordPerformanceLog(5 * 60_000, false), false, "respects the performance log cooldown window");
+eq(shouldRecordPerformanceLog(11 * 60_000, true), false, "does not record while the window is hidden");
+eq(shouldRecordPerformanceLog(11 * 60_000, false, false), false, "does not record while unfocused");
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

@@ -15,6 +15,7 @@ import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { displayReasoningText } from "../lib/reasoningDisplay";
 import { stripMemoryCompilerExecution } from "../lib/memoryCompilerDisplay";
 import { visibleTranscriptMemoryCitations } from "../lib/memoryCitationVisibility";
+import { ReferencedMessageImages } from "./MessageImage";
 import type { Item, MessageActionScope } from "../lib/useController";
 import type { CheckpointMeta, MemoryCitation } from "../lib/types";
 
@@ -704,12 +705,14 @@ export function TurnActions({
 
 export const AssistantMessage = memo(function AssistantMessage({
   item,
+  tabId,
   defaultExpanded = false,
   expandWhileStreaming = true,
   truncateStreamingReasoning = false,
   creationMode = false,
 }: {
   item: AssistantItem;
+  tabId?: string;
   defaultExpanded?: boolean;
   /** false in compact mode: completed steps fold away, so auto-open + fold reads as flicker. */
   expandWhileStreaming?: boolean;
@@ -794,7 +797,8 @@ export const AssistantMessage = memo(function AssistantMessage({
       )}
       {hasText && (
         <div className="msg__body">
-          <Markdown text={item.text} plainStatusBlocks={creationMode} />
+          <Markdown text={item.text} plainStatusBlocks={creationMode} tabId={tabId} />
+          <ReferencedMessageImages text={item.text} tabId={tabId} />
         </div>
       )}
       <MemoryCitations citations={item.memoryCitations} />

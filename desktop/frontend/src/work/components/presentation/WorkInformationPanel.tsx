@@ -716,6 +716,14 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
   const nextInput = pending.length > 0
     ? pending[(Math.max(activeIndex, 0) + 1) % pending.length]
     : undefined;
+  const backCount = Math.min(Math.max(stackInputs.length - 1, 0), 4);
+  const stackBacks = Array.from({ length: backCount }, (_, index) => {
+    const depth = backCount - index;
+    return {
+      depth,
+      input: stackInputs[(activeIndex + depth) % stackInputs.length],
+    };
+  });
   const setAfterSubmit = (afterSubmit: AfterSubmit) => setPanel(workId, { afterSubmit });
   const toggleAdvanced = () => setPanel(workId, {
     advancedOpen: { ...panelState.advancedOpen, [active.id]: !advancedOpen },
@@ -755,17 +763,17 @@ export const WorkInformationPanel: React.FC<WorkInformationPanelProps> = ({
             </button>
           </header>
 
-          <div className="wg2-info-stack" data-stack-count={Math.min(stackInputs.length, 3)}>
-        {stackInputs.length > 2 && (
-          <div className="wg2-info-stack__back wg2-info-stack__back--2" aria-hidden="true">
-            <span>{specs.get(stackInputs[(activeIndex + 2) % stackInputs.length].specId)?.label}</span>
+          <div className="wg2-info-stack" data-stack-count={Math.min(stackInputs.length, 5)}>
+        {stackBacks.map(({ depth, input }) => (
+          <div
+            key={input.id}
+            className="wg2-info-stack__back"
+            data-depth={depth}
+            aria-hidden="true"
+          >
+            <span>{specs.get(input.specId)?.label}</span>
           </div>
-        )}
-        {stackInputs.length > 1 && (
-          <div className="wg2-info-stack__back wg2-info-stack__back--1" aria-hidden="true">
-            <span>{specs.get(stackInputs[(activeIndex + 1) % stackInputs.length].specId)?.label}</span>
-          </div>
-        )}
+        ))}
         <article className="wg2-info-card">
           <div className="wg2-info-card__meta">
             <span>{editingDone ? '修改已填写信息' : `${taskTitle ? `${taskTitle} · ` : ''}${activeIndex + 1}/${stackInputs.length}`}</span>

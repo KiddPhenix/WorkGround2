@@ -232,7 +232,7 @@ async function runTests(): Promise<void> {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // 1. reserved — no refs, visible placeholder
+  // 1. reserved — no refs, compact card without repeated placeholder copy
   // ════════════════════════════════════════════════════════════════════════
   {
     const slot = makeSlot({ state: 'reserved', artifactRefs: [] });
@@ -243,8 +243,8 @@ async function runTests(): Promise<void> {
     const badge = host.querySelector('[data-testid="result-card-badge-slot-1"]');
     ok(badge?.textContent?.includes('待生成') ?? false, 'reserved: badge shows 待生成');
     const placeholder = host.querySelector('[data-testid="result-card-placeholder-slot-1"]');
-    ok(placeholder !== null, 'reserved: placeholder visible');
-    contains(placeholder?.textContent ?? '', '尚未生成', 'reserved: placeholder text');
+    ok(placeholder === null, 'reserved: repeated placeholder copy is omitted');
+    ok(!host.textContent?.includes('文件尚未生成'), 'reserved: no redundant generation explanation');
     ok(host.querySelector('.wg2-rc-files') === null, 'reserved: no file list');
     await cleanup();
   }
@@ -896,16 +896,32 @@ async function runTests(): Promise<void> {
   // 23. File icon mapping uses the app icon library, not platform emoji.
   // ════════════════════════════════════════════════════════════════════════
   {
-    const cases: Array<[string, string, string]> = [
-      ['pdf', 'application/pdf', '.lucide-file-text'],
-      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.lucide-file-text'],
-      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.lucide-file-spreadsheet'],
-      ['text', 'text/plain', '.lucide-file-text'],
-      ['unknown', 'application/octet-stream', '.lucide-file'],
+    const cases: Array<[string, string, string, string]> = [
+      ['pdf', 'application/pdf', 'manual.pdf', '.lucide-file-type-corner'],
+      ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'manual.docx', '.lucide-file-text'],
+      ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'budget.xlsx', '.lucide-file-spreadsheet'],
+      ['code', 'text/plain', 'main.go', '.lucide-file-code-corner'],
+      ['image', 'image/png', 'cover.png', '.lucide-file-image'],
+      ['audio', 'audio/mpeg', 'voice.mp3', '.lucide-file-headphone'],
+      ['video', 'video/mp4', 'demo.mp4', '.lucide-file-play'],
+      ['unknown', 'application/octet-stream', 'artifact.bin', '.lucide-file'],
     ];
-    for (const [kind, type, selector] of cases) {
-      const { host, cleanup } = await mount(<ResultCard slot={makeSlot({ id: `icon-${kind}`, kind, artifactRefs: [makeRef({ id: `ri-${kind}`, type, name: 'f' })] })} />);
+    for (const [kind, type, name, selector] of cases) {
+      const { host, cleanup } = await mount(<ResultCard slot={makeSlot({ id: `icon-${kind}`, kind, artifactRefs: [makeRef({ id: `ri-${kind}`, type, name })] })} />);
       ok(host.querySelector(`.wg2-rc-file-icon ${selector}`) !== null, `icon: ${kind} → ${selector}`);
+      await cleanup();
+    }
+
+    const pendingCases: Array<[string, string]> = [
+      ['章节内容', '.lucide-book-open-text'],
+      ['最终稿', '.lucide-file-check-corner'],
+      ['初稿', '.lucide-file-pen-line'],
+      ['修订稿', '.lucide-file-diff'],
+      ['故事正文', '.lucide-book-open'],
+    ];
+    for (const [title, selector] of pendingCases) {
+      const { host, cleanup } = await mount(<ResultCard slot={makeSlot({ id: `pending-${title}`, title, kind: 'document', state: 'reserved', artifactRefs: [] })} />);
+      ok(host.querySelector(`.wg2-rc-hero-icon ${selector}`) !== null, `pending icon: ${title} → ${selector}`);
       await cleanup();
     }
   }
@@ -927,7 +943,7 @@ async function runTests(): Promise<void> {
     const slot: ArtifactSlot = { ...slot0, artifactRefs: slot0.artifactRefs ?? [] };
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);
     ok(host.querySelector('[data-testid="result-card-slot"]') !== null, 'golden-render: card');
-    ok(host.querySelector('[data-testid="result-card-placeholder-slot"]') !== null, 'golden-render: placeholder');
+    ok(host.querySelector('[data-testid="result-card-placeholder-slot"]') === null, 'golden-render: no redundant placeholder');
     await cleanup();
   }
 

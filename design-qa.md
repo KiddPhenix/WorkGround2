@@ -1,3 +1,170 @@
+# Session 石墨叠板视觉 QA
+
+- source visual truth: `D:\Codex\.codex\generated_images\019fd4ea-4259-7be1-a7fb-fd4bc9f9f5ab\exec-670f39ea-3d5e-4397-b09b-a65be63fa26b.png`
+- implementation screenshot: `D:\Work\WorkGround2\docs\session-surface-qa-final.png`
+- viewport: 1520 × 1035 CSS px
+- pixels / density: source 1520 × 1035；implementation 1520 × 1035；deviceScaleFactor 1；无需缩放归一化
+- state: 深色工作台、用户指定背景图、Session 运行中、输入框已输入并聚焦、AddOn 已关闭
+
+## 顶部工具带与侧栏收起复验（2026-08-06）
+
+- latest source evidence: `D:\Temp\codex-clipboard-da92b8c6-7fbe-4852-8ff2-96d78ad1d874.png`
+- implementation: `http://127.0.0.1:4173/?uiFixture=iris`
+- viewport: 1520 × 1035 CSS px
+- 右上角：应用工具与四个 Windows 窗体操作统一为高 32px 的连续内嵌工具带，距顶/右 14px；移除原先贴在视口边缘的独立 184×40 窗体块。标题通过显式安全宽度保持省略，不再与工具带叠压。
+- 侧栏收起：工作台从 `264px + 12px + main` 切换为真实单列 `1500px`，间距归零；Session 板保持 `x=10 / width=1500 / height=1016`，展开后恢复 `264px + 12px + 1224px`。
+- 交互：收起后标题左侧保留唯一“展开导航”入口；再次展开后侧栏内容、主板尺寸和顶部工具带位置全部恢复。
+- comparison: 用户局部截图与修正后的 1520×1035 全窗截图已在同一比较输入中检查；按钮材质、垂直基线和圆角已连续，无可执行 P0 / P1 / P2 差异。
+- console: 0 errors。
+
+### 顶栏单板复验
+
+- latest source evidence: `D:\Temp\codex-clipboard-73f86ebf-9d10-49b9-a83f-3b3d87992279.png`
+- Session 的应用工具与 Windows 窗体按钮现在共用唯一外框、背景、阴影和 7px 圆角；两组 DOM 之间不再各自绘制外轮廓，中间只保留一条 `border-soft` 内部分隔线。
+- 实测应用工具右缘与系统按钮左缘重叠约 0.27 CSS px，消除原先可见的暗色缝隙；两组高度均为 32px，垂直差小于 0.3 CSS px。
+- App 显式区分 `app--workbench-session`、`app--workbench-room`、`app--workbench-work`；三种页面分别以自己的既有操作组作为底板锚点，并共用同一套窗体控制材质。
+- 用户局部参考与实现全窗截图已在同一比较输入中检查；外轮廓连续、按钮清晰、内部分隔稳定，无可执行 P0 / P1 / P2 差异。
+
+### Work / Room 顶栏补全复验（2026-08-06）
+
+- source evidence: `D:\Temp\codex-clipboard-28d70f56-877e-40d8-ae80-347be33bc879.png`、`D:\Temp\codex-clipboard-6c6838e9-b62a-4470-84de-6b161434a676.png`
+- target material evidence: `D:\Work\WorkGround2\docs\session-surface-qa-final.png`；两张缺口截图与已通过的 Session 连续轨道在同一比较输入中检查。
+- Work：只重组既有“会话 / 基石 / AddOn”节点为 `wg2-work-top-actions`；该组固定在窗体控制左侧，背景向右延伸覆盖系统按钮，不增加操作。
+- Room：只重组既有网络可达性 / 邀请 / 退出节点为 `collab-topic-actions`；该组固定在窗体控制左侧，不再受 Room 主栏与成员栏分栏影响。
+- 折叠稳定性：两组都使用 viewport 固定的 `top: 15px`、`right: 14px + 160px` 和 `height: 32px`；侧栏宽度、Work 内容标题长度、Room 成员栏宽度均不参与轨道定位。
+- 视觉语言：三种页面共用 7px 外圆角、`border-soft` 内分隔、石墨 74% 磨砂底、相同阴影；各页面按钮维持原图标、文案、可访问名称与行为。
+- validation: Session 背景/轨道契约 16/16、Room 协作回归 227/227、WorkCard M1 全部通过、CSS syntax、z-index token、TypeScript、Vite production 和 Wails production 通过。WorkCard V2 宽回归仍停在既有 face / ResultShelf 基线失败，与本次顶栏结构无关。
+
+## Full-view comparison evidence
+
+- 信息架构一致：左侧 Workspace / Session 板与右侧 Session 工作板保持双板结构；标题、记忆栏、正文、运行卡、产物/队列和输入区顺序未改。
+- 布局节奏一致：外边距 10px、双板间距 12px、主内容左轴 48px；标题、运行卡和 Composer 与设计稿处于同一视觉轴。
+- 字体与排版：沿用产品现有 UI 字体，标题 25px，正文保持长期阅读所需的现有字号与行高；未为追求概念稿外观替换字体。实现正文略紧凑，属于真实内容密度差异。
+- 色彩与令牌：大面积表面统一为中性石墨色；紫色只用于标题、当前 Session、运行轨迹和输入焦点；绿色只用于已完成的小型状态点。
+- 图片质量：使用用户指定原图，cover 裁切，2px 轻模糊、低饱和和 32% 中性遮罩；未重绘、栅格替换或使用占位图。
+- 文案与内容：实现使用可运行 fixture 的真实产品文案和控件；设计稿中的长会话列表与测试正文仅作构图参照，没有写入产品。
+
+全图为原生 1520 × 1035 尺寸，侧栏、运行区、Composer 和状态文字均清晰可读，因此无需额外裁切比较。
+
+## Comparison history
+
+### Pass 1 — blocked
+
+- [P1] AddOn fixture 自动展开，遮挡 Session 右侧。修复：终验状态显式关闭 AddOn，保持与设计稿一致。
+- [P2] 背景层过暗，人物轮廓弱；运行卡高度 168px 偏重。修复：遮罩从 42% 调为 32%，Session 板透明度从 78% 调为 72%，运行卡压缩为 132px，并保留一行现有执行详情。
+- evidence: `D:\Work\WorkGround2\docs\session-surface-qa-pass-1-bg.png`
+
+### Pass 2 — passed
+
+- post-fix evidence: `D:\Work\WorkGround2\docs\session-surface-qa-final.png`
+- 无可执行的 P0 / P1 / P2 差异。
+- 保留差异：运行卡比概念稿约高 36px，用于继续显示已有当前执行详情；Composer 在运行中显示“加入队列”，遵循现有产品逻辑。
+
+## Interaction evidence
+
+- 输入：真实 textarea 已输入并聚焦；Composer 边框为 `rgba(221, 139, 232, 0.82)`，整体上移 2px。
+- 运行：当前运行轨迹使用 `session-run-track`；完成态无轨迹动画。
+- 悬停：主操作按钮上移 1px；按下态回落 1px。
+- 减少动态效果：CSS 在 `prefers-reduced-motion: reduce` 下关闭 Session 标记、运行轨迹和位移动画。
+- console: 0 errors。
+
+## Findings
+
+- P0: none
+- P1: none
+- P2: none
+- P3: 品牌字标沿用当前蓝色资产，概念稿为紫白字标；为保持品牌资产真实性未做滤镜染色。
+
+## Primary interactions tested
+
+- Composer 输入与焦点反馈
+- 运行态轨迹动画
+- 主操作按钮 hover 位移
+- AddOn 关闭后主工作区无阻挡
+
+## Final result
+
+final result: passed
+
+---
+
+# Session 工作台浅色模式 Design QA
+
+## Root cause and fix
+
+- 后置的 `.app--workbench` 叠板规则写入了完整深色变量和若干深色实值，优先级高于根节点浅色主题，导致设置已切换但 Session 仍保持深色。
+- 在同一工作台层级补齐 `:root[data-theme="light"] .app--workbench` 材质映射；几何、叠板层级和交互状态保持不变，仅让浅色主题重新成为配色单一来源。
+- 同步覆盖侧栏、Session 板面、消息/代码块、输入区、主操作按钮，以及 Session / Work / Room 共用的右上角窗体控制轨道。
+
+## Browser evidence
+
+- Fixture: `http://127.0.0.1:4173/?uiFixture=iris&platform=windows`
+- 通过设置界面实际点击“浅色”，确认 `data-theme=light`。
+- Computed styles: app `rgb(237, 241, 246)`；sidebar `rgba(248, 250, 253, 0.9)`；Session plate `rgba(250, 251, 253, 0.78)`；foreground `#111827`。
+- 视觉检查确认侧栏、Session、产物架、队列和输入区均恢复浅色；运行中窗口继续使用高对比深色焦点面，以区分需要关注的活动状态。
+
+## Validation
+
+- Session background/contracts: 17/17 passed。
+- CSS syntax and z-index tokens: passed。
+- TypeScript: passed。
+- Vite production build: passed。
+- Wails production build: passed；产物 `desktop/build/bin/WorkGround2.exe`。
+
+final result: passed
+
+---
+
+# Work 半透明底板与主题继承 Design QA
+
+## Root cause and fix
+
+- Work 根卡片使用不透明 `var(--bg)`，展示面又混合两个实色背景，导致工作台背景被完全遮住。
+- Work 展示面和结构预览分别写死青绿色强调色，Work V2 组件使用的 `--wg2-*` 变量也没有映射到应用主题。
+- Work 工作台现使用两层半透明底板；标题栏适度提高不透明度保证可读性。展示面、结构预览和 Work V2 组件统一继承应用的背景、文字、强调色及状态色。
+
+## Browser evidence
+
+- Iris 深色：应用强调色 `#cb83dc`，Work 强调色 `#cb83dc`，Work surface 由深色 `--bg` 以 84% 混合透明色。
+- Iris 浅色：应用强调色 `#6d5ff0`，Work 强调色 `#6d5ff0`，Work surface 由浅色 `--bg` 以 84% 混合透明色。
+- 独立 Work 结构预览不再命中固定绿色，继承 Iris 强调色 `#8378f6`。
+
+## Validation
+
+- Work 半透明与主题继承新增契约：2/2 passed。
+- App/Work integration: 40/40 passed。
+- CSS syntax and z-index tokens: passed。
+- TypeScript: passed。
+- 宽范围 `workbench-layout` 的新增契约通过；其余 14 条既有基线失败保持不变。
+
+final result: passed
+
+
+---
+
+# Room 外层圆角一致性 Design QA
+
+- Root cause: 工作台叠板规则指向不存在的 `.collaboration-workspace`，真实 Room 根节点是 `.collab-surface`，导致外层边框、8px 圆角、阴影和浅色边框均未生效。
+- Fix: 三处工作台选择器统一改为 `.collab-surface`；继续复用 Room 根节点已有的 `overflow: hidden` 裁切内部主区和成员栏。
+- Validation: Room 227/227、Session/Work/Room 叠板契约 18/18、CSS syntax/z-index、TypeScript 均通过。
+
+final result: passed
+
+---
+
+# 运行状态与产物架独立布局 Design QA
+
+- Root cause: `.composer-toolbar--status-only` 位于 Composer 正常文档流内；运行状态出现后增加 Footer 高度，底部输入区保持锚定时会把其上方产物架整体向上推。
+- Fix: 工作台内将状态条绝对定位到 Composer 上方的产物带右侧；产物架仅按 `--composer-runstatus-lane` 预留横向空间，状态条不再参与纵向高度计算。
+- Layout: 52px 产物带与 34px 状态条按中心线对齐；状态出现/消失不改变 Composer、配置栏或产物架的纵向基线。
+- Validation: 工作台叠板/底部布局契约 19/19、CSS syntax/z-index、TypeScript 通过。Composer 行为测试的 4 条既有 guidance 基线失败保持不变。
+
+final result: passed
+
+---
+
+# Historical QA reports
+
 # Design QA — Room Agent 运行动态浮窗（2026-08-04）
 
 - Source visual truth: `D:\Temp\codex-clipboard-a85375df-70ad-4c2d-94bc-c90be88a8509.png`

@@ -305,15 +305,10 @@
 
 .wg2-info-panel {
   --info-accent: #e8a11b;
-  --info-border: rgba(255, 255, 255, 0.11);
   width: min(760px, 100%);
   flex: 0 0 auto;
   color: var(--text-primary, #f0eee9);
-  border: 1px solid var(--info-border);
-  border-radius: 14px;
-  background: #11110f;
-  overflow: hidden;
-  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.46);
+  background: transparent;
 }
 
 .wg2-info-panel__bar,
@@ -324,6 +319,10 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
+}
+
+.wg2-info-panel__bar {
+  padding: 0 20px 2px;
 }
 
 .wg2-info-panel__bar > div,
@@ -386,38 +385,59 @@
 
 .wg2-info-stack {
   position: relative;
-  padding: 0 40px 44px 12px;
+  isolation: isolate;
+  padding: 0 52px 58px 16px;
 }
 
 .wg2-info-stack__back {
   position: absolute;
-  top: 24px;
-  bottom: 18px;
-  left: 30px;
-  right: 18px;
+  z-index: 1;
+  top: 12px;
+  right: 52px;
+  bottom: 58px;
+  left: 16px;
   display: flex;
   align-items: flex-end;
   padding: 0 22px 12px;
-  border: 1px solid rgba(232, 161, 27, 0.2);
+  border: 1px solid rgba(232, 161, 27, 0.28);
   border-radius: 12px;
-  background: #17150f;
+  background:
+    radial-gradient(circle at 84% 0, rgba(232, 161, 27, 0.045), transparent 36%),
+    #17150f;
   color: rgba(240, 238, 233, 0.3);
   font-size: 11px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  transform-origin: 50% 78%;
 }
 
-.wg2-info-stack__back--2 {
-  transform: translate(26px, 26px);
-  opacity: 0.44;
+.wg2-info-stack__back[data-depth="4"] {
+  z-index: 1;
+  transform: translate(34px, 42px) rotate(-1.25deg) scale(0.964);
+  opacity: 0.38;
 }
 
-.wg2-info-stack__back--1 {
-  transform: translate(14px, 14px);
-  opacity: 0.72;
+.wg2-info-stack__back[data-depth="3"] {
+  z-index: 2;
+  transform: translate(5px, 33px) rotate(1.15deg) scale(0.976);
+  opacity: 0.48;
+}
+
+.wg2-info-stack__back[data-depth="2"] {
+  z-index: 3;
+  transform: translate(25px, 22px) rotate(-0.8deg) scale(0.988);
+  opacity: 0.6;
+}
+
+.wg2-info-stack__back[data-depth="1"] {
+  z-index: 4;
+  transform: translate(14px, 10px) rotate(0.65deg);
+  opacity: 0.76;
 }
 
 .wg2-info-card {
   position: relative;
-  z-index: 1;
+  z-index: 5;
   margin-top: 12px;
   padding: 18px;
   border: 1px solid rgba(232, 161, 27, 0.52);
@@ -828,7 +848,13 @@
   }
 
   .wg2-info-stack {
-    padding-right: 24px;
+    padding-right: 34px;
+    padding-bottom: 46px;
+  }
+
+  .wg2-info-stack__back {
+    right: 34px;
+    bottom: 46px;
   }
 
   .wg2-info-card {

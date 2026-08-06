@@ -114,12 +114,16 @@ type DesktopConfig struct {
 const (
 	SessionBackgroundSourceFile   = "file"
 	SessionBackgroundSourceFolder = "folder"
+	SessionBackgroundModePattern  = "pattern"
+	SessionBackgroundModeSolid    = "solid"
+	SessionBackgroundModeCustom   = "custom"
 )
 
 // DesktopSessionBackgroundConfig is a user-level, presentation-only image pool.
 // Pointer booleans let an absent field retain the safe default when loading old
 // configuration files.
 type DesktopSessionBackgroundConfig struct {
+	Mode          string                           `toml:"mode"`
 	Enabled       bool                             `toml:"enabled"`
 	MaskEnabled   *bool                            `toml:"mask_enabled"`
 	RandomOnOpen  *bool                            `toml:"random_on_open"`
@@ -274,6 +278,14 @@ func (c *Config) DesktopThemeStyle() string {
 // Session background preferences without exposing mutable config slices.
 func (c *Config) DesktopSessionBackground() DesktopSessionBackgroundConfig {
 	bg := c.Desktop.SessionBackground
+	bg.Mode = normalizeSessionBackgroundMode(bg.Mode)
+	if bg.Mode == "" {
+		if bg.Enabled && len(bg.Sources) > 0 {
+			bg.Mode = SessionBackgroundModeCustom
+		} else {
+			bg.Mode = SessionBackgroundModePattern
+		}
+	}
 	if bg.MaskEnabled == nil {
 		bg.MaskEnabled = boolValue(true)
 	} else {
@@ -293,6 +305,19 @@ func (c *Config) DesktopSessionBackground() DesktopSessionBackgroundConfig {
 		}
 	}
 	return bg
+}
+
+func normalizeSessionBackgroundMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case SessionBackgroundModePattern:
+		return SessionBackgroundModePattern
+	case SessionBackgroundModeSolid:
+		return SessionBackgroundModeSolid
+	case SessionBackgroundModeCustom, "image", "images":
+		return SessionBackgroundModeCustom
+	default:
+		return ""
+	}
 }
 
 func boolValue(value bool) *bool {
