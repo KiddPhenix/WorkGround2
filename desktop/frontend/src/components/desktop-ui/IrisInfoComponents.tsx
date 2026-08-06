@@ -5,7 +5,7 @@
 // These components keep App.tsx clean of store wiring and are tree-shakeable
 // from the classic layout.
 
-import { useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { useMemoryStore, selectMemory } from "../../store/memory";
 import { useArtifactStore, selectArtifactsBySession } from "../../store/artifacts";
 import { useComposerQueueStore } from "../../store/composerQueue";
@@ -22,7 +22,7 @@ import { RuntimeConfigBar, connectionStatusFromRuntime, runtimeStatusLabel, type
 import { AddOnWorkbench } from "../desktop-ui/AddOnWorkbench";
 import { RunBlock } from "../desktop-ui/RunBlock";
 import { useRunStore, type RunRecord, type RunStatus } from "../../store/run";
-import { Layers } from "lucide-react";
+import { ChevronDown, Layers, ListTree } from "lucide-react";
 import { app } from "../../lib/bridge";
 import type { CollaborationMode, RuntimeMode, ToolApprovalMode } from "../../lib/types";
 import type { Item } from "../../lib/useController";
@@ -32,22 +32,6 @@ import type { Item } from "../../lib/useController";
 export interface SessionSummary {
   headline: string;
   detail: string;
-}
-
-/** Final assistant replies keyed by zero-based user turn. */
-export function assistantResultsByTurn(items: Item[]): Map<number, string> {
-  const results = new Map<number, string>();
-  let turn = -1;
-  for (const item of items) {
-    if (item.kind === "user" && !item.queued) {
-      turn += 1;
-      continue;
-    }
-    if (turn < 0 || item.kind !== "assistant" || item.streaming) continue;
-    const text = item.text.trim();
-    if (text) results.set(turn, text);
-  }
-  return results;
 }
 
 type RecapPoints = { outcomes: string[]; checks: string[] };
@@ -242,14 +226,15 @@ export function SessionRunStream({
   statuses,
   turnId,
   unassignedOnly = false,
-  resultText,
+  inlineTerminal = false,
   onStop,
 }: {
   sessionId: string;
   statuses?: RunStatus[];
   turnId?: string;
   unassignedOnly?: boolean;
-  resultText?: string;
+  /** Place completed-run controls directly in the surrounding turn action row. */
+  inlineTerminal?: boolean;
   onStop?: () => void;
 }) {
   const runs = useRunStore((s) => s.runs);
@@ -265,7 +250,7 @@ export function SessionRunStream({
   if (sessionRuns.length === 0) return null;
 
   const terminalRuns = sessionRuns.filter((run) =>
-    (run.status === "completed" || run.status === "failed" || run.status === "cancelled") && !run.expanded,
+    run.status === "completed" || run.status === "failed" || run.status === "cancelled",
   );
   const activeRuns = sessionRuns.filter((run) => !terminalRuns.includes(run));
   const terminalOnly = activeRuns.length === 0;
@@ -274,8 +259,6 @@ export function SessionRunStream({
     <RunBlock
       key={run.runId}
       run={run}
-      resultText={resultText}
-      onToggle={(runId) => setRunExpanded(runId, !runs[runId]?.expanded)}
       onStop={onStop ? () => onStop() : undefined}
       onStepSelect={(runId, stepIndex) => {
         const currentRun = runs[runId];
@@ -290,11 +273,48 @@ export function SessionRunStream({
     />
   );
 
+  const renderTerminalAction = (run: (typeof sessionRuns)[number]) => {
+    const panelId = `run-process-${run.runId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+    return (
+      <Fragment key={run.runId}>
+        <button
+          type="button"
+          className="turn-actions__btn session-run-action__toggle"
+          aria-expanded={run.expanded}
+          aria-controls={panelId}
+          onClick={() => setRunExpanded(run.runId, !run.expanded)}
+        >
+          <ListTree size={13} aria-hidden="true" />
+          <span>运行过程</span>
+          <ChevronDown size={12} aria-hidden="true" />
+        </button>
+        {run.expanded && (
+          <div id={panelId} className="session-run-action__panel">
+            {renderRun(run)}
+          </div>
+        )}
+      </Fragment>
+    );
+  };
+
+  if (inlineTerminal) {
+    return (
+      <>
+        {terminalRuns.map(renderTerminalAction)}
+        {activeRuns.length > 0 && (
+          <div className="session-run-stream" aria-label="任务运行记录">
+            {activeRuns.map(renderRun)}
+          </div>
+        )}
+      </>
+    );
+  }
+
   return (
     <div className={`session-run-stream${terminalOnly ? " session-run-stream--terminal" : ""}`} aria-label="任务运行记录">
       {terminalRuns.length > 0 && (
-        <div className="session-run-stream__terminal" aria-label="已结束运行">
-          {terminalRuns.map(renderRun)}
+        <div className="turn-actions session-run-actions" aria-label="已结束运行">
+          {terminalRuns.map(renderTerminalAction)}
         </div>
       )}
       {activeRuns.map(renderRun)}

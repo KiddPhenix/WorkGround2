@@ -414,10 +414,12 @@ export function Transcript({
     let actionText = "";
     let actionReady = false;
     let activeTurn: number | undefined;
+    let footerAttached = false;
     const pushTurnActions = () => {
       if (activeTurn == null || !actionReady || actionText.trim() === "") return;
       const turn = activeTurn;
       const openMenu = openAction && openAction.turn === turn ? openAction.menu : null;
+      const turnFooter = renderTurnFooter?.(turn);
       out.push(
         <TurnActions
           key={`ta-${turn}`}
@@ -434,12 +436,18 @@ export function Transcript({
             onRewind?.(targetTurn, scope);
             setOpenAction(null);
           }}
+          extraActions={turnFooter}
         />,
       );
+      footerAttached = turnFooter != null;
       actionText = "";
       actionReady = false;
     };
     const pushTurnFooter = () => {
+      if (footerAttached) {
+        footerAttached = false;
+        return;
+      }
       if (activeTurn == null || !renderTurnFooter) return;
       out.push(<Fragment key={`turn-footer-${activeTurn}`}>{renderTurnFooter(activeTurn)}</Fragment>);
     };
@@ -927,10 +935,12 @@ function WarmTurnItems({
   let actionText = "";
   let actionReady = false;
   let activeTurn: number | undefined;
+  let footerAttached = false;
   const pushTurnActions = () => {
     if (activeTurn == null || !actionReady || actionText.trim() === "") return;
     const turn = activeTurn;
     const openMenu = openAction && openAction.turn === turn ? openAction.menu : null;
+    const turnFooter = renderTurnFooter?.(turn);
     nodes.push(
       <TurnActions
         key={`ta-${turn}`}
@@ -947,12 +957,18 @@ function WarmTurnItems({
           onRewind?.(targetTurn, scope);
           setOpenAction(null);
         }}
+        extraActions={turnFooter}
       />,
     );
+    footerAttached = turnFooter != null;
     actionText = "";
     actionReady = false;
   };
   const pushTurnFooter = () => {
+    if (footerAttached) {
+      footerAttached = false;
+      return;
+    }
     if (activeTurn == null || !renderTurnFooter) return;
     nodes.push(<Fragment key={`turn-footer-${activeTurn}`}>{renderTurnFooter(activeTurn)}</Fragment>);
   };

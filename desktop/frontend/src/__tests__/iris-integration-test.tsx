@@ -54,6 +54,7 @@ import { useComposerQueueStore } from "../store/composerQueue";
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
+const sessionSurfaceSource = readFileSync(resolve(testDir, "../components/SessionSurface.tsx"), "utf8");
 
 let passed = 0;
 let failed = 0;
@@ -259,11 +260,18 @@ cleanup();
 
 // ── Test: Run stream renders terminal and active states ─────────────────────
 const runEl = render(<SessionRunStream sessionId={FIXTURE_SESSION_ID} />);
-ok(hasText(runEl, "运行完成"), "RunStream: renders completed run tab");
+const processToggle = runEl.querySelector<HTMLButtonElement>(".session-run-action__toggle");
+ok(hasText(processToggle, "运行过程"), "RunStream: completed run becomes a compact process action");
+ok(processToggle?.getAttribute("aria-expanded") === "false", "RunStream: completed process starts collapsed");
 ok(hasText(runEl, "运行中"), "RunStream: renders active run window");
-ok(queryAllByClassName(runEl, "run-work-window").length === 2, "RunStream: terminal and active runs use the same fixed work window");
-ok(queryAllByClassName(runEl, "run-result-face").length === 1, "RunStream: completed run exposes a result face");
-ok(queryAllByClassName(runEl, "active-run-view").length === 2, "RunStream: process history stays mounted on both windows");
+ok(queryAllByClassName(runEl, "run-work-window").length === 1, "RunStream: only active work occupies a fixed window initially");
+if (processToggle) {
+  act(() => processToggle.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+}
+ok(processToggle?.getAttribute("aria-expanded") === "true", "RunStream: compact process action expands in place");
+ok(hasText(runEl, "运行完成"), "RunStream: expanded terminal process preserves completion status");
+ok(queryAllByClassName(runEl, "run-work-window").length === 2, "RunStream: expanded history reuses the fixed process window");
+ok(queryAllByClassName(runEl, "run-result-face").length === 0, "RunStream: no result face or flip remains");
 cleanup();
 
 // ── Test: AddOnLauncherButton shows active count ────────────────────────────
@@ -306,14 +314,14 @@ ok(!appSource.includes('desktopLayoutStyle === "iris"'), "Regression: no invalid
 // ── Regression: AddOn launcher uses setWorkbenchOpen (not AddOnDialog) ──────
 // The AddOnLauncherButton component calls setWorkbenchOpen — verified by
 // the AddOnWorkbenchOverlay appearing when we seed workbenchOpen=true
-ok(appSource.includes("<AddOnLauncherButton />"), "Regression: workbench path renders the AddOn launcher");
+ok(sessionSurfaceSource.includes("<AddOnLauncherButton />"), "Regression: workbench path renders the AddOn launcher");
 
 // ── Regression: Real workbench path uses correct selectors ──────────────────
 ok(appSource.includes('"app--workbench"'), "Real workbench: app--workbench CSS selector exists");
 ok(appSource.includes('"layout--workbench"'), "Real workbench: layout--workbench CSS selector exists");
 ok(appSource.includes('variant="workbench"'), "Real workbench: ProjectTree variant=workbench exists");
 ok(appSource.includes("workspace-sidebar"), "Real workbench: workspace-sidebar element exists");
-ok(appSource.includes("session-workspace"), "Real workbench: session-workspace element exists");
+ok(sessionSurfaceSource.includes("session-workspace"), "Real workbench: session-workspace element exists");
 
 // ── Regression: Real workbench path renders ProjectTree (not just fixture) ──
 // When !irisFixtureActive, the tree area renders a real ProjectTree component

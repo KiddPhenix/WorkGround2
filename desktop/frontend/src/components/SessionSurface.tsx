@@ -1,11 +1,12 @@
 import React, { type ComponentProps } from 'react';
 
 import { Transcript } from './Transcript';
+import { TurnActions } from './Message';
 import { Composer } from './Composer';
 import { ApprovalModal } from './ApprovalModal';
 import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
-import { assistantResultsByTurn, SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
+import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
 import { Tooltip } from './Tooltip';
 import { SessionBackground } from './SessionBackground';
 import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
@@ -257,8 +258,6 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   widgetEnabled,
 }) => {
   const embedded = variant === 'work';
-  const assistantResults = React.useMemo(() => assistantResultsByTurn(displayItems), [displayItems]);
-  const latestAssistantResult = React.useMemo(() => [...assistantResults.values()].pop(), [assistantResults]);
   return (
     <section
       className={`session-workspace${embedded ? ' session-workspace--work-back' : ''}`}
@@ -314,11 +313,20 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
         {irisFixtureActive ? (
           <div className="iris-fixture-conversation">
             <p className="iris-fixture-conversation__message">已调整为两级导航结构，核心路径保持不变。</p>
-            <SessionRunStream
-              sessionId={renderSessionId}
-              statuses={["completed", "failed", "cancelled"]}
-              resultText="已完成索引访问方式调整，并确认替换范围。"
-              onStop={onCancel}
+            <TurnActions
+              text="已完成索引访问方式调整，并确认替换范围。"
+              turn={0}
+              checkpoint={{ turn: 0, prompt: "调整索引访问方式", files: [], time: Date.now(), canCode: true, canConversation: true }}
+              onPinMemory={() => {}}
+              onRewind={() => {}}
+              extraActions={(
+                <SessionRunStream
+                  sessionId={renderSessionId}
+                  statuses={["completed", "failed", "cancelled"]}
+                  inlineTerminal
+                  onStop={onCancel}
+                />
+              )}
             />
             <div className="iris-fixture-conversation__message iris-fixture-conversation__message--long">
               <p>好的，已制定持久化方案并完成 PoC 验证。</p>
@@ -361,13 +369,13 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
                 <SessionRunStream
                   sessionId={renderSessionId}
                   turnId={`turn:${turn + 1}`}
-                  resultText={assistantResults.get(turn)}
+                  inlineTerminal
                   onStop={onCancel}
                 />
               )}
             />
             <div data-testid="session-run-slot" style={{ display: 'contents' }}>
-              <SessionRunStream sessionId={renderSessionId} unassignedOnly resultText={latestAssistantResult} onStop={onCancel} />
+              <SessionRunStream sessionId={renderSessionId} unassignedOnly onStop={onCancel} />
             </div>
           </div>
         )}

@@ -38,6 +38,28 @@ final result: passed
 
 ---
 
+# Session 运行过程操作行 Design QA（2026-08-06）
+
+## Evidence
+
+- 用户最新参考：`D:\Temp\codex-clipboard-ae95b469-ecc0-4ccb-8c12-17b74b9686d5.png`
+- 终态收起：`D:\Work\WorkGround2\design-qa-session-process-action-collapsed.png`
+- 终态展开：`D:\Work\WorkGround2\design-qa-session-process-action-expanded.png`
+- 执行中：`D:\Work\WorkGround2\design-qa-session-process-action-running.png`
+
+## 验收结论
+
+- 结论仍是普通 assistant 文字回复，未放入执行卡。
+- 执行结束后，“运行过程”默认收起，与“钉选记忆 / 分叉会话 / 总结 / 回溯”位于同一操作行。
+- 展开后过程面板独占下一行，保留 220px 固定高度、事件横轨和当前记录详情。
+- 执行中状态仍直接显示固定过程窗口，只展示已发生事件，不预测下一步。
+- 已移除结果面、翻转动画和“查看结果 / 查看过程”翻面控件。
+- 收起 → 展开 → 收起交互已验证；`aria-expanded` 状态正确；浏览器 warning/error 为 0。
+
+final result: passed
+
+---
+
 # Session 结果面结论补全 Design QA（2026-08-06）
 
 ## Evidence

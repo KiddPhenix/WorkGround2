@@ -15,15 +15,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { TaskMemoryBar } from "../components/desktop-ui/TaskMemoryBar";
-import { RunBlock, CompletedRunTab, ActiveRunView } from "../components/desktop-ui/RunBlock";
+import { RunBlock, ActiveRunView } from "../components/desktop-ui/RunBlock";
 import { ArtifactShelf, ArtifactItem } from "../components/desktop-ui/ArtifactShelf";
 import { QueueTray } from "../components/desktop-ui/QueueTray";
 import { RuntimeConfigBar, connectionStatusFromRuntime, derivePrimaryActionLabel, runtimeStatusLabel } from "../components/desktop-ui/RuntimeConfigBar";
 import type { SurfaceKind } from "../components/desktop-ui/RuntimeConfigBar";
 import { LocaleProvider } from "../lib/i18n";
 import { AddOnWorkbench, WorkbenchHeader, InstanceHeader, AddOnInstanceView } from "../components/desktop-ui/AddOnWorkbench";
-import { assistantResultsByTurn, recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
-import type { Item } from "../lib/useController";
+import { recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
+import { TurnActions } from "../components/Message";
 
 import type { MemoryLine } from "../store/memory";
 import type { RunRecord, RunEvent } from "../store/run";
@@ -390,28 +390,27 @@ installDom();
 // ── RunBlock / CompletedRunTab ──────────────────────────────────────────────
 
 {
-  const results = assistantResultsByTurn([
-    { kind: "user", id: "u1", text: "调整访问方式" },
-    { kind: "assistant", id: "a1", text: "已完成第一轮修改。", reasoning: "", streaming: false },
-    { kind: "user", id: "queued", text: "排队消息", queued: true },
-    { kind: "user", id: "u2", text: "继续验证" },
-    { kind: "assistant", id: "a2-live", text: "未完成草稿", reasoning: "", streaming: true },
-    { kind: "assistant", id: "a2", text: "验证通过，结论可安全恢复。", reasoning: "", streaming: false },
-  ] satisfies Item[]);
-  eq(results.get(0), "已完成第一轮修改。", "ResultFace: derives the first conclusion from its assistant turn");
-  eq(results.get(1), "验证通过，结论可安全恢复。", "ResultFace: ignores queued users and streaming drafts");
+  const container = render(<RunBlock run={COMPLETED_RUN} />);
+  ok(hasText(container, "运行完成"), "RunBlock: completed process keeps its terminal status");
+  ok(hasText(container, "配置"), "RunBlock: completed process shows the first step");
+  ok(hasText(container, "执行查询"), "RunBlock: completed process shows the final step");
+  ok(container.querySelector(".run-work-window")?.getAttribute("data-face") === "process", "RunBlock: only exposes the process surface");
+  ok(container.querySelector(".run-result-face") === null, "RunBlock: no result face remains");
+  cleanup();
 }
 
 {
-  const container = render(<RunBlock run={COMPLETED_RUN} resultText="已将点号访问改成索引访问，并确认替换范围。" />);
-  ok(hasText(container, "运行完成"), "ResultFace: shows completed label");
-  ok(hasText(container, "结论"), "ResultFace: labels the terminal assistant reply as the conclusion");
-  ok(hasText(container.querySelector('[aria-label="本轮结论"]'), "已将点号访问改成索引访问"), "ResultFace: shows the final assistant reply instead of a generic event summary");
-  ok(hasText(container, "3 条记录"), "ResultFace: shows observed event count");
-  ok(hasText(container, "4 秒"), "ResultFace: shows elapsed seconds");
-  ok(container.querySelector(".run-work-window")?.getAttribute("data-face") === "result", "RunBlock: completed run defaults to result face");
-  ok(container.querySelector(".run-result-face--completed")?.getAttribute("aria-hidden") === "false", "ResultFace: completed face is visible");
-  ok(container.querySelector(".run-process-face")?.getAttribute("aria-hidden") === "true", "RunBlock: process face stays mounted behind result");
+  const container = render(
+    <LocaleProvider>
+      <TurnActions
+        text="已完成索引访问方式调整。"
+        extraActions={<button type="button" className="turn-actions__btn session-run-action__toggle">运行过程</button>}
+      />
+    </LocaleProvider>,
+  );
+  const row = container.querySelector(".turn-actions");
+  const processAction = container.querySelector(".session-run-action__toggle");
+  ok(processAction?.parentElement === row, "TurnActions: run process control shares the copy/action row");
   cleanup();
 }
 
@@ -438,8 +437,8 @@ installDom();
 
 {
   const container = render(<RunBlock run={FAILED_RUN} />);
-  ok(hasText(container, "运行失败"), "ResultFace: shows failed label");
-  ok(container.querySelector(".run-result-face--failed") !== null, "ResultFace: has --failed modifier class");
+  ok(hasText(container, "运行失败"), "RunBlock: failed process keeps its terminal status");
+  ok(container.querySelector(".active-run-view--failed") !== null, "RunBlock: failed process uses the failed modifier");
   cleanup();
 }
 
@@ -447,9 +446,7 @@ installDom();
 
 {
   const container = render(<RunBlock run={COMPLETED_RUN} />);
-  const btn = container.querySelector('button[aria-label="查看执行过程"]');
-  ok(btn !== null, "ResultFace: exposes a native process flip button");
-  ok(btn?.tagName === "BUTTON", "ResultFace: flip control is a button");
+  ok(container.querySelector(".run-result-face") === null, "RunBlock: completed state has no flip control or result face");
   cleanup();
 }
 
@@ -463,8 +460,8 @@ installDom();
 
 {
   const container = render(<RunBlock run={COMPLETED_RUN} />);
-  ok(container.querySelectorAll(".run-step-tab").length === 3, "RunBlock: completed process history remains mounted behind result");
-  ok(container.querySelector(".run-process-face")?.getAttribute("aria-hidden") === "true", "RunBlock: completed process history is hidden until flipped");
+  ok(container.querySelectorAll(".run-step-tab").length === 3, "RunBlock: completed process history remains available when expanded");
+  ok(container.querySelector(".run-process-face")?.getAttribute("aria-hidden") === "false", "RunBlock: expanded process history is visible");
   cleanup();
 }
 

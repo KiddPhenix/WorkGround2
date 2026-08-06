@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
 import { BrainCircuit, ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, Pin, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
@@ -470,6 +470,7 @@ export function TurnActions({
   actionPending = false,
   rewindDisabled = false,
   hoverMenus = false,
+  extraActions,
 }: {
   text: string;
   turn?: number;
@@ -481,6 +482,8 @@ export function TurnActions({
   actionPending?: boolean;
   rewindDisabled?: boolean;
   hoverMenus?: boolean;
+  /** Turn-scoped controls that belong on the same row as copy/pin/fork. */
+  extraActions?: ReactNode;
 }) {
   const t = useT();
   const [confirmScope, setConfirmScope] = useState<MessageActionScope | null>(null);
@@ -694,6 +697,7 @@ export function TurnActions({
           </div>
         </>
       )}
+      {extraActions}
     </div>
   );
 }

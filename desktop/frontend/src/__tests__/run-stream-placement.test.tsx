@@ -36,12 +36,12 @@ ok(!runMatchesStream(first, "session-1", undefined, undefined, true), "tail fall
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
-const terminalRule = styles.match(/\.session-run-stream__terminal\s*\{([^}]*)\}/)?.[1] ?? "";
-ok(!terminalRule.includes("background:") && !terminalRule.includes("padding:"), "terminal run row has no outer rectangular fill or padding");
-ok(terminalRule.includes("flex-direction: column"), "terminal runs keep full-width fixed work windows instead of compact tabs");
+const actionRule = styles.match(/\.session-run-action__panel\s*\{([^}]*)\}/)?.[1] ?? "";
+ok(actionRule.includes("flex: 1 0 100%") && actionRule.includes("width: 100%"), "expanded terminal process fills the next line of the action row");
+ok(styles.includes(".session-run-action__toggle[aria-expanded=\"true\"]"), "terminal process exposes an explicit expanded state");
 const windowRule = styles.match(/\.run-work-window\s*\{([^}]*)\}/)?.[1] ?? "";
-ok(windowRule.includes("height: 220px") && windowRule.includes("min-height: 220px"), "process and result faces share one fixed-size window");
-ok(styles.includes('.run-work-window[data-face="result"] .run-work-window__inner'), "terminal result uses the same window flip surface");
+ok(windowRule.includes("height: 220px") && windowRule.includes("min-height: 220px"), "active and expanded process views share one fixed-size window");
+ok(!styles.includes(".run-work-window__inner") && !styles.includes(".run-result-face"), "run presentation has no flip surface or result face");
 
 process.stdout.write(`\n${passed + failed} tests · ${passed} passed · ${failed} failed\n`);
 if (failed > 0) process.exit(1);

@@ -1,5 +1,5 @@
 export { TaskMemoryBar, type TaskMemoryBarProps } from "./TaskMemoryBar";
-export { RunBlock, ActiveRunView, CompletedRunTab, RunDetailViewport, type RunBlockProps } from "./RunBlock";
+export { RunBlock, ActiveRunView, RunDetailViewport, type RunBlockProps } from "./RunBlock";
 export { ArtifactShelf, ArtifactItem, type ArtifactShelfProps, type ArtifactItemProps } from "./ArtifactShelf";
 export { QueueTray, type QueueTrayProps } from "./QueueTray";
 export {

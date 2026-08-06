@@ -319,21 +319,24 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".session-run-stream--terminal", "display") === "flex" &&
     finalDeclaration(stylesSource, ".session-run-stream--terminal", "flex-direction") === "column",
-  "CSS: completed runs retain full-width work windows",
+  "CSS: unassigned terminal runs retain a full-width container",
 );
 ok(
-  finalDeclaration(stylesSource, ".session-run-stream__terminal", "display") === "flex" &&
-    finalDeclaration(stylesSource, ".session-run-stream__terminal", "flex-direction") === "column",
-  "CSS: completed runs remain stacked while another run is active",
+  finalDeclaration(stylesSource, ".session-run-actions", "width") === "100%" &&
+    finalDeclaration(stylesSource, ".session-run-action__panel", "flex") === "1 0 100%",
+  "CSS: completed runs collapse into the action row and expand below it",
 );
 ok(
-  finalDeclaration(stylesSource, ".run-work-window", "height") === "220px" &&
-    finalDeclaration(stylesSource, ".run-work-window", "min-height") === "220px",
-  "CSS: process and result use the same fixed-size window",
+  /\.run-work-window\s*\{[^}]*height:\s*220px;[^}]*min-height:\s*220px;/s.test(stylesSource),
+  "CSS: active and expanded process views use the same fixed-size window",
 );
 ok(
   finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport:has(.session-run-stream) .turn-collapse", "display") === "none",
   "CSS: real run stream replaces legacy execution folds in Workbench",
+);
+ok(
+  finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport:has(.session-run-action__toggle) .turn-collapse", "display") === "none",
+  "CSS: compact run action also replaces legacy execution folds in Workbench",
 );
 ok(
   finalDeclaration(stylesSource, ".active-run-view__tabs", "overflow-x") === "auto" &&
