@@ -34,6 +34,22 @@ export interface SessionSummary {
   detail: string;
 }
 
+/** Final assistant replies keyed by zero-based user turn. */
+export function assistantResultsByTurn(items: Item[]): Map<number, string> {
+  const results = new Map<number, string>();
+  let turn = -1;
+  for (const item of items) {
+    if (item.kind === "user" && !item.queued) {
+      turn += 1;
+      continue;
+    }
+    if (turn < 0 || item.kind !== "assistant" || item.streaming) continue;
+    const text = item.text.trim();
+    if (text) results.set(turn, text);
+  }
+  return results;
+}
+
 type RecapPoints = { outcomes: string[]; checks: string[] };
 
 const NOISE_HEADING = /^(已?完成(?:总结)?|总结|改动文件|变更文件|文件列表|创建的文件|修改的文件|验证命令|验证|命令|测试|注意事项)$/i;
@@ -226,12 +242,14 @@ export function SessionRunStream({
   statuses,
   turnId,
   unassignedOnly = false,
+  resultText,
   onStop,
 }: {
   sessionId: string;
   statuses?: RunStatus[];
   turnId?: string;
   unassignedOnly?: boolean;
+  resultText?: string;
   onStop?: () => void;
 }) {
   const runs = useRunStore((s) => s.runs);
@@ -256,6 +274,7 @@ export function SessionRunStream({
     <RunBlock
       key={run.runId}
       run={run}
+      resultText={resultText}
       onToggle={(runId) => setRunExpanded(runId, !runs[runId]?.expanded)}
       onStop={onStop ? () => onStop() : undefined}
       onStepSelect={(runId, stepIndex) => {

@@ -38,6 +38,56 @@ final result: passed
 
 ---
 
+# Session 结果面结论补全 Design QA（2026-08-06）
+
+## Evidence
+
+- Source visual truth: `D:\Temp\codex-clipboard-e6d97b85-add4-4154-afe3-3b42b978adec.png`
+- Browser implementation: `D:\Work\WorkGround2\design-qa-session-result-conclusion.jpg`
+- Focused side-by-side comparison: `D:\Work\WorkGround2\design-qa-session-result-conclusion-comparison.png`
+
+## Normalization
+
+- Source pixels: 1202 × 512 RGBA.
+- Implementation pixels: 1280 × 720 RGB.
+- Browser viewport: 1280 × 720 CSS px; reported device pixel ratio: 1.375.
+- Comparison image: 2176 × 375 RGB. Both artifacts are cropped to the completed-result region and contained without stretching.
+- State: completed run, result face visible, dark Iris fixture.
+
+## Findings
+
+- No actionable P0/P1/P2 visual or interaction differences remain.
+- Fonts and typography: “结论” uses the existing result hierarchy; conclusion text keeps the product content font, 13px size, and 1.6 line height.
+- Spacing and layout rhythm: the fixed 220px work window, header, marker, conclusion column, and recent-record column remain unchanged. Long conclusions scroll inside the summary column instead of growing the card.
+- Colors and visual tokens: existing background, border, foreground, muted, and purple accent tokens are unchanged; no large green success mark is introduced.
+- Image quality and asset fidelity: the component uses no raster content or generated visual assets; existing icon-library controls are retained.
+- Copy and content: the generic event fallback is replaced by the final assistant reply for the same user turn. The completed title is now “结论”; process events remain on the reverse face.
+
+## Interaction and accessibility checks
+
+- Completed state defaults to `data-face="result"`.
+- “查看过程” switches to `data-face="process"`; “查看结果” switches back to `data-face="result"`.
+- The conclusion remains `已完成索引访问方式调整，并确认替换范围。` after both flips.
+- The conclusion region exposes `aria-label="本轮结论"` and scrolls independently for long text.
+- Browser console warnings/errors: none.
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: the result face only showed “本轮执行已完成” plus a tool-event fragment, which read as an empty result message.
+- Fix: derive the same turn's final non-streaming assistant reply from Transcript and pass it into the result face without duplicating it into Run state.
+- Post-fix evidence: `design-qa-session-result-conclusion-comparison.png`.
+- Result: the result face now carries the actual conclusion while preserving the fixed two-sided window.
+
+## Focused comparison
+
+Focused comparison is required because the user-reported issue is confined to result-card content; the surrounding sidebar, composer, artifacts, and AddOn surfaces are unrelated. The combined image shows the missing generic body on the source side and the same region populated with an explicit “结论” and real turn result on the implementation side.
+
+final result: passed
+
+---
+
 # Work 结构规划实时输出与结构确认 Design QA
 
 - source visual truth: `D:\Codex\.codex\generated_images\019face3-a142-7712-90e3-3b5256973ee9\call_k7TTbidAluoO0TbL6lP5GQis.png`
