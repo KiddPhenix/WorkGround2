@@ -18,6 +18,8 @@ export interface RunBlockProps {
   onToggle?: (runId: string) => void;
   onStepSelect?: (runId: string, stepIndex: number) => void;
   elapsedSeconds?: number;
+  /** Final assistant reply for this turn. The transcript remains the source of truth. */
+  resultText?: string;
   hidden?: boolean;
 }
 
@@ -66,32 +68,33 @@ function runMeta(run: RunRecord, elapsedSeconds?: number): string {
   return parts.join(" · ");
 }
 
-function resultCopy(run: RunRecord): { title: string; detail: string } {
+function resultCopy(run: RunRecord, resultText?: string): { title: string; detail: string } {
   const lastEvent = run.events[run.events.length - 1];
+  const conclusion = resultText?.trim();
   const meaningfulEvent = [...run.events]
     .reverse()
     .find((event) => event.content.trim() && !/^(?:运行完成|步骤确认完成|开始执行)$/.test(event.content.trim()));
   if (run.status === "failed") {
     return {
       title: "本轮执行遇到问题",
-      detail: run.errorMessage || lastEvent?.content || "执行失败，可查看过程定位原因。",
+      detail: conclusion || run.errorMessage || lastEvent?.content || "执行失败，可查看过程定位原因。",
     };
   }
   if (run.status === "cancelled") {
     return {
       title: "本轮执行已停止",
-      detail: lastEvent?.content || "执行已由用户停止。",
+      detail: conclusion || lastEvent?.content || "执行已由用户停止。",
     };
   }
   return {
-    title: "本轮执行已完成",
-    detail: meaningfulEvent?.content || lastEvent?.content || "执行完成。",
+    title: "结论",
+    detail: conclusion || meaningfulEvent?.content || lastEvent?.content || "执行完成。",
   };
 }
 
 /** Terminal result face. Kept under the legacy export name for API compatibility. */
-export function CompletedRunTab({ run, onRetry, onToggle, elapsedSeconds, hidden = false }: RunBlockProps) {
-  const copy = resultCopy(run);
+export function CompletedRunTab({ run, onRetry, onToggle, elapsedSeconds, resultText, hidden = false }: RunBlockProps) {
+  const copy = resultCopy(run, resultText);
   const recentLabels = run.events
     .map((event) => event.stepLabel?.trim())
     .filter((label): label is string => Boolean(label) && label !== "完成")
@@ -134,7 +137,9 @@ export function CompletedRunTab({ run, onRetry, onToggle, elapsedSeconds, hidden
         <span className={`run-result-face__marker run-result-face__marker--${run.status}`} aria-hidden="true" />
         <div className="run-result-face__summary">
           <h3>{copy.title}</h3>
-          <p>{copy.detail}</p>
+          <div className="run-result-face__conclusion" aria-label="本轮结论">
+            {copy.detail}
+          </div>
         </div>
         {recentLabels.length > 0 && (
           <div className="run-result-face__records" aria-label="最近执行记录">

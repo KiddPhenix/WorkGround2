@@ -5,7 +5,7 @@ import { Composer } from './Composer';
 import { ApprovalModal } from './ApprovalModal';
 import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
-import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
+import { assistantResultsByTurn, SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
 import { Tooltip } from './Tooltip';
 import { SessionBackground } from './SessionBackground';
 import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
@@ -257,6 +257,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   widgetEnabled,
 }) => {
   const embedded = variant === 'work';
+  const assistantResults = React.useMemo(() => assistantResultsByTurn(displayItems), [displayItems]);
+  const latestAssistantResult = React.useMemo(() => [...assistantResults.values()].pop(), [assistantResults]);
   return (
     <section
       className={`session-workspace${embedded ? ' session-workspace--work-back' : ''}`}
@@ -312,7 +314,12 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
         {irisFixtureActive ? (
           <div className="iris-fixture-conversation">
             <p className="iris-fixture-conversation__message">已调整为两级导航结构，核心路径保持不变。</p>
-            <SessionRunStream sessionId={renderSessionId} statuses={["completed", "failed", "cancelled"]} onStop={onCancel} />
+            <SessionRunStream
+              sessionId={renderSessionId}
+              statuses={["completed", "failed", "cancelled"]}
+              resultText="已完成索引访问方式调整，并确认替换范围。"
+              onStop={onCancel}
+            />
             <div className="iris-fixture-conversation__message iris-fixture-conversation__message--long">
               <p>好的，已制定持久化方案并完成 PoC 验证。</p>
               <p>将采用本地存储并预留云端同步接口，确保数据一致性与恢复能力。</p>
@@ -350,10 +357,17 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
               loadingOlderHistory={historyOlderLoading}
               onLoadOlderHistory={onLoadOlderHistory}
               scrollHostRef={scrollHostRef}
-              renderTurnFooter={(turn: number) => <SessionRunStream sessionId={renderSessionId} turnId={`turn:${turn + 1}`} onStop={onCancel} />}
+              renderTurnFooter={(turn: number) => (
+                <SessionRunStream
+                  sessionId={renderSessionId}
+                  turnId={`turn:${turn + 1}`}
+                  resultText={assistantResults.get(turn)}
+                  onStop={onCancel}
+                />
+              )}
             />
             <div data-testid="session-run-slot" style={{ display: 'contents' }}>
-              <SessionRunStream sessionId={renderSessionId} unassignedOnly onStop={onCancel} />
+              <SessionRunStream sessionId={renderSessionId} unassignedOnly resultText={latestAssistantResult} onStop={onCancel} />
             </div>
           </div>
         )}

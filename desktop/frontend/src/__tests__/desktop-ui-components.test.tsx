@@ -22,7 +22,8 @@ import { RuntimeConfigBar, connectionStatusFromRuntime, derivePrimaryActionLabel
 import type { SurfaceKind } from "../components/desktop-ui/RuntimeConfigBar";
 import { LocaleProvider } from "../lib/i18n";
 import { AddOnWorkbench, WorkbenchHeader, InstanceHeader, AddOnInstanceView } from "../components/desktop-ui/AddOnWorkbench";
-import { recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
+import { assistantResultsByTurn, recentSessionSummary, SessionMemoryBar } from "../components/desktop-ui/IrisInfoComponents";
+import type { Item } from "../lib/useController";
 
 import type { MemoryLine } from "../store/memory";
 import type { RunRecord, RunEvent } from "../store/run";
@@ -389,8 +390,23 @@ installDom();
 // ── RunBlock / CompletedRunTab ──────────────────────────────────────────────
 
 {
-  const container = render(<RunBlock run={COMPLETED_RUN} />);
+  const results = assistantResultsByTurn([
+    { kind: "user", id: "u1", text: "调整访问方式" },
+    { kind: "assistant", id: "a1", text: "已完成第一轮修改。", reasoning: "", streaming: false },
+    { kind: "user", id: "queued", text: "排队消息", queued: true },
+    { kind: "user", id: "u2", text: "继续验证" },
+    { kind: "assistant", id: "a2-live", text: "未完成草稿", reasoning: "", streaming: true },
+    { kind: "assistant", id: "a2", text: "验证通过，结论可安全恢复。", reasoning: "", streaming: false },
+  ] satisfies Item[]);
+  eq(results.get(0), "已完成第一轮修改。", "ResultFace: derives the first conclusion from its assistant turn");
+  eq(results.get(1), "验证通过，结论可安全恢复。", "ResultFace: ignores queued users and streaming drafts");
+}
+
+{
+  const container = render(<RunBlock run={COMPLETED_RUN} resultText="已将点号访问改成索引访问，并确认替换范围。" />);
   ok(hasText(container, "运行完成"), "ResultFace: shows completed label");
+  ok(hasText(container, "结论"), "ResultFace: labels the terminal assistant reply as the conclusion");
+  ok(hasText(container.querySelector('[aria-label="本轮结论"]'), "已将点号访问改成索引访问"), "ResultFace: shows the final assistant reply instead of a generic event summary");
   ok(hasText(container, "3 条记录"), "ResultFace: shows observed event count");
   ok(hasText(container, "4 秒"), "ResultFace: shows elapsed seconds");
   ok(container.querySelector(".run-work-window")?.getAttribute("data-face") === "result", "RunBlock: completed run defaults to result face");
