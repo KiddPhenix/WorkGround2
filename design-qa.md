@@ -624,3 +624,75 @@ final result: passed
 - Comparison: `D:/Codex/.codex/visualizations/2026/08/01/019fbd42-57a1-7721-a940-695c37c7c869/work-restart-comparison.png`。
 
 final result: passed
+
+---
+
+# Session 双面执行窗口 Design QA
+
+## Evidence
+
+- Source process truth: `D:\Temp\codex-clipboard-4ce9352c-275f-4c73-98d3-f7e836a82903.png`
+- Source result direction: `D:\Codex\.codex\generated_images\019fd512-4465-7af3-825e-d60c7c827dab\exec-34d52c54-3f93-4247-b6b4-a292478b50c0.png`
+- Browser implementation, process: `D:\Work\WorkGround2\design-qa-session-process-full.png`
+- Browser implementation, result: `D:\Work\WorkGround2\design-qa-session-result-full.png`
+- Browser implementation, running: `D:\Work\WorkGround2\design-qa-session-running-full.png`
+- Side-by-side process comparison: `D:\Work\WorkGround2\design-qa-session-process-comparison.png`
+- Side-by-side result comparison: `D:\Work\WorkGround2\design-qa-session-result-comparison.png`
+
+## Normalization
+
+- Browser viewport: 1280 × 720 CSS px.
+- Browser reported device pixel ratio: 1.375; captured screenshots are normalized to 1280 × 720 pixels.
+- Process source: 1140 × 256 pixels; compared using its 1045 × 220 work-window crop.
+- Result source: 1488 × 1060 pixels; compared using its 1030 × 455 result-card crop as content direction.
+- Default-session implementation work window: 760 × 220 CSS px.
+- Iris fixture running work window: 909.8 × 220 CSS px.
+- The user explicitly selected the existing 220px-high process window as one face, so the result direction is intentionally compressed into the same 220px frame rather than retaining the taller concept-card proportions.
+
+## State and interactions tested
+
+- Completed run defaults to the result face.
+- “查看过程” flips the same mounted window to its process face.
+- “查看结果” flips back without replacing the outer frame.
+- Running run has only a process face and displays only four observed events; no future placeholder, percentage, predicted route, or total-step forecast is rendered.
+- The process face keeps its event rail and selected detail mounted while the result face is visible.
+- Reduced-motion users receive an immediate face switch without the 3D transition.
+- Browser console errors/warnings checked: none.
+
+## Findings
+
+- No actionable P0/P1/P2 visual or interaction differences remain.
+- Fonts and typography: existing WorkGround2 typography and weights are preserved; the process hierarchy matches the source, and result copy uses the same UI scale.
+- Spacing and layout rhythm: both faces share one fixed 220px frame, border, radius, header height, and full-width placement. The result body is deliberately denser than the taller concept image to honor the selected fixed-size process frame.
+- Colors and visual tokens: implementation uses existing background, border, foreground, muted, error, and purple accent tokens. There is no large green success mark.
+- Image quality and asset fidelity: this component contains no raster imagery or custom illustrative assets; all controls use the existing icon library.
+- Copy and content: process labels come only from actual `RunEvent` records. Result detail uses the latest meaningful observed event and never invents changed files or validation facts.
+
+## Focused comparison
+
+The work window itself was compared as a focused region because the full app includes unrelated sidebar, composer, artifacts, and AddOn surfaces. The side-by-side evidence confirms the header, horizontal observed-event rail, selected-event detail, border treatment, fixed height, and result/process flip affordance.
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: the old terminal state collapsed to a compact run tab, so it did not share the process window's size or location.
+- Fix: replaced the compact terminal tab with a two-sided fixed work window; terminal transitions now set the result face, and the process face remains mounted behind it.
+- Post-fix evidence: `design-qa-session-process-comparison.png` and `design-qa-session-result-comparison.png`.
+- Result: no remaining P0/P1/P2 findings.
+
+## Implementation checklist
+
+- [x] Fixed-size shared work window.
+- [x] Running process face with observed events only.
+- [x] Automatic terminal flip to result.
+- [x] Manual process/result flip controls.
+- [x] Failure/cancelled result variants.
+- [x] Keyboard labels, `aria-busy`, live log, hidden-face tab isolation, and reduced motion.
+- [x] Browser interaction and console verification.
+
+## Follow-up polish
+
+- P3: when the backend later exposes typed changed-file and validation artifacts, the result face can add those sections without parsing log text.
+
+final result: passed

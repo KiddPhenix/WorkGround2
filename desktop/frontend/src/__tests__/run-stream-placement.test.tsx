@@ -38,6 +38,10 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const styles = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const terminalRule = styles.match(/\.session-run-stream__terminal\s*\{([^}]*)\}/)?.[1] ?? "";
 ok(!terminalRule.includes("background:") && !terminalRule.includes("padding:"), "terminal run row has no outer rectangular fill or padding");
+ok(terminalRule.includes("flex-direction: column"), "terminal runs keep full-width fixed work windows instead of compact tabs");
+const windowRule = styles.match(/\.run-work-window\s*\{([^}]*)\}/)?.[1] ?? "";
+ok(windowRule.includes("height: 220px") && windowRule.includes("min-height: 220px"), "process and result faces share one fixed-size window");
+ok(styles.includes('.run-work-window[data-face="result"] .run-work-window__inner'), "terminal result uses the same window flip surface");
 
 process.stdout.write(`\n${passed + failed} tests · ${passed} passed · ${failed} failed\n`);
 if (failed > 0) process.exit(1);

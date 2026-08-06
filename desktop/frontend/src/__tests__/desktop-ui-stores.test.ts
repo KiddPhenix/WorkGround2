@@ -136,6 +136,7 @@ function testRunTerminalGuard() {
   });
   setRunStatus("run-b", "completed");
   eq(useRunStore.getState().runs["run-b"].status, "completed", "run transitions to completed");
+  eq(useRunStore.getState().runs["run-b"].expanded, false, "terminal transition flips the run to its result face");
 
   // Terminal guard: can't change status after terminal
   setRunStatus("run-b", "running");

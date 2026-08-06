@@ -318,17 +318,18 @@ ok(
 );
 ok(
   finalDeclaration(stylesSource, ".session-run-stream--terminal", "display") === "flex" &&
-    finalDeclaration(stylesSource, ".session-run-stream--terminal", "overflow-x") === "auto",
-  "CSS: completed runs form a compact horizontal tab strip",
+    finalDeclaration(stylesSource, ".session-run-stream--terminal", "flex-direction") === "column",
+  "CSS: completed runs retain full-width work windows",
 );
 ok(
   finalDeclaration(stylesSource, ".session-run-stream__terminal", "display") === "flex" &&
-    finalDeclaration(stylesSource, ".session-run-stream__terminal", "overflow-x") === "auto",
-  "CSS: completed runs stay horizontal while another run is active",
+    finalDeclaration(stylesSource, ".session-run-stream__terminal", "flex-direction") === "column",
+  "CSS: completed runs remain stacked while another run is active",
 );
 ok(
-  finalDeclaration(stylesSource, ".session-run-stream--terminal .completed-run-tab", "width") === "auto",
-  "CSS: completed run tabs size to their content",
+  finalDeclaration(stylesSource, ".run-work-window", "height") === "220px" &&
+    finalDeclaration(stylesSource, ".run-work-window", "min-height") === "220px",
+  "CSS: process and result use the same fixed-size window",
 );
 ok(
   finalDeclaration(stylesSource, ".layout--workbench .conversation-viewport:has(.session-run-stream) .turn-collapse", "display") === "none",

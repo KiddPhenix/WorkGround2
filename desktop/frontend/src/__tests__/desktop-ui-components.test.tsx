@@ -390,13 +390,12 @@ installDom();
 
 {
   const container = render(<RunBlock run={COMPLETED_RUN} />);
-  ok(hasText(container, "运行完成"), "CompletedRunTab: shows completed label");
-  ok(hasText(container, "3 步"), "CompletedRunTab: shows step count");
-  ok(hasText(container, "4 秒"), "CompletedRunTab: shows elapsed seconds");
-  const btn = container.querySelector("button.completed-run-tab");
-  ok(btn !== null, "CompletedRunTab: is a native <button>");
-  ok(btn?.getAttribute("aria-expanded") === "false", "CompletedRunTab: aria-expanded is false");
-  ok(btn?.classList.contains("completed-run-tab--completed"), "CompletedRunTab: has --completed modifier class");
+  ok(hasText(container, "运行完成"), "ResultFace: shows completed label");
+  ok(hasText(container, "3 条记录"), "ResultFace: shows observed event count");
+  ok(hasText(container, "4 秒"), "ResultFace: shows elapsed seconds");
+  ok(container.querySelector(".run-work-window")?.getAttribute("data-face") === "result", "RunBlock: completed run defaults to result face");
+  ok(container.querySelector(".run-result-face--completed")?.getAttribute("aria-hidden") === "false", "ResultFace: completed face is visible");
+  ok(container.querySelector(".run-process-face")?.getAttribute("aria-hidden") === "true", "RunBlock: process face stays mounted behind result");
   cleanup();
 }
 
@@ -423,25 +422,24 @@ installDom();
 
 {
   const container = render(<RunBlock run={FAILED_RUN} />);
-  ok(hasText(container, "运行失败"), "CompletedRunTab: shows failed label");
-  ok(container.querySelector(".completed-run-tab--failed") !== null, "CompletedRunTab: has --failed modifier class");
+  ok(hasText(container, "运行失败"), "ResultFace: shows failed label");
+  ok(container.querySelector(".run-result-face--failed") !== null, "ResultFace: has --failed modifier class");
   cleanup();
 }
 
-// ── RunBlock native button test ──────────────────────────────────────────────
+// ── RunBlock face controls ───────────────────────────────────────────────────
 
 {
   const container = render(<RunBlock run={COMPLETED_RUN} />);
-  const btn = container.querySelector("button.completed-run-tab");
-  ok(btn !== null, "CompletedRunTab: native <button> element exists");
-  ok(btn?.tagName === "BUTTON", "CompletedRunTab: tag is BUTTON");
+  const btn = container.querySelector('button[aria-label="查看执行过程"]');
+  ok(btn !== null, "ResultFace: exposes a native process flip button");
+  ok(btn?.tagName === "BUTTON", "ResultFace: flip control is a button");
   cleanup();
 }
 
 {
   const container = render(<RunBlock run={RUNNING_RUN} />);
-  const btn = container.querySelector("button.completed-run-tab");
-  ok(btn === null, "ActiveRunView: not rendered as button (uses ActiveRunView div)");
+  ok(container.querySelector(".run-result-face") === null, "ActiveRunView: running state has no speculative result face");
   cleanup();
 }
 
@@ -449,8 +447,8 @@ installDom();
 
 {
   const container = render(<RunBlock run={COMPLETED_RUN} />);
-  // expanded=false, so CompletedRunTab is shown — no step tabs visible
-  ok(container.querySelector(".run-step-tab") === null, "CompletedRunTab: no step tabs rendered");
+  ok(container.querySelectorAll(".run-step-tab").length === 3, "RunBlock: completed process history remains mounted behind result");
+  ok(container.querySelector(".run-process-face")?.getAttribute("aria-hidden") === "true", "RunBlock: completed process history is hidden until flipped");
   cleanup();
 }
 

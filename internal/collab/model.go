@@ -87,7 +87,7 @@ type Room struct {
 	Name           string    `json:"name"`
 	Description    string    `json:"description,omitempty"`
 	TokenRequired  bool      `json:"tokenRequired"`
-	CreatedAt      time.Time `json:"createdAt"`
+	CreatedAt      time.Time `json:"createdAt" ts_type:"string"`
 	LatestSequence uint64    `json:"latestSequence"`
 }
 
@@ -107,8 +107,8 @@ type Member struct {
 	Role       string          `json:"role,omitempty"`
 	Agent      AgentDescriptor `json:"agent"`
 	Status     MemberStatus    `json:"status"`
-	JoinedAt   time.Time       `json:"joinedAt"`
-	LastSeenAt time.Time       `json:"lastSeenAt"`
+	JoinedAt   time.Time       `json:"joinedAt" ts_type:"string"`
+	LastSeenAt time.Time       `json:"lastSeenAt" ts_type:"string"`
 }
 
 type ChatMessage struct {
@@ -119,7 +119,7 @@ type ChatMessage struct {
 	MentionAgentIDs  []string  `json:"mentionAgentIds,omitempty"`
 	ReferenceIDs     []string  `json:"referenceIds,omitempty"`
 	Revision         uint64    `json:"revision"`
-	CreatedAt        time.Time `json:"createdAt"`
+	CreatedAt        time.Time `json:"createdAt" ts_type:"string"`
 }
 
 type Contribution struct {
@@ -135,7 +135,7 @@ type Contribution struct {
 	ActionNeeded bool              `json:"actionNeeded,omitempty"`
 	Revision     uint64            `json:"revision"`
 	Metadata     map[string]string `json:"metadata,omitempty"`
-	CreatedAt    time.Time         `json:"createdAt"`
+	CreatedAt    time.Time         `json:"createdAt" ts_type:"string"`
 }
 
 type AgentRequest struct {
@@ -147,8 +147,8 @@ type AgentRequest struct {
 	Status         AgentRequestStatus `json:"status"`
 	DecisionBy     string             `json:"decisionBy,omitempty"`
 	DecisionNote   string             `json:"decisionNote,omitempty"`
-	CreatedAt      time.Time          `json:"createdAt"`
-	UpdatedAt      time.Time          `json:"updatedAt"`
+	CreatedAt      time.Time          `json:"createdAt" ts_type:"string"`
+	UpdatedAt      time.Time          `json:"updatedAt" ts_type:"string"`
 }
 
 type AgentRun struct {
@@ -162,7 +162,7 @@ type AgentRun struct {
 	Status       AgentRunStatus `json:"status"`
 	Summary      string         `json:"summary,omitempty"`
 	Error        string         `json:"error,omitempty"`
-	UpdatedAt    time.Time      `json:"updatedAt"`
+	UpdatedAt    time.Time      `json:"updatedAt" ts_type:"string"`
 }
 
 type AgentResult struct {
@@ -174,7 +174,7 @@ type AgentResult struct {
 	Summary      string         `json:"summary"`
 	ReferenceIDs []string       `json:"referenceIds,omitempty"`
 	Handoffs     []AgentHandoff `json:"handoffs,omitempty"`
-	CreatedAt    time.Time      `json:"createdAt"`
+	CreatedAt    time.Time      `json:"createdAt" ts_type:"string"`
 }
 
 // AgentHandoff is an explicit, addressable request for another Room Agent.
@@ -199,8 +199,8 @@ type FileOffer struct {
 	ChunkSize    int64      `json:"chunkSize"`
 	ChunkCount   int        `json:"chunkCount"`
 	Revision     uint64     `json:"revision"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	RevokedAt    *time.Time `json:"revokedAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt" ts_type:"string"`
+	RevokedAt    *time.Time `json:"revokedAt,omitempty" ts_type:"string"`
 }
 
 type Reaction struct {
@@ -208,7 +208,7 @@ type Reaction struct {
 	AuthorID  string    `json:"authorId"`
 	TargetID  string    `json:"targetId"`
 	Kind      string    `json:"kind"`
-	CreatedAt time.Time `json:"createdAt"`
+	CreatedAt time.Time `json:"createdAt" ts_type:"string"`
 }
 
 type SystemEvent struct {
@@ -240,7 +240,7 @@ type RoomEvent struct {
 	ActorID     string          `json:"actorId,omitempty"`
 	RequestID   string          `json:"requestId"`
 	CausationID string          `json:"causationId,omitempty"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	CreatedAt   time.Time       `json:"createdAt" ts_type:"string"`
 	Payload     json.RawMessage `json:"payload"`
 }
 
@@ -292,7 +292,7 @@ type SessionInput struct {
 type SweepInput struct {
 	RequestID string    `json:"requestId"`
 	Room      string    `json:"room"`
-	Before    time.Time `json:"before"`
+	Before    time.Time `json:"before" ts_type:"string"`
 }
 
 type CommandEnvelope struct {
