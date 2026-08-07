@@ -98,24 +98,21 @@ func openRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInp
 }
 
 func relayConfigForRoute(route CollaborationRouteInput) (config.RelayConfig, error) {
-	if strings.TrimSpace(route.RelayID) != "" {
-		relay, err := collaborationRelayByID(route.RelayID)
+	if strings.TrimSpace(route.URL) != "" {
+		relay, err := collaborationRelayByURL(route.URL)
 		if err == nil {
-			if route.URL != "" && !strings.EqualFold(strings.TrimSpace(route.URL), strings.TrimSpace(relay.URL)) {
-				return config.RelayConfig{}, fmt.Errorf("Relay %q URL differs from the trusted Settings entry", route.RelayID)
-			}
 			return relay, nil
 		}
-		if route.URL == "" {
-			return config.RelayConfig{}, err
-		}
+		// An invitation may carry an unconfigured WSS route. Plaintext routes
+		// still require an explicit trusted Settings entry for the same URL.
+		return config.RelayConfig{ID: route.RelayID, Name: route.RelayID, URL: route.URL, Enabled: true}, nil
 	}
-	if strings.TrimSpace(route.URL) == "" {
-		return config.RelayConfig{}, fmt.Errorf("Relay route URL is required")
+	if strings.TrimSpace(route.RelayID) != "" {
+		// Legacy persisted routes may omit the URL. ID lookup remains only as a
+		// compatibility path; IDs are local labels and are not cross-client trust keys.
+		return collaborationRelayByID(route.RelayID)
 	}
-	// An invitation may carry an unconfigured WSS route. Plaintext routes still
-	// require an explicit trusted Settings entry with allow_insecure enabled.
-	return config.RelayConfig{ID: route.RelayID, Name: route.RelayID, URL: route.URL, Enabled: true}, nil
+	return config.RelayConfig{}, fmt.Errorf("Relay route URL is required")
 }
 
 func (p *relayCollaborationPeer) readLoop() {

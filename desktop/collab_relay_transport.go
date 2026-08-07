@@ -204,6 +204,34 @@ func collaborationRelayByID(relayID string) (config.RelayConfig, error) {
 	return config.RelayConfig{}, fmt.Errorf("Relay %q is not configured", relayID)
 }
 
+func collaborationRelayByURL(relayURL string) (config.RelayConfig, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return config.RelayConfig{}, fmt.Errorf("load Relay settings: %w", err)
+	}
+	want, err := relayURLKey(relayURL)
+	if err != nil {
+		return config.RelayConfig{}, err
+	}
+	for _, relay := range cfg.Collaboration.Relays {
+		key, keyErr := relayURLKey(relay.URL)
+		if keyErr == nil && key == want {
+			return relay, nil
+		}
+	}
+	return config.RelayConfig{}, fmt.Errorf("Relay URL %q is not configured", relayURL)
+}
+
+func relayURLKey(raw string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Hostname() == "" {
+		return "", fmt.Errorf("invalid Relay URL %q", raw)
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	return u.String(), nil
+}
+
 func waitRelayControl(socket *collaborationRelaySocket, requestID string, accepted ...string) (relayproto.Header, []byte, error) {
 	_ = socket.conn.SetReadDeadline(time.Now().Add(relayControlTimeout))
 	defer socket.conn.SetReadDeadline(time.Time{})
