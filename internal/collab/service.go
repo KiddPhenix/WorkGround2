@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -37,9 +38,11 @@ var fallbackID atomic.Uint64
 
 // Service is the single mutation entrance for all hosted rooms.
 type Service struct {
-	store *FileStore
-	hub   *Hub
-	now   func() time.Time
+	store      *FileStore
+	hub        *Hub
+	now        func() time.Time
+	snapshotMu sync.Mutex
+	snapshots  map[string]*snapshotBlob
 }
 
 func NewService(store *FileStore, hubs ...*Hub) *Service {
@@ -47,7 +50,7 @@ func NewService(store *FileStore, hubs ...*Hub) *Service {
 	if len(hubs) > 0 && hubs[0] != nil {
 		hub = hubs[0]
 	}
-	return &Service{store: store, hub: hub, now: time.Now}
+	return &Service{store: store, hub: hub, now: time.Now, snapshots: map[string]*snapshotBlob{}}
 }
 
 func (s *Service) Hub() *Hub { return s.hub }

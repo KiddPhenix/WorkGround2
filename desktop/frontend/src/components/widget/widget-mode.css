@@ -517,6 +517,13 @@ body:has(.widget-mode) .app {
   white-space: nowrap;
 }
 
+.widget-idle__controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+
 .widget-new {
   position: relative;
   flex: 0 0 216px;
@@ -540,6 +547,17 @@ body:has(.widget-mode) .app {
   flex-direction: column;
   align-items: flex-start;
   line-height: 1.05;
+}
+
+.widget-new > .widget-new__glyph,
+.widget-workspace__glyph {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+}
+
+.widget-new > .widget-new__glyph {
+  flex-direction: row;
 }
 
 .widget-new strong {
@@ -685,6 +703,7 @@ body:has(.widget-mode) .app {
 }
 
 .widget-workspace__toggle {
+  position: relative;
   max-width: 250px;
   min-height: 48px;
   padding: 5px 13px;

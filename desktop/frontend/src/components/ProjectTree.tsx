@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, Pencil, Plus, MoreHorizontal, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Tag, Users } from "lucide-react";
+import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app } from "../lib/bridge";
@@ -65,6 +65,10 @@ function isTopicNode(node: ProjectNode): boolean {
   return node.kind === "topic" || node.kind === "global_topic";
 }
 
+export function projectTreeNodeScope(node: ProjectNode): "global" | "project" {
+  return node.kind.startsWith("global_") ? "global" : "project";
+}
+
 function comparableSessionPath(path: string): string {
   const trimmed = path.trim().replace(/\\/g, "/");
   return /^[a-z]:/i.test(trimmed) ? trimmed.toLowerCase() : trimmed;
@@ -86,7 +90,7 @@ export type ProjectTreeTopicOpenRequest = {
 
 export function projectTreeTopicOpenRequest(node: ProjectNode): ProjectTreeTopicOpenRequest | null {
   if (!isTopicNode(node) && !isRuntimeSessionNode(node)) return null;
-  const scope = node.kind === "global_topic" || node.kind === "global_session" ? "global" : "project";
+  const scope = projectTreeNodeScope(node);
   const status = topicStatus(node);
   const runtimeHint = node.running || status ? { running: Boolean(node.running), status: status || undefined, turnStartedAt: node.turnStartedAt } : undefined;
   return {
@@ -136,12 +140,33 @@ function topicIsActive(node: ProjectNode, activeScope?: string, activeWorkspaceR
   if (!isTopicNode(node) && !isRuntimeSessionNode(node) && !isCrewSessionNode(node)) return false;
   if (node.sessionPath) return projectTreeSessionPathMatches(activeSessionPath, node.sessionPath);
   if (activeSessionPath && asArray(node.children).some(isRuntimeSessionNode)) return false;
-  const scope = node.kind === "global_topic" ? "global" : "project";
+  const scope = projectTreeNodeScope(node);
   return (
     activeTopicId === node.topicId &&
     activeScope === scope &&
     (scope === "global" || activeWorkspaceRoot === node.root)
   );
+}
+
+export function projectTreeActiveKey(
+  nodes: ProjectNode[],
+  activeScope?: string,
+  activeWorkspaceRoot?: string,
+  activeTopicId?: string,
+  activeSessionPath?: string,
+): string | null {
+  let activeKey: string | null = null;
+  const walk = (nodeList: ProjectNode[], depth: number) => {
+    for (const node of nodeList) {
+      if (!node) continue;
+      if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) {
+        activeKey = projectNodeKey(node, depth);
+      }
+      walk(asArray(node.children), depth + 1);
+    }
+  };
+  walk(nodes, 0);
+  return activeKey;
 }
 
 function topicMetaLine(node: ProjectNode, t: Translator, compact = false): string {
@@ -286,6 +311,12 @@ function topicActivityDateLabel(ms: number): string {
 type ProjectDropPosition = "before" | "after";
 type WorkbenchOrganizeMode = "project" | "recent" | "time";
 type WorkbenchSortMode = "created" | "updated";
+export type WorkbenchRecentLimit = 1 | 3 | 5 | 10;
+
+export type WorkbenchRecentSettings = {
+  showExternal: boolean;
+  limit: WorkbenchRecentLimit;
+};
 
 type CollapseSnapshot = {
   expanded: Set<string>;
@@ -293,13 +324,16 @@ type CollapseSnapshot = {
 };
 
 type WorkbenchTreeSections = {
-  pinned: ProjectNode[];
+  recent: ProjectNode[];
   projects: ProjectNode[];
 };
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 const WORKBENCH_ORGANIZE_KEY = "projectTree:workbenchOrganize";
 const WORKBENCH_SORT_KEY = "projectTree:workbenchSort";
+const WORKBENCH_RECENT_KEY = "projectTree:workbenchRecent";
+const WORKBENCH_RECENT_LIMITS: WorkbenchRecentLimit[] = [1, 3, 5, 10];
+const DEFAULT_WORKBENCH_RECENT: WorkbenchRecentSettings = { showExternal: true, limit: 1 };
 const READ_ACTIVITY_KEY = "projectTree:readActivity";
 const READ_ACTIVITY_INIT_KEY = "projectTree:readActivityInitialized";
 
@@ -344,6 +378,34 @@ function loadWorkbenchSortMode(): WorkbenchSortMode {
     /* localStorage unavailable */
   }
   return "updated";
+}
+
+export function parseWorkbenchRecentSettings(value: unknown): WorkbenchRecentSettings {
+  if (!value || typeof value !== "object") return DEFAULT_WORKBENCH_RECENT;
+  const candidate = value as Partial<WorkbenchRecentSettings>;
+  return {
+    showExternal: typeof candidate.showExternal === "boolean" ? candidate.showExternal : DEFAULT_WORKBENCH_RECENT.showExternal,
+    limit: WORKBENCH_RECENT_LIMITS.includes(candidate.limit as WorkbenchRecentLimit)
+      ? candidate.limit as WorkbenchRecentLimit
+      : DEFAULT_WORKBENCH_RECENT.limit,
+  };
+}
+
+function loadWorkbenchRecentSettings(): WorkbenchRecentSettings {
+  try {
+    const value = localStorage.getItem(WORKBENCH_RECENT_KEY);
+    return value ? parseWorkbenchRecentSettings(JSON.parse(value)) : DEFAULT_WORKBENCH_RECENT;
+  } catch {
+    return DEFAULT_WORKBENCH_RECENT;
+  }
+}
+
+function saveWorkbenchRecentSettings(settings: WorkbenchRecentSettings) {
+  try {
+    localStorage.setItem(WORKBENCH_RECENT_KEY, JSON.stringify(settings));
+  } catch {
+    /* localStorage unavailable */
+  }
 }
 
 const CREW_PROJECT_ORDER_KEY = "__crew__";
@@ -460,42 +522,45 @@ function arrangeWorkbenchTree(nodes: ProjectNode[], organizeMode: WorkbenchOrgan
   });
 }
 
-function splitWorkbenchPinnedTree(nodes: ProjectNode[], sortMode: WorkbenchSortMode): WorkbenchTreeSections {
-  const pinnedTopics: ProjectNode[] = [];
-  const pinnedProjects: ProjectNode[] = [];
+export function projectTreeIsExternalCall(node: ProjectNode): boolean {
+  const source = (node.sessionSource ?? "").trim().toLowerCase();
+  const channel = (node.channel ?? "").trim();
+  const titleSource = (node.titleSource ?? "").trim().toLowerCase();
+  if (channel) return true;
+  if (source.startsWith("work:") || source === "collaboration") return false;
+  if (source) return true;
+  return Boolean(titleSource && titleSource !== "manual" && titleSource !== "auto");
+}
+
+export function splitWorkbenchRecentTree(
+  nodes: ProjectNode[],
+  sortMode: WorkbenchSortMode,
+  settings: WorkbenchRecentSettings,
+): WorkbenchTreeSections {
+  const recentTopics: ProjectNode[] = [];
   const projects: ProjectNode[] = [];
 
   for (const node of nodes) {
     if (!node) continue;
     const isFolder = node.kind === "project" || node.kind === "global_folder" || node.kind === "crew_folder";
     if (!isFolder) {
-      if (node.pinned) pinnedTopics.push(node);
-      else projects.push(node);
+      if (isTopicNode(node)) recentTopics.push(node);
+      projects.push(node);
       continue;
     }
-
-    if (node.pinned && node.kind === "project") {
-      pinnedProjects.push(node);
-      continue;
-    }
-
-    const children = asArray(node.children);
-    const nextChildren: ProjectNode[] = [];
-    for (const child of children) {
-      if (isTopicNode(child) && child.pinned) {
-        pinnedTopics.push(child);
-        continue;
-      }
-      nextChildren.push(child);
-    }
-    projects.push({ ...node, children: nextChildren });
+    if (node.kind !== "crew_folder") recentTopics.push(...asArray(node.children).filter(isTopicNode));
+    projects.push(node);
   }
 
-  pinnedTopics.sort((a, b) => topicSortValue(b, sortMode) - topicSortValue(a, sortMode));
-  pinnedProjects.sort((a, b) => projectSortValue(b, sortMode) - projectSortValue(a, sortMode));
+  recentTopics.sort((a, b) => {
+    if (Boolean(a.running) !== Boolean(b.running)) return a.running ? -1 : 1;
+    return topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
+  });
 
   return {
-    pinned: [...pinnedTopics, ...pinnedProjects],
+    recent: recentTopics
+      .filter((node) => settings.showExternal || !projectTreeIsExternalCall(node))
+      .slice(0, settings.limit),
     projects,
   };
 }
@@ -505,6 +570,23 @@ function projectAccentStyle(color?: string, fallbackValue?: string): CSSProperti
   const value = projectColorValue(color) || fallbackValue;
   if (!value) return undefined;
   return { "--project-accent": value } as CSSProperties;
+}
+
+const projectAccentPalette = ["#57b987", "#a970df", "#e9a03b", "#369fe8", "#d56f92", "#64a7c8"];
+
+function projectAccentFallback(node: ProjectNode): string {
+  if (node.kind === "global_folder") return "#369fe8";
+  if (node.kind === "crew_folder") return "#e9a03b";
+  const source = node.root || node.label || node.key || "project";
+  let hash = 0;
+  for (let index = 0; index < source.length; index += 1) hash = ((hash << 5) - hash + source.charCodeAt(index)) | 0;
+  return projectAccentPalette[Math.abs(hash) % projectAccentPalette.length];
+}
+
+function recentProjectLabel(node: ProjectNode): string {
+  if (projectTreeNodeScope(node) === "global") return "Global";
+  const root = (node.root || "").replace(/[\\/]+$/, "");
+  return root.split(/[\\/]/).filter(Boolean).pop() || "";
 }
 
 function colorMenuLabel(label: string, color?: string, active = false) {
@@ -620,7 +702,11 @@ export function ProjectTree({
   const [platform, setPlatform] = useState("");
   const [workbenchOrganizeMode, setWorkbenchOrganizeMode] = useState<WorkbenchOrganizeMode>(loadWorkbenchOrganizeMode);
   const [workbenchSortMode] = useState<WorkbenchSortMode>(loadWorkbenchSortMode);
+  const [workbenchRecentSettings, setWorkbenchRecentSettings] = useState<WorkbenchRecentSettings>(loadWorkbenchRecentSettings);
+  const [recentSettingsOpen, setRecentSettingsOpen] = useState(false);
   const [readActivity, setReadActivity] = useState<ProjectTreeReadActivity>(loadReadActivity);
+  const recentSettingsRef = useRef<HTMLDivElement>(null);
+  const recentSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
   const filterTriggerRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -642,6 +728,14 @@ export function ProjectTree({
     setMenuPoint(null);
     setConfirmAction(null);
     setConfirmRemoveProject(null);
+  }, []);
+
+  const updateWorkbenchRecentSettings = useCallback((patch: Partial<WorkbenchRecentSettings>) => {
+    setWorkbenchRecentSettings((current) => {
+      const next = parseWorkbenchRecentSettings({ ...current, ...patch });
+      saveWorkbenchRecentSettings(next);
+      return next;
+    });
   }, []);
 
   const updateManuallyCollapsed = useCallback((updater: (prev: Set<string>) => Set<string>) => {
@@ -795,6 +889,24 @@ export function ProjectTree({
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [filterMenuOpen]);
+
+  useEffect(() => {
+    if (!recentSettingsOpen) return;
+    const onMouseDown = (event: MouseEvent) => {
+      if (recentSettingsRef.current && !recentSettingsRef.current.contains(event.target as Node)) setRecentSettingsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setRecentSettingsOpen(false);
+      recentSettingsTriggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [recentSettingsOpen]);
 
   const moveMenuFocus = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
@@ -1107,9 +1219,9 @@ export function ProjectTree({
   }, [compactTopics, query, tree, timeFilter, workbenchOrganizeMode, workbenchSortMode]);
 
   const workbenchTreeSections = useMemo<WorkbenchTreeSections>(() => {
-    if (!compactTopics) return { pinned: [], projects: visibleTree };
-    return splitWorkbenchPinnedTree(visibleTree, workbenchSortMode);
-  }, [compactTopics, visibleTree, workbenchSortMode]);
+    if (!compactTopics) return { recent: [], projects: visibleTree };
+    return splitWorkbenchRecentTree(visibleTree, workbenchSortMode, workbenchRecentSettings);
+  }, [compactTopics, visibleTree, workbenchRecentSettings, workbenchSortMode]);
 
   const projectDragEnabled = query.trim() === "";
 
@@ -1150,6 +1262,11 @@ export function ProjectTree({
     [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree],
   );
 
+  const activeRowKey = useMemo(
+    () => projectTreeActiveKey(tree, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath),
+    [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, tree],
+  );
+
   useEffect(() => {
     if (activeAncestorKeys.length === 0) return;
     setExpanded((prev) => {
@@ -1164,7 +1281,7 @@ export function ProjectTree({
     });
   }, [activeAncestorKeys, manuallyCollapsed]);
 
-  const renderNode = (node: ProjectNode | null | undefined, depth: number, section: "pinned" | "projects" = "projects", isVisible = true) => {
+  const renderNode = (node: ProjectNode | null | undefined, depth: number, section: "recent" | "projects" = "projects", isVisible = true) => {
     if (!node) return null;
     const key = projectNodeKey(node, depth);
     const children = asArray(node.children);
@@ -1178,7 +1295,7 @@ export function ProjectTree({
       const scope = isCrewSessionNode(node) ? "global" : (openRequest?.scope ?? "project");
       const scopeClass = scope === "global" ? " project-tree__topic--global" : " project-tree__topic--project";
       const accentStyle = isCrewSessionNode(node) ? undefined : projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
-      const active = topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
+      const active = section !== "recent" && key === activeRowKey;
       const label = (node.label || node.topicId || "Untitled").replace(/^●\s*/, "");
       const activityAt = node.lastActivityAt || node.createdAt || 0;
       const sideTimeVisible = compactTopics || creationTopics;
@@ -1202,7 +1319,6 @@ export function ProjectTree({
       const topicMenuOpen = (!isSessionNode || workSession) && menuTopic === key;
       const pinned = Boolean(node.pinned);
       const pinLabel = t(pinned ? "projectTree.unpinTopic" : "projectTree.pinTopic");
-      const trashActionLabel = workSession ? t("history.moveToTrash") : t("projectTree.archiveTopic");
       const openTopicMenu = (event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>) => {
         if (isSessionNode && !workSession) return;
         event.preventDefault();
@@ -1286,6 +1402,7 @@ export function ProjectTree({
             className="project-tree__topic-main"
             title={title}
             style={{ paddingLeft: 14 + depth * 16 }}
+            aria-current={active ? "page" : undefined}
             onClick={() => {
               if (isCrewSessionNode(node)) {
                 markNodeRead(node);
@@ -1322,10 +1439,10 @@ export function ProjectTree({
               startRenameTopic(node, label);
             }}
           >
-            {compactTopics && visualState !== "none" && (
+            {compactTopics && (visualState !== "none" || section === "recent") && (
               <span
-                className={`project-tree__topic-visual project-tree__topic-visual--${visualState}`}
-                title={visualState === "failed" ? statusLabel : visualState === "running" ? statusLabel || t("projectTree.running") : t("projectTree.status.done")}
+                className={`project-tree__topic-visual project-tree__topic-visual--${visualState === "none" ? "recent" : visualState}`}
+                title={visualState === "none" ? undefined : visualState === "failed" ? statusLabel : visualState === "running" ? statusLabel || t("projectTree.running") : t("projectTree.status.done")}
                 aria-hidden="true"
               />
             )}
@@ -1337,6 +1454,11 @@ export function ProjectTree({
             {collaborationSession && (
               <span className="project-tree__work-icon" title={t("collab.title")} aria-label={t("collab.title")}>
                 <Users size={12} aria-hidden="true" />
+              </span>
+            )}
+            {!workSession && !collaborationSession && !sourceBadge && (
+              <span className="project-tree__session-icon" aria-hidden="true">
+                <MessageSquare size={13} />
               </span>
             )}
             <span className="project-tree__topic-copy">
@@ -1365,6 +1487,11 @@ export function ProjectTree({
                 </span>
               )}
             </span>
+            {compactTopics && section === "recent" && recentProjectLabel(node) && (
+              <span className="project-tree__topic-project" aria-hidden="true">
+                {recentProjectLabel(node)}
+              </span>
+            )}
             {sideTimeVisible && !compactTopics && (
               <span className={`project-tree__topic-side${!timeLabel && !showStatusInSide ? " project-tree__topic-side--empty" : ""}`} aria-hidden="true">
                 {showStatusInSide && <span className={`project-tree__topic-state project-tree__topic-state--${status}`} title={statusLabel} />}
@@ -1383,9 +1510,9 @@ export function ProjectTree({
             )}
           </button>
           {!compactTopics && unread && <span className="project-tree__topic-unread-dot" aria-hidden="true" />}
-          {projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node), workSession) && (
+          {(section === "recent" || !compactTopics) && projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node), workSession) && (
             <span className="project-tree__topic-actions" aria-label={t("projectTree.topicActions")}>
-              {!workSession && <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
+              {section === "recent" && !workSession && <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
                 <button
                   className={`project-tree__topic-action${pinned ? " project-tree__topic-action--pinned" : ""}`}
                   type="button"
@@ -1401,18 +1528,16 @@ export function ProjectTree({
                   <Pin size={15} aria-hidden="true" />
                 </button>
               </Tooltip>}
-              {(!isSessionNode || workSession) && <Tooltip label={trashActionLabel} side="top" className="project-tree__topic-action-slot">
+              {!compactTopics && section !== "recent" && (!isSessionNode || workSession) && <Tooltip label={t("projectTree.topicActions")} side="top" className="project-tree__topic-action-slot">
                 <button
-                  className="project-tree__topic-action project-tree__topic-action--archive"
+                  className="project-tree__topic-action project-tree__topic-action--more"
                   type="button"
-                  aria-label={trashActionLabel}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    void trashTopic(topicId);
-                  }}
+                  aria-label={t("projectTree.topicActions")}
+                  aria-haspopup="menu"
+                  aria-expanded={topicMenuOpen}
+                  onClick={openTopicMenu}
                 >
-                  <Archive size={15} aria-hidden="true" />
+                  <MoreHorizontal size={16} aria-hidden="true" />
                 </button>
               </Tooltip>}
             </span>
@@ -1452,13 +1577,13 @@ export function ProjectTree({
     if (node.kind === "crew_folder") {
       const scopeClass = " project-tree__folder--global";
       const crewLabel = node.label || "Crew";
-      const projectActive = children.some((child) => topicIsActive(child, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath));
+      const projectActive = activeAncestorKeys.includes(key);
       const folderClass = `project-tree__folder project-tree__folder--crew${scopeClass}${isExpanded ? " project-tree__folder--expanded" : ""}${projectActive ? " project-tree__folder--active" : ""}`;
       return (
         <div key={key}>
           <div
             className={folderClass}
-            style={{ "--project-accent": "var(--project-tree-global-accent)" } as CSSProperties}
+            style={{ "--project-accent": projectAccentFallback(node) } as CSSProperties}
           >
             <button
               type="button"
@@ -1468,12 +1593,15 @@ export function ProjectTree({
               onClick={() => { if (folderDisclosure.canExpand) toggleExpand(key); }}
               aria-expanded={folderDisclosure.ariaExpanded}
             >
-              <span className={folderDisclosure.iconStackClassName}>
-                {folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+              <span className="project-tree__folder-chevron" aria-hidden="true">
+                {folderDisclosure.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
               </span>
+              <span className="project-tree__folder-color" aria-hidden="true" />
+              {folderDisclosure.isOpen ? <FolderOpen size={16} className="project-tree__folder-icon" /> : <Folder size={16} className="project-tree__folder-icon" />}
               <span className="project-tree__folder-heading">
                 <span className="project-tree__folder-label">{crewLabel}</span>
               </span>
+              <span className="project-tree__folder-count" aria-label={`${children.length}`}>{children.length}</span>
             </button>
           </div>
           {hasChildren && (
@@ -1490,17 +1618,17 @@ export function ProjectTree({
     const scope = node.kind === "global_folder" ? "global" : "project";
     const scopeClass = scope === "global" ? " project-tree__folder--global" : " project-tree__folder--project";
     const pinnedClass = node.pinned ? " project-tree__folder--pinned" : "";
-    const accentStyle = projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
+    const accentStyle = projectAccentStyle(node.projectColor, projectAccentFallback(node));
     const projectRoot = scope === "global" ? "" : node.root ?? "";
     const projectDragKey = scope === "global" ? GLOBAL_PROJECT_ORDER_KEY : projectRoot;
     const projectPath = node.root ?? "";
     const colorTargetRoot = scope === "global" ? "" : projectPath;
     const projectLabel = node.label || (scope === "global" ? "Global" : "Untitled");
     const projectPinned = Boolean(node.pinned);
-    const projectActive = activeScope === scope && (scope === "global" || activeWorkspaceRoot === node.root);
+    const projectActive = activeAncestorKeys.includes(key) || (activeScope === scope && (scope === "global" || activeWorkspaceRoot === node.root));
     const projectMenuOpen = menuProject?.key === key;
     const activeTopicInProject = Boolean(activeTopicId) && activeScope === scope && (scope === "global" || activeWorkspaceRoot === projectRoot);
-    const draggableProject = section !== "pinned" && projectDragEnabled && depth === 0 && Boolean(projectDragKey) && editingProject?.key !== key;
+    const draggableProject = section !== "recent" && projectDragEnabled && depth === 0 && Boolean(projectDragKey) && editingProject?.key !== key;
     const projectDropPosition = dropProject?.root === projectDragKey ? dropProject.position : null;
     const handleProjectDragStart = (event: ReactDragEvent<HTMLElement>) => {
       if (!draggableProject) return;
@@ -1626,6 +1754,27 @@ export function ProjectTree({
         : []),
     ];
     const workbenchProjectMenuItems: ContextMenuItem[] = [
+      {
+        key: "new-session",
+        icon: <Plus size={13} />,
+        label: t("projectTree.newTopic"),
+        onSelect: () => {
+          void handleCreateTopic(scope, projectRoot, key);
+        },
+      },
+      ...(onCreateWork
+        ? [
+            {
+              key: "new-work",
+              icon: <BriefcaseBusiness size={13} />,
+              label: t("projectTree.newWorkTooltip"),
+              onSelect: () => {
+                void onCreateWork(scope, projectRoot);
+              },
+            },
+          ]
+        : []),
+      { type: "separator" as const, key: "create-separator" },
       ...(scope === "project"
         ? [
             {
@@ -1667,6 +1816,8 @@ export function ProjectTree({
         label: t("projectTree.renameProjectWorkbench"),
         onSelect: () => startRenameProject(key, projectRoot, projectLabel),
       },
+      { type: "separator" as const, key: "visual-separator" },
+      ...projectColorMenuItems,
       {
         key: "archive-active-topic",
         icon: <Archive size={13} />,
@@ -1731,7 +1882,7 @@ export function ProjectTree({
     return (
       <div key={key} className="project-tree__project-wrapper">
         <div
-          className={`project-tree__folder${scopeClass}${pinnedClass}${node.projectColor ? " project-tree__folder--has-color" : ""}${draggableProject ? " project-tree__folder--draggable" : ""}${projectActive ? " project-tree__folder--active" : ""}${projectMenuOpen ? " project-tree__folder--menu-open" : ""}${dragProjectRoot === projectDragKey ? " project-tree__folder--dragging" : ""}${projectDropPosition ? ` project-tree__folder--drop-${projectDropPosition}` : ""}`}
+          className={`project-tree__folder${scopeClass}${pinnedClass} project-tree__folder--has-color${draggableProject ? " project-tree__folder--draggable" : ""}${projectActive ? " project-tree__folder--active" : ""}${projectMenuOpen ? " project-tree__folder--menu-open" : ""}${dragProjectRoot === projectDragKey ? " project-tree__folder--dragging" : ""}${projectDropPosition ? ` project-tree__folder--drop-${projectDropPosition}` : ""}`}
           style={accentStyle}
           draggable={draggableProject}
           aria-grabbed={draggableProject ? dragProjectRoot === projectRoot : undefined}
@@ -1759,11 +1910,13 @@ export function ProjectTree({
             }}
             aria-expanded={folderDisclosure.ariaExpanded}
           >
-            <span className={folderDisclosure.iconStackClassName}>
-              {folderDisclosure.isOpen ? <FolderOpen size={14} className="project-tree__folder-icon" /> : <Folder size={14} className="project-tree__folder-icon" />}
+            <span className="project-tree__folder-chevron" aria-hidden="true">
+              {folderDisclosure.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </span>
             <span className="project-tree__folder-color" aria-hidden="true" />
+            {folderDisclosure.isOpen ? <FolderOpen size={16} className="project-tree__folder-icon" /> : <Folder size={16} className="project-tree__folder-icon" />}
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>{projectLabel}</span>
+            <span className="project-tree__folder-count" aria-label={`${children.length}`}>{children.length}</span>
           </button>
           {creationTopics && (
             <Tooltip label={t("projectTree.newTopicTooltip")} className="project-tree__action-slot">
@@ -1799,50 +1952,6 @@ export function ProjectTree({
           )}
           {compactTopics && (
             <div className="project-tree__workspace-actions" aria-label={t("projectTree.projectActions")}>
-              <Tooltip label={t("projectTree.newTopicTooltip")} className="project-tree__workspace-action-slot">
-                <button
-                  type="button"
-                  className="project-tree__workspace-action"
-                  aria-label={t("projectTree.newTopicTooltip")}
-                  disabled={creatingProject !== null}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void handleCreateTopic(scope, projectRoot, key);
-                  }}
-                >
-                  <Plus size={14} aria-hidden="true" />
-                </button>
-              </Tooltip>
-              {onCreateWork && (
-                <Tooltip label={t("projectTree.newWorkTooltip")} className="project-tree__workspace-action-slot">
-                  <button
-                    type="button"
-                    className="project-tree__workspace-action"
-                    aria-label={t("projectTree.newWorkTooltip")}
-                    disabled={creatingProject !== null}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void onCreateWork(scope, projectRoot);
-                    }}
-                  >
-                    <BriefcaseBusiness size={14} aria-hidden="true" />
-                  </button>
-                </Tooltip>
-              )}
-              {scope === "project" && (
-                <Tooltip label={t("projectTree.visualLabel")} className="project-tree__workspace-action-slot">
-                  <button
-                    type="button"
-                    className={`project-tree__workspace-action${node.projectColor ? " project-tree__workspace-action--active" : ""}`}
-                    aria-label={t("projectTree.visualLabel")}
-                    aria-haspopup="menu"
-                    aria-expanded={projectMenuOpen}
-                    onClick={(event) => openProjectMenu(event, "color")}
-                  >
-                    <Tag size={14} aria-hidden="true" />
-                  </button>
-                </Tooltip>
-              )}
               <Tooltip label={t("projectTree.projectActions")} className="project-tree__workspace-action-slot">
                 <button
                   type="button"
@@ -1852,7 +1961,7 @@ export function ProjectTree({
                   aria-expanded={projectMenuOpen}
                   onClick={openProjectMenu}
                 >
-                  <MoreHorizontal size={15} aria-hidden="true" />
+                  <MoreVertical size={17} aria-hidden="true" />
                 </button>
               </Tooltip>
             </div>
@@ -1878,24 +1987,14 @@ export function ProjectTree({
   };
 
   const timeFilterBadge = timeFilter !== "all" ? (timeFilter === "1d" ? "24h" : timeFilter) : "";
-  const timeFilterDisplayLabel = timeFilter === "all" ? t("projectTree.timeFilterAll")
-    : timeFilter === "10" ? t("projectTree.timeFilter10")
-    : timeFilter === "20" ? t("projectTree.timeFilter20")
-    : timeFilter === "1h" ? t("projectTree.timeFilter1h")
-    : timeFilter === "3h" ? t("projectTree.timeFilter3h")
-    : timeFilter === "5h" ? t("projectTree.timeFilter5h")
-    : t("projectTree.timeFilter1d");
-  const renderTimeFilterControl = (mode: "classic" | "workbench") => {
-    const workbench = mode === "workbench";
+  const renderTimeFilterControl = () => {
     const active = timeFilter !== "all";
-    const controlLabel = workbench ? `${t("projectTree.timeFilter")}: ${timeFilterDisplayLabel}` : t("projectTree.timeFilter");
-    const buttonClassName = workbench
-      ? `project-tree__header-icon-btn project-tree__header-icon-btn--filter${active ? " project-tree__header-icon-btn--active" : ""}`
-      : `project-tree__header-action-btn${active ? " project-tree__header-action-btn--active" : ""}`;
+    const controlLabel = t("projectTree.timeFilter");
+    const buttonClassName = `project-tree__header-action-btn${active ? " project-tree__header-action-btn--active" : ""}`;
     return (
       <Tooltip
         label={controlLabel}
-        className={`project-tree__action-slot project-tree__header-action-slot project-tree__header-action-slot--filter${workbench ? " project-tree__header-action-slot--workbench-filter" : ""}`}
+        className="project-tree__action-slot project-tree__header-action-slot project-tree__header-action-slot--filter"
       >
         <div ref={filterRef} className="project-tree__time-filter">
           <button
@@ -1910,7 +2009,7 @@ export function ProjectTree({
               setFilterMenuOpen(!filterMenuOpen);
             }}
           >
-            <Clock size={workbench ? 15 : 14} aria-hidden="true" />
+            <Clock size={14} aria-hidden="true" />
             {timeFilterBadge && (
               <span className="project-tree__time-filter-label">
                 {timeFilterBadge}
@@ -1987,7 +2086,7 @@ export function ProjectTree({
   const renderProjectHeader = (mode: "classic" | "workbench") => (
     <div className="project-tree__header">
       <span className="project-tree__header-title">
-        <BriefcaseBusiness className="project-tree__header-icon" size={13} />
+        {mode === "classic" && <BriefcaseBusiness className="project-tree__header-icon" size={13} />}
         {t("projectTree.workspaceTitle")}
       </span>
       <span className="project-tree__header-actions">
@@ -2000,12 +2099,12 @@ export function ProjectTree({
               disabled={addingProject}
               onClick={() => void handleAddProject()}
             >
-              <FolderPlus size={15} aria-hidden="true" />
+              <SquarePlus size={17} aria-hidden="true" />
             </button>
           </Tooltip>
         ) : (
           <>
-            {renderTimeFilterControl("classic")}
+            {renderTimeFilterControl()}
             <Tooltip label={collapseToggleLabel} className="project-tree__action-slot project-tree__header-action-slot project-tree__action-slot--collapse">
               <button
                 type="button"
@@ -2066,8 +2165,6 @@ export function ProjectTree({
     );
   };
 
-  const hasWorkbenchRows = workbenchTreeSections.pinned.length > 0 || workbenchTreeSections.projects.length > 0;
-
   // Report visible topics to parent after render so shortcuts match sidebar order.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -2092,26 +2189,75 @@ export function ProjectTree({
         </label>
       )}
       {compactTopics ? (
-        <>
-          {renderProjectHeader("workbench")}
-          <div className="project-tree__list project-tree__list--workbench">
-            {!hasWorkbenchRows ? (
-              renderEmptyState()
-            ) : (
-              <>
-                {workbenchTreeSections.pinned.length > 0 && (
-                  <div className="project-tree__section project-tree__section--pinned">
-                    <div className="project-tree__section-title">{t("projectTree.pinnedTitle")}</div>
-                    {workbenchTreeSections.pinned.map((node) => renderNode(node, 0, "pinned"))}
+        <div className="project-tree__list project-tree__list--workbench">
+          <div className="project-tree__section project-tree__section--recent">
+            <div className="project-tree__section-head">
+              <div className="project-tree__section-title">{t("projectTree.recentTitle")}</div>
+              <div ref={recentSettingsRef} className="project-tree__recent-settings">
+                <button
+                  ref={recentSettingsTriggerRef}
+                  type="button"
+                  className={`project-tree__recent-settings-trigger${recentSettingsOpen ? " project-tree__recent-settings-trigger--open" : ""}`}
+                  title={t("projectTree.recentSettings")}
+                  aria-label={t("projectTree.recentSettings")}
+                  aria-haspopup="dialog"
+                  aria-controls="project-tree-recent-settings"
+                  aria-expanded={recentSettingsOpen}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRecentSettingsOpen((open) => !open);
+                  }}
+                >
+                  <SlidersHorizontal size={16} aria-hidden="true" />
+                </button>
+                {recentSettingsOpen && (
+                  <div id="project-tree-recent-settings" className="project-tree__recent-settings-popover" role="dialog" aria-label={t("projectTree.recentSettings")}>
+                    <div className="project-tree__recent-settings-row">
+                      <span>{t("projectTree.showExternalCalls")}</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-label={t("projectTree.showExternalCalls")}
+                        aria-checked={workbenchRecentSettings.showExternal}
+                        className={`project-tree__recent-switch${workbenchRecentSettings.showExternal ? " project-tree__recent-switch--on" : ""}`}
+                        onClick={() => updateWorkbenchRecentSettings({ showExternal: !workbenchRecentSettings.showExternal })}
+                      >
+                        <span aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="project-tree__recent-settings-divider" />
+                    <div className="project-tree__recent-limit-label">{t("projectTree.recentCount")}</div>
+                    <div className="project-tree__recent-limit-options">
+                      {WORKBENCH_RECENT_LIMITS.map((limit) => (
+                        <button
+                          key={limit}
+                          type="button"
+                          className={workbenchRecentSettings.limit === limit ? "project-tree__recent-limit--active" : ""}
+                          aria-pressed={workbenchRecentSettings.limit === limit}
+                          onClick={() => updateWorkbenchRecentSettings({ limit })}
+                        >
+                          {limit}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
-                <div className="project-tree__section project-tree__section--projects">
-                  {workbenchTreeSections.projects.map((node) => renderNode(node, 0, "projects"))}
-                </div>
-              </>
+              </div>
+            </div>
+            {workbenchTreeSections.recent.length > 0 ? (
+              workbenchTreeSections.recent.map((node) => renderNode(node, 0, "recent", false))
+            ) : (
+              <div className="project-tree__recent-empty">{t("projectTree.recentEmpty")}</div>
             )}
           </div>
-        </>
+          {renderProjectHeader("workbench")}
+          {workbenchTreeSections.projects.length > 0 ? (
+            <div className="project-tree__section project-tree__section--projects">
+              {workbenchTreeSections.projects.map((node) => renderNode(node, 0, "projects"))}
+            </div>
+          ) : renderEmptyState()}
+        </div>
       ) : (
         <>
           {renderProjectHeader("classic")}

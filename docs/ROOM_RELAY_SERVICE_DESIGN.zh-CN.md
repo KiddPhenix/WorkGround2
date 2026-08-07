@@ -542,6 +542,8 @@ Relay 重试不能生成新的业务 `requestId`。Transport 重连后，Client 
 |---|---|
 | `collab.join` | `Service.Join` |
 | `collab.snapshot` | `Service.Snapshot` |
+| `collab.snapshot_manifest` | `Service.SnapshotManifest`，固定 `baseSequence`、块描述与完整性 Hash |
+| `collab.snapshot_chunk` | `Service.SnapshotChunk`，独立鉴权、校验和重试的 Snapshot 块 |
 | `collab.events` | `Service.Events(afterSequence)` |
 | `collab.submit` | `Service.Submit` |
 | `collab.heartbeat` | `Service.Heartbeat` |

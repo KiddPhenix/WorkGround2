@@ -283,6 +283,8 @@ export const collabEn = {
   "collab.fileRevoke": "Stop sharing",
   "collab.fileOpen": "Open",
   "collab.fileReveal": "Show in folder",
+  "collab.previewFailed": "Preview failed",
+  "collab.previewRetry": "Retry preview",
 } as const;
 
 type CollabDict = Record<keyof typeof collabEn, string>;
@@ -572,6 +574,8 @@ export const collabZh: CollabDict = {
   "collab.fileRevoke": "停止分享",
   "collab.fileOpen": "打开",
   "collab.fileReveal": "打开文件位置",
+  "collab.previewFailed": "预览失败",
+  "collab.previewRetry": "重试预览",
 };
 
 export const collabZhTW: CollabDict = {
@@ -859,4 +863,6 @@ export const collabZhTW: CollabDict = {
   "collab.fileRevoke": "停止分享",
   "collab.fileOpen": "開啟",
   "collab.fileReveal": "開啟檔案位置",
+  "collab.previewFailed": "預覽失敗",
+  "collab.previewRetry": "重試預覽",
 };

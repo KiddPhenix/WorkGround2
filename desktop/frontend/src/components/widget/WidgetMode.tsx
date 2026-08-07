@@ -305,7 +305,7 @@ function WorkspaceDropdown({ options, selected, onChange, disabled }: {
         aria-label={t("widget.workspaceSelectAria", { name: label })}
       >
         <span className="widget-workspace__value"><strong>{label}</strong><small>{t("widget.workspaceLabel")}</small></span>
-        <ChevronUp size={16} />
+        <span className="widget-workspace__glyph" aria-hidden="true"><ChevronUp size={16} /></span>
       </button>
       {open && (
         <ul className="widget-workspace__menu" role="menu" aria-label={t("widget.workspaceMenu")}>
@@ -384,11 +384,13 @@ function IdleStatus({ snapshot, workspaces, selectedWorkspace, onWorkspaceChange
       <div className="widget-status-line" aria-hidden="true"><span /></div>
       <div className="widget-idle__foot">
         <p>{secondary}</p>
-        <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={disabled} />
-        <button className="widget-new" type="button" onClick={onNew} disabled={disabled}>
-          <MessageSquarePlus size={18} />
-          <span><strong>{t("widget.newConversation")}</strong><small>{t("widget.enterTask")}</small></span>
-        </button>
+        <div className="widget-idle__controls">
+          <WorkspaceDropdown options={workspaces} selected={selectedWorkspace} onChange={onWorkspaceChange} disabled={disabled} />
+          <button className="widget-new" type="button" onClick={onNew} disabled={disabled}>
+            <span className="widget-new__glyph" aria-hidden="true"><MessageSquarePlus size={18} /></span>
+            <span><strong>{t("widget.newConversation")}</strong><small>{t("widget.enterTask")}</small></span>
+          </button>
+        </div>
       </div>
     </section>
   );

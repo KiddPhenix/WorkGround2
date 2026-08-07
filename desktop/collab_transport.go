@@ -117,7 +117,7 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	if actualPort > 0 {
 		filePeer = &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession, protocolVersion: protocolVersion}
 	}
-	snapshot, err := peer.Snapshot(ctx)
+	snapshot, err := fetchCollaborationSnapshot(ctx, peer)
 	if err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
@@ -214,7 +214,7 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 				memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 				memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
 				sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
-				initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), lanEnabled: true, protocolVersion: protocolVersion,
+				initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), lanEnabled: true, protocolVersion: protocolVersion, hostKey: strings.TrimSpace(input.HostKey),
 			}, nil
 		}
 		if !strings.EqualFold(route.Kind, "relay") {
@@ -429,7 +429,7 @@ func joinCollaborationPeer(ctx context.Context, host string, port int, room, tok
 		return nil, collab.JoinResult{}, collab.Snapshot{}, err
 	}
 	peer.session = joined.ConnectionSession
-	snapshot, err := peer.Snapshot(ctx)
+	snapshot, err := fetchCollaborationSnapshot(ctx, peer)
 	if err != nil {
 		return nil, collab.JoinResult{}, collab.Snapshot{}, err
 	}
@@ -441,6 +441,54 @@ func (p *httpCollaborationPeer) Snapshot(ctx context.Context) (collab.Snapshot, 
 	path := p.roomPath("snapshot")
 	err := p.doJSON(ctx, http.MethodGet, path, nil, &value, true)
 	return value, err
+}
+
+func (p *httpCollaborationPeer) SnapshotManifest(ctx context.Context) (collab.SnapshotManifest, error) {
+	var value collab.SnapshotManifest
+	err := p.doJSON(ctx, http.MethodGet, p.roomPath("snapshot/manifest"), nil, &value, true)
+	return value, err
+}
+
+func (p *httpCollaborationPeer) SnapshotChunk(ctx context.Context, snapshotID string, index int) (collab.SnapshotChunk, error) {
+	path := p.roomPath("snapshot/chunks/"+strconv.Itoa(index)) + "?snapshotId=" + url.QueryEscape(snapshotID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
+	if err != nil {
+		return collab.SnapshotChunk{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.session)
+	req.Header.Set("Accept", "application/octet-stream")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return collab.SnapshotChunk{}, &collaborationTransportError{message: err.Error(), retryable: true}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var value collab.Error
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&value); err == nil && value.Message != "" {
+			return collab.SnapshotChunk{}, &value
+		}
+		return collab.SnapshotChunk{}, &collaborationTransportError{message: "collaboration host returned " + resp.Status, retryable: resp.StatusCode >= 500}
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, collab.MaxSnapshotChunkBytes+1))
+	if err != nil {
+		return collab.SnapshotChunk{}, &collaborationTransportError{message: "read collaboration snapshot chunk: " + err.Error(), retryable: true}
+	}
+	if len(data) > collab.MaxSnapshotChunkBytes {
+		return collab.SnapshotChunk{}, &collaborationTransportError{message: "collaboration snapshot chunk exceeds size limit", retryable: false}
+	}
+	returnedID := resp.Header.Get("X-Collab-Snapshot-ID")
+	if returnedID == "" {
+		returnedID = snapshotID
+	}
+	returnedIndex := index
+	if raw := resp.Header.Get("X-Collab-Chunk-Index"); raw != "" {
+		parsed, parseErr := strconv.Atoi(raw)
+		if parseErr != nil {
+			return collab.SnapshotChunk{}, &collaborationTransportError{message: "invalid collaboration snapshot chunk index header", retryable: true}
+		}
+		returnedIndex = parsed
+	}
+	return collab.SnapshotChunk{SnapshotID: returnedID, Index: returnedIndex, SHA256: resp.Header.Get("X-Collab-Chunk-SHA256"), Data: data}, nil
 }
 
 func (p *httpCollaborationPeer) Events(ctx context.Context, after uint64) ([]collab.RoomEvent, error) {
@@ -677,10 +725,14 @@ func (c *desktopCollaboration) submit(ctx context.Context, requestID string, com
 	if err == nil {
 		result := CollaborationActionResult{RequestID: requestID, Receipt: receipt, Duplicate: receipt.Duplicate}
 		events, eventsErr := conn.peer.Events(ctx, state.Snapshot.LatestSequence)
-		snapshot, snapshotErr := conn.peer.Snapshot(ctx)
-		if eventsErr == nil && snapshotErr == nil {
-			c.markConnected(conn, &snapshot, events)
-			result.Item = collaborationTimelineAt(snapshot, receipt.LatestSequence)
+		if eventsErr == nil {
+			if !c.markConnected(conn, nil, events) {
+				snapshot, snapshotErr := fetchCollaborationSnapshot(ctx, conn.peer)
+				if snapshotErr == nil {
+					c.markConnected(conn, &snapshot, events)
+				}
+			}
+			result.Item = collaborationTimelineAt(c.snapshot().Snapshot, receipt.LatestSequence)
 		}
 		return result, nil
 	}
@@ -902,11 +954,32 @@ func (c *desktopCollaboration) consumeStreamEvent(ctx context.Context, conn *col
 		return nil
 	}
 	if value.Sequence != after+1 {
-		return &collaborationTransportError{message: fmt.Sprintf("collaboration event gap after %d: got %d", after, value.Sequence), retryable: true}
+		events, err := conn.peer.Events(ctx, after)
+		if err != nil {
+			return err
+		}
+		if len(events) > 0 && c.markConnected(conn, nil, events) {
+			return nil
+		}
+		snapshot, err := fetchCollaborationSnapshot(ctx, conn.peer)
+		if err != nil {
+			return err
+		}
+		if snapshot.LatestSequence < value.Sequence {
+			return &collaborationTransportError{message: fmt.Sprintf("collaboration snapshot stopped at %d while recovering event %d", snapshot.LatestSequence, value.Sequence), retryable: true}
+		}
+		c.markConnected(conn, &snapshot, events)
+		return nil
 	}
-	snapshot, err := conn.peer.Snapshot(ctx)
+	if c.markConnected(conn, nil, []collab.RoomEvent{value}) {
+		return nil
+	}
+	snapshot, err := fetchCollaborationSnapshot(ctx, conn.peer)
 	if err != nil {
 		return err
+	}
+	if snapshot.LatestSequence < value.Sequence {
+		return &collaborationTransportError{message: fmt.Sprintf("collaboration snapshot stopped at %d while projecting event %d", snapshot.LatestSequence, value.Sequence), retryable: true}
 	}
 	c.markConnected(conn, &snapshot, []collab.RoomEvent{value})
 	return nil
@@ -934,7 +1007,7 @@ func (c *desktopCollaboration) syncConnection(ctx context.Context, conn *collabo
 	}
 	sort.Slice(events, func(i, j int) bool { return events[i].Sequence < events[j].Sequence })
 	if events[0].Sequence != after+1 {
-		snapshot, snapErr := conn.peer.Snapshot(ctx)
+		snapshot, snapErr := fetchCollaborationSnapshot(ctx, conn.peer)
 		if snapErr != nil {
 			c.markReconnect(conn, snapErr)
 			return
@@ -942,7 +1015,10 @@ func (c *desktopCollaboration) syncConnection(ctx context.Context, conn *collabo
 		c.markConnected(conn, &snapshot, nil)
 		return
 	}
-	snapshot, err := conn.peer.Snapshot(ctx)
+	if c.markConnected(conn, nil, events) {
+		return
+	}
+	snapshot, err := fetchCollaborationSnapshot(ctx, conn.peer)
 	if err != nil {
 		c.markReconnect(conn, err)
 		return
@@ -1041,26 +1117,37 @@ func collaborationSessionInvalid(err error) bool {
 	return errors.As(err, &protocol) && protocol.Code == collab.CodeUnauthorized
 }
 
-func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snapshot *collab.Snapshot, events []collab.RoomEvent) {
+func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snapshot *collab.Snapshot, events []collab.RoomEvent) bool {
 	c.mu.Lock()
 	if c.conn != conn {
 		c.mu.Unlock()
-		return
+		return false
 	}
+	installed := snapshot
+	if installed == nil && len(events) > 0 {
+		projected, err := projectCollaborationEvents(c.state.Snapshot, events)
+		if err != nil {
+			c.mu.Unlock()
+			return false
+		}
+		installed = &projected
+	}
+	resumeTransfers := c.state.Status == "reconnecting"
 	c.state.Status = "connected"
 	if c.leaveError != "" {
 		c.state.Status = "failed"
 		c.state.LastError = c.leaveError
 		c.state.Retryable = true
-	} else if len(c.outboxFailures) == 0 {
-		c.state.LastError = ""
-		c.state.Retryable = false
-	} else {
+	} else if len(c.outboxFailures) > 0 {
 		c.state.LastError = fmt.Sprintf("%d collaboration command(s) require manual retry", len(c.outboxFailures))
 		c.state.Retryable = true
+	} else if !strings.HasPrefix(c.state.LastError, collaborationAutoReceiveNotice) {
+		c.state.LastError = ""
+		c.state.Retryable = false
 	}
-	if snapshot != nil {
-		c.state.Snapshot = *snapshot
+	if installed != nil {
+		c.state.Snapshot = *installed
+		c.rebuildFileOffersLocked(*installed)
 	}
 	c.state.OutboxCount = len(c.outbox)
 	c.persistLocked()
@@ -1078,6 +1165,27 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 	if c.hasPendingFileOrigins(conn) {
 		go c.restoreFileOrigins(conn)
 	}
+	if installed != nil && collaborationEventsAffectFiles(events) {
+		c.signalAutoReceiveFiles()
+	}
+	if resumeTransfers {
+		go c.resumeWaitingFileTransfers()
+	}
+	return true
+}
+
+func collaborationEventsAffectFiles(events []collab.RoomEvent) bool {
+	// A Snapshot installed without its incremental events is a full reconcile
+	// point (initial join, gap recovery, or reconnect).
+	if len(events) == 0 {
+		return true
+	}
+	for _, value := range events {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value.Type)), "file.") {
+			return true
+		}
+	}
+	return false
 }
 
 func collaborationEventView(sessionID string, value collab.RoomEvent) CollaborationEventView {

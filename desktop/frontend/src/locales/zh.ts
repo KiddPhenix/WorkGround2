@@ -905,6 +905,11 @@ export const zh: Record<DictKey, string> = {
   // 项目树
   "projectTree.workspaceTitle": "项目",
   "projectTree.pinnedTitle": "置顶",
+  "projectTree.recentTitle": "最近",
+  "projectTree.recentSettings": "最近会话设置",
+  "projectTree.showExternalCalls": "显示外部调用",
+  "projectTree.recentCount": "显示条数",
+  "projectTree.recentEmpty": "暂无最近会话",
   "projectTree.searchPlaceholder": "搜索项目或会话",
   "projectTree.newTopic": "新会话",
   "projectTree.renameTopic": "重命名会话",

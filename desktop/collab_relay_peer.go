@@ -216,6 +216,21 @@ func (p *relayCollaborationPeer) Snapshot(ctx context.Context) (collab.Snapshot,
 	return value, err
 }
 
+func (p *relayCollaborationPeer) SnapshotManifest(ctx context.Context) (collab.SnapshotManifest, error) {
+	var value collab.SnapshotManifest
+	err := p.call(ctx, "collab.snapshot_manifest", struct{ Room, Session string }{p.room, p.session}, &value)
+	return value, err
+}
+
+func (p *relayCollaborationPeer) SnapshotChunk(ctx context.Context, snapshotID string, index int) (collab.SnapshotChunk, error) {
+	var value collab.SnapshotChunk
+	err := p.call(ctx, "collab.snapshot_chunk", struct {
+		Room, Session, SnapshotID string
+		Index                     int
+	}{p.room, p.session, snapshotID, index}, &value)
+	return value, err
+}
+
 func (p *relayCollaborationPeer) Events(ctx context.Context, after uint64) ([]collab.RoomEvent, error) {
 	var value []collab.RoomEvent
 	err := p.call(ctx, "collab.events", struct {
@@ -289,7 +304,7 @@ func joinRelayCollaborationPeer(ctx context.Context, route CollaborationRouteInp
 		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("join Room through Relay: %w", err)
 	}
 	peer.room, peer.member, peer.session = room, joined.Member.ID, joined.ConnectionSession
-	snapshot, err := peer.Snapshot(ctx)
+	snapshot, err := fetchCollaborationSnapshot(ctx, peer)
 	if err != nil {
 		_ = peer.Close(context.Background())
 		return nil, collab.JoinResult{}, collab.Snapshot{}, "", fmt.Errorf("load Room snapshot through Relay: %w", err)

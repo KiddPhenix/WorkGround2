@@ -363,6 +363,25 @@ func (h *collaborationRelayHost) dispatchRPC(ctx context.Context, peerID string,
 		input.Room = h.authorityRoom(input.Room)
 		value, err := service.Snapshot(ctx, input.Room, input.Session)
 		return encode(value, err)
+	case "collab.snapshot_manifest":
+		var input struct{ Room, Session string }
+		if err := json.Unmarshal(request.Body, &input); err != nil {
+			return nil, toRelayRPCError(err)
+		}
+		input.Room = h.authorityRoom(input.Room)
+		value, err := service.SnapshotManifest(ctx, input.Room, input.Session)
+		return encode(value, err)
+	case "collab.snapshot_chunk":
+		var input struct {
+			Room, Session, SnapshotID string
+			Index                     int
+		}
+		if err := json.Unmarshal(request.Body, &input); err != nil {
+			return nil, toRelayRPCError(err)
+		}
+		input.Room = h.authorityRoom(input.Room)
+		value, err := service.SnapshotChunk(ctx, input.Room, input.Session, input.SnapshotID, input.Index)
+		return encode(value, err)
 	case "collab.events":
 		var input struct {
 			Room, Session string

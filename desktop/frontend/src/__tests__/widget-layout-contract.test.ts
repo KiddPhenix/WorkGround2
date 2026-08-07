@@ -3,7 +3,7 @@
 // clock sizing, button text, and EN idle strings stay within bounds at the
 // 520 px native minimum width.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 // ---- Locale text-length contracts ----
@@ -269,6 +269,26 @@ for (const skin of SKIN_IDS) {
   }
 }
 
+const returnEdges = { bp: "4.6", instant: "4.2", pet: "4.4", recorder: "4.1" } as const;
+for (const skin of SKIN_IDS) {
+  const control = extractSkinRule(skin, ".widget-return");
+  assert.match(control ?? "", new RegExp(`right:\\s*${returnEdges[skin].replace(".", "\\.")}%`), `${skin} return control must align with its message action edge`);
+}
+
+assert.match(modeSource, /className="widget-idle__controls"/, "idle controls need one shared hardware dock");
+assert.match(modeSource, /className="widget-new__glyph"/, "new task action needs a dedicated icon well");
+assert.match(modeSource, /className="widget-workspace__glyph"/, "workspace selector needs a dedicated icon well");
+
+const controlDock = skinsCss.match(/\.widget-idle__controls\s*\{[^}]*\}/s)?.[0] ?? "";
+assert.match(controlDock, /padding:\s*4px/, "generated-skin controls must sit inside the shared inset dock");
+assert.match(controlDock, /background:\s*var\(--widget-control-deck\)/, "control dock material must come from the active skin");
+
+const sharedControlRhythm = skinsCss.match(
+  /:is\(\s*\.widget-return,\s*\.widget-workspace__toggle,\s*\.widget-new\s*\)\s*\{[^}]*\}/s,
+)?.[0] ?? "";
+assert.match(sharedControlRhythm, /height:\s*66px/, "generated-skin header and footer controls must share one visible height");
+assert.match(sharedControlRhythm, /padding:\s*6px 11px/, "generated-skin controls must share one padding rhythm");
+
 const materialSignatures = new Set<string>();
 for (const skin of SKIN_IDS) {
   const material = extractSkinRule(skin, ".widget-new");
@@ -279,6 +299,33 @@ for (const skin of SKIN_IDS) {
   materialSignatures.add(material!.replace(/\s+/g, " "));
 }
 assert.equal(materialSignatures.size, SKIN_IDS.length, "every generated skin must have a distinct button material");
+
+const softEdgeRule = skinsCss.match(
+  /:is\(\[data-widget-skin="instant"\],\s*\[data-widget-skin="pet"\]\)\s+:is\([^{]+\)\s*\{[^}]*display:\s*none;[^}]*\}/s,
+)?.[0] ?? "";
+assert.match(softEdgeRule, /\.widget-new::after/, "rounded primary buttons must remove the redundant inner outline");
+assert.match(softEdgeRule, /\.widget-return::after/, "rounded return buttons must remove the redundant inner outline");
+assert.match(softEdgeRule, /\.widget-workspace__toggle::after/, "rounded workspace buttons must remove the redundant inner outline");
+
+const instantDock = extractSkinRule("instant", ".widget-idle__controls");
+assert.match(instantDock ?? "", /border:\s*0/, "instant control dock must stay recessed without another bright outline");
+
+const petRasterAssets = [
+  "control-secondary-v2.png",
+  "control-primary-v2.png",
+  "control-tray-v2.png",
+] as const;
+for (const asset of petRasterAssets) {
+  const path = resolve(import.meta.dirname, `../assets/widget-mode/skins/pet/${asset}`);
+  assert.ok(existsSync(path), `pet control raster must exist: ${asset}`);
+  assert.ok(statSync(path).size > 16_000, `pet control raster must contain production artwork: ${asset}`);
+  assert.match(skinsCss, new RegExp(`url\\(\"[^\"]*${asset.replace(".", "\\.")}\"\\)`), `pet skin must consume ${asset}`);
+}
+
+const petDock = skinsCss.match(/\[data-widget-skin="pet"\]\s+\.widget-idle__controls\s*\{[^}]*\}/s)?.[0] ?? "";
+assert.match(petDock ?? "", /border-image:\s*url\([^)]*control-tray-v2\.png/, "pet dock edge must come from its raster artwork");
+assert.match(skinsCss, /control-secondary-v2\.png[^;]*fill/, "pet secondary controls must use a filled raster nine-slice");
+assert.match(skinsCss, /control-primary-v2\.png[^;]*fill/, "pet primary controls must use a filled raster nine-slice");
 
 assert.match(
   skinsCss,

@@ -905,6 +905,11 @@ export const en = {
   // project tree
   "projectTree.workspaceTitle": "Projects",
   "projectTree.pinnedTitle": "Pinned",
+  "projectTree.recentTitle": "Recent",
+  "projectTree.recentSettings": "Recent settings",
+  "projectTree.showExternalCalls": "Show external calls",
+  "projectTree.recentCount": "Sessions shown",
+  "projectTree.recentEmpty": "No recent sessions",
   "projectTree.searchPlaceholder": "Search projects or sessions",
   "projectTree.newTopic": "New session",
   "projectTree.renameTopic": "Rename session",

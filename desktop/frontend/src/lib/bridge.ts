@@ -21,6 +21,7 @@ import type {
   CollaborationAgentRunResponse,
   CollaborationToolApprovalMode,
   CollaborationFileTransfer,
+  CollaborationFilePreview,
   StartCollaborationAgentInput,
   UpdateCollaborationAgentConfigInput,
   UpdateCollaborationProfileInput,
@@ -316,6 +317,7 @@ export interface AppBindings extends WailsWorkBindings {
   RevokeCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationActionResult>;
   OpenCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
   RevealCollaborationFile(input: { sessionID: string; fileID: string }): Promise<void>;
+  PreviewCollaborationFile(input: { sessionID: string; fileID: string }): Promise<CollaborationFilePreview>;
   // ── Heartbeat ──
   HeartbeatListTasks(): Promise<unknown>;
   HeartbeatReloadTasks(): Promise<unknown>;
@@ -2308,6 +2310,7 @@ function makeMockApp(): AppBindings {
     async RevokeCollaborationFile() { return { ok: false, error: "File transfer preview unavailable", retryable: true }; },
     async OpenCollaborationFile() { throw new Error("File transfer preview unavailable"); },
     async RevealCollaborationFile() { throw new Error("File transfer preview unavailable"); },
+    async PreviewCollaborationFile() { throw new Error("File preview unavailable"); },
     async EnterWidgetMode() {
       widgetMode = true;
       return mockWidgetSnapshot();

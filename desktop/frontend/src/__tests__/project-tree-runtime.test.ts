@@ -2,16 +2,21 @@
 
 import {
   projectTreeFolderDisclosure,
+  projectTreeActiveKey,
   defaultExpandedProjectTreeKeys,
   activeSessionAncestorKeys,
   projectTreeTopicOpenRequest,
+  projectTreeNodeScope,
   projectTreeShouldSuppressOpenForRename,
   projectTreeSessionPathMatches,
   projectTreeReadActivityKey,
   projectTreeTopicHasUnreadActivity,
   projectTreeTopicVisualState,
   projectTreeShouldRenderTopicActions,
+  projectTreeIsExternalCall,
+  parseWorkbenchRecentSettings,
   reorderedProjectRoots,
+  splitWorkbenchRecentTree,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -96,6 +101,50 @@ eq(
   projectTreeTopicOpenRequest(tree[0].children?.[0].children?.[1] as ProjectNode),
   { scope: "global", workspaceRoot: "", topicId: "topic-a", sessionPath: "/tmp/b.jsonl" },
   "runtime session row opens the concrete session path",
+);
+
+const globalWorkTree: ProjectNode[] = [
+  {
+    key: "global_folder",
+    kind: "global_folder",
+    label: "Global",
+    children: [
+      {
+        key: "global_topic_work",
+        kind: "global_topic",
+        label: "Work",
+        topicId: "global-work",
+        children: [
+          {
+            key: "global_work_session_active",
+            kind: "global_work_session",
+            label: "Work run",
+            topicId: "global-work",
+            sessionPath: "C:\\sessions\\work.jsonl",
+            sessionKind: "work",
+          },
+        ],
+      },
+    ],
+  },
+];
+
+eq(
+  projectTreeNodeScope(globalWorkTree[0].children?.[0].children?.[0] as ProjectNode),
+  "global",
+  "global Work runtime rows retain global scope",
+);
+
+eq(
+  projectTreeTopicOpenRequest(globalWorkTree[0].children?.[0].children?.[0] as ProjectNode),
+  { scope: "global", workspaceRoot: "", topicId: "global-work", sessionPath: "C:\\sessions\\work.jsonl" },
+  "global Work runtime row opens without a project root",
+);
+
+eq(
+  projectTreeActiveKey(globalWorkTree, "global", "", "global-work", "c:/sessions/work.jsonl"),
+  "global_work_session_active",
+  "only the concrete runtime row owns the selected state",
 );
 
 eq(
@@ -331,6 +380,51 @@ eq(
   ),
   ["__global__", "/b", "/a"],
   "project reorder excludes virtual Crew from persisted order",
+);
+
+const recentProject: ProjectNode = {
+  key: "project_recent",
+  kind: "project",
+  label: "Recent",
+  root: "/recent",
+  children: [
+    { key: "topic_local", kind: "topic", label: "Local", root: "/recent", topicId: "local", lastActivityAt: 100 },
+    { key: "topic_cli", kind: "topic", label: "CLI", root: "/recent", topicId: "cli", sessionSource: "cli", lastActivityAt: 500 },
+    { key: "topic_im", kind: "topic", label: "IM", root: "/recent", topicId: "im", sessionSource: "auto", channel: "weixin", lastActivityAt: 400 },
+    { key: "topic_work", kind: "topic", label: "Work", root: "/recent", topicId: "work", sessionSource: "work:w1/run:r1", lastActivityAt: 300 },
+    { key: "topic_collab", kind: "topic", label: "Room", root: "/recent", topicId: "room", sessionSource: "collaboration", lastActivityAt: 200 },
+  ],
+};
+
+eq(projectTreeIsExternalCall(recentProject.children?.[1] as ProjectNode), true, "CLI sessions are external calls");
+eq(projectTreeIsExternalCall(recentProject.children?.[2] as ProjectNode), true, "IM sessions are external calls");
+eq(projectTreeIsExternalCall(recentProject.children?.[3] as ProjectNode), false, "Work child sessions stay internal");
+eq(projectTreeIsExternalCall(recentProject.children?.[4] as ProjectNode), false, "collaboration sessions stay internal");
+
+eq(
+  splitWorkbenchRecentTree([recentProject], "updated", { showExternal: true, limit: 3 }).recent.map((node) => node.key),
+  ["topic_cli", "topic_im", "topic_work"],
+  "recent section applies the configured row limit after activity sorting",
+);
+eq(
+  splitWorkbenchRecentTree([recentProject], "updated", { showExternal: false, limit: 3 }).recent.map((node) => node.key),
+  ["topic_work", "topic_collab", "topic_local"],
+  "recent section can hide typed external calls without removing project children",
+);
+eq(
+  splitWorkbenchRecentTree([recentProject], "updated", { showExternal: false, limit: 3 }).projects[0].children?.length,
+  5,
+  "recent filtering keeps the project tree as the single complete source",
+);
+eq(
+  parseWorkbenchRecentSettings({ showExternal: false, limit: 5 }),
+  { showExternal: false, limit: 5 },
+  "valid recent preferences round-trip",
+);
+eq(
+  parseWorkbenchRecentSettings({ showExternal: "no", limit: 99 }),
+  { showExternal: true, limit: 1 },
+  "invalid recent preferences recover to safe defaults",
 );
 
 eq(

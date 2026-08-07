@@ -285,6 +285,11 @@ export interface CollaborationFileTransfer {
   retryable?: boolean;
 }
 
+export interface CollaborationFilePreview {
+  mime: string;
+  dataUrl: string;
+}
+
 export interface CollaborationRoom {
   room: string;
   title?: string;
@@ -472,6 +477,7 @@ export interface CollaborationTransport {
   revokeFile(fileId: string): Promise<CollaborationActionResult>;
   openFile(fileId: string): Promise<void>;
   revealFile(fileId: string): Promise<void>;
+  previewFile?(fileId: string): Promise<CollaborationFilePreview>;
   subscribeState(listener: (state: CollaborationState) => void): () => void;
   subscribeEvent(listener: (item: CollaborationTimelineItem) => void): () => void;
 }

@@ -92,9 +92,12 @@ func relayGuestAccept(private *ecdh.PrivateKey, tunnelID, peerID string, hello r
 	if err != nil || len(publicBytes) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("invalid relay Host public key")
 	}
-	if expectedHostKey != "" && expectedHostKey != accept.HostKeyFingerprint {
+	if relayHostKeyFingerprint(ed25519.PublicKey(publicBytes)) != accept.HostKeyFingerprint {
+		return nil, fmt.Errorf("relay Host key fingerprint is invalid")
+	}
+	if expectedHostKey != "" {
 		expected, decodeErr := decodeRelayPublicValue(expectedHostKey)
-		if decodeErr != nil || !ed25519.PublicKey(publicBytes).Equal(ed25519.PublicKey(expected)) {
+		if decodeErr != nil || len(expected) != ed25519.PublicKeySize || !ed25519.PublicKey(publicBytes).Equal(ed25519.PublicKey(expected)) {
 			return nil, fmt.Errorf("relay Host identity does not match invitation")
 		}
 	}

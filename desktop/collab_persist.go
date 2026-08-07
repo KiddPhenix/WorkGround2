@@ -226,9 +226,23 @@ func (c *desktopCollaboration) loadPersisted() {
 			transfer.PartPath = transfer.Destination + ".wg2part"
 		}
 		if transfer.Status == "downloading" || transfer.Status == "negotiating" || transfer.Status == "verifying" {
-			transfer.Status = "paused"
-			transfer.Error = "应用已重启，可继续接收"
+			if transfer.Automatic && !transfer.PausedByUser {
+				transfer.Status = "waiting_sender"
+				transfer.Error = "应用已重启，连接后将自动继续"
+			} else {
+				transfer.Status = "paused"
+				transfer.Error = "应用已重启，可继续接收"
+			}
 			transfer.Retryable = true
+		}
+		if c.transfers == nil {
+			c.transfers = map[string]*CollaborationFileTransfer{}
+		}
+		if previous := c.transfers[transfer.FileID]; previous != nil {
+			if c.transferArchive == nil {
+				c.transferArchive = map[string]*CollaborationFileTransfer{}
+			}
+			c.transferArchive[collaborationTransferArchiveKey(previous.RoomInstance, previous.FileID)] = previous
 		}
 		c.transfers[transfer.FileID] = &transfer
 	}
@@ -246,6 +260,7 @@ func (c *desktopCollaboration) loadPersisted() {
 		Routes:        append([]CollaborationRouteState(nil), p.Routes...),
 		Advertisement: p.Advertisement,
 	}
+	c.rebuildFileOffersLocked(c.state.Snapshot)
 	if queueTruncated {
 		c.state.LastError = "collaboration Agent queue exceeded 20 tasks and was truncated during recovery"
 		c.state.Retryable = false

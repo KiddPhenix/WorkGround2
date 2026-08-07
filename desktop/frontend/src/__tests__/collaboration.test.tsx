@@ -1218,6 +1218,14 @@ async function main() {
   await testConnectionPanelWorkspace();
   await testDiscoveryFailureIsHandled();
   await testSessionSwitchIsolation();
+  await testFileCardImagePreview();
+  await testFileCardPreviewFallback();
+  await testOwnFileImagePreviewRetry();
+  await testFileCardIgnoresLatePreview();
+  await testFilePreviewVisibilityAndCache();
+  await testFilePreviewConcurrencyLimit();
+  await testFilePreviewQueuedCancellation();
+  await testFilePreviewCacheBounds();
 
   // Regression: switching rooms isolates timeline
   let roomAState = collabReducer(initialCollabState, { type: "STATE", state: { status: "connected", room: { room: "room-a", host: "127.0.0.1", port: 39170, latestSequence: 3 }, selfMemberId: "self", members: [], timeline: [item("synced-a", 1, "room A synced")] } });
@@ -1246,6 +1254,399 @@ async function main() {
 
   process.stdout.write(`\n${passed} passed, ${failed} failed\n`);
   if (failed) process.exit(1);
+}
+
+async function testFileCardImagePreview() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const previewCalls: string[] = [];
+  const previewFile = async (fileId: string) => {
+    previewCalls.push(fileId);
+    return { mime: "image/png", dataUrl: "data:image/png;base64,abc123" };
+  };
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-img", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "img.png", fileName: "img.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const completedTransfer = { id: "t-img", fileId: "file-img", direction: "receive" as const, name: "img.png", status: "completed" as const, transferred: 100, total: 100 };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[completedTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+  });
+  // Wait for useEffect to fire.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  equal(previewCalls, ["file-img"], "completed received file triggers previewFile call");
+  const previewImg = document.querySelector(".collab-file-card__preview img") as HTMLImageElement | null;
+  ok(previewImg !== null, "image preview element is rendered for completed image file");
+  ok(previewImg?.getAttribute("src") === "data:image/png;base64,abc123", "preview img src is the returned dataUrl");
+  ok(previewImg?.getAttribute("loading") === "lazy", "preview img uses lazy loading");
+  ok(previewImg?.getAttribute("alt") === "img.png", "preview img has alt text from file name");
+  await act(async () => root.unmount());
+}
+
+async function testFileCardPreviewFallback() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+
+  // Test 1: previewFile returns null → no preview, normal file card.
+  let previewNullCalls = 0;
+  const previewNull = async () => { previewNullCalls++; return null; };
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-txt", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "doc.txt", fileName: "doc.txt", fileSize: 50, fileMime: "text/plain", fileSHA256: "def",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const completedTransfer = { id: "t-txt", fileId: "file-txt", direction: "receive" as const, name: "doc.txt", status: "completed" as const, transferred: 50, total: 50 };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[completedTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewNull}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  ok(document.querySelector(".collab-file-card__preview") === null, "non-image preview (null) shows no image preview element");
+  ok(document.querySelector(".collab-file-card__icon svg") !== null, "file icon is shown when preview is unavailable");
+  equal(previewNullCalls, 0, "plain files do not call the image preview bridge");
+
+  // Test 2: Non-completed file → previewFile not called.
+  await act(async () => root.unmount());
+  const root2 = createRoot(document.getElementById("root")!);
+  let previewCalledForIncomplete = false;
+  const previewIncomplete = async () => { previewCalledForIncomplete = true; return null; };
+  const incompleteTransfer = { id: "t-inc", fileId: "file-txt", direction: "receive" as const, name: "doc.txt", status: "downloading" as const, transferred: 20, total: 50 };
+
+  await act(async () => {
+    root2.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={[incompleteTransfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewIncomplete}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+  ok(!previewCalledForIncomplete, "incomplete file transfer does not call previewFile");
+
+  // Test 3: Existing file operations still rendered.
+  const buttons = document.querySelectorAll(".collab-file-card__actions button");
+  const buttonTexts = [...buttons].map((btn) => btn.textContent?.trim() || "");
+  ok(buttonTexts.some((t) => t.includes("Pause") || t.includes("暂停")), "pause button is visible for downloading file transfer");
+
+  await act(async () => root2.unmount());
+}
+
+async function testOwnFileImagePreviewRetry() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-own-img", sequence: 1, revision: 1, kind: "file", actorId: "self", actorName: "Me",
+    text: "own.png", fileName: "own.png", fileSize: 100, fileMime: "application/octet-stream", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const transfer = { id: "share:file-own-img", fileId: "file-own-img", direction: "share" as const, name: "own.png", status: "available" as const, transferred: 100, total: 100 };
+  let calls = 0;
+  const previewFile = async () => {
+    calls++;
+    if (calls === 1) throw new Error("temporary read failure");
+    return { mime: "image/png", dataUrl: "data:image/png;base64,b3du" };
+  };
+
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[transfer]}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+  const retry = document.querySelector(".collab-file-card__preview-error button") as HTMLButtonElement | null;
+  ok(retry !== null, "own shared image exposes a preview retry after a transient read failure");
+  await act(async () => { retry?.click(); await new Promise((resolve) => setTimeout(resolve, 20)); });
+  equal(calls, 2, "own shared image preview retries explicitly");
+  const image = document.querySelector(".collab-file-card__preview img") as HTMLImageElement | null;
+  ok(image?.getAttribute("decoding") === "async", "own shared image renders with asynchronous decoding");
+  ok(image?.getAttribute("draggable") === "false", "inline image preview is not draggable");
+  await act(async () => root.unmount());
+}
+
+async function testFileCardIgnoresLatePreview() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-late", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "late.png", fileName: "late.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  let resolvePreview: ((value: { mime: string; dataUrl: string }) => void) | undefined;
+  const previewFile = () => new Promise<{ mime: string; dataUrl: string }>((resolve) => { resolvePreview = resolve; });
+  const render = (status: "completed" | "downloading") => <LocaleProvider><CollaborationTimeline
+    items={[fileItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+    transfers={[{ id: "t-late", fileId: fileItem.id, direction: "receive", name: "late.png", status, transferred: status === "completed" ? 100 : 50, total: 100 }]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+
+  await act(async () => root.render(render("completed")));
+  await act(async () => root.render(render("downloading")));
+  await act(async () => {
+    resolvePreview?.({ mime: "image/png", dataUrl: "data:image/png;base64,bGF0ZQ==" });
+    await Promise.resolve();
+  });
+  ok(document.querySelector(".collab-file-card__preview") === null, "late preview result cannot appear after transfer state changes");
+  await act(async () => root.unmount());
+}
+
+async function testFilePreviewVisibilityAndCache() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  let observed: Element | undefined;
+  let reveal: (() => void) | undefined;
+  let hide: (() => void) | undefined;
+  class TestIntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "0px";
+    readonly thresholds = [0];
+    private active = true;
+    constructor(callback: IntersectionObserverCallback) {
+      reveal = () => { if (this.active) callback([{ isIntersecting: true, target: observed } as IntersectionObserverEntry], this as unknown as IntersectionObserver); };
+      hide = () => { if (this.active) callback([{ isIntersecting: false, target: observed } as IntersectionObserverEntry], this as unknown as IntersectionObserver); };
+    }
+    observe(target: Element) { observed = target; }
+    disconnect() { this.active = false; }
+    unobserve() {}
+    takeRecords(): IntersectionObserverEntry[] { return []; }
+  }
+  globalThis.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
+
+  const fileItem: CollaborationTimelineItem = {
+    id: "file-visible", sequence: 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: "visible.png", fileName: "visible.png", fileSize: 100, fileMime: "image/png", fileSHA256: "abc",
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  };
+  const transfer = { id: "t-visible", fileId: fileItem.id, direction: "receive" as const, name: "visible.png", status: "completed" as const, transferred: 100, total: 100 };
+  let calls = 0;
+  const previewFile = async () => {
+    calls++;
+    return { mime: "image/png", dataUrl: "data:image/png;base64,dmlzaWJsZQ==" };
+  };
+  const render = (currentItem = fileItem) => <LocaleProvider><CollaborationTimeline
+    items={[currentItem]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[transfer]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+
+  const container = document.getElementById("root")!;
+  const root = createRoot(container);
+  await act(async () => { root.render(render()); await Promise.resolve(); });
+  equal(calls, 0, "image preview waits until its card intersects the viewport");
+  await act(async () => { reveal?.(); await Promise.resolve(); });
+  equal(calls, 1, "visible image starts one preview request");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "visible image renders after intersection");
+  await act(async () => { hide?.(); await Promise.resolve(); });
+  ok(document.querySelector(".collab-file-card__preview") === null, "image preview leaves the DOM after its card exits the viewport");
+  await act(async () => { reveal?.(); await Promise.resolve(); });
+  equal(calls, 1, "re-entering the viewport can reuse a completed cached preview");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "image preview renders again after re-entering the viewport");
+  await act(async () => root.unmount());
+
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+  else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const remount = createRoot(container);
+  await act(async () => { remount.render(render()); await Promise.resolve(); });
+  equal(calls, 1, "remount reuses the preview cache for the same loader and file id");
+  ok(document.querySelector(".collab-file-card__preview img") !== null, "cached preview still renders directly");
+  await act(async () => {
+    remount.render(render({ ...fileItem, fileSHA256: "different-sha", fileSize: 101, fileMime: "image/jpeg" }));
+    await Promise.resolve();
+  });
+  equal(calls, 2, "same file id with a different content identity does not reuse a stale preview across Rooms");
+  await act(async () => remount.unmount());
+}
+
+async function testFilePreviewConcurrencyLimit() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const items: CollaborationTimelineItem[] = [1, 2, 3].map((index) => ({
+    id: `file-limit-${index}`, sequence: index, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `limit-${index}.png`, fileName: `limit-${index}.png`, fileSize: 100, fileMime: "image/png", fileSHA256: `sha-${index}`,
+    createdAt: `2026-08-03T00:00:0${index}Z`, referenceIds: [],
+  }));
+  const calls: string[] = [];
+  const pending: Array<(value: null) => void> = [];
+  const previewFile = (fileId: string) => {
+    calls.push(fileId);
+    return new Promise<null>((resolve) => pending.push(resolve));
+  };
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive", name: entry.fileName || entry.id, status: "completed", transferred: 100, total: 100 }))}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+    await Promise.resolve();
+  });
+  equal(calls.length, 2, "preview scheduler starts at most two global requests");
+  await act(async () => { pending.shift()?.(null); await Promise.resolve(); await Promise.resolve(); });
+  equal(calls.length, 3, "preview scheduler starts the next request after one slot completes");
+  await act(async () => {
+    for (const resolve of pending.splice(0)) resolve(null);
+    await Promise.resolve();
+  });
+  await act(async () => root.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+}
+
+async function testFilePreviewQueuedCancellation() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  const observers = new Map<Element, { callback: IntersectionObserverCallback; observer: IntersectionObserver; active: boolean }>();
+  class TestIntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "0px";
+    readonly thresholds = [0];
+    private target?: Element;
+    constructor(private callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.target = target;
+      observers.set(target, { callback: this.callback, observer: this as unknown as IntersectionObserver, active: true });
+    }
+    disconnect() {
+      if (this.target) {
+        const value = observers.get(this.target);
+        if (value) value.active = false;
+      }
+    }
+    unobserve() {}
+    takeRecords(): IntersectionObserverEntry[] { return []; }
+  }
+  globalThis.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
+  const emit = (target: Element, isIntersecting: boolean) => {
+    const value = observers.get(target);
+    if (value?.active) value.callback([{ isIntersecting, target } as IntersectionObserverEntry], value.observer);
+  };
+  const items: CollaborationTimelineItem[] = [1, 2, 3].map((index) => ({
+    id: `file-cancel-${index}`, sequence: index, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `cancel-${index}.png`, fileName: `cancel-${index}.png`, fileSize: 100, fileMime: "image/png", fileSHA256: `cancel-sha-${index}`,
+    createdAt: `2026-08-03T00:00:0${index}Z`, referenceIds: [],
+  }));
+  const calls: string[] = [];
+  const pending = new Map<string, (value: null) => void>();
+  const previewFile = (fileId: string) => {
+    calls.push(fileId);
+    return new Promise<null>((resolve) => pending.set(fileId, resolve));
+  };
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<LocaleProvider><CollaborationTimeline
+      items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+      transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive", name: entry.fileName || entry.id, status: "completed", transferred: 100, total: 100 }))}
+      onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+      onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+      onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+      previewFile={previewFile}
+    /></LocaleProvider>);
+    await Promise.resolve();
+  });
+  const cards = [...document.querySelectorAll(".collab-file-card")];
+  await act(async () => { cards.forEach((card) => emit(card, true)); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id], "only two visible preview loaders start while the third request remains queued");
+  await act(async () => { emit(cards[2], false); await Promise.resolve(); });
+  pending.get(items[0].id)?.(null);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id], "a queued preview does not call its loader after the card leaves the viewport");
+  await act(async () => { emit(cards[2], true); await Promise.resolve(); });
+  equal(calls, [items[0].id, items[1].id, items[2].id], "the cancelled card can queue a fresh preview after re-entering the viewport");
+  pending.get(items[1].id)?.(null);
+  pending.get(items[2].id)?.(null);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => root.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
+  else delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+}
+
+async function testFilePreviewCacheBounds() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const originalObserver = globalThis.IntersectionObserver;
+  delete (globalThis as { IntersectionObserver?: typeof IntersectionObserver }).IntersectionObserver;
+  const makeItem = (id: string, size = 100): CollaborationTimelineItem => ({
+    id, sequence: Number(id.replace(/\D/g, "")) || 1, revision: 1, kind: "file", actorId: "other", actorName: "Alice",
+    text: `${id}.png`, fileName: `${id}.png`, fileSize: size, fileMime: "image/png", fileSHA256: `sha-${id}`,
+    createdAt: "2026-08-03T00:00:01Z", referenceIds: [],
+  });
+  const render = (items: CollaborationTimelineItem[], previewFile: (fileId: string) => Promise<{ mime: string; dataUrl: string }>) => <LocaleProvider><CollaborationTimeline
+    items={items} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy
+    transfers={items.map((entry) => ({ id: `t-${entry.id}`, fileId: entry.id, direction: "receive" as const, name: entry.fileName || entry.id, status: "completed" as const, transferred: entry.fileSize || 0, total: entry.fileSize || 0 }))}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+    previewFile={previewFile}
+  /></LocaleProvider>;
+  const container = document.getElementById("root")!;
+
+  const countItems = Array.from({ length: 17 }, (_, index) => makeItem(`cache-count-${index + 1}`));
+  let countCalls = 0;
+  const countLoader = async () => {
+    countCalls++;
+    return { mime: "image/png", dataUrl: "data:image/png;base64,Y2FjaGU=" };
+  };
+  const countRoot = createRoot(container);
+  await act(async () => { countRoot.render(render(countItems, countLoader)); await new Promise((resolve) => setTimeout(resolve, 30)); });
+  equal(countCalls, 17, "preview cache loads every distinct visible image");
+  await act(async () => countRoot.unmount());
+  const countRemount = createRoot(container);
+  await act(async () => { countRemount.render(render([countItems[0]], countLoader)); await new Promise((resolve) => setTimeout(resolve, 10)); });
+  equal(countCalls, 18, "preview cache evicts the oldest entry after its 16-item limit and can reload it");
+  await act(async () => countRemount.unmount());
+
+  const byteItems = [makeItem("cache-bytes-1", 9 * 1024 * 1024), makeItem("cache-bytes-2", 9 * 1024 * 1024)];
+  const largeDataUrl = `data:image/png;base64,${"A".repeat(9 * 1024 * 1024)}`;
+  let byteCalls = 0;
+  const byteLoader = async () => {
+    byteCalls++;
+    return { mime: "image/png", dataUrl: largeDataUrl };
+  };
+  const byteRoot = createRoot(container);
+  await act(async () => { byteRoot.render(render(byteItems, byteLoader)); await new Promise((resolve) => setTimeout(resolve, 30)); });
+  equal(byteCalls, 2, "preview cache loads entries that individually fit its byte budget");
+  await act(async () => byteRoot.unmount());
+  const byteRemount = createRoot(container);
+  await act(async () => { byteRemount.render(render([byteItems[0]], byteLoader)); await new Promise((resolve) => setTimeout(resolve, 10)); });
+  equal(byteCalls, 3, "preview cache evicts the oldest DataURL above its 16 MiB total and can reload it");
+  await act(async () => byteRemount.unmount());
+  if (originalObserver) globalThis.IntersectionObserver = originalObserver;
 }
 
 void main();

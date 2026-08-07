@@ -335,6 +335,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onRevokeFile={(id) => handleAction(controller.revokeFile(id))}
             onOpenFile={(id) => handleAction(controller.openFile(id))}
             onRevealFile={(id) => handleAction(controller.revealFile(id))}
+            previewFile={controller.previewFile}
           />
         </div>
 

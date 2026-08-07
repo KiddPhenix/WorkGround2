@@ -1,3 +1,66 @@
+# Session List 层级与选中态 Design QA（2026-08-07）
+
+- Source visual truth: `D:\Temp\codex-clipboard-3d6474e0-121b-429b-ba43-2c900bf9e89d.png`
+- Adjustment source — remove Session ellipsis: `D:\Temp\codex-clipboard-c998f46c-da8d-4762-a580-9c4829620eb9.png`
+- Adjustment source — remove project-header ellipsis: `D:\Temp\codex-clipboard-fa491039-721c-4e54-8758-5abc75d452be.png`
+- Adjustment source — Recent visibility and settings: `D:\Temp\codex-clipboard-c7eef836-c306-48b9-8a1f-58de8475c1ba.png`
+- Final implementation: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\session-list-clean-actions-sidebar.png`
+- Recent closed-state evidence: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\recent-settings-closed.png`
+- Recent settings evidence: `D:\Codex\.codex\visualizations\2026\08\07\019fda7f-2001-7bf0-9e4a-0f5358f1814f\recent-settings-open.png`
+- Runtime package: `desktop/build/bin/WorkGround2-session-list-transparent.exe`
+- State: 深色工作台、真实本地项目与会话数据、Recent 显示 3 条且隐藏外部调用、设置弹层开闭、展开与收起项目、Work Session 选中态
+
+## Normalization and comparison
+
+- 参考图为 `808 × 1946` 的高密度长侧栏方向稿，约等于 `404 × 973` CSS 视口；三张局部调整图分别为 `368 × 229`、`754 × 510` 和 `418 × 155`；Recent 最终开闭状态均为 `1240 × 720` 原生像素。Recent 参考局部与最终设置弹层已放入同一比较输入，直接检查标题可见性、动作位和列表密度。
+- 本轮只调整侧栏局部且目标元素在 `323 × 978` 裁切中完整可读，因此使用无阻挡的侧栏聚焦证据；无需用被 Windows 防火墙提示遮挡的主内容区作为比较依据。
+- 参考图与实现使用不同的实时数据快照，因此项目数量、会话标题、展开项目和滚动终点不作像素级比较；项目卡、最近区、项目头、会话行和选中行使用同一层级状态进行对照。
+
+## Findings and fixes
+
+- Pass 1：项目卡缺失文件夹图标；原因是主题级 `svg { display: none }` 仍命中新增图标。最终规则显式恢复 `display: inline-flex`。
+- Pass 1：“最近”仍沿用置顶抽取语义，导致会话可能从所属项目消失。最终改为最新会话的单条快捷副本，并从快捷键收集和选中态中排除副本。
+- Pass 2：最新会话缺少稳定状态点。最终增加轻量绿色状态点；真实运行态继续使用后端状态。
+- Pass 3：按用户反馈恢复列表内部透明感。项目卡与选中行的常驻填充改为透明，保留项目细边框、悬停反馈、选中主题描边和 4px 左标记；实机滚动复验中选中项仍可稳定定位。参考图中的低对比填充被视为本轮明确要求的有意偏差。
+- Pass 4：按圈选移除工作台会话行常驻 `…`；释放右侧 24px 标题空间。行级右键菜单继续可用，“最近”快捷行的 Pin 按钮不受影响。
+- Pass 5：按圈选移除“项目”标题栏的竖向 `⋮` 时间筛选入口；新增项目按钮保留，每个项目行自己的 `⋮` 菜单保留。经典侧栏仍保留时间筛选控件。
+- Pass 6：实机发现 Workspace 旧规则仍对分区标题设置 `display:none`，导致“最近”文字消失、只剩筛选图标。最终以工作台专用规则恢复标题布局和对比度，并加入最终声明回归断言。
+- Pass 7：Recent 改为稳定渲染，新增明确的滑杆设置按钮；弹层可切换“显示外部调用”，并选择 `1 / 3 / 5 / 10` 条。CLI、IM/Bot、外部导入按现有来源字段判定，Work 子任务和多人协作保持内部来源；设置写入 localStorage，完整进程关闭重开后恢复。开关补齐可访问名称，Pin 保持可用。
+- 最终比较没有可执行的 P0 / P1 / P2 问题。
+
+## Fidelity
+
+- Layout：侧栏固定为 `300px`，恢复参考图中的“最近 → 分隔线 → 项目 → 项目卡 → 会话行”结构；项目计数和溢出菜单拥有固定列，不挤压标题。
+- Typography：沿用现有产品字体和字重；项目、选中会话、普通会话和辅助项目名形成四级层次，长标题保持单行省略。
+- Color and shape：项目颜色收敛为 9px 圆点，不再染整行；项目卡恢复透明底色并保留细边框；唯一选中行使用透明底色、主题色描边和 4px 左标记。
+- Assets：品牌图继续使用现有 wordmark；所有新增控制图标来自现有 Lucide 图标库。
+- Content：来源徽标、Room / Work / CLI 类型、项目计数和真实标题均来自现有模型，不通过标题关键词猜测类型。
+
+## Interaction and engineering evidence
+
+- 项目展开/收起、项目拖拽、创建项目、创建会话、创建 Work、颜色、历史、重命名、移除及右键菜单继续复用既有入口。
+- 工作台不再显示会话行和项目标题栏的省略号；会话右键菜单、项目行菜单与新增项目入口仍可用。
+- 最新会话快捷副本可打开真实 Session，但不会重复占用数字快捷键；只有项目树内的具体会话行可获得 `aria-current="page"`。Recent 无数据或过滤后为空时仍保留标题、设置入口和显式空状态。
+- `global_work_session` 现在按 Global scope 打开，避免空项目根路径导致导航失败。
+- Project Tree 定向测试 `44 / 44` 通过；CSS syntax、z-index token、TypeScript、Vite production 和 Wails production 构建通过。
+- `workbench-layout` 宽结构套件 `98 / 109`；新增“Recent 始终可见、设置持久化、覆盖旧隐藏规则”契约通过。剩余 11 条均为本功能开始前已存在的工作台/Composer/RuntimeConfig 旧断言。
+
+final result: passed
+
+# Design QA — 小组件多皮肤操作区精修
+
+- Source visual truth：用户提供的 BP机、拍立得、电子宠物、录音机四张 752×220 实机截图，以及 `D:/Temp/codex-clipboard-446596cd-21ff-4ec3-968d-a92be818e53d.png` 的电子宠物运行态反馈。
+- Viewport：`590 × 176` 逻辑尺寸；另在真实 WidgetMode 的 BP 选择回复态复核任务按钮。
+- Geometry：四套皮肤的“主窗口”键与正文/底部主操作统一右边缘；主窗口、工作区、新对话共享 `66px` 逻辑高度和同一内边距节奏，底部两项进入一个内嵌操作坞。
+- Material：BP 保留军用塑料与黄铜主键；录音机保留方形棕黑压键。拍立得继续使用单一逻辑轮廓。电子宠物的暗绿操作槽、薄荷副键、杏橙主键改为重新生成的无字 PNG 图素；首轮厚框/双沟槽版本被淘汰，第二轮只保留一条薄压边和克制的面内材质。三张图素经透明化、紧边裁切后使用 filled nine-slice，圆角和压边不参与横向拉伸。
+- Iconography：工作区、新对话和主窗口图标各有独立图标槽，文字与图标不再裸贴；hover 上浮 1px，active 下压 1px，disabled/focus 契约保持。
+- Comparison history：首轮发现右上键与新对话键偏小；第二轮虽统一比例，却把外框、内圈、底板框和阴影叠成多层，电子宠物实机出现明显白色双圈。先删除重复 CSS 内圈后，用户进一步要求重新生成图素；生成首轮仍有厚边，未接入项目，第二轮按“去内沟槽、压薄至高度约 5%–6%”重新收边后才进入生产资源。590×176 复核时三张 PNG 均实际加载，透明角无洋红泄漏，九宫格无接缝，右上/底部按钮右缘与文字安全区正常。
+- Validation：`test:widget-layout`、`test:widget-skins`、TypeScript、CSS、Vite production、scoped `git diff --check` 与独立 Wails production 构建通过；验收版为 `desktop/build/bin/WorkGround2-widget-raster.exe`。新增契约要求三张生产图素存在、非空并被 CSS filled nine-slice 消费；浏览器控制台无 warning/error。
+
+final result: passed
+
+---
+
 # Session 石墨叠板视觉 QA
 
 - source visual truth: `D:\Codex\.codex\generated_images\019fd4ea-4259-7be1-a7fb-fd4bc9f9f5ab\exec-670f39ea-3d5e-4397-b09b-a65be63fa26b.png`

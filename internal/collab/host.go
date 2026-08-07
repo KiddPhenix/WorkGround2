@@ -65,6 +65,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.files.serve(w, r, room, parts[2:], 1)
 		return
 	}
+	if len(parts) == 3 && parts[0] != "" && parts[1] == "snapshot" && parts[2] == "manifest" {
+		room, err := url.PathUnescape(parts[0])
+		if err != nil {
+			writeError(w, fail(CodeInvalid, "invalid room path"))
+			return
+		}
+		h.snapshotManifest(w, r, room)
+		return
+	}
+	if len(parts) == 4 && parts[0] != "" && parts[1] == "snapshot" && parts[2] == "chunks" {
+		room, err := url.PathUnescape(parts[0])
+		if err != nil {
+			writeError(w, fail(CodeInvalid, "invalid room path"))
+			return
+		}
+		h.snapshotChunk(w, r, room, parts[3])
+		return
+	}
 	if len(parts) != 2 || parts[0] == "" {
 		writeError(w, fail(CodeNotFound, "endpoint does not exist"))
 		return
@@ -166,6 +184,44 @@ func (h *Handler) snapshot(w http.ResponseWriter, r *http.Request, room string) 
 		return
 	}
 	writeJSON(w, http.StatusOK, value)
+}
+
+func (h *Handler) snapshotManifest(w http.ResponseWriter, r *http.Request, room string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	value, err := h.service.SnapshotManifest(r.Context(), room, sessionFrom(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
+}
+
+func (h *Handler) snapshotChunk(w http.ResponseWriter, r *http.Request, room, rawIndex string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	index, err := strconv.Atoi(rawIndex)
+	if err != nil || index < 0 {
+		writeError(w, fail(CodeInvalid, "snapshot chunk index must be non-negative"))
+		return
+	}
+	value, err := h.service.SnapshotChunk(r.Context(), room, sessionFrom(r), r.URL.Query().Get("snapshotId"), index)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-Collab-Snapshot-ID", value.SnapshotID)
+	w.Header().Set("X-Collab-Chunk-Index", strconv.Itoa(value.Index))
+	w.Header().Set("X-Collab-Chunk-SHA256", value.SHA256)
+	w.Header().Set("Content-Length", strconv.Itoa(len(value.Data)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(value.Data)
 }
 
 func (h *Handler) events(w http.ResponseWriter, r *http.Request, room string) {

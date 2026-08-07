@@ -70,7 +70,7 @@ type collaborationReference struct {
 	Text     string
 }
 
-func collaborationContext(snapshot collab.Snapshot, referenceIDs []string) (string, error) {
+func collaborationContext(snapshot collab.Snapshot, referenceIDs []string, fileRefs map[string]string) (string, error) {
 	if len(referenceIDs) == 0 {
 		return "", nil
 	}
@@ -102,6 +102,9 @@ func collaborationContext(snapshot collab.Snapshot, referenceIDs []string) (stri
 		case item.File != nil:
 			ref.AuthorID, ref.Revision = item.File.OwnerID, item.File.Revision
 			ref.Text = fmt.Sprintf("Shared file metadata: %s (%d bytes, SHA-256 %s). The file contents are not automatically included.", item.File.Name, item.File.Size, item.File.SHA256)
+			if refPath, ok := fileRefs[item.ID]; ok {
+				ref.Text = fmt.Sprintf("Shared file: %s (%d bytes, SHA-256 %s). The received file is available for reading at %s.", item.File.Name, item.File.Size, item.File.SHA256, refPath)
+			}
 		default:
 			return "", fmt.Errorf("timeline item %q cannot be used as Agent context", item.ID)
 		}
@@ -163,8 +166,8 @@ Complete the current task yourself when you can. When a concrete follow-up requi
 </room-collaboration>`, selfAgentID, data, roomHandoffsStart, roomHandoffsEnd)
 }
 
-func collaborationAgentInput(snapshot collab.Snapshot, selfAgentID, instruction string, referenceIDs []string) (string, error) {
-	contextText, err := collaborationContext(snapshot, referenceIDs)
+func collaborationAgentInput(snapshot collab.Snapshot, selfAgentID, instruction string, referenceIDs []string, fileRefs map[string]string) (string, error) {
+	contextText, err := collaborationContext(snapshot, referenceIDs, fileRefs)
 	if err != nil {
 		return "", err
 	}
@@ -394,7 +397,7 @@ func (c *desktopCollaboration) startNextQueuedAgent(sessionID string) {
 	c.mu.Unlock()
 	c.emitState()
 
-	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, run.Instruction, run.ReferenceIDs)
+	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, run.Instruction, run.ReferenceIDs, c.roomAttachmentRefs(run.ReferenceIDs))
 	if err != nil {
 		c.failAgentRun(ctx, run, err)
 		return

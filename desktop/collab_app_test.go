@@ -148,7 +148,9 @@ func TestCollaborationAgentConfigRenamesAndPersists(t *testing.T) {
 	app, runtime, _ := newTestDesktopCollaboration(t)
 	ctrl := control.New(control.Options{Skills: []skill.Skill{{Name: "review", Body: "review body", Path: "(builtin)", Scope: skill.ScopeBuiltin}}})
 	defer ctrl.Close()
-	app.tabs = map[string]*WorkspaceTab{"session-a": {ID: "session-a", SessionID: "session-a", Ctrl: ctrl, Ready: true}}
+	tab := &WorkspaceTab{ID: "session-a", SessionID: "session-a", Ctrl: ctrl, Ready: true}
+	app.tabs = map[string]*WorkspaceTab{"session-a": tab}
+	app.trackSession(tab)
 	peer := &fakeCollaborationPeer{snapshot: collab.Snapshot{
 		Room: collab.Room{ID: "room-a", Name: "Room A", LatestSequence: 1}, LatestSequence: 1,
 		Members: []collab.Member{{ID: "member-a", Name: "Alice", Status: collab.MemberOnline, Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Old", Status: collab.AgentIdle}}},
@@ -228,7 +230,9 @@ func TestCollaborationAgentExplicitSourcesUseLoadedMemoryAndControllerSkills(t *
 		Skills: []skill.Skill{{Name: "review", Description: "Review changes", Body: "REVIEW PLAYBOOK", Path: skillPath, Scope: skill.ScopeProject, RunAs: skill.RunInline}},
 	})
 	defer ctrl.Close()
-	app := &App{tabs: map[string]*WorkspaceTab{"session-a": {ID: "session-a", SessionID: "session-a", Ctrl: ctrl, Ready: true}}}
+	tab := &WorkspaceTab{ID: "session-a", SessionID: "session-a", Ctrl: ctrl, Ready: true}
+	app := &App{tabs: map[string]*WorkspaceTab{"session-a": tab}}
+	app.trackSession(tab)
 
 	sources := app.collaborationAgentSources("session-a")
 	if len(sources.Agents) != 1 || sources.Agents[0].Path != agentsPath || len(sources.Skills) != 1 || sources.Skills[0].Path != skillPath {
@@ -281,6 +285,7 @@ func TestCollaborationAgentConfirmationTargetsOwningSessionPrompt(t *testing.T) 
 	app := &App{}
 	app.tabs = map[string]*WorkspaceTab{"tab-a": {ID: "tab-a", SessionID: "session-a", Ctrl: ctrl, Ready: true}}
 	app.tabOrder = []string{"tab-a"}
+	app.trackSession(app.tabs["tab-a"])
 	cancelled, err := app.respondCollaborationAgent("session-a", RespondCollaborationAgentRunInput{Allow: true, Session: true, Persist: true})
 	if err != nil || cancelled || ctrl.approvalID != "approval-1" || !ctrl.approvalAllow || !ctrl.approvalSession || !ctrl.approvalPersist || ctrl.cancels != 0 {
 		t.Fatalf("approval routed incorrectly: cancelled=%v id=%q allow=%v cancels=%d err=%v", cancelled, ctrl.approvalID, ctrl.approvalAllow, ctrl.cancels, err)
@@ -1053,6 +1058,7 @@ func TestCollaborationToolApprovalModeUsesOwningSessionPolicy(t *testing.T) {
 	defer tab.Ctrl.Close()
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
+	app.trackSession(tab)
 	runtime.state.SessionID = tab.SessionID
 
 	state, err := app.UpdateCollaborationToolApprovalMode(UpdateCollaborationToolApprovalModeInput{SessionID: tab.SessionID, Mode: control.ToolApprovalYolo})
@@ -1072,6 +1078,7 @@ func TestCollaborationAutoApprovalRestorePreservesOwnerChange(t *testing.T) {
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
+	app.trackSession(tab)
 	tab.Ctrl.SetToolApprovalMode(control.ToolApprovalAsk)
 
 	previous, err := app.prepareCollaborationAutoAgent(tab.SessionID)
@@ -1104,6 +1111,7 @@ func TestCollaborationAutoApprovalDoesNotLeakIntoPersistentState(t *testing.T) {
 	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
+	app.trackSession(tab)
 	tab.Ctrl.SetToolApprovalMode(control.ToolApprovalYolo)
 
 	// User persistent choice is yolo; verify it's reflected.

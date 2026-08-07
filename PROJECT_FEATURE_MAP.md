@@ -122,17 +122,24 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### Room 我的 Agent 任务队列
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/collab_persist.go`, `internal/collab/store.go`, `desktop/frontend/src/collab`
-- Summary: Desktop 协作运行时持久化最多 20 个 Personal Agent 等待任务；统一就绪唤醒在 Controller 空闲、重连和重启恢复后幂等续跑，Room 状态从全部活跃 Run 投影，主人可关闭排队项。
-- Keywords: Room, Personal Agent, 任务队列, queuedTasks, queueWaiting, activeAgentStatus, CancelCollaborationQueuedTask
-- Source: verified-by-search
+### Room @Agent 自动触发去重
+- Location: `desktop/frontend/src/collab/state.ts`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
+- Summary: 带问号的显式 `@成员/@Agent` 消息只由 mention 链路启动一次本机 Agent；自动回答问题扫描识别结构化目标 ID 并跳过，避免同一消息生成运行中与排队中两个任务。
+- Keywords: Room, Agent, mention, autoRespondQuestions, mentionMemberIds, mentionAgentIds, dedupe
+- Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room Host Session 重启可见性
-- Location: `internal/agent/save.go`, `desktop/collab_app.go`, `desktop/tabs.go`, `desktop/collab_session_test.go`
-- Summary: 已绑定 Room 的 collaboration Session 即使本地对话轮次仍为 0，也作为持久业务 Session 进入 Session List；普通空白 Session 继续隐藏，Host Room 在进程重启且未恢复原 tab 时仍可从原 Workspace/topic 找回。
-- Keywords: Room, Host, restart, Session List, collaboration Session, empty transcript
+### Room Agent 审批模式与确认详情
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`
+- Summary: “我的 Agent”可切换普通 Session 同源的 ask/auto/yolo 工具审批模式；待处理 Approval/Ask 只投影到主人本机，工具审批显示工具、对象和原因，Agent 提问显示真实问题与选项并可直接作答。
+- Keywords: Room, Agent, approval mode, PendingInteraction, ApprovalModal, AskCard, local-only prompt
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-04
+
+### Room Agent 等待确认决策
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/collab/useCollabController.ts`
+- Summary: waiting_approval 卡片按所属 Session/Run ID 直接回答当前 Controller pending interaction；同意或拒绝均续接原执行且不创建新的 Agent 排队任务。
+- Keywords: Room, Agent, waiting_approval, RespondCollaborationAgentRun, PendingInteraction, 同意, 拒绝
 - Source: verified-by-search
 - Updated: 2026-08-04
 
@@ -143,25 +150,11 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room 我的 Agent 当前运行与停止
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/collab/transport.ts`, `desktop/frontend/src/collab/collab.css`
-- Summary: “我的 Agent”面板常驻显示当前本地 Run 的运行、等待确认和停止中阶段，以及指令、可公开进度、开始时间和同 Session 队列数；停止按 Session/Run ID 精确取消所属 Controller，重复调用幂等，失败回滚可重试，完成后发布 cancelled 并继续队列。
-- Keywords: Room, Personal Agent, currentRun, stopping, StopCollaborationAgentRun, idempotent cancel, queue continuation
-- Source: user-stated+verified-by-tests
-- Updated: 2026-08-05
-
-### Room Agent 等待确认决策
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/collab/useCollabController.ts`
-- Summary: waiting_approval 卡片按所属 Session/Run ID 直接回答当前 Controller pending interaction；同意或拒绝均续接原执行且不创建新的 Agent 排队任务。
-- Keywords: Room, Agent, waiting_approval, RespondCollaborationAgentRun, PendingInteraction, 同意, 拒绝
+### Room Host Session 重启可见性
+- Location: `internal/agent/save.go`, `desktop/collab_app.go`, `desktop/tabs.go`, `desktop/collab_session_test.go`
+- Summary: 已绑定 Room 的 collaboration Session 即使本地对话轮次仍为 0，也作为持久业务 Session 进入 Session List；普通空白 Session 继续隐藏，Host Room 在进程重启且未恢复原 tab 时仍可从原 Workspace/topic 找回。
+- Keywords: Room, Host, restart, Session List, collaboration Session, empty transcript
 - Source: verified-by-search
-- Updated: 2026-08-04
-
-### Room @Agent 自动触发去重
-- Location: `desktop/frontend/src/collab/state.ts`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
-- Summary: 带问号的显式 `@成员/@Agent` 消息只由 mention 链路启动一次本机 Agent；自动回答问题扫描识别结构化目标 ID 并跳过，避免同一消息生成运行中与排队中两个任务。
-- Keywords: Room, Agent, mention, autoRespondQuestions, mentionMemberIds, mentionAgentIds, dedupe
-- Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
 ### Room 主人命令授权边界
@@ -171,12 +164,26 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
-### Room Agent 审批模式与确认详情
-- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`
-- Summary: “我的 Agent”可切换普通 Session 同源的 ask/auto/yolo 工具审批模式；待处理 Approval/Ask 只投影到主人本机，工具审批显示工具、对象和原因，Agent 提问显示真实问题与选项并可直接作答。
-- Keywords: Room, Agent, approval mode, PendingInteraction, ApprovalModal, AskCard, local-only prompt
-- Source: user-stated+verified-by-search
+### Room 小文件自动接收与图片直显
+- Location: `desktop/collab_file_transfer.go`, `desktop/collab_relay_file.go`, `desktop/collab_relay_crypto.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
+- Summary: Room 中严格小于 1 MiB 的他人文件按 Session workspace 和可信 Room 实例自动接收到 .workground2/attachments/room，完成 SHA 校验后可供 Agent 以相对 @ 路径引用；静态图片经内容校验后在文件卡内有界懒加载直显。
+- Keywords: Room, auto receive, attachments, PreviewCollaborationFile, roomAttachmentRefs, Relay HostKey, CollaborationTimeline
+- Source: verified-by-search
+- Updated: 2026-08-07
+
+### Room 我的 Agent 任务队列
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/collab_persist.go`, `internal/collab/store.go`, `desktop/frontend/src/collab`
+- Summary: Desktop 协作运行时持久化最多 20 个 Personal Agent 等待任务；统一就绪唤醒在 Controller 空闲、重连和重启恢复后幂等续跑，Room 状态从全部活跃 Run 投影，主人可关闭排队项。
+- Keywords: Room, Personal Agent, 任务队列, queuedTasks, queueWaiting, activeAgentStatus, CancelCollaborationQueuedTask
+- Source: verified-by-search
 - Updated: 2026-08-04
+
+### Room 我的 Agent 当前运行与停止
+- Location: `desktop/collab_app.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/collab/transport.ts`, `desktop/frontend/src/collab/collab.css`
+- Summary: “我的 Agent”面板常驻显示当前本地 Run 的运行、等待确认和停止中阶段，以及指令、可公开进度、开始时间和同 Session 队列数；停止按 Session/Run ID 精确取消所属 Controller，重复调用幂等，失败回滚可重试，完成后发布 cancelled 并继续队列。
+- Keywords: Room, Personal Agent, currentRun, stopping, StopCollaborationAgentRun, idempotent cancel, queue continuation
+- Source: user-stated+verified-by-tests
+- Updated: 2026-08-05
 
 ### Session 持久化、后台任务与回滚
 - Location: `internal/store/session.go`, `internal/agent/save.go`, `internal/agent/session.go`, `internal/agent/session_lease.go`, `internal/agent/session_removal.go`, `internal/agent/recovery_gc.go`, `internal/checkpoint/checkpoint.go`, `internal/jobs/jobs.go`, `internal/control/controller.go`, `internal/control/checkpoint.go`, `internal/control/session_lease_keeper.go`, `internal/boot/boot.go`, `internal/cli/session_lease.go`, `internal/acp/service.go`, `internal/serve/serve.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/settings_app.go`, `desktop/sessions.go`, `desktop/recovery_gc.go`

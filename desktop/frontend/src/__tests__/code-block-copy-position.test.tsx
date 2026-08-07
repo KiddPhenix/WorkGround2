@@ -65,6 +65,14 @@ const css = readFileSync(stylesPath, "utf8");
 
 ok(selectorPresent(css, ".code-block__wrap:hover .code-block__copy"), "hover reveal targets the wrapper");
 notOk(selectorPresent(css, ".code:hover .code-block__copy"), "hover reveal no longer depends on pre descendants");
+notOk(
+  selectorPresent(css, ".app--workbench .conversation-viewport .code-block,"),
+  "workbench theme does not paint the outer code block wrapper",
+);
+notOk(
+  selectorPresent(css, ':root[data-theme="light"] .app--workbench .conversation-viewport .code-block,'),
+  "light workbench theme does not paint the outer code block wrapper",
+);
 ok(
   selectorPresent(css, ".app--creation .msg--assistant .md .code:not([data-lang]) + .code-block__copy"),
   "creation unlabelled code button styles target sibling copy buttons",

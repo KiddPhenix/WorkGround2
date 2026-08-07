@@ -54,6 +54,8 @@ node_modules/
 !/.reasonix/commands/
 !/.reasonix/commands/review.md
 /.WorkGround2/
+/.workground2/
+/tmp/
 
 # CodeGraph per-project index (rebuilt locally; never committed)
 .codegraph/

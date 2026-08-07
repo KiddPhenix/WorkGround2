@@ -682,6 +682,11 @@ export const zhTW: Record<DictKey, string> = {
   // 專案樹
   "projectTree.workspaceTitle": "專案",
   "projectTree.pinnedTitle": "置頂",
+  "projectTree.recentTitle": "最近",
+  "projectTree.recentSettings": "最近會話設定",
+  "projectTree.showExternalCalls": "顯示外部呼叫",
+  "projectTree.recentCount": "顯示筆數",
+  "projectTree.recentEmpty": "暫無最近會話",
   "projectTree.searchPlaceholder": "搜尋專案或會話",
   "projectTree.newTopic": "新建會話",
   "projectTree.renameTopic": "重新命名會話",

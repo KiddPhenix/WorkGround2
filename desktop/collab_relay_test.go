@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -55,6 +56,18 @@ func TestRelayE2EEncryptsAndAuthenticatesHeader(t *testing.T) {
 	wrong := base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
 	if _, err := relayGuestAccept(guestPrivate, "tun-1", "peer-1", hello, accept, wrong); err == nil {
 		t.Fatal("wrong Host key was accepted")
+	}
+	_, attackerIdentity, err := newRelayHostKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerAccept, _, err := relayHostAccept("tun-1", "peer-1", hello, attackerIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerAccept.HostKeyFingerprint = accept.HostPublicKey
+	if _, err := relayGuestAccept(guestPrivate, "tun-1", "peer-1", hello, attackerAccept, accept.HostPublicKey); err == nil {
+		t.Fatal("self-reported Host fingerprint bypassed the invited Host key")
 	}
 }
 
@@ -169,6 +182,95 @@ func TestRelayConfigForRouteKeepsLegacyIDFallback(t *testing.T) {
 	}
 	if relay.ID != "legacy-relay" || relay.URL != "wss://relay.example/relay/v1/connect" {
 		t.Fatalf("relay = %#v, want legacy ID lookup", relay)
+	}
+}
+
+func newTestRelayFileSource(t *testing.T, data []byte) (*desktopCollaboration, collaborationSharedFile) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "relay-source.bin")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := &desktopCollaboration{state: CollaborationState{Room: "room", MemberID: "owner"}, shareAuthority: "authority", shares: map[string]collaborationSharedFile{}}
+	share, err := c.prepareSharedFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	share.Room, share.ShareAuthority, share.OwnerID, share.Status = "room", "authority", "owner", "available"
+	c.shares[share.FileID] = share
+	return c, share
+}
+
+func TestRelayFileSourceRequiresCurrentAuthorityAndOwner(t *testing.T) {
+	c, share := newTestRelayFileSource(t, []byte("relay source"))
+	peer := &relayCollaborationPeer{fileSource: c, room: "room"}
+	if err := peer.RegisterFileOrigin(context.Background(), share.FileID, collab.RegisterFileOriginInput{}); err != nil {
+		t.Fatalf("current source registration failed: %v", err)
+	}
+	c.mu.Lock()
+	changed := c.shares[share.FileID]
+	changed.Status = "unavailable"
+	c.shares[share.FileID] = changed
+	c.mu.Unlock()
+	if err := peer.RegisterFileOrigin(context.Background(), share.FileID, collab.RegisterFileOriginInput{}); err != nil {
+		t.Fatalf("recoverable source registration failed: %v", err)
+	}
+	c.mu.Lock()
+	c.shareAuthority = "other-authority"
+	c.mu.Unlock()
+	if err := peer.RegisterFileOrigin(context.Background(), share.FileID, collab.RegisterFileOriginInput{}); err == nil {
+		t.Fatal("source from another Room authority was registered")
+	}
+	if _, err := c.serveRelayFileSource("file.manifest", relayFileRequest{Room: "room", FileID: share.FileID}); err == nil {
+		t.Fatal("source from another Room authority was served")
+	}
+}
+
+func TestRelayFileSourceRejectsOverflowAndSourceChanges(t *testing.T) {
+	data := bytes.Repeat([]byte("segment-data"), 10_000)
+	for _, mutation := range []string{"replace", "in_place"} {
+		t.Run(mutation, func(t *testing.T) {
+			c, share := newTestRelayFileSource(t, data)
+			request := relayFileRequest{Room: "room", FileID: share.FileID, Index: 0, Size: 8}
+			if _, err := c.serveRelayFileSource("file.segment", relayFileRequest{Room: "room", FileID: share.FileID, Index: 0, Offset: math.MaxInt64, Size: 1}); err == nil {
+				t.Fatal("overflowing segment offset was accepted")
+			}
+			if _, err := c.serveRelayFileSource("file.segment", request); err != nil {
+				t.Fatalf("initial segment: %v", err)
+			}
+			request.Offset = 8
+			if _, err := c.serveRelayFileSource("file.segment", request); err != nil {
+				t.Fatalf("cached segment: %v", err)
+			}
+			c.mu.RLock()
+			cacheEntries := len(c.relayChunkCache)
+			c.mu.RUnlock()
+			if cacheEntries != 1 {
+				t.Fatalf("same chunk cache entries = %d, want 1", cacheEntries)
+			}
+			mutated := bytes.Repeat([]byte("x"), len(data))
+			if mutation == "replace" {
+				if err := os.Remove(share.Path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(share.Path, mutated, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			future := time.Now().Add(2 * time.Second)
+			if err := os.Chtimes(share.Path, future, future); err != nil {
+				t.Fatal(err)
+			}
+			if value, err := c.serveRelayFileSource("file.segment", request); err == nil || value != nil {
+				t.Fatalf("changed source returned data: value=%T err=%v", value, err)
+			}
+			c.mu.RLock()
+			status := c.shares[share.FileID].Status
+			c.mu.RUnlock()
+			if status != "source_changed" {
+				t.Fatalf("changed source status = %q", status)
+			}
+		})
 	}
 }
 
@@ -297,7 +399,7 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err = guest.Snapshot(ctx)
+	snapshot, err = fetchCollaborationSnapshot(ctx, guest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,15 +421,18 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	share.Room, share.OwnerID, share.Status = roomID, hostConn.memberID, "available"
+	_, shareAuthority := establishCollaborationRoomInstance(hostConn)
+	share.Room, share.ShareAuthority, share.OwnerID, share.Status = roomID, shareAuthority, hostConn.memberID, "available"
 	hostRuntime.mu.Lock()
+	hostRuntime.state.Room, hostRuntime.state.MemberID = roomID, hostConn.memberID
+	hostRuntime.shareAuthority = shareAuthority
 	hostRuntime.shares[share.FileID] = share
 	hostRuntime.mu.Unlock()
 	_, err = hostConn.peer.Submit(ctx, collab.CommandEnvelope{RequestID: share.FileID + ":offer", Command: collab.Command{Type: collab.CommandOfferFile, FileOffer: &collab.OfferFileInput{FileID: share.FileID, Name: share.Name, Size: share.Size, MIME: share.MIME, SHA256: share.SHA256, ManifestHash: share.ManifestHash, ChunkSize: share.ChunkSize, ChunkCount: len(share.ChunkHashes)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ticket, manifest, err := guest.fetchFileManifest(ctx, share.FileID)
+	ticket, manifest, err := guest.fetchFileManifest(ctx, share.FileID, 4096, true)
 	if err != nil {
 		t.Fatal(err)
 	}

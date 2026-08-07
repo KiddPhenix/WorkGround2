@@ -138,6 +138,7 @@ import {
   type RightDockMode,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  WORKBENCH_SIDEBAR_WIDTH,
   clampCreationSidebarWidth,
   clampRightDockPreviewWidth,
   clampRightDockTreeWidth,
@@ -1396,6 +1397,12 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     setTransientOverlayDismissSignal((signal) => signal + 1);
   }, []);
 
+  const openGeneralSettings = useCallback(() => {
+    closeTransientOverlays();
+    setSettingsFocus(null);
+    setSettingsTarget("general");
+  }, [closeTransientOverlays, setSettingsFocus, setSettingsTarget]);
+
   const reloadSidebarImConnections = useCallback(async () => {
     const [settings, runtimeStatus] = await Promise.all([
       app.DesktopStartupSettings(),
@@ -1548,10 +1555,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   useEffect(() => {
     if (typeof window === "undefined" || !window.runtime) return;
     return window.runtime.EventsOn("app:open-settings", () => {
-      closeTransientOverlays();
-      setSettingsTarget("general");
+      openGeneralSettings();
     });
-  }, [closeTransientOverlays]);
+  }, [openGeneralSettings]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onResize = () => setViewportWidth(window.innerWidth);
@@ -2334,10 +2340,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   }, [anchorAppScrollToChat, closeTransientOverlays, pulseSidebarToggle, sidebarCollapsed]);
 
   const sidebarWidthClamp = desktopLayoutStyle === "creation" ? clampCreationSidebarWidth : clampSidebarWidth;
-  // Workbench owns a fixed 264px navigation rail and does not render the
+  // Workbench owns a fixed navigation rail and does not render the
   // resizer. Reusing a persisted classic/creation width here leaves an empty
   // grid track between the fixed rail and the session workspace.
-  const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? SIDEBAR_MIN_WIDTH : (liveSidebarWidth ?? sidebarWidth);
+  const sidebarRenderWidth = desktopLayoutStyle === "workbench" ? WORKBENCH_SIDEBAR_WIDTH : (liveSidebarWidth ?? sidebarWidth);
   const sidebarResizeMinWidth = desktopLayoutStyle === "creation" ? CREATION_SIDEBAR_MIN_WIDTH : SIDEBAR_MIN_WIDTH;
 
   useEffect(() => {
@@ -3189,10 +3195,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     });
   }, [openPalette]);
   useGlobalShortcut("app.newSession", () => void handleNewTab(), [handleNewTab]);
-  useGlobalShortcut("settings.open", () => {
-    closeTransientOverlays();
-    setSettingsTarget("general");
-  }, [closeTransientOverlays]);
+  useGlobalShortcut("settings.open", openGeneralSettings, [openGeneralSettings]);
   useGlobalShortcut("tab.close", () => {
     if (activeTabId) void handleTabClose(activeTabId);
   }, [activeTabId, handleTabClose], Boolean(activeTabId));
@@ -4069,10 +4072,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 type="button"
                 className="workspace-sidebar__settings"
                 aria-label={t("topbar.settings")}
-                onClick={() => {
-                  closeTransientOverlays();
-                  setSettingsTarget("general");
-                }}
+                onClick={openGeneralSettings}
               >
                 <SettingsIcon size={18} aria-hidden="true" />
                 <span>{t("topbar.settings")}</span>

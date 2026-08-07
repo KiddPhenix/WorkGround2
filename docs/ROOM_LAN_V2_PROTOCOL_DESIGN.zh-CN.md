@@ -17,6 +17,8 @@ POST /collab/v2/rooms/{room_id}/join
 POST /collab/v2/rooms/{room_id}/heartbeat
 POST /collab/v2/rooms/{room_id}/leave
 GET  /collab/v2/rooms/{room_id}/snapshot
+GET  /collab/v2/rooms/{room_id}/snapshot/manifest
+GET  /collab/v2/rooms/{room_id}/snapshot/chunks/{index}?snapshotId=...
 GET  /collab/v2/rooms/{room_id}/events
 GET  /collab/v2/rooms/{room_id}/stream
 POST /collab/v2/rooms/{room_id}/commands
@@ -25,9 +27,12 @@ POST /collab/v2/rooms/{room_id}/commands
 
 同一 App 维护一个共享 LAN Host：一个 Listener、一个 HTTP Server、一个 Hub、一个 Service/FileStore，以及活动 `room_id` 注册表。请求先校验活动 Room，再由路径中的 `room_id` 进入共享 Service。关闭单个 Room 只注销该 Room；App 关闭时统一停止 Listener。
 
+Snapshot Manifest 固定生成时的 `baseSequence`，并携带整体 SHA-256、逐块 SHA-256、块大小和过期时间。Client 将 Chunk 下载到暂存态，全部校验成功后一次性替换本地 Snapshot，再从 `baseSequence` 补读 Events；下载失败继续展示旧 Snapshot。旧 `/snapshot` 保留给旧 Host/Client 兼容。正常实时事件由 Desktop 本地投影，只有首次加入、序列缺口、旧事件缺少投影字段或完整性失败时请求 Snapshot。
+
 ## 3. 协议兼容
 
 - `NewHandler` 和全部 `/collab/v1/*` 行为保持不变。
+- V1/V2 Handler 都提供可选的 Manifest/Chunk 路径；Client 遇到旧 Host 的 `not_found` 时回退旧 `/snapshot`。
 - 旧直连邀请 `workground2://host:port/room` 继续走 V1。
 - V2 RouteSet 的 LAN route 显式携带 `protocolVersion: 2`；Join 按 route 版本选择 V1/V2 Client。
 - 旧持久化状态没有 `protocolVersion` 时按 V1 恢复；新建 Room 默认写入 V2。

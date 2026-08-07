@@ -532,6 +532,7 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
     revokeFile: async (fileID) => normalizeCollaborationAction(await app.RevokeCollaborationFile({ sessionID, fileID }), names, agents),
     openFile: (fileID) => app.OpenCollaborationFile({ sessionID, fileID }),
     revealFile: (fileID) => app.RevealCollaborationFile({ sessionID, fileID }),
+    previewFile: (fileID) => app.PreviewCollaborationFile({ sessionID, fileID }),
     subscribeState: (listener) => onCollaborationState((payload) => {
       const raw = record(payload);
       if (text(raw.sessionId ?? raw.SessionID) !== sessionID) return;

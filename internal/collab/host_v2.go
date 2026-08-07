@@ -50,6 +50,14 @@ func (h *v2Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handler.files.serve(w, r, room, parts[2:], 2)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "snapshot" && parts[2] == "manifest" {
+		h.handler.snapshotManifest(w, r, room)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "snapshot" && parts[2] == "chunks" {
+		h.handler.snapshotChunk(w, r, room, parts[3])
+		return
+	}
 	if len(parts) != 2 {
 		writeError(w, fail(CodeNotFound, "endpoint does not exist"))
 		return

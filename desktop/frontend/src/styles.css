@@ -27070,7 +27070,7 @@ body > .mermaid-diagram--fullscreen {
   gap: 0;
 }
 
-.sidebar--workbench .project-tree__section--pinned {
+.sidebar--workbench .project-tree__section--recent {
   margin-bottom: 12px;
 }
 
@@ -30892,7 +30892,7 @@ body > .mermaid-diagram--fullscreen {
     left: 0;
     z-index: var(--z-workspace-float);
     display: flex;
-    width: clamp(196px, 42vw, 264px);
+    width: clamp(236px, 72vw, 300px);
     max-width: calc(100vw - 20px);
     height: auto;
     box-shadow: 10px 0 30px rgba(20, 22, 28, 0.1);
@@ -32807,9 +32807,13 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .workspace-sidebar__settings {
+  --wails-draggable: no-drag;
+  position: relative;
+  z-index: var(--z-local-raised);
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 36px;
   width: 100%;
   height: 36px;
   padding: 0 10px;
@@ -32820,6 +32824,9 @@ body > .mermaid-diagram--fullscreen {
   color: var(--fg-dim);
   font-size: 13px;
   cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  user-select: none;
   transition: background var(--dur-fast) ease-out, color var(--dur-fast) ease-out;
 }
 
@@ -33460,7 +33467,7 @@ body > .mermaid-diagram--fullscreen {
 
 /* Workbench information layout integration */
 .layout--workbench {
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
 /* ── Collapsed sidebar ────────────────────────────────────────────────── */
@@ -42096,7 +42103,7 @@ body > .mermaid-diagram--fullscreen {
 .app--workbench .layout--workbench {
   position: relative;
   isolation: isolate;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
   gap: 12px;
   height: 100%;
   padding: 10px;
@@ -42144,7 +42151,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .workspace-sidebar {
-  width: 264px;
+  width: 300px;
   height: 100%;
   padding: 16px 14px 12px;
   background: rgba(19, 21, 27, 0.82);
@@ -42456,6 +42463,17 @@ body > .mermaid-diagram--fullscreen {
   padding-left: 9px;
 }
 
+.app--workbench .workspace-sidebar__settings {
+  flex-basis: 38px;
+}
+
+/* The frameless Windows resize layer owns the viewport's bottom edge at a
+   higher stacking level. Keep the final sidebar action fully above that hit
+   zone so a settings click cannot start a native window resize. */
+.app--windows-frameless.app--workbench .workspace-sidebar__settings {
+  margin-bottom: 20px;
+}
+
 .app--workbench .workspace-sidebar__new-session svg {
   padding: 0;
   background: transparent;
@@ -42593,7 +42611,6 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .conversation-viewport pre,
-.app--workbench .conversation-viewport .code-block,
 .app--workbench .conversation-viewport .process-card {
   border: 1px solid rgba(217, 221, 231, 0.22);
   background: rgba(20, 22, 28, 0.88);
@@ -42919,7 +42936,6 @@ body > .mermaid-diagram--fullscreen {
 }
 
 :root[data-theme="light"] .app--workbench .conversation-viewport pre,
-:root[data-theme="light"] .app--workbench .conversation-viewport .code-block,
 :root[data-theme="light"] .app--workbench .conversation-viewport .process-card {
   border-color: var(--border);
   background: rgba(255, 255, 255, 0.88);
@@ -43306,6 +43322,494 @@ body > .mermaid-diagram--fullscreen {
 
 @media (prefers-reduced-motion: reduce) {
   .wg2-work-chat__input-row {
+    transition: none;
+  }
+}
+
+/* ── Workbench session list hierarchy ─────────────────────────────────── */
+
+.app--workbench .workspace-sidebar {
+  --session-list-card: transparent;
+  --session-list-card-border: color-mix(in srgb, var(--fg) 7%, transparent);
+  --session-list-selected: transparent;
+  --session-list-selected-border: color-mix(in srgb, var(--accent) 68%, var(--border));
+}
+
+.app--workbench .workspace-sidebar__tree {
+  padding-top: 10px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__list--workbench {
+  gap: 0;
+  padding: 0 2px 4px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section-head {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 8px 4px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section-title {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent {
+  margin: 0 4px 12px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-trigger {
+  width: 32px;
+  height: 32px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-trigger {
+  --wails-draggable: no-drag;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: color var(--dur-fast), background var(--dur-fast);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-trigger:hover,
+.app--workbench .workspace-sidebar .project-tree__recent-settings-trigger--open {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-trigger:focus-visible,
+.app--workbench .workspace-sidebar .project-tree__recent-switch:focus-visible,
+.app--workbench .workspace-sidebar .project-tree__recent-limit-options button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-popover {
+  --wails-draggable: no-drag;
+  position: absolute;
+  top: calc(100% + 5px);
+  right: 0;
+  z-index: var(--z-menu);
+  width: 210px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  box-shadow: 0 12px 30px color-mix(in srgb, var(--shadow) 34%, transparent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 28px;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-faint) 38%, transparent);
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-switch > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bg-elev);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 36%, transparent);
+  transition: transform var(--dur-fast);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-switch--on {
+  background: var(--accent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-switch--on > span {
+  transform: translateX(14px);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-settings-divider {
+  height: 1px;
+  margin: 10px 0;
+  background: var(--border-soft);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-limit-label {
+  margin-bottom: 7px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-limit-options {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-limit-options button {
+  --wails-draggable: no-drag;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-limit-options button:hover {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-limit-options .project-tree__recent-limit--active {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__recent-empty {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__header {
+  min-height: 40px;
+  height: 40px;
+  margin: 0 4px 6px;
+  padding: 0 8px;
+  border: 0;
+}
+
+.app--workbench .workspace-sidebar .project-tree__header-title {
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 680;
+}
+
+.app--workbench .workspace-sidebar .project-tree__header-actions {
+  gap: 2px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__header-action-slot,
+.app--workbench .workspace-sidebar .project-tree__header-icon-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__header-action-slot--filter .project-tree__header-icon-btn {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder {
+  position: relative;
+  min-height: 40px;
+  height: 40px;
+  margin: 3px 0;
+  border: 1px solid var(--session-list-card-border);
+  border-radius: 8px;
+  background: var(--session-list-card);
+  overflow: visible;
+  transition: border-color var(--dur-fast) ease-out, background var(--dur-fast) ease-out;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder:hover,
+.app--workbench .workspace-sidebar .project-tree__folder--active:hover,
+.app--workbench .workspace-sidebar .project-tree__folder--menu-open,
+.app--workbench .workspace-sidebar .project-tree__folder--menu-open:hover {
+  border-color: color-mix(in srgb, var(--fg-faint) 28%, transparent);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-main,
+.app--workbench .workspace-sidebar .project-tree__folder--has-color:hover .project-tree__folder-main,
+.app--workbench .workspace-sidebar .project-tree__folder--has-color.project-tree__folder--menu-open .project-tree__folder-main {
+  background: transparent;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-main {
+  min-height: 38px;
+  padding-right: 38px;
+  gap: 8px;
+  color: var(--fg-dim);
+  font-size: 14px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  flex: 0 0 14px;
+  color: var(--fg-faint);
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-color,
+.app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-color {
+  display: block;
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border-radius: 999px;
+  background: var(--project-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--project-accent) 12%, transparent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-main > svg.project-tree__folder-icon {
+  display: inline-flex;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  color: color-mix(in srgb, var(--fg-dim) 88%, var(--project-accent));
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-label {
+  color: var(--fg-dim);
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder--active .project-tree__folder-label {
+  color: var(--fg);
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder-count {
+  min-width: 16px;
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.app--workbench .workspace-sidebar .project-tree__workspace-actions {
+  right: 5px;
+  width: 28px;
+  padding: 0;
+  opacity: 0.72;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.app--workbench .workspace-sidebar .project-tree__folder:hover .project-tree__workspace-actions,
+.app--workbench .workspace-sidebar .project-tree__folder:focus-within .project-tree__workspace-actions,
+.app--workbench .workspace-sidebar .project-tree__folder--menu-open .project-tree__workspace-actions {
+  opacity: 1;
+}
+
+.app--workbench .workspace-sidebar .project-tree__workspace-action-slot,
+.app--workbench .workspace-sidebar .project-tree__workspace-action {
+  width: 26px;
+  height: 26px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic {
+  position: relative;
+  min-height: 38px;
+  margin: 1px 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  overflow: hidden;
+  transform: none;
+  transition: border-color var(--dur-fast) ease-out, background var(--dur-fast) ease-out;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic:hover,
+.app--workbench .workspace-sidebar .project-tree__topic:active {
+  background: var(--list-row-hover-bg);
+  transform: none;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active,
+.app--workbench .workspace-sidebar .project-tree__topic--active:hover,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active:hover {
+  border-color: var(--session-list-selected-border);
+  background: var(--session-list-selected);
+  box-shadow: inset 4px 0 0 var(--tree-row-marker);
+  transform: none;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active:has(.project-tree__topic-visual--running)::after,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic--active:has(.project-tree__topic-visual--running)::after {
+  display: none;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-main {
+  min-height: 36px;
+  width: 100%;
+  padding-right: 10px;
+  gap: 8px;
+  color: var(--fg-dim);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active .project-tree__topic-main,
+.app--workbench .workspace-sidebar .project-tree__topic--active .project-tree__topic-label {
+  color: var(--fg);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--active .project-tree__topic-label {
+  font-weight: 650;
+}
+
+.app--workbench .workspace-sidebar .project-tree__session-icon,
+.app--workbench .workspace-sidebar .project-tree__work-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  color: var(--fg-faint);
+}
+
+.app--workbench .workspace-sidebar .project-tree__session-icon svg,
+.app--workbench .workspace-sidebar .project-tree__work-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--running,
+:root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+  width: 9px;
+  height: 9px;
+  border: 0;
+  background: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--recent {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  background: var(--ok);
+  opacity: 0.78;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-origin {
+  height: 20px;
+  max-width: 40px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-project {
+  max-width: 72px;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-actions {
+  right: 5px;
+  display: inline-flex !important;
+  gap: 0;
+  opacity: 0.72;
+  pointer-events: auto;
+  transform: translateY(-50%);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic:hover .project-tree__topic-actions,
+.app--workbench .workspace-sidebar .project-tree__topic:focus-within .project-tree__topic-actions,
+.app--workbench .workspace-sidebar .project-tree__topic--menu-open .project-tree__topic-actions {
+  opacity: 1;
+  transform: translateY(-50%);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-action-slot,
+.app--workbench .workspace-sidebar .project-tree__topic-action {
+  width: 26px;
+  height: 26px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-action {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-faint);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-action:hover,
+.app--workbench .workspace-sidebar .project-tree__topic-action--pinned,
+.app--workbench .workspace-sidebar .project-tree__topic-action--pinned:hover {
+  border: 0;
+  background: var(--sidebar-hover);
+  color: var(--fg);
+  transform: none;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {
+  padding-left: 10px !important;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-copy {
+  flex: 1 1 auto;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {
+  padding-right: 96px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project {
+  position: absolute;
+  right: 38px;
+  max-width: 70px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app--workbench .workspace-sidebar .project-tree__folder,
+  .app--workbench .workspace-sidebar .project-tree__topic {
     transition: none;
   }
 }

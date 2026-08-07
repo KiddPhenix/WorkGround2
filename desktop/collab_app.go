@@ -169,18 +169,31 @@ type UpdateCollaborationProfileInput struct {
 }
 
 type CollaborationFileTransfer struct {
-	ID          string `json:"id"`
-	FileID      string `json:"fileId"`
-	Direction   string `json:"direction"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	Transferred int64  `json:"transferred"`
-	Total       int64  `json:"total"`
-	Destination string `json:"destination,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Retryable   bool   `json:"retryable,omitempty"`
-	Completed   []bool `json:"completed,omitempty"`
-	PartPath    string `json:"partPath,omitempty"`
+	ID            string `json:"id"`
+	FileID        string `json:"fileId"`
+	Room          string `json:"room,omitempty"`
+	RoomInstance  string `json:"roomInstance,omitempty"`
+	OwnerID       string `json:"ownerId,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	ManifestHash  string `json:"manifestHash,omitempty"`
+	ChunkSize     int64  `json:"chunkSize,omitempty"`
+	ChunkCount    int    `json:"chunkCount,omitempty"`
+	OfferRevision uint64 `json:"offerRevision,omitempty"`
+	Direction     string `json:"direction"`
+	Name          string `json:"name"`
+	Status        string `json:"status"`
+	Transferred   int64  `json:"transferred"`
+	Total         int64  `json:"total"`
+	Destination   string `json:"destination,omitempty"`
+	Error         string `json:"error,omitempty"`
+	Retryable     bool   `json:"retryable,omitempty"`
+	Completed     []bool `json:"completed,omitempty"`
+	PartPath      string `json:"partPath,omitempty"`
+	Automatic     bool   `json:"automatic,omitempty"`
+	PausedByUser  bool   `json:"pausedByUser,omitempty"`
+	AutoBlocked   bool   `json:"autoBlocked,omitempty"`
+	AutoAttempts  int    `json:"autoAttempts,omitempty"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 }
 
 type ShareCollaborationFilesInput struct {
@@ -378,28 +391,50 @@ type CollaborationEventView struct {
 // desktopCollaboration is deliberately above Controller. It owns Room
 // transport state, while the selected Controller continues to own the turn.
 type desktopCollaboration struct {
-	app               *App
-	ownerSessionID    string
-	ownerSessionPath  string
-	ownerSessionTitle string
+	app                *App
+	ownerSessionID     string
+	ownerSessionPath   string
+	ownerWorkspaceRoot string
+	ownerSessionTitle  string
+	roomInstance       string
+	shareAuthority     string
 
-	opMu           sync.Mutex
-	mu             sync.RWMutex
-	state          CollaborationState
-	conn           *collaborationConnection
-	outbox         []collab.CommandEnvelope
-	outboxFailures map[string]string
-	starts         map[string]collaborationStartRecord
-	runs           map[string]*collaborationAgentRun
-	queuedRuns     []*collaborationAgentRun
-	queueWaiting   bool
-	recoveredRuns  []collaborationPersistedRun
-	leaveError     string
-	recovery       collaborationPersistedState
-	shares         map[string]collaborationSharedFile
-	transfers      map[string]*CollaborationFileTransfer
-	transferCancel map[string]context.CancelFunc
-	fileOrigin     *collaborationFileOrigin
+	opMu            sync.Mutex
+	autoReceiveMu   sync.Mutex
+	mu              sync.RWMutex
+	state           CollaborationState
+	fileOffers      map[string]collab.FileOffer
+	fileOffersReady bool
+	conn            *collaborationConnection
+	outbox          []collab.CommandEnvelope
+	outboxFailures  map[string]string
+	starts          map[string]collaborationStartRecord
+	runs            map[string]*collaborationAgentRun
+	queuedRuns      []*collaborationAgentRun
+	queueWaiting    bool
+	recoveredRuns   []collaborationPersistedRun
+	leaveError      string
+	recovery        collaborationPersistedState
+	shares          map[string]collaborationSharedFile
+	transfers       map[string]*CollaborationFileTransfer
+	transferArchive map[string]*CollaborationFileTransfer
+	transferCancel  map[string]context.CancelFunc
+	transferRun     map[string]uint64
+	transferLocks   map[string]*sync.Mutex
+	ownedParts      map[string]os.FileInfo
+	autoReceiveSem  chan struct{}
+	autoRetryDelay  func(int) time.Duration
+	autoRetryAfter  map[string]time.Time
+	autoRetryTimer  *time.Timer
+	autoRetryAt     time.Time
+	autoScanActive  bool
+	autoScanAgain   bool
+	autoScanClosed  bool
+	verifiedFiles   map[string]collaborationVerifiedFile
+	relayChunkCache map[string]collaborationRelayChunk
+	relayChunkBytes int64
+	relayChunkClock uint64
+	fileOrigin      *collaborationFileOrigin
 
 	persistPath       string
 	legacyPersistPath string
@@ -465,6 +500,8 @@ type collaborationConnection struct {
 	hostCapabilityRefs  map[string]string
 	guestCapabilityRefs map[string]string
 	protocolVersion     int
+	roomInstanceKey     string
+	shareAuthorityKey   string
 	releaseLAN          func()
 }
 
@@ -484,7 +521,7 @@ type collaborationPeer interface {
 type collaborationFilePeer interface {
 	RegisterFileOrigin(context.Context, string, collab.RegisterFileOriginInput) error
 	fileTicket(context.Context, string) (collab.FileTransferTicket, error)
-	fetchFileManifest(context.Context, string) (collab.FileTransferTicket, collaborationFileManifest, error)
+	fetchFileManifest(context.Context, string, int64, bool) (collab.FileTransferTicket, collaborationFileManifest, error)
 	fetchFileChunk(context.Context, collab.FileTransferTicket, int) ([]byte, error)
 }
 
@@ -584,23 +621,34 @@ type collaborationPersistedRun struct {
 
 func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	sessionID = strings.TrimSpace(sessionID)
-	var sessionPath, sessionTitle string
-	if tab, _ := app.tabAndCtrlByID(sessionID); tab != nil {
+	var sessionPath, sessionTitle, workspaceRoot string
+	if tab := app.sessionByID(sessionID); tab != nil {
+		app.mu.RLock()
 		sessionPath = sessionRuntimeKey(tab.currentSessionPath())
 		sessionTitle = strings.TrimSpace(tab.TopicTitle)
+		workspaceRoot = normalizeProjectRoot(tab.WorkspaceRoot)
+		app.mu.RUnlock()
 	}
 	c := &desktopCollaboration{
-		app:               app,
-		ownerSessionID:    sessionID,
-		ownerSessionPath:  sessionPath,
-		ownerSessionTitle: sessionTitle,
-		state:             CollaborationState{Status: "disconnected", SessionID: sessionID, AgentConfig: defaultCollaborationAgentConfig()},
-		starts:            map[string]collaborationStartRecord{},
-		runs:              map[string]*collaborationAgentRun{},
-		shares:            map[string]collaborationSharedFile{},
-		transfers:         map[string]*CollaborationFileTransfer{},
-		transferCancel:    map[string]context.CancelFunc{},
-		outboxFailures:    map[string]string{},
+		app:                app,
+		ownerSessionID:     sessionID,
+		ownerSessionPath:   sessionPath,
+		ownerWorkspaceRoot: workspaceRoot,
+		ownerSessionTitle:  sessionTitle,
+		state:              CollaborationState{Status: "disconnected", SessionID: sessionID, AgentConfig: defaultCollaborationAgentConfig()},
+		starts:             map[string]collaborationStartRecord{},
+		runs:               map[string]*collaborationAgentRun{},
+		shares:             map[string]collaborationSharedFile{},
+		transfers:          map[string]*CollaborationFileTransfer{},
+		transferArchive:    map[string]*CollaborationFileTransfer{},
+		transferCancel:     map[string]context.CancelFunc{},
+		transferRun:        map[string]uint64{},
+		transferLocks:      map[string]*sync.Mutex{},
+		ownedParts:         map[string]os.FileInfo{},
+		autoReceiveSem:     make(chan struct{}, 2),
+		autoRetryAfter:     map[string]time.Time{},
+		verifiedFiles:      map[string]collaborationVerifiedFile{},
+		outboxFailures:     map[string]string{},
 	}
 	c.openHost = c.openHostedRoom
 	c.openJoin = c.openJoinedRoom
@@ -613,11 +661,15 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	c.waitAgentReady = app.waitCollaborationAgentReady
 	c.prepareAgentInput = app.prepareCollaborationAgentInput
 	c.submitAgent = func(sessionID, display, input string) error {
-		return app.SubmitDisplayToTab(sessionID, display, input)
+		tab, ctrl := app.sessionAndCtrl(sessionID)
+		if tab == nil || ctrl == nil {
+			return fmt.Errorf("collaboration Agent workspace is not ready")
+		}
+		return app.SubmitDisplayToTab(tab.ID, display, input)
 	}
 	c.respondAgent = app.respondCollaborationAgent
 	c.stopAgent = func(sessionID string) error {
-		_, ctrl := app.tabAndCtrlByID(sessionID)
+		_, ctrl := app.sessionAndCtrl(sessionID)
 		if ctrl == nil {
 			return fmt.Errorf("collaboration Agent workspace is not ready")
 		}
@@ -805,19 +857,20 @@ func (a *App) UpdateCollaborationToolApprovalMode(input UpdateCollaborationToolA
 	default:
 		return runtime.snapshot(), fmt.Errorf("unsupported tool approval mode %q", input.Mode)
 	}
-	if _, ctrl := a.tabAndCtrlByID(input.SessionID); ctrl == nil {
+	tab, ctrl := a.sessionAndCtrl(input.SessionID)
+	if tab == nil || ctrl == nil {
 		return runtime.snapshot(), fmt.Errorf("collaboration Agent workspace is not ready")
 	}
-	a.SetToolApprovalModeForTab(input.SessionID, mode)
+	a.SetToolApprovalModeForTab(tab.ID, mode)
 	state := runtime.snapshot()
 	runtime.emitState()
 	return state, nil
 }
 
 func (a *App) collaborationToolApprovalMode(sessionID string) string {
-	a.mu.RLock()
-	tab := a.tabByIDLocked(sessionID)
+	tab := a.sessionByID(sessionID)
 	mode := control.ToolApprovalAsk
+	a.mu.RLock()
 	if tab != nil {
 		mode = normalizeToolApprovalMode(tab.toolApprovalMode)
 	}
@@ -831,7 +884,7 @@ func collaborationAgentSourceID(kind, value string) string {
 
 func (a *App) collaborationAgentSources(sessionID string) CollaborationAgentSources {
 	result := CollaborationAgentSources{Agents: []CollaborationAgentSource{}, Skills: []CollaborationAgentSource{}}
-	_, ctrl := a.tabAndCtrlByID(sessionID)
+	_, ctrl := a.sessionAndCtrl(sessionID)
 	if ctrl == nil {
 		return result
 	}
@@ -899,7 +952,7 @@ func (a *App) prepareCollaborationAgentInput(sessionID string, refs []string, in
 	if len(refs) == 0 {
 		return input, nil
 	}
-	_, ctrl := a.tabAndCtrlByID(sessionID)
+	_, ctrl := a.sessionAndCtrl(sessionID)
 	if ctrl == nil {
 		return "", fmt.Errorf("collaboration Agent workspace is not ready")
 	}
@@ -2070,7 +2123,7 @@ func (c *desktopCollaboration) startAgentLocked(ctx context.Context, input Start
 		return result, nil
 	}
 
-	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, instruction, input.ReferenceIDs)
+	fullInput, err := collaborationAgentInput(state.Snapshot, run.AgentID, instruction, input.ReferenceIDs, c.roomAttachmentRefs(input.ReferenceIDs))
 	if err != nil {
 		return CollaborationActionResult{}, err
 	}
@@ -2194,7 +2247,7 @@ func (c *desktopCollaboration) respondAgentRun(ctx context.Context, input Respon
 }
 
 func (a *App) respondCollaborationAgent(sessionID string, input RespondCollaborationAgentRunInput) (bool, error) {
-	_, ctrl := a.tabAndCtrlByID(sessionID)
+	_, ctrl := a.sessionAndCtrl(sessionID)
 	if ctrl == nil {
 		return false, fmt.Errorf("collaboration Agent workspace is not ready")
 	}
@@ -2372,7 +2425,7 @@ func (c *desktopCollaboration) respond(ctx context.Context, input RespondCollabo
 }
 
 func (a *App) prepareCollaborationAutoAgent(sessionID string) (string, error) {
-	tab, ctrl := a.tabAndCtrlByID(sessionID)
+	tab, ctrl := a.sessionAndCtrl(sessionID)
 	if ctrl == nil {
 		return "", fmt.Errorf("collaboration Agent workspace is not ready")
 	}
@@ -2388,7 +2441,7 @@ func (a *App) prepareCollaborationAutoAgent(sessionID string) (string, error) {
 }
 
 func (a *App) restoreCollaborationAutoAgent(sessionID, previous string) {
-	tab, ctrl := a.tabAndCtrlByID(sessionID)
+	tab, ctrl := a.sessionAndCtrl(sessionID)
 	automatic := true
 	if tab != nil {
 		automatic = tab.autoAgentActive.Swap(false)
@@ -2498,6 +2551,43 @@ func stableCollaborationID(prefix, value string) string {
 	return prefix + "_" + hex.EncodeToString(sum[:12])
 }
 
+func collaborationRoomInstanceKey(conn *collaborationConnection) string {
+	if conn == nil {
+		return ""
+	}
+	return strings.TrimSpace(conn.roomInstanceKey)
+}
+
+func collaborationShareAuthorityKey(conn *collaborationConnection) string {
+	if conn == nil {
+		return ""
+	}
+	return strings.TrimSpace(conn.shareAuthorityKey)
+}
+
+func establishCollaborationRoomInstance(conn *collaborationConnection) (string, string) {
+	if conn == nil || strings.TrimSpace(conn.room) == "" {
+		return "", ""
+	}
+	if roomKey, shareKey := strings.TrimSpace(conn.roomInstanceKey), strings.TrimSpace(conn.shareAuthorityKey); roomKey != "" && shareKey != "" {
+		return roomKey, shareKey
+	}
+	hostKey := strings.TrimSpace(conn.hostKey)
+	trustedHostKey := hostKey != "" && (conn.mode == "host" || len(conn.relayBindings) > 0)
+	if trustedHostKey {
+		conn.roomInstanceKey = stableCollaborationID("room_instance", hostKey+"\x00"+strings.TrimSpace(conn.room))
+		// Relay authenticates the host key, and a local host owns its key.
+		conn.shareAuthorityKey = conn.roomInstanceKey
+	} else {
+		// LAN currently has no authenticated host identity. Both received state
+		// and local source authority stay connection-scoped so a replacement host
+		// cannot replay an old offer to expose a previous Room attachment.
+		conn.roomInstanceKey = newCollaborationRequestID("room_instance")
+		conn.shareAuthorityKey = newCollaborationRequestID("share_authority")
+	}
+	return conn.roomInstanceKey, conn.shareAuthorityKey
+}
+
 func (c *desktopCollaboration) setConnecting(mode, host string, port int, room string, identity collab.MemberDescriptor, sessionID string) {
 	c.mu.Lock()
 	config := normalizeCollaborationAgentConfig(c.state.AgentConfig, identity.Agent.Name)
@@ -2514,6 +2604,7 @@ func (c *desktopCollaboration) setConnecting(mode, host string, port int, room s
 		OutboxCount: len(c.outbox),
 		AgentConfig: config,
 	}
+	c.rebuildFileOffersLocked(c.state.Snapshot)
 	c.mu.Unlock()
 	c.emitState()
 }
@@ -2525,6 +2616,13 @@ func (c *desktopCollaboration) fenceCurrentConnection() {
 	c.mu.Lock()
 	conn := c.conn
 	c.conn = nil
+	for fileID := range c.transferCancel {
+		c.cancelFileTransferLocked(fileID)
+		if transfer := c.transfers[fileID]; transfer != nil && transfer.Status != "completed" {
+			transfer.Status, transfer.Error, transfer.Retryable = "waiting_sender", "Room 连接已切换", true
+		}
+	}
+	c.persistLocked()
 	c.mu.Unlock()
 	if conn == nil {
 		return
@@ -2549,10 +2647,18 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	if conn == nil || conn.peer == nil {
 		return c.snapshot(), fmt.Errorf("collaboration connection is unavailable")
 	}
+	roomInstance, shareAuthority := establishCollaborationRoomInstance(conn)
 	c.mu.Lock()
 	config := normalizeCollaborationAgentConfig(c.state.AgentConfig, conn.agentName)
 	previous := c.conn
+	c.autoScanClosed = false
+	c.autoScanAgain = false
 	c.conn = conn
+	c.switchFileTransfersLocked(roomInstance)
+	c.relayChunkCache = map[string]collaborationRelayChunk{}
+	c.relayChunkBytes, c.relayChunkClock = 0, 0
+	c.roomInstance = roomInstance
+	c.shareAuthority = shareAuthority
 	status := "connected"
 	if conn.rejoined || len(c.outbox) > 0 || len(c.recoveredRuns) > 0 {
 		status = "syncing"
@@ -2573,6 +2679,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		Advertisement:   conn.advertisement,
 		ProtocolVersion: conn.protocolVersion,
 	}
+	c.rebuildFileOffersLocked(c.state.Snapshot)
 	if conn.routeError != "" {
 		c.state.LastError = conn.routeError
 		c.state.Retryable = true
@@ -2603,6 +2710,8 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	conn.done = make(chan struct{})
 	go c.connectionLoop(loopCtx, conn)
 	go c.restoreFileOrigins(conn)
+	c.signalAutoReceiveFiles()
+	go c.resumeWaitingFileTransfers()
 	c.emitState()
 	go c.startNextQueuedAgent(conn.sessionID)
 	if c.scheduler != nil {

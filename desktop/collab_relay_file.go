@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +15,17 @@ import (
 )
 
 const relayFileSegmentSize = 48 << 10
+
+const (
+	relayChunkCacheEntries = 4
+	relayChunkCacheBytes   = int64(32 << 20)
+)
+
+type collaborationRelayChunk struct {
+	Info     os.FileInfo
+	Data     []byte
+	LastUsed uint64
+}
 
 type relayFileRequest struct {
 	Room    string `json:"room"`
@@ -39,6 +52,59 @@ type relayHostFilePeer struct {
 	session string
 }
 
+func relayChunkCacheKey(authority string, share collaborationSharedFile, index int) string {
+	return authority + "\x00" + share.FileID + "\x00" + fmt.Sprint(index) + "\x00" + share.ChunkHashes[index]
+}
+
+func (c *desktopCollaboration) cachedRelayChunk(key string, info os.FileInfo) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.relayChunkCache[key]
+	if !ok || entry.Info == nil || !os.SameFile(entry.Info, info) || entry.Info.Size() != info.Size() || !entry.Info.ModTime().Equal(info.ModTime()) {
+		if ok {
+			delete(c.relayChunkCache, key)
+			c.relayChunkBytes -= int64(len(entry.Data))
+		}
+		return nil, false
+	}
+	c.relayChunkClock++
+	entry.LastUsed = c.relayChunkClock
+	c.relayChunkCache[key] = entry
+	return entry.Data, true
+}
+
+func (c *desktopCollaboration) cacheRelayChunk(key string, share collaborationSharedFile, authority string, info os.FileInfo, data []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, ok := c.shares[share.FileID]
+	if !ok || c.shareAuthority != authority || current.ShareAuthority != authority || current.Status != "available" || current.ModTimeUnix != share.ModTimeUnix || current.Size != share.Size {
+		return false
+	}
+	if c.relayChunkCache == nil {
+		c.relayChunkCache = map[string]collaborationRelayChunk{}
+	}
+	if old, ok := c.relayChunkCache[key]; ok {
+		c.relayChunkBytes -= int64(len(old.Data))
+	}
+	c.relayChunkClock++
+	c.relayChunkCache[key] = collaborationRelayChunk{Info: info, Data: data, LastUsed: c.relayChunkClock}
+	c.relayChunkBytes += int64(len(data))
+	for len(c.relayChunkCache) > relayChunkCacheEntries || c.relayChunkBytes > relayChunkCacheBytes {
+		oldestKey := ""
+		var oldest uint64
+		for candidate, entry := range c.relayChunkCache {
+			if oldestKey == "" || entry.LastUsed < oldest {
+				oldestKey, oldest = candidate, entry.LastUsed
+			}
+		}
+		entry := c.relayChunkCache[oldestKey]
+		delete(c.relayChunkCache, oldestKey)
+		c.relayChunkBytes -= int64(len(entry.Data))
+	}
+	_, retained := c.relayChunkCache[key]
+	return retained
+}
+
 type fallbackCollaborationFilePeer struct {
 	primary  collaborationFilePeer
 	fallback collaborationFilePeer
@@ -59,12 +125,12 @@ func (p *fallbackCollaborationFilePeer) fileTicket(ctx context.Context, fileID s
 	return p.fallback.fileTicket(ctx, fileID)
 }
 
-func (p *fallbackCollaborationFilePeer) fetchFileManifest(ctx context.Context, fileID string) (collab.FileTransferTicket, collaborationFileManifest, error) {
-	ticket, manifest, err := p.primary.fetchFileManifest(ctx, fileID)
+func (p *fallbackCollaborationFilePeer) fetchFileManifest(ctx context.Context, fileID string, limit int64, allowDirect bool) (collab.FileTransferTicket, collaborationFileManifest, error) {
+	ticket, manifest, err := p.primary.fetchFileManifest(ctx, fileID, limit, allowDirect)
 	if err == nil {
 		return ticket, manifest, nil
 	}
-	return p.fallback.fetchFileManifest(ctx, fileID)
+	return p.fallback.fetchFileManifest(ctx, fileID, limit, allowDirect)
 }
 
 func (p *fallbackCollaborationFilePeer) fetchFileChunk(ctx context.Context, ticket collab.FileTransferTicket, index int) ([]byte, error) {
@@ -237,9 +303,15 @@ func (p *relayCollaborationPeer) handleHostRPC(header relayproto.Header, payload
 func (c *desktopCollaboration) serveRelayFileSource(method string, input relayFileRequest) (any, error) {
 	c.mu.RLock()
 	share, ok := c.shares[input.FileID]
+	room, authority, memberID := c.state.Room, c.shareAuthority, c.state.MemberID
 	c.mu.RUnlock()
-	if !ok || share.Room != input.Room || share.Status == "revoked" {
+	if !ok || room == "" || input.Room != room || authority == "" || share.Room != room || share.ShareAuthority != authority || share.OwnerID != memberID || share.Status != "available" {
 		return nil, &collab.Error{Code: collab.CodeUnavailable, Message: "file source is unavailable", Retryable: true}
+	}
+	info, err := os.Stat(share.Path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != share.Size || info.ModTime().UnixNano() != share.ModTimeUnix {
+		c.setShareStatus(share.FileID, "source_changed", "源文件已移动或发生变化")
+		return nil, &collab.Error{Code: collab.CodeConflict, Message: "source_changed"}
 	}
 	switch method {
 	case "file.manifest", "file.source.manifest":
@@ -250,19 +322,40 @@ func (c *desktopCollaboration) serveRelayFileSource(method string, input relayFi
 		}
 		chunkOffset := int64(input.Index) * share.ChunkSize
 		chunkLength := min(share.ChunkSize, share.Size-chunkOffset)
-		if input.Offset+int64(input.Size) > chunkLength {
+		segmentSize := int64(input.Size)
+		if segmentSize > chunkLength || input.Offset > chunkLength-segmentSize {
 			return nil, &collab.Error{Code: collab.CodeInvalid, Message: "file segment exceeds chunk"}
+		}
+		cacheKey := relayChunkCacheKey(authority, share, input.Index)
+		if chunk, cached := c.cachedRelayChunk(cacheKey, info); cached {
+			start, end := int(input.Offset), int(input.Offset+segmentSize)
+			return relayFileSegmentResponse{Data: append([]byte(nil), chunk[start:end]...)}, nil
 		}
 		file, err := os.Open(share.Path)
 		if err != nil {
 			return nil, &collab.Error{Code: collab.CodeUnavailable, Message: err.Error(), Retryable: true}
 		}
 		defer file.Close()
-		data := make([]byte, input.Size)
-		if _, err := io.ReadFull(io.NewSectionReader(file, chunkOffset+input.Offset, int64(input.Size)), data); err != nil {
+		opened, err := file.Stat()
+		if err != nil || !os.SameFile(info, opened) || opened.Size() != share.Size || opened.ModTime().UnixNano() != share.ModTimeUnix {
+			c.setShareStatus(share.FileID, "source_changed", "源文件已移动或发生变化")
+			return nil, &collab.Error{Code: collab.CodeConflict, Message: "source_changed"}
+		}
+		chunk := make([]byte, chunkLength)
+		if _, err := io.ReadFull(io.NewSectionReader(file, chunkOffset, chunkLength), chunk); err != nil {
 			return nil, &collab.Error{Code: collab.CodeUnavailable, Message: err.Error(), Retryable: true}
 		}
-		return relayFileSegmentResponse{Data: data}, nil
+		after, statErr := file.Stat()
+		sum := sha256.Sum256(chunk)
+		if statErr != nil || !os.SameFile(opened, after) || after.Size() != share.Size || after.ModTime().UnixNano() != share.ModTimeUnix || hex.EncodeToString(sum[:]) != share.ChunkHashes[input.Index] {
+			c.setShareStatus(share.FileID, "source_changed", "源文件内容发生变化")
+			return nil, &collab.Error{Code: collab.CodeConflict, Message: "source_changed"}
+		}
+		if !c.cacheRelayChunk(cacheKey, share, authority, after, chunk) {
+			return nil, &collab.Error{Code: collab.CodeUnavailable, Message: "file source changed", Retryable: true}
+		}
+		start, end := int(input.Offset), int(input.Offset+segmentSize)
+		return relayFileSegmentResponse{Data: append([]byte(nil), chunk[start:end]...)}, nil
 	default:
 		return nil, &collab.Error{Code: collab.CodeInvalid, Message: "unsupported Relay file method"}
 	}
@@ -273,15 +366,17 @@ func (p *relayCollaborationPeer) RegisterFileOrigin(_ context.Context, fileID st
 		return &collab.Error{Code: collab.CodeUnavailable, Message: "Relay file source is unavailable", Retryable: true}
 	}
 	p.fileSource.mu.RLock()
-	_, ok := p.fileSource.shares[fileID]
+	share, ok := p.fileSource.shares[fileID]
+	room, authority, memberID := p.fileSource.state.Room, p.fileSource.shareAuthority, p.fileSource.state.MemberID
 	p.fileSource.mu.RUnlock()
-	if !ok {
+	recoverable := share.Status == "pending" || share.Status == "unavailable" || share.Status == "failed" || share.Status == "available"
+	if !ok || room == "" || p.room != room || authority == "" || share.Room != room || share.ShareAuthority != authority || share.OwnerID != memberID || !recoverable {
 		return &collab.Error{Code: collab.CodeNotFound, Message: "shared file is unavailable"}
 	}
 	return nil
 }
 
-func (p *relayCollaborationPeer) fetchFileManifest(ctx context.Context, fileID string) (collab.FileTransferTicket, collaborationFileManifest, error) {
+func (p *relayCollaborationPeer) fetchFileManifest(ctx context.Context, fileID string, _ int64, _ bool) (collab.FileTransferTicket, collaborationFileManifest, error) {
 	var value relayFileManifestResponse
 	err := p.call(ctx, "file.manifest", relayFileRequest{Room: p.room, Session: p.session, FileID: fileID}, &value)
 	if err != nil {
@@ -292,7 +387,7 @@ func (p *relayCollaborationPeer) fetchFileManifest(ctx context.Context, fileID s
 }
 
 func (p *relayCollaborationPeer) fileTicket(ctx context.Context, fileID string) (collab.FileTransferTicket, error) {
-	ticket, _, err := p.fetchFileManifest(ctx, fileID)
+	ticket, _, err := p.fetchFileManifest(ctx, fileID, 0, false)
 	return ticket, err
 }
 
@@ -322,7 +417,7 @@ func (p *relayHostFilePeer) RegisterFileOrigin(_ context.Context, _ string, _ co
 	return nil
 }
 
-func (p *relayHostFilePeer) fetchFileManifest(ctx context.Context, fileID string) (collab.FileTransferTicket, collaborationFileManifest, error) {
+func (p *relayHostFilePeer) fetchFileManifest(ctx context.Context, fileID string, _ int64, _ bool) (collab.FileTransferTicket, collaborationFileManifest, error) {
 	request := relayRPCRequest{Method: "file.manifest"}
 	request.Body, _ = json.Marshal(relayFileRequest{Room: p.room, Session: p.session, FileID: fileID})
 	body, rpcErr := p.host.dispatchRelayFile(ctx, "", request)
@@ -337,7 +432,7 @@ func (p *relayHostFilePeer) fetchFileManifest(ctx context.Context, fileID string
 }
 
 func (p *relayHostFilePeer) fileTicket(ctx context.Context, fileID string) (collab.FileTransferTicket, error) {
-	ticket, _, err := p.fetchFileManifest(ctx, fileID)
+	ticket, _, err := p.fetchFileManifest(ctx, fileID, 0, false)
 	return ticket, err
 }
 
