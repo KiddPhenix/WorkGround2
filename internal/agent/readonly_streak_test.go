@@ -45,7 +45,7 @@ func TestReadOnlyStreakBelowThresholdNoNudge(t *testing.T) {
 	if got := atomic.LoadInt32(&readCalls); got != 7 {
 		t.Fatalf("read_file executed %d times, want 7", got)
 	}
-	if sessionHasUserMessageContaining(a.session, "purely reading context") {
+	if sessionHasUserMessageContaining(a.session, "Recent rounds only gathered context") {
 		t.Fatal("nudge should not appear before threshold")
 	}
 }
@@ -66,21 +66,24 @@ func TestReadOnlyStreakAtThresholdNudgeOnce(t *testing.T) {
 	if got := atomic.LoadInt32(&readCalls); got != 8 {
 		t.Fatalf("read_file executed %d times, want 8", got)
 	}
-	if !sessionHasUserMessageContaining(a.session, "purely reading context") {
+	if !sessionHasUserMessageContaining(a.session, "Recent rounds only gathered context") {
 		t.Fatal("nudge should appear at threshold (8 rounds)")
 	}
 	// Count occurrences: should be exactly one
 	count := 0
 	for _, m := range a.session.Messages {
-		if m.Role == provider.RoleUser && strings.Contains(m.Content, "purely reading context") {
+		if m.Role == provider.RoleUser && strings.Contains(m.Content, "Recent rounds only gathered context") {
 			count++
+			if m.Origin != provider.MessageOriginHost {
+				t.Fatalf("read-only nudge origin = %q, want host", m.Origin)
+			}
 		}
 	}
 	if count != 1 {
 		t.Fatalf("nudge count = %d, want exactly 1", count)
 	}
 	for i, m := range a.session.Messages {
-		if m.Role != provider.RoleUser || !strings.Contains(m.Content, "purely reading context") {
+		if m.Role != provider.RoleUser || !strings.Contains(m.Content, "Recent rounds only gathered context") {
 			continue
 		}
 		if i == 0 || a.session.Messages[i-1].Role != provider.RoleTool {
@@ -107,7 +110,7 @@ func TestReadOnlyStreakNudgeOnlyOncePerStreak(t *testing.T) {
 	}
 	count := 0
 	for _, m := range a.session.Messages {
-		if m.Role == provider.RoleUser && strings.Contains(m.Content, "purely reading context") {
+		if m.Role == provider.RoleUser && strings.Contains(m.Content, "Recent rounds only gathered context") {
 			count++
 		}
 	}
@@ -161,7 +164,7 @@ func TestReadOnlyStreakResetsOnProgress(t *testing.T) {
 	}
 	count := 0
 	for _, m := range a.session.Messages {
-		if m.Role == provider.RoleUser && strings.Contains(m.Content, "purely reading context") {
+		if m.Role == provider.RoleUser && strings.Contains(m.Content, "Recent rounds only gathered context") {
 			count++
 		}
 	}
@@ -184,7 +187,7 @@ func TestReadOnlyStreakFailedWriterDoesNotReset(t *testing.T) {
 	if err := a.Run(context.Background(), "read, fail to write, then read"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !sessionHasUserMessageContaining(a.session, "purely reading context") {
+	if !sessionHasUserMessageContaining(a.session, "Recent rounds only gathered context") {
 		t.Fatal("failed writer should not clear accumulated read-only streak")
 	}
 }
@@ -219,7 +222,7 @@ func TestReadOnlyStreakBashResetsStreak(t *testing.T) {
 	if err := a.Run(context.Background(), "read bash read"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if sessionHasUserMessageContaining(a.session, "purely reading context") {
+	if sessionHasUserMessageContaining(a.session, "Recent rounds only gathered context") {
 		t.Fatal("nudge should not appear when bash resets streak (only 4 after reset < 8)")
 	}
 }

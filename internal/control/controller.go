@@ -728,7 +728,7 @@ const planApprovalTool = "exit_plan_mode"
 
 // planApprovedMessage is the follow-up turn sent once the user approves a plan —
 // the in-context nudge to execute and keep the (already-seeded) task list honest.
-const planApprovedMessage = "Plan approved — plan mode is off; you’re cleared to make the changes without asking again. Implement the plan now. Use this serial workflow: 1) mark the first sub-step in_progress with todo_write (this establishes the task list); 2) execute the sub-step; 3) call complete_step with evidence — the host then marks that sub-step completed and moves the next one to in_progress for you. Repeat 2–3 for each remaining sub-step. You don’t need another todo_write to mark steps completed; each complete_step advances the list. Sign off one sub-step at a time — never batch multiple completions."
+const planApprovedMessage = "Plan approved — execute now. 计划已批准，立即执行。 Work through the existing task list one step at a time: mark one step in_progress, perform it, then call complete_step with evidence. Continue until done. Do not ask again for approval already granted; ask only for a new user-owned decision or permission outside the approved scope."
 
 // runTurn runs one model turn, then applies the plan-approval gate. This is the
 // single, frontend-agnostic plan flow: in plan mode the model just researches
@@ -3433,7 +3433,7 @@ func (c *Controller) stripCancelledVisibleTurnMessagesAfter(idx int) {
 		if m.Role != provider.RoleUser {
 			continue
 		}
-		if IsSyntheticUserMessage(m.Content) {
+		if m.Origin == provider.MessageOriginHost || (m.Origin == "" && IsSyntheticUserMessage(m.Content)) {
 			continue
 		}
 		if _, ok := agent.SteerText(m.Content); ok {

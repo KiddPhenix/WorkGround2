@@ -2006,7 +2006,8 @@ func TestTaskExecutorRunsMandatoryQualityPass(t *testing.T) {
 	}
 	last := request.Messages[len(request.Messages)-1]
 	if last.Role != provider.RoleUser ||
-		!strings.Contains(last.Content, "complete replacement delivery") ||
+		last.Origin != provider.MessageOriginHost ||
+		!strings.Contains(last.Content, "complete final delivery") ||
 		!strings.Contains(last.Content, "preserve source URLs") {
 		t.Fatalf("quality pass prompt = %+v", last)
 	}

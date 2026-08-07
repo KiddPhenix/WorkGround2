@@ -19,11 +19,18 @@ import (
 // Role is the role of a message.
 type Role string
 
+// MessageOrigin is local provenance metadata. Providers ignore it; history
+// renderers use it to distinguish authored input from host-generated turns.
+type MessageOrigin string
+
 const (
 	RoleSystem    Role = "system"
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
+
+	MessageOriginUser MessageOrigin = "user"
+	MessageOriginHost MessageOrigin = "host"
 )
 
 // Message is a single conversation message.
@@ -44,6 +51,7 @@ type Message struct {
 	MemoryCitations    []MemoryCitation `json:"memoryCitations,omitempty"` // local UI metadata; provider requests ignore it
 	Edited             bool             `json:"edited,omitempty"`          // local UI metadata; provider requests ignore it
 	Original           string           `json:"original,omitempty"`        // user prompt before inline edit
+	Origin             MessageOrigin    `json:"origin,omitempty"`          // local provenance; empty means a legacy message
 }
 
 // MemoryCitation is local display metadata for memories that influenced an
@@ -115,6 +123,24 @@ const interruptedToolResult = "[no result: the previous turn was interrupted bef
 // touching the stored session. Kept as a distinct name so call sites read as
 // "defensive wire prep" rather than "session mutation".
 func SanitizeToolPairing(msgs []Message) []Message { return NormalizeMessages(msgs) }
+
+// StripLocalMessageMetadata removes fields that belong only to WorkGround2's
+// history/UI before a provider serializes provider.Message directly.
+func StripLocalMessageMetadata(msgs []Message) []Message {
+	for _, m := range msgs {
+		if m.Origin != "" || len(m.MemoryCitations) > 0 || m.Edited || m.Original != "" {
+			out := append([]Message(nil), msgs...)
+			for i := range out {
+				out[i].Origin = ""
+				out[i].MemoryCitations = nil
+				out[i].Edited = false
+				out[i].Original = ""
+			}
+			return out
+		}
+	}
+	return msgs
+}
 
 // NormalizeMessages repairs a conversation history so it satisfies the tool-call
 // contract the OpenAI-compatible and Anthropic APIs enforce: every assistant
