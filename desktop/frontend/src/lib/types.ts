@@ -1416,7 +1416,7 @@ export interface SessionBackgroundSourceView {
   error?: string;
 }
 
-export type SessionBackgroundMode = "pattern" | "solid" | "custom";
+export type SessionBackgroundMode = "pattern" | "solid" | "waves" | "aurora" | "nebula" | "embers" | "starfield" | "blackhole" | "moonclouds" | "biolume" | "silk" | "dunes" | "raincity" | "custom";
 
 export interface SessionBackgroundSettingsView {
 	mode?: SessionBackgroundMode;

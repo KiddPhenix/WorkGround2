@@ -112,11 +112,22 @@ type DesktopConfig struct {
 }
 
 const (
-	SessionBackgroundSourceFile   = "file"
-	SessionBackgroundSourceFolder = "folder"
-	SessionBackgroundModePattern  = "pattern"
-	SessionBackgroundModeSolid    = "solid"
-	SessionBackgroundModeCustom   = "custom"
+	SessionBackgroundSourceFile     = "file"
+	SessionBackgroundSourceFolder   = "folder"
+	SessionBackgroundModePattern    = "pattern"
+	SessionBackgroundModeSolid      = "solid"
+	SessionBackgroundModeWaves      = "waves"
+	SessionBackgroundModeAurora     = "aurora"
+	SessionBackgroundModeNebula     = "nebula"
+	SessionBackgroundModeEmbers     = "embers"
+	SessionBackgroundModeStarfield  = "starfield"
+	SessionBackgroundModeBlackhole  = "blackhole"
+	SessionBackgroundModeMoonclouds = "moonclouds"
+	SessionBackgroundModeBiolume    = "biolume"
+	SessionBackgroundModeSilk       = "silk"
+	SessionBackgroundModeDunes      = "dunes"
+	SessionBackgroundModeRaincity   = "raincity"
+	SessionBackgroundModeCustom     = "custom"
 )
 
 // DesktopSessionBackgroundConfig is a user-level, presentation-only image pool.
@@ -313,6 +324,28 @@ func normalizeSessionBackgroundMode(mode string) string {
 		return SessionBackgroundModePattern
 	case SessionBackgroundModeSolid:
 		return SessionBackgroundModeSolid
+	case SessionBackgroundModeWaves:
+		return SessionBackgroundModeWaves
+	case SessionBackgroundModeAurora:
+		return SessionBackgroundModeAurora
+	case SessionBackgroundModeNebula:
+		return SessionBackgroundModeNebula
+	case SessionBackgroundModeEmbers:
+		return SessionBackgroundModeEmbers
+	case SessionBackgroundModeStarfield:
+		return SessionBackgroundModeStarfield
+	case SessionBackgroundModeBlackhole:
+		return SessionBackgroundModeBlackhole
+	case SessionBackgroundModeMoonclouds:
+		return SessionBackgroundModeMoonclouds
+	case SessionBackgroundModeBiolume:
+		return SessionBackgroundModeBiolume
+	case SessionBackgroundModeSilk:
+		return SessionBackgroundModeSilk
+	case SessionBackgroundModeDunes:
+		return SessionBackgroundModeDunes
+	case SessionBackgroundModeRaincity:
+		return SessionBackgroundModeRaincity
 	case SessionBackgroundModeCustom, "image", "images":
 		return SessionBackgroundModeCustom
 	default:

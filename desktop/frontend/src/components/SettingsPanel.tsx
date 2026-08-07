@@ -46,6 +46,7 @@ import {
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
 import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import { DYNAMIC_WALLPAPER_SCENES, isSceneName } from "./DynamicWallpaper";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -6068,7 +6069,7 @@ function SessionBackgroundSettingsSection() {
   const [view, setView] = useState<SessionBackgroundSettingsView | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const mode: SessionBackgroundMode = view?.mode === "pattern" || view?.mode === "solid" || view?.mode === "custom"
+  const mode: SessionBackgroundMode = view?.mode != null && (view.mode === "pattern" || view.mode === "solid" || view.mode === "custom" || isSceneName(view.mode))
     ? view.mode
     : view?.enabled && view.imageCount > 0 ? "custom" : "pattern";
 
@@ -6159,7 +6160,7 @@ function SessionBackgroundSettingsSection() {
         <>
           <SettingsField label={t("settings.sessionBackgroundMode")} hint={t("settings.sessionBackgroundModeHint")} stacked>
             <div className="settings-background__modes" role="radiogroup" aria-label={t("settings.sessionBackgroundMode")}>
-              {(["pattern", "solid", "custom"] as const).map((option) => (
+              {(["pattern", "solid", ...DYNAMIC_WALLPAPER_SCENES, "custom"] as const).map((option) => (
                 <button
                   key={option}
                   type="button"

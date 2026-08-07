@@ -1954,6 +1954,37 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 	if solid := solidDecoded.DesktopSessionBackground(); solid.Mode != SessionBackgroundModeSolid || solid.Enabled {
 		t.Fatalf("solid background round trip = %#v", solid)
 	}
+
+	for _, mode := range []string{
+		SessionBackgroundModeWaves,
+		SessionBackgroundModeAurora,
+		SessionBackgroundModeNebula,
+		SessionBackgroundModeEmbers,
+		SessionBackgroundModeStarfield,
+		SessionBackgroundModeBlackhole,
+		SessionBackgroundModeMoonclouds,
+		SessionBackgroundModeBiolume,
+		SessionBackgroundModeSilk,
+		SessionBackgroundModeDunes,
+		SessionBackgroundModeRaincity,
+	} {
+		t.Run(mode, func(t *testing.T) {
+			if err := cfg.SetDesktopSessionBackground(DesktopSessionBackgroundConfig{Mode: mode}); err != nil {
+				t.Fatal(err)
+			}
+			rendered := RenderTOMLForScope(cfg, RenderScopeUser)
+			if !strings.Contains(rendered, `mode = "`+mode+`"`) {
+				t.Fatalf("%s background mode missing from rendered config:\n%s", mode, rendered)
+			}
+			var decoded Config
+			if _, err := toml.Decode(rendered, &decoded); err != nil {
+				t.Fatalf("decode %s background config: %v", mode, err)
+			}
+			if got := decoded.DesktopSessionBackground(); got.Mode != mode || got.Enabled {
+				t.Fatalf("%s background round trip = %#v", mode, got)
+			}
+		})
+	}
 }
 
 func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testing.T) {

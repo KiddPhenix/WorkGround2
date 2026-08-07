@@ -240,7 +240,7 @@ func (c *Config) SetDesktopSessionBackground(next DesktopSessionBackgroundConfig
 	mode := normalizeSessionBackgroundMode(next.Mode)
 	if mode == "" {
 		if strings.TrimSpace(next.Mode) != "" {
-			return fmt.Errorf("desktop Session background mode %q: must be pattern|solid|custom", next.Mode)
+			return fmt.Errorf("desktop Session background mode %q: must be pattern|solid|waves|aurora|nebula|embers|starfield|blackhole|moonclouds|biolume|silk|dunes|raincity|custom", next.Mode)
 		}
 		if next.Enabled || len(next.Sources) > 0 {
 			mode = SessionBackgroundModeCustom

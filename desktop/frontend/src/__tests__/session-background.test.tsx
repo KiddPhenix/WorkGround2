@@ -100,8 +100,92 @@ console.log("\nSession background rendering and contracts");
   await act(async () => root.unmount());
 }
 
+{
+  setupDOM({ mode: "waves", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-waves" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "waves mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "aurora", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-aurora" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--aurora") !== null, "aurora mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "aurora mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "nebula", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-nebula" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--nebula") !== null, "nebula mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "nebula mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "embers", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-embers" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--embers") !== null, "embers mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "embers mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "starfield", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-starfield" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--starfield") !== null, "starfield mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "starfield mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "blackhole", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-blackhole" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--blackhole") !== null, "blackhole mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "blackhole mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
+{
+  setupDOM({ mode: "raincity", enabled: false, maskEnabled: true, randomOnOpen: true, rotateSeconds: 0, imageCount: 0, sources: [] });
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => {
+    root.render(<SessionBackground tabId="tab-raincity" />);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  ok(document.querySelector(".session-background--raincity") !== null, "raincity mode wraps in its own themed container");
+  ok(document.querySelector("canvas.session-background__dynamic") !== null, "raincity mode renders a dynamic WebGL canvas");
+  await act(async () => root.unmount());
+}
+
 const testDir = dirname(fileURLToPath(import.meta.url));
 const componentSource = readFileSync(resolve(testDir, "../components/SessionBackground.tsx"), "utf8");
+const dynamicSource = readFileSync(resolve(testDir, "../components/DynamicWallpaper.tsx"), "utf8");
 const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const sessionSurfaceSource = readFileSync(resolve(testDir, "../components/SessionSurface.tsx"), "utf8");
 const workWorkspaceSource = readFileSync(resolve(testDir, "../components/work/WorkWorkspace.tsx"), "utf8");
@@ -115,8 +199,15 @@ ok((appSource.match(/<SessionBackground tabId=\{activeTabId\}/g) ?? []).length =
 ok(appSource.indexOf("<SessionBackground tabId={activeTabId} />") < appSource.indexOf("<aside className={`workspace-sidebar"), "workbench background sits below both navigation and Session plates");
 ok(!sessionSurfaceSource.includes("<SessionBackground") && sessionSurfaceSource.includes("session-workspace--running"), "Session surface exposes running state without mounting a duplicate background");
 ok(componentSource.includes('document.addEventListener("visibilitychange"') && componentSource.includes("Date.now() >= dueAt"), "rotation pauses while hidden and catches up at most once");
-ok(componentSource.includes("image.decode()") && componentSource.includes("prefers-reduced-motion") === false, "component decodes images before swapping layers");
-ok(cssSource.includes("@media (prefers-reduced-motion: reduce)") && cssSource.includes("color-mix(in srgb, var(--bg)"), "CSS provides reduced-motion and theme-derived masking");
+ok(componentSource.includes("image.decode()") && componentSource.includes("isSceneName(mode)") && componentSource.includes("DynamicWallpaper"), "component decodes images before swapping layers and delegates all dynamic modes through the shared scene guard");
+ok(cssSource.includes(".session-background__dynamic") && cssSource.includes("linear-gradient(180deg") && cssSource.includes("#0a1628"), "CSS provides dynamic canvas placement and static deep-water gradient fallback");
+ok(cssSource.includes(".session-background--aurora") && cssSource.includes(".session-background--nebula") && cssSource.includes(".session-background--embers") && cssSource.includes(".session-background--starfield") && cssSource.includes(".session-background--blackhole") && cssSource.includes(".session-background--raincity"), "CSS provides themed fallback containers for all dynamic wallpapers");
+ok(cssSource.includes(".settings-background__preview--aurora") && cssSource.includes(".settings-background__preview--nebula") && cssSource.includes(".settings-background__preview--embers") && cssSource.includes(".settings-background__preview--starfield") && cssSource.includes(".settings-background__preview--blackhole") && cssSource.includes(".settings-background__preview--raincity"), "CSS provides distinct high-quality previews for all dynamic themes");
+ok(dynamicSource.includes("1.0 - v_uv.y") && dynamicSource.includes("u_light") && dynamicSource.includes("MAX_DPR = 1.5") && dynamicSource.includes("TARGET_FPS = 30"), "dynamic shaders keep the horizon upright, follow theme, and cap render cost");
+ok(dynamicSource.includes('return src.replace("precision highp float;"') && !dynamicSource.includes("return GLSL_COMMON + src"), "shared GLSL utilities are injected after the required version and precision directives");
+ok(dynamicSource.includes('document.visibilityState !== "hidden"') && dynamicSource.includes("prefers-reduced-motion: reduce") && dynamicSource.includes("webglcontextrestored") && dynamicSource.includes("deleteProgram"), "dynamic lifecycle pauses, reduces motion, restores context, and releases GL resources");
+ok(dynamicSource.includes('"aurora"') && dynamicSource.includes('"nebula"') && dynamicSource.includes('"embers"') && dynamicSource.includes('"waves"') && dynamicSource.includes('"starfield"') && dynamicSource.includes('"blackhole"') && dynamicSource.includes('"raincity"') && dynamicSource.includes("FRAG_AURORA") && dynamicSource.includes("FRAG_NEBULA") && dynamicSource.includes("FRAG_EMBERS") && dynamicSource.includes("FRAG_STARFIELD"), "DynamicWallpaper carries eleven distinct scene shaders");
+ok(cssSource.includes("@media (prefers-reduced-motion: reduce)") && cssSource.includes("color-mix(in srgb, var(--bg)") && cssSource.includes(".session-background__image--previous"), "CSS provides reduced-motion, theme-derived masking, and image crossfade freeze");
 ok(cssSource.includes(".session-workspace:has(> .session-background) .task-memory-bar") && cssSource.includes("backdrop-filter: blur(8px)"), "background sessions soften the memory rail instead of painting an opaque stripe");
 ok(cssSource.includes(".layout--workbench > .session-background") && cssSource.includes("session-run-track") && cssSource.includes("session-active-marker"), "workbench uses one wallpaper layer and restrained active-state motion");
 ok(
@@ -195,8 +286,10 @@ ok(settingsSource.includes("PickSessionBackgroundFiles") && settingsSource.inclu
 ok(
   settingsSource.includes('const themeOptions = ["light", "dark"] as const') &&
     !settingsSource.includes("THEME_STYLES.map") &&
-    settingsSource.includes('(["pattern", "solid", "custom"] as const)'),
-  "Appearance settings expose two color schemes and three coherent background modes",
+    dynamicSource.includes("DYNAMIC_WALLPAPER_SCENES") &&
+    settingsSource.includes("isSceneName(view.mode)") &&
+    settingsSource.includes('(["pattern", "solid", ...DYNAMIC_WALLPAPER_SCENES, "custom"] as const)'),
+  "Appearance settings expose two color schemes and fourteen coherent background modes",
 );
 ok(
   cssSource.includes('url("./assets/session-pattern-light.svg")') &&
