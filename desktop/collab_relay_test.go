@@ -105,6 +105,73 @@ func TestRelayDialURLRequiresExplicitPublicWSConsent(t *testing.T) {
 	}
 }
 
+func TestRelayConfigForRouteMatchesLocalTrustByURL(t *testing.T) {
+	t.Setenv("WORKGROUND2_HOME", t.TempDir())
+	trustedURL := "ws://Relay.Example:8443/relay/v1/connect"
+	cfg := config.Default()
+	if err := cfg.SetCollaboration(config.CollaborationConfig{
+		PreferLAN: true, ConnectTimeout: 10, RouteStable: 60,
+		Relays: []config.RelayConfig{{
+			ID: "my-local-name", URL: trustedURL, Enabled: true, Priority: 100, AllowInsecure: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	relay, err := relayConfigForRoute(CollaborationRouteInput{
+		Kind: "relay", RelayID: "someone-elses-name", URL: "ws://relay.example:8443/relay/v1/connect",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.ID != "my-local-name" || !relay.AllowInsecure || relay.URL != trustedURL {
+		t.Fatalf("relay = %#v, want local trusted entry selected by URL", relay)
+	}
+
+	untrusted, err := relayConfigForRoute(CollaborationRouteInput{
+		Kind: "relay", RelayID: "my-local-name", URL: "ws://other.example:8443/relay/v1/connect",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if untrusted.AllowInsecure || untrusted.URL != "ws://other.example:8443/relay/v1/connect" {
+		t.Fatalf("relay = %#v, same local ID must not trust a different URL", untrusted)
+	}
+}
+
+func TestRelayConfigForRouteKeepsLegacyIDFallback(t *testing.T) {
+	t.Setenv("WORKGROUND2_HOME", t.TempDir())
+	cfg := config.Default()
+	if err := cfg.SetCollaboration(config.CollaborationConfig{
+		PreferLAN: true, ConnectTimeout: 10, RouteStable: 60,
+		Relays: []config.RelayConfig{{
+			ID: "legacy-relay", URL: "wss://relay.example/relay/v1/connect", Enabled: true, Priority: 100,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	relay, err := relayConfigForRoute(CollaborationRouteInput{Kind: "relay", RelayID: "legacy-relay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.ID != "legacy-relay" || relay.URL != "wss://relay.example/relay/v1/connect" {
+		t.Fatalf("relay = %#v, want legacy ID lookup", relay)
+	}
+}
+
 func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	t.Setenv("WORKGROUND2_HOME", t.TempDir())
 	relayCfg := relayserver.DefaultConfig()
