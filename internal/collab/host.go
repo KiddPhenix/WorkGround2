@@ -62,7 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, fail(CodeInvalid, "invalid room path"))
 			return
 		}
-		h.files.serve(w, r, room, parts[2:])
+		h.files.serve(w, r, room, parts[2:], 1)
 		return
 	}
 	if len(parts) != 2 || parts[0] == "" {
@@ -89,6 +89,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
+	h.joinRoom(w, r, "")
+}
+
+func (h *Handler) joinRoom(w http.ResponseWriter, r *http.Request, room string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
 		return
@@ -97,6 +101,13 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 	if err := decodeBody(w, r, &input); err != nil {
 		writeError(w, err)
 		return
+	}
+	if room != "" {
+		if input.Room != "" && input.Room != room {
+			writeError(w, fail(CodeInvalid, "room body does not match path"))
+			return
+		}
+		input.Room = room
 	}
 	result, err := h.service.Join(r.Context(), input)
 	if err != nil {
@@ -107,6 +118,10 @@ func (h *Handler) join(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) signal(w http.ResponseWriter, r *http.Request, leave bool) {
+	h.signalRoom(w, r, "", leave)
+}
+
+func (h *Handler) signalRoom(w http.ResponseWriter, r *http.Request, room string, leave bool) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
 		return
@@ -115,6 +130,13 @@ func (h *Handler) signal(w http.ResponseWriter, r *http.Request, leave bool) {
 	if err := decodeBody(w, r, &input); err != nil {
 		writeError(w, err)
 		return
+	}
+	if room != "" {
+		if input.Room != "" && input.Room != room {
+			writeError(w, fail(CodeInvalid, "room body does not match path"))
+			return
+		}
+		input.Room = room
 	}
 	if input.Session == "" {
 		input.Session = sessionFrom(r)

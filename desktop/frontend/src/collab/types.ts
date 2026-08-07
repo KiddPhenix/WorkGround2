@@ -57,6 +57,7 @@ export interface CollaborationRelayConfig {
 
 export interface CollaborationRouteInput {
   id?: string;
+  protocolVersion?: 1 | 2;
   kind: "lan" | "relay";
   host?: string;
   port?: number;
@@ -300,6 +301,7 @@ export interface CollaborationWorkspaceOption {
 
 export interface CollaborationState {
   status: CollaborationConnectionStatus;
+  protocolVersion?: 1 | 2;
   mode?: "host" | "client";
   room?: CollaborationRoom;
   selfMemberId?: string;
@@ -335,6 +337,7 @@ export interface HostCollaborationRoomInput {
   listenHost: string;
   port: number;
   room: string;
+  protocolVersion?: 1 | 2;
   roomName?: string;
   description?: string;
   token?: string;

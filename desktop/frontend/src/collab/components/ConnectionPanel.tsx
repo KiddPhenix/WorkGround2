@@ -134,22 +134,23 @@ export function ConnectionPanel({ sessionID, status, error, initial, workspaces,
       localStorage.setItem(`collab:${sessionID}:host`, joinHost.trim());
       localStorage.setItem(`collab:${sessionID}:listenHost`, listenHost.trim());
       localStorage.setItem(`collab:${sessionID}:port`, port);
-      localStorage.setItem(`collab:${sessionID}:room`, room.trim());
+      if (mode === "join") localStorage.setItem(`collab:${sessionID}:room`, room.trim());
     } catch { /* private mode: the current form values remain usable */ }
     const shared = {
-      port: Number(port), room: room.trim(), token: token.trim() || undefined,
+      port: Number(port), room: mode === "host" ? "" : room.trim(), token: token.trim() || undefined,
       memberID: saved.memberID, memberName: saved.memberName, memberAvatar: saved.memberAvatar, memberRole: saved.memberRole,
       agentID: saved.agentID, agentName: saved.agentName, agentAvatar: saved.agentAvatar, agentRole: saved.agentRole, sessionID,
     };
     try {
       if (mode === "host") {
-        const publishedRoomName = roomName.trim() || room.trim();
+        const publishedRoomName = roomName.trim();
         if (!lanEnabled && relayIDs.length === 0) {
           setConnectionError(c("routeRequired"));
           return;
         }
         await onHost({
           ...shared,
+          protocolVersion: 2,
           listenHost: listenHost.trim(),
           roomName: publishedRoomName,
           description: description.trim() || undefined,
@@ -197,6 +198,10 @@ export function ConnectionPanel({ sessionID, status, error, initial, workspaces,
           {!workspaceRoot && <div className="collab-warning"><AlertTriangle size={16} />{c("workspaceRequired")}</div>}
           {sessionResolving && <div className="collab-warning"><AlertTriangle size={16} />{c("workspacePreparing")}</div>}
           {sessionError && !sessionResolving && <div className="collab-error" role="alert">{sessionError} <button type="button" className="collab-quiet-button" onClick={onRetrySession}>{c("retry")}</button></div>}
+          {mode === "host" && <>
+            <label className="collab-field--wide"><span>{c("roomName")}</span><input name="roomName" required value={roomName} onChange={(event) => setRoomName(event.target.value)} /></label>
+            <label className="collab-field--wide"><span>{c("roomDescription")}</span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+          </>}
           {mode === "host" && <fieldset className="collab-route-picker collab-field--wide">
             <legend>{c("connectionRoutes")}</legend>
             <label><input type="checkbox" checked={lanEnabled} onChange={(event) => setLANEnabled(event.target.checked)} /><span><b>{c("lanRoute")}</b><small>{c("lanRouteHint")}</small></span></label>
@@ -208,7 +213,7 @@ export function ConnectionPanel({ sessionID, status, error, initial, workspaces,
           </>}
           <label><span>{mode === "host" ? c("listenHost") : c("hostIP")}</span><input required={mode === "host" || joinRoutes.length === 0} value={currentHost} onChange={(event) => mode === "host" ? setListenHost(event.target.value) : setJoinHost(event.target.value)} autoComplete="off" /></label>
           <label><span>{c("port")}</span><input required={mode === "host" || joinRoutes.length === 0} type="number" min={mode === "host" ? 0 : joinRoutes.length ? 0 : 1} max="65535" value={port} onChange={(event) => setPort(event.target.value)} /></label>
-          <label className="collab-field--wide"><span>{c("room")}</span><input name="room" required value={room} onChange={(event) => setRoom(event.target.value)} autoComplete="off" /></label>
+          {mode === "join" && <label className="collab-field--wide"><span>{c("room")}</span><input name="room" required value={room} onChange={(event) => setRoom(event.target.value)} autoComplete="off" /></label>}
           <label className="collab-field--wide"><span>{c("token")}</span><input value={token} onChange={(event) => setToken(event.target.value)} autoComplete="off" /></label>
           {mode === "host" && <fieldset className="collab-visibility collab-field--wide">
             <legend>{c("roomVisibility")}</legend>
@@ -217,8 +222,6 @@ export function ConnectionPanel({ sessionID, status, error, initial, workspaces,
           {mode === "host" && <details className="collab-advanced">
             <summary>{c("roomDetails")}</summary>
             <div className="collab-advanced-fields">
-              <label><span>{c("roomName")}</span><input name="roomName" required={visibility === "public"} value={roomName || room} onChange={(event) => setRoomName(event.target.value)} /></label>
-              <label><span>{c("roomDescription")}</span><input value={description} onChange={(event) => setDescription(event.target.value)} /></label>
               <label><span>{c("roomTags")}</span><input value={tags} onChange={(event) => setTags(event.target.value)} placeholder={c("roomTagsHint")} /></label>
               <label><span>{c("roomCapacity")}</span><input type="number" min="1" value={capacity} onChange={(event) => setCapacity(event.target.value)} /></label>
               <label className="collab-inline-check"><input type="checkbox" checked={showOnlineCount} onChange={(event) => setShowOnlineCount(event.target.checked)} /><span>{c("showOnlineCount")}</span></label>
