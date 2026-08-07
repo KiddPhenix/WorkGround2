@@ -27,6 +27,8 @@ const (
 	collaborationStateChannel  = "collaboration:state"
 	collaborationEventChannel  = "collaboration:event"
 	maxCollaborationAgentQueue = 20
+	collaborationProtocolV1    = 1
+	collaborationProtocolV2    = 2
 )
 
 // CollaborationState is the authoritative desktop projection consumed by the
@@ -54,6 +56,7 @@ type CollaborationState struct {
 	Routes           []CollaborationRouteState        `json:"routes,omitempty"`
 	Advertisement    *CollaborationAdvertisementState `json:"advertisement,omitempty"`
 	CurrentRun       *CollaborationCurrentRun         `json:"currentRun,omitempty"`
+	ProtocolVersion  int                              `json:"protocolVersion,omitempty"`
 }
 
 // CollaborationCurrentRun is the local owner-only projection of the Agent
@@ -78,6 +81,7 @@ type CollaborationRouteInput struct {
 	TunnelID        string `json:"tunnelId,omitempty"`
 	GuestCapability string `json:"guestCapability,omitempty"`
 	Priority        int    `json:"priority,omitempty"`
+	ProtocolVersion int    `json:"protocolVersion,omitempty"`
 }
 
 type CollaborationRouteState struct {
@@ -217,26 +221,27 @@ type CollaborationInvite struct {
 }
 
 type HostCollaborationRoomInput struct {
-	ListenHost    string                  `json:"listenHost"`
-	Port          int                     `json:"port"`
-	Room          string                  `json:"room"`
-	RoomName      string                  `json:"roomName,omitempty"`
-	Description   string                  `json:"description,omitempty"`
-	Token         string                  `json:"token,omitempty"`
-	MemberID      string                  `json:"memberId,omitempty"`
-	MemberName    string                  `json:"memberName"`
-	MemberAvatar  string                  `json:"memberAvatar,omitempty"`
-	MemberRole    string                  `json:"memberRole,omitempty"`
-	AgentID       string                  `json:"agentId,omitempty"`
-	AgentName     string                  `json:"agentName,omitempty"`
-	AgentAvatar   string                  `json:"agentAvatar,omitempty"`
-	AgentRole     string                  `json:"agentRole,omitempty"`
-	SessionID     string                  `json:"sessionId"`
-	LANEnabled    *bool                   `json:"lanEnabled,omitempty"`
-	RelayIDs      []string                `json:"relayIDs,omitempty"`
-	PreferLAN     *bool                   `json:"preferLAN,omitempty"`
-	Visibility    string                  `json:"visibility,omitempty"`
-	Advertisement *RoomAdvertisementInput `json:"advertisement,omitempty"`
+	ListenHost      string                  `json:"listenHost"`
+	Port            int                     `json:"port"`
+	Room            string                  `json:"room"`
+	RoomName        string                  `json:"roomName,omitempty"`
+	Description     string                  `json:"description,omitempty"`
+	Token           string                  `json:"token,omitempty"`
+	MemberID        string                  `json:"memberId,omitempty"`
+	MemberName      string                  `json:"memberName"`
+	MemberAvatar    string                  `json:"memberAvatar,omitempty"`
+	MemberRole      string                  `json:"memberRole,omitempty"`
+	AgentID         string                  `json:"agentId,omitempty"`
+	AgentName       string                  `json:"agentName,omitempty"`
+	AgentAvatar     string                  `json:"agentAvatar,omitempty"`
+	AgentRole       string                  `json:"agentRole,omitempty"`
+	SessionID       string                  `json:"sessionId"`
+	LANEnabled      *bool                   `json:"lanEnabled,omitempty"`
+	RelayIDs        []string                `json:"relayIDs,omitempty"`
+	PreferLAN       *bool                   `json:"preferLAN,omitempty"`
+	Visibility      string                  `json:"visibility,omitempty"`
+	Advertisement   *RoomAdvertisementInput `json:"advertisement,omitempty"`
+	ProtocolVersion int                     `json:"protocolVersion,omitempty"`
 }
 
 type JoinCollaborationRoomInput struct {
@@ -459,6 +464,8 @@ type collaborationConnection struct {
 	authorityKeyRef     string
 	hostCapabilityRefs  map[string]string
 	guestCapabilityRefs map[string]string
+	protocolVersion     int
+	releaseLAN          func()
 }
 
 type collaborationRelayBinding interface {
@@ -556,6 +563,7 @@ type collaborationPersistedState struct {
 	GuestCapabilityRefs   map[string]string                   `json:"guestCapabilityRefs,omitempty"`
 	HostKey               string                              `json:"hostKey,omitempty"`
 	Advertisement         *CollaborationAdvertisementState    `json:"advertisement,omitempty"`
+	ProtocolVersion       int                                 `json:"protocolVersion,omitempty"`
 }
 
 type collaborationPersistedRun struct {
@@ -681,6 +689,9 @@ func (a *App) closeCollaborations() {
 		}()
 	}
 	wg.Wait()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	_ = a.closeCollaborationLAN(ctx)
+	cancel()
 }
 
 // restoreCollaborationRuntimes scans the persisted collaboration states on
@@ -1584,6 +1595,25 @@ func cloneCollaborationHandoffs(values []collab.AgentHandoff) []collab.AgentHand
 func (c *desktopCollaboration) host(ctx context.Context, input HostCollaborationRoomInput) (CollaborationState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
+	if input.ProtocolVersion == 0 {
+		input.ProtocolVersion = collaborationProtocolV2
+	}
+	if input.ProtocolVersion != collaborationProtocolV1 && input.ProtocolVersion != collaborationProtocolV2 {
+		err := fmt.Errorf("unsupported collaboration protocol version %d", input.ProtocolVersion)
+		return c.failState("failed", err, false), err
+	}
+	input.Room = strings.TrimSpace(input.Room)
+	if input.Room == "" {
+		if input.ProtocolVersion == collaborationProtocolV1 {
+			err := fmt.Errorf("room is required for collaboration V1")
+			return c.failState("failed", err, false), err
+		}
+		if strings.TrimSpace(input.SessionID) == "" {
+			err := fmt.Errorf("sessionId is required to generate room_id")
+			return c.failState("failed", err, false), err
+		}
+		input.Room = stableCollaborationID("room", strings.TrimSpace(input.SessionID))
+	}
 	var err error
 	input.ListenHost, err = normalizeCollaborationHost(input.ListenHost)
 	if err != nil {
@@ -1909,7 +1939,7 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 				ListenHost: p.Host, Port: p.Port, Room: p.Room, RoomName: p.RoomName, Description: p.Description, Token: token,
 				MemberID: p.MemberID, MemberName: p.MemberName, MemberAvatar: p.MemberAvatar, MemberRole: p.MemberRole,
 				AgentID: p.AgentID, AgentName: p.AgentName, AgentAvatar: p.AgentAvatar, AgentRole: p.AgentRole, SessionID: p.SessionID,
-				LANEnabled: boolPointer(p.LANEnabled), RelayIDs: append([]string(nil), p.RelayIDs...), PreferLAN: boolPointer(p.PreferLAN), Visibility: visibility,
+				LANEnabled: boolPointer(p.LANEnabled), RelayIDs: append([]string(nil), p.RelayIDs...), PreferLAN: boolPointer(p.PreferLAN), Visibility: visibility, ProtocolVersion: p.ProtocolVersion,
 			}, identity, resume)
 		} else {
 			routes := make([]CollaborationRouteInput, 0, len(p.Routes))
@@ -2528,19 +2558,20 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		status = "syncing"
 	}
 	c.state = CollaborationState{
-		Status:        status,
-		Mode:          conn.mode,
-		Host:          conn.hostName,
-		Port:          conn.port,
-		Room:          conn.room,
-		MemberID:      conn.memberID,
-		AgentID:       conn.agentID,
-		SessionID:     conn.sessionID,
-		Snapshot:      conn.initialSnapshot,
-		OutboxCount:   len(c.outbox),
-		AgentConfig:   config,
-		Routes:        publicCollaborationRoutes(conn.routes),
-		Advertisement: conn.advertisement,
+		Status:          status,
+		Mode:            conn.mode,
+		Host:            conn.hostName,
+		Port:            conn.port,
+		Room:            conn.room,
+		MemberID:        conn.memberID,
+		AgentID:         conn.agentID,
+		SessionID:       conn.sessionID,
+		Snapshot:        conn.initialSnapshot,
+		OutboxCount:     len(c.outbox),
+		AgentConfig:     config,
+		Routes:          publicCollaborationRoutes(conn.routes),
+		Advertisement:   conn.advertisement,
+		ProtocolVersion: conn.protocolVersion,
 	}
 	if conn.routeError != "" {
 		c.state.LastError = conn.routeError

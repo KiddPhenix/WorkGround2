@@ -38,39 +38,73 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	if roomName == "" {
 		roomName = room
 	}
-	authority, err := openCollaborationAuthority(ctx, input)
-	if err != nil {
-		return nil, err
+	protocolVersion := input.ProtocolVersion
+	if protocolVersion == 0 {
+		protocolVersion = collaborationProtocolV1
 	}
-	service, hub := authority.service, authority.hub
 	lanEnabled := input.LANEnabled == nil || *input.LANEnabled
 	var listener net.Listener
 	var server *http.Server
+	var releaseLAN func()
+	var err error
 	actualPort := 0
 	routes := make([]CollaborationRouteState, 0, 1+len(input.RelayIDs))
-	if lanEnabled {
+	var authority *collaborationAuthority
+	if lanEnabled && protocolVersion == collaborationProtocolV2 {
+		if c.app == nil {
+			err = fmt.Errorf("shared collaboration V2 listener is unavailable")
+		} else {
+			authority, actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(ctx, input)
+		}
+		if err != nil {
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "failed", LastError: err.Error(), Retryable: true})
+		} else {
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: actualPort, Priority: 1000, ProtocolVersion: protocolVersion}, Status: "connected"})
+		}
+	} else if lanEnabled {
 		listener, err = net.Listen("tcp", net.JoinHostPort(listenHost, strconv.Itoa(input.Port)))
 		if err != nil {
-			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port}, Status: "failed", LastError: err.Error(), Retryable: true})
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: collaborationProtocolV1}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
 			actualPort = listener.Addr().(*net.TCPAddr).Port
-			server = &http.Server{Handler: collab.NewHandler(service, hub), ReadHeaderTimeout: 10 * time.Second}
+			authority, err = openCollaborationAuthority(ctx, input)
+			if err != nil {
+				_ = listener.Close()
+				return nil, err
+			}
+			server = &http.Server{Handler: collab.NewHandler(authority.service, authority.hub), ReadHeaderTimeout: 10 * time.Second}
 			go func() {
 				if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 					c.failState("failed", fmt.Errorf("collaboration host stopped: %w", serveErr), true)
 				}
 			}()
-			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: actualPort, Priority: 1000}, Status: "connected"})
+			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: actualPort, Priority: 1000, ProtocolVersion: collaborationProtocolV1}, Status: "connected"})
 		}
 	} else {
-		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port}, Status: "disabled"})
+		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "disabled"})
 	}
+	if authority == nil {
+		authority, err = openCollaborationAuthority(ctx, input)
+		if err != nil {
+			if server != nil {
+				_ = server.Shutdown(context.Background())
+			}
+			if releaseLAN != nil {
+				releaseLAN()
+			}
+			return nil, err
+		}
+	}
+	service, hub := authority.service, authority.hub
 	joined, err := service.Join(ctx, collab.JoinInput{
 		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
 	})
 	if err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
+		}
+		if releaseLAN != nil {
+			releaseLAN()
 		}
 		return nil, err
 	}
@@ -81,12 +115,15 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	}
 	var filePeer *httpCollaborationPeer
 	if actualPort > 0 {
-		filePeer = &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession}
+		filePeer = &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession, protocolVersion: protocolVersion}
 	}
 	snapshot, err := peer.Snapshot(ctx)
 	if err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
+		}
+		if releaseLAN != nil {
+			releaseLAN()
 		}
 		return nil, err
 	}
@@ -96,7 +133,7 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
 		sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
 		initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined,
-		authority: authority, routes: routes, lanEnabled: lanEnabled, relayIDs: append([]string(nil), input.RelayIDs...),
+		authority: authority, routes: routes, lanEnabled: lanEnabled, relayIDs: append([]string(nil), input.RelayIDs...), protocolVersion: protocolVersion, releaseLAN: releaseLAN,
 		preferLAN:          input.PreferLAN == nil || *input.PreferLAN,
 		hostCapabilityRefs: map[string]string{}, guestCapabilityRefs: map[string]string{},
 		sweep: func(sweepCtx context.Context) error {
@@ -105,6 +142,12 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 			})
 			return sweepErr
 		},
+	}
+	if protocolVersion == collaborationProtocolV2 {
+		if err := c.prepareRoomAuthority(conn); err != nil {
+			_ = conn.close(context.Background(), false)
+			return nil, err
+		}
 	}
 	if err := c.startRelayBindings(ctx, conn, input); err != nil && !lanEnabled {
 		// Authority and local Host stay available; individual Relay failures are
@@ -118,7 +161,7 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 	host := strings.TrimSpace(input.Host)
 	room := strings.TrimSpace(input.Room)
 	candidates := append([]CollaborationRouteInput(nil), input.Routes...)
-	if host != "" && input.Port > 0 && input.Port <= 65535 {
+	if len(candidates) == 0 && host != "" && input.Port > 0 && input.Port <= 65535 {
 		candidates = append([]CollaborationRouteInput{{ID: "lan", Kind: "lan", Host: host, Port: input.Port, Priority: 1000}}, candidates...)
 	}
 	if len(candidates) == 0 {
@@ -152,7 +195,11 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 		}
 		state := CollaborationRouteState{CollaborationRouteInput: route, Status: "connecting"}
 		if strings.EqualFold(route.Kind, "lan") {
-			peer, joined, snapshot, err := joinCollaborationPeer(ctx, strings.TrimSpace(route.Host), route.Port, room, strings.TrimSpace(input.Token), identity, resume)
+			protocolVersion := route.ProtocolVersion
+			if protocolVersion == 0 {
+				protocolVersion = collaborationProtocolV1
+			}
+			peer, joined, snapshot, err := joinCollaborationPeer(ctx, strings.TrimSpace(route.Host), route.Port, room, strings.TrimSpace(input.Token), identity, resume, protocolVersion)
 			if err != nil {
 				state.Status, state.LastError, state.Retryable = "failed", err.Error(), collaborationErrorRetryable(err)
 				routeStates = append(routeStates, state)
@@ -167,7 +214,7 @@ func (c *desktopCollaboration) openJoinedRoom(ctx context.Context, input JoinCol
 				memberID: joined.Member.ID, agentID: joined.Member.Agent.ID,
 				memberName: identity.Name, memberAvatar: identity.Avatar, memberRole: identity.Role, agentName: identity.Agent.Name, agentAvatar: identity.Agent.Avatar, agentRole: identity.Agent.Role,
 				sessionID: strings.TrimSpace(input.SessionID), connectionSession: joined.ConnectionSession,
-				initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), lanEnabled: true,
+				initialSnapshot: snapshot, joinToken: strings.TrimSpace(input.Token), rejoined: joined.Rejoined, routes: appendRemainingRouteStates(routeStates, candidates[index+1:]), lanEnabled: true, protocolVersion: protocolVersion,
 			}, nil
 		}
 		if !strings.EqualFold(route.Kind, "relay") {
@@ -257,6 +304,9 @@ func (conn *collaborationConnection) close(ctx context.Context, sendLeave bool) 
 				result = err
 			}
 		}
+		if conn.releaseLAN != nil {
+			conn.releaseLAN()
+		}
 		for _, binding := range conn.relayBindings {
 			if binding == nil {
 				continue
@@ -276,12 +326,13 @@ func (conn *collaborationConnection) close(ctx context.Context, sendLeave bool) 
 }
 
 type httpCollaborationPeer struct {
-	baseURL      string
-	client       *http.Client
-	streamClient *http.Client
-	room         string
-	member       string
-	session      string
+	baseURL         string
+	client          *http.Client
+	streamClient    *http.Client
+	room            string
+	member          string
+	session         string
+	protocolVersion int
 }
 
 // serviceCollaborationPeer keeps the Host's own session on the authoritative
@@ -359,11 +410,15 @@ func (p *serviceCollaborationPeer) Leave(ctx context.Context, requestID string) 
 	return err
 }
 
-func joinCollaborationPeer(ctx context.Context, host string, port int, room, token string, identity collab.MemberDescriptor, resume string) (*httpCollaborationPeer, collab.JoinResult, collab.Snapshot, error) {
+func joinCollaborationPeer(ctx context.Context, host string, port int, room, token string, identity collab.MemberDescriptor, resume string, protocolVersion int) (*httpCollaborationPeer, collab.JoinResult, collab.Snapshot, error) {
 	baseURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
-	peer := &httpCollaborationPeer{baseURL: baseURL, client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: identity.ID}
+	peer := &httpCollaborationPeer{baseURL: baseURL, client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: identity.ID, protocolVersion: protocolVersion}
 	var joined collab.JoinResult
-	err := peer.doJSON(ctx, http.MethodPost, "/collab/v1/join", collab.JoinInput{
+	joinPath := "/collab/v1/join"
+	if protocolVersion >= collaborationProtocolV2 {
+		joinPath = peer.roomPath("join")
+	}
+	err := peer.doJSON(ctx, http.MethodPost, joinPath, collab.JoinInput{
 		RequestID:     newCollaborationRequestID("join"),
 		Room:          room,
 		Token:         token,
@@ -383,20 +438,20 @@ func joinCollaborationPeer(ctx context.Context, host string, port int, room, tok
 
 func (p *httpCollaborationPeer) Snapshot(ctx context.Context) (collab.Snapshot, error) {
 	var value collab.Snapshot
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/snapshot"
+	path := p.roomPath("snapshot")
 	err := p.doJSON(ctx, http.MethodGet, path, nil, &value, true)
 	return value, err
 }
 
 func (p *httpCollaborationPeer) Events(ctx context.Context, after uint64) ([]collab.RoomEvent, error) {
 	var value []collab.RoomEvent
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/events?afterSequence=" + strconv.FormatUint(after, 10)
+	path := p.roomPath("events") + "?afterSequence=" + strconv.FormatUint(after, 10)
 	err := p.doJSON(ctx, http.MethodGet, path, nil, &value, true)
 	return value, err
 }
 
 func (p *httpCollaborationPeer) Stream(ctx context.Context, after uint64, handle func(collab.RoomEvent) error) error {
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/stream?afterSequence=" + strconv.FormatUint(after, 10)
+	path := p.roomPath("stream") + "?afterSequence=" + strconv.FormatUint(after, 10)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
 	if err != nil {
 		return err
@@ -441,23 +496,39 @@ func (p *httpCollaborationPeer) Stream(ctx context.Context, after uint64, handle
 func (p *httpCollaborationPeer) Submit(ctx context.Context, env collab.CommandEnvelope) (collab.CommandReceipt, error) {
 	env.Room, env.MemberID, env.Session = p.room, p.member, p.session
 	var value collab.CommandReceipt
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/commands"
+	path := p.roomPath("commands")
 	err := p.doJSON(ctx, http.MethodPost, path, env, &value, true)
 	return value, err
 }
 
 func (p *httpCollaborationPeer) Heartbeat(ctx context.Context, requestID string) error {
 	var value collab.CommandReceipt
-	return p.doJSON(ctx, http.MethodPost, "/collab/v1/heartbeat", collab.SessionInput{
+	path := "/collab/v1/heartbeat"
+	if p.protocolVersion >= collaborationProtocolV2 {
+		path = p.roomPath("heartbeat")
+	}
+	return p.doJSON(ctx, http.MethodPost, path, collab.SessionInput{
 		RequestID: requestID, Room: p.room, MemberID: p.member, Session: p.session,
 	}, &value, true)
 }
 
 func (p *httpCollaborationPeer) Leave(ctx context.Context, requestID string) error {
 	var value collab.CommandReceipt
-	return p.doJSON(ctx, http.MethodPost, "/collab/v1/leave", collab.SessionInput{
+	path := "/collab/v1/leave"
+	if p.protocolVersion >= collaborationProtocolV2 {
+		path = p.roomPath("leave")
+	}
+	return p.doJSON(ctx, http.MethodPost, path, collab.SessionInput{
 		RequestID: requestID, Room: p.room, MemberID: p.member, Session: p.session,
 	}, &value, true)
+}
+
+func (p *httpCollaborationPeer) roomPath(action string) string {
+	prefix := "/collab/v1/rooms/"
+	if p.protocolVersion >= collaborationProtocolV2 {
+		prefix = "/collab/v2/rooms/"
+	}
+	return prefix + url.PathEscape(p.room) + "/" + strings.TrimPrefix(action, "/")
 }
 
 func (p *httpCollaborationPeer) doJSON(ctx context.Context, method, path string, input, output any, authorize bool) error {

@@ -411,6 +411,8 @@ async function testConnectionPanelWorkspace() {
   ];
   const calls: string[] = [];
   let hostedRoomName = "";
+  let hostedRoomID = "unset";
+  let hostedProtocol = 0;
   let sessionID: string | undefined;
   let workspaceRoot = "";
   let resolving = false;
@@ -419,12 +421,13 @@ async function testConnectionPanelWorkspace() {
     root.render(<LocaleProvider><ConnectionPanel
       sessionID={sessionID}
       status="disconnected"
+      initial={{ room: "", title: "Beta Room", host: "127.0.0.1", port: 39170, latestSequence: 0 }}
       workspaces={workspaces}
       workspaceRoot={workspaceRoot}
       onWorkspaceChange={(value) => { calls.push(`change:${value}`); }}
       sessionResolving={resolving}
       onRetrySession={() => { calls.push("retry"); }}
-      onHost={async (input) => { hostedRoomName = input.roomName || ""; calls.push(`host:${sessionID}`); }}
+      onHost={async (input) => { hostedRoomName = input.roomName || ""; hostedRoomID = input.room; hostedProtocol = input.protocolVersion || 0; calls.push(`host:${sessionID}`); }}
       onJoin={async () => { calls.push(`join:${sessionID}`); }}
       relayConfig={{ preferLAN: true, connectTimeoutSeconds: 10, routeStableSeconds: 60, relays: [{ id: "relay-sg", name: "Singapore", url: "wss://relay.example.test/relay/v1/connect", enabled: true, priority: 100, discovery: true }] }}
       roomQuery={{ rooms: [{ publicRoomId: "public-room", room: "relay-room", name: "Relay Room", description: "Cross-network room", requiresToken: false, hostKey: "host-key", routes: [{ kind: "relay", relayId: "relay-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1" }], joinRef: "join-ref" }] }}
@@ -515,13 +518,16 @@ async function testConnectionPanelWorkspace() {
     (tabs[1] as HTMLButtonElement).click();
     await Promise.resolve();
   });
-  equal((document.querySelector<HTMLInputElement>('input[name="roomName"]'))?.value, "relay-room", "optional Room details automatically mirrors the required Room name");
+  ok(!document.querySelector('input[name="room"]'), "Host hides the generated Room ID from the editable form");
+  const roomNameInput = document.querySelector<HTMLInputElement>('input[name="roomName"]')!;
+  ok(Boolean(roomNameInput) && roomNameInput.compareDocumentPosition(document.querySelector(".collab-route-picker")!) === dom.window.Node.DOCUMENT_POSITION_FOLLOWING, "Host puts required Room information above connection routes");
+  equal(roomNameInput.value, "Beta Room", "Host keeps the visible Room name independent from the generated Room ID");
   await act(async () => {
     (document.querySelector(".collab-connect-form") as HTMLFormElement).dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
   equal(calls.at(-2), "host:session-beta", "Host uses the same explicitly selected Workspace Session");
-  equal(hostedRoomName, "relay-room", "Host submission uses the required Room name when optional Room details stays untouched");
+  equal([hostedRoomName, hostedRoomID, hostedProtocol], ["Beta Room", "", 2], "Host submits display metadata and delegates V2 Room ID generation to the backend");
   await act(async () => {
     (tabs[0] as HTMLButtonElement).click();
     await Promise.resolve();
@@ -863,7 +869,7 @@ async function main() {
   equal(parseCollaborationInvite(invite), { host: "192.168.1.8", port: 39170, room: "接口 联调", token: "shared secret" }, "connection string round-trips Room and token");
   const ipv6Invite = buildCollaborationInvite({ host: "::1", port: 39170, room: "room-v6" });
   equal(parseCollaborationInvite(ipv6Invite), { host: "::1", port: 39170, room: "room-v6", token: undefined }, "connection string preserves bracketed IPv6 hosts");
-  const relayInviteValue = { version: 2 as const, room: "跨网联调", hostKey: "sha256:host-key", routes: [{ kind: "lan" as const, host: "192.168.1.8", port: 39170 }, { kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1", priority: 100 }], roomToken: "secret" };
+  const relayInviteValue = { version: 2 as const, room: "跨网联调", hostKey: "sha256:host-key", routes: [{ kind: "lan" as const, protocolVersion: 2 as const, host: "192.168.1.8", port: 39170 }, { kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1", priority: 100 }], roomToken: "secret" };
   equal(parseCollaborationInvite(buildCollaborationInvite(relayInviteValue)), relayInviteValue, "V2 RouteSet invite round-trips UTF-8 Room, LAN and Relay routes");
   let invalidInvite = false;
   try { parseCollaborationInvite("https://example.com/room"); } catch { invalidInvite = true; }

@@ -62,7 +62,7 @@ func (c *desktopCollaboration) openRelayHost(ctx context.Context, conn *collabor
 		return nil, route, err
 	}
 	route.URL, route.Priority = relay.URL, relay.Priority
-	identity, keyRef, err := c.loadRelayAuthorityKey(conn.room)
+	identity, keyRef, err := c.loadRoomAuthorityKey(conn.room)
 	if err != nil {
 		route.Status, route.LastError, route.Retryable = "failed", err.Error(), true
 		return nil, route, err
@@ -157,7 +157,7 @@ func normalizeRoomVisibility(value string) string {
 	}
 }
 
-func (c *desktopCollaboration) loadRelayAuthorityKey(room string) (ed25519.PrivateKey, string, error) {
+func (c *desktopCollaboration) loadRoomAuthorityKey(room string) (ed25519.PrivateKey, string, error) {
 	ref := collaborationRelayAuthorityRef(room)
 	if encoded := c.getSecret(ref); encoded != "" {
 		data, err := base64.RawURLEncoding.DecodeString(encoded)
@@ -173,6 +173,16 @@ func (c *desktopCollaboration) loadRelayAuthorityKey(room string) (ed25519.Priva
 		return nil, ref, fmt.Errorf("save Room authority key: %w", err)
 	}
 	return private, ref, nil
+}
+
+func (c *desktopCollaboration) prepareRoomAuthority(conn *collaborationConnection) error {
+	identity, keyRef, err := c.loadRoomAuthorityKey(conn.room)
+	if err != nil {
+		return err
+	}
+	conn.authorityKeyRef = keyRef
+	conn.hostKey = base64.RawURLEncoding.EncodeToString(identity.Public().(ed25519.PublicKey))
+	return nil
 }
 
 func collaborationRelayAuthorityRef(room string) string {

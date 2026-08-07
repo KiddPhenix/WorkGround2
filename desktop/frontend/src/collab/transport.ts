@@ -280,6 +280,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     : undefined;
   return {
     status: (text(raw.status ?? raw.Status, roomName ? "connected" : "disconnected") || "disconnected") as CollaborationState["status"],
+    protocolVersion: number(raw.protocolVersion ?? raw.ProtocolVersion) === 2 ? 2 : undefined,
     mode: (text(raw.mode ?? raw.Mode) || undefined) as CollaborationState["mode"],
     room: roomName
       ? {
@@ -373,6 +374,7 @@ function normalizeRouteInput(value: unknown): CollaborationRouteInput {
   const raw = record(value);
   return {
     id: text(raw.id ?? raw.ID) || undefined,
+    protocolVersion: number(raw.protocolVersion ?? raw.ProtocolVersion) === 2 ? 2 : undefined,
     kind: text(raw.kind ?? raw.Kind) === "relay" ? "relay" : "lan",
     host: text(raw.host ?? raw.Host) || undefined,
     port: number(raw.port ?? raw.Port) || undefined,

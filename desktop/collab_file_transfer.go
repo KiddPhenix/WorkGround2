@@ -621,8 +621,11 @@ func (c *desktopCollaboration) downloadFile(ctx context.Context, fileID string) 
 
 func (p *httpCollaborationPeer) fileTicket(ctx context.Context, fileID string) (collab.FileTransferTicket, error) {
 	var ticket collab.FileTransferTicket
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/files/" + url.PathEscape(fileID) + "/ticket"
+	path := p.roomPath("files/" + url.PathEscape(fileID) + "/ticket")
 	err := p.doJSON(ctx, http.MethodGet, path, nil, &ticket, true)
+	if err == nil && p.protocolVersion >= collaborationProtocolV2 {
+		ticket.ProxyPath = p.roomPath("files/" + url.PathEscape(fileID))
+	}
 	return ticket, err
 }
 
@@ -643,7 +646,7 @@ func (p *httpCollaborationPeer) fetchFileManifest(ctx context.Context, fileID st
 }
 
 func (p *httpCollaborationPeer) RegisterFileOrigin(ctx context.Context, fileID string, input collab.RegisterFileOriginInput) error {
-	path := "/collab/v1/rooms/" + url.PathEscape(p.room) + "/files/" + url.PathEscape(fileID) + "/origin"
+	path := p.roomPath("files/" + url.PathEscape(fileID) + "/origin")
 	var result map[string]any
 	return p.doJSON(ctx, http.MethodPost, path, input, &result, true)
 }

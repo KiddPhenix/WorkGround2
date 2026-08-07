@@ -58,6 +58,7 @@ POST /collab/v2/rooms/{room_id}/commands
 ## 7. 风险与验收
 
 - 未知、已注销或路径/Body Room 不一致必须显式失败，不能串房。
+- V2 文件票据返回 V2 ProxyPath，直连失败时仍在同一共享端口按 `room_id` 回退。
 - 多 Room 并发创建、关闭、重复恢复不得重复监听、关闭其他 Room 或泄漏路由。
 - 同一 App 请求不同显式 V2 端口时返回当前端口冲突，不静默开启第二个 Listener。
 - V1 Handler、V1 Client、旧邀请、V1 恢复测试必须继续通过。

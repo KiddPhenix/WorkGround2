@@ -378,6 +378,7 @@ func (c *desktopCollaboration) persistLocked() {
 		value.HostCapabilityRefs = cloneStringMap(c.conn.hostCapabilityRefs)
 		value.GuestCapabilityRefs = cloneStringMap(c.conn.guestCapabilityRefs)
 		value.HostKey = c.conn.hostKey
+		value.ProtocolVersion = c.conn.protocolVersion
 		value.ConnectionSecretRef = collaborationSecretRef(c.state.Host, c.state.Port, c.state.Room, c.state.MemberID)
 		if c.getSecret(value.ConnectionSecretRef) != c.conn.connectionSession {
 			if err := c.setSecret(value.ConnectionSecretRef, c.conn.connectionSession); err != nil {
@@ -416,6 +417,9 @@ func (c *desktopCollaboration) persistLocked() {
 }
 
 func (c *desktopCollaboration) repairPersisted(value collaborationPersistedState) collaborationPersistedState {
+	if value.ProtocolVersion == 0 {
+		value.ProtocolVersion = collaborationProtocolV1
+	}
 	if value.ReachabilityVersion == 0 {
 		value.LANEnabled = value.Mode == "host" && value.Port > 0
 		value.PreferLAN = true
