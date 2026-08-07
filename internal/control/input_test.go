@@ -1053,7 +1053,27 @@ func TestIsSyntheticUserMessage(t *testing.T) {
 		},
 		{
 			name:  "executor handoff",
-			input: "You are already in the executor phase. The planner's read-only limitations do not apply to you.",
+			input: "The tool schema is still attached to this executor request. Use your available tools now.",
+			want:  true,
+		},
+		{
+			name:  "read only convergence current",
+			input: "Recent rounds only gathered context. Reassess the requested outcome now.",
+			want:  true,
+		},
+		{
+			name:  "read only convergence legacy",
+			input: "This turn has been purely reading context for many rounds. Start implementation now.",
+			want:  true,
+		},
+		{
+			name:  "tool round limit current",
+			input: "Tool-round limit reached (agent.max_steps). Do not call more tools.",
+			want:  true,
+		},
+		{
+			name:  "tool round limit legacy",
+			input: "Do not call any more tools — your tool-call round limit (agent.max_steps) has been reached.",
 			want:  true,
 		},
 		{

@@ -46,7 +46,7 @@ func (o *turnOrchestrator) runSyntheticTurnWithRawDisplay(ctx context.Context, i
 
 func (o *turnOrchestrator) runComposedSyntheticTurn(ctx context.Context, text string) error {
 	c := o.c
-	return c.runner.Run(agent.WithMemoryCompilerSkip(ctx), c.ComposeSynthetic(text))
+	return c.runner.Run(agent.WithSyntheticUser(agent.WithMemoryCompilerSkip(ctx)), c.ComposeSynthetic(text))
 }
 
 func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchestratedTurn) error {
@@ -79,6 +79,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 		ctx = agent.WithMemoryCompilerSkip(ctx)
 	} else {
 		ctx = agent.WithMemoryCompilerSourceInput(ctx, turn.raw)
+	}
+	if turn.synthetic {
+		ctx = agent.WithSyntheticUser(ctx)
 	}
 	input := c.compose(turn.input, !turn.synthetic)
 	startMessages := c.messageCount()

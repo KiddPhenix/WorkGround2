@@ -6686,7 +6686,9 @@ func TestCollectPromptHistoryEntriesSkipsSyntheticMessages(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 	if err := os.WriteFile(path, []byte(`{"role":"user","content":"Plan approved — plan mode is off"}
-{"role":"user","content":"real prompt"}
+{"role":"user","content":"new host wording","origin":"host"}
+{"role":"user","content":"Recent rounds only gathered context. Quoted by the user.","origin":"user"}
+{"role":"user","content":"real prompt","origin":"user"}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -6698,11 +6700,11 @@ func TestCollectPromptHistoryEntriesSkipsSyntheticMessages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Text != "real prompt" {
-		t.Errorf("expected real prompt, got %q", entries[0].Text)
+	if entries[0].Text != "Recent rounds only gathered context. Quoted by the user." || entries[1].Text != "real prompt" {
+		t.Errorf("unexpected prompt history: %+v", entries)
 	}
 }
 

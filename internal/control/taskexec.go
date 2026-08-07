@@ -359,7 +359,7 @@ func (a *TaskExecutorAdapter) ExecuteTask(ctx context.Context, input work.TaskEx
 
 	runErr := ctrl.RunTurn(taskCtx, runPrompt)
 	if runErr == nil && len(input.AcceptanceCriteria) > 0 {
-		runErr = ctrl.RunTurn(taskCtx, taskQualityReviewPrompt(input.AcceptanceCriteria))
+		runErr = ctrl.RunTurn(agent.WithSyntheticUser(taskCtx), taskQualityReviewPrompt(input.AcceptanceCriteria))
 	}
 	snapshotErr := ctrl.Snapshot()
 	cause := errors.Join(runErr, snapshotErr)
@@ -943,11 +943,11 @@ func taskLastAssistantText(messages []provider.Message) string {
 
 func taskQualityReviewPrompt(criteria []string) string {
 	var b strings.Builder
-	b.WriteString("Perform the mandatory final quality pass now. Re-read the original task, the upstream inputs, and your previous delivery. Return a corrected, complete replacement delivery; do not return a review, checklist, summary, or a claim that the work passes.\n\nAcceptance criteria:\n")
+	b.WriteString("Run the final quality pass now. 立即完成最终质检。 Check the original task, upstream inputs, previous delivery, and the acceptance criteria below. Fix only unmet criteria; preserve verified content, citations, and artifacts. Return the complete final delivery, not a review or checklist.\n\nAcceptance criteria:\n")
 	for i, criterion := range criteria {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, strings.TrimSpace(criterion))
 	}
-	b.WriteString("\nPreserve valid citations and generated artifacts. If a criterion cannot be satisfied, fail explicitly with the blocking reason instead of claiming completion.")
+	b.WriteString("\nIf a criterion cannot be satisfied, fail explicitly with the blocking reason. Do not claim completion. 不要虚假完成。")
 	return b.String()
 }
 

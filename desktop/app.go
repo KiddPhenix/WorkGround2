@@ -4137,7 +4137,7 @@ func collectJSONLUserPrompts(path string, info os.FileInfo, resolveUserContent f
 			if text == "" {
 				continue
 			}
-			if control.IsSyntheticUserMessage(text) {
+			if rec.Origin == provider.MessageOriginHost || (rec.Origin == "" && control.IsSyntheticUserMessage(text)) {
 				continue
 			}
 			at := fallbackAt
@@ -4823,7 +4823,7 @@ func historyCheckpointTurns(msgs []provider.Message, resolveUserContent func(str
 		if _, isSteer := agent.SteerText(msg.Content); isSteer {
 			continue
 		}
-		if control.IsSyntheticUserMessage(resolveUserContent(msg.Content)) {
+		if hiddenSyntheticUser(msg, resolveUserContent) {
 			continue
 		}
 		turn, ok := checkpointTurns[index]
@@ -4870,7 +4870,7 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 				continue
 			}
 			content = skill.RedactProtectedContent(resolveUserContent(m.Content))
-			if control.IsSyntheticUserMessage(content) {
+			if m.Origin == provider.MessageOriginHost || (m.Origin == "" && control.IsSyntheticUserMessage(content)) {
 				continue
 			}
 			if turn, ok := checkpointTurns[index]; ok {
@@ -4974,7 +4974,18 @@ func isVisibleHistoryUser(msg provider.Message, resolveUserContent func(string) 
 	if _, isSteer := agent.SteerText(msg.Content); isSteer {
 		return false
 	}
-	return !control.IsSyntheticUserMessage(resolveUserContent(msg.Content))
+	return !hiddenSyntheticUser(msg, resolveUserContent)
+}
+
+func hiddenSyntheticUser(msg provider.Message, resolveUserContent func(string) string) bool {
+	switch msg.Origin {
+	case provider.MessageOriginHost:
+		return true
+	case provider.MessageOriginUser:
+		return false
+	default:
+		return control.IsSyntheticUserMessage(resolveUserContent(msg.Content))
+	}
 }
 
 func providerMessagesForVisibleTurnRange(msgs []provider.Message, resolveUserContent func(string) string, startTurn, endTurn int) ([]provider.Message, []int) {
@@ -5455,6 +5466,7 @@ type previewEventRecord struct {
 	UpdatedAtSnake   json.RawMessage           `json:"updated_at"`
 	Text             string                    `json:"text"`
 	Content          string                    `json:"content"`
+	Origin           provider.MessageOrigin    `json:"origin"`
 	Reasoning        string                    `json:"reasoning"`
 	ReasoningContent string                    `json:"reasoningContent"`
 	MemoryCitations  []provider.MemoryCitation `json:"memoryCitations"`

@@ -174,9 +174,10 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 }
 
 func (c *client) run(ctx context.Context, req provider.Request, out chan<- provider.Chunk) error {
+	messages := provider.StripLocalMessageMetadata(provider.SanitizeToolPairing(req.Messages))
 	body, err := json.Marshal(request{
 		Model:       c.model,
-		Messages:    provider.SanitizeToolPairing(req.Messages),
+		Messages:    messages,
 		Tools:       req.Tools,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,

@@ -506,3 +506,34 @@ func TestMockProviderImplementsInterface(t *testing.T) {
 		t.Errorf("Chunk.Type = %d, want ChunkDone", got.Type)
 	}
 }
+
+func TestMessageOriginRoundTripsButStaysLocal(t *testing.T) {
+	in := []Message{{
+		Role:            RoleUser,
+		Content:         "host retry",
+		Origin:          MessageOriginHost,
+		Edited:          true,
+		Original:        "old",
+		MemoryCitations: []MemoryCitation{{ID: "m1", Source: "test"}},
+	}}
+
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored []Message
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0].Origin != MessageOriginHost {
+		t.Fatalf("restored origin = %+v, want host", restored)
+	}
+
+	wire := StripLocalMessageMetadata(restored)
+	if wire[0].Origin != "" || wire[0].Edited || wire[0].Original != "" || len(wire[0].MemoryCitations) != 0 {
+		t.Fatalf("wire message still has local metadata: %+v", wire[0])
+	}
+	if restored[0].Origin != MessageOriginHost || !restored[0].Edited {
+		t.Fatalf("sanitizer mutated stored message: %+v", restored[0])
+	}
+}
