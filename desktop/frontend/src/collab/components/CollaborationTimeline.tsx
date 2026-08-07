@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Ban, Bot, Check, ChevronDown, ChevronUp, CircleAlert, Download, ExternalLink, File, FolderOpen, MoreHorizontal, Pause, Play, RefreshCw, Reply, ThumbsUp, UserRound } from "lucide-react";
 import { useI18n } from "../../lib/i18n";
 import { ApprovalModal } from "../../components/ApprovalModal";
@@ -22,7 +22,7 @@ interface CollaborationTimelineProps {
   onToggle(id: string): void;
   onReply(item: CollaborationTimelineItem): void;
   onAgree(item: CollaborationTimelineItem): void;
-  onAgreeRun(item: CollaborationTimelineItem): void;
+  onRequestAgent(item: CollaborationTimelineItem, memberId: string): void;
   onAgent(item: CollaborationTimelineItem): void;
   onAccept(item: CollaborationTimelineItem): void;
   onReject(item: CollaborationTimelineItem): void;
@@ -173,6 +173,38 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
   const { locale, t } = useI18n();
   const c = collabCopy(t);
   const [expandedReferences, setExpandedReferences] = useState<Set<string>>(new Set());
+  const [requestAgentOpen, setRequestAgentOpen] = useState<string | null>(null);
+  const [requestAgentPlacement, setRequestAgentPlacement] = useState<{ side: "above" | "below"; maxHeight: number }>({ side: "above", maxHeight: 260 });
+  const requestAgentRef = useRef<HTMLDivElement>(null);
+  const requestAgentTriggerRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!requestAgentOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!requestAgentRef.current || !requestAgentRef.current.contains(event.target as Node)) {
+        setRequestAgentOpen(null);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [requestAgentOpen]);
+  const closeRequestAgent = (restoreFocus = false) => {
+    if (restoreFocus) requestAgentTriggerRef.current?.focus();
+    setRequestAgentOpen(null);
+  };
+  const toggleRequestAgent = (event: ReactMouseEvent<HTMLButtonElement>, itemId: string) => {
+    if (requestAgentOpen === itemId) {
+      closeRequestAgent();
+      return;
+    }
+    requestAgentTriggerRef.current = event.currentTarget;
+    const trigger = event.currentTarget.getBoundingClientRect();
+    const scroll = event.currentTarget.closest(".collab-scroll")?.getBoundingClientRect();
+    const above = Math.max(0, trigger.top - (scroll?.top ?? 0));
+    const below = Math.max(0, (scroll?.bottom ?? window.innerHeight) - trigger.bottom);
+    const side = below >= above ? "below" : "above";
+    setRequestAgentPlacement({ side, maxHeight: Math.max(48, Math.min(260, Math.floor(Math.max(above, below) - 8))) });
+    setRequestAgentOpen(itemId);
+  };
   if (props.items.length === 0) return <div className="collab-empty">{c("empty")}</div>;
   const rawItems = new Map(props.items.map((item) => [item.id, item]));
   const visibleItems = visibleCollaborationTimeline(props.items);
@@ -184,6 +216,10 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
     target.classList.add("collab-message--referenced");
     window.setTimeout(() => target.classList.remove("collab-message--referenced"), 1800);
   };
+
+  const requestAgentEligible = (props.members || []).filter(
+    (member) => member.online && member.id !== props.selfMemberId && !member.isSelf && Boolean(member.agent.id.trim()),
+  );
 
   return <div className="collab-timeline-list">
     {visibleItems.map((item) => {
@@ -223,10 +259,20 @@ export function CollaborationTimeline(props: CollaborationTimelineProps) {
               <button type="button" aria-label={c("reply")} title={c("reply")} onClick={() => props.onReply(item)}><Reply size={14} /><span>{c("reply")}</span></button>
               <button type="button" aria-label={c("agree")} title={c("agree")} onClick={() => props.onAgree(item)}><ThumbsUp size={14} /><span>{c("agree")}</span></button>
               <button type="button" aria-label={c("agentRespond")} title={props.agentBusy ? c("agentQueueHint") : c("agentRespond")} onClick={() => props.onAgent(item)}><Bot size={14} /><span>{c("agentRespond")}</span></button>
-              <details className="collab-action-more">
-                <summary aria-label={c("moreActions")} title={c("moreActions")}><MoreHorizontal size={15} /></summary>
-                <div><button type="button" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAgreeRun(item)}><Bot size={13} />{c("agreeRun")}</button></div>
-              </details>
+              <div className="collab-request-agent" ref={requestAgentOpen === item.id ? requestAgentRef : undefined} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRequestAgent(true); } }}>
+                <button type="button" aria-label={c("requestOther")} title={c("requestOther")} aria-expanded={requestAgentOpen === item.id} aria-controls={`${timelineDOMID(item.id)}-request-agents`} onClick={(event) => toggleRequestAgent(event, item.id)}>
+                  <span className="collab-double-bot" aria-hidden="true"><Bot size={10} /><Bot size={10} /></span>
+                </button>
+                {requestAgentOpen === item.id && <div id={`${timelineDOMID(item.id)}-request-agents`} className={`collab-request-agent__popup collab-request-agent__popup--${requestAgentPlacement.side}`} role="group" aria-label={c("requestOther")} style={{ maxHeight: requestAgentPlacement.maxHeight }}>
+                  {requestAgentEligible.length === 0
+                    ? <p className="collab-request-agent__empty">{c("requestAgentEmpty")}</p>
+                    : requestAgentEligible.map((member) => (
+                      <button key={member.id} type="button" title={`${member.name} · ${member.agent.name} · ${member.agent.role || c("agentResponsibilityFallback")}`} onClick={() => { closeRequestAgent(true); props.onRequestAgent(item, member.id); }}>
+                        <span>{member.name} · {member.agent.name} · {member.agent.role || c("agentResponsibilityFallback")}</span>
+                      </button>
+                    ))}
+                </div>}
+              </div>
             </div>}
             {incomingRequest && <div className="collab-request-actions">
               <button type="button" className="collab-action-accent" title={props.agentBusy ? c("agentQueueHint") : undefined} onClick={() => props.onAccept(item)}><UserRound size={13} />{c("acceptRun")}</button>

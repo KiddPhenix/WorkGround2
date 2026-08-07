@@ -82,6 +82,7 @@ export function normalizeCollaborationMember(value: unknown): CollaborationMembe
       id: text(agentRaw.id ?? agentRaw.ID ?? raw.agentId ?? raw.AgentID, `${id}-agent`),
       name: text(agentRaw.name ?? agentRaw.Name ?? raw.agentName ?? raw.AgentName, t("collab.defaultAgent")),
       avatar: text(agentRaw.avatar ?? agentRaw.Avatar ?? raw.agentAvatar ?? raw.AgentAvatar) || undefined,
+      role: text(agentRaw.role ?? agentRaw.Role ?? raw.agentRole ?? raw.AgentRole) || undefined,
       status: (text(agentRaw.status ?? agentRaw.Status ?? raw.agentStatus ?? raw.AgentStatus, "idle").replace("waiting_approval", "waiting") || "idle") as CollaborationMember["agent"]["status"],
       sessionId: text(agentRaw.sessionId ?? agentRaw.SessionID ?? raw.sessionId ?? raw.SessionID) || undefined,
     },
@@ -564,9 +565,9 @@ function mockRuntime(sessionID: string): MockCollaborationRuntime {
 
 const now = () => new Date().toISOString();
 const sampleMembers = (selfName: string, agentName: string, sessionID: string): CollaborationMember[] => [
-  { id: "planner", name: "林策划", role: "策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", status: "idle" } },
-  { id: "artist", name: "周美术", role: "美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", status: "idle" } },
-  { id: "self", name: selfName, role: "程序", online: true, isSelf: true, agent: { id: "self-agent", name: agentName, status: "idle", sessionId: sessionID } },
+  { id: "planner", name: "林策划", role: "策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", role: "策划", status: "idle" } },
+  { id: "artist", name: "周美术", role: "美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", role: "美术", status: "idle" } },
+  { id: "self", name: selfName, role: "程序", online: true, isSelf: true, agent: { id: "self-agent", name: agentName, role: "程序", status: "idle", sessionId: sessionID } },
 ];
 
 function sampleTimeline(): CollaborationTimelineItem[] {

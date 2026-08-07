@@ -321,7 +321,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
             onToggle={controller.toggleSelection}
             onReply={setReplyTo}
             onAgree={(item) => handleAction(controller.agree(item))}
-            onAgreeRun={(item) => handleAction(controller.agree(item).then(() => controller.startAgent(c("agentInstructionAgree", { text: item.text }), [item.id])))}
+            onRequestAgent={(item, memberId) => handleAction(controller.requestAgent(memberId, item.text, [item.id]))}
             onAgent={runForItem}
             onAccept={(item) => handleAction(controller.acceptRequest(item))}
             onReject={(item) => handleAction(controller.rejectRequest(item))}

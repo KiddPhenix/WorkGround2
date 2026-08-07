@@ -68,7 +68,7 @@ async function testWaitingAgentRunDecisions() {
   const render = (agentPrompt?: Parameters<typeof CollaborationTimeline>[0]["agentPrompt"]) => <LocaleProvider><CollaborationTimeline
     items={[waiting]} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy transfers={[]}
     agentPrompt={agentPrompt}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={(_, response) => decisions.push(response.allow ?? false)} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>;
@@ -78,7 +78,7 @@ async function testWaitingAgentRunDecisions() {
   equal(buttons.map((button) => button.textContent), ["同意", "拒绝"], "waiting Agent Run exposes dedicated agree and reject decisions");
   await act(async () => { buttons[0].click(); buttons[1].click(); });
   equal(decisions, [true, false], "waiting Agent Run decisions resolve the current execution");
-  ok(!document.querySelector(".collab-action-more"), "waiting Agent Run hides the generic agree-and-run action that created a queue entry");
+  ok(!document.querySelector(".collab-action-more"), "waiting Agent Run no longer renders the removed agree-and-run overflow menu");
   await act(async () => root.render(render({ runId: waiting.id, kind: "approval", id: "approval-1", tool: "shell_command", subject: "go test ./desktop", reason: "执行本地测试" })));
   equal([(document.querySelector(".prompt-shelf__badge") as HTMLElement)?.textContent, (document.querySelector(".approval-subject") as HTMLElement)?.textContent, (document.querySelector(".approval-reason") as HTMLElement)?.textContent], ["shell_command", "go test ./desktop", "执行本地测试"], "Room tool approval shows the concrete tool, subject, and reason");
   ok(!document.querySelector(".collab-agent-run__decision"), "structured tool approval replaces the detail-free agree/reject fallback");
@@ -97,7 +97,7 @@ async function testReferenceAndRunResultPresentation() {
   await act(async () => root.render(<LocaleProvider><CollaborationTimeline
     items={[original, run, result]} members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
     selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>));
@@ -131,7 +131,7 @@ async function testAgentRunResultOutput() {
     items={[completedRun, completedResult, failedRun, cancelledRun]}
     members={[{ id: "member-b", name: "Bob", online: true, agent: { id: "agent-b", name: "Verifier", status: "idle" } }]}
     selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
-    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onAgreeRun={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
     onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
     onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
   /></LocaleProvider>));
@@ -153,6 +153,107 @@ async function testAgentRunResultOutput() {
   ok(handoffEl !== null, "handoffs remain visible on merged run/result card");
   ok((handoffEl?.textContent || "").includes("@Verifier"), "handoff addresses target Agent");
 
+  await act(async () => root.unmount());
+}
+
+async function testRequestAgentPopup() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const chatItem = item("chat-request", 1, "检查资源命名规范");
+  const members = [
+    { id: "self", name: "陈程序", online: true, isSelf: true, agent: { id: "self-agent", name: "程序 Agent", status: "idle" } },
+    { id: "planner", name: "林策划", online: true, agent: { id: "planner-agent", name: "策划 Agent", role: "策划", status: "idle" } },
+    { id: "artist", name: "周美术", online: true, agent: { id: "artist-agent", name: "美术 Agent", role: "美术", status: "idle" } },
+    { id: "offline-dev", name: "离线开发", online: false, agent: { id: "offline-agent", name: "离线 Agent", role: "开发", status: "offline" } },
+    { id: "no-role", name: "无名", online: true, agent: { id: "no-role-agent", name: "通用 Agent", status: "idle" } },
+  ];
+  const requests: { memberId: string; text: string }[] = [];
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[chatItem]} members={members} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={(item, memberId) => requests.push({ memberId, text: item.text })} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+
+  const trigger = document.querySelector<HTMLButtonElement>(".collab-request-agent > button");
+  ok(trigger !== null, "request-Agent trigger button is rendered");
+  equal([trigger?.getAttribute("aria-label"), trigger?.getAttribute("aria-expanded")], ["请求其他成员的 Agent", "false"], "trigger exposes the localized target and closed popup state");
+  if (trigger) trigger.getBoundingClientRect = () => ({ top: 700, bottom: 723, left: 0, right: 26, width: 26, height: 23, x: 0, y: 700, toJSON: () => ({}) }) as DOMRect;
+
+  // Open popup
+  await act(async () => trigger?.click());
+  const popup = document.querySelector(".collab-request-agent__popup");
+  ok(popup !== null, "popup opens on click");
+  equal([trigger?.getAttribute("aria-expanded"), popup?.getAttribute("role")], ["true", "group"], "open popup exposes its expanded action group");
+  ok(popup?.classList.contains("collab-request-agent__popup--above"), "popup flips above a trigger near the scroll boundary instead of being clipped");
+
+  // Self, offline members excluded
+  const rows = popup?.querySelectorAll<HTMLButtonElement>("button");
+  equal(rows?.length, 3, "popup shows three eligible members: planner, artist, no-role; excludes self and offline");
+  const labels = [...(rows || [])].map((btn) => btn.textContent);
+  ok(labels.includes("林策划 · 策划 Agent · 策划"), "three-part label: member name, Agent name, and Agent role from member.agent.role");
+  ok(labels.includes("周美术 · 美术 Agent · 美术"), "second eligible member shows correct three-part label");
+  ok(labels.includes("无名 · 通用 Agent · 未填写职责"), "member with no agent.role explicitly reports the missing responsibility");
+
+  // Click third row (no-role member) and verify callback
+  await act(async () => rows?.[2]?.click());
+  equal(requests.length, 1, "selecting a row fires the onRequestAgent callback");
+  equal(requests[0].memberId, "no-role", "callback receives member.id of the selected row");
+  equal(requests[0].text, "检查资源命名规范", "callback receives the current item text");
+  equal(document.querySelector(".collab-request-agent__popup"), null, "popup closes after selecting a row");
+
+  // Verify outside click closes popup
+  await act(async () => trigger?.click());
+  ok(document.querySelector(".collab-request-agent__popup") !== null, "popup reopens");
+  await act(async () => { document.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true })); });
+  equal(document.querySelector(".collab-request-agent__popup"), null, "outside mousedown closes the popup");
+
+  await act(async () => trigger?.click());
+  const escapeRow = document.querySelector<HTMLButtonElement>(".collab-request-agent__popup button");
+  escapeRow?.focus();
+  await act(async () => escapeRow?.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  equal(document.querySelector(".collab-request-agent__popup"), null, "Escape closes the Agent request popup");
+  ok(document.activeElement === trigger, "Escape restores focus to the request-Agent trigger");
+
+  // Empty state: no eligible members
+  const soloMembers = [{ id: "self", name: "陈程序", online: true, isSelf: true, agent: { id: "self-agent", name: "程序 Agent", status: "idle" } }];
+  await act(async () => root.render(<LocaleProvider><CollaborationTimeline
+    items={[chatItem]} members={soloMembers} selfMemberId="self" selectedIds={[]} pendingIntents={{}} connected agentBusy={false} transfers={[]}
+    onToggle={() => {}} onReply={() => {}} onAgree={() => {}} onRequestAgent={() => {}} onAgent={() => {}} onAccept={() => {}} onReject={() => {}}
+    onRespondAgentRun={() => {}} onStartPending={() => {}} onStopPending={() => {}} onEditPending={() => {}}
+    onReceiveFile={() => {}} onPauseFile={() => {}} onResumeFile={() => {}} onRevokeFile={() => {}} onOpenFile={() => {}} onRevealFile={() => {}}
+  /></LocaleProvider>));
+  const soloTrigger = document.querySelector<HTMLButtonElement>(".collab-request-agent > button");
+  ok(soloTrigger !== null, "request-Agent trigger still renders with no eligible members");
+  await act(async () => soloTrigger?.click());
+  const emptyText = document.querySelector(".collab-request-agent__empty")?.textContent;
+  ok(emptyText === "没有其他拥有 Agent 的成员在线。", "empty state shows localized message when no eligible members exist");
+  ok(document.querySelector(".collab-request-agent__popup button") === null, "empty popup has no selectable rows and makes no request");
+
+  await act(async () => root.unmount());
+}
+
+async function testRequestAgentPayload() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const transport = createMockCollaborationTransport("request-agent-payload");
+  const post = transport.post.bind(transport);
+  let posted: Parameters<CollaborationTransport["post"]>[0] | undefined;
+  transport.post = async (input) => {
+    posted = input;
+    return post(input);
+  };
+  let controller: CollabController | undefined;
+  function Harness() { controller = useCollabController("request-agent-payload", transport); return null; }
+  const root = createRoot(document.getElementById("root")!);
+  await act(async () => { root.render(<LocaleProvider><Harness /></LocaleProvider>); await Promise.resolve(); });
+  await act(async () => controller!.requestAgent("member-reviewer", "检查资源命名规范", ["chat-request"]));
+  equal(
+    posted && { kind: posted.kind, targetMemberID: posted.targetMemberID, text: posted.text, referenceIDs: posted.referenceIDs },
+    { kind: "agent_request", targetMemberID: "member-reviewer", text: "检查资源命名规范", referenceIDs: ["chat-request"] },
+    "message-level Agent delegation sends the selected member, original instruction, and referenced item through the real controller transport",
+  );
   await act(async () => root.unmount());
 }
 
@@ -833,7 +934,8 @@ async function main() {
   ok(/\.collab-connect-form > \.collab-primary-button\s*\{[^}]*position:\s*sticky[^}]*bottom:\s*0/.test(layoutCSS), "Room action stays visible at the bottom of a tall form");
   ok(/\.collab-advanced-fields\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\)/.test(layoutCSS), "optional Room and identity fields use two columns to reduce form height");
   ok(timelineSource.includes("collab-presence-notice") && timelineSource.includes("collab-agent-run__marquee"), "presence events stay lightweight while Agent work uses a fixed animated status card");
-  ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("MoreHorizontal"), "per-message actions collapse to a hover icon toolbar and overflow menu");
+  ok(/\.collab-message-actions\s*\{[^}]*opacity:\s*0/.test(layoutCSS) && timelineSource.includes("collab-double-bot") && !timelineSource.includes("collab-action-more"), "per-message actions collapse to a hover toolbar with a dedicated multi-Agent request trigger instead of the old overflow action");
+  ok(workspaceSource.includes("controller.requestAgent(memberId, item.text, [item.id])"), "message-level delegation targets the selected member and preserves the current item as request context");
   ok(/\.collab-topicbar\s*\{[^}]*--wails-draggable:\s*drag/.test(layoutCSS) && layoutCSS.includes("--wails-draggable: no-drag"), "collaboration title bar is draggable while controls remain interactive");
   ok(/\.app--windows-frameless\.app--workbench-room \.collab-members\s*\{[^}]*height:\s*100%[^}]*margin-top:\s*0[^}]*padding-top:\s*calc\(20px \+ var\(--windows-window-controls-height\)\)/.test(workbenchCSS), "Room right plate extends behind the caption rail while its content keeps the same safe offset");
   ok(/--collab-bg:\s*var\(--bg\)/.test(layoutCSS) && /--collab-panel:\s*var\(--bg-elev/.test(layoutCSS) && /--collab-text:\s*var\(--fg\)/.test(layoutCSS) && /--collab-accent:\s*var\(--accent\)/.test(layoutCSS), "Room derives surfaces, text, and accents from light/dark Settings theme tokens");
@@ -971,6 +1073,13 @@ async function main() {
     outbox: [{ requestId: "queued-chat", status: "pending", item: { id: "outbox:queued-chat", sequence: 4, type: "chat", chat: { id: "outbox:queued-chat", authorId: "self", text: "not swallowed", revision: 1, createdAt: "2026-08-03T10:00:00Z" } } }],
   });
   equal([queuedState.timeline[0].text, queuedState.timeline[0].syncStatus, queuedState.timeline[0].localPending, queuedState.timeline[0].actorName], ["not swallowed", "pending", true, "Me"], "persisted Outbox is visible as a local pending timeline message");
+  const agentRoleState = normalizeCollaborationState({ status: "connected", snapshot: { members: [
+    { id: "nested-role", name: "Nested", agent: { id: "agent-a", name: "A", role: "Backend" } },
+    { ID: "nested-Role", Name: "Nested Legacy", Agent: { ID: "agent-b", Name: "B", Role: "Design" } },
+    { id: "flat-role", name: "Flat", agent: { id: "agent-c", name: "C" }, agentRole: "QA" },
+    { ID: "flat-Role", Name: "Flat Legacy", Agent: { ID: "agent-d", Name: "D" }, AgentRole: "Ops" },
+  ], timeline: [] } });
+  equal(agentRoleState.members.map((member) => member.agent.role), ["Backend", "Design", "QA", "Ops"], "Agent responsibility survives nested and flattened bridge field variants");
   const agentQueueState = normalizeCollaborationState({ status: "connected", room: "room-a", snapshot: { room: { id: "room-a" }, members: [], timeline: [] }, queuedTasks: [{ id: "run-2", requestId: "request-2", instruction: "检查接口", referenceIds: ["message-1"], queuedAt: "2026-08-04T10:00:00Z" }] });
   equal(agentQueueState.queuedTasks, [{ id: "run-2", requestId: "request-2", instruction: "检查接口", referenceIds: ["message-1"], agentRequestId: undefined, queuedAt: "2026-08-04T10:00:00Z" }], "persisted Agent queue survives desktop state normalization");
   const currentRunState = normalizeCollaborationState({ status: "connected", room: "room-a", snapshot: { room: { id: "room-a" }, members: [], timeline: [] }, currentRun: { sessionId: "session-a", runId: "run-1", phase: "waiting_approval", instruction: "检查接口", progress: "等待工具确认", startedAt: 1700000000000, queueCount: 2 } });
@@ -1102,6 +1211,8 @@ async function main() {
   await testWaitingAgentRunDecisions();
   await testReferenceAndRunResultPresentation();
   await testAgentRunResultOutput();
+  await testRequestAgentPopup();
+  await testRequestAgentPayload();
   await testCountdown();
   await testConnectionPanelWorkspace();
   await testDiscoveryFailureIsHandled();
