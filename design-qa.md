@@ -120,7 +120,7 @@ final result: passed
 - [x] Add three lower foreground lens arcs only.
 - [x] Preserve animation, WebGL1 compatibility, theme response and lifecycle behavior.
 - [x] Verify the Blackhole selection path and browser console.
-- [x] Run the 46 background contracts, CSS checks and production Vite bundle.
+- [x] Run the 46 background contracts, CSS checks, TypeScript check, production Vite bundle and standard desktop restart.
 
 ## Follow-up polish
 
