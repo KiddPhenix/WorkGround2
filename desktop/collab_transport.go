@@ -1152,6 +1152,7 @@ func (c *desktopCollaboration) markConnected(conn *collaborationConnection, snap
 	c.state.OutboxCount = len(c.outbox)
 	c.persistLocked()
 	c.mu.Unlock()
+	c.observeUnread()
 	if c.app != nil && c.app.ctx != nil {
 		for _, value := range events {
 			c.app.runtimeEvents.Emit(c.app.ctx, collaborationEventChannel, collaborationEventView(c.ownerSessionID, value))

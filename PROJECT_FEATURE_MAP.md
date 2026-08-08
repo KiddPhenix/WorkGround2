@@ -304,6 +304,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-07
 
+### 总体未读数据层（Room / IM）
+- Location: `internal/unread`, `internal/bot/gateway.go`, `desktop/unread_app.go`, `desktop/collab_app.go`, `desktop/collab_transport.go`, `desktop/bot_runtime_app.go`
+- Summary: 统一未读仓库位于 internal/unread；Room 通过 Snapshot Sequence 投影，Desktop IM 在网关处理前持久化并按 MessageID 去重，后端提供 Summary、单调已读游标和 unread:state 事件。
+- Keywords: unread, Room, IM, AcceptInbound, MarkUnreadRead, UnreadState
+- Source: verified-by-search
+- Updated: 2026-08-08
+
 ### 权限与沙盒
 - Location: `internal/permission/permission.go`, `internal/sandbox/sandbox.go`, `internal/tool/builtin`
 - Summary: permission 做每个工具调用的 allow/ask/deny 规则判断，sandbox 对 bash 做 OS 级写入/读取/网络约束，文件写入工具另有 in-process 限制。

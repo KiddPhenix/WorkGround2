@@ -904,6 +904,76 @@ func TestGatewayApprovalReplyUnblocksWedgedTurn(t *testing.T) {
 	}
 }
 
+func TestGatewayAcceptInboundRunsBeforeCommandsAndStopsDuplicates(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	calls := 0
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		AcceptInbound: func(msg InboundMessage) (InboundAcceptance, error) {
+			calls++
+			if msg.ReceivedAt.IsZero() {
+				t.Fatal("AcceptInbound received no timestamp")
+			}
+			return InboundAcceptance{Duplicate: calls > 1}, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformFeishu, "fake-feishu")
+	binding := AdapterBinding{ID: "feishu", Platform: PlatformFeishu, Adapter: adapter}
+	msg := InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "user", MessageID: "message-1", Text: "/help"}
+
+	gw.handleMessage(context.Background(), binding, msg)
+	gw.handleMessage(context.Background(), binding, msg)
+
+	if calls != 2 {
+		t.Fatalf("AcceptInbound calls = %d, want 2", calls)
+	}
+	if sent := adapter.sentMessages(); len(sent) != 1 || !strings.Contains(sent[0].Text, "可用命令") {
+		t.Fatalf("sent = %+v, want one help response", sent)
+	}
+}
+
+func TestGatewayAcceptInboundFailureLeavesMessageRetryable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		AcceptInbound: func(InboundMessage) (InboundAcceptance, error) {
+			return InboundAcceptance{}, errors.New("disk unavailable")
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "user", MessageID: "message-1", Text: "/help"})
+
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "未读状态保存失败") {
+		t.Fatalf("sent = %+v, want persistence failure response", sent)
+	}
+}
+
+func TestGatewayDoesNotAcceptSelfOrUnauthorizedInbound(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	calls := 0
+	gw := NewGateway(GatewayConfig{
+		IgnoreSelfMessages: true,
+		SelfUserIDs:        map[Platform][]string{PlatformQQ: {"self"}},
+		Allowlist: AllowlistConfig{
+			Enabled: true,
+			Users:   map[Platform][]string{PlatformQQ: {"allowed"}},
+		},
+		AcceptInbound: func(InboundMessage) (InboundAcceptance, error) {
+			calls++
+			return InboundAcceptance{}, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformQQ, "fake-qq")
+	binding := AdapterBinding{ID: "qq", Platform: PlatformQQ, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "self", MessageID: "self-1", Text: "/help"})
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "chat", UserID: "stranger", MessageID: "stranger-1", Text: "/help"})
+	if calls != 0 {
+		t.Fatalf("AcceptInbound calls = %d, want 0", calls)
+	}
+}
+
 func TestGatewayModeCommandSupportsAskAutoAndStatus(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{

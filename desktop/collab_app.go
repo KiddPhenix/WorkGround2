@@ -691,6 +691,7 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 			c.loadPersisted()
 		}
 	}
+	c.observeUnread()
 	return c
 }
 
@@ -2713,6 +2714,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 	c.signalAutoReceiveFiles()
 	go c.resumeWaitingFileTransfers()
 	c.emitState()
+	c.observeUnread()
 	go c.startNextQueuedAgent(conn.sessionID)
 	if c.scheduler != nil {
 		c.scheduler.signal(wakeSignal)

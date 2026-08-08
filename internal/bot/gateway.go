@@ -50,7 +50,11 @@ type GatewayConfig struct {
 	Allowlist          AllowlistConfig
 	Enabled            map[Platform]bool
 	Debounce           time.Duration
-	OnInbound          func(InboundMessage)
+	// AcceptInbound durably records an authorized, non-self message before any
+	// command, queue, or Agent processing. Returning Duplicate stops redelivery
+	// from triggering the same work twice; an error leaves the message retryable.
+	AcceptInbound func(InboundMessage) (InboundAcceptance, error)
+	OnInbound     func(InboundMessage)
 	// OnSessionReady notifies the host after the bot has created or reused the
 	// controller for an inbound remote. Hosts may persist the concrete session ID
 	// or keep the remote as a read-only channel.
@@ -62,6 +66,10 @@ type GatewayConfig struct {
 	// OnSessionIdle lets the host move an idle auto-created IM transcript to its
 	// own trash implementation after the gateway has closed its controller.
 	OnSessionIdle func(string) error
+}
+
+type InboundAcceptance struct {
+	Duplicate bool
 }
 
 // ChannelConfig overrides gateway defaults for one IM channel.
@@ -565,6 +573,9 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 	if msg.Domain == "" {
 		msg.Domain = binding.Domain
 	}
+	if msg.ReceivedAt.IsZero() {
+		msg.ReceivedAt = time.Now().UTC()
+	}
 	if gw.isSelfMessage(msg) {
 		gw.logger.Debug("bot ignored self message", "platform", binding.Platform, "connection", msg.ConnectionID, "chat", hashID(msg.ChatID), "message", hashID(msg.MessageID), "user", hashID(msg.UserID))
 		return
@@ -594,6 +605,18 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 		}
 		_ = gw.sendText(ctx, binding.Adapter, msg, "抱歉，您没有使用此 bot 的权限。")
 		return
+	}
+	if gw.cfg.AcceptInbound != nil {
+		acceptance, err := gw.cfg.AcceptInbound(msg)
+		if err != nil {
+			gw.logger.Error("persist inbound message failed", "platform", binding.Platform, "connection", msg.ConnectionID, "message", hashID(msg.MessageID), "err", err)
+			_ = gw.sendText(ctx, binding.Adapter, msg, "消息已收到，但本地未读状态保存失败。请稍后重试。")
+			return
+		}
+		if acceptance.Duplicate {
+			gw.logger.Info("duplicate inbound message ignored", "platform", binding.Platform, "connection", msg.ConnectionID, "message", hashID(msg.MessageID))
+			return
+		}
 	}
 	if gw.cfg.OnInbound != nil {
 		gw.cfg.OnInbound(msg)

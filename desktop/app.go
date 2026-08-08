@@ -46,6 +46,7 @@ import (
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
 	"workground2/internal/skill"
+	"workground2/internal/unread"
 	"workground2/internal/work"
 )
 
@@ -149,6 +150,10 @@ type App struct {
 	background  *sessionBackgroundService
 	botInstalls map[string]*botInstallSession
 	botRuntime  *desktopBotRuntime
+
+	unreadMu    sync.RWMutex
+	unreadStore *unread.Store
+	unreadErr   error
 
 	metrics atomic.Pointer[metricsAggregator] // non-nil only when desktop.metrics is opted in; swapped live by SetDesktopMetrics
 
@@ -396,8 +401,10 @@ func NewApp() *App {
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root == "" {
 		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
+		a.unreadErr = errors.New("unread data directory is unavailable")
 		return a
 	}
+	a.unreadStore, a.unreadErr = unread.Open(filepath.Join(root, "unread-v1.json"))
 	a.sessionRefs, a.sessionRefsErr = work.NewFileSessionRefStore(
 		filepath.Join(root, "work-session-refs-v1.json"),
 		work.WithRetention(30*24*time.Hour),
