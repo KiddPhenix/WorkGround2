@@ -151,9 +151,12 @@ type App struct {
 	botInstalls map[string]*botInstallSession
 	botRuntime  *desktopBotRuntime
 
-	unreadMu    sync.RWMutex
-	unreadStore *unread.Store
-	unreadErr   error
+	unreadMu           sync.RWMutex
+	unreadStore        *unread.Store
+	unreadErr          error
+	unreadBadgeMu      sync.Mutex
+	unreadBadgeTarget  int
+	unreadBadgeRunning bool
 
 	metrics atomic.Pointer[metricsAggregator] // non-nil only when desktop.metrics is opted in; swapped live by SetDesktopMetrics
 
@@ -808,6 +811,12 @@ func (a *App) domReady(_ context.Context) {
 	}
 
 	runtime.WindowShow(a.ctx)
+	// Explorer registers the taskbar button only after the native window is
+	// visible. Apply the persisted total after that registration point.
+	a.goSafe("initialUnreadBadge", func() {
+		time.Sleep(500 * time.Millisecond)
+		a.scheduleUnreadBadge(a.UnreadState().Summary.TotalUnread)
+	})
 }
 
 // --- bound command surface (frontend → controller) ---

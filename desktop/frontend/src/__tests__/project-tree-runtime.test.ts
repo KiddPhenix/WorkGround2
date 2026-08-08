@@ -17,6 +17,8 @@ import {
   parseWorkbenchRecentSettings,
   reorderedProjectRoots,
   splitWorkbenchRecentTree,
+  projectTreeUnreadConversations,
+  projectTreeUnreadCount,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -341,6 +343,8 @@ const crewFolder: ProjectNode = {
       kind: "crew_session",
       label: "WeChat · test-user",
       sessionPath: "/tmp/crew-session.jsonl",
+      sessionSource: "auto",
+      channel: "weixin",
       turns: 5,
       createdAt: 1000,
       lastActivityAt: 2000,
@@ -364,6 +368,24 @@ eq(
   projectTreeSessionPathMatches("D:\\Temp\\Crew-Session.jsonl", "d:/temp/crew-session.jsonl"),
   true,
   "session path matching tolerates Windows slash and drive-case differences",
+);
+
+const unreadConversations = [
+  { key: "room:one", source: "room" as const, sessionId: "session-room", latestSequence: 8, readSequence: 5, unreadCount: 3, highPriorityCount: 1 },
+  { key: "im:one", source: "im" as const, sessionId: "path:D:\\Temp\\Crew-Session.jsonl", latestSequence: 4, readSequence: 2, unreadCount: 2, highPriorityCount: 0 },
+  { key: "im:read", source: "im" as const, sessionId: "path:D:\\Temp\\Crew-Session.jsonl", latestSequence: 1, readSequence: 1, unreadCount: 0, highPriorityCount: 0 },
+];
+const unreadNode = { ...crewFolder.children[0], sessionPath: "d:/temp/crew-session.jsonl" };
+
+eq(
+  projectTreeUnreadCount({ ...unreadNode, sessionId: "session-room" }, unreadConversations),
+  5,
+  "recent unread count sums exact Session ID and normalized path bindings",
+);
+eq(
+  projectTreeUnreadConversations({ ...unreadNode, sessionId: "other" }, unreadConversations).map((conversation) => conversation.key),
+  ["im:one"],
+  "read conversations and unrelated Session IDs do not create recent badges",
 );
 
 eq(
@@ -415,6 +437,16 @@ eq(
   splitWorkbenchRecentTree([recentProject], "updated", { showExternal: false, limit: 3 }).projects[0].children?.length,
   5,
   "recent filtering keeps the project tree as the single complete source",
+);
+eq(
+  splitWorkbenchRecentTree([crewFolder, recentProject], "updated", { showExternal: true, limit: 10 }).recent.some((node) => node.kind === "crew_session"),
+  true,
+  "IM Crew sessions participate in Recent when external calls are visible",
+);
+eq(
+  splitWorkbenchRecentTree([crewFolder, recentProject], "updated", { showExternal: false, limit: 10 }).recent.some((node) => node.kind === "crew_session"),
+  false,
+  "hiding external calls also removes IM Crew sessions from Recent",
 );
 eq(
   parseWorkbenchRecentSettings({ showExternal: false, limit: 5 }),

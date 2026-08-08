@@ -910,6 +910,7 @@ export const en = {
   "projectTree.showExternalCalls": "Show external calls",
   "projectTree.recentCount": "Sessions shown",
   "projectTree.recentEmpty": "No recent sessions",
+  "projectTree.unreadCount": "{n} unread messages",
   "projectTree.searchPlaceholder": "Search projects or sessions",
   "projectTree.newTopic": "New session",
   "projectTree.renameTopic": "Rename session",

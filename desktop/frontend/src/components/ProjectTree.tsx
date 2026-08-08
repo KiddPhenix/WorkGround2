@@ -7,8 +7,8 @@ import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as React
 import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
-import { app } from "../lib/bridge";
-import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus } from "../lib/types";
+import { app, onUnreadState } from "../lib/bridge";
+import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus, UnreadConversation, UnreadState } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
@@ -78,6 +78,27 @@ export function projectTreeSessionPathMatches(activeSessionPath?: string, nodeSe
   const active = comparableSessionPath(activeSessionPath ?? "");
   const node = comparableSessionPath(nodeSessionPath ?? "");
   return Boolean(active && node && active === node);
+}
+
+function unreadSessionPath(sessionId?: string): string {
+  const value = (sessionId ?? "").trim();
+  return value.toLowerCase().startsWith("path:") ? value.slice(5).trim() : "";
+}
+
+export function projectTreeUnreadConversations(node: ProjectNode, conversations: UnreadConversation[]): UnreadConversation[] {
+  const nodeSessionId = (node.sessionId ?? "").trim();
+  return conversations.filter((conversation) => {
+    if (conversation.unreadCount <= 0) return false;
+    const conversationSessionId = (conversation.sessionId ?? "").trim();
+    if (!conversationSessionId) return false;
+    if (nodeSessionId && conversationSessionId === nodeSessionId) return true;
+    const path = unreadSessionPath(conversationSessionId);
+    return Boolean(path && projectTreeSessionPathMatches(path, node.sessionPath));
+  });
+}
+
+export function projectTreeUnreadCount(node: ProjectNode, conversations: UnreadConversation[]): number {
+  return projectTreeUnreadConversations(node, conversations).reduce((total, conversation) => total + conversation.unreadCount, 0);
 }
 
 export type ProjectTreeTopicOpenRequest = {
@@ -336,6 +357,10 @@ const WORKBENCH_RECENT_LIMITS: WorkbenchRecentLimit[] = [1, 3, 5, 10];
 const DEFAULT_WORKBENCH_RECENT: WorkbenchRecentSettings = { showExternal: true, limit: 1 };
 const READ_ACTIVITY_KEY = "projectTree:readActivity";
 const READ_ACTIVITY_INIT_KEY = "projectTree:readActivityInitialized";
+const EMPTY_UNREAD_STATE: UnreadState = {
+  available: false,
+  summary: { revision: 0, totalUnread: 0, highPriorityCount: 0, conversations: [] },
+};
 
 function loadReadActivity(): ProjectTreeReadActivity {
   try {
@@ -548,7 +573,7 @@ export function splitWorkbenchRecentTree(
       projects.push(node);
       continue;
     }
-    if (node.kind !== "crew_folder") recentTopics.push(...asArray(node.children).filter(isTopicNode));
+    recentTopics.push(...asArray(node.children).filter((child) => isTopicNode(child) || isRuntimeSessionNode(child) || isCrewSessionNode(child)));
     projects.push(node);
   }
 
@@ -705,6 +730,7 @@ export function ProjectTree({
   const [workbenchRecentSettings, setWorkbenchRecentSettings] = useState<WorkbenchRecentSettings>(loadWorkbenchRecentSettings);
   const [recentSettingsOpen, setRecentSettingsOpen] = useState(false);
   const [readActivity, setReadActivity] = useState<ProjectTreeReadActivity>(loadReadActivity);
+  const [unreadState, setUnreadState] = useState<UnreadState>(EMPTY_UNREAD_STATE);
   const recentSettingsRef = useRef<HTMLDivElement>(null);
   const recentSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const filterRef = useRef<HTMLDivElement>(null);
@@ -720,6 +746,30 @@ export function ProjectTree({
       if (clickTimerRef.current !== null) clearTimeout(clickTimerRef.current.timer);
     };
   }, []);
+  const applyUnreadState = useCallback((next: UnreadState) => {
+    setUnreadState((current) => next.summary.revision >= current.summary.revision ? next : current);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const unsubscribe = onUnreadState((next) => {
+      if (alive) applyUnreadState(next);
+    });
+    void app.UnreadState()
+      .then((next) => {
+        if (alive) applyUnreadState(next);
+      })
+      .catch((error) => {
+        if (!alive) return;
+        setUnreadState({
+          ...EMPTY_UNREAD_STATE,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [applyUnreadState]);
   const manuallyCollapsedRef = useRef(manuallyCollapsed);
 
   const closeMenu = useCallback(() => {
@@ -791,6 +841,19 @@ export function ProjectTree({
     });
   }, []);
 
+  const markRemoteUnread = useCallback((node: ProjectNode) => {
+    for (const conversation of projectTreeUnreadConversations(node, asArray(unreadState.summary.conversations))) {
+      void app.MarkUnreadRead({
+        conversationKey: conversation.key,
+        upToSequence: conversation.latestSequence,
+      }).then(applyUnreadState).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setUnreadState((current) => ({ ...current, error: message }));
+        console.error("mark unread conversation read failed", error);
+      });
+    }
+  }, [applyUnreadState, unreadState.summary.conversations]);
+
   useEffect(() => {
     if (tree.length === 0) return;
     try {
@@ -833,12 +896,15 @@ export function ProjectTree({
   useEffect(() => {
     const markActive = (nodes: ProjectNode[]) => {
       for (const node of nodes) {
-        if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) markNodeRead(node);
+        if (topicIsActive(node, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath)) {
+          markNodeRead(node);
+          markRemoteUnread(node);
+        }
         markActive(asArray(node.children));
       }
     };
     markActive(tree);
-  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, tree]);
+  }, [activeScope, activeSessionPath, activeTopicId, activeWorkspaceRoot, markNodeRead, markRemoteUnread, tree]);
 
   useEffect(() => {
     try {
@@ -1306,6 +1372,9 @@ export function ProjectTree({
       const statusLabel = topicStatusLabel(node, t);
       const showStatusInSide = status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job";
       const unread = isCrewSessionNode(node) ? false : projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
+      const remoteUnreadCount = section === "recent"
+        ? projectTreeUnreadCount(node, asArray(unreadState.summary.conversations))
+        : 0;
       const visualState = projectTreeTopicVisualState(node, unread, status);
       const workSession = node.sessionKind === "work";
       const collaborationSession = node.sessionKind === "collaboration";
@@ -1439,7 +1508,15 @@ export function ProjectTree({
               startRenameTopic(node, label);
             }}
           >
-            {compactTopics && (visualState !== "none" || section === "recent") && (
+            {compactTopics && section === "recent" && remoteUnreadCount > 0 ? (
+              <span
+                className="project-tree__topic-unread-count"
+                title={t("projectTree.unreadCount", { n: remoteUnreadCount })}
+                aria-label={t("projectTree.unreadCount", { n: remoteUnreadCount })}
+              >
+                {remoteUnreadCount > 99 ? "99+" : remoteUnreadCount}
+              </span>
+            ) : compactTopics && (visualState !== "none" || section === "recent") && (
               <span
                 className={`project-tree__topic-visual project-tree__topic-visual--${visualState === "none" ? "recent" : visualState}`}
                 title={visualState === "none" ? undefined : visualState === "failed" ? statusLabel : visualState === "running" ? statusLabel || t("projectTree.running") : t("projectTree.status.done")}

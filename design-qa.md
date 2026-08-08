@@ -1,3 +1,39 @@
+# 总体未读提醒 Design QA（2026-08-08）
+
+- Source visual truth: `D:\Codex\.codex\generated_images\019fdf57-c322-7323-acf3-8416144055e1\exec-8c9fceda-25c0-4659-90e4-133c5629c435.png`
+- Implementation screenshot: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-implementation-window.png`
+- Taskbar evidence: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-taskbar-fast-crop.png`
+- Full-view comparison: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-design-qa-full-comparison.png`
+- Focused comparison: `D:\Codex\.codex\visualizations\2026\08\08\019fdf57-c322-7323-acf3-8416144055e1\unread-design-qa-focused-comparison.png`
+- Viewport: 实现窗口 `1000 × 700` CSS px；Windows 主屏 `3840 × 1080`；100% 原生截图。
+- Pixels and normalization: 源图 `1672 × 941`，实现窗口 `1000 × 700`，任务栏聚焦图 `1200 × 80`；全图比较将源图等比缩放到 `1244 × 700`，实现保持 `1000 × 700`，聚焦比较使用各自原生区域，无密度伪精确比较。
+- State: 深色工作台；隔离状态中一个微信 IM 会话有 4 条未读；最近列表显示 IM 来源；项目计数保持原语义；置顶 Windows 任务栏显示 WorkGround2 图标。
+
+## Findings
+
+- P0 / P1 / P2: none。
+- Fonts and typography: 数字使用现有 UI 字体、`10px / 750`、等宽数字；在 18px 徽标和任务栏 32px 图标中均清晰可读。
+- Spacing and layout rhythm: 有未读时，18px 紫色数字完整占用原状态点槽位；无未读行继续使用绿色状态点，标题与右侧来源/动作位不跳动。
+- Colors and tokens: 最近列表复用 `--accent` 与现有对比色；任务栏徽标使用同一紫色语义，同时保留 W2 基础图标。
+- Image quality and assets: W2 图标来自应用自身窗口图标；数字由 Windows 原生图标合成，未替换品牌资产。截图在原生像素下无拉伸和压缩伪影。
+- Copy and content: 未读数量来自 `internal/unread` 汇总；IM 标签、会话标题和项目计数来自现有模型，没有用标题文本推断。
+
+## Comparison history
+
+- Pass 1 — blocked：最近列表数字正确替代绿点；标准 `ITaskbarList3` Overlay 在本机置顶任务栏返回 `E_NOINTERFACE`，任务栏没有数字。
+- Fix：任务栏改为合成窗口大小图标，保留 W2 基础图标并在左上角叠加紫色数量；初始化移动到窗口显示后；32 位 DIB 显式补齐徽标 alpha。
+- Pass 2 — passed：聚焦对比同时可见“最近”左侧 `4`、项目数字未变化，以及任务栏 W2 图标左上角 `4`。无遗留 P0 / P1 / P2。
+
+## Interaction and engineering evidence
+
+- 初始状态与 `unread:state` 事件均更新最近列表和任务栏总数；revision 防止迟到事件回退。
+- 打开实际会话后按 `latestSequence` 单调标记已读；重复调用安全，失败保留可观察错误；总体归零时恢复原任务栏图标。
+- Project Tree 定向测试 `48 / 48`、TypeScript、CSS syntax、z-index token、Vite production、Desktop/未读/Bot 定向 Go 测试、Go vet 和 Wails production 构建通过。
+
+final result: passed
+
+---
+
 # Session List 层级与选中态 Design QA（2026-08-07）
 
 - Source visual truth: `D:\Temp\codex-clipboard-3d6474e0-121b-429b-ba43-2c900bf9e89d.png`

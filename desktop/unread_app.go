@@ -23,9 +23,8 @@ type MarkUnreadReadInput struct {
 	UpToSequence    uint64 `json:"upToSequence"`
 }
 
-// UnreadState returns the durable data-layer projection. The frontend does not
-// consume it yet; keeping this API stable lets the later presentation layer stay
-// read-only apart from the explicit cursor command below.
+// UnreadState returns the durable data-layer projection consumed by the recent
+// list and the native taskbar badge.
 func (a *App) UnreadState() UnreadState {
 	store, _ := a.currentUnreadStore()
 	a.unreadMu.RLock()
@@ -42,7 +41,7 @@ func (a *App) UnreadState() UnreadState {
 }
 
 // MarkUnreadRead monotonically advances an actual visible watermark supplied
-// by a future Room/IM presentation layer.
+// by the Room/IM presentation layer.
 func (a *App) MarkUnreadRead(input MarkUnreadReadInput) (UnreadState, error) {
 	store, err := a.currentUnreadStore()
 	if err != nil {
@@ -188,7 +187,11 @@ func (c *desktopCollaboration) observeUnread() {
 }
 
 func (a *App) emitUnreadState(state UnreadState) {
-	if a == nil || a.ctx == nil {
+	if a == nil {
+		return
+	}
+	a.scheduleUnreadBadge(state.Summary.TotalUnread)
+	if a.ctx == nil {
 		return
 	}
 	a.runtimeEvents.Emit(a.ctx, unreadStateChannel, state)

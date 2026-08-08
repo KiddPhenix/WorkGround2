@@ -44347,6 +44347,24 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.78;
 }
 
+.app--workbench .workspace-sidebar .project-tree__topic-unread-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 70%, white 16%);
+  color: var(--accent-contrast, #fff);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  line-height: 1;
+}
+
 .app--workbench .workspace-sidebar .project-tree__topic-origin {
   height: 20px;
   max-width: 40px;

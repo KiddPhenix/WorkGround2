@@ -81,6 +81,8 @@ import type {
   PluginInstallOptions,
   PluginView,
   ProjectNode,
+  MarkUnreadReadInput,
+  UnreadState,
   PromptHistoryEntry,
   PromptHistoryResult,
   ProviderView,
@@ -280,9 +282,11 @@ export interface WorkArtifactFileIntent {
 
 export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
-	EnterWidgetMode(): Promise<WidgetSnapshot>;
-	ExitWidgetMode(tabID: string): Promise<void>;
-	IsWidgetMode(): Promise<boolean>;
+  UnreadState(): Promise<UnreadState>;
+  MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
+  EnterWidgetMode(): Promise<WidgetSnapshot>;
+  ExitWidgetMode(tabID: string): Promise<void>;
+  IsWidgetMode(): Promise<boolean>;
 	GetWidgetSnapshot(): Promise<WidgetSnapshot>;
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
@@ -958,6 +962,18 @@ function sessionActivatedEvent(payload: unknown): SessionActivatedEvent {
 export function onProjectTreeChanged(cb: () => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("project-tree:changed", () => cb());
+  }
+  return () => {};
+}
+
+const emptyUnreadState = (): UnreadState => ({
+  available: false,
+  summary: { revision: 0, totalUnread: 0, highPriorityCount: 0, conversations: [] },
+});
+
+export function onUnreadState(cb: (state: UnreadState) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("unread:state", (payload?: unknown) => cb(payload as UnreadState));
   }
   return () => {};
 }
@@ -4057,6 +4073,12 @@ function makeMockApp(): AppBindings {
     },
     async PickSessionBackgroundFolder() {
       return "";
+    },
+    async UnreadState() {
+      return emptyUnreadState();
+    },
+    async MarkUnreadRead() {
+      return emptyUnreadState();
     },
     async SessionBackground(_tabID: string) {
       return { path: "", url: "" };

@@ -268,6 +268,7 @@ export interface ProjectNode {
   label: string;
   root?: string;
   topicId?: string;
+  sessionId?: string;
   sessionPath?: string;
   projectColor?: string;
   titleSource?: string;
@@ -293,6 +294,36 @@ export interface ProjectTopicRuntimeHint {
   running?: boolean;
   status?: ProjectTopicStatus;
   turnStartedAt?: number;
+}
+
+export interface UnreadConversation {
+  key: string;
+  source: "room" | "im";
+  sessionId?: string;
+  title?: string;
+  latestSequence: number;
+  readSequence: number;
+  unreadCount: number;
+  highPriorityCount: number;
+  lastUnreadAt?: string;
+}
+
+export interface UnreadSummary {
+  revision: number;
+  totalUnread: number;
+  highPriorityCount: number;
+  conversations: UnreadConversation[];
+}
+
+export interface UnreadState {
+  available: boolean;
+  error?: string;
+  summary: UnreadSummary;
+}
+
+export interface MarkUnreadReadInput {
+  conversationKey: string;
+  upToSequence: number;
 }
 
 export interface TopicMeta {

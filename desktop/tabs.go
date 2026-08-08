@@ -5561,6 +5561,7 @@ type ProjectNode struct {
 	Label          string        `json:"label"`
 	Root           string        `json:"root,omitempty"` // project workspace root
 	TopicID        string        `json:"topicId,omitempty"`
+	SessionID      string        `json:"sessionId,omitempty"`
 	SessionPath    string        `json:"sessionPath,omitempty"`
 	ProjectColor   string        `json:"projectColor,omitempty"`
 	TitleSource    string        `json:"titleSource,omitempty"`
@@ -6538,6 +6539,7 @@ type topicSummary struct {
 }
 
 type runtimeSessionStatus struct {
+	sessionID      string
 	sessionPath    string
 	label          string
 	sessionSource  string
@@ -6844,6 +6846,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			wid = info.WorkID
 		}
 		runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)] = append(runtimeSessionsByTopic[topicSummaryKey(tab.Scope, tab.WorkspaceRoot, tab.TopicID)], runtimeSessionStatus{
+			sessionID:      tab.SessionID,
 			sessionPath:    sessionPath,
 			label:          label,
 			sessionSource:  sessionSource,
@@ -6924,39 +6927,39 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		return
 	}
-	topicWorkBinding := func(key string) (sessionPath, sessionKind, workID string) {
+	topicWorkBinding := func(key string) (sessionID, sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
 		if len(sessions) == 1 && (sessions[0].sessionKind == string(agent.SessionKindWork) || sessions[0].sessionKind == string(agent.SessionKindCollaboration)) {
 			session := sessions[0]
-			return session.sessionPath, session.sessionKind, session.workID
+			return session.sessionID, session.sessionPath, session.sessionKind, session.workID
 		}
 		if len(sessions) != 0 {
-			return "", "", ""
+			return "", "", "", ""
 		}
 		persisted := persistedSessionsByTopic[key]
 		if len(persisted) == 0 {
-			return "", "", ""
+			return "", "", "", ""
 		}
 		selected := persisted[0]
 		identityKind := selected.SessionKind
 		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration {
-			return "", "", ""
+			return "", "", "", ""
 		}
 		identityWorkID := ""
 		identityRequestID := ""
 		for _, info := range persisted {
 			if info.SessionKind != identityKind {
-				return "", "", ""
+				return "", "", "", ""
 			}
 			if info.WorkID != "" {
 				if identityWorkID != "" && identityWorkID != info.WorkID {
-					return "", "", ""
+					return "", "", "", ""
 				}
 				identityWorkID = info.WorkID
 			}
 			if info.WorkRequestID != "" {
 				if identityRequestID != "" && identityRequestID != info.WorkRequestID {
-					return "", "", ""
+					return "", "", "", ""
 				}
 				identityRequestID = info.WorkRequestID
 			}
@@ -6964,7 +6967,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				selected = info
 			}
 		}
-		return selected.Path, string(identityKind), identityWorkID
+		return "", selected.Path, string(identityKind), identityWorkID
 	}
 	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)
@@ -6994,6 +6997,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          session.label,
 				Root:           workspaceRoot,
 				TopicID:        topicID,
+				SessionID:      session.sessionID,
 				SessionPath:    session.sessionPath,
 				ProjectColor:   projectColor,
 				SessionSource:  session.sessionSource,
@@ -7041,7 +7045,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
 			kind := "global_topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "global_work_session"
@@ -7052,6 +7056,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Kind:           kind,
 				Label:          title,
 				TopicID:        id,
+				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   globalColor,
 				TitleSource:    globalTitleSourceMap[id],
@@ -7145,7 +7150,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				continue
 			}
 			open, running, status, turnStartedAt := topicRuntimeStatus(key)
-			sessionPath, sessionKind, workID := topicWorkBinding(key)
+			sessionID, sessionPath, sessionKind, workID := topicWorkBinding(key)
 			kind := "topic"
 			if sessionKind == string(agent.SessionKindWork) {
 				kind = "work_session"
@@ -7157,6 +7162,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          topicTitle,
 				Root:           p.Root,
 				TopicID:        tid,
+				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   p.Color,
 				TitleSource:    loaded.sources[tid],
