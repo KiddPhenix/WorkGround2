@@ -298,7 +298,7 @@ export interface ProjectTopicRuntimeHint {
 
 export interface UnreadConversation {
   key: string;
-  source: "room" | "im";
+  source: "room" | "im" | "session" | "work";
   sessionId?: string;
   title?: string;
   latestSequence: number;

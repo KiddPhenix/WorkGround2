@@ -894,6 +894,7 @@ type closeableEventSink interface {
 func (s *tabEventSink) Emit(e event.Event) {
 	if s.app != nil {
 		s.app.observeCollaborationAgentEvent(s.tabID, e)
+		s.app.observeSessionUnread(s.tabID, e)
 	}
 	if s.app != nil {
 		switch e.Kind {
@@ -3039,6 +3040,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	clearTabStartupError(tab)
 	keepBuildContext = true
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(ctrl)
 	a.drainRemoteSubmit(tab)
 	a.emitReady(wailsCtx, tab.ID)
 }

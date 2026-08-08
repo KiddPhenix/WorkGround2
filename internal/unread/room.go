@@ -18,6 +18,7 @@ type RoomInput struct {
 	LocalAgentID    string
 	Snapshot        collab.Snapshot
 	ObservedAt      time.Time
+	Read            bool
 }
 
 // ObserveRoom projects a complete authoritative Room snapshot. The first
@@ -95,6 +96,10 @@ func (s *Store) ObserveRoom(input RoomInput) (Conversation, error) {
 		conversation.Pending = upsertPending(conversation.Pending, item)
 	}
 	conversation.LatestSequence = input.Snapshot.LatestSequence
+	if input.Read {
+		conversation.ReadSequence = conversation.LatestSequence
+		conversation.Pending = nil
+	}
 	next.Revision++
 	if err := s.persist(next); err != nil {
 		return projectConversation(current), err

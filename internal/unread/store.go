@@ -18,8 +18,10 @@ const stateVersion = 1
 type Source string
 
 const (
-	SourceRoom Source = "room"
-	SourceIM   Source = "im"
+	SourceRoom    Source = "room"
+	SourceIM      Source = "im"
+	SourceSession Source = "session"
+	SourceWork    Source = "work"
 )
 
 type Priority string
@@ -30,8 +32,7 @@ const (
 )
 
 // Item is the minimum durable identity needed to count and navigate an unread
-// event. Message bodies intentionally remain in their authoritative Room/IM
-// stores.
+// event. Full payloads intentionally remain in their authoritative source.
 type Item struct {
 	ID         string    `json:"id"`
 	Sequence   uint64    `json:"sequence"`
@@ -139,7 +140,7 @@ func validateState(state *diskState) error {
 		if conversation == nil || strings.TrimSpace(key) == "" || conversation.Key != key {
 			return fmt.Errorf("invalid unread conversation %q", key)
 		}
-		if conversation.Source != SourceRoom && conversation.Source != SourceIM {
+		if !conversation.Source.valid() {
 			return fmt.Errorf("invalid unread source %q", conversation.Source)
 		}
 		if conversation.ReadSequence > conversation.LatestSequence {
@@ -150,7 +151,7 @@ func validateState(state *diskState) error {
 		}
 		for id, sequence := range conversation.Seen {
 			if strings.TrimSpace(id) == "" || sequence == 0 || sequence > conversation.LatestSequence {
-				return fmt.Errorf("unread conversation %q has invalid IM receipt", key)
+				return fmt.Errorf("unread conversation %q has invalid event receipt", key)
 			}
 		}
 		var previous uint64
@@ -165,6 +166,15 @@ func validateState(state *diskState) error {
 		}
 	}
 	return nil
+}
+
+func (s Source) valid() bool {
+	switch s {
+	case SourceRoom, SourceIM, SourceSession, SourceWork:
+		return true
+	default:
+		return false
+	}
 }
 
 // Summary returns a detached, stable snapshot sorted by newest unread activity.
@@ -250,7 +260,7 @@ func (s *Store) MarkRead(key string, upTo uint64) (Conversation, error) {
 	return projectConversation(conversation), nil
 }
 
-// BindSession associates a durable remote conversation with its local Session.
+// BindSession associates a durable conversation with its local Session.
 func (s *Store) BindSession(key, sessionID string) error {
 	key, sessionID = strings.TrimSpace(key), strings.TrimSpace(sessionID)
 	if key == "" || sessionID == "" {

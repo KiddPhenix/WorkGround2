@@ -1971,6 +1971,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	}
 	a.mu.Unlock()
 	if installed {
+		a.bindWorkUnreadObserver(newCtrl)
 		if err := a.rotateSessionID(tab); err != nil {
 			return err
 		}
@@ -7948,6 +7949,7 @@ func (a *App) applyModelForTabLocked(tab *WorkspaceTab, name string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}
@@ -8072,6 +8074,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}
@@ -8171,6 +8174,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.bindWorkUnreadObserver(newCtrl)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}

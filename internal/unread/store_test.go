@@ -85,6 +85,106 @@ func TestIMFailedPersistenceDoesNotAdvanceMemoryAndCanRetry(t *testing.T) {
 	}
 }
 
+func TestAttentionPersistsDeduplicatesAndKeepsVisibleEventsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unread.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 8, 7, 0, 0, 0, time.UTC)
+	first, err := store.AcceptAttention(AttentionInput{
+		Source: SourceSession, ConversationKey: "session-1", EventID: "ask-1",
+		SessionID: "session-1", Title: "Session", Kind: "question", Priority: PriorityHigh, OccurredAt: at,
+	})
+	if err != nil || first.Duplicate || first.Sequence != 1 || first.ConversationKey != "session:session-1" {
+		t.Fatalf("first attention = %+v, err = %v", first, err)
+	}
+	duplicate, err := store.AcceptAttention(AttentionInput{
+		Source: SourceSession, ConversationKey: "session-1", EventID: "ask-1", Kind: "question",
+	})
+	if err != nil || !duplicate.Duplicate || duplicate.Sequence != 1 {
+		t.Fatalf("duplicate attention = %+v, err = %v", duplicate, err)
+	}
+	visible, err := store.AcceptAttention(AttentionInput{
+		Source: SourceSession, ConversationKey: "session-1", EventID: "done-1",
+		Kind: "completed", Read: true, OccurredAt: at.Add(time.Minute),
+	})
+	if err != nil || visible.Duplicate || visible.Sequence != 2 {
+		t.Fatalf("visible attention = %+v, err = %v", visible, err)
+	}
+	if got := store.Summary(); got.TotalUnread != 0 || got.HighPriorityCount != 0 || got.Conversations[0].ReadSequence != 2 {
+		t.Fatalf("visible attention did not consume prior pending state: %+v", got)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := reopened.AcceptAttention(AttentionInput{
+		Source: SourceSession, ConversationKey: "session-1", EventID: "done-1", Kind: "completed",
+	})
+	if err != nil || !replayed.Duplicate || reopened.Summary().TotalUnread != 0 {
+		t.Fatalf("visible replay resurrected unread: receipt=%+v summary=%+v err=%v", replayed, reopened.Summary(), err)
+	}
+}
+
+func TestAttentionRejectsUnsupportedSourceAndRetriesPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unread.json")
+	fail := true
+	store, err := open(path, func(path string, data []byte, mode os.FileMode) error {
+		if fail {
+			return errors.New("disk unavailable")
+		}
+		return fileutil.AtomicWriteFile(path, data, mode)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptAttention(AttentionInput{Source: SourceIM, ConversationKey: "x", EventID: "e", Kind: "completed"}); err == nil {
+		t.Fatal("AcceptAttention accepted an IM source")
+	}
+	input := AttentionInput{Source: SourceWork, ConversationKey: "work-1", EventID: "run-1", Kind: "completed"}
+	if _, err := store.AcceptAttention(input); err == nil {
+		t.Fatal("AcceptAttention succeeded while persistence failed")
+	}
+	if got := store.Summary(); got.TotalUnread != 0 || len(got.Conversations) != 0 {
+		t.Fatalf("failed attention leaked into memory: %+v", got)
+	}
+	fail = false
+	receipt, err := store.AcceptAttention(input)
+	if err != nil || receipt.Duplicate || receipt.Sequence != 1 {
+		t.Fatalf("attention retry = %+v, err = %v", receipt, err)
+	}
+}
+
+func TestVisibleIMAndRoomEventsAdvanceReadWatermarks(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptIM(IMInput{ConversationKey: "remote", MessageID: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcceptIM(IMInput{ConversationKey: "remote", MessageID: "two", Read: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Summary(); got.TotalUnread != 0 || got.Conversations[0].ReadSequence != 2 {
+		t.Fatalf("visible IM state = %+v", got)
+	}
+
+	base := collab.Snapshot{Room: collab.Room{ID: "room", LatestSequence: 1}, LatestSequence: 1}
+	if _, err := store.ObserveRoom(RoomInput{ConversationKey: "room", LocalMemberID: "self", Snapshot: base}); err != nil {
+		t.Fatal(err)
+	}
+	next := base
+	next.LatestSequence, next.Room.LatestSequence = 2, 2
+	next.Timeline = []collab.TimelineItem{{ID: "chat", Sequence: 2, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "chat", AuthorID: "other"}}}
+	conversation, err := store.ObserveRoom(RoomInput{ConversationKey: "room", LocalMemberID: "self", Snapshot: next, Read: true})
+	if err != nil || conversation.UnreadCount != 0 || conversation.ReadSequence != 2 {
+		t.Fatalf("visible Room state = %+v, err = %v", conversation, err)
+	}
+}
+
 func TestRoomUsesBaselineAndProjectsOnlyRemoteReadableItems(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "unread.json"))
 	if err != nil {

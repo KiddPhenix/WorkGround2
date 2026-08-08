@@ -1,13 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/bot"
+	"workground2/internal/control"
+	"workground2/internal/event"
 	"workground2/internal/unread"
+	"workground2/internal/work"
 )
 
 const unreadStateChannel = "unread:state"
@@ -41,7 +46,7 @@ func (a *App) UnreadState() UnreadState {
 }
 
 // MarkUnreadRead monotonically advances an actual visible watermark supplied
-// by the Room/IM presentation layer.
+// by the presentation layer.
 func (a *App) MarkUnreadRead(input MarkUnreadReadInput) (UnreadState, error) {
 	store, err := a.currentUnreadStore()
 	if err != nil {
@@ -101,6 +106,7 @@ func (a *App) acceptIMUnread(msg bot.InboundMessage) (bot.InboundAcceptance, err
 		Title:           imUnreadTitle(msg),
 		AuthorID:        firstNonEmpty(strings.TrimSpace(msg.OperatorID), strings.TrimSpace(msg.UserID)),
 		ReceivedAt:      msg.ReceivedAt,
+		Read:            a.unreadConversationVisible("im:" + bot.BuildSessionKey(msg.Session())),
 	})
 	if err != nil {
 		a.recordUnreadError(err)
@@ -174,6 +180,7 @@ func (c *desktopCollaboration) observeUnread() {
 		LocalAgentID:    agentID,
 		Snapshot:        snapshot,
 		ObservedAt:      time.Now().UTC(),
+		Read:            c.app.unreadTargetVisible(sessionID, ""),
 	})
 	if err != nil {
 		c.app.recordUnreadError(fmt.Errorf("project Room unread: %w", err))
@@ -184,6 +191,245 @@ func (c *desktopCollaboration) observeUnread() {
 	if state.Summary.Revision != before {
 		c.app.emitUnreadState(state)
 	}
+}
+
+type desktopUnreadAttention struct {
+	id       string
+	kind     string
+	priority unread.Priority
+	at       time.Time
+}
+
+func (a *App) unreadTargetVisible(sessionID, workID string) bool {
+	if a == nil {
+		return false
+	}
+	sessionID, workID = strings.TrimSpace(sessionID), strings.TrimSpace(workID)
+	a.mu.RLock()
+	tab := a.tabs[a.activeTabID]
+	if tab == nil {
+		a.mu.RUnlock()
+		return false
+	}
+	tabID := strings.TrimSpace(tab.ID)
+	tabSessionID := strings.TrimSpace(tab.SessionID)
+	tabPath := strings.TrimSpace(tab.currentSessionPath())
+	tabWorkID := strings.TrimSpace(tab.workID)
+	a.mu.RUnlock()
+	if workID != "" && workID == tabWorkID {
+		return true
+	}
+	if sessionID == "" {
+		return false
+	}
+	if sessionID == tabID || sessionID == tabSessionID {
+		return true
+	}
+	path := strings.TrimSpace(strings.TrimPrefix(sessionID, "path:"))
+	return strings.HasPrefix(strings.ToLower(sessionID), "path:") &&
+		sessionRuntimeKey(path) != "" && sessionRuntimeKey(path) == sessionRuntimeKey(tabPath)
+}
+
+func (a *App) unreadConversationVisible(key string) bool {
+	store, err := a.currentUnreadStore()
+	if err != nil || store == nil {
+		return false
+	}
+	for _, conversation := range store.Summary().Conversations {
+		if conversation.Key == key {
+			return a.unreadTargetVisible(conversation.SessionID, "")
+		}
+	}
+	return false
+}
+
+// observeSessionUnread bridges the existing desktop attention boundary into
+// the durable unified unread projection. CLI-owned sessions are intentionally
+// excluded; a visible target still writes a read receipt so replay is harmless.
+func (a *App) observeSessionUnread(tabID string, value event.Event) {
+	if a == nil || (value.Kind != event.TurnDone && value.Kind != event.AskRequest && value.Kind != event.ApprovalRequest) {
+		return
+	}
+	a.mu.RLock()
+	tab := a.tabByEventSinkIDLocked(tabID)
+	if tab == nil || tab.sessionKind == agent.SessionKindWork || tabSourceIsCLILocked(tab) {
+		a.mu.RUnlock()
+		return
+	}
+	sessionID := strings.TrimSpace(tab.SessionID)
+	path := strings.TrimSpace(tab.currentSessionPath())
+	if sessionID == "" && path != "" {
+		sessionID = "path:" + path
+	}
+	key := firstNonEmpty(sessionID, strings.TrimSpace(tab.ID))
+	title := firstNonEmpty(strings.TrimSpace(tab.TopicTitle), strings.TrimSpace(tab.Label), "Session")
+	a.mu.RUnlock()
+	if key == "" {
+		return
+	}
+	now := time.Now().UTC()
+	attention := desktopUnreadAttention{priority: unread.PriorityHigh, at: now}
+	switch value.Kind {
+	case event.AskRequest:
+		attention.id = "ask:" + strings.TrimSpace(value.Ask.ID)
+		attention.kind = "question"
+	case event.ApprovalRequest:
+		attention.id = "approval:" + strings.TrimSpace(value.Approval.ID)
+		attention.kind = "approval"
+	case event.TurnDone:
+		started := tab.activeTurnStartedAt()
+		if started == 0 {
+			started = now.UnixNano()
+		}
+		attention.id = fmt.Sprintf("turn:%d", started)
+		attention.kind = "completed"
+		attention.priority = unread.PriorityNormal
+		if value.Err != nil {
+			attention.kind = "failed"
+			attention.priority = unread.PriorityHigh
+		}
+	}
+	if strings.HasSuffix(attention.id, ":") {
+		return
+	}
+	a.recordUnreadAttention(unread.SourceSession, key, sessionID, title, a.unreadTargetVisible(sessionID, ""), []desktopUnreadAttention{attention})
+}
+
+func (a *App) bindWorkUnreadObserver(ctrl control.SessionAPI) {
+	if a == nil || ctrl == nil {
+		return
+	}
+	owner, ok := ctrl.(workController)
+	if !ok || owner.WorkViews() == nil {
+		return
+	}
+	owner.WorkViews().SetObserver(a.observeWorkUnread)
+}
+
+func (a *App) observeWorkUnread(value work.WorkViewEvent) {
+	title, attention := workUnreadAttention(value)
+	if len(attention) == 0 {
+		return
+	}
+	sessionID, fallbackTitle := a.workUnreadBinding(value.WorkID)
+	a.recordUnreadAttention(
+		unread.SourceWork,
+		value.WorkID,
+		sessionID,
+		firstNonEmpty(title, fallbackTitle, "Work"),
+		a.unreadTargetVisible(sessionID, value.WorkID),
+		attention,
+	)
+}
+
+func (a *App) workUnreadBinding(workID string) (sessionID, title string) {
+	workID = strings.TrimSpace(workID)
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, collection := range []map[string]*WorkspaceTab{a.tabs, a.detachedSessions} {
+		for _, tab := range collection {
+			if tab == nil || strings.TrimSpace(tab.workID) != workID {
+				continue
+			}
+			sessionID = strings.TrimSpace(tab.SessionID)
+			if sessionID == "" {
+				if path := strings.TrimSpace(tab.currentSessionPath()); path != "" {
+					sessionID = "path:" + path
+				}
+			}
+			return sessionID, firstNonEmpty(strings.TrimSpace(tab.TopicTitle), strings.TrimSpace(tab.Label))
+		}
+	}
+	return "", ""
+}
+
+func (a *App) recordUnreadAttention(source unread.Source, key, sessionID, title string, read bool, attention []desktopUnreadAttention) {
+	store, err := a.currentUnreadStore()
+	if err != nil || store == nil {
+		if err != nil {
+			a.recordUnreadError(err)
+		}
+		return
+	}
+	before := store.Summary().Revision
+	for _, item := range attention {
+		if _, err := store.AcceptAttention(unread.AttentionInput{
+			Source: source, ConversationKey: key, EventID: item.id, SessionID: sessionID,
+			Title: title, Kind: item.kind, Priority: item.priority, OccurredAt: item.at, Read: read,
+		}); err != nil {
+			a.recordUnreadError(err)
+			return
+		}
+	}
+	a.recordUnreadError(nil)
+	state := a.UnreadState()
+	if state.Summary.Revision != before {
+		a.emitUnreadState(state)
+	}
+}
+
+func workUnreadAttention(value work.WorkViewEvent) (string, []desktopUnreadAttention) {
+	if value.Type == work.ViewAttention {
+		var payload struct {
+			Planning struct {
+				Kind  string `json:"kind"`
+				State string `json:"state"`
+			} `json:"planning"`
+		}
+		if json.Unmarshal(value.Payload, &payload) == nil &&
+			(payload.Planning.State == "waiting" || payload.Planning.Kind == "clarification") {
+			return "", []desktopUnreadAttention{{id: value.EventID, kind: "question", priority: unread.PriorityHigh, at: value.CreatedAt}}
+		}
+		return "", nil
+	}
+	if value.Type != work.ViewSnapshot {
+		return "", nil
+	}
+	var view work.WorkView
+	if json.Unmarshal(value.Payload, &view) != nil || view.Work == nil {
+		return "", nil
+	}
+	now := value.CreatedAt
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	items := make([]desktopUnreadAttention, 0, 4)
+	if view.Work.State == work.WorkCompleted {
+		id := "work:" + view.Work.ID + ":completed"
+		for i := len(view.Work.Runs) - 1; i >= 0; i-- {
+			if view.Work.Runs[i].State == work.RunCompleted && strings.TrimSpace(view.Work.Runs[i].ID) != "" {
+				id = "run:" + view.Work.Runs[i].ID + ":completed"
+				break
+			}
+		}
+		items = append(items, desktopUnreadAttention{id: id, kind: "completed", priority: unread.PriorityNormal, at: now})
+	}
+	for _, input := range view.Inputs {
+		if input.State != work.InputRequested && input.State != work.InputRejected {
+			continue
+		}
+		id := fmt.Sprintf("input:%s:%s:%d", input.ID, input.State, input.Revision)
+		items = append(items, desktopUnreadAttention{id: id, kind: "question", priority: unread.PriorityHigh, at: input.UpdatedAt})
+	}
+	for _, task := range view.Tasks {
+		if task.State != work.TaskWaitingInput && task.State != work.TaskWaitingApproval {
+			continue
+		}
+		if task.State == work.TaskWaitingInput && len(task.WaitingInputIDs) > 0 {
+			continue
+		}
+		version := task.UpdatedAt.UnixNano()
+		if task.UpdatedAt.IsZero() {
+			version = value.Revision
+		}
+		id := fmt.Sprintf("task:%s:%s:%s:%d", task.RunID, task.ID, task.State, version)
+		items = append(items, desktopUnreadAttention{id: id, kind: "question", priority: unread.PriorityHigh, at: task.UpdatedAt})
+	}
+	if view.Work.State == work.WorkWaitingUser && len(items) == 0 {
+		id := fmt.Sprintf("work:%s:waiting:%d", view.Work.ID, value.Revision)
+		items = append(items, desktopUnreadAttention{id: id, kind: "question", priority: unread.PriorityHigh, at: now})
+	}
+	return strings.TrimSpace(view.Work.Name), items
 }
 
 func (a *App) emitUnreadState(state UnreadState) {
