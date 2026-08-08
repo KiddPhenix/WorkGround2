@@ -910,6 +910,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.showExternalCalls": "显示外部调用",
   "projectTree.recentCount": "显示条数",
   "projectTree.recentEmpty": "暂无最近会话",
+  "projectTree.unreadCount": "{n} 条未读消息",
   "projectTree.searchPlaceholder": "搜索项目或会话",
   "projectTree.newTopic": "新会话",
   "projectTree.renameTopic": "重命名会话",

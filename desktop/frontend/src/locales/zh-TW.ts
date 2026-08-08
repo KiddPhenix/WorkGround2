@@ -687,6 +687,7 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.showExternalCalls": "顯示外部呼叫",
   "projectTree.recentCount": "顯示筆數",
   "projectTree.recentEmpty": "暫無最近會話",
+  "projectTree.unreadCount": "{n} 則未讀訊息",
   "projectTree.searchPlaceholder": "搜尋專案或會話",
   "projectTree.newTopic": "新建會話",
   "projectTree.renameTopic": "重新命名會話",

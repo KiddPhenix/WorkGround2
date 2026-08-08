@@ -58,7 +58,7 @@ func TestBindCollaborationSessionPersistsWorkspaceSession(t *testing.T) {
 	found := false
 	for _, project := range nodes {
 		for _, topic := range project.Children {
-			if topic.TopicID == tab.TopicID && topic.SessionKind == string(agent.SessionKindCollaboration) && topic.SessionPath == path {
+			if topic.TopicID == tab.TopicID && topic.SessionKind == string(agent.SessionKindCollaboration) && topic.SessionID == tab.SessionID && topic.SessionPath == path {
 				found = true
 			}
 		}
