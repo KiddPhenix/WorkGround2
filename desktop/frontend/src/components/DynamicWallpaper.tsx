@@ -481,55 +481,71 @@ vec3 blackholeStars(vec2 p, float scale, float seed) {
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.035;
-  vec2 center = vec2(0.64, 0.47);
+  float t = u_time * 0.025;
+  vec2 center = vec2(0.50, 0.53);
   vec2 p = (uv - center) * vec2(aspect, 1.0);
   float r = length(p);
   float a = atan(p.y, p.x);
 
-  vec3 col = mix(vec3(0.002, 0.003, 0.012), vec3(0.008, 0.012, 0.034), u_light);
-  col += fbm(uv * vec2(aspect * 1.6, 1.6) + vec2(t, 0.0)) * vec3(0.012, 0.014, 0.035);
+  vec3 col = mix(vec3(0.002, 0.006, 0.010), vec3(0.008, 0.018, 0.025), u_light);
+  float haze = fbm(uv * vec2(aspect * 1.4, 1.4) + vec2(t * 0.3, 4.0));
+  col += haze * mix(vec3(0.005, 0.014, 0.020), vec3(0.012, 0.027, 0.034), u_light);
+  col += exp(-r * 2.8) * mix(vec3(0.008, 0.022, 0.027), vec3(0.018, 0.042, 0.048), u_light);
 
-  // Pull the background angularly around the mass instead of shrinking it into a dot.
-  float bend = 0.075 / max(r, 0.055);
-  vec2 warped = center + vec2(cos(a + bend * 0.12), sin(a + bend * 0.12)) * (r + bend * 0.030) / vec2(aspect, 1.0);
-  col += blackholeStars(warped, 27.0, 6.0) * 0.65;
-  col += blackholeStars(warped + vec2(t * 0.05, 0.0), 49.0, 27.0) * 0.42;
+  // A restrained lensed star field keeps the subject isolated like the reference.
+  float bend = 0.060 / max(r, 0.060);
+  vec2 warped = center + vec2(cos(a + bend * 0.08), sin(a + bend * 0.08)) * (r + bend * 0.020) / vec2(aspect, 1.0);
+  col += blackholeStars(warped, 30.0, 6.0) * 0.18;
+  col += blackholeStars(warped + vec2(t * 0.025, 0.0), 55.0, 27.0) * 0.10;
 
-  // The accretion disk has turbulent bands and pronounced Doppler asymmetry.
-  vec2 diskP = vec2(p.x, p.y * 5.3);
-  float diskR = length(diskP);
-  float diskA = atan(diskP.y, diskP.x);
-  float grain = fbm(vec2(diskA * 2.6 - t * 5.0, diskR * 17.0));
-  float bands = 0.55 + 0.45 * sin(diskR * 115.0 - diskA * 5.0 + grain * 4.0);
-  float diskMask = smoothstep(0.12, 0.17, diskR) * (1.0 - smoothstep(0.46, 0.58, diskR));
-  diskMask *= smoothstep(0.22, 0.68, grain * 0.72 + bands * 0.45);
-  float hot = 1.0 - smoothstep(0.16, 0.49, diskR);
-  float doppler = 0.34 + 1.10 * smoothstep(-0.95, 0.85, cos(diskA));
-  vec3 outer = mix(vec3(0.72, 0.14, 0.018), vec3(0.95, 0.28, 0.035), u_light);
-  vec3 inner = mix(vec3(0.88, 0.55, 0.22), vec3(1.0, 0.84, 0.56), u_light);
-  vec3 diskColor = mix(outer, inner, hot);
-  float diskGlow = exp(-abs(diskR - 0.28) * 8.0) * (1.0 - smoothstep(0.52, 0.78, diskR));
-  col += diskColor * (diskMask * doppler * 1.45 + diskGlow * 0.12);
+  vec3 whiteHot = mix(vec3(1.00, 0.90, 0.67), vec3(1.00, 0.98, 0.86), u_light);
+  vec3 warmGold = mix(vec3(0.92, 0.49, 0.16), vec3(1.00, 0.70, 0.30), u_light);
+  vec3 dimGold = mix(vec3(0.34, 0.13, 0.035), vec3(0.55, 0.25, 0.075), u_light);
 
-  // Light from the rear disk is lensed into a crown and lower arc.
-  float lensRadius = length(vec2(p.x, abs(p.y) * 1.12));
-  float crown = exp(-abs(lensRadius - 0.185) * 82.0);
-  crown *= smoothstep(0.025, 0.105, abs(p.y));
-  float crownGrain = 0.62 + fbm(vec2(a * 4.0 - t * 2.2, r * 24.0)) * 0.58;
-  col += crown * crownGrain * mix(vec3(0.95, 0.35, 0.055), vec3(1.0, 0.67, 0.22), hot) * 1.25;
+  // The rear disk is gravitationally lifted into one incandescent white-gold mass.
+  float lensR = length(vec2(p.x * 1.05, p.y * 0.88));
+  float flow = fbm(vec2(a * 3.4 - t * 2.2, lensR * 14.0));
+  float arcBand = smoothstep(0.205, 0.232, lensR) * (1.0 - smoothstep(0.318, 0.355, lensR));
+  float innerEdge = exp(-abs(lensR - 0.222) * 105.0);
+  float outerEdge = exp(-abs(lensR - 0.327) * 62.0);
+  float arcGrain = 0.88 + flow * 0.22;
+  float strata = 0.98 + 0.02 * sin(lensR * 280.0 + flow * 4.0 - t * 3.0);
+  float lowerLift = mix(0.92, 1.10, smoothstep(-0.20, 0.22, p.y));
+  float verticalLift = 0.04 + 0.96 * smoothstep(0.030, 0.220, abs(p.y));
+  col += warmGold * arcBand * arcGrain * lowerLift * verticalLift * 0.48;
+  col += whiteHot * arcBand * (0.70 + flow * 0.28) * strata * lowerLift * verticalLift * 1.08;
+  col += whiteHot * innerEdge * lowerLift * verticalLift * 0.28;
+  col += warmGold * outerEdge * arcGrain * verticalLift * 0.18;
 
-  float photon = exp(-abs(r - 0.142) * 165.0);
-  float bloom = exp(-abs(r - 0.153) * 31.0) * 0.30;
-  col += (photon + bloom) * mix(vec3(0.94, 0.43, 0.11), vec3(1.0, 0.74, 0.34), u_light);
+  // Broad optical bloom softens the bands into the incandescent mass in image two.
+  float arcBloom = exp(-abs(lensR - 0.282) * 9.0);
+  col += mix(dimGold, whiteHot, 0.74) * arcBloom * (0.045 + verticalLift * 0.43);
 
-  // An uncompromising dark horizon is what gives the surrounding light scale.
-  float outside = smoothstep(0.126, 0.139, r);
+  // The visible accretion disk is a razor-thin line, brightest at the horizon edges.
+  float ax = abs(p.x);
+  float diskRange = smoothstep(0.165, 0.205, ax) * (1.0 - smoothstep(0.62, 0.82, ax));
+  float diskGrain = 0.70 + fbm(vec2(p.x * 9.0 - t * 4.0, 2.0)) * 0.45;
+  float diskCore = exp(-abs(p.y) * 470.0) * diskRange;
+  float diskBody = exp(-abs(p.y) * 115.0) * diskRange;
+  float diskHalo = exp(-abs(p.y) * 34.0) * diskRange;
+  float edgeHeat = exp(-abs(ax - 0.205) * 18.0);
+  float doppler = mix(0.78, 1.14, smoothstep(-0.48, 0.48, p.x));
+  col += warmGold * diskHalo * diskGrain * 0.22;
+  col += whiteHot * diskBody * diskGrain * 0.42;
+  col += whiteHot * diskCore * diskGrain * doppler * (1.34 + edgeHeat * 0.48);
+
+  // A fine photon rim defines the smaller event horizon without an orange outline.
+  float photon = exp(-abs(r - 0.172) * 210.0);
+  float photonBloom = exp(-abs(r - 0.178) * 43.0);
+  col += whiteHot * photon * 0.38;
+  col += warmGold * photonBloom * 0.11;
+
+  float outside = smoothstep(0.157, 0.169, r);
   col *= outside;
-  col += exp(-r * 7.0) * outside * vec3(0.035, 0.018, 0.055);
+  col += exp(-r * 8.5) * outside * mix(vec3(0.018, 0.026, 0.026), vec3(0.035, 0.045, 0.040), u_light);
 
   float vignette = 1.0 - smoothstep(0.48, 1.12, length((uv - 0.5) * vec2(0.76, 1.0)));
-  col *= 0.60 + vignette * 0.40;
+  col *= 0.64 + vignette * 0.36;
   gl_FragColor = vec4(col, 1.0);
 }`);
 

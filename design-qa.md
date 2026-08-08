@@ -83,6 +83,55 @@ final result: passed
 
 final result: passed
 
+---
+
+# Blackhole Wallpaper Reference Match — 2026-08-08
+
+## Evidence
+
+- Source visual truth: `D:\Temp\codex-clipboard-ba9bbb7b-bf13-4ab0-80c7-3b339fc0af63.png`
+- Previous implementation supplied by user: `D:\Temp\codex-clipboard-c2e8be65-4092-4a86-a20f-bdd73451b2c8.png`
+- Final raw WebGL capture: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\implementation-final.png`
+- Final desktop capture: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\implementation-app-final.png`
+- Side-by-side comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-reference-qa\comparison-final.png`
+- State: dark theme, blackhole scene selected, animation running.
+- Browser viewport / CSS size: 1280 × 720 at device scale factor 1.
+- Source pixels: 306 × 172, normalized with Lanczos to 1280 × 720 for equal-size comparison.
+- Implementation pixels: 1280 × 720; runtime canvas rendered at 1408 × 792 before browser composition.
+
+## Required Fidelity Surfaces
+
+- Fonts and typography: not applicable; the selected visual contains no text.
+- Spacing and layout rhythm: centered subject, outer lens diameter, horizon-to-halo ratio, and horizontal disk span now follow the reference proportions.
+- Colors and visual tokens: orange/red bands were replaced by a white-hot ivory core, restrained gold edge, and blue-black atmospheric field.
+- Image quality and asset fidelity: the result remains real-time WebGL, crisp at desktop resolution with controlled bloom and no raster scaling artifacts.
+- Copy and content: not applicable; the selected visual contains no copy.
+
+## Full-view Comparison
+
+The final comparison shows the same dominant structure as the reference: a smaller central event horizon, bright upper and lower gravitational lens arcs, a narrow dark gap around the horizon, and a razor-thin horizontal accretion line extending into the dark field. The desktop capture confirms that the brighter subject remains readable beneath WorkGround2's foreground plates and mask.
+
+Focused-region comparison was not required because the only fidelity-critical subject occupies the central majority of the equal-size full-view comparison, with no small typography, icons, or controls.
+
+## Comparison History
+
+1. Initial user-provided implementation: P1 — event horizon too large, disk too thick, repeated orange radial bands dominated the scene.
+2. `implementation-v3.png`: P1 — color direction corrected, but the lens became a clipped uniform white donut.
+3. `implementation-v4.png` / `implementation-v5.png`: P2 — upper/lower emphasis improved, but side bloom formed wide vertical columns and the photon rim was too strong.
+4. Final: side bloom now tapers into the horizontal disk, the photon rim is restrained, the disk has a thin bright core plus soft halo, and the white-gold arcs retain subtle animated texture. No actionable P0/P1/P2 differences remain.
+
+## Validation
+
+- Primary interaction tested: Settings → Appearance → Blackhole selection and close.
+- Browser console errors/warnings: none.
+- Raw shader and masked desktop states captured and reviewed.
+
+## Follow-up Polish
+
+- P3: the low-resolution reference has photographic blur and irregular lens streaks that cannot be matched pixel-for-pixel without sacrificing clean real-time wallpaper rendering; the current procedural motion preserves the intended art direction.
+
+final result: passed
+
 # Design QA — 小组件多皮肤操作区精修
 
 - Source visual truth：用户提供的 BP机、拍立得、电子宠物、录音机四张 752×220 实机截图，以及 `D:/Temp/codex-clipboard-446596cd-21ff-4ec3-968d-a92be818e53d.png` 的电子宠物运行态反馈。
