@@ -66,6 +66,27 @@ float fbm(vec2 p) {
   }
   return v;
 }
+
+float hash11(float n) {
+  return fract(sin(n) * 43758.5453123);
+}
+
+vec2 hash22(vec2 p) {
+  return fract(sin(vec2(
+    dot(p, vec2(127.1, 311.7)),
+    dot(p, vec2(269.5, 183.3))
+  )) * 43758.5453);
+}
+
+mat2 rotate2d(float angle) {
+  float s = sin(angle);
+  float c = cos(angle);
+  return mat2(c, -s, s, c);
+}
+
+float softDisc(vec2 p, float radius, float feather) {
+  return 1.0 - smoothstep(radius - feather, radius + feather, length(p));
+}
 `;
 
 function frag(src: string) {
@@ -290,98 +311,76 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
-float hash1(float n) {
-  return fract(sin(n) * 43758.5453);
-}
-
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.3;
+  float t = u_time * 0.22;
+  vec2 p = (uv - vec2(0.5, 0.93)) * vec2(aspect, 1.0);
 
-  // ── deep atmospheric background ─────────────────────────────────
-  vec3 bg = mix(
-    mix(vec3(0.03, 0.025, 0.03), vec3(0.07, 0.06, 0.07), u_light),
-    mix(vec3(0.05, 0.03, 0.02), vec3(0.10, 0.07, 0.05), u_light),
-    uv.y
+  vec3 col = mix(
+    mix(vec3(0.006, 0.006, 0.010), vec3(0.015, 0.014, 0.020), u_light),
+    mix(vec3(0.045, 0.014, 0.006), vec3(0.075, 0.028, 0.010), u_light),
+    smoothstep(0.10, 1.0, uv.y)
   );
 
-  // drifting smoke
-  float smoke = fbm(uv * vec2(aspect * 2.8, 2.8) + vec2(t * 0.08, t * 0.05));
-  bg += smoke * mix(vec3(0.012, 0.01, 0.008), vec3(0.025, 0.02, 0.016), u_light);
+  // Smoke is lit from below, so its volume appears without turning grey.
+  vec2 smokeUV = vec2(p.x * 1.45, uv.y * 2.15 - t * 0.12);
+  smokeUV.x += sin(uv.y * 5.0 - t * 0.35) * 0.18;
+  float smoke = fbm(smokeUV + fbm(smokeUV * 1.8 + 7.0) * 0.55);
+  float smokeBody = smoothstep(0.42, 0.72, smoke) * smoothstep(0.02, 0.85, uv.y);
+  col += smokeBody * mix(vec3(0.028, 0.018, 0.018), vec3(0.055, 0.040, 0.045), u_light) * (0.35 + uv.y);
 
-  // ── low warm glow ──────────────────────────────────────────────
-  float glowDist = length((uv - vec2(0.5, 0.04)) * vec2(1.0, 2.0));
-  float glow = exp(-glowDist * 2.2) * 0.38;
-  vec3 glowColor = mix(vec3(0.50, 0.20, 0.05), vec3(0.60, 0.32, 0.13), u_light);
-  bg += glow * glowColor;
+  // A broad hearth glow and a textured coal bed establish a believable source.
+  float hearth = exp(-length(p * vec2(0.72, 1.65)) * 2.25);
+  col += hearth * mix(vec3(0.52, 0.105, 0.012), vec3(0.72, 0.20, 0.025), u_light) * 0.72;
+  float bedNoise = fbm(vec2(p.x * 5.0, t * 0.42));
+  float bedEdge = 0.965 + sin(p.x * 6.0) * 0.009 + (bedNoise - 0.5) * 0.025;
+  float bed = smoothstep(bedEdge - 0.014, bedEdge + 0.012, uv.y);
+  float coal = fbm(vec2(p.x * 12.0, uv.y * 28.0) + vec2(t * 0.08, 0.0));
+  vec3 coalColor = mix(vec3(0.22, 0.025, 0.004), vec3(1.0, 0.27, 0.018), smoothstep(0.48, 0.79, coal));
+  col = mix(col, coalColor * (0.55 + hearth), bed * 0.92);
 
-  // secondary cooler glow higher up
-  float glow2 = exp(-length((uv - vec2(0.5, 0.35)) * vec2(1.4, 1.0)) * 3.5) * 0.08;
-  bg += glow2 * mix(vec3(0.08, 0.06, 0.15), vec3(0.14, 0.11, 0.22), u_light);
-
-  // ── varied embers (3 tiers × 12 embers each) ───────────────────
-  float emberCore = 0.0;
-  float emberHalo = 0.0;
-
-  for (int tier = 0; tier < 3; tier++) {
-    float tierF = float(tier);
-    float baseSize = 0.0035 + tierF * 0.0015;
-    float baseSpeed = 0.22 + tierF * 0.12;
-    float brightnessScale = 1.0 - tierF * 0.18;
-
-    for (int i = 0; i < 12; i++) {
-      float idx = tierF * 12.0 + float(i);
-      float seed = idx * 73.0 + 19.0;
-
-      // unique position via hash
-      float px = 0.05 + hash1(seed + 0.3) * 0.90;
-      float pyOff = hash1(seed + 0.7);
-
-      // vertical cycle
-      float speed = baseSpeed * (0.8 + 0.4 * hash1(seed + 1.1));
-      float yCycle = fract(pyOff + t * speed);
-
-      // sinusoidal horizontal drift
-      float driftAmp = 0.03 + 0.04 * hash1(seed + 1.5);
-      float driftFreq = 0.7 + 0.5 * hash1(seed + 1.9);
-      float driftX = sin(t * driftFreq + seed) * driftAmp;
-
-      float ex = px + driftX;
-      float ey = yCycle;
-
-      // size variation
-      float size = baseSize * (0.7 + 0.6 * hash1(seed + 0.5));
-
-      // fade near top and bottom
-      float fade = 1.0 - smoothstep(0.85, 1.0, yCycle);
-      fade *= smoothstep(0.0, 0.06, yCycle);
-
-      // distance from ember center
-      vec2 ed = (uv - vec2(ex, ey)) * vec2(aspect, 0.42);
-      float dist = length(ed / size);
-
-      // core: tight bright point
-      float core = (1.0 - smoothstep(0.0, 1.1, dist)) * fade * brightnessScale;
-
-      // halo: softer surrounding glow
-      float halo = (1.0 - smoothstep(0.0, 3.4, dist)) * fade * brightnessScale * 0.30;
-
-      emberCore += core;
-      emberHalo += halo;
-    }
+  // Narrow turbulent flame tongues remain low and secondary to the embers.
+  float flame = 0.0;
+  for (int f = 0; f < 5; f++) {
+    float fi = float(f);
+    float seed = fi * 17.3 + 4.0;
+    float fx = (hash11(seed) - 0.5) * 0.78;
+    float height = 0.12 + hash11(seed + 1.0) * 0.22;
+    float sway = sin(t * (0.9 + hash11(seed + 2.0)) + seed) * 0.045;
+    float fy = (0.945 - uv.y) / height;
+    float width = mix(0.075, 0.025, clamp(fy, 0.0, 1.0));
+    float tongue = 1.0 - smoothstep(width * 0.55, width, abs(p.x - fx - sway * fy));
+    tongue *= smoothstep(0.0, 0.10, fy) * (1.0 - smoothstep(0.70, 1.06, fy));
+    tongue *= 0.68 + 0.32 * noise(vec2(fy * 6.0 - t, seed));
+    flame += tongue;
   }
+  col += flame * mix(vec3(0.82, 0.10, 0.005), vec3(1.0, 0.31, 0.02), u_light) * 0.23;
 
-  // ember colours: warm orange/amber
-  vec3 emberColor = mix(vec3(1.0, 0.45, 0.08), vec3(0.95, 0.55, 0.22), u_light);
-  bg += emberCore * emberColor * 1.45;
-  bg += emberHalo * vec3(0.55, 0.16, 0.025) * 0.85;
+  float emberCore = 0.0;
+  float emberTrail = 0.0;
+  for (int i = 0; i < 42; i++) {
+    float seed = float(i) * 31.71 + 9.2;
+    float speed = 0.055 + hash11(seed + 1.0) * 0.13;
+    float life = fract(hash11(seed + 2.0) + t * speed);
+    float ex = 0.5 + (hash11(seed + 3.0) - 0.5) * (0.30 + life * 0.92);
+    ex += sin(t * (0.65 + hash11(seed + 4.0)) + seed) * (0.014 + life * 0.045);
+    float ey = 0.94 - life * (0.34 + hash11(seed + 5.0) * 0.72);
+    float fade = smoothstep(0.0, 0.07, life) * (1.0 - smoothstep(0.58, 1.0, life));
+    float size = mix(0.0046, 0.0012, life) * (0.7 + hash11(seed + 6.0) * 0.8);
+    vec2 d = (uv - vec2(ex, ey)) * vec2(aspect, 1.0);
+    float core = 1.0 - smoothstep(size * 0.25, size, length(d));
+    float trail = 1.0 - smoothstep(size * 0.55, size * 2.4, length(vec2(d.x, d.y * 0.18)));
+    trail *= smoothstep(-size * 9.0, 0.0, d.y) * (1.0 - smoothstep(0.0, size * 1.5, d.y));
+    emberCore += core * fade;
+    emberTrail += trail * fade;
+  }
+  col += emberTrail * vec3(0.62, 0.105, 0.008) * 0.48;
+  col += emberCore * mix(vec3(1.0, 0.34, 0.025), vec3(1.0, 0.58, 0.10), u_light) * 1.55;
 
-  // vignette
-  float vignette = 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.45;
-  bg *= vignette;
-
-  gl_FragColor = vec4(bg, 1.0);
+  float vignette = 1.0 - smoothstep(0.45, 1.10, length((uv - 0.5) * vec2(0.85, 1.0)));
+  col *= 0.60 + vignette * 0.40;
+  gl_FragColor = vec4(col, 1.0);
 }`);
 
 // ── starfield ───────────────────────────────────────────────────────
@@ -394,68 +393,68 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
-float hash1f(float n) {
-  return fract(sin(n) * 43758.5453);
+vec3 starLayer(vec2 p, float scale, float seed, float drift) {
+  vec2 gridUV = p * scale + vec2(drift, -drift * 0.37);
+  vec2 cell = floor(gridUV);
+  vec2 local = fract(gridUV) - 0.5;
+  vec2 rnd = hash22(cell + seed);
+  vec2 pos = local - (rnd - 0.5) * 0.72;
+  float chance = step(0.79, rnd.x);
+  float radius = mix(0.018, 0.055, rnd.y * rnd.y);
+  float core = 1.0 - smoothstep(radius * 0.28, radius, length(pos));
+  float flare = exp(-abs(pos.x) * 120.0) * exp(-abs(pos.y) * 14.0)
+    + exp(-abs(pos.y) * 120.0) * exp(-abs(pos.x) * 14.0);
+  flare *= step(0.94, rnd.y) * 0.32;
+  float temperature = hash(cell + seed * 3.7);
+  vec3 warm = vec3(1.0, 0.72, 0.48);
+  vec3 cool = vec3(0.55, 0.72, 1.0);
+  vec3 tint = mix(warm, cool, smoothstep(0.18, 0.82, temperature));
+  float twinkle = 0.72 + 0.28 * sin(u_time * (0.35 + rnd.y) + rnd.x * 42.0);
+  return tint * chance * (core * 1.45 + flare) * twinkle;
 }
 
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.04;
+  float t = u_time * 0.018;
+  vec2 p = (uv - 0.5) * vec2(aspect, 1.0);
 
-  // deep space background
-  vec3 bg = mix(vec3(0.003, 0.005, 0.020), vec3(0.010, 0.014, 0.045), u_light);
+  vec3 top = mix(vec3(0.004, 0.006, 0.025), vec3(0.012, 0.018, 0.055), u_light);
+  vec3 bottom = mix(vec3(0.012, 0.008, 0.042), vec3(0.030, 0.022, 0.075), u_light);
+  vec3 col = mix(top, bottom, uv.y);
 
-  // ── 4 parallax star layers ─────────────────────────────────────
-  float stars = 0.0;
-  for (int L = 0; L < 4; L++) {
-    float depth = float(L) + 1.0;
-    float px = 1.0 / depth;
-    float sc = 24.0 + float(L) * 20.0;
-    vec2 suv = uv * vec2(aspect, 1.0) * sc;
-    suv += vec2(t * px * 0.22, t * px * 0.09) + float(L) * 11.0;
-    vec2 cell = floor(suv);
-    vec2 lc = fract(suv) - 0.5;
-    float r = hash(cell + float(L) * 37.0);
-    float tw = 0.55 + 0.45 * sin(t * 2.2 + r * 50.0 + float(L) * 9.0);
-    float mag = 0.035 + 0.012 * float(L);
-    stars += (1.0 - smoothstep(0.0, mag, length(lc))) * step(0.895, r) * tw * (1.0 - float(L) * 0.10);
-  }
-  vec3 sc = mix(vec3(0.65, 0.72, 0.88), vec3(0.82, 0.86, 0.94), u_light);
-  vec3 col = bg + stars * sc * 2.8;
+  // A broad diagonal Milky Way with a dark dust lane and clumped star clouds.
+  vec2 mw = rotate2d(-0.43) * (p + vec2(0.05, -0.02));
+  float band = exp(-abs(mw.y) * 2.7);
+  float cloud = fbm(mw * vec2(1.15, 3.8) + vec2(t, -t * 0.35));
+  float fine = fbm(mw * vec2(3.4, 8.5) - vec2(t * 0.7, t * 0.2));
+  float dust = exp(-abs(mw.y + (fine - 0.5) * 0.11) * 12.0);
+  float luminous = band * smoothstep(0.28, 0.78, cloud * 0.78 + fine * 0.42);
+  vec3 violet = mix(vec3(0.19, 0.10, 0.34), vec3(0.30, 0.20, 0.44), u_light);
+  vec3 cyan = mix(vec3(0.08, 0.22, 0.34), vec3(0.16, 0.32, 0.46), u_light);
+  col += luminous * mix(violet, cyan, smoothstep(-0.4, 0.45, mw.x)) * 1.35;
+  col *= 1.0 - dust * band * 0.38;
+  col += band * vec3(0.055, 0.045, 0.10) * (0.45 + cloud * 0.75);
 
-  // ── Milky Way band ─────────────────────────────────────────────
-  float mwDist = abs(uv.y - 0.48 + (uv.x - 0.5) * 0.30 - sin(uv.x * 2.2) * 0.025);
-  float mw = exp(-mwDist * 5.0) * 0.28;
-  mw += exp(-mwDist * 18.0) * 0.10;
-  float mwDetail = fbm(uv * vec2(aspect * 3.5, 1.8) + t * 0.02) * 0.5 + 0.5;
-  mw *= 0.65 + 0.35 * mwDetail;
-  vec3 mwColor = mix(vec3(0.24, 0.16, 0.42), vec3(0.34, 0.28, 0.52), u_light);
-  col += mw * mwColor * 2.6;
-  col += fbm(uv * vec2(aspect * 2.2, 2.2) + vec2(t * 0.025, -t * 0.015))
-    * mix(vec3(0.035, 0.025, 0.085), vec3(0.055, 0.045, 0.11), u_light);
+  // Three genuinely different depth planes create slow camera travel.
+  col += starLayer(p, 19.0, 3.0, t * 0.20) * 0.72;
+  col += starLayer(p, 37.0, 19.0, t * 0.34) * 0.52;
+  col += starLayer(p, 71.0, 47.0, t * 0.55) * 0.34;
 
-  // ── sparse meteors ─────────────────────────────────────────────
-  float meteorSum = 0.0;
-  for (int m = 0; m < 3; m++) {
-    float seed = float(m) * 141.0 + 59.0;
-    float cycle = fract(t * 0.055 + seed * 0.07);
-    float appear = smoothstep(0.0, 0.04, cycle) * (1.0 - smoothstep(0.22, 0.30, cycle));
-    float mx = hash1f(seed + 0.1) * 0.65 + 0.18;
-    float my = hash1f(seed + 0.2) * 0.55 + 0.15;
-    float angle = (hash1f(seed + 0.3) - 0.5) * 0.5 - 0.45;
-    float len = 0.06 + hash1f(seed + 0.4) * 0.05;
-    vec2 dir = vec2(cos(angle), sin(angle));
-    float along = dot(uv - vec2(mx, my), dir);
-    float across = abs(dot(uv - vec2(mx, my), vec2(-dir.y, dir.x)));
-    float streak = exp(-across * 55.0) * exp(-max(0.0, -along) * 14.0) * step(0.0, along) * step(along, len);
-    meteorSum += streak * appear;
-  }
-  col += meteorSum * vec3(0.65, 0.75, 1.0) * 0.5;
+  // Rare restrained shooting star crossing the empty upper-right field.
+  float cycle = fract(u_time * 0.012);
+  float gate = smoothstep(0.04, 0.10, cycle) * (1.0 - smoothstep(0.23, 0.31, cycle));
+  vec2 origin = vec2(0.78, 0.16) + vec2(-cycle * 0.45, cycle * 0.24);
+  vec2 delta = uv - origin;
+  vec2 dir = normalize(vec2(-1.0, 0.52));
+  float along = dot(delta, dir);
+  float across = abs(dot(delta, vec2(-dir.y, dir.x)));
+  float meteor = exp(-across * 180.0) * exp(-max(0.0, along) * 24.0)
+    * step(-0.22, along) * step(along, 0.015) * gate;
+  col += meteor * vec3(0.65, 0.78, 1.0) * 1.6;
 
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.28;
-
+  float vignette = smoothstep(1.08, 0.25, length(p * vec2(0.72, 0.92)));
+  col *= 0.68 + 0.32 * vignette;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -469,76 +468,68 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
+vec3 blackholeStars(vec2 p, float scale, float seed) {
+  vec2 g = p * scale;
+  vec2 cell = floor(g);
+  vec2 local = fract(g) - 0.5;
+  vec2 rnd = hash22(cell + seed);
+  vec2 pos = local - (rnd - 0.5) * 0.72;
+  float star = (1.0 - smoothstep(0.018, 0.060, length(pos))) * step(0.90, rnd.x);
+  return mix(vec3(0.48, 0.62, 1.0), vec3(1.0, 0.74, 0.48), rnd.y) * star;
+}
+
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.06;
+  float t = u_time * 0.035;
+  vec2 center = vec2(0.64, 0.47);
+  vec2 p = (uv - center) * vec2(aspect, 1.0);
+  float r = length(p);
+  float a = atan(p.y, p.x);
 
-  vec2 center = vec2(0.62, 0.42);
-  vec2 dp = (uv - center) * vec2(aspect, 1.0);
-  float dist = length(dp);
-  float angle = atan(dp.y, dp.x);
+  vec3 col = mix(vec3(0.002, 0.003, 0.012), vec3(0.008, 0.012, 0.034), u_light);
+  col += fbm(uv * vec2(aspect * 1.6, 1.6) + vec2(t, 0.0)) * vec3(0.012, 0.014, 0.035);
 
-  // gravitational lens warp: stars bend around center
-  float lensStrength = 0.055 / (dist + 0.08);
-  float warp = lensStrength * smoothstep(0.15, 0.05, dist);
+  // Pull the background angularly around the mass instead of shrinking it into a dot.
+  float bend = 0.075 / max(r, 0.055);
+  vec2 warped = center + vec2(cos(a + bend * 0.12), sin(a + bend * 0.12)) * (r + bend * 0.030) / vec2(aspect, 1.0);
+  col += blackholeStars(warped, 27.0, 6.0) * 0.65;
+  col += blackholeStars(warped + vec2(t * 0.05, 0.0), 49.0, 27.0) * 0.42;
 
-  // ── lensed star field ──────────────────────────────────────────
-  vec3 bg = mix(vec3(0.003, 0.004, 0.018), vec3(0.008, 0.012, 0.040), u_light);
-  float stars = 0.0;
-  for (int L = 0; L < 4; L++) {
-    float depth = float(L) + 1.0;
-    float px = 1.0 / depth;
-    float sc = 22.0 + float(L) * 16.0;
+  // The accretion disk has turbulent bands and pronounced Doppler asymmetry.
+  vec2 diskP = vec2(p.x, p.y * 5.3);
+  float diskR = length(diskP);
+  float diskA = atan(diskP.y, diskP.x);
+  float grain = fbm(vec2(diskA * 2.6 - t * 5.0, diskR * 17.0));
+  float bands = 0.55 + 0.45 * sin(diskR * 115.0 - diskA * 5.0 + grain * 4.0);
+  float diskMask = smoothstep(0.12, 0.17, diskR) * (1.0 - smoothstep(0.46, 0.58, diskR));
+  diskMask *= smoothstep(0.22, 0.68, grain * 0.72 + bands * 0.45);
+  float hot = 1.0 - smoothstep(0.16, 0.49, diskR);
+  float doppler = 0.34 + 1.10 * smoothstep(-0.95, 0.85, cos(diskA));
+  vec3 outer = mix(vec3(0.72, 0.14, 0.018), vec3(0.95, 0.28, 0.035), u_light);
+  vec3 inner = mix(vec3(0.88, 0.55, 0.22), vec3(1.0, 0.84, 0.56), u_light);
+  vec3 diskColor = mix(outer, inner, hot);
+  float diskGlow = exp(-abs(diskR - 0.28) * 8.0) * (1.0 - smoothstep(0.52, 0.78, diskR));
+  col += diskColor * (diskMask * doppler * 1.45 + diskGlow * 0.12);
 
-    // warp star coords
-    float wd = max(dist, 0.02);
-    float wa = angle + warp * px + t * 0.15 * px;
+  // Light from the rear disk is lensed into a crown and lower arc.
+  float lensRadius = length(vec2(p.x, abs(p.y) * 1.12));
+  float crown = exp(-abs(lensRadius - 0.185) * 82.0);
+  crown *= smoothstep(0.025, 0.105, abs(p.y));
+  float crownGrain = 0.62 + fbm(vec2(a * 4.0 - t * 2.2, r * 24.0)) * 0.58;
+  col += crown * crownGrain * mix(vec3(0.95, 0.35, 0.055), vec3(1.0, 0.67, 0.22), hot) * 1.25;
 
-    vec2 suv = vec2(center.x + cos(wa) * wd / aspect, center.y + sin(wa) * wd) * sc;
-    suv += float(L) * 13.0 + t * px * 0.1;
+  float photon = exp(-abs(r - 0.142) * 165.0);
+  float bloom = exp(-abs(r - 0.153) * 31.0) * 0.30;
+  col += (photon + bloom) * mix(vec3(0.94, 0.43, 0.11), vec3(1.0, 0.74, 0.34), u_light);
 
-    vec2 cell = floor(suv);
-    vec2 lc = fract(suv) - 0.5;
-    float r = hash(cell + float(L) * 41.0);
-    float tw = 0.5 + 0.5 * sin(t * 2.5 + r * 45.0 + float(L) * 8.0);
-    stars += smoothstep(0.07, 0.0, length(lc)) * step(0.955, r) * tw * (1.0 - float(L) * 0.1);
-  }
-  vec3 sc = mix(vec3(0.7, 0.75, 0.9), vec3(0.85, 0.88, 0.95), u_light);
-  vec3 col = bg + stars * sc * 0.75;
+  // An uncompromising dark horizon is what gives the surrounding light scale.
+  float outside = smoothstep(0.126, 0.139, r);
+  col *= outside;
+  col += exp(-r * 7.0) * outside * vec3(0.035, 0.018, 0.055);
 
-  // ── accretion disk ─────────────────────────────────────────────
-  vec2 diskP = vec2(dp.x, dp.y * 3.4);
-  float diskDist = length(diskP);
-  float diskAngle = atan(diskP.y, diskP.x) + t * 0.7;
-  float disk = exp(-abs(diskDist - 0.17) * 38.0);
-
-  // disk colour gradient: inner hot white-blue → outer orange
-  float diskGrad = smoothstep(0.10, 0.27, diskDist);
-  vec3 diskInner = mix(vec3(0.6, 0.75, 1.0), vec3(0.7, 0.85, 1.0), u_light);
-  vec3 diskOuter = mix(vec3(0.85, 0.40, 0.08), vec3(1.0, 0.55, 0.18), u_light);
-  vec3 diskColor = mix(diskInner, diskOuter, diskGrad);
-
-  // Doppler brightening on one side
-  float doppler = 0.65 + 0.35 * cos(diskAngle + 1.2);
-  float diskGrain = 0.78 + noise(vec2(diskAngle * 4.0, t * 1.8)) * 0.45;
-  col += disk * diskColor * doppler * diskGrain * 1.25;
-
-  // ── photon ring (bright thin ring just outside horizon) ────────
-  float photonRing = exp(-abs(dist - 0.085) * 95.0) * 0.72;
-  col += photonRing * mix(vec3(0.35, 0.65, 1.0), vec3(0.55, 0.82, 1.0), u_light) * 0.78;
-
-  // ── event horizon ──────────────────────────────────────────────
-  float horizon = smoothstep(0.055, 0.07, dist);
-  col *= horizon;
-
-  // subtle glow around horizon
-  float horizonGlow = exp(-dist * 12.0) * 0.12;
-  col += horizonGlow * mix(vec3(0.08, 0.06, 0.18), vec3(0.15, 0.12, 0.28), u_light);
-
-  // ── vignette ───────────────────────────────────────────────────
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.35;
-
+  float vignette = 1.0 - smoothstep(0.48, 1.12, length((uv - 0.5) * vec2(0.76, 1.0)));
+  col *= 0.60 + vignette * 0.40;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -552,80 +543,70 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
+float cloudBand(vec2 uv, float scale, float drift, float base, float softness) {
+  vec2 q = uv * vec2(scale, scale * 1.25);
+  q.x += u_time * drift;
+  float body = fbm(q + fbm(q * 0.72 + 8.0) * 0.52);
+  float envelope = smoothstep(base - 0.13, base + 0.15, uv.y);
+  return smoothstep(0.49 - softness, 0.56 + softness, body) * envelope;
+}
+
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.06;
+  vec3 top = mix(vec3(0.006, 0.014, 0.050), vec3(0.014, 0.030, 0.090), u_light);
+  vec3 horizon = mix(vec3(0.040, 0.065, 0.135), vec3(0.085, 0.120, 0.205), u_light);
+  vec3 col = mix(top, horizon, smoothstep(0.0, 0.78, uv.y));
 
-  // ── night sky ──────────────────────────────────────────────────
-  vec3 skyTop = mix(vec3(0.02, 0.03, 0.12), vec3(0.05, 0.07, 0.22), u_light);
-  vec3 skyHor = mix(vec3(0.04, 0.06, 0.18), vec3(0.10, 0.14, 0.30), u_light);
-  vec3 sky = mix(skyTop, skyHor, smoothstep(0.0, 0.6, uv.y));
+  // Quiet stars keep the open sky spacious.
+  vec2 sg = uv * vec2(aspect, 1.0) * 62.0;
+  vec2 scell = floor(sg);
+  vec2 slocal = fract(sg) - 0.5;
+  float sr = hash(scell);
+  float stars = (1.0 - smoothstep(0.018, 0.055, length(slocal))) * step(0.955, sr);
+  col += stars * mix(vec3(0.45, 0.58, 0.82), vec3(0.68, 0.76, 0.92), u_light) * 0.48;
 
-  // faint stars
-  float stars = 0.0;
-  for (int i = 0; i < 2; i++) {
-    float sc = 38.0 + float(i) * 25.0;
-    vec2 suv = uv * vec2(aspect, 1.0) * sc + float(i) * 17.0;
-    vec2 cell = floor(suv);
-    vec2 lc = fract(suv) - 0.5;
-    float r = hash(cell + float(i) * 29.0);
-    stars += smoothstep(0.08, 0.0, length(lc)) * step(0.96, r) * 0.7;
-  }
-  sky += stars * mix(vec3(0.6, 0.65, 0.8), vec3(0.8, 0.83, 0.9), u_light) * 0.3;
+  vec2 moonCenter = vec2(0.73, 0.24);
+  float moonRadius = 0.122;
+  vec2 moonP = (uv - moonCenter) * vec2(aspect, 1.0) / moonRadius;
+  float moonR = length(moonP);
+  float moon = 1.0 - smoothstep(0.985, 1.015, moonR);
+  float limb = sqrt(max(0.0, 1.0 - moonR * moonR));
+  float maria = fbm(moonP * 3.2 + 7.0) * 0.26 + fbm(moonP * 8.5 + 13.0) * 0.09;
+  float craters = softDisc(moonP - vec2(-0.28, -0.12), 0.16, 0.10) * 0.24;
+  craters += softDisc(moonP - vec2(0.31, 0.18), 0.11, 0.07) * 0.18;
+  craters += softDisc(moonP - vec2(0.07, -0.36), 0.08, 0.06) * 0.16;
+  float directional = 0.68 + 0.32 * dot(normalize(vec3(moonP, max(limb, 0.01))), normalize(vec3(-0.45, -0.2, 1.0)));
+  vec3 moonColor = mix(vec3(0.48, 0.53, 0.59), vec3(0.82, 0.86, 0.87), u_light);
+  moonColor *= directional * (1.05 - maria - craters) + limb * 0.18;
+  float moonGlow = exp(-max(0.0, moonR - 1.0) * 3.2) * (1.0 - moon);
+  col += moonGlow * mix(vec3(0.10, 0.16, 0.28), vec3(0.18, 0.25, 0.38), u_light) * 0.70;
+  col = mix(col, moonColor, moon);
 
-  vec3 col = sky;
+  // Distant ridges anchor the composition beneath the cloud sea.
+  float ridge = 0.72 + sin(uv.x * 6.0 + 1.4) * 0.035 + sin(uv.x * 15.0) * 0.018;
+  float peak = abs(fract(uv.x * 3.4 + 0.18) - 0.5);
+  ridge -= max(0.0, 0.23 - peak) * 0.20;
+  float ridgeMask = smoothstep(ridge - 0.006, ridge + 0.006, uv.y);
+  col = mix(col, mix(vec3(0.012, 0.022, 0.052), vec3(0.035, 0.052, 0.090), u_light), ridgeMask * 0.88);
 
-  // ── moon ───────────────────────────────────────────────────────
-  vec2 moonCenter = vec2(0.72, 0.19);
-  float moonDist = length((uv - moonCenter) * vec2(aspect, 1.0));
-  float moonRadius = 0.085;
+  float farNoise = fbm(uv * vec2(aspect * 2.1, 2.8) + vec2(u_time * 0.004, 3.0));
+  float midNoise = fbm(uv * vec2(aspect * 3.4, 4.1) + vec2(u_time * 0.007, 9.0));
+  float nearNoise = fbm(uv * vec2(aspect * 5.0, 5.8) + vec2(u_time * 0.011, 17.0));
+  float cFar = smoothstep(0.44, 0.60, farNoise + smoothstep(0.42, 0.68, uv.y) * 0.24) * 0.54;
+  float cMid = smoothstep(0.43, 0.59, midNoise + smoothstep(0.51, 0.76, uv.y) * 0.28) * 0.72;
+  float cNear = smoothstep(0.42, 0.57, nearNoise + smoothstep(0.62, 0.86, uv.y) * 0.32);
+  float cloud = clamp(cFar + cMid + cNear, 0.0, 1.0);
+  float topNoise = fbm((uv - vec2(0.0, 0.014)) * vec2(aspect * 5.0, 5.8) + vec2(u_time * 0.011, 17.0));
+  float cloudTop = smoothstep(0.42, 0.57, topNoise + smoothstep(0.62, 0.86, uv.y) * 0.32);
+  float rim = clamp(cloudTop - cNear, 0.0, 1.0) * 2.2;
+  float moonReach = exp(-abs(uv.x - moonCenter.x) * 2.2) * (1.0 - smoothstep(0.32, 0.96, uv.y));
+  vec3 cloudDark = mix(vec3(0.055, 0.075, 0.125), vec3(0.105, 0.135, 0.195), u_light);
+  vec3 cloudLit = mix(vec3(0.21, 0.25, 0.32), vec3(0.35, 0.40, 0.48), u_light);
+  col = mix(col, mix(cloudDark, cloudLit, clamp(rim * (0.75 + moonReach), 0.0, 1.0)), cloud * 0.94);
 
-  // moon surface
-  float moonBody = 1.0 - smoothstep(moonRadius - 0.003, moonRadius + 0.003, moonDist);
-
-  // subtle surface detail
-  vec2 moonUV = (uv - moonCenter) * vec2(aspect, 1.0) / moonRadius;
-  float surface = fbm(moonUV * 4.0 + 3.0) * 0.16;
-  surface += fbm(moonUV * 10.0 + 7.0) * 0.07;
-  float limb = sqrt(max(0.0, 1.0 - dot(moonUV, moonUV)));
-
-  vec3 moonDark = mix(vec3(0.75, 0.72, 0.68), vec3(0.85, 0.83, 0.78), u_light);
-  vec3 moonColor = moonDark * (0.62 + limb * 0.48) - surface;
-  col = mix(col, moonColor, moonBody);
-
-  // ── moonlight glow ─────────────────────────────────────────────
-  float glow = exp(-moonDist * 6.0) * 0.24;
-  glow += exp(-moonDist * 16.0) * 0.14;
-  vec3 glowColor = mix(vec3(0.30, 0.35, 0.55), vec3(0.45, 0.50, 0.65), u_light);
-  col += glow * glowColor;
-
-  // ── cloud layers ───────────────────────────────────────────────
-  float horizon = 0.38;
-  float cloudMask = smoothstep(horizon, horizon + 0.25, uv.y);
-
-  // layer 1: distant thin clouds
-  float c1 = fbm(uv * vec2(aspect * 2.0, 1.5) + vec2(t * 0.15, t * 0.05));
-  c1 = smoothstep(0.42, 0.58, c1) * 0.25 * cloudMask;
-
-  // layer 2: mid-level clouds
-  float c2 = fbm(uv * vec2(aspect * 3.5, 2.2) + vec2(t * 0.22, t * 0.08) + 8.0);
-  c2 = smoothstep(0.38, 0.55, c2) * 0.30 * cloudMask;
-
-  // layer 3: foreground clouds
-  float c3 = fbm(uv * vec2(aspect * 5.0, 3.0) + vec2(t * 0.30, t * 0.12) + 15.0);
-  c3 = smoothstep(0.44, 0.60, c3) * 0.28 * cloudMask;
-
-  vec3 cloudColor = mix(vec3(0.30, 0.34, 0.52), vec3(0.60, 0.64, 0.76), u_light);
-  col += (c1 + c2 + c3) * cloudColor;
-
-  // moon illuminates clouds from above
-  float moonIllum = smoothstep(horizon, horizon + 0.1, uv.y) * (1.0 - smoothstep(0.0, 0.6, uv.y));
-  col += moonIllum * glowColor * 0.06;
-
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.25;
-
+  float vignette = 1.0 - smoothstep(0.48, 1.05, length((uv - 0.5) * vec2(0.78, 1.0)));
+  col *= 0.64 + vignette * 0.36;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -639,85 +620,76 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
-float hash1f(float n) {
-  return fract(sin(n) * 43758.5453);
+vec3 jellyLight(vec2 p, vec2 center, float size, float phase, vec3 tint) {
+  vec2 q = (p - center) / size;
+  q.x += sin(u_time * 0.16 + phase + q.y * 0.9) * 0.055;
+  float pulse = 0.94 + sin(u_time * 0.48 + phase) * 0.06;
+  q.x /= pulse;
+
+  float ellipse = length(vec2(q.x, q.y * 1.28));
+  float dome = (1.0 - smoothstep(0.78, 1.04, ellipse))
+    * smoothstep(0.15, -0.22, q.y) * smoothstep(-0.94, -0.62, q.y);
+  float shell = exp(-abs(ellipse - 0.88) * 13.0)
+    * smoothstep(0.20, -0.05, q.y) * smoothstep(-0.96, -0.62, q.y);
+  float rim = exp(-abs(q.y + 0.02) * 22.0) * (1.0 - smoothstep(0.38, 0.92, abs(q.x)));
+  float organs = exp(-length(vec2(q.x * 1.8, (q.y + 0.38) * 2.4)) * 3.8) * dome;
+
+  float tentacles = 0.0;
+  for (int k = 0; k < 5; k++) {
+    float fk = float(k) - 2.0;
+    float x0 = fk * 0.21;
+    float wave = sin(q.y * (2.2 + abs(fk) * 0.25) + phase + fk) * (0.075 + abs(fk) * 0.015);
+    float line = 1.0 - smoothstep(0.018, 0.052, abs(q.x - x0 - wave));
+    float lengthFade = smoothstep(0.0, 0.15, q.y) * (1.0 - smoothstep(1.25 + abs(fk) * 0.16, 2.35, q.y));
+    tentacles += line * lengthFade * (0.82 - abs(fk) * 0.09);
+  }
+  float halo = exp(-length(vec2(q.x, q.y * 0.85 + 0.16)) * 1.9) * 0.24;
+  float light = dome * 0.48 + shell * 0.90 + rim * 0.72 + organs * 0.65 + tentacles * 0.52 + halo;
+  return tint * light;
 }
 
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.15;
+  float t = u_time * 0.06;
+  vec2 p = uv * vec2(aspect, 1.0);
+  vec3 deep = mix(vec3(0.001, 0.012, 0.028), vec3(0.004, 0.026, 0.052), u_light);
+  vec3 upper = mix(vec3(0.010, 0.058, 0.082), vec3(0.018, 0.090, 0.115), u_light);
+  vec3 col = mix(upper, deep, smoothstep(0.0, 0.92, uv.y));
+  col += fbm(vec2(p.x * 1.3, uv.y * 2.2 - t)) * vec3(0.006, 0.025, 0.034);
 
-  // ── deep ocean gradient ────────────────────────────────────────
-  vec3 deepColor = mix(vec3(0.005, 0.008, 0.040), vec3(0.012, 0.020, 0.070), u_light);
-  vec3 midColor = mix(vec3(0.010, 0.018, 0.060), vec3(0.025, 0.038, 0.095), u_light);
-  vec3 col = mix(deepColor, midColor, uv.y);
-
-  // ── faint caustic light rays from above ────────────────────────
-  float caustic = 0.0;
-  for (int r = 0; r < 5; r++) {
-    float rx = 0.1 + float(r) * 0.2;
-    float rAngle = sin(rx * 12.0 + t * 0.3) * 0.15;
-    float ray = exp(-abs(uv.x - rx - rAngle * uv.y) * 25.0) * exp(-uv.y * 2.5) * 0.04;
-    caustic += ray;
+  float rays = 0.0;
+  for (int r = 0; r < 6; r++) {
+    float fr = float(r);
+    float origin = 0.08 + fr * 0.22 + sin(t + fr * 2.7) * 0.035;
+    float width = 0.025 + fr * 0.004;
+    float rayX = p.x / aspect - origin - (uv.y * (0.06 + fr * 0.012));
+    rays += exp(-abs(rayX) / width) * exp(-uv.y * 2.1) * 0.10;
   }
-  col += caustic * mix(vec3(0.08, 0.20, 0.40), vec3(0.15, 0.30, 0.50), u_light);
+  col += rays * mix(vec3(0.025, 0.16, 0.20), vec3(0.055, 0.23, 0.26), u_light);
 
-  // ── jellyfish ──────────────────────────────────────────────────
-  float jfSum = 0.0;
-  for (int j = 0; j < 4; j++) {
-    float seed = float(j) * 83.0 + 31.0;
-    // drift position
-    float jx = 0.14 + float(j) * 0.24 + sin(t * 0.4 + seed) * 0.08;
-    float jy = 0.22 + mod(float(j) * 0.21, 0.62) + cos(t * 0.35 + seed + 1.5) * 0.06;
-    float phase = t * 0.8 + seed;
+  vec3 aqua = mix(vec3(0.08, 0.64, 0.69), vec3(0.16, 0.88, 0.84), u_light);
+  vec3 blue = mix(vec3(0.12, 0.36, 0.82), vec3(0.22, 0.54, 1.0), u_light);
+  vec3 violet = mix(vec3(0.42, 0.18, 0.70), vec3(0.63, 0.31, 0.90), u_light);
+  col += jellyLight(p, vec2(aspect * 0.23 + sin(t * 1.1) * 0.035, 0.29), 0.092, 2.0, blue) * 0.76;
+  col += jellyLight(p, vec2(aspect * 0.69 + sin(t * 0.7 + 2.0) * 0.045, 0.38), 0.145, 5.0, aqua) * 1.12;
+  col += jellyLight(p, vec2(aspect * 0.46 + sin(t * 0.9 + 4.0) * 0.025, 0.69), 0.082, 8.0, violet) * 0.62;
+  col += jellyLight(p, vec2(aspect * 0.88 + sin(t * 0.8 + 7.0) * 0.032, 0.73), 0.105, 11.0, blue) * 0.74;
+  col += jellyLight(p, vec2(aspect * 0.08 + sin(t + 1.0) * 0.018, 0.86), 0.062, 13.0, aqua) * 0.42;
 
-    vec2 jd = (uv - vec2(jx, jy)) * vec2(aspect * 1.05, 1.0);
-
-    // bell: half ellipse
-    float bellDist = length(jd * vec2(1.0, 2.25));
-    float bell = (1.0 - smoothstep(0.095, 0.13, bellDist)) * step(jd.y, 0.025);
-    float bellRim = exp(-abs(bellDist - 0.112) * 95.0) * step(jd.y, 0.035);
-
-    // bell pulses
-    float pulse = 1.0 + sin(phase) * 0.15;
-    bell *= pulse;
-
-    // tentacles: sinusoidal curves hanging down
-    float tentacles = 0.0;
-    for (int tn = 0; tn < 3; tn++) {
-      float tx = jd.x - (float(tn) - 1.0) * 0.04;
-      float wave = sin(jd.y * 12.0 + phase + float(tn) * 1.5) * 0.03;
-      float tentDist = abs(tx - wave);
-      float tentLen = 0.08 + float(tn) * 0.04;
-      float tentWidth = 1.0 - smoothstep(0.002, 0.012, tentDist);
-      float tentFade = 1.0 - smoothstep(0.0, tentLen, jd.y);
-      tentacles += tentWidth * tentFade * step(0.0, jd.y);
-    }
-
-    jfSum += (bell * 0.65 + bellRim + tentacles * 0.85) * 0.82;
-  }
-
-  vec3 jfColor = mix(vec3(0.15, 0.75, 0.70), vec3(0.25, 0.80, 0.75), u_light);
-  col += jfSum * jfColor * 1.05;
-
-  // ── floating bioluminescent particles ──────────────────────────
   float particles = 0.0;
-  for (int p = 0; p < 24; p++) {
-    float seed = float(p) * 53.0 + 17.0;
-    float px = hash1f(seed + 0.2);
-    float py = fract(hash1f(seed + 0.5) + t * (0.06 + hash1f(seed + 0.8) * 0.08));
-    float size = 0.004 + hash1f(seed + 0.3) * 0.010;
-    float bright = 0.5 + 0.5 * sin(t * 2.5 + seed);
-    float pd = length((uv - vec2(px, py)) * vec2(aspect, 1.0)) / size;
-    particles += smoothstep(1.5, 0.0, pd) * bright * 0.5;
+  for (int i = 0; i < 30; i++) {
+    float seed = float(i) * 29.1 + 3.0;
+    float px = hash11(seed) * aspect;
+    float py = fract(hash11(seed + 1.0) + t * (0.025 + hash11(seed + 2.0) * 0.045));
+    float size = 0.0012 + hash11(seed + 3.0) * 0.0038;
+    float d = length(p - vec2(px, py));
+    particles += (1.0 - smoothstep(size, size * 3.8, d)) * (0.25 + hash11(seed + 4.0) * 0.75);
   }
-  vec3 partColor = mix(vec3(0.2, 0.85, 0.7), vec3(0.35, 0.9, 0.78), u_light);
-  col += particles * partColor;
+  col += particles * mix(vec3(0.08, 0.42, 0.42), vec3(0.16, 0.68, 0.62), u_light);
 
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.4;
-
+  float vignette = 1.0 - smoothstep(0.48, 1.05, length((uv - 0.5) * vec2(0.78, 1.0)));
+  col *= 0.58 + vignette * 0.42;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -731,63 +703,52 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
-// HSL → RGB for iridescent colouring
-vec3 hsl2rgb(float h, float s, float l) {
-  vec3 rgb = clamp(
-    abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0,
-    0.0, 1.0
-  );
-  return l + s * (rgb - 0.5) * (1.0 - abs(2.0 * l - 1.0));
+float silkHeight(vec2 p) {
+  float t = u_time * 0.035;
+  float warp = sin(p.y * 1.55 - t * 0.6) * 0.92 + sin(p.y * 4.1 + t * 0.38) * 0.22;
+  float h = sin(p.x * 2.35 + warp + t * 0.42) * 0.45;
+  h += sin(p.x * 4.7 - p.y * 1.65 - t * 0.34) * 0.24;
+  h += sin(p.x * 1.15 + p.y * 4.2 + t * 0.24) * 0.16;
+  h += sin(p.x * 8.8 + p.y * 1.4 + t * 0.19) * 0.07;
+  return h;
 }
 
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.04;
+  vec2 p = (uv - 0.5) * vec2(aspect * 1.32, 1.0);
+  p = rotate2d(-0.13) * p;
+  float h = silkHeight(p);
+  float e = 0.005;
+  float hx = silkHeight(p + vec2(e, 0.0));
+  float hy = silkHeight(p + vec2(0.0, e));
+  vec3 normal = normalize(vec3((h - hx) / e * 0.30, (h - hy) / e * 0.30, 1.0));
+  vec3 lightDir = normalize(vec3(-0.56, -0.32, 0.78));
+  vec3 viewDir = normalize(vec3(0.0, 0.0, 1.0));
+  vec3 halfDir = normalize(lightDir + viewDir);
 
-  // ── ribbon folds via layered sine waves ────────────────────────
-  vec2 p = uv * vec2(aspect * 1.2, 1.0);
+  float diffuse = max(0.0, dot(normal, lightDir));
+  float specular = pow(max(0.0, dot(normal, halfDir)), 42.0);
+  float softSpec = pow(max(0.0, dot(normal, halfDir)), 8.0);
+  float fresnel = pow(1.0 - max(0.0, dot(normal, viewDir)), 2.4);
+  float facing = normal.x * 0.5 + 0.5;
 
-  float fold = sin(p.x * 4.5 + t * 0.25 + sin(p.y * 3.0 + t * 0.15) * 1.8);
-  fold += sin(p.x * 7.0 - t * 0.35 + p.y * 2.0) * 0.6;
-  fold += sin(p.x * 13.0 + t * 0.5) * 0.3;
-  fold += fbm(p * vec2(2.0, 1.5) + t * 0.1) * 0.4;
-  fold = fold * 0.45 + 0.5;
+  vec3 navy = mix(vec3(0.020, 0.032, 0.105), vec3(0.040, 0.068, 0.165), u_light);
+  vec3 plum = mix(vec3(0.145, 0.038, 0.190), vec3(0.245, 0.075, 0.295), u_light);
+  vec3 cyan = mix(vec3(0.055, 0.285, 0.345), vec3(0.100, 0.455, 0.500), u_light);
+  vec3 material = mix(navy, plum, smoothstep(0.10, 0.86, facing));
+  material = mix(material, cyan, fresnel * 0.48 + smoothstep(0.73, 1.0, h * 0.5 + 0.5) * 0.16);
 
-  // fold gradient for specular and colour
-  float foldGrad = abs(fold - 0.5) * 2.0; // 0 at trough/crest, 1 at steep slopes
+  float weave = sin((p.x + p.y) * 140.0) * sin((p.x - p.y) * 132.0) * 0.014;
+  vec3 col = material * (0.48 + diffuse * 0.82 + weave);
+  col += mix(vec3(0.30, 0.36, 0.54), vec3(0.76, 0.84, 0.92), u_light) * specular * 1.18;
+  col += mix(plum, cyan, facing) * softSpec * 0.34;
 
-  // ── iridescent colour ──────────────────────────────────────────
-  float hue = 0.59 + fold * 0.17 + t * 0.012;
-  hue += sin(p.y * 1.5 + t * 0.08) * 0.025;
-
-  float sat = 0.32 + foldGrad * 0.20;
-  float lit = 0.07 + fold * 0.20;
-  lit += foldGrad * 0.06;
-
-  vec3 baseColor = hsl2rgb(hue, sat, lit);
-  baseColor = mix(baseColor, baseColor * 1.3, u_light);
-
-  // ── specular highlights ────────────────────────────────────────
-  float spec = pow(max(0.0, 1.0 - abs(fold - 0.62)), 12.0) * 0.25;
-  spec += pow(max(0.0, 1.0 - abs(fold - 0.28)), 16.0) * 0.15;
-
-  vec3 col = baseColor + spec * mix(vec3(0.4, 0.45, 0.55), vec3(0.7, 0.73, 0.8), u_light);
-
-  // subtle secondary ribbon layer
-  float fold2 = sin(p.x * 3.2 - t * 0.3 + p.y * 2.5 + 2.0) * 0.5 + 0.5;
-  float alpha2 = smoothstep(0.45, 0.55, fold2) * 0.15;
-  float hue2 = fract(hue + 0.10);
-  vec3 color2 = hsl2rgb(hue2, sat * 0.8, lit * 1.3);
-  col = mix(col, color2, alpha2);
-
-  // ── background gradient ────────────────────────────────────────
-  vec3 bg = mix(vec3(0.012, 0.018, 0.055), vec3(0.045, 0.055, 0.13), u_light);
-  col = bg + col * 0.92;
-
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.35;
-
+  // A wide grazing sheen sells the cloth's scale without looking like a gradient.
+  float sweep = exp(-abs(p.x + sin(p.y * 2.0 + u_time * 0.025) * 0.24) * 2.7) * fresnel;
+  col += sweep * mix(vec3(0.08, 0.12, 0.25), vec3(0.22, 0.31, 0.42), u_light) * 0.60;
+  float vignette = 1.0 - smoothstep(0.48, 1.12, length((uv - 0.5) * vec2(0.78, 1.0)));
+  col *= 0.66 + vignette * 0.34;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -801,70 +762,66 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
+float duneLine(float x, float seed, float scale) {
+  float broad = sin(x * (1.18 + seed * 0.07) + seed * 2.1) * 0.060;
+  broad += sin(x * (2.35 + seed * 0.04) - seed * 1.7) * 0.028;
+  float wind = (noise(vec2(x * scale, seed * 3.7)) - 0.5) * 0.018;
+  return broad + wind;
+}
+
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.05;
+  float t = u_time * 0.025;
+  vec3 zenith = mix(vec3(0.055, 0.070, 0.145), vec3(0.105, 0.125, 0.205), u_light);
+  vec3 dusk = mix(vec3(0.48, 0.20, 0.095), vec3(0.72, 0.39, 0.16), u_light);
+  vec3 horizon = mix(vec3(0.92, 0.46, 0.16), vec3(1.0, 0.67, 0.29), u_light);
+  vec3 col = mix(zenith, dusk, smoothstep(0.02, 0.42, uv.y));
+  col = mix(col, horizon, smoothstep(0.28, 0.58, uv.y) * (1.0 - smoothstep(0.58, 0.78, uv.y)));
 
-  // ── sky gradient ───────────────────────────────────────────────
-  float skyHorizon = 0.35;
-  vec3 skyTop = mix(vec3(0.08, 0.10, 0.25), vec3(0.18, 0.22, 0.38), u_light);
-  vec3 skyMid = mix(vec3(0.45, 0.25, 0.12), vec3(0.65, 0.45, 0.25), u_light);
-  vec3 skyLow = mix(vec3(0.70, 0.40, 0.15), vec3(0.85, 0.58, 0.28), u_light);
-  float skyGrad = smoothstep(0.0, skyHorizon, uv.y);
-  vec3 sky = mix(skyTop, skyMid, smoothstep(0.0, skyHorizon * 0.7, uv.y));
-  sky = mix(sky, skyLow, smoothstep(skyHorizon * 0.6, skyHorizon, uv.y));
+  vec2 sunP = (uv - vec2(0.72, 0.30)) * vec2(aspect, 1.0);
+  float sunR = length(sunP);
+  float sun = 1.0 - smoothstep(0.058, 0.064, sunR);
+  float sunGlow = exp(-sunR * 4.8);
+  col += sunGlow * mix(vec3(0.58, 0.20, 0.055), vec3(0.78, 0.35, 0.08), u_light) * 0.50;
+  col = mix(col, mix(vec3(0.96, 0.62, 0.30), vec3(1.0, 0.80, 0.48), u_light), sun);
 
-  // sun glow near horizon
-  float sunX = 0.30;
-  float sunGlow = exp(-abs(uv.x - sunX) * 3.5) * exp(-abs(uv.y - skyHorizon) * 8.0);
-  sky += sunGlow * mix(vec3(0.60, 0.35, 0.10), vec3(0.75, 0.50, 0.22), u_light) * 0.3;
-
-  vec3 col = sky;
-
-  // ── dune layers ────────────────────────────────────────────────
-  for (int d = 0; d < 4; d++) {
-    float df = float(d);
-    float baseY = skyHorizon + 0.06 + df * 0.16;
-    float amp = 0.075 + df * 0.020;
-
-    // dune shape
-    float dune = sin(uv.x * (2.0 + df * 0.8) + df * 2.7 + t * 0.02 * df) * amp;
-    dune += sin(uv.x * (4.5 + df * 1.1) - df * 3.5 + t * 0.03) * amp * 0.48;
-    dune += fbm(vec2(uv.x * aspect * (4.0 + df * 1.2), df * 5.0) + t * 0.04) * amp * 0.6;
-
-    float duneY = baseY + dune;
-    float duneMask = smoothstep(duneY - 0.003, duneY + 0.003, uv.y);
-
-    // slope-based lighting (grazing light from left)
-    float slope = (dune - (-amp)) / (2.0 * amp);
-    float lit = 0.25 + slope * 0.75;
-    lit = lit * 0.7 + 0.3;
-
-    // dune colour: warm sand
-    vec3 duneColor = mix(
-      mix(vec3(0.50, 0.30, 0.14), vec3(0.68, 0.48, 0.28), u_light),
-      mix(vec3(0.38, 0.22, 0.10), vec3(0.52, 0.35, 0.20), u_light),
-      df * 0.25
-    );
-    duneColor *= lit;
-
-    col = mix(col, duneColor, duneMask);
+  // Five atmospheric layers create depth; each crest catches the same low sun.
+  for (int d = 0; d < 5; d++) {
+    float fd = float(d);
+    float x = uv.x * aspect + t * (0.004 + fd * 0.001);
+    float base = 0.47 + fd * 0.105;
+    float amp = 1.20 + fd * 0.16;
+    float y = base + duneLine(x, fd + 1.0, 3.0 + fd * 0.8) * amp;
+    float yn = base + duneLine(x + 0.008, fd + 1.0, 3.0 + fd * 0.8) * amp;
+    float slope = (yn - y) / 0.008;
+    float light = 0.58 + clamp(-slope * 1.7, -0.24, 0.35);
+    vec3 farSand = mix(vec3(0.48, 0.21, 0.115), vec3(0.69, 0.37, 0.19), u_light);
+    vec3 nearSand = mix(vec3(0.18, 0.060, 0.035), vec3(0.38, 0.145, 0.072), u_light);
+    vec3 sand = mix(farSand, nearSand, fd / 4.0) * light;
+    float mask = smoothstep(y - 0.004, y + 0.004, uv.y);
+    float crest = exp(-abs(uv.y - y) * (130.0 - fd * 9.0));
+    float faceLight = 1.0 - smoothstep(0.0, 0.21, uv.y - y);
+    sand *= 0.72 + faceLight * 0.34;
+    col = mix(col, sand, mask);
+    col += crest * mix(vec3(0.72, 0.31, 0.11), vec3(1.0, 0.61, 0.27), u_light) * (0.40 - fd * 0.032);
   }
 
-  // ── wind-blown sand streaks ────────────────────────────────────
-  float streaks = 0.0;
-  for (int s = 0; s < 6; s++) {
-    float sx = fract(float(s) * 0.17 + t * 0.06);
-    float sy = skyHorizon + 0.12 + float(s) * 0.08;
-    float streak = exp(-abs(uv.y - sy) * 30.0) * exp(-abs(uv.x - sx) * 4.0) * 0.06;
-    streaks += streak;
+  // Fine wind ripples live only on the foreground plane.
+  float ripples = sin((uv.x * aspect * 13.0 + uv.y * 24.0) + fbm(uv * vec2(aspect * 4.0, 5.0)) * 2.2);
+  ripples = pow(max(0.0, ripples * 0.5 + 0.5), 8.0) * smoothstep(0.72, 1.0, uv.y);
+  col += ripples * mix(vec3(0.20, 0.085, 0.030), vec3(0.42, 0.20, 0.080), u_light) * 0.52;
+
+  float sandAir = 0.0;
+  for (int i = 0; i < 12; i++) {
+    float seed = float(i) * 17.7;
+    float px = fract(hash11(seed) + t * (0.018 + hash11(seed + 1.0) * 0.035));
+    float py = 0.48 + hash11(seed + 2.0) * 0.36;
+    sandAir += exp(-abs(uv.y - py) * 90.0) * exp(-abs(uv.x - px) * 16.0) * 0.045;
   }
-  col += streaks * mix(vec3(0.55, 0.35, 0.18), vec3(0.7, 0.52, 0.32), u_light);
-
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.25;
-
+  col += sandAir * mix(vec3(0.55, 0.28, 0.10), vec3(0.78, 0.48, 0.22), u_light);
+  float vignette = 1.0 - smoothstep(0.52, 1.10, length((uv - 0.5) * vec2(0.76, 1.0)));
+  col *= 0.68 + vignette * 0.32;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
@@ -878,88 +835,77 @@ uniform vec2 u_res;
 uniform float u_time;
 uniform float u_light;
 
-float hash1f(float n) {
-  return fract(sin(n) * 43758.5453);
-}
-
 void main() {
   vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);
   float aspect = u_res.x / u_res.y;
-  float t = u_time * 0.08;
+  float t = u_time * 0.085;
+  vec3 sky = mix(vec3(0.006, 0.010, 0.024), vec3(0.022, 0.033, 0.060), u_light);
+  vec3 col = sky + fbm(uv * vec2(aspect * 2.0, 2.0)) * vec3(0.008, 0.014, 0.026);
+  col += exp(-abs(uv.y - 0.58) * 7.5) * mix(vec3(0.018, 0.050, 0.085), vec3(0.035, 0.085, 0.125), u_light);
 
-  // ── dark night background ──────────────────────────────────────
-  vec3 bg = mix(vec3(0.015, 0.018, 0.040), vec3(0.030, 0.035, 0.065), u_light);
-  vec3 col = bg;
+  // A readable skyline sits behind the wet glass.
+  vec2 city = uv * vec2(17.0 * aspect, 1.0);
+  float buildingId = floor(city.x);
+  float bx = fract(city.x);
+  float height = 0.34 + hash11(buildingId * 2.7) * 0.36;
+  float inset = 0.08 + hash11(buildingId + 8.0) * 0.07;
+  float building = step(height, uv.y) * step(inset, bx) * step(bx, 1.0 - inset);
+  vec3 buildingColor = mix(vec3(0.014, 0.023, 0.038), vec3(0.038, 0.055, 0.078), hash11(buildingId + 3.0));
+  col = mix(col, buildingColor, building * 0.96);
+  float roof = exp(-abs(uv.y - height) * 190.0) * step(inset, bx) * step(bx, 1.0 - inset);
+  col += roof * mix(vec3(0.055, 0.12, 0.18), vec3(0.09, 0.19, 0.25), u_light) * 0.45;
 
-  // ── city bokeh (defocused lights) ──────────────────────────────
-  float bokeh = 0.0;
-  vec3 bokehColor = vec3(0.0);
-  for (int b = 0; b < 16; b++) {
-    float seed = float(b) * 67.0 + 23.0;
-    float bx = hash1f(seed + 0.1) * 0.85 + 0.08;
-    float by = hash1f(seed + 0.2) * 0.55 + 0.10;
-    float size = 0.020 + hash1f(seed + 0.3) * 0.045;
+  vec2 win = vec2(fract(city.x * 3.0), fract(uv.y * 31.0));
+  vec2 winCell = floor(vec2(city.x * 3.0, uv.y * 31.0));
+  float windowShape = step(0.24, win.x) * step(win.x, 0.70) * step(0.24, win.y) * step(win.y, 0.68);
+  float windowOn = step(0.72, hash(winCell + buildingId));
+  float windows = building * windowShape * windowOn;
+  vec3 windowColor = mix(vec3(0.10, 0.42, 0.68), vec3(1.0, 0.48, 0.12), step(0.52, hash(winCell + 31.0)));
+  col += windows * windowColor * mix(0.70, 1.05, u_light);
 
-    // slow drift
-    bx += sin(t * 0.3 + seed) * 0.02;
-    by += cos(t * 0.25 + seed + 1.0) * 0.015;
-
-    // brightness pulses
-    float bright = 0.5 + 0.5 * sin(t * 1.5 + seed);
-    bright *= 0.6 + 0.4 * hash1f(seed + 0.7);
-
-    float bd = length((uv - vec2(bx, by)) * vec2(aspect, 1.0)) / size;
-    float bdot = smoothstep(2.5, 0.0, bd) * bright;
-
-    // varied bokeh colours: warm amber, cyan, magenta
-    float hue = hash1f(seed + 0.5);
-    vec3 bClr;
-    if (hue < 0.33) bClr = vec3(0.90, 0.50, 0.15);
-    else if (hue < 0.66) bClr = vec3(0.15, 0.55, 0.80);
-    else bClr = vec3(0.70, 0.20, 0.55);
-
-    bokeh += bdot * 0.35;
-    bokehColor += bdot * bClr * 0.75;
+  // Large defocused lights provide photographic depth and colour separation.
+  for (int b = 0; b < 18; b++) {
+    float seed = float(b) * 23.7 + 5.0;
+    vec2 pos = vec2(0.04 + hash11(seed) * 0.92, 0.24 + hash11(seed + 1.0) * 0.62);
+    float size = 0.012 + hash11(seed + 2.0) * 0.035;
+    vec2 d = (uv - pos) * vec2(aspect, 1.0);
+    float ring = exp(-abs(length(d) - size * 0.62) * 95.0) * 0.20;
+    float glow = 1.0 - smoothstep(size * 0.22, size * 1.8, length(d));
+    float tone = hash11(seed + 3.0);
+    vec3 tint = mix(vec3(0.05, 0.47, 0.78), vec3(0.96, 0.31, 0.09), smoothstep(0.30, 0.72, tone));
+    tint = mix(tint, vec3(0.74, 0.14, 0.48), step(0.84, tone));
+    col += tint * (glow * 0.17 + ring * 0.72) * (0.65 + 0.35 * sin(t * 0.35 + seed));
   }
-  col += bokehColor * 1.15;
 
-  // ── rain streaks ───────────────────────────────────────────────
-  float rain = 0.0;
-  for (int r = 0; r < 24; r++) {
-    float seed = float(r) * 47.0 + 11.0;
-    float rx = hash1f(seed + 0.2);
-    float ry = fract(hash1f(seed + 0.4) + t * (0.8 + hash1f(seed + 0.6) * 0.5));
-    float rLen = 0.04 + hash1f(seed + 0.1) * 0.08;
-    float rWidth = 0.0015 + hash1f(seed + 0.3) * 0.002;
-
-    // streak: bright at top, fades down
-    float rDist = abs(uv.x - rx) / rWidth;
-    float rVert = (ry - uv.y) / rLen;
-    float streak = smoothstep(1.2, 0.0, rDist) * smoothstep(0.0, 1.0, rVert) * smoothstep(0.0, 0.5, rVert);
-    streak *= 0.52;
-
-    rain += streak;
+  // Street-level reflections stretch lights vertically across soaked pavement.
+  float road = smoothstep(0.69, 1.0, uv.y);
+  for (int q = 0; q < 9; q++) {
+    float seed = float(q) * 19.1 + 7.0;
+    float x = 0.06 + hash11(seed) * 0.88;
+    float width = 0.009 + hash11(seed + 1.0) * 0.026;
+    float flicker = 0.55 + noise(vec2(uv.y * 28.0, seed)) * 0.55;
+    float streak = exp(-abs(uv.x - x) / width) * road * flicker;
+    vec3 tint = mix(vec3(0.025, 0.33, 0.62), vec3(0.84, 0.20, 0.055), step(0.52, hash11(seed + 2.0)));
+    col += streak * tint * 0.27;
   }
-  col += rain * mix(vec3(0.45, 0.55, 0.70), vec3(0.60, 0.68, 0.78), u_light);
 
-  // ── horizontal light reflections (wet ground/glass) ────────────
-  float refl = 0.0;
-  for (int rf = 0; rf < 5; rf++) {
-    float seed = float(rf) * 37.0 + 91.0;
-    float ry = hash1f(seed + 0.3) * 0.6 + 0.2;
-    float rx = fract(hash1f(seed + 0.5) + t * 0.12);
-    float rLen = 0.06 + hash1f(seed + 0.1) * 0.10;
-
-    float rd = abs(uv.y - ry) * 15.0;
-    float rHoriz = smoothstep(rLen, 0.0, abs(uv.x - rx));
-    refl += exp(-rd) * rHoriz * 0.22;
+  // Foreground droplets have beads, tails and refraction-like bright edges.
+  float glass = 0.0;
+  for (int r = 0; r < 28; r++) {
+    float seed = float(r) * 41.3 + 2.0;
+    float speed = 0.12 + hash11(seed + 1.0) * 0.34;
+    float y = fract(hash11(seed + 2.0) + t * speed);
+    float x = hash11(seed + 3.0) + sin(y * 8.0 + seed) * 0.010;
+    float size = 0.0022 + hash11(seed + 4.0) * 0.0055;
+    vec2 d = (uv - vec2(x, y)) * vec2(aspect, 1.0);
+    float bead = exp(-abs(length(d) - size) * 320.0) * 0.44;
+    float tail = exp(-abs(d.x) * 520.0) * smoothstep(-size * 16.0, -size, d.y) * (1.0 - smoothstep(-size, size, d.y));
+    glass += bead + tail * 0.20;
   }
-  vec3 reflColor = mix(vec3(0.55, 0.35, 0.20), vec3(0.70, 0.50, 0.35), u_light);
-  col += refl * reflColor;
+  col += glass * mix(vec3(0.30, 0.48, 0.62), vec3(0.48, 0.62, 0.72), u_light);
 
-  // vignette
-  col *= 1.0 - length((uv - 0.5) * vec2(1.0, 0.7)) * 0.40;
-
+  float vignette = 1.0 - smoothstep(0.46, 1.05, length((uv - 0.5) * vec2(0.80, 1.0)));
+  col *= 0.56 + vignette * 0.44;
   gl_FragColor = vec4(col, 1.0);
 }`);
 
