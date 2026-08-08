@@ -13,6 +13,7 @@ type IMInput struct {
 	Title           string
 	AuthorID        string
 	ReceivedAt      time.Time
+	Read            bool
 }
 
 type IMReceipt struct {
@@ -58,14 +59,19 @@ func (s *Store) AcceptIM(input IMInput) (IMReceipt, error) {
 	conversation.SessionID = firstNonEmpty(strings.TrimSpace(input.SessionID), conversation.SessionID)
 	conversation.Title = firstNonEmpty(strings.TrimSpace(input.Title), conversation.Title)
 	conversation.Seen[messageID] = conversation.LatestSequence
-	conversation.Pending = append(conversation.Pending, Item{
-		ID:         messageID,
-		Sequence:   conversation.LatestSequence,
-		Kind:       "message",
-		Priority:   PriorityNormal,
-		AuthorID:   strings.TrimSpace(input.AuthorID),
-		OccurredAt: at,
-	})
+	if input.Read {
+		conversation.ReadSequence = conversation.LatestSequence
+		conversation.Pending = nil
+	} else {
+		conversation.Pending = append(conversation.Pending, Item{
+			ID:         messageID,
+			Sequence:   conversation.LatestSequence,
+			Kind:       "message",
+			Priority:   PriorityNormal,
+			AuthorID:   strings.TrimSpace(input.AuthorID),
+			OccurredAt: at,
+		})
+	}
 	next.Revision++
 	if err := s.persist(next); err != nil {
 		return IMReceipt{}, err

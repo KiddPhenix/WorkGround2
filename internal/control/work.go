@@ -109,8 +109,21 @@ type WorkService interface {
 type WorkViewBroadcaster struct {
 	mu            sync.RWMutex
 	subs          map[string]*workViewSub
+	observer      func(work.WorkViewEvent)
 	nextID        atomic.Int64
 	overflowCount atomic.Int64
+}
+
+// SetObserver installs one transport-level observer in addition to normal
+// subscribers. It is intended for durable local projections such as unread
+// state. The observer runs after fan-out and must remain bounded.
+func (b *WorkViewBroadcaster) SetObserver(observer func(work.WorkViewEvent)) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.observer = observer
+	b.mu.Unlock()
 }
 
 type workViewSub struct {
@@ -205,7 +218,6 @@ func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 		return
 	}
 	b.mu.RLock()
-	defer b.mu.RUnlock()
 	for _, sub := range b.subs {
 		if sub.workID != "" && e.WorkID != sub.workID {
 			continue
@@ -220,6 +232,11 @@ func (b *WorkViewBroadcaster) EmitWorkView(e work.WorkViewEvent) {
 			sub.drops.Add(1)
 			b.overflowCount.Add(1)
 		}
+	}
+	observer := b.observer
+	b.mu.RUnlock()
+	if observer != nil {
+		observer(e)
 	}
 }
 
