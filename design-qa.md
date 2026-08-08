@@ -83,6 +83,51 @@ final result: passed
 
 final result: passed
 
+# Blackhole Front-Lens Arc Correction — 2026-08-08
+
+## Evidence
+
+- Source visual truth: `D:\Temp\codex-clipboard-c2558eb5-2b27-444c-89f0-656abf2015d0.png` (964 × 564 px, user-marked target).
+- Implementation: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\implementation-final.png` (1280 × 720 px, CSS viewport 1280 × 720, device scale factor 1).
+- Full comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\comparison-final.png`.
+- Focused comparison: `D:\Codex\.codex\visualizations\2026\08\07\019fdce8-4b7f-7e41-aa85-da743b800586\blackhole-front-arcs-qa\comparison-focused.png`.
+- Normalization: the source was center-cropped from 964 × 564 to 964 × 542 and resized to 1280 × 720. The focused comparison independently scales each event-horizon crop so the annotated lower arcs can be judged without the source application's display-scale difference.
+- State: dark appearance, animated `blackhole` theme, unobstructed raw WebGL canvas.
+- Primary interaction tested: Settings → Appearance → Blackhole; canvas mounted and animated.
+- Browser warning/error log: empty.
+
+## Findings
+
+- No P0/P1/P2 mismatch remains. The previous orange-gold accretion disk, event-horizon size, Doppler asymmetry, star field, crown and lower outer ring are restored. Three warm foreground lens arcs now occupy the lower half of the dark horizon in the same direction, count and curvature indicated by the user's red annotation.
+- Fonts and typography: not applicable; the target contains no text.
+- Spacing and layout rhythm: the restored shader preserves the prior composition. The source was captured with a different application display scale, so full-frame subject size is not used as a change request; the focused equal-subject comparison verifies the requested arc placement.
+- Colors and visual tokens: the arcs reuse the existing orange/gold disk palette and theme-lightness uniform; no unrelated palette changes remain.
+- Image quality and asset fidelity: the WebGL output is crisp at 1280 × 720, with soft emissive falloff and animated noise rather than flat annotation strokes.
+- Copy and content: not applicable.
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: the new front arcs were mirrored into the upper half of the event horizon.
+- Fix: inverted the vertical lens-curve equation while leaving the restored previous shader unchanged.
+- Post-fix evidence: `implementation-final.png` and `comparison-focused.png` show all three arcs across the lower horizon.
+- Result: no remaining P0/P1/P2 findings.
+
+## Implementation checklist
+
+- [x] Restore the user's preferred previous blackhole shader.
+- [x] Add three lower foreground lens arcs only.
+- [x] Preserve animation, WebGL1 compatibility, theme response and lifecycle behavior.
+- [x] Verify the Blackhole selection path and browser console.
+- [x] Run the 46 background contracts, CSS checks and production Vite bundle.
+
+## Follow-up polish
+
+- P3: the hand-drawn reference intentionally varies each red stroke length; the implementation keeps the three light bands optically coherent as one lensed disk image.
+
+final result: passed
+
 ---
 
 # Blackhole Wallpaper Reference Match — 2026-08-08
