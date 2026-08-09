@@ -188,6 +188,40 @@ const completedTopic: ProjectNode = {
 };
 const completedTopicKey = projectTreeReadActivityKey(completedTopic) ?? "";
 
+const recoveredTopicPath = "C:\\sessions\\topic-complete-recovery.jsonl";
+eq(
+  projectTreeReadActivityKey({ ...completedTopic, sessionPath: recoveredTopicPath }),
+  completedTopicKey,
+  "topic read identity stays stable when recovery changes its bound session path",
+);
+
+eq(
+  projectTreeTopicHasUnreadActivity(
+    { ...completedTopic, sessionPath: recoveredTopicPath },
+    { [completedTopicKey]: completedTopic.lastActivityAt ?? 0 },
+    "project",
+    "/repo",
+    "other-topic",
+  ),
+  false,
+  "recovered transcript does not revive an already-read topic",
+);
+
+const runtimeSessionReadKey = projectTreeReadActivityKey({
+  ...completedTopic,
+  kind: "session",
+  sessionPath: "C:\\sessions\\runtime-a.jsonl",
+});
+eq(
+  runtimeSessionReadKey !== projectTreeReadActivityKey({
+    ...completedTopic,
+    kind: "session",
+    sessionPath: "C:\\sessions\\runtime-b.jsonl",
+  }),
+  true,
+  "concrete runtime sessions under one topic keep independent read identities",
+);
+
 eq(
   projectTreeTopicHasUnreadActivity(completedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
   true,

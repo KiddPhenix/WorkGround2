@@ -273,11 +273,13 @@ function topicActivityAt(node: ProjectNode): number {
 export function projectTreeReadActivityKey(node: ProjectNode): string | null {
   const request = projectTreeTopicOpenRequest(node);
   if (!request?.topicId) return null;
+  // Topic bindings can move to recovery paths; only concrete session rows use path identity.
+  const sessionPath = isRuntimeSessionNode(node) ? comparableSessionPath(request.sessionPath ?? "") : "";
   return [
     request.scope,
     request.workspaceRoot,
     request.topicId,
-    request.sessionPath ?? "",
+    sessionPath,
   ].join("\u001f");
 }
 
