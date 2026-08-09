@@ -3838,6 +3838,19 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const showCollaborationSurface = activeTab?.sessionKind === "collaboration";
   const showWorkSurface = activeTab?.sessionKind === "work";
+  const workbenchSidebarRestoreControl = sidebarCollapsed ? (
+    <button
+      className={`workbench-surface-sidebar-restore${sidebarTogglePressed ? " workbench-surface-sidebar-restore--pressed" : ""}`}
+      type="button"
+      onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
+      aria-label={sidebarToggleTitle}
+      aria-pressed={!sidebarCollapsed}
+      aria-disabled={sidebarExpandBlocked}
+      title={sidebarToggleTitle}
+    >
+      <PanelRight size={15} aria-hidden="true" />
+    </button>
+  ) : undefined;
   const storedLinkedWorkReturn = linkedWorkReturn
     && comparableSessionPath(activeTab?.sessionPath) === comparableSessionPath(linkedWorkReturn.targetSessionPath)
     ? linkedWorkReturn
@@ -4078,6 +4091,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{t("topbar.settings")}</span>
               </button>
             </aside>
+
+            {(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl}
 
             {showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace

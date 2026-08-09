@@ -592,6 +592,21 @@ ok(
   "App.tsx: workspace-sidebar brand has PanelLeft collapse button with correct aria",
 );
 
+ok(
+  includes(appSource, "const workbenchSidebarRestoreControl = sidebarCollapsed ? (") &&
+    includes(appSource, "(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl") &&
+    includes(appSource, "workbench-surface-sidebar-restore") &&
+    includes(appSource, 'aria-label={sidebarToggleTitle}') &&
+    includes(appSource, '<PanelRight size={15} aria-hidden="true" />') &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "position") === "absolute" &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "--wails-draggable") === "no-drag" &&
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "left") === "24px" &&
+    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .wg2-work-outer-header,") &&
+    includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .collab-topicbar,") &&
+    includes(stylesSource, "padding-left: 54px;"),
+  "App.tsx: every collapsed Work and Room state exposes one App-owned sidebar restore control",
+);
+
 // App.tsx: expand button in session-header when collapsed
 ok(
   includes(appSource, 'className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}') &&
@@ -615,6 +630,10 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "--wails-draggable") === "no-drag",
   "CSS: collapse button opts out of window dragging",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar__collapse-btn", "margin-right") === "-8px",
+  "CSS: workbench collapse button sits 8px farther right",
 );
 
 // CSS: expand button in session header

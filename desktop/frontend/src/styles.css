@@ -43065,6 +43065,53 @@ body > .mermaid-diagram--fullscreen {
   padding: 0 4px;
 }
 
+.app--workbench .workspace-sidebar__collapse-btn {
+  margin-right: -8px;
+}
+
+.app--workbench .layout--workbench > .workbench-surface-sidebar-restore {
+  --wails-draggable: no-drag;
+  position: absolute;
+  z-index: var(--z-dock);
+  top: 24px;
+  left: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
+  transition: color var(--dur-fast) ease-out, background var(--dur-fast) ease-out, transform var(--dur-fast) ease-out;
+}
+
+.app--workbench .workbench-surface-sidebar-restore:hover,
+.app--workbench .workbench-surface-sidebar-restore:focus-visible {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+
+.app--workbench .workbench-surface-sidebar-restore:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.app--workbench .workbench-surface-sidebar-restore--pressed {
+  transform: scale(0.94);
+}
+
+.app--workbench .layout--sidebar-collapsed .wg2-work-outer-header,
+.app--workbench .layout--sidebar-collapsed .collab-topicbar,
+.app--workbench .layout--sidebar-collapsed .work-page__header {
+  padding-left: 54px;
+}
+
 .app--workbench .workspace-sidebar__new-session,
 .app--workbench .workspace-sidebar__settings,
 .app--workbench .workspace-sidebar .project-tree__folder,
