@@ -106,6 +106,13 @@ ok(
   "CSS: real workspace tree cannot create horizontal scrolling",
 );
 ok(
+  finalDeclaration(stylesSource, ".workspace-sidebar__tree", "-webkit-mask-image") ===
+    "linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%)" &&
+    finalDeclaration(stylesSource, ".workspace-sidebar__tree", "mask-image") ===
+      "linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%)",
+  "CSS: Session List content fades through the top and bottom 18px without an overlay",
+);
+ok(
   includes(stylesSource, ".workspace-sidebar *::-webkit-scrollbar:horizontal") &&
     includes(stylesSource, "height: 0;") &&
     includes(stylesSource, ".workspace-sidebar * {\n  scrollbar-width: auto;"),

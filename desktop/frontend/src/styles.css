@@ -32657,6 +32657,8 @@ body > .mermaid-diagram--fullscreen {
   overflow-y: auto;
   overflow-x: hidden;
   min-width: 0;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
 }
 
 /* Scrollbar: invisible by default, fades in during scroll, fades out after idle.
