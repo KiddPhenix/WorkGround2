@@ -44324,13 +44324,24 @@ body > .mermaid-diagram--fullscreen {
   height: 15px;
 }
 
-.app--workbench .workspace-sidebar .project-tree__topic-visual--running,
+.app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid color-mix(in srgb, var(--accent) 72%, #55d5ff);
+  border-top-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  animation: session-list-running-spin 900ms linear infinite;
+}
+
 :root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
-  width: 9px;
-  height: 9px;
-  border: 0;
-  background: var(--ok);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 78%, #1677a8);
+  border-top-color: transparent;
+}
+
+@keyframes session-list-running-spin {
+  to { transform: rotate(360deg); }
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-visual--done {
@@ -44451,5 +44462,9 @@ body > .mermaid-diagram--fullscreen {
   .app--workbench .workspace-sidebar .project-tree__folder,
   .app--workbench .workspace-sidebar .project-tree__topic {
     transition: none;
+  }
+
+  .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+    animation: none;
   }
 }

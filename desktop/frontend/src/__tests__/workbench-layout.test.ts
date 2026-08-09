@@ -65,6 +65,18 @@ ok(!includes(appSource, '"layout--iris"'), "App.tsx: layout--iris class does NOT
 ok(includes(projectTreeSource, 'variant === "workbench"'), "ProjectTree: variant workbench branch exists");
 ok(includes(projectTreeSource, "compactTopics = variant === \"workbench\""), "ProjectTree: compactTopics maps to workbench");
 
+// Session status semantics: running is a ring; green solid dot is done-unread only.
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-visual--running", "background") === "transparent" &&
+    includes(stylesSource, "animation: session-list-running-spin 900ms linear infinite;"),
+  "CSS: running Session uses an animated ring instead of the green unread dot",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-visual--done::after", "background") === "var(--ok)",
+  "CSS: green solid dot remains reserved for done-unread Session",
+);
+ok(includes(stylesSource, "@keyframes session-list-running-spin"), "CSS: running Session ring has a dedicated animation");
+
 // CSS: layout--workbench has correct grid
 const workbenchGrid = includes(
   stylesSource,
