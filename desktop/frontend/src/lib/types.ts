@@ -326,6 +326,14 @@ export interface MarkUnreadReadInput {
   upToSequence: number;
 }
 
+export interface ResolvedSession {
+  scope: string;
+  workspaceRoot: string;
+  topicId: string;
+  sessionPath: string;
+  topicTitle: string;
+}
+
 export interface TopicMeta {
   id: string;
   title: string;

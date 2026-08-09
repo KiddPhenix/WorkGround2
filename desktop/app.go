@@ -157,6 +157,8 @@ type App struct {
 	unreadBadgeMu      sync.Mutex
 	unreadBadgeTarget  int
 	unreadBadgeRunning bool
+	// sessionDirsOverride replaces knownSessionDirs() when non-nil (test-only).
+	sessionDirsOverride []string
 
 	metrics atomic.Pointer[metricsAggregator] // non-nil only when desktop.metrics is opted in; swapped live by SetDesktopMetrics
 

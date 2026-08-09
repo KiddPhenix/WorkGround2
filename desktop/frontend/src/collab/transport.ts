@@ -491,6 +491,12 @@ export function createWailsCollaborationTransport(sessionID: string): Collaborat
       agents.set(member.id, member.agent.name);
       if (member.agent.id) agents.set(member.agent.id, member.agent.name);
     }
+    // Old persisted states or serialisation edge cases may omit selfSessionId
+    // even when a Room is bound. Backfill it from the transport's owner session
+    // so CollaborationWorkspace.ownsRoom deterministically recognises the Room.
+    if (!state.selfSessionId && (state.mode === "host" || state.mode === "client") && state.room) {
+      state.selfSessionId = sessionID;
+    }
     return state;
   };
   return {

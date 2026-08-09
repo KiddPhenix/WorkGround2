@@ -133,6 +133,7 @@ func TestListTabsReportsForegroundTurnStartedAt(t *testing.T) {
 	defer ctrl.Close()
 	app.tabs["running"] = &WorkspaceTab{
 		ID:            "running",
+		SessionID:     "session-running",
 		Scope:         "global",
 		WorkspaceRoot: globalTabWorkspaceRoot(),
 		TopicID:       topicID,
@@ -168,6 +169,18 @@ func TestListTabsReportsForegroundTurnStartedAt(t *testing.T) {
 	topic := nodes[0].Children[0]
 	if topic.TurnStartedAt != tabs[0].TurnStartedAt {
 		t.Fatalf("topic turnStartedAt = %d, want tab turnStartedAt %d", topic.TurnStartedAt, tabs[0].TurnStartedAt)
+	}
+	if topic.SessionID != "session-running" || topic.SessionPath != path || topic.SessionKind != string(agent.SessionKindNormal) {
+		t.Fatalf("normal runtime topic identity = %+v, want session id/path/kind", topic)
+	}
+
+	coldNodes := NewApp().ListProjectTree()
+	if len(coldNodes) != 1 || len(coldNodes[0].Children) != 1 {
+		t.Fatalf("cold project tree = %#v, want one global topic", coldNodes)
+	}
+	coldTopic := coldNodes[0].Children[0]
+	if coldTopic.SessionPath != path || coldTopic.SessionKind != string(agent.SessionKindNormal) {
+		t.Fatalf("cold normal topic identity = %+v, want persisted session path/kind", coldTopic)
 	}
 
 	close(runner.release)

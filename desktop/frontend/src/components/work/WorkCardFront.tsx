@@ -48,7 +48,7 @@ import { WorkControlBar } from './WorkControlBar';
 import { WorkChatInput } from './WorkChatInput';
 import { ResultShelf, ExecutionList } from '../../work/components/v2';
 import { WorkInformationPanel } from '../../work/components/presentation';
-import { v2DiscussionBlockId } from '../../work/components/v2/discussionBlock';
+import { isAutomaticV2DiscussionBlock } from '../../work/components/v2/discussionBlock';
 import {
   deriveWorkPresentation,
   type WorkPresentation,
@@ -331,19 +331,9 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
       { activeRunId: runId, workState: work.state },
     );
   }, [artifactSlots, runId, v2Definition, v2Tasks, work.state]);
-  const automaticNodeSummaries = useMemo(() => {
-    if (!v2Definition) return new Map<string, string>();
-    return new Map(v2Definition.nodes.map((node) => [
-      v2DiscussionBlockId(node.id),
-      (node.description ?? node.title).trim(),
-    ]));
-  }, [v2Definition]);
   const isAutomaticNodeSummary = useCallback((block: Work['blocks'][number]) => {
-    const expected = automaticNodeSummaries.get(block.id);
-    if (!expected || block.kind !== 'markdown' || block.revision !== 1) return false;
-    const data = block.data as { content?: unknown } | undefined;
-    return typeof data?.content === 'string' && data.content.trim() === expected;
-  }, [automaticNodeSummaries]);
+    return isAutomaticV2DiscussionBlock(block);
+  }, []);
   const presentationBlocks = useMemo(
     () => work.blocks.filter((block) => !block.tombstone && !isAutomaticNodeSummary(block)),
     [isAutomaticNodeSummary, work.blocks],

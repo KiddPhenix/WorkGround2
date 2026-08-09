@@ -174,6 +174,13 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	if materializeBlock && plannerWork != nil {
 		plannerWork.Blocks = append(plannerWork.Blocks, cloneDiscussionBlock(*block))
 	}
+	// Workflow discussions use the generated node summary only as planner
+	// context. Persisting it turns an internal discussion anchor into a normal
+	// presentation Block; once the node description changes, the frontend can
+	// no longer recognize that stale summary and displays it as user content.
+	// Block-scoped discussions still need a durable Block because applying the
+	// preview mutates that Block directly.
+	persistDiscussionBlock := materializeBlock && input.Scope == PatchBlock
 	plan, err := s.planner.PlanPatch(ctx, PatchPlanInput{
 		Instruction:  input.Instruction,
 		SessionID:    input.SessionID,
@@ -245,7 +252,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 	preview.Digest = hashPatchPreviewDigest(preview)
 
 	previewRevision := state.Revision + 1
-	if materializeBlock {
+	if persistDiscussionBlock {
 		previewRevision++
 	}
 	receipt := &PatchIntentReceipt{
@@ -289,7 +296,7 @@ func (s *PatchService) PreviewWorkPatch(ctx context.Context, input PreviewWorkPa
 
 	events := make([]WorkEvent, 0, 2)
 	nextRevision := state.Revision
-	if materializeBlock {
+	if persistDiscussionBlock {
 		blockPayload, blockErr := json.Marshal(block)
 		if blockErr != nil {
 			return nil, fmt.Errorf("work: PreviewWorkPatch: encode discussion block: %w", blockErr)
@@ -489,7 +496,7 @@ func (s *PatchService) ApplyWorkPatch(ctx context.Context, input ApplyWorkPatchI
 			node.ID,
 		)
 	}
-	block, resolveErr := resolveBlockForApply(current, preview.BlockID)
+	block, resolveErr := resolveDiscussionBlockForApply(current, baseDefinition, preview, now)
 	if resolveErr != nil {
 		return nil, fmt.Errorf("work: ApplyWorkPatch: %w", resolveErr)
 	}
@@ -1518,6 +1525,35 @@ func resolveBlockForApply(current *Work, blockID string) (*BlockInstance, error)
 		}
 	}
 	return nil, fmt.Errorf("block %q not found", blockID)
+}
+
+// resolveDiscussionBlockForApply keeps workflow-only node summaries virtual.
+// Legacy and block-scoped previews may already own a durable Block; workflow
+// previews can safely reconstruct the same revision-1 reference from their
+// immutable base definition because workflow operations never target Block
+// paths.
+func resolveDiscussionBlockForApply(
+	current *Work,
+	definition *WorkDefinitionRevision,
+	preview *WorkPatchPreview,
+	now time.Time,
+) (*BlockInstance, error) {
+	block, err := resolveBlockForApply(current, preview.BlockID)
+	if err == nil || preview.Scope != PatchWorkflow {
+		return block, err
+	}
+	_, _, block, _, _, synthErr := resolveDiscussionBlock(
+		current,
+		definition,
+		preview.RunID,
+		preview.TaskID,
+		preview.BlockID,
+		now,
+	)
+	if synthErr != nil {
+		return nil, errors.Join(err, synthErr)
+	}
+	return block, nil
 }
 
 func cloneWorkForPatch(current *Work) *Work {

@@ -3,10 +3,12 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"workground2/internal/agent"
 	"workground2/internal/bot"
 	"workground2/internal/collab"
 	"workground2/internal/event"
@@ -55,7 +57,7 @@ func TestDesktopSessionAttentionRecordsOnlyBackgroundNonCLIEvents(t *testing.T) 
 	}
 	app.observeSessionUnread(background.ID, event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: "ask-1"}})
 	app.observeSessionUnread(background.ID, event.Event{Kind: event.AskRequest, Ask: event.Ask{ID: "ask-1"}})
-	if got := app.UnreadState().Summary; got.TotalUnread != 1 || got.HighPriorityCount != 1 {
+	if got := app.UnreadState().Summary; got.TotalUnread != 1 || got.HighPriorityCount != 1 || got.Conversations[0].SessionID != "path:"+background.SessionPath {
 		t.Fatalf("background question state = %+v", got)
 	}
 
@@ -180,5 +182,263 @@ func TestDesktopRoomUnreadUsesStableSessionAndRoomIdentity(t *testing.T) {
 	read, err := app.MarkUnreadRead(MarkUnreadReadInput{ConversationKey: conversation.Key, UpToSequence: 3})
 	if err != nil || read.Summary.TotalUnread != 0 || read.Summary.Conversations[0].ReadSequence != 3 {
 		t.Fatalf("read state = %+v, err = %v", read, err)
+	}
+}
+
+func TestResolveLegacySessionUnreadByExactBranchID(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session_f719de92b7ada7e462b8afd646331866.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.EnsureBranchMeta(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(dir, "unread.json")
+	store, err := unread.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:session_f719de92b7ada7e462b8afd646331866"
+	_, err = store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key,
+		EventID: "turn:1", SessionID: "session_f719de92b7ada7e462b8afd646331866",
+		Title: "查看一下调用codex cli的方式", Kind: "completed", Priority: unread.PriorityNormal,
+		OccurredAt: time.Date(2026, 8, 9, 3, 21, 6, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveLegacySessionUnread(key)
+	if err != nil {
+		t.Fatalf("ResolveLegacySessionUnread: %v", err)
+	}
+	if resolved.SessionPath != sessionPath {
+		t.Fatalf("SessionPath = %q, want %q", resolved.SessionPath, sessionPath)
+	}
+
+	// Self-healing: the unread store should now have path: prefix.
+	summary := store.Summary()
+	if len(summary.Conversations) != 1 {
+		t.Fatalf("expected 1 conversation, got %d", len(summary.Conversations))
+	}
+	if got := summary.Conversations[0].SessionID; got != "path:"+sessionPath {
+		t.Fatalf("SessionID after bind = %q, want path:...", got)
+	}
+
+	// Idempotent: a stale retry after self-healing returns the same target.
+	again, err := app.ResolveLegacySessionUnread(key)
+	if err != nil || again.SessionPath != sessionPath {
+		t.Fatalf("idempotent ResolveLegacySessionUnread = %+v, %v", again, err)
+	}
+}
+
+func TestResolveLegacySessionUnreadByRuntimeUUID(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "runtime-session.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.EnsureBranchMeta(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:runtime-uuid"
+	if _, err := store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key, EventID: "turn:runtime",
+		SessionID: "runtime-uuid", Title: "Runtime", Kind: "completed",
+		Priority: unread.PriorityNormal, OccurredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{
+		unreadStore:         store,
+		sessionDirsOverride: []string{dir},
+		tabs: map[string]*WorkspaceTab{
+			"tab-runtime": {ID: "tab-runtime", SessionID: "runtime-uuid", SessionPath: sessionPath},
+		},
+	}
+	resolved, err := app.ResolveLegacySessionUnread(key)
+	if err != nil || resolved.SessionPath != sessionPath {
+		t.Fatalf("runtime UUID resolution = %+v, %v", resolved, err)
+	}
+}
+
+func TestResolveLegacySessionUnreadByTitleFallback(t *testing.T) {
+	dir := t.TempDir()
+	title := "查看一下调用codex cli的方式"
+	sessionPath := filepath.Join(dir, "other-uuid.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.EnsureBranchMeta(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	// Overwrite meta with matching title.
+	meta, _, _ := agent.LoadBranchMeta(sessionPath)
+	meta.TopicTitle = title
+	meta.UpdatedAt = time.Date(2026, 8, 9, 3, 21, 6, 0, time.UTC)
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(agent.BranchMetaPath(sessionPath), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	storePath := filepath.Join(dir, "unread.json")
+	store, err := unread.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:session_f719de92b7ada7e462b8afd646331866"
+	_, err = store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key,
+		EventID: "turn:1", SessionID: "session_f719de92b7ada7e462b8afd646331866",
+		Title: title, Kind: "completed", Priority: unread.PriorityNormal,
+		OccurredAt: time.Date(2026, 8, 9, 3, 21, 6, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveLegacySessionUnread(key)
+	if err != nil {
+		t.Fatalf("ResolveLegacySessionUnread by title: %v", err)
+	}
+	if resolved.SessionPath != sessionPath {
+		t.Fatalf("SessionPath = %q, want %q", resolved.SessionPath, sessionPath)
+	}
+}
+
+func TestResolveLegacySessionUnreadAmbiguousTitle(t *testing.T) {
+	dir := t.TempDir()
+	title := "Same Title"
+	for i, name := range []string{"a.jsonl", "b.jsonl"} {
+		sp := filepath.Join(dir, name)
+		if err := os.WriteFile(sp, []byte("[]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agent.EnsureBranchMeta(sp); err != nil {
+			t.Fatal(err)
+		}
+		meta, _, _ := agent.LoadBranchMeta(sp)
+		meta.TopicTitle = title
+		meta.UpdatedAt = time.Date(2026, 8, 9, 3, 21, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute)
+		raw, _ := json.Marshal(meta)
+		if err := os.WriteFile(agent.BranchMetaPath(sp), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	storePath := filepath.Join(dir, "unread.json")
+	store, err := unread.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:missing-uuid"
+	_, err = store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key,
+		EventID: "turn:1", SessionID: "missing-uuid",
+		Title: title, Kind: "completed", Priority: unread.PriorityNormal,
+		OccurredAt: time.Date(2026, 8, 9, 3, 21, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	_, err = app.ResolveLegacySessionUnread(key)
+	if err == nil {
+		t.Fatal("expected ambiguous-title error, got nil")
+	}
+}
+
+func TestResolveLegacySessionUnreadNonSessionSource(t *testing.T) {
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store}
+	// Key does not start with session:, so it must fail.
+	_, err = app.ResolveLegacySessionUnread("im:chat-1")
+	if err == nil {
+		t.Fatal("expected error for non-session key prefix, got nil")
+	}
+	// Empty key must also fail.
+	_, err = app.ResolveLegacySessionUnread("")
+	if err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+}
+
+func TestResolveLegacySessionUnreadMissingConversation(t *testing.T) {
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store}
+	_, err = app.ResolveLegacySessionUnread("session:nonexistent")
+	if err == nil {
+		t.Fatal("expected error for missing conversation, got nil")
+	}
+}
+
+func TestResolveLegacySessionUnreadDisambiguatesByTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	title := "Timestamp Test"
+	lastUnreadAt := time.Date(2026, 8, 9, 3, 21, 6, 0, time.UTC)
+
+	// Create two sessions with same title, one close in time, one far.
+	closePath := filepath.Join(dir, "close.jsonl")
+	farPath := filepath.Join(dir, "far.jsonl")
+	for _, sp := range []string{closePath, farPath} {
+		if err := os.WriteFile(sp, []byte("[]"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := agent.EnsureBranchMeta(sp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Close match: within 5-minute window.
+	cm, _, _ := agent.LoadBranchMeta(closePath)
+	cm.TopicTitle = title
+	cm.UpdatedAt = lastUnreadAt.Add(2 * time.Minute) // within window
+	raw, _ := json.Marshal(cm)
+	os.WriteFile(agent.BranchMetaPath(closePath), raw, 0o600)
+
+	// Far match: outside 5-minute window.
+	fm, _, _ := agent.LoadBranchMeta(farPath)
+	fm.TopicTitle = title
+	fm.UpdatedAt = lastUnreadAt.Add(10 * time.Minute) // outside window
+	raw, _ = json.Marshal(fm)
+	os.WriteFile(agent.BranchMetaPath(farPath), raw, 0o600)
+
+	storePath := filepath.Join(dir, "unread.json")
+	store, err := unread.Open(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:disambig-uuid"
+	_, err = store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key,
+		EventID: "turn:1", SessionID: "disambig-uuid",
+		Title: title, Kind: "completed", Priority: unread.PriorityNormal,
+		OccurredAt: lastUnreadAt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveLegacySessionUnread(key)
+	if err != nil {
+		t.Fatalf("ResolveLegacySessionUnread with timestamp disambiguation: %v", err)
+	}
+	if resolved.SessionPath != closePath {
+		t.Fatalf("SessionPath = %q, want close path %q", resolved.SessionPath, closePath)
 	}
 }

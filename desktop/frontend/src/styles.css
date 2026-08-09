@@ -20135,21 +20135,15 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
-.windows-resize-handles {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-window-resize);
-  pointer-events: none;
-  --windows-resize-edge: 8px;
-  --windows-resize-corner: 18px;
-}
-
 .windows-resize-handle {
   position: fixed;
+  z-index: var(--z-window-resize);
   display: block;
   pointer-events: auto;
   background: transparent;
   --wails-draggable: no-drag;
+  --windows-resize-edge: 8px;
+  --windows-resize-corner: 18px;
 }
 
 .windows-resize-handle--top,
@@ -44379,21 +44373,46 @@ body > .mermaid-diagram--fullscreen {
   height: 15px;
 }
 
-.app--workbench .workspace-sidebar .project-tree__topic-visual--running,
+.app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  border: 2px solid color-mix(in srgb, var(--accent) 72%, #55d5ff);
+  border-top-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  animation: session-list-running-spin 900ms linear infinite;
+}
+
 :root[data-theme="light"] .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
-  width: 9px;
-  height: 9px;
-  border: 0;
+  border-color: color-mix(in srgb, var(--accent) 78%, #1677a8);
+  border-top-color: transparent;
+}
+
+@keyframes session-list-running-spin {
+  to { transform: rotate(360deg); }
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--done {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin: 0;
+  background: transparent;
+  opacity: 1;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--done::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
   background: var(--ok);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 12%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-visual--recent {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 9px;
-  background: var(--ok);
-  opacity: 0.78;
+  display: none;
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-unread-count {
@@ -44492,5 +44511,9 @@ body > .mermaid-diagram--fullscreen {
   .app--workbench .workspace-sidebar .project-tree__folder,
   .app--workbench .workspace-sidebar .project-tree__topic {
     transition: none;
+  }
+
+  .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
+    animation: none;
   }
 }
