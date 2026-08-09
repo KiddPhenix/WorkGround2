@@ -301,6 +301,16 @@ export function projectTreeReadActivityKey(node: ProjectNode): string | null {
 
 type ProjectTreeReadActivity = Record<string, number>;
 
+export function projectTreeReadActivityAfter(
+  node: ProjectNode,
+  current: ProjectTreeReadActivity,
+): ProjectTreeReadActivity {
+  const key = projectTreeReadActivityKey(node);
+  const activityAt = topicActivityAt(node);
+  if (!key || activityAt <= 0 || (current[key] ?? 0) >= activityAt) return current;
+  return { ...current, [key]: activityAt };
+}
+
 export function projectTreeTopicHasUnreadActivity(
   node: ProjectNode,
   readActivity: ProjectTreeReadActivity,
@@ -825,6 +835,7 @@ export function ProjectTree({
   const [workbenchRecentSettings, setWorkbenchRecentSettings] = useState<WorkbenchRecentSettings>(loadWorkbenchRecentSettings);
   const [recentSettingsOpen, setRecentSettingsOpen] = useState(false);
   const [readActivity, setReadActivity] = useState<ProjectTreeReadActivity>(loadReadActivity);
+  const readActivityRef = useRef(readActivity);
   const [unreadState, setUnreadState] = useState<UnreadState>(EMPTY_UNREAD_STATE);
   const recentSettingsRef = useRef<HTMLDivElement>(null);
   const recentSettingsTriggerRef = useRef<HTMLButtonElement>(null);
@@ -924,17 +935,18 @@ export function ProjectTree({
     void refresh();
   }, [refresh, refreshSignal]);
 
-  const markNodeRead = useCallback((node: ProjectNode) => {
-    const key = projectTreeReadActivityKey(node);
-    const activityAt = topicActivityAt(node);
-    if (!key || activityAt <= 0) return;
-    setReadActivity((prev) => {
-      if ((prev[key] ?? 0) >= activityAt) return prev;
-      const next = { ...prev, [key]: activityAt };
-      saveReadActivity(next);
-      return next;
-    });
+  const commitReadActivity = useCallback((update: (current: ProjectTreeReadActivity) => ProjectTreeReadActivity) => {
+    const current = readActivityRef.current;
+    const next = update(current);
+    if (next === current) return;
+    readActivityRef.current = next;
+    saveReadActivity(next);
+    setReadActivity(next);
   }, []);
+
+  const markNodeRead = useCallback((node: ProjectNode) => {
+    commitReadActivity((current) => projectTreeReadActivityAfter(node, current));
+  }, [commitReadActivity]);
 
   const markRemoteUnread = useCallback((node: ProjectNode) => {
     for (const conversation of projectTreeUnreadConversations(node, asArray(unreadState.summary.conversations))) {
@@ -974,7 +986,7 @@ export function ProjectTree({
       /* localStorage unavailable */
     }
     if (Object.keys(baseline).length === 0) return;
-    setReadActivity((prev) => {
+    commitReadActivity((prev) => {
       const next = { ...prev };
       let changed = false;
       for (const [key, value] of Object.entries(baseline)) {
@@ -983,10 +995,9 @@ export function ProjectTree({
         changed = true;
       }
       if (!changed) return prev;
-      saveReadActivity(next);
       return next;
     });
-  }, [tree]);
+  }, [commitReadActivity, tree]);
 
   useEffect(() => {
     const markActive = (nodes: ProjectNode[]) => {
@@ -1597,6 +1608,7 @@ export function ProjectTree({
             onClick={() => {
               if (isCrewSessionNode(node)) {
                 markNodeRead(node);
+                markRemoteUnread(node);
                 void onOpenCrewSession?.(node.sessionPath ?? "");
                 return;
               }
@@ -1632,6 +1644,7 @@ export function ProjectTree({
               const timer = setTimeout(() => {
                 if (clickTimerRef.current?.timer === timer) clickTimerRef.current = null;
                 markNodeRead(node);
+                markRemoteUnread(node);
                 onOpenTopic(openRequest.scope, openRequest.workspaceRoot, openRequest.topicId, openRequest.sessionPath, openRequest.runtimeHint);
               }, 200);
               clickTimerRef.current = { ...nextClick, timer };

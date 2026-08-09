@@ -10,6 +10,7 @@ import {
   projectTreeShouldSuppressOpenForRename,
   projectTreeSessionPathMatches,
   projectTreeReadActivityKey,
+  projectTreeReadActivityAfter,
   projectTreeTopicHasUnreadActivity,
   projectTreeTopicVisualState,
   projectTreeShouldRenderTopicActions,
@@ -188,6 +189,18 @@ const completedTopic: ProjectNode = {
   lastActivityAt: 2000,
 };
 const completedTopicKey = projectTreeReadActivityKey(completedTopic) ?? "";
+
+const unreadActivity = projectTreeReadActivityAfter(completedTopic, {});
+eq(
+  unreadActivity[completedTopicKey],
+  completedTopic.lastActivityAt,
+  "marking a completed recent row read records its visible activity watermark",
+);
+eq(
+  projectTreeReadActivityAfter(completedTopic, unreadActivity) === unreadActivity,
+  true,
+  "repeating the same read receipt is idempotent",
+);
 
 const recoveredTopicPath = "C:\\sessions\\topic-complete-recovery.jsonl";
 eq(

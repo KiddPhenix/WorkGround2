@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 最近列表已读回执修复 | `done` | `developping/recent-unread-receipt-fix+2026-08-10` | `Codex` | `desktop/frontend/src/components/ProjectTree.tsx`、`project-tree-runtime.test.ts` | 最近行点击现在通过单一同步入口幂等持久化可见活动水位，并同时推进统一未读会话游标，避免导航卸载丢失本地回执或依赖迟到 active effect；覆盖普通 Session、Work 与 Crew/Room 路径。ProjectTree 91/91、TypeScript、CSS/z-index 与 Vite production build 通过。Codex 直接处理，未使用 WorkGround2 Worker。 |
 | Work / Room 侧栏恢复入口 | `done` | `developping/work-room-sidebar-restore+2026-08-10` | `Codex` | `desktop/frontend/src/App.tsx`、`styles.css`、`workbench-layout.test.ts` | App 在侧栏收起且处于 Work/Room 时统一渲染左上恢复按钮，覆盖正常、初始化、不可用和未连接态；侧栏内收起按钮向右移动 8px。新增契约、CSS、Room 286 项、TypeScript 与 Wails clean build 通过，`debug-restart.bat` 已成功重启新 EXE；布局脚本其余 12 项及 Work 宽套件失败为既有漂移。按用户要求直接实现，不使用 WorkGround2 Worker。 |
 | 最近列表 Session 回收站修复 | `done` | `developping/recent-session-trash+2026-08-09` | `Codex` | `desktop/frontend/src/components/ProjectTree.tsx`、`desktop/frontend/src/__tests__/project-tree-runtime.test.ts` | “最近”和“项目”重复节点的菜单实例改为按 section + node key 隔离，避免两个 ContextMenu 互相关闭；最近行新增显式操作入口，Topic/Work Session 继续整 Topic 回收，普通 Runtime/Crew Session 按路径回收单个 Session。前端定向测试 53 项、TypeScript 类型检查及 production build 通过。 |
 | Session List 上下边缘渐隐 | `done` | `developping/session-list-edge-fade+2026-08-10` | `Codex` | `desktop/frontend/src/styles.css`、`desktop/frontend/src/__tests__/workbench-layout.test.ts` | 工作台 Session List 滚动区已增加上下 18px 透明渐隐，透出当前侧栏背景且不增加拦截交互的覆盖层。新增契约通过，CSS、TypeScript 与 Vite 生产构建通过；布局脚本其余 12 项既有断言失败与本次无关。按用户要求直接实现，不使用 WorkGround2 Worker。 |
