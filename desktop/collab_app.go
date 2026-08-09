@@ -788,6 +788,12 @@ func (a *App) closeCollaborations() {
 // Errors are recorded in the runtime state and surfaced to the frontend when
 // the user eventually opens that Room tab.
 func (a *App) restoreCollaborationRuntimes() {
+	a.restoreCollaborationRuntimesWith(a.startCollaborationRestore)
+}
+
+type collaborationRestoreStart func(*desktopCollaboration, string)
+
+func (a *App) restoreCollaborationRuntimesWith(start collaborationRestoreStart) {
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root == "" {
 		return
@@ -805,11 +811,15 @@ func (a *App) restoreCollaborationRuntimes() {
 			continue
 		}
 		persistPath := filepath.Join(stateDir, entry.Name())
-		a.restoreOneCollaboration(persistPath)
+		a.restoreOneCollaborationWith(persistPath, start)
 	}
 }
 
 func (a *App) restoreOneCollaboration(persistPath string) {
+	a.restoreOneCollaborationWith(persistPath, a.startCollaborationRestore)
+}
+
+func (a *App) restoreOneCollaborationWith(persistPath string, start collaborationRestoreStart) {
 	var persisted collaborationPersistedState
 	if err := readPersistFile(persistPath, &persisted); err != nil {
 		fmt.Fprintf(os.Stderr, "collaboration restore: read %s: %v\n", persistPath, err)
@@ -850,17 +860,21 @@ func (a *App) restoreOneCollaboration(persistPath string) {
 		// files for one logical Room. The runtime is keyed by SessionID, so
 		// only one startup reconnect may run even when the scan sees both.
 		runtime.scheduleRestore(func() {
-			go func() {
-				readyCtx, cancel := context.WithTimeout(a.bootContext(), 2*time.Minute)
-				defer cancel()
-				if err := a.waitCollaborationAgentReady(readyCtx, persisted.SessionID); err != nil {
-					runtime.failState("failed", fmt.Errorf("restore collaboration Agent workspace: %w", err), true)
-					return
-				}
-				_, _ = runtime.retry(a.bootContext())
-			}()
+			start(runtime, persisted.SessionID)
 		})
 	}
+}
+
+func (a *App) startCollaborationRestore(runtime *desktopCollaboration, sessionID string) {
+	go func() {
+		readyCtx, cancel := context.WithTimeout(a.bootContext(), 2*time.Minute)
+		defer cancel()
+		if err := a.waitCollaborationAgentReady(readyCtx, sessionID); err != nil {
+			runtime.failState("failed", fmt.Errorf("restore collaboration Agent workspace: %w", err), true)
+			return
+		}
+		_, _ = runtime.retry(a.bootContext())
+	}()
 }
 
 func (c *desktopCollaboration) scheduleRestore(start func()) {
