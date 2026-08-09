@@ -1430,10 +1430,16 @@ func TestCollaborationRecoveryBranchUsesParentRoomPersistenceKey(t *testing.T) {
 	}
 }
 
-func TestRestoreCollaborationAcceptsParentCacheForRecoveryTab(t *testing.T) {
-	dir := t.TempDir()
-	parent := filepath.Join(dir, "room-session.jsonl")
-	recovery := filepath.Join(dir, "room-session-recovery-1234.jsonl")
+func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
+	supportDir := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", supportDir)
+	stateDir := filepath.Join(supportDir, "desktop-collaboration-v2")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := t.TempDir()
+	parent := filepath.Join(sessionDir, "room-session.jsonl")
+	recovery := filepath.Join(sessionDir, "room-session-recovery-1234.jsonl")
 	for _, path := range []string{parent, recovery} {
 		if err := os.WriteFile(path, nil, 0o600); err != nil {
 			t.Fatal(err)
@@ -1448,43 +1454,62 @@ func TestRestoreCollaborationAcceptsParentCacheForRecoveryTab(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	app := NewApp()
 	sessionID := "session-recovery-room"
+	baseCache := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(sessionID, parent)))
+	recoveryCache := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(sessionID, recovery)))
+	writeState := func(path string, value collaborationPersistedState) {
+		t.Helper()
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeState(baseCache, collaborationPersistedState{
+		Mode: "host", Host: "0.0.0.0", Port: 49853, Room: "stable-room",
+		SessionID: sessionID, SessionPath: parent,
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "stable-room", Name: "Stable Room"}},
+	})
+	// This is the incomplete duplicate left by a pre-canonicalisation build.
+	// The startup scan must not let it schedule a second reconnect.
+	writeState(recoveryCache, collaborationPersistedState{
+		SessionID: sessionID, SessionPath: recovery,
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "stable-room", Name: "Stable Room"}},
+	})
+
+	app := NewApp()
 	tab := &WorkspaceTab{ID: "recovery-room", SessionID: sessionID, SessionPath: recovery}
 	app.trackSession(tab)
 	app.mu.Lock()
 	app.tabs[tab.ID] = tab
 	app.mu.Unlock()
 
-	persistPath := filepath.Join(dir, "persisted.json")
-	data, err := json.Marshal(collaborationPersistedState{SessionID: sessionID, SessionPath: parent})
-	if err != nil {
-		t.Fatal(err)
+	starts := 0
+	var startedRuntime *desktopCollaboration
+	app.restoreCollaborationRuntimesWith(func(runtime *desktopCollaboration, restoredSessionID string) {
+		starts++
+		startedRuntime = runtime
+		if restoredSessionID != sessionID {
+			t.Fatalf("restored SessionID = %q, want %q", restoredSessionID, sessionID)
+		}
+	})
+	if starts != 1 {
+		t.Fatalf("startup restore starts = %d, want exactly 1 for duplicate owner caches", starts)
 	}
-	if err := os.WriteFile(persistPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	app.restoreOneCollaboration(persistPath)
 	app.collaborationMu.Lock()
 	runtime := app.collaborations[sessionID]
 	app.collaborationMu.Unlock()
-	if runtime == nil {
-		t.Fatal("recovery tab rejected its original Room owner cache")
+	if runtime == nil || runtime != startedRuntime {
+		t.Fatalf("restored runtime = %p, callback runtime = %p", runtime, startedRuntime)
 	}
 	if runtime.ownerSessionPath != sessionRuntimeKey(parent) {
 		t.Fatalf("runtime owner path = %q, want %q", runtime.ownerSessionPath, sessionRuntimeKey(parent))
 	}
-}
-
-func TestCollaborationStartupRestoreRunsOncePerRuntime(t *testing.T) {
-	c := &desktopCollaboration{}
-	starts := 0
-	for range 2 {
-		c.scheduleRestore(func() { starts++ })
-	}
-	if starts != 1 {
-		t.Fatalf("startup restore starts = %d, want 1", starts)
+	state := runtime.snapshot()
+	if state.Mode != "host" || state.Host != "0.0.0.0" || state.Port != 49853 || state.Room != "stable-room" {
+		t.Fatalf("restored Host authority = %+v", state)
 	}
 }
 
