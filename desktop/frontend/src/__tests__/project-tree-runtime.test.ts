@@ -19,6 +19,8 @@ import {
   splitWorkbenchRecentTree,
   projectTreeUnreadConversations,
   projectTreeUnreadCount,
+  projectTreeMenuKey,
+  projectTreeTrashTarget,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -248,27 +250,57 @@ eq(
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(false, true, false),
+  projectTreeShouldRenderTopicActions(true, false),
   true,
   "read workbench topic renders hover actions",
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(false, true, true),
+  projectTreeShouldRenderTopicActions(true, true),
   false,
   "unread workbench topic omits hover actions from the keyboard tab order",
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(true, true, false),
-  false,
-  "runtime session rows do not render topic hover actions",
+  projectTreeShouldRenderTopicActions(true, false),
+  true,
+  "read workbench Session rows expose their actions",
 );
 
 eq(
-  projectTreeShouldRenderTopicActions(true, true, false, false, true),
+  projectTreeShouldRenderTopicActions(true, false),
   true,
   "Work Session rows expose hover actions so they can be deleted",
+);
+
+eq(
+  projectTreeMenuKey("recent", "topic-a") === projectTreeMenuKey("projects", "topic-a"),
+  false,
+  "duplicate Recent and Projects rows keep independent menu identities",
+);
+
+eq(
+  projectTreeTrashTarget({ key: "topic-a", kind: "topic", label: "A", topicId: "topic-a" }),
+  { kind: "topic", topicId: "topic-a" },
+  "topic rows move the whole topic to trash",
+);
+
+eq(
+  projectTreeTrashTarget({ key: "work-a", kind: "work_session", label: "Work", topicId: "topic-work", sessionPath: "/tmp/work.jsonl", sessionKind: "work" }),
+  { kind: "topic", topicId: "topic-work" },
+  "Work Session rows retain topic-level trash semantics",
+);
+
+eq(
+  projectTreeTrashTarget({ key: "session-a", kind: "session", label: "Run", topicId: "topic-a", sessionPath: "/tmp/run.jsonl" }),
+  { kind: "session", path: "/tmp/run.jsonl" },
+  "runtime Session rows move only the selected session to trash",
+);
+
+eq(
+  projectTreeTrashTarget({ key: "crew-a", kind: "crew_session", label: "IM", sessionPath: "/tmp/crew.jsonl" }),
+  { kind: "session", path: "/tmp/crew.jsonl" },
+  "Crew Session rows can be moved to trash by path",
 );
 
 eq(
