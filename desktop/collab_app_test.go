@@ -1430,6 +1430,117 @@ func TestCollaborationRecoveryBranchUsesParentRoomPersistenceKey(t *testing.T) {
 	}
 }
 
+func TestRestoreCollaborationAcceptsParentCacheForRecoveryTab(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "room-session.jsonl")
+	recovery := filepath.Join(dir, "room-session-recovery-1234.jsonl")
+	for _, path := range []string{parent, recovery} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.SaveBranchMeta(recovery, agent.BranchMeta{
+		ID:            string(agent.BranchID(recovery)),
+		ParentID:      string(agent.BranchID(parent)),
+		Recovered:     true,
+		RecoveryDepth: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	sessionID := "session-recovery-room"
+	tab := &WorkspaceTab{ID: "recovery-room", SessionID: sessionID, SessionPath: recovery}
+	app.trackSession(tab)
+	app.mu.Lock()
+	app.tabs[tab.ID] = tab
+	app.mu.Unlock()
+
+	persistPath := filepath.Join(dir, "persisted.json")
+	data, err := json.Marshal(collaborationPersistedState{SessionID: sessionID, SessionPath: parent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app.restoreOneCollaboration(persistPath)
+	app.collaborationMu.Lock()
+	runtime := app.collaborations[sessionID]
+	app.collaborationMu.Unlock()
+	if runtime == nil {
+		t.Fatal("recovery tab rejected its original Room owner cache")
+	}
+	if runtime.ownerSessionPath != sessionRuntimeKey(parent) {
+		t.Fatalf("runtime owner path = %q, want %q", runtime.ownerSessionPath, sessionRuntimeKey(parent))
+	}
+}
+
+func TestCollaborationStartupRestoreRunsOncePerRuntime(t *testing.T) {
+	c := &desktopCollaboration{}
+	starts := 0
+	for range 2 {
+		c.scheduleRestore(func() { starts++ })
+	}
+	if starts != 1 {
+		t.Fatalf("startup restore starts = %d, want 1", starts)
+	}
+}
+
+func TestCollaborationMigratesRecoveryPathCacheToOwnerPath(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionDir := t.TempDir()
+	parent := filepath.Join(sessionDir, "room-session.jsonl")
+	recovery := filepath.Join(sessionDir, "room-session-recovery-1234.jsonl")
+	for _, path := range []string{parent, recovery} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.SaveBranchMeta(recovery, agent.BranchMeta{
+		ID:            string(agent.BranchID(recovery)),
+		ParentID:      string(agent.BranchID(parent)),
+		Recovered:     true,
+		RecoveryDepth: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	targetPath := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey("current", parent)))
+	oldPath := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey("current", recovery)))
+	value := collaborationPersistedState{
+		Mode: "host", Host: "0.0.0.0", Port: 49853, Room: "stable-room",
+		SessionID: "current", SessionPath: recovery,
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "stable-room", Name: "Stable Room"}},
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &desktopCollaboration{
+		ownerSessionID: "current", ownerSessionPath: sessionRuntimeKey(parent), ownerSessionTitle: "Stable Room",
+		state:  CollaborationState{Status: "disconnected", SessionID: "current"},
+		starts: map[string]collaborationStartRecord{}, runs: map[string]*collaborationAgentRun{}, shares: map[string]collaborationSharedFile{},
+		transfers: map[string]*CollaborationFileTransfer{}, outboxFailures: map[string]string{}, persistPath: targetPath, writeState: fileutil.AtomicWriteFile,
+	}
+	c.loadPersisted()
+	state := c.snapshot()
+	if state.Mode != "host" || state.Room != "stable-room" || state.SessionID != "current" {
+		t.Fatalf("migrated Host state = %+v", state)
+	}
+	if sessionRuntimeKey(c.readPersisted().SessionPath) != sessionRuntimeKey(parent) {
+		t.Fatalf("migrated cache path = %q, want %q", c.readPersisted().SessionPath, parent)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("recovery-path cache still exists: %v", err)
+	}
+}
+
 func TestCollaborationOldV2CacheMigratesToStableSessionPath(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionPath := filepath.Join(t.TempDir(), "sessions", "room-session.jsonl")

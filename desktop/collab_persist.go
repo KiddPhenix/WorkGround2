@@ -132,6 +132,19 @@ func (c *desktopCollaboration) loadPersisted() {
 	}
 	var p collaborationPersistedState
 	err := readPersistFile(c.persistPath, &p)
+	adoptedRecovery := false
+	if os.IsNotExist(err) {
+		var adoptErr error
+		adoptedRecovery, adoptErr = c.adoptRecoveryV2Cache()
+		if adoptErr != nil {
+			c.state.LastError = "load collaboration state: " + adoptErr.Error()
+			c.state.Retryable = true
+			return
+		}
+		if adoptedRecovery {
+			err = readPersistFile(c.persistPath, &p)
+		}
+	}
 	adoptedV2 := false
 	if os.IsNotExist(err) {
 		adoptedV2, err = c.adoptLegacyV2Cache()
@@ -160,7 +173,8 @@ func (c *desktopCollaboration) loadPersisted() {
 	identityChanged := false
 	if c.ownerSessionPath != "" {
 		persistedPath := sessionRuntimeKey(p.SessionPath)
-		if persistedPath != "" && persistedPath != c.ownerSessionPath {
+		persistedOwnerPath := collaborationOwnerSessionPath(persistedPath)
+		if persistedPath != "" && persistedOwnerPath != c.ownerSessionPath {
 			c.state.LastError = "load collaboration state: cached Room belongs to another session path"
 			c.state.Retryable = true
 			return
@@ -269,9 +283,64 @@ func (c *desktopCollaboration) loadPersisted() {
 		c.state.Status = "failed"
 		c.state.Retryable = true
 	}
-	if migrated || adoptedV2 || identityChanged {
+	if migrated || adoptedRecovery || adoptedV2 || identityChanged {
 		c.persistLocked()
 	}
+}
+
+// adoptRecoveryV2Cache migrates a cache written before recovery branches were
+// canonicalised to their original logical Session path. Candidates already
+// prove the same owner through branch metadata, so choosing the newest complete
+// Room record is deterministic and cannot attach an unrelated Room by title.
+func (c *desktopCollaboration) adoptRecoveryV2Cache() (bool, error) {
+	if c.ownerSessionPath == "" {
+		return false, nil
+	}
+	dir := filepath.Dir(c.persistPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	targetName := filepath.Base(c.persistPath)
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	var best candidate
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == targetName || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		var value collaborationPersistedState
+		if readPersistFile(path, &value) != nil || !hasPersistedRoom(value) {
+			continue
+		}
+		persistedPath := sessionRuntimeKey(value.SessionPath)
+		if persistedPath == "" || persistedPath == c.ownerSessionPath || collaborationOwnerSessionPath(persistedPath) != c.ownerSessionPath {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			continue
+		}
+		if best.path == "" || info.ModTime().After(best.modTime) {
+			best = candidate{path: path, modTime: info.ModTime()}
+		}
+	}
+	if best.path == "" {
+		return false, nil
+	}
+	if err := os.Rename(best.path, c.persistPath); err != nil {
+		if _, statErr := os.Stat(c.persistPath); statErr == nil {
+			return true, nil
+		}
+		return false, fmt.Errorf("migrate recovered Room cache: %w", err)
+	}
+	return true, nil
 }
 
 // adoptLegacyV2Cache moves the one old SessionID-keyed cache that can be
