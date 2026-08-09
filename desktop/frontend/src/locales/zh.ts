@@ -911,6 +911,8 @@ export const zh: Record<DictKey, string> = {
   "projectTree.recentCount": "显示条数",
   "projectTree.recentEmpty": "暂无最近会话",
   "projectTree.unreadCount": "{n} 条未读消息",
+  "projectTree.unreadFallbackOpenError": "无法打开此未读会话，未读状态已保留",
+  "projectTree.unreadFallbackLabel": "未读 {source}: {title} ({count})",
   "projectTree.searchPlaceholder": "搜索项目或会话",
   "projectTree.newTopic": "新会话",
   "projectTree.renameTopic": "重命名会话",

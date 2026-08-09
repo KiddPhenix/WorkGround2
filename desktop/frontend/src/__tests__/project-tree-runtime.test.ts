@@ -19,8 +19,11 @@ import {
   splitWorkbenchRecentTree,
   projectTreeUnreadConversations,
   projectTreeUnreadCount,
+  projectTreeUnreadFallbackConversation,
+  openLegacyUnreadConversation,
+  topicMenuKey,
 } from "../components/ProjectTree";
-import type { ProjectNode } from "../lib/types";
+import type { ProjectNode, UnreadConversation } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -227,7 +230,7 @@ eq(
   "backend RunningWork stays authoritative when an event status is stale",
 );
 
-const failedTopic = { ...completedTopic, status: "error" };
+const failedTopic: ProjectNode = { ...completedTopic, status: "error" };
 
 eq(
   projectTreeTopicHasUnreadActivity(failedTopic, { [completedTopicKey]: 1000 }, "project", "/repo", "other-topic"),
@@ -333,27 +336,26 @@ eq(
 
 // === Crew nodes ===
 
+const crewSession: ProjectNode = {
+  key: "crew_session_1",
+  kind: "crew_session",
+  label: "WeChat · test-user",
+  sessionPath: "/tmp/crew-session.jsonl",
+  sessionSource: "auto",
+  channel: "weixin",
+  turns: 5,
+  createdAt: 1000,
+  lastActivityAt: 2000,
+};
 const crewFolder: ProjectNode = {
   key: "crew_folder",
   kind: "crew_folder",
   label: "Crew",
-  children: [
-    {
-      key: "crew_session_1",
-      kind: "crew_session",
-      label: "WeChat · test-user",
-      sessionPath: "/tmp/crew-session.jsonl",
-      sessionSource: "auto",
-      channel: "weixin",
-      turns: 5,
-      createdAt: 1000,
-      lastActivityAt: 2000,
-    },
-  ],
+  children: [crewSession],
 };
 
 eq(
-  projectTreeTopicOpenRequest(crewFolder.children[0]),
+  projectTreeTopicOpenRequest(crewSession),
   null,
   "crew_session returns null from projectTreeTopicOpenRequest (opens via onOpenCrewSession)",
 );
@@ -375,7 +377,7 @@ const unreadConversations = [
   { key: "im:one", source: "im" as const, sessionId: "path:D:\\Temp\\Crew-Session.jsonl", latestSequence: 4, readSequence: 2, unreadCount: 2, highPriorityCount: 0 },
   { key: "im:read", source: "im" as const, sessionId: "path:D:\\Temp\\Crew-Session.jsonl", latestSequence: 1, readSequence: 1, unreadCount: 0, highPriorityCount: 0 },
 ];
-const unreadNode = { ...crewFolder.children[0], sessionPath: "d:/temp/crew-session.jsonl" };
+const unreadNode: ProjectNode = { ...crewSession, sessionPath: "d:/temp/crew-session.jsonl" };
 
 eq(
   projectTreeUnreadCount({ ...unreadNode, sessionId: "session-room" }, unreadConversations),
@@ -387,6 +389,53 @@ eq(
   ["im:one"],
   "read conversations and unrelated Session IDs do not create recent badges",
 );
+
+// Regression: single normal-session topic node must match unread by sessionId (UUID).
+eq(
+  projectTreeUnreadCount(
+    { key: "topic_t1", kind: "topic", label: "Chat", topicId: "t1", sessionId: "session-uuid-1" },
+    [{ key: "session:session-uuid-1", source: "session" as const, sessionId: "session-uuid-1", latestSequence: 5, readSequence: 3, unreadCount: 2, highPriorityCount: 0 }],
+  ),
+  2,
+  "topic node with sessionId matches unread by direct UUID",
+);
+
+// Regression: single normal-session topic node must match unread via path: prefix
+// when node.sessionPath is set but node.sessionId differs from conversation.sessionId.
+eq(
+  projectTreeUnreadCount(
+    { key: "topic_t2", kind: "topic", label: "Dev", topicId: "t2", sessionPath: "d:/work/session.jsonl" },
+    [{ key: "session:path:D:\\work\\session.jsonl", source: "session" as const, sessionId: "path:D:\\work\\session.jsonl", latestSequence: 3, readSequence: 1, unreadCount: 2, highPriorityCount: 1 }],
+  ),
+  2,
+  "topic node with sessionPath matches unread via path: prefix with Windows slash/drive normalization",
+);
+
+// Regression: taskbar totalUnread=1 must be visible on the corresponding recent node.
+eq(
+  projectTreeUnreadCount(
+    { key: "topic_t3", kind: "global_topic", label: "Solo", topicId: "t3", sessionId: "solo-id", sessionPath: "/tmp/solo.jsonl" },
+    [{ key: "session:solo-id", source: "session" as const, sessionId: "solo-id", latestSequence: 1, readSequence: 0, unreadCount: 1, highPriorityCount: 0 }],
+  ),
+  1,
+  "totalUnread=1 maps to exactly one recent node (no ghost badge)",
+);
+
+// Regression: opening the matching session clears the unread via MarkUnreadRead.
+const markReadConversations = [
+  { key: "session:mark-me", source: "session" as const, sessionId: "path:/home/dev/chat.jsonl", latestSequence: 10, readSequence: 5, unreadCount: 5, highPriorityCount: 2 },
+];
+const markReadNode: ProjectNode = { key: "topic_t4", kind: "topic", label: "Mark", topicId: "t4", sessionPath: "/home/dev/chat.jsonl" };
+const matched = projectTreeUnreadConversations(markReadNode, markReadConversations);
+eq(
+  matched.length,
+  1,
+  "open-session node matches its unread conversation",
+);
+if (matched.length === 1) {
+  eq(matched[0].key, "session:mark-me", "matched conversation key is correct for MarkUnreadRead");
+  eq(matched[0].latestSequence, 10, "latestSequence is available for MarkUnreadRead UpToSequence");
+}
 
 eq(
   reorderedProjectRoots(
@@ -464,11 +513,215 @@ eq(
     key: "crew_folder_windows",
     kind: "crew_folder",
     label: "Crew",
-    children: [{ ...crewFolder.children[0], sessionPath: "d:/temp/crew-session.jsonl" }],
+    children: [{ ...crewSession, sessionPath: "d:/temp/crew-session.jsonl" }],
   }], "global", "", "", "D:\\Temp\\Crew-Session.jsonl"),
   ["crew_folder_windows"],
   "crew folder expands when active session path differs only by Windows formatting",
 );
+
+// === topicMenuKey regression — scoped by tree section ===
+
+const menuKeyA = topicMenuKey("recent", "topic-1");
+const menuKeyB = topicMenuKey("projects", "topic-1");
+
+eq(
+  menuKeyA === menuKeyB,
+  false,
+  "same node key has distinct menu identities for Recent vs Projects sections",
+);
+
+eq(
+  topicMenuKey("recent", "topic-1"),
+  menuKeyA,
+  "menu identity is stable within the same section",
+);
+
+eq(
+  topicMenuKey("projects", "topic-1"),
+  menuKeyB,
+  "menu identity is stable within the projects section",
+);
+
+eq(
+  topicMenuKey("recent", "") === topicMenuKey("projects", ""),
+  false,
+  "empty node keys also differ across sections",
+);
+
+// === Unread-aware splitWorkbenchRecentTree regression tests ===
+
+const unreadTestProject: ProjectNode = {
+  key: "project_ut",
+  kind: "project",
+  label: "UT",
+  root: "/ut",
+  children: [
+    { key: "ut_unread_a", kind: "topic", label: "Unread A", root: "/ut", topicId: "ua", sessionId: "sid:ua", lastActivityAt: 100 },
+    { key: "ut_unread_b", kind: "topic", label: "Unread B", root: "/ut", topicId: "ub", sessionId: "sid:ub", lastActivityAt: 200 },
+    { key: "ut_read_c", kind: "topic", label: "Read C", root: "/ut", topicId: "uc", lastActivityAt: 500 },
+    { key: "ut_read_d", kind: "topic", label: "Read D", root: "/ut", topicId: "ud", lastActivityAt: 50 },
+    { key: "ut_ext_unread", kind: "topic", label: "Ext Unread", root: "/ut", topicId: "ue", sessionId: "sid:ue", sessionSource: "cli", lastActivityAt: 80 },
+  ],
+};
+
+const recentUnreadConvs: UnreadConversation[] = [
+  { key: "sid:ua", source: "session", sessionId: "sid:ua", unreadCount: 3, latestSequence: 10, readSequence: 7, highPriorityCount: 0, title: "Conv A" },
+  { key: "sid:ub", source: "room", sessionId: "sid:ub", unreadCount: 1, latestSequence: 5, readSequence: 4, highPriorityCount: 0, title: "Conv B" },
+  { key: "sid:ue", source: "im", sessionId: "sid:ue", unreadCount: 2, latestSequence: 8, readSequence: 6, highPriorityCount: 0, title: "Ext Conv" },
+  { key: "legacy:orphan-uuid", source: "im", sessionId: "legacy:orphan-uuid", unreadCount: 5, latestSequence: 20, readSequence: 15, highPriorityCount: 0, title: "Orphan Chat" },
+];
+
+// 1. limit=1 with 2+ unreads → all unreads still shown; read within limit
+const limit1Result = splitWorkbenchRecentTree([unreadTestProject], "updated", { showExternal: true, limit: 1 }, recentUnreadConvs);
+eq(
+  limit1Result.recent.map((n) => n.key),
+  ["ut_unread_b", "ut_unread_a", "ut_ext_unread", "unread_fallback:legacy:orphan-uuid", "ut_read_c"],
+  "unread items all appear before read items; read limited to 1",
+);
+eq(limit1Result.recent.length >= 4, true, "limit=1 does not cut unread items");
+
+// 2. showExternal=false still shows unread external sources; hides read external
+const extFilterResult = splitWorkbenchRecentTree([unreadTestProject], "updated", { showExternal: false, limit: 5 }, recentUnreadConvs);
+eq(
+  extFilterResult.recent.some((n) => n.key === "ut_ext_unread"),
+  true,
+  "unread external source bypasses showExternal filter",
+);
+eq(
+  extFilterResult.recent.some((n) => n.key === "ut_read_d"),
+  true,
+  "read internal source still shown with showExternal=false",
+);
+
+// 3. Dedup — same sessionId/conversation only appears once in Recent
+eq(
+  limit1Result.recent.filter((n) => n.sessionId === "sid:ua").length,
+  1,
+  "node with active unread appears only once in Recent (not duplicated)",
+);
+
+// 4. Unmapped legacy UUID gets fallback row
+const fallbackRow = limit1Result.recent.find((n) => n.key.startsWith("unread_fallback:"));
+eq(Boolean(fallbackRow), true, "unmapped legacy UUID creates a visible fallback row");
+if (fallbackRow) {
+  eq(fallbackRow.label, "Orphan Chat", "fallback row shows conversation title");
+  eq(fallbackRow.kind, "topic", "fallback row is a topic-kind node");
+  eq(
+    projectTreeUnreadFallbackConversation(fallbackRow, recentUnreadConvs)?.key,
+    "legacy:orphan-uuid",
+    "fallback row resolves to its unread conversation without embedding mutable state in the node",
+  );
+}
+
+// 5. Multiple unread conversations bound to one Session aggregate into one row.
+const sharedSessionConvs: UnreadConversation[] = [
+  { key: "session:shared", source: "session", sessionId: "sid:ua", unreadCount: 2, latestSequence: 2, readSequence: 0, highPriorityCount: 0 },
+  { key: "room:shared", source: "room", sessionId: "sid:ua", unreadCount: 1, latestSequence: 1, readSequence: 0, highPriorityCount: 1 },
+];
+const sharedSessionResult = splitWorkbenchRecentTree([unreadTestProject], "updated", { showExternal: true, limit: 1 }, sharedSessionConvs);
+eq(
+  sharedSessionResult.recent.filter((node) => node.sessionId === "sid:ua").length,
+  1,
+  "multiple unread conversations for one Session produce one Recent row",
+);
+eq(
+  sharedSessionResult.recent.some((node) => node.key.startsWith("unread_fallback:")),
+  false,
+  "a second unread conversation for the same Session does not become a fallback row",
+);
+
+// 6. Backward compat — no unreadConversations behaves like before (no unread param)
+const legacyResult = splitWorkbenchRecentTree([unreadTestProject], "updated", { showExternal: true, limit: 3 });
+eq(
+  legacyResult.recent.length,
+  3,
+  "without unreadConversations, limit is respected as before",
+);
+eq(
+  legacyResult.recent.some((n) => n.key.startsWith("unread_fallback:")),
+  false,
+  "without unreadConversations, no fallback rows are generated",
+);
+
+// 7. sort stability — unread items respect running-first, then activity
+const runningUnreadNode: ProjectNode = {
+  key: "project_run",
+  kind: "project",
+  label: "Run",
+  root: "/run",
+  children: [
+    { key: "run_normal", kind: "topic", label: "Normal", root: "/run", topicId: "rn", sessionId: "sid:rn", lastActivityAt: 300 },
+    { key: "run_active", kind: "topic", label: "Active", root: "/run", topicId: "ra", sessionId: "sid:ra", lastActivityAt: 50, running: true },
+  ],
+};
+const runningConvs: UnreadConversation[] = [
+  { key: "sid:rn", source: "session", sessionId: "sid:rn", unreadCount: 1, latestSequence: 3, readSequence: 2, highPriorityCount: 0 },
+  { key: "sid:ra", source: "session", sessionId: "sid:ra", unreadCount: 1, latestSequence: 2, readSequence: 1, highPriorityCount: 0 },
+];
+const runningResult = splitWorkbenchRecentTree([runningUnreadNode], "updated", { showExternal: true, limit: 5 }, runningConvs);
+eq(
+  runningResult.recent[0]?.key,
+  "run_active",
+  "running unread node sorts before non-running unread regardless of activity",
+);
+
+// 8. project tree children stay intact
+eq(
+  limit1Result.projects.length,
+  1,
+  "project count unchanged with unread conversations",
+);
+eq(
+  limit1Result.projects[0].children?.length,
+  5,
+  "project children count unchanged with unread conversations",
+);
+
+// 9. SESSION-source unread fallback node is distinguishable from IM/room/work.
+const sessionFallbackConvs: UnreadConversation[] = [
+  { key: "session:legacy-uuid", source: "session", sessionId: "session_f719de92b7ada7e462b8afd646331866", unreadCount: 1, latestSequence: 5, readSequence: 4, highPriorityCount: 0, title: "Legacy Session" },
+];
+const sessionFallbackResult = splitWorkbenchRecentTree([unreadTestProject], "updated", { showExternal: true, limit: 10 }, sessionFallbackConvs);
+const sessionFallbackRow = sessionFallbackResult.recent.find((n) => n.key.startsWith("unread_fallback:"));
+eq(Boolean(sessionFallbackRow), true, "legacy UUID session-source unread creates a fallback row");
+if (sessionFallbackRow) {
+  eq(sessionFallbackRow.label, "Legacy Session", "session fallback row shows conversation title");
+  const fbConv = projectTreeUnreadFallbackConversation(sessionFallbackRow, sessionFallbackConvs);
+  eq(Boolean(fbConv), true, "session fallback row resolves to its unread conversation");
+  if (fbConv) {
+    eq(fbConv.source, "session", "session fallback conversation source identifies as session for resolution");
+    eq(fbConv.key, "session:legacy-uuid", "session fallback conversation key is preserved for ResolveLegacySessionUnread");
+  }
+}
+
+const legacyOpenSteps: string[] = [];
+await openLegacyUnreadConversation(
+  sessionFallbackConvs[0],
+  async (key) => {
+    legacyOpenSteps.push(`resolve:${key}`);
+    return { scope: "project", workspaceRoot: "/ut", topicId: "ua", sessionPath: "/ut/legacy.jsonl", topicTitle: "Legacy Session" };
+  },
+  async (target) => { legacyOpenSteps.push(`open:${target.sessionPath}`); },
+  async (key, sequence) => { legacyOpenSteps.push(`read:${key}:${sequence}`); },
+);
+eq(
+  legacyOpenSteps,
+  ["resolve:session:legacy-uuid", "open:/ut/legacy.jsonl", "read:session:legacy-uuid:5"],
+  "legacy unread is marked read only after its resolved Session opens",
+);
+
+const failedOpenSteps: string[] = [];
+try {
+  await openLegacyUnreadConversation(
+    sessionFallbackConvs[0],
+    async () => ({ scope: "project", workspaceRoot: "/ut", topicId: "ua", sessionPath: "/ut/missing.jsonl", topicTitle: "Legacy Session" }),
+    async () => { failedOpenSteps.push("open"); throw new Error("open failed"); },
+    async () => { failedOpenSteps.push("read"); },
+  );
+} catch {
+  failedOpenSteps.push("error");
+}
+eq(failedOpenSteps, ["open", "error"], "failed legacy Session open preserves unread state");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

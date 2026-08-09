@@ -3,6 +3,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import type { PatchScope } from '../../../types_v2';
+import { isAutomaticV2DiscussionBlock } from '../discussionBlock';
 import { DiscussionDrawer } from './DiscussionDrawer';
 import type {
   DiscussionApplyIntent,
@@ -139,6 +140,21 @@ function drawer(
 }
 
 async function run(): Promise<void> {
+  {
+    const generated = {
+      id: 'v2-node-6e31',
+      kind: 'markdown',
+      revision: 1,
+      source: { provider: 'controller', mode: 'snapshot', verified: true },
+    };
+    ok(isAutomaticV2DiscussionBlock(generated), '展示：旧工作流讨论摘要仍识别为系统 Block');
+    ok(!isAutomaticV2DiscussionBlock({ ...generated, revision: 2 }), '展示：用户编辑后的 Block 保留为工作内容');
+    ok(!isAutomaticV2DiscussionBlock({
+      ...generated,
+      source: { provider: 'user', mode: 'snapshot', verified: true },
+    }), '展示：用户 Block 不会因 ID 形状被隐藏');
+  }
+
   {
     const state = harness();
     const mounted = await mount(drawer(state));

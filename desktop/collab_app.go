@@ -624,7 +624,7 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	var sessionPath, sessionTitle, workspaceRoot string
 	if tab := app.sessionByID(sessionID); tab != nil {
 		app.mu.RLock()
-		sessionPath = sessionRuntimeKey(tab.currentSessionPath())
+		sessionPath = collaborationOwnerSessionPath(tab.currentSessionPath())
 		sessionTitle = strings.TrimSpace(tab.TopicTitle)
 		workspaceRoot = normalizeProjectRoot(tab.WorkspaceRoot)
 		app.mu.RUnlock()
@@ -693,6 +693,36 @@ func newDesktopCollaboration(app *App, sessionID string) *desktopCollaboration {
 	}
 	c.observeUnread()
 	return c
+}
+
+// collaborationOwnerSessionPath keeps a conflict-recovery branch attached to
+// the Room owned by its original logical Session. Recovery branches are an
+// implementation detail of durable session saving; opening one must not make
+// the user's hosted Room appear to belong to a different Session.
+func collaborationOwnerSessionPath(sessionPath string) string {
+	current := sessionRuntimeKey(sessionPath)
+	if current == "" {
+		return ""
+	}
+	for range agent.SessionRecoveryMaxDepth {
+		meta, ok, err := agent.LoadBranchMeta(current)
+		if err != nil || !ok || !meta.Recovered {
+			break
+		}
+		parentID := strings.TrimSpace(meta.ParentID)
+		if parentID == "" || parentID != filepath.Base(parentID) || parentID == "." || parentID == ".." {
+			break
+		}
+		parent := sessionRuntimeKey(filepath.Join(filepath.Dir(current), parentID+".jsonl"))
+		if parent == "" || parent == current {
+			break
+		}
+		if _, err := os.Stat(parent); err != nil {
+			break
+		}
+		current = parent
+	}
+	return current
 }
 
 func collaborationPersistenceKey(sessionID, sessionPath string) string {

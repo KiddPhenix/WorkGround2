@@ -6931,9 +6931,14 @@ func (a *App) ListProjectTree() []ProjectNode {
 	}
 	topicWorkBinding := func(key string) (sessionID, sessionPath, sessionKind, workID string) {
 		sessions := runtimeSessionsByTopic[key]
-		if len(sessions) == 1 && (sessions[0].sessionKind == string(agent.SessionKindWork) || sessions[0].sessionKind == string(agent.SessionKindCollaboration)) {
+		if len(sessions) == 1 {
 			session := sessions[0]
-			return session.sessionID, session.sessionPath, session.sessionKind, session.workID
+			if session.sessionKind == string(agent.SessionKindWork) || session.sessionKind == string(agent.SessionKindCollaboration) {
+				return session.sessionID, session.sessionPath, session.sessionKind, session.workID
+			}
+			// Single normal session: expose identity so the frontend can
+			// match UnreadConversation entries to this tree node.
+			return session.sessionID, session.sessionPath, string(agent.SessionKindNormal), ""
 		}
 		if len(sessions) != 0 {
 			return "", "", "", ""
@@ -6945,7 +6950,9 @@ func (a *App) ListProjectTree() []ProjectNode {
 		selected := persisted[0]
 		identityKind := selected.SessionKind
 		if identityKind != agent.SessionKindWork && identityKind != agent.SessionKindCollaboration {
-			return "", "", "", ""
+			// Cold start: map the most-recent normal session path so the
+			// frontend can match persisted unread conversations.
+			return "", selected.Path, string(agent.SessionKindNormal), ""
 		}
 		identityWorkID := ""
 		identityRequestID := ""
@@ -7877,6 +7884,9 @@ func (a *App) persistTabSessionPath(tab *WorkspaceTab, path string) {
 }
 
 func (a *App) knownSessionDirs() []string {
+	if len(a.sessionDirsOverride) > 0 {
+		return a.sessionDirsOverride
+	}
 	seen := map[string]bool{}
 	out := []string{}
 	add := func(dir string) {

@@ -1,12 +1,13 @@
 // Run: tsx src/__tests__/collaboration.test.tsx
 
 import { JSDOM } from "jsdom";
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { IntentCountdown } from "../collab/components/IntentCountdown";
 import { ConnectionPanel } from "../collab/components/ConnectionPanel";
+import { CollaborationComposer } from "../collab/components/CollaborationComposer";
 import { CollaborationTimeline } from "../collab/components/CollaborationTimeline";
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { agentCollaborationClock, agentCollaborationRequestID, collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems, visibleCollaborationTimeline } from "../collab/state";
@@ -14,8 +15,8 @@ import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationI
 import { buildCollaborationInvite, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
 import { recentAgentActivity } from "../collab/agentActivity";
 import { activeMention, collaborationMentionCandidates, filterMentionCandidates, insertMention, mentionPayload, mentionRequestID, nextMentionedAgentItem } from "../collab/mentions";
-import type { CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
-import { createMockCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
+import type { CollaborationMember, CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
+import { createMockCollaborationTransport, createWailsCollaborationTransport, normalizeCollaborationAction, normalizeCollaborationIntent, normalizeCollaborationItem, normalizeCollaborationState } from "../collab/transport";
 import { buildAgreeMessageInput, loadCollaborationState, useCollabController, type CollabController } from "../collab/useCollabController";
 import { LocaleProvider, t } from "../lib/i18n";
 
@@ -406,6 +407,145 @@ async function testOfflineSelfAgentIntervention() {
   equal(controller!.state.pendingIntents[intent.messageId]?.status, "failed", "workspace startup failure remains visible and retryable");
   await act(async () => { await controller!.startPending(controller!.state.pendingIntents[intent.messageId]); });
   equal([agentStarts, controller!.state.status, controller!.state.pendingIntents[intent.messageId]?.status], [2, "failed", "dismissed"], "offline solo Host can retry and run its own Agent while Room sync remains retryable");
+  await act(async () => root.unmount());
+}
+
+async function testComposerOfflineAgentOnly() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  let agentCalls = 0;
+  let chatCalls = 0;
+  let contributionCalls = 0;
+  let requestCalls = 0;
+  let shareCalls = 0;
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+    { id: "other", name: "Alice", online: true, agent: { id: "agent-other", name: "AliceAgent", status: "idle" } },
+  ];
+  await act(async () => root.render(<LocaleProvider><CollaborationComposer
+    members={members} selfMemberId="self" connected={false} submitKey="enter"
+    onReplyClear={() => {}} onChat={async () => { chatCalls++; }} onAgent={async () => { agentCalls++; }}
+    onContribution={async () => { contributionCalls++; }} onRequest={async () => { requestCalls++; }}
+    onShareFiles={async () => { shareCalls++; }}
+  /></LocaleProvider>));
+  const textarea = document.querySelector("textarea")!;
+  ok(!textarea.disabled, "offline composer textarea remains editable");
+  // All non-agent mode options are disabled when offline.
+  const modeSelect = document.querySelector("select")!;
+  const options = [...modeSelect.querySelectorAll("option")];
+  const agentOption = options.find((opt) => opt.value === "agent")!;
+  const chatOption = options.find((opt) => opt.value === "chat")!;
+  const bothOption = options.find((opt) => opt.value === "both")!;
+  const requestOption = options.find((opt) => opt.value === "request")!;
+  const contributionOption = options.find((opt) => opt.value === "contribution")!;
+  ok(!agentOption.disabled, "agent mode stays enabled while offline");
+  ok(chatOption.disabled, "chat mode is disabled while offline");
+  ok(bothOption.disabled, "both mode is disabled while offline");
+  ok(requestOption.disabled, "request mode is disabled while offline");
+  ok(contributionOption.disabled, "contribution mode is disabled while offline");
+  ok((chatOption.textContent || "").includes("离线"), "chat option shows offline label");
+  ok((bothOption.textContent || "").includes("离线"), "both option shows offline label");
+  equal(modeSelect.value, "agent", "an initially offline composer selects the local Agent mode");
+
+  const sendButton = document.querySelector(".collab-primary-button") as HTMLButtonElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "离线继续工作");
+    const propsKey = Object.keys(textarea).find((key) => key.startsWith("__reactProps$"));
+    if (!propsKey) throw new Error("missing textarea React props");
+    (textarea as unknown as Record<string, { onChange(event: { target: HTMLTextAreaElement }): void }>)[propsKey].onChange({ target: textarea });
+  });
+  equal(sendButton.disabled, false, "offline local Agent message can be submitted");
+  await act(async () => { sendButton.click(); await Promise.resolve(); });
+  equal(agentCalls, 1, "offline submit invokes the local Agent");
+  equal(chatCalls, 0, "onChat was not called");
+  equal(contributionCalls, 0, "onContribution was not called");
+  equal(requestCalls, 0, "onRequest was not called");
+  equal(shareCalls, 0, "onShareFiles was not called");
+
+  await act(async () => root.unmount());
+}
+
+async function testComposerAutoSwitchPreservesDraft() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+  ];
+  // Use a harness so connected can be toggled without unmounting the Composer.
+  let setConnected: ((c: boolean) => void) | undefined;
+  function Harness() {
+    const [connected, setC] = useState(true);
+    useEffect(() => { setConnected = setC; }, []);
+    return <LocaleProvider><CollaborationComposer
+      members={members} selfMemberId="self" connected={connected} submitKey="enter"
+      onReplyClear={() => {}} onChat={async () => {}} onAgent={async () => {}}
+      onContribution={async () => {}} onRequest={async () => {}} onShareFiles={async () => {}}
+    /></LocaleProvider>;
+  }
+
+  await act(async () => root.render(<Harness />));
+  const modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
+  // Start in chat mode (connected).
+  await act(async () => {
+    (modeSelect as HTMLSelectElement).value = "chat";
+    modeSelect.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  });
+  equal(modeSelect.value, "chat", "starts in chat mode");
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(dom.window.HTMLTextAreaElement.prototype, "value")?.set?.call(textarea, "keep this draft");
+    const propsKey = Object.keys(textarea).find((key) => key.startsWith("__reactProps$"));
+    if (!propsKey) throw new Error("missing textarea React props");
+    (textarea as unknown as Record<string, { onChange(event: { target: HTMLTextAreaElement }): void }>)[propsKey].onChange({ target: textarea });
+  });
+  equal(textarea.value, "keep this draft", "chat draft is present before disconnect");
+
+  // Disconnect without unmounting: auto-switch to agent mode.
+  await act(async () => { setConnected!(false); await Promise.resolve(); });
+  equal(modeSelect.value, "agent", "auto-switched to agent mode on disconnect");
+  equal(textarea.value, "keep this draft", "disconnect preserves the draft for the local Agent");
+
+  // Reconnect: agent mode stays but chat is available again.
+  await act(async () => { setConnected!(true); await Promise.resolve(); });
+  const chatOption = [...modeSelect.querySelectorAll("option")].find((o) => o.value === "chat")!;
+  ok(!chatOption.disabled, "chat mode re-enabled after reconnect");
+
+  await act(async () => root.unmount());
+}
+
+async function testComposerReconnectRestoresModes() {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", { pretendToBeVisual: true, url: "http://localhost/" });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement });
+  const root = createRoot(document.getElementById("root")!);
+  const members: CollaborationMember[] = [
+    { id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent-self", name: "MyAgent", status: "idle" } },
+    { id: "other", name: "Alice", online: true, agent: { id: "agent-other", name: "AliceAgent", status: "idle" } },
+  ];
+  const render = (connected: boolean) => <LocaleProvider><CollaborationComposer
+    members={members} selfMemberId="self" connected={connected} submitKey="enter"
+    onReplyClear={() => {}} onChat={async () => {}} onAgent={async () => {}}
+    onContribution={async () => {}} onRequest={async () => {}} onShareFiles={async () => {}}
+  /></LocaleProvider>;
+
+  // Offline: non-agent modes disabled.
+  await act(async () => root.render(render(false)));
+  let modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const offlineOptions = [...modeSelect.querySelectorAll("option")];
+  ok(offlineOptions.find((o) => o.value === "chat")!.disabled, "chat disabled while offline");
+  ok(offlineOptions.find((o) => o.value === "both")!.disabled, "both disabled while offline");
+  ok(offlineOptions.find((o) => o.value === "request")!.disabled, "request disabled while offline");
+
+  // Reconnect: all modes re-enabled.
+  await act(async () => root.render(render(true)));
+  modeSelect = document.querySelector("select") as HTMLSelectElement;
+  const onlineOptions = [...modeSelect.querySelectorAll("option")];
+  ok(!onlineOptions.find((o) => o.value === "chat")!.disabled, "chat re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "both")!.disabled, "both re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "request")!.disabled, "request re-enabled after reconnect");
+  ok(!onlineOptions.find((o) => o.value === "contribution")!.disabled, "contribution re-enabled after reconnect");
+
   await act(async () => root.unmount());
 }
 
@@ -897,6 +1037,197 @@ async function testNoCacheSessionEntryWithoutAutoConnect() {
   await act(async () => root.unmount());
 }
 
+async function testHostRestoreMissingSelfSessionId() {
+  // An old persisted Host state may lack selfSessionId. The restore flow
+  // must still recognise the Room and auto-retry, and the cached dispatch
+  // must carry enough context for ownsRoom to resolve correctly.
+  const stale: CollaborationState = {
+    status: "failed", mode: "host", retryable: true,
+    room: { room: "host-room-no-ssid", host: "127.0.0.1", port: 39170, latestSequence: 2 },
+    selfMemberId: "self",
+    // intentionally omit selfSessionId
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("host-no-ssid", 1, "离线 Host 消息")],
+    lastError: "port busy",
+  };
+  let retryCalls = 0;
+  const transport: CollaborationTransport = {
+    async getState() { return { ...stale }; },
+    async retry() { retryCalls++; return { ...stale, status: "connected" as const, lastError: undefined }; },
+    async host() { return stale; },
+    async join() { return stale; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "host-room-no-ssid" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig(input: any) { stale.agentConfig = input.config; return stale; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let renderedCached: CollaborationState | undefined;
+  const result = await loadCollaborationState(transport, false, (state) => { renderedCached = state; });
+  equal([renderedCached?.room?.room, renderedCached?.timeline.length], ["host-room-no-ssid", 1],
+    "cached Host Room without selfSessionId is still dispatched to the UI before retry");
+  equal([result.status, result.room?.room, result.members.length, result.timeline.length, retryCalls],
+    ["connected", "host-room-no-ssid", 1, 1, 1],
+    "Host auto-retry succeeds even when the persisted snapshot lacks selfSessionId");
+  ok(result.selfSessionId === undefined, "loadCollaborationState returns the state as-is; selfSessionId backfill is the transport normalizer's job");
+
+  // Verify that collabReducer's STATE action sets selfSessionId when present.
+  const fromReducer = collabReducer(initialCollabState, { type: "STATE", state: { ...stale, selfSessionId: "current-host-session" } });
+  equal(fromReducer.selfSessionId, "current-host-session", "a Host STATE with explicit selfSessionId survives the reducer round-trip");
+  // Verify that when normalizeCollaborationState produces selfSessionId: undefined
+  // (all sources empty), the reducer spread overwrites an existing value. This
+  // is why the transport normalizer must backfill — the TYPE system allows
+  // undefined, but the reducer treats it as an explicit overwrite.
+  const withExplicitUndefined: CollaborationState = { ...stale, selfSessionId: undefined };
+  const afterIncomplete = collabReducer(fromReducer, { type: "STATE", state: withExplicitUndefined });
+  ok(afterIncomplete.selfSessionId === undefined, "an incoming STATE where selfSessionId is explicitly undefined resets it (the normalizer must always backfill)");
+}
+
+async function testClientRestoreMissingSelfSessionId() {
+  // A client-mode cached Room without selfSessionId must also auto-retry
+  // and preserve timeline/members across the restore flow.
+  const stale: CollaborationState = {
+    status: "failed", mode: "client", retryable: true,
+    room: { room: "joined-room-no-ssid", host: "192.168.1.99", port: 39171, latestSequence: 3 },
+    selfMemberId: "self",
+    // intentionally omit selfSessionId
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("client-no-ssid", 1, "客户端离线消息")],
+    lastError: "host not reachable",
+  };
+  let retryCalls = 0;
+  const transport: CollaborationTransport = {
+    async getState() { return { ...stale }; },
+    async retry() { retryCalls++; throw new Error("still unreachable"); },
+    async host() { return stale; },
+    async join() { return stale; },
+    async invite() { return { hosts: ["192.168.1.99"], port: 39171, room: "joined-room-no-ssid" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig(input: any) { stale.agentConfig = input.config; return stale; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  let renderedCached: CollaborationState | undefined;
+  const result = await loadCollaborationState(transport, false, (state) => { renderedCached = state; });
+  equal([renderedCached?.room?.room, renderedCached?.timeline.length], ["joined-room-no-ssid", 1],
+    "cached client Room without selfSessionId is dispatched before retry");
+  equal([result.status, result.room?.room, result.members.length, result.timeline.length, retryCalls],
+    ["failed", "joined-room-no-ssid", 1, 1, 1],
+    "failed client auto-retry preserves cached Snapshot even without selfSessionId");
+}
+
+async function testExplicitWrongSessionIdRejected() {
+  // When selfSessionId is explicitly set and does not match the current
+  // session, the transport must NOT backfill and the ownership check must
+  // fail. This prevents cross-session Room leakage.
+  const wrongSession: CollaborationState = {
+    status: "connected", mode: "host",
+    room: { room: "other-room", host: "127.0.0.1", port: 39172, latestSequence: 1 },
+    selfMemberId: "self",
+    selfSessionId: "other-session-id",
+    members: [{ id: "self", name: "Me", online: true, isSelf: true, agent: { id: "agent", name: "Agent", status: "idle" } }],
+    timeline: [item("other-msg", 1, "其他 session 的消息")],
+  };
+  // Simulate the reducer receiving a STATE from a mismatched session.
+  const reducerState = collabReducer(initialCollabState, { type: "STATE", state: wrongSession });
+  equal(reducerState.selfSessionId, "other-session-id",
+    "explicit selfSessionId from a different session is preserved verbatim");
+  // Ownership check (the same logic as CollaborationWorkspace.ownsRoom):
+  const currentSession = "current-session";
+  const ownsRoom = Boolean(currentSession) && reducerState.selfSessionId === currentSession;
+  ok(!ownsRoom, "explicit mismatched selfSessionId does NOT grant ownsRoom to a different session");
+
+  // The transport normalizer must NOT overwrite an explicit selfSessionId.
+  // (This is the production code path — verify by inspection that the
+  //  backfill guard is `!state.selfSessionId`, not `state.selfSessionId !== sessionID`.)
+  const transportSource = readFileSync(new URL("../collab/transport.ts", import.meta.url), "utf8");
+  ok(transportSource.includes("!state.selfSessionId"),
+    "transport normalizer backfill gate is !state.selfSessionId so explicit values are never overwritten");
+}
+
+async function testNewSessionNoRoomShowsEntry() {
+  // A fresh Session with no persisted Room must stay disconnected and
+  // must NOT auto-retry or inherit a global cached Room.
+  const emptyState: CollaborationState = {
+    status: "disconnected",
+    selfSessionId: "new-empty-session",
+  };
+  const transport: CollaborationTransport = {
+    async getState() { return { ...emptyState }; },
+    async retry() { return { ...emptyState }; },
+    async host() { return emptyState; },
+    async join() { return emptyState; },
+    async invite() { return { hosts: ["127.0.0.1"], port: 39170, room: "never-joined" }; },
+    async leave() {},
+    async post() { return { ok: true }; },
+    async startAgent() { return { ok: true }; },
+    async cancelQueuedTask() { return { ok: true }; },
+    async respond() { return { ok: true }; },
+    async updateAgentConfig() { return emptyState; },
+    async shareFiles() { return []; },
+    async receiveFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "completed", transferred: 1, total: 1 }; },
+    async pauseFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "paused", transferred: 0, total: 1 }; },
+    async resumeFile(fileId: string) { return { id: `receive:${fileId}`, fileId, direction: "receive", name: fileId, status: "downloading", transferred: 0, total: 1 }; },
+    async revokeFile() { return { ok: true }; },
+    subscribeState() { return () => {}; },
+    subscribeEvent() { return () => {}; },
+  };
+  const result = await loadCollaborationState(transport);
+  equal([result.status, result.room, result.mode],
+    ["disconnected", undefined, undefined],
+    "new Session with no cached Room stays disconnected and does not auto-retry");
+}
+
+async function testWailsTransportRestoresSessionOwnership() {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document });
+  let raw: Record<string, unknown> = {
+    status: "failed", mode: "host", retryable: true,
+    room: "owned-host-room", snapshot: { room: { id: "owned-host-room" }, members: [], timeline: [] },
+  };
+  (window as any).go = { main: { App: {
+    GetCollaborationState: async () => raw,
+    RetryCollaboration: async () => { throw new Error("route unavailable"); },
+  } } };
+
+  const hostTransport = createWailsCollaborationTransport("host-session");
+  let cachedHost: CollaborationState | undefined;
+  const host = await loadCollaborationState(hostTransport, false, (state) => { cachedHost = state; });
+  equal([cachedHost?.selfSessionId, host.selfSessionId, host.room?.room], ["host-session", "host-session", "owned-host-room"],
+    "production Wails transport restores ownership for a cached Host Room without selfSessionId");
+
+  raw = { ...raw, mode: "client", room: "owned-client-room", snapshot: { room: { id: "owned-client-room" }, members: [], timeline: [] } };
+  const client = await createWailsCollaborationTransport("client-session").getState();
+  equal([client.selfSessionId, client.room?.room], ["client-session", "owned-client-room"],
+    "production Wails transport restores ownership for a cached client Room without selfSessionId");
+
+  raw = { ...raw, selfSessionId: "other-session" };
+  const mismatched = await createWailsCollaborationTransport("current-session").getState();
+  equal(mismatched.selfSessionId, "other-session", "an explicit different Session owner is never overwritten");
+
+  raw = { status: "disconnected", members: [], timeline: [] };
+  const fresh = await createWailsCollaborationTransport("fresh-session").getState();
+  equal([fresh.selfSessionId, fresh.room], [undefined, undefined], "a fresh Session without a Room does not inherit ownership");
+}
+
 async function main() {
   process.stdout.write("\ncollaboration state and countdown\n");
   const layoutCSS = readFileSync(new URL("../collab/collab.css", import.meta.url), "utf8");
@@ -921,8 +1252,9 @@ async function main() {
   ok(appSource.includes("selectCollaborationWorkspace") && appSource.includes("collabResolveGen.current") && appSource.includes("app.ListWorkspaces()") && appSource.includes("if (!workspaceRoot)"), "the connection dialog resolves the chosen Workspace with a generation guard and never creates a Session for an empty selection");
   ok(appSource.includes('mode="dialog"') && workspaceSource.includes('mode?: "session" | "dialog"'), "connection popup and connected Session have separate presentation modes");
   ok(!workspaceSource.includes("collab-room-rail"), "embedded collaboration view reuses the existing Session List instead of duplicating a Room rail");
-  ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null : projectTreeSourceBadge(node, t)"), "Room Session keeps its dedicated icon without an external-source badge");
+  ok(projectTreeSource.includes("const sourceBadge = collaborationSession ? null :"), "Room Session keeps its dedicated icon without an external-source badge");
   ok(workspaceSource.includes('const usable = ownsRoom && Boolean(state.room)') && workspaceSource.includes('c("cachedBackground")'), "cached Room context remains usable and is explicitly disclosed while offline");
+  ok(workspaceSource.includes("if (!ownsRoom || !state.room)") && !workspaceSource.includes('c("untitledRoom")'), "a Session without an authoritative Room stays on the connection entry instead of rendering a synthetic Room");
   ok(workspaceSource.includes("handleAction(controller.startAgent") && composerSource.includes("catch {"), "Agent action promises are consumed at both timeline and composer UI boundaries");
   ok(connectionSource.includes("await onHost(") && connectionSource.includes("await onJoin(") && connectionSource.includes("await onConnected?.()"), "popup closes only after Room connection and Session binding both complete");
   ok(connectionSource.includes('c("workspace")') && connectionSource.indexOf('c("workspace")') < connectionSource.indexOf('c("connectionString")'), "the Workspace selector sits before the network fields and is shared by Join and Host");
@@ -1203,10 +1535,18 @@ async function main() {
   await testCachedRoomSurvivesFailedRetry();
   await testCachedClientRoomSurvivesFailedRetry();
   await testNoCacheSessionEntryWithoutAutoConnect();
+  await testHostRestoreMissingSelfSessionId();
+  await testClientRestoreMissingSelfSessionId();
+  await testExplicitWrongSessionIdRejected();
+  await testNewSessionNoRoomShowsEntry();
+  await testWailsTransportRestoresSessionOwnership();
 
   await testSessionTransportIsolation();
   await testAgentBusyGuard();
   await testOfflineSelfAgentIntervention();
+  await testComposerOfflineAgentOnly();
+  await testComposerAutoSwitchPreservesDraft();
+  await testComposerReconnectRestoresModes();
   await testMentionStartsAgent();
   await testRoomAgentUsesScopedAutoApproval();
   await testWaitingAgentRunDecisions();

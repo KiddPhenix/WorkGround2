@@ -82,6 +82,7 @@ import type {
   PluginView,
   ProjectNode,
   MarkUnreadReadInput,
+  ResolvedSession,
   UnreadState,
   PromptHistoryEntry,
   PromptHistoryResult,
@@ -284,6 +285,7 @@ export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
   UnreadState(): Promise<UnreadState>;
   MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
+  ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
   EnterWidgetMode(): Promise<WidgetSnapshot>;
   ExitWidgetMode(tabID: string): Promise<void>;
   IsWidgetMode(): Promise<boolean>;
@@ -4079,6 +4081,9 @@ function makeMockApp(): AppBindings {
     },
     async MarkUnreadRead() {
       return emptyUnreadState();
+    },
+    async ResolveLegacySessionUnread(_conversationKey: string) {
+      throw new Error("ResolveLegacySessionUnread is not available in browser dev mode");
     },
     async SessionBackground(_tabID: string) {
       return { path: "", url: "" };

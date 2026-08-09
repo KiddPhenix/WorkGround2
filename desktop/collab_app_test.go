@@ -1401,6 +1401,35 @@ func TestCollaborationV2SessionIDRepairPreservesCachedRoom(t *testing.T) {
 	}
 }
 
+func TestCollaborationRecoveryBranchUsesParentRoomPersistenceKey(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "room-session.jsonl")
+	recovery := filepath.Join(dir, "room-session-recovery-1234.jsonl")
+	for _, path := range []string{parent, recovery} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.SaveBranchMeta(recovery, agent.BranchMeta{
+		ID:            string(agent.BranchID(recovery)),
+		ParentID:      string(agent.BranchID(parent)),
+		Recovered:     true,
+		RecoveryDepth: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	owner := collaborationOwnerSessionPath(recovery)
+	if owner != sessionRuntimeKey(parent) {
+		t.Fatalf("recovery Room owner path = %q, want parent %q", owner, sessionRuntimeKey(parent))
+	}
+	parentKey := collaborationPersistenceKey("parent-runtime", parent)
+	recoveryKey := collaborationPersistenceKey("recovery-runtime", owner)
+	if recoveryKey != parentKey {
+		t.Fatalf("recovery Room persistence key = %q, want %q", recoveryKey, parentKey)
+	}
+}
+
 func TestCollaborationOldV2CacheMigratesToStableSessionPath(t *testing.T) {
 	stateDir := t.TempDir()
 	sessionPath := filepath.Join(t.TempDir(), "sessions", "room-session.jsonl")

@@ -159,6 +159,31 @@ func buildPatchPlannerSystemPrompt(input work.PatchPlanInput) string {
 			b.WriteString(fmt.Sprintf("  - id=%s label=%q kind=%s required=%v\n", s.ID, s.Label, s.Kind, s.Required))
 		}
 	}
+	if input.Work != nil {
+		customInputs := make([]work.WorkInput, 0)
+		for _, item := range input.Work.V2Inputs {
+			if item.CustomSpec != nil {
+				customInputs = append(customInputs, item)
+			}
+		}
+		sort.Slice(customInputs, func(i, j int) bool {
+			return customInputs[i].ID < customInputs[j].ID
+		})
+		if len(customInputs) > 0 {
+			b.WriteString("Work Information (user-owned, preserve across workflow revisions):\n")
+			for _, item := range customInputs {
+				b.WriteString(fmt.Sprintf(
+					"  - id=%s label=%q description=%q kind=%s state=%s value=%s\n",
+					item.ID,
+					item.CustomSpec.Label,
+					item.CustomSpec.Description,
+					item.CustomSpec.Kind,
+					item.State,
+					compactPatchJSON(item.Value),
+				))
+			}
+		}
+	}
 
 	if input.Block != nil {
 		blockLabel := "Target Block"

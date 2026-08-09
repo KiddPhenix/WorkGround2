@@ -78,8 +78,34 @@ ok(
 
 ok(
   ["e-resize", "s-resize", "se-resize"].every((edge) => appSource.includes(`edge: "${edge}"`)) &&
-    /\{windowsFramelessChrome && <WindowsResizeHandles \/>}[\s\S]*\{windowsFramelessChrome && <WindowsWindowControls \/>}/.test(appSource),
+    /\{windowsFramelessChrome && <WindowsResizeHandles \/>}[\s\S]*\{windowsFramelessChrome && <WindowsWindowControls/.test(appSource),
   "Windows frameless chrome renders explicit right and bottom resize handles",
+);
+
+ok(
+  !appSource.includes('className="windows-resize-handles"') &&
+    appSource.includes('className={`windows-resize-handle ${className}`}') &&
+    finalDeclaration(".windows-resize-handle", "z-index") === "var(--z-window-resize)",
+  "Windows resize hit targets do not use a full-viewport overlay",
+);
+
+ok(
+  /function WindowsResizeHandles\(\)[\s\S]*?flags\.borderThickness = Number\.NEGATIVE_INFINITY;[\s\S]*?flags\.borderThickness = borderThickness;[\s\S]*?wailsInvoke\(`resize:\$\{edge\}`\)/.test(appSource) &&
+    appSource.includes("flags.resizeEdge = undefined;") &&
+    finalDeclaration(".windows-resize-handle--right", "width") === "var(--windows-resize-edge)",
+  "Windows desktop neutralizes Wails global edge inference and keeps only explicit resize handles",
+);
+
+ok(
+  appSource.includes("function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void)") &&
+    appSource.includes("if (event.button !== 0) return;") &&
+    appSource.includes("function stopFramelessPointerDown(event: ReactPointerEvent<HTMLElement>)") &&
+    appSource.includes("function stopFramelessMouseDown(event: ReactMouseEvent<HTMLElement>)") &&
+    appSource.includes("function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void)") &&
+    appSource.includes("if (event.detail === 0) action();") &&
+    /aria-label="Maximize or restore window"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, toggleMaximise\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, toggleMaximise\)\}/.test(appSource) &&
+    /className="workspace-sidebar__settings"[\s\S]*?onPointerDown=\{stopFramelessPointerDown\}[\s\S]*?onPointerUp=\{\(event\) => runFramelessPointerAction\(event, openGeneralSettings\)\}[\s\S]*?onMouseDown=\{stopFramelessMouseDown\}[\s\S]*?onClick=\{\(event\) => runKeyboardClick\(event, openGeneralSettings\)\}/.test(appSource),
+  "Windows caption controls and bottom settings isolate pointer down and act on pointer up while retaining keyboard clicks",
 );
 
 ok(

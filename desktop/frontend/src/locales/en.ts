@@ -911,6 +911,8 @@ export const en = {
   "projectTree.recentCount": "Sessions shown",
   "projectTree.recentEmpty": "No recent sessions",
   "projectTree.unreadCount": "{n} unread messages",
+  "projectTree.unreadFallbackOpenError": "This unread conversation could not be opened. Its unread state was kept.",
+  "projectTree.unreadFallbackLabel": "{source} unread: {title} ({count})",
   "projectTree.searchPlaceholder": "Search projects or sessions",
   "projectTree.newTopic": "New session",
   "projectTree.renameTopic": "Rename session",

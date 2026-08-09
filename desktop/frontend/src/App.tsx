@@ -273,6 +273,24 @@ type WorkBootstrap = {
   result?: WorkSessionResult;
 };
 
+function runFramelessPointerAction(event: ReactPointerEvent<HTMLElement>, action: () => void) {
+  event.stopPropagation();
+  if (event.button !== 0) return;
+  action();
+}
+
+function stopFramelessPointerDown(event: ReactPointerEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function stopFramelessMouseDown(event: ReactMouseEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function runKeyboardClick(event: ReactMouseEvent<HTMLElement>, action: () => void) {
+  if (event.detail === 0) action();
+}
+
 function workDraftKey(requestID: string): string {
   return `work:start-draft:${requestID}`;
 }
@@ -305,7 +323,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 		type="button"
 		aria-label="进入小组件模式"
 		title="小组件模式"
-		onClick={() => void onEnterWidgetMode()}
+		onPointerDown={stopFramelessPointerDown}
+		onPointerUp={(event) => runFramelessPointerAction(event, () => void onEnterWidgetMode())}
+		onMouseDown={stopFramelessMouseDown}
+		onClick={(event) => runKeyboardClick(event, () => void onEnterWidgetMode())}
 	  >
 		<PictureInPicture2 size={13} strokeWidth={1.8} />
 	  </button>
@@ -315,7 +336,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         type="button"
         aria-label="Minimize window"
         title="Minimize"
-        onClick={() => void app.MinimiseMainWindow()}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.MinimiseMainWindow())}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, () => void app.MinimiseMainWindow())}
       >
         <Minus size={13} strokeWidth={1.9} />
       </button>
@@ -325,7 +349,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         aria-label="Maximize or restore window"
         aria-pressed={maximised}
         title={maximised ? "Restore" : "Maximize"}
-        onClick={toggleMaximise}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, toggleMaximise)}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, toggleMaximise)}
       >
         {maximised ? <RestoreIcon size={12} strokeWidth={1.75} /> : <Square size={11} strokeWidth={1.8} />}
       </button>
@@ -334,7 +361,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         type="button"
         aria-label="Close window"
         title="Close"
-        onClick={() => void app.CloseMainWindow()}
+        onPointerDown={stopFramelessPointerDown}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.CloseMainWindow())}
+        onMouseDown={stopFramelessMouseDown}
+        onClick={(event) => runKeyboardClick(event, () => void app.CloseMainWindow())}
       >
         <X size={13} strokeWidth={1.9} />
       </button>
@@ -344,6 +374,26 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 
 function WindowsResizeHandles() {
   const { maximised } = useWindowsMaximisedState();
+  useEffect(() => {
+    const flags = (window as Window & {
+      wails?: { flags?: { borderThickness: number; resizeEdge?: string; defaultCursor?: string | null } };
+    }).wails?.flags;
+    if (!flags) return;
+    const borderThickness = flags.borderThickness;
+
+    const resetCursor = () => {
+      document.documentElement.style.cursor = flags.defaultCursor ?? "";
+      flags.resizeEdge = undefined;
+    };
+
+    resetCursor();
+    flags.borderThickness = Number.NEGATIVE_INFINITY;
+    return () => {
+      resetCursor();
+      flags.borderThickness = borderThickness;
+    };
+  }, []);
+
   const startResize = useCallback((edge: WindowsResizeEdge, event: ReactMouseEvent<HTMLSpanElement>) => {
     if (event.button !== 0) return;
     const wailsInvoke = (window as Window & { WailsInvoke?: (message: string) => void }).WailsInvoke;
@@ -356,15 +406,16 @@ function WindowsResizeHandles() {
   if (maximised) return null;
 
   return (
-    <div className="windows-resize-handles" aria-hidden="true">
+    <>
       {WINDOWS_RESIZE_EDGES.map(({ edge, className }) => (
         <span
           key={edge}
+          aria-hidden="true"
           className={`windows-resize-handle ${className}`}
           onMouseDown={(event) => startResize(edge, event)}
         />
       ))}
-    </div>
+    </>
   );
 }
 
@@ -4072,7 +4123,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 type="button"
                 className="workspace-sidebar__settings"
                 aria-label={t("topbar.settings")}
-                onClick={openGeneralSettings}
+                onPointerDown={stopFramelessPointerDown}
+                onPointerUp={(event) => runFramelessPointerAction(event, openGeneralSettings)}
+                onMouseDown={stopFramelessMouseDown}
+                onClick={(event) => runKeyboardClick(event, openGeneralSettings)}
               >
                 <SettingsIcon size={18} aria-hidden="true" />
                 <span>{t("topbar.settings")}</span>

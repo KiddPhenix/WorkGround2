@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -256,10 +258,12 @@ func (a *App) observeSessionUnread(tabID string, value event.Event) {
 		a.mu.RUnlock()
 		return
 	}
-	sessionID := strings.TrimSpace(tab.SessionID)
 	path := strings.TrimSpace(tab.currentSessionPath())
-	if sessionID == "" && path != "" {
+	sessionID := ""
+	if path != "" {
 		sessionID = "path:" + path
+	} else {
+		sessionID = strings.TrimSpace(tab.SessionID)
 	}
 	key := firstNonEmpty(sessionID, strings.TrimSpace(tab.ID))
 	title := firstNonEmpty(strings.TrimSpace(tab.TopicTitle), strings.TrimSpace(tab.Label), "Session")
@@ -441,4 +445,216 @@ func (a *App) emitUnreadState(state UnreadState) {
 		return
 	}
 	a.runtimeEvents.Emit(a.ctx, unreadStateChannel, state)
+}
+
+// ResolvedSession carries the navigation target resolved from a legacy unread
+// conversation key. It intentionally omits a runtime hint so the caller stays
+// on the standard open-topic path.
+type ResolvedSession struct {
+	Scope         string `json:"scope"`
+	WorkspaceRoot string `json:"workspaceRoot"`
+	TopicID       string `json:"topicId"`
+	SessionPath   string `json:"sessionPath"`
+	TopicTitle    string `json:"topicTitle"`
+}
+
+// ResolveLegacySessionUnread attempts to resolve a SESSION unread conversation
+// key that uses an old UUID-based SessionID into a concrete session file path.
+// On success it self-heals the unread store via BindSession so the record
+// survives restarts. It only accepts keys with the "session:" prefix; any other
+// key returns an error immediately.
+func (a *App) ResolveLegacySessionUnread(conversationKey string) (ResolvedSession, error) {
+	key := strings.TrimSpace(conversationKey)
+	if key == "" {
+		return ResolvedSession{}, errors.New("conversation key is required")
+	}
+	if !strings.HasPrefix(key, "session:") {
+		return ResolvedSession{}, fmt.Errorf("conversation key %q is not a session unread", key)
+	}
+	store, err := a.currentUnreadStore()
+	if err != nil {
+		return ResolvedSession{}, fmt.Errorf("unread store unavailable: %w", err)
+	}
+	if store == nil {
+		return ResolvedSession{}, errors.New("unread store unavailable")
+	}
+	// Find the conversation to access its SessionID and metadata.
+	summary := store.Summary()
+	var conv unread.Conversation
+	found := false
+	for _, c := range summary.Conversations {
+		if c.Key == key {
+			conv = c
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ResolvedSession{}, fmt.Errorf("unread conversation %q not found", key)
+	}
+	// Only SESSION source unreads can be resolved this way.
+	if conv.Source != unread.SourceSession {
+		return ResolvedSession{}, fmt.Errorf("unread conversation %q has source %q, only session is supported", key, conv.Source)
+	}
+	sessionID := strings.TrimSpace(conv.SessionID)
+	if sessionID == "" {
+		return ResolvedSession{}, errors.New("legacy session unread has no session ID")
+	}
+	dirs := a.knownSessionDirs()
+	resolvedPath := ""
+	if strings.HasPrefix(strings.ToLower(sessionID), "path:") {
+		resolvedPath = strings.TrimSpace(sessionID[len("path:"):])
+	} else {
+		resolvedPath = a.runtimeSessionPath(sessionID)
+	}
+	if resolvedPath == "" {
+		resolvedPath, err = resolveSessionByID(dirs, sessionID, conv.Title, conv.LastUnreadAt)
+	}
+	if err != nil {
+		return ResolvedSession{}, err
+	}
+	if !sessionPathInDirs(dirs, resolvedPath) {
+		return ResolvedSession{}, fmt.Errorf("resolved session path %q is outside known session directories", resolvedPath)
+	}
+	// Load meta for scope/workspace/topic.
+	meta, ok, err := agent.LoadBranchMeta(resolvedPath)
+	if err != nil || !ok {
+		return ResolvedSession{}, fmt.Errorf("cannot load session meta for %q: %w", resolvedPath, err)
+	}
+	scope := meta.DefaultScope()
+	workspaceRoot := meta.WorkspaceRoot
+	topicID := meta.TopicID
+	topicTitle := firstNonEmpty(meta.TopicTitle, meta.CustomTitle, conv.Title)
+	// Self-heal: bind the resolved path back to the unread store. BindSession is
+	// idempotent, so a stale double-click or retry remains safe.
+	newSessionID := "path:" + resolvedPath
+	before := store.Summary().Revision
+	if err := store.BindSession(key, newSessionID); err != nil {
+		return ResolvedSession{}, fmt.Errorf("bind resolved session path: %w", err)
+	}
+	state := a.UnreadState()
+	if state.Summary.Revision != before {
+		a.emitUnreadState(state)
+	}
+	return ResolvedSession{
+		Scope:         scope,
+		WorkspaceRoot: workspaceRoot,
+		TopicID:       topicID,
+		SessionPath:   resolvedPath,
+		TopicTitle:    topicTitle,
+	}, nil
+}
+
+func (a *App) runtimeSessionPath(sessionID string) string {
+	if a == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, tabs := range []map[string]*WorkspaceTab{a.tabs, a.detachedSessions} {
+		for _, tab := range tabs {
+			if tab != nil && strings.TrimSpace(tab.SessionID) == sessionID {
+				return strings.TrimSpace(tab.currentSessionPath())
+			}
+		}
+	}
+	return ""
+}
+
+func sessionPathInDirs(dirs []string, sessionPath string) bool {
+	target := sessionRuntimeKey(filepath.Dir(strings.TrimSpace(sessionPath)))
+	if target == "" {
+		return false
+	}
+	for _, dir := range dirs {
+		if sessionRuntimeKey(dir) == target {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveSessionByID searches known session dirs for a .jsonl file whose stem
+// matches sessionID. If no exact match is found it falls back to
+// scanning .jsonl.meta files and matching by title + LastUnreadAt proximity.
+func resolveSessionByID(dirs []string, sessionID, title string, lastUnreadAt time.Time) (string, error) {
+	// Step 1: try a direct filename-stem match without allowing traversal.
+	if filepath.Base(sessionID) == sessionID && !strings.ContainsAny(sessionID, `/\\`) {
+		for _, dir := range dirs {
+			candidate := filepath.Join(dir, sessionID+".jsonl")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+	}
+	// Step 2: fallback scan by title + timestamp proximity.
+	if title == "" {
+		return "", fmt.Errorf("session %q not found and no title to fallback match", sessionID)
+	}
+	return resolveSessionByTitle(dirs, title, lastUnreadAt)
+}
+
+// resolveSessionByTitle scans .jsonl.meta files across known session dirs,
+// matching by topic_title. If exactly one candidate matches and its
+// UpdatedAt is within a reasonable window of lastUnreadAt, it is returned.
+// Zero or multiple matches produce an explicit error.
+func resolveSessionByTitle(dirs []string, title string, lastUnreadAt time.Time) (string, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", errors.New("title is required for fallback session resolution")
+	}
+	type candidate struct {
+		path      string
+		updatedAt time.Time
+	}
+	var candidates []candidate
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".jsonl.meta") {
+				continue
+			}
+			sessionPath := filepath.Join(dir, strings.TrimSuffix(name, ".meta"))
+			if _, err := os.Stat(sessionPath); err != nil {
+				continue
+			}
+			meta, ok, err := agent.LoadBranchMeta(sessionPath)
+			if err != nil || !ok {
+				continue
+			}
+			metaTitle := firstNonEmpty(meta.TopicTitle, meta.CustomTitle)
+			if metaTitle != title {
+				continue
+			}
+			candidates = append(candidates, candidate{path: sessionPath, updatedAt: meta.UpdatedAt})
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no session found with title %q", title)
+	}
+	if len(candidates) > 1 {
+		// Try to disambiguate by timestamp proximity when lastUnreadAt is set.
+		if !lastUnreadAt.IsZero() {
+			var close []candidate
+			const window = 5 * time.Minute
+			for _, c := range candidates {
+				diff := c.updatedAt.Sub(lastUnreadAt)
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff <= window {
+					close = append(close, c)
+				}
+			}
+			if len(close) == 1 {
+				return close[0].path, nil
+			}
+		}
+		return "", fmt.Errorf("multiple sessions with title %q found (%d candidates); cannot disambiguate", title, len(candidates))
+	}
+	return candidates[0].path, nil
 }

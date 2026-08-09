@@ -688,6 +688,8 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.recentCount": "顯示筆數",
   "projectTree.recentEmpty": "暫無最近會話",
   "projectTree.unreadCount": "{n} 則未讀訊息",
+  "projectTree.unreadFallbackOpenError": "無法開啟此未讀會話，未讀狀態已保留",
+  "projectTree.unreadFallbackLabel": "未讀 {source}: {title} ({count})",
   "projectTree.searchPlaceholder": "搜尋專案或會話",
   "projectTree.newTopic": "新建會話",
   "projectTree.renameTopic": "重新命名會話",

@@ -8,7 +8,7 @@ import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app, onUnreadState } from "../lib/bridge";
-import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus, UnreadConversation, UnreadState } from "../lib/types";
+import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus, ResolvedSession, UnreadConversation, UnreadState } from "../lib/types";
 import { topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
@@ -51,6 +51,12 @@ type ProjectTreeImTopicSource = {
 
 function projectNodeKey(node: ProjectNode, depth: number): string {
   return node.key || `${node.kind}-${node.root ?? ""}-${node.topicId ?? ""}-${depth}`;
+}
+
+/** Returns a menu identity scoped by tree section so the same node rendered
+ *  in both Recent and Projects sections only opens one ContextMenu portal. */
+export function topicMenuKey(section: "recent" | "projects", nodeKey: string): string {
+  return `${section}\x1f${nodeKey}`;
 }
 
 function isRuntimeSessionNode(node: ProjectNode): boolean {
@@ -99,6 +105,30 @@ export function projectTreeUnreadConversations(node: ProjectNode, conversations:
 
 export function projectTreeUnreadCount(node: ProjectNode, conversations: UnreadConversation[]): number {
   return projectTreeUnreadConversations(node, conversations).reduce((total, conversation) => total + conversation.unreadCount, 0);
+}
+
+const UNREAD_FALLBACK_PREFIX = "unread_fallback:";
+
+function unreadFallbackKey(conversation: UnreadConversation): string {
+  return `${UNREAD_FALLBACK_PREFIX}${conversation.key}`;
+}
+
+export function projectTreeUnreadFallbackConversation(node: ProjectNode, conversations: UnreadConversation[]): UnreadConversation | undefined {
+  const key = (node.key ?? "").trim();
+  if (!key.startsWith(UNREAD_FALLBACK_PREFIX)) return undefined;
+  return conversations.find((conversation) => unreadFallbackKey(conversation) === key && conversation.unreadCount > 0);
+}
+
+export async function openLegacyUnreadConversation(
+  conversation: UnreadConversation,
+  resolve: (key: string) => Promise<ResolvedSession>,
+  open: (target: ResolvedSession) => Promise<void> | void,
+  markRead: (key: string, upToSequence: number) => Promise<void>,
+): Promise<ResolvedSession> {
+  const target = await resolve(conversation.key);
+  await open(target);
+  await markRead(conversation.key, conversation.latestSequence);
+  return target;
 }
 
 export type ProjectTreeTopicOpenRequest = {
@@ -561,6 +591,7 @@ export function splitWorkbenchRecentTree(
   nodes: ProjectNode[],
   sortMode: WorkbenchSortMode,
   settings: WorkbenchRecentSettings,
+  unreadConversations: UnreadConversation[] = [],
 ): WorkbenchTreeSections {
   const recentTopics: ProjectNode[] = [];
   const projects: ProjectNode[] = [];
@@ -582,11 +613,60 @@ export function splitWorkbenchRecentTree(
     return topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
   });
 
+  // --- Unread-aware separation ---
+  const activeUnread = unreadConversations.filter((c) => c.unreadCount > 0);
+  const unreadRelatedKeys = new Set<string>();
+  const assignedConversationKeys = new Set<string>();
+  const unreadMapped: ProjectNode[] = [];
+
+  for (const node of recentTopics) {
+    const matched = projectTreeUnreadConversations(node, activeUnread);
+    if (matched.length === 0) continue;
+    unreadRelatedKeys.add(node.key);
+    const unassigned = matched.filter((conversation) => !assignedConversationKeys.has(conversation.key));
+    if (unassigned.length === 0) continue;
+    unreadMapped.push(node);
+    for (const conversation of unassigned) assignedConversationKeys.add(conversation.key);
+  }
+  const unmatchedConversations = activeUnread.filter((conversation) => !assignedConversationKeys.has(conversation.key));
+
+  // Sort unread-mapped nodes: running first, then by activity (same as the base sort)
+  unreadMapped.sort((a, b) => {
+    if (Boolean(a.running) !== Boolean(b.running)) return a.running ? -1 : 1;
+    return topicSortValue(b, sortMode) - topicSortValue(a, sortMode);
+  });
+
+  // Build fallback nodes for unmapped conversations
+  const SOURCE_PRIORITY: Record<string, number> = { room: 0, im: 1, work: 2, session: 3 };
+  const unreadFallbacks: ProjectNode[] = unmatchedConversations
+    .sort((a, b) => {
+      const aTime = a.lastUnreadAt ? new Date(a.lastUnreadAt).getTime() : 0;
+      const bTime = b.lastUnreadAt ? new Date(b.lastUnreadAt).getTime() : 0;
+      if (aTime !== bTime) return bTime - aTime;
+      return (SOURCE_PRIORITY[a.source] ?? 4) - (SOURCE_PRIORITY[b.source] ?? 4);
+    })
+    .map((conv) => buildUnreadFallbackNode(conv));
+
+  // Read section: exclude unread-mapped nodes, apply external filter, apply limit
+  const readRecent = recentTopics
+    .filter((n) => !unreadRelatedKeys.has(n.key))
+    .filter((n) => settings.showExternal || !projectTreeIsExternalCall(n))
+    .slice(0, settings.limit);
+
   return {
-    recent: recentTopics
-      .filter((node) => settings.showExternal || !projectTreeIsExternalCall(node))
-      .slice(0, settings.limit),
+    recent: [...unreadMapped, ...unreadFallbacks, ...readRecent],
     projects,
+  };
+}
+
+/** Build a synthetic ProjectNode as a fallback row for an unmapped unread conversation. */
+function buildUnreadFallbackNode(conv: UnreadConversation): ProjectNode {
+  return {
+    kind: "topic",
+    key: unreadFallbackKey(conv),
+    label: conv.title || conv.key,
+    topicId: "",
+    sessionSource: conv.source === "room" ? "room" : conv.source === "im" ? "auto" : conv.source === "work" ? `work:${conv.key}` : "",
   };
 }
 
@@ -1286,8 +1366,8 @@ export function ProjectTree({
 
   const workbenchTreeSections = useMemo<WorkbenchTreeSections>(() => {
     if (!compactTopics) return { recent: [], projects: visibleTree };
-    return splitWorkbenchRecentTree(visibleTree, workbenchSortMode, workbenchRecentSettings);
-  }, [compactTopics, visibleTree, workbenchRecentSettings, workbenchSortMode]);
+    return splitWorkbenchRecentTree(visibleTree, workbenchSortMode, workbenchRecentSettings, asArray(unreadState.summary.conversations));
+  }, [compactTopics, visibleTree, workbenchRecentSettings, workbenchSortMode, unreadState.summary.conversations]);
 
   const projectDragEnabled = query.trim() === "";
 
@@ -1357,7 +1437,8 @@ export function ProjectTree({
 
     if (isTopicNode(node) || isRuntimeSessionNode(node) || isCrewSessionNode(node)) {
       const isSessionNode = isRuntimeSessionNode(node) || isCrewSessionNode(node);
-      const openRequest = isCrewSessionNode(node) ? null : projectTreeTopicOpenRequest(node);
+      const unreadFallbackConv = projectTreeUnreadFallbackConversation(node, asArray(unreadState.summary.conversations));
+      const openRequest = isCrewSessionNode(node) || unreadFallbackConv ? null : projectTreeTopicOpenRequest(node);
       const scope = isCrewSessionNode(node) ? "global" : (openRequest?.scope ?? "project");
       const scopeClass = scope === "global" ? " project-tree__topic--global" : " project-tree__topic--project";
       const accentStyle = isCrewSessionNode(node) ? undefined : projectAccentStyle(node.projectColor, scope === "global" ? "var(--project-tree-global-accent)" : undefined);
@@ -1373,7 +1454,7 @@ export function ProjectTree({
       const showStatusInSide = status === "thinking" || status === "streaming" || status === "waiting_confirmation" || status === "background_job";
       const unread = isCrewSessionNode(node) ? false : projectTreeTopicHasUnreadActivity(node, readActivity, activeScope, activeWorkspaceRoot, activeTopicId, activeSessionPath);
       const remoteUnreadCount = section === "recent"
-        ? projectTreeUnreadCount(node, asArray(unreadState.summary.conversations))
+        ? (unreadFallbackConv?.unreadCount ?? projectTreeUnreadCount(node, asArray(unreadState.summary.conversations)))
         : 0;
       const visualState = projectTreeTopicVisualState(node, unread, status);
       const workSession = node.sessionKind === "work";
@@ -1383,19 +1464,23 @@ export function ProjectTree({
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
       const imSourcePlatform = (imSource?.platform || "im").replace(/[^a-z0-9_-]/gi, "").toLowerCase() || "im";
-      const sourceBadge = collaborationSession ? null : projectTreeSourceBadge(node, t);
+      const sourceBadge = collaborationSession ? null : unreadFallbackConv ? {
+        label: unreadFallbackConv.source.toUpperCase(),
+        title: t("projectTree.unreadFallbackLabel", { title: label, source: unreadFallbackConv.source, count: unreadFallbackConv.unreadCount }),
+        className: "project-tree__topic-origin--external",
+      } : projectTreeSourceBadge(node, t);
       const title = [label, imSourceTitle, sourceBadge?.title, statusLabel, meta, exactTimeLabel].filter(Boolean).join(" · ");
-      const topicMenuOpen = (!isSessionNode || workSession) && menuTopic === key;
-      const pinned = Boolean(node.pinned);
+      const topicMenuOpen = !unreadFallbackConv && (!isSessionNode || workSession) && menuTopic === topicMenuKey(section, key);
+      const pinned = !unreadFallbackConv && Boolean(node.pinned);
       const pinLabel = t(pinned ? "projectTree.unpinTopic" : "projectTree.pinTopic");
       const openTopicMenu = (event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>) => {
-        if (isSessionNode && !workSession) return;
+        if (unreadFallbackConv || (isSessionNode && !workSession)) return;
         event.preventDefault();
         event.stopPropagation();
         setMenuProject(null);
         setConfirmRemoveProject(null);
         setMenuPoint(contextMenuPointFromEvent(event));
-        setMenuTopic(key);
+        setMenuTopic(topicMenuKey(section, key));
         setConfirmAction(null);
       };
       const trashMenuItem: ContextMenuItem = {
@@ -1464,7 +1549,7 @@ export function ProjectTree({
         <div
           className={`project-tree__topic${scopeClass}${isSessionNode ? " project-tree__topic--session" : ""}${workSession ? " project-tree__topic--work-session" : ""}${collaborationSession ? " project-tree__topic--collaboration-session" : ""}${active ? " project-tree__topic--active" : ""}${node.running ? " project-tree__topic--running" : ""}${status ? ` project-tree__topic--status-${status}` : ""}${visualState !== "none" ? ` project-tree__topic--visual-${visualState}` : ""}${sourceBadge ? " project-tree__topic--external-source" : ""}${unread ? " project-tree__topic--unread" : ""}${!isSessionNode && pinned ? " project-tree__topic--pinned" : ""}${topicMenuOpen ? " project-tree__topic--menu-open" : ""}${sideTimeVisible && (timeLabel || showStatusInSide) ? " project-tree__topic--with-side" : meta ? " project-tree__topic--has-meta" : ""}${imSource ? " project-tree__topic--im-source" : ""}${shortcutIndex > 0 ? " project-tree__topic--show-shortcut" : ""}`}
           style={accentStyle}
-          onContextMenu={isSessionNode && !workSession ? undefined : openTopicMenu}
+          onContextMenu={unreadFallbackConv || (isSessionNode && !workSession) ? undefined : openTopicMenu}
         >
           <button
             type="button"
@@ -1472,10 +1557,32 @@ export function ProjectTree({
             title={title}
             style={{ paddingLeft: 14 + depth * 16 }}
             aria-current={active ? "page" : undefined}
+            aria-label={unreadFallbackConv ? t("projectTree.unreadFallbackLabel", { title: label, source: unreadFallbackConv.source, count: unreadFallbackConv.unreadCount }) : undefined}
             onClick={() => {
               if (isCrewSessionNode(node)) {
                 markNodeRead(node);
                 void onOpenCrewSession?.(node.sessionPath ?? "");
+                return;
+              }
+              if (unreadFallbackConv) {
+                if (unreadFallbackConv.source === "session") {
+                  void openLegacyUnreadConversation(
+                    unreadFallbackConv,
+                    (conversationKey) => app.ResolveLegacySessionUnread(conversationKey),
+                    (resolved) => onOpenTopic(resolved.scope, resolved.workspaceRoot, resolved.topicId, resolved.sessionPath),
+                    async (conversationKey, upToSequence) => {
+                      const next = await app.MarkUnreadRead({ conversationKey, upToSequence });
+                      applyUnreadState(next);
+                    },
+                  ).then(() => {
+                    markNodeRead(node);
+                  }).catch((error) => {
+                    showToast(t("projectTree.unreadFallbackOpenError"), "error");
+                    console.error("open legacy session unread failed", error);
+                  });
+                } else {
+                  showToast(t("projectTree.unreadFallbackOpenError"), "error");
+                }
                 return;
               }
               if (!openRequest) return;
@@ -1499,7 +1606,7 @@ export function ProjectTree({
               }
             }}
             onDoubleClick={(event) => {
-              if (isSessionNode) return;
+              if (isSessionNode || unreadFallbackConv) return;
               event.stopPropagation();
               if (clickTimerRef.current !== null && clickTimerRef.current.rowKey === key) {
                 clearTimeout(clickTimerRef.current.timer);
@@ -1587,7 +1694,7 @@ export function ProjectTree({
             )}
           </button>
           {!compactTopics && unread && <span className="project-tree__topic-unread-dot" aria-hidden="true" />}
-          {(section === "recent" || !compactTopics) && projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node), workSession) && (
+          {!unreadFallbackConv && (section === "recent" || !compactTopics) && projectTreeShouldRenderTopicActions(isSessionNode, compactTopics, unread, isCrewSessionNode(node), workSession) && (
             <span className="project-tree__topic-actions" aria-label={t("projectTree.topicActions")}>
               {section === "recent" && !workSession && <Tooltip label={pinLabel} side="top" className="project-tree__topic-action-slot">
                 <button
@@ -1619,7 +1726,7 @@ export function ProjectTree({
               </Tooltip>}
             </span>
           )}
-          {(!isSessionNode || workSession) && (
+          {!unreadFallbackConv && (!isSessionNode || workSession) && (
             <ContextMenu
               open={topicMenuOpen}
               point={menuPoint}

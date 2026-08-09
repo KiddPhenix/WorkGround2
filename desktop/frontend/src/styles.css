@@ -20135,21 +20135,15 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
-.windows-resize-handles {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-window-resize);
-  pointer-events: none;
-  --windows-resize-edge: 8px;
-  --windows-resize-corner: 18px;
-}
-
 .windows-resize-handle {
   position: fixed;
+  z-index: var(--z-window-resize);
   display: block;
   pointer-events: auto;
   background: transparent;
   --wails-draggable: no-drag;
+  --windows-resize-edge: 8px;
+  --windows-resize-corner: 18px;
 }
 
 .windows-resize-handle--top,
@@ -44339,12 +44333,26 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 12%, transparent);
 }
 
-.app--workbench .workspace-sidebar .project-tree__topic-visual--recent {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 9px;
+.app--workbench .workspace-sidebar .project-tree__topic-visual--done {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  margin: 0;
+  background: transparent;
+  opacity: 1;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--done::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
   background: var(--ok);
-  opacity: 0.78;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-visual--recent {
+  display: none;
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-unread-count {
