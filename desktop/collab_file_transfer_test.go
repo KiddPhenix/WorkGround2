@@ -28,6 +28,43 @@ import (
 	"workground2/internal/collab"
 )
 
+func TestRegisterFileOriginAllowsRelayWithoutLocalHTTPOrigin(t *testing.T) {
+	c := &desktopCollaboration{
+		state:          CollaborationState{Room: "room", MemberID: "owner"},
+		shareAuthority: "share-authority",
+		shares: map[string]collaborationSharedFile{
+			"file": {FileID: "file", Room: "room", OwnerID: "owner", ShareAuthority: "share-authority", Status: "available"},
+		},
+	}
+	c.conn = &collaborationConnection{
+		filePeer:          &relayCollaborationPeer{fileSource: c, room: "room"},
+		room:              "room",
+		memberID:          "owner",
+		shareAuthorityKey: "share-authority",
+	}
+
+	if err := c.registerFileOrigin(context.Background(), "file"); err != nil {
+		t.Fatalf("register Relay file origin: %v", err)
+	}
+}
+
+func TestRegisterFileOriginRequiresLocalHTTPOrigin(t *testing.T) {
+	c := &desktopCollaboration{
+		shareAuthority: "share-authority",
+		shares: map[string]collaborationSharedFile{
+			"file": {FileID: "file", ShareAuthority: "share-authority"},
+		},
+	}
+	c.conn = &collaborationConnection{
+		filePeer:          &httpCollaborationPeer{},
+		shareAuthorityKey: "share-authority",
+	}
+
+	if err := c.registerFileOrigin(context.Background(), "file"); err == nil || err.Error() != "file origin is unavailable" {
+		t.Fatalf("register HTTP file origin error = %v", err)
+	}
+}
+
 func TestCollaborationSharedFileOriginServesVerifiedChunks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shared.bin")
 	if err := os.WriteFile(path, []byte("shared-content"), 0o600); err != nil {
