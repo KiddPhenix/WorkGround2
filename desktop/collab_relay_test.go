@@ -226,6 +226,27 @@ func TestRelayFileSourceRequiresCurrentAuthorityAndOwner(t *testing.T) {
 	}
 }
 
+func TestRelayFileManifestPreservesOfferIdentity(t *testing.T) {
+	c, share := newTestRelayFileSource(t, []byte("relay source"))
+	share.OfferRevision = 7
+	c.shares[share.FileID] = share
+	value, err := c.serveRelayFileSource("file.manifest", relayFileRequest{Room: "room", FileID: share.FileID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := value.(relayFileManifestResponse)
+	if !ok {
+		t.Fatalf("manifest response type = %T", value)
+	}
+	offer := collab.FileOffer{
+		ID: share.FileID, OwnerID: share.OwnerID, Size: share.Size, SHA256: share.SHA256,
+		ManifestHash: share.ManifestHash, ChunkSize: share.ChunkSize, ChunkCount: len(share.ChunkHashes), Revision: share.OfferRevision,
+	}
+	if !fileTicketMatchesOffer(collab.FileTransferTicket{File: response.File}, offer) {
+		t.Fatalf("Relay ticket file = %+v, want offer identity %+v", response.File, offer)
+	}
+}
+
 func TestRelayFileSourceRejectsOverflowAndSourceChanges(t *testing.T) {
 	data := bytes.Repeat([]byte("segment-data"), 10_000)
 	for _, mutation := range []string{"replace", "in_place"} {

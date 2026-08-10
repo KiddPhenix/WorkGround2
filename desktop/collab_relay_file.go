@@ -315,7 +315,7 @@ func (c *desktopCollaboration) serveRelayFileSource(method string, input relayFi
 	}
 	switch method {
 	case "file.manifest", "file.source.manifest":
-		return relayFileManifestResponse{File: collab.FileOffer{ID: share.FileID, OwnerID: share.OwnerID, Name: share.Name, Size: share.Size, MIME: share.MIME, SHA256: share.SHA256, ManifestHash: share.ManifestHash, ChunkSize: share.ChunkSize, ChunkCount: len(share.ChunkHashes)}, Manifest: collaborationFileManifest{FileID: share.FileID, Size: share.Size, ChunkSize: share.ChunkSize, ChunkHashes: append([]string(nil), share.ChunkHashes...)}}, nil
+		return relayFileManifestResponse{File: collab.FileOffer{ID: share.FileID, OwnerID: share.OwnerID, Name: share.Name, Size: share.Size, MIME: share.MIME, SHA256: share.SHA256, ManifestHash: share.ManifestHash, ChunkSize: share.ChunkSize, ChunkCount: len(share.ChunkHashes), Revision: share.OfferRevision}, Manifest: collaborationFileManifest{FileID: share.FileID, Size: share.Size, ChunkSize: share.ChunkSize, ChunkHashes: append([]string(nil), share.ChunkHashes...)}}, nil
 	case "file.segment", "file.source.segment":
 		if input.Index < 0 || input.Index >= len(share.ChunkHashes) || input.Offset < 0 || input.Size < 1 || input.Size > relayFileSegmentSize {
 			return nil, &collab.Error{Code: collab.CodeInvalid, Message: "invalid file segment"}
