@@ -1,4 +1,4 @@
-import type { CollaborationRouteInput } from "./types";
+import type { CollaborationInvite, CollaborationRouteInput } from "./types";
 
 export interface CollaborationInviteV1 {
   version?: 1;
@@ -18,6 +18,14 @@ export interface CollaborationInviteV2 {
 
 export type CollaborationInviteValue = CollaborationInviteV1 | CollaborationInviteV2;
 
+export interface CollaborationInviteOption {
+  key: string;
+  kind: "lan" | "relay";
+  label: string;
+  host?: string;
+  route?: CollaborationRouteInput;
+}
+
 const inviteScheme = "workground2:";
 
 export function tryBuildCollaborationInvite(value: CollaborationInviteValue): string {
@@ -26,6 +34,41 @@ export function tryBuildCollaborationInvite(value: CollaborationInviteValue): st
   } catch {
     return "";
   }
+}
+
+export function collaborationInviteOptions(invite: CollaborationInvite): CollaborationInviteOption[] {
+  const routes = invite.routes || [];
+  const relay = routes.flatMap((route, index) => route.kind === "relay"
+    ? [{ key: `relay:${index}`, kind: "relay" as const, label: route.relayId || route.url || "Relay Server", route }]
+    : []);
+  const lanRoutes = routes.filter((route) => route.kind === "lan" && route.host);
+  const hosts = invite.version === 2 ? lanRoutes.map((route) => route.host!) : invite.hosts;
+  const seen = new Set<string>();
+  const lan = hosts.flatMap((host) => {
+    host = host.trim();
+    if (!host || seen.has(host)) return [];
+    seen.add(host);
+    return [{
+      key: `lan:${host}`,
+      kind: "lan" as const,
+      label: host,
+      host,
+      route: lanRoutes.find((route) => route.host === host),
+    }];
+  });
+  const regular = lan.filter((option) => option.host !== "127.0.0.1" && option.host !== "::1");
+  const loopback = lan.filter((option) => option.host === "127.0.0.1" || option.host === "::1");
+  return [...relay, ...regular, ...loopback];
+}
+
+export function buildCollaborationInviteForOption(invite: CollaborationInvite, option?: CollaborationInviteOption): string {
+  if (!option) return "";
+  if (invite.version === 2) {
+    if (!invite.hostKey || !option.route) return "";
+    return tryBuildCollaborationInvite({ version: 2, room: invite.room, hostKey: invite.hostKey, routes: [option.route], roomToken: invite.token });
+  }
+  if (option.kind !== "lan" || !option.host) return "";
+  return tryBuildCollaborationInvite({ host: option.host, port: invite.port, room: invite.room, token: invite.token });
 }
 
 export function buildCollaborationInvite(value: CollaborationInviteValue): string {

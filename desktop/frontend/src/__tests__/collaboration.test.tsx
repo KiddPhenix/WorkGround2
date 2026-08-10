@@ -12,7 +12,7 @@ import { CollaborationTimeline } from "../collab/components/CollaborationTimelin
 import { collabCopy, contributionLabel } from "../collab/copy";
 import { agentCollaborationClock, agentCollaborationRequestID, collabReducer, detectSelfAgentIntent, detectSelfAgentIntentRule, initialCollabState, nextAgentCollaborationBatch, nextAutomaticAgentItem, replayableSelfAgentItems, selectedTimelineItems, visibleCollaborationTimeline } from "../collab/state";
 import { loadCollaborationIdentity, newCollaborationIdentity, saveCollaborationIdentity } from "../collab/identity";
-import { buildCollaborationInvite, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
+import { buildCollaborationInvite, buildCollaborationInviteForOption, collaborationInviteOptions, parseCollaborationInvite, tryBuildCollaborationInvite } from "../collab/invite";
 import { recentAgentActivity } from "../collab/agentActivity";
 import { activeMention, collaborationMentionCandidates, filterMentionCandidates, insertMention, mentionPayload, mentionRequestID, nextMentionedAgentItem } from "../collab/mentions";
 import type { CollaborationMember, CollaborationState, CollaborationTimelineItem, CollaborationTransport, PendingIntent } from "../collab/types";
@@ -1306,6 +1306,19 @@ async function main() {
   equal(parseCollaborationInvite(ipv6Invite), { host: "::1", port: 39170, room: "room-v6", token: undefined }, "connection string preserves bracketed IPv6 hosts");
   const relayInviteValue = { version: 2 as const, room: "跨网联调", hostKey: "sha256:host-key", routes: [{ kind: "lan" as const, protocolVersion: 2 as const, host: "192.168.1.8", port: 39170 }, { kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1", priority: 100 }], roomToken: "secret" };
   equal(parseCollaborationInvite(buildCollaborationInvite(relayInviteValue)), relayInviteValue, "V2 RouteSet invite round-trips UTF-8 Room, LAN and Relay routes");
+  const selectableInvite = { version: 2 as const, hosts: ["127.0.0.1", "10.0.0.8", "::1"], port: 39170, room: "route-room", token: "secret", hostKey: "sha256:host-key", routes: [
+    { id: "lan:127.0.0.1", kind: "lan" as const, protocolVersion: 2 as const, host: "127.0.0.1", port: 39170 },
+    { id: "relay:sg", kind: "relay" as const, relayId: "official-sg", url: "wss://relay.example.test/relay/v1/connect", tunnelId: "tun-1", guestCapability: "cap-1" },
+    { id: "lan:10.0.0.8", kind: "lan" as const, protocolVersion: 2 as const, host: "10.0.0.8", port: 39170 },
+    { id: "lan:::1", kind: "lan" as const, protocolVersion: 2 as const, host: "::1", port: 39170 },
+  ] };
+  const exportOptions = collaborationInviteOptions(selectableInvite);
+  equal(exportOptions.map((option) => `${option.kind}:${option.label}`), ["relay:official-sg", "lan:10.0.0.8", "lan:127.0.0.1", "lan:::1"], "export routes keep Relay first and loopback addresses last");
+  const relayExport = buildCollaborationInviteForOption(selectableInvite, exportOptions[0]);
+  const lanExport = buildCollaborationInviteForOption(selectableInvite, exportOptions[1]);
+  ok(relayExport !== lanExport, "changing the export route changes the connection string");
+  equal((parseCollaborationInvite(relayExport) as typeof relayInviteValue).routes.map((route) => route.kind), ["relay"], "Relay selection exports only the selected Relay route");
+  equal((parseCollaborationInvite(lanExport) as typeof relayInviteValue).routes.map((route) => route.host), ["10.0.0.8"], "LAN selection exports only the selected IP route");
   let invalidInvite = false;
   try { parseCollaborationInvite("https://example.com/room"); } catch { invalidInvite = true; }
   ok(invalidInvite, "non-WorkGround2 URLs are rejected as Room invites");
@@ -1316,6 +1329,7 @@ async function main() {
   equal(tryBuildCollaborationInvite({ version: 2 as const, room: "test", hostKey: "key", routes: [] }), "", "V2 invite without routes returns empty string without throwing");
   ok(tryBuildCollaborationInvite({ host: "192.168.1.8", port: 39170, room: "test" }).startsWith("workground2://"), "valid V1 invite produces workground2 URL");
   ok(workspaceSource.includes('inviteBuildError = invite && !inviteString ? c("connectionStringInvalid")') && workspaceSource.includes("disabled={!inviteString}"), "invalid exported invites stay visible as retryable errors and cannot be copied");
+  ok(workspaceSource.includes("buildCollaborationInviteForOption") && !workspaceSource.includes("invite?.invite ||"), "exported connection strings follow the selected route instead of the prebuilt aggregate invite");
 
   const identityDOM = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
   Object.assign(globalThis, { localStorage: identityDOM.window.localStorage });

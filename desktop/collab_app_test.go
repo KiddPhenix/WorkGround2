@@ -2059,23 +2059,29 @@ func TestCollaborationHostInviteExportsLocalAddressesOnDemand(t *testing.T) {
 	conn := testConnection(&fakeCollaborationPeer{}, "host", "session-a")
 	conn.hostName = "0.0.0.0"
 	conn.joinToken = "room-secret"
+	conn.hostKey = "sha256:host-key"
+	conn.routes = []CollaborationRouteState{{
+		CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: conn.hostName, Port: conn.port, Priority: 1000, ProtocolVersion: collaborationProtocolV2},
+		Status:                  "connected",
+	}}
 	c.conn = conn
 	c.state = CollaborationState{Status: "connected", Mode: "host", Host: conn.hostName, Port: conn.port, Room: conn.room, SessionID: conn.sessionID}
 	invite, err := c.invite()
 	if err != nil || invite.Room != conn.room || invite.Port != conn.port || invite.Token != conn.joinToken {
 		t.Fatalf("invite=%+v err=%v", invite, err)
 	}
-	foundLoopback := false
 	for _, host := range invite.Hosts {
-		if host == "127.0.0.1" {
-			foundLoopback = true
-		}
 		if host == "0.0.0.0" || host == "::" {
 			t.Fatalf("invite exposed an unspecified address: %+v", invite.Hosts)
 		}
 	}
-	if !foundLoopback {
-		t.Fatalf("invite has no local double-open address: %+v", invite.Hosts)
+	if size := len(invite.Hosts); size < 2 || invite.Hosts[size-2] != "127.0.0.1" || invite.Hosts[size-1] != "::1" {
+		t.Fatalf("invite loopback addresses are not last: %+v", invite.Hosts)
+	}
+	for _, route := range invite.Routes {
+		if route.Kind == "lan" && route.ProtocolVersion != collaborationProtocolV2 {
+			t.Fatalf("invite lost LAN protocol version: %+v", route)
+		}
 	}
 	c.state.Mode = "client"
 	if _, err := c.invite(); err == nil {

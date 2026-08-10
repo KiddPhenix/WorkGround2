@@ -11,7 +11,7 @@ import { AgentActivityPopover, type AgentActivityAnchor } from "./components/Age
 import { CollaborationAvatar } from "./components/CollaborationAvatar";
 import { compressCollaborationAvatar } from "./avatar";
 import { loadCollaborationIdentity, saveCollaborationIdentity } from "./identity";
-import { tryBuildCollaborationInvite } from "./invite";
+import { buildCollaborationInviteForOption, collaborationInviteOptions } from "./invite";
 import { agentCollaborationClock } from "./state";
 import type { CollaborationInvite, CollaborationTimelineItem, CollaborationToolApprovalMode, CollaborationWorkspaceOption } from "./types";
 import type { ComposerSubmitKey } from "../lib/composerKeyboard";
@@ -76,7 +76,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
   const [replyTo, setReplyTo] = useState<CollaborationTimelineItem>();
   const [batchInstruction, setBatchInstruction] = useState("");
   const [invite, setInvite] = useState<CollaborationInvite>();
-  const [inviteHost, setInviteHost] = useState("");
+  const [inviteTarget, setInviteTarget] = useState("");
   const [inviteError, setInviteError] = useState("");
   const [inviteCopied, setInviteCopied] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
@@ -189,14 +189,13 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
     try {
       const next = await controller.invite();
       setInvite(next);
-      setInviteHost(next.hosts[0] || "127.0.0.1");
+      setInviteTarget(collaborationInviteOptions(next)[0]?.key || "");
     } catch (error) {
       setInviteError(error instanceof Error ? error.message : String(error));
     }
   };
-  const inviteString = invite?.invite || (invite?.version === 2 && invite.hostKey && invite.routes?.length
-    ? tryBuildCollaborationInvite({ version: 2, room: invite.room, hostKey: invite.hostKey, routes: invite.routes, roomToken: invite.token })
-    : invite && inviteHost ? tryBuildCollaborationInvite({ host: inviteHost, port: invite.port, room: invite.room, token: invite.token }) : "");
+  const inviteOptions = invite ? collaborationInviteOptions(invite) : [];
+  const inviteString = invite ? buildCollaborationInviteForOption(invite, inviteOptions.find((option) => option.key === inviteTarget)) : "";
   const inviteBuildError = invite && !inviteString ? c("connectionStringInvalid") : "";
   const copyInvite = async () => {
     if (!inviteString) return;
@@ -290,7 +289,7 @@ export function CollaborationWorkspace({ sessionID, tabID, mode = "session", onC
               {(invite || inviteError) && <div className="collab-invite-popover" role="dialog" aria-label={c("exportConnection")}>
                 <strong>{c("exportConnection")}</strong>
                 {invite && <>
-                  {invite.hosts.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteHost} onChange={(event) => { setInviteHost(event.target.value); setInviteCopied(false); }}>{invite.hosts.map((host) => <option key={host} value={host}>{host}</option>)}</select></label>}
+                  {inviteOptions.length > 0 && <label><span>{c("selectLocalIP")}</span><select value={inviteTarget} onChange={(event) => { setInviteTarget(event.target.value); setInviteCopied(false); }}>{inviteOptions.map((option) => <option key={option.key} value={option.key}>{option.kind === "relay" ? `${c("relayServer")} · ${option.label}` : option.label}</option>)}</select></label>}
                   <div className="collab-invite-value"><input readOnly value={inviteString} aria-label={c("connectionString")} /><button type="button" disabled={!inviteString} onClick={() => void copyInvite()} aria-label={c("copyConnection")} title={c("copyConnection")}>{inviteCopied ? <Check size={15} /> : <Copy size={15} />}</button></div>
                   <small>{c("connectionTokenNotice")}</small>
                 </>}

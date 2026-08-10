@@ -1838,7 +1838,7 @@ func (c *desktopCollaboration) invite() (CollaborationInvite, error) {
 	for _, route := range conn.routes {
 		if route.Kind == "lan" && route.Status == "connected" {
 			for _, host := range collaborationLocalHosts(route.Host) {
-				result.Routes = append(result.Routes, CollaborationRouteInput{ID: "lan:" + host, Kind: "lan", Host: host, Port: route.Port, Priority: route.Priority})
+				result.Routes = append(result.Routes, CollaborationRouteInput{ID: "lan:" + host, Kind: "lan", Host: host, Port: route.Port, Priority: route.Priority, ProtocolVersion: route.ProtocolVersion})
 			}
 			continue
 		}
@@ -1874,7 +1874,7 @@ func collaborationLocalHosts(bindHost string) []string {
 		return []string{bindHost}
 	}
 	seen := map[string]bool{}
-	var ipv4, ipv6 []string
+	var ipv4, ipv6, loopback []string
 	add := func(value string) {
 		value = strings.Trim(strings.TrimSpace(value), "[]")
 		ip := net.ParseIP(strings.Split(value, "%")[0])
@@ -1882,7 +1882,9 @@ func collaborationLocalHosts(bindHost string) []string {
 			return
 		}
 		seen[value] = true
-		if ip.To4() != nil {
+		if ip.IsLoopback() {
+			loopback = append(loopback, value)
+		} else if ip.To4() != nil {
 			ipv4 = append(ipv4, value)
 		} else {
 			ipv6 = append(ipv6, value)
@@ -1906,9 +1908,11 @@ func collaborationLocalHosts(bindHost string) []string {
 		}
 	}
 	add("127.0.0.1")
+	add("::1")
 	sort.Strings(ipv4)
 	sort.Strings(ipv6)
-	return append(ipv4, ipv6...)
+	sort.Strings(loopback)
+	return append(append(ipv4, ipv6...), loopback...)
 }
 
 func (c *desktopCollaboration) leave(ctx context.Context) error {

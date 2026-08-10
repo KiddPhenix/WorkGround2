@@ -164,6 +164,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-stated+verified-by-search
 - Updated: 2026-08-04
 
+### Room 导出连接路由选择
+- Location: `desktop/collab_app.go`, `desktop/frontend/src/collab/CollaborationWorkspace.tsx`, `desktop/frontend/src/collab/invite.ts`
+- Summary: Room Host 导出连接的地址枚举、Relay/LAN 路由选择和邀请字符串编码入口。
+- Keywords: Room, export connection, CollaborationInvite, Relay, LAN, inviteString
+- Source: verified-by-search
+- Updated: 2026-08-10
+
 ### Room 小文件自动接收与图片直显
 - Location: `desktop/collab_file_transfer.go`, `desktop/collab_relay_file.go`, `desktop/collab_relay_crypto.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
 - Summary: Room 中严格小于 1 MiB 的他人文件按 Session workspace 和可信 Room 实例自动接收到 .workground2/attachments/room，完成 SHA 校验后可供 Agent 以相对 @ 路径引用；静态图片经内容校验后在文件卡内有界懒加载直显。
