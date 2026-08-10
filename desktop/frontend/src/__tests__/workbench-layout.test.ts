@@ -141,8 +141,8 @@ ok(
 ok(
   !includes(projectTreeSource, 'renderTimeFilterControl("workbench")') &&
     includes(projectTreeSource, '(section === "recent" || !compactTopics)') &&
-    includes(projectTreeSource, '!compactTopics && section !== "recent"'),
-  "ProjectTree: workbench hides header and session overflow controls while preserving classic actions",
+    includes(projectTreeSource, 'section === "recent" && !workSession'),
+  "ProjectTree: workbench hides header controls while Recent rows expose scoped actions",
 );
 ok(
   includes(projectTreeSource, 'role="switch"') &&
