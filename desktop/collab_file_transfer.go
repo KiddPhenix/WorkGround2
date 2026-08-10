@@ -716,10 +716,17 @@ func (c *desktopCollaboration) registerFileOrigin(ctx context.Context, fileID st
 	share, ok := c.shares[fileID]
 	shareAuthority := c.shareAuthority
 	c.mu.RUnlock()
-	if conn == nil || conn.filePeer == nil || origin == nil || !ok || share.ShareAuthority == "" || share.ShareAuthority != shareAuthority || shareAuthority != collaborationShareAuthorityKey(conn) {
+	if conn == nil || conn.filePeer == nil || !ok || share.ShareAuthority == "" || share.ShareAuthority != shareAuthority || shareAuthority != collaborationShareAuthorityKey(conn) {
 		return fmt.Errorf("file origin is unavailable")
 	}
-	return conn.filePeer.RegisterFileOrigin(ctx, fileID, collab.RegisterFileOriginInput{Port: origin.port, Secret: origin.secret, Hosts: append([]string(nil), origin.hosts...)})
+	input := collab.RegisterFileOriginInput{}
+	if collaborationFilePeerNeedsOrigin(conn.filePeer) {
+		if origin == nil {
+			return fmt.Errorf("file origin is unavailable")
+		}
+		input = collab.RegisterFileOriginInput{Port: origin.port, Secret: origin.secret, Hosts: append([]string(nil), origin.hosts...)}
+	}
+	return conn.filePeer.RegisterFileOrigin(ctx, fileID, input)
 }
 
 func (c *desktopCollaboration) restoreFileOrigins(conn *collaborationConnection) {
