@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -620,6 +621,9 @@ func collaborationFileOriginBindHost(conn *collaborationConnection) string {
 }
 
 func collaborationFilePeerNeedsOrigin(peer collaborationFilePeer) bool {
+	if !collaborationFilePeerAvailable(peer) {
+		return false
+	}
 	switch value := peer.(type) {
 	case *httpCollaborationPeer:
 		return true
@@ -887,6 +891,7 @@ func (c *desktopCollaboration) startFileDownload(fileID string) {
 				c.signalAutoReceiveFiles()
 			}
 		}()
+		defer c.recoverFileDownload(fileID, run)
 		if automatic {
 			c.downloadAutomaticFile(ctx, fileID, run, fileLock, sem, retryDelay)
 			return
@@ -899,17 +904,31 @@ func (c *desktopCollaboration) startFileDownload(fileID string) {
 	}()
 }
 
+func (c *desktopCollaboration) recoverFileDownload(fileID string, run uint64) {
+	value := recover()
+	if value == nil {
+		return
+	}
+	stack := debug.Stack()
+	fmt.Fprintf(os.Stderr, "collaboration file transfer panic: file=%s run=%d: %v\n%s", fileID, run, value, stack)
+	c.updateFileTransferRun(fileID, run, func(transfer *CollaborationFileTransfer) {
+		transfer.Status, transfer.Error, transfer.Retryable = "failed", "文件传输内部异常，已暂停自动重试", true
+		if transfer.Automatic {
+			transfer.AutoBlocked = true
+		}
+	})
+}
+
 func (c *desktopCollaboration) downloadAutomaticFile(ctx context.Context, fileID string, run uint64, fileLock *sync.Mutex, sem chan struct{}, retryDelay func(int) time.Duration) {
 	fileLock.Lock()
+	defer fileLock.Unlock()
 	select {
 	case sem <- struct{}{}:
 	case <-ctx.Done():
-		fileLock.Unlock()
 		return
 	}
+	defer func() { <-sem }()
 	c.downloadFile(ctx, fileID, run)
-	<-sem
-	fileLock.Unlock()
 	if ctx.Err() != nil {
 		return
 	}
@@ -932,7 +951,7 @@ func (c *desktopCollaboration) downloadFile(ctx context.Context, fileID string, 
 	if currentRun != run || transfer == nil {
 		return
 	}
-	if conn == nil || conn.filePeer == nil || !found {
+	if conn == nil || !collaborationFilePeerAvailable(conn.filePeer) || !found {
 		c.failFileTransferRun(fileID, run, "waiting_sender", "分享者或房间连接当前不可用", true)
 		return
 	}
@@ -1899,7 +1918,7 @@ func (c *desktopCollaboration) maybeAutoReceiveFiles() {
 		}
 		return
 	}
-	if room == "" || roomInstance == "" || conn == nil || conn.filePeer == nil {
+	if room == "" || roomInstance == "" || conn == nil || !collaborationFilePeerAvailable(conn.filePeer) {
 		return
 	}
 

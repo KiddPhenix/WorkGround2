@@ -48,6 +48,26 @@ func TestRegisterFileOriginAllowsRelayWithoutLocalHTTPOrigin(t *testing.T) {
 	}
 }
 
+func TestFallbackFilePeerSkipsTypedNilPrimary(t *testing.T) {
+	offer, fallback := testFileOffer("relay-only", "payload.json", "other", []byte(`{"ok":true}`), collab.MinFileChunkSize)
+	var primary *httpCollaborationPeer
+	peer := &fallbackCollaborationFilePeer{primary: primary, fallback: fallback}
+
+	if collaborationFilePeerAvailable(primary) {
+		t.Fatal("typed nil HTTP peer reported available")
+	}
+	if collaborationFilePeerNeedsOrigin(peer) {
+		t.Fatal("typed nil HTTP peer incorrectly requires a local file origin")
+	}
+	ticket, manifest, err := peer.fetchFileManifest(context.Background(), offer.ID, 4096, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticket.File.ID != offer.ID || manifest.FileID != offer.ID {
+		t.Fatalf("fallback manifest = %+v, ticket = %+v", manifest, ticket)
+	}
+}
+
 func TestRegisterFileOriginRequiresLocalHTTPOrigin(t *testing.T) {
 	c := &desktopCollaboration{
 		shareAuthority: "share-authority",
@@ -867,6 +887,34 @@ func TestAutomaticFileFetchUsesAuthenticatedRoomProxyOnly(t *testing.T) {
 	}
 }
 
+func TestAutomaticFileDownloadPanicIsContainedAndRetryable(t *testing.T) {
+	offer, healthy := testFileOffer("panic-recovery", "payload.json", "other", []byte(`{"ok":true}`), collab.MinFileChunkSize)
+	panicking := &panicFilePeer{}
+	c := testAutoReceiveRuntime(t.TempDir(), "", offer, panicking)
+	defer c.closeFileTransfers()
+
+	c.maybeAutoReceiveFiles()
+	failed := waitForTransferStatus(t, c, offer.ID, "failed")
+	if !failed.Retryable || !failed.AutoBlocked || !strings.Contains(failed.Error, "内部异常") {
+		t.Fatalf("contained panic state = %+v", failed)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if calls := panicking.manifestCalls.Load(); calls != 1 {
+		t.Fatalf("contained panic automatically retried %d times, want 1", calls)
+	}
+
+	c.mu.Lock()
+	c.conn.filePeer = healthy
+	c.mu.Unlock()
+	if _, err := c.resumeFile(offer.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := waitForTransferStatus(t, c, offer.ID, "completed")
+	if data, err := os.ReadFile(want.Destination); err != nil || string(data) != `{"ok":true}` {
+		t.Fatalf("retried file = %q, %v", data, err)
+	}
+}
+
 func TestInstallConnectionReconcilesInitialSnapshotAndReopensAfterClose(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	c.ownerWorkspaceRoot = t.TempDir()
@@ -918,6 +966,27 @@ type scriptedFilePeer struct {
 	chunks           map[int][]byte
 	manifestFailures int
 	manifestCalls    int
+}
+
+type panicFilePeer struct {
+	manifestCalls atomic.Int32
+}
+
+func (p *panicFilePeer) RegisterFileOrigin(context.Context, string, collab.RegisterFileOriginInput) error {
+	return nil
+}
+
+func (p *panicFilePeer) fileTicket(context.Context, string) (collab.FileTransferTicket, error) {
+	return collab.FileTransferTicket{}, nil
+}
+
+func (p *panicFilePeer) fetchFileManifest(context.Context, string, int64, bool) (collab.FileTransferTicket, collaborationFileManifest, error) {
+	p.manifestCalls.Add(1)
+	panic("file peer exploded")
+}
+
+func (p *panicFilePeer) fetchFileChunk(context.Context, collab.FileTransferTicket, int) ([]byte, error) {
+	return nil, nil
 }
 
 func (p *scriptedFilePeer) RegisterFileOrigin(context.Context, string, collab.RegisterFileOriginInput) error {

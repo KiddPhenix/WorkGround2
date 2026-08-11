@@ -113,7 +113,7 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	if ip := net.ParseIP(strings.Split(strings.Trim(httpHost, "[]"), "%")[0]); ip != nil && ip.IsUnspecified() {
 		httpHost = "127.0.0.1"
 	}
-	var filePeer *httpCollaborationPeer
+	var filePeer collaborationFilePeer
 	if actualPort > 0 {
 		filePeer = &httpCollaborationPeer{baseURL: "http://" + net.JoinHostPort(httpHost, strconv.Itoa(actualPort)), client: &http.Client{Timeout: 15 * time.Second}, streamClient: &http.Client{}, room: room, member: joined.Member.ID, session: joined.ConnectionSession, protocolVersion: protocolVersion}
 	}

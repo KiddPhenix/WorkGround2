@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"time"
 
 	"workground2/internal/collab"
@@ -110,35 +111,87 @@ type fallbackCollaborationFilePeer struct {
 	fallback collaborationFilePeer
 }
 
-func (p *fallbackCollaborationFilePeer) RegisterFileOrigin(ctx context.Context, fileID string, input collab.RegisterFileOriginInput) error {
-	if err := p.primary.RegisterFileOrigin(ctx, fileID, input); err == nil {
-		return nil
+func collaborationFilePeerAvailable(peer collaborationFilePeer) bool {
+	if peer == nil {
+		return false
 	}
-	return p.fallback.RegisterFileOrigin(ctx, fileID, input)
+	value := reflect.ValueOf(peer)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return !value.IsNil()
+	default:
+		return true
+	}
+}
+
+func (p *fallbackCollaborationFilePeer) availablePeers() (collaborationFilePeer, collaborationFilePeer) {
+	if p == nil {
+		return nil, nil
+	}
+	var primary, fallback collaborationFilePeer
+	if collaborationFilePeerAvailable(p.primary) {
+		primary = p.primary
+	}
+	if collaborationFilePeerAvailable(p.fallback) {
+		fallback = p.fallback
+	}
+	return primary, fallback
+}
+
+func (p *fallbackCollaborationFilePeer) RegisterFileOrigin(ctx context.Context, fileID string, input collab.RegisterFileOriginInput) error {
+	primary, fallback := p.availablePeers()
+	if primary != nil {
+		err := primary.RegisterFileOrigin(ctx, fileID, input)
+		if err == nil || fallback == nil {
+			return err
+		}
+	}
+	if fallback != nil {
+		return fallback.RegisterFileOrigin(ctx, fileID, input)
+	}
+	return fmt.Errorf("collaboration file peer is unavailable")
 }
 
 func (p *fallbackCollaborationFilePeer) fileTicket(ctx context.Context, fileID string) (collab.FileTransferTicket, error) {
-	value, err := p.primary.fileTicket(ctx, fileID)
-	if err == nil {
-		return value, nil
+	primary, fallback := p.availablePeers()
+	if primary != nil {
+		value, err := primary.fileTicket(ctx, fileID)
+		if err == nil || fallback == nil {
+			return value, err
+		}
 	}
-	return p.fallback.fileTicket(ctx, fileID)
+	if fallback != nil {
+		return fallback.fileTicket(ctx, fileID)
+	}
+	return collab.FileTransferTicket{}, fmt.Errorf("collaboration file peer is unavailable")
 }
 
 func (p *fallbackCollaborationFilePeer) fetchFileManifest(ctx context.Context, fileID string, limit int64, allowDirect bool) (collab.FileTransferTicket, collaborationFileManifest, error) {
-	ticket, manifest, err := p.primary.fetchFileManifest(ctx, fileID, limit, allowDirect)
-	if err == nil {
-		return ticket, manifest, nil
+	primary, fallback := p.availablePeers()
+	if primary != nil {
+		ticket, manifest, err := primary.fetchFileManifest(ctx, fileID, limit, allowDirect)
+		if err == nil || fallback == nil {
+			return ticket, manifest, err
+		}
 	}
-	return p.fallback.fetchFileManifest(ctx, fileID, limit, allowDirect)
+	if fallback != nil {
+		return fallback.fetchFileManifest(ctx, fileID, limit, allowDirect)
+	}
+	return collab.FileTransferTicket{}, collaborationFileManifest{}, fmt.Errorf("collaboration file peer is unavailable")
 }
 
 func (p *fallbackCollaborationFilePeer) fetchFileChunk(ctx context.Context, ticket collab.FileTransferTicket, index int) ([]byte, error) {
-	value, err := p.primary.fetchFileChunk(ctx, ticket, index)
-	if err == nil {
-		return value, nil
+	primary, fallback := p.availablePeers()
+	if primary != nil {
+		value, err := primary.fetchFileChunk(ctx, ticket, index)
+		if err == nil || fallback == nil {
+			return value, err
+		}
 	}
-	return p.fallback.fetchFileChunk(ctx, ticket, index)
+	if fallback != nil {
+		return fallback.fetchFileChunk(ctx, ticket, index)
+	}
+	return nil, fmt.Errorf("collaboration file peer is unavailable")
 }
 
 func (h *collaborationRelayHost) dispatchRelayFile(ctx context.Context, _ string, request relayRPCRequest) (json.RawMessage, *relayRPCError) {

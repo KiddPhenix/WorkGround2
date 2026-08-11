@@ -342,6 +342,12 @@ func TestRelayHostBridgeJoinSubmitAndSnapshot(t *testing.T) {
 	if len(hostConn.routes) < 2 || hostConn.routes[1].Status != "connected" {
 		t.Fatalf("host routes = %#v", hostConn.routes)
 	}
+	if _, ok := hostConn.filePeer.(*relayHostFilePeer); !ok {
+		t.Fatalf("Relay-only Host file peer = %T, want direct Relay peer", hostConn.filePeer)
+	}
+	if collaborationFilePeerNeedsOrigin(hostConn.filePeer) {
+		t.Fatal("Relay-only Host unexpectedly requires a local HTTP file origin")
+	}
 	route := hostConn.routes[1].CollaborationRouteInput
 	relay := cfg.Collaboration.Relays[0]
 	rooms, err := queryRelayRooms(ctx, relay, ListCollaborationRoomsInput{Query: "Relay"}, 20)

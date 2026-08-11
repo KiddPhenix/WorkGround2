@@ -122,7 +122,7 @@ func (c *desktopCollaboration) openRelayHost(ctx context.Context, conn *collabor
 	publicRoomID := stableCollaborationID("room-public", base64.RawURLEncoding.EncodeToString(publicKey)+"\x00"+conn.room)
 	host := &collaborationRelayHost{runtime: c, roomConn: conn, relay: relay, socket: socket, tunnelID: bound.TunnelID, identity: identity, publicRoomID: publicRoomID, sessions: map[string]*relayHostSession{}, pending: map[string]chan relayRPCResult{}, done: make(chan struct{})}
 	relayFiles := &relayHostFilePeer{host: host, room: conn.room, member: conn.memberID, session: conn.connectionSession}
-	if conn.filePeer == nil {
+	if !collaborationFilePeerAvailable(conn.filePeer) {
 		conn.filePeer = relayFiles
 	} else {
 		conn.filePeer = &fallbackCollaborationFilePeer{primary: conn.filePeer, fallback: relayFiles}

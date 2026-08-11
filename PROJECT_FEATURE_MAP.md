@@ -171,6 +171,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-10
 
+### Room Relay-only 文件接收恢复
+- Location: `desktop/collab_transport.go`, `desktop/collab_relay_host.go`, `desktop/collab_relay_file.go`, `desktop/collab_file_transfer.go`
+- Summary: Relay-only Host 不再把 typed-nil HTTP 文件通道误装入 fallback；文件下载 Panic 会记录栈、隔离为可手动重试的失败，并可靠释放自动接收锁与并发槽，避免持久化传输让 Desktop 启动循环崩溃。
+- Keywords: Room, Relay-only, auto receive, typed nil, fallback, panic recovery, waiting_sender
+- Source: user-stated+verified-by-reproduction
+- Updated: 2026-08-11
+
 ### Room 小文件自动接收与图片直显
 - Location: `desktop/collab_file_transfer.go`, `desktop/collab_relay_file.go`, `desktop/collab_relay_crypto.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/__tests__/collaboration.test.tsx`
 - Summary: Room 中严格小于 1 MiB 的他人文件按 Session workspace 和可信 Room 实例自动接收到 .workground2/attachments/room，完成 SHA 校验后可供 Agent 以相对 @ 路径引用；静态图片经内容校验后在文件卡内有界懒加载直显。
