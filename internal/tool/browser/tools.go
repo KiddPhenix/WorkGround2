@@ -3,6 +3,7 @@ package browsertool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"unicode/utf8"
 
 	"workground2/internal/browser"
@@ -19,6 +20,7 @@ func NewTools(svc browser.Service) []tool.Tool {
 		&typeTool{svc: svc},
 		&scrollTool{svc: svc},
 		&tabTool{svc: svc},
+		&uploadTool{svc: svc},
 		&closeTool{svc: svc},
 	}
 }
@@ -226,7 +228,8 @@ func (t *typeTool) ReadOnly() bool     { return false }
 func (t *typeTool) PlanModeSafe() bool { return false }
 
 func (t *typeTool) Description() string {
-	return "Type text into an editable element. Do NOT type passwords or secrets as plain text. " +
+	return "Type text into an editable element. Password inputs are accepted unless the allow_password_input setting disables them; file inputs always require browser_upload. " +
+		"The typed text is recorded in the ToolCall transcript, so never pass secrets you do not want retained. " +
 		"Optionally clear the field first and/or press Enter after typing."
 }
 
@@ -389,6 +392,66 @@ func (t *tabTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	result, err := t.svc.Tab(ctx, owner, browser.TabRequest{
 		Revision: p.Revision, Action: action, TabID: p.TabID,
 		URL: p.URL, RequestID: p.RequestID,
+	})
+	if err != nil {
+		return marshalBrowserError[browser.ActionResult](err)
+	}
+	return marshalOK(result)
+}
+
+// ── browser_upload ──────────────────────────────────────────────────────────
+
+type uploadTool struct{ svc browser.Service }
+
+func (t *uploadTool) Name() string       { return "browser_upload" }
+func (t *uploadTool) ReadOnly() bool     { return false }
+func (t *uploadTool) PlanModeSafe() bool { return false }
+
+func (t *uploadTool) Description() string {
+	return "Upload local files to an input[type=file] identified by its index from browser_state. " +
+		"Each path must be an existing regular file (1-20 files); multi-file uploads require the input's multiple attribute. " +
+		"The selected files' contents become available to the page, and the paths appear verbatim in the ToolCall transcript — never upload secret or credential files. " +
+		"Must pass the current revision to prevent stale uploads."
+}
+
+func (t *uploadTool) Schema() json.RawMessage {
+	return json.RawMessage(`{
+"type":"object",
+"additionalProperties":false,
+"properties":{
+  "revision":{"type":"integer","description":"Page revision from browser_state. Minimum 1.","minimum":1},
+  "index":{"type":"integer","description":"Element index of the input[type=file] from browser_state. Minimum 1.","minimum":1},
+  "files":{"type":"array","description":"Local file paths to upload, 1-20 non-empty strings. Paths are recorded in the transcript.","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1}},
+  "request_id":{"type":"string","description":"Idempotency key, 1-128 chars. Reuse the same value for safe retries; use a new value for a new intent.","minLength":1,"maxLength":128}
+},
+"required":["revision","index","files","request_id"]
+}`)
+}
+
+func (t *uploadTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	owner := ownerFromContext(ctx)
+	var p struct {
+		Revision  uint64   `json:"revision"`
+		Index     int      `json:"index"`
+		Files     []string `json:"files"`
+		RequestID string   `json:"request_id"`
+	}
+	if err := decodeArgs(args, &p); err != nil {
+		return marshalError[browser.ActionResult](err)
+	}
+	if p.Revision < 1 || p.Index < 1 || !validRequestID(p.RequestID) {
+		return marshalError[browser.ActionResult](invalidArgs("revision and index must be at least 1, and request_id must contain 1-128 characters"))
+	}
+	if len(p.Files) == 0 || len(p.Files) > 20 {
+		return marshalError[browser.ActionResult](invalidArgs("files must contain 1-20 paths"))
+	}
+	for _, file := range p.Files {
+		if strings.TrimSpace(file) == "" {
+			return marshalError[browser.ActionResult](invalidArgs("file paths must not be empty"))
+		}
+	}
+	result, err := t.svc.Upload(ctx, owner, browser.UploadRequest{
+		Revision: p.Revision, Index: p.Index, Files: p.Files, RequestID: p.RequestID,
 	})
 	if err != nil {
 		return marshalBrowserError[browser.ActionResult](err)

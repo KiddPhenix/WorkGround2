@@ -129,10 +129,10 @@ For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-
 
 The default full tool surface includes `browser_open`, `browser_navigate`,
 `browser_state`, `browser_click`, `browser_type`, `browser_scroll`, `browser_tab`,
-and `browser_close`. Google Chrome is the primary target; Edge, Chromium, and
-Chrome for Testing are compatible through the same Chrome DevTools Protocol.
-Browser discovery and launch are lazy, so WorkGround2 still starts when no
-supported browser is installed and reports that failure on `browser_open`.
+`browser_upload`, and `browser_close`. Google Chrome is the primary target; Edge,
+Chromium, and Chrome for Testing are compatible through the same Chrome DevTools
+Protocol. Browser discovery and launch are lazy, so WorkGround2 still starts when
+no supported browser is installed and reports that failure on `browser_open`.
 
 Each parent session owns one browser process, its tabs, revision map, idempotency
 records, and an isolated ephemeral profile. Closing the session or calling
@@ -140,10 +140,19 @@ records, and an isolated ephemeral profile. Closing the session or calling
 `idle_timeout_seconds` (30..86400) is configured, and the default `0` means the
 browser is never auto-closed for idleness. Work task sessions close only their
 own browser. V1 reads text and indexed interactive elements and deliberately has
-no screenshots, uploads/downloads, or visual coordinate targeting. `browser_type`
-is for ordinary text only: do not pass passwords, API keys, tokens, or other
-secrets because tool arguments are retained in the conversation transcript;
-password and file inputs are rejected.
+no screenshots, downloads, drag-and-drop, directory upload, or visual coordinate
+targeting. `browser_type` is for ordinary text: tool arguments are retained in
+the conversation transcript, so never pass passwords, API keys, tokens, or other
+secrets unless you intend them to be recorded. Password typing and local file
+upload each have an independent switch under `[tools.browser]` —
+`allow_password_input` and `allow_file_upload` (both default `true`, disabled
+explicitly with `false`); disabling one hard-rejects that operation before it
+reaches the browser and does not affect the other. `browser_upload` sets 1-20
+existing local regular files on an `input[type=file]` (multi-file targets need
+the `multiple` attribute); uploaded file paths are recorded verbatim in the
+ToolCall transcript and the files' contents become available to the page, so do
+not upload secret files through it. File inputs are never accepted by
+`browser_type`.
 
 The runtime has reserved ProfileProvider/CredentialProvider boundaries for later
 managed profiles, explicitly authorized attachment to a daily Chrome profile,

@@ -263,7 +263,23 @@ func (d *driver) Type(ctx context.Context, ref browser.NodeRef, value browser.Ty
 		return err
 	}
 	defer cancel()
-	return typeText(opCtx, ref, value)
+	return typeText(opCtx, ref, value, d.opts.AllowPasswordInput)
+}
+
+// Upload sets local files on an input[type=file] routed by the node's target
+// (supports OOPIF). The AllowFileUpload switch is re-checked here so a disabled
+// capability can never reach DOM.setFileInputFiles even if the Manager were
+// bypassed.
+func (d *driver) Upload(ctx context.Context, ref browser.NodeRef, files []string) error {
+	if !d.opts.AllowFileUpload {
+		return browser.NewError(browser.ErrSensitiveInputBlocked, "file upload is disabled by allow_file_upload", nil)
+	}
+	opCtx, cancel, err := d.operationContextForTarget(ctx, ref.TargetID)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return uploadFiles(opCtx, ref, files)
 }
 
 func (d *driver) Scroll(ctx context.Context, value browser.ScrollInput) error {

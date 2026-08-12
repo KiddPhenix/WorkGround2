@@ -1329,6 +1329,7 @@ func defaultFullBootToolNames() []string {
 		"browser_state",
 		"browser_tab",
 		"browser_type",
+		"browser_upload",
 		"code_index",
 		"complete_step",
 		"delete_range",

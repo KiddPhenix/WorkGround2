@@ -1196,6 +1196,12 @@ export interface PermissionsView {
   allow: string[];
   ask: string[];
   deny: string[];
+  browser: BrowserPermissionsView;
+}
+
+export interface BrowserPermissionsView {
+  allowPasswordInput: boolean; // browser_type may type into password inputs
+  allowFileUpload: boolean; // browser_upload may set local files on file inputs
 }
 
 export interface SandboxView {

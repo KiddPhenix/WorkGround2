@@ -120,17 +120,22 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # 可选：raw MCP tool 名
 ### 原生浏览器工具
 
 默认 full 工具面包含 `browser_open`、`browser_navigate`、`browser_state`、
-`browser_click`、`browser_type`、`browser_scroll`、`browser_tab`、`browser_close`
-八个工具。第一优先支持 Google Chrome；Edge、Chromium、Chrome for Testing
+`browser_click`、`browser_type`、`browser_scroll`、`browser_tab`、`browser_upload`、
+`browser_close` 九个工具。第一优先支持 Google Chrome；Edge、Chromium、Chrome for Testing
 通过同一套 Chrome DevTools Protocol 兼容。浏览器只在第一次 `browser_open`
 时发现并启动，因此机器未安装受支持浏览器也不影响 WorkGround2 启动，失败会在打开时显式返回。
 
 每个 parent session 独占浏览器进程、标签页、revision 映射、幂等记录和隔离的临时 Profile。
 Session 关闭和调用 `browser_close` 都会回收资源；空闲回收只在配置了正数
 `idle_timeout_seconds`（30..86400）时生效，默认 `0` 表示永不因空闲自动关闭。
-Work task 只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、上传下载或视觉坐标定位。
-`browser_type` 只用于普通文本：工具参数会进入会话记录，因此禁止传入密码、API key、token 等秘密；
-password 和 file 输入框也会被拒绝。
+Work task 只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、
+下载、拖放、目录上传或视觉坐标定位。`browser_type` 只用于普通文本：工具参数会进入会话记录，
+因此除非你确实希望被记录，否则不要传入密码、API key、token 等秘密。密码输入和本地文件上传各自有
+`[tools.browser]` 下的独立开关 —— `allow_password_input` 与 `allow_file_upload`
+（默认均 `true`，显式 `false` 关闭）；关闭任一会把对应操作在到达浏览器之前硬拒绝，且不影响另一项。
+`browser_upload` 可向 `input[type=file]` 设置 1-20 个存在的本地普通文件（多文件目标要求
+`multiple` 属性）；上传的文件路径会原样进入 ToolCall transcript，且文件内容会交给页面，因此不要用它上传机密文件。
+file 输入框始终不接受 `browser_type`。
 
 运行时已经为后续 managed Profile、经用户明确授权连接日常 Chrome、复用 Cookie/登录态和密码库填充
 预留 ProfileProvider/CredentialProvider 边界；V1 不启用这些能力，也不会把 managed/attach 请求静默降级为

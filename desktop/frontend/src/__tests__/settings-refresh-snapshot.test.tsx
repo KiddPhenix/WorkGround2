@@ -58,7 +58,7 @@ function baseSettings(displayMode: "standard" | "compact" = "standard"): Setting
     autoPlan: "off",
     providers: [],
     officialProviders: [],
-    permissions: { mode: "ask", allow: [], ask: [], deny: [] },
+    permissions: { mode: "ask", allow: [], ask: [], deny: [], browser: { allowPasswordInput: true, allowFileUpload: true } },
     sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" },
     network: { proxyMode: "auto", proxyUrl: "", noProxy: "", proxy: { type: "socks5", server: "", port: 0, username: "", password: "" } },
     agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" },

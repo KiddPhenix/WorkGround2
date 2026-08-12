@@ -20,6 +20,7 @@ type fakeService struct {
 	typeFn     func(ctx context.Context, owner string, req browser.TypeRequest) (browser.ActionResult, error)
 	scrollFn   func(ctx context.Context, owner string, req browser.ScrollRequest) (browser.ActionResult, error)
 	tabFn      func(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error)
+	uploadFn   func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error)
 	closeFn    func(ctx context.Context, owner string) (browser.CloseResult, error)
 }
 
@@ -43,6 +44,9 @@ func (s *fakeService) Scroll(ctx context.Context, owner string, req browser.Scro
 }
 func (s *fakeService) Tab(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error) {
 	return s.tabFn(ctx, owner, req)
+}
+func (s *fakeService) Upload(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
+	return s.uploadFn(ctx, owner, req)
 }
 func (s *fakeService) CloseSession(ctx context.Context, owner string) (browser.CloseResult, error) {
 	return s.closeFn(ctx, owner)
@@ -78,6 +82,9 @@ func newFakeService() *fakeService {
 		tabFn: func(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error) {
 			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
 		},
+		uploadFn: func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
+			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+		},
 		closeFn: func(ctx context.Context, owner string) (browser.CloseResult, error) {
 			return browser.CloseResult{SessionID: "test-session", Closed: true}, nil
 		},
@@ -87,8 +94,8 @@ func newFakeService() *fakeService {
 func TestToolsExist(t *testing.T) {
 	svc := newFakeService()
 	tools := browsertool.NewTools(svc)
-	if len(tools) != 8 {
-		t.Fatalf("expected 8 tools, got %d", len(tools))
+	if len(tools) != 9 {
+		t.Fatalf("expected 9 tools, got %d", len(tools))
 	}
 	names := make(map[string]bool)
 	for _, tool := range tools {
@@ -97,7 +104,7 @@ func TestToolsExist(t *testing.T) {
 	expected := []string{
 		"browser_open", "browser_navigate", "browser_state",
 		"browser_click", "browser_type", "browser_scroll",
-		"browser_tab", "browser_close",
+		"browser_tab", "browser_upload", "browser_close",
 	}
 	for _, n := range expected {
 		if !names[n] {
@@ -317,6 +324,7 @@ func TestInvalidArgumentsAlwaysReturnEnvelope(t *testing.T) {
 		"browser_type":     json.RawMessage(`{"revision":1,"index":1,"text":"","request_id":"r"}`),
 		"browser_scroll":   json.RawMessage(`{"revision":1,"delta_y":0,"request_id":"r"}`),
 		"browser_tab":      json.RawMessage(`{"revision":1,"action":"activate","request_id":"r"}`),
+		"browser_upload":   json.RawMessage(`{"revision":1,"index":1,"files":[],"request_id":"r"}`),
 		"browser_close":    json.RawMessage(`{"unexpected":true}`),
 	}
 	for _, bt := range browsertool.NewTools(newFakeService()) {
@@ -328,6 +336,112 @@ func TestInvalidArgumentsAlwaysReturnEnvelope(t *testing.T) {
 		if !strings.Contains(output, `"ok":false`) || !strings.Contains(output, `"code":"invalid_arguments"`) {
 			t.Errorf("%s: invalid error envelope %q", bt.Name(), output)
 		}
+	}
+}
+
+func TestUploadSchemaAndTraits(t *testing.T) {
+	svc := newFakeService()
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_upload" {
+			continue
+		}
+		if bt.ReadOnly() {
+			t.Fatal("browser_upload must be a writer tool")
+		}
+		if pc, ok := bt.(interface{ PlanModeSafe() bool }); !ok || pc.PlanModeSafe() {
+			t.Fatal("browser_upload must not be plan-mode safe")
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(bt.Schema(), &schema); err != nil {
+			t.Fatal(err)
+		}
+		if schema["type"] != "object" || schema["additionalProperties"] != false {
+			t.Fatalf("browser_upload schema must be a closed object: %v", schema)
+		}
+		required, ok := schema["required"].([]any)
+		if !ok || len(required) != 4 {
+			t.Fatalf("browser_upload required = %v, want 4 fields", schema["required"])
+		}
+		props := schema["properties"].(map[string]any)
+		revision := props["revision"].(map[string]any)
+		if revision["minimum"].(float64) != 1 {
+			t.Fatalf("revision minimum = %v, want 1", revision["minimum"])
+		}
+		index := props["index"].(map[string]any)
+		if index["minimum"].(float64) != 1 {
+			t.Fatalf("index minimum = %v, want 1", index["minimum"])
+		}
+		files := props["files"].(map[string]any)
+		if files["minItems"].(float64) != 1 || files["maxItems"].(float64) != 20 {
+			t.Fatalf("files min/max = %v/%v, want 1/20", files["minItems"], files["maxItems"])
+		}
+		items := files["items"].(map[string]any)
+		if items["minLength"].(float64) != 1 {
+			t.Fatalf("files items minLength = %v, want 1", items["minLength"])
+		}
+		rid := props["request_id"].(map[string]any)
+		if rid["minLength"].(float64) != 1 || rid["maxLength"].(float64) != 128 {
+			t.Fatalf("request_id bounds = %v/%v, want 1/128", rid["minLength"], rid["maxLength"])
+		}
+	}
+}
+
+func TestUploadExecutePassesFilesAndEnvelope(t *testing.T) {
+	svc := newFakeService()
+	var got browser.UploadRequest
+	svc.uploadFn = func(_ context.Context, _ string, req browser.UploadRequest) (browser.ActionResult, error) {
+		got = req
+		return browser.ActionResult{BeforeRevision: 3, AfterRevision: 4, Method: "upload"}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_upload" {
+			continue
+		}
+		output, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":3,"index":2,"files":["a.txt","b.txt"],"request_id":"up-1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(output, `"ok":true`) || !strings.Contains(output, `"method":"upload"`) {
+			t.Fatalf("upload output = %s", output)
+		}
+		if got.Revision != 3 || got.Index != 2 || len(got.Files) != 2 || got.Files[0] != "a.txt" || got.RequestID != "up-1" {
+			t.Fatalf("upload request = %+v", got)
+		}
+	}
+}
+
+func TestUploadRejectsInvalidFilesBeforeService(t *testing.T) {
+	svc := newFakeService()
+	reached := false
+	svc.uploadFn = func(context.Context, string, browser.UploadRequest) (browser.ActionResult, error) {
+		reached = true
+		return browser.ActionResult{}, nil
+	}
+	var uploadTool interface {
+		Execute(context.Context, json.RawMessage) (string, error)
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() == "browser_upload" {
+			uploadTool = bt
+		}
+	}
+	for name, args := range map[string]string{
+		"zero revision":  `{"revision":0,"index":1,"files":["a"],"request_id":"r"}`,
+		"zero index":     `{"revision":1,"index":0,"files":["a"],"request_id":"r"}`,
+		"empty files":    `{"revision":1,"index":1,"files":[],"request_id":"r"}`,
+		"too many files": `{"revision":1,"index":1,"files":["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u"],"request_id":"r"}`,
+		"empty path":     `{"revision":1,"index":1,"files":["  "],"request_id":"r"}`,
+		"bad request id": `{"revision":1,"index":1,"files":["a"],"request_id":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			output, err := uploadTool.Execute(context.Background(), json.RawMessage(args))
+			if err == nil || !strings.Contains(output, `"code":"invalid_arguments"`) {
+				t.Fatalf("%s: err=%v output=%s", name, err, output)
+			}
+		})
+	}
+	if reached {
+		t.Fatal("invalid upload args reached the service")
 	}
 }
 

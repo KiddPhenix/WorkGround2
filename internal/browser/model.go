@@ -151,6 +151,16 @@ type TypeRequest struct {
 	RequestID  string
 }
 
+// UploadRequest sets local files on a file input. Files must be absolute paths
+// (or paths relative to the WorkGround2 process working directory) to existing
+// regular files; 1..20 entries.
+type UploadRequest struct {
+	Revision  uint64
+	Index     int
+	Files     []string
+	RequestID string
+}
+
 // ScrollRequest scrolls the page or an element.
 type ScrollRequest struct {
 	Revision  uint64

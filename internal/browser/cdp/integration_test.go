@@ -88,10 +88,23 @@ func TestChromeWorkflow(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, `<!doctype html><title>Browser Integration</title>
 <label>Name <input id="name" aria-label="Name"></label>
+<label>Password <input id="pw" type="password" aria-label="Password"></label>
+<input id="file" type="file" aria-label="Upload">
 <button id="submit" onclick="document.getElementById('result').textContent='clicked:'+document.getElementById('name').value">Submit</button>
 <button id="grow" onclick="document.body.style.height='4000px';this.textContent='grown'">Grow</button>
 <a id="download" download="blocked.txt" href="/download">Download</a>
-<p id="result">idle</p>`)
+<p id="result">idle</p>
+<p id="file-result">idle</p>
+<script>
+document.getElementById('file').addEventListener('change', function (event) {
+  var file = event.target.files[0];
+  var reader = new FileReader();
+  reader.onload = function () {
+    document.getElementById('file-result').textContent = 'file:' + file.name + ':' + reader.result;
+  };
+  reader.readAsText(file);
+});
+</script>`)
 	})
 	mux.HandleFunc("/next", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `<!doctype html><title>Next</title><p>navigated</p>`)
@@ -119,6 +132,7 @@ func TestChromeWorkflow(t *testing.T) {
 		ExecutablePath: info.ExecutablePath, Headless: true,
 		ProfileRoot: profileRoot, ActionTimeout: 20 * time.Second,
 		StateTimeout: 20 * time.Second, IdleTimeout: time.Minute,
+		AllowPasswordInput: true, AllowFileUpload: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,11 +149,57 @@ func TestChromeWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	inputIndex := findElement(t, state, func(element browser.Element) bool { return element.InputType == "text" && element.Name == "Name" })
-	typed, err := manager.Type(ctx, owner, browser.TypeRequest{
+	if _, err := manager.Type(ctx, owner, browser.TypeRequest{
 		Revision: state.Revision, Index: inputIndex, Text: "workground2", Clear: true, RequestID: "type-1",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Password input: allowed by default through the production CDP path.
+	state, err = manager.State(ctx, owner, browser.StateRequest{Refresh: false})
 	if err != nil {
 		t.Fatal(err)
+	}
+	passwordIndex := findElement(t, state, func(element browser.Element) bool {
+		return element.InputType == "password" && element.Name == "Password"
+	})
+	if _, err := manager.Type(ctx, owner, browser.TypeRequest{
+		Revision: state.Revision, Index: passwordIndex, Text: "sup3r-secret", Clear: true, RequestID: "type-pw",
+	}); err != nil {
+		t.Fatalf("password type: %v", err)
+	}
+
+	// Local file upload: FileReader exposes filename+content in page text.
+	uploadFile := filepath.Join(t.TempDir(), "payload-upload.txt")
+	if err := os.WriteFile(uploadFile, []byte("uploaded-content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err = manager.State(ctx, owner, browser.StateRequest{Refresh: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileIndex := findElement(t, state, func(element browser.Element) bool { return element.InputType == "file" && element.Name == "Upload" })
+	if _, err := manager.Upload(ctx, owner, browser.UploadRequest{
+		Revision: state.Revision, Index: fileIndex, Files: []string{uploadFile}, RequestID: "upload-1",
+	}); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	// The page updates asynchronously through FileReader.onload; poll State.
+	deadline := time.Now().Add(10 * time.Second)
+	var uploadText string
+	for time.Now().Before(deadline) {
+		state, err = manager.State(ctx, owner, browser.StateRequest{Refresh: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(state.Text, "file:payload-upload.txt:uploaded-content") {
+			uploadText = state.Text
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if uploadText == "" {
+		t.Fatalf("state after upload never exposed FileReader result: text=%q", state.Text)
 	}
 
 	_, err = manager.Click(ctx, owner, browser.ClickRequest{Revision: opened.Revision, Index: inputIndex, RequestID: "stale-1"})
@@ -154,7 +214,7 @@ func TestChromeWorkflow(t *testing.T) {
 	}
 	buttonIndex := findElement(t, state, func(element browser.Element) bool { return element.Role == "button" && element.Name == "Submit" })
 	_, err = manager.Click(ctx, owner, browser.ClickRequest{
-		Revision: typed.AfterRevision, Index: buttonIndex, RequestID: "click-1",
+		Revision: state.Revision, Index: buttonIndex, RequestID: "click-1",
 	})
 	if err != nil {
 		t.Fatal(err)

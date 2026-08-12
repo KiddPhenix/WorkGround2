@@ -146,6 +146,15 @@ func TestConsumeCloseErrorConcurrentReturnsErrorOnce(t *testing.T) {
 	}
 }
 
+func TestDriverUploadRejectsWhenSwitchDisabled(t *testing.T) {
+	d := &driver{opts: browser.DriverOptions{AllowFileUpload: false}}
+	err := d.Upload(context.Background(), browser.NodeRef{TargetID: "tab-1", BackendNodeID: 1}, []string{"x.txt"})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
+		t.Fatalf("upload with disabled switch error = %v, want sensitive_input_blocked", err)
+	}
+}
+
 func TestValidateBrowserVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

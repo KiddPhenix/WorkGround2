@@ -25,6 +25,7 @@ type fakeDriver struct {
 	closed           atomic.Bool
 	clicked          []browser.NodeRef
 	typed            []typeRecord
+	uploaded         []uploadRecord
 	scrolled         []browser.ScrollInput
 	tabs             []browser.TabInfo
 	activeTab        string
@@ -32,11 +33,13 @@ type fakeDriver struct {
 	observeCalls     atomic.Int32
 	clickCalls       atomic.Int32
 	typeCalls        atomic.Int32
+	uploadCalls      atomic.Int32
 	closeCalls       atomic.Int32
 	observeErr       error
 	blockClick       chan struct{}
 	blockNavigate    chan struct{}
 	clickErr         error
+	uploadErr        error
 	closeErrOnce     atomic.Bool
 	closeFailures    atomic.Int32
 	lifecycleCtx     context.Context
@@ -50,6 +53,11 @@ type fakeDriver struct {
 type typeRecord struct {
 	ref   browser.NodeRef
 	input browser.TypeInput
+}
+
+type uploadRecord struct {
+	ref   browser.NodeRef
+	files []string
 }
 
 func newFakeDriver() *fakeDriver {
@@ -158,6 +166,18 @@ func (d *fakeDriver) Type(ctx context.Context, ref browser.NodeRef, input browse
 	defer d.mu.Unlock()
 	d.typed = append(d.typed, typeRecord{ref: ref, input: input})
 	d.title = "Typed!"
+	return nil
+}
+
+func (d *fakeDriver) Upload(ctx context.Context, ref browser.NodeRef, files []string) error {
+	d.uploadCalls.Add(1)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.uploadErr != nil {
+		return d.uploadErr
+	}
+	d.uploaded = append(d.uploaded, uploadRecord{ref: ref, files: append([]string(nil), files...)})
+	d.title = "Uploaded!"
 	return nil
 }
 
@@ -778,33 +798,454 @@ func newTestManager(t *testing.T) *browser.Manager {
 	return mgr
 }
 
-func TestTypeRejectsSensitiveInputsBeforeDriverDispatch(t *testing.T) {
-	for _, inputType := range []string{"password", "file"} {
-		t.Run(inputType, func(t *testing.T) {
-			factory := newFakeFactory()
-			factory.configure = func(d *fakeDriver) {
-				d.nodes[1].InputType = inputType
-			}
-			mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer mgr.Close()
-			opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = mgr.Type(context.Background(), "owner", browser.TypeRequest{
-				Revision: opened.Revision, Index: 2, Text: "must-not-dispatch", RequestID: "type",
+func TestTypeRejectsFileInputBeforeDriverDispatch(t *testing.T) {
+	factory := newFakeFactory()
+	factory.configure = func(d *fakeDriver) {
+		d.nodes[1].InputType = "file"
+	}
+	mgr, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: factory, AllowPasswordInput: true, AllowFileUpload: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Type(context.Background(), "owner", browser.TypeRequest{
+		Revision: opened.Revision, Index: 2, Text: "must-not-dispatch", RequestID: "type",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
+		t.Fatalf("expected sensitive_input_blocked, got %v", err)
+	}
+	if got := factory.only(t).typeCalls.Load(); got != 0 {
+		t.Fatalf("driver Type call count = %d, want 0", got)
+	}
+}
+
+func TestTypePasswordFollowsAllowPasswordInputSwitch(t *testing.T) {
+	t.Run("allowed by default", func(t *testing.T) {
+		factory := newFakeFactory()
+		factory.configure = func(d *fakeDriver) {
+			d.nodes[1].InputType = "password"
+		}
+		mgr, err := browser.NewManager(context.Background(), browser.Options{
+			Factory: factory, AllowPasswordInput: true, AllowFileUpload: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := mgr.Type(context.Background(), "owner", browser.TypeRequest{
+			Revision: opened.Revision, Index: 2, Text: "secret", RequestID: "type-pw",
+		})
+		if err != nil {
+			t.Fatalf("password type with switch enabled: %v", err)
+		}
+		if result.Method != "type" || factory.only(t).typeCalls.Load() != 1 {
+			t.Fatalf("password type result=%+v calls=%d", result, factory.only(t).typeCalls.Load())
+		}
+	})
+	t.Run("rejected when disabled", func(t *testing.T) {
+		factory := newFakeFactory()
+		factory.configure = func(d *fakeDriver) {
+			d.nodes[1].InputType = "password"
+		}
+		mgr, err := browser.NewManager(context.Background(), browser.Options{
+			Factory: factory, AllowPasswordInput: false, AllowFileUpload: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = mgr.Type(context.Background(), "owner", browser.TypeRequest{
+			Revision: opened.Revision, Index: 2, Text: "must-not-dispatch", RequestID: "type-pw",
+		})
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
+			t.Fatalf("expected sensitive_input_blocked, got %v", err)
+		}
+		if got := factory.only(t).typeCalls.Load(); got != 0 {
+			t.Fatalf("driver Type call count = %d, want 0", got)
+		}
+	})
+}
+
+// ── Upload ─────────────────────────────────────────────────────────────────
+
+func newUploadManager(t *testing.T, configure func(*browser.Options)) (*browser.Manager, *fakeFactory) {
+	t.Helper()
+	factory := newFakeFactory()
+	opts := browser.Options{Factory: factory, AllowPasswordInput: true, AllowFileUpload: true}
+	if configure != nil {
+		configure(&opts)
+	}
+	effective := factory
+	if f, ok := opts.Factory.(*fakeFactory); ok {
+		effective = f
+	}
+	mgr, err := browser.NewManager(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mgr, effective
+}
+
+// newFileInputManager builds a manager whose index-2 element is an enabled
+// input[type=file], so path/target validation paths are reached.
+func newFileInputManager(t *testing.T) (*browser.Manager, *fakeFactory) {
+	t.Helper()
+	return newUploadManager(t, func(opts *browser.Options) {
+		fileFactory := newFakeFactory()
+		fileFactory.configure = func(d *fakeDriver) { d.nodes[1].InputType = "file" }
+		opts.Factory = fileFactory
+	})
+}
+
+func fileInputFixture(t *testing.T) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	good := filepath.Join(root, "payload.txt")
+	if err := os.WriteFile(good, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, good
+}
+
+func TestUploadSetsFilesOnFileInput(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = opened
+	factory.only(t).nodes[1].InputType = "file"
+	state, err := mgr.State(context.Background(), "owner", browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: state.Revision, Index: 2, Files: []string{good}, RequestID: "upload-1",
+	})
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	if result.Method != "upload" || result.BeforeRevision >= result.AfterRevision {
+		t.Fatalf("upload result=%+v", result)
+	}
+	driver := factory.only(t)
+	if got := driver.uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
+	}
+	driver.mu.Lock()
+	uploaded := append([]uploadRecord(nil), driver.uploaded...)
+	driver.mu.Unlock()
+	if len(uploaded) != 1 || len(uploaded[0].files) != 1 || uploaded[0].files[0] != good {
+		t.Fatalf("uploaded records = %+v, want [%s]", uploaded, good)
+	}
+}
+
+func TestUploadRejectsWhenSwitchDisabled(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, func(opts *browser.Options) { opts.AllowFileUpload = false })
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: []string{good}, RequestID: "upload-deny",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
+		t.Fatalf("expected sensitive_input_blocked, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 0 {
+		t.Fatalf("driver Upload call count = %d, want 0", got)
+	}
+}
+
+func TestUploadRejectsNonFileTarget(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Index 1 is a button, not a file input.
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 1, Files: []string{good}, RequestID: "upload-wrong",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrElementNotInteractable {
+		t.Fatalf("expected element_not_interactable, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 0 {
+		t.Fatalf("driver Upload call count = %d, want 0", got)
+	}
+}
+
+func TestUploadRejectsMissingPathBeforeDispatch(t *testing.T) {
+	mgr, factory := newFileInputManager(t)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "nope.txt")
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: []string{missing}, RequestID: "upload-missing",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrInvalidArguments {
+		t.Fatalf("expected invalid_arguments for missing file, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 0 {
+		t.Fatalf("driver Upload call count = %d, want 0", got)
+	}
+}
+
+func TestUploadRejectsDirectoryAndEmptyPath(t *testing.T) {
+	root, good := fileInputFixture(t)
+	mgr, factory := newFileInputManager(t)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, files := range map[string][]string{
+		"directory": {root},
+		"empty":     {""},
+		"mixed":     {good, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+				Revision: opened.Revision, Index: 2, Files: files, RequestID: "upload-" + name,
 			})
 			var browserErr *browser.Error
-			if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
-				t.Fatalf("expected sensitive_input_blocked, got %v", err)
+			if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrInvalidArguments {
+				t.Fatalf("expected invalid_arguments for %v, got %v", files, err)
 			}
-			if got := factory.only(t).typeCalls.Load(); got != 0 {
-				t.Fatalf("driver Type call count = %d, want 0", got)
+			if got := factory.only(t).uploadCalls.Load(); got != 0 {
+				t.Fatalf("driver Upload call count = %d, want 0", got)
 			}
 		})
+	}
+}
+
+func TestUploadRejectsMoreThanTwentyFiles(t *testing.T) {
+	root := t.TempDir()
+	files := make([]string, 0, 21)
+	for i := 0; i < 21; i++ {
+		p := filepath.Join(root, fmt.Sprintf("f%d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, p)
+	}
+	mgr, factory := newFileInputManager(t)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: files, RequestID: "upload-many",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrInvalidArguments {
+		t.Fatalf("expected invalid_arguments for 21 files, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 0 {
+		t.Fatalf("driver Upload call count = %d, want 0", got)
+	}
+}
+
+func TestUploadStaleRevisionNoDispatch(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newFileInputManager(t)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Bump the revision with a successful click so the earlier revision is stale.
+	if _, err := mgr.Click(context.Background(), "owner", browser.ClickRequest{Revision: opened.Revision, Index: 1, RequestID: "click-bump"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: []string{good}, RequestID: "upload-stale",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrStaleState {
+		t.Fatalf("expected stale_state for old revision, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 0 {
+		t.Fatalf("driver Upload call count = %d, want 0", got)
+	}
+}
+
+func TestUploadRequestReplayReturnsCachedResult(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = opened
+	factory.only(t).nodes[1].InputType = "file"
+	state, err := mgr.State(context.Background(), "owner", browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := browser.UploadRequest{Revision: state.Revision, Index: 2, Files: []string{good}, RequestID: "upload-replay"}
+	first, err := mgr.Upload(context.Background(), "owner", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := mgr.Upload(context.Background(), "owner", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AfterRevision != second.AfterRevision || first.RequestID != second.RequestID {
+		t.Fatalf("replay mismatch: %+v vs %+v", first, second)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
+	}
+}
+
+func TestUploadRequestConflict(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newFileInputManager(t)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: []string{good}, RequestID: "upload-conflict",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: opened.Revision, Index: 2, Files: []string{good, good}, RequestID: "upload-conflict",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrRequestIDConflict {
+		t.Fatalf("expected request_id_conflict, got %v", err)
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
+	}
+}
+
+func TestUploadConcurrentSameRequestDispatchesOnce(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = opened
+	factory.only(t).nodes[1].InputType = "file"
+	state, err := mgr.State(context.Background(), "owner", browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := browser.UploadRequest{Revision: state.Revision, Index: 2, Files: []string{good}, RequestID: "upload-concurrent"}
+	const callers = 8
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			_, err := mgr.Upload(context.Background(), "owner", req)
+			errs <- err
+		}()
+	}
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent upload error: %v", err)
+		}
+	}
+	if got := factory.only(t).uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
+	}
+}
+
+func TestUploadDriverRejectionIsPropagatedBeforeDispatch(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	if _, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	driver := factory.only(t)
+	driver.nodes[1].InputType = "file"
+	state, err := mgr.State(context.Background(), "owner", browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver.mu.Lock()
+	driver.uploadErr = browser.NewError(browser.ErrInvalidArguments, "target file input lacks the multiple attribute for multiple files", nil)
+	driver.mu.Unlock()
+	_, err = mgr.Upload(context.Background(), "owner", browser.UploadRequest{
+		Revision: state.Revision, Index: 2, Files: []string{good, good}, RequestID: "upload-multiple",
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrInvalidArguments {
+		t.Fatalf("driver multiple rejection must propagate as invalid_arguments, got %v", err)
+	}
+	// The Driver-level validation error is outcome-known and dispatched once.
+	if got := driver.uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
+	}
+}
+
+func TestUploadOutcomeUnknownDispatchesOnceAndReplays(t *testing.T) {
+	_, good := fileInputFixture(t)
+	mgr, factory := newUploadManager(t, nil)
+	defer mgr.Close()
+	opened, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = opened
+	driver := factory.only(t)
+	driver.nodes[1].InputType = "file"
+	state, err := mgr.State(context.Background(), "owner", browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver.mu.Lock()
+	driver.observeErr = fmt.Errorf("injected observe failure")
+	driver.mu.Unlock()
+	req := browser.UploadRequest{Revision: state.Revision, Index: 2, Files: []string{good}, RequestID: "upload-unknown"}
+	for i := 0; i < 2; i++ {
+		_, err := mgr.Upload(context.Background(), "owner", req)
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrOutcomeUnknown || browserErr.OutcomeKnown {
+			t.Fatalf("attempt %d: expected outcome_unknown, got %v", i+1, err)
+		}
+	}
+	if got := driver.uploadCalls.Load(); got != 1 {
+		t.Fatalf("driver Upload call count = %d, want 1", got)
 	}
 }
 

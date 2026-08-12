@@ -118,6 +118,7 @@ import type {
   GitCommitView,
   GitCommitDetailView,
   WorkspaceView,
+  BrowserPermissionsView,
 } from "./types";
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
@@ -571,6 +572,7 @@ export interface AppBindings extends WailsWorkBindings {
   SetPermissionMode(mode: string): Promise<void>;
   AddPermissionRule(list: string, rule: string): Promise<void>;
   RemovePermissionRule(list: string, rule: string): Promise<void>;
+  SetBrowserPermissions(b: BrowserPermissionsView): Promise<void>;
   SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string): Promise<void>;
   SetNetwork(n: NetworkView): Promise<void>;
   SetCollaboration(c: CollaborationSettingsView): Promise<void>;
@@ -1654,7 +1656,7 @@ function makeMockApp(): AppBindings {
     officialProviders: [
       { name: "deepseek", builtIn: true, added: false, kind: "openai", baseUrl: "https://api.deepseek.com", modelsUrl: "", models: ["deepseek-v4-flash", "deepseek-v4-pro"], visionModels: [], visionModelsConfigured: false, default: "deepseek-v4-flash", apiKeyEnv: "DEEPSEEK_API_KEY", keySet: true, balanceUrl: "https://api.deepseek.com/user/balance", contextWindow: 1_000_000, reasoningProtocol: "", supportedEfforts: [], defaultEffort: "" },
     ],
-    permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"] },
+    permissions: { mode: "ask", allow: ["ls", "read_file"], ask: [], deny: ["Bash(rm:*)"], browser: { allowPasswordInput: true, allowFileUpload: true } },
     sandbox: { bash: "enforce", network: true, workspaceRoot: "", allowWrite: [], shell: "auto" },
     network: {
       proxyMode: "auto",
@@ -4189,6 +4191,9 @@ function makeMockApp(): AppBindings {
     async RemovePermissionRule(list: string, rule: string) {
       const k = list as "allow" | "ask" | "deny";
       settings.permissions[k] = settings.permissions[k].filter((r) => r !== rule);
+    },
+    async SetBrowserPermissions(b: BrowserPermissionsView) {
+      settings.permissions.browser = { allowPasswordInput: b.allowPasswordInput, allowFileUpload: b.allowFileUpload };
     },
         async SetSandbox(bash: string, network: boolean, workspaceRoot: string, allowWrite: string[], shell: string) {
           settings.sandbox = { bash, network, workspaceRoot, allowWrite, shell };

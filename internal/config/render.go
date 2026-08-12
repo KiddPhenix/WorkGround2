@@ -1137,7 +1137,9 @@ func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
 		fmt.Fprintf(b, "state_timeout_seconds = %d   # DOM/accessibility observation cap (1..300)\n", c.BrowserStateTimeoutSeconds())
 		fmt.Fprintf(b, "settle_milliseconds = %d   # post-action DOM quiet window (50..5000)\n", c.BrowserSettleMilliseconds())
 		fmt.Fprintf(b, "max_text_chars = %d   # page text cap returned to the model (1000..60000)\n", c.BrowserMaxTextChars())
-		fmt.Fprintf(b, "max_elements = %d   # indexed interactive-element cap (1..2000)\n\n", c.BrowserMaxElements())
+		fmt.Fprintf(b, "max_elements = %d   # indexed interactive-element cap (1..2000)\n", c.BrowserMaxElements())
+		fmt.Fprintf(b, "allow_password_input = %v   # allow browser_type to type into password inputs (default true; false hard-rejects)\n", c.BrowserAllowPasswordInput())
+		fmt.Fprintf(b, "allow_file_upload = %v   # allow browser_upload to set local files on file inputs (default true; false hard-rejects)\n\n", c.BrowserAllowFileUpload())
 		return
 	}
 	fmt.Fprintf(b, "enabled = %v\n", c.BrowserEnabled())
@@ -1149,7 +1151,9 @@ func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
 	fmt.Fprintf(b, "state_timeout_seconds = %d\n", c.BrowserStateTimeoutSeconds())
 	fmt.Fprintf(b, "settle_milliseconds = %d\n", c.BrowserSettleMilliseconds())
 	fmt.Fprintf(b, "max_text_chars = %d\n", c.BrowserMaxTextChars())
-	fmt.Fprintf(b, "max_elements = %d\n\n", c.BrowserMaxElements())
+	fmt.Fprintf(b, "max_elements = %d\n", c.BrowserMaxElements())
+	fmt.Fprintf(b, "allow_password_input = %v\n", c.BrowserAllowPasswordInput())
+	fmt.Fprintf(b, "allow_file_upload = %v\n\n", c.BrowserAllowFileUpload())
 }
 
 func renderPricingInline(p *provider.Pricing) string {

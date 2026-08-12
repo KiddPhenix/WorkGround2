@@ -1036,7 +1036,7 @@ function normalizeProviderView(p: ProviderView): ProviderView {
 
 function normalizeSettingsView(view: SettingsView | null | undefined): SettingsView | null {
   if (!view) return null;
-  const permissions = view.permissions ?? { mode: "ask", allow: [], ask: [], deny: [] };
+  const permissions = view.permissions ?? { mode: "ask", allow: [], ask: [], deny: [], browser: { allowPasswordInput: true, allowFileUpload: true } };
   const sandbox = view.sandbox ?? { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" };
   const network = view.network ?? {
     proxyMode: "auto",
@@ -1059,6 +1059,10 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
       allow: asArray(permissions.allow),
       ask: asArray(permissions.ask),
       deny: asArray(permissions.deny),
+      browser: {
+        allowPasswordInput: permissions.browser?.allowPasswordInput !== false,
+        allowFileUpload: permissions.browser?.allowFileUpload !== false,
+      },
     },
     sandbox: {
       ...sandbox,
@@ -5430,6 +5434,13 @@ function KeyField({
 
 function PermissionsSection({ s, busy, apply }: SectionProps) {
   const t = useT();
+  const setBrowser = (next: { allowPasswordInput: boolean; allowFileUpload: boolean }) =>
+    apply(() =>
+      app.SetBrowserPermissions({
+        allowPasswordInput: next.allowPasswordInput,
+        allowFileUpload: next.allowFileUpload,
+      }),
+    );
   return (
     <>
     <SettingsSection title={t("settings.permissions")} description={t("settings.permissionsModeHint")}>
@@ -5444,6 +5455,26 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
           <option value="allow">{t("settings.modeAllow")}</option>
           <option value="deny">{t("settings.modeDeny")}</option>
         </select>
+      </SettingsField>
+    </SettingsSection>
+    <SettingsSection title={t("settings.browserSensitive")} description={t("settings.browserSensitiveHint")}>
+      <SettingsField label={t("settings.allowPasswordInput")} hint={t("settings.allowPasswordInputHint")}>
+        <ToggleSegment
+          value={s.permissions.browser.allowPasswordInput}
+          disabled={busy}
+          onChange={(enabled) =>
+            void setBrowser({ allowPasswordInput: enabled, allowFileUpload: s.permissions.browser.allowFileUpload })
+          }
+        />
+      </SettingsField>
+      <SettingsField label={t("settings.allowFileUpload")} hint={t("settings.allowFileUploadHint")}>
+        <ToggleSegment
+          value={s.permissions.browser.allowFileUpload}
+          disabled={busy}
+          onChange={(enabled) =>
+            void setBrowser({ allowPasswordInput: s.permissions.browser.allowPasswordInput, allowFileUpload: enabled })
+          }
+        />
       </SettingsField>
     </SettingsSection>
     <SettingsSection title={t("settings.permissionRules")} description={t("settings.ruleForm")}>

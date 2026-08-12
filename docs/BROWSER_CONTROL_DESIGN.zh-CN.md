@@ -2,7 +2,7 @@
 
 状态：`implemented`
 分支：`developping/browser-control+2026-08-12`
-范围：第一版原生 CDP；不使用 MCP；不提供截图、上传、下载、持久登录态或桌面专用 UI。
+范围：第一版原生 CDP；不使用 MCP；不提供截图、下载、持久登录态或桌面专用 UI；本地文件上传通过专用 `browser_upload` 工具并在 Desktop 设置中可关闭。
 
 实现验证：Chrome 151 真实双门集成已覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、空闲/Controller 回收、下载拒绝和临时 Profile 清理；默认单测不启动浏览器。
 
@@ -15,7 +15,8 @@
 3. 获取适合模型读取的页面文本、标签页和带编号的交互元素。
 4. 使用页面 revision 和元素编号点击、输入、滚动。
 5. 新建、激活和关闭标签页。
-6. 显式关闭浏览器；Controller 关闭后自动回收。空闲超时（默认 0 = 永不）仅在配置正数 `idle_timeout_seconds` 时回收。
+6. 向 input[type=file] 上传本地文件（1-20 个，路径进入 transcript）。
+7. 显式关闭浏览器；Controller 关闭后自动回收。空闲超时（默认 0 = 永不）仅在配置正数 `idle_timeout_seconds` 时回收。
 
 该能力学习 browser-use 的两部分：
 
@@ -30,7 +31,7 @@ WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流
 
 - browser-use MCP 或其他浏览器 sidecar。
 - 截图、视觉模型输入、坐标视觉定位。
-- 文件上传、下载管理、打印和 PDF。
+- 拖放、目录上传、下载管理、打印和 PDF；本地文件上传仅通过 `browser_upload`（受 `allow_file_upload` 开关控制）。
 - 第一版不启用用户日常 Chrome Profile、Cookie、登录态和密码库自动填充；接口位置会预留，后续无需改动核心 Tool/Session 模型。
 - 验证码、反机器人绕过、扩展管理、代理池。
 - Desktop 浏览器面板或专用前端状态页。
@@ -43,7 +44,7 @@ WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流
 ```text
 browser_open
   -> browser_state
-  -> browser_click / browser_type / browser_scroll / browser_tab
+  -> browser_click / browser_type / browser_scroll / browser_tab / browser_upload
   -> browser_state
   -> browser_close
 ```
@@ -384,7 +385,7 @@ type TabRequest struct {
 - `index=0` 在 Scroll 中表示滚动当前视口；正数表示先滚动目标元素。
 - `delta_y` 限制在 `[-4000, 4000]`，不能为 0。
 - Type.Text 第一版进入工具参数和 transcript，不用于密码或 Token。
-- `browser_type` 必须在 Session 和生产 Driver 两层拒绝 `input_type=password` 和 `input_type=file`，返回 `sensitive_input_blocked`；拒绝路径不能向页面派发输入动作。密码和文件后续分别使用凭据引用和上传专用工具。
+- `browser_type` 在 Session 和生产 Driver 两层：`input_type=file` 始终拒绝并返回 `sensitive_input_blocked`（必须使用 `browser_upload`）；`input_type=password` 仅在 `allow_password_input=false` 时拒绝，开启时真实输入。任何拒绝路径都不能向页面派发输入动作。
 - Tab close 拒绝关闭最后一个标签页，关闭整个浏览器使用 `browser_close`。
 
 ### 8.4 结果
@@ -707,7 +708,7 @@ Driver Observe 使用：
 5. 嵌套重复节点优先保留语义更完整、可命中的节点。
 6. 页面 Text 从可见文本生成，去除连续空白和重复节点文本。
 7. password 输入值永不进入 Observation；其他输入当前 value 第一版也不输出。
-8. input 的 type 可以进入 Observation，用于在 Session 和 Driver 两层拒绝 password/file 输入；不得输出 value。
+8. input 的 type 可以进入 Observation，用于在 Session 和 Driver 两层校验 password/file 输入（file 拒绝，password 受开关控制）；不得输出 value。
 9. 其余属性只允许 role、tag、aria/name、placeholder、href、disabled、checked、editable。
 9. URL、元素数和文本严格受配置上限约束。
 
@@ -756,6 +757,7 @@ Driver Observe 使用：
 | `browser_type` | `revision`, `index`, `text`, `clear?`, `press_enter?`, `request_id` | false | false |
 | `browser_scroll` | `revision`, `index?`, `delta_y`, `request_id` | false | false |
 | `browser_tab` | `revision`, `action`, `tab_id?`, `url?`, `request_id` | false | false |
+| `browser_upload` | `revision`, `index`, `files`, `request_id` | false | false |
 | `browser_close` | 无 | false | false |
 
 工具全部返回 pretty JSON。运行错误返回结构化 JSON 作为 result，同时返回非 nil Go error，使 ToolResult 明确显示失败。
@@ -891,6 +893,8 @@ state_timeout_seconds = 15
 settle_milliseconds = 300
 max_text_chars = 20000
 max_elements = 400
+allow_password_input = true
+allow_file_upload = true
 ```
 
 约束：
@@ -914,7 +918,7 @@ max_elements = 400
 - 不读取或复用用户真实 Profile。
 - 页面状态不输出 password value、Cookie、localStorage 或完整 HTML。
 - 工具错误和 progress 不包含输入文本、页面敏感字段或 CDP 原始 payload。
-- `browser_type.text` 仍会出现在现有 ToolCall transcript；文档和 Schema 必须明确禁止把秘密直接传给首版工具。
+- `browser_type.text` 和 `browser_upload.files` 路径都会出现在现有 ToolCall transcript；文档和 Schema 必须明确提醒不要传秘密、不要上传机密文件。
 - 第一版存在 CredentialProvider 接口也不能视为已启用密码库；禁止静默回退到普通 Type。
 
 ## 18. 生命周期
@@ -1026,13 +1030,13 @@ Idle reaper：
 
 1. 分支中没有 MCP、截图、上传、下载或 UI 实现。
 2. Google Chrome 和兼容 Chromium 浏览器可由 kind/executable_path 发现；浏览器未安装只在首次 open 显式失败。
-3. 八个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
+3. 九个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
 4. 同一 WorkGround2 parent session 可完成启动、导航、读取、点击、输入、滚动、tab 和关闭。
 5. 不同 parent session 不共享 Driver、Tab、revision 或 request cache。
 6. 页面变化后旧 revision 必须失败，不能落到其他节点。
 7. 相同 request_id 可安全重复；冲突和结果不确定显式返回。
 8. 工具取消不会误杀其他 Session；Controller cleanup 和空闲回收没有进程泄漏。
-9. ProfileProvider 和 CredentialProvider 扩展点及安全测试存在，但第一版只启用 ephemeral profile，不能填写密码。
+9. ProfileProvider 和 CredentialProvider 扩展点及安全测试存在，但第一版只启用 ephemeral profile；密码输入默认允许（`allow_password_input`），不接入密码库。
 10. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
 11. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
 12. Feature Map、配置示例和用户文档同步更新。

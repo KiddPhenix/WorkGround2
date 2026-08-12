@@ -68,6 +68,7 @@ var browserRuntimeTools = map[string]bool{
 	"browser_type":     true,
 	"browser_scroll":   true,
 	"browser_tab":      true,
+	"browser_upload":   true,
 	"browser_close":    true,
 }
 
@@ -697,17 +698,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if cfg.BrowserEnabled() && !tokenEconomy && browserToolsSelected(enabledBuiltins) {
 		factory := cdp.NewFactory(cdp.Options{})
 		bm, err := browserpkg.NewManager(ctx, browserpkg.Options{
-			Factory:        factory,
-			BrowserKind:    browserpkg.BrowserKind(cfg.BrowserKind()),
-			ExecutablePath: cfg.Tools.Browser.ExecutablePath,
-			Headless:       cfg.BrowserHeadless(),
-			ProfileRoot:    sessionDir,
-			IdleTimeout:    time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
-			ActionTimeout:  time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
-			StateTimeout:   time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
-			SettleWindow:   time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
-			MaxTextChars:   cfg.BrowserMaxTextChars(),
-			MaxElements:    cfg.BrowserMaxElements(),
+			Factory:            factory,
+			BrowserKind:        browserpkg.BrowserKind(cfg.BrowserKind()),
+			ExecutablePath:     cfg.Tools.Browser.ExecutablePath,
+			Headless:           cfg.BrowserHeadless(),
+			ProfileRoot:        sessionDir,
+			IdleTimeout:        time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
+			ActionTimeout:      time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
+			StateTimeout:       time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
+			SettleWindow:       time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
+			MaxTextChars:       cfg.BrowserMaxTextChars(),
+			MaxElements:        cfg.BrowserMaxElements(),
+			AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
+			AllowFileUpload:    cfg.BrowserAllowFileUpload(),
 		})
 		if err != nil {
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,

@@ -1113,6 +1113,82 @@ func TestSetDesktopMetricsDefaultsOnAndPersistsOff(t *testing.T) {
 	}
 }
 
+func TestSettingsBrowserPermissionsDefaultTrue(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	view := NewApp().Settings()
+	if !view.Permissions.Browser.AllowPasswordInput || !view.Permissions.Browser.AllowFileUpload {
+		t.Fatalf("default browser permissions = %+v, want both true", view.Permissions.Browser)
+	}
+}
+
+func TestSetBrowserPermissionsPersistsExplicitValuesAndRebuilds(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetBrowserPermissions(BrowserPermissionsView{AllowPasswordInput: false, AllowFileUpload: false}); err != nil {
+		t.Fatalf("SetBrowserPermissions: %v", err)
+	}
+
+	view := app.Settings()
+	if view.Permissions.Browser.AllowPasswordInput || view.Permissions.Browser.AllowFileUpload {
+		t.Fatalf("Settings() browser permissions = %+v, want false false", view.Permissions.Browser)
+	}
+
+	raw, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{"allow_password_input = false", "allow_file_upload = false"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("saved TOML missing %q:\n%s", want, text)
+		}
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Tools.Browser.AllowPasswordInput == nil || *cfg.Tools.Browser.AllowPasswordInput {
+		t.Fatalf("saved allow_password_input = %v, want explicit false", cfg.Tools.Browser.AllowPasswordInput)
+	}
+	if cfg.Tools.Browser.AllowFileUpload == nil || *cfg.Tools.Browser.AllowFileUpload {
+		t.Fatalf("saved allow_file_upload = %v, want explicit false", cfg.Tools.Browser.AllowFileUpload)
+	}
+
+	if c := app.activeCtrl(); c == nil || c == old {
+		t.Fatal("SetBrowserPermissions must rebuild the controller")
+	}
+}
+
+func TestSetBrowserPermissionsSwitchesAreIndependent(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	if err := app.SetBrowserPermissions(BrowserPermissionsView{AllowPasswordInput: false, AllowFileUpload: true}); err != nil {
+		t.Fatalf("SetBrowserPermissions: %v", err)
+	}
+	view := app.Settings()
+	if view.Permissions.Browser.AllowPasswordInput || !view.Permissions.Browser.AllowFileUpload {
+		t.Fatalf("independent switch save = %+v, want password=false file=true", view.Permissions.Browser)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Tools.Browser.AllowPasswordInput == nil || *cfg.Tools.Browser.AllowPasswordInput {
+		t.Fatalf("saved allow_password_input = %v, want explicit false", cfg.Tools.Browser.AllowPasswordInput)
+	}
+	if cfg.Tools.Browser.AllowFileUpload == nil || !*cfg.Tools.Browser.AllowFileUpload {
+		t.Fatalf("saved allow_file_upload = %v, want explicit true", cfg.Tools.Browser.AllowFileUpload)
+	}
+}
+
 func TestSetMemoryCompilerDefaultsOnAndPersistsOff(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

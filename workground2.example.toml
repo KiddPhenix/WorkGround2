@@ -146,6 +146,8 @@ state_timeout_seconds = 15
 settle_milliseconds = 300
 max_text_chars = 20000
 max_elements = 400
+allow_password_input = true   # allow browser_type to type into password inputs; false hard-rejects before the browser
+allow_file_upload = true   # allow browser_upload to set local files on file inputs; false hard-rejects before the browser
 
 # Sandbox confinement bounds the blast radius of tool calls. Writers may only
 # modify workspace_root (empty = current directory) plus allow_write. forbid_read

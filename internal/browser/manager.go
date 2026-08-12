@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -179,15 +181,17 @@ func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) 
 	// The Driver owns a long-lived browser process. Never derive its lifetime
 	// from a single tool-call context.
 	driver, err := m.factory.New(m.ctx, DriverOptions{
-		BrowserKind:    m.opts.BrowserKind,
-		ExecutablePath: m.opts.ExecutablePath,
-		Headless:       m.opts.Headless,
-		UserDataDir:    lease.UserDataDir,
-		ProfileName:    lease.ProfileName,
-		DebugURL:       lease.DebugURL,
-		OwnProcess:     lease.OwnProcess,
-		DenyDownloads:  true,
-		SettleWindow:   m.opts.SettleWindow,
+		BrowserKind:        m.opts.BrowserKind,
+		ExecutablePath:     m.opts.ExecutablePath,
+		Headless:           m.opts.Headless,
+		UserDataDir:        lease.UserDataDir,
+		ProfileName:        lease.ProfileName,
+		DebugURL:           lease.DebugURL,
+		OwnProcess:         lease.OwnProcess,
+		DenyDownloads:      true,
+		SettleWindow:       m.opts.SettleWindow,
+		AllowPasswordInput: m.opts.AllowPasswordInput,
+		AllowFileUpload:    m.opts.AllowFileUpload,
 	})
 	if err != nil {
 		// Keep the lease attached to the Session until release succeeds. A failed
@@ -697,8 +701,11 @@ func (m *Manager) Type(ctx context.Context, ownerID string, req TypeRequest) (Ac
 		}
 	}
 	inputType = strings.ToLower(strings.TrimSpace(inputType))
-	if inputType == "password" || inputType == "file" {
-		return completeAction(s, rec, ActionResult{}, NewError(ErrSensitiveInputBlocked, "browser_type refuses password and file inputs", nil))
+	if inputType == "file" {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrSensitiveInputBlocked, "browser_type refuses file inputs; use browser_upload", nil))
+	}
+	if inputType == "password" && !m.opts.AllowPasswordInput {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrSensitiveInputBlocked, "password input is disabled by tools.browser.allow_password_input", nil))
 	}
 	if !editable || disabled {
 		return completeAction(s, rec, ActionResult{}, NewError(ErrElementNotInteractable, "target element is not editable", nil))
@@ -957,6 +964,137 @@ func (m *Manager) Tab(ctx context.Context, ownerID string, req TabRequest) (Acti
 		AfterRevision:  afterRev,
 		Changed:        beforeRev != afterRev,
 		Method:         "tab_" + string(req.Action),
+		URL:            obs.URL,
+		Title:          obs.Title,
+	}
+	return completeAction(s, rec, result, nil)
+}
+
+// Upload sets local files on a file input identified by revision and index.
+// Files are resolved to absolute cleaned paths and must exist as regular
+// files. The target must be a visible, enabled input[type=file]; multi-file
+// uploads additionally require the input's multiple attribute, which the
+// production Driver verifies against the live DOM before any dispatch.
+func (m *Manager) Upload(ctx context.Context, ownerID string, req UploadRequest) (ActionResult, error) {
+	if ownerID == "" {
+		return ActionResult{}, NewError(ErrMissingSessionScope, "no parent session scope", nil)
+	}
+	if req.RequestID == "" {
+		return ActionResult{}, NewError(ErrStaleState, "request_id is required for upload", nil)
+	}
+	if !m.opts.AllowFileUpload {
+		return ActionResult{}, NewError(ErrSensitiveInputBlocked, "file upload is disabled by tools.browser.allow_file_upload", nil)
+	}
+	if len(req.Files) == 0 || len(req.Files) > 20 {
+		return ActionResult{}, NewError(ErrInvalidArguments, "files must contain 1-20 paths", nil)
+	}
+
+	s := m.getSession(ownerID)
+	if s == nil || s.State() != SessionReady {
+		return ActionResult{}, NewError(ErrBrowserNotOpen, "browser not open", nil)
+	}
+	s.touch()
+	defer s.touch()
+
+	sig := requestSignature("browser_upload", map[string]any{
+		"revision": req.Revision,
+		"index":    req.Index,
+		"files":    req.Files,
+	})
+	rec, cached, leader, err := beginAction(ctx, s, req.RequestID, sig)
+	if err != nil || !leader {
+		return cached, err
+	}
+
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	beforeRev := s.Revision()
+
+	snap, err := s.validateRevision(req.Revision)
+	if err != nil {
+		return completeAction(s, rec, ActionResult{}, err)
+	}
+
+	ref, ok := snap.Nodes[req.Index]
+	if !ok {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrElementNotFound, fmt.Sprintf("element %d not found", req.Index), nil))
+	}
+	var targetElement Element
+	found := false
+	for _, element := range snap.State.Elements {
+		if element.Index == req.Index {
+			targetElement = element
+			found = true
+			break
+		}
+	}
+	if !found || strings.ToLower(strings.TrimSpace(targetElement.InputType)) != "file" {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrElementNotInteractable, "browser_upload target must be an input[type=file]", nil))
+	}
+	if targetElement.Disabled {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrElementNotInteractable, "browser_upload target is disabled", nil))
+	}
+
+	// Resolve every path: absolute + clean, must exist and be a regular file.
+	// Order is preserved for the driver.
+	files := make([]string, 0, len(req.Files))
+	for _, raw := range req.Files {
+		if strings.TrimSpace(raw) == "" {
+			return completeAction(s, rec, ActionResult{}, NewError(ErrInvalidArguments, "file paths must not be empty", nil))
+		}
+		abs, err := filepath.Abs(raw)
+		if err != nil {
+			return completeAction(s, rec, ActionResult{}, NewError(ErrInvalidArguments, fmt.Sprintf("invalid file path %q", raw), err))
+		}
+		abs = filepath.Clean(abs)
+		info, err := os.Stat(abs)
+		if err != nil {
+			return completeAction(s, rec, ActionResult{}, NewError(ErrInvalidArguments, fmt.Sprintf("file %q does not exist", abs), err))
+		}
+		if !info.Mode().IsRegular() {
+			return completeAction(s, rec, ActionResult{}, NewError(ErrInvalidArguments, fmt.Sprintf("path %q is not a regular file", abs), nil))
+		}
+		files = append(files, abs)
+	}
+
+	driver := s.driver
+	if driver == nil {
+		return completeAction(s, rec, ActionResult{}, NewError(ErrBrowserDisconnected, "driver disconnected", nil))
+	}
+	callCtx, cancel := m.actionContext(ctx)
+	defer cancel()
+
+	dispatchErr := driver.Upload(callCtx, ref, files)
+	if dispatchErr != nil {
+		var browserErr *Error
+		if errors.As(dispatchErr, &browserErr) {
+			// Validation rejects inside the Driver never reached the browser.
+			return completeAction(s, rec, ActionResult{}, browserErr)
+		}
+		return completeDriverError(s, rec, "upload", dispatchErr)
+	}
+
+	if err := m.settle(callCtx, s); err != nil {
+		s.bumpGeneration()
+		return completeAction(s, rec, ActionResult{}, NewError(ErrOutcomeUnknown, "upload dispatched but settle was canceled", err))
+	}
+	obs, afterRev, err := m.observeAndPublish(callCtx, s, driver, ObserveOptions{
+		MaxTextChars: m.opts.MaxTextChars,
+		MaxElements:  m.opts.MaxElements,
+	}, true)
+	if err != nil {
+		s.bumpGeneration()
+		return completeAction(s, rec, ActionResult{}, NewError(ErrOutcomeUnknown, "upload dispatched but re-observation failed", err))
+	}
+
+	result := ActionResult{
+		SessionID:      s.id,
+		RequestID:      req.RequestID,
+		BeforeRevision: beforeRev,
+		AfterRevision:  afterRev,
+		Changed:        beforeRev != afterRev,
+		Method:         "upload",
 		URL:            obs.URL,
 		Title:          obs.Title,
 	}

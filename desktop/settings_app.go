@@ -76,6 +76,17 @@ type PermissionsView struct {
 	Allow []string `json:"allow"`
 	Ask   []string `json:"ask"`
 	Deny  []string `json:"deny"`
+	// Browser carries the browser sensitive-operation switches (password
+	// typing and local file upload). Both default to allowed.
+	Browser BrowserPermissionsView `json:"browser"`
+}
+
+// BrowserPermissionsView exposes the two independent browser sensitive
+// operation switches. Values are resolved config booleans: an old config
+// without the keys surfaces as true (allowed).
+type BrowserPermissionsView struct {
+	AllowPasswordInput bool `json:"allowPasswordInput"`
+	AllowFileUpload    bool `json:"allowFileUpload"`
 }
 
 type SandboxView struct {
@@ -565,6 +576,10 @@ func (a *App) Settings() SettingsView {
 				Allow: []string{},
 				Ask:   []string{},
 				Deny:  []string{},
+				Browser: BrowserPermissionsView{
+					AllowPasswordInput: true,
+					AllowFileUpload:    true,
+				},
 			},
 			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
 			Collaboration:           CollaborationSettingsView{PreferLAN: true, ConnectTimeoutSeconds: 10, RouteStableSeconds: 60, Relays: []RelayView{}},
@@ -612,6 +627,10 @@ func (a *App) Settings() SettingsView {
 			Allow: nonNil(cfg.Permissions.Allow),
 			Ask:   nonNil(cfg.Permissions.Ask),
 			Deny:  nonNil(cfg.Permissions.Deny),
+			Browser: BrowserPermissionsView{
+				AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
+				AllowFileUpload:    cfg.BrowserAllowFileUpload(),
+			},
 		},
 		Sandbox: SandboxView{
 			Bash: bash, Network: cfg.Sandbox.Network,
@@ -2043,6 +2062,20 @@ func (a *App) RemovePermissionRule(list, rule string) error {
 	return a.applyConfigChange(func(c *config.Config) error {
 		_, err := c.RemovePermissionRule(list, rule)
 		return err
+	})
+}
+
+// SetBrowserPermissions atomically persists both browser sensitive-operation
+// switches (password typing and local file upload). Both values are written
+// explicitly so a single flipped switch still lands in the TOML; the change
+// rebuilds the controller for the new runtime behavior.
+func (a *App) SetBrowserPermissions(b BrowserPermissionsView) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		allowPassword := b.AllowPasswordInput
+		allowFile := b.AllowFileUpload
+		c.Tools.Browser.AllowPasswordInput = &allowPassword
+		c.Tools.Browser.AllowFileUpload = &allowFile
+		return nil
 	})
 }
 

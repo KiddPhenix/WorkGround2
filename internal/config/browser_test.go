@@ -14,6 +14,9 @@ func TestBrowserConfigDefaults(t *testing.T) {
 	if !c.BrowserEnabled() || c.BrowserKind() != "auto" || c.BrowserHeadless() {
 		t.Fatalf("browser defaults = enabled %v kind %q headless %v", c.BrowserEnabled(), c.BrowserKind(), c.BrowserHeadless())
 	}
+	if !c.BrowserAllowPasswordInput() || !c.BrowserAllowFileUpload() {
+		t.Fatalf("browser sensitive defaults = allow_password_input %v allow_file_upload %v, want true true", c.BrowserAllowPasswordInput(), c.BrowserAllowFileUpload())
+	}
 	got := []int{
 		c.BrowserIdleTimeoutSeconds(), c.BrowserActionTimeoutSeconds(),
 		c.BrowserStateTimeoutSeconds(), c.BrowserSettleMilliseconds(),
@@ -103,17 +106,42 @@ func TestBrowserConfigClampsAndValidatesKind(t *testing.T) {
 	}
 }
 
+func TestBrowserSensitivePermissionSwitches(t *testing.T) {
+	// nil (old config without the keys) defaults to true.
+	c := Default()
+	c.Tools.Browser.AllowPasswordInput = nil
+	c.Tools.Browser.AllowFileUpload = nil
+	if !c.BrowserAllowPasswordInput() || !c.BrowserAllowFileUpload() {
+		t.Fatalf("nil sensitive switches must default true: password %v file %v", c.BrowserAllowPasswordInput(), c.BrowserAllowFileUpload())
+	}
+
+	// Explicit false is respected independently.
+	c = Default()
+	c.Tools.Browser.AllowPasswordInput = boolPtr(false)
+	if c.BrowserAllowPasswordInput() || !c.BrowserAllowFileUpload() {
+		t.Fatalf("password=false must only disable password: password %v file %v", c.BrowserAllowPasswordInput(), c.BrowserAllowFileUpload())
+	}
+	c = Default()
+	c.Tools.Browser.AllowFileUpload = boolPtr(false)
+	if !c.BrowserAllowPasswordInput() || c.BrowserAllowFileUpload() {
+		t.Fatalf("file=false must only disable upload: password %v file %v", c.BrowserAllowPasswordInput(), c.BrowserAllowFileUpload())
+	}
+}
+
 func TestRenderTOMLBrowserFullRoundTrip(t *testing.T) {
 	c := Default()
 	c.Tools.Browser.Kind = "chrome"
 	c.Tools.Browser.ExecutablePath = `C:\Program Files\Google\Chrome\Application\chrome.exe`
 	c.Tools.Browser.Headless = boolPtr(true)
 	c.Tools.Browser.MaxElements = intPtr(777)
+	c.Tools.Browser.AllowPasswordInput = boolPtr(false)
+	c.Tools.Browser.AllowFileUpload = boolPtr(false)
 
 	rendered := RenderTOML(c)
 	for _, want := range []string{
 		"[tools.browser]", `kind = "chrome"`, `headless = true`,
 		"idle_timeout_seconds = 0", "max_elements = 777",
+		"allow_password_input = false", "allow_file_upload = false",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("full render missing %q:\n%s", want, rendered)
@@ -125,6 +153,9 @@ func TestRenderTOMLBrowserFullRoundTrip(t *testing.T) {
 	}
 	if got.BrowserKind() != "chrome" || !got.BrowserHeadless() || got.BrowserMaxElements() != 777 || got.Tools.Browser.ExecutablePath != c.Tools.Browser.ExecutablePath {
 		t.Fatalf("browser round trip = %+v", got.Tools.Browser)
+	}
+	if got.BrowserAllowPasswordInput() || got.BrowserAllowFileUpload() {
+		t.Fatalf("sensitive switch round trip = password %v file %v, want false false", got.BrowserAllowPasswordInput(), got.BrowserAllowFileUpload())
 	}
 }
 
@@ -149,5 +180,21 @@ func TestProjectDeltaBrowserOverrideRoundTrip(t *testing.T) {
 	}
 	if got.BrowserKind() != "edge" || !got.BrowserHeadless() {
 		t.Fatalf("project browser round trip = %+v", got.Tools.Browser)
+	}
+}
+
+func TestProjectDeltaBrowserSensitiveSwitchRoundTrip(t *testing.T) {
+	c := Default()
+	c.Tools.Browser.AllowFileUpload = boolPtr(false)
+	delta := RenderTOMLProjectDelta(c)
+	if !strings.Contains(delta, "[tools.browser]") || !strings.Contains(delta, "allow_file_upload = false") {
+		t.Fatalf("project browser delta missing sensitive override:\n%s", delta)
+	}
+	got := Default()
+	if _, err := toml.Decode(delta, got); err != nil {
+		t.Fatalf("decode sensitive browser delta: %v\n%s", err, delta)
+	}
+	if !got.BrowserAllowPasswordInput() || got.BrowserAllowFileUpload() {
+		t.Fatalf("sensitive browser delta round trip = password %v file %v, want true false", got.BrowserAllowPasswordInput(), got.BrowserAllowFileUpload())
 	}
 }

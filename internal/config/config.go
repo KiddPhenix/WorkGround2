@@ -1616,6 +1616,12 @@ type BrowserConfig struct {
 	SettleMilliseconds   *int   `toml:"settle_milliseconds"`
 	MaxTextChars         *int   `toml:"max_text_chars"`
 	MaxElements          *int   `toml:"max_elements"`
+	// AllowPasswordInput controls whether browser_type may type into password
+	// inputs. nil (old config without the key) defaults to true.
+	AllowPasswordInput *bool `toml:"allow_password_input"`
+	// AllowFileUpload controls whether browser_upload may set local files on
+	// file inputs. nil (old config without the key) defaults to true.
+	AllowFileUpload *bool `toml:"allow_file_upload"`
 }
 
 const (
@@ -1670,6 +1676,20 @@ func (c *Config) BrowserKind() string {
 // BrowserHeadless reports whether the browser should run without a visible UI.
 func (c *Config) BrowserHeadless() bool {
 	return c.Tools.Browser.Headless != nil && *c.Tools.Browser.Headless
+}
+
+// BrowserAllowPasswordInput reports whether browser_type may type into password
+// inputs. nil and old configs without the key default to true; explicit false
+// hard-rejects password typing.
+func (c *Config) BrowserAllowPasswordInput() bool {
+	return c.Tools.Browser.AllowPasswordInput == nil || *c.Tools.Browser.AllowPasswordInput
+}
+
+// BrowserAllowFileUpload reports whether browser_upload may set local files on
+// file inputs. nil and old configs without the key default to true; explicit
+// false hard-rejects uploads.
+func (c *Config) BrowserAllowFileUpload() bool {
+	return c.Tools.Browser.AllowFileUpload == nil || *c.Tools.Browser.AllowFileUpload
 }
 
 // BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds. 0 is
@@ -1928,6 +1948,8 @@ func Default() *Config {
 			SettleMilliseconds:   intConfigPtr(defaultBrowserSettleMs),
 			MaxTextChars:         intConfigPtr(defaultBrowserMaxTextChars),
 			MaxElements:          intConfigPtr(defaultBrowserMaxElements),
+			AllowPasswordInput:   boolConfigPtr(true),
+			AllowFileUpload:      boolConfigPtr(true),
 		}},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.

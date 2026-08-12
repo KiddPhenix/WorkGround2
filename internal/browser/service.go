@@ -18,6 +18,7 @@ type Service interface {
 	Type(ctx context.Context, ownerID string, req TypeRequest) (ActionResult, error)
 	Scroll(ctx context.Context, ownerID string, req ScrollRequest) (ActionResult, error)
 	Tab(ctx context.Context, ownerID string, req TabRequest) (ActionResult, error)
+	Upload(ctx context.Context, ownerID string, req UploadRequest) (ActionResult, error)
 	CloseSession(ctx context.Context, ownerID string) (CloseResult, error)
 	Close() error
 }
@@ -36,6 +37,7 @@ type Driver interface {
 	Observe(ctx context.Context, opts ObserveOptions) (Observation, error)
 	Click(ctx context.Context, ref NodeRef) error
 	Type(ctx context.Context, ref NodeRef, input TypeInput) error
+	Upload(ctx context.Context, ref NodeRef, files []string) error
 	Scroll(ctx context.Context, input ScrollInput) error
 	NewTab(ctx context.Context, url string) (string, error)
 	ActivateTab(ctx context.Context, targetID string) error
@@ -59,6 +61,10 @@ type Options struct {
 	SettleWindow   time.Duration
 	MaxTextChars   int
 	MaxElements    int
+	// AllowPasswordInput permits browser_type to type into password inputs.
+	AllowPasswordInput bool
+	// AllowFileUpload permits browser_upload to set local files on file inputs.
+	AllowFileUpload bool
 }
 
 // DriverOptions configures a single Driver (Chromium process).
@@ -72,6 +78,10 @@ type DriverOptions struct {
 	OwnProcess     bool
 	DenyDownloads  bool
 	SettleWindow   time.Duration
+	// AllowPasswordInput mirrors Options for the double-checked rejection.
+	AllowPasswordInput bool
+	// AllowFileUpload mirrors Options for the double-checked rejection.
+	AllowFileUpload bool
 }
 
 // ObserveOptions limits what Driver.Observe collects.

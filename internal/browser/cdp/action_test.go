@@ -129,15 +129,57 @@ func TestClickReturnsBothPrimaryAndFallbackError(t *testing.T) {
 }
 
 func TestValidateTypeTargetBlocksSensitiveInputsBeforeDispatch(t *testing.T) {
-	for _, inputType := range []string{"password", "file", "PASSWORD"} {
+	for _, inputType := range []string{"file", "FILE"} {
 		node := &cdp.Node{NodeName: "INPUT", Attributes: []string{"type", inputType, "value", "must-not-be-read"}}
-		err := validateTypeTarget(node)
+		err := validateTypeTarget(node, true)
 		var browserErr *browser.Error
 		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
 			t.Fatalf("type %q error = %v", inputType, err)
 		}
 	}
-	if err := validateTypeTarget(&cdp.Node{NodeName: "INPUT", Attributes: []string{"type", "text"}}); err != nil {
+	for _, inputType := range []string{"password", "PASSWORD"} {
+		node := &cdp.Node{NodeName: "INPUT", Attributes: []string{"type", inputType, "value", "must-not-be-read"}}
+		err := validateTypeTarget(node, false)
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
+			t.Fatalf("type %q with allowPassword=false error = %v", inputType, err)
+		}
+		if err := validateTypeTarget(node, true); err != nil {
+			t.Fatalf("type %q with allowPassword=true rejected: %v", inputType, err)
+		}
+	}
+	if err := validateTypeTarget(&cdp.Node{NodeName: "INPUT", Attributes: []string{"type", "text"}}, false); err != nil {
 		t.Fatalf("text input rejected: %v", err)
+	}
+}
+
+func TestValidateUploadTarget(t *testing.T) {
+	fileInput := &cdp.Node{NodeName: "INPUT", Attributes: []string{"type", "file"}}
+	if err := validateUploadTarget(fileInput, 1); err != nil {
+		t.Fatalf("single file input rejected: %v", err)
+	}
+	// Multiple files require the multiple attribute.
+	err := validateUploadTarget(fileInput, 2)
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrInvalidArguments {
+		t.Fatalf("multi-file without multiple error = %v", err)
+	}
+	multi := &cdp.Node{NodeName: "INPUT", Attributes: []string{"type", "file", "multiple", ""}}
+	if err := validateUploadTarget(multi, 2); err != nil {
+		t.Fatalf("multi file input with multiple rejected: %v", err)
+	}
+	// Wrong DOM node type is rejected before dispatch.
+	for _, wrong := range []*cdp.Node{
+		{NodeName: "INPUT", Attributes: []string{"type", "text"}},
+		{NodeName: "TEXTAREA", Attributes: []string{"type", "file"}},
+		{NodeName: "INPUT"},
+	} {
+		err := validateUploadTarget(wrong, 1)
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrElementNotInteractable {
+			t.Fatalf("wrong upload target %+v error = %v", wrong, err)
+		}
+	}
+	if err := validateUploadTarget(nil, 1); !errors.As(err, &browserErr) || browserErr.Code != browser.ErrElementNotFound {
+		t.Fatalf("nil upload target error = %v", err)
 	}
 }

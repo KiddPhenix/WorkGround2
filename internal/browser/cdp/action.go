@@ -163,14 +163,14 @@ func fallbackClick(ctx context.Context, backend clickBackend, nodeID cdp.Backend
 	return "dom_fallback", nil
 }
 
-func typeText(ctx context.Context, ref browser.NodeRef, value browser.TypeInput) error {
+func typeText(ctx context.Context, ref browser.NodeRef, value browser.TypeInput, allowPassword bool) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		node, err := dom.DescribeNode().WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).WithDepth(0).Do(ctx)
 		if err != nil {
 			return fmt.Errorf("describe input node: %w", err)
 		}
 		// This check intentionally precedes focus and every Input.* dispatch.
-		if err := validateTypeTarget(node); err != nil {
+		if err := validateTypeTarget(node, allowPassword); err != nil {
 			return err
 		}
 		if err := dom.Focus().WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).Do(ctx); err != nil {
@@ -195,14 +195,56 @@ func typeText(ctx context.Context, ref browser.NodeRef, value browser.TypeInput)
 	}))
 }
 
-func validateTypeTarget(node *cdp.Node) error {
+func validateTypeTarget(node *cdp.Node, allowPassword bool) error {
 	if node == nil {
 		return fmt.Errorf("input node not found")
 	}
 	attrs := parseDOMAttributes(node.Attributes)
 	inputType := strings.ToLower(attrs["type"])
-	if strings.EqualFold(node.NodeName, "input") && (inputType == "password" || inputType == "file") {
-		return browser.NewError(browser.ErrSensitiveInputBlocked, "password and file inputs require a dedicated secure tool", nil)
+	if !strings.EqualFold(node.NodeName, "input") {
+		return nil
+	}
+	if inputType == "file" {
+		return browser.NewError(browser.ErrSensitiveInputBlocked, "file inputs require browser_upload", nil)
+	}
+	if inputType == "password" && !allowPassword {
+		return browser.NewError(browser.ErrSensitiveInputBlocked, "password input is disabled by allow_password_input", nil)
+	}
+	return nil
+}
+
+// uploadFiles sets local files on an input[type=file] via DOM.setFileInputFiles.
+// The real DOM is re-validated here (double-check against the Manager snapshot)
+// and multi-file uploads require the multiple attribute before any dispatch.
+func uploadFiles(ctx context.Context, ref browser.NodeRef, files []string) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		node, err := dom.DescribeNode().WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).WithDepth(0).Do(ctx)
+		if err != nil {
+			return fmt.Errorf("describe file input node: %w", err)
+		}
+		if err := validateUploadTarget(node, len(files)); err != nil {
+			return err
+		}
+		if err := dom.SetFileInputFiles(files).WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).Do(ctx); err != nil {
+			return &browser.DispatchError{Dispatched: true, Cause: fmt.Errorf("set file input files: %w", err)}
+		}
+		return nil
+	}))
+}
+
+func validateUploadTarget(node *cdp.Node, fileCount int) error {
+	if node == nil {
+		return browser.NewError(browser.ErrElementNotFound, "file input node not found", nil)
+	}
+	attrs := parseDOMAttributes(node.Attributes)
+	inputType := strings.ToLower(attrs["type"])
+	if !strings.EqualFold(node.NodeName, "input") || inputType != "file" {
+		return browser.NewError(browser.ErrElementNotInteractable, "upload target is not an input[type=file]", nil)
+	}
+	if fileCount > 1 {
+		if _, ok := attrs["multiple"]; !ok {
+			return browser.NewError(browser.ErrInvalidArguments, "target file input lacks the multiple attribute for multiple files", nil)
+		}
 	}
 	return nil
 }
