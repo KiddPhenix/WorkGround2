@@ -1619,7 +1619,9 @@ type BrowserConfig struct {
 }
 
 const (
-	defaultBrowserIdleTimeoutSec   = 600
+	// defaultBrowserIdleTimeoutSec = 0 means the browser is never auto-closed
+	// for idleness; only explicit Close/CloseSession and lifecycle cleanup do.
+	defaultBrowserIdleTimeoutSec   = 0
 	defaultBrowserActionTimeoutSec = 30
 	defaultBrowserStateTimeoutSec  = 15
 	defaultBrowserSettleMs         = 300
@@ -1670,9 +1672,11 @@ func (c *Config) BrowserHeadless() bool {
 	return c.Tools.Browser.Headless != nil && *c.Tools.Browser.Headless
 }
 
-// BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds.
+// BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds. 0 is
+// a legal special value that disables the idle reaper (the browser is never
+// auto-closed for idleness); positive values are clamped to 30..86400.
 func (c *Config) BrowserIdleTimeoutSeconds() int {
-	return boundedBrowserInt(c.Tools.Browser.IdleTimeoutSeconds, defaultBrowserIdleTimeoutSec, minBrowserIdleTimeoutSec, maxBrowserIdleTimeoutSec)
+	return boundedBrowserIdleTimeout(c.Tools.Browser.IdleTimeoutSeconds)
 }
 
 // BrowserActionTimeoutSeconds returns the action timeout.
@@ -1729,6 +1733,26 @@ func (c *Config) BrowserConfigWarnings() []string {
 		}
 	}
 	return warnings
+}
+
+// boundedBrowserIdleTimeout normalizes a configured browser idle timeout:
+// nil falls back to 0 (never auto-close), 0 is kept as the disable sentinel,
+// and 1..29 / negative values clamp to the 30s floor while values above
+// 86400 clamp to the cap. Negatives are never treated as "disabled".
+func boundedBrowserIdleTimeout(value *int) int {
+	if value == nil {
+		return defaultBrowserIdleTimeoutSec
+	}
+	if *value == 0 {
+		return 0
+	}
+	if *value < minBrowserIdleTimeoutSec {
+		return minBrowserIdleTimeoutSec
+	}
+	if *value > maxBrowserIdleTimeoutSec {
+		return maxBrowserIdleTimeoutSec
+	}
+	return *value
 }
 
 func boundedBrowserInt(value *int, fallback, minValue, maxValue int) int {

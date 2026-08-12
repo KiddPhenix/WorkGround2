@@ -1132,7 +1132,7 @@ func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
 		fmt.Fprintf(b, "kind = %q   # auto|chrome|edge|chromium|chrome_for_testing\n", c.BrowserKind())
 		fmt.Fprintf(b, "executable_path = %q   # optional absolute browser executable; takes priority over kind discovery\n", strings.TrimSpace(c.Tools.Browser.ExecutablePath))
 		fmt.Fprintf(b, "headless = %v   # false keeps the browser visible for user observation\n", c.BrowserHeadless())
-		fmt.Fprintf(b, "idle_timeout_seconds = %d   # per-session browser idle lifetime (30..86400)\n", c.BrowserIdleTimeoutSeconds())
+		fmt.Fprintf(b, "idle_timeout_seconds = %d   # per-session browser idle lifetime; 0 = never auto-close from idleness (30..86400 for positive)\n", c.BrowserIdleTimeoutSeconds())
 		fmt.Fprintf(b, "action_timeout_seconds = %d   # navigation/action cap (1..300)\n", c.BrowserActionTimeoutSeconds())
 		fmt.Fprintf(b, "state_timeout_seconds = %d   # DOM/accessibility observation cap (1..300)\n", c.BrowserStateTimeoutSeconds())
 		fmt.Fprintf(b, "settle_milliseconds = %d   # post-action DOM quiet window (50..5000)\n", c.BrowserSettleMilliseconds())

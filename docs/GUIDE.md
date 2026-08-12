@@ -88,7 +88,7 @@ enabled = true
 kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
 # executable_path = "/path/to/chrome"
 headless = false
-idle_timeout_seconds = 600
+idle_timeout_seconds = 0   # 0 = never auto-close from idleness; 30..86400 for a positive lifetime
 
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tools
@@ -135,13 +135,15 @@ Browser discovery and launch are lazy, so WorkGround2 still starts when no
 supported browser is installed and reports that failure on `browser_open`.
 
 Each parent session owns one browser process, its tabs, revision map, idempotency
-records, and an isolated ephemeral profile. Closing the session, calling
-`browser_close`, or exceeding `idle_timeout_seconds` releases it; Work task
-sessions close only their own browser. V1 reads text and indexed interactive
-elements and deliberately has no screenshots, uploads/downloads, or visual
-coordinate targeting. `browser_type` is for ordinary text only: do not pass
-passwords, API keys, tokens, or other secrets because tool arguments are retained
-in the conversation transcript; password and file inputs are rejected.
+records, and an isolated ephemeral profile. Closing the session or calling
+`browser_close` releases it; the idle reaper only fires when a positive
+`idle_timeout_seconds` (30..86400) is configured, and the default `0` means the
+browser is never auto-closed for idleness. Work task sessions close only their
+own browser. V1 reads text and indexed interactive elements and deliberately has
+no screenshots, uploads/downloads, or visual coordinate targeting. `browser_type`
+is for ordinary text only: do not pass passwords, API keys, tokens, or other
+secrets because tool arguments are retained in the conversation transcript;
+password and file inputs are rejected.
 
 The runtime has reserved ProfileProvider/CredentialProvider boundaries for later
 managed profiles, explicitly authorized attachment to a daily Chrome profile,

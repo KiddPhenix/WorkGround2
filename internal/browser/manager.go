@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// defaultIdleTimeout is used when Options.IdleTimeout is zero.
-const defaultIdleTimeout = 10 * time.Minute
 const profileCleanupTimeout = 10 * time.Second
 const driverCloseAttempts = 2
 
@@ -35,14 +33,16 @@ type Manager struct {
 }
 
 // NewManager creates a new Manager. The Factory must be non-nil; otherwise an
-// error is returned. The Manager does not start any browser process — that is
+// error is returned. IdleTimeout of 0 disables the idle reaper (browsers are
+// only closed explicitly or by lifecycle cleanup); a negative IdleTimeout is a
+// config error. The Manager does not start any browser process — that is
 // deferred until the first browser_open call.
 func NewManager(ctx context.Context, opts Options) (*Manager, error) {
 	if opts.Factory == nil {
 		return nil, NewError(ErrConfig, "DriverFactory is required; nil means no CDP backend is wired", nil)
 	}
-	if opts.IdleTimeout <= 0 {
-		opts.IdleTimeout = defaultIdleTimeout
+	if opts.IdleTimeout < 0 {
+		return nil, NewError(ErrConfig, "Options.IdleTimeout must be >= 0; 0 disables the idle reaper", nil)
 	}
 	if opts.ActionTimeout <= 0 {
 		opts.ActionTimeout = 30 * time.Second
@@ -77,9 +77,13 @@ func NewManager(ctx context.Context, opts Options) (*Manager, error) {
 		cancel:   cancel,
 	}
 
-	// Start idle reaper.
-	m.wg.Add(1)
-	go m.reapLoop()
+	// Start idle reaper only when a positive timeout is configured. Zero means
+	// the browser is never auto-closed for idleness; explicit Close/CloseSession
+	// and lifecycle cleanup remain the only close paths.
+	if m.opts.IdleTimeout > 0 {
+		m.wg.Add(1)
+		go m.reapLoop()
+	}
 
 	return m, nil
 }

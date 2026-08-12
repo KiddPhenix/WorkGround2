@@ -15,7 +15,7 @@
 3. 获取适合模型读取的页面文本、标签页和带编号的交互元素。
 4. 使用页面 revision 和元素编号点击、输入、滚动。
 5. 新建、激活和关闭标签页。
-6. 显式关闭浏览器；Controller 关闭或空闲超时后自动回收。
+6. 显式关闭浏览器；Controller 关闭后自动回收。空闲超时（默认 0 = 永不）仅在配置正数 `idle_timeout_seconds` 时回收。
 
 该能力学习 browser-use 的两部分：
 
@@ -517,7 +517,7 @@ type BrowserInfo struct {
 func NewManager(ctx context.Context, opts Options) (*Manager, error)
 ```
 
-`NewManager` 只校验配置、建立自己拥有的 Profile root 和启动 idle reaper，不探测或启动浏览器。`Factory` 必填，nil 返回配置错误。生产环境由 `internal/boot` 注入 `cdp.NewFactory(...)`，测试注入 Fake Factory；`internal/browser` 不得反向 import `internal/browser/cdp`，避免 Go import cycle。
+`NewManager` 只校验配置、建立自己拥有的 Profile root 和（当 `IdleTimeout > 0` 时）启动 idle reaper，不探测或启动浏览器。`Factory` 必填，nil 返回配置错误；`IdleTimeout` 为 0 表示禁用空闲回收（浏览器只由显式 Close/CloseSession 与生命周期 cleanup 关闭），为负数返回配置错误。生产环境由 `internal/boot` 注入 `cdp.NewFactory(...)`，测试注入 Fake Factory；`internal/browser` 不得反向 import `internal/browser/cdp`，避免 Go import cycle。
 
 ### 8.6 Profile 扩展接口
 
@@ -885,7 +885,7 @@ type BrowserConfig struct {
 enabled = true
 kind = "auto"
 headless = false
-idle_timeout_seconds = 600
+idle_timeout_seconds = 0
 action_timeout_seconds = 30
 state_timeout_seconds = 15
 settle_milliseconds = 300
@@ -897,6 +897,7 @@ max_elements = 400
 
 - omitted `enabled` 表示启用；Chrome/Chromium 只在首次 `browser_open` 时启动。
 - omitted `headless` 表示 false，方便用户观察；无图形环境显式配置 true。
+- `idle_timeout_seconds` 默认 0：合法特殊值，禁用空闲 reaper，浏览器永不因空闲自动关闭；正数范围 30..86400，`1..29` 与负数夹到 30，超过 86400 夹到 86400，非法值产生 config warning；负数不会解释为禁用。
 - 数值设置必须有最小/最大夹取，非法值回退默认值并保持可诊断。
 - `kind=chrome` 时只发现 Google Chrome；`kind=auto` 按 BrowserAuto 顺序发现。
 - `executable_path` 为空时按 kind 的平台安装路径和 PATH 发现。
@@ -937,7 +938,8 @@ for _, t := range browsertool.NewTools(browserManager) {
 
 Idle reaper：
 
-- Manager 单一 goroutine，检查间隔不超过 idle timeout 的四分之一。
+- `IdleTimeout = 0` 时 Manager 不启动 reaper goroutine，浏览器只由显式 `CloseSession`/`Close` 和 Controller/Work Task 生命周期 cleanup 回收；`IdleTimeout < 0` 在 `NewManager` 直接返回配置错误，不存在隐式语义。
+- Manager 单一 goroutine，检查间隔不超过 idle timeout 的四分之一（仅正数时启动）。
 - 只回收 `ready`/`broken` 且超过 idle timeout 的 Session。
 - 正在 opMu 操作的 Session 不被关闭；先标记 closing，操作完成后关闭。
 - Close 失败保持可观察，并在下一周期重试；Manager 最终 Close 返回聚合错误。

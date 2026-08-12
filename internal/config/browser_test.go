@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -18,9 +19,53 @@ func TestBrowserConfigDefaults(t *testing.T) {
 		c.BrowserStateTimeoutSeconds(), c.BrowserSettleMilliseconds(),
 		c.BrowserMaxTextChars(), c.BrowserMaxElements(),
 	}
-	want := []int{600, 30, 15, 300, 20000, 400}
+	want := []int{0, 30, 15, 300, 20000, 400}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("browser numeric defaults = %v, want %v", got, want)
+	}
+}
+
+func TestBrowserIdleTimeoutZeroSemantics(t *testing.T) {
+	// 0 is a legal special value: never auto-close from idleness. It must not
+	// be clamped and must not produce an out-of-range warning.
+	c := Default()
+	c.Tools.Browser.IdleTimeoutSeconds = intPtr(0)
+	if got := c.BrowserIdleTimeoutSeconds(); got != 0 {
+		t.Fatalf("idle_timeout_seconds=0 resolved to %d, want 0", got)
+	}
+	for _, w := range c.BrowserConfigWarnings() {
+		if strings.Contains(w, "idle_timeout_seconds") {
+			t.Fatalf("idle_timeout_seconds=0 produced an out-of-range warning: %q", w)
+		}
+	}
+
+	// 1..29 clamps to 30 with a warning; negative values also clamp to 30
+	// (never interpreted as "disabled"); values above 86400 clamp to the cap.
+	cases := []struct {
+		raw  int
+		want int
+	}{
+		{1, 30}, {29, 30}, {-1, 30}, {-86400, 30}, {86401, 86400}, {999999, 86400},
+	}
+	for _, tc := range cases {
+		c := Default()
+		c.Tools.Browser.IdleTimeoutSeconds = intPtr(tc.raw)
+		if got := c.BrowserIdleTimeoutSeconds(); got != tc.want {
+			t.Fatalf("idle_timeout_seconds=%d resolved to %d, want %d", tc.raw, got, tc.want)
+		}
+		warnings := c.BrowserConfigWarnings()
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, "idle_timeout_seconds") {
+				found = true
+				if !strings.Contains(w, fmt.Sprintf("%d", tc.want)) {
+					t.Fatalf("idle_timeout_seconds=%d warning %q does not name the clamped value %d", tc.raw, w, tc.want)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("idle_timeout_seconds=%d produced no out-of-range warning", tc.raw)
+		}
 	}
 }
 
@@ -68,7 +113,7 @@ func TestRenderTOMLBrowserFullRoundTrip(t *testing.T) {
 	rendered := RenderTOML(c)
 	for _, want := range []string{
 		"[tools.browser]", `kind = "chrome"`, `headless = true`,
-		"idle_timeout_seconds = 600", "max_elements = 777",
+		"idle_timeout_seconds = 0", "max_elements = 777",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("full render missing %q:\n%s", want, rendered)

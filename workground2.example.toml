@@ -140,7 +140,7 @@ enabled = true
 kind = "auto"   # auto|chrome|edge|chromium|chrome_for_testing
 executable_path = ""   # optional absolute path; overrides kind discovery
 headless = false
-idle_timeout_seconds = 600
+idle_timeout_seconds = 0   # 0 = never auto-close from idleness; 30..86400 for a positive lifetime
 action_timeout_seconds = 30
 state_timeout_seconds = 15
 settle_milliseconds = 300

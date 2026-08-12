@@ -1251,3 +1251,50 @@ func TestIdleReaperDoesNotCloseActiveOperation(t *testing.T) {
 		t.Fatalf("active operation failed: %v", err)
 	}
 }
+
+func TestNewManagerNegativeIdleTimeoutIsConfigError(t *testing.T) {
+	factory := newFakeFactory()
+	_, err := browser.NewManager(context.Background(), browser.Options{Factory: factory, IdleTimeout: -time.Second})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrConfig {
+		t.Fatalf("negative IdleTimeout = %v, want structured config error", err)
+	}
+}
+
+func TestIdleReaperDisabledAtZeroKeepsSessionUntilExplicitClose(t *testing.T) {
+	factory := newFakeFactory()
+	profiles := &recordingProfiles{lease: browser.ProfileLease{ID: "lease", Mode: browser.ProfileEphemeral, OwnProcess: true}}
+	mgr, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: factory, Profiles: profiles, IdleTimeout: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	if _, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	// Wait far beyond a short reaper window (a 40ms-timeout reaper would have
+	// fired many times here). With IdleTimeout=0 no reaper goroutine runs, so
+	// the session must stay alive and usable.
+	time.Sleep(300 * time.Millisecond)
+	if factory.only(t).closeCalls.Load() != 0 || profiles.releaseCalls.Load() != 0 {
+		t.Fatalf("IdleTimeout=0 reaped the session: close=%d release=%d", factory.only(t).closeCalls.Load(), profiles.releaseCalls.Load())
+	}
+	if _, err := mgr.State(context.Background(), "owner", browser.StateRequest{}); err != nil {
+		t.Fatalf("session not usable after idle window with IdleTimeout=0: %v", err)
+	}
+	// Explicit close still releases the driver and profile.
+	result, err := mgr.CloseSession(context.Background(), "owner")
+	if err != nil || !result.Closed {
+		t.Fatalf("explicit CloseSession failed: result=%+v err=%v", result, err)
+	}
+	if factory.only(t).closeCalls.Load() != 1 || profiles.releaseCalls.Load() != 1 {
+		t.Fatalf("explicit close missing cleanup: close=%d release=%d", factory.only(t).closeCalls.Load(), profiles.releaseCalls.Load())
+	}
+	_, err = mgr.State(context.Background(), "owner", browser.StateRequest{})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrBrowserNotOpen {
+		t.Fatalf("session reachable after explicit close: %v", err)
+	}
+}

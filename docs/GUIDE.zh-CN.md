@@ -80,7 +80,7 @@ enabled = true
 kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
 # executable_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 headless = false
-idle_timeout_seconds = 600
+idle_timeout_seconds = 0   # 0 = 永不因空闲自动关闭；30..86400 表示正数生命周期
 
 [environment]
 enabled = true   # 启动时把 OS、shell 和常见工具摘要稳定注入 prompt
@@ -126,8 +126,9 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # 可选：raw MCP tool 名
 时发现并启动，因此机器未安装受支持浏览器也不影响 WorkGround2 启动，失败会在打开时显式返回。
 
 每个 parent session 独占浏览器进程、标签页、revision 映射、幂等记录和隔离的临时 Profile。
-Session 关闭、调用 `browser_close` 或超过 `idle_timeout_seconds` 都会回收资源；Work task
-只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、上传下载或视觉坐标定位。
+Session 关闭和调用 `browser_close` 都会回收资源；空闲回收只在配置了正数
+`idle_timeout_seconds`（30..86400）时生效，默认 `0` 表示永不因空闲自动关闭。
+Work task 只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、上传下载或视觉坐标定位。
 `browser_type` 只用于普通文本：工具参数会进入会话记录，因此禁止传入密码、API key、token 等秘密；
 password 和 file 输入框也会被拒绝。
 
