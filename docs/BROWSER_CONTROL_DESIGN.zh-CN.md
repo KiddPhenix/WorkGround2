@@ -252,6 +252,7 @@ type Element struct {
 	Index       int     `json:"index"`
 	Role        string  `json:"role,omitempty"`
 	Tag         string  `json:"tag,omitempty"`
+	InputType   string  `json:"input_type,omitempty"`
 	Name        string  `json:"name,omitempty"`
 	Placeholder string  `json:"placeholder,omitempty"`
 	Href        string  `json:"href,omitempty"`
@@ -306,6 +307,7 @@ type ObservedNode struct {
 	Ref         NodeRef
 	Role        string
 	Tag         string
+	InputType   string
 	Name        string
 	Placeholder string
 	Href        string
@@ -380,6 +382,7 @@ type TabRequest struct {
 - `index=0` 在 Scroll 中表示滚动当前视口；正数表示先滚动目标元素。
 - `delta_y` 限制在 `[-4000, 4000]`，不能为 0。
 - Type.Text 第一版进入工具参数和 transcript，不用于密码或 Token。
+- `browser_type` 必须在 Session 和生产 Driver 两层拒绝 `input_type=password` 和 `input_type=file`，返回 `sensitive_input_blocked`；拒绝路径不能向页面派发输入动作。密码和文件后续分别使用凭据引用和上传专用工具。
 - Tab close 拒绝关闭最后一个标签页，关闭整个浏览器使用 `browser_close`。
 
 ### 8.4 结果
@@ -702,7 +705,8 @@ Driver Observe 使用：
 5. 嵌套重复节点优先保留语义更完整、可命中的节点。
 6. 页面 Text 从可见文本生成，去除连续空白和重复节点文本。
 7. password 输入值永不进入 Observation；其他输入当前 value 第一版也不输出。
-8. 属性只允许 role、tag、aria/name、placeholder、href、disabled、checked、editable。
+8. input 的 type 可以进入 Observation，用于在 Session 和 Driver 两层拒绝 password/file 输入；不得输出 value。
+9. 其余属性只允许 role、tag、aria/name、placeholder、href、disabled、checked、editable。
 9. URL、元素数和文本严格受配置上限约束。
 
 跨域 iframe：第一版必须识别已附加 Target，并把 TargetID/FrameID 写入 NodeRef；无法附加的 frame 显式标为观察不完整，不允许把错误节点映射到主文档。
@@ -840,6 +844,7 @@ type Error struct {
 | `stale_state` | true | true | `browser_state` |
 | `element_not_found` | true | true | `browser_state` |
 | `element_not_interactable` | true | true | 选择其他元素 |
+| `sensitive_input_blocked` | false | true | 使用未来的专用凭据/上传工具 |
 | `target_closed` | true | true | `browser_state` |
 | `last_tab` | true | true | `browser_close` 或保留标签页 |
 | `request_id_conflict` | true | true | 使用新 request_id |
@@ -965,6 +970,7 @@ Idle reaper：
 - 同 request_id 同参数返回缓存结果。
 - 同 request_id 不同参数返回 conflict。
 - Click/Type 已派发后 Observe 失败返回 outcome_unknown，且不自动重复。
+- Type 对 password/file 输入在 Session 层拒绝，Fake Driver action call count 保持 0；生产 Driver 再做一次防御校验。
 - CloseSession 和 Manager.Close 幂等。
 - idle reaper 不关闭活跃操作，能够重试失败 close。
 - State 和 Elements 返回副本，外部修改不污染单一可信状态。
