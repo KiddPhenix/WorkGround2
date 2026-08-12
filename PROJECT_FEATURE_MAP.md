@@ -24,6 +24,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### LLM 后台任务等待
+- Location: `internal/tool/builtin/bgjobs.go`, `internal/jobs/jobs.go`, `internal/agent/agent.go`
+- Summary: 模型通过结构化 `wait` 工具调用等待当前 Session 的后台 job；Job 完成关闭 done channel，等待结果写回工具消息后 Agent 继续下一轮模型请求，纯文本“等待”不会自动续跑。
+- Keywords: wait, waitJob, WaitForSession, background job, done channel, tool loop
+- Source: verified-by-search
+- Updated: 2026-08-12
+
 ### AutoResearch 与 Memory Compiler
 - Location: `internal/autoresearch/store.go`, `internal/autoresearch`, `internal/memorycompiler/runtime.go`, `docs/superpowers`
 - Summary: autoresearch 在 .WorkGround2/autoresearch 下管理研究任务状态，memorycompiler 是本地 rule-driven Memory v5 runtime 和执行 IR/trace 学习层。
@@ -65,6 +72,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: desktop new, starting, pendingRemoteInput, SessionID, PollOnly, dispatch.ps1
 - Source: verified-by-search
 - Updated: 2026-08-03
+
+### Desktop 外部 Session 模型选择
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `internal/config/load.go`, `internal/config/config.go`, `internal/boot/boot.go`
+- Summary: `/api/v1/session/new` 不接收 model；新外部 Session 以 workspace 合并配置的 `default_model` 启动，恢复既有 Session 时优先使用可解析的持久化模型，失效引用按有效默认模型和首个已配置 Provider 回退。
+- Keywords: desktop new, external session, default_model, LoadForRoot, ResolveModelWithFallback, BranchMeta
+- Source: verified-by-search
+- Updated: 2026-08-12
 
 ### Draw AddOn 画图工具
 - Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
