@@ -4,16 +4,21 @@ package cdp_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/chromedp/chromedp"
 
 	"workground2/internal/browser"
 	"workground2/internal/browser/cdp"
@@ -23,6 +28,7 @@ type processDriver interface {
 	browser.Driver
 	ProcessID() int
 	ProcessExited() bool
+	DebugEndpoint() string
 }
 
 type captureFactory struct {
@@ -494,4 +500,96 @@ func findElement(t *testing.T, state browser.PageState, match func(browser.Eleme
 	}
 	t.Fatalf("matching element missing from %+v", state.Elements)
 	return 0
+}
+
+// TestChromeDebugPortWebdriverSignal verifies the production launch change on a
+// real visible Chrome: the debug endpoint is a fresh nonzero loopback port
+// (never port=0, never a wildcard address), /json/version is reachable on it,
+// a visible browser does not expose navigator.webdriver=true, and the port
+// becomes unreachable once the browser is closed. Headless is deliberately not
+// covered: headless Chrome always reports navigator.webdriver=true regardless
+// of the port, so no false promise is made here.
+func TestChromeDebugPortWebdriverSignal(t *testing.T) {
+	if os.Getenv("WORKGROUND2_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set WORKGROUND2_BROWSER_INTEGRATION=1 and use -tags browser_integration")
+	}
+	info, err := cdp.Discover(browser.BrowserAuto, os.Getenv("WORKGROUND2_BROWSER_EXECUTABLE"))
+	if err != nil {
+		t.Skipf("no supported Chrome/Chromium browser installed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	captured := &captureFactory{base: cdp.NewFactory(cdp.Options{})}
+	mgr, err := browser.NewManager(ctx, browser.Options{
+		Factory: captured, BrowserKind: info.Kind, ExecutablePath: info.ExecutablePath,
+		Headless: false, ProfileRoot: t.TempDir(), ActionTimeout: 20 * time.Second,
+		StateTimeout: 20 * time.Second, IdleTimeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	if _, err := mgr.Open(ctx, "webdriver", browser.OpenRequest{URL: "about:blank", RequestID: "wd-open"}); err != nil {
+		t.Fatal(err)
+	}
+	proc := captured.onlyProcess(t)
+	endpoint := proc.DebugEndpoint()
+	if endpoint == "" {
+		t.Fatal("driver exposed no debug endpoint")
+	}
+	host, portStr, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		t.Fatalf("debug endpoint %q not host:port: %v", endpoint, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		t.Fatalf("debug endpoint port %q is not a nonzero TCP port: %v", portStr, err)
+	}
+	if host != "127.0.0.1" {
+		t.Fatalf("debug endpoint host = %q, want 127.0.0.1", host)
+	}
+
+	// The endpoint must actually serve CDP: GET /json/version on the loopback port.
+	resp, err := http.Get("http://" + endpoint + "/json/version")
+	if err != nil {
+		t.Fatalf("GET /json/version on %s: %v", endpoint, err)
+	}
+	var version struct {
+		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
+	}
+	decodeErr := json.NewDecoder(resp.Body).Decode(&version)
+	_ = resp.Body.Close()
+	if decodeErr != nil || !strings.HasPrefix(version.WebSocketDebuggerURL, "ws://127.0.0.1:") {
+		t.Fatalf("/json/version did not return a loopback ws URL: %v body-decode-err=%v", version.WebSocketDebuggerURL, decodeErr)
+	}
+
+	// Attach as a second CDP client through the real endpoint and read
+	// navigator.webdriver on a visible browser. NewRemoteAllocator connects to
+	// the existing browser; it does not launch a process and does not set
+	// --enable-automation, so it cannot mask the signal under test.
+	remoteCtx, remoteCancel := chromedp.NewRemoteAllocator(ctx, version.WebSocketDebuggerURL)
+	defer remoteCancel()
+	tctx, tCancel := chromedp.NewContext(remoteCtx)
+	defer tCancel()
+	var webdriver bool
+	if err := chromedp.Run(tctx, chromedp.Evaluate(`navigator.webdriver`, &webdriver)); err != nil {
+		t.Fatalf("evaluate navigator.webdriver: %v", err)
+	}
+	if webdriver {
+		t.Fatal("visible Chrome exposed navigator.webdriver=true; nonzero loopback port did not clear the port=0 automation signal")
+	}
+
+	// Close must tear down the browser, reclaim the profile, and make the port
+	// unreachable.
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("manager close: %v", err)
+	}
+	conn, err := net.DialTimeout("tcp4", endpoint, 2*time.Second)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatalf("debug port %s still reachable after Close", endpoint)
+	}
+	if proc.ProcessID() <= 0 || !proc.ProcessExited() {
+		t.Fatalf("browser process evidence pid=%d exited=%v", proc.ProcessID(), proc.ProcessExited())
+	}
 }

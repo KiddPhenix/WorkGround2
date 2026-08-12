@@ -142,6 +142,8 @@ file 输入框始终不接受 `browser_type`。
 临时 Profile。关闭 `[tools.browser].enabled`、通过 `tools.enabled` 筛掉浏览器工具或启用 token economy
 都会隐藏这组工具。revision/request_id 规则见[工具合约](./TOOL_CONTRACT.zh-CN.md)。
 
+每个启动的浏览器都在新选的随机非零回环端口（`127.0.0.1:<port>`）暴露 DevTools endpoint，替代 port=0 的自动化信号；endpoint 绝不绑定非回环接口，并随浏览器一起销毁。这移除的是一个标准自动化信号——可见（非 headless）浏览器不再因为端口而报告 `navigator.webdriver === true`——但它不是反检测保证：网站仍可通过其他手段识别自动化，且 headless 模式仍会报告 `navigator.webdriver === true`，因此不承诺任何 stealth 效果。Chrome 136 起远程调试要求非默认 `--user-data-dir`；WorkGround2 总是使用独立临时 Profile 启动，该要求天然满足。
+
 `[agent].plan_mode_allowed_tools` 用于把 WorkGround2 无法自动分类的自定义/外部工具声明为额外只读工具。
 对 MCP/plugin 工具，像 `mcp__github__issue_read` 这样的具体模型可见名也会把该工具提升为
 planner / read-only research 可用的可信只读工具。优先使用 MCP 只读信任的一次性确认；需要预置已审过工具时，

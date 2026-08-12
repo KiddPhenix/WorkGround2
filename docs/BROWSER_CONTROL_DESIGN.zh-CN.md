@@ -4,7 +4,7 @@
 分支：`developping/browser-control+2026-08-12`
 范围：第一版原生 CDP；不使用 MCP；不提供截图、下载、持久登录态或桌面专用 UI；本地文件上传通过专用 `browser_upload` 工具并在 Desktop 设置中可关闭。
 
-实现验证：Chrome 151 真实双门集成已覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、空闲/Controller 回收、下载拒绝和临时 Profile 清理；默认单测不启动浏览器。
+实现验证：Chrome 151 真实双门集成已覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、空闲/Controller 回收、下载拒绝和临时 Profile 清理，并新增可见 Chrome 下 `navigator.webdriver === false`、随机非零回环调试端口 `/json/version` 可达、关闭后端口不可连的验收；默认单测不启动浏览器。
 
 ## 1. 目标
 
@@ -110,6 +110,23 @@ const (
 `BrowserAuto` 的默认发现顺序是 Chrome、Edge、Chromium、Chrome for Testing；显式 `executable_path` 始终优先。启动成功后 Driver 必须读取 Browser version/protocol version，不满足最低 CDP 能力时返回显式错误，不能假装成功。
 
 Chrome 本身就是 Chromium 系浏览器，页面感知和动作使用同一套 CDP 域，无需 Chrome 专属 Tool。
+
+### 4.2 调试端口与可检测性
+
+生产启动不使用 chromedp 隐式的 `--remote-debugging-port=0`。每次启动前先监听 `tcp4 127.0.0.1:0` 选取一个当前空闲的非零回环端口，关闭临时 listener 后显式传入：
+
+- `--remote-debugging-address=127.0.0.1`
+- `--remote-debugging-port=<nonzero>`
+
+严禁固定 9222、`0.0.0.0`、IPv6 wildcard 或公网地址；不启用 `--enable-automation`，不注入或覆写 `navigator.webdriver`，不引入 stealth/反指纹依赖。chromedp 在显式非零端口下仍从 Chrome stderr 解析 `DevTools listening on ws://...` 并连接，沿用现有 API，不另造 HTTP/CDP client。
+
+端口选择到 Chrome bind 之间存在 TOCTOU：`internal/browser/cdp` 的 Factory 对“端口占用/监听失败”做最多 3 次有界重试，每次使用全新的 Driver/allocator/process 状态，失败实例完整 `Close` 后再试；非端口类启动错误立即返回；最终错误包含尝试次数和原因，允许上层安全重试。Driver 保存实际 `127.0.0.1:<port>` endpoint 仅供生命周期与包内集成测试取证，不进入 `BrowserInfo`/`ToolResult`/日志。
+
+可检测性边界（明确承诺，不做夸大）：
+
+- 去掉 `port=0` 只是移除了一个标准自动化信号：可见（非 headless）Chrome 不再因此暴露 `navigator.webdriver=true`。这不构成“网站不可检测”保证；自动化指纹、插件、请求头、网络特征和页面侧启发式仍然可能识别。
+- headless 模式仍会暴露 `navigator.webdriver=true`，与端口无关，不承诺不可检测。
+- Chrome 136 起，`--remote-debugging-port`/`--remote-debugging-pipe` 对默认数据目录不再生效，远程调试必须配合非默认 `--user-data-dir`；WorkGround2 总是使用独立临时 Profile，该约束不变（见 §8.6）。
 
 ## 5. 目录和文件
 
@@ -999,6 +1016,9 @@ Idle reaper：
 - iframe/target NodeRef 映射。
 - URL 验证和 executable discovery。
 - Chrome/Edge/Chromium/Chrome for Testing 的 kind 过滤和发现优先级。
+- 调试端口候选：返回非零回环端口且可重绑；候选器失败显式返回错误。
+- 启动参数：显式 `--remote-debugging-address=127.0.0.1` 与 `--remote-debugging-port=<nonzero>`，拒绝 `0`/越界端口，不含 `port=0`、wildcard 地址或 `--enable-automation`。
+- Factory 有界重试：端口冲突前两次失败第三次成功、三次冲突显式失败（错误含尝试次数与原因）、非端口错误不重试、失败实例全部 `Close`。
 
 ### Profile/凭据接口测试
 
@@ -1023,6 +1043,7 @@ Idle reaper：
 - DOM 变化后 stale revision。
 - 新建、激活、关闭 tab。
 - 取消导航、关闭浏览器和进程回收。
+- 可见 Chrome 下 `navigator.webdriver === false`；实际调试端口非零回环且 `/json/version` 可达；关闭后端口不可连接、进程退出、Profile 回收（headless 不承诺 `webdriver=false`）。
 
 ## 22. 验收标准
 

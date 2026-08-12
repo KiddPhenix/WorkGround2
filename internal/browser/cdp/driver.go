@@ -25,8 +25,10 @@ type driver struct {
 	execPath     string
 	browserKind  browser.BrowserKind
 	settleWindow time.Duration
+	pickPort     func() (int, error)
 
 	mu             sync.RWMutex
+	debugEndpoint  string
 	allocCtx       context.Context
 	allocCancel    context.CancelFunc
 	browserBase    context.Context
@@ -60,8 +62,32 @@ func (d *driver) Info() browser.BrowserInfo {
 	}
 }
 
+// prepareDebugLaunch picks a free nonzero loopback port and builds the explicit
+// remote-debugging flags. The actual endpoint is recorded on the driver for
+// lifecycle/package-internal evidence only.
+func (d *driver) prepareDebugLaunch() ([]chromedp.ExecAllocatorOption, error) {
+	port, err := d.pickPort()
+	if err != nil {
+		return nil, fmt.Errorf("pick debug port: %w", err)
+	}
+	flags, err := debugLaunchFlags(port)
+	if err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	d.debugEndpoint = debugEndpointFor(port)
+	d.mu.Unlock()
+	return flags, nil
+}
+
 func (d *driver) start(ctx context.Context) error {
+	debugFlags, err := d.prepareDebugLaunch()
+	if err != nil {
+		_ = d.Close()
+		return err
+	}
 	allocOpts := []chromedp.ExecAllocatorOption{chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck}
+	allocOpts = append(allocOpts, debugFlags...)
 	if d.opts.Headless {
 		allocOpts = append(allocOpts, chromedp.Headless, chromedp.WindowSize(1280, 720))
 	}
@@ -108,7 +134,7 @@ func (d *driver) start(ctx context.Context) error {
 
 	versionCtx, cancel := context.WithTimeout(initialCtx, 10*time.Second)
 	var protocol, product string
-	err := chromedp.Run(versionCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	err = chromedp.Run(versionCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var err error
 		protocol, product, _, _, _, err = browsercdp.GetVersion().Do(ctx)
 		return err
@@ -558,6 +584,16 @@ func (d *driver) ProcessID() int {
 }
 
 func (d *driver) ProcessExited() bool { return d.processExited.Load() }
+
+// DebugEndpoint returns the 127.0.0.1:<port> endpoint the browser actually
+// listens on, or "" before a successful start. It is intentionally outside
+// browser.Driver and BrowserInfo: it exists for lifecycle evidence and
+// package-internal integration tests, never for model-visible output.
+func (d *driver) DebugEndpoint() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.debugEndpoint
+}
 
 // consumeCloseError exposes a graceful-close error once. The process cleanup
 // has already completed, so a later Manager retry may continue with profile

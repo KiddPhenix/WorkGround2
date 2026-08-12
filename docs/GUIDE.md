@@ -162,6 +162,17 @@ profile to an ephemeral one. Browser tools are hidden when disabled, filtered ou
 by `tools.enabled`, or when token economy mode is active. See
 [Tool Contract](./TOOL_CONTRACT.md) for the request/revision rules.
 
+Each launched browser exposes its DevTools endpoint on a freshly chosen nonzero
+loopback port (`127.0.0.1:<port>`) instead of the port-0 automation signal; the
+endpoint is never bound to a non-loopback interface and is torn down with the
+browser. This removes one standard automation signal — a visible (non-headless)
+browser no longer reports `navigator.webdriver === true` because of the port —
+but it is not an anti-detection guarantee: sites can still fingerprint
+automation, and headless mode still reports `navigator.webdriver === true`, so
+no stealth promise is implied. Since Chrome 136, remote debugging requires a
+non-default `--user-data-dir`; WorkGround2 always launches with an isolated
+ephemeral profile, so that requirement is already satisfied.
+
 `[agent].plan_mode_allowed_tools` is an extra read-only declaration for custom or
 external tools WorkGround2 cannot classify itself. For MCP/plugin tools, a concrete
 model-visible name such as `mcp__github__issue_read` also promotes that tool to a
