@@ -41,11 +41,30 @@ The test checks that every registered built-in tool has a documented name, read-
 In a default full-token boot, WorkGround2 sends the built-in tools above plus the
 session, memory, skill, subagent, LSP, install, and slash-command tools below:
 
-`ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
+`ask`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
-`read_only_task`, `read_session`, `read_skill`, `remember`, `research`,
+`read_only_task`, `read_session`, `read_skill`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+The eight runtime-bound browser tools use one browser process per parent session:
+
+| Tool | Read-only | Contract |
+| --- | --- | --- |
+| `browser_open` | false | Idempotently open the session browser, optionally navigating to an HTTP/HTTPS URL. |
+| `browser_navigate` | false | Navigate the active tab. Requires a stable `request_id`. |
+| `browser_state` | true | Return page text, tabs, `revision`, and indexed interactive elements. No screenshots or form values. |
+| `browser_click` | false | Click an element from the exact supplied `revision` and index. |
+| `browser_type` | false | Type ordinary, non-sensitive text into an editable indexed element. Password and file inputs are rejected. |
+| `browser_scroll` | false | Scroll the viewport or an indexed element under the supplied revision. |
+| `browser_tab` | false | Create, activate, or close a tab under the supplied revision. |
+| `browser_close` | false | Idempotently close only the current parent session's browser. |
+
+Browser tools are hidden when `[tools.browser].enabled=false`, when filtered out
+by `tools.enabled`, and in token economy mode. Chrome is the primary browser;
+Edge, Chromium, and Chrome for Testing use the same CDP contract. V1 uses only
+an isolated ephemeral profile and has no screenshot, upload/download, secret
+typing, daily Chrome profile, cookie, login-state, or password-vault access.
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` verifies the
 actual boot registry contract against the provider request, including read-only

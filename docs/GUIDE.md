@@ -83,6 +83,13 @@ enabled = []   # omit/empty = all built-ins
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool overrides may raise it
 
+[tools.browser]
+enabled = true
+kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
+# executable_path = "/path/to/chrome"
+headless = false
+idle_timeout_seconds = 600
+
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tools
 # [environment.tools]
@@ -117,6 +124,32 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # optional raw MCP tool nam
 ```
 
 For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-configuration-toml).
+
+### Native browser tools
+
+The default full tool surface includes `browser_open`, `browser_navigate`,
+`browser_state`, `browser_click`, `browser_type`, `browser_scroll`, `browser_tab`,
+and `browser_close`. Google Chrome is the primary target; Edge, Chromium, and
+Chrome for Testing are compatible through the same Chrome DevTools Protocol.
+Browser discovery and launch are lazy, so WorkGround2 still starts when no
+supported browser is installed and reports that failure on `browser_open`.
+
+Each parent session owns one browser process, its tabs, revision map, idempotency
+records, and an isolated ephemeral profile. Closing the session, calling
+`browser_close`, or exceeding `idle_timeout_seconds` releases it; Work task
+sessions close only their own browser. V1 reads text and indexed interactive
+elements and deliberately has no screenshots, uploads/downloads, or visual
+coordinate targeting. `browser_type` is for ordinary text only: do not pass
+passwords, API keys, tokens, or other secrets because tool arguments are retained
+in the conversation transcript; password and file inputs are rejected.
+
+The runtime has reserved ProfileProvider/CredentialProvider boundaries for later
+managed profiles, explicitly authorized attachment to a daily Chrome profile,
+cookie/login-state reuse, and password-vault filling. Those capabilities are not
+enabled in V1, and there is no silent fallback from a requested managed/attached
+profile to an ephemeral one. Browser tools are hidden when disabled, filtered out
+by `tools.enabled`, or when token economy mode is active. See
+[Tool Contract](./TOOL_CONTRACT.md) for the request/revision rules.
 
 `[agent].plan_mode_allowed_tools` is an extra read-only declaration for custom or
 external tools WorkGround2 cannot classify itself. For MCP/plugin tools, a concrete

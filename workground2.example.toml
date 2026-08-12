@@ -132,6 +132,21 @@ mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool 
 [tools.background_jobs]
 stalled_warning_seconds = 900   # warn once per background job after this many quiet seconds; 0 disables
 
+# Native CDP browser automation. Chrome is preferred; Edge, Chromium, and
+# Chrome for Testing are also supported. The browser starts lazily on the first
+# browser_open call and each WorkGround2 session gets an isolated temporary profile.
+[tools.browser]
+enabled = true
+kind = "auto"   # auto|chrome|edge|chromium|chrome_for_testing
+executable_path = ""   # optional absolute path; overrides kind discovery
+headless = false
+idle_timeout_seconds = 600
+action_timeout_seconds = 30
+state_timeout_seconds = 15
+settle_milliseconds = 300
+max_text_chars = 20000
+max_elements = 400
+
 # Sandbox confinement bounds the blast radius of tool calls. Writers may only
 # modify workspace_root (empty = current directory) plus allow_write. forbid_read
 # hides sensitive directories from read/list/search tools and from sandboxed bash

@@ -1,0 +1,623 @@
+package cdp
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	browsercdp "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/target"
+	"github.com/chromedp/chromedp"
+
+	"workground2/internal/browser"
+)
+
+type driver struct {
+	opts         browser.DriverOptions
+	execPath     string
+	browserKind  browser.BrowserKind
+	settleWindow time.Duration
+
+	mu             sync.RWMutex
+	allocCtx       context.Context
+	allocCancel    context.CancelFunc
+	browserBase    context.Context
+	rootCtx        context.Context
+	cdpCtx         context.Context
+	targetCancels  map[string]context.CancelFunc
+	targetContexts map[string]context.Context
+	activeTarget   string
+	product        string
+	version        string
+	protocol       string
+	processID      int
+
+	events          chan browser.Invalidation
+	invalCh         chan browser.Invalidation
+	eventDone       chan struct{}
+	eventCancel     context.CancelFunc
+	closeOnce       sync.Once
+	closeErr        error
+	closeErrPending bool
+	closed          atomic.Bool
+	processExited   atomic.Bool
+}
+
+func (d *driver) Info() browser.BrowserInfo {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return browser.BrowserInfo{
+		Kind: d.browserKind, Product: d.product, Version: d.version,
+		ProtocolVersion: d.protocol, ExecutablePath: d.execPath,
+	}
+}
+
+func (d *driver) start(ctx context.Context) error {
+	allocOpts := []chromedp.ExecAllocatorOption{chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck}
+	if d.opts.Headless {
+		allocOpts = append(allocOpts, chromedp.Headless, chromedp.WindowSize(1280, 720))
+	}
+	if d.execPath != "" {
+		allocOpts = append(allocOpts, chromedp.ExecPath(d.execPath))
+	}
+	if d.opts.UserDataDir != "" {
+		allocOpts = append(allocOpts, chromedp.UserDataDir(d.opts.UserDataDir))
+	}
+	allocOpts = append(allocOpts,
+		chromedp.Flag("disable-save-password-bubble", true),
+		chromedp.Flag("disable-password-manager-reauthentication", true),
+		chromedp.Flag("password-store", "basic"),
+	)
+
+	d.allocCtx, d.allocCancel = chromedp.NewExecAllocator(ctx, allocOpts...)
+	initialCtx, initialCancel := chromedp.NewContext(d.allocCtx)
+	d.mu.Lock()
+	d.browserBase = context.WithoutCancel(initialCtx)
+	d.rootCtx = initialCtx
+	d.cdpCtx = initialCtx
+	if d.targetCancels == nil {
+		d.targetCancels = make(map[string]context.CancelFunc)
+	}
+	if d.targetContexts == nil {
+		d.targetContexts = make(map[string]context.Context)
+	}
+	d.mu.Unlock()
+	if err := chromedp.Run(initialCtx); err != nil {
+		_ = d.Close()
+		return fmt.Errorf("browser startup failed: %w", err)
+	}
+
+	chromedpContext := chromedp.FromContext(initialCtx)
+	if chromedpContext == nil || chromedpContext.Target == nil {
+		_ = d.Close()
+		return fmt.Errorf("browser startup did not create a target")
+	}
+	d.mu.Lock()
+	d.activeTarget = string(chromedpContext.Target.TargetID)
+	d.targetCancels[d.activeTarget] = initialCancel
+	d.targetContexts[d.activeTarget] = initialCtx
+	d.mu.Unlock()
+
+	versionCtx, cancel := context.WithTimeout(initialCtx, 10*time.Second)
+	var protocol, product string
+	err := chromedp.Run(versionCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var err error
+		protocol, product, _, _, _, err = browsercdp.GetVersion().Do(ctx)
+		return err
+	}))
+	cancel()
+	if err != nil {
+		_ = d.Close()
+		return fmt.Errorf("read browser version: %w", err)
+	}
+	if err := validateBrowserVersion(d.browserKind, product, protocol); err != nil {
+		_ = d.Close()
+		return err
+	}
+	d.mu.Lock()
+	d.product = product
+	d.version = productVersion(product)
+	d.protocol = protocol
+	d.mu.Unlock()
+	if process := chromedpContext.Browser.Process(); process != nil {
+		d.mu.Lock()
+		d.processID = process.Pid
+		d.mu.Unlock()
+	}
+
+	if d.opts.DenyDownloads {
+		downloadPath := filepath.Join(d.opts.UserDataDir, "Downloads")
+		if err := os.MkdirAll(downloadPath, 0o700); err != nil {
+			_ = d.Close()
+			return fmt.Errorf("create denied-download directory: %w", err)
+		}
+		downloadCtx, cancel := context.WithTimeout(initialCtx, 10*time.Second)
+		err = chromedp.Run(downloadCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return browsercdp.SetDownloadBehavior(browsercdp.SetDownloadBehaviorBehaviorDeny).
+				WithDownloadPath(downloadPath).Do(ctx)
+		}))
+		cancel()
+		if err != nil {
+			_ = d.Close()
+			return fmt.Errorf("deny downloads: %w", err)
+		}
+	}
+	d.listenTarget(initialCtx)
+	chromedp.ListenBrowser(initialCtx, d.handleEvent)
+	return nil
+}
+
+func productVersion(product string) string {
+	if _, version, ok := strings.Cut(product, "/"); ok {
+		return version
+	}
+	return product
+}
+
+func validateBrowserVersion(kind browser.BrowserKind, product, protocol string) error {
+	if strings.TrimSpace(product) == "" || strings.TrimSpace(protocol) == "" {
+		return browser.NewError(browser.ErrUnsupportedBrowser, "Browser.getVersion returned empty product or protocolVersion", nil)
+	}
+	lower := strings.ToLower(product)
+	validProduct := strings.Contains(lower, "chrome") || strings.Contains(lower, "chromium") || strings.Contains(lower, "edge") || strings.Contains(lower, "edg/") || strings.Contains(lower, "headless")
+	if !validProduct {
+		return browser.NewError(browser.ErrUnsupportedBrowser, fmt.Sprintf("unsupported CDP product %q", product), nil)
+	}
+	if kind == browser.BrowserEdge && !strings.Contains(lower, "edge") && !strings.Contains(lower, "edg") {
+		return browser.NewError(browser.ErrUnsupportedBrowser, fmt.Sprintf("expected Edge product, got %q", product), nil)
+	}
+	return nil
+}
+
+func (d *driver) Navigate(ctx context.Context, url string) error {
+	if err := validateNavigationURL(url); err != nil {
+		return err
+	}
+	opCtx, cancel, err := d.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return chromedp.Run(opCtx, chromedp.Navigate(url))
+}
+
+func (d *driver) Observe(ctx context.Context, opts browser.ObserveOptions) (browser.Observation, error) {
+	if opts.MaxTextChars <= 0 {
+		opts.MaxTextChars = 20000
+	}
+	if opts.MaxElements <= 0 {
+		opts.MaxElements = 400
+	}
+	opCtx, cancel, err := d.operationContext(ctx)
+	if err != nil {
+		return browser.Observation{}, err
+	}
+	defer cancel()
+	_, active := d.current()
+	main, err := observe(opCtx, active, opts)
+	if err != nil {
+		return browser.Observation{}, err
+	}
+	var infos []*target.Info
+	if err := chromedp.Run(opCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+		var err error
+		infos, err = target.GetTargets().Do(ctx)
+		return err
+	})); err != nil {
+		return browser.Observation{}, fmt.Errorf("list iframe targets: %w", err)
+	}
+	for _, info := range infos {
+		if info == nil || info.Type != "iframe" {
+			continue
+		}
+		childCtx, childCancel, err := d.operationContextForTarget(ctx, string(info.TargetID))
+		if err != nil {
+			main.Warnings = append(main.Warnings, browser.StateWarning{Code: "frame_target_unavailable", FrameID: string(info.TargetID), Message: err.Error()})
+			continue
+		}
+		child, childErr := observe(childCtx, string(info.TargetID), opts)
+		childCancel()
+		if childErr != nil {
+			main.Warnings = append(main.Warnings, browser.StateWarning{Code: "frame_target_unavailable", FrameID: string(info.TargetID), Message: childErr.Error()})
+			continue
+		}
+		main.Nodes = append(main.Nodes, child.Nodes...)
+		if child.Text != "" {
+			main.Text = strings.TrimSpace(main.Text + " " + child.Text)
+		}
+		main.Warnings = append(main.Warnings, child.Warnings...)
+		main.Fingerprint += ":" + child.Fingerprint
+		main.Truncated = main.Truncated || child.Truncated
+	}
+	if len(main.Nodes) > opts.MaxElements {
+		main.Nodes = main.Nodes[:opts.MaxElements]
+		main.Truncated = true
+	}
+	var textTruncated bool
+	main.Text, textTruncated = truncateRunes(main.Text, opts.MaxTextChars)
+	main.Truncated = main.Truncated || textTruncated
+	return main, nil
+}
+
+func (d *driver) Click(ctx context.Context, ref browser.NodeRef) error {
+	opCtx, cancel, err := d.operationContextForTarget(ctx, ref.TargetID)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	_, err = clickNodeWithMethod(opCtx, ref)
+	return err
+}
+
+func (d *driver) Type(ctx context.Context, ref browser.NodeRef, value browser.TypeInput) error {
+	opCtx, cancel, err := d.operationContextForTarget(ctx, ref.TargetID)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return typeText(opCtx, ref, value)
+}
+
+func (d *driver) Scroll(ctx context.Context, value browser.ScrollInput) error {
+	targetID := ""
+	if value.Node != nil {
+		targetID = value.Node.TargetID
+	}
+	opCtx, cancel, err := d.operationContextForTarget(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	defer cancel()
+	return scrollPage(opCtx, value)
+}
+
+func (d *driver) NewTab(ctx context.Context, url string) (string, error) {
+	if err := validateNavigationURL(url); err != nil {
+		return "", err
+	}
+	opCtx, cancel, err := d.operationContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	targetID, err := newTab(opCtx, url)
+	cancel()
+	if err != nil {
+		return "", err
+	}
+	if err := d.switchTarget(ctx, targetID); err != nil {
+		return "", dispatchedError("target created but activation failed", err)
+	}
+	return targetID, nil
+}
+
+func (d *driver) ActivateTab(ctx context.Context, targetID string) error {
+	opCtx, cancel, err := d.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	err = activateTab(opCtx, targetID)
+	cancel()
+	if err != nil {
+		return err
+	}
+	if err := d.switchTarget(ctx, targetID); err != nil {
+		return dispatchedError("target activated but context switch failed", err)
+	}
+	return nil
+}
+
+func (d *driver) CloseTab(ctx context.Context, targetID string) error {
+	opCtx, cancel, err := d.operationContext(ctx)
+	if err != nil {
+		return err
+	}
+	tabs, err := listTabsInternal(opCtx, d.activeTargetID())
+	if err != nil {
+		cancel()
+		return fmt.Errorf("list tabs before close: %w", err)
+	}
+	replacement, replacementErr := replacementTab(tabs, targetID)
+	if replacementErr != nil {
+		cancel()
+		return replacementErr
+	}
+	if targetID == d.activeTargetID() {
+		cancel()
+		d.mu.RLock()
+		oldCtx := d.cdpCtx
+		d.mu.RUnlock()
+		if err := d.switchTarget(ctx, replacement); err != nil {
+			return dispatchedError("activate replacement tab", err)
+		}
+		closeCtx, closeCancel := context.WithTimeout(oldCtx, 10*time.Second)
+		err := chromedp.Cancel(closeCtx)
+		closeCancel()
+		if err != nil && ctx.Err() == nil {
+			return dispatchedError("active target close failed", err)
+		}
+		return nil
+	}
+	err = closeTab(opCtx, targetID)
+	cancel()
+	if err != nil {
+		return dispatchedError("target close failed", err)
+	}
+	return nil
+}
+
+func dispatchedError(action string, err error) error {
+	return &browser.DispatchError{Dispatched: true, Cause: fmt.Errorf("%s: %w", action, err)}
+}
+
+func replacementTab(tabs []browser.TabInfo, closing string) (string, error) {
+	if len(tabs) <= 1 {
+		return "", fmt.Errorf("cannot close last tab")
+	}
+	for _, tab := range tabs {
+		if tab.ID != closing {
+			return tab.ID, nil
+		}
+	}
+	return "", fmt.Errorf("target %q not found", closing)
+}
+
+func validateNavigationURL(raw string) error {
+	if raw == "about:blank" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() {
+		return browser.NewError(browser.ErrInvalidURL, "URL must be an absolute HTTP/HTTPS URL", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return browser.NewError(browser.ErrUnsupportedScheme, "only HTTP and HTTPS navigation is supported", nil)
+	}
+	if parsed.Host == "" {
+		return browser.NewError(browser.ErrInvalidURL, "URL must include a host", nil)
+	}
+	if parsed.User != nil {
+		return browser.NewError(browser.ErrInvalidURL, "URL credentials are forbidden", nil)
+	}
+	return nil
+}
+
+func (d *driver) switchTarget(callCtx context.Context, targetID string) error {
+	if err := callCtx.Err(); err != nil {
+		return err
+	}
+	d.mu.RLock()
+	baseCtx := d.browserBase
+	d.mu.RUnlock()
+	targetCtx, targetCancel := chromedp.NewContext(baseCtx, chromedp.WithTargetID(target.ID(targetID)))
+	stop := context.AfterFunc(callCtx, targetCancel)
+	err := chromedp.Run(targetCtx)
+	stop()
+	if err != nil {
+		targetCancel()
+		return err
+	}
+	if err := callCtx.Err(); err != nil {
+		targetCancel()
+		return err
+	}
+	d.mu.Lock()
+	d.cdpCtx = targetCtx
+	d.activeTarget = targetID
+	if d.targetCancels == nil {
+		d.targetCancels = make(map[string]context.CancelFunc)
+	}
+	d.targetCancels[targetID] = targetCancel
+	d.targetContexts[targetID] = targetCtx
+	d.mu.Unlock()
+	d.listenTarget(targetCtx)
+	return nil
+}
+
+func (d *driver) operationContext(callCtx context.Context) (context.Context, context.CancelFunc, error) {
+	if d.closed.Load() {
+		return nil, nil, fmt.Errorf("driver closed")
+	}
+	if callCtx == nil {
+		return nil, nil, fmt.Errorf("nil action context")
+	}
+	if err := callCtx.Err(); err != nil {
+		return nil, nil, err
+	}
+	base, _ := d.current()
+	if base == nil {
+		return nil, nil, fmt.Errorf("driver not started")
+	}
+	opCtx, cancel := context.WithCancel(base)
+	stop := context.AfterFunc(callCtx, cancel)
+	return opCtx, func() { stop(); cancel() }, nil
+}
+
+func (d *driver) operationContextForTarget(callCtx context.Context, targetID string) (context.Context, context.CancelFunc, error) {
+	if targetID == "" || targetID == d.activeTargetID() {
+		return d.operationContext(callCtx)
+	}
+	d.mu.RLock()
+	cached := d.targetContexts[targetID]
+	base := d.browserBase
+	d.mu.RUnlock()
+	if cached != nil {
+		opCtx, opCancel := context.WithCancel(cached)
+		stop := context.AfterFunc(callCtx, opCancel)
+		return opCtx, func() { stop(); opCancel() }, nil
+	}
+	if base == nil {
+		return nil, nil, fmt.Errorf("browser target context unavailable")
+	}
+	targetCtx, targetCancel := chromedp.NewContext(base, chromedp.WithTargetID(target.ID(targetID)))
+	stop := context.AfterFunc(callCtx, targetCancel)
+	if err := chromedp.Run(targetCtx); err != nil {
+		stop()
+		targetCancel()
+		return nil, nil, fmt.Errorf("attach target %s: %w", targetID, err)
+	}
+	stop()
+	d.mu.Lock()
+	if d.targetContexts == nil {
+		d.targetContexts = make(map[string]context.Context)
+	}
+	if d.targetCancels == nil {
+		d.targetCancels = make(map[string]context.CancelFunc)
+	}
+	d.targetContexts[targetID] = targetCtx
+	d.targetCancels[targetID] = targetCancel
+	d.mu.Unlock()
+	d.listenTarget(targetCtx)
+	opCtx, opCancel := context.WithCancel(targetCtx)
+	opStop := context.AfterFunc(callCtx, opCancel)
+	return opCtx, func() { opStop(); opCancel() }, nil
+}
+
+func (d *driver) current() (context.Context, string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.cdpCtx, d.activeTarget
+}
+
+func (d *driver) activeTargetID() string {
+	_, targetID := d.current()
+	return targetID
+}
+
+func (d *driver) Invalidations() <-chan browser.Invalidation { return d.invalCh }
+
+func (d *driver) Close() error {
+	d.closeOnce.Do(func() {
+		d.closed.Store(true)
+		d.emit(browser.Invalidation{Kind: browser.InvalidationClosed, At: time.Now().UTC()})
+		d.mu.RLock()
+		cancels := make([]context.CancelFunc, 0, len(d.targetCancels))
+		for _, cancel := range d.targetCancels {
+			cancels = append(cancels, cancel)
+		}
+		allocCancel := d.allocCancel
+		rootCtx := d.rootCtx
+		d.mu.RUnlock()
+		if rootCtx != nil {
+			closeCtx, closeCancel := context.WithTimeout(rootCtx, 10*time.Second)
+			gracefulErr := chromedp.Cancel(closeCtx)
+			closeCancel()
+			d.mu.Lock()
+			d.closeErr = gracefulErr
+			d.closeErrPending = gracefulErr != nil
+			d.mu.Unlock()
+		}
+		// Force cleanup always runs, even when graceful chromedp.Cancel failed.
+		// This guarantees process/event resources converge before Manager retries
+		// Profile release.
+		for _, cancel := range cancels {
+			cancel()
+		}
+		if allocCancel != nil {
+			allocCancel()
+		}
+		if d.eventCancel != nil {
+			d.eventCancel()
+		}
+		<-d.eventDone
+		d.processExited.Store(true)
+	})
+	return d.consumeCloseError()
+}
+
+// ProcessID and ProcessExited are intentionally outside browser.Driver and
+// BrowserInfo. They provide internal integration evidence without exposing PID
+// through model-visible tool JSON.
+func (d *driver) ProcessID() int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.processID
+}
+
+func (d *driver) ProcessExited() bool { return d.processExited.Load() }
+
+// consumeCloseError exposes a graceful-close error once. The process cleanup
+// has already completed, so a later Manager retry may continue with profile
+// release instead of being permanently pinned to the same stale error.
+func (d *driver) consumeCloseError() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.closeErrPending {
+		return nil
+	}
+	d.closeErrPending = false
+	return d.closeErr
+}
+
+func (d *driver) listenTarget(ctx context.Context) {
+	chromedp.ListenTarget(ctx, d.handleEvent)
+}
+
+func (d *driver) handleEvent(event any) {
+	now := time.Now().UTC()
+	switch value := event.(type) {
+	case *dom.EventDocumentUpdated, *dom.EventAttributeModified, *dom.EventAttributeRemoved,
+		*dom.EventCharacterDataModified, *dom.EventChildNodeCountUpdated,
+		*dom.EventChildNodeInserted, *dom.EventChildNodeRemoved:
+		d.emit(browser.Invalidation{Kind: browser.InvalidationDocument, TargetID: d.activeTargetID(), At: now})
+	case *page.EventFrameNavigated:
+		frameID := ""
+		if value.Frame != nil {
+			frameID = string(value.Frame.ID)
+		}
+		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.activeTargetID(), FrameID: frameID, At: now})
+	case *page.EventFrameStartedLoading:
+		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.activeTargetID(), FrameID: string(value.FrameID), At: now})
+	case *target.EventTargetCreated:
+		if value.TargetInfo != nil {
+			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: now})
+		}
+	case *target.EventTargetInfoChanged:
+		if value.TargetInfo != nil {
+			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: now})
+		}
+	case *target.EventTargetDestroyed:
+		d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetID), At: now})
+	}
+}
+
+func (d *driver) emit(event browser.Invalidation) {
+	select {
+	case d.events <- event:
+	default:
+		// Coalescing is safe: any invalidation makes the current snapshot stale.
+	}
+}
+
+func (d *driver) runEventLoop(lifecycle context.Context) {
+	defer close(d.eventDone)
+	defer close(d.invalCh)
+	for {
+		select {
+		case event := <-d.events:
+			select {
+			case d.invalCh <- event:
+			default:
+			}
+		case <-lifecycle.Done():
+			for {
+				select {
+				case event := <-d.events:
+					select {
+					case d.invalCh <- event:
+					default:
+					}
+				default:
+					return
+				}
+			}
+		}
+	}
+}

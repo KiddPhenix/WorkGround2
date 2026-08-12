@@ -18,9 +18,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"workground2/internal/agent"
+	browserpkg "workground2/internal/browser"
+	"workground2/internal/browser/cdp"
 	"workground2/internal/command"
 	"workground2/internal/config"
 	"workground2/internal/control"
@@ -46,6 +49,7 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/skillshare"
 	"workground2/internal/tool"
+	browsertool "workground2/internal/tool/browser"
 	"workground2/internal/tool/builtin"
 	"workground2/internal/tool/sessiontool"
 	"workground2/internal/work"
@@ -55,6 +59,94 @@ import (
 // system prompts, and documentation. It is the single source of truth for
 // the product brand.
 const ProductName = "WorkGround2"
+
+var browserRuntimeTools = map[string]bool{
+	"browser_open":     true,
+	"browser_navigate": true,
+	"browser_state":    true,
+	"browser_click":    true,
+	"browser_type":     true,
+	"browser_scroll":   true,
+	"browser_tab":      true,
+	"browser_close":    true,
+}
+
+type browserCloseAll interface {
+	Close() error
+}
+
+type browserSessionCloser interface {
+	CloseSession(context.Context, string) (browserpkg.CloseResult, error)
+}
+
+// browserLifecycle keeps Build responsible for a newly-created manager until a
+// Controller has actually been returned. Cleanup retries once because a
+// Controller invokes its cleanup hook only once, while Manager.Close can expose
+// a transient process/profile cleanup failure that is safe to retry.
+type browserLifecycle struct {
+	closer browserCloseAll
+	sink   event.Sink
+	mu     sync.Mutex
+	closed bool
+	owned  bool
+}
+
+func newBrowserLifecycle(closer browserCloseAll, sink event.Sink) *browserLifecycle {
+	return &browserLifecycle{closer: closer, sink: sink, owned: true}
+}
+
+func (l *browserLifecycle) transfer() {
+	if l != nil {
+		l.owned = false
+	}
+}
+
+func (l *browserLifecycle) releaseIfOwned() {
+	if l != nil && l.owned {
+		l.close("browser manager cleanup after Build failure")
+	}
+}
+
+func (l *browserLifecycle) close(label string) {
+	if l == nil || l.closer == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		return
+	}
+	var err error
+	for range 2 {
+		if err = l.closer.Close(); err == nil {
+			l.closed = true
+			return
+		}
+	}
+	slog.Warn(label, "err", err)
+	if l.sink != nil {
+		l.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: label + ": " + err.Error()})
+	}
+}
+
+func browserTaskCleanup(closer browserSessionCloser, owner string, sink event.Sink) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if closer == nil || strings.TrimSpace(owner) == "" {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := closer.CloseSession(ctx, owner); err != nil {
+				slog.Warn("browser task session cleanup failed", "owner", owner, "err", err)
+				if sink != nil {
+					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "browser task session cleanup failed: " + err.Error()})
+				}
+			}
+		})
+	}
+}
 
 // WorkTaskSystemPrompt is the system prompt injected into every Work V2 task
 // session. It defines the role as a business delivery executor — distinct from
@@ -275,6 +367,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			Level: event.LevelWarn,
 			Text:  fmt.Sprintf("plan_mode_allowed_tools ignored known blocked entries: %s; this setting only declares extra read-only custom tools and cannot unlock known blocked tools or unsafe bash", strings.Join(ignored, ", ")),
 		})
+	}
+	for _, warning := range cfg.BrowserConfigWarnings() {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: warning})
 	}
 	if migErr != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "config migration from ~/.WorkGround2 failed: " + migErr.Error()})
@@ -593,6 +688,42 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 		prev := cleanup
 		cleanup = func() { prev(); lspMgr.Close() }
+	}
+
+	// Browser tools: manager is created but no browser is launched until
+	// the first browser_open call. Browser-absent hosts boot successfully.
+	var browserMgr *browserpkg.Manager
+	var browserOwner *browserLifecycle
+	if cfg.BrowserEnabled() && !tokenEconomy && browserToolsSelected(enabledBuiltins) {
+		factory := cdp.NewFactory(cdp.Options{})
+		bm, err := browserpkg.NewManager(ctx, browserpkg.Options{
+			Factory:        factory,
+			BrowserKind:    browserpkg.BrowserKind(cfg.BrowserKind()),
+			ExecutablePath: cfg.Tools.Browser.ExecutablePath,
+			Headless:       cfg.BrowserHeadless(),
+			ProfileRoot:    sessionDir,
+			IdleTimeout:    time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
+			ActionTimeout:  time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
+			StateTimeout:   time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
+			SettleWindow:   time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
+			MaxTextChars:   cfg.BrowserMaxTextChars(),
+			MaxElements:    cfg.BrowserMaxElements(),
+		})
+		if err != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+				Text: "browser manager init failed: " + err.Error()})
+		} else {
+			browserMgr = bm
+			browserOwner = newBrowserLifecycle(browserMgr, sink)
+			defer browserOwner.releaseIfOwned()
+			for _, t := range browsertool.NewTools(browserMgr) {
+				if builtinToolEnabled(enabledBuiltins, t.Name()) {
+					reg.Add(t)
+				}
+			}
+			prev := cleanup
+			cleanup = func() { prev(); browserOwner.close("browser manager cleanup failed") }
+		}
 	}
 
 	maxSteps := cfg.Agent.MaxSteps
@@ -1277,6 +1408,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					taskJobs := jobs.NewManager(taskSink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
 					taskSession := agent.NewSession(taskPrompt)
 					taskAgent := agent.New(execProv, reg, taskSession, newAgentOptions(taskJobs), taskSink)
+					taskCleanup := func() {}
+					if browserMgr != nil {
+						taskCleanup = browserTaskCleanup(browserMgr, agent.BranchID(taskPath), taskSink)
+					}
 					taskCtrl := control.New(control.Options{
 						Runner:               taskAgent,
 						Executor:             taskAgent,
@@ -1300,6 +1435,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 						BalanceClient:        balanceClient,
 						Jobs:                 taskJobs,
 						Registry:             reg,
+						Cleanup:              taskCleanup,
 					})
 					return taskCtrl, func() {}, nil
 				},
@@ -1418,6 +1554,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	ctrl := control.New(ctrlOpts)
+	if browserOwner != nil {
+		browserOwner.transfer()
+	}
 	// Post-init: wire every live Cornerstone source through production adapters.
 	// URL resolution reuses the configured web_fetch tool, including its proxy,
 	// timeout, response cap, and SSRF policy. If web_fetch is disabled, URL refs
@@ -1765,7 +1904,7 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 		for _, name := range enabled {
 			if t, ok := tool.LookupBuiltin(name); ok {
 				reg.Add(t)
-			} else {
+			} else if !browserRuntimeTools[strings.TrimSpace(name)] {
 				fmt.Fprintf(stderr, "warning: unknown built-in tool %q\n", name)
 			}
 		}
@@ -1793,6 +1932,18 @@ func builtinToolEnabled(enabled []string, name string) bool {
 	name = strings.TrimSpace(name)
 	for _, candidate := range enabled {
 		if strings.TrimSpace(candidate) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func browserToolsSelected(enabled []string) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	for _, name := range enabled {
+		if browserRuntimeTools[strings.TrimSpace(name)] {
 			return true
 		}
 	}

@@ -1321,6 +1321,14 @@ func defaultFullBootToolNames() []string {
 		"ask",
 		"bash",
 		"bash_output",
+		"browser_click",
+		"browser_close",
+		"browser_navigate",
+		"browser_open",
+		"browser_scroll",
+		"browser_state",
+		"browser_tab",
+		"browser_type",
 		"code_index",
 		"complete_step",
 		"delete_range",
@@ -3072,7 +3080,7 @@ func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
 	}
 }
 
-func TestBuildMigratesLegacyEagerTierToBackground(t *testing.T) {
+func TestBuildNormalizesLegacyEagerTierInMemoryWithoutRewritingConfig(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -3112,12 +3120,12 @@ tier = "eager"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "\ntier") {
-		t.Fatalf("legacy eager tier should be removed during load:\n%s", raw)
+	if !strings.Contains(string(raw), `tier = "eager"`) {
+		t.Fatalf("boot must not rewrite the user's legacy eager tier:\n%s", raw)
 	}
 }
 
-func TestBuildMigratesLegacyLazyTierToBackground(t *testing.T) {
+func TestBuildNormalizesLegacyLazyTierInMemoryWithoutRewritingConfig(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -3157,8 +3165,8 @@ tier = "lazy"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "\ntier") {
-		t.Fatalf("legacy lazy tier should be removed during load:\n%s", raw)
+	if !strings.Contains(string(raw), `tier = "lazy"`) {
+		t.Fatalf("boot must not rewrite the user's legacy lazy tier:\n%s", raw)
 	}
 }
 

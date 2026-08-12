@@ -1536,6 +1536,7 @@ type ToolsConfig struct {
 	BackgroundJobs        BackgroundJobsConfig `toml:"background_jobs"`
 	Search                SearchConfig         `toml:"search"`
 	Shell                 ShellConfig          `toml:"shell"`
+	Browser               BrowserConfig        `toml:"browser"`
 }
 
 const (
@@ -1601,6 +1602,146 @@ type SearchConfig struct {
 type ShellConfig struct {
 	Prefer string `toml:"prefer"`
 	Path   string `toml:"path"`
+}
+
+// BrowserConfig tunes the browser automation tools.
+type BrowserConfig struct {
+	Enabled              *bool  `toml:"enabled"`
+	Kind                 string `toml:"kind"`
+	ExecutablePath       string `toml:"executable_path"`
+	Headless             *bool  `toml:"headless"`
+	IdleTimeoutSeconds   *int   `toml:"idle_timeout_seconds"`
+	ActionTimeoutSeconds *int   `toml:"action_timeout_seconds"`
+	StateTimeoutSeconds  *int   `toml:"state_timeout_seconds"`
+	SettleMilliseconds   *int   `toml:"settle_milliseconds"`
+	MaxTextChars         *int   `toml:"max_text_chars"`
+	MaxElements          *int   `toml:"max_elements"`
+}
+
+const (
+	defaultBrowserIdleTimeoutSec   = 600
+	defaultBrowserActionTimeoutSec = 30
+	defaultBrowserStateTimeoutSec  = 15
+	defaultBrowserSettleMs         = 300
+	defaultBrowserMaxTextChars     = 20000
+	defaultBrowserMaxElements      = 400
+	minBrowserIdleTimeoutSec       = 30
+	maxBrowserIdleTimeoutSec       = 86400
+	minBrowserActionTimeoutSec     = 1
+	maxBrowserActionTimeoutSec     = 300
+	minBrowserStateTimeoutSec      = 1
+	maxBrowserStateTimeoutSec      = 300
+	minBrowserSettleMs             = 50
+	maxBrowserSettleMs             = 5000
+	minBrowserMaxTextChars         = 1000
+	maxBrowserMaxTextChars         = 60000
+	minBrowserMaxElements          = 1
+	maxBrowserMaxElements          = 2000
+)
+
+var browserKinds = map[string]bool{
+	"auto":               true,
+	"chrome":             true,
+	"chromium":           true,
+	"edge":               true,
+	"chrome_for_testing": true,
+}
+
+// BrowserEnabled reports whether browser tools are enabled.
+func (c *Config) BrowserEnabled() bool {
+	if c.Tools.Browser.Enabled != nil {
+		return *c.Tools.Browser.Enabled
+	}
+	return true
+}
+
+// BrowserKind returns a validated browser family. Unknown and blank values use
+// auto discovery so a typo cannot make application boot fail.
+func (c *Config) BrowserKind() string {
+	kind := strings.ToLower(strings.TrimSpace(c.Tools.Browser.Kind))
+	if !browserKinds[kind] {
+		return "auto"
+	}
+	return kind
+}
+
+// BrowserHeadless reports whether the browser should run without a visible UI.
+func (c *Config) BrowserHeadless() bool {
+	return c.Tools.Browser.Headless != nil && *c.Tools.Browser.Headless
+}
+
+// BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds.
+func (c *Config) BrowserIdleTimeoutSeconds() int {
+	return boundedBrowserInt(c.Tools.Browser.IdleTimeoutSeconds, defaultBrowserIdleTimeoutSec, minBrowserIdleTimeoutSec, maxBrowserIdleTimeoutSec)
+}
+
+// BrowserActionTimeoutSeconds returns the action timeout.
+func (c *Config) BrowserActionTimeoutSeconds() int {
+	return boundedBrowserInt(c.Tools.Browser.ActionTimeoutSeconds, defaultBrowserActionTimeoutSec, minBrowserActionTimeoutSec, maxBrowserActionTimeoutSec)
+}
+
+// BrowserStateTimeoutSeconds returns the state observation timeout.
+func (c *Config) BrowserStateTimeoutSeconds() int {
+	return boundedBrowserInt(c.Tools.Browser.StateTimeoutSeconds, defaultBrowserStateTimeoutSec, minBrowserStateTimeoutSec, maxBrowserStateTimeoutSec)
+}
+
+// BrowserSettleMilliseconds returns the settle window.
+func (c *Config) BrowserSettleMilliseconds() int {
+	return boundedBrowserInt(c.Tools.Browser.SettleMilliseconds, defaultBrowserSettleMs, minBrowserSettleMs, maxBrowserSettleMs)
+}
+
+// BrowserMaxTextChars returns the max page text chars.
+func (c *Config) BrowserMaxTextChars() int {
+	return boundedBrowserInt(c.Tools.Browser.MaxTextChars, defaultBrowserMaxTextChars, minBrowserMaxTextChars, maxBrowserMaxTextChars)
+}
+
+// BrowserMaxElements returns the max interactive elements.
+func (c *Config) BrowserMaxElements() int {
+	return boundedBrowserInt(c.Tools.Browser.MaxElements, defaultBrowserMaxElements, minBrowserMaxElements, maxBrowserMaxElements)
+}
+
+// BrowserConfigWarnings reports recoverable normalization so frontends can
+// explain why runtime behavior differs from a malformed config value.
+func (c *Config) BrowserConfigWarnings() []string {
+	if c == nil {
+		return nil
+	}
+	var warnings []string
+	rawKind := strings.ToLower(strings.TrimSpace(c.Tools.Browser.Kind))
+	if rawKind != "" && !browserKinds[rawKind] {
+		warnings = append(warnings, fmt.Sprintf("tools.browser.kind %q is unsupported; using auto", c.Tools.Browser.Kind))
+	}
+	checks := []struct {
+		name  string
+		raw   *int
+		value int
+	}{
+		{"idle_timeout_seconds", c.Tools.Browser.IdleTimeoutSeconds, c.BrowserIdleTimeoutSeconds()},
+		{"action_timeout_seconds", c.Tools.Browser.ActionTimeoutSeconds, c.BrowserActionTimeoutSeconds()},
+		{"state_timeout_seconds", c.Tools.Browser.StateTimeoutSeconds, c.BrowserStateTimeoutSeconds()},
+		{"settle_milliseconds", c.Tools.Browser.SettleMilliseconds, c.BrowserSettleMilliseconds()},
+		{"max_text_chars", c.Tools.Browser.MaxTextChars, c.BrowserMaxTextChars()},
+		{"max_elements", c.Tools.Browser.MaxElements, c.BrowserMaxElements()},
+	}
+	for _, check := range checks {
+		if check.raw != nil && *check.raw != check.value {
+			warnings = append(warnings, fmt.Sprintf("tools.browser.%s=%d is out of range; using %d", check.name, *check.raw, check.value))
+		}
+	}
+	return warnings
+}
+
+func boundedBrowserInt(value *int, fallback, minValue, maxValue int) int {
+	if value == nil {
+		return fallback
+	}
+	if *value < minValue {
+		return minValue
+	}
+	if *value > maxValue {
+		return maxValue
+	}
+	return *value
 }
 
 // PermissionsConfig declares the per-call permission policy (see
@@ -1753,6 +1894,17 @@ func Default() *Config {
 		// so an absent [sandbox] in a user's file keeps egress (zero value would
 		// wrongly deny it).
 		Sandbox: SandboxConfig{Bash: "enforce", Network: true},
+		Tools: ToolsConfig{Browser: BrowserConfig{
+			Enabled:              boolConfigPtr(true),
+			Kind:                 "auto",
+			Headless:             boolConfigPtr(false),
+			IdleTimeoutSeconds:   intConfigPtr(defaultBrowserIdleTimeoutSec),
+			ActionTimeoutSeconds: intConfigPtr(defaultBrowserActionTimeoutSec),
+			StateTimeoutSeconds:  intConfigPtr(defaultBrowserStateTimeoutSec),
+			SettleMilliseconds:   intConfigPtr(defaultBrowserSettleMs),
+			MaxTextChars:         intConfigPtr(defaultBrowserMaxTextChars),
+			MaxElements:          intConfigPtr(defaultBrowserMaxElements),
+		}},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.
 		LSP:           LSPConfig{Enabled: true},
@@ -1780,6 +1932,10 @@ func Default() *Config {
 		},
 	}
 }
+
+func boolConfigPtr(value bool) *bool { return &value }
+
+func intConfigPtr(value int) *int { return &value }
 
 // WriteFile writes the configuration to path as annotated TOML. The write is
 // atomic + fsynced so an interrupted write or power loss can never truncate the

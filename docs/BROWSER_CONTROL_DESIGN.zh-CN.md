@@ -1,8 +1,10 @@
 # WorkGround2 原生浏览器操作能力设计
 
-状态：`review`
+状态：`implemented`
 分支：`developping/browser-control+2026-08-12`
 范围：第一版原生 CDP；不使用 MCP；不提供截图、上传、下载、持久登录态或桌面专用 UI。
+
+实现验证：Chrome 151 真实双门集成已覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、空闲/Controller 回收、下载拒绝和临时 Profile 清理；默认单测不启动浏览器。
 
 ## 1. 目标
 

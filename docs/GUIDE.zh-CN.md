@@ -75,6 +75,13 @@ enabled = []   # 省略/为空 = 全部内置工具
 bash_timeout_seconds = 120   # 前台安全上限；设为 0 表示不设工具层超时
 mcp_call_timeout_seconds = 300   # MCP 调用默认安全上限；可用 plugin/tool 覆盖
 
+[tools.browser]
+enabled = true
+kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
+# executable_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+headless = false
+idle_timeout_seconds = 600
+
 [environment]
 enabled = true   # 启动时把 OS、shell 和常见工具摘要稳定注入 prompt
 # [environment.tools]
@@ -109,6 +116,25 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # 可选：raw MCP tool 名
 ```
 
 完整 schema 与每个字段的契约见 [`SPEC.md` §5](./SPEC.md#5-configuration-toml)。
+
+### 原生浏览器工具
+
+默认 full 工具面包含 `browser_open`、`browser_navigate`、`browser_state`、
+`browser_click`、`browser_type`、`browser_scroll`、`browser_tab`、`browser_close`
+八个工具。第一优先支持 Google Chrome；Edge、Chromium、Chrome for Testing
+通过同一套 Chrome DevTools Protocol 兼容。浏览器只在第一次 `browser_open`
+时发现并启动，因此机器未安装受支持浏览器也不影响 WorkGround2 启动，失败会在打开时显式返回。
+
+每个 parent session 独占浏览器进程、标签页、revision 映射、幂等记录和隔离的临时 Profile。
+Session 关闭、调用 `browser_close` 或超过 `idle_timeout_seconds` 都会回收资源；Work task
+只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、上传下载或视觉坐标定位。
+`browser_type` 只用于普通文本：工具参数会进入会话记录，因此禁止传入密码、API key、token 等秘密；
+password 和 file 输入框也会被拒绝。
+
+运行时已经为后续 managed Profile、经用户明确授权连接日常 Chrome、复用 Cookie/登录态和密码库填充
+预留 ProfileProvider/CredentialProvider 边界；V1 不启用这些能力，也不会把 managed/attach 请求静默降级为
+临时 Profile。关闭 `[tools.browser].enabled`、通过 `tools.enabled` 筛掉浏览器工具或启用 token economy
+都会隐藏这组工具。revision/request_id 规则见[工具合约](./TOOL_CONTRACT.zh-CN.md)。
 
 `[agent].plan_mode_allowed_tools` 用于把 WorkGround2 无法自动分类的自定义/外部工具声明为额外只读工具。
 对 MCP/plugin 工具，像 `mcp__github__issue_read` 这样的具体模型可见名也会把该工具提升为

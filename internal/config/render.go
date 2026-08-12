@@ -463,6 +463,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# path   = \"/opt/homebrew/bin/bash\"   # absolute path to the shell executable; empty = PATH lookup\n\n")
 	}
 
+	renderBrowserConfig(&b, c, true)
+
 	renderLSPConfig(&b, c.LSP)
 
 	b.WriteString("[skills]\n")
@@ -985,6 +987,13 @@ func RenderTOMLProjectDelta(c *Config) string {
 		b.WriteString("\n")
 	}
 
+	// [tools.browser] is a project/runtime capability. Emit it only when it
+	// differs from built-in defaults so saving an unrelated legacy config cannot
+	// pin the newly introduced browser defaults into that project.
+	if !reflect.DeepEqual(c.Tools.Browser, d.Tools.Browser) {
+		renderBrowserConfig(&b, c, false)
+	}
+
 	// [lsp]
 	if !reflect.DeepEqual(c.LSP, d.LSP) {
 		renderLSPConfig(&b, c.LSP)
@@ -1111,6 +1120,36 @@ func RenderTOMLProjectDelta(c *Config) string {
 	}
 
 	return b.String()
+}
+
+func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
+	if b == nil || c == nil {
+		return
+	}
+	b.WriteString("[tools.browser]\n")
+	if annotated {
+		fmt.Fprintf(b, "enabled = %v   # false hides all browser tools and skips the runtime manager\n", c.BrowserEnabled())
+		fmt.Fprintf(b, "kind = %q   # auto|chrome|edge|chromium|chrome_for_testing\n", c.BrowserKind())
+		fmt.Fprintf(b, "executable_path = %q   # optional absolute browser executable; takes priority over kind discovery\n", strings.TrimSpace(c.Tools.Browser.ExecutablePath))
+		fmt.Fprintf(b, "headless = %v   # false keeps the browser visible for user observation\n", c.BrowserHeadless())
+		fmt.Fprintf(b, "idle_timeout_seconds = %d   # per-session browser idle lifetime (30..86400)\n", c.BrowserIdleTimeoutSeconds())
+		fmt.Fprintf(b, "action_timeout_seconds = %d   # navigation/action cap (1..300)\n", c.BrowserActionTimeoutSeconds())
+		fmt.Fprintf(b, "state_timeout_seconds = %d   # DOM/accessibility observation cap (1..300)\n", c.BrowserStateTimeoutSeconds())
+		fmt.Fprintf(b, "settle_milliseconds = %d   # post-action DOM quiet window (50..5000)\n", c.BrowserSettleMilliseconds())
+		fmt.Fprintf(b, "max_text_chars = %d   # page text cap returned to the model (1000..60000)\n", c.BrowserMaxTextChars())
+		fmt.Fprintf(b, "max_elements = %d   # indexed interactive-element cap (1..2000)\n\n", c.BrowserMaxElements())
+		return
+	}
+	fmt.Fprintf(b, "enabled = %v\n", c.BrowserEnabled())
+	fmt.Fprintf(b, "kind = %q\n", c.BrowserKind())
+	fmt.Fprintf(b, "executable_path = %q\n", strings.TrimSpace(c.Tools.Browser.ExecutablePath))
+	fmt.Fprintf(b, "headless = %v\n", c.BrowserHeadless())
+	fmt.Fprintf(b, "idle_timeout_seconds = %d\n", c.BrowserIdleTimeoutSeconds())
+	fmt.Fprintf(b, "action_timeout_seconds = %d\n", c.BrowserActionTimeoutSeconds())
+	fmt.Fprintf(b, "state_timeout_seconds = %d\n", c.BrowserStateTimeoutSeconds())
+	fmt.Fprintf(b, "settle_milliseconds = %d\n", c.BrowserSettleMilliseconds())
+	fmt.Fprintf(b, "max_text_chars = %d\n", c.BrowserMaxTextChars())
+	fmt.Fprintf(b, "max_elements = %d\n\n", c.BrowserMaxElements())
 }
 
 func renderPricingInline(p *provider.Pricing) string {

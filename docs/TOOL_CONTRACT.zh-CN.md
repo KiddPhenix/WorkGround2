@@ -40,11 +40,29 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 
 默认 full-token boot 会发送上面的内置工具，并额外发送 session、memory、skill、subagent、LSP、install 和 slash-command 工具：
 
-`ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
+`ask`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
-`read_only_task`, `read_session`, `read_skill`, `remember`, `research`,
+`read_only_task`, `read_session`, `read_skill`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+八个运行时绑定的浏览器工具按 parent session 独占浏览器进程：
+
+| 工具 | Read-only | 合约 |
+| --- | --- | --- |
+| `browser_open` | false | 幂等打开当前会话浏览器，可选导航到 HTTP/HTTPS URL。 |
+| `browser_navigate` | false | 导航当前标签页，要求稳定的 `request_id`。 |
+| `browser_state` | true | 返回页面文本、标签页、`revision` 和带编号交互元素；不返回截图或表单值。 |
+| `browser_click` | false | 按指定 `revision` 和元素编号点击，陈旧 revision 显式失败。 |
+| `browser_type` | false | 向可编辑元素输入普通非敏感文本；拒绝 password/file 输入。 |
+| `browser_scroll` | false | 按 revision 滚动视口或指定元素。 |
+| `browser_tab` | false | 按 revision 新建、激活或关闭标签页。 |
+| `browser_close` | false | 幂等关闭且只关闭当前 parent session 的浏览器。 |
+
+`[tools.browser].enabled=false`、`tools.enabled` 未选中或 token economy
+模式都会隐藏浏览器工具。首选 Google Chrome，同一 CDP 合约也支持 Edge、
+Chromium 和 Chrome for Testing。V1 只使用隔离的临时 Profile，不提供截图、
+上传下载、敏感信息输入、日常 Chrome Profile/Cookie/登录态或密码库访问。
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` 会校验真实 boot registry 合约和 provider request 一致，包括 read-only 标记和 canonical schema。
 

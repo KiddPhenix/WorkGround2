@@ -1,0 +1,199 @@
+package browser
+
+import "time"
+
+// ── Page state ──────────────────────────────────────────────────────────────
+
+// PageState is the immutable page snapshot returned to the model.
+type PageState struct {
+	SessionID  string         `json:"session_id"`
+	Revision   uint64         `json:"revision"`
+	URL        string         `json:"url"`
+	Title      string         `json:"title"`
+	ActiveTab  string         `json:"active_tab"`
+	Tabs       []TabInfo      `json:"tabs"`
+	Text       string         `json:"text,omitempty"`
+	Elements   []Element      `json:"elements"`
+	Warnings   []StateWarning `json:"warnings,omitempty"`
+	Truncated  bool           `json:"truncated"`
+	CapturedAt time.Time      `json:"captured_at"`
+}
+
+// StateWarning describes a non-fatal observation issue.
+type StateWarning struct {
+	Code    string `json:"code"`
+	FrameID string `json:"frame_id,omitempty"`
+	Message string `json:"message"`
+}
+
+// TabInfo describes a single browser tab.
+type TabInfo struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Title  string `json:"title"`
+	Active bool   `json:"active"`
+}
+
+// Element is an interactive element visible in the page.
+type Element struct {
+	Index       int    `json:"index"`
+	Role        string `json:"role,omitempty"`
+	Tag         string `json:"tag,omitempty"`
+	InputType   string `json:"input_type,omitempty"`
+	Name        string `json:"name,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+	Href        string `json:"href,omitempty"`
+	Disabled    bool   `json:"disabled,omitempty"`
+	Checked     *bool  `json:"checked,omitempty"`
+	Editable    bool   `json:"editable,omitempty"`
+	Bounds      Rect   `json:"bounds"`
+}
+
+// Rect is a bounding rectangle in CSS pixels.
+type Rect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// ── Internal snapshot ───────────────────────────────────────────────────────
+
+// Snapshot holds the immutable page snapshot plus internal node mapping.
+type Snapshot struct {
+	State       PageState
+	Nodes       map[int]NodeRef
+	Fingerprint string
+	Generation  uint64
+}
+
+// NodeRef is an opaque reference to a DOM node used for actions.
+type NodeRef struct {
+	TargetID      string
+	FrameID       string
+	BackendNodeID int64
+	Bounds        Rect
+}
+
+// ── Driver observation ──────────────────────────────────────────────────────
+
+// Observation is the raw data Driver.Observe returns.
+type Observation struct {
+	URL         string
+	Title       string
+	ActiveTab   string
+	Tabs        []TabInfo
+	Text        string
+	Nodes       []ObservedNode
+	Warnings    []StateWarning
+	Fingerprint string
+	Truncated   bool
+}
+
+// ObservedNode is a raw interactive node from CDP before indexing.
+type ObservedNode struct {
+	Ref         NodeRef
+	Role        string
+	Tag         string
+	InputType   string
+	Name        string
+	Placeholder string
+	Href        string
+	Disabled    bool
+	Checked     *bool
+	Editable    bool
+}
+
+// ── Requests ────────────────────────────────────────────────────────────────
+
+// OpenRequest starts or reuses a browser session.
+type OpenRequest struct {
+	URL       string
+	RequestID string
+}
+
+// OpenResult describes the outcome of a browser_open.
+type OpenResult struct {
+	SessionID string      `json:"session_id"`
+	Created   bool        `json:"created"`
+	Revision  uint64      `json:"revision"`
+	URL       string      `json:"url"`
+	Title     string      `json:"title"`
+	Browser   BrowserInfo `json:"browser"`
+}
+
+// NavigateRequest navigates the active tab to a URL.
+type NavigateRequest struct {
+	URL       string
+	RequestID string
+}
+
+// StateRequest requests a page state snapshot.
+type StateRequest struct {
+	Refresh  bool
+	MaxChars int
+}
+
+// ClickRequest clicks an interactive element.
+type ClickRequest struct {
+	Revision  uint64
+	Index     int
+	RequestID string
+}
+
+// TypeRequest types text into an editable element.
+type TypeRequest struct {
+	Revision   uint64
+	Index      int
+	Text       string
+	Clear      bool
+	PressEnter bool
+	RequestID  string
+}
+
+// ScrollRequest scrolls the page or an element.
+type ScrollRequest struct {
+	Revision  uint64
+	Index     int
+	DeltaY    int
+	RequestID string
+}
+
+// TabAction is the operation for browser_tab.
+type TabAction string
+
+const (
+	TabNew      TabAction = "new"
+	TabActivate TabAction = "activate"
+	TabClose    TabAction = "close"
+)
+
+// TabRequest manipulates browser tabs.
+type TabRequest struct {
+	Revision  uint64
+	Action    TabAction
+	TabID     string
+	URL       string
+	RequestID string
+}
+
+// ── Results ─────────────────────────────────────────────────────────────────
+
+// ActionResult is the common result for write operations.
+type ActionResult struct {
+	SessionID      string `json:"session_id"`
+	RequestID      string `json:"request_id"`
+	BeforeRevision uint64 `json:"before_revision"`
+	AfterRevision  uint64 `json:"after_revision"`
+	Changed        bool   `json:"changed"`
+	Method         string `json:"method,omitempty"`
+	URL            string `json:"url"`
+	Title          string `json:"title"`
+	Next           string `json:"next"`
+}
+
+// CloseResult describes the outcome of a browser_close.
+type CloseResult struct {
+	SessionID string `json:"session_id"`
+	Closed    bool   `json:"closed"`
+}
