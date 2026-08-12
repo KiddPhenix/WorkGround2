@@ -1,0 +1,910 @@
+# WorkGround2 原生浏览器操作能力设计
+
+状态：`draft`  
+分支：`developping/browser-control+2026-08-12`  
+范围：第一版原生 CDP；不使用 MCP；不提供截图、上传、下载、持久登录态或桌面专用 UI。
+
+## 1. 目标
+
+让所有通过 `control.Controller` 运行的前端获得一致的浏览器操作能力。Agent 可以：
+
+1. 按当前 WorkGround2 Session 启动独立 Chromium 浏览器。
+2. 导航到 HTTP/HTTPS 页面。
+3. 获取适合模型读取的页面文本、标签页和带编号的交互元素。
+4. 使用页面 revision 和元素编号点击、输入、滚动。
+5. 新建、激活和关闭标签页。
+6. 显式关闭浏览器；Controller 关闭或空闲超时后自动回收。
+
+该能力学习 browser-use 的两部分：
+
+- 使用 CDP 获取 DOM、布局和 Accessibility 信息，构建紧凑页面状态。
+- 使用 CDP Input、DOM 和 Runtime 域执行可靠动作。
+
+WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流、会话和配置体系。
+
+## 2. 非目标
+
+第一版明确不实现：
+
+- browser-use MCP 或其他浏览器 sidecar。
+- 截图、视觉模型输入、坐标视觉定位。
+- 文件上传、下载管理、打印和 PDF。
+- 复用用户日常 Chrome Profile、Cookie 或登录态。
+- 密码库自动填充；密码等敏感文本不得作为首版验收场景。
+- 验证码、反机器人绕过、扩展管理、代理池。
+- Desktop 浏览器面板或专用前端状态页。
+- 多个 WorkGround2 Session 共用同一浏览器进程。
+
+## 3. 用户入口和主流程
+
+入口是模型可见的内置工具，无新增 UI：
+
+```text
+browser_open
+  -> browser_state
+  -> browser_click / browser_type / browser_scroll / browser_tab
+  -> browser_state
+  -> browser_close
+```
+
+正常流程：
+
+1. `browser_open` 按当前 parent session 幂等创建浏览器，可选导航 URL。
+2. `browser_state` 发布一个不可变页面快照，返回 `revision` 和 `[index]` 元素。
+3. 写操作必须携带该 `revision`、目标 `index` 和 `request_id`。
+4. 写操作完成后重新观察页面，发布新快照并返回新 revision 摘要。
+5. 页面在动作前发生变化时，旧 revision 被拒绝，模型重新调用 `browser_state`。
+
+## 4. 总体架构
+
+```text
+control.Controller
+    |
+    v
+agent.Agent -> tool.Registry
+                   |
+                   v
+          internal/tool/browser
+                   |
+                   v
+          browser.Service interface
+                   |
+                   v
+          internal/browser.Manager
+                   |
+          ownerID -> *Session
+                   |
+                   v
+          internal/browser/cdp.Driver
+                   |
+                   v
+              Chromium CDP
+```
+
+职责边界：
+
+- `internal/tool/browser` 只处理 JSON Schema、参数校验、权限属性、Session owner 提取和结果编码。
+- `internal/browser` 拥有核心模型、revision、幂等、并发、生命周期和恢复语义。
+- `internal/browser/cdp` 只处理 Chromium 启动、CDP Target/DOM/AX/Input 细节。
+- `internal/boot` 创建 Manager、注册工具、组合 cleanup。
+- `internal/config` 提供稳定配置和默认值。
+
+## 5. 目录和文件
+
+```text
+internal/browser/
+    service.go          # Service、Driver、Factory 接口
+    model.go            # 请求、结果、PageState、Element、Tab
+    errors.go           # ErrorCode、Error
+    manager.go          # ownerID -> Session、启动/关闭/空闲回收
+    session.go          # revision、幂等、串行操作、事件失效
+    idempotency.go      # 有界 request_id 结果缓存
+    cdp/
+        factory.go      # DriverFactory
+        driver.go       # Chromium/Target 生命周期
+        observe.go      # DOMSnapshot + AX + 页面文本
+        action.go       # navigate/click/type/scroll
+        tabs.go         # Target 列表、激活、创建、关闭
+        discover.go     # Chromium executable 发现
+
+internal/tool/browser/
+    tools.go            # NewTools(service)
+    common.go           # owner、JSON 响应、错误转换
+    open.go
+    navigate.go
+    state.go
+    click.go
+    type.go
+    scroll.go
+    tab.go
+    close.go
+
+internal/config/
+    config.go           # ToolsConfig.Browser 与默认值方法
+
+internal/boot/
+    boot.go             # Manager 创建、工具注册、cleanup
+```
+
+测试与实现文件同包放置，不新建通用规则引擎或浏览器事件总线。
+
+## 6. 会话身份
+
+工具通过现有接口获得 owner：
+
+```go
+ownerID := jobs.SessionFromContext(ctx)
+```
+
+`control.Controller` 已在工具调用前同时写入 `agent.WithParentSession` 和 `jobs.WithSession`。浏览器工具使用 `internal/jobs` 可以避免 `agent -> tool -> browser tool -> agent` import cycle。
+
+规则：
+
+- ownerID 为空时返回 `missing_session_scope`，禁止回退到全局默认 Session。
+- 一个 ownerID 对应一个 Browser Session 和一个独立 Chromium 进程。
+- 同一 Browser Session 内可以有多个标签页。
+- Work 子任务若获得不同的 jobs session ID，则使用独立 Browser Session。
+- `browser_close` 只关闭当前 owner。
+- Controller cleanup 调用 `Manager.Close()` 关闭该 Manager 下全部 Session。
+- Idle reaper 回收已废弃的子任务 Session。
+
+## 7. 核心接口
+
+工具层只依赖 `browser.Service`：
+
+```go
+type Service interface {
+	Open(context.Context, string, OpenRequest) (OpenResult, error)
+	Navigate(context.Context, string, NavigateRequest) (ActionResult, error)
+	State(context.Context, string, StateRequest) (PageState, error)
+	Click(context.Context, string, ClickRequest) (ActionResult, error)
+	Type(context.Context, string, TypeRequest) (ActionResult, error)
+	Scroll(context.Context, string, ScrollRequest) (ActionResult, error)
+	Tab(context.Context, string, TabRequest) (ActionResult, error)
+	CloseSession(context.Context, string) (CloseResult, error)
+	Close() error
+}
+```
+
+Manager 通过 Factory 创建每个 Session 的 Driver：
+
+```go
+type DriverFactory interface {
+	New(context.Context, DriverOptions) (Driver, error)
+}
+
+type Driver interface {
+	Navigate(context.Context, string) error
+	Observe(context.Context, ObserveOptions) (Observation, error)
+	Click(context.Context, NodeRef) error
+	Type(context.Context, NodeRef, TypeInput) error
+	Scroll(context.Context, ScrollInput) error
+	NewTab(context.Context, string) (string, error)
+	ActivateTab(context.Context, string) error
+	CloseTab(context.Context, string) error
+	Invalidations() <-chan Invalidation
+	Close() error
+}
+```
+
+约束：
+
+- Driver 的生命周期 context 来自 Manager，不来自单次工具调用。
+- 单次操作继续接受调用 context，以支持用户取消和超时。
+- `Driver.Close` 必须幂等。
+- Fake Driver 可以完整测试核心状态机，不启动真实浏览器。
+
+## 8. 核心数据结构
+
+### 8.1 页面状态
+
+```go
+type PageState struct {
+	SessionID  string         `json:"session_id"`
+	Revision   uint64         `json:"revision"`
+	URL        string         `json:"url"`
+	Title      string         `json:"title"`
+	ActiveTab  string         `json:"active_tab"`
+	Tabs       []TabInfo      `json:"tabs"`
+	Text       string         `json:"text,omitempty"`
+	Elements   []Element      `json:"elements"`
+	Warnings   []StateWarning `json:"warnings,omitempty"`
+	Truncated  bool           `json:"truncated"`
+	CapturedAt time.Time      `json:"captured_at"`
+}
+
+type StateWarning struct {
+	Code    string `json:"code"`
+	FrameID string `json:"frame_id,omitempty"`
+	Message string `json:"message"`
+}
+
+type TabInfo struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Title  string `json:"title"`
+	Active bool   `json:"active"`
+}
+
+type Element struct {
+	Index       int     `json:"index"`
+	Role        string  `json:"role,omitempty"`
+	Tag         string  `json:"tag,omitempty"`
+	Name        string  `json:"name,omitempty"`
+	Placeholder string  `json:"placeholder,omitempty"`
+	Href        string  `json:"href,omitempty"`
+	Disabled    bool    `json:"disabled,omitempty"`
+	Checked     *bool   `json:"checked,omitempty"`
+	Editable    bool    `json:"editable,omitempty"`
+	Bounds      Rect    `json:"bounds"`
+}
+
+type Rect struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+```
+
+`Element` 不暴露内部 Node ID。Session 保存不可变 Snapshot：
+
+```go
+type Snapshot struct {
+	State       PageState
+	Nodes       map[int]NodeRef
+	Fingerprint string
+	Generation  uint64
+}
+
+type NodeRef struct {
+	TargetID      string
+	FrameID       string
+	BackendNodeID int64
+	Bounds        Rect
+}
+```
+
+### 8.2 Driver 观察结果
+
+```go
+type Observation struct {
+	URL         string
+	Title       string
+	ActiveTab   string
+	Tabs        []TabInfo
+	Text        string
+	Nodes       []ObservedNode
+	Warnings    []StateWarning
+	Fingerprint string
+	Truncated   bool
+}
+
+type ObservedNode struct {
+	Ref         NodeRef
+	Role        string
+	Tag         string
+	Name        string
+	Placeholder string
+	Href        string
+	Disabled    bool
+	Checked     *bool
+	Editable    bool
+}
+```
+
+Driver 按 DOM/布局顺序返回 Nodes；Session 从 1 开始分配连续 Index。
+
+### 8.3 请求
+
+```go
+type OpenRequest struct {
+	URL       string
+	RequestID string
+}
+
+type NavigateRequest struct {
+	URL       string
+	RequestID string
+}
+
+type StateRequest struct {
+	Refresh  bool
+	MaxChars int
+}
+
+type ClickRequest struct {
+	Revision  uint64
+	Index     int
+	RequestID string
+}
+
+type TypeRequest struct {
+	Revision   uint64
+	Index      int
+	Text       string
+	Clear      bool
+	PressEnter bool
+	RequestID  string
+}
+
+type ScrollRequest struct {
+	Revision  uint64
+	Index     int
+	DeltaY    int
+	RequestID string
+}
+
+type TabAction string
+
+const (
+	TabNew      TabAction = "new"
+	TabActivate TabAction = "activate"
+	TabClose    TabAction = "close"
+)
+
+type TabRequest struct {
+	Revision  uint64
+	Action    TabAction
+	TabID     string
+	URL       string
+	RequestID string
+}
+```
+
+说明：
+
+- 除天然幂等的 `browser_close` 外，所有写操作必须提供非空 `request_id`。
+- `index=0` 在 Scroll 中表示滚动当前视口；正数表示先滚动目标元素。
+- `delta_y` 限制在 `[-4000, 4000]`，不能为 0。
+- Type.Text 第一版进入工具参数和 transcript，不用于密码或 Token。
+- Tab close 拒绝关闭最后一个标签页，关闭整个浏览器使用 `browser_close`。
+
+### 8.4 结果
+
+```go
+type OpenResult struct {
+	SessionID string `json:"session_id"`
+	Created   bool   `json:"created"`
+	Revision  uint64 `json:"revision"`
+	URL       string `json:"url"`
+	Title     string `json:"title"`
+}
+
+type ActionResult struct {
+	SessionID      string `json:"session_id"`
+	RequestID      string `json:"request_id"`
+	BeforeRevision uint64 `json:"before_revision"`
+	AfterRevision  uint64 `json:"after_revision"`
+	Changed        bool   `json:"changed"`
+	Method         string `json:"method,omitempty"`
+	URL            string `json:"url"`
+	Title          string `json:"title"`
+	Next           string `json:"next"`
+}
+
+type CloseResult struct {
+	SessionID string `json:"session_id"`
+	Closed    bool   `json:"closed"`
+}
+```
+
+成功动作完成后必须执行一次有界 Observe，发布新 Snapshot。`AfterRevision` 对应该 Snapshot；随后 `browser_state(refresh=false)` 返回同一 revision 和元素表。
+
+工具层统一使用信封，不直接裸返回上述类型：
+
+```go
+type ToolResponse[T any] struct {
+	OK     bool       `json:"ok"`
+	Result *T         `json:"result,omitempty"`
+	Error  *ErrorInfo `json:"error,omitempty"`
+}
+
+type ErrorInfo struct {
+	Code         ErrorCode `json:"code"`
+	Message      string    `json:"message"`
+	Recoverable  bool      `json:"recoverable"`
+	OutcomeKnown bool      `json:"outcome_known"`
+	Next         string    `json:"next,omitempty"`
+}
+```
+
+成功只能设置 `Result`，失败只能设置 `Error`；禁止 `OK=true` 但携带 Error。时间统一编码为 RFC3339Nano UTC。
+
+### 8.5 Runtime 和 Driver 选项
+
+```go
+type Options struct {
+	Factory        DriverFactory
+	ExecutablePath string
+	Headless        bool
+	ProfileRoot     string
+	IdleTimeout     time.Duration
+	ActionTimeout   time.Duration
+	StateTimeout    time.Duration
+	SettleWindow    time.Duration
+	MaxTextChars    int
+	MaxElements     int
+}
+
+type DriverOptions struct {
+	ExecutablePath string
+	Headless        bool
+	ProfileDir      string
+	DenyDownloads   bool
+	SettleWindow    time.Duration
+}
+
+type ObserveOptions struct {
+	MaxTextChars int
+	MaxElements  int
+}
+
+type TypeInput struct {
+	Text       string
+	Clear      bool
+	PressEnter bool
+}
+
+type ScrollInput struct {
+	Node   *NodeRef
+	DeltaY int
+}
+
+type InvalidationKind string
+
+const (
+	InvalidationDocument InvalidationKind = "document"
+	InvalidationFrame    InvalidationKind = "frame"
+	InvalidationTarget   InvalidationKind = "target"
+	InvalidationClosed   InvalidationKind = "closed"
+)
+
+type Invalidation struct {
+	Kind     InvalidationKind
+	TargetID string
+	FrameID  string
+	At       time.Time
+}
+```
+
+构造器固定为：
+
+```go
+func NewManager(ctx context.Context, opts Options) (*Manager, error)
+```
+
+`NewManager` 只校验配置、建立自己拥有的 Profile root 和启动 idle reaper，不探测或启动浏览器。`Factory=nil` 时使用 `internal/browser/cdp` 的生产 Factory；测试传 Fake Factory。
+
+## 9. Session 状态和并发
+
+```go
+type Session struct {
+	id      string
+	driver  Driver
+
+	opMu    sync.Mutex
+	mu      sync.RWMutex
+	state   SessionState
+	revision uint64
+	generation uint64
+	snapshot *Snapshot
+	requests *RequestCache
+	lastUsed time.Time
+}
+```
+
+状态：
+
+```go
+type SessionState string
+
+const (
+	SessionStarting SessionState = "starting"
+	SessionReady    SessionState = "ready"
+	SessionBroken   SessionState = "broken"
+	SessionClosing  SessionState = "closing"
+	SessionClosed   SessionState = "closed"
+)
+```
+
+并发规则：
+
+- Manager mutex 只保护 Session map，不包围 CDP 调用。
+- 每个 Session 的 `opMu` 串行化 Observe 和全部写操作。
+- 不同 ownerID 可以并行。
+- Driver 的 invalidation watcher 只增加 generation、令 snapshot 失效，不执行长操作。
+- Snapshot 发布后不可修改；读者拿副本。
+- 同一 owner 的重复 Open 等待正在启动的结果，不能启动第二个进程。
+
+## 10. Revision 规则
+
+Revision 是页面元素映射的版本，不是普通调用次数。
+
+1. 第一次 Observe 成功发布 revision 1。
+2. CDP 收到 frame navigation、document updated、target changed/closed 等事件后增加 generation，并立即令 Snapshot 无效。
+3. Observe 获取开始时记录 generation；捕获结束时若 generation 已变化，最多重试两次。
+4. 新 Observation 与当前 Snapshot fingerprint 相同且期间未失效时，保留 revision。
+5. fingerprint 不同或 Snapshot 已失效时，revision 单调加一。
+6. 写操作执行前同时校验 `request.revision == snapshot.revision` 和 Snapshot 有效性。
+7. 写操作成功后 Observe 并发布新 Snapshot；即使 fingerprint 偶然相同，写操作后也至少增加一次 revision。
+
+旧 revision 返回 `stale_state`，不得自动使用同一个 Index 重试。
+
+## 11. 幂等和结果不确定
+
+Session 保存最近 256 个写请求：
+
+```go
+type RequestRecord struct {
+	ID        string
+	Signature string
+	State     RequestState
+	Result    ActionResult
+	ErrCode   ErrorCode
+}
+```
+
+规则：
+
+- Signature 是工具名和规范化参数的 SHA-256，不包含 request_id。
+- 同一 request_id、同一 Signature、已有成功结果：直接返回缓存结果。
+- 同一 request_id、不同 Signature：返回 `request_id_conflict`。
+- 只允许在确定尚未向浏览器派发动作时自动重试。
+- Click/Type 已派发，但等待或重新观察失败：返回 `outcome_unknown`，令 Snapshot 失效，要求调用 `browser_state` 对账。
+- `outcome_unknown` 不自动重复动作。
+- `browser_close` 天然幂等；不存在 Session 时返回 `closed=false` 成功。
+
+## 12. CDP 页面感知
+
+Driver Observe 使用：
+
+- `Page.getFrameTree`
+- `DOMSnapshot.captureSnapshot`
+- `DOM.getDocument`，`pierce=true`
+- `Accessibility.getFullAXTree`
+- `Target.getTargets`
+
+合并原则：
+
+1. 以 `backendNodeId` 关联 DOMSnapshot、DOM 和 AX 节点。
+2. 保留可见且有有效 Bounds 的交互元素。
+3. 交互候选包括 button、link、input、textarea、select、contenteditable、有效 tabindex 和具有交互 AX role 的节点。
+4. 过滤 display:none、visibility:hidden、零面积、disabled 和明显位于视口外且不可滚动定位的节点。
+5. 嵌套重复节点优先保留语义更完整、可命中的节点。
+6. 页面 Text 从可见文本生成，去除连续空白和重复节点文本。
+7. password 输入值永不进入 Observation；其他输入当前 value 第一版也不输出。
+8. 属性只允许 role、tag、aria/name、placeholder、href、disabled、checked、editable。
+9. URL、元素数和文本严格受配置上限约束。
+
+跨域 iframe：第一版必须识别已附加 Target，并把 TargetID/FrameID 写入 NodeRef；无法附加的 frame 显式标为观察不完整，不允许把错误节点映射到主文档。
+
+## 13. CDP 动作
+
+### Click
+
+1. 用 BackendNodeID 重新解析节点。
+2. `scrollIntoViewIfNeeded`。
+3. 获取最新 Box Model。
+4. 计算中心点并做命中检查。
+5. 依次发送 mouseMoved、mousePressed、mouseReleased。
+6. CDP Input 明确失败时，可使用一次受控的 DOM `click()` fallback，并在结果中记录动作路径供日志观察。
+
+### Type
+
+1. 校验元素 Editable。
+2. 聚焦节点。
+3. `clear=true` 时使用全选和 Backspace 清空。
+4. 普通文本优先 `Input.insertText`，特殊按键使用 `dispatchKeyEvent`。
+5. `press_enter=true` 时最后发送 Enter。
+
+### Scroll
+
+- index 为 0 时滚动当前 viewport。
+- index 大于 0 时先解析并滚动到目标元素，再应用 delta。
+- 使用 CDP Input wheel event；执行后重新观察。
+
+### 页面稳定
+
+- 每个动作等待 DOM/CDP invalidation 进入短暂 quiet window。
+- quiet window 默认 300ms，总等待受 settle timeout 限制。
+- 不等待永不结束的 network idle。
+- context 取消必须尽快终止等待，但不能连带杀死长期 Browser Session。
+
+## 14. 工具定义
+
+| 工具 | 关键参数 | ReadOnly | PlanModeSafe |
+|---|---|---:|---:|
+| `browser_open` | `url?`, `request_id` | false | false |
+| `browser_navigate` | `url`, `request_id` | false | false |
+| `browser_state` | `refresh?`, `max_chars?` | true | true |
+| `browser_click` | `revision`, `index`, `request_id` | false | false |
+| `browser_type` | `revision`, `index`, `text`, `clear?`, `press_enter?`, `request_id` | false | false |
+| `browser_scroll` | `revision`, `index?`, `delta_y`, `request_id` | false | false |
+| `browser_tab` | `revision`, `action`, `tab_id?`, `url?`, `request_id` | false | false |
+| `browser_close` | 无 | false | false |
+
+工具全部返回 pretty JSON。运行错误返回结构化 JSON 作为 result，同时返回非 nil Go error，使 ToolResult 明确显示失败。
+
+`browser_state` 实现适合其 JSON 结构的 `SnipHinter`；其他工具显式采用副作用工具的短结果策略。Schema 在注册时固定，不能根据浏览器状态动态变化，保证 prompt prefix 稳定。
+
+### 14.1 Schema 精确约束
+
+公共约束：
+
+- 每个 Schema 根节点都是 `type=object` 且 `additionalProperties=false`。
+- `request_id` 长度 1..128；描述要求同一次安全重试复用原值，新意图使用新值。
+- URL 最大 8192 字符，工具层和 Service 层都必须再次验证。
+- `revision` 最小 1；`index` 最小 1，只有 Scroll 的 index 允许 0。
+
+各工具字段：
+
+```text
+browser_open
+  required: request_id
+  url: string, optional, default about:blank
+
+browser_navigate
+  required: url, request_id
+
+browser_state
+  required: none
+  refresh: boolean, default true
+  max_chars: integer, 1000..60000, omitted uses config;
+             request value cannot exceed configured MaxTextChars
+
+browser_click
+  required: revision, index, request_id
+
+browser_type
+  required: revision, index, text, request_id
+  text: string, 0..20000; empty is allowed only when clear=true or press_enter=true
+  clear: boolean, default false
+  press_enter: boolean, default false
+
+browser_scroll
+  required: revision, delta_y, request_id
+  index: integer, 0..2147483647, default 0
+  delta_y: integer, -4000..4000, value 0 forbidden
+
+browser_tab
+  required: revision, action, request_id
+  action: enum(new, activate, close)
+  new: url optional, default about:blank; tab_id forbidden
+  activate/close: tab_id required; url forbidden
+
+browser_close
+  required: none
+```
+
+JSON Schema 应使用 `oneOf` 表达 `browser_tab` 的条件字段；Go 参数校验仍重复检查，不能只信模型满足 Schema。
+
+## 15. 错误协议
+
+```go
+type ErrorCode string
+
+type Error struct {
+	Code        ErrorCode `json:"code"`
+	Message     string    `json:"message"`
+	Recoverable bool      `json:"recoverable"`
+	OutcomeKnown bool     `json:"outcome_known"`
+	Next        string    `json:"next,omitempty"`
+	Cause       error     `json:"-"`
+}
+```
+
+固定错误码：
+
+| Code | Recoverable | OutcomeKnown | Next |
+|---|---:|---:|---|
+| `missing_session_scope` | false | true | host wiring |
+| `browser_not_open` | true | true | `browser_open` |
+| `browser_launch_failed` | true | true | 检查 executable/config 后重试 |
+| `browser_disconnected` | true | true | `browser_open` |
+| `invalid_url` | true | true | 修正 URL |
+| `unsupported_scheme` | true | true | 使用 HTTP/HTTPS |
+| `navigation_timeout` | true | false | `browser_state` |
+| `state_timeout` | true | true | `browser_state` |
+| `stale_state` | true | true | `browser_state` |
+| `element_not_found` | true | true | `browser_state` |
+| `element_not_interactable` | true | true | 选择其他元素 |
+| `target_closed` | true | true | `browser_state` |
+| `last_tab` | true | true | `browser_close` 或保留标签页 |
+| `request_id_conflict` | true | true | 使用新 request_id |
+| `outcome_unknown` | true | false | `browser_state`，禁止盲重试 |
+
+错误不得只 Log 后返回空结果。
+
+## 16. 配置
+
+配置放在 `ToolsConfig` 下：
+
+```go
+type ToolsConfig struct {
+	// existing fields...
+	Browser BrowserConfig `toml:"browser"`
+}
+
+type BrowserConfig struct {
+	Enabled            *bool  `toml:"enabled"`
+	ExecutablePath     string `toml:"executable_path"`
+	Headless            *bool  `toml:"headless"`
+	IdleTimeoutSeconds  *int   `toml:"idle_timeout_seconds"`
+	ActionTimeoutSeconds *int  `toml:"action_timeout_seconds"`
+	StateTimeoutSeconds *int   `toml:"state_timeout_seconds"`
+	SettleMilliseconds  *int   `toml:"settle_milliseconds"`
+	MaxTextChars        *int   `toml:"max_text_chars"`
+	MaxElements         *int   `toml:"max_elements"`
+}
+```
+
+默认值：
+
+```toml
+[tools.browser]
+enabled = true
+headless = false
+idle_timeout_seconds = 600
+action_timeout_seconds = 30
+state_timeout_seconds = 15
+settle_milliseconds = 300
+max_text_chars = 20000
+max_elements = 400
+```
+
+约束：
+
+- omitted `enabled` 表示启用；Chromium 只在首次 `browser_open` 时启动。
+- omitted `headless` 表示 false，方便用户观察；无图形环境显式配置 true。
+- 数值设置必须有最小/最大夹取，非法值回退默认值并保持可诊断。
+- `executable_path` 为空时按 Chrome、Chromium、Edge 的平台路径和 PATH 发现。
+- 每个 Session 使用 Manager 创建的临时 Profile；只删除 Manager 明确创建并记录的目录。
+
+## 17. 安全和权限
+
+- 只有 `browser_state` 是只读工具；所有启动、导航和动作走现有 permission gate。
+- URL 只允许绝对 `http`/`https`，禁止 URL 内嵌用户名密码。
+- 内部初始页可以使用 `about:blank`，模型输入不能导航到 `file:`、`data:`、`javascript:`、`chrome:`。
+- 第一版允许 localhost，支持本地 Web 测试。
+- 下载行为通过 CDP 设置为 deny。
+- 不读取或复用用户真实 Profile。
+- 页面状态不输出 password value、Cookie、localStorage 或完整 HTML。
+- 工具错误和 progress 不包含输入文本、页面敏感字段或 CDP 原始 payload。
+- `browser_type.text` 仍会出现在现有 ToolCall transcript；文档和 Schema 必须明确禁止把秘密直接传给首版工具。
+
+## 18. 生命周期
+
+Manager 在 boot 阶段创建，但不启动 Chromium：
+
+```go
+browserManager := browser.NewManager(rootCtx, options)
+for _, t := range browsertool.NewTools(browserManager) {
+	if browserToolEnabled(cfg, t.Name()) {
+		reg.Add(t)
+	}
+}
+```
+
+现有 cleanup 使用组合函数追加 `browserManager.Close()`，不能覆盖 plugin/work cleanup。
+
+Idle reaper：
+
+- Manager 单一 goroutine，检查间隔不超过 idle timeout 的四分之一。
+- 只回收 `ready`/`broken` 且超过 idle timeout 的 Session。
+- 正在 opMu 操作的 Session 不被关闭；先标记 closing，操作完成后关闭。
+- Close 失败保持可观察，并在下一周期重试；Manager 最终 Close 返回聚合错误。
+
+## 19. Boot 和工具启用
+
+- Browser tools 是运行时绑定工具，不通过 `init()` 注册携带 Manager 的全局实例。
+- `tools.enabled` 为空时注册全部 browser tools。
+- `tools.enabled` 非空时，只注册名单中明确出现的 browser tool。
+- `tools.browser.enabled=false` 时不创建 Manager、不注册工具。
+- 只注册部分 browser tools是允许的，但配置文档应提示最小可用集合为 open/state/close。
+- Work task 继续复用同一 Registry；ownerID 保证状态隔离。
+
+## 20. 可观测性
+
+- 启动、导航和稳定等待通过 `tool.WithProgress` 发送短进度，不发送页面内容。
+- 错误返回 code、recoverable、outcome_known 和 next。
+- 记录结构化 slog：session hash、动作类型、revision、耗时、错误码；不记录 URL query、输入文本和页面文本。
+- Session 状态从 starting/ready/broken/closing/closed 显式转换。
+- Driver invalidation channel 关闭视为 `browser_disconnected`，Session 进入 broken。
+
+## 21. 测试
+
+默认测试不得启动真实 Chrome。
+
+### 核心单测
+
+- 同一 owner 并发 Open 只创建一个 Driver。
+- 不同 owner 状态完全隔离。
+- owner 缺失显式失败。
+- revision 正常增长、相同快照保持、事件失效、旧 revision 被拒绝。
+- 同 request_id 同参数返回缓存结果。
+- 同 request_id 不同参数返回 conflict。
+- Click/Type 已派发后 Observe 失败返回 outcome_unknown，且不自动重复。
+- CloseSession 和 Manager.Close 幂等。
+- idle reaper 不关闭活跃操作，能够重试失败 close。
+- State 和 Elements 返回副本，外部修改不污染单一可信状态。
+
+### 工具单测
+
+- Schema 必填字段和范围。
+- ReadOnly/PlanModeSafe 分类。
+- jobs session owner 正确传入 Service。
+- 所有 Error 都保留结构化结果和非 nil Go error。
+- browser_state 输出受 max chars/elements 限制并适合 snip。
+
+### CDP 纯逻辑单测
+
+- DOMSnapshot/AX merge。
+- 可见交互元素过滤、顺序和去重。
+- password/value 脱敏。
+- iframe/target NodeRef 映射。
+- URL 验证和 executable discovery。
+
+### Boot/Config 测试
+
+- 默认值、非法值回退、enabled false。
+- tools.enabled 过滤。
+- Manager cleanup 被组合执行。
+- 浏览器未安装时 boot 仍成功，首次 open 显式失败。
+
+### 真实集成测试
+
+真实 Chromium 测试必须通过 build tag 或 `WORKGROUND2_BROWSER_INTEGRATION=1` 显式开启。测试只访问本地 `httptest.Server`，覆盖：
+
+- open -> state -> type -> click -> state。
+- DOM 变化后 stale revision。
+- 新建、激活、关闭 tab。
+- 取消导航、关闭浏览器和进程回收。
+
+## 22. 验收标准
+
+全部满足才算第一版完成：
+
+1. 分支中没有 MCP、截图、上传、下载或 UI 实现。
+2. 八个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
+3. 同一 WorkGround2 parent session 可完成启动、导航、读取、点击、输入、滚动、tab 和关闭。
+4. 不同 parent session 不共享 Driver、Tab、revision 或 request cache。
+5. 页面变化后旧 revision 必须失败，不能落到其他节点。
+6. 相同 request_id 可安全重复；冲突和结果不确定显式返回。
+7. 工具取消不会误杀其他 Session；Controller cleanup 和空闲回收没有进程泄漏。
+8. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
+9. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
+10. Feature Map、配置示例和用户文档同步更新。
+
+## 23. Worker 实现边界
+
+Worker 接收一个完整任务，一次实现本设计的第一版，不拆成多个互相猜接口的小任务。
+
+允许修改：
+
+- `go.mod`、`go.sum`
+- `internal/browser/**`
+- `internal/tool/browser/**`
+- `internal/config/**` 中浏览器配置相关代码和测试
+- `internal/boot/**` 中浏览器装配相关代码和测试
+- 浏览器配置/工具用户文档
+- `Codex/KnowledgeBase/FeatureMap.md` 仅在范围变化时补充，最终状态由 Codex 收尾
+
+禁止修改：
+
+- Provider/Agent 的主循环和 Tool 接口。
+- MCP、Plugin、Desktop UI、Bot 专属流程。
+- 图片或 Artifact 协议。
+- 权限策略的通用语义。
+- 与浏览器能力无关的格式化、重构、依赖升级。
+- git stage、commit、push、merge 和 release。
+
+遇到设计无法实现时，Worker 必须停在明确失败点，报告冲突的接口、证据和最小替代方案，不得静默缩水。
+
+## 24. 未决问题
+
+以下问题不阻塞第一版，实现时按本设计默认值执行：
+
+- CDP 依赖优先使用 `chromedp`/`cdproto`，具体兼容版本由 `go.mod` 和 Go toolchain 验证后固定。
+- 页面文本的最佳压缩格式可在不改变 PageState 字段的前提下调整。
+- Chromium 不同版本缺少个别 CDP 字段时允许显式降级，但必须保留 AX/DOM 合并的测试路径并输出能力提示。
