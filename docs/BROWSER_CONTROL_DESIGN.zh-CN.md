@@ -1,14 +1,14 @@
 # WorkGround2 原生浏览器操作能力设计
 
-状态：`draft`  
-分支：`developping/browser-control+2026-08-12`  
+状态：`review`
+分支：`developping/browser-control+2026-08-12`
 范围：第一版原生 CDP；不使用 MCP；不提供截图、上传、下载、持久登录态或桌面专用 UI。
 
 ## 1. 目标
 
 让所有通过 `control.Controller` 运行的前端获得一致的浏览器操作能力。Agent 可以：
 
-1. 按当前 WorkGround2 Session 启动独立 Chromium 浏览器。
+1. 按当前 WorkGround2 Session 启动独立 Chrome 或兼容 Chromium 浏览器。
 2. 导航到 HTTP/HTTPS 页面。
 3. 获取适合模型读取的页面文本、标签页和带编号的交互元素。
 4. 使用页面 revision 和元素编号点击、输入、滚动。
@@ -29,8 +29,7 @@ WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流
 - browser-use MCP 或其他浏览器 sidecar。
 - 截图、视觉模型输入、坐标视觉定位。
 - 文件上传、下载管理、打印和 PDF。
-- 复用用户日常 Chrome Profile、Cookie 或登录态。
-- 密码库自动填充；密码等敏感文本不得作为首版验收场景。
+- 第一版不启用用户日常 Chrome Profile、Cookie、登录态和密码库自动填充；接口位置会预留，后续无需改动核心 Tool/Session 模型。
 - 验证码、反机器人绕过、扩展管理、代理池。
 - Desktop 浏览器面板或专用前端状态页。
 - 多个 WorkGround2 Session 共用同一浏览器进程。
@@ -89,6 +88,26 @@ agent.Agent -> tool.Registry
 - `internal/boot` 创建 Manager、注册工具、组合 cleanup。
 - `internal/config` 提供稳定配置和默认值。
 
+### 4.1 支持的浏览器
+
+第一版支持安装在本机的 Google Chrome，并兼容其他使用 Chrome DevTools Protocol 的 Chromium 系浏览器：
+
+```go
+type BrowserKind string
+
+const (
+	BrowserAuto             BrowserKind = "auto"
+	BrowserChrome           BrowserKind = "chrome"
+	BrowserChromium         BrowserKind = "chromium"
+	BrowserEdge             BrowserKind = "edge"
+	BrowserChromeForTesting BrowserKind = "chrome_for_testing"
+)
+```
+
+`BrowserAuto` 的默认发现顺序是 Chrome、Edge、Chromium、Chrome for Testing；显式 `executable_path` 始终优先。启动成功后 Driver 必须读取 Browser version/protocol version，不满足最低 CDP 能力时返回显式错误，不能假装成功。
+
+Chrome 本身就是 Chromium 系浏览器，页面感知和动作使用同一套 CDP 域，无需 Chrome 专属 Tool。
+
 ## 5. 目录和文件
 
 ```text
@@ -99,6 +118,8 @@ internal/browser/
     manager.go          # ownerID -> Session、启动/关闭/空闲回收
     session.go          # revision、幂等、串行操作、事件失效
     idempotency.go      # 有界 request_id 结果缓存
+    profile.go          # ProfileProvider、ProfileLease、默认临时 Profile
+    credential.go       # 预留 CredentialProvider；第一版不注册凭据工具
     cdp/
         factory.go      # DriverFactory
         driver.go       # Chromium/Target 生命周期
@@ -174,6 +195,7 @@ type DriverFactory interface {
 }
 
 type Driver interface {
+	Info() BrowserInfo
 	Navigate(context.Context, string) error
 	Observe(context.Context, ObserveOptions) (Observation, error)
 	Click(context.Context, NodeRef) error
@@ -364,11 +386,12 @@ type TabRequest struct {
 
 ```go
 type OpenResult struct {
-	SessionID string `json:"session_id"`
-	Created   bool   `json:"created"`
-	Revision  uint64 `json:"revision"`
-	URL       string `json:"url"`
-	Title     string `json:"title"`
+	SessionID string      `json:"session_id"`
+	Created   bool        `json:"created"`
+	Revision  uint64      `json:"revision"`
+	URL       string      `json:"url"`
+	Title     string      `json:"title"`
+	Browser   BrowserInfo `json:"browser"`
 }
 
 type ActionResult struct {
@@ -416,6 +439,9 @@ type ErrorInfo struct {
 ```go
 type Options struct {
 	Factory        DriverFactory
+	Profiles       ProfileProvider
+	Credentials    CredentialProvider
+	BrowserKind    BrowserKind
 	ExecutablePath string
 	Headless        bool
 	ProfileRoot     string
@@ -428,9 +454,13 @@ type Options struct {
 }
 
 type DriverOptions struct {
+	BrowserKind    BrowserKind
 	ExecutablePath string
 	Headless        bool
-	ProfileDir      string
+	UserDataDir     string
+	ProfileName     string
+	DebugURL        string
+	OwnProcess      bool
 	DenyDownloads   bool
 	SettleWindow    time.Duration
 }
@@ -466,6 +496,14 @@ type Invalidation struct {
 	FrameID  string
 	At       time.Time
 }
+
+type BrowserInfo struct {
+	Kind            BrowserKind `json:"kind"`
+	Product         string      `json:"product"`
+	Version         string      `json:"version"`
+	ProtocolVersion string      `json:"protocol_version"`
+	ExecutablePath  string      `json:"executable_path,omitempty"`
+}
 ```
 
 构造器固定为：
@@ -475,6 +513,96 @@ func NewManager(ctx context.Context, opts Options) (*Manager, error)
 ```
 
 `NewManager` 只校验配置、建立自己拥有的 Profile root 和启动 idle reaper，不探测或启动浏览器。`Factory=nil` 时使用 `internal/browser/cdp` 的生产 Factory；测试传 Fake Factory。
+
+### 8.6 Profile 扩展接口
+
+Profile 策略在 Driver 启动之前决定，因此抽象位于 `internal/browser/profile.go`，不进入 Tool 参数，也不污染 PageState：
+
+```go
+type ProfileMode string
+
+const (
+	ProfileEphemeral ProfileMode = "ephemeral"
+	ProfileManaged   ProfileMode = "managed"
+	ProfileAttach    ProfileMode = "attach"
+)
+
+type ProfileRequest struct {
+	OwnerID   string
+	Kind      BrowserKind
+	Headless  bool
+	Workspace string
+}
+
+type ProfileLease struct {
+	ID          string
+	Mode        ProfileMode
+	UserDataDir string
+	ProfileName string
+	DebugURL    string
+	OwnProcess  bool
+	Persistent  bool
+}
+
+type ProfileProvider interface {
+	Acquire(context.Context, ProfileRequest) (ProfileLease, error)
+	Release(context.Context, ProfileLease) error
+}
+```
+
+模式语义：
+
+- `ephemeral`：第一版实现和默认模式。WorkGround2 创建临时 `user-data-dir`，关闭后安全删除。
+- `managed`：预留。使用 WorkGround2 自己拥有的持久 Profile；用户可在可见 Chrome 中登录一次，后续安全复用 Cookie 和登录态。
+- `attach`：预留。连接用户已经显式开启远程调试并授权的 Chrome，不启动、不关闭其进程；可继承该浏览器的登录态和 Cookie。
+
+第一版实现 `EphemeralProfileProvider`。`Options.Profiles=nil` 等价于默认实现。接口和测试 Fake 同时落地；`managed`、`attach` 不进入第一版配置和工具 Schema，避免出现看似可用但实际退化的开关。
+
+不设计“直接启动并占用日常 Chrome 默认 User Data 目录”的模式：
+
+- 正在运行的 Chrome 会持有 Profile 锁，第二个进程可能启动失败或损坏状态。
+- Chrome 136 起，`--remote-debugging-port`/`--remote-debugging-pipe` 对默认数据目录不再生效，远程调试必须配合非默认 `--user-data-dir`。
+- Profile 复制涉及 Cookie/密码的加密密钥、迟到写入和文件一致性，不能作为可靠恢复机制。
+
+参考：[Chrome 远程调试安全变更](https://developer.chrome.com/blog/remote-debugging-port)。
+
+### 8.7 凭据自动填充扩展接口
+
+未来的密码库接入不能让模型把明文密码写进 `browser_type.text`。接口放在 `internal/browser/credential.go`：
+
+```go
+type CredentialRequest struct {
+	OwnerID      string
+	Origin       string
+	Reference    string
+	UsernameHint string
+	Reason       string
+}
+
+type CredentialLease interface {
+	Username() string
+	WithSecret(func([]byte) error) error
+	Close() error
+}
+
+type CredentialProvider interface {
+	Acquire(context.Context, CredentialRequest) (CredentialLease, error)
+}
+
+type SecureTyper interface {
+	TypeSecret(context.Context, NodeRef, []byte) error
+}
+```
+
+约束：
+
+- 第一版只定义接口和 nil/disabled 语义，不实现凭据工具、不调用 Provider。
+- 后续新增独立 `browser_fill_credential`，参数只携带 `credential_ref`、revision 和元素 index，不携带明文。
+- `CredentialLease.WithSecret` 将秘密限制在回调生命周期内；实现必须在回调后清零缓冲区。
+- 生产 Driver 通过可选 `SecureTyper` 执行，不把秘密转成普通日志字符串。
+- ToolResult、progress、slog、历史和错误不得包含 secret。
+- 凭据读取必须经过现有 permission gate 和用户明确授权；Provider 失败显式暴露且允许安全重试。
+- 使用 `managed` 或受控 `attach` Profile 时，也允许由 Chrome 自己的密码管理器在浏览器界面中完成填充；WorkGround2 不读取浏览器密码库明文。
 
 ## 9. Session 状态和并发
 
@@ -701,6 +829,9 @@ type Error struct {
 | `missing_session_scope` | false | true | host wiring |
 | `browser_not_open` | true | true | `browser_open` |
 | `browser_launch_failed` | true | true | 检查 executable/config 后重试 |
+| `unsupported_browser` | true | true | 修改 kind/executable_path |
+| `profile_unavailable` | true | true | 修正 Profile 配置或授权 |
+| `credential_provider_disabled` | false | true | 配置凭据 Provider |
 | `browser_disconnected` | true | true | `browser_open` |
 | `invalid_url` | true | true | 修正 URL |
 | `unsupported_scheme` | true | true | 使用 HTTP/HTTPS |
@@ -728,6 +859,7 @@ type ToolsConfig struct {
 
 type BrowserConfig struct {
 	Enabled            *bool  `toml:"enabled"`
+	Kind               string `toml:"kind"`
 	ExecutablePath     string `toml:"executable_path"`
 	Headless            *bool  `toml:"headless"`
 	IdleTimeoutSeconds  *int   `toml:"idle_timeout_seconds"`
@@ -744,6 +876,7 @@ type BrowserConfig struct {
 ```toml
 [tools.browser]
 enabled = true
+kind = "auto"
 headless = false
 idle_timeout_seconds = 600
 action_timeout_seconds = 30
@@ -755,11 +888,13 @@ max_elements = 400
 
 约束：
 
-- omitted `enabled` 表示启用；Chromium 只在首次 `browser_open` 时启动。
+- omitted `enabled` 表示启用；Chrome/Chromium 只在首次 `browser_open` 时启动。
 - omitted `headless` 表示 false，方便用户观察；无图形环境显式配置 true。
 - 数值设置必须有最小/最大夹取，非法值回退默认值并保持可诊断。
-- `executable_path` 为空时按 Chrome、Chromium、Edge 的平台路径和 PATH 发现。
+- `kind=chrome` 时只发现 Google Chrome；`kind=auto` 按 BrowserAuto 顺序发现。
+- `executable_path` 为空时按 kind 的平台安装路径和 PATH 发现。
 - 每个 Session 使用 Manager 创建的临时 Profile；只删除 Manager 明确创建并记录的目录。
+- `managed`/`attach` 配置字段暂不暴露；后续由 ProfileProvider 扩展，不改变 Browser Service 和 Tool Schema。
 
 ## 17. 安全和权限
 
@@ -772,6 +907,7 @@ max_elements = 400
 - 页面状态不输出 password value、Cookie、localStorage 或完整 HTML。
 - 工具错误和 progress 不包含输入文本、页面敏感字段或 CDP 原始 payload。
 - `browser_type.text` 仍会出现在现有 ToolCall transcript；文档和 Schema 必须明确禁止把秘密直接传给首版工具。
+- 第一版存在 CredentialProvider 接口也不能视为已启用密码库；禁止静默回退到普通 Type。
 
 ## 18. 生命周期
 
@@ -844,6 +980,15 @@ Idle reaper：
 - password/value 脱敏。
 - iframe/target NodeRef 映射。
 - URL 验证和 executable discovery。
+- Chrome/Edge/Chromium/Chrome for Testing 的 kind 过滤和发现优先级。
+
+### Profile/凭据接口测试
+
+- 默认 ProfileProvider 只创建临时目录，并且 Release/Manager.Close 幂等清理自己拥有的路径。
+- Fake ProfileProvider 可以返回 managed/attach lease，证明 Manager/Driver 接口无需改动；第一版生产 Provider 不实现这两种模式。
+- managed/attach 未配置时不能静默降级为 ephemeral。
+- CredentialProvider 默认 disabled；第一版没有任何工具能够读取或填入 secret。
+- Fake CredentialLease 的 secret 在回调后被清零，日志和 JSON 结果无明文。
 
 ### Boot/Config 测试
 
@@ -866,15 +1011,17 @@ Idle reaper：
 全部满足才算第一版完成：
 
 1. 分支中没有 MCP、截图、上传、下载或 UI 实现。
-2. 八个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
-3. 同一 WorkGround2 parent session 可完成启动、导航、读取、点击、输入、滚动、tab 和关闭。
-4. 不同 parent session 不共享 Driver、Tab、revision 或 request cache。
-5. 页面变化后旧 revision 必须失败，不能落到其他节点。
-6. 相同 request_id 可安全重复；冲突和结果不确定显式返回。
-7. 工具取消不会误杀其他 Session；Controller cleanup 和空闲回收没有进程泄漏。
-8. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
-9. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
-10. Feature Map、配置示例和用户文档同步更新。
+2. Google Chrome 和兼容 Chromium 浏览器可由 kind/executable_path 发现；浏览器未安装只在首次 open 显式失败。
+3. 八个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
+4. 同一 WorkGround2 parent session 可完成启动、导航、读取、点击、输入、滚动、tab 和关闭。
+5. 不同 parent session 不共享 Driver、Tab、revision 或 request cache。
+6. 页面变化后旧 revision 必须失败，不能落到其他节点。
+7. 相同 request_id 可安全重复；冲突和结果不确定显式返回。
+8. 工具取消不会误杀其他 Session；Controller cleanup 和空闲回收没有进程泄漏。
+9. ProfileProvider 和 CredentialProvider 扩展点及安全测试存在，但第一版只启用 ephemeral profile，不能填写密码。
+10. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
+11. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
+12. Feature Map、配置示例和用户文档同步更新。
 
 ## 23. Worker 实现边界
 
