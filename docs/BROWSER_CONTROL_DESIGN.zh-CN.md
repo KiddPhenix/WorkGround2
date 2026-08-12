@@ -512,7 +512,7 @@ type BrowserInfo struct {
 func NewManager(ctx context.Context, opts Options) (*Manager, error)
 ```
 
-`NewManager` 只校验配置、建立自己拥有的 Profile root 和启动 idle reaper，不探测或启动浏览器。`Factory=nil` 时使用 `internal/browser/cdp` 的生产 Factory；测试传 Fake Factory。
+`NewManager` 只校验配置、建立自己拥有的 Profile root 和启动 idle reaper，不探测或启动浏览器。`Factory` 必填，nil 返回配置错误。生产环境由 `internal/boot` 注入 `cdp.NewFactory(...)`，测试注入 Fake Factory；`internal/browser` 不得反向 import `internal/browser/cdp`，避免 Go import cycle。
 
 ### 8.6 Profile 扩展接口
 
@@ -914,7 +914,11 @@ max_elements = 400
 Manager 在 boot 阶段创建，但不启动 Chromium：
 
 ```go
-browserManager := browser.NewManager(rootCtx, options)
+factory := cdp.NewFactory(cdp.Options{})
+browserManager, err := browser.NewManager(rootCtx, browser.Options{
+	Factory: factory,
+	// normalized config...
+})
 for _, t := range browsertool.NewTools(browserManager) {
 	if browserToolEnabled(cfg, t.Name()) {
 		reg.Add(t)
