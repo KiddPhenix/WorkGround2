@@ -14,6 +14,7 @@ import (
 
 	"workground2/internal/agent/testutil"
 	browserpkg "workground2/internal/browser"
+	"workground2/internal/config"
 	"workground2/internal/event"
 	"workground2/internal/netclient"
 	"workground2/internal/sandbox"
@@ -143,6 +144,34 @@ func TestBrowserTaskCleanupIsOwnerScopedAndConcurrentIdempotent(t *testing.T) {
 	}
 	if len(owners) != 1 || owners[0] != "work-task-owner" {
 		t.Fatalf("CloseSession owners = %v, want exactly [work-task-owner]", owners)
+	}
+}
+
+func TestBrowserManagerOptionsCarriesIncognito(t *testing.T) {
+	// Default config: incognito must resolve to false on the Manager options.
+	opts := browserManagerOptions(config.Default(), nil)
+	if opts.Incognito {
+		t.Fatal("default browserManagerOptions.Incognito = true, want false")
+	}
+	if opts.Headless || opts.AllowPasswordInput == false || opts.AllowFileUpload == false {
+		t.Fatalf("default browserManagerOptions regressed unrelated fields: %+v", opts)
+	}
+
+	// Explicit true flows from config into the runtime options.
+	cfg := config.Default()
+	incognito := true
+	headless := true
+	cfg.Tools.Browser.Incognito = &incognito
+	cfg.Tools.Browser.Headless = &headless
+	opts = browserManagerOptions(cfg, nil)
+	if !opts.Incognito {
+		t.Fatal("browserManagerOptions.Incognito = false, want true")
+	}
+	if !opts.Headless {
+		t.Fatal("browserManagerOptions.Headless = false, want true")
+	}
+	if opts.Factory != nil {
+		t.Fatal("browserManagerOptions should not invent a factory")
 	}
 }
 

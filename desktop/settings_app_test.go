@@ -1120,6 +1120,9 @@ func TestSettingsBrowserPermissionsDefaultTrue(t *testing.T) {
 	if !view.Permissions.Browser.AllowPasswordInput || !view.Permissions.Browser.AllowFileUpload {
 		t.Fatalf("default browser permissions = %+v, want both true", view.Permissions.Browser)
 	}
+	if view.BrowserLaunch.Incognito {
+		t.Fatalf("default browser incognito = true, want false")
+	}
 }
 
 func TestSetBrowserPermissionsPersistsExplicitValuesAndRebuilds(t *testing.T) {
@@ -1166,6 +1169,35 @@ func TestSetBrowserPermissionsPersistsExplicitValuesAndRebuilds(t *testing.T) {
 
 	if c := app.activeCtrl(); c == nil || c == old {
 		t.Fatal("SetBrowserPermissions must rebuild the controller")
+	}
+}
+
+func TestSetBrowserLaunchPersistsIncognitoAndRebuilds(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	old := control.New(control.Options{Label: "old-controller"})
+	app.setTestCtrl(old, "deepseek-flash/deepseek-v4-flash")
+	defer func() {
+		if c := app.activeCtrl(); c != nil {
+			c.Close()
+		}
+	}()
+
+	if err := app.SetBrowserLaunch(BrowserLaunchView{Incognito: true}); err != nil {
+		t.Fatalf("SetBrowserLaunch: %v", err)
+	}
+	if !app.Settings().BrowserLaunch.Incognito {
+		t.Fatal("Settings() browser launch incognito = false, want true")
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if cfg.Tools.Browser.Incognito == nil || !*cfg.Tools.Browser.Incognito {
+		t.Fatalf("saved incognito = %v, want explicit true", cfg.Tools.Browser.Incognito)
+	}
+	if c := app.activeCtrl(); c == nil || c == old {
+		t.Fatal("SetBrowserLaunch must rebuild the controller")
 	}
 }
 

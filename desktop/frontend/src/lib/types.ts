@@ -1204,6 +1204,10 @@ export interface BrowserPermissionsView {
   allowFileUpload: boolean; // browser_upload may set local files on file inputs
 }
 
+export interface BrowserLaunchView {
+  incognito: boolean; // new browser processes launch in Chromium incognito mode
+}
+
 export interface SandboxView {
   bash: string; // "enforce" | "off"
   network: boolean;
@@ -1424,6 +1428,7 @@ export interface SettingsView {
   providers: ProviderView[];
   officialProviders: ProviderView[];
   permissions: PermissionsView;
+  browserLaunch: BrowserLaunchView;
   sandbox: SandboxView;
   network: NetworkView;
   collaboration: CollaborationSettingsView;

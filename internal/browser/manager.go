@@ -192,6 +192,7 @@ func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) 
 		SettleWindow:       m.opts.SettleWindow,
 		AllowPasswordInput: m.opts.AllowPasswordInput,
 		AllowFileUpload:    m.opts.AllowFileUpload,
+		Incognito:          m.opts.Incognito,
 	})
 	if err != nil {
 		// Keep the lease attached to the Session until release succeeds. A failed

@@ -89,6 +89,7 @@ kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
 # executable_path = "/path/to/chrome"
 headless = false
 idle_timeout_seconds = 0   # 0 = never auto-close from idleness; 30..86400 for a positive lifetime
+incognito = false          # true launches new browser processes in incognito mode
 
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tools
@@ -153,6 +154,13 @@ the `multiple` attribute); uploaded file paths are recorded verbatim in the
 ToolCall transcript and the files' contents become available to the page, so do
 not upload secret files through it. File inputs are never accepted by
 `browser_type`.
+
+Browser launch preference lives under `[tools.browser].incognito` (default
+`false`, explicit `true` enables it): when enabled, newly started
+Chrome/Edge/Chromium processes run in Chromium incognito mode, so history and
+cookies from that session are not persisted. It is a launch preference, not a
+permission. Saving it in Desktop rebuilds the browser runtime and closes the
+browser processes it manages; the next `browser_open` uses the new mode.
 
 The runtime has reserved ProfileProvider/CredentialProvider boundaries for later
 managed profiles, explicitly authorized attachment to a daily Chrome profile,

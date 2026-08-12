@@ -1064,6 +1064,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
         allowFileUpload: permissions.browser?.allowFileUpload !== false,
       },
     },
+    browserLaunch: { incognito: view.browserLaunch?.incognito === true },
     sandbox: {
       ...sandbox,
       allowWrite: asArray(sandbox.allowWrite),
@@ -5441,6 +5442,7 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
         allowFileUpload: next.allowFileUpload,
       }),
     );
+  const setBrowserLaunch = (incognito: boolean) => apply(() => app.SetBrowserLaunch({ incognito }));
   return (
     <>
     <SettingsSection title={t("settings.permissions")} description={t("settings.permissionsModeHint")}>
@@ -5473,6 +5475,17 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
           disabled={busy}
           onChange={(enabled) =>
             void setBrowser({ allowPasswordInput: s.permissions.browser.allowPasswordInput, allowFileUpload: enabled })
+          }
+        />
+      </SettingsField>
+    </SettingsSection>
+    <SettingsSection title={t("settings.browserLaunch")} description={t("settings.browserLaunchHint")}>
+      <SettingsField label={t("settings.browserIncognito")} hint={t("settings.browserIncognitoHint")}>
+        <ToggleSegment
+          value={s.browserLaunch.incognito}
+          disabled={busy}
+          onChange={(enabled) =>
+            void setBrowserLaunch(enabled)
           }
         />
       </SettingsField>

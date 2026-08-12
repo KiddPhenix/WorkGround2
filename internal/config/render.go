@@ -1139,7 +1139,8 @@ func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
 		fmt.Fprintf(b, "max_text_chars = %d   # page text cap returned to the model (1000..60000)\n", c.BrowserMaxTextChars())
 		fmt.Fprintf(b, "max_elements = %d   # indexed interactive-element cap (1..2000)\n", c.BrowserMaxElements())
 		fmt.Fprintf(b, "allow_password_input = %v   # allow browser_type to type into password inputs (default true; false hard-rejects)\n", c.BrowserAllowPasswordInput())
-		fmt.Fprintf(b, "allow_file_upload = %v   # allow browser_upload to set local files on file inputs (default true; false hard-rejects)\n\n", c.BrowserAllowFileUpload())
+		fmt.Fprintf(b, "allow_file_upload = %v   # allow browser_upload to set local files on file inputs (default true; false hard-rejects)\n", c.BrowserAllowFileUpload())
+		fmt.Fprintf(b, "incognito = %v   # launch new browser processes in Chromium incognito mode (default false; affects only new processes)\n\n", c.BrowserIncognito())
 		return
 	}
 	fmt.Fprintf(b, "enabled = %v\n", c.BrowserEnabled())
@@ -1153,7 +1154,8 @@ func renderBrowserConfig(b *strings.Builder, c *Config, annotated bool) {
 	fmt.Fprintf(b, "max_text_chars = %d\n", c.BrowserMaxTextChars())
 	fmt.Fprintf(b, "max_elements = %d\n", c.BrowserMaxElements())
 	fmt.Fprintf(b, "allow_password_input = %v\n", c.BrowserAllowPasswordInput())
-	fmt.Fprintf(b, "allow_file_upload = %v\n\n", c.BrowserAllowFileUpload())
+	fmt.Fprintf(b, "allow_file_upload = %v\n", c.BrowserAllowFileUpload())
+	fmt.Fprintf(b, "incognito = %v\n\n", c.BrowserIncognito())
 }
 
 func renderPricingInline(p *provider.Pricing) string {

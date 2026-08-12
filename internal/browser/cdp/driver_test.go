@@ -3,11 +3,13 @@ package cdp
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/chromedp"
 
 	"workground2/internal/browser"
 )
@@ -153,6 +155,40 @@ func TestDriverUploadRejectsWhenSwitchDisabled(t *testing.T) {
 	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrSensitiveInputBlocked {
 		t.Fatalf("upload with disabled switch error = %v, want sensitive_input_blocked", err)
 	}
+}
+
+func TestLaunchAllocOptionsIncognitoFlag(t *testing.T) {
+	// Enabled: the launch argv must carry --incognito alongside the explicit
+	// loopback debug flags, without enabling automation or a default port.
+	on := launchAllocOptions(browser.DriverOptions{Incognito: true}, "chrome", debugLaunchFlagsUnchecked(t))
+	onArgs := strings.Join(captureLaunchArgs(t, on...), " ")
+	if !strings.Contains(onArgs, "--incognito") {
+		t.Fatalf("incognito launch missing --incognito: %v", onArgs)
+	}
+	if !strings.Contains(onArgs, "--remote-debugging-address=127.0.0.1") {
+		t.Fatalf("incognito launch lost loopback debug address: %v", onArgs)
+	}
+	if strings.Contains(onArgs, "--enable-automation") {
+		t.Fatalf("incognito launch enables automation: %v", onArgs)
+	}
+
+	// Disabled (default): --incognito must never appear.
+	off := launchAllocOptions(browser.DriverOptions{Incognito: false}, "chrome", debugLaunchFlagsUnchecked(t))
+	offArgs := strings.Join(captureLaunchArgs(t, off...), " ")
+	if strings.Contains(offArgs, "--incognito") {
+		t.Fatalf("non-incognito launch leaked --incognito: %v", offArgs)
+	}
+}
+
+// debugLaunchFlagsUnchecked builds the debug flags without failing the caller:
+// the port is fixed, so debugLaunchFlags cannot error here.
+func debugLaunchFlagsUnchecked(t *testing.T) []chromedp.ExecAllocatorOption {
+	t.Helper()
+	flags, err := debugLaunchFlags(4321)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return flags
 }
 
 func TestValidateBrowserVersion(t *testing.T) {

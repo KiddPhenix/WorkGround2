@@ -1,6 +1,6 @@
 // Run: tsx src/__tests__/browser-sensitive-settings.test.tsx
-// Focused contract test for the two browser sensitive-operation switches on
-// the permissions page: render, defaults, bridge arguments, and refresh.
+// Focused contract test for browser permissions and launch settings on the
+// permissions page: render, defaults, bridge arguments, and refresh.
 
 import { JSDOM } from "jsdom";
 import React from "react";
@@ -62,6 +62,7 @@ function baseSettings(): SettingsView {
       deny: [],
       browser: { allowPasswordInput: true, allowFileUpload: true },
     },
+    browserLaunch: { incognito: false },
     sandbox: { bash: "enforce", network: false, workspaceRoot: "", allowWrite: [], shell: "auto" },
     network: { proxyMode: "auto", proxyUrl: "", noProxy: "", proxy: { type: "socks5", server: "", port: 0, username: "", password: "" } },
     agent: { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" },
@@ -121,7 +122,8 @@ window.scrollTo = () => {};
 
 const saved = baseSettings();
 let settingsCalls = 0;
-const setCalls: Array<{ allowPasswordInput: boolean; allowFileUpload: boolean }> = [];
+const permissionCalls: Array<{ allowPasswordInput: boolean; allowFileUpload: boolean }> = [];
+const launchCalls: Array<{ incognito: boolean }> = [];
 window.go = {
   main: {
     App: {
@@ -130,8 +132,12 @@ window.go = {
         return JSON.parse(JSON.stringify(saved)) as SettingsView;
       },
       SetBrowserPermissions: async (b: { allowPasswordInput: boolean; allowFileUpload: boolean }) => {
-        setCalls.push({ allowPasswordInput: b.allowPasswordInput, allowFileUpload: b.allowFileUpload });
+        permissionCalls.push({ allowPasswordInput: b.allowPasswordInput, allowFileUpload: b.allowFileUpload });
         saved.permissions.browser = { allowPasswordInput: b.allowPasswordInput, allowFileUpload: b.allowFileUpload };
+      },
+      SetBrowserLaunch: async (b: { incognito: boolean }) => {
+        launchCalls.push({ incognito: b.incognito });
+        saved.browserLaunch = { incognito: b.incognito };
       },
     } as Partial<AppBindings> as AppBindings,
   },
@@ -154,6 +160,8 @@ await waitFor("permissions page renders", () => document.body.textContent?.inclu
 
 ok(document.body.textContent?.includes("Allow password input") === true, "password switch label renders");
 ok(document.body.textContent?.includes("Allow local file upload") === true, "file upload switch label renders");
+ok(document.body.textContent?.includes("Open in incognito mode") === true, "incognito switch label renders");
+ok(document.body.textContent?.includes("Browser launch") === true, "browser launch section renders");
 
 function segmentFor(label: string): HTMLElement {
   const fields = Array.from(document.querySelectorAll(".settings-field")) as HTMLElement[];
@@ -170,8 +178,10 @@ function segmentOn(seg: HTMLElement): boolean {
 
 const passwordSeg = segmentFor("Allow password input");
 const uploadSeg = segmentFor("Allow local file upload");
+const incognitoSeg = segmentFor("Open in incognito mode");
 ok(segmentOn(passwordSeg) === true, "password switch defaults to on (allowed)");
 ok(segmentOn(uploadSeg) === true, "file upload switch defaults to on (allowed)");
+ok(segmentOn(incognitoSeg) === false, "incognito switch defaults to off");
 
 // Flip password off; the file switch must be preserved.
 const passwordOff = Array.from(passwordSeg.querySelectorAll(".set-seg__btn")).find((b) => b.textContent?.trim() === "Off") as HTMLButtonElement;
@@ -180,8 +190,9 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("password switch reflects saved value", () => segmentOn(segmentFor("Allow password input")) === false);
-eq(setCalls[0], { allowPasswordInput: false, allowFileUpload: true }, "password toggle calls SetBrowserPermissions with file switch preserved");
+eq(permissionCalls[0], { allowPasswordInput: false, allowFileUpload: true }, "password toggle calls SetBrowserPermissions with file switch preserved");
 ok(segmentOn(segmentFor("Allow local file upload")) === true, "file upload switch untouched after password toggle");
+ok(segmentOn(segmentFor("Open in incognito mode")) === false, "incognito switch untouched after password toggle");
 ok(settingsCalls >= 2, "settings refreshed after save");
 
 // Flip file upload off too.
@@ -191,7 +202,20 @@ await act(async () => {
   await flushPromises();
 });
 await waitFor("file switch reflects saved value", () => segmentOn(segmentFor("Allow local file upload")) === false);
-eq(setCalls[1], { allowPasswordInput: false, allowFileUpload: false }, "file toggle calls SetBrowserPermissions with both switches");
+eq(permissionCalls[1], { allowPasswordInput: false, allowFileUpload: false }, "file toggle calls SetBrowserPermissions with both switches");
+
+// Flip incognito on; both sensitive switches must be preserved.
+const incognitoSegFresh = segmentFor("Open in incognito mode");
+const incognitoOn = Array.from(incognitoSegFresh.querySelectorAll(".set-seg__btn")).find((b) => b.textContent?.trim() === "On") as HTMLButtonElement;
+await act(async () => {
+  incognitoOn.click();
+  await flushPromises();
+});
+await waitFor("incognito switch reflects saved value", () => segmentOn(segmentFor("Open in incognito mode")) === true);
+eq(launchCalls[0], { incognito: true }, "incognito toggle calls SetBrowserLaunch");
+eq(permissionCalls.length, 2, "incognito toggle does not rewrite browser permissions");
+ok(segmentOn(segmentFor("Allow password input")) === false, "password switch untouched after incognito toggle");
+ok(segmentOn(segmentFor("Allow local file upload")) === false, "file upload switch untouched after incognito toggle");
 
 await act(async () => {
   root.unmount();

@@ -86,22 +86,7 @@ func (d *driver) start(ctx context.Context) error {
 		_ = d.Close()
 		return err
 	}
-	allocOpts := []chromedp.ExecAllocatorOption{chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck}
-	allocOpts = append(allocOpts, debugFlags...)
-	if d.opts.Headless {
-		allocOpts = append(allocOpts, chromedp.Headless, chromedp.WindowSize(1280, 720))
-	}
-	if d.execPath != "" {
-		allocOpts = append(allocOpts, chromedp.ExecPath(d.execPath))
-	}
-	if d.opts.UserDataDir != "" {
-		allocOpts = append(allocOpts, chromedp.UserDataDir(d.opts.UserDataDir))
-	}
-	allocOpts = append(allocOpts,
-		chromedp.Flag("disable-save-password-bubble", true),
-		chromedp.Flag("disable-password-manager-reauthentication", true),
-		chromedp.Flag("password-store", "basic"),
-	)
+	allocOpts := launchAllocOptions(d.opts, d.execPath, debugFlags)
 
 	d.allocCtx, d.allocCancel = chromedp.NewExecAllocator(ctx, allocOpts...)
 	initialCtx, initialCancel := chromedp.NewContext(d.allocCtx)
@@ -179,6 +164,35 @@ func (d *driver) start(ctx context.Context) error {
 	d.listenTarget(initialCtx)
 	chromedp.ListenBrowser(initialCtx, d.handleEvent)
 	return nil
+}
+
+// launchAllocOptions builds the chromedp ExecAllocatorOption list for one
+// browser launch. execPath is the discovered executable (may differ from
+// dopts.ExecutablePath when kind discovery resolves it); debugFlags carry the
+// explicit nonzero loopback remote-debugging flags. The Chromium incognito flag
+// is appended only when dopts.Incognito is true, so a disabled switch never
+// leaks --incognito into the process args.
+func launchAllocOptions(dopts browser.DriverOptions, execPath string, debugFlags []chromedp.ExecAllocatorOption) []chromedp.ExecAllocatorOption {
+	allocOpts := []chromedp.ExecAllocatorOption{chromedp.NoFirstRun, chromedp.NoDefaultBrowserCheck}
+	allocOpts = append(allocOpts, debugFlags...)
+	if dopts.Headless {
+		allocOpts = append(allocOpts, chromedp.Headless, chromedp.WindowSize(1280, 720))
+	}
+	if dopts.Incognito {
+		allocOpts = append(allocOpts, chromedp.Flag("incognito", true))
+	}
+	if execPath != "" {
+		allocOpts = append(allocOpts, chromedp.ExecPath(execPath))
+	}
+	if dopts.UserDataDir != "" {
+		allocOpts = append(allocOpts, chromedp.UserDataDir(dopts.UserDataDir))
+	}
+	allocOpts = append(allocOpts,
+		chromedp.Flag("disable-save-password-bubble", true),
+		chromedp.Flag("disable-password-manager-reauthentication", true),
+		chromedp.Flag("password-store", "basic"),
+	)
+	return allocOpts
 }
 
 func productVersion(product string) string {

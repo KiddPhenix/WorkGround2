@@ -17,6 +17,9 @@ func TestBrowserConfigDefaults(t *testing.T) {
 	if !c.BrowserAllowPasswordInput() || !c.BrowserAllowFileUpload() {
 		t.Fatalf("browser sensitive defaults = allow_password_input %v allow_file_upload %v, want true true", c.BrowserAllowPasswordInput(), c.BrowserAllowFileUpload())
 	}
+	if c.BrowserIncognito() {
+		t.Fatalf("browser incognito default = true, want false")
+	}
 	got := []int{
 		c.BrowserIdleTimeoutSeconds(), c.BrowserActionTimeoutSeconds(),
 		c.BrowserStateTimeoutSeconds(), c.BrowserSettleMilliseconds(),
@@ -106,6 +109,27 @@ func TestBrowserConfigClampsAndValidatesKind(t *testing.T) {
 	}
 }
 
+func TestBrowserIncognitoSwitch(t *testing.T) {
+	// nil (old config without the key) defaults to false.
+	c := Default()
+	c.Tools.Browser.Incognito = nil
+	if c.BrowserIncognito() {
+		t.Fatalf("nil incognito must default false, got true")
+	}
+
+	// Explicit true is respected; explicit false stays off.
+	c = Default()
+	c.Tools.Browser.Incognito = boolPtr(true)
+	if !c.BrowserIncognito() {
+		t.Fatal("incognito=true resolved to false")
+	}
+	c = Default()
+	c.Tools.Browser.Incognito = boolPtr(false)
+	if c.BrowserIncognito() {
+		t.Fatal("incognito=false resolved to true")
+	}
+}
+
 func TestBrowserSensitivePermissionSwitches(t *testing.T) {
 	// nil (old config without the keys) defaults to true.
 	c := Default()
@@ -136,12 +160,14 @@ func TestRenderTOMLBrowserFullRoundTrip(t *testing.T) {
 	c.Tools.Browser.MaxElements = intPtr(777)
 	c.Tools.Browser.AllowPasswordInput = boolPtr(false)
 	c.Tools.Browser.AllowFileUpload = boolPtr(false)
+	c.Tools.Browser.Incognito = boolPtr(true)
 
 	rendered := RenderTOML(c)
 	for _, want := range []string{
 		"[tools.browser]", `kind = "chrome"`, `headless = true`,
 		"idle_timeout_seconds = 0", "max_elements = 777",
 		"allow_password_input = false", "allow_file_upload = false",
+		"incognito = true",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("full render missing %q:\n%s", want, rendered)
@@ -156,6 +182,28 @@ func TestRenderTOMLBrowserFullRoundTrip(t *testing.T) {
 	}
 	if got.BrowserAllowPasswordInput() || got.BrowserAllowFileUpload() {
 		t.Fatalf("sensitive switch round trip = password %v file %v, want false false", got.BrowserAllowPasswordInput(), got.BrowserAllowFileUpload())
+	}
+	if !got.BrowserIncognito() {
+		t.Fatal("incognito round trip = false, want true")
+	}
+}
+
+func TestBrowserIncognitoTOMLDecode(t *testing.T) {
+	// Old config without the key parses as false.
+	var old Config
+	if _, err := toml.Decode("[tools.browser]\nheadless = true\n", &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.BrowserIncognito() {
+		t.Fatal("old config without incognito resolved to true, want false")
+	}
+	// Explicit true parses as true.
+	var with Config
+	if _, err := toml.Decode("[tools.browser]\nincognito = true\n", &with); err != nil {
+		t.Fatal(err)
+	}
+	if !with.BrowserIncognito() {
+		t.Fatal("incognito = true did not parse as enabled")
 	}
 }
 
@@ -196,5 +244,21 @@ func TestProjectDeltaBrowserSensitiveSwitchRoundTrip(t *testing.T) {
 	}
 	if !got.BrowserAllowPasswordInput() || got.BrowserAllowFileUpload() {
 		t.Fatalf("sensitive browser delta round trip = password %v file %v, want true false", got.BrowserAllowPasswordInput(), got.BrowserAllowFileUpload())
+	}
+}
+
+func TestProjectDeltaBrowserIncognitoRoundTrip(t *testing.T) {
+	c := Default()
+	c.Tools.Browser.Incognito = boolPtr(true)
+	delta := RenderTOMLProjectDelta(c)
+	if !strings.Contains(delta, "[tools.browser]") || !strings.Contains(delta, "incognito = true") {
+		t.Fatalf("project browser delta missing incognito override:\n%s", delta)
+	}
+	got := Default()
+	if _, err := toml.Decode(delta, got); err != nil {
+		t.Fatalf("decode incognito browser delta: %v\n%s", err, delta)
+	}
+	if !got.BrowserIncognito() {
+		t.Fatal("incognito delta round trip = false, want true")
 	}
 }

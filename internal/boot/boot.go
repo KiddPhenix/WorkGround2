@@ -697,21 +697,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var browserOwner *browserLifecycle
 	if cfg.BrowserEnabled() && !tokenEconomy && browserToolsSelected(enabledBuiltins) {
 		factory := cdp.NewFactory(cdp.Options{})
-		bm, err := browserpkg.NewManager(ctx, browserpkg.Options{
-			Factory:            factory,
-			BrowserKind:        browserpkg.BrowserKind(cfg.BrowserKind()),
-			ExecutablePath:     cfg.Tools.Browser.ExecutablePath,
-			Headless:           cfg.BrowserHeadless(),
-			ProfileRoot:        sessionDir,
-			IdleTimeout:        time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
-			ActionTimeout:      time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
-			StateTimeout:       time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
-			SettleWindow:       time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
-			MaxTextChars:       cfg.BrowserMaxTextChars(),
-			MaxElements:        cfg.BrowserMaxElements(),
-			AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
-			AllowFileUpload:    cfg.BrowserAllowFileUpload(),
-		})
+		bm, err := browserpkg.NewManager(ctx, browserManagerOptions(cfg, factory))
 		if err != nil {
 			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 				Text: "browser manager init failed: " + err.Error()})
@@ -1951,6 +1937,27 @@ func browserToolsSelected(enabled []string) bool {
 		}
 	}
 	return false
+}
+
+// browserManagerOptions maps the resolved browser config onto the Manager
+// options. It is a separate function so tests can verify the config→runtime
+// value flow (including incognito) without booting a controller.
+func browserManagerOptions(cfg *config.Config, factory browserpkg.DriverFactory) browserpkg.Options {
+	return browserpkg.Options{
+		Factory:            factory,
+		BrowserKind:        browserpkg.BrowserKind(cfg.BrowserKind()),
+		ExecutablePath:     cfg.Tools.Browser.ExecutablePath,
+		Headless:           cfg.BrowserHeadless(),
+		Incognito:          cfg.BrowserIncognito(),
+		IdleTimeout:        time.Duration(cfg.BrowserIdleTimeoutSeconds()) * time.Second,
+		ActionTimeout:      time.Duration(cfg.BrowserActionTimeoutSeconds()) * time.Second,
+		StateTimeout:       time.Duration(cfg.BrowserStateTimeoutSeconds()) * time.Second,
+		SettleWindow:       time.Duration(cfg.BrowserSettleMilliseconds()) * time.Millisecond,
+		MaxTextChars:       cfg.BrowserMaxTextChars(),
+		MaxElements:        cfg.BrowserMaxElements(),
+		AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
+		AllowFileUpload:    cfg.BrowserAllowFileUpload(),
+	}
 }
 
 // partitionByTier splits configured plugin entries into eager (block boot until

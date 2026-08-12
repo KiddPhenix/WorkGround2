@@ -81,6 +81,7 @@ kind = "auto"                    # auto|chrome|edge|chromium|chrome_for_testing
 # executable_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 headless = false
 idle_timeout_seconds = 0   # 0 = 永不因空闲自动关闭；30..86400 表示正数生命周期
+incognito = false          # true 后新建浏览器进程以隐身模式（incognito）启动
 
 [environment]
 enabled = true   # 启动时把 OS、shell 和常见工具摘要稳定注入 prompt
@@ -136,6 +137,11 @@ Work task 只关闭属于自身 owner 的浏览器。V1 读取页面文本和带
 `browser_upload` 可向 `input[type=file]` 设置 1-20 个存在的本地普通文件（多文件目标要求
 `multiple` 属性）；上传的文件路径会原样进入 ToolCall transcript，且文件内容会交给页面，因此不要用它上传机密文件。
 file 输入框始终不接受 `browser_type`。
+
+浏览器启动偏好由 `[tools.browser].incognito` 控制（默认 `false`，显式 `true` 开启）：
+开启后新建的 Chrome/Edge/Chromium 进程以 Chromium 隐身模式（incognito）启动，不保留该会话的
+历史与 Cookie。它是启动配置而非权限。Desktop 保存设置时会重建浏览器运行时并关闭其管理的现有
+浏览器进程；下次 `browser_open` 使用新模式。
 
 运行时已经为后续 managed Profile、经用户明确授权连接日常 Chrome、复用 Cookie/登录态和密码库填充
 预留 ProfileProvider/CredentialProvider 边界；V1 不启用这些能力，也不会把 managed/attach 请求静默降级为

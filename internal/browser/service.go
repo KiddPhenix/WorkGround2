@@ -65,6 +65,9 @@ type Options struct {
 	AllowPasswordInput bool
 	// AllowFileUpload permits browser_upload to set local files on file inputs.
 	AllowFileUpload bool
+	// Incognito launches new browser processes in Chromium incognito mode.
+	// It affects only processes started after the switch is applied.
+	Incognito bool
 }
 
 // DriverOptions configures a single Driver (Chromium process).
@@ -82,6 +85,8 @@ type DriverOptions struct {
 	AllowPasswordInput bool
 	// AllowFileUpload mirrors Options for the double-checked rejection.
 	AllowFileUpload bool
+	// Incognito mirrors Options: the launch adds --incognito only when true.
+	Incognito bool
 }
 
 // ObserveOptions limits what Driver.Observe collects.

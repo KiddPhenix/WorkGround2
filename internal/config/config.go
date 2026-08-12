@@ -1622,6 +1622,10 @@ type BrowserConfig struct {
 	// AllowFileUpload controls whether browser_upload may set local files on
 	// file inputs. nil (old config without the key) defaults to true.
 	AllowFileUpload *bool `toml:"allow_file_upload"`
+	// Incognito controls whether newly launched Chrome/Edge/Chromium processes
+	// use Chromium incognito mode. nil (old config without the key) defaults to
+	// false; the switch only affects processes started after the change.
+	Incognito *bool `toml:"incognito"`
 }
 
 const (
@@ -1690,6 +1694,14 @@ func (c *Config) BrowserAllowPasswordInput() bool {
 // false hard-rejects uploads.
 func (c *Config) BrowserAllowFileUpload() bool {
 	return c.Tools.Browser.AllowFileUpload == nil || *c.Tools.Browser.AllowFileUpload
+}
+
+// BrowserIncognito reports whether newly launched browser processes should run
+// in Chromium incognito mode. nil and old configs without the key default to
+// false; the switch affects only processes started after the change, never
+// already-running windows.
+func (c *Config) BrowserIncognito() bool {
+	return c.Tools.Browser.Incognito != nil && *c.Tools.Browser.Incognito
 }
 
 // BrowserIdleTimeoutSeconds returns the browser idle timeout in seconds. 0 is
@@ -1950,6 +1962,7 @@ func Default() *Config {
 			MaxElements:          intConfigPtr(defaultBrowserMaxElements),
 			AllowPasswordInput:   boolConfigPtr(true),
 			AllowFileUpload:      boolConfigPtr(true),
+			Incognito:            boolConfigPtr(false),
 		}},
 		// LSP tools on by default, but dormant until a language server is on PATH;
 		// a missing server yields an install hint rather than an error.

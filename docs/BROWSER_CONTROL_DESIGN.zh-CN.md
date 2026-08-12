@@ -128,6 +128,10 @@ Chrome 本身就是 Chromium 系浏览器，页面感知和动作使用同一套
 - headless 模式仍会暴露 `navigator.webdriver=true`，与端口无关，不承诺不可检测。
 - Chrome 136 起，`--remote-debugging-port`/`--remote-debugging-pipe` 对默认数据目录不再生效，远程调试必须配合非默认 `--user-data-dir`；WorkGround2 总是使用独立临时 Profile，该约束不变（见 §8.6）。
 
+### 4.3 隐身模式（incognito）
+
+`[tools.browser].incognito`（默认 `false`，旧配置缺字段解析为 `false`）是浏览器启动偏好：显式 `true` 时，后续 `browser_open` 新建的 Chrome/Edge/Chromium 进程追加 chromedp `Flag("incognito", true)`（生成 `--incognito` 启动参数），以 Chromium 隐身模式运行，不保留该会话的历史与 Cookie；`false` 时启动参数不得包含 `--incognito`。Desktop 保存该设置会重建浏览器运行时并关闭其管理的现有浏览器进程，下次 `browser_open` 使用新模式。它不复用/共享 Profile、不启用反检测；隐身模式与现有非零回环调试端口、临时 Profile、Cookie/Profile 语义相互独立。
+
 ## 5. 目录和文件
 
 ```text
@@ -474,6 +478,9 @@ type Options struct {
 	SettleWindow    time.Duration
 	MaxTextChars    int
 	MaxElements     int
+	AllowPasswordInput bool // browser_type 密码输入开关
+	AllowFileUpload    bool // browser_upload 本地文件上传开关
+	Incognito           bool // true 时新建进程以 Chromium 隐身模式启动（追加 --incognito）
 }
 
 type DriverOptions struct {
@@ -486,6 +493,9 @@ type DriverOptions struct {
 	OwnProcess      bool
 	DenyDownloads   bool
 	SettleWindow    time.Duration
+	AllowPasswordInput bool // 与 Options 一致，双保险拒绝
+	AllowFileUpload    bool // 与 Options 一致，双保险拒绝
+	Incognito           bool // 仅 true 时启动参数含 --incognito
 }
 
 type ObserveOptions struct {
@@ -894,6 +904,9 @@ type BrowserConfig struct {
 	SettleMilliseconds  *int   `toml:"settle_milliseconds"`
 	MaxTextChars        *int   `toml:"max_text_chars"`
 	MaxElements         *int   `toml:"max_elements"`
+	AllowPasswordInput  *bool  `toml:"allow_password_input"` // omitted -> true
+	AllowFileUpload     *bool  `toml:"allow_file_upload"`    // omitted -> true
+	Incognito           *bool  `toml:"incognito"`            // omitted -> false
 }
 ```
 
@@ -912,12 +925,14 @@ max_text_chars = 20000
 max_elements = 400
 allow_password_input = true
 allow_file_upload = true
+incognito = false
 ```
 
 约束：
 
 - omitted `enabled` 表示启用；Chrome/Chromium 只在首次 `browser_open` 时启动。
 - omitted `headless` 表示 false，方便用户观察；无图形环境显式配置 true。
+- omitted `incognito` 表示 false；显式 `true` 时，新建的浏览器进程以 Chromium 隐身模式（incognito）启动（追加 `--incognito` 启动参数），不保留该会话的历史与 Cookie。它是启动配置而非权限；Desktop 保存时会重建浏览器运行时，下次 `browser_open` 使用新模式。
 - `idle_timeout_seconds` 默认 0：合法特殊值，禁用空闲 reaper，浏览器永不因空闲自动关闭；正数范围 30..86400，`1..29` 与负数夹到 30，超过 86400 夹到 86400，非法值产生 config warning；负数不会解释为禁用。
 - 数值设置必须有最小/最大夹取，非法值回退默认值并保持可诊断。
 - `kind=chrome` 时只发现 Google Chrome；`kind=auto` 按 BrowserAuto 顺序发现。
