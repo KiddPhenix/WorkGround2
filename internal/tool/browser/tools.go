@@ -34,7 +34,8 @@ func (t *openTool) ReadOnly() bool     { return false }
 func (t *openTool) PlanModeSafe() bool { return false }
 
 func (t *openTool) Description() string {
-	return "Open or reuse a browser session for the current agent. " +
+	return "Open or reuse the preferred WorkGround2 native browser-use session for the current agent. " +
+		"Use the browser_* tools first when available; use Playwright only as a fallback when the native tools are unavailable, lack a required capability, or explicitly fail. " +
 		"Returns the session ID, page revision, and browser info. " +
 		"The browser process is created on first call and reused for the same session."
 }
