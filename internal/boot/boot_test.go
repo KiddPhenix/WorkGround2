@@ -1321,6 +1321,7 @@ func defaultFullBootToolNames() []string {
 		"ask",
 		"bash",
 		"bash_output",
+		"browser_attach",
 		"browser_click",
 		"browser_close",
 		"browser_navigate",

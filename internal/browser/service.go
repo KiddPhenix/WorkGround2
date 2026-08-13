@@ -4,6 +4,7 @@ package browser
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type Service interface {
 	Scroll(ctx context.Context, ownerID string, req ScrollRequest) (ActionResult, error)
 	Tab(ctx context.Context, ownerID string, req TabRequest) (ActionResult, error)
 	Upload(ctx context.Context, ownerID string, req UploadRequest) (ActionResult, error)
+	Attach(ctx context.Context, ownerID string) (AttachResult, error)
 	CloseSession(ctx context.Context, ownerID string) (CloseResult, error)
 	Close() error
 }
@@ -68,6 +70,15 @@ type Options struct {
 	// Incognito launches new browser processes in Chromium incognito mode.
 	// It affects only processes started after the switch is applied.
 	Incognito bool
+	// RuntimeDir is the per-user directory holding the shared browser endpoint
+	// record and launch lock. When non-empty the Manager reuses one persistent
+	// browser across controllers, tasks, settings rebuilds and app restarts
+	// instead of launching a fresh ephemeral process per owner. Empty keeps the
+	// legacy per-owner ephemeral lifecycle.
+	RuntimeDir string
+	// RuntimeClient is the HTTP client used to validate the shared endpoint
+	// record's /json/version. Nil uses a bounded default; tests inject fakes.
+	RuntimeClient *http.Client
 }
 
 // DriverOptions configures a single Driver (Chromium process).
@@ -81,6 +92,11 @@ type DriverOptions struct {
 	OwnProcess     bool
 	DenyDownloads  bool
 	SettleWindow   time.Duration
+	// Attach connects to an already-running browser via WebSocketURL instead of
+	// launching a new process. Close only detaches the CDP client in this mode.
+	Attach bool
+	// WebSocketURL is the browser-level DevTools websocket URL used when Attach.
+	WebSocketURL string
 	// AllowPasswordInput mirrors Options for the double-checked rejection.
 	AllowPasswordInput bool
 	// AllowFileUpload mirrors Options for the double-checked rejection.

@@ -41,17 +41,19 @@ The test checks that every registered built-in tool has a documented name, read-
 In a default full-token boot, WorkGround2 sends the built-in tools above plus the
 session, memory, skill, subagent, LSP, install, and slash-command tools below:
 
-`ask`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
+`ask`, `browser_attach`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
 `read_only_task`, `read_session`, `read_skill`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
 
-The nine runtime-bound browser tools use one browser process per parent session:
+The ten runtime-bound browser tools share one persistent automation browser per
+user across controllers, tasks, settings rebuilds and app restarts:
 
 | Tool | Read-only | Contract |
 | --- | --- | --- |
 | `browser_open` | false | Idempotently open the session browser, optionally navigating to an HTTP/HTTPS URL. |
+| `browser_attach` | true | Return the loopback CDP endpoint of the current session for Playwright's `chromium.connectOverCDP()`. Requires `browser_open` first; never starts a second browser. After any Playwright write, call `browser_state(refresh=true)`. |
 | `browser_navigate` | false | Navigate the active tab. Requires a stable `request_id`. |
 | `browser_state` | true | Return page text, tabs, `revision`, and indexed interactive elements. No screenshots or form values. |
 | `browser_click` | false | Click an element from the exact supplied `revision` and index. |
@@ -59,15 +61,16 @@ The nine runtime-bound browser tools use one browser process per parent session:
 | `browser_scroll` | false | Scroll the viewport or an indexed element under the supplied revision. |
 | `browser_tab` | false | Create, activate, or close a tab under the supplied revision. |
 | `browser_upload` | false | Set 1-20 existing local regular files on an `input[type=file]`; the selected files' contents become available to the page. Paths are recorded verbatim in the ToolCall transcript; multi-file targets require the `multiple` attribute. Denied when `allow_file_upload=false`. |
-| `browser_close` | false | Idempotently close only the current parent session's browser. |
+| `browser_close` | false | Idempotently detach only the current parent session's browser client; the shared Chromium and its persistent profile survive. |
 
 Browser tools are hidden when `[tools.browser].enabled=false`, when filtered out
 by `tools.enabled`, and in token economy mode. Chrome is the primary browser;
 Edge, Chromium, and Chrome for Testing use the same CDP contract. V1 uses only
-an isolated ephemeral profile and has no screenshot, drag-and-drop, directory
-upload, download, secret vault, daily Chrome profile, cookie, login-state, or
-password-vault access. Both `allow_password_input` and `allow_file_upload`
-default to true and can be disabled independently; downloads stay denied.
+an isolated automation profile (distinct from any default browser profile) and
+has no screenshot, drag-and-drop, directory upload, download, secret vault, daily
+Chrome profile, cookie, login-state, or password-vault access. Both
+`allow_password_input` and `allow_file_upload` default to true and can be
+disabled independently; downloads stay denied.
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` verifies the
 actual boot registry contract against the provider request, including read-only

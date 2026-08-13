@@ -349,6 +349,27 @@ func CacheDir() string {
 	return dir
 }
 
+// BrowserStateDir is the per-user browser runtime directory holding the shared
+// browser endpoint record and launch lock. Empty when the user state dir can't
+// be resolved, which disables cross-controller browser reuse.
+func BrowserStateDir() string {
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "browser")
+}
+
+// BrowserProfileDir is the per-user persistent automation profile directory
+// used by the shared browser. It is distinct from any default browser profile.
+func BrowserProfileDir() string {
+	dir := BrowserStateDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "profile")
+}
+
 // MemoryUserDir returns the WorkGround2 user state root (…/WorkGround2), under which
 // the user-global WorkGround2.md and the per-project auto-memory store live. Empty
 // when the user state dir can't be resolved, which disables user-scoped memory.

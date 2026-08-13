@@ -21,6 +21,7 @@ type fakeService struct {
 	scrollFn   func(ctx context.Context, owner string, req browser.ScrollRequest) (browser.ActionResult, error)
 	tabFn      func(ctx context.Context, owner string, req browser.TabRequest) (browser.ActionResult, error)
 	uploadFn   func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error)
+	attachFn   func(ctx context.Context, owner string) (browser.AttachResult, error)
 	closeFn    func(ctx context.Context, owner string) (browser.CloseResult, error)
 }
 
@@ -47,6 +48,9 @@ func (s *fakeService) Tab(ctx context.Context, owner string, req browser.TabRequ
 }
 func (s *fakeService) Upload(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
 	return s.uploadFn(ctx, owner, req)
+}
+func (s *fakeService) Attach(ctx context.Context, owner string) (browser.AttachResult, error) {
+	return s.attachFn(ctx, owner)
 }
 func (s *fakeService) CloseSession(ctx context.Context, owner string) (browser.CloseResult, error) {
 	return s.closeFn(ctx, owner)
@@ -85,6 +89,9 @@ func newFakeService() *fakeService {
 		uploadFn: func(ctx context.Context, owner string, req browser.UploadRequest) (browser.ActionResult, error) {
 			return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
 		},
+		attachFn: func(ctx context.Context, owner string) (browser.AttachResult, error) {
+			return browser.AttachResult{SessionID: "test-session", Endpoint: "http://127.0.0.1:9222"}, nil
+		},
 		closeFn: func(ctx context.Context, owner string) (browser.CloseResult, error) {
 			return browser.CloseResult{SessionID: "test-session", Closed: true}, nil
 		},
@@ -94,15 +101,15 @@ func newFakeService() *fakeService {
 func TestToolsExist(t *testing.T) {
 	svc := newFakeService()
 	tools := browsertool.NewTools(svc)
-	if len(tools) != 9 {
-		t.Fatalf("expected 9 tools, got %d", len(tools))
+	if len(tools) != 10 {
+		t.Fatalf("expected 10 tools, got %d", len(tools))
 	}
 	names := make(map[string]bool)
 	for _, tool := range tools {
 		names[tool.Name()] = true
 	}
 	expected := []string{
-		"browser_open", "browser_navigate", "browser_state",
+		"browser_open", "browser_attach", "browser_navigate", "browser_state",
 		"browser_click", "browser_type", "browser_scroll",
 		"browser_tab", "browser_upload", "browser_close",
 	}
@@ -115,19 +122,18 @@ func TestToolsExist(t *testing.T) {
 
 func TestStateIsReadOnly(t *testing.T) {
 	svc := newFakeService()
+	readOnly := map[string]bool{"browser_state": true, "browser_attach": true}
 	for _, tool := range browsertool.NewTools(svc) {
-		if tool.Name() == "browser_state" {
+		if readOnly[tool.Name()] {
 			if !tool.ReadOnly() {
-				t.Error("browser_state must be ReadOnly")
+				t.Errorf("%s must be ReadOnly", tool.Name())
 			}
 			pc, ok := tool.(interface{ PlanModeSafe() bool })
 			if !ok || !pc.PlanModeSafe() {
-				t.Error("browser_state must be PlanModeSafe")
+				t.Errorf("%s must be PlanModeSafe", tool.Name())
 			}
-		} else {
-			if tool.ReadOnly() {
-				t.Errorf("%s must not be ReadOnly", tool.Name())
-			}
+		} else if tool.ReadOnly() {
+			t.Errorf("%s must not be ReadOnly", tool.Name())
 		}
 	}
 }
@@ -257,7 +263,7 @@ func TestToolTraitsAndSchemas(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s does not explicitly classify plan mode", bt.Name())
 		}
-		wantRead := bt.Name() == "browser_state"
+		wantRead := bt.Name() == "browser_state" || bt.Name() == "browser_attach"
 		if bt.ReadOnly() != wantRead || classifier.PlanModeSafe() != wantRead {
 			t.Errorf("%s traits readOnly=%v planSafe=%v, want %v", bt.Name(), bt.ReadOnly(), classifier.PlanModeSafe(), wantRead)
 		}
@@ -325,6 +331,7 @@ func TestInvalidArgumentsAlwaysReturnEnvelope(t *testing.T) {
 		"browser_scroll":   json.RawMessage(`{"revision":1,"delta_y":0,"request_id":"r"}`),
 		"browser_tab":      json.RawMessage(`{"revision":1,"action":"activate","request_id":"r"}`),
 		"browser_upload":   json.RawMessage(`{"revision":1,"index":1,"files":[],"request_id":"r"}`),
+		"browser_attach":   json.RawMessage(`{"unexpected":true}`),
 		"browser_close":    json.RawMessage(`{"unexpected":true}`),
 	}
 	for _, bt := range browsertool.NewTools(newFakeService()) {

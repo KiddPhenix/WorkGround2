@@ -120,35 +120,44 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # 可选：raw MCP tool 名
 
 ### 原生浏览器工具
 
-默认 full 工具面包含 `browser_open`、`browser_navigate`、`browser_state`、
+默认 full 工具面包含 `browser_open`、`browser_attach`、`browser_navigate`、`browser_state`、
 `browser_click`、`browser_type`、`browser_scroll`、`browser_tab`、`browser_upload`、
-`browser_close` 九个工具。第一优先支持 Google Chrome；Edge、Chromium、Chrome for Testing
+`browser_close` 十个工具。第一优先支持 Google Chrome；Edge、Chromium、Chrome for Testing
 通过同一套 Chrome DevTools Protocol 兼容。浏览器只在第一次 `browser_open`
 时发现并启动，因此机器未安装受支持浏览器也不影响 WorkGround2 启动，失败会在打开时显式返回。
 
-每个 parent session 独占浏览器进程、标签页、revision 映射、幂等记录和隔离的临时 Profile。
-Session 关闭和调用 `browser_close` 都会回收资源；空闲回收只在配置了正数
-`idle_timeout_seconds`（30..86400）时生效，默认 `0` 表示永不因空闲自动关闭。
-Work task 只关闭属于自身 owner 的浏览器。V1 读取页面文本和带编号交互元素，明确不提供截图、
-下载、拖放、目录上传或视觉坐标定位。`browser_type` 只用于普通文本：工具参数会进入会话记录，
-因此除非你确实希望被记录，否则不要传入密码、API key、token 等秘密。密码输入和本地文件上传各自有
-`[tools.browser]` 下的独立开关 —— `allow_password_input` 与 `allow_file_upload`
-（默认均 `true`，显式 `false` 关闭）；关闭任一会把对应操作在到达浏览器之前硬拒绝，且不影响另一项。
-`browser_upload` 可向 `input[type=file]` 设置 1-20 个存在的本地普通文件（多文件目标要求
-`multiple` 属性）；上传的文件路径会原样进入 ToolCall transcript，且文件内容会交给页面，因此不要用它上传机密文件。
+每个用户共享一个持久化自动化浏览器，跨 Controller、Task、设置重建和应用重启复用。它使用独立的
+自动化 Profile（绝非默认 Chrome Profile），并把回环 CDP endpoint 元数据写入稳定的每用户运行时文件。
+`browser_open` 在记录校验通过时 attach 到已运行的浏览器，仅在首次使用时启动可脱离 WorkGround2 进程
+继续存活的 Chromium。Session 关闭和调用 `browser_close` 只分离该 Session 的 CDP 客户端并释放内存资源，
+不会退出共享 Chromium、不删除其持久 Profile 或有效 endpoint 记录；空闲回收只在配置了正数
+`idle_timeout_seconds`（30..86400）时生效，默认 `0` 表示永不因空闲自动关闭，且即使触发也只分离客户端。
+V1 读取页面文本和带编号交互元素，明确不提供截图、下载、拖放、目录上传或视觉坐标定位。
+`browser_type` 只用于普通文本：工具参数会进入会话记录，因此除非你确实希望被记录，否则不要传入密码、
+API key、token 等秘密。密码输入和本地文件上传各自有 `[tools.browser]` 下的独立开关 ——
+`allow_password_input` 与 `allow_file_upload`（默认均 `true`，显式 `false` 关闭）；
+关闭任一会把对应操作在到达浏览器之前硬拒绝，且不影响另一项。`browser_upload` 可向
+`input[type=file]` 设置 1-20 个存在的本地普通文件（多文件目标要求 `multiple` 属性）；
+上传的文件路径会原样进入 ToolCall transcript，且文件内容会交给页面，因此不要用它上传机密文件。
 file 输入框始终不接受 `browser_type`。
+
+`browser_attach` 返回当前 Session 的回环 CDP endpoint，供 Playwright `chromium.connectOverCDP()`
+使用；必须先 `browser_open`，绝不启动第二个浏览器。任何 Playwright 写操作后必须调用
+`browser_state(refresh=true)` —— 旧 `revision` 已失效，CDP invalidation 继续生效，原生
+`browser_state` 仍是 DOM/AX 摘要和 revision 的单一可信源。endpoint 绝不暴露 PID、Profile 路径或凭据，
+Playwright 断连不会退出浏览器。
 
 浏览器启动偏好由 `[tools.browser].incognito` 控制（默认 `false`，显式 `true` 开启）：
 开启后新建的 Chrome/Edge/Chromium 进程以 Chromium 隐身模式（incognito）启动，不保留该会话的
-历史与 Cookie。它是启动配置而非权限。Desktop 保存设置时会重建浏览器运行时并关闭其管理的现有
-浏览器进程；下次 `browser_open` 使用新模式。
+历史与 Cookie。它是启动配置而非权限。Desktop 保存设置时只重建并分离控制端，已运行的共享浏览器
+继续保持原启动模式；该浏览器自行退出或 endpoint 失效后，下一次新建才使用更新后的模式。
 
 运行时已经为后续 managed Profile、经用户明确授权连接日常 Chrome、复用 Cookie/登录态和密码库填充
 预留 ProfileProvider/CredentialProvider 边界；V1 不启用这些能力，也不会把 managed/attach 请求静默降级为
 临时 Profile。关闭 `[tools.browser].enabled`、通过 `tools.enabled` 筛掉浏览器工具或启用 token economy
 都会隐藏这组工具。revision/request_id 规则见[工具合约](./TOOL_CONTRACT.zh-CN.md)。
 
-每个启动的浏览器都在新选的随机非零回环端口（`127.0.0.1:<port>`）暴露 DevTools endpoint，替代 port=0 的自动化信号；endpoint 绝不绑定非回环接口，并随浏览器一起销毁。这移除的是一个标准自动化信号——可见（非 headless）浏览器不再因为端口而报告 `navigator.webdriver === true`——但它不是反检测保证：网站仍可通过其他手段识别自动化，且 headless 模式仍会报告 `navigator.webdriver === true`，因此不承诺任何 stealth 效果。Chrome 136 起远程调试要求非默认 `--user-data-dir`；WorkGround2 总是使用独立临时 Profile 启动，该要求天然满足。
+每个启动的浏览器都在新选的随机非零回环端口（`127.0.0.1:<port>`）暴露 DevTools endpoint，替代 port=0 的自动化信号；endpoint 绝不绑定非回环接口，其元数据以 0600、临时文件+rename 原子写入每用户运行时文件且绝不进入日志。这移除的是一个标准自动化信号——可见（非 headless）浏览器不再因为端口而报告 `navigator.webdriver === true`——但它不是反检测保证：网站仍可通过其他手段识别自动化，且 headless 模式仍会报告 `navigator.webdriver === true`，因此不承诺任何 stealth 效果。Chrome 136 起远程调试要求非默认 `--user-data-dir`；WorkGround2 总是使用独立自动化 Profile 启动，该要求天然满足。
 
 `[agent].plan_mode_allowed_tools` 用于把 WorkGround2 无法自动分类的自定义/外部工具声明为额外只读工具。
 对 MCP/plugin 工具，像 `mcp__github__issue_read` 这样的具体模型可见名也会把该工具提升为

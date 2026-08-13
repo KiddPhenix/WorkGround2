@@ -128,24 +128,30 @@ For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-
 
 ### Native browser tools
 
-The default full tool surface includes `browser_open`, `browser_navigate`,
-`browser_state`, `browser_click`, `browser_type`, `browser_scroll`, `browser_tab`,
-`browser_upload`, and `browser_close`. Google Chrome is the primary target; Edge,
-Chromium, and Chrome for Testing are compatible through the same Chrome DevTools
-Protocol. Browser discovery and launch are lazy, so WorkGround2 still starts when
-no supported browser is installed and reports that failure on `browser_open`.
+The default full tool surface includes `browser_open`, `browser_attach`,
+`browser_navigate`, `browser_state`, `browser_click`, `browser_type`,
+`browser_scroll`, `browser_tab`, `browser_upload`, and `browser_close`. Google
+Chrome is the primary target; Edge, Chromium, and Chrome for Testing are
+compatible through the same Chrome DevTools Protocol. Browser discovery and
+launch are lazy, so WorkGround2 still starts when no supported browser is
+installed and reports that failure on `browser_open`.
 
-Each parent session owns one browser process, its tabs, revision map, idempotency
-records, and an isolated ephemeral profile. Closing the session or calling
-`browser_close` releases it; the idle reaper only fires when a positive
-`idle_timeout_seconds` (30..86400) is configured, and the default `0` means the
-browser is never auto-closed for idleness. Work task sessions close only their
-own browser. V1 reads text and indexed interactive elements and deliberately has
-no screenshots, downloads, drag-and-drop, directory upload, or visual coordinate
-targeting. `browser_type` is for ordinary text: tool arguments are retained in
-the conversation transcript, so never pass passwords, API keys, tokens, or other
-secrets unless you intend them to be recorded. Password typing and local file
-upload each have an independent switch under `[tools.browser]` —
+One persistent automation browser is shared per user, across controllers, tasks,
+settings rebuilds and app restarts. It uses its own automation profile (never a
+default Chrome profile) and a stable per-user runtime record that points at its
+loopback CDP endpoint. `browser_open` attaches to the running browser when the
+record validates and starts a detached, surviving Chromium only on first use.
+Closing a session or calling `browser_close` only detaches that session's CDP
+client and releases its in-memory resources; it never quits the shared Chromium
+and never deletes its persistent profile or endpoint record. The idle reaper only
+fires when a positive `idle_timeout_seconds` (30..86400) is configured, the
+default `0` means the browser is never auto-closed for idleness, and even then it
+only detaches. V1 reads text and indexed interactive elements and deliberately
+has no screenshots, downloads, drag-and-drop, directory upload, or visual
+coordinate targeting. `browser_type` is for ordinary text: tool arguments are
+retained in the conversation transcript, so never pass passwords, API keys,
+tokens, or other secrets unless you intend them to be recorded. Password typing
+and local file upload each have an independent switch under `[tools.browser]` —
 `allow_password_input` and `allow_file_upload` (both default `true`, disabled
 explicitly with `false`); disabling one hard-rejects that operation before it
 reaches the browser and does not affect the other. `browser_upload` sets 1-20
@@ -155,12 +161,22 @@ ToolCall transcript and the files' contents become available to the page, so do
 not upload secret files through it. File inputs are never accepted by
 `browser_type`.
 
+`browser_attach` returns the shared session's loopback CDP endpoint for
+Playwright's `chromium.connectOverCDP()`; it requires `browser_open` first and
+never starts a second browser. After any Playwright write you must call
+`browser_state(refresh=true)` — the old `revision` is stale, CDP invalidation
+still applies, and the native `browser_state` remains the single source of truth
+for the DOM/AX summary and revision. The endpoint never exposes a PID, profile
+path, or credentials, and Playwright disconnecting does not quit the browser.
+
 Browser launch preference lives under `[tools.browser].incognito` (default
-`false`, explicit `true` enables it): when enabled, newly started
-Chrome/Edge/Chromium processes run in Chromium incognito mode, so history and
+`false`, explicit `true` enables it): when enabled, a newly started
+Chrome/Edge/Chromium process runs in Chromium incognito mode, so history and
 cookies from that session are not persisted. It is a launch preference, not a
-permission. Saving it in Desktop rebuilds the browser runtime and closes the
-browser processes it manages; the next `browser_open` uses the new mode.
+permission. Saving it in Desktop only rebuilds and detaches the controlling
+runtime; an already-running shared browser keeps its original launch mode. The
+updated mode applies when that browser exits or its endpoint becomes stale and a
+later `browser_open` creates a replacement.
 
 The runtime has reserved ProfileProvider/CredentialProvider boundaries for later
 managed profiles, explicitly authorized attachment to a daily Chrome profile,
@@ -172,14 +188,15 @@ by `tools.enabled`, or when token economy mode is active. See
 
 Each launched browser exposes its DevTools endpoint on a freshly chosen nonzero
 loopback port (`127.0.0.1:<port>`) instead of the port-0 automation signal; the
-endpoint is never bound to a non-loopback interface and is torn down with the
-browser. This removes one standard automation signal — a visible (non-headless)
+endpoint is never bound to a non-loopback interface, and its metadata is written
+to a per-user runtime file (mode `0600`, atomic temp-file + rename) that is never
+logged. This removes one standard automation signal — a visible (non-headless)
 browser no longer reports `navigator.webdriver === true` because of the port —
 but it is not an anti-detection guarantee: sites can still fingerprint
 automation, and headless mode still reports `navigator.webdriver === true`, so
 no stealth promise is implied. Since Chrome 136, remote debugging requires a
-non-default `--user-data-dir`; WorkGround2 always launches with an isolated
-ephemeral profile, so that requirement is already satisfied.
+non-default `--user-data-dir`; WorkGround2 always launches with its isolated
+automation profile, so that requirement is already satisfied.
 
 `[agent].plan_mode_allowed_tools` is an extra read-only declaration for custom or
 external tools WorkGround2 cannot classify itself. For MCP/plugin tools, a concrete

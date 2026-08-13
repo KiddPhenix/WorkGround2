@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +22,7 @@ type fakeDriver struct {
 	info             browser.BrowserInfo
 	url              string
 	title            string
+	endpoint         string
 	nodes            []browser.ObservedNode
 	invalCh          chan browser.Invalidation
 	closed           atomic.Bool
@@ -87,6 +90,12 @@ func newFakeDriver() *fakeDriver {
 }
 
 func (d *fakeDriver) Info() browser.BrowserInfo { return d.info }
+func (d *fakeDriver) CDPEndpoint() string {
+	if d.endpoint == "" {
+		return "http://127.0.0.1:9222"
+	}
+	return d.endpoint
+}
 func (d *fakeDriver) Close() error {
 	d.closeCalls.Add(1)
 	if d.lifecycleCtx != nil && d.lifecycleCtx.Err() != nil {
@@ -226,13 +235,14 @@ func (d *fakeDriver) Invalidations() <-chan browser.Invalidation {
 
 // fakeFactory implements browser.DriverFactory.
 type fakeFactory struct {
-	drivers   map[string]*fakeDriver
-	mu        sync.Mutex
-	created   []*fakeDriver
-	configure func(*fakeDriver)
-	opts      []browser.DriverOptions
-	newCtx    context.Context
-	newErr    error
+	drivers        map[string]*fakeDriver
+	mu             sync.Mutex
+	created        []*fakeDriver
+	configure      func(*fakeDriver)
+	opts           []browser.DriverOptions
+	newCtx         context.Context
+	newErr         error
+	attachFailures atomic.Int32
 }
 
 func newFakeFactory() *fakeFactory {
@@ -242,6 +252,13 @@ func newFakeFactory() *fakeFactory {
 func (f *fakeFactory) New(ctx context.Context, opts browser.DriverOptions) (browser.Driver, error) {
 	if f.newErr != nil {
 		return nil, f.newErr
+	}
+	if opts.Attach && f.attachFailures.Load() > 0 {
+		f.attachFailures.Add(-1)
+		f.mu.Lock()
+		f.opts = append(f.opts, opts)
+		f.mu.Unlock()
+		return nil, errors.New("injected attach race")
 	}
 	d := newFakeDriver()
 	d.lifecycleCtx = ctx
@@ -1737,5 +1754,169 @@ func TestIdleReaperDisabledAtZeroKeepsSessionUntilExplicitClose(t *testing.T) {
 	var browserErr *browser.Error
 	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrBrowserNotOpen {
 		t.Fatalf("session reachable after explicit close: %v", err)
+	}
+}
+
+type rtTransport func(*http.Request) (*http.Response, error)
+
+func (f rtTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func fakeVersionClient() *http.Client {
+	return &http.Client{Transport: rtTransport(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/json/version" {
+			return nil, fmt.Errorf("unexpected path %s", req.URL.Path)
+		}
+		body := `{"Browser":"Chrome/151.0","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/x"}`
+		return &http.Response{
+			StatusCode: 200,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+}
+
+func TestSharedRuntimeReuseAcrossManagers(t *testing.T) {
+	dir := t.TempDir()
+
+	first, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: newFakeFactory(), RuntimeDir: dir, RuntimeClient: fakeVersionClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Open(context.Background(), "owner-a", browser.OpenRequest{RequestID: "open-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later Manager over the same RuntimeDir must attach, never relaunch.
+	factory := newFakeFactory()
+	second, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: factory, RuntimeDir: dir, RuntimeClient: fakeVersionClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if _, err := second.Open(context.Background(), "owner-b", browser.OpenRequest{RequestID: "open-2"}); err != nil {
+		t.Fatal(err)
+	}
+	factory.mu.Lock()
+	opts := append([]browser.DriverOptions(nil), factory.opts...)
+	factory.mu.Unlock()
+	if len(opts) != 1 || !opts[0].Attach {
+		t.Fatalf("later manager did not attach to the shared record: %+v", opts)
+	}
+}
+
+func TestSharedCleanupPreservesRecordAndProfile(t *testing.T) {
+	dir := t.TempDir()
+	profileDir := filepath.Join(dir, "profile")
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: factory, RuntimeDir: dir, RuntimeClient: fakeVersionClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	// The launch callback would create the persistent profile in production; a
+	// fake factory does not, so create it here to model a real launch.
+	if err := os.MkdirAll(profileDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := mgr.CloseSession(context.Background(), "owner")
+	if err != nil || !result.Closed {
+		t.Fatalf("CloseSession = %+v err=%v", result, err)
+	}
+	if factory.only(t).closeCalls.Load() == 0 {
+		t.Fatal("CloseSession did not detach the driver")
+	}
+	// The persistent profile and valid endpoint record must survive cleanup.
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Fatalf("persistent profile was deleted: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "endpoint.json")); err != nil {
+		t.Fatalf("endpoint record was deleted: %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAttachReturnsLoopbackEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: newFakeFactory(), RuntimeDir: dir, RuntimeClient: fakeVersionClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	if _, err := mgr.Attach(context.Background(), "owner"); err == nil {
+		t.Fatal("Attach before Open must fail")
+	}
+	if _, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := mgr.Attach(context.Background(), "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionID == "" || res.Endpoint == "" {
+		t.Fatalf("Attach result missing fields: %+v", res)
+	}
+	if !strings.HasPrefix(res.Endpoint, "http://127.0.0.1:") {
+		t.Fatalf("Attach endpoint is not loopback: %q", res.Endpoint)
+	}
+}
+
+func TestSharedAttachRaceClearsStaleRecordAndRelaunches(t *testing.T) {
+	dir := t.TempDir()
+	seed, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: newFakeFactory(), RuntimeDir: dir, RuntimeClient: fakeVersionClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.Open(context.Background(), "seed", browser.OpenRequest{RequestID: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls atomic.Int32
+	client := &http.Client{Transport: rtTransport(func(req *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		if call == 2 { // browser exits after resolve validation, before attach
+			return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(strings.NewReader(""))}, nil
+		}
+		body := `{"Browser":"Chrome/151.0","webSocketDebuggerUrl":"ws://127.0.0.1:9222/devtools/browser/x"}`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	factory := newFakeFactory()
+	factory.attachFailures.Store(1)
+	mgr, err := browser.NewManager(context.Background(), browser.Options{
+		Factory: factory, RuntimeDir: dir, RuntimeClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	if _, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	factory.mu.Lock()
+	opts := append([]browser.DriverOptions(nil), factory.opts...)
+	factory.mu.Unlock()
+	if len(opts) != 2 || !opts[0].Attach || opts[1].Attach {
+		t.Fatalf("attach race did not converge to one relaunch: %+v", opts)
 	}
 }

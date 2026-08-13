@@ -593,3 +593,101 @@ func TestChromeDebugPortWebdriverSignal(t *testing.T) {
 		t.Fatalf("browser process evidence pid=%d exited=%v", proc.ProcessID(), proc.ProcessExited())
 	}
 }
+
+// TestPersistentBrowserDetachAndReattach proves the shared-runtime contract on
+// a real browser: Close tears down only the CDP client, the browser and page
+// survive, and a second Driver attaches to the same page target.
+func TestPersistentBrowserDetachAndReattach(t *testing.T) {
+	if os.Getenv("WORKGROUND2_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set WORKGROUND2_BROWSER_INTEGRATION=1 and use -tags browser_integration")
+	}
+	info, err := cdp.Discover(browser.BrowserAuto, os.Getenv("WORKGROUND2_BROWSER_EXECUTABLE"))
+	if err != nil {
+		t.Skipf("no supported Chrome/Chromium browser installed: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Persistent Reattach</title><button>same page</button>`)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	factory := cdp.NewFactory(cdp.Options{})
+	opts := browser.DriverOptions{
+		BrowserKind: info.Kind, ExecutablePath: info.ExecutablePath,
+		Headless: true, UserDataDir: t.TempDir(), OwnProcess: false,
+		DenyDownloads: true,
+	}
+	first, err := factory.New(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	killer, ok := first.(browser.Killer)
+	if !ok {
+		t.Fatal("persistent driver does not expose orphan reaper")
+	}
+	defer killer.Kill()
+	process, ok := first.(processDriver)
+	if !ok {
+		t.Fatal("persistent driver does not expose integration process evidence")
+	}
+	if err := first.Navigate(ctx, server.URL); err != nil {
+		t.Fatal(err)
+	}
+	before, err := first.Observe(ctx, browser.ObserveOptions{})
+	if err != nil || before.Title != "Persistent Reattach" {
+		t.Fatalf("first observation title=%q err=%v", before.Title, err)
+	}
+	endpoint := "http://" + process.DebugEndpoint()
+	endpointInfo, err := browser.ValidateEndpoint(ctx, nil, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if process.ProcessExited() {
+		t.Fatal("detach reported the shared browser process as exited")
+	}
+	if _, err := browser.ValidateEndpoint(ctx, nil, endpoint); err != nil {
+		t.Fatalf("browser endpoint died after detach: %v", err)
+	}
+
+	opts.Attach = true
+	opts.DebugURL = endpoint
+	opts.WebSocketURL = endpointInfo.WebSocketURL
+	second, err := factory.New(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, ok := second.(browser.EndpointSource)
+	if !ok {
+		t.Fatal("reattached driver does not expose its CDP endpoint")
+	}
+	if got := source.CDPEndpoint(); got != endpoint {
+		t.Fatalf("reattached endpoint = %q, want %q", got, endpoint)
+	}
+	after, err := second.Observe(ctx, browser.ObserveOptions{})
+	if err != nil || after.Title != before.Title || after.URL != before.URL {
+		t.Fatalf("reattach did not reuse page: before=%+v after=%+v err=%v", before, after, err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := browser.ValidateEndpoint(ctx, nil, endpoint); err != nil {
+		t.Fatalf("second detach closed shared browser: %v", err)
+	}
+	if err := killer.Kill(); err != nil {
+		t.Fatalf("integration orphan cleanup: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if _, err := browser.ValidateEndpoint(ctx, nil, endpoint); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("explicit orphan cleanup left the browser endpoint reachable")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

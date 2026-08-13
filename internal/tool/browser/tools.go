@@ -14,6 +14,7 @@ import (
 func NewTools(svc browser.Service) []tool.Tool {
 	return []tool.Tool{
 		&openTool{svc: svc},
+		&attachTool{svc: svc},
 		&navigateTool{svc: svc},
 		&stateTool{svc: svc},
 		&clickTool{svc: svc},
@@ -37,7 +38,7 @@ func (t *openTool) Description() string {
 	return "Open or reuse the preferred WorkGround2 native browser-use session for the current agent. " +
 		"Use the browser_* tools first when available; use Playwright only as a fallback when the native tools are unavailable, lack a required capability, or explicitly fail. " +
 		"Returns the session ID, page revision, and browser info. " +
-		"The browser process is created on first call and reused for the same session."
+		"The underlying browser is shared across controllers, tasks and app restarts; use browser_attach when Playwright must operate that same running browser."
 }
 
 func (t *openTool) Schema() json.RawMessage {
@@ -460,6 +461,42 @@ func (t *uploadTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	return marshalOK(result)
 }
 
+// ── browser_attach ──────────────────────────────────────────────────────────
+
+type attachTool struct{ svc browser.Service }
+
+func (t *attachTool) Name() string       { return "browser_attach" }
+func (t *attachTool) ReadOnly() bool     { return true }
+func (t *attachTool) PlanModeSafe() bool { return true }
+
+func (t *attachTool) Description() string {
+	return "Return the loopback CDP endpoint of the current WorkGround2 browser session, usable with Playwright's " +
+		"chromium.connectOverCDP(). Requires browser_open first; it never starts a second browser. " +
+		"After any Playwright write action you must call browser_state(refresh=true) to invalidate the old revision " +
+		"and obtain fresh element indices; CDP invalidation still applies. The endpoint never exposes PID, profile path or credentials."
+}
+
+func (t *attachTool) Schema() json.RawMessage {
+	return json.RawMessage(`{
+"type":"object",
+"additionalProperties":false,
+"properties":{}
+}`)
+}
+
+func (t *attachTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	owner := ownerFromContext(ctx)
+	var p struct{}
+	if err := decodeArgs(args, &p); err != nil {
+		return marshalError[browser.AttachResult](err)
+	}
+	result, err := t.svc.Attach(ctx, owner)
+	if err != nil {
+		return marshalBrowserError[browser.AttachResult](err)
+	}
+	return marshalOK(result)
+}
+
 // ── browser_close ───────────────────────────────────────────────────────────
 
 type closeTool struct{ svc browser.Service }
@@ -469,7 +506,9 @@ func (t *closeTool) ReadOnly() bool     { return false }
 func (t *closeTool) PlanModeSafe() bool { return false }
 
 func (t *closeTool) Description() string {
-	return "Close the browser session for the current agent. Idempotent — safe to call multiple times."
+	return "Detach the browser session for the current agent, releasing this CDP client and its in-memory resources. " +
+		"The underlying Chromium and its persistent profile are reused across controllers, tasks and restarts, so this does not quit the browser. " +
+		"Idempotent — safe to call multiple times."
 }
 
 func (t *closeTool) Schema() json.RawMessage {
