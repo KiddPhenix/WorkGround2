@@ -44505,7 +44505,7 @@ body > .mermaid-diagram--fullscreen {
 .app--workbench .workspace-sidebar .project-tree__topic-pin-state {
   position: absolute;
   top: 50%;
-  right: -18px;
+  right: 80px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -44514,10 +44514,6 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--accent) 86%, var(--fg));
   pointer-events: none;
   transform: translateY(-50%);
-}
-
-.app--workbench .workspace-sidebar .project-tree__topic-heading {
-  position: relative;
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic--pinned .project-tree__topic-project {

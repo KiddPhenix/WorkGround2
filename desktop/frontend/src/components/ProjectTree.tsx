@@ -1765,6 +1765,7 @@ export function ProjectTree({
                     event.stopPropagation();
                     if (isCrewSessionNode(node)) void setSessionPinned(node.sessionPath ?? "", !pinned);
                     else void setTopicPinned(topicId, !pinned);
+                    if (event.detail > 0) event.currentTarget.blur();
                   }}
                 >
                   {pinned

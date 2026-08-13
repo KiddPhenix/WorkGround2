@@ -146,8 +146,10 @@ ok(
 );
 ok(
   includes(projectTreeSource, 'className="project-tree__topic-pin-state"') &&
-    includes(projectTreeSource, '<PinOff size={15} aria-hidden="true" />'),
-  "ProjectTree: pinned Recent rows separate the persistent Pin state from the unpin action",
+    includes(projectTreeSource, '<PinOff size={15} aria-hidden="true" />') &&
+    includes(projectTreeSource, "event.detail > 0") &&
+    includes(projectTreeSource, "event.currentTarget.blur()"),
+  "ProjectTree: pinned Recent rows separate state from action and release pointer focus after toggling",
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "opacity") === "0" &&
@@ -159,11 +161,11 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "display") === "inline-flex" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "position") === "absolute" &&
-    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "-18px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "80px" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
     includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
     includes(stylesSource, "transform: translateX(-3px);"),
-  "CSS: pinned state stays outside title flow while project metadata yields to row actions",
+  "CSS: pinned state and project metadata use separate stable columns while metadata yields to row actions",
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "top") === "6px" &&
