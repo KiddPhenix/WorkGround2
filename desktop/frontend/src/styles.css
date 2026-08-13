@@ -44452,12 +44452,13 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-actions {
+  top: 6px;
   right: 5px;
   display: inline-flex !important;
   gap: 0;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%) translateX(4px);
+  transform: translateX(4px);
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic:hover .project-tree__topic-actions,
@@ -44465,7 +44466,7 @@ body > .mermaid-diagram--fullscreen {
 .app--workbench .workspace-sidebar .project-tree__topic--menu-open .project-tree__topic-actions {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(-50%) translateX(0);
+  transform: translateX(0);
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-action-slot,
@@ -44502,13 +44503,25 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .workspace-sidebar .project-tree__topic-pin-state {
+  position: absolute;
+  top: 50%;
+  right: -18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 14px;
   width: 14px;
   height: 14px;
   color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic-heading {
+  position: relative;
+}
+
+.app--workbench .workspace-sidebar .project-tree__topic--pinned .project-tree__topic-project {
+  max-width: 64px;
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {

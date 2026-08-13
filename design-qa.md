@@ -41,15 +41,19 @@ final result: passed
 - Implementation pinned-state screenshot: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned.png`
 - Full target-region comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-comparison.png`
 - Focused pinned-state evidence: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned-crop.png`
+- Alignment feedback source: `D:\Temp\codex-clipboard-aa687e41-8d0f-4d07-aa8a-6821c3f7d363.png`
+- Alignment implementation: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-hover.png`
+- Alignment comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-comparison.png`
 - Viewport: `1280 × 720` CSS px；device pixel ratio `1.375`；工作台侧栏渲染宽度 `300px`。
 - Pixels and normalization: 源图 `409 × 393`；实现截图 `1280 × 720`；对照图将源图等比缩放到 `229 × 220`，实现侧栏裁剪为 `320 × 220`，只比较用户指出的“最近”区域。
+- Alignment viewport and normalization: `612 × 842` CSS px、device pixel ratio `1.375`；反馈图 `413 × 125`，实现从全屏截图裁剪为 `300 × 125`，并排图保持两侧同高 `125px`。
 - State: 深色工作台；分别验证未置顶悬停、置顶静止、置顶聚焦、取消置顶与重新置顶。
 
 ## Findings
 
 - P0 / P1 / P2: none。
-- Fonts and typography: 沿用现有 UI 字体、字号、字重和截断规则；Pin 使用独立 `14px` 固定槽，不挤压标题基线。
-- Spacing and layout rhythm: 未置顶时操作区静止隐藏；悬停/聚焦时项目名淡出，Pin 与更多菜单占用独立的 `26px` 操作槽；已置顶 Pin 跟随标题常驻，不再与项目名重叠。
+- Fonts and typography: 沿用现有 UI 字体、字号、字重和截断规则；Pin 绝对定位在标题右侧，不再参与标题宽度计算，实机标题从“00 制定…”恢复到“00 制定项目…”。
+- Spacing and layout rhythm: 未置顶时操作区静止隐藏；悬停/聚焦时项目名淡出，Pin 与更多菜单占用独立的 `26px` 操作槽；操作区固定 `top: 6px`，其中心与 `38px` 行中心实测偏差为 `0`。
 - Colors and tokens: 状态 Pin 使用现有 `--accent` 与前景色混合；静止态无额外底框，悬停底色继续复用 `--sidebar-hover`。
 - Image quality and assets: 没有新增位图或近似绘制；状态与操作图标均来自项目现有 `lucide-react`，分别使用 `Pin` 和 `PinOff`。
 - Copy and content: 沿用“置顶对话 / 取消置顶 / 置顶”现有本地化，不引入新文案。
@@ -68,11 +72,17 @@ final result: passed
 - Fix: 已置顶状态改为标题旁 `-45deg` Pin；未置顶操作仅在悬停/聚焦时出现；取消置顶使用 `PinOff`；项目名在操作区出现时淡出。
 - Post-fix evidence: 并排图、置顶静止聚焦图、浏览器计算样式与双向交互结果均无重叠或状态残留。
 
+### Pass 2
+
+- Earlier findings: 用户实机指出 Unpin 与更多菜单整体偏高；标题旁 Pin 作为 flex item 占用宽度，使标题过早截断。
+- Fix: 操作区改为相对 38px 行的固定 `top: 6px`，移除纵向百分比变换；状态 Pin 改为标题容器内绝对定位，并将置顶行项目名上限收为 `64px`，避免状态 Pin 与项目名相撞。
+- Post-fix evidence: `session-pin-alignment-comparison.png`；浏览器测得行与操作区中心差为 `0`，Pin 为 `position: absolute; right: -18px`，标题 label 不再为 Pin 让出宽度。
+
 ## Interaction and engineering evidence
 
 - 浏览器实际点击“置顶对话”后状态 Pin 出现；点击“取消置顶”后数量为 `0`，重新置顶后数量恢复为 `1`。
 - 浏览器 console error/warning: none。
-- 新增 3 条 Workbench 样式契约通过；该历史布局脚本仍为既有 `112 / 124`，12 条漂移断言与 Feature Map 记录一致，本次无新增失败。
+- 新增及更新的 4 条 Workbench Pin/布局契约通过；该历史布局脚本仍为既有 12 条漂移断言（`113 / 125`），本次无新增失败。
 - CSS syntax、z-index token、TypeScript 和 Vite production build 通过。
 
 ## Follow-up polish

@@ -158,11 +158,18 @@ ok(
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "display") === "inline-flex" &&
-    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "flex") === "0 0 14px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "position") === "absolute" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "-18px" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
     includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
     includes(stylesSource, "transform: translateX(-3px);"),
-  "CSS: pinned state has a stable slot while project metadata yields to row actions",
+  "CSS: pinned state stays outside title flow while project metadata yields to row actions",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "top") === "6px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "transform") === "translateX(4px)" &&
+    includes(stylesSource, "transform: translateX(0);"),
+  "CSS: Recent row actions are vertically centered without a percentage translation",
 );
 ok(
   includes(projectTreeSource, 'role="switch"') &&
