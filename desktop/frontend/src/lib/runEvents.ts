@@ -1,4 +1,5 @@
-import { useRunStore, type RunEvent, type RunStatus } from "../store/run";
+import { useRunStore, type RunEvent, type RunEventKind, type RunStatus } from "../store/run";
+import { classifyTool } from "./activity";
 import type { WireEvent, WireTool } from "./types";
 
 type HistoryRunItem = {
@@ -13,7 +14,13 @@ type HistoryRunItem = {
   summary?: string;
 };
 
-type ToolStep = { content: string; label: string };
+type ToolStep = {
+  content: string;
+  label: string;
+  kind: RunEventKind;
+  toolName?: string;
+  args?: string;
+};
 type ActiveRun = { runId: string; turnId: string; seq: number; toolSteps: Map<string, ToolStep> };
 
 const activeRuns = new Map<string, ActiveRun>();
@@ -67,6 +74,30 @@ function toolStepId(run: ActiveRun, tool?: WireTool): string {
   return `${run.runId}:tool:${toolStepKey(tool)}`;
 }
 
+/** Central visual-semantic mapping for RunBlock activity scenes. */
+export function classifyRunEventKind(name: string, args = ""): RunEventKind {
+  const normalized = name.trim().toLowerCase();
+  if (normalized.startsWith("browser_") || normalized.includes("__browser__")) return "browser";
+  switch (classifyTool(normalized, args)) {
+    case "searching": return "search";
+    case "reading": return "read";
+    case "editing": return "edit";
+    case "testing": return "test";
+    case "command": return "command";
+    default: return "generic";
+  }
+}
+
+function toolMeta(tool?: WireTool, previous?: ToolStep): Pick<ToolStep, "kind" | "toolName" | "args"> {
+  const toolName = tool?.name || previous?.toolName;
+  const args = tool?.args ?? previous?.args;
+  return {
+    kind: toolName ? classifyRunEventKind(toolName, args) : (previous?.kind ?? "generic"),
+    ...(toolName ? { toolName } : {}),
+    ...(args ? { args } : {}),
+  };
+}
+
 function isCompleteStepSuccess(tool?: Pick<WireTool, "name" | "err">): boolean {
   if (tool?.name !== "complete_step") return false;
   return !tool.err || /newly completed|already completed/i.test(tool.err);
@@ -86,7 +117,7 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
 
   if (event.kind === "turn_started") {
     const run = nextRun(sessionId, turnId);
-    append(sessionId, run, { content: "开始执行", stepLabel: "开始" }, `${run.runId}:start`);
+    append(sessionId, run, { kind: "generic", content: "开始执行", stepLabel: "开始" }, `${run.runId}:start`);
     return;
   }
 
@@ -105,8 +136,16 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
     case "tool_dispatch": {
       if (!event.tool || event.tool.partial) return;
       const label = toolLabel(event.tool);
-      run.toolSteps.set(toolStepKey(event.tool), { content: label, label });
-      append(sessionId, run, { content: label, stepLabel: label, status: "running" }, toolStepId(run, event.tool));
+      const step = { content: label, label, ...toolMeta(event.tool) };
+      run.toolSteps.set(toolStepKey(event.tool), step);
+      append(sessionId, run, {
+        kind: step.kind,
+        toolName: step.toolName,
+        args: step.args,
+        content: step.content,
+        stepLabel: label,
+        status: "running",
+      }, toolStepId(run, event.tool));
       setStatus(run, "running");
       return;
     }
@@ -119,8 +158,16 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
       const combined = previous?.content && previous.content !== label
         ? `${previous.content}\n${content}`
         : content;
-      run.toolSteps.set(key, { content: combined, label });
-      append(sessionId, run, { content: combined, stepLabel: label, status: "running" }, toolStepId(run, event.tool));
+      const step = { content: combined, label, ...toolMeta(event.tool, previous) };
+      run.toolSteps.set(key, step);
+      append(sessionId, run, {
+        kind: step.kind,
+        toolName: step.toolName,
+        args: step.args,
+        content: step.content,
+        stepLabel: label,
+        status: "running",
+      }, toolStepId(run, event.tool));
       setStatus(run, "running");
       return;
     }
@@ -147,7 +194,7 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
       append(
         sessionId,
         run,
-        { content, stepLabel, status: failed ? "failed" : "completed" },
+        { ...toolMeta(event.tool, progress), content, stepLabel, status: failed ? "failed" : "completed" },
         toolStepId(run, event.tool),
       );
       run.toolSteps.delete(key);
@@ -169,7 +216,7 @@ export function applyRunWireEvent(sessionId: string, event: WireEvent, turnId?: 
       append(
         sessionId,
         run,
-        { content: hadCompleteStep ? "步骤确认完成" : (event.err || "运行完成"), stepLabel: finalErr ? "失败" : "完成", status: finalErr ? "failed" : "completed" },
+        { kind: "generic", content: hadCompleteStep ? "步骤确认完成" : (event.err || "运行完成"), stepLabel: finalErr ? "失败" : "完成", status: finalErr ? "failed" : "completed" },
         `${run.runId}:done`,
       );
       setStatus(run, finalErr ? "failed" : "completed", finalErr);
@@ -218,7 +265,7 @@ export function projectRunHistory(sessionId: string, items: HistoryRunItem[]): v
       continue;
     }
     if (item.kind === "assistant" && item.reasoning?.trim()) {
-      events.push({ eventId: `${sessionId}:history:${turn}:reasoning`, content: item.reasoning.trim(), stepLabel: "思考完成", status: "completed" });
+      events.push({ eventId: `${sessionId}:history:${turn}:reasoning`, kind: "generic", content: item.reasoning.trim(), stepLabel: "思考完成", status: "completed" });
       continue;
     }
     if (item.kind === "tool") {
@@ -227,6 +274,9 @@ export function projectRunHistory(sessionId: string, items: HistoryRunItem[]): v
       const stepCompleted = name === "complete_step" && (!item.error || /newly completed|already completed/i.test(item.error));
       events.push({
         eventId: `${sessionId}:history:${turn}:tool:${item.id || events.length}`,
+        kind: classifyRunEventKind(name, item.args),
+        toolName: name,
+        ...(item.args ? { args: item.args } : {}),
         content: stepCompleted ? stripRunAnsi(item.output || "步骤确认完成") : stripRunAnsi(item.error || item.output || subject),
         stepLabel: stepCompleted ? "步骤确认完成" : `${name} ${item.status === "error" ? "失败" : "完成"}`,
         status: item.status === "error" && !stepCompleted ? "failed" : "completed",

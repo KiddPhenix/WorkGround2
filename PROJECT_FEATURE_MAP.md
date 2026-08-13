@@ -24,13 +24,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
-### LLM 后台任务等待
-- Location: `internal/tool/builtin/bgjobs.go`, `internal/jobs/jobs.go`, `internal/agent/agent.go`
-- Summary: 模型通过结构化 `wait` 工具调用等待当前 Session 的后台 job；Job 完成关闭 done channel，等待结果写回工具消息后 Agent 继续下一轮模型请求，纯文本“等待”不会自动续跑。
-- Keywords: wait, waitJob, WaitForSession, background job, done channel, tool loop
-- Source: verified-by-search
-- Updated: 2026-08-12
-
 ### AutoResearch 与 Memory Compiler
 - Location: `internal/autoresearch/store.go`, `internal/autoresearch`, `internal/memorycompiler/runtime.go`, `docs/superpowers`
 - Summary: autoresearch 在 .WorkGround2/autoresearch 下管理研究任务状态，memorycompiler 是本地 rule-driven Memory v5 runtime 和执行 IR/trace 学习层。
@@ -66,6 +59,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-14
 
+### Desktop 外部 Session 模型选择
+- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `internal/config/load.go`, `internal/config/config.go`, `internal/boot/boot.go`
+- Summary: `/api/v1/session/new` 不接收 model；新外部 Session 以 workspace 合并配置的 `default_model` 启动，恢复既有 Session 时优先使用可解析的持久化模型，失效引用按有效默认模型和首个已配置 Provider 回退。
+- Keywords: desktop new, external session, default_model, LoadForRoot, ResolveModelWithFallback, BranchMeta
+- Source: verified-by-search
+- Updated: 2026-08-12
+
 ### Desktop 异步派发握手
 - Location: `desktop/remote_api.go`, `desktop/tabs.go`, `desktop/app.go`, `desktop/ai_collaboration_skill/scripts/dispatch.ps1`
 - Summary: 外部 Session 创建后立即返回可查询的 starting SessionID；启动期任务持久排队，Controller Ready 后幂等重放；Worker 派发与 PollOnly 拆成短命令快照。
@@ -73,12 +73,12 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-03
 
-### Desktop 外部 Session 模型选择
-- Location: `desktop/remote_api.go`, `desktop/tabs.go`, `internal/config/load.go`, `internal/config/config.go`, `internal/boot/boot.go`
-- Summary: `/api/v1/session/new` 不接收 model；新外部 Session 以 workspace 合并配置的 `default_model` 启动，恢复既有 Session 时优先使用可解析的持久化模型，失效引用按有效默认模型和首个已配置 Provider 回退。
-- Keywords: desktop new, external session, default_model, LoadForRoot, ResolveModelWithFallback, BranchMeta
+### Desktop 普通 Session 消息队列
+- Location: `desktop/frontend/src/store/composerQueue.ts`, `desktop/frontend/src/components/Composer.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/lib/useController.ts`, `desktop/frontend/src/components/desktop-ui/IrisInfoComponents.tsx`
+- Summary: 普通 Session 运行中消息按 session 入队，Controller 空闲且无决策门控时 FIFO 自动提交；后端拒绝时保留错误并支持重试。
+- Keywords: ordinary session, composerQueue, QueueTray, sendToTabConfirmed, FIFO, retry
 - Source: verified-by-search
-- Updated: 2026-08-12
+- Updated: 2026-08-13
 
 ### Draw AddOn 画图工具
 - Location: `pkg/drawaddon`, `internal/boot/boot.go`, `desktop/draw_addon_app.go`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/lib/bridge.ts`, `D:\Work\wg2addons\draw-tool`, `docs/addons/draw-addon-design.md`
@@ -93,6 +93,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: serve, SSE, /events, /submit, /approve, browser UI
 - Source: verified-by-search
 - Updated: 2026-07-03
+
+### LLM 后台任务等待
+- Location: `internal/tool/builtin/bgjobs.go`, `internal/jobs/jobs.go`, `internal/agent/agent.go`
+- Summary: 模型通过结构化 `wait` 工具调用等待当前 Session 的后台 job；Job 完成关闭 done channel，等待结果写回工具消息后 Agent 继续下一轮模型请求，纯文本“等待”不会自动续跑。
+- Keywords: wait, waitJob, WaitForSession, background job, done channel, tool loop
+- Source: verified-by-search
+- Updated: 2026-08-12
 
 ### MCP 插件系统
 - Location: `internal/plugin/plugin.go`, `internal/plugin`, `cmd/WorkGround2-plugin-example/main.go`, `docs/PLUGIN_PACKAGES.md`
@@ -171,6 +178,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-04
 
+### Room Relay-only 文件接收恢复
+- Location: `desktop/collab_transport.go`, `desktop/collab_relay_host.go`, `desktop/collab_relay_file.go`, `desktop/collab_file_transfer.go`
+- Summary: Relay-only Host 不再把 typed-nil HTTP 文件通道误装入 fallback；文件下载 Panic 会记录栈、隔离为可手动重试的失败，并可靠释放自动接收锁与并发槽，避免持久化传输让 Desktop 启动循环崩溃。
+- Keywords: Room, Relay-only, auto receive, typed nil, fallback, panic recovery, waiting_sender
+- Source: user-stated+verified-by-reproduction
+- Updated: 2026-08-11
+
 ### Room 主人命令授权边界
 - Location: `desktop/frontend/src/collab/useCollabController.ts`, `desktop/frontend/src/__tests__/collaboration.test.tsx`, `desktop/collab_agent.go`
 - Summary: 主人命令本身直接启动；后续工具权限遵循同一 Session 的 ask/auto/yolo 策略。自动响应任务可在单次运行临时启用 scoped auto，完成后恢复原策略且不覆盖主人主动修改。
@@ -184,13 +198,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: Room, export connection, CollaborationInvite, Relay, LAN, inviteString
 - Source: verified-by-search
 - Updated: 2026-08-10
-
-### Room Relay-only 文件接收恢复
-- Location: `desktop/collab_transport.go`, `desktop/collab_relay_host.go`, `desktop/collab_relay_file.go`, `desktop/collab_file_transfer.go`
-- Summary: Relay-only Host 不再把 typed-nil HTTP 文件通道误装入 fallback；文件下载 Panic 会记录栈、隔离为可手动重试的失败，并可靠释放自动接收锁与并发槽，避免持久化传输让 Desktop 启动循环崩溃。
-- Keywords: Room, Relay-only, auto receive, typed nil, fallback, panic recovery, waiting_sender
-- Source: user-stated+verified-by-reproduction
-- Updated: 2026-08-11
 
 ### Room 小文件自动接收与图片直显
 - Location: `desktop/collab_file_transfer.go`, `desktop/collab_relay_file.go`, `desktop/collab_relay_crypto.go`, `desktop/collab_agent.go`, `desktop/frontend/src/collab/components/CollaborationTimeline.tsx`, `desktop/frontend/src/__tests__/collaboration.test.tsx`

@@ -32,9 +32,23 @@ export function isTerminalStatus(status: RunStatus): boolean {
 
 export type RunStepStatus = "running" | "completed" | "failed";
 
+export type RunEventKind =
+  | "search"
+  | "read"
+  | "edit"
+  | "command"
+  | "test"
+  | "browser"
+  | "generic";
+
 export type RunEvent = {
   eventId: string;
+  /** Stable visual semantics assigned by the wire-event projection layer. */
+  kind: RunEventKind;
   content: string;
+  /** Source tool metadata used by the compact activity scene. */
+  toolName?: string;
+  args?: string;
   /** Optional short label shown in step tabs, e.g. "已读 1 个文件" */
   stepLabel?: string;
   /** Status of this individual step; independent from the enclosing run. */
@@ -139,9 +153,23 @@ export const useRunStore = create<RunState & RunActions>((set) => ({
         const eventIndex = existing.events.findIndex((e) => e.eventId === event.eventId);
         if (eventIndex >= 0) {
           const previous = existing.events[eventIndex];
-          if (previous.content === event.content && previous.stepLabel === event.stepLabel && previous.status === event.status) return s;
+          const merged = {
+            ...previous,
+            ...event,
+            kind: event.kind ?? previous.kind,
+            toolName: event.toolName ?? previous.toolName,
+            args: event.args ?? previous.args,
+          };
+          if (
+            previous.content === merged.content &&
+            previous.stepLabel === merged.stepLabel &&
+            previous.status === merged.status &&
+            previous.kind === merged.kind &&
+            previous.toolName === merged.toolName &&
+            previous.args === merged.args
+          ) return s;
           const events = [...existing.events];
-          events[eventIndex] = event;
+          events[eventIndex] = merged;
           return {
             runs: {
               ...s.runs,

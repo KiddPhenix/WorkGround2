@@ -656,6 +656,8 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   const { root, calls, rerender } = await renderComposer({
     running: true,
+    collaborationMode: "goal",
+    goal: "ship the guidance queue",
     onSend: (displayText, submitText) => {
       calls.send.push(displayText);
       calls.submit.push(submitText);
@@ -751,6 +753,8 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   const { root, calls, rerender } = await renderComposer({
     running: true,
+    collaborationMode: "goal",
+    goal: "ship the guidance queue",
     submitDisabled: true,
     onSend: (displayText) => {
       calls.send.push(displayText);

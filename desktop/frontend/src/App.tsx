@@ -153,6 +153,7 @@ import {
 } from "./store/layout";
 import { useOverlayStore } from "./store/overlays";
 import { useAddOnDialogStore } from "./store/addonDialog";
+import { canDrainQueue, selectSessionQueueHead, useComposerQueueStore } from "./store/composerQueue";
 import { hydrateDisplayMode } from "./lib/displayMode";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems, type StatusBarItemId } from "./lib/statusBarItems";
 import { paletteSessionDisplayTitle, paletteSessionHint, paletteSessionKeywords, sessionActivityTime, tabSessionDisplayTitle } from "./lib/session";
@@ -1093,6 +1094,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     activeSessionId,
     send,
     sendToTab,
+    sendToTabConfirmed,
     runShell,
     steer,
     notice,
@@ -3809,6 +3811,67 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     widgetEnabled,
   };
 
+  // ── Composer queue auto-drain ────────────────────────────────────────────
+  //
+  // While an ordinary session is running, the Composer enqueues follow-up
+  // messages into the visible session queue (store/composerQueue). Once that
+  // same session becomes safe/idle — ready, no foreground turn, no pending
+  // approval/ask/decision gate — submit only the FIFO head as a new turn.
+  // One item drains per completed turn; a failed submit is retained with a
+  // retryable error instead of retrying in a tight loop.
+  const composerQueueItems = useComposerQueueStore((s) => s.items);
+  const composerQueueDrainingRef = useRef(false);
+
+  useEffect(() => {
+    const sessionId = activeSessionId ?? activeTabId ?? "";
+    const targetTabId = activeTabId ?? "";
+    const drainable = canDrainQueue({
+      ready: controllerReady && !hydratePlaceholderActive,
+      running: state.running || rewindCommitting,
+      decisionPending:
+        state.approval != null ||
+        state.ask != null ||
+        state.messageAction != null ||
+        clearContextPending,
+    });
+    if (!drainable || !sessionId || !targetTabId || composerQueueDrainingRef.current) return;
+    const head = selectSessionQueueHead(composerQueueItems, sessionId);
+    if (!head || head.error) return;
+
+    composerQueueDrainingRef.current = true;
+    handleSend(
+      head.content,
+      head.submitText ?? head.content,
+      (display, submit) => commitRewindThen(() => sendToTabConfirmed(targetTabId, display, submit)),
+    )
+      .then(() => {
+        useComposerQueueStore.getState().removeItem(head.queueItemId);
+      })
+      .catch((error) => {
+        useComposerQueueStore.getState().updateItem(head.queueItemId, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        composerQueueDrainingRef.current = false;
+      });
+  }, [
+    composerQueueItems,
+    activeSessionId,
+    activeTabId,
+    controllerReady,
+    hydratePlaceholderActive,
+    state.running,
+    rewindCommitting,
+    state.approval,
+    state.ask,
+    state.messageAction,
+    clearContextPending,
+    handleSend,
+    commitRewindThen,
+    sendToTabConfirmed,
+  ]);
+
   // ── Linked task Session navigation with an explicit Work return path ─
   const handleNavigateToLinkedSession = useCallback(async (sessionRef: SessionRef): Promise<void> => {
     if (activeTab?.sessionKind !== "work" || !activeTab.workId || !activeTab.topicId || !activeTab.sessionPath) {
@@ -4920,7 +4983,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               modelLabel={state.meta?.label ?? t("status.connecting")}
               submitKey={composerSubmitKey}
               imageInputEnabled={state.meta?.imageInputEnabled !== false}
-              tabId={activeSessionId}
+              tabId={activeSessionId ?? activeTabId}
               widgetEnabled={widgetEnabled}
               onEnterWidgetMode={onEnterWidgetMode}
               effort={state.effort}

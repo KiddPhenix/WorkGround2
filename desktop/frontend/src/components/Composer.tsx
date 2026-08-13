@@ -13,6 +13,7 @@ import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcut
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
+import { makeQueueItem, useComposerQueueStore } from "../store/composerQueue";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ComposerSubmitKey, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
 import {
   formatWorkspaceReference,
@@ -68,6 +69,7 @@ type PendingGuidance = {
   id: number;
   text: string;
   submitText: string;
+  source: "preview" | "manual";
 };
 
 type ComposerDraft = {
@@ -659,6 +661,7 @@ export function Composer({
   useEffect(() => {
     if (wasRunning.current && !running) {
       setGuidanceExpanded(false);
+      setPendingGuidance((items) => items.filter((item) => item.source === "manual"));
       if (text.trim() === "") {
         pastedBlocksRef.current = [];
         setPastedBlocks([]);
@@ -679,7 +682,7 @@ export function Composer({
     setPendingGuidance(
       guidanceQueuePreviewKey
         .split("\n")
-        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text })),
+        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text, source: "preview" as const })),
     );
   }, [guidanceQueuePreviewKey, running]);
 
@@ -1250,11 +1253,27 @@ export function Composer({
       const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
       if (runningRef.current) {
-        const guidanceText = displayText.trim();
-        const guidanceSubmitText = submitText.trim();
-        if (guidanceText) {
-          const id = nextGuidanceId.current++;
-          setPendingGuidance((items) => [...items, { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText }]);
+        const queuedText = displayText.trim();
+        const queuedSubmitText = submitText.trim();
+        if (queuedText) {
+          if (goalModeOn) {
+            // Goal mode steers the running turn: keep the manual guidance queue.
+            const id = nextGuidanceId.current++;
+            setPendingGuidance((items) => [...items, {
+              id,
+              text: queuedText,
+              submitText: queuedSubmitText || queuedText,
+              source: "manual",
+            }]);
+          } else {
+            // Ordinary sessions queue a follow-up turn for the visible session
+            // queue, which drains FIFO once this session becomes safe/idle.
+            useComposerQueueStore.getState().addItem(makeQueueItem({
+              sessionId: tabId ?? "",
+              content: queuedText,
+              submitText: queuedSubmitText || queuedText,
+            }));
+          }
         }
         clearSubmittedDraft(submitDraftKey);
         return;
@@ -2064,7 +2083,7 @@ export function Composer({
     return null;
   })();
   const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
-  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal) && !running) || disabled || (!running && submitDisabled) || readOnly;
+  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
   const submitTooltip = running ? t("composer.queueGuidance") : t(composerSubmitKey === "ctrl_enter" ? "composer.sendCtrlEnter" : "composer.send");
   const composerPlaceholder = readOnly
     ? t("composer.readOnlyChannel")
@@ -2352,7 +2371,7 @@ export function Composer({
                     className="composer-guidance-item__guide"
                     type="button"
                     aria-label={t("composer.guidanceSend")}
-                    disabled={!running || disabled || readOnly || guidanceSendingId !== null}
+                    disabled={disabled || readOnly || guidanceSendingId !== null}
                     onClick={() => void sendQueuedGuidance(item)}
                   >
                     <CornerDownRight size={13} />

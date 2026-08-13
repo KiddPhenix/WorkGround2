@@ -8,7 +8,7 @@
 import { Fragment, useCallback, useMemo, useState } from "react";
 import { useMemoryStore, selectMemory } from "../../store/memory";
 import { useArtifactStore, selectArtifactsBySession } from "../../store/artifacts";
-import { useComposerQueueStore } from "../../store/composerQueue";
+import { selectItemsBySession, useComposerQueueStore } from "../../store/composerQueue";
 import {
   useAddOnSurfaceStore,
   selectSortedAddOnInstances,
@@ -339,33 +339,40 @@ export function SessionArtifactShelf({ sessionId }: { sessionId: string }) {
 
 // ── SessionQueueTray ─────────────────────────────────────────────────────────
 
-export function SessionQueueTray({ onEditContent }: { onEditContent?: (content: string) => void } = {}) {
+export function SessionQueueTray({ sessionId, onEditContent }: { sessionId: string; onEditContent?: (content: string) => void }) {
   const items = useComposerQueueStore((s) => s.items);
   const removeItem = useComposerQueueStore((s) => s.removeItem);
-  const reorderItems = useComposerQueueStore((s) => s.reorderItems);
+  const updateItem = useComposerQueueStore((s) => s.updateItem);
+  const reorderSessionItems = useComposerQueueStore((s) => s.reorderSessionItems);
+  const sessionItems = useMemo(() => selectItemsBySession(items, sessionId), [items, sessionId]);
 
   const onEdit = useCallback((queueItemId: string) => {
-    const item = items.find((candidate) => candidate.queueItemId === queueItemId);
+    const item = sessionItems.find((candidate) => candidate.queueItemId === queueItemId);
     if (!item) return;
     onEditContent?.(item.content);
     removeItem(queueItemId);
-  }, [items, onEditContent, removeItem]);
+  }, [sessionItems, onEditContent, removeItem]);
 
   const onRemove = useCallback((queueItemId: string) => {
     removeItem(queueItemId);
   }, [removeItem]);
 
+  const onRetry = useCallback((queueItemId: string) => {
+    updateItem(queueItemId, { error: undefined });
+  }, [updateItem]);
+
   const move = useCallback((queueItemId: string, delta: number) => {
-    const from = items.findIndex((item) => item.queueItemId === queueItemId);
+    const from = sessionItems.findIndex((item) => item.queueItemId === queueItemId);
     if (from < 0) return;
-    reorderItems(from, from + delta);
-  }, [items, reorderItems]);
+    reorderSessionItems(sessionId, from, from + delta);
+  }, [sessionItems, reorderSessionItems, sessionId]);
 
   return (
     <QueueTray
-      items={items}
+      items={sessionItems}
       onEdit={onEditContent ? onEdit : undefined}
       onRemove={onRemove}
+      onRetry={onRetry}
       onMoveUp={(id) => move(id, -1)}
       onMoveDown={(id) => move(id, 1)}
     />
@@ -411,7 +418,8 @@ export function SessionConfigBar({
   onSetApprovalMode?: (mode: ToolApprovalMode) => void;
   surfaceKind?: SurfaceKind;
 }) {
-  const hasQueue = useComposerQueueStore((s) => s.items.length > 0);
+  const queueItems = useComposerQueueStore((s) => s.items);
+  const hasQueue = useMemo(() => selectItemsBySession(queueItems, tabId ?? "").length > 0, [queueItems, tabId]);
   const connectionStatus: ConnectionStatus = controllerReady
     ? connectionStatusFromRuntime(runtimeMode, foregroundActive)
     : "offline";

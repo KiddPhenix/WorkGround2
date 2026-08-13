@@ -10,6 +10,7 @@
     "check:css": "node scripts/check-css-syntax.mjs src/styles.css && node scripts/check-z-index-tokens.mjs src/styles.css",
     "test:todo-visibility": "node scripts/test-todo-visibility.mjs",
     "test:activity": "tsx src/__tests__/activity.test.ts",
+    "test:composer-queue": "tsx src/__tests__/composer-queue-drain.test.ts",
     "test:request-help": "tsx src/__tests__/request-help-display.test.tsx",
     "test:session-status": "tsx src/__tests__/session-status-indicators.test.tsx",
     "test:collab": "tsx src/__tests__/collaboration.test.tsx",

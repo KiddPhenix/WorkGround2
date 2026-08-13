@@ -1,4 +1,4 @@
-import { applyRunWireEvent, projectRunHistory, resetRunProjection, stripRunAnsi } from "../lib/runEvents";
+import { applyRunWireEvent, classifyRunEventKind, projectRunHistory, resetRunProjection, stripRunAnsi } from "../lib/runEvents";
 import { useRunStore } from "../store/run";
 
 let passed = 0;
@@ -10,6 +10,11 @@ function ok(value: boolean, label: string) {
 
 useRunStore.setState({ runs: {} });
 resetRunProjection();
+
+ok(classifyRunEventKind("browser_click", "#submit") === "browser", "browser_* tools use the dedicated browser scene");
+ok(classifyRunEventKind("mcp__browser__navigate", "https://example.com") === "browser", "browser MCP tools use the dedicated browser scene");
+ok(classifyRunEventKind("shell", "go test ./...") === "test", "test shell commands use the test scene");
+ok(classifyRunEventKind("shell", "go build ./...") === "command", "non-test shell commands use the command scene");
 
 applyRunWireEvent("tab-1", { kind: "notice", text: "background" });
 ok(Object.keys(useRunStore.getState().runs).length === 0, "unrelated background events do not create phantom runs");
@@ -127,12 +132,22 @@ ok(progressRun?.events[1]?.content.includes("first chunk") === true, "tool progr
 ok(progressRun?.events[1]?.content.includes("second chunk") === true, "tool progress appends later chunks");
 ok(progressRun?.events[1]?.stepLabel !== "进度", "tool progress keeps the tool label");
 ok(progressRun?.events[1]?.status === "running", "tool progress keeps the step running");
+ok(progressRun?.events[1]?.kind === "test", "tool progress keeps the dispatch visual kind");
+ok(progressRun?.events[1]?.toolName === "bash", "tool progress keeps the source tool name");
+ok(progressRun?.events[1]?.args === '{"command":"go test ./..."}', "tool progress keeps the original arguments");
 
 applyRunWireEvent("tab-progress", { kind: "tool_result", tool: { id: "p1", name: "bash", output: "all passed", readOnly: true } });
 progressRun = Object.values(useRunStore.getState().runs).find((r) => r.sessionId === "tab-progress");
 ok(progressRun?.events.length === 2, "tool result updates the existing tool step");
 ok(progressRun?.events[1]?.content === "all passed", "tool result replaces progress with the final output");
 ok(progressRun?.events[1]?.status === "completed", "completed tool no longer shows a running spinner");
+ok(progressRun?.events[1]?.kind === "test" && progressRun.events[1]?.args?.includes("go test") === true, "tool result keeps scene metadata during its idempotent update");
+
+applyRunWireEvent("tab-browser", { kind: "turn_started" });
+applyRunWireEvent("tab-browser", { kind: "tool_dispatch", tool: { id: "b1", name: "browser_navigate", args: '{"url":"https://example.com"}', readOnly: false } });
+applyRunWireEvent("tab-browser", { kind: "tool_result", tool: { id: "b1", name: "browser_navigate", output: "页面已加载", readOnly: false } });
+const browserRun = Object.values(useRunStore.getState().runs).find((r) => r.sessionId === "tab-browser");
+ok(browserRun?.events[browserRun.events.length - 1]?.kind === "browser", "browser result stays in the dedicated browser scene");
 
 const ansiLog = "\u001b[31mFAIL\u001b[0m suite\n\u001b]0;title\u0007details";
 ok(stripRunAnsi(ansiLog) === "FAIL suite\ndetails", "ANSI terminal controls are removed from run logs");

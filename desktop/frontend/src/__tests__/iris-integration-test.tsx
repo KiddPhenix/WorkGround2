@@ -225,7 +225,7 @@ ok(artItems.length === 4, "ArtifactShelf: exactly 4 artifact items");
 cleanup();
 
 // ── Test: QueueTray ─────────────────────────────────────────────────────────
-const queueEl = render(<SessionQueueTray />);
+const queueEl = render(<SessionQueueTray sessionId={FIXTURE_SESSION_ID} />);
 ok(hasText(queueEl, "查看测试结果"), "QueueTray: shows first item");
 ok(hasText(queueEl, "提交代码审查"), "QueueTray: shows second item");
 const queueItems = queryAllByClassName(queueEl, "queue-item-row");

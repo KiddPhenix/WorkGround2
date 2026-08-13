@@ -135,9 +135,9 @@ const BASE_MEMORY: MemoryLine = {
 };
 
 const BASE_EVENTS: RunEvent[] = [
-  { eventId: "e1", content: "读取配置文件", stepLabel: "配置" },
-  { eventId: "e2", content: "连接数据库", stepLabel: "数据库" },
-  { eventId: "e3", content: "执行查询", stepLabel: "查询" },
+  { eventId: "e1", kind: "read", content: "读取配置文件", stepLabel: "配置" },
+  { eventId: "e2", kind: "generic", content: "连接数据库", stepLabel: "数据库" },
+  { eventId: "e3", kind: "search", content: "执行查询", stepLabel: "查询", toolName: "grep", args: "session" },
 ];
 
 const COMPLETED_RUN: RunRecord = {
@@ -424,7 +424,33 @@ installDom();
   const region = container.querySelector('[aria-busy="true"]');
   ok(region !== null, "ActiveRunView: aria-busy is true for running run");
   ok(container.querySelector(".active-run-view--running") !== null, "ActiveRunView: has --running modifier class");
+  const scene = container.querySelector(".run-activity-scene");
+  ok(scene?.getAttribute("data-kind") === "search", "ActiveRunView: scene follows the projected event kind");
+  const children = Array.from(container.querySelector(".active-run-view")?.children ?? []);
+  ok(children.indexOf(scene as Element) < children.indexOf(container.querySelector(".active-run-view__tabs") as Element), "ActiveRunView: activity scene stays above the bottom step track");
   cleanup();
+}
+
+{
+  const sceneContract = [
+    ["search", ".run-activity-lines--search"],
+    ["read", ".run-activity-editor"],
+    ["edit", ".run-activity-editor"],
+    ["command", ".run-activity-terminal"],
+    ["test", ".run-activity-terminal"],
+    ["browser", ".run-activity-browser"],
+    ["generic", ".run-activity-lines--generic"],
+  ] as const;
+  for (const [kind, selector] of sceneContract) {
+    const run: RunRecord = {
+      ...RUNNING_RUN,
+      events: [{ eventId: `scene-${kind}`, kind, toolName: `${kind}_tool`, args: "real input", content: "real output", status: "running" }],
+    };
+    const container = render(<ActiveRunView run={run} />);
+    ok(container.querySelector(`.run-activity-scene--${kind}[data-kind="${kind}"]`) !== null, `Run activity scene: ${kind} has a stable semantic class`);
+    ok(container.querySelector(selector) !== null, `Run activity scene: ${kind} renders its compact micro-scene`);
+    cleanup();
+  }
 }
 
 {

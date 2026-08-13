@@ -99,8 +99,8 @@ function resetStores() {
 console.log("\nrun store");
 
 function testRunMergeEvent() {
-  const event1: RunEvent = { eventId: "e1", content: "读取文件", stepLabel: "已读 1 个文件" };
-  const event2: RunEvent = { eventId: "e2", content: "分析调用", stepLabel: "分析 delete_range 调用" };
+  const event1: RunEvent = { eventId: "e1", kind: "read", content: "读取文件", stepLabel: "已读 1 个文件", toolName: "read_file", args: "a.go" };
+  const event2: RunEvent = { eventId: "e2", kind: "generic", content: "分析调用", stepLabel: "分析 delete_range 调用" };
 
   useRunStore.getState().mergeRunEvent("run-a", "sess-1", "turn-1", event1);
   const s1 = useRunStore.getState();
@@ -132,7 +132,7 @@ function testRunTerminalGuard() {
 
   mergeRunEvent("run-b", "sess-1", "turn-1", {
     eventId: "e1",
-    content: "start",
+    kind: "generic", content: "start",
   });
   setRunStatus("run-b", "completed");
   eq(useRunStore.getState().runs["run-b"].status, "completed", "run transitions to completed");
@@ -145,12 +145,12 @@ function testRunTerminalGuard() {
   // Terminal guard: late events are dropped
   mergeRunEvent("run-b", "sess-1", "turn-1", {
     eventId: "e2",
-    content: "late event",
+    kind: "generic", content: "late event",
   });
   eq(useRunStore.getState().runs["run-b"].events.length, 1, "late events dropped for terminal run");
 
   // Failed is also terminal
-  mergeRunEvent("run-c", "sess-1", "turn-1", { eventId: "e1", content: "start" });
+  mergeRunEvent("run-c", "sess-1", "turn-1", { eventId: "e1", kind: "generic", content: "start" });
   setRunStatus("run-c", "failed", { errorMessage: "timeout" });
   eq(useRunStore.getState().runs["run-c"].status, "failed", "run transitions to failed");
   eq(useRunStore.getState().runs["run-c"].errorMessage, "timeout", "failed carries errorMessage");
@@ -166,7 +166,7 @@ function testRunExpandCollapse() {
   resetStores();
   useRunStore.getState().mergeRunEvent("run-d", "sess-1", "turn-1", {
     eventId: "e1",
-    content: "start",
+    kind: "generic", content: "start",
   });
 
   useRunStore.getState().setRunExpanded("run-d", false);
@@ -179,9 +179,9 @@ function testRunExpandCollapse() {
 function testCollapseSessionRuns() {
   resetStores();
   const store = useRunStore.getState();
-  store.mergeRunEvent("run-1", "sess-1", "turn-1", { eventId: "e1", content: "one" });
-  store.mergeRunEvent("run-2", "sess-1", "turn-2", { eventId: "e2", content: "two" });
-  store.mergeRunEvent("run-3", "sess-2", "turn-3", { eventId: "e3", content: "three" });
+  store.mergeRunEvent("run-1", "sess-1", "turn-1", { eventId: "e1", kind: "generic", content: "one" });
+  store.mergeRunEvent("run-2", "sess-1", "turn-2", { eventId: "e2", kind: "generic", content: "two" });
+  store.mergeRunEvent("run-3", "sess-2", "turn-3", { eventId: "e3", kind: "generic", content: "three" });
   store.collapseSessionRuns("sess-1");
   eq(useRunStore.getState().runs["run-1"].expanded, false, "collapseSessionRuns collapses the first matching run");
   eq(useRunStore.getState().runs["run-2"].expanded, false, "collapseSessionRuns collapses every matching run");
@@ -192,7 +192,7 @@ function testRunClear() {
   resetStores();
   useRunStore.getState().mergeRunEvent("run-e", "sess-1", "turn-1", {
     eventId: "e1",
-    content: "start",
+    kind: "generic", content: "start",
   });
   useRunStore.getState().clearRun("run-e");
   eq(useRunStore.getState().runs["run-e"], undefined, "cleared run is removed");
@@ -203,7 +203,7 @@ function testRunClear() {
   // clearAllRuns
   useRunStore.getState().mergeRunEvent("run-f", "sess-1", "turn-1", {
     eventId: "e1",
-    content: "start",
+    kind: "generic", content: "start",
   });
   useRunStore.getState().clearAllRuns();
   eq(Object.keys(useRunStore.getState().runs).length, 0, "clearAllRuns removes all runs");
@@ -216,7 +216,7 @@ function testRunSelectors() {
 
   useRunStore.getState().mergeRunEvent("run-g", "sess-1", "turn-1", {
     eventId: "e1",
-    content: "start",
+    kind: "generic", content: "start",
   });
   const s = useRunStore.getState();
   ok(selectRun(s.runs, "run-g") !== undefined, "selectRun finds existing run");
