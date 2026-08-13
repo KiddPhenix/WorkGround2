@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
+import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, PinOff, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app, onUnreadState } from "../lib/bridge";
@@ -1702,6 +1702,15 @@ export function ProjectTree({
                   </span>
                 )}
                 <span className="project-tree__topic-label">{label}</span>
+                {pinned && (
+                  <span
+                    className="project-tree__topic-pin-state"
+                    title={t("projectTree.pinnedTitle")}
+                    aria-hidden="true"
+                  >
+                    <Pin size={12} />
+                  </span>
+                )}
                 {imSource && (
                   <span
                     className={`project-tree__topic-im project-tree__topic-im--${imSourcePlatform}`}
@@ -1758,7 +1767,9 @@ export function ProjectTree({
                     else void setTopicPinned(topicId, !pinned);
                   }}
                 >
-                  <Pin size={15} aria-hidden="true" />
+                  {pinned
+                    ? <PinOff size={15} aria-hidden="true" />
+                    : <Pin className="project-tree__topic-pin-action" size={15} aria-hidden="true" />}
                 </button>
               </Tooltip>}
               {trashTarget && <Tooltip label={t("projectTree.topicActions")} side="top" className="project-tree__topic-action-slot">

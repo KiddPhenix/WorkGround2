@@ -145,6 +145,26 @@ ok(
   "ProjectTree: workbench hides header controls while Recent rows expose scoped actions",
 );
 ok(
+  includes(projectTreeSource, 'className="project-tree__topic-pin-state"') &&
+    includes(projectTreeSource, '<PinOff size={15} aria-hidden="true" />'),
+  "ProjectTree: pinned Recent rows separate the persistent Pin state from the unpin action",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "opacity") === "0" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "pointer-events") === "none" &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-actions") &&
+    includes(stylesSource, "pointer-events: auto;"),
+  "CSS: Recent row actions stay quiet until hover or keyboard focus",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "flex") === "0 0 14px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
+    includes(stylesSource, "transform: translateX(-3px);"),
+  "CSS: pinned state has a stable slot while project metadata yields to row actions",
+);
+ok(
   includes(projectTreeSource, 'role="switch"') &&
     includes(projectTreeSource, "WORKBENCH_RECENT_LIMITS.map") &&
     includes(projectTreeSource, "saveWorkbenchRecentSettings(next)") &&

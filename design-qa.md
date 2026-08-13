@@ -34,6 +34,55 @@ final result: passed
 
 ---
 
+# 最近会话 Pin 视觉修正 Design QA（2026-08-13）
+
+- Source visual truth: `D:\Temp\codex-clipboard-39c9b9b4-167a-44cc-bb29-883f7e3a7476.png`
+- Implementation full screenshot: `D:\Work\WorkGround2\.codex-preview\session-pin-full.png`
+- Implementation pinned-state screenshot: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned.png`
+- Full target-region comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-comparison.png`
+- Focused pinned-state evidence: `D:\Work\WorkGround2\.codex-preview\session-pin-pinned-crop.png`
+- Viewport: `1280 × 720` CSS px；device pixel ratio `1.375`；工作台侧栏渲染宽度 `300px`。
+- Pixels and normalization: 源图 `409 × 393`；实现截图 `1280 × 720`；对照图将源图等比缩放到 `229 × 220`，实现侧栏裁剪为 `320 × 220`，只比较用户指出的“最近”区域。
+- State: 深色工作台；分别验证未置顶悬停、置顶静止、置顶聚焦、取消置顶与重新置顶。
+
+## Findings
+
+- P0 / P1 / P2: none。
+- Fonts and typography: 沿用现有 UI 字体、字号、字重和截断规则；Pin 使用独立 `14px` 固定槽，不挤压标题基线。
+- Spacing and layout rhythm: 未置顶时操作区静止隐藏；悬停/聚焦时项目名淡出，Pin 与更多菜单占用独立的 `26px` 操作槽；已置顶 Pin 跟随标题常驻，不再与项目名重叠。
+- Colors and tokens: 状态 Pin 使用现有 `--accent` 与前景色混合；静止态无额外底框，悬停底色继续复用 `--sidebar-hover`。
+- Image quality and assets: 没有新增位图或近似绘制；状态与操作图标均来自项目现有 `lucide-react`，分别使用 `Pin` 和 `PinOff`。
+- Copy and content: 沿用“置顶对话 / 取消置顶 / 置顶”现有本地化，不引入新文案。
+
+## Full-view and focused comparison
+
+- 源图只覆盖侧栏局部，因此全视图以完整的源目标区域与实现侧栏裁剪并排比较；应用全屏截图用于确认改动没有影响 Session 主界面比例。
+- 聚焦图确认已置顶 Pin 位于标题之后，项目名仍保持右对齐；操作区静止时 `opacity: 0`、`pointer-events: none`，项目名保持 `opacity: 1`。
+- 悬停对照确认项目名让位后 Pin 与 `…` 不再覆盖 `wg2t / CICDBOT` 一类项目标签。
+
+## Comparison history
+
+### Pass 1
+
+- Earlier finding: 旧实现所有 Recent 行常驻垂直 Pin，已置顶只靠弱背景区分；项目名固定在 `right: 38px`，与两个 `26px` 操作槽重叠。
+- Fix: 已置顶状态改为标题旁 `-45deg` Pin；未置顶操作仅在悬停/聚焦时出现；取消置顶使用 `PinOff`；项目名在操作区出现时淡出。
+- Post-fix evidence: 并排图、置顶静止聚焦图、浏览器计算样式与双向交互结果均无重叠或状态残留。
+
+## Interaction and engineering evidence
+
+- 浏览器实际点击“置顶对话”后状态 Pin 出现；点击“取消置顶”后数量为 `0`，重新置顶后数量恢复为 `1`。
+- 浏览器 console error/warning: none。
+- 新增 3 条 Workbench 样式契约通过；该历史布局脚本仍为既有 `112 / 124`，12 条漂移断言与 Feature Map 记录一致，本次无新增失败。
+- CSS syntax、z-index token、TypeScript 和 Vite production build 通过。
+
+## Follow-up polish
+
+- P3: 如果后续统一侧栏全部状态图标，可将 Pin 的倾角、线宽与运行态圆环纳入同一图标 token。
+
+final result: passed
+
+---
+
 # Session List 层级与选中态 Design QA（2026-08-07）
 
 - Source visual truth: `D:\Temp\codex-clipboard-3d6474e0-121b-429b-ba43-2c900bf9e89d.png`
