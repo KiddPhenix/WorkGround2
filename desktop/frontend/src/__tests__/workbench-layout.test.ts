@@ -161,11 +161,14 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "display") === "inline-flex" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "position") === "absolute" &&
-    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "80px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-pin-state", "right") === "10px" &&
     finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project", "right") === "10px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "right") === "34px" &&
+    finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project", "max-width") === "64px" &&
     includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-project") &&
+    includes(stylesSource, ".project-tree__topic:hover .project-tree__topic-pin-state") &&
     includes(stylesSource, "transform: translateX(-3px);"),
-  "CSS: pinned state and project metadata use separate stable columns while metadata yields to row actions",
+  "CSS: pinned state stays at the right edge while project metadata shifts left and both yield to row actions",
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar .project-tree__topic-actions", "top") === "6px" &&

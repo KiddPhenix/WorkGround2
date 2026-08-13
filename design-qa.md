@@ -45,6 +45,8 @@ final result: passed
 - Alignment implementation: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-hover.png`
 - Alignment comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-alignment-comparison.png`
 - Multi-pin focus fix evidence: `D:\Work\WorkGround2\.codex-preview\session-pin-focus-after.jpg`
+- Right-edge Pin implementation: `D:\Work\WorkGround2\.codex-preview\session-pin-right-edge.jpg`
+- Right-edge before/after comparison: `D:\Work\WorkGround2\.codex-preview\session-pin-right-edge-comparison.jpg`
 - Viewport: `1280 × 720` CSS px；device pixel ratio `1.375`；工作台侧栏渲染宽度 `300px`。
 - Pixels and normalization: 源图 `409 × 393`；实现截图 `1280 × 720`；对照图将源图等比缩放到 `229 × 220`，实现侧栏裁剪为 `320 × 220`，只比较用户指出的“最近”区域。
 - Alignment viewport and normalization: `612 × 842` CSS px、device pixel ratio `1.375`；反馈图 `413 × 125`，实现从全屏截图裁剪为 `300 × 125`，并排图保持两侧同高 `125px`。
@@ -84,6 +86,12 @@ final result: passed
 - Earlier findings: 鼠标点击 Pin/Unpin 后按钮保留焦点，最后点击行持续命中 `:focus-within`，导致操作区常显、Workspace 标签被淡出；状态 Pin 以标题为定位参照，长标题下会与 Workspace 争位。
 - Fix: 仅对真实指针点击（`MouseEvent.detail > 0`）释放按钮焦点，键盘激活继续保留可见焦点；状态 Pin 改为相对整行固定在 `right: 80px`，Workspace 保持 `right: 10px`，两者成为互不抢位的独立列。
 - Post-fix evidence: `session-pin-focus-after.jpg`；实机同时置顶两条 Recent，会话状态 Pin 均可见；点击后活动元素回到 `BODY`，两行操作区 `opacity: 0`、Workspace `opacity: 1`，Pin 与 Workspace 实测间距约 `4.5px`，无重叠。
+
+### Pass 4
+
+- Earlier finding: 用户希望状态 Pin 成为 Recent 行最右侧状态，而 Workspace 位于其左侧。
+- Fix: 状态 Pin 改为 `right: 10px`；置顶行 Workspace 改为 `right: 34px`、`max-width: 64px`；悬停、键盘聚焦或菜单打开时状态 Pin 淡出，为右侧 Unpin / `…` 操作区让位。
+- Post-fix evidence: `session-pin-right-edge-comparison.jpg`；静止态两条置顶行均显示最右侧 Pin，Workspace 与 Pin 间距 `10px`，Pin 距行右边缘约 `10.7px`；操作区与状态图标不会叠加。
 
 ## Interaction and engineering evidence
 

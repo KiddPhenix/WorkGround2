@@ -44505,7 +44505,7 @@ body > .mermaid-diagram--fullscreen {
 .app--workbench .workspace-sidebar .project-tree__topic-pin-state {
   position: absolute;
   top: 50%;
-  right: 80px;
+  right: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -44514,10 +44514,7 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--accent) 86%, var(--fg));
   pointer-events: none;
   transform: translateY(-50%);
-}
-
-.app--workbench .workspace-sidebar .project-tree__topic--pinned .project-tree__topic-project {
-  max-width: 64px;
+  transition: opacity var(--dur-fast);
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {
@@ -44529,7 +44526,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-main {
-  padding-right: 96px;
+  padding-right: 106px;
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic-project {
@@ -44537,6 +44534,17 @@ body > .mermaid-diagram--fullscreen {
   right: 10px;
   max-width: 78px;
   transition: opacity var(--dur-fast), transform var(--dur-fast);
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--pinned .project-tree__topic-project {
+  right: 34px;
+  max-width: 64px;
+}
+
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic:hover .project-tree__topic-pin-state,
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic:focus-within .project-tree__topic-pin-state,
+.app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic--menu-open .project-tree__topic-pin-state {
+  opacity: 0;
 }
 
 .app--workbench .workspace-sidebar .project-tree__section--recent .project-tree__topic:hover .project-tree__topic-project,
