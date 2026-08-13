@@ -37,6 +37,18 @@ type driverLauncher interface {
 }
 
 func (f *factory) New(ctx context.Context, dopts browser.DriverOptions) (browser.Driver, error) {
+	if dopts.Attach {
+		if dopts.DebugURL == "" || dopts.WebSocketURL == "" {
+			return nil, fmt.Errorf("cdp factory: attach requires DebugURL and WebSocketURL")
+		}
+		d := newDriver(dopts, "", dopts.BrowserKind, settleWindow(dopts), ctx)
+		if err := d.startRemote(ctx); err != nil {
+			_ = d.Close()
+			return nil, fmt.Errorf("cdp attach: %w", err)
+		}
+		return d, nil
+	}
+
 	// Discover the browser executable.
 	info, err := Discover(dopts.BrowserKind, dopts.ExecutablePath)
 	if err != nil {
@@ -48,15 +60,34 @@ func (f *factory) New(ctx context.Context, dopts browser.DriverOptions) (browser
 	if execPath == "" {
 		execPath = info.ExecutablePath
 	}
+	if !dopts.OwnProcess {
+		var lastErr error
+		attempts := 0
+		for attempt := 1; attempt <= maxLaunchAttempts; attempt++ {
+			attempts = attempt
+			d, err := launchPersistent(ctx, dopts, execPath, info.Kind)
+			if err == nil {
+				return d, nil
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		return nil, fmt.Errorf("cdp factory: persistent browser launch failed after %d attempts: %w", attempts, lastErr)
+	}
 
+	return launchWithRetry(ctx, func() driverLauncher {
+		return newDriver(dopts, execPath, info.Kind, settleWindow(dopts), ctx)
+	}, maxLaunchAttempts)
+}
+
+func settleWindow(dopts browser.DriverOptions) time.Duration {
 	settleWindow := dopts.SettleWindow
 	if settleWindow <= 0 {
 		settleWindow = 300 * time.Millisecond
 	}
-
-	return launchWithRetry(ctx, func() driverLauncher {
-		return newDriver(dopts, execPath, info.Kind, settleWindow, ctx)
-	}, maxLaunchAttempts)
+	return settleWindow
 }
 
 // newDriver builds a fresh driver with its own event loop. Every retry attempt
@@ -92,9 +123,14 @@ func launchWithRetry(ctx context.Context, makeDriver func() driverLauncher, maxA
 		if err := d.start(ctx); err != nil {
 			lastErr = err
 			// Idempotent: driver.start already closes itself on failure; the
-			// extra Close guarantees no event loop/allocator/process survives a
-			// failed attempt before the next retry.
-			_ = d.Close()
+			// extra Kill/Close guarantees no event loop/allocator/process
+			// survives a failed attempt before the next retry. Kill is preferred
+			// so a partially-started shared browser cannot leak as an orphan.
+			if k, ok := d.(browser.Killer); ok {
+				_ = k.Kill()
+			} else {
+				_ = d.Close()
+			}
 			if !isDebugPortConflict(err) {
 				return nil, fmt.Errorf("cdp start: %w", err)
 			}

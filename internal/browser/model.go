@@ -207,3 +207,12 @@ type CloseResult struct {
 	SessionID string `json:"session_id"`
 	Closed    bool   `json:"closed"`
 }
+
+// AttachResult describes the outcome of a browser_attach. Endpoint is the
+// loopback CDP HTTP endpoint usable with Playwright's
+// chromium.connectOverCDP(); it never carries PID, profile path or credentials.
+type AttachResult struct {
+	SessionID string      `json:"session_id"`
+	Endpoint  string      `json:"endpoint"`
+	Browser   BrowserInfo `json:"browser"`
+}

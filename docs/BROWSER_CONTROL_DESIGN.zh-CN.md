@@ -1,22 +1,23 @@
 # WorkGround2 原生浏览器操作能力设计
 
 状态：`implemented`
-分支：`developping/browser-control+2026-08-12`
-范围：第一版原生 CDP；不使用 MCP；不提供截图、下载、持久登录态或桌面专用 UI；本地文件上传通过专用 `browser_upload` 工具并在 Desktop 设置中可关闭。
+分支：`developping/browser-playwright-reuse+2026-08-13`
+范围：原生 CDP + Playwright 复用入口；不使用浏览器 MCP；不提供截图、下载或桌面专用 UI；本地文件上传通过专用 `browser_upload` 工具并在 Desktop 设置中可关闭。
 
-实现验证：Chrome 151 真实双门集成已覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、空闲/Controller 回收、下载拒绝和临时 Profile 清理，并新增可见 Chrome 下 `navigator.webdriver === false`、随机非零回环调试端口 `/json/version` 可达、关闭后端口不可连的验收；默认单测不启动浏览器。
+实现验证：Chrome 151 真实双门集成覆盖完整工具闭环、跨域 iframe Target 路由、取消隔离、下载拒绝、旧临时 Profile 兼容路径回收，以及共享浏览器 detach 后 endpoint/页面继续存活并可重新 attach；默认单测不启动浏览器。
 
 ## 1. 目标
 
 让所有通过 `control.Controller` 运行的前端获得一致的浏览器操作能力。Agent 可以：
 
-1. 按当前 WorkGround2 Session 启动独立 Chrome 或兼容 Chromium 浏览器。
+1. 打开或复用当前用户的持久 Chrome/兼容 Chromium 自动化浏览器。
 2. 导航到 HTTP/HTTPS 页面。
 3. 获取适合模型读取的页面文本、标签页和带编号的交互元素。
 4. 使用页面 revision 和元素编号点击、输入、滚动。
 5. 新建、激活和关闭标签页。
 6. 向 input[type=file] 上传本地文件（1-20 个，路径进入 transcript）。
-7. 显式关闭浏览器；Controller 关闭后自动回收。空闲超时（默认 0 = 永不）仅在配置正数 `idle_timeout_seconds` 时回收。
+7. 显式分离当前 Session 控制端；Controller、Task、设置重建和应用退出均不关闭底层浏览器。
+8. 通过 `browser_attach` 把同一回环 CDP endpoint 交给 Playwright，外部写操作后由 `browser_state(refresh=true)` 重建 DOM/AX 摘要和 revision。
 
 该能力学习 browser-use 的两部分：
 
@@ -35,7 +36,7 @@ WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流
 - 第一版不启用用户日常 Chrome Profile、Cookie、登录态和密码库自动填充；接口位置会预留，后续无需改动核心 Tool/Session 模型。
 - 验证码、反机器人绕过、扩展管理、代理池。
 - Desktop 浏览器面板或专用前端状态页。
-- 多个 WorkGround2 Session 共用同一浏览器进程。
+- 直接复用用户日常 Chrome 的默认 Profile；共享浏览器只使用 WorkGround2 自己的自动化 Profile。
 
 ## 3. 用户入口和主流程
 
@@ -44,6 +45,7 @@ WorkGround2 保留自己的 Agent 循环、Tool Registry、权限门、事件流
 ```text
 browser_open
   -> browser_state
+  -> browser_attach -> Playwright connectOverCDP -> browser_state(refresh=true)
   -> browser_click / browser_type / browser_scroll / browser_tab / browser_upload
   -> browser_state
   -> browser_close
@@ -51,7 +53,7 @@ browser_open
 
 正常流程：
 
-1. `browser_open` 按当前 parent session 幂等创建浏览器，可选导航 URL。
+1. `browser_open` 按当前 parent session 幂等创建控制 Session；优先校验记录的 endpoint 并 attach，失效时才新建浏览器并更新记录。
 2. `browser_state` 发布一个不可变页面快照，返回 `revision` 和 `[index]` 元素。
 3. 写操作必须携带该 `revision`、目标 `index` 和 `request_id`。
 4. 写操作完成后重新观察页面，发布新快照并返回新 revision 摘要。
@@ -113,12 +115,12 @@ Chrome 本身就是 Chromium 系浏览器，页面感知和动作使用同一套
 
 ### 4.2 调试端口与可检测性
 
-生产启动不使用 chromedp 隐式的 `--remote-debugging-port=0`。每次启动前先监听 `tcp4 127.0.0.1:0` 选取一个当前空闲的非零回环端口，关闭临时 listener 后显式传入：
+生产启动不使用 chromedp 隐式的 `--remote-debugging-port=0`。需要新建浏览器时先监听 `tcp4 127.0.0.1:0` 选取一个当前空闲的非零回环端口，关闭临时 listener 后显式传入：
 
 - `--remote-debugging-address=127.0.0.1`
 - `--remote-debugging-port=<nonzero>`
 
-严禁固定 9222、`0.0.0.0`、IPv6 wildcard 或公网地址；不启用 `--enable-automation`，不注入或覆写 `navigator.webdriver`，不引入 stealth/反指纹依赖。chromedp 在显式非零端口下仍从 Chrome stderr 解析 `DevTools listening on ws://...` 并连接，沿用现有 API，不另造 HTTP/CDP client。
+严禁固定 9222、`0.0.0.0`、IPv6 wildcard 或公网地址；不启用 `--enable-automation`，不注入或覆写 `navigator.webdriver`，不引入 stealth/反指纹依赖。浏览器作为 OS 脱离进程启动，运行时轮询回环 `/json/version`，验证 browser websocket 后使用 chromedp RemoteAllocator 连接。
 
 端口选择到 Chrome bind 之间存在 TOCTOU：`internal/browser/cdp` 的 Factory 对“端口占用/监听失败”做最多 3 次有界重试，每次使用全新的 Driver/allocator/process 状态，失败实例完整 `Close` 后再试；非端口类启动错误立即返回；最终错误包含尝试次数和原因，允许上层安全重试。Driver 保存实际 `127.0.0.1:<port>` endpoint 仅供生命周期与包内集成测试取证，不进入 `BrowserInfo`/`ToolResult`/日志。
 
@@ -126,11 +128,11 @@ Chrome 本身就是 Chromium 系浏览器，页面感知和动作使用同一套
 
 - 去掉 `port=0` 只是移除了一个标准自动化信号：可见（非 headless）Chrome 不再因此暴露 `navigator.webdriver=true`。这不构成“网站不可检测”保证；自动化指纹、插件、请求头、网络特征和页面侧启发式仍然可能识别。
 - headless 模式仍会暴露 `navigator.webdriver=true`，与端口无关，不承诺不可检测。
-- Chrome 136 起，`--remote-debugging-port`/`--remote-debugging-pipe` 对默认数据目录不再生效，远程调试必须配合非默认 `--user-data-dir`；WorkGround2 总是使用独立临时 Profile，该约束不变（见 §8.6）。
+- Chrome 136 起，`--remote-debugging-port`/`--remote-debugging-pipe` 对默认数据目录不再生效，远程调试必须配合非默认 `--user-data-dir`；WorkGround2 总是使用独立持久自动化 Profile，该约束不变（见 §8.6）。
 
 ### 4.3 隐身模式（incognito）
 
-`[tools.browser].incognito`（默认 `false`，旧配置缺字段解析为 `false`）是浏览器启动偏好：显式 `true` 时，后续 `browser_open` 新建的 Chrome/Edge/Chromium 进程追加 chromedp `Flag("incognito", true)`（生成 `--incognito` 启动参数），以 Chromium 隐身模式运行，不保留该会话的历史与 Cookie；`false` 时启动参数不得包含 `--incognito`。Desktop 保存该设置会重建浏览器运行时并关闭其管理的现有浏览器进程，下次 `browser_open` 使用新模式。它不复用/共享 Profile、不启用反检测；隐身模式与现有非零回环调试端口、临时 Profile、Cookie/Profile 语义相互独立。
+`[tools.browser].incognito`（默认 `false`，旧配置缺字段解析为 `false`）是浏览器启动偏好：显式 `true` 时，新建的 Chrome/Edge/Chromium 进程追加 `--incognito`，以 Chromium 隐身模式运行；`false` 时启动参数不得包含该标记。Desktop 保存设置只重建并分离控制端，已运行的共享浏览器保持原启动模式；它自行退出或 endpoint 失效后，下一次新建才应用更新后的设置。该开关不启用反检测，也不改变独立自动化 Profile 的边界。
 
 ## 5. 目录和文件
 
@@ -139,21 +141,23 @@ internal/browser/
     service.go          # Service、Driver、Factory 接口
     model.go            # 请求、结果、PageState、Element、Tab
     errors.go           # ErrorCode、Error
-    manager.go          # ownerID -> Session、启动/关闭/空闲回收
+    manager.go          # ownerID -> Session、共享浏览器解析/连接/分离
+    runtime.go          # endpoint 记录、跨进程启动锁、校验与恢复
     session.go          # revision、幂等、串行操作、事件失效
     idempotency.go      # 有界 request_id 结果缓存
-    profile.go          # ProfileProvider、ProfileLease、默认临时 Profile
+    profile.go          # ProfileProvider、ProfileLease、临时兼容路径
     credential.go       # 预留 CredentialProvider；第一版不注册凭据工具
     cdp/
-        factory.go      # DriverFactory
-        driver.go       # Chromium/Target 生命周期
+        factory.go      # DriverFactory、持久/兼容启动路由
+        persistent.go   # OS 脱离启动、endpoint readiness、已有页面 Target 复用
+        driver.go       # Chromium/Target 连接与安全 detach
         observe.go      # DOMSnapshot + AX + 页面文本
         action.go       # navigate/click/type/scroll
         tabs.go         # Target 列表、激活、创建、关闭
         discover.go     # Chromium executable 发现
 
 internal/tool/browser/
-    tools.go            # NewTools(service)
+    tools.go            # NewTools(service)，含 browser_attach
     common.go           # owner、JSON 响应、错误转换
     open.go
     navigate.go
@@ -186,12 +190,13 @@ ownerID := jobs.SessionFromContext(ctx)
 规则：
 
 - ownerID 为空时返回 `missing_session_scope`，禁止回退到全局默认 Session。
-- 一个 ownerID 对应一个 Browser Session 和一个独立 Chromium 进程。
+- 一个 ownerID 对应一个 Browser Session（CDP 客户端 + revision 状态）；多个 owner 和后续 Manager attach 到同一个共享 Chromium。
 - 同一 Browser Session 内可以有多个标签页。
-- Work 子任务若获得不同的 jobs session ID，则使用独立 Browser Session。
-- `browser_close` 只关闭当前 owner。
-- Controller cleanup 调用 `Manager.Close()` 关闭该 Manager 下全部 Session。
-- Idle reaper 回收已废弃的子任务 Session。
+- Work 子任务若获得不同的 jobs session ID，则拥有独立的 Browser Session，但复用同一底层浏览器。
+- `browser_close` 只分离当前 owner 的 Session，不退出共享浏览器。
+- Controller cleanup 调用 `Manager.Close()` 分离该 Manager 下全部 Session。
+- Idle reaper 只分离已废弃的子任务 Session；共享 Chromium、持久 Profile 和有效 endpoint 记录都不被删除。
+- 共享浏览器以每用户为粒度：首次 `browser_open` 在跨进程协调后启动可脱离 WorkGround2 进程继续存活的 Chromium，后续 Manager 校验回环 endpoint + `/json/version` 后 attach。
 
 ## 7. 核心接口
 
@@ -407,7 +412,7 @@ type TabRequest struct {
 - `delta_y` 限制在 `[-4000, 4000]`，不能为 0。
 - Type.Text 第一版进入工具参数和 transcript，不用于密码或 Token。
 - `browser_type` 在 Session 和生产 Driver 两层：`input_type=file` 始终拒绝并返回 `sensitive_input_blocked`（必须使用 `browser_upload`）；`input_type=password` 仅在 `allow_password_input=false` 时拒绝，开启时真实输入。任何拒绝路径都不能向页面派发输入动作。
-- Tab close 拒绝关闭最后一个标签页，关闭整个浏览器使用 `browser_close`。
+- Tab close 拒绝关闭最后一个标签页，分离整个浏览器 Session 使用 `browser_close`（不退出共享 Chromium）。
 
 ### 8.4 结果
 
@@ -585,11 +590,16 @@ type ProfileProvider interface {
 
 模式语义：
 
-- `ephemeral`：第一版实现和默认模式。WorkGround2 创建临时 `user-data-dir`，关闭后安全删除。
-- `managed`：预留。使用 WorkGround2 自己拥有的持久 Profile；用户可在可见 Chrome 中登录一次，后续安全复用 Cookie 和登录态。
-- `attach`：预留。连接用户已经显式开启远程调试并授权的 Chrome，不启动、不关闭其进程；可继承该浏览器的登录态和 Cookie。
+- `ephemeral`：仅作为未注入 `RuntimeDir` 时的兼容路径。创建临时 `user-data-dir`，关闭后安全删除。
+- `managed`：第一版生产路径。使用 WorkGround2 自己拥有的持久自动化 Profile（`<state>/browser/profile`），不删除、不复用默认 Chrome Profile。
+- `attach`：共享浏览器 endpoint 校验通过后的 CDP 连接模式；不启动、不关闭进程，Close 只分离客户端。
 
-第一版实现 `EphemeralProfileProvider`。`Options.Profiles=nil` 等价于默认实现。接口和测试 Fake 同时落地；`managed`、`attach` 不进入第一版配置和工具 Schema，避免出现看似可用但实际退化的开关。
+生产由 `internal/boot` 注入持久化共享运行时：`Options.RuntimeDir`（endpoint 记录 + 启动锁）与 `Options.ProfileRoot`（持久自动化 Profile）。共享运行时在 `internal/browser/runtime.go` 中负责跨进程收敛：
+
+- endpoint 记录写入 `<RuntimeDir>/endpoint.json`，0600、临时文件 + `rename` 原子更新，内容绝不进入日志或模型可见 JSON。
+- 首次需要时用 `O_CREATE|O_EXCL` 启动锁 + 陈旧锁回收做跨进程协调，读取记录并严格校验回环 HTTP endpoint 与 `/json/version`（`webSocketDebuggerUrl` 也必须回环）。
+- 校验通过则 `attach`；失效/恶意（非回环）记录被清理并替换为新启动的浏览器。并发调用最多启动一次，绝不破坏有效记录。
+- 新建浏览器使用平台级脱离进程（Windows detached process / Unix 新 session），随后也通过 RemoteAllocator 控制；正常 `Close()` 先清除 chromedp Target 关闭语义再取消上下文，只断开 websocket。`Kill()` 仅用于回收本次启动验证失败的孤儿和集成测试清理。
 
 不设计“直接启动并占用日常 Chrome 默认 User Data 目录”的模式：
 
@@ -714,7 +724,7 @@ type RequestRecord struct {
 - 只允许在确定尚未向浏览器派发动作时自动重试。
 - Click/Type 已派发，但等待或重新观察失败：返回 `outcome_unknown`，令 Snapshot 失效，要求调用 `browser_state` 对账。
 - `outcome_unknown` 不自动重复动作。
-- `browser_close` 天然幂等；不存在 Session 时返回 `closed=false` 成功。
+- `browser_close` 天然幂等；不存在 Session 时返回 `closed=false` 成功。它只分离当前 Session 的 CDP 客户端，不退出共享 Chromium、不删除持久 Profile 或有效 endpoint 记录。
 
 ## 12. CDP 页面感知
 
@@ -778,6 +788,7 @@ Driver Observe 使用：
 | 工具 | 关键参数 | ReadOnly | PlanModeSafe |
 |---|---|---:|---:|
 | `browser_open` | `url?`, `request_id` | false | false |
+| `browser_attach` | 无 | true | true |
 | `browser_navigate` | `url`, `request_id` | false | false |
 | `browser_state` | `refresh?`, `max_chars?` | true | true |
 | `browser_click` | `revision`, `index`, `request_id` | false | false |
@@ -937,8 +948,8 @@ incognito = false
 - 数值设置必须有最小/最大夹取，非法值回退默认值并保持可诊断。
 - `kind=chrome` 时只发现 Google Chrome；`kind=auto` 按 BrowserAuto 顺序发现。
 - `executable_path` 为空时按 kind 的平台安装路径和 PATH 发现。
-- 每个 Session 使用 Manager 创建的临时 Profile；只删除 Manager 明确创建并记录的目录。
-- `managed`/`attach` 配置字段暂不暴露；后续由 ProfileProvider 扩展，不改变 Browser Service 和 Tool Schema。
+- 每个 Session 使用 Manager 管理的持久自动化 Profile；只删除 Manager 明确创建并记录的目录（`ephemeral` 兼容路径）。
+- `browser_attach` 返回当前 Session 的回环 CDP endpoint，供 Playwright `chromium.connectOverCDP()` 使用；必须先 `browser_open`，绝不启动第二个浏览器。任何 Playwright 写操作后必须 `browser_state(refresh=true)`，旧 revision 失效。
 
 ## 17. 安全和权限
 
@@ -1057,25 +1068,26 @@ Idle reaper：
 - open -> state -> type -> click -> state。
 - DOM 变化后 stale revision。
 - 新建、激活、关闭 tab。
-- 取消导航、关闭浏览器和进程回收。
-- 可见 Chrome 下 `navigator.webdriver === false`；实际调试端口非零回环且 `/json/version` 可达；关闭后端口不可连接、进程退出、Profile 回收（headless 不承诺 `webdriver=false`）。
+- 取消导航、控制端 detach、共享浏览器页面/endpoint 存活和重新 attach。
+- 可见 Chrome 下 `navigator.webdriver === false`；实际调试端口非零回环且 `/json/version` 可达；ephemeral 兼容路径关闭后端口不可连接、进程退出、Profile 回收（headless 不承诺 `webdriver=false`）。
 
 ## 22. 验收标准
 
 全部满足才算第一版完成：
 
-1. 分支中没有 MCP、截图、上传、下载或 UI 实现。
+1. 分支中没有浏览器 MCP、截图、下载或 UI 实现；文件上传只走已有 `browser_upload`。
 2. Google Chrome 和兼容 Chromium 浏览器可由 kind/executable_path 发现；浏览器未安装只在首次 open 显式失败。
-3. 九个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
+3. 十个工具按本设计注册，Schema、ReadOnly 和 PlanMode 属性正确。
 4. 同一 WorkGround2 parent session 可完成启动、导航、读取、点击、输入、滚动、tab 和关闭。
-5. 不同 parent session 不共享 Driver、Tab、revision 或 request cache。
+5. 不同 parent session 各自拥有 Driver 客户端、revision 和 request cache，但观察并操作同一底层浏览器及标签页。
 6. 页面变化后旧 revision 必须失败，不能落到其他节点。
 7. 相同 request_id 可安全重复；冲突和结果不确定显式返回。
-8. 工具取消不会误杀其他 Session；Controller cleanup 和空闲回收没有进程泄漏。
-9. ProfileProvider 和 CredentialProvider 扩展点及安全测试存在，但第一版只启用 ephemeral profile；密码输入默认允许（`allow_password_input`），不接入密码库。
-10. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
-11. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
-12. Feature Map、配置示例和用户文档同步更新。
+8. 工具取消不会误杀其他 Session；`browser_close`、Controller/Task cleanup、设置重建和应用退出只分离控制端，底层浏览器继续运行。
+9. 生产路径使用 WorkGround2 独立持久自动化 Profile；ephemeral 仅为未注入 RuntimeDir 的兼容路径。密码输入默认允许（`allow_password_input`），不接入密码库。
+10. endpoint 记录写入每用户状态目录，严格限制回环 HTTP/WS 同端口；损坏、失效或恶意记录可清理并安全重建，并发调用收敛为一次启动。
+11. 默认测试不依赖已安装浏览器；真实集成测试显式 opt-in。
+12. 定向测试、`go test ./...` 和 `go vet ./...` 通过；若全量存在独立既有失败，必须给出可重复证据。
+13. Feature Map、配置示例和用户文档同步更新。
 
 ## 23. Worker 实现边界
 

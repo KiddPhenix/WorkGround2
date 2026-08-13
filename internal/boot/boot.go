@@ -62,6 +62,7 @@ const ProductName = "WorkGround2"
 
 var browserRuntimeTools = map[string]bool{
 	"browser_open":     true,
+	"browser_attach":   true,
 	"browser_navigate": true,
 	"browser_state":    true,
 	"browser_click":    true,
@@ -1957,6 +1958,10 @@ func browserManagerOptions(cfg *config.Config, factory browserpkg.DriverFactory)
 		MaxElements:        cfg.BrowserMaxElements(),
 		AllowPasswordInput: cfg.BrowserAllowPasswordInput(),
 		AllowFileUpload:    cfg.BrowserAllowFileUpload(),
+		// Shared persistent browser: one automation profile + endpoint record
+		// per user, reused across controllers/tasks/rebuilds/restarts.
+		RuntimeDir:  config.BrowserStateDir(),
+		ProfileRoot: config.BrowserProfileDir(),
 	}
 }
 

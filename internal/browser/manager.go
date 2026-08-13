@@ -23,6 +23,7 @@ type Manager struct {
 	profiles ProfileProvider
 	creds    CredentialProvider
 	factory  DriverFactory
+	runtime  *sharedRuntime
 
 	mu       sync.Mutex
 	sessions map[string]*Session // ownerID -> Session
@@ -79,6 +80,21 @@ func NewManager(ctx context.Context, opts Options) (*Manager, error) {
 		cancel:   cancel,
 	}
 
+	// The shared runtime path reuses one persistent browser per user. The
+	// endpoint record and launch lock live under RuntimeDir; the profile under
+	// ProfileRoot (derived from RuntimeDir when unset).
+	if opts.RuntimeDir != "" {
+		profileDir := opts.ProfileRoot
+		if profileDir == "" {
+			profileDir = filepath.Join(opts.RuntimeDir, "profile")
+		}
+		m.runtime = newSharedRuntime(RuntimeOptions{
+			Dir:        opts.RuntimeDir,
+			ProfileDir: profileDir,
+			Client:     opts.RuntimeClient,
+		})
+	}
+
 	// Start idle reaper only when a positive timeout is configured. Zero means
 	// the browser is never auto-closed for idleness; explicit Close/CloseSession
 	// and lifecycle cleanup remain the only close paths.
@@ -120,7 +136,7 @@ func (m *Manager) removeSession(ownerID string) {
 	delete(m.sessions, ownerID)
 }
 
-// ensureDriver starts the browser if not already started.
+// ensureDriver starts or attaches the browser if not already available.
 func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
@@ -131,7 +147,7 @@ func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) 
 
 	if s.driver != nil {
 		// A broken/closing driver must never be handed back as healthy. Tear it
-		// down under the operation lock, then create a fresh process.
+		// down under the operation lock, then attach or launch afresh.
 		s.mu.Lock()
 		if s.watchCancel != nil {
 			s.watchCancel()
@@ -164,6 +180,15 @@ func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) 
 		s.hasLease = false
 	}
 
+	if m.runtime != nil {
+		return m.ensureDriverShared(ctx, s)
+	}
+	return m.ensureDriverLegacy(ctx, s)
+}
+
+// ensureDriverLegacy is the pre-shared-runtime launch path: acquire a profile
+// lease and launch a fresh, per-owner ephemeral browser process.
+func (m *Manager) ensureDriverLegacy(ctx context.Context, s *Session) (Driver, error) {
 	// Acquire profile.
 	acquireCtx, acquireCancel := context.WithTimeout(m.ctx, profileCleanupTimeout)
 	defer acquireCancel()
@@ -229,6 +254,86 @@ func (m *Manager) ensureDriver(ctx context.Context, s *Session) (Driver, error) 
 		"version", driver.Info().Version,
 	)
 	return driver, nil
+}
+
+// ensureDriverShared resolves or launches the persistent shared browser and
+// builds a Driver that either attaches to the existing record or owns the fresh
+// launch. Cleanup never kills the shared browser: the profile is persistent and
+// the endpoint record stays valid for the next Manager.
+func (m *Manager) ensureDriverShared(ctx context.Context, s *Session) (Driver, error) {
+	profileDir := m.runtime.profileDir
+	var driver Driver
+	var result ResolveResult
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err = m.runtime.resolve(ctx, func(ctx context.Context, dir string) (Driver, error) {
+			// The shared browser must survive this process, so launch it detached
+			// from the Manager lifecycle context.
+			return m.factory.New(context.WithoutCancel(m.ctx), m.driverOptions(dir, "", "", false))
+		})
+		if err != nil {
+			break
+		}
+		if !result.Attach {
+			driver = result.Driver
+			break
+		}
+		driver, err = m.factory.New(m.ctx, m.driverOptions(profileDir, result.Endpoint, result.WebSocketURL, true))
+		if err == nil {
+			break
+		}
+		cleared, clearErr := m.runtime.clearIfInvalid(ctx, result.Endpoint)
+		if clearErr != nil {
+			err = errors.Join(err, clearErr)
+			break
+		}
+		if !cleared {
+			break
+		}
+		// The browser exited between validation and attach. The stale record is
+		// gone; one bounded retry now converges on a fresh launch.
+	}
+	if err != nil || driver == nil {
+		s.setState(SessionBroken)
+		slog.Error("browser shared resolve failed", "owner", s.ownerID, "err", err)
+		return nil, NewError(ErrBrowserLaunchFailed, "failed to resolve shared browser", err)
+	}
+
+	s.driver = driver
+	// The persistent profile is never released; no lease bookkeeping here.
+	s.lease = ProfileLease{}
+	s.hasLease = false
+	s.setState(SessionReady)
+
+	s.listenInvalidations(m.ctx)
+
+	slog.Info("browser session ready",
+		"session", s.id,
+		"owner", s.ownerID,
+		"attach", result.Attach,
+		"kind", driver.Info().Kind,
+		"version", driver.Info().Version,
+	)
+	return driver, nil
+}
+
+// driverOptions builds DriverOptions for the shared runtime path.
+func (m *Manager) driverOptions(userDataDir, endpoint, wsURL string, attach bool) DriverOptions {
+	return DriverOptions{
+		BrowserKind:        m.opts.BrowserKind,
+		ExecutablePath:     m.opts.ExecutablePath,
+		Headless:           m.opts.Headless,
+		UserDataDir:        userDataDir,
+		DebugURL:           endpoint,
+		WebSocketURL:       wsURL,
+		Attach:             attach,
+		OwnProcess:         false, // shared browser is never killed by cleanup
+		DenyDownloads:      true,
+		SettleWindow:       m.opts.SettleWindow,
+		AllowPasswordInput: m.opts.AllowPasswordInput,
+		AllowFileUpload:    m.opts.AllowFileUpload,
+		Incognito:          m.opts.Incognito,
+	}
 }
 
 func (m *Manager) actionContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -1100,6 +1205,38 @@ func (m *Manager) Upload(ctx context.Context, ownerID string, req UploadRequest)
 		Title:          obs.Title,
 	}
 	return completeAction(s, rec, result, nil)
+}
+
+// Attach returns the shared browser's loopback CDP endpoint for external
+// tooling (e.g. Playwright's chromium.connectOverCDP). It requires an already
+// open browser session and never launches a second browser. The endpoint does
+// not expose PID, profile path or credentials.
+func (m *Manager) Attach(ctx context.Context, ownerID string) (AttachResult, error) {
+	if ownerID == "" {
+		return AttachResult{}, NewError(ErrMissingSessionScope, "no parent session scope", nil)
+	}
+	s := m.getSession(ownerID)
+	if s == nil || s.State() != SessionReady {
+		return AttachResult{}, NewError(ErrBrowserNotOpen, "browser not open", nil)
+	}
+	s.touch()
+	defer s.touch()
+
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	driver := s.driver
+	if driver == nil {
+		return AttachResult{}, NewError(ErrBrowserDisconnected, "driver disconnected", nil)
+	}
+	src, ok := driver.(EndpointSource)
+	if !ok || src.CDPEndpoint() == "" {
+		return AttachResult{}, NewError(ErrBrowserNotOpen, "browser does not expose a CDP endpoint", nil)
+	}
+	return AttachResult{
+		SessionID: s.id,
+		Endpoint:  src.CDPEndpoint(),
+		Browser:   driver.Info(),
+	}, nil
 }
 
 // CloseSession closes the browser session for an owner.

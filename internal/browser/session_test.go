@@ -63,3 +63,36 @@ func TestWaitForQuietReturnsImmediatelyWithoutInvalidationAndHonorsCancel(t *tes
 		t.Fatalf("cancel error=%v", err)
 	}
 }
+
+// TestInvalidationStalesRevisionAndRefreshRecovers models an external page
+// change (e.g. a Playwright write over the shared browser): the current
+// revision becomes stale, then a fresh observation publishes a new revision.
+func TestInvalidationStalesRevisionAndRefreshRecovers(t *testing.T) {
+	s := newSession("owner", Options{})
+	if _, accepted := s.publishSnapshot("session", testObservation("fp", 11), s.Generation()); !accepted {
+		t.Fatal("initial publish rejected")
+	}
+	rev := s.Revision()
+	if rev == 0 {
+		t.Fatal("initial revision is 0")
+	}
+
+	// External change invalidates the snapshot.
+	s.bumpGeneration()
+	if _, err := s.validateRevision(rev); err == nil {
+		t.Fatal("stale revision was accepted")
+	} else {
+		var be *Error
+		if !errors.As(err, &be) || be.Code != ErrStaleState {
+			t.Fatalf("stale revision error = %v, want stale_state", err)
+		}
+	}
+
+	// A refresh re-observes at the current generation and advances the revision.
+	if _, accepted := s.publishSnapshot("session", testObservation("fp", 11), s.Generation()); !accepted {
+		t.Fatal("refresh publish rejected")
+	}
+	if s.Revision() == rev {
+		t.Fatal("refresh did not advance the revision")
+	}
+}

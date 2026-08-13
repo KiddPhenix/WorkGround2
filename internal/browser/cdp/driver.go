@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/chromedp/chromedp"
 
 	"workground2/internal/browser"
+	"workground2/internal/proc"
 )
 
 type driver struct {
@@ -41,6 +43,8 @@ type driver struct {
 	version        string
 	protocol       string
 	processID      int
+	launchCmd      *exec.Cmd
+	launchDone     chan struct{}
 
 	events          chan browser.Invalidation
 	invalCh         chan browser.Invalidation
@@ -89,7 +93,38 @@ func (d *driver) start(ctx context.Context) error {
 	allocOpts := launchAllocOptions(d.opts, d.execPath, debugFlags)
 
 	d.allocCtx, d.allocCancel = chromedp.NewExecAllocator(ctx, allocOpts...)
-	initialCtx, initialCancel := chromedp.NewContext(d.allocCtx)
+	return d.startWithAllocator("")
+}
+
+// startRemote attaches to an already-running browser via its websocket URL.
+// The remote browser is not owned and must never be killed by Close.
+func (d *driver) startRemote(ctx context.Context) error {
+	if d.opts.DebugURL == "" || d.opts.WebSocketURL == "" {
+		return fmt.Errorf("attach requires DebugURL and WebSocketURL")
+	}
+	info, err := browser.ValidateEndpoint(ctx, nil, d.opts.DebugURL)
+	if err != nil {
+		return fmt.Errorf("validate attach endpoint: %w", err)
+	}
+	endpointURL, _ := url.Parse(info.Endpoint)
+	d.mu.Lock()
+	d.debugEndpoint = endpointURL.Host
+	d.mu.Unlock()
+
+	initialTarget, err := reusablePageTarget(ctx, info.Endpoint)
+	if err != nil {
+		return fmt.Errorf("find reusable page target: %w", err)
+	}
+	d.allocCtx, d.allocCancel = chromedp.NewRemoteAllocator(ctx, info.WebSocketURL)
+	return d.startWithAllocator(initialTarget)
+}
+
+func (d *driver) startWithAllocator(initialTarget string) error {
+	var contextOpts []chromedp.ContextOption
+	if initialTarget != "" {
+		contextOpts = append(contextOpts, chromedp.WithTargetID(target.ID(initialTarget)))
+	}
+	initialCtx, initialCancel := chromedp.NewContext(d.allocCtx, contextOpts...)
 	d.mu.Lock()
 	d.browserBase = context.WithoutCancel(initialCtx)
 	d.rootCtx = initialCtx
@@ -119,7 +154,7 @@ func (d *driver) start(ctx context.Context) error {
 
 	versionCtx, cancel := context.WithTimeout(initialCtx, 10*time.Second)
 	var protocol, product string
-	err = chromedp.Run(versionCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+	err := chromedp.Run(versionCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var err error
 		protocol, product, _, _, _, err = browsercdp.GetVersion().Do(ctx)
 		return err
@@ -561,7 +596,7 @@ func (d *driver) Close() error {
 		allocCancel := d.allocCancel
 		rootCtx := d.rootCtx
 		d.mu.RUnlock()
-		if rootCtx != nil {
+		if d.opts.OwnProcess && rootCtx != nil {
 			closeCtx, closeCancel := context.WithTimeout(rootCtx, 10*time.Second)
 			gracefulErr := chromedp.Cancel(closeCtx)
 			closeCancel()
@@ -570,9 +605,12 @@ func (d *driver) Close() error {
 			d.closeErrPending = gracefulErr != nil
 			d.mu.Unlock()
 		}
-		// Force cleanup always runs, even when graceful chromedp.Cancel failed.
-		// This guarantees process/event resources converge before Manager retries
-		// Profile release.
+		if !d.opts.OwnProcess {
+			// chromedp context cancellation normally closes the attached target.
+			// Clear each target pointer first so cancellation only disconnects this
+			// client and leaves the shared browser and all of its tabs intact.
+			d.detachTargets()
+		}
 		for _, cancel := range cancels {
 			cancel()
 		}
@@ -583,9 +621,49 @@ func (d *driver) Close() error {
 			d.eventCancel()
 		}
 		<-d.eventDone
-		d.processExited.Store(true)
+		if d.opts.OwnProcess {
+			d.processExited.Store(true)
+		}
 	})
 	return d.consumeCloseError()
+}
+
+// Kill forcibly reaps the browser process and then closes the driver. It is
+// used only to reclaim a just-launched orphan when the launch itself fails
+// endpoint validation; normal cleanup must call Close (detach only).
+func (d *driver) Kill() error {
+	d.mu.RLock()
+	cmd := d.launchCmd
+	done := d.launchDone
+	d.mu.RUnlock()
+	if cmd != nil {
+		proc.KillTree(cmd)
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		d.processExited.Store(true)
+	}
+	return d.Close()
+}
+
+func (d *driver) detachTargets() {
+	d.mu.RLock()
+	contexts := make([]context.Context, 0, len(d.targetContexts)+1)
+	if d.rootCtx != nil {
+		contexts = append(contexts, d.rootCtx)
+	}
+	for _, ctx := range d.targetContexts {
+		contexts = append(contexts, ctx)
+	}
+	d.mu.RUnlock()
+	for _, ctx := range contexts {
+		if c := chromedp.FromContext(ctx); c != nil {
+			c.Target = nil
+		}
+	}
 }
 
 // ProcessID and ProcessExited are intentionally outside browser.Driver and
@@ -607,6 +685,18 @@ func (d *driver) DebugEndpoint() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.debugEndpoint
+}
+
+// CDPEndpoint satisfies browser.EndpointSource: the full loopback HTTP CDP
+// endpoint (http://127.0.0.1:<port>) for the shared runtime record and the
+// browser_attach tool.
+func (d *driver) CDPEndpoint() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.debugEndpoint == "" {
+		return ""
+	}
+	return "http://" + d.debugEndpoint
 }
 
 // consumeCloseError exposes a graceful-close error once. The process cleanup
