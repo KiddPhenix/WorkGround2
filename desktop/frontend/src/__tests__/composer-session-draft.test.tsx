@@ -378,5 +378,30 @@ console.log("\ncomposer session draft");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  const activated: Array<{ tabID: string; name: string }> = [];
+  installBridgeApp({
+    Commands: async () => [{ name: "GPT", description: "delegated workflow", kind: "skill" }],
+    ActivateSkillVocabularyForTab: async (tabID: string, name: string) => {
+      activated.push({ tabID, name });
+      return { skill: name, termCount: 1, added: 1, warnings: [] };
+    },
+  });
+  const { root, rerender } = await renderComposer();
+  await rerender({ insertRequest: { id: 30, text: "/GPT", mode: "replace" } });
+  await act(async () => {
+    await flushTimers();
+  });
+  eq(activated.length, 1, "exact Skill slash input activates vocabulary before submit");
+  eq(activated[0]?.tabID, "single-surface-tab", "Skill vocabulary activation keeps the target tab identity");
+  eq(activated[0]?.name, "GPT", "Skill vocabulary activation uses the canonical command name");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

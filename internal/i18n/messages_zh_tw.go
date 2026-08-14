@@ -184,6 +184,7 @@ var ChineseTraditional = Messages{
 	CmdSkill:            "管理 skills",
 	CmdVerbose:          "切換 thinking 原文顯示",
 	CmdReloadCmd:        "重載自定義命令",
+	CmdRebuildVocab:     "掃描 Workspace 並重建專案詞彙表",
 	CmdSandbox:          "檢視沙箱狀態",
 	CmdEffort:           "設定推理強度",
 	CmdMouse:            "切換滑鼠接管（關閉後由終端原生處理選取/右鍵）",

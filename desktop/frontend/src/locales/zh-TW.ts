@@ -1836,6 +1836,8 @@ export const zhTW: Record<DictKey, string> = {
   "composer.attachImageFailed": "圖片貼上失敗",
   "composer.vocabularyHint": "按 Tab 補全為 {term}",
   "composer.vocabularyUseFailed": "記錄詞彙偏好失敗：{error}",
+  "composer.skillVocabularyFailed": "載入 Skill 詞彙表失敗：{error}",
+  "composer.skillVocabularyWarning": "Skill 詞彙表已載入，但有警告：{warning}",
   "composer.attachFileFailed": "檔案附加失敗",
   "composer.attachDropFailed": "拖放檔案附加失敗",
   "composer.pasteImageFailed": "未能讀取剪貼簿圖片",

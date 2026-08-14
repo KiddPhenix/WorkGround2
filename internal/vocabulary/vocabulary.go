@@ -96,6 +96,17 @@ type Options struct {
 	Agents        []AgentSource
 }
 
+// RefreshResult describes a Session-local Skill activation or full rebuild.
+type RefreshResult struct {
+	Skill     string   `json:"skill,omitempty"`
+	TermCount int      `json:"termCount"`
+	Added     int      `json:"added,omitempty"`
+	Scanned   int      `json:"scanned,omitempty"`
+	Path      string   `json:"path,omitempty"`
+	Updated   bool     `json:"updated,omitempty"`
+	Warnings  []string `json:"warnings"`
+}
+
 type learnedState struct {
 	Version   int               `json:"version"`
 	Terms     map[string]*Entry `json:"terms"`
@@ -131,21 +142,10 @@ func New(opts Options) *Service {
 	s.loadLearned()
 	s.static = append(s.static, s.loadFile(filepath.Join(s.root, ".WorkGround2", ProjectFile), Source{Kind: "workspace", Name: "workspace"})...)
 	for _, sk := range opts.Skills {
-		source := Source{Kind: "skill", Name: sk.Name, Path: sk.Path}
-		for _, term := range sk.Terms {
-			if e, ok := simpleEntry(term, source); ok {
-				s.static = append(s.static, e)
-			}
-		}
-		if sidecar := skillSidecar(sk.Path); sidecar != "" {
-			s.static = append(s.static, s.loadFile(sidecar, source)...)
-		}
+		s.appendSkillLocked(sk)
 	}
 	for _, doc := range opts.Agents {
-		s.static = append(s.static, entriesFromAgent(doc)...)
-		if strings.TrimSpace(doc.Path) != "" {
-			s.static = append(s.static, s.loadFile(filepath.Join(filepath.Dir(doc.Path), SidecarFile), Source{Kind: "agent", Name: doc.Name, Path: doc.Path})...)
-		}
+		s.appendAgentLocked(doc)
 	}
 	s.rebuildLocked()
 	return s
@@ -160,6 +160,69 @@ func (s *Service) Warnings() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return append([]string(nil), s.warnings...)
+}
+
+// ActivateSkill replaces one Skill's authored entries in the current Session.
+// Repeating the activation is safe and also picks up edits made since the last
+// activation; it does not persist the activation into other Sessions.
+func (s *Service) ActivateSkill(sk SkillSource) RefreshResult {
+	if s == nil || strings.TrimSpace(sk.Name) == "" {
+		return RefreshResult{Warnings: []string{}}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	beforeWarnings := len(s.warnings)
+	kept := s.static[:0]
+	for _, entry := range s.static {
+		if !entryFromSkill(entry, sk.Name) {
+			kept = append(kept, entry)
+		}
+	}
+	s.static = kept
+	beforeEntries := len(s.static)
+	s.appendSkillLocked(sk)
+	s.rebuildLocked()
+	return RefreshResult{
+		Skill:     sk.Name,
+		TermCount: len(s.entries),
+		Added:     len(s.static) - beforeEntries,
+		Warnings:  append([]string(nil), s.warnings[beforeWarnings:]...),
+	}
+}
+
+// RebuildWorkspace scans project files, atomically refreshes the generated
+// section of .WorkGround2/vocabulary.toml, then reloads that source into this
+// Session. Skill and Agent entries keep their existing Session scope.
+func (s *Service) RebuildWorkspace() (RefreshResult, error) {
+	if s == nil || s.root == "" {
+		return RefreshResult{Warnings: []string{}}, fmt.Errorf("vocabulary: workspace root is required")
+	}
+	scan, err := RebuildProject(s.root)
+	if err != nil {
+		return RefreshResult{Warnings: []string{}}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	beforeWarnings := len(s.warnings)
+	kept := s.static[:0]
+	for _, entry := range s.static {
+		if !entryFromSource(entry, "workspace", "workspace") {
+			kept = append(kept, entry)
+		}
+	}
+	s.static = kept
+	s.static = append(s.static, s.loadFile(scan.Path, Source{Kind: "workspace", Name: "workspace"})...)
+	s.rebuildLocked()
+	warnings := append([]string(nil), scan.Warnings...)
+	warnings = append(warnings, s.warnings[beforeWarnings:]...)
+	return RefreshResult{
+		TermCount: len(s.entries),
+		Added:     scan.Generated,
+		Scanned:   scan.Scanned,
+		Path:      scan.Path,
+		Updated:   scan.Updated,
+		Warnings:  warnings,
+	}, nil
 }
 
 // Complete returns stable prefix matches. Prefix matching is case-insensitive
@@ -599,6 +662,38 @@ func (s *Service) loadFile(path string, source Source) []Entry {
 		return nil
 	}
 	return entries
+}
+
+func (s *Service) appendSkillLocked(sk SkillSource) {
+	source := Source{Kind: "skill", Name: sk.Name, Path: sk.Path}
+	for _, term := range sk.Terms {
+		if entry, ok := simpleEntry(term, source); ok {
+			s.static = append(s.static, entry)
+		}
+	}
+	if sidecar := skillSidecar(sk.Path); sidecar != "" {
+		s.static = append(s.static, s.loadFile(sidecar, source)...)
+	}
+}
+
+func (s *Service) appendAgentLocked(doc AgentSource) {
+	s.static = append(s.static, entriesFromAgent(doc)...)
+	if strings.TrimSpace(doc.Path) != "" {
+		s.static = append(s.static, s.loadFile(filepath.Join(filepath.Dir(doc.Path), SidecarFile), Source{Kind: "agent", Name: doc.Name, Path: doc.Path})...)
+	}
+}
+
+func entryFromSkill(entry Entry, name string) bool {
+	return entryFromSource(entry, "skill", name)
+}
+
+func entryFromSource(entry Entry, kind, name string) bool {
+	for _, source := range entry.Sources {
+		if source.Kind == kind && strings.EqualFold(source.Name, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func entriesFromAgent(doc AgentSource) []Entry {

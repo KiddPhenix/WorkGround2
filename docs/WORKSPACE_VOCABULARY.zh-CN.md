@@ -37,6 +37,8 @@ vocabulary: 多模态生视频V5, 角色设定Pro, 批量跑图 — 批量执行
 
 需要类型、别名或首选项时，在 `SKILL.md` 同目录增加 `VOCABULARY.toml`，格式与 Workspace 文件一致。禁用或受保护的 Skill 不会向当前 Session 注入词汇。
 
+Skill 支持动态激活：在输入框中精确输入 `/gpt`（无需回车），或从 `/` 菜单选中 GPT Skill 时，该 Skill 的 frontmatter 与同目录 `VOCABULARY.toml` 会立即进入当前 Session。重复激活会重新读取文件并安全替换旧快照；不会写入项目词表，也不会影响其他 Session。
+
 ### Agent 自带词汇
 
 `AGENTS.md` 支持 frontmatter，也支持正文词汇表：
@@ -59,6 +61,12 @@ vocabulary: 多模态生视频V5, 角色设定Pro
 每个成功对话轮次会观察原始用户输入和最终 Assistant 文本。提取器只接受显式声明、引号包围或具备版本号/中英混排等明显特征的短词，普通句子不会写入；疑似 API Key、Token、路径和命令触发词会被拒绝。
 
 学习数据写入用户私有的项目状态目录，不修改仓库文件。写入采用原子替换、跨 Session 锁、落盘前重读合并和事件去重；进程崩溃留下的锁会自动恢复。损坏或不可读的可选来源会产生可见警告，其余有效词汇仍可使用。
+
+## 重建项目词表
+
+提交 `/rebuild_vocabulary` 会扫描当前 Workspace 的常见代码、配置和文档文件，提取显式声明、引号词条及具有版本号或中英混排特征的项目术语，然后更新 `.WorkGround2/vocabulary.toml`。命令完成后，当前 Session 会立即重载新词表。
+
+扫描生成内容位于 `WORKGROUND2:BEGIN/END GENERATED VOCABULARY` 标记之间。每次重建只替换该区段，标记外的手工词条和注释保持原样；写入采用原子替换，相同输入重复执行不会改写文件。扫描跳过 Git、依赖、构建产物、缓存、附件和 Session 数据目录，并限制单文件大小、文件数和生成词条数。TOML 损坏时命令显式失败且保留原文件。
 
 ## 对话上下文
 

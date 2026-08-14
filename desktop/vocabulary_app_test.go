@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"workground2/internal/control"
+	"workground2/internal/skill"
 	"workground2/internal/vocabulary"
 )
 
@@ -49,5 +50,32 @@ func TestVocabularyCompletionRejectsMissingTabIdentity(t *testing.T) {
 	}
 	if err := app.RecordVocabularyUseForTab("", "term", "use-1"); err == nil {
 		t.Fatal("missing tab id use should fail explicitly")
+	}
+	if _, err := app.ActivateSkillVocabularyForTab("", "gpt"); err == nil {
+		t.Fatal("missing tab id activation should fail explicitly")
+	}
+}
+
+func TestSkillVocabularyActivationIsTabScoped(t *testing.T) {
+	root := t.TempDir()
+	svc := vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: filepath.Join(t.TempDir(), "state")})
+	ctrl := control.New(control.Options{
+		WorkspaceRoot: root,
+		Vocabulary:    svc,
+		Skills:        []skill.Skill{{Name: "GPT", Path: filepath.Join(root, "GPT", "SKILL.md"), Vocabulary: []string{"多模态生视频V5"}}},
+	})
+	app := NewApp()
+	app.setTestCtrl(ctrl, "test-model")
+
+	result, err := app.ActivateSkillVocabularyForTab("test", "gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skill != "GPT" || result.Added != 1 {
+		t.Fatalf("activation = %+v", result)
+	}
+	got, err := app.CompleteVocabularyForTab("test", "多模", 5)
+	if err != nil || len(got) != 1 || got[0].Text != "多模态生视频V5" {
+		t.Fatalf("completion = %+v, err = %v", got, err)
 	}
 }

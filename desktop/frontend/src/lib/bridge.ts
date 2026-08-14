@@ -108,6 +108,7 @@ import type {
   TopicMeta,
   ToolApprovalMode,
   VocabularyMatch,
+  VocabularyRefreshResult,
   UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
@@ -485,6 +486,7 @@ export interface AppBindings extends WailsWorkBindings {
   SlashArgs(input: string): Promise<SlashArgsResult>;
   CompleteVocabularyForTab(tabID: string, prefix: string, limit: number): Promise<VocabularyMatch[]>;
   RecordVocabularyUseForTab(tabID: string, id: string, useID: string): Promise<void>;
+  ActivateSkillVocabularyForTab(tabID: string, name: string): Promise<VocabularyRefreshResult>;
   ListDir(rel: string): Promise<DirEntry[]>;
   ListDirForTab(tabID: string, rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
@@ -3727,6 +3729,9 @@ function makeMockApp(): AppBindings {
         .map((term) => ({ ...term, suffix: term.text.slice(prefix.length) }));
     },
     async RecordVocabularyUseForTab(_tabID: string, _id: string, _useID: string) {},
+    async ActivateSkillVocabularyForTab(_tabID: string, name: string) {
+      return { skill: name, termCount: 2, added: 2, warnings: [] };
+    },
     async ListDir(rel: string) {
       // A tiny fake tree so the @ menu is navigable in browser dev.
       if (rel === "" || rel === "./") {

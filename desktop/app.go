@@ -6149,6 +6149,7 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
 		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin"},
+		{Name: "rebuild_vocabulary", Description: i18n.M.CmdRebuildVocab, Kind: "builtin"},
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()

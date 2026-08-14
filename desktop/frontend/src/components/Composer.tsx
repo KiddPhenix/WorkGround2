@@ -711,6 +711,32 @@ export function Composer({
     () => (slashQuery === null ? [] : commands.filter((c) => c.name.toLowerCase().includes(slashQuery))),
     [slashQuery, commands],
   );
+  const skillVocabularyActivations = useRef(new Map<string, Promise<unknown>>());
+  const activateSkillVocabulary = useCallback((command: CommandInfo) => {
+    if (!tabId || command.kind !== "skill") return;
+    const key = `${tabId}:${command.name.toLowerCase()}`;
+    if (skillVocabularyActivations.current.has(key)) return;
+    const activate = app.ActivateSkillVocabularyForTab;
+    if (typeof activate !== "function") return;
+    const pending = activate(tabId, command.name)
+      .then((result) => {
+        const warnings = asArray(result?.warnings);
+        if (warnings.length > 0) showToast(t("composer.skillVocabularyWarning", { warning: warnings[0] }), "warn");
+      })
+      .catch((error) => {
+        showToast(t("composer.skillVocabularyFailed", { error: error instanceof Error ? error.message : String(error) }), "warn");
+      })
+      .finally(() => skillVocabularyActivations.current.delete(key));
+    skillVocabularyActivations.current.set(key, pending);
+  }, [showToast, t, tabId]);
+  const typedSkillName = useMemo(() => /^\/([^\s]+)/.exec(text)?.[1]?.toLowerCase(), [text]);
+  const exactSkillCommand = useMemo(
+    () => typedSkillName === undefined ? undefined : commands.find((command) => command.kind === "skill" && command.name.toLowerCase() === typedSkillName),
+    [commands, typedSkillName],
+  );
+  useEffect(() => {
+    if (exactSkillCommand) activateSkillVocabulary(exactSkillCommand);
+  }, [activateSkillVocabulary, exactSkillCommand]);
 
   // --- slash argument completion ("/cmd <args>") --- mirrors the CLI: once past
   // the command word, the backend suggests sub-commands (/skill → list/show/…,
@@ -1625,7 +1651,10 @@ export function Composer({
     if (typeof restored === "string") setTextCaretEnd(restored);
   };
 
-  const pickCommand = (c: CommandInfo) => setTextCaretEnd("/" + c.name + " ");
+  const pickCommand = (c: CommandInfo) => {
+    activateSkillVocabulary(c);
+    setTextCaretEnd("/" + c.name + " ");
+  };
 
   const activePastedBlocks = pastedBlocks.filter((block) => text.includes(block.label));
   const shellModeActive = text.trimStart().startsWith("!");

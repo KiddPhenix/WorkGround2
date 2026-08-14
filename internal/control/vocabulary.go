@@ -26,6 +26,39 @@ func (c *Controller) RecordVocabularyUse(id, useID string) error {
 	return c.vocabulary.RecordUse(id, useID)
 }
 
+// ActivateSkillVocabulary adds one live Skill's glossary to this Controller.
+// It intentionally leaves the stable system prompt unchanged.
+func (c *Controller) ActivateSkillVocabulary(name string) (vocabulary.RefreshResult, error) {
+	if c == nil || c.vocabulary == nil {
+		return vocabulary.RefreshResult{Warnings: []string{}}, nil
+	}
+	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	canonical := ""
+	for _, candidate := range c.Skills() {
+		if strings.EqualFold(candidate.Name, name) {
+			canonical = candidate.Name
+			break
+		}
+	}
+	if canonical == "" {
+		return vocabulary.RefreshResult{Warnings: []string{}}, fmt.Errorf("unknown or disabled skill: %s", name)
+	}
+	sk, ok := c.skills.resolve(canonical)
+	if !ok || sk.Protected {
+		return vocabulary.RefreshResult{Warnings: []string{}}, fmt.Errorf("skill vocabulary is unavailable: %s", canonical)
+	}
+	return c.vocabulary.ActivateSkill(vocabulary.SkillSource{Name: sk.Name, Path: sk.Path, Terms: sk.Vocabulary}), nil
+}
+
+// RebuildVocabulary scans the Workspace and updates the generated section of
+// the shared project vocabulary file.
+func (c *Controller) RebuildVocabulary() (vocabulary.RefreshResult, error) {
+	if c == nil || c.vocabulary == nil {
+		return vocabulary.RefreshResult{Warnings: []string{}}, fmt.Errorf("vocabulary service is unavailable")
+	}
+	return c.vocabulary.RebuildWorkspace()
+}
+
 func (c *Controller) observeVocabulary(index int, role, text string) {
 	if c == nil || c.vocabulary == nil || strings.TrimSpace(text) == "" {
 		return

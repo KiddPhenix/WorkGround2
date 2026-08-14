@@ -674,6 +674,16 @@ export interface VocabularyMatch {
   source?: "agent" | "skill" | "workspace" | "learned" | string;
 }
 
+export interface VocabularyRefreshResult {
+  skill?: string;
+  termCount: number;
+  added?: number;
+  scanned?: number;
+  path?: string;
+  updated?: boolean;
+  warnings: string[];
+}
+
 export interface DirEntry {
   name: string;
   path?: string;

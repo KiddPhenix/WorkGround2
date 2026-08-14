@@ -15,6 +15,10 @@ type vocabularyUseRecorder interface {
 	RecordVocabularyUse(id, useID string) error
 }
 
+type vocabularySkillActivator interface {
+	ActivateSkillVocabulary(name string) (vocabulary.RefreshResult, error)
+}
+
 // CompleteVocabularyForTab returns completion candidates from the target tab's
 // controller snapshot. The tab ID is mandatory so a delayed response from a
 // previous workspace can never leak into the active composer.
@@ -50,4 +54,22 @@ func (a *App) RecordVocabularyUseForTab(tabID, id, useID string) error {
 		return nil
 	}
 	return recorder.RecordVocabularyUse(strings.TrimSpace(id), strings.TrimSpace(useID))
+}
+
+// ActivateSkillVocabularyForTab hot-loads a selected Skill's vocabulary into
+// the target Session before the slash command is submitted.
+func (a *App) ActivateSkillVocabularyForTab(tabID, name string) (vocabulary.RefreshResult, error) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return vocabulary.RefreshResult{Warnings: []string{}}, fmt.Errorf("vocabulary: tab id is required")
+	}
+	_, ctrl := a.tabAndCtrlByID(tabID)
+	if ctrl == nil {
+		return vocabulary.RefreshResult{Warnings: []string{}}, nil
+	}
+	activator, ok := ctrl.(vocabularySkillActivator)
+	if !ok {
+		return vocabulary.RefreshResult{Warnings: []string{}}, nil
+	}
+	return activator.ActivateSkillVocabulary(strings.TrimSpace(name))
 }

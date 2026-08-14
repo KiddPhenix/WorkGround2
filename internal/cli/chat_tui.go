@@ -36,6 +36,7 @@ import (
 	"workground2/internal/sandbox"
 	"workground2/internal/skill"
 	"workground2/internal/tool"
+	"workground2/internal/vocabulary"
 )
 
 // chatTUI is a bubbletea Model that normally owns the terminal with an
@@ -3520,6 +3521,37 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			return nil
 		}
 		m.notice(fmt.Sprintf("commands reloaded: %d → %d commands", prev, len(m.commands)))
+	case "/rebuild_vocabulary":
+		m.echoLocalCommand(input)
+		if m.ctrl == nil {
+			m.notice("controller not ready")
+			return nil
+		}
+		if m.ctrl.Running() {
+			m.notice("wait for the current turn to finish, then retry /rebuild_vocabulary")
+			return nil
+		}
+		rebuilder, ok := m.ctrl.(interface {
+			RebuildVocabulary() (vocabulary.RefreshResult, error)
+		})
+		if !ok {
+			m.notice("vocabulary service is unavailable")
+			return nil
+		}
+		result, err := rebuilder.RebuildVocabulary()
+		if err != nil {
+			m.notice("rebuild_vocabulary: " + err.Error())
+			return nil
+		}
+		state := "unchanged"
+		if result.Updated {
+			state = "updated"
+		}
+		message := fmt.Sprintf("vocabulary %s: scanned %d files, generated %d terms -> %s", state, result.Scanned, result.Added, result.Path)
+		if len(result.Warnings) > 0 {
+			message += fmt.Sprintf(" (%d warnings; first: %s)", len(result.Warnings), result.Warnings[0])
+		}
+		m.notice(message)
 
 	case "/paste-image":
 		return pasteClipboardImage()

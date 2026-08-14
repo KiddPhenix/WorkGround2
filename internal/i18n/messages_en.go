@@ -196,6 +196,7 @@ var English = Messages{
 	CmdSkill:            "manage skills",
 	CmdVerbose:          "toggle thinking text",
 	CmdReloadCmd:        "reload custom commands",
+	CmdRebuildVocab:     "scan workspace and rebuild project vocabulary",
 	CmdDiffFold:         "toggle diff fold/expand",
 	CmdSandbox:          "show sandbox status",
 	CmdEffort:           "set reasoning effort",

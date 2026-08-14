@@ -538,6 +538,9 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	if !hasCommand(cmds, "effort") {
 		t.Fatalf("Commands() should include effort: %+v", cmds)
 	}
+	if !hasCommand(cmds, "rebuild_vocabulary") {
+		t.Fatalf("Commands() should include rebuild_vocabulary: %+v", cmds)
+	}
 	if hasCommand(cmds, "thinking") {
 		t.Fatalf("Commands() should not include thinking: %+v", cmds)
 	}

@@ -666,6 +666,8 @@ export const en = {
   "composer.attachImageFailed": "Image paste failed",
   "composer.vocabularyHint": "Press Tab to complete as {term}",
   "composer.vocabularyUseFailed": "Failed to record vocabulary preference: {error}",
+  "composer.skillVocabularyFailed": "Failed to load Skill vocabulary: {error}",
+  "composer.skillVocabularyWarning": "Skill vocabulary loaded with a warning: {warning}",
   "composer.attachFileFailed": "File attach failed",
   "composer.attachDropFailed": "Dropped file attach failed",
   "composer.pasteImageFailed": "Could not read clipboard image",

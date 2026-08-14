@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"workground2/internal/event"
+	"workground2/internal/skill"
 	"workground2/internal/vocabulary"
 )
 
@@ -39,5 +41,58 @@ func TestObserveVocabularyUsesStableEventIdentity(t *testing.T) {
 	got := ctrl.CompleteVocabulary("多模", 5)
 	if len(got) != 1 || got[0].Text != "多模态生视频V5" {
 		t.Fatalf("completion = %+v", got)
+	}
+}
+
+func TestActivateDynamicallyDiscoveredSkillVocabulary(t *testing.T) {
+	root := t.TempDir()
+	store := skill.New(skill.Options{ProjectRoot: root, HomeDir: t.TempDir(), DisableBuiltins: true})
+	svc := vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: filepath.Join(t.TempDir(), "state")})
+	ctrl := New(Options{WorkspaceRoot: root, SkillStore: store, Vocabulary: svc})
+	skillDir := filepath.Join(root, ".WorkGround2", "skills", "GPT")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: GPT
+description: delegated workflow
+vocabulary: 多模态生视频V5
+---
+Use GPT.
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ctrl.ActivateSkillVocabulary("gpt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Skill != "GPT" || len(ctrl.CompleteVocabulary("多模", 5)) != 1 {
+		t.Fatalf("dynamic activation = %+v, matches = %+v", result, ctrl.CompleteVocabulary("多模", 5))
+	}
+}
+
+func TestRebuildVocabularyCommandUpdatesProjectFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "notes.md"), []byte("名词：多模态生视频V5"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var notices []event.Event
+	ctrl := New(Options{
+		WorkspaceRoot: root,
+		Vocabulary:    vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: filepath.Join(t.TempDir(), "state")}),
+		Sink: event.FuncSink(func(item event.Event) {
+			notices = append(notices, item)
+		}),
+	})
+	if !ctrl.managementNotice("/rebuild_vocabulary") {
+		t.Fatal("rebuild command was not handled")
+	}
+	body, err := os.ReadFile(filepath.Join(root, ".WorkGround2", vocabulary.ProjectFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "多模态生视频V5") || len(notices) == 0 || !strings.Contains(notices[len(notices)-1].Text, "vocabulary updated") {
+		t.Fatalf("body=%s notices=%+v", body, notices)
 	}
 }

@@ -428,6 +428,25 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		} else {
 			c.notice("commands reloaded (" + strconv.Itoa(len(c.Commands())) + " available)")
 		}
+	case "/rebuild_vocabulary":
+		if c.Running() {
+			c.notice("wait for the current turn to finish, then retry /rebuild_vocabulary")
+			return true
+		}
+		result, err := c.RebuildVocabulary()
+		if err != nil {
+			c.notice("rebuild_vocabulary: " + err.Error())
+			return true
+		}
+		state := "unchanged"
+		if result.Updated {
+			state = "updated"
+		}
+		message := fmt.Sprintf("vocabulary %s: scanned %d files, generated %d terms -> %s", state, result.Scanned, result.Added, result.Path)
+		if len(result.Warnings) > 0 {
+			message += fmt.Sprintf(" (%d warnings; first: %s)", len(result.Warnings), result.Warnings[0])
+		}
+		c.notice(message)
 	case "/hooks":
 		sub := ""
 		if len(fields) >= 2 {

@@ -186,6 +186,7 @@ type Messages struct {
 	CmdSkill            string // /skills
 	CmdVerbose          string // /verbose
 	CmdReloadCmd        string // /reload-cmd
+	CmdRebuildVocab     string // /rebuild_vocabulary
 	CmdDiffFold         string // /diff-fold
 	CmdSandbox          string // /sandbox
 	CmdEffort           string // /effort
