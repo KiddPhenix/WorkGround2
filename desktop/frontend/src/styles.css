@@ -43766,6 +43766,92 @@ body > .mermaid-diagram--fullscreen {
   background: rgba(255, 255, 255, 0.20);
 }
 
+:root[data-theme="light"] .app--workbench .run-work-window--running,
+:root[data-theme="light"] .app--workbench .run-work-window--queued,
+:root[data-theme="light"] .app--workbench .run-work-window--reconnecting {
+  filter: drop-shadow(0 10px 18px rgba(48, 59, 76, 0.16));
+}
+
+:root[data-theme="light"] .app--workbench .run-work-face {
+  border-color: rgba(84, 96, 116, 0.28);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 22px rgba(48, 59, 76, 0.10);
+}
+
+:root[data-theme="light"] .app--workbench .run-work-face__header,
+:root[data-theme="light"] .app--workbench .active-run-view__tabs {
+  border-color: var(--border);
+}
+
+:root[data-theme="light"] .app--workbench .active-run-view--running::before,
+:root[data-theme="light"] .app--workbench .active-run-view--queued::before,
+:root[data-theme="light"] .app--workbench .active-run-view--reconnecting::before {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+:root[data-theme="light"] .app--workbench .active-run-view--running::after,
+:root[data-theme="light"] .app--workbench .active-run-view--queued::after,
+:root[data-theme="light"] .app--workbench .active-run-view--reconnecting::after {
+  background: var(--accent);
+  box-shadow: 58px 0 0 -0.5px color-mix(in srgb, var(--accent) 54%, white);
+}
+
+:root[data-theme="light"] .app--workbench .active-run-view--running .run-work-face__status > svg,
+:root[data-theme="light"] .app--workbench .active-run-view--queued .run-work-face__status > svg,
+:root[data-theme="light"] .app--workbench .active-run-view--reconnecting .run-work-face__status > svg,
+:root[data-theme="light"] .app--workbench .active-run-view--running .active-run-view__status-text,
+:root[data-theme="light"] .app--workbench .active-run-view--queued .active-run-view__status-text {
+  color: color-mix(in srgb, var(--accent) 82%, var(--fg));
+}
+
+:root[data-theme="light"] .app--workbench .run-step-tab {
+  color: var(--fg-dim);
+}
+
+:root[data-theme="light"] .app--workbench .run-step-tab:hover {
+  color: var(--fg);
+}
+
+:root[data-theme="light"] .app--workbench .run-step-tab[aria-selected="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+:root[data-theme="light"] .app--workbench .run-step-tab__number,
+:root[data-theme="light"] .app--workbench .run-step-tab--completed .run-step-tab__number {
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+  color: var(--ok);
+}
+
+:root[data-theme="light"] .app--workbench .run-step-tab--running .run-step-tab__number,
+:root[data-theme="light"] .app--workbench .run-step-tab--queued .run-step-tab__number,
+:root[data-theme="light"] .app--workbench .run-step-tab--reconnecting .run-step-tab__number {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+:root[data-theme="light"] .app--workbench .active-run-view__tabs {
+  scrollbar-color: var(--border-2) transparent;
+}
+
+:root[data-theme="light"] .app--workbench .active-run-view__tabs::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+}
+
+:root[data-theme="light"] .app--workbench .run-detail-viewport {
+  background: rgba(238, 242, 247, 0.86);
+}
+
+:root[data-theme="light"] .app--workbench .run-activity-terminal,
+:root[data-theme="light"] .app--workbench .run-activity-editor,
+:root[data-theme="light"] .app--workbench .run-activity-browser,
+:root[data-theme="light"] .app--workbench .run-activity-lines {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.82);
+}
+
 :root[data-theme="light"] .app--workbench .session-footer-dock .composer-card,
 :root[data-theme="light"] .app--workbench .session-footer-dock .runtime-config-bar {
   border-color: rgba(84, 96, 116, 0.24);

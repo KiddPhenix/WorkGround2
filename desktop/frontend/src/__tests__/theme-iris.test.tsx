@@ -120,6 +120,10 @@ includes(cssText, ".session-run-action__panel", "expanded terminal process panel
 includes(cssText, ".active-run-view--failed", "active-run-view mod failed");
 includes(cssText, ".run-step-tab--completed", "run-step-tab mod completed");
 includes(cssText, ".run-work-face .icon-button--text", "run face text action");
+includes(cssText, ':root[data-theme="light"] .app--workbench .run-work-face', "light workbench run face");
+includes(cssText, ':root[data-theme="light"] .app--workbench .run-detail-viewport', "light workbench run activity surface");
+includes(cssText, ':root[data-theme="light"] .app--workbench .run-step-tab[aria-selected="true"]', "light workbench selected run step");
+includes(cssText, ':root[data-theme="light"] .app--workbench .run-activity-terminal', "light workbench run detail cards");
 
 // ArtifactShelf
 includes(cssText, ".artifact-item--stale", "artifact-item mod stale");
