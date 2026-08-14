@@ -940,7 +940,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.sourceExternalShort": "外部",
   "projectTree.visualLabel": "视觉标签",
   "projectTree.visualIcon": "项目图标",
-  "projectTree.iconDot": "圆点",
+  "projectTree.iconFolder": "文件夹",
   "projectTree.iconStar": "星标",
   "projectTree.iconBookmark": "书签",
   "projectTree.iconCode": "代码",

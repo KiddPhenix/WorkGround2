@@ -44,20 +44,22 @@ interface ProjectTreeProps {
   onVisibleTopicsChange?: (topics: TopicShortcutEntry[]) => void;
 }
 
-function ProjectVisualIcon({ value, size = 13 }: { value?: string; size?: number }) {
-  const className = "project-tree__visual-icon-symbol";
+function ProjectFolderIcon({ value, open = false, size = 16 }: { value?: string; open?: boolean; size?: number }) {
+  const className = "project-tree__folder-icon";
   switch (projectIconKey(value)) {
     case "star": return <Star size={size} className={className} aria-hidden="true" />;
     case "bookmark": return <Bookmark size={size} className={className} aria-hidden="true" />;
     case "code": return <Code2 size={size} className={className} aria-hidden="true" />;
     case "terminal": return <SquareTerminal size={size} className={className} aria-hidden="true" />;
     case "bolt": return <Zap size={size} className={className} aria-hidden="true" />;
-    default: return <span className="project-tree__visual-icon-dot" aria-hidden="true" />;
+    default: return open
+      ? <FolderOpen size={size} className={className} aria-hidden="true" />
+      : <Folder size={size} className={className} aria-hidden="true" />;
   }
 }
 
 function projectIconLabel(t: Translator, icon: ProjectIconKey): string {
-  const key = icon ? `projectTree.icon${icon[0].toUpperCase()}${icon.slice(1)}` : "projectTree.iconDot";
+  const key = icon ? `projectTree.icon${icon[0].toUpperCase()}${icon.slice(1)}` : "projectTree.iconFolder";
   return t(key as DictKey);
 }
 
@@ -2002,8 +2004,8 @@ export function ProjectTree({
         onSelect: () => {},
       },
       ...PROJECT_ICON_OPTIONS.map((icon): ContextMenuItem => ({
-        key: `icon-${icon || "dot"}`,
-        icon: <ProjectVisualIcon value={icon} size={14} />,
+        key: `icon-${icon || "folder"}`,
+        icon: <ProjectFolderIcon value={icon} size={14} />,
         label: projectIconLabel(t, icon),
         variant: "visual" as const,
         checked: projectIconKey(node.projectIcon) === icon,
@@ -2240,10 +2242,8 @@ export function ProjectTree({
             <span className="project-tree__folder-chevron" aria-hidden="true">
               {folderDisclosure.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </span>
-            <span className="project-tree__folder-color" aria-hidden="true">
-              <ProjectVisualIcon value={node.projectIcon} />
-            </span>
-            {folderDisclosure.isOpen ? <FolderOpen size={16} className="project-tree__folder-icon" /> : <Folder size={16} className="project-tree__folder-icon" />}
+            <span className="project-tree__folder-color" aria-hidden="true" />
+            <ProjectFolderIcon value={node.projectIcon} open={folderDisclosure.isOpen} />
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>{projectLabel}</span>
             <span className="project-tree__folder-count" aria-label={`${children.length}`}>{children.length}</span>
           </button>

@@ -203,10 +203,13 @@ ok(
   includes(projectIconsSource, '["", "star", "bookmark", "code", "terminal", "bolt"]') &&
     includes(projectTreeSource, 'variant: "visual" as const') &&
     includes(projectTreeSource, "await app.SetProjectIcon(path, icon)") &&
-    includes(projectTreeSource, "<ProjectVisualIcon value={node.projectIcon} />") &&
+    includes(projectTreeSource, '<span className="project-tree__folder-color" aria-hidden="true" />') &&
+    includes(projectTreeSource, "<ProjectFolderIcon value={node.projectIcon} open={folderDisclosure.isOpen} />") &&
+    includes(projectTreeSource, '? <FolderOpen size={size} className={className} aria-hidden="true" />') &&
+    includes(stylesSource, ".app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-color {\n  display: block;\n  width: 9px;") &&
     finalDeclaration(stylesSource, ".context-menu__item--visual", "display") === "inline-flex" &&
     finalDeclaration(stylesSource, ".context-menu__item--visual", "width") === "30px",
-  "ProjectTree: project icons are selectable in one compact row and render on the folder",
+  "ProjectTree: project icons replace the folder glyph while the color dot stays independent",
 );
 ok(
   !includes(projectTreeSource, 'className="project-tree__recent-settings-slot"') &&
