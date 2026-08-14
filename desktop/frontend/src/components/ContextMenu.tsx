@@ -12,7 +12,7 @@ export type ContextMenuItem =
       label: ReactNode;
       disabled?: boolean;
       danger?: boolean;
-      variant?: "section" | "color";
+      variant?: "section" | "color" | "visual";
       checked?: boolean;
       title?: string;
       onSelect: () => void;

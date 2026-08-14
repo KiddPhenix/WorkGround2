@@ -1349,6 +1349,7 @@ type TabMeta struct {
 	ReadOnly            bool                     `json:"readOnly,omitempty"`
 	Blank               bool                     `json:"blank,omitempty"`
 	ProjectColor        string                   `json:"projectColor,omitempty"`
+	ProjectIcon         string                   `json:"projectIcon,omitempty"`
 	Label               string                   `json:"label"`
 	Ready               bool                     `json:"ready"`
 	Running             bool                     `json:"running"`
@@ -1426,9 +1427,11 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 	switch tab.Scope {
 	case "global":
 		m.ProjectColor = globalProjectColor()
+		m.ProjectIcon = globalProjectIcon()
 		m.WorkspaceName = globalProjectTitle()
 	case "project":
 		m.ProjectColor = projectColor(tab.WorkspaceRoot)
+		m.ProjectIcon = projectIcon(tab.WorkspaceRoot)
 	}
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
 
@@ -4242,6 +4245,7 @@ type desktopProject struct {
 	Root         string   `json:"root"`
 	Title        string   `json:"title,omitempty"`
 	Color        string   `json:"color,omitempty"`
+	Icon         string   `json:"icon,omitempty"`
 	Topics       []string `json:"topics"` // ordered topic IDs
 	PinnedTopics []string `json:"pinnedTopics,omitempty"`
 }
@@ -4249,6 +4253,7 @@ type desktopProject struct {
 type desktopProjectFile struct {
 	GlobalTitle        string           `json:"globalTitle,omitempty"`
 	GlobalColor        string           `json:"globalColor,omitempty"`
+	GlobalIcon         string           `json:"globalIcon,omitempty"`
 	GlobalTopics       []string         `json:"globalTopics,omitempty"`
 	GlobalPinnedTopics []string         `json:"globalPinnedTopics,omitempty"`
 	PinnedProjects     []string         `json:"pinnedProjects,omitempty"`
@@ -4636,6 +4641,7 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 	out := desktopProjectFile{
 		GlobalTitle:        strings.TrimSpace(f.GlobalTitle),
 		GlobalColor:        normalizeProjectColor(f.GlobalColor),
+		GlobalIcon:         normalizeProjectIcon(f.GlobalIcon),
 		GlobalTopics:       uniqueStrings(f.GlobalTopics),
 		GlobalPinnedTopics: uniqueStrings(f.GlobalPinnedTopics),
 	}
@@ -4648,6 +4654,7 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 		p.Root = root
 		p.Title = strings.TrimSpace(p.Title)
 		p.Color = normalizeProjectColor(p.Color)
+		p.Icon = normalizeProjectIcon(p.Icon)
 		p.Topics = uniqueStrings(p.Topics)
 		p.PinnedTopics = uniqueStrings(p.PinnedTopics)
 		if i, ok := index[root]; ok {
@@ -4656,6 +4663,9 @@ func normalizeProjectsFile(f desktopProjectFile) desktopProjectFile {
 			}
 			if out.Projects[i].Color == "" && p.Color != "" {
 				out.Projects[i].Color = p.Color
+			}
+			if out.Projects[i].Icon == "" && p.Icon != "" {
+				out.Projects[i].Icon = p.Icon
 			}
 			out.Projects[i].Topics = uniqueStrings(append(out.Projects[i].Topics, p.Topics...))
 			out.Projects[i].PinnedTopics = uniqueStrings(append(out.Projects[i].PinnedTopics, p.PinnedTopics...))
@@ -4946,6 +4956,17 @@ func normalizeProjectColor(color string) string {
 	}
 }
 
+func normalizeProjectIcon(icon string) string {
+	icon = strings.TrimSpace(strings.ToLower(icon))
+	switch icon {
+	case "star", "bookmark", "code", "terminal", "bolt":
+		return icon
+	default:
+		// Empty and unknown values preserve the backwards-compatible dot icon.
+		return ""
+	}
+}
+
 func projectColor(root string) string {
 	root = normalizeProjectRoot(root)
 	if root == "" {
@@ -4961,6 +4982,23 @@ func projectColor(root string) string {
 
 func globalProjectColor() string {
 	return normalizeProjectColor(loadProjectsFile().GlobalColor)
+}
+
+func projectIcon(root string) string {
+	root = normalizeProjectRoot(root)
+	if root == "" {
+		return globalProjectIcon()
+	}
+	for _, p := range loadProjectsFile().Projects {
+		if p.Root == root {
+			return normalizeProjectIcon(p.Icon)
+		}
+	}
+	return ""
+}
+
+func globalProjectIcon() string {
+	return normalizeProjectIcon(loadProjectsFile().GlobalIcon)
 }
 
 func globalProjectTitle() string {
@@ -5037,6 +5075,31 @@ func setProjectColor(root, color string) error {
 			}
 		}
 		f.Projects = append(f.Projects, desktopProject{Root: root, Color: color})
+		return true, nil
+	})
+}
+
+func setProjectIcon(root, icon string) error {
+	root = normalizeProjectRoot(root)
+	icon = normalizeProjectIcon(icon)
+	return updateProjectsFile(func(f *desktopProjectFile) (bool, error) {
+		if root == "" {
+			if f.GlobalIcon == icon {
+				return false, nil
+			}
+			f.GlobalIcon = icon
+			return true, nil
+		}
+		for i, p := range f.Projects {
+			if p.Root == root {
+				if f.Projects[i].Icon == icon {
+					return false, nil
+				}
+				f.Projects[i].Icon = icon
+				return true, nil
+			}
+		}
+		f.Projects = append(f.Projects, desktopProject{Root: root, Icon: icon})
 		return true, nil
 	})
 }
@@ -5566,6 +5629,7 @@ type ProjectNode struct {
 	SessionID      string        `json:"sessionId,omitempty"`
 	SessionPath    string        `json:"sessionPath,omitempty"`
 	ProjectColor   string        `json:"projectColor,omitempty"`
+	ProjectIcon    string        `json:"projectIcon,omitempty"`
 	TitleSource    string        `json:"titleSource,omitempty"`
 	SessionSource  string        `json:"sessionSource,omitempty"`
 	Channel        string        `json:"channel,omitempty"`
@@ -6036,6 +6100,16 @@ func (a *App) RenameProject(workspaceRoot, title string) error {
 // in the sidebar and tabs. Empty color restores the default accent.
 func (a *App) SetProjectColor(workspaceRoot, color string) error {
 	if err := setProjectColor(workspaceRoot, color); err != nil {
+		return err
+	}
+	a.emitProjectTreeChanged()
+	return nil
+}
+
+// SetProjectIcon updates the project-level visual marker. Empty restores the
+// backwards-compatible dot icon.
+func (a *App) SetProjectIcon(workspaceRoot, icon string) error {
+	if err := setProjectIcon(workspaceRoot, icon); err != nil {
 		return err
 	}
 	a.emitProjectTreeChanged()
@@ -6978,7 +7052,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		return "", selected.Path, string(identityKind), identityWorkID
 	}
-	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor string) []ProjectNode {
+	runtimeSessionNodes := func(scope, workspaceRoot, topicID, projectColor, projectIcon string) []ProjectNode {
 		key := topicSummaryKey(scope, workspaceRoot, topicID)
 		sessions := runtimeSessionsByTopic[key]
 		if len(sessions) <= 1 {
@@ -7009,6 +7083,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				SessionID:      session.sessionID,
 				SessionPath:    session.sessionPath,
 				ProjectColor:   projectColor,
+				ProjectIcon:    projectIcon,
 				SessionSource:  session.sessionSource,
 				Channel:        session.channel,
 				ChannelLabel:   session.channelLabel,
@@ -7034,10 +7109,11 @@ func (a *App) ListProjectTree() []ProjectNode {
 	globalTitleSetting := strings.TrimSpace(f.GlobalTitle)
 	globalTitle := globalTitleSetting
 	globalColor := normalizeProjectColor(f.GlobalColor)
+	globalIcon := normalizeProjectIcon(f.GlobalIcon)
 	if globalTitle == "" {
 		globalTitle = "Global"
 	}
-	if len(globalTitleMap) > 0 || len(f.Projects) == 0 || len(f.GlobalTopics) > 0 || globalTitleSetting != "" || globalColor != "" || hasGlobalTrashedSessions() {
+	if len(globalTitleMap) > 0 || len(f.Projects) == 0 || len(f.GlobalTopics) > 0 || globalTitleSetting != "" || globalColor != "" || globalIcon != "" || hasGlobalTrashedSessions() {
 		globalTopicIDs := sortTopicIDsByActivityWithPinned(orderedTopicIDs(f.GlobalTopics, globalTitleMap), "global", "", topicSummaries, f.GlobalPinnedTopics)
 		children := make([]ProjectNode, 0, len(globalTopicIDs))
 		for _, id := range globalTopicIDs {
@@ -7068,6 +7144,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   globalColor,
+				ProjectIcon:    globalIcon,
 				TitleSource:    globalTitleSourceMap[id],
 				SessionSource:  summary.sessionSource,
 				Channel:        summary.channel,
@@ -7082,7 +7159,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Pinned:         pinned,
 				SessionKind:    sessionKind,
 				WorkID:         workID,
-				Children:       runtimeSessionNodes("global", "", id, globalColor),
+				Children:       runtimeSessionNodes("global", "", id, globalColor, globalIcon),
 			})
 		}
 		out = append(out, ProjectNode{
@@ -7091,6 +7168,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			Label:        globalTitle,
 			Root:         globalWorkspaceRoot(),
 			ProjectColor: globalColor,
+			ProjectIcon:  globalIcon,
 			Children:     children,
 		})
 	}
@@ -7174,6 +7252,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				SessionID:      sessionID,
 				SessionPath:    sessionPath,
 				ProjectColor:   p.Color,
+				ProjectIcon:    p.Icon,
 				TitleSource:    loaded.sources[tid],
 				SessionSource:  summary.sessionSource,
 				Channel:        summary.channel,
@@ -7188,11 +7267,12 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Pinned:         pinned,
 				SessionKind:    sessionKind,
 				WorkID:         workID,
-				Children:       runtimeSessionNodes("project", p.Root, tid, p.Color),
+				Children:       runtimeSessionNodes("project", p.Root, tid, p.Color, p.Icon),
 			})
 		}
 		node.Label = title
 		node.ProjectColor = p.Color
+		node.ProjectIcon = p.Icon
 		node.Children = children
 		out = append(out, node)
 	}
