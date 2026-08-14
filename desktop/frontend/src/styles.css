@@ -32225,6 +32225,32 @@ body > .mermaid-diagram--fullscreen {
   gap: 2px;
   flex-shrink: 0;
 }
+.queue-item-row__steer {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-s);
+  background: var(--surface);
+  color: var(--fg-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 120ms, color 120ms, background 120ms;
+  outline: none;
+}
+.queue-item-row__steer:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.queue-item-row__steer:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.queue-item-row__steer:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 
 /* &#8209; RuntimeConfigBar (48px) &#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209;&#8209; */
 
@@ -43682,10 +43708,12 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
 }
 
-/* The foreground control shares the artifact lane visually, but it must not
-   participate in Composer height: otherwise appearing/disappearing activity
-   shifts the entire artifact shelf vertically. Reserve only horizontal room. */
-.app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .artifact-shelf {
+/* The foreground control shares the artifact/queue lane visually, but it must
+   not participate in Composer height: otherwise appearing/disappearing activity
+   shifts the footer vertically. Reserve horizontal room for every row it can
+   overlap so queued-message actions stay clickable. */
+.app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .artifact-shelf,
+.app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .queue-tray {
   box-sizing: border-box;
   padding-right: var(--composer-runstatus-lane);
 }

@@ -44,7 +44,7 @@ session, memory, skill, subagent, LSP, install, and slash-command tools below:
 `ask`, `browser_attach`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
-`read_only_task`, `read_session`, `read_skill`, `remember`, `request_help`, `research`,
+`read_only_task`, `read_session`, `read_skill`, `rebuild_vocabulary`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
 
 The ten runtime-bound browser tools share one persistent automation browser per
@@ -82,7 +82,11 @@ In token economy mode, WorkGround2 starts with the core coding/session/memory to
 and the connector used to enable optional sources on demand:
 
 `ask`, `connect_tool_source`, `forget`, `history`, `list_sessions`, `memory`,
-`read_session`, `remember`, `slash_command`.
+`read_session`, `rebuild_vocabulary`, `remember`, `slash_command`.
+
+`rebuild_vocabulary` is the write tool behind the built-in inline Skill of the
+same name. It deterministically rebuilds the current workspace vocabulary and
+refreshes the Session-local completion snapshot.
 
 Core built-in tools such as `bash`, `read_file`, `grep`, file writers, job tools,
 and `todo_write` remain available in economy mode and are listed in the built-in

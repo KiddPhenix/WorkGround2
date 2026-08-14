@@ -1,4 +1,4 @@
-import { ChevronUp, ChevronDown, GripVertical, Pencil, RotateCw, X } from "lucide-react";
+import { ChevronUp, ChevronDown, CornerDownRight, GripVertical, Pencil, RotateCw, X } from "lucide-react";
 import type { QueueItem } from "../../store/composerQueue";
 
 // ── Props ──────────────────────────────────────────────────────────────────
@@ -15,6 +15,10 @@ export interface QueueTrayProps {
   onMoveDown?: (queueItemId: string) => void;
   /** Retry a failed item (clears its error so it can drain again). */
   onRetry?: (queueItemId: string) => void;
+  /** Steer a queued item into the running turn. Async; resolves on success. */
+  onSteer?: (queueItemId: string) => Promise<void> | void;
+  /** queueItemId of the item currently being steered — its 引导 button is disabled. */
+  steeringId?: string | null;
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -25,7 +29,7 @@ export interface QueueTrayProps {
  *
  * This is a pure presentational primitive — it does NOT subscribe to stores.
  */
-export function QueueTray({ items, onEdit, onRemove, onMoveUp, onMoveDown, onRetry }: QueueTrayProps) {
+export function QueueTray({ items, onEdit, onRemove, onMoveUp, onMoveDown, onRetry, onSteer, steeringId }: QueueTrayProps) {
   if (items.length === 0) return null;
 
   const visible = items.slice(0, 2);
@@ -49,6 +53,8 @@ export function QueueTray({ items, onEdit, onRemove, onMoveUp, onMoveDown, onRet
           onMoveUp={onMoveUp}
           onMoveDown={onMoveDown}
           onRetry={onRetry}
+          onSteer={onSteer}
+          steeringId={steeringId}
         />
       ))}
       {overflow > 0 && (
@@ -71,6 +77,8 @@ function QueueItemRow({
   onMoveUp,
   onMoveDown,
   onRetry,
+  onSteer,
+  steeringId,
 }: {
   item: QueueItem;
   index: number;
@@ -80,6 +88,8 @@ function QueueItemRow({
   onMoveUp?: (queueItemId: string) => void;
   onMoveDown?: (queueItemId: string) => void;
   onRetry?: (queueItemId: string) => void;
+  onSteer?: (queueItemId: string) => Promise<void> | void;
+  steeringId?: string | null;
 }) {
   return (
     <div
@@ -99,6 +109,19 @@ function QueueItemRow({
       </span>
 
       <span className="queue-item-row__actions">
+        {onSteer && (
+          <button
+            type="button"
+            className="queue-item-row__steer"
+            aria-label="引导"
+            disabled={steeringId === item.queueItemId}
+            onClick={() => void onSteer(item.queueItemId)}
+          >
+            <CornerDownRight size={14} />
+            <span>引导</span>
+          </button>
+        )}
+
         {onRetry && item.error && (
           <button
             type="button"

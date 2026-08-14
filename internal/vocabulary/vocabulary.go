@@ -902,7 +902,10 @@ func validTerm(term string) bool {
 			spaces++
 		}
 	}
-	return spaces <= 2
+	// Short multi-word technical phrases are valid completion terms. Keep the
+	// bound low enough to reject prose while accepting common four-to-six-word
+	// policy names such as "approval cannot expand authority".
+	return spaces <= 5
 }
 
 func likelySecret(term string) bool {

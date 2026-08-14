@@ -526,6 +526,23 @@ func TestBuiltinInitIsInlineSkill(t *testing.T) {
 	}
 }
 
+func TestBuiltinRebuildVocabularyIsInlineSkill(t *testing.T) {
+	st := New(Options{HomeDir: t.TempDir()})
+	sk, ok := st.Read("rebuild_vocabulary")
+	if !ok {
+		t.Fatal("built-in rebuild_vocabulary skill not found")
+	}
+	if sk.Scope != ScopeBuiltin || sk.RunAs != RunInline {
+		t.Errorf("rebuild_vocabulary should be a builtin inline skill, got scope=%s runAs=%s", sk.Scope, sk.RunAs)
+	}
+	if !strings.Contains(sk.Body, "rebuild_vocabulary tool") {
+		t.Errorf("rebuild_vocabulary body must invoke the deterministic tool: %q", sk.Body)
+	}
+	if _, listed := find(st.List(), "rebuild_vocabulary"); !listed {
+		t.Error("rebuild_vocabulary should appear in List() and slash menus")
+	}
+}
+
 func TestBuiltinSubagentSkillsDeclareAllowedTools(t *testing.T) {
 	st := New(Options{HomeDir: t.TempDir()})
 	cases := map[string][]string{

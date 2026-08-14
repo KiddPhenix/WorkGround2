@@ -6126,7 +6126,7 @@ type CommandInfo struct {
 	Name        string `json:"name"` // without the leading slash
 	Description string `json:"description"`
 	Hint        string `json:"hint,omitempty"` // argument hint, if any
-	Kind        string `json:"kind"`           // "builtin" | "custom" | "mcp"
+	Kind        string `json:"kind"`           // "builtin" | "skill" | "custom" | "mcp"
 }
 
 // Commands lists the slash commands available this session — built-in actions,
@@ -6149,7 +6149,6 @@ func (a *App) Commands() []CommandInfo {
 		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
 		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
 		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin"},
-		{Name: "rebuild_vocabulary", Description: i18n.M.CmdRebuildVocab, Kind: "builtin"},
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()

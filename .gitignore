@@ -68,3 +68,6 @@ Thumbs.db
 /site/public/av/
 
 benchmarks/context-maintenance-e2e/run/
+
+# Local Session flow concept; intentionally excluded from source control.
+/docs/session-flow-zone-design.md

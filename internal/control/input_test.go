@@ -643,6 +643,28 @@ func TestSubmitMissingSlashPathDiagnosticStartsTurn(t *testing.T) {
 	}
 }
 
+func TestSubmitBuiltinRebuildVocabularyStartsSkillTurn(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	events := make(chan event.Event, 4)
+	store := skill.New(skill.Options{HomeDir: t.TempDir(), ProjectRoot: t.TempDir()})
+	c := New(Options{
+		AutoPlan:   "off",
+		Runner:     runner,
+		SkillStore: store,
+		Skills:     store.List(),
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+
+	c.Submit("/rebuild_vocabulary")
+	waitForTurnDone(t, events)
+
+	if len(runner.inputs) != 1 || !strings.Contains(runner.inputs[0], "rebuild_vocabulary tool") {
+		t.Fatalf("rebuild_vocabulary should start the built-in Skill turn, inputs=%q", runner.inputs)
+	}
+}
+
 func TestSubmitUnknownSlashCommandStillReportsNotice(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)

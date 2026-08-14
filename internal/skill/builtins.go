@@ -190,6 +190,12 @@ Rules:
 - Don't fabricate conventions the code doesn't demonstrate.
 - After writing, summarize in one or two lines what you captured and tell the user to review and edit it.`
 
+const builtinRebuildVocabularyBody = `This skill is INLINED. Rebuild the current project's vocabulary now.
+
+1. Call the rebuild_vocabulary tool exactly once with an empty object. Do not replace it with a manual repository scan.
+2. Report whether the vocabulary changed, how many files were scanned and terms generated, the output path, and the first warning when present.
+3. If the tool fails validation, report the exact error and inspect the referenced .WorkGround2/vocabulary.toml entry when possible. Never claim that /rebuild_vocabulary does not exist.`
+
 // CodeGraphReadTools returns read-only tool names that look like an installed
 // codegraph MCP surface. Writable or untrusted tools stay out of subagents.
 func CodeGraphReadTools(reg *tool.Registry) []string {
@@ -288,6 +294,14 @@ func builtinSkills() []Skill {
 			Name:        "init",
 			Description: "Bootstrap or refresh this project's AGENTS.md — analyze the codebase (structure, build/test commands, architecture, conventions) and write a concise memory file loaded into every future session. Inlined — runs in the main loop so you see and approve the write.",
 			Body:        builtinInitBody,
+			Scope:       ScopeBuiltin,
+			Path:        "(builtin)",
+			RunAs:       RunInline,
+		},
+		{
+			Name:        "rebuild_vocabulary",
+			Description: "Deterministically rescan the current workspace and rebuild .WorkGround2/vocabulary.toml, then refresh this Session's completion vocabulary.",
+			Body:        builtinRebuildVocabularyBody,
 			Scope:       ScopeBuiltin,
 			Path:        "(builtin)",
 			RunAs:       RunInline,

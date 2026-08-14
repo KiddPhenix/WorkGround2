@@ -203,7 +203,7 @@ ok(componentSource.includes("image.decode()") && componentSource.includes("isSce
 ok(cssSource.includes(".session-background__dynamic") && cssSource.includes("linear-gradient(180deg") && cssSource.includes("#0a1628"), "CSS provides dynamic canvas placement and static deep-water gradient fallback");
 ok(cssSource.includes(".session-background--aurora") && cssSource.includes(".session-background--nebula") && cssSource.includes(".session-background--embers") && cssSource.includes(".session-background--starfield") && cssSource.includes(".session-background--blackhole") && cssSource.includes(".session-background--raincity"), "CSS provides themed fallback containers for all dynamic wallpapers");
 ok(cssSource.includes(".settings-background__preview--aurora") && cssSource.includes(".settings-background__preview--nebula") && cssSource.includes(".settings-background__preview--embers") && cssSource.includes(".settings-background__preview--starfield") && cssSource.includes(".settings-background__preview--blackhole") && cssSource.includes(".settings-background__preview--raincity"), "CSS provides distinct high-quality previews for all dynamic themes");
-ok(dynamicSource.includes("1.0 - v_uv.y") && dynamicSource.includes("u_light") && dynamicSource.includes("MAX_DPR = 1.5") && dynamicSource.includes("TARGET_FPS = 30"), "dynamic shaders keep the horizon upright, follow theme, and cap render cost");
+ok(dynamicSource.includes("1.0 - v_uv.y") && dynamicSource.includes("u_light") && dynamicSource.includes("MAX_DPR = 1.5") && dynamicSource.includes("TARGET_FPS = 10"), "dynamic shaders keep the horizon upright, follow theme, and cap render cost");
 ok(dynamicSource.includes('return src.replace("precision highp float;"') && !dynamicSource.includes("return GLSL_COMMON + src"), "shared GLSL utilities are injected after the required version and precision directives");
 ok(dynamicSource.includes('document.visibilityState !== "hidden"') && dynamicSource.includes("prefers-reduced-motion: reduce") && dynamicSource.includes("webglcontextrestored") && dynamicSource.includes("deleteProgram"), "dynamic lifecycle pauses, reduces motion, restores context, and releases GL resources");
 ok(dynamicSource.includes('"aurora"') && dynamicSource.includes('"nebula"') && dynamicSource.includes('"embers"') && dynamicSource.includes('"waves"') && dynamicSource.includes('"starfield"') && dynamicSource.includes('"blackhole"') && dynamicSource.includes('"raincity"') && dynamicSource.includes("FRAG_AURORA") && dynamicSource.includes("FRAG_NEBULA") && dynamicSource.includes("FRAG_EMBERS") && dynamicSource.includes("FRAG_STARFIELD"), "DynamicWallpaper carries eleven distinct scene shaders");
@@ -267,12 +267,12 @@ ok(
   "Session title and recap form one compact information group while the light composer area keeps the wallpaper clear",
 );
 ok(
-  cssSource.includes(".app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .artifact-shelf {") &&
+  cssSource.includes(".app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .artifact-shelf,\n.app--workbench .session-footer-dock:has(.composer-toolbar--status-only) .queue-tray {") &&
     cssSource.includes("padding-right: var(--composer-runstatus-lane);") &&
     cssSource.includes(".app--workbench .session-footer-dock .composer-wrap > .composer-toolbar--status-only {") &&
     cssSource.includes("position: absolute;") &&
     cssSource.includes("bottom: calc(100% + 9px);"),
-  "foreground controls reserve a right-side lane without changing artifact shelf height",
+  "foreground controls reserve a right-side lane without covering queued-message actions",
 );
 ok(
   cssSource.includes(".app--workbench .work-session-host {") &&

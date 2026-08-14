@@ -5,7 +5,7 @@
 // These components keep App.tsx clean of store wiring and are tree-shakeable
 // from the classic layout.
 
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useRef, useState } from "react";
 import { useMemoryStore, selectMemory } from "../../store/memory";
 import { useArtifactStore, selectArtifactsBySession } from "../../store/artifacts";
 import { selectItemsBySession, useComposerQueueStore } from "../../store/composerQueue";
@@ -339,12 +339,26 @@ export function SessionArtifactShelf({ sessionId }: { sessionId: string }) {
 
 // ── SessionQueueTray ─────────────────────────────────────────────────────────
 
-export function SessionQueueTray({ sessionId, onEditContent }: { sessionId: string; onEditContent?: (content: string) => void }) {
+export function SessionQueueTray({
+  sessionId,
+  onEditContent,
+  running = false,
+  onSend,
+}: {
+  sessionId: string;
+  onEditContent?: (content: string) => void;
+  /** Only a running session exposes the 引导 (steer) action. */
+  running?: boolean;
+  /** Existing send route — steers the running turn (displayText, submitText). */
+  onSend?: (displayText: string, submitText?: string) => void | Promise<void>;
+}) {
   const items = useComposerQueueStore((s) => s.items);
   const removeItem = useComposerQueueStore((s) => s.removeItem);
   const updateItem = useComposerQueueStore((s) => s.updateItem);
   const reorderSessionItems = useComposerQueueStore((s) => s.reorderSessionItems);
   const sessionItems = useMemo(() => selectItemsBySession(items, sessionId), [items, sessionId]);
+  const [steeringId, setSteeringId] = useState<string | null>(null);
+  const steeringIdRef = useRef<string | null>(null);
 
   const onEdit = useCallback((queueItemId: string) => {
     const item = sessionItems.find((candidate) => candidate.queueItemId === queueItemId);
@@ -361,6 +375,27 @@ export function SessionQueueTray({ sessionId, onEditContent }: { sessionId: stri
     updateItem(queueItemId, { error: undefined });
   }, [updateItem]);
 
+  // Steer a queued item into the running turn. The item stays in the queue
+  // until onSend resolves; a failure keeps it with a visible, retryable error.
+  // While one item is in flight every 引导 action is guarded so a duplicate
+  // click cannot steer the same turn twice.
+  const onSteer = useCallback(async (queueItemId: string) => {
+    if (!onSend || steeringIdRef.current !== null) return;
+    const item = sessionItems.find((candidate) => candidate.queueItemId === queueItemId);
+    if (!item) return;
+    steeringIdRef.current = queueItemId;
+    setSteeringId(queueItemId);
+    try {
+      await onSend(item.content, item.submitText ?? item.content);
+      removeItem(queueItemId);
+    } catch (error) {
+      updateItem(queueItemId, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (steeringIdRef.current === queueItemId) steeringIdRef.current = null;
+      setSteeringId((current) => (current === queueItemId ? null : current));
+    }
+  }, [onSend, sessionItems, removeItem, updateItem]);
+
   const move = useCallback((queueItemId: string, delta: number) => {
     const from = sessionItems.findIndex((item) => item.queueItemId === queueItemId);
     if (from < 0) return;
@@ -375,6 +410,8 @@ export function SessionQueueTray({ sessionId, onEditContent }: { sessionId: stri
       onRetry={onRetry}
       onMoveUp={(id) => move(id, -1)}
       onMoveDown={(id) => move(id, 1)}
+      onSteer={running && onSend ? onSteer : undefined}
+      steeringId={steeringId}
     />
   );
 }

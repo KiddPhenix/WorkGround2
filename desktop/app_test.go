@@ -31,6 +31,7 @@ import (
 	"workground2/internal/plugin"
 	"workground2/internal/pluginpkg"
 	"workground2/internal/provider"
+	"workground2/internal/skill"
 	"workground2/internal/tool"
 )
 
@@ -538,12 +539,26 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	if !hasCommand(cmds, "effort") {
 		t.Fatalf("Commands() should include effort: %+v", cmds)
 	}
-	if !hasCommand(cmds, "rebuild_vocabulary") {
-		t.Fatalf("Commands() should include rebuild_vocabulary: %+v", cmds)
-	}
 	if hasCommand(cmds, "thinking") {
 		t.Fatalf("Commands() should not include thinking: %+v", cmds)
 	}
+}
+
+func TestCommandsListsRebuildVocabularyAsSkill(t *testing.T) {
+	store := skill.New(skill.Options{HomeDir: t.TempDir(), ProjectRoot: t.TempDir()})
+	ctrl := control.New(control.Options{SkillStore: store, Skills: store.List()})
+	app := NewApp()
+	app.setTestCtrl(ctrl, "test")
+
+	for _, command := range app.Commands() {
+		if command.Name == "rebuild_vocabulary" {
+			if command.Kind != "skill" {
+				t.Fatalf("rebuild_vocabulary kind = %q, want skill", command.Kind)
+			}
+			return
+		}
+	}
+	t.Fatal("Commands() should list the built-in rebuild_vocabulary Skill")
 }
 
 func TestMetaForTabIncludesWorkspaceContext(t *testing.T) {

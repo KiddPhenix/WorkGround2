@@ -50,15 +50,6 @@ func (c *Controller) ActivateSkillVocabulary(name string) (vocabulary.RefreshRes
 	return c.vocabulary.ActivateSkill(vocabulary.SkillSource{Name: sk.Name, Path: sk.Path, Terms: sk.Vocabulary}), nil
 }
 
-// RebuildVocabulary scans the Workspace and updates the generated section of
-// the shared project vocabulary file.
-func (c *Controller) RebuildVocabulary() (vocabulary.RefreshResult, error) {
-	if c == nil || c.vocabulary == nil {
-		return vocabulary.RefreshResult{Warnings: []string{}}, fmt.Errorf("vocabulary service is unavailable")
-	}
-	return c.vocabulary.RebuildWorkspace()
-}
-
 func (c *Controller) observeVocabulary(index int, role, text string) {
 	if c == nil || c.vocabulary == nil || strings.TrimSpace(text) == "" {
 		return

@@ -788,6 +788,54 @@ installDom();
   cleanup();
 }
 
+{
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={() => {}}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导");
+  ok(steerBtn !== null, "QueueTray: has 引导 button when onSteer is provided");
+  ok(steerBtn?.textContent?.includes("引导") === true, "QueueTray: 引导 button carries a visible text label");
+  ok(steerBtn?.classList.contains("queue-item-row__steer") === true, "QueueTray: 引导 button uses the steer class");
+  cleanup();
+}
+
+{
+  const container = render(<QueueTray items={QUEUE_ITEMS.slice(0, 1)} />);
+  ok(queryByAriaLabel(container, "引导") === null, "QueueTray: no 引导 button without onSteer");
+  cleanup();
+}
+
+{
+  let steeredId = "";
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={(id) => { steeredId = id; }}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导") as HTMLButtonElement | null;
+  if (!steerBtn) throw new Error("QueueTray 引导 button did not render");
+  act(() => steerBtn.click());
+  eq(steeredId, "q1", "QueueTray: clicking 引导 passes the item's queueItemId");
+  cleanup();
+}
+
+{
+  const container = render(
+    <QueueTray
+      items={QUEUE_ITEMS.slice(0, 1)}
+      onSteer={() => {}}
+      steeringId="q1"
+    />,
+  );
+  const steerBtn = queryByAriaLabel(container, "引导") as HTMLButtonElement | null;
+  ok(steerBtn?.disabled === true, "QueueTray: 引导 is disabled while that item is being steered");
+  cleanup();
+}
+
 // ── RuntimeConfigBar ────────────────────────────────────────────────────────
 
 {

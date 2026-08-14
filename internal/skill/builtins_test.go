@@ -155,7 +155,7 @@ func TestBuiltinReviewAndSecurityReviewAreReadOnly(t *testing.T) {
 
 func TestBuiltinInlineSkillsAreNotReadOnly(t *testing.T) {
 	skills := builtinSkills()
-	for _, name := range []string{"init", "test", "install-capability"} {
+	for _, name := range []string{"init", "test", "install-capability", "rebuild_vocabulary"} {
 		var sk *Skill
 		for i := range skills {
 			if skills[i].Name == name {

@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { Composer, composerPickFileEntry } from "../components/Composer";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
+import { useComposerQueueStore } from "../store/composerQueue";
 import type { AppBindings } from "../lib/bridge";
 import type { CollaborationMode, ToolApprovalMode, TokenMode } from "../lib/types";
 
@@ -806,6 +807,197 @@ console.log("\ncomposer goal toggle");
   await waitFor("tab-b file request", () => fileScopeCalls.includes("tab-b"));
 
   ok(fileScopeCalls[0] === "tab-a" && fileScopeCalls.at(-1) === "tab-b", "composer file requests follow tab identity even when cwd is unchanged");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+console.log("\ncomposer /rebuild_vocabulary skill routing");
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({ running: false });
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!textarea || !sendButton) throw new Error("idle composer did not render");
+
+  await rerender({ insertRequest: { id: 19, text: "/rebuild_vocabulary", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "/rebuild_vocabulary", "idle composer sends the built-in Skill as a normal turn");
+  eq(useComposerQueueStore.getState().items.length, 0, "idle Skill does not enter the running queue");
+  eq(textarea.value, "", "successful idle Skill submit clears the draft");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await rerender({ insertRequest: { id: 20, text: "/rebuild_vocabulary", mode: "replace" } });
+  eq(textarea.value, "/rebuild_vocabulary", "running composer draft holds the exact command");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "running /rebuild_vocabulary waits in the ordinary queue");
+  const queuedRebuild = useComposerQueueStore.getState().items;
+  eq(queuedRebuild.length, 1, "running /rebuild_vocabulary creates one queue item");
+  eq(queuedRebuild[0]?.content, "/rebuild_vocabulary", "queued rebuild keeps the exact Skill command");
+  eq(queuedRebuild[0]?.submitText, "/rebuild_vocabulary", "queued rebuild keeps the exact submit text");
+  eq(textarea.value, "", "queued /rebuild_vocabulary clears the draft");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+    },
+  });
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await rerender({ insertRequest: { id: 21, text: "  /rebuild_vocabulary  ", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "surrounding whitespace still uses the running queue");
+  eq(useComposerQueueStore.getState().items[0]?.content, "/rebuild_vocabulary", "queued Skill command is trimmed");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+    },
+  });
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await rerender({ insertRequest: { id: 22, text: "/REBUILD_VOCABULARY", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "wrong-case text also uses the ordinary running queue");
+  eq(useComposerQueueStore.getState().items.length, 1, "running queue does not special-case command spelling");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await rerender({ insertRequest: { id: 23, text: "普通消息继续排队", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "ordinary running message does not call onSend");
+  const queued = useComposerQueueStore.getState().items;
+  eq(queued.length, 1, "ordinary running message is queued");
+  eq(queued[0]?.content, "普通消息继续排队", "queued item keeps the display content");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  useComposerQueueStore.setState({ items: [] });
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    collaborationMode: "goal",
+    goal: "keep goal guidance",
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+    },
+  });
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await rerender({ insertRequest: { id: 25, text: "/rebuild_vocabulary", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "goal mode queues /rebuild_vocabulary as guidance first");
+  eq(useComposerQueueStore.getState().items.length, 0, "goal mode never writes composerQueue");
+  const guidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  ok(guidanceItem?.textContent?.includes("/rebuild_vocabulary") === true, "built-in Skill enters the Goal guidance queue");
+  const guideButton = guidanceItem?.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!guideButton) throw new Error("rebuild Skill guidance action did not render");
+  await act(async () => {
+    guideButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.join(","), "/rebuild_vocabulary", "queued rebuild Skill can be converted to guidance");
 
   await act(async () => {
     root.unmount();

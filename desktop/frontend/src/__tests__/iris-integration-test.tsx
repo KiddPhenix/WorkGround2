@@ -47,7 +47,7 @@ import { useMemoryStore } from "../store/memory";
 import { useArtifactStore } from "../store/artifacts";
 import { useRunStore, selectRun } from "../store/run";
 import { useAddOnSurfaceStore } from "../store/addonSurface";
-import { useComposerQueueStore } from "../store/composerQueue";
+import { useComposerQueueStore, selectItemsBySession } from "../store/composerQueue";
 
 // ── Test framework ──────────────────────────────────────────────────────────
 
@@ -67,6 +67,11 @@ function ok(value: boolean, label: string) {
     process.stdout.write(`  FAIL  ${label}\n`);
     failed += 1;
   }
+}
+
+function eq(actual: unknown, expected: unknown, label: string) {
+  if (actual === expected) ok(true, label);
+  else ok(false, `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
 function hasText(el: Element | null, text: string): boolean {
@@ -230,7 +235,107 @@ ok(hasText(queueEl, "查看测试结果"), "QueueTray: shows first item");
 ok(hasText(queueEl, "提交代码审查"), "QueueTray: shows second item");
 const queueItems = queryAllByClassName(queueEl, "queue-item-row");
 ok(queueItems.length === 2, "QueueTray: exactly 2 queue items");
+ok(queryByAriaLabel(queueEl, "引导") === null, "QueueTray: no 引导 action while the session is not running");
 cleanup();
+
+// ── Test: SessionQueueTray steer (running) ──────────────────────────────────
+
+function seedQueueItem(queueItemId: string, content: string, submitText?: string) {
+  useComposerQueueStore.setState({ items: [] });
+  useComposerQueueStore.getState().addItem({
+    queueItemId,
+    requestId: `req-${queueItemId}`,
+    sessionId: FIXTURE_SESSION_ID,
+    content,
+    submitText,
+    createdAt: Date.now(),
+  });
+}
+
+{
+  seedQueueItem("steer-ok", "转向这条", "ctx 转向这条");
+  const sent: Array<[string, string | undefined]> = [];
+  const el = render(
+    <SessionQueueTray
+      sessionId={FIXTURE_SESSION_ID}
+      running
+      onSend={(displayText, submitText) => { sent.push([displayText, submitText]); }}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(el, "引导") as HTMLButtonElement | null;
+  ok(steerBtn !== null, "SessionQueueTray: running session exposes the 引导 action");
+  if (!steerBtn) throw new Error("SessionQueueTray 引导 button did not render");
+  await act(async () => { steerBtn.click(); });
+  ok(selectItemsBySession(useComposerQueueStore.getState().items, FIXTURE_SESSION_ID).length === 0, "SessionQueueTray: successful steer removes the item");
+  eq(sent.length, 1, "SessionQueueTray: steer calls onSend once");
+  eq(sent[0]?.[0], "转向这条", "SessionQueueTray: onSend receives the display content");
+  eq(sent[0]?.[1], "ctx 转向这条", "SessionQueueTray: onSend receives submitText when present");
+  cleanup();
+}
+
+{
+  seedQueueItem("steer-fallback", "只有展示文本");
+  const sent: Array<[string, string | undefined]> = [];
+  const el = render(
+    <SessionQueueTray
+      sessionId={FIXTURE_SESSION_ID}
+      running
+      onSend={(displayText, submitText) => { sent.push([displayText, submitText]); }}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(el, "引导") as HTMLButtonElement | null;
+  if (!steerBtn) throw new Error("SessionQueueTray 引导 button did not render");
+  await act(async () => { steerBtn.click(); });
+  eq(sent[0]?.[0], "只有展示文本", "SessionQueueTray: display content passed through");
+  eq(sent[0]?.[1], "只有展示文本", "SessionQueueTray: submitText falls back to content when absent");
+  cleanup();
+}
+
+{
+  seedQueueItem("steer-fail", "会失败的一条");
+  const el = render(
+    <SessionQueueTray
+      sessionId={FIXTURE_SESSION_ID}
+      running
+      onSend={() => Promise.reject(new Error("steer rejected"))}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(el, "引导") as HTMLButtonElement | null;
+  if (!steerBtn) throw new Error("SessionQueueTray 引导 button did not render");
+  await act(async () => { steerBtn.click(); });
+  const remaining = selectItemsBySession(useComposerQueueStore.getState().items, FIXTURE_SESSION_ID);
+  eq(remaining.length, 1, "SessionQueueTray: failed steer keeps the item in the queue");
+  eq(remaining[0]?.error, "steer rejected", "SessionQueueTray: failed steer writes a retryable error");
+  ok(hasText(el, "steer rejected"), "SessionQueueTray: the steer error is visible in the tray");
+  cleanup();
+}
+
+{
+  seedQueueItem("steer-pending", "正在转向");
+  let sendCalls = 0;
+  let releaseSend: ((value: unknown) => void) | null = null;
+  const el = render(
+    <SessionQueueTray
+      sessionId={FIXTURE_SESSION_ID}
+      running
+      onSend={() => {
+        sendCalls += 1;
+        return new Promise((resolve) => { releaseSend = resolve; });
+      }}
+    />,
+  );
+  const steerBtn = queryByAriaLabel(el, "引导") as HTMLButtonElement | null;
+  if (!steerBtn) throw new Error("SessionQueueTray 引导 button did not render");
+  await act(async () => {
+    steerBtn.click();
+    steerBtn.click();
+  });
+  ok((queryByAriaLabel(el, "引导") as HTMLButtonElement | null)?.disabled === true, "SessionQueueTray: 引导 is disabled while the steer is in flight");
+  eq(sendCalls, 1, "SessionQueueTray: same-frame duplicate clicks do not steer again");
+  await act(async () => { releaseSend?.(undefined); });
+  ok(selectItemsBySession(useComposerQueueStore.getState().items, FIXTURE_SESSION_ID).length === 0, "SessionQueueTray: item is removed once the pending steer resolves");
+  cleanup();
+}
 
 // ── Test: ConfigBar ─────────────────────────────────────────────────────────
 const configData = irisFixtureConfig();

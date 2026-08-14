@@ -60,7 +60,6 @@ const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 // it; the real gap is a few ms, so keep it short or a deliberate quick second
 // Enter (submit) gets eaten too.
 const IME_CONFIRM_GRACE_MS = 100;
-
 type PastedBlock = {
   label: string;
   text: string;

@@ -940,7 +940,7 @@ const SCENES: Record<SceneName, SceneDef> = {
 
 const VERTICES = new Float32Array([-1, -1, 3, -1, -1, 3]);
 const MAX_DPR = 1.5;
-const TARGET_FPS = 30;
+const TARGET_FPS = 10;
 const FRAME_MS = 1000 / TARGET_FPS;
 
 // ── WebGL helpers ───────────────────────────────────────────────────

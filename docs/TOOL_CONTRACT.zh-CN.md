@@ -43,7 +43,7 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 `ask`, `browser_attach`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
-`read_only_task`, `read_session`, `read_skill`, `remember`, `request_help`, `research`,
+`read_only_task`, `read_session`, `read_skill`, `rebuild_vocabulary`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
 
 十个运行时绑定的浏览器工具按用户共享一个持久化自动化浏览器（跨 Controller、Task、设置重建和应用重启复用）：
@@ -75,6 +75,9 @@ Chromium 和 Chrome for Testing。V1 只使用独立的自动化 Profile（区�
 token economy 模式启动时保留核心编码、session、memory 工具，以及按需启用可选来源的 connector：
 
 `ask`, `connect_tool_source`, `forget`, `history`, `list_sessions`, `memory`,
-`read_session`, `remember`, `slash_command`.
+`read_session`, `rebuild_vocabulary`, `remember`, `slash_command`.
+
+`rebuild_vocabulary` 是同名内置 inline Skill 背后的写工具；它会确定性重建
+当前 Workspace 的词表，并刷新当前 Session 的补全快照。
 
 `bash`、`read_file`、`grep`、文件写工具、后台 job 工具和 `todo_write` 等核心内置工具在 economy 模式下仍可用，见上方内置工具表。
