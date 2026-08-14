@@ -46,7 +46,7 @@ import {
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
 import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
-import { DYNAMIC_WALLPAPER_SCENES, isSceneName } from "./DynamicWallpaper";
+import { DYNAMIC_WALLPAPER_SCENES, DynamicWallpaper, isSceneName } from "./DynamicWallpaper";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -6216,6 +6216,7 @@ function SessionBackgroundSettingsSection() {
                 >
                   <span className={`settings-background__preview settings-background__preview--${option}`} aria-hidden="true">
                     {option === "pattern" && <><i /><i /></>}
+                    {isSceneName(option) && <DynamicWallpaper scene={option} animate={false} />}
                   </span>
                   <span className="settings-background__mode-copy">
                     <strong>{t(`settings.sessionBackgroundMode.${option}` as DictKey)}</strong>

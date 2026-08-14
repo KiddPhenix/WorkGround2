@@ -6644,19 +6644,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--waves {
   background: linear-gradient(180deg,
-    #7ba6bd 0%,
-    #5b91ad 28%,
-    #34718f 55%,
-    #174d70 100%);
+    #d8eff1 0%,
+    #a8d7dc 28%,
+    #62aebb 55%,
+    #2f7693 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--waves {
     background: linear-gradient(180deg,
-      #7ba6bd 0%,
-      #5b91ad 28%,
-      #34718f 55%,
-      #174d70 100%);
+      #d8eff1 0%,
+      #a8d7dc 28%,
+      #62aebb 55%,
+      #2f7693 100%);
   }
 }
 
@@ -6672,19 +6672,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--aurora {
   background: linear-gradient(180deg,
-    #0a1025 0%,
-    #0d1630 30%,
-    #101c3a 60%,
-    #152444 100%);
+    #b8d0df 0%,
+    #d6e3e7 30%,
+    #c5e3da 60%,
+    #a9d4cc 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--aurora {
     background: linear-gradient(180deg,
-      #0a1025 0%,
-      #0d1630 30%,
-      #101c3a 60%,
-      #152444 100%);
+      #b8d0df 0%,
+      #d6e3e7 30%,
+      #c5e3da 60%,
+      #a9d4cc 100%);
   }
 }
 
@@ -6700,47 +6700,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--nebula {
   background: linear-gradient(180deg,
-    #0a0820 0%,
-    #100c2a 35%,
-    #141030 65%,
-    #0c1028 100%);
+    #c3bdd8 0%,
+    #d5c9de 35%,
+    #b9cde1 65%,
+    #a7c8d2 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--nebula {
     background: linear-gradient(180deg,
-      #0a0820 0%,
-      #100c2a 35%,
-      #141030 65%,
-      #0c1028 100%);
-  }
-}
-
-/* ── embers mode ─────────────────────────────────────────────────── */
-
-.session-background--embers {
-  background: linear-gradient(180deg,
-    #080606 0%,
-    #0e0a08 30%,
-    #140c08 60%,
-    #1c100a 100%);
-}
-
-:root[data-theme="light"] .session-background--embers {
-  background: linear-gradient(180deg,
-    #161210 0%,
-    #1c1612 30%,
-    #221a14 60%,
-    #281e16 100%);
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .session-background--embers {
-    background: linear-gradient(180deg,
-      #161210 0%,
-      #1c1612 30%,
-      #221a14 60%,
-      #281e16 100%);
+      #c3bdd8 0%,
+      #d5c9de 35%,
+      #b9cde1 65%,
+      #a7c8d2 100%);
   }
 }
 
@@ -6756,19 +6728,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--starfield {
   background: linear-gradient(180deg,
-    #060d28 0%,
-    #0b1335 35%,
-    #101840 65%,
-    #090f28 100%);
+    #9eb8d9 0%,
+    #b7c9e0 35%,
+    #c8c0dc 65%,
+    #a99fc8 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--starfield {
     background: linear-gradient(180deg,
-      #060d28 0%,
-      #0b1335 35%,
-      #101840 65%,
-      #090f28 100%);
+      #9eb8d9 0%,
+      #b7c9e0 35%,
+      #c8c0dc 65%,
+      #a99fc8 100%);
   }
 }
 
@@ -6783,17 +6755,17 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--blackhole {
   background: radial-gradient(ellipse 60% 50% at 50% 48%,
-    #080828 0%,
-    #101030 40%,
-    #080820 100%);
+    #aeb8c8 0%,
+    #d2d5d8 40%,
+    #b8c4d2 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--blackhole {
     background: radial-gradient(ellipse 60% 50% at 50% 48%,
-      #080828 0%,
-      #101030 40%,
-      #080820 100%);
+      #aeb8c8 0%,
+      #d2d5d8 40%,
+      #b8c4d2 100%);
   }
 }
 
@@ -6809,19 +6781,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--moonclouds {
   background: linear-gradient(180deg,
-    #0c1430 0%,
-    #151e40 45%,
-    #1e2850 70%,
-    #283258 100%);
+    #9db9d8 0%,
+    #bdcbe0 45%,
+    #d8d4d0 70%,
+    #a8b4c4 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--moonclouds {
     background: linear-gradient(180deg,
-      #0c1430 0%,
-      #151e40 45%,
-      #1e2850 70%,
-      #283258 100%);
+      #9db9d8 0%,
+      #bdcbe0 45%,
+      #d8d4d0 70%,
+      #a8b4c4 100%);
   }
 }
 
@@ -6837,47 +6809,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--biolume {
   background: linear-gradient(180deg,
-    #041028 0%,
-    #061838 40%,
-    #082048 80%,
-    #0a2850 100%);
+    #b8ddd8 0%,
+    #8bc8c7 40%,
+    #63aeb5 80%,
+    #438a9c 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--biolume {
     background: linear-gradient(180deg,
-      #041028 0%,
-      #061838 40%,
-      #082048 80%,
-      #0a2850 100%);
-  }
-}
-
-/* ── silk mode ────────────────────────────────────────────────────── */
-
-.session-background--silk {
-  background: linear-gradient(135deg,
-    #040410 0%,
-    #08081a 30%,
-    #0a0a20 60%,
-    #060612 100%);
-}
-
-:root[data-theme="light"] .session-background--silk {
-  background: linear-gradient(135deg,
-    #0e0e22 0%,
-    #161630 30%,
-    #1a1a38 60%,
-    #101022 100%);
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .session-background--silk {
-    background: linear-gradient(135deg,
-      #0e0e22 0%,
-      #161630 30%,
-      #1a1a38 60%,
-      #101022 100%);
+      #b8ddd8 0%,
+      #8bc8c7 40%,
+      #63aeb5 80%,
+      #438a9c 100%);
   }
 }
 
@@ -6893,47 +6837,19 @@ body > .mermaid-diagram--fullscreen {
 
 :root[data-theme="light"] .session-background--dunes {
   background: linear-gradient(180deg,
-    #2a1e12 0%,
-    #3e2a18 30%,
-    #523420 55%,
-    #3e2816 100%);
+    #a8cce8 0%,
+    #e3c2a8 30%,
+    #f1c089 55%,
+    #a8663e 100%);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) .session-background--dunes {
     background: linear-gradient(180deg,
-      #2a1e12 0%,
-      #3e2a18 30%,
-      #523420 55%,
-      #3e2816 100%);
-  }
-}
-
-/* ── raincity mode ────────────────────────────────────────────────── */
-
-.session-background--raincity {
-  background: linear-gradient(180deg,
-    #020818 0%,
-    #040e22 35%,
-    #06142c 65%,
-    #030c1c 100%);
-}
-
-:root[data-theme="light"] .session-background--raincity {
-  background: linear-gradient(180deg,
-    #0a1228 0%,
-    #0f1a35 35%,
-    #142040 65%,
-    #0b1328 100%);
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .session-background--raincity {
-    background: linear-gradient(180deg,
-      #0a1228 0%,
-      #0f1a35 35%,
-      #142040 65%,
-      #0b1328 100%);
+      #a8cce8 0%,
+      #e3c2a8 30%,
+      #f1c089 55%,
+      #a8663e 100%);
   }
 }
 
@@ -33748,6 +33664,13 @@ body > .mermaid-diagram--fullscreen {
     color-mix(in srgb, var(--bg-elev-2) 84%, transparent);
 }
 
+/* Dynamic cards use the real scene shader, frozen on a representative frame.
+   Keep the canvas above the legacy CSS fallbacks without animating the grid. */
+.settings-background__preview > .session-background__dynamic {
+  z-index: var(--z-local-raised);
+  border-radius: inherit;
+}
+
 .settings-background__preview--waves {
   position: relative;
   overflow: hidden;
@@ -33817,35 +33740,6 @@ body > .mermaid-diagram--fullscreen {
     radial-gradient(ellipse 40% 30% at 60% 40%, rgba(15, 60, 130, 0.22) 0%, transparent 60%),
     radial-gradient(ellipse 35% 25% at 50% 55%, rgba(10, 90, 100, 0.18) 0%, transparent 60%);
   filter: blur(5px);
-}
-
-.settings-background__preview--embers {
-  position: relative;
-  overflow: hidden;
-}
-.settings-background__preview--embers::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 6px;
-  overflow: hidden;
-  background: linear-gradient(180deg,
-    #0c0a0a 0%,
-    #120e0a 40%,
-    #1a100c 100%);
-}
-/* warm glow + ember hints */
-.settings-background__preview--embers::after {
-  content: "";
-  position: absolute;
-  inset: 35% 0 0 0;
-  background:
-    radial-gradient(ellipse 60% 50% at 50% 90%, rgba(200, 80, 20, 0.20) 0%, transparent 70%),
-    radial-gradient(circle 2px at 25% 60%, rgba(255, 140, 40, 0.55) 0%, transparent 40%),
-    radial-gradient(circle 1.5px at 55% 40%, rgba(255, 120, 30, 0.45) 0%, transparent 40%),
-    radial-gradient(circle 1px at 70% 55%, rgba(255, 150, 50, 0.4) 0%, transparent 40%),
-    radial-gradient(circle 2px at 40% 70%, rgba(255, 100, 20, 0.5) 0%, transparent 40%);
-  filter: blur(1px);
 }
 
 /* ── preview: starfield ──────────────────────────────────────────── */
@@ -33959,35 +33853,6 @@ body > .mermaid-diagram--fullscreen {
   filter: blur(1px);
 }
 
-/* ── preview: silk ───────────────────────────────────────────────── */
-
-.settings-background__preview--silk {
-  position: relative;
-  overflow: hidden;
-}
-.settings-background__preview--silk::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 6px;
-  background: linear-gradient(135deg,
-    #040410 0%, #0a0a20 50%, #060612 100%);
-}
-.settings-background__preview--silk::after {
-  content: "";
-  position: absolute;
-  inset: 5% 0 5% 0;
-  background:
-    linear-gradient(105deg,
-      transparent 20%,
-      rgba(100,80,180,0.15) 28%, transparent 32%,
-      transparent 48%,
-      rgba(60,140,160,0.12) 55%, transparent 62%,
-      transparent 75%,
-      rgba(130,100,180,0.14) 82%, transparent 88%);
-  filter: blur(3px);
-}
-
 /* ── preview: dunes ──────────────────────────────────────────────── */
 
 .settings-background__preview--dunes {
@@ -34012,33 +33877,6 @@ body > .mermaid-diagram--fullscreen {
       rgba(200,140,80,0.08) 35%, transparent 50%,
       rgba(180,120,60,0.06) 65%, transparent 80%,
       rgba(160,100,50,0.05) 90%, transparent 100%);
-  filter: blur(2px);
-}
-
-/* ── preview: raincity ───────────────────────────────────────────── */
-
-.settings-background__preview--raincity {
-  position: relative;
-  overflow: hidden;
-}
-.settings-background__preview--raincity::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: 6px;
-  background: linear-gradient(180deg,
-    #020818 0%, #06142c 50%, #030c1c 100%);
-}
-.settings-background__preview--raincity::after {
-  content: "";
-  position: absolute;
-  inset: 5% 8% 5% 8%;
-  background:
-    radial-gradient(circle 3px at 15% 30%, rgba(220,140,50,0.35) 0%, transparent 50%),
-    radial-gradient(circle 2.5px at 35% 22%, rgba(50,140,200,0.3) 0%, transparent 50%),
-    radial-gradient(circle 2px at 55% 35%, rgba(180,70,140,0.28) 0%, transparent 50%),
-    radial-gradient(circle 3.5px at 72% 28%, rgba(220,150,60,0.32) 0%, transparent 50%),
-    radial-gradient(circle 2px at 85% 38%, rgba(60,150,210,0.3) 0%, transparent 50%);
   filter: blur(2px);
 }
 

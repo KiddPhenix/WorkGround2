@@ -1959,14 +1959,11 @@ func TestSetDesktopSessionBackgroundDefaultsAndRoundTrip(t *testing.T) {
 		SessionBackgroundModeWaves,
 		SessionBackgroundModeAurora,
 		SessionBackgroundModeNebula,
-		SessionBackgroundModeEmbers,
 		SessionBackgroundModeStarfield,
 		SessionBackgroundModeBlackhole,
 		SessionBackgroundModeMoonclouds,
 		SessionBackgroundModeBiolume,
-		SessionBackgroundModeSilk,
 		SessionBackgroundModeDunes,
-		SessionBackgroundModeRaincity,
 	} {
 		t.Run(mode, func(t *testing.T) {
 			if err := cfg.SetDesktopSessionBackground(DesktopSessionBackgroundConfig{Mode: mode}); err != nil {
@@ -1992,6 +1989,9 @@ func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testi
 	before := cfg.DesktopSessionBackground()
 	for _, input := range []DesktopSessionBackgroundConfig{
 		{Mode: "animated"},
+		{Mode: "embers"},
+		{Mode: "silk"},
+		{Mode: "raincity"},
 		{RotateSeconds: 29},
 		{RotateSeconds: 86_401},
 		{Sources: []DesktopSessionBackgroundSource{{Kind: "url", Path: "https://example.com/a.png"}}},
@@ -2003,5 +2003,18 @@ func TestSetDesktopSessionBackgroundRejectsInvalidValuesWithoutMutation(t *testi
 		if got := cfg.DesktopSessionBackground(); !reflect.DeepEqual(got, before) {
 			t.Fatalf("invalid input mutated config: got %#v want %#v", got, before)
 		}
+	}
+}
+
+func TestDesktopSessionBackgroundMigratesRemovedDynamicModes(t *testing.T) {
+	for _, mode := range []string{"embers", "silk", "raincity"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Default()
+			cfg.Desktop.SessionBackground.Mode = mode
+
+			if got := cfg.DesktopSessionBackground().Mode; got != SessionBackgroundModePattern {
+				t.Fatalf("removed mode %q normalized to %q, want %q", mode, got, SessionBackgroundModePattern)
+			}
+		})
 	}
 }

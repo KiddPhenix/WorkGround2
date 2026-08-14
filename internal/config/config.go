@@ -119,14 +119,11 @@ const (
 	SessionBackgroundModeWaves      = "waves"
 	SessionBackgroundModeAurora     = "aurora"
 	SessionBackgroundModeNebula     = "nebula"
-	SessionBackgroundModeEmbers     = "embers"
 	SessionBackgroundModeStarfield  = "starfield"
 	SessionBackgroundModeBlackhole  = "blackhole"
 	SessionBackgroundModeMoonclouds = "moonclouds"
 	SessionBackgroundModeBiolume    = "biolume"
-	SessionBackgroundModeSilk       = "silk"
 	SessionBackgroundModeDunes      = "dunes"
-	SessionBackgroundModeRaincity   = "raincity"
 	SessionBackgroundModeCustom     = "custom"
 )
 
@@ -330,8 +327,6 @@ func normalizeSessionBackgroundMode(mode string) string {
 		return SessionBackgroundModeAurora
 	case SessionBackgroundModeNebula:
 		return SessionBackgroundModeNebula
-	case SessionBackgroundModeEmbers:
-		return SessionBackgroundModeEmbers
 	case SessionBackgroundModeStarfield:
 		return SessionBackgroundModeStarfield
 	case SessionBackgroundModeBlackhole:
@@ -340,12 +335,8 @@ func normalizeSessionBackgroundMode(mode string) string {
 		return SessionBackgroundModeMoonclouds
 	case SessionBackgroundModeBiolume:
 		return SessionBackgroundModeBiolume
-	case SessionBackgroundModeSilk:
-		return SessionBackgroundModeSilk
 	case SessionBackgroundModeDunes:
 		return SessionBackgroundModeDunes
-	case SessionBackgroundModeRaincity:
-		return SessionBackgroundModeRaincity
 	case SessionBackgroundModeCustom, "image", "images":
 		return SessionBackgroundModeCustom
 	default:
