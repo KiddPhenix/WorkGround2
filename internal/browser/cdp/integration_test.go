@@ -150,6 +150,7 @@ document.getElementById('file').addEventListener('change', function (event) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clickHTTPRelay(t, ctx, manager, owner, server.URL, "relay-open-1")
 	state, err := manager.State(ctx, owner, browser.StateRequest{Refresh: true})
 	if err != nil {
 		t.Fatal(err)
@@ -264,9 +265,10 @@ document.getElementById('file').addEventListener('change', function (event) {
 		t.Fatal(err)
 	}
 	navigated, err := manager.Navigate(ctx, owner, browser.NavigateRequest{URL: server.URL + "/next", RequestID: "navigate-1"})
-	if err != nil || navigated.URL != server.URL+"/next" {
+	if err != nil {
 		t.Fatalf("navigate result=%+v err=%v", navigated, err)
 	}
+	navigated = clickHTTPRelay(t, ctx, manager, owner, server.URL+"/next", "relay-navigate-1")
 
 	newTab, err := manager.Tab(ctx, owner, browser.TabRequest{
 		Revision: navigated.AfterRevision, Action: browser.TabNew, URL: server.URL, RequestID: "tab-new-1",
@@ -274,6 +276,7 @@ document.getElementById('file').addEventListener('change', function (event) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	newTab = clickHTTPRelay(t, ctx, manager, owner, server.URL, "relay-tab-new-1")
 	state, err = manager.State(ctx, owner, browser.StateRequest{Refresh: false})
 	if err != nil || len(state.Tabs) != 2 {
 		t.Fatalf("new tab state: tabs=%d err=%v", len(state.Tabs), err)
@@ -391,12 +394,22 @@ func TestChromeCancellationIsolationAndIdleReaper(t *testing.T) {
 	if _, err := mgr.Open(context.Background(), "one", browser.OpenRequest{URL: server.URL, RequestID: "one-open"}); err != nil {
 		t.Fatal(err)
 	}
+	clickHTTPRelay(t, context.Background(), mgr, "one", server.URL, "one-relay")
 	if _, err := mgr.Open(context.Background(), "two", browser.OpenRequest{URL: server.URL, RequestID: "two-open"}); err != nil {
 		t.Fatal(err)
 	}
+	clickHTTPRelay(t, context.Background(), mgr, "two", server.URL, "two-relay")
+	if _, err := mgr.Navigate(context.Background(), "one", browser.NavigateRequest{URL: server.URL + "/slow", RequestID: "slow"}); err != nil {
+		t.Fatal(err)
+	}
+	slowState, err := mgr.State(context.Background(), "one", browser.StateRequest{Refresh: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slowLink := findElement(t, slowState, func(element browser.Element) bool { return element.Href == server.URL+"/slow" })
 	cancelCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if _, err := mgr.Navigate(cancelCtx, "one", browser.NavigateRequest{URL: server.URL + "/slow", RequestID: "slow"}); err == nil {
+	if _, err := mgr.Click(cancelCtx, "one", browser.ClickRequest{Revision: slowState.Revision, Index: slowLink, RequestID: "slow-click"}); err == nil {
 		t.Fatal("canceled navigation succeeded")
 	}
 	if _, err := mgr.State(context.Background(), "two", browser.StateRequest{Refresh: true}); err != nil {
@@ -500,6 +513,25 @@ func findElement(t *testing.T, state browser.PageState, match func(browser.Eleme
 	}
 	t.Fatalf("matching element missing from %+v", state.Elements)
 	return 0
+}
+
+func clickHTTPRelay(t *testing.T, ctx context.Context, mgr *browser.Manager, owner, target, requestID string) browser.ActionResult {
+	t.Helper()
+	state, err := mgr.State(ctx, owner, browser.StateRequest{Refresh: false})
+	if err != nil {
+		t.Fatalf("state HTTP relay for %q: %v", target, err)
+	}
+	index := findElement(t, state, func(element browser.Element) bool { return element.Href == target })
+	result, err := mgr.Click(ctx, owner, browser.ClickRequest{
+		Revision: state.Revision, Index: index, RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("click HTTP relay for %q: %v", target, err)
+	}
+	if strings.TrimSuffix(result.URL, "/") != strings.TrimSuffix(target, "/") {
+		t.Fatalf("HTTP relay landed on %q, want %q", result.URL, target)
+	}
+	return result
 }
 
 // TestChromeDebugPortWebdriverSignal verifies the production launch change on a

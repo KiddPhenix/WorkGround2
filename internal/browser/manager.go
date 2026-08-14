@@ -29,6 +29,9 @@ type Manager struct {
 	sessions map[string]*Session // ownerID -> Session
 	closeMu  sync.Mutex
 
+	relay   *httpRelay
+	relayMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -516,15 +519,12 @@ func (m *Manager) Open(ctx context.Context, ownerID string, req OpenRequest) (Op
 
 	// Navigate if URL is provided (and not empty and not about:blank which is default).
 	if created || navURL != "about:blank" {
-		if navURL == "about:blank" {
-			// For about:blank of a fresh session, navigate to blank.
-			if err := driver.Navigate(callCtx, navURL); err != nil {
-				return completeOpen(s, rec, OpenResult{}, NewError(ErrNavigationTimeout, "navigation failed", err))
-			}
-		} else {
-			if err := driver.Navigate(callCtx, navURL); err != nil {
-				return completeOpen(s, rec, OpenResult{}, NewError(ErrNavigationTimeout, "navigation failed", err))
-			}
+		nav, err := m.relayURL(navURL)
+		if err != nil {
+			return completeOpen(s, rec, OpenResult{}, err)
+		}
+		if err := driver.Navigate(callCtx, nav); err != nil {
+			return completeOpen(s, rec, OpenResult{}, NewError(ErrNavigationTimeout, "navigation failed", err))
 		}
 	}
 
@@ -589,7 +589,11 @@ func (m *Manager) Navigate(ctx context.Context, ownerID string, req NavigateRequ
 	callCtx, cancel := m.actionContext(ctx)
 	defer cancel()
 
-	if err := driver.Navigate(callCtx, req.URL); err != nil {
+	nav, err := m.relayURL(req.URL)
+	if err != nil {
+		return completeAction(s, rec, ActionResult{}, err)
+	}
+	if err := driver.Navigate(callCtx, nav); err != nil {
 		return completeAction(s, rec, ActionResult{}, NewError(ErrNavigationTimeout, "navigation failed", err))
 	}
 
@@ -1039,7 +1043,11 @@ func (m *Manager) Tab(ctx context.Context, ownerID string, req TabRequest) (Acti
 				return completeAction(s, rec, ActionResult{}, err)
 			}
 		}
-		_, err := driver.NewTab(callCtx, navURL)
+		nav, err := m.relayURL(navURL)
+		if err != nil {
+			return completeAction(s, rec, ActionResult{}, err)
+		}
+		_, err = driver.NewTab(callCtx, nav)
 		if err != nil {
 			if outcomeUnknown(err) {
 				s.bumpGeneration()
@@ -1322,10 +1330,61 @@ func (m *Manager) Close() error {
 	m.cancel()
 	m.wg.Wait()
 
+	// The relay serves in-process loopback pages only; nothing depends on it
+	// after sessions are closed. Shut it down last and report failures.
+	m.relayMu.Lock()
+	relay := m.relay
+	m.relay = nil
+	m.relayMu.Unlock()
+	if relay != nil {
+		if err := relay.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("browser manager close: http relay: %w", err))
+		}
+	}
+
 	if len(errs) > 0 {
-		return fmt.Errorf("browser manager close: %d sessions had errors: %w", len(errs), errs[0])
+		return fmt.Errorf("browser manager close: %d errors: %w", len(errs), errs[0])
 	}
 	return nil
+}
+
+// ── HTTP relay ──────────────────────────────────────────────────────────────
+
+// relayURL rewrites a plain http:// URL into the loopback relay address so
+// the user explicitly clicks through to the target from the confirmation
+// page, avoiding Chromium's automatic HTTPS upgrade of address-bar-style
+// HTTP navigation. https:// and about:blank pass through untouched. The
+// request-idempotency signature always stays based on the user's original
+// URL, so the random relay address never affects same-request_id replay.
+func (m *Manager) relayURL(raw string) (string, error) {
+	if raw == "about:blank" || !strings.HasPrefix(strings.ToLower(raw), "http://") {
+		return raw, nil
+	}
+	r, err := m.ensureRelay()
+	if err != nil {
+		return "", NewError(ErrRelayUnavailable, "http relay unavailable", err)
+	}
+	nav, err := r.register(raw)
+	if err != nil {
+		return "", NewError(ErrRelayUnavailable, "http relay page unavailable", err)
+	}
+	return nav, nil
+}
+
+// ensureRelay returns the lazily started relay. Concurrent first users share
+// one instance; a failed start leaves no half-initialized state and the next
+// call can retry.
+func (m *Manager) ensureRelay() (*httpRelay, error) {
+	m.relayMu.Lock()
+	defer m.relayMu.Unlock()
+	if m.relay == nil {
+		m.relay = newHTTPRelay()
+	}
+	if err := m.relay.start(); err != nil {
+		m.relay = nil
+		return nil, err
+	}
+	return m.relay, nil
 }
 
 // ── Idle reaper ─────────────────────────────────────────────────────────────

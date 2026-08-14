@@ -30,6 +30,7 @@ const (
 	ErrRequestIDConflict          ErrorCode = "request_id_conflict"
 	ErrOutcomeUnknown             ErrorCode = "outcome_unknown"
 	ErrConfig                     ErrorCode = "config_error"
+	ErrRelayUnavailable           ErrorCode = "relay_unavailable"
 )
 
 // ErrorSpec maps a code to its recoverable/outcome_known/next defaults.
@@ -62,6 +63,7 @@ var DefaultErrorSpecs = map[ErrorCode]ErrorSpec{
 	ErrRequestIDConflict:          {true, true, "使用新 request_id"},
 	ErrOutcomeUnknown:             {true, false, "browser_state，禁止盲重试"},
 	ErrConfig:                     {true, true, "检查配置"},
+	ErrRelayUnavailable:           {true, true, "重试 HTTP 导航"},
 }
 
 // Error is a structured browser error.

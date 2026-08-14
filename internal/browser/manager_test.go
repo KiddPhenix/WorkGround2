@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1918,5 +1919,264 @@ func TestSharedAttachRaceClearsStaleRecordAndRelaunches(t *testing.T) {
 	factory.mu.Unlock()
 	if len(opts) != 2 || !opts[0].Attach || opts[1].Attach {
 		t.Fatalf("attach race did not converge to one relaunch: %+v", opts)
+	}
+}
+
+// ── HTTP relay integration ──────────────────────────────────────────────────
+
+// relayHostPort extracts host:port from a relay URL and verifies its shape.
+func relayHostPort(t *testing.T, u string) string {
+	t.Helper()
+	parsed, err := url.Parse(u)
+	if err != nil {
+		t.Fatalf("parse URL %s: %v", u, err)
+	}
+	if parsed.Scheme != "http" {
+		t.Fatalf("expected http relay URL, got %s", u)
+	}
+	if !strings.HasPrefix(parsed.Host, "127.0.0.1:") {
+		t.Fatalf("expected loopback relay host, got %q", parsed.Host)
+	}
+	tok := strings.TrimPrefix(parsed.Path, "/")
+	if len(tok) != 32 {
+		t.Fatalf("expected 32-hex token in relay URL, got %q", tok)
+	}
+	for i := 0; i < len(tok); i++ {
+		c := tok[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			t.Fatalf("token is not hex: %q", tok)
+		}
+	}
+	return parsed.Host
+}
+
+func getRelayPage(t *testing.T, u string) string {
+	t.Helper()
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET relay %s: %v", u, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET relay %s: status %d", u, resp.StatusCode)
+	}
+	return string(body)
+}
+
+func TestOpenHTTPURLUsesRelay(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	const target = "http://plain.example/path?a=1&b=2"
+	result, err := mgr.Open(context.Background(), "owner-1", browser.OpenRequest{
+		URL: target, RequestID: "open-http",
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	host := relayHostPort(t, result.URL)
+	if d := factory.only(t); !strings.HasPrefix(d.url, "http://"+host+"/") {
+		t.Fatalf("driver navigated to %q, want relay under %q", d.url, host)
+	}
+	// The relay page must surface the original target and warn about HTTP.
+	// The query '&' appears escaped in the page.
+	page := getRelayPage(t, result.URL)
+	if !strings.Contains(page, "http://plain.example/path?a=1&amp;b=2") {
+		t.Fatalf("relay page missing target %q:\n%s", target, page)
+	}
+	if !strings.Contains(page, "未加密的 HTTP 协议") {
+		t.Fatalf("relay page missing HTTP warning:\n%s", page)
+	}
+}
+
+func TestNavigateHTTPUsesRelay(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	if _, err := mgr.Open(context.Background(), "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := mgr.Navigate(context.Background(), "owner-1", browser.NavigateRequest{
+		URL: "http://plain.example/nav", RequestID: "nav-http",
+	})
+	if err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
+	host := relayHostPort(t, res.URL)
+	if d := factory.only(t); d.url != res.URL || !strings.HasPrefix(d.url, "http://"+host+"/") {
+		t.Fatalf("driver URL %q does not match result %q", d.url, res.URL)
+	}
+}
+
+func TestTabNewHTTPUsesRelay(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	if _, err := mgr.Open(context.Background(), "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Tab(context.Background(), "owner-1", browser.TabRequest{
+		Revision: 1, Action: browser.TabNew, URL: "http://plain.example/new", RequestID: "tab-http",
+	}); err != nil {
+		t.Fatalf("Tab new: %v", err)
+	}
+	d := factory.only(t)
+	d.mu.Lock()
+	last := d.tabs[len(d.tabs)-1].URL
+	d.mu.Unlock()
+	// fakeDriver does not switch the active tab, so the new tab's URL is the
+	// authoritative record of what was passed to Driver.NewTab.
+	host := relayHostPort(t, last)
+	if !strings.HasPrefix(last, "http://"+host+"/") {
+		t.Fatalf("new tab URL %q is not a relay URL", last)
+	}
+	getRelayPage(t, last)
+}
+
+func TestHTTPSAndBlankPassThroughRelay(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	if _, err := mgr.Open(context.Background(), "owner-1", browser.OpenRequest{
+		URL: "https://secure.example/ok", RequestID: "open-https",
+	}); err != nil {
+		t.Fatalf("Open https: %v", err)
+	}
+	if d := factory.only(t); d.url != "https://secure.example/ok" {
+		t.Fatalf("https URL must pass through untouched, got %q", d.url)
+	}
+
+	if _, err := mgr.Navigate(context.Background(), "owner-1", browser.NavigateRequest{
+		URL: "https://secure.example/nav", RequestID: "nav-https",
+	}); err != nil {
+		t.Fatalf("Navigate https: %v", err)
+	}
+	if d := factory.only(t); d.url != "https://secure.example/nav" {
+		t.Fatalf("https navigate must pass through untouched, got %q", d.url)
+	}
+}
+
+func TestRelayIdempotentReplayKeepsOriginalSignature(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	ctx := context.Background()
+	r1, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{URL: "http://plain.example/replay", RequestID: "same-id"})
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	navigations := factory.only(t).navigateCalls.Load()
+	r2, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{URL: "http://plain.example/replay", RequestID: "same-id"})
+	if err != nil {
+		t.Fatalf("replayed Open: %v", err)
+	}
+	if r2.URL != r1.URL {
+		t.Fatalf("replay must return cached result %q, got %q", r1.URL, r2.URL)
+	}
+	if got := factory.only(t).navigateCalls.Load(); got != navigations {
+		t.Fatalf("replay must not navigate again: calls %d -> %d", navigations, got)
+	}
+}
+
+func TestManagerCloseShutsRelay(t *testing.T) {
+	mgr := newTestManager(t)
+	result, err := mgr.Open(context.Background(), "owner-1", browser.OpenRequest{
+		URL: "http://plain.example/close", RequestID: "open-http",
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	getRelayPage(t, result.URL) // relay is live while the manager runs
+
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(result.URL)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected relay to refuse after manager close, got %d", resp.StatusCode)
+	}
+}
+
+func TestConcurrentHTTPOpenStartsSingleRelay(t *testing.T) {
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	const callers = 8
+	results := make(chan browser.OpenResult, callers)
+	errs := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func(i int) {
+			result, err := mgr.Open(context.Background(), "owner", browser.OpenRequest{
+				URL: "http://plain.example/concurrent", RequestID: fmt.Sprintf("open-%d", i),
+			})
+			results <- result
+			errs <- err
+		}(i)
+	}
+	hosts := map[string]bool{}
+	for i := 0; i < callers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent Open: %v", err)
+		}
+		result := <-results
+		hosts[relayHostPort(t, result.URL)] = true
+		getRelayPage(t, result.URL)
+	}
+	if len(hosts) != 1 {
+		t.Fatalf("expected one relay instance across %d opens, got %v", callers, hosts)
+	}
+}
+
+func TestURLValidationRejectsUnsafeSchemesAndRelative(t *testing.T) {
+	mgr := newTestManager(t)
+	defer mgr.Close()
+	ctx := context.Background()
+
+	bad := []string{
+		"file:///etc/passwd",
+		"data:text/html,<script>alert(1)</script>",
+		"relative/path",
+		"//host/path",
+	}
+	for _, raw := range bad {
+		if _, err := mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{URL: raw, RequestID: "nav-" + raw}); err == nil {
+			t.Fatalf("Navigate must reject %q", raw)
+		}
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{URL: raw, RequestID: "open-" + raw}); err == nil {
+			t.Fatalf("Open must reject %q", raw)
+		}
+	}
+	// Credential-bearing URLs stay rejected too.
+	if _, err := mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{
+		URL: "http://user:pass@example.com", RequestID: "nav-creds",
+	}); err == nil {
+		t.Fatal("Navigate must reject embedded credentials")
 	}
 }
