@@ -657,6 +657,7 @@ export interface AppBindings extends WailsWorkBindings {
   ListProjectTree(): Promise<ProjectNode[]>;
   RenameProject(workspaceRoot: string, title: string): Promise<void>;
   SetProjectColor(workspaceRoot: string, color: string): Promise<void>;
+  SetProjectIcon(workspaceRoot: string, icon: string): Promise<void>;
   SetProjectPinned(workspaceRoot: string, pinned: boolean): Promise<void>;
   ReorderProjects(workspaceRoots: string[]): Promise<void>;
   CreateTopic(scope: string, workspaceRoot: string, title: string): Promise<TopicMeta>;
@@ -4706,6 +4707,19 @@ function makeMockApp(): AppBindings {
         (workspaceRoot ? tab.workspaceRoot === workspaceRoot : tab.scope === "global")
           ? { ...tab, projectColor: node.projectColor }
         : tab,
+      );
+    },
+    async SetProjectIcon(workspaceRoot: string, icon: string) {
+      const node = workspaceRoot
+        ? mockProjectTree.find((item) => item.root === workspaceRoot)
+        : mockProjectTree.find((item) => item.kind === "global_folder");
+      if (!node) return;
+      node.projectIcon = icon || undefined;
+      for (const child of projectChildren(node)) child.projectIcon = node.projectIcon;
+      mockTabs = mockTabs.map((tab) =>
+        (workspaceRoot ? tab.workspaceRoot === workspaceRoot : tab.scope === "global")
+          ? { ...tab, projectIcon: node.projectIcon }
+          : tab,
       );
     },
     async SetProjectPinned(workspaceRoot: string, pinned: boolean) {

@@ -230,6 +230,7 @@ export interface TabMeta {
   blank?: boolean;
   filePath?: string;
   projectColor?: string;
+  projectIcon?: string;
   label: string;
   ready: boolean;
   running: boolean;
@@ -271,6 +272,7 @@ export interface ProjectNode {
   sessionId?: string;
   sessionPath?: string;
   projectColor?: string;
+  projectIcon?: string;
   titleSource?: string;
   sessionSource?: string;
   channel?: string;

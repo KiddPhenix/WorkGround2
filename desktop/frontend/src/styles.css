@@ -21859,12 +21859,28 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .project-tree__folder-color {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  color: var(--project-accent, var(--accent));
+}
+
+.project-tree__visual-icon-symbol {
+  display: block;
   flex: 0 0 auto;
+  stroke-width: 2;
+}
+
+.project-tree__visual-icon-dot {
+  display: block;
   width: 7px;
   height: 7px;
   border-radius: 999px;
-  background: var(--project-accent, var(--accent));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--project-accent, var(--accent)) 14%, transparent);
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
 }
 
 .project-tree__folder-main:focus-visible {
@@ -22394,6 +22410,31 @@ body > .mermaid-diagram--fullscreen {
 
 .context-menu__item--color > span {
   flex: 0 0 auto;
+}
+
+.context-menu__item--visual {
+  position: relative;
+  display: inline-flex;
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  justify-content: center;
+  vertical-align: top;
+  color: var(--fg-dim);
+}
+
+.context-menu__item--visual[aria-checked="true"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.context-menu__item--visual > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 
 .context-menu__item > span {
@@ -29378,8 +29419,8 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .project-tree__folder-color,
 :root[data-theme-style] .app--creation .project-tree__folder-color {
-  width: 7px;
-  height: 7px;
+  width: 13px;
+  height: 13px;
 }
 
 .app--creation .project-tree__folder:hover,
@@ -44525,13 +44566,17 @@ body > .mermaid-diagram--fullscreen {
 
 .app--workbench .workspace-sidebar .project-tree__folder-color,
 .app--workbench .workspace-sidebar .project-tree__folder--has-color .project-tree__folder-color {
-  display: block;
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  color: var(--project-accent);
+}
+
+.app--workbench .workspace-sidebar .project-tree__visual-icon-dot {
   width: 9px;
   height: 9px;
-  flex: 0 0 9px;
-  border-radius: 999px;
-  background: var(--project-accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--project-accent) 12%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 12%, transparent);
 }
 
 .app--workbench .workspace-sidebar .project-tree__folder-main > svg.project-tree__folder-icon {

@@ -14,6 +14,7 @@ const appSource = readFileSync(resolve(testDir, "../App.tsx"), "utf8");
 const stylesSource = readFileSync(resolve(testDir, "../styles.css"), "utf8");
 const layoutStoreSource = readFileSync(resolve(testDir, "../store/layout.ts"), "utf8");
 const projectTreeSource = readFileSync(resolve(testDir, "../components/ProjectTree.tsx"), "utf8");
+const projectIconsSource = readFileSync(resolve(testDir, "../lib/projectIcons.ts"), "utf8");
 const runtimeConfigSource = readFileSync(resolve(testDir, "../components/desktop-ui/RuntimeConfigBar.tsx"), "utf8");
 const workWorkspaceSource = readFileSync(resolve(testDir, "../components/work/WorkWorkspace.tsx"), "utf8");
 const collaborationSource = readFileSync(resolve(testDir, "../collab/CollaborationWorkspace.tsx"), "utf8");
@@ -197,6 +198,15 @@ ok(
     finalDeclaration(stylesSource, ".context-menu__item--color", "display") === "inline-flex" &&
     finalDeclaration(stylesSource, ".context-menu__item--color", "width") === "24px",
   "ProjectTree: visual labels render as one compact horizontal color row",
+);
+ok(
+  includes(projectIconsSource, '["", "star", "bookmark", "code", "terminal", "bolt"]') &&
+    includes(projectTreeSource, 'variant: "visual" as const') &&
+    includes(projectTreeSource, "await app.SetProjectIcon(path, icon)") &&
+    includes(projectTreeSource, "<ProjectVisualIcon value={node.projectIcon} />") &&
+    finalDeclaration(stylesSource, ".context-menu__item--visual", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".context-menu__item--visual", "width") === "30px",
+  "ProjectTree: project icons are selectable in one compact row and render on the folder",
 );
 ok(
   !includes(projectTreeSource, 'className="project-tree__recent-settings-slot"') &&

@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, ListCollapse, ListRestart, MessageSquare, Clock, Pin, PinOff, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
+import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, ListCollapse, ListRestart, MessageSquare, Clock, Pin, PinOff, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal, Star, Bookmark, Code2, SquareTerminal, Zap } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app, onUnreadState } from "../lib/bridge";
@@ -12,6 +12,7 @@ import type { ProjectNode, ProjectTopicRuntimeHint, ProjectTopicStatus, Resolved
 import { topicActivityTime } from "../lib/session";
 import { getLocale, useT, type DictKey, type Translator } from "../lib/i18n";
 import { PROJECT_COLOR_OPTIONS, projectColorValue } from "../lib/projectColors";
+import { PROJECT_ICON_OPTIONS, projectIconKey, type ProjectIconKey } from "../lib/projectIcons";
 import { topicShortcutLabel, type TopicShortcutEntry } from "../lib/topicShortcuts";
 import type { ShortcutPlatform } from "../lib/keyboardShortcuts";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
@@ -41,6 +42,23 @@ interface ProjectTreeProps {
   showShortcutBadges?: boolean;
   shortcutPlatform?: ShortcutPlatform;
   onVisibleTopicsChange?: (topics: TopicShortcutEntry[]) => void;
+}
+
+function ProjectVisualIcon({ value, size = 13 }: { value?: string; size?: number }) {
+  const className = "project-tree__visual-icon-symbol";
+  switch (projectIconKey(value)) {
+    case "star": return <Star size={size} className={className} aria-hidden="true" />;
+    case "bookmark": return <Bookmark size={size} className={className} aria-hidden="true" />;
+    case "code": return <Code2 size={size} className={className} aria-hidden="true" />;
+    case "terminal": return <SquareTerminal size={size} className={className} aria-hidden="true" />;
+    case "bolt": return <Zap size={size} className={className} aria-hidden="true" />;
+    default: return <span className="project-tree__visual-icon-dot" aria-hidden="true" />;
+  }
+}
+
+function projectIconLabel(t: Translator, icon: ProjectIconKey): string {
+  const key = icon ? `projectTree.icon${icon[0].toUpperCase()}${icon.slice(1)}` : "projectTree.iconDot";
+  return t(key as DictKey);
 }
 
 type ProjectTreeImTopicSource = {
@@ -1375,6 +1393,18 @@ export function ProjectTree({
     }
   };
 
+  const setProjectIcon = async (path: string, icon: string) => {
+    try {
+      await app.SetProjectIcon(path, icon);
+      setMenuProject(null);
+      setMenuPoint(null);
+      await refresh();
+      await onTopicsChanged?.();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : String(err), "error");
+    }
+  };
+
   const visibleTree = useMemo(() => {
     const q = query.trim().toLowerCase();
     // Time filter: compute cutoff timestamp.
@@ -1964,6 +1994,24 @@ export function ProjectTree({
           void setProjectColor(colorTargetRoot, option.key);
         },
       })),
+      {
+        key: "visual-icon-heading",
+        label: t("projectTree.visualIcon"),
+        variant: "section" as const,
+        disabled: true,
+        onSelect: () => {},
+      },
+      ...PROJECT_ICON_OPTIONS.map((icon): ContextMenuItem => ({
+        key: `icon-${icon || "dot"}`,
+        icon: <ProjectVisualIcon value={icon} size={14} />,
+        label: projectIconLabel(t, icon),
+        variant: "visual" as const,
+        checked: projectIconKey(node.projectIcon) === icon,
+        title: projectIconLabel(t, icon),
+        onSelect: () => {
+          void setProjectIcon(colorTargetRoot, icon);
+        },
+      })),
     ];
     const projectMenuItems: ContextMenuItem[] = [
       {
@@ -2192,7 +2240,9 @@ export function ProjectTree({
             <span className="project-tree__folder-chevron" aria-hidden="true">
               {folderDisclosure.isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
             </span>
-            <span className="project-tree__folder-color" aria-hidden="true" />
+            <span className="project-tree__folder-color" aria-hidden="true">
+              <ProjectVisualIcon value={node.projectIcon} />
+            </span>
             {folderDisclosure.isOpen ? <FolderOpen size={16} className="project-tree__folder-icon" /> : <Folder size={16} className="project-tree__folder-icon" />}
             <span className={`project-tree__folder-label${!hasChildren ? " project-tree__folder-label--empty" : ""}`}>{projectLabel}</span>
             <span className="project-tree__folder-count" aria-label={`${children.length}`}>{children.length}</span>
