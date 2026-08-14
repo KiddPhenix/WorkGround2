@@ -337,5 +337,46 @@ console.log("\ncomposer session draft");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  const used: string[] = [];
+  let cycled = 0;
+  installBridgeApp({
+    CompleteVocabularyForTab: async (_tabID: string, prefix: string) => prefix === "多模"
+      ? [{ id: "term-video-v5", text: "多模态生视频V5", suffix: "态生视频V5", kind: "noun", source: "workspace" }]
+      : [],
+    RecordVocabularyUseForTab: async (_tabID: string, id: string) => {
+      used.push(id);
+    },
+  });
+  const { root, rerender } = await renderComposer({ onCycleMode: () => { cycled += 1; } });
+  await rerender({ insertRequest: { id: 20, text: "多模", mode: "replace" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  });
+  eq(document.querySelector(".composer__ghost b")?.textContent, "态生视频V5", "workspace vocabulary renders an inline ghost suffix");
+
+  await act(async () => {
+    textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea().value, "多模态生视频V5", "plain Tab accepts vocabulary completion");
+  eq(used[0], "term-video-v5", "accepted vocabulary usage is recorded with the tab-scoped entry id");
+
+  await rerender({ insertRequest: { id: 21, text: "多模", mode: "replace" } });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(cycled, 1, "Shift+Tab keeps its plan-mode action when vocabulary is visible");
+  eq(textarea().value, "多模", "Shift+Tab does not accept vocabulary completion");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

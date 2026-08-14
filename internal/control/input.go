@@ -164,6 +164,7 @@ func (c *Controller) Compose(text string) string {
 }
 
 func (c *Controller) compose(text string, includeHookContext bool) string {
+	vocabularyInput := text
 	c.mu.Lock()
 	plan := c.planMode
 	responseLanguage := c.responseLanguage
@@ -222,6 +223,13 @@ func (c *Controller) compose(text string, includeHookContext bool) string {
 	}
 	if includeHookContext {
 		if block := c.drainHookContextBlock(); block != "" {
+			text = block + "\n\n" + text
+		}
+	}
+	// Dynamic vocabulary definitions ride only the matching turn. This keeps
+	// learned terms useful immediately without changing the cache-stable prefix.
+	if c.vocabulary != nil {
+		if block := c.vocabulary.Context(vocabularyInput, 5); block != "" {
 			text = block + "\n\n" + text
 		}
 	}

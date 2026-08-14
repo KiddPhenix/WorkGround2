@@ -7733,6 +7733,37 @@ body > .mermaid-diagram--fullscreen {
   line-height: 1.55;
   flex-shrink: 0;
 }
+.composer__input-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: calc(var(--font-content) * 1.55);
+  overflow: hidden;
+}
+.composer-card--resized .composer__input-wrap {
+  height: 100%;
+}
+.composer__ghost {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 2px;
+  color: transparent;
+  font: inherit;
+  font-size: var(--font-content);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  user-select: none;
+}
+.composer__ghost b {
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
+  font: inherit;
+}
 .composer__input {
   flex: 1;
   resize: none;
@@ -7746,6 +7777,9 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
   overflow-y: hidden;
   scrollbar-width: none;           /* Firefox */
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
 }
 .composer__input::-webkit-scrollbar {
   display: none;                    /* Chrome / Safari / Wails webview */

@@ -664,6 +664,8 @@ export const en = {
   "composer.pastedRemove": "Remove pasted text",
   "composer.removeImage": "Remove image",
   "composer.attachImageFailed": "Image paste failed",
+  "composer.vocabularyHint": "Press Tab to complete as {term}",
+  "composer.vocabularyUseFailed": "Failed to record vocabulary preference: {error}",
   "composer.attachFileFailed": "File attach failed",
   "composer.attachDropFailed": "Dropped file attach failed",
   "composer.pasteImageFailed": "Could not read clipboard image",

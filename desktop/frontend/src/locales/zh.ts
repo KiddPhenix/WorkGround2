@@ -664,6 +664,8 @@ export const zh: Record<DictKey, string> = {
   "composer.pastedRemove": "删除粘贴文本",
   "composer.removeImage": "移除图片",
   "composer.attachImageFailed": "图片粘贴失败",
+  "composer.vocabularyHint": "按 Tab 补全为 {term}",
+  "composer.vocabularyUseFailed": "记录词汇偏好失败：{error}",
   "composer.attachFileFailed": "文件附加失败",
   "composer.attachDropFailed": "拖放文件附加失败",
   "composer.pasteImageFailed": "未能读取剪贴板图片",

@@ -107,6 +107,7 @@ import type {
   TabMeta,
   TopicMeta,
   ToolApprovalMode,
+  VocabularyMatch,
   UpdateDownloadResult,
   UpdateInfo,
   UpdateProgress,
@@ -482,6 +483,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetMCPServerEnabled(name: string, enabled: boolean): Promise<void>;
   SetMCPServerTier(name: string, tier: string): Promise<void>;
   SlashArgs(input: string): Promise<SlashArgsResult>;
+  CompleteVocabularyForTab(tabID: string, prefix: string, limit: number): Promise<VocabularyMatch[]>;
+  RecordVocabularyUseForTab(tabID: string, id: string, useID: string): Promise<void>;
   ListDir(rel: string): Promise<DirEntry[]>;
   ListDirForTab(tabID: string, rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
@@ -3712,6 +3715,18 @@ function makeMockApp(): AppBindings {
         .map((it) => ({ label: it.label, insert: it.insert, hint: it.hint, descend: it.descend ?? false }));
       return { items, from };
     },
+    async CompleteVocabularyForTab(_tabID: string, prefix: string, limit: number) {
+      const terms: VocabularyMatch[] = [
+        { id: "mock-video-v5", text: "多模态生视频V5", suffix: "", kind: "noun", source: "workspace" },
+        { id: "mock-role-pro", text: "角色设定Pro", suffix: "", kind: "noun", source: "skill" },
+      ];
+      const needle = prefix.toLowerCase();
+      return terms
+        .filter((term) => term.text.toLowerCase().startsWith(needle) && term.text.length > prefix.length)
+        .slice(0, limit)
+        .map((term) => ({ ...term, suffix: term.text.slice(prefix.length) }));
+    },
+    async RecordVocabularyUseForTab(_tabID: string, _id: string, _useID: string) {},
     async ListDir(rel: string) {
       // A tiny fake tree so the @ menu is navigable in browser dev.
       if (rel === "" || rel === "./") {

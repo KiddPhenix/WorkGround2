@@ -104,3 +104,17 @@ func TestProjectWorkDirUnicodePath(t *testing.T) {
 		t.Fatalf("ProjectWorkDir = %q, must not equal root", got)
 	}
 }
+
+func TestProjectVocabularyDirUsesPrivateProjectState(t *testing.T) {
+	home := isolateUserConfigHome(t)
+	root := t.TempDir()
+
+	got := ProjectVocabularyDir(root)
+	wantPrefix := filepath.Join(expectedDefaultWorkGround2Home(home), "projects", WorkspaceSlug(root))
+	if !strings.HasPrefix(filepath.Clean(got), filepath.Clean(wantPrefix)) || !strings.HasSuffix(filepath.ToSlash(got), "/vocabulary") {
+		t.Fatalf("ProjectVocabularyDir = %q, want %q/vocabulary", got, wantPrefix)
+	}
+	if strings.HasPrefix(filepath.Clean(got), filepath.Clean(root)+string(filepath.Separator)) {
+		t.Fatalf("learned vocabulary must stay outside workspace: %q", got)
+	}
+}

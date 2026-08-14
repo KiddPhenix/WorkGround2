@@ -71,6 +71,9 @@ type Skill struct {
 	ReadOnly     bool   // skill must run in a read-only subagent (frontmatter `read-only:`)
 	Model        string // optional model override for runAs=subagent (frontmatter `model:`)
 	Effort       string // optional effort for runAs=subagent (frontmatter `effort:`)
+	// Vocabulary contains comma/YAML-list terms contributed by this skill. Rich
+	// entries may instead live in a sibling VOCABULARY.toml file.
+	Vocabulary []string
 }
 
 // Provider contributes skills from a non-directory source. Providers are asked
@@ -552,6 +555,7 @@ func parseMarkdownContent(content, source, stem string, scope Scope, requireSkil
 		RunAs:        parseRunAs(fm[skillFrontmatterRunAs], fm[skillFrontmatterContext], fm[skillFrontmatterAgent]),
 		Model:        strings.TrimSpace(fm[skillFrontmatterModel]),
 		Effort:       strings.TrimSpace(fm[skillFrontmatterEffort]),
+		Vocabulary:   parseVocabulary(fm[skillFrontmatterVocabulary]),
 	}, true
 }
 
@@ -568,6 +572,7 @@ const (
 	skillFrontmatterProtected    = "protected"
 	skillFrontmatterAntiLeak     = "antileak"
 	skillFrontmatterSourceKind   = "source-kind"
+	skillFrontmatterVocabulary   = "vocabulary"
 )
 
 var skillMarkerFrontmatterKeys = []string{
@@ -583,6 +588,23 @@ var skillMarkerFrontmatterKeys = []string{
 	skillFrontmatterProtected,
 	skillFrontmatterAntiLeak,
 	skillFrontmatterSourceKind,
+	skillFrontmatterVocabulary,
+}
+
+func parseVocabulary(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, item := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '，' || r == ';' || r == '；'
+	}) {
+		item = strings.TrimSpace(item)
+		key := strings.ToLower(item)
+		if item != "" && !seen[key] {
+			seen[key] = true
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func hasSkillMarker(content string, fm map[string]string) bool {

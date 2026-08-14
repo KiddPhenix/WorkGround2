@@ -665,6 +665,15 @@ export interface CommandInfo {
   kind: "builtin" | "custom" | "mcp" | "skill";
 }
 
+export interface VocabularyMatch {
+  id: string;
+  text: string;
+  suffix: string;
+  kind?: "noun" | "verb" | "phrase";
+  description?: string;
+  source?: "agent" | "skill" | "workspace" | "learned" | string;
+}
+
 export interface DirEntry {
   name: string;
   path?: string;

@@ -1834,6 +1834,8 @@ export const zhTW: Record<DictKey, string> = {
   "composer.shellMode": "Shell 模式：給輸入前加 !",
   "composer.shellModeOn": "Shell 模式已開：點選移除 !",
   "composer.attachImageFailed": "圖片貼上失敗",
+  "composer.vocabularyHint": "按 Tab 補全為 {term}",
+  "composer.vocabularyUseFailed": "記錄詞彙偏好失敗：{error}",
   "composer.attachFileFailed": "檔案附加失敗",
   "composer.attachDropFailed": "拖放檔案附加失敗",
   "composer.pasteImageFailed": "未能讀取剪貼簿圖片",

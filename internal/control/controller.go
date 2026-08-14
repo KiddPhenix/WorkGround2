@@ -52,6 +52,7 @@ import (
 	"workground2/internal/skill"
 	"workground2/internal/store"
 	"workground2/internal/tool"
+	"workground2/internal/vocabulary"
 	"workground2/internal/work"
 )
 
@@ -92,6 +93,7 @@ type Controller struct {
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
 	memory            memoryManager
+	vocabulary        *vocabulary.Service
 	cleanup           func()
 	autoPlan          string
 	responseLanguage  string
@@ -381,6 +383,7 @@ type Options struct {
 	AllSkillStore *skill.Store
 	Hooks         *hook.Runner
 	Memory        *memory.Set
+	Vocabulary    *vocabulary.Service
 	Cleanup       func()
 	// BalanceURL/BalanceKey wire the active provider's optional wallet-balance
 	// endpoint and bearer key; empty when the provider declares no balance_url.
@@ -497,6 +500,7 @@ func New(opts Options) *Controller {
 		skills:                     newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
 		hooks:                      opts.Hooks,
 		memory:                     newMemoryManager(opts.Memory),
+		vocabulary:                 opts.Vocabulary,
 		cleanup:                    opts.Cleanup,
 		autoPlan:                   normalizeAutoPlan(opts.AutoPlan),
 		responseLanguage:           config.NormalizeLanguage(opts.ResponseLanguage),

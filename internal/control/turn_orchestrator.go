@@ -98,6 +98,9 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	if !turn.synthetic {
 		c.beginCheckpoint(input)
 		c.touchSessionActivity()
+		// Observe the raw user wording before the provider call. A network/model
+		// failure must not lose a newly introduced workspace term.
+		c.observeVocabulary(startMessages, "user", turn.raw)
 	}
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
@@ -121,6 +124,12 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatStartingTurn, "")
 	err := c.runner.Run(ctx, input)
 	if err == nil {
+		if !turn.synthetic {
+			history := c.History()
+			if startMessages < len(history) {
+				c.observeVocabulary(len(history), "assistant", lastAssistantText(history[startMessages:]))
+			}
+		}
 		c.recordAutoResearchEvidenceFromAssistant(autoResearchTaskID, lastAssistantText(c.History()))
 		c.recordAutoResearchTurnProgress(autoResearchTaskID, autoResearchAcceptedBefore)
 		c.appendAutoResearchHeartbeat(autoResearchTaskID, autoresearch.HeartbeatTurnDone, "")

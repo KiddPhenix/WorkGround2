@@ -52,6 +52,7 @@ import (
 	browsertool "workground2/internal/tool/browser"
 	"workground2/internal/tool/builtin"
 	"workground2/internal/tool/sessiontool"
+	"workground2/internal/vocabulary"
 	"workground2/internal/work"
 )
 
@@ -475,6 +476,28 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skills := skillStore.List()
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), ExcludedPaths: cfg.SkillExcludedPaths(), Providers: remoteSkillProviders, MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
+	vocabSkills := make([]vocabulary.SkillSource, 0, len(skills))
+	for _, sk := range skills {
+		if sk.Protected {
+			continue
+		}
+		vocabSkills = append(vocabSkills, vocabulary.SkillSource{Name: sk.Name, Path: sk.Path, Terms: sk.Vocabulary})
+	}
+	vocabAgents := make([]vocabulary.AgentSource, 0, len(mem.Docs))
+	for _, doc := range mem.Docs {
+		if base := strings.ToLower(filepath.Base(doc.Path)); strings.HasPrefix(base, "agents") {
+			vocabAgents = append(vocabAgents, vocabulary.AgentSource{Name: filepath.Base(doc.Path), Path: doc.Path, Body: doc.Body})
+		}
+	}
+	vocab := vocabulary.New(vocabulary.Options{
+		WorkspaceRoot: root,
+		StateDir:      config.ProjectVocabularyDir(root),
+		Skills:        vocabSkills,
+		Agents:        vocabAgents,
+	})
+	for _, warning := range vocab.Warnings() {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "vocabulary: " + warning})
+	}
 	if !tokenEconomy {
 		sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 	}
@@ -1470,6 +1493,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		AllSkillStore:          allSkillStore,
 		Hooks:                  hookRunner,
 		Memory:                 mem,
+		Vocabulary:             vocab,
 		Cleanup:                cleanup,
 		BalanceURL:             entry.BalanceURL,
 		BalanceKey:             entry.APIKey(),

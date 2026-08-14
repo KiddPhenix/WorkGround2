@@ -14,7 +14,8 @@ import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
 import { makeQueueItem, useComposerQueueStore } from "../store/composerQueue";
-import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ComposerSubmitKey, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
+import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ComposerSubmitKey, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode, type VocabularyMatch } from "../lib/types";
+import { acceptVocabulary, vocabularyTokenAt } from "../lib/vocabularyCompletion";
 import {
   formatWorkspaceReference,
   parseWorkspaceReference,
@@ -546,6 +547,11 @@ export function Composer({
   const [loadingPastChats, setLoadingPastChats] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [composerPrompt, setComposerPrompt] = useState<string | null>(null);
+  const [vocabularyMatch, setVocabularyMatch] = useState<VocabularyMatch | null>(null);
+  const [vocabularyCursor, setVocabularyCursor] = useState({ start: 0, end: 0 });
+  const [vocabularyComposing, setVocabularyComposing] = useState(false);
+  const [vocabularyDismissed, setVocabularyDismissed] = useState(false);
+  const [vocabularyScrollTop, setVocabularyScrollTop] = useState(0);
   // Prompt history navigation (plain ↑/↓)
   // Use refs for values read inside async closures to avoid stale captures
   // on rapid key presses (the React closure trap).
@@ -626,6 +632,7 @@ export function Composer({
     savedTextRef.current = next.savedText;
     setHistoryIndex(next.historyIndex);
     lastSelectionRef.current = { start: next.text.length, end: next.text.length };
+    setVocabularyCursor(lastSelectionRef.current);
     setComposerPrompt(null);
     setShowPastChats(false);
     setPastChatQuery("");
@@ -869,6 +876,43 @@ export function Composer({
         : atRaw !== null && !dismissed
           ? "at"
           : null;
+
+  const vocabularyToken = useMemo(
+    () => vocabularyTokenAt(text, vocabularyCursor.start, vocabularyCursor.end),
+    [text, vocabularyCursor],
+  );
+
+  useEffect(() => {
+    if (!tabId || menuMode || vocabularyComposing || vocabularyDismissed || !vocabularyToken) {
+      setVocabularyMatch(null);
+      return;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      const complete = app.CompleteVocabularyForTab;
+      if (typeof complete !== "function") {
+        setVocabularyMatch(null);
+        return;
+      }
+      complete(tabId, vocabularyToken.prefix, 5)
+        .then((items) => {
+          if (!live) return;
+          const first = asArray(items)[0] ?? null;
+          setVocabularyMatch(first && first.text !== vocabularyToken.prefix ? first : null);
+        })
+        .catch(() => {
+          if (live) setVocabularyMatch(null);
+        });
+    }, 90);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [menuMode, tabId, vocabularyComposing, vocabularyDismissed, vocabularyToken?.from, vocabularyToken?.prefix]);
+
+  useEffect(() => {
+    setVocabularyDismissed(false);
+  }, [text, vocabularyCursor.start, vocabularyCursor.end, tabId]);
   const countBase =
     menuMode === "slash"
       ? slashMatches.length
@@ -965,6 +1009,7 @@ export function Composer({
 
   const setTextCaretEnd = (next: string) => {
     setText(next);
+    setVocabularyCursor({ start: next.length, end: next.length });
     requestAnimationFrame(() => {
       const ta = taRef.current;
       if (ta) {
@@ -978,6 +1023,30 @@ export function Composer({
     const ta = taRef.current;
     if (!ta) return;
     lastSelectionRef.current = { start: ta.selectionStart ?? text.length, end: ta.selectionEnd ?? text.length };
+    setVocabularyCursor(lastSelectionRef.current);
+  };
+
+  const pickVocabulary = () => {
+    if (!vocabularyMatch || !vocabularyToken) return;
+    const accepted = acceptVocabulary(text, vocabularyToken, vocabularyMatch);
+    setText(accepted.value);
+    setVocabularyMatch(null);
+    setVocabularyDismissed(true);
+    const recordUse = app.RecordVocabularyUseForTab;
+    if (tabId && typeof recordUse === "function") {
+      const useID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      void recordUse(tabId, vocabularyMatch.id, useID).catch((error) => {
+        showToast(t("composer.vocabularyUseFailed", { error: error instanceof Error ? error.message : String(error) }), "warn");
+      });
+    }
+    requestAnimationFrame(() => {
+      const node = taRef.current;
+      if (!node) return;
+      node.focus();
+      node.selectionStart = node.selectionEnd = accepted.cursor;
+      lastSelectionRef.current = { start: accepted.cursor, end: accepted.cursor };
+      setVocabularyCursor(lastSelectionRef.current);
+    });
   };
 
   const insertTextAtCaret = (snippet: string) => {
@@ -1988,6 +2057,19 @@ export function Composer({
       }
     }
 
+    if (e.key === "Tab" && !e.shiftKey && vocabularyMatch && vocabularyToken && !composing) {
+      e.preventDefault();
+      pickVocabulary();
+      return;
+    }
+
+    if (e.key === "Escape" && vocabularyMatch && !composing) {
+      e.preventDefault();
+      setVocabularyMatch(null);
+      setVocabularyDismissed(true);
+      return;
+    }
+
     // Enter handling follows the user-configured submit shortcut.
     if (isComposerSubmitKey(e, composerSubmitKey, composing)) {
       e.preventDefault();
@@ -2519,35 +2601,53 @@ export function Composer({
           onDragLeave={onDragLeave}
         >
           <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
-          <textarea
-            id="composer-input"
-            ref={taRef}
-            className="composer__input"
-            aria-label={t("composer.placeholder")}
-            value={text}
-            onChange={(e) => {
-              resetPromptHistoryNavigation();
-              setText(e.target.value);
-              if (composerPrompt) setComposerPrompt(null);
-            }}
-            onSelect={rememberCaret}
-            onClick={rememberCaret}
-            onKeyUp={rememberCaret}
-            onFocus={rememberCaret}
-            onPaste={onPaste}
-            onKeyDown={onKeyDown}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-              lastCompositionEndAt.current = Date.now();
-            }}
-            style={textareaStyle}
-            placeholder={composerPlaceholder}
-            rows={1}
-            disabled={disabled || readOnly}
-          />
+          <div className="composer__input-wrap">
+            {vocabularyMatch && vocabularyToken && (
+              <div className="composer__ghost" aria-hidden="true" style={{ top: `${-vocabularyScrollTop}px` }}>
+                <span>{text}</span><b>{vocabularyMatch.suffix}</b>
+              </div>
+            )}
+            <textarea
+              id="composer-input"
+              ref={taRef}
+              className="composer__input"
+              aria-label={t("composer.placeholder")}
+              aria-describedby={vocabularyMatch ? "composer-vocabulary-hint" : undefined}
+              value={text}
+              onChange={(e) => {
+                resetPromptHistoryNavigation();
+                setText(e.target.value);
+                setVocabularyCursor({ start: e.target.selectionStart ?? e.target.value.length, end: e.target.selectionEnd ?? e.target.value.length });
+                setVocabularyMatch(null);
+                if (composerPrompt) setComposerPrompt(null);
+              }}
+              onSelect={rememberCaret}
+              onClick={rememberCaret}
+              onKeyUp={rememberCaret}
+              onFocus={rememberCaret}
+              onPaste={onPaste}
+              onScroll={(event) => setVocabularyScrollTop(event.currentTarget.scrollTop)}
+              onKeyDown={onKeyDown}
+              onCompositionStart={() => {
+                composingRef.current = true;
+                setVocabularyComposing(true);
+                setVocabularyMatch(null);
+              }}
+              onCompositionEnd={(event) => {
+                composingRef.current = false;
+                setVocabularyComposing(false);
+                setVocabularyCursor({ start: event.currentTarget.selectionStart ?? text.length, end: event.currentTarget.selectionEnd ?? text.length });
+                lastCompositionEndAt.current = Date.now();
+              }}
+              style={textareaStyle}
+              placeholder={composerPlaceholder}
+              rows={1}
+              disabled={disabled || readOnly}
+            />
+            {vocabularyMatch && (
+              <span id="composer-vocabulary-hint" className="sr-only">{t("composer.vocabularyHint", { term: vocabularyMatch.text })}</span>
+            )}
+          </div>
           {composerPrompt && (
             <span className="composer__prompt" role="status">
               {composerPrompt === imageInputPromptKey ? t("composer.imageInputUnsupported") : composerPrompt}
