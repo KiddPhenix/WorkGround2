@@ -22383,6 +22383,19 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 650;
 }
 
+.context-menu__item--color {
+  display: inline-flex;
+  width: 24px;
+  min-height: 28px;
+  padding: 0;
+  justify-content: center;
+  vertical-align: top;
+}
+
+.context-menu__item--color > span {
+  flex: 0 0 auto;
+}
+
 .context-menu__item > span {
   flex: 1 1 auto;
   min-width: 0;
@@ -22444,9 +22457,11 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--bg-elev) 72%, transparent);
 }
 
-.project-tree__color-check {
-  margin-left: auto;
-  color: var(--project-accent, var(--accent));
+.project-tree__color-swatch--active {
+  border-color: var(--fg);
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--bg-elev) 72%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--project-accent, var(--accent)) 58%, transparent);
 }
 
 .project-tree__empty {

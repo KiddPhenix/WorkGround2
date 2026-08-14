@@ -184,6 +184,21 @@ ok(
   "ProjectTree: recent section stays visible and persists external-call and row-count settings",
 );
 ok(
+  includes(projectTreeSource, "projectTreeRenameTarget(node)") &&
+    includes(projectTreeSource, "editingNode?.rowKey === menuKey") &&
+    includes(projectTreeSource, "await onRenameSession(target.path, title)") &&
+    includes(appSource, "onRenameSession={renameSidebarSession}"),
+  "ProjectTree: Recent Session rename is routed by path and scoped to the concrete rendered row",
+);
+ok(
+  includes(projectTreeSource, 'variant: "color" as const') &&
+    includes(projectTreeSource, 'checked: (node.projectColor || "") === option.key') &&
+    includes(projectTreeSource, "minWidth={230}") &&
+    finalDeclaration(stylesSource, ".context-menu__item--color", "display") === "inline-flex" &&
+    finalDeclaration(stylesSource, ".context-menu__item--color", "width") === "24px",
+  "ProjectTree: visual labels render as one compact horizontal color row",
+);
+ok(
   !includes(projectTreeSource, 'className="project-tree__recent-settings-slot"') &&
     includes(projectTreeSource, 'onPointerDown={(event) => event.stopPropagation()}') &&
     includes(projectTreeSource, 'aria-controls="project-tree-recent-settings"'),
