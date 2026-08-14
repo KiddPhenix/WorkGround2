@@ -940,7 +940,7 @@ export const en = {
   "projectTree.sourceExternalShort": "EXT",
   "projectTree.visualLabel": "Visual label",
   "projectTree.visualIcon": "Project icon",
-  "projectTree.iconDot": "Dot",
+  "projectTree.iconFolder": "Folder",
   "projectTree.iconStar": "Star",
   "projectTree.iconBookmark": "Bookmark",
   "projectTree.iconCode": "Code",

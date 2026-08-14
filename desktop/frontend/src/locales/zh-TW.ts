@@ -1876,7 +1876,7 @@ export const zhTW: Record<DictKey, string> = {
   "projectTree.sourceExternalShort": "外部",
   "projectTree.visualLabel": "視覺標籤",
   "projectTree.visualIcon": "專案圖示",
-  "projectTree.iconDot": "圓點",
+  "projectTree.iconFolder": "資料夾",
   "projectTree.iconStar": "星標",
   "projectTree.iconBookmark": "書籤",
   "projectTree.iconCode": "程式碼",
