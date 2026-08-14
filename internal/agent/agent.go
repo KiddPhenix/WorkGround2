@@ -2453,7 +2453,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	if a.hooks != nil && call.Name == "task" && !isBackgroundTaskCall(call.Arguments) {
 		a.hooks.SubagentStop(ctx, result)
 	}
-	body, truncMsg := truncateToolOutput(result)
+	body, truncMsg := fitToolOutput(t, result)
 	return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
 }
 
@@ -2705,6 +2705,23 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// fitToolOutput fits a successful tool result to maxToolOutputBytes. A tool
+// that implements tool.OutputLimiter gets to shape-aware-fit its own output
+// first (preserving structure the generic head/tail cut would garble); when
+// the tool doesn't implement it, declines, or returns output still over the
+// budget (or invalid UTF-8), the generic truncation applies unchanged.
+func fitToolOutput(t tool.Tool, s string) (string, string) {
+	if lm, ok := t.(tool.OutputLimiter); ok {
+		if out, handled := lm.LimitOutput(s, maxToolOutputBytes); handled && len(out) <= maxToolOutputBytes && utf8.ValidString(out) {
+			if len(out) == len(s) {
+				return s, "" // passed through untouched — nothing to report
+			}
+			return out, fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(out), len(s))
+		}
+	}
+	return truncateToolOutput(s)
 }
 
 // truncateToolOutput head+tails s when it exceeds maxToolOutputBytes, slicing

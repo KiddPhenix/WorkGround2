@@ -17,6 +17,15 @@ type PageState struct {
 	Warnings   []StateWarning `json:"warnings,omitempty"`
 	Truncated  bool           `json:"truncated"`
 	CapturedAt time.Time      `json:"captured_at"`
+	// NextElementIndex is the index of the first element NOT included in this
+	// response because it was trimmed to fit the model-facing byte budget
+	// (0 when every element of the page is present). Pass it back as
+	// StateRequest.ElementStart with the same revision to fetch the next page
+	// of elements from the same snapshot.
+	NextElementIndex int `json:"next_element_index,omitempty"`
+	// RemainingElements counts the elements not included in this response
+	// (0 when every element of the page is present).
+	RemainingElements int `json:"remaining_elements,omitempty"`
 }
 
 // StateWarning describes a non-fatal observation issue.
@@ -132,6 +141,15 @@ type NavigateRequest struct {
 type StateRequest struct {
 	Refresh  bool
 	MaxChars int
+	// Revision pins the request to an existing snapshot: when set, the call
+	// serves from that snapshot only and returns ErrStaleState if the current
+	// revision differs or the snapshot was invalidated — it never refreshes
+	// and substitutes fresh data. The Refresh flag is ignored when Revision
+	// is set.
+	Revision *uint64
+	// ElementStart returns only the elements whose Index is >= ElementStart,
+	// preserving their original indices. <= 0 returns all elements.
+	ElementStart int
 }
 
 // ClickRequest clicks an interactive element.

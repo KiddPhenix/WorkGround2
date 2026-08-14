@@ -620,7 +620,9 @@ func (m *Manager) Navigate(ctx context.Context, ownerID string, req NavigateRequ
 	return completeAction(s, rec, result, nil)
 }
 
-// State returns the current page state.
+// State returns the current page state. A request pinned to a Revision serves
+// from that snapshot only (never refreshing); everything else follows the
+// existing refresh semantics. ElementStart pages the returned element list.
 func (m *Manager) State(ctx context.Context, ownerID string, req StateRequest) (PageState, error) {
 	if ownerID == "" {
 		return PageState{}, NewError(ErrMissingSessionScope, "no parent session scope", nil)
@@ -633,10 +635,21 @@ func (m *Manager) State(ctx context.Context, ownerID string, req StateRequest) (
 	s.touch()
 	defer s.touch()
 
+	// A revision-pinned request reads only that snapshot. A stale revision or
+	// an invalidated snapshot must surface as stale_state — the call must not
+	// fall through to a refresh and substitute fresh data.
+	if req.Revision != nil {
+		snap, err := s.validateRevision(*req.Revision)
+		if err != nil {
+			return PageState{}, err
+		}
+		return pageState(snap.State, req.ElementStart), nil
+	}
+
 	if !req.Refresh {
 		snap := s.Snapshot()
 		if snap != nil {
-			return snap.State, nil
+			return pageState(snap.State, req.ElementStart), nil
 		}
 		// No snapshot, fall through to refresh.
 	}
@@ -669,7 +682,25 @@ func (m *Manager) State(ctx context.Context, ownerID string, req StateRequest) (
 	if snap == nil {
 		return PageState{}, NewError(ErrStateTimeout, "no snapshot after publish", nil)
 	}
-	return snap.State, nil
+	return pageState(snap.State, req.ElementStart), nil
+}
+
+// pageState returns st with only the elements whose Index is >= elementStart
+// kept (elementStart <= 0 keeps all), preserving their original indices. It is
+// the data-layer half of browser_state pagination: the snapshot stays
+// immutable and each page is a deterministic subset, so repeated calls for the
+// same revision and start are idempotent. The returned element slice is fresh,
+// never aliasing the snapshot's backing array.
+func pageState(st PageState, elementStart int) PageState {
+	out := st
+	kept := make([]Element, 0, len(st.Elements))
+	for _, el := range st.Elements {
+		if elementStart <= 0 || el.Index >= elementStart {
+			kept = append(kept, el)
+		}
+	}
+	out.Elements = kept
+	return out
 }
 
 // Click clicks an element identified by revision and index.

@@ -140,8 +140,10 @@ func (t *stateTool) Schema() json.RawMessage {
 "type":"object",
 "additionalProperties":false,
 "properties":{
-  "refresh":{"type":"boolean","description":"Force a fresh observation. Default true."},
-  "max_chars":{"type":"integer","description":"Max text characters, 1000-60000. Default uses config (20000).","minimum":1000,"maximum":60000}
+  "refresh":{"type":"boolean","description":"Force a fresh observation. Default true. Ignored when revision is set."},
+  "max_chars":{"type":"integer","description":"Max text characters, 1000-60000. Default uses config (20000).","minimum":1000,"maximum":60000},
+  "revision":{"type":"integer","description":"Serve from the snapshot with this revision instead of observing. Returns stale_state if the revision no longer matches (the page changed); re-request browser_state to get the new revision.","minimum":1},
+  "element_start":{"type":"integer","description":"Return only elements with index >= element_start, preserving their original indices. Use the previous response's next_element_index to page through a large element list.","minimum":1}
 }
 }`)
 }
@@ -149,8 +151,10 @@ func (t *stateTool) Schema() json.RawMessage {
 func (t *stateTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	owner := ownerFromContext(ctx)
 	var p struct {
-		Refresh  *bool `json:"refresh"`
-		MaxChars int   `json:"max_chars"`
+		Refresh      *bool   `json:"refresh"`
+		MaxChars     int     `json:"max_chars"`
+		Revision     *uint64 `json:"revision"`
+		ElementStart *int    `json:"element_start"`
 	}
 	if err := decodeArgs(args, &p); err != nil {
 		return marshalError[browser.PageState](err)
@@ -158,11 +162,23 @@ func (t *stateTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	if p.MaxChars != 0 && (p.MaxChars < 1000 || p.MaxChars > 60000) {
 		return marshalError[browser.PageState](invalidArgs("max_chars must be between 1000 and 60000"))
 	}
+	if p.ElementStart != nil && *p.ElementStart < 1 {
+		return marshalError[browser.PageState](invalidArgs("element_start must be >= 1"))
+	}
+	elementStart := 0
+	if p.ElementStart != nil {
+		elementStart = *p.ElementStart
+	}
 	refresh := true
 	if p.Refresh != nil {
 		refresh = *p.Refresh
 	}
-	result, err := t.svc.State(ctx, owner, browser.StateRequest{Refresh: refresh, MaxChars: p.MaxChars})
+	result, err := t.svc.State(ctx, owner, browser.StateRequest{
+		Refresh:      refresh,
+		MaxChars:     p.MaxChars,
+		Revision:     p.Revision,
+		ElementStart: elementStart,
+	})
 	if err != nil {
 		return marshalBrowserError[browser.PageState](err)
 	}
