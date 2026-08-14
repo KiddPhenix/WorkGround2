@@ -22,6 +22,7 @@ import {
   projectTreeUnreadCount,
   projectTreeMenuKey,
   projectTreeTrashTarget,
+  projectTreeCanRenameTopic,
   projectTreeUnreadFallbackConversation,
   openLegacyUnreadConversation,
 } from "../components/ProjectTree";
@@ -152,6 +153,18 @@ eq(
   projectTreeActiveKey(globalWorkTree, "global", "", "global-work", "c:/sessions/work.jsonl"),
   "global_work_session_active",
   "only the concrete runtime row owns the selected state",
+);
+
+eq(
+  projectTreeCanRenameTopic(globalWorkTree[0].children?.[0].children?.[0] as ProjectNode),
+  true,
+  "Work runtime rows can rename their owning topic from the session list",
+);
+
+eq(
+  projectTreeCanRenameTopic(tree[0].children?.[0].children?.[0] as ProjectNode),
+  false,
+  "normal runtime rows keep per-session semantics and cannot rename the owning topic",
 );
 
 eq(

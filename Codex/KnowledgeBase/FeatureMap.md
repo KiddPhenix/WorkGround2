@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Work Session List 重命名 | `done` | `developping/work-session-list-rename+2026-08-14` | `Codex` | `desktop/frontend/src/components/ProjectTree.tsx`、`project-tree-runtime.test.ts` | 修复单 Work Session 被建模为运行时节点后错误继承“仅回收”能力的问题；列表中的 Work 行现可通过菜单或双击改名，普通多运行时 Session 仍保持独立回收语义。ProjectTree 93 项、TypeScript、CSS/z-index 门禁和 Vite 生产构建通过。小范围前端修复，不使用 WorkGround2 Worker。 |
 | 运行过程浮层浅色适配 | `done` | `developping/run-process-light-theme+2026-08-14` | `Codex` | `desktop/frontend/src/styles.css`、主题契约测试 | 修正 Workbench 运行过程窗口残留的深色硬编码，覆盖面板、活动区、步骤轨道、状态色、滚动条与阴影。Iris 89 项主题测试、CSS 门禁、生产构建及真实组件浅色截图检查通过。小范围 CSS 修复，不使用 WorkGround2 Worker。 |
 | 动态壁纸场景与主题重整 | `done` | `developping/dynamic-wallpaper-refresh+2026-08-14` | `Codex` | `desktop/frontend/src/components/DynamicWallpaper.tsx`、`SettingsPanel.tsx`、`styles.css`、本地化与相关测试 | 海浪改为全屏连续水面；删除余烬、流光绸缎、雨夜霓虹并将旧配置安全回退为纹理；其余 8 个场景使用真实 Shader 静态预览并补齐独立浅色配色。配置专项、前端 45 项背景契约、TypeScript、CSS 门禁与生产构建通过；深浅主题真实 WebGL 截图检查通过。Desktop 全包测试 184 秒外层超时且未返回失败详情。用户明确要求不使用 WorkGround2 Worker。 |
 | Browser State 结构化截断 | `done` | `developping/browser-state-structured-truncation+2026-08-14` | `Codex + WorkGround2` | `internal/agent`、`internal/browser`、`internal/tool`、`internal/tool/browser`、相关测试 | `browser_state` 超过 Agent 32 KiB 单次工具输出上限时，先按 rune 收缩正文、再按完整元素裁剪，保持 JSON、revision 和原始 index 有效并显式标记截断；回包提供 `next_element_index` / `remaining_elements`，可用同 revision 续页，过期或失效快照返回 `stale_state` 且不暗中刷新。三包专项、Tool/Boot 边界测试和受影响包 vet 通过；全仓测试/vet 并行门禁在 364 秒外层超时且未返回失败详情。 |

@@ -71,6 +71,11 @@ function isTopicNode(node: ProjectNode): boolean {
   return node.kind === "topic" || node.kind === "global_topic";
 }
 
+export function projectTreeCanRenameTopic(node: ProjectNode): boolean {
+  if (!(node.topicId ?? "").trim()) return false;
+  return isTopicNode(node) || node.sessionKind === "work";
+}
+
 export type ProjectTreeTrashTarget =
   | { kind: "topic"; topicId: string }
   | { kind: "session"; path: string };
@@ -1499,6 +1504,7 @@ export function ProjectTree({
       const workSession = node.sessionKind === "work";
       const collaborationSession = node.sessionKind === "collaboration";
       const topicId = node.topicId ?? "";
+      const canRenameTopic = projectTreeCanRenameTopic(node);
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
@@ -1540,8 +1546,8 @@ export function ProjectTree({
           }
         },
       };
-      const topicMenuItems: ContextMenuItem[] = isSessionNode ? [trashMenuItem] : [
-        ...(compactTopics
+      const topicMenuItems: ContextMenuItem[] = [
+        ...(!isSessionNode && compactTopics
           ? [
               {
                 key: pinned ? "unpin" : "pin",
@@ -1551,15 +1557,17 @@ export function ProjectTree({
               },
             ]
           : []),
-        {
-          key: "rename",
-          icon: <Pencil size={13} />,
-          label: t("projectTree.renameTopic"),
-          onSelect: () => startRenameTopic(node, label),
-        },
+        ...(canRenameTopic
+          ? [{
+              key: "rename",
+              icon: <Pencil size={13} />,
+              label: t("projectTree.renameTopic"),
+              onSelect: () => startRenameTopic(node, label),
+            }]
+          : []),
         trashMenuItem,
       ];
-      if (!isSessionNode && editingTopic === topicId) {
+      if (canRenameTopic && editingTopic === topicId) {
         return (
           <div
             key={key}
@@ -1634,7 +1642,7 @@ export function ProjectTree({
                 return;
               }
               if (!openRequest) return;
-              const nextClick = { rowKey: key, canRename: !isSessionNode };
+              const nextClick = { rowKey: key, canRename: canRenameTopic };
               const pending = clickTimerRef.current;
               if (pending !== null) {
                 clearTimeout(pending.timer);
@@ -1655,7 +1663,7 @@ export function ProjectTree({
               }
             }}
             onDoubleClick={(event) => {
-              if (isSessionNode || unreadFallbackConv) return;
+              if (!canRenameTopic || unreadFallbackConv) return;
               event.stopPropagation();
               if (clickTimerRef.current !== null && clickTimerRef.current.rowKey === key) {
                 clearTimeout(clickTimerRef.current.timer);
