@@ -23,6 +23,7 @@ import {
   projectTreeMenuKey,
   projectTreeTrashTarget,
   projectTreeCanRenameTopic,
+  projectTreeRenameTarget,
   projectTreeUnreadFallbackConversation,
   openLegacyUnreadConversation,
 } from "../components/ProjectTree";
@@ -165,6 +166,18 @@ eq(
   projectTreeCanRenameTopic(tree[0].children?.[0].children?.[0] as ProjectNode),
   false,
   "normal runtime rows keep per-session semantics and cannot rename the owning topic",
+);
+
+eq(
+  projectTreeRenameTarget(tree[0].children?.[0].children?.[0] as ProjectNode),
+  { kind: "session", path: "/tmp/a.jsonl" },
+  "normal runtime rows rename the concrete Session by path",
+);
+
+eq(
+  projectTreeRenameTarget(globalWorkTree[0].children?.[0].children?.[0] as ProjectNode),
+  { kind: "topic", topicId: "global-work" },
+  "Work runtime rows keep topic-level rename semantics",
 );
 
 eq(
@@ -376,11 +389,11 @@ eq(
 
 eq(
   projectTreeShouldSuppressOpenForRename(
-    { rowKey: "session-a", canRename: false },
-    { rowKey: "session-a", canRename: false },
+    { rowKey: "session-a", canRename: true },
+    { rowKey: "session-a", canRename: true },
   ),
-  false,
-  "runtime session double-click still allows the session row to open",
+  true,
+  "runtime Session double-click suppresses open and starts inline rename",
 );
 
 eq(

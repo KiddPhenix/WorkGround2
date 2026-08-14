@@ -3651,6 +3651,13 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     }
   }, [refreshProjectsAndTabs, showToast]);
 
+  const renameSidebarSession = useCallback(async (path: string, title: string) => {
+    const nextTitle = title.trim();
+    if (!path || !nextTitle) return;
+    await renameSession(path, nextTitle);
+    await refreshProjectsAndTabs();
+  }, [refreshProjectsAndTabs, renameSession]);
+
   const startActiveTopicRename = useCallback(() => {
     if (!activeTab?.topicId) return;
     topicRenameSkipCommitRef.current = false;
@@ -4182,6 +4189,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
                   onTopicsChanged={refreshProjectsAndTabs}
                   onRenameTopic={renameTopic}
+                  onRenameSession={renameSidebarSession}
                   refreshSignal={projectRevision}
                   onAddProject={async () => { await switchFolder(); }}
                   timeFilter={topicTimeFilter}
@@ -4478,6 +4486,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               onCreateTopic={(scope, workspaceRoot) => openBlankSession(scope, scope === "project" ? workspaceRoot : "")}
               onTopicsChanged={refreshProjectsAndTabs}
               onRenameTopic={renameTopic}
+              onRenameSession={renameSidebarSession}
               refreshSignal={projectRevision}
               onAddProject={async () => {
                 await switchFolder();

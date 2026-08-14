@@ -4,7 +4,7 @@
 // new topic.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from "react";
-import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, Check, ListCollapse, ListRestart, MessageSquare, Clock, Pin, PinOff, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
+import { Archive, Pencil, Plus, MoreHorizontal, MoreVertical, Folder, FolderPlus, Search, BriefcaseBusiness, Copy, FolderOpen, XCircle, History, ListCollapse, ListRestart, MessageSquare, Clock, Pin, PinOff, Users, ChevronDown, ChevronRight, SquarePlus, SlidersHorizontal } from "lucide-react";
 import { asArray } from "../lib/array";
 import { useToast } from "../lib/toast";
 import { app, onUnreadState } from "../lib/bridge";
@@ -30,6 +30,7 @@ interface ProjectTreeProps {
   onAddProject: () => Promise<void>;
   onCreateTopic?: (scope: string, workspaceRoot: string) => Promise<void> | void;
   onRenameTopic?: (topicId: string, title: string) => Promise<void> | void;
+  onRenameSession?: (sessionPath: string, title: string) => Promise<void> | void;
   onTopicsChanged?: () => Promise<void> | void;
   onCreateWork?: (scope: string, workspaceRoot: string) => Promise<void> | void;
   refreshSignal?: number;
@@ -74,6 +75,21 @@ function isTopicNode(node: ProjectNode): boolean {
 export function projectTreeCanRenameTopic(node: ProjectNode): boolean {
   if (!(node.topicId ?? "").trim()) return false;
   return isTopicNode(node) || node.sessionKind === "work";
+}
+
+export type ProjectTreeRenameTarget =
+  | { kind: "topic"; topicId: string }
+  | { kind: "session"; path: string };
+
+export function projectTreeRenameTarget(node: ProjectNode): ProjectTreeRenameTarget | null {
+  if (projectTreeCanRenameTopic(node)) {
+    return { kind: "topic", topicId: (node.topicId ?? "").trim() };
+  }
+  if (isRuntimeSessionNode(node)) {
+    const path = (node.sessionPath ?? "").trim();
+    return path ? { kind: "session", path } : null;
+  }
+  return null;
 }
 
 export type ProjectTreeTrashTarget =
@@ -727,14 +743,13 @@ function recentProjectLabel(node: ProjectNode): string {
 function colorMenuLabel(label: string, color?: string, active = false) {
   const value = projectColorValue(color);
   return (
-    <span className="project-tree__color-option">
+    <span className="project-tree__color-option project-tree__color-option--compact">
       <span
-        className="project-tree__color-swatch"
+        className={`project-tree__color-swatch${active ? " project-tree__color-swatch--active" : ""}`}
         style={value ? ({ "--project-accent": value } as CSSProperties) : undefined}
         aria-hidden="true"
       />
-      <span>{label}</span>
-      {active && <Check className="project-tree__color-check" size={12} />}
+      <span className="sr-only">{label}</span>
     </span>
   );
 }
@@ -802,6 +817,7 @@ export function ProjectTree({
   onCreateTopic,
   onCreateWork,
   onRenameTopic,
+  onRenameSession,
   onTopicsChanged,
   refreshSignal,
   timeFilter,
@@ -821,7 +837,7 @@ export function ProjectTree({
   const [manuallyCollapsed, setManuallyCollapsed] = useState<Set<string>>(new Set());
   const [creatingProject, setCreatingProject] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [editingTopic, setEditingTopic] = useState<string | null>(null);
+  const [editingNode, setEditingNode] = useState<{ rowKey: string; target: ProjectTreeRenameTarget } | null>(null);
   const [topicDraft, setTopicDraft] = useState("");
   const [menuTopic, setMenuTopic] = useState<string | null>(null);
   const [menuProject, setMenuProject] = useState<{ key: string; root: string; path: string; scope: "global" | "project"; label: string; mode?: "actions" | "color" } | null>(null);
@@ -1214,12 +1230,12 @@ export function ProjectTree({
     }
   };
 
-  const startRenameTopic = (node: ProjectNode, label: string) => {
+  const startRenameNode = (rowKey: string, target: ProjectTreeRenameTarget, label: string) => {
     setMenuTopic(null);
     setMenuProject(null);
     setMenuPoint(null);
     setConfirmAction(null);
-    setEditingTopic(node.topicId ?? null);
+    setEditingNode({ rowKey, target });
     setTopicDraft(label);
   };
 
@@ -1232,15 +1248,21 @@ export function ProjectTree({
     setProjectDraft(label);
   };
 
-  const commitRenameTopic = async (topicId: string) => {
+  const commitRenameNode = async (target: ProjectTreeRenameTarget) => {
     const title = topicDraft.trim();
-    setEditingTopic(null);
+    setEditingNode(null);
     if (!title) return;
     try {
-      if (onRenameTopic) await onRenameTopic(topicId, title);
-      else await app.RenameTopic(topicId, title);
+      if (target.kind === "topic") {
+        if (onRenameTopic) await onRenameTopic(target.topicId, title);
+        else await app.RenameTopic(target.topicId, title);
+      } else if (onRenameSession) {
+        await onRenameSession(target.path, title);
+      } else {
+        await app.RenameSession(target.path, title);
+      }
       await refresh();
-      if (!onRenameTopic) await onTopicsChanged?.();
+      if (target.kind === "topic" ? !onRenameTopic : !onRenameSession) await onTopicsChanged?.();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
     }
@@ -1504,7 +1526,8 @@ export function ProjectTree({
       const workSession = node.sessionKind === "work";
       const collaborationSession = node.sessionKind === "collaboration";
       const topicId = node.topicId ?? "";
-      const canRenameTopic = projectTreeCanRenameTopic(node);
+      const renameTarget = projectTreeRenameTarget(node);
+      const canRenameNode = Boolean(renameTarget);
       const imSource = scope === "global" && topicId ? imTopicSources[topicId] : undefined;
       const imSourceLabel = imSource?.label || "";
       const imSourceTitle = imSourceLabel ? t("msg.fromIm", { source: imSourceLabel }) : "";
@@ -1557,17 +1580,17 @@ export function ProjectTree({
               },
             ]
           : []),
-        ...(canRenameTopic
+        ...(canRenameNode
           ? [{
               key: "rename",
               icon: <Pencil size={13} />,
               label: t("projectTree.renameTopic"),
-              onSelect: () => startRenameTopic(node, label),
+              onSelect: () => renameTarget && startRenameNode(menuKey, renameTarget, label),
             }]
           : []),
         trashMenuItem,
       ];
-      if (canRenameTopic && editingTopic === topicId) {
+      if (renameTarget && editingNode?.rowKey === menuKey) {
         return (
           <div
             key={key}
@@ -1581,10 +1604,10 @@ export function ProjectTree({
               onChange={(event) => setTopicDraft(event.target.value)}
               onFocus={(event) => event.target.select()}
               onKeyDown={(event) => {
-                if (event.key === "Enter") void commitRenameTopic(topicId);
-                if (event.key === "Escape") setEditingTopic(null);
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") setEditingNode(null);
               }}
-              onBlur={() => void commitRenameTopic(topicId)}
+              onBlur={() => void commitRenameNode(renameTarget)}
             />
           </div>
         );
@@ -1642,7 +1665,7 @@ export function ProjectTree({
                 return;
               }
               if (!openRequest) return;
-              const nextClick = { rowKey: key, canRename: canRenameTopic };
+              const nextClick = { rowKey: key, canRename: canRenameNode };
               const pending = clickTimerRef.current;
               if (pending !== null) {
                 clearTimeout(pending.timer);
@@ -1663,13 +1686,13 @@ export function ProjectTree({
               }
             }}
             onDoubleClick={(event) => {
-              if (!canRenameTopic || unreadFallbackConv) return;
+              if (!canRenameNode || unreadFallbackConv) return;
               event.stopPropagation();
               if (clickTimerRef.current !== null && clickTimerRef.current.rowKey === key) {
                 clearTimeout(clickTimerRef.current.timer);
                 clickTimerRef.current = null;
               }
-              startRenameTopic(node, label);
+              if (renameTarget) startRenameNode(menuKey, renameTarget, label);
             }}
           >
             {compactTopics && section === "recent" && remoteUnreadCount > 0 ? (
@@ -1934,6 +1957,9 @@ export function ProjectTree({
       ...PROJECT_COLOR_OPTIONS.map((option): ContextMenuItem => ({
         key: `color-${option.key || "default"}`,
         label: colorMenuLabel(projectColorLabel(t, option.key), option.key, (node.projectColor || "") === option.key),
+        variant: "color" as const,
+        checked: (node.projectColor || "") === option.key,
+        title: projectColorLabel(t, option.key),
         onSelect: () => {
           void setProjectColor(colorTargetRoot, option.key);
         },
@@ -2223,7 +2249,7 @@ export function ProjectTree({
             open={projectMenuOpen}
             point={menuPoint}
             items={compactTopics ? (menuProject?.mode === "color" ? projectColorMenuItems : workbenchProjectMenuItems) : projectMenuItems}
-            minWidth={compactTopics && menuProject?.mode === "color" ? 168 : compactTopics ? 206 : 212}
+            minWidth={230}
             ariaLabel={t("projectTree.projectActions")}
             onClose={closeMenu}
           />

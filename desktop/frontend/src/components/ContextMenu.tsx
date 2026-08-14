@@ -12,7 +12,9 @@ export type ContextMenuItem =
       label: ReactNode;
       disabled?: boolean;
       danger?: boolean;
-      variant?: "section";
+      variant?: "section" | "color";
+      checked?: boolean;
+      title?: string;
       onSelect: () => void;
     }
   | {
@@ -116,7 +118,9 @@ export function ContextMenu({
           <button
             key={item.key}
             type="button"
-            role="menuitem"
+            role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+            aria-checked={item.checked}
+            title={item.title}
             disabled={item.disabled}
             className={`context-menu__item${item.danger ? " context-menu__item--danger" : ""}${item.variant ? ` context-menu__item--${item.variant}` : ""}`}
             onClick={(event) => {
