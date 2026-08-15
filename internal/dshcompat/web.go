@@ -123,6 +123,12 @@ func validateWebSpec(spec *WebSpec) (string, error) {
 		if !filepath.IsAbs(spec.BundlePatch) {
 			return "", errors.New("bundle patch must be an absolute path")
 		}
+		if info, err := os.Stat(spec.BundlePatch); err != nil || !info.Mode().IsRegular() {
+			if err == nil {
+				err = errors.New("not a regular file")
+			}
+			return "", fmt.Errorf("bundle patch %s: %w", spec.BundlePatch, err)
+		}
 	}
 	if spec.NodePath == "" {
 		node, err := exec.LookPath("node")

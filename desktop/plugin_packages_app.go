@@ -161,7 +161,7 @@ func dshView(bundle *pluginpkg.DshBundle, bundleRoot string) *DSHView {
 		view.NodePath = nodePath
 		if anchor, anchorErr := dshcompat.ResolveRuntimeAnchor(bundleRoot); anchorErr == nil {
 			view.RuntimeAnchor = anchor
-			view.RuntimeReady = true
+			view.RuntimeReady = len(view.MissingPackages) == 0
 		}
 	}
 	return view

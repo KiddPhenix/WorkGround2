@@ -45,7 +45,7 @@ WG2 使用 React 19，DSH Client Plugin 以 React 18 为 peer。当前选择完�
 
 - WG2 不在普通插件安装阶段隐式执行第三方 `prepare`/`install` 脚本。
 - 已构建 Bundle 可以直接使用；缺少构建产物时 Doctor 给出构建命令和缺失文件。
-- Node sidecar 继承最小环境，敏感值通过现有凭据/权限入口提供，日志不得包含明文。
+- Node sidecar 为兼容 DSH 现有配置而继承 WG2 进程环境，并强制关闭 DSH telemetry；因此 Bundle 按本地代码信任边界管理，日志不得主动输出敏感值。
 - Client Bundle 默认隔离，其 Host 调用留在 loopback-only 的原生 DSH Web transport 内。
 
 ## 兼容等级
