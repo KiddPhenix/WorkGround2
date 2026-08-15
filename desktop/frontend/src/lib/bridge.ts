@@ -2330,7 +2330,7 @@ function makeMockApp(): AppBindings {
     async RespondCollaborationAgentRun(input) { return { ok: false, requestID: `${input.runID}:respond`, error: "Collaboration preview transport unavailable", retryable: true }; },
     async RespondCollaborationRequest(input) { return { ok: false, requestID: input.requestID, error: "Collaboration preview transport unavailable", retryable: true }; },
     async UpdateCollaborationAgentConfig(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: input.config }; },
-    async UpdateCollaborationProfile(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: { alias: input.agentName, autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" } }; },
+    async UpdateCollaborationProfile(input) { return { status: "disconnected", members: [], timeline: [], agentConfig: { alias: input.agentName, autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" } }; },
     async UpdateCollaborationToolApprovalMode(input) { return { status: "disconnected", members: [], timeline: [], toolApprovalMode: input.mode }; },
     async ShareCollaborationFiles() { return []; },
     async ReceiveCollaborationFile() { throw new Error("File transfer preview unavailable"); },

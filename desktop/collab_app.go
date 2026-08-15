@@ -1044,7 +1044,7 @@ func (a *App) prepareCollaborationAgentInput(sessionID string, refs []string, in
 }
 
 func defaultCollaborationAgentConfig() CollaborationAgentConfig {
-	return CollaborationAgentConfig{RecognitionMode: "off", AgentResponseIntervalSeconds: 30, AgentClockTurns: 12}
+	return CollaborationAgentConfig{RecognitionMode: "interval", AgentResponseIntervalSeconds: 30, AgentClockTurns: 12}
 }
 
 func normalizeCollaborationAgentConfig(value CollaborationAgentConfig, fallbackAlias string) CollaborationAgentConfig {
@@ -1055,7 +1055,7 @@ func normalizeCollaborationAgentConfig(value CollaborationAgentConfig, fallbackA
 	switch value.RecognitionMode {
 	case "message", "interval", "off":
 	default:
-		value.RecognitionMode = "off"
+		value.RecognitionMode = "interval"
 	}
 	if value.AgentResponseIntervalSeconds == 0 {
 		value.AgentResponseIntervalSeconds = 30

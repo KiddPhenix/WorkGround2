@@ -216,7 +216,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
   for (const member of members) member.isSelf = member.id === selfMemberId;
   const self = members.find((member) => member.id === selfMemberId);
   const configRaw = record(raw.agentConfig ?? raw.AgentConfig);
-  const mode = text(configRaw.recognitionMode ?? configRaw.RecognitionMode, "off");
+  const mode = text(configRaw.recognitionMode ?? configRaw.RecognitionMode, "interval");
   const peerInterval = number(configRaw.agentResponseIntervalSeconds ?? configRaw.AgentResponseIntervalSeconds, 30);
   const clockTurns = number(configRaw.agentClockTurns ?? configRaw.AgentClockTurns, 12);
   const clockWoundAt = text(configRaw.agentClockWoundAt ?? configRaw.AgentClockWoundAt);
@@ -229,7 +229,7 @@ export function normalizeCollaborationState(value: unknown): CollaborationState 
     agentClockTurns: Math.min(100, Math.max(1, clockTurns)),
     agentClockUnlimited: bool(configRaw.agentClockUnlimited ?? configRaw.AgentClockUnlimited),
     agentClockWoundAt: Number.isFinite(Date.parse(clockWoundAt)) ? clockWoundAt : undefined,
-    recognitionMode: mode === "message" || mode === "interval" ? mode : "off",
+    recognitionMode: mode === "message" || mode === "off" ? mode : "interval",
     contextRefs: list(configRaw.contextRefs ?? configRaw.ContextRefs).map((item) => text(item)).filter(Boolean),
   };
 
@@ -564,7 +564,7 @@ const mockRuntimes = new Map<string, MockCollaborationRuntime>();
 function mockRuntime(sessionID: string): MockCollaborationRuntime {
   let runtime = mockRuntimes.get(sessionID);
   if (!runtime) {
-    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], toolApprovalMode: "ask", agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" } } };
+    runtime = { stateListeners: new Set(), eventListeners: new Set(), sequence: 4, state: { status: "disconnected", selfSessionId: sessionID, members: [], timeline: [], toolApprovalMode: "ask", agentConfig: { alias: "", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" } } };
     mockRuntimes.set(sessionID, runtime);
   }
   return runtime;
@@ -608,7 +608,7 @@ function connectMock(runtime: MockCollaborationRuntime, input: HostCollaboration
     members: sampleMembers(input.memberName || "陈程序", input.agentName || "程序 Agent", input.sessionID),
     timeline: sampleTimeline(),
     toolApprovalMode: "ask",
-    agentConfig: { alias: input.agentName || "程序 Agent", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "off" },
+    agentConfig: { alias: input.agentName || "程序 Agent", autoRespondQuestions: false, autoRespondRequests: false, autoRespondAgents: false, agentResponseIntervalSeconds: 30, agentClockTurns: 12, agentClockUnlimited: false, recognitionMode: "interval" },
   };
   runtime.sequence = 4;
   emitMockState(runtime);

@@ -183,8 +183,8 @@ func TestCollaborationAgentConfigRenamesAndPersists(t *testing.T) {
 		t.Fatalf("Agent config was not persisted: %+v, %v", persisted, err)
 	}
 	legacy := normalizeCollaborationAgentConfig(CollaborationAgentConfig{Alias: "Legacy"}, "")
-	if legacy.AgentResponseIntervalSeconds != 30 || legacy.AgentClockTurns != 12 {
-		t.Fatalf("legacy Agent collaboration defaults = interval %d, clock %d", legacy.AgentResponseIntervalSeconds, legacy.AgentClockTurns)
+	if legacy.RecognitionMode != "interval" || legacy.AgentResponseIntervalSeconds != 30 || legacy.AgentClockTurns != 12 {
+		t.Fatalf("legacy Agent collaboration defaults = recognition %s, interval %d, clock %d", legacy.RecognitionMode, legacy.AgentResponseIntervalSeconds, legacy.AgentClockTurns)
 	}
 	bounded := normalizeCollaborationAgentConfig(CollaborationAgentConfig{Alias: "Bounded", AgentResponseIntervalSeconds: 1, AgentClockTurns: 101}, "")
 	if bounded.AgentResponseIntervalSeconds != 5 || bounded.AgentClockTurns != 100 {
