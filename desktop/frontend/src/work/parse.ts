@@ -299,6 +299,7 @@ function parseArtifactRefV2(r:Record<string,unknown>,label:string):void{
   nonEmpty(r.id);nonEmpty(r.name);nonEmpty(r.type);checkEnum(r.status,artRefStatuses,`${label}.status`);
   if(r.path!=null)str(r.path);if(r.relativePath!=null)str(r.relativePath);if(r.blobDigest!=null)str(r.blobDigest);
   if(r.sourceRunId!=null)str(r.sourceRunId);if(r.error!=null)str(r.error);if(r.lastVerifiedAt!=null)checkDate(r.lastVerifiedAt);
+  if(r.url!=null)str(r.url);
 }
 export function parseArtifactSlot(raw:unknown):ArtifactSlot{
   const r=fields(raw);nonEmpty(r.id);nonEmpty(r.workId);safeInt(r.definitionRev);safeInt(r.revision);

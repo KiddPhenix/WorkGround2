@@ -97,6 +97,7 @@ export interface WorkCardProps {
   resolveSessionSurface?: (sessionRef: SessionRef, context: SessionSurfaceContext) => ReactNode;
   onOpenSession?: (sessionRef: SessionRef, context: SessionSurfaceContext) => void | Promise<void>;
   onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
+  onArtifactOpenURL?: (intent: FileOpenIntent) => void | Promise<void>;
   onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
   onArtifactLocate?: (intent: FileLocateIntent) => void | Promise<void>;
   onArtifactRetry?: (intent: SlotRetryIntent) => void | Promise<void>;
@@ -256,6 +257,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
   resolveSessionSurface,
   onOpenSession,
   onArtifactOpen,
+  onArtifactOpenURL,
   onArtifactDownload,
   onArtifactLocate,
   onArtifactRetry,
@@ -939,6 +941,7 @@ export const WorkCard: React.FC<WorkCardProps> = ({
               v2Inputs={v2Inputs}
               onV2TaskRetry={handleV2TaskRetry}
               onArtifactOpen={onArtifactOpen}
+              onArtifactOpenURL={onArtifactOpenURL}
               onArtifactDownload={onArtifactDownload}
               onArtifactLocate={onArtifactLocate}
               onArtifactRetry={onArtifactRetry ?? (

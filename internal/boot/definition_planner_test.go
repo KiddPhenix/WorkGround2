@@ -1910,6 +1910,20 @@ func TestDefinitionPlannerPrompt_ContainsInputSpecSearchVsAskRules(t *testing.T)
 	}
 }
 
+func TestDefinitionPlannerPromptSupportsURLDeliverables(t *testing.T) {
+	sysPrompt := definitionPlannerPrompt + definitionPlanSchema
+	for _, want := range []string{
+		`artifact kind "url"`,
+		"actual absolute http/https link",
+		"release page",
+		"Use url for an actual absolute http/https link rather than a file",
+	} {
+		if !strings.Contains(sysPrompt, want) {
+			t.Fatalf("system prompt missing URL artifact rule %q", want)
+		}
+	}
+}
+
 func TestDefinitionPlannerSchema_InputSpecRequiredAndOrphanRule(t *testing.T) {
 	schema := definitionPlanSchema
 	for _, want := range []string{

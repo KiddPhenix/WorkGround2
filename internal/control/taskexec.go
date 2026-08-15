@@ -485,6 +485,14 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 		if !ok {
 			return nil, fmt.Errorf("artifact slot %q is unavailable in the active Work projection", slotID)
 		}
+		if work.IsURLArtifactKind(slot.Kind) {
+			output, err := a.taskURLSlotOutput(input, slot, data.text, now)
+			if err != nil {
+				return nil, err
+			}
+			outputs = append(outputs, *output)
+			continue
+		}
 		expectedCount := slot.ExpectedCount
 		if expectedCount <= 0 {
 			expectedCount = 1
@@ -570,6 +578,49 @@ func (a *TaskExecutorAdapter) TaskArtifacts(
 		})
 	}
 	return outputs, nil
+}
+
+// taskURLSlotOutput satisfies a url/link artifact slot from unique valid
+// absolute http(s) links in the task final response. URL results are durable
+// ArtifactRefs without blobs or fake files; the authoritative URL is the ref
+// itself. Refs are stable across retries of the same attempt.
+func (a *TaskExecutorAdapter) taskURLSlotOutput(
+	input work.TaskExecuteInput,
+	slot work.ArtifactSlot,
+	text string,
+	now time.Time,
+) (*work.TaskArtifactOutput, error) {
+	expectedCount := slot.ExpectedCount
+	if expectedCount <= 0 {
+		expectedCount = 1
+	}
+	links := collectTaskURLs(text)
+	if len(links) < expectedCount {
+		return nil, fmt.Errorf(
+			"artifact slot %q requires %d %q link(s); the task final response contained %d valid absolute http(s) link(s)",
+			slot.ID, expectedCount, slot.Kind, len(links),
+		)
+	}
+	refs := make([]work.ArtifactRef, 0, expectedCount)
+	for i := 0; i < expectedCount; i++ {
+		link := links[i]
+		refKey := fmt.Sprintf("%s\x00%s\x00%d\x00%s", input.AttemptID, slot.ID, i, link)
+		refID := strings.TrimPrefix(work.ContentDigest([]byte(refKey)), "sha256:")
+		refs = append(refs, work.ArtifactRef{
+			ID:             "task-" + refID[:24],
+			Name:           link,
+			Type:           urlArtifactMediaType,
+			Status:         work.ArtifactRefStatusAvailable,
+			URL:            link,
+			SourceRunID:    input.RunID,
+			LastVerifiedAt: &now,
+		})
+	}
+	summary := firstLine(text, 120)
+	if summary == "" {
+		summary = slot.Title
+	}
+	return &work.TaskArtifactOutput{SlotID: slot.ID, Refs: refs, Summary: summary}, nil
 }
 
 // ReformatTaskArtifacts implements work.TaskArtifactReformatter. It reuses

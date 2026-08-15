@@ -24,6 +24,8 @@ export interface ResultShelfProps {
   workflowChangeState?: WorkflowChangeState | null;
   /** Called when the user wants to open a file. */
   onOpen?: (intent: FileOpenIntent) => void | Promise<void>;
+  /** Called when the user wants to open a URL artifact in the Desktop browser. */
+  onOpenURL?: (intent: FileOpenIntent) => void | Promise<void>;
   /** Called when the user wants to download a file. */
   onDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
   /** Called when the user wants to locate a file on disk. */
@@ -62,6 +64,7 @@ interface EditState {
 }
 
 const ARTIFACT_KINDS = [
+  { value: 'url', label: '网址链接（URL）' },
   { value: 'document', label: '文档（Markdown）' },
   { value: 'text', label: '纯文本' },
   { value: 'docx', label: 'Word 文档（DOCX）' },
@@ -76,7 +79,14 @@ const ARTIFACT_KINDS = [
   { value: 'file', label: '其他文件' },
 ] as const;
 
+function isURLKind(kind: string): boolean {
+  return kind.trim().toLowerCase() === 'url' || kind.trim().toLowerCase() === 'link';
+}
+
 function titleForKind(title: string, kind: string): string {
+  const knownExtension = /\.(?:md|markdown|txt|docx?|pdf|xlsx|xls|csv|json|sh|bat|cmd|ps1|exe|zip|7z|tar|gz)$/i;
+  const trimmed = title.trim();
+  if (isURLKind(kind)) return trimmed.replace(knownExtension, '');
   const extension: Record<string, string> = {
     document: '.md',
     markdown: '.md',
@@ -104,11 +114,10 @@ function titleForKind(title: string, kind: string): string {
   };
   const next = extension[kind.toLowerCase()];
   if (!next) return title;
-  const trimmed = title.trim();
   if (!trimmed) return trimmed;
   if (trimmed.toLowerCase().endsWith(next)) return trimmed;
-  if (/\.(?:md|markdown|txt|docx?|pdf|xlsx|xls|csv|json|sh|bat|cmd|ps1|exe|zip|7z|tar|gz)$/i.test(trimmed)) {
-    return trimmed.replace(/\.(?:md|markdown|txt|docx?|pdf|xlsx|xls|csv|json|sh|bat|cmd|ps1|exe|zip|7z|tar|gz)$/i, next);
+  if (knownExtension.test(trimmed)) {
+    return trimmed.replace(knownExtension, next);
   }
   return `${trimmed}${next}`;
 }
@@ -177,6 +186,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
   onRequestWorkflowChange,
   workflowChangeState,
   onOpen,
+  onOpenURL,
   onDownload,
   onLocate,
   onRetry,
@@ -287,11 +297,16 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
     if (!target) return;
     const changes = artifactChanges(editing.slot, { ...editing.draft, title });
     const formatChanged = editing.slot.kind !== editing.draft.kind;
+    const formatInstruction = !formatChanged
+      ? ''
+      : isURLKind(editing.draft.kind)
+        ? '成果必须真实转换为网址链接；产出任务最终回复需包含实际的绝对 http/https URL，不要生成占位文件。'
+        : `格式必须真实转换为 ${editing.draft.kind}，重新生成可被对应软件打开的文件，不能只改扩展名或 MIME。`;
     fireRequest({
       token: `edit:${editing.slot.id}:${Date.now()}`,
       nodeId: target.id,
       title: `修改成果：${editing.slot.title}`,
-      instruction: `修改成果“${editing.slot.title}”（ID：${editing.slot.id}）：${changes.join('；')}。保留成果 ID、唯一产出任务、所有使用关系和流程依赖；对该成果的相应字段使用 replace，不要删除后重建。${formatChanged ? `格式必须真实转换为 ${editing.draft.kind}，重新生成可被对应软件打开的文件，不能只改扩展名或 MIME。` : ''}只修改该成果定义以及产出任务必要的格式要求，不改动其他任务职责。`,
+      instruction: `修改成果“${editing.slot.title}”（ID：${editing.slot.id}）：${changes.join('；')}。保留成果 ID、唯一产出任务、所有使用关系和流程依赖；对该成果的相应字段使用 replace，不要删除后重建。${formatInstruction}只修改该成果定义以及产出任务必要的格式要求，不改动其他任务职责。`,
     });
     setEditing(null);
   };
@@ -379,6 +394,7 @@ export const ResultShelf: React.FC<ResultShelfProps> = ({
                   slot={slot}
                   paused={paused}
                   onOpen={onOpen}
+                  onOpenURL={onOpenURL}
                   onDownload={onDownload}
                   onLocate={onLocate}
                   onRetry={onRetry}

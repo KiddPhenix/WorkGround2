@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"workground2/internal/control"
 	"workground2/internal/work"
 )
 
@@ -109,5 +112,135 @@ func TestSafeArtifactFileNameBlocksTraversal(t *testing.T) {
 	}
 	if filepath.Base(got) != got {
 		t.Fatalf("safe name escaped base: %q", got)
+	}
+}
+
+// urlArtifactAppHarness builds a real V2 Work with a url/link artifact slot
+// and returns an App whose controller serves it.
+func urlArtifactAppHarness(t *testing.T) (*App, WorkArtifactFileIntent, string) {
+	t.Helper()
+	root := t.TempDir()
+	store, err := work.NewFileWorkStore(filepath.Join(t.TempDir(), "works"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := work.NewService(store, nil, nil)
+	ctx := context.Background()
+	planning, err := svc.BeginWorkPlanning(ctx, work.BeginWorkPlanningInput{
+		SessionID: "url-artifact-session", RequestID: "url-artifact-plan",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := &work.WorkDefinitionRevision{
+		WorkID: planning.Work.ID, Goal: "release a build", CreatedBy: "test",
+		Nodes: []work.NodeDef{{ID: "n1", Title: "release"}},
+		ArtifactSlots: []work.ArtifactSlotDef{{
+			ID: "release-url", Title: "发布链接", Kind: "url",
+			ExpectedCount: 1, Required: true,
+		}},
+	}
+	candidate, err = svc.CreateCandidateRevision(ctx, planning.Work.ID, candidate, "url-artifact-candidate", planning.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := store.LoadState(planning.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyDefinition(ctx, work.ApplyDefinitionInput{
+		WorkID: planning.Work.ID, Revision: candidate.Revision,
+		ExpectedRevision: state.Revision, RequestID: "url-artifact-apply",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err = store.LoadState(planning.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const refID = "release-ref"
+	if _, err := svc.UpdateArtifactSlot(ctx, work.UpdateArtifactSlotInput{
+		WorkID: planning.Work.ID, SlotID: "release-url", RequestID: "url-artifact-ref",
+		State: work.SlotReady,
+		Refs: []work.ArtifactRef{{
+			ID: refID, Name: "https://release.example.com/v1.2.0",
+			Type: "text/uri-list", Status: work.ArtifactRefStatusAvailable,
+			URL: "https://release.example.com/v1.2.0",
+		}},
+		ExpectedRevision: state.Revision, DefinitionRev: candidate.Revision, Revision: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Unsafe schemes are rejected at the authoritative write seam.
+	if _, err := svc.UpdateArtifactSlot(ctx, work.UpdateArtifactSlotInput{
+		WorkID: planning.Work.ID, SlotID: "release-url", RequestID: "url-artifact-unsafe",
+		State: work.SlotReady,
+		Refs: []work.ArtifactRef{{
+			ID: "unsafe-ref", Name: "javascript:alert(1)", Type: "text/uri-list",
+			Status: work.ArtifactRefStatusAvailable, URL: "javascript:alert(1)",
+		}},
+		ExpectedRevision: state.Revision, DefinitionRev: candidate.Revision, Revision: 2,
+	}); err == nil || !strings.Contains(err.Error(), "not an absolute http(s) URL") {
+		t.Fatalf("unsafe URL write accepted: %v", err)
+	}
+
+	views := control.NewWorkViewBroadcaster()
+	svc.SetV2TransportEnabled(true)
+	ctrl := control.New(control.Options{Work: svc, WorkViews: views, WorkV2Enabled: true})
+	app := &App{ctx: context.Background()}
+	app.setTestCtrl(ctrl, "")
+	app.tabs["test"].WorkspaceRoot = root
+	intent := WorkArtifactFileIntent{
+		WorkID:             planning.Work.ID,
+		DefinitionRevision: candidate.Revision,
+		SlotID:             "release-url",
+		SlotRevision:       2,
+		ArtifactRefID:      refID,
+	}
+	return app, intent, "https://release.example.com/v1.2.0"
+}
+
+func TestOpenWorkArtifactURLForTabResolvesAuthoritativeURL(t *testing.T) {
+	app, intent, want := urlArtifactAppHarness(t)
+	var opened []string
+	old := openExternalBrowser
+	openExternalBrowser = func(_ context.Context, url string) error {
+		opened = append(opened, url)
+		return nil
+	}
+	t.Cleanup(func() { openExternalBrowser = old })
+
+	if err := app.OpenWorkArtifactURLForTab("test", intent); err != nil {
+		t.Fatalf("open valid URL artifact: %v", err)
+	}
+	if len(opened) != 1 || opened[0] != want {
+		t.Fatalf("opened = %v, want [%s]", opened, want)
+	}
+}
+
+func TestOpenWorkArtifactURLForTabRejectsStaleOrFileIdentity(t *testing.T) {
+	app, intent, _ := urlArtifactAppHarness(t)
+	opened := 0
+	old := openExternalBrowser
+	openExternalBrowser = func(_ context.Context, _ string) error {
+		opened++
+		return nil
+	}
+	t.Cleanup(func() { openExternalBrowser = old })
+
+	// A stale slot revision must never resolve — the URL is never trusted.
+	stale := intent
+	stale.SlotRevision++
+	if err := app.OpenWorkArtifactURLForTab("test", stale); err == nil {
+		t.Fatal("stale identity opened")
+	}
+	// A file-only ref (no URL) must fail explicitly without opening.
+	fileIntent := intent
+	fileIntent.ArtifactRefID = "file-only-ref"
+	if err := app.OpenWorkArtifactURLForTab("test", fileIntent); err == nil {
+		t.Fatal("missing ref identity opened")
+	}
+	if opened != 0 {
+		t.Fatalf("browser opened %d times for rejected identities", opened)
 	}
 }

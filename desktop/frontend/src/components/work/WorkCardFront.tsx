@@ -93,6 +93,8 @@ export interface WorkCardFrontProps {
   v2Inputs?: WorkInput[];
   onV2TaskRetry?: (intent: V2TaskRetryIntent) => void | Promise<void>;
   onArtifactOpen?: (intent: FileOpenIntent) => void | Promise<void>;
+  /** Called when the user wants to open a URL artifact in the Desktop browser. */
+  onArtifactOpenURL?: (intent: FileOpenIntent) => void | Promise<void>;
   onArtifactDownload?: (intent: FileDownloadIntent) => void | Promise<void>;
   onArtifactLocate?: (intent: FileLocateIntent) => void | Promise<void>;
   onArtifactRetry?: (intent: SlotRetryIntent) => void | Promise<void>;
@@ -275,6 +277,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
   v2Inputs,
   onV2TaskRetry,
   onArtifactOpen,
+  onArtifactOpenURL,
   onArtifactDownload,
   onArtifactLocate,
   onArtifactRetry,
@@ -526,6 +529,7 @@ export const WorkCardFront: React.FC<WorkCardFrontProps> = ({
             onRequestWorkflowChange={canChangeWorkflow ? requestWorkflowChange : undefined}
             workflowChangeState={workflowChangeState}
             onOpen={onArtifactOpen}
+            onOpenURL={onArtifactOpenURL}
             onDownload={onArtifactDownload}
             onLocate={onArtifactLocate}
             onRetry={onArtifactRetry}

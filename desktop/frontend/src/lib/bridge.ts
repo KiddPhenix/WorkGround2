@@ -505,6 +505,7 @@ export interface AppBindings extends WailsWorkBindings {
   OpenWorkspacePath(rel: string): Promise<void>;
   OpenWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
   OpenWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
+  OpenWorkArtifactURLForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePathForTab(tabID: string, rel: string): Promise<void>;
   RevealWorkArtifactForTab(tabID: string, input: WorkArtifactFileIntent): Promise<void>;
@@ -3848,6 +3849,9 @@ function makeMockApp(): AppBindings {
     },
     async OpenWorkArtifactForTab(_tabID: string, input: WorkArtifactFileIntent) {
       console.info("mock OpenWorkArtifactForTab", input);
+    },
+    async OpenWorkArtifactURLForTab(_tabID: string, input: WorkArtifactFileIntent) {
+      console.info("mock OpenWorkArtifactURLForTab", input);
     },
     async RevealWorkspacePath(rel: string) {
       console.info("mock RevealWorkspacePath", rel);

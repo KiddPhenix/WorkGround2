@@ -1348,8 +1348,9 @@ func v2NodePromptLocale(
 	}
 
 	// Determine which slots are structured (need tool-produced artifacts) vs text
-	// (your final response is authoritative).
-	var structuredLines, textLines []string
+	// (your final response is authoritative) vs URL (absolute links in the
+	// final response text are authoritative).
+	var structuredLines, textLines, urlLines []string
 	for _, sid := range node.ProducesSlotIDs {
 		sd, ok := slotByID[sid]
 		if !ok {
@@ -1363,6 +1364,9 @@ func v2NodePromptLocale(
 		if g, hasGuidance := guidanceByKind[strings.ToLower(strings.TrimSpace(kind))]; hasGuidance {
 			structuredLines = append(structuredLines,
 				fmt.Sprintf("Slot %q (%s): %s", sd.Title, sd.Kind, g.Guidance))
+		} else if IsURLArtifactKind(kind) {
+			urlLines = append(urlLines, fmt.Sprintf("Slot %q (%s): expected %d unique absolute http(s) link(s) — include each link itself, as a Markdown link or a bare https:// URL, in your final response.",
+				sd.Title, sd.Kind, slotExpectedCount(sd.ExpectedCount)))
 		} else if kind == "text" || kind == "document" || kind == "code" || kind == "xlsx" || kind == "markdown" {
 			textLines = append(textLines, sd.Title)
 		} else {
@@ -1381,6 +1385,11 @@ func v2NodePromptLocale(
 		parts = append(parts, "", "Structured slots — must be produced by tools:",
 			strings.Join(structuredLines, "\n"))
 	}
+	if len(urlLines) > 0 {
+		parts = append(parts, "",
+			"URL slots — your final response text must contain the actual links themselves: Markdown links like [label](https://example.com) or bare https:// URLs. Only absolute http/https URLs with a host count; one unique valid link per expected item (duplicates collapse). Do not write or claim files for these slots.",
+			strings.Join(urlLines, "\n"))
+	}
 	if len(textLines) > 0 {
 		parts = append(parts, "",
 			"Text slots — your final response text is the authoritative content for: "+
@@ -1389,6 +1398,13 @@ func v2NodePromptLocale(
 	}
 
 	return prompt + "\n\n" + strings.Join(parts, "\n")
+}
+
+func slotExpectedCount(expected int) int {
+	if expected <= 0 {
+		return 1
+	}
+	return expected
 }
 
 // buildSlotGuidanceMaps returns shared kind and capability indexes from

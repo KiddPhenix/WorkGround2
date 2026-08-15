@@ -30,6 +30,9 @@ type ApplyDefinitionResult struct {
 	Committed      bool                  `json:"committed"`
 	Recoverable    bool                  `json:"recoverable"`
 	TransportError *WorkTransportError   `json:"transportError,omitempty"`
+	// deferredWake is package-private: only the reusable-flow coordinator owns
+	// the follow-up asynchronous wake.
+	deferredWake bool
 }
 
 // BeginWorkPlanningResult is the typed Wails result for the idempotent
@@ -467,25 +470,29 @@ func (s *Service) ApplyDefinition(ctx context.Context, input ApplyDefinitionInpu
 		result.View = view
 		result.Revision = view.Revision
 		if s.v2 != nil && s.v2.enabled() {
-			definition, defErr := s.definitionStore().LoadRevision(workID, receipt.ResultRevision)
-			if defErr != nil {
-				recovery := committedRecovery("v2-definition-wake", workID, requestID, view.Revision, defErr)
-				result.TransportError = TransportErrorFrom(recovery)
-				result.Recoverable = result.TransportError.Recoverable
-				return result, recovery
-			}
-			if wakeErr := s.v2.ContinueDefinition(
-				ctx,
-				workID,
-				receipt.ResultRunID,
-				requestID,
-				definition,
-				runImpactAffectedTasks(result.Impact),
-			); wakeErr != nil {
-				recovery := committedRecovery("v2-definition-wake", workID, requestID, view.Revision, wakeErr)
-				result.TransportError = TransportErrorFrom(recovery)
-				result.Recoverable = result.TransportError.Recoverable
-				return result, recovery
+			if input.deferWake {
+				result.deferredWake = true
+			} else {
+				definition, defErr := s.definitionStore().LoadRevision(workID, receipt.ResultRevision)
+				if defErr != nil {
+					recovery := committedRecovery("v2-definition-wake", workID, requestID, view.Revision, defErr)
+					result.TransportError = TransportErrorFrom(recovery)
+					result.Recoverable = result.TransportError.Recoverable
+					return result, recovery
+				}
+				if wakeErr := s.v2.ContinueDefinition(
+					ctx,
+					workID,
+					receipt.ResultRunID,
+					requestID,
+					definition,
+					runImpactAffectedTasks(result.Impact),
+				); wakeErr != nil {
+					recovery := committedRecovery("v2-definition-wake", workID, requestID, view.Revision, wakeErr)
+					result.TransportError = TransportErrorFrom(recovery)
+					result.Recoverable = result.TransportError.Recoverable
+					return result, recovery
+				}
 			}
 		}
 		return result, nil
@@ -620,6 +627,16 @@ func (s *Service) ApplyDefinition(ctx context.Context, input ApplyDefinitionInpu
 	}
 	prevEventRev = revisions[len(revisions)-1]
 	if s.v2 != nil && s.v2.enabled() {
+		if input.deferWake {
+			return &ApplyDefinitionResult{
+				View:         nil,
+				Intent:       &AutoSwitchFaceIntent{WorkID: workID, RunID: runID, DefinitionRev: input.Revision, Reason: "definition_applied"},
+				Impact:       runImpact,
+				Revision:     prevEventRev,
+				Committed:    true,
+				deferredWake: true,
+			}, nil
+		}
 		if wakeErr := s.v2.ContinueDefinition(
 			ctx,
 			workID,

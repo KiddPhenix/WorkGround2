@@ -1460,6 +1460,10 @@ async function testV2ProductionActionCapabilities(): Promise<void> {
     'production artifact open reaches the authoritative system-open host boundary',
   );
   ok(
+    appSource.includes('onArtifactOpenURL={(intent) => app.OpenWorkArtifactURLForTab(activeTab.id, intent)}'),
+    'production URL artifact open reaches the authoritative browser host boundary',
+  );
+  ok(
     appSource.includes('onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}'),
     'production artifact locate reaches the authoritative file-manager host boundary',
   );

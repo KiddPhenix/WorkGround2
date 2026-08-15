@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -508,7 +509,7 @@ func (s *Service) runReusableV2(ctx context.Context, record *reusableFlowRecord,
 		}
 	}
 	result, err := s.ApplyDefinition(ctx, ApplyDefinitionInput{
-		WorkID: workID, Revision: 1, ExpectedRevision: applyBaseRevision, RequestID: applyID,
+		WorkID: workID, Revision: 1, ExpectedRevision: applyBaseRevision, RequestID: applyID, deferWake: true,
 	})
 	if err != nil {
 		return nil, err
@@ -528,7 +529,36 @@ func (s *Service) runReusableV2(ctx context.Context, record *reusableFlowRecord,
 	if value != nil && len(value.Runs) > 0 {
 		run = &value.Runs[len(value.Runs)-1]
 	}
+	if result != nil && result.deferredWake && run != nil &&
+		(run.State == RunPending || run.State == RunRunning) {
+		s.dispatchReusableWake(workID, requestID, applyID, result, definition)
+	}
 	return &ReusableFlowRun{Flow: cloneReusableFlow(record.Flow), Work: value, Run: run, Duplicate: duplicate || result.Duplicate}, nil
+}
+
+// dispatchReusableWake resumes the V2 DAG asynchronously after the durable
+// create/apply commit, so a long run never keeps the caller in "creating".
+// The wake is idempotent against restart: scheduling recovery at boot resumes
+// the same run if this goroutine is lost, and re-dispatching an already
+// running DAG only re-evaluates ready tasks. Errors are logged and left to
+// the retryable scheduling recovery path.
+func (s *Service) dispatchReusableWake(workID, requestID, applyID string, result *ApplyDefinitionResult, definition *WorkDefinitionRevision) {
+	if s.v2 == nil || !s.v2.enabled() || result == nil || result.Intent == nil {
+		return
+	}
+	runID := result.Intent.RunID
+	if strings.TrimSpace(runID) == "" {
+		return
+	}
+	affected := runImpactAffectedTasks(result.Impact)
+	go func() {
+		ctx := context.Background()
+		if err := s.v2.ContinueDefinition(ctx, workID, runID, applyID, definition, affected); err != nil {
+			slog.Warn("work: reusable run dispatch failed; scheduling recovery will retry",
+				"work_id", workID, "run_id", runID, "request_id", requestID, "error", err,
+			)
+		}
+	}()
 }
 
 func seedReusableV2Inputs(workID, runID string, definition *WorkDefinitionRevision, values map[string]json.RawMessage, now time.Time) []WorkInput {
@@ -547,9 +577,13 @@ func seedReusableV2Inputs(workID, runID string, definition *WorkDefinitionRevisi
 			if !ok || spec.Kind == InputApproval || len(value) == 0 || string(value) == "null" {
 				continue
 			}
-			inputID, _ := v2InputIdentity(runID, node.ID, specID)
+			taskID, err := DeriveTaskID(runID, node.ID)
+			if err != nil {
+				continue
+			}
+			inputID, _ := v2InputIdentity(runID, taskID, specID)
 			result = append(result, WorkInput{
-				ID: inputID, WorkID: workID, RunID: runID, TaskID: node.ID,
+				ID: inputID, WorkID: workID, RunID: runID, TaskID: taskID,
 				BlockID: v2InputBlockID(node), SpecID: specID,
 				Value: append(json.RawMessage(nil), value...), State: InputSubmitted,
 				Source: "reusable_flow", UpdatedBy: "user", ReadyForStart: true,

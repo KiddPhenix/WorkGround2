@@ -106,6 +106,7 @@ Planning rules:
 - Every referenced inputSpecId and artifact slot ID must exist in the returned object.
 - Every artifact slot must have exactly one producer node.
 - Artifact slots are deliverable outputs created by the workflow and shown to the user in the Results shelf. Never use an artifact slot for an original/source/input file, an upload, reference material, or an existing workspace file.
+- When the requested deliverable is a release page, deployed site, published document, or another web destination, use artifact kind "url" ("link" is accepted for compatibility). A URL artifact is the actual absolute http/https link from the producer's final response; do not invent a file deliverable for it.
 - A file supplied by the user must be a file InputSpec referenced through the consuming node's inputSpecIds. That node consumes the submitted file; it must not reproduce the same file through producesSlotIds.
 - Do not create an "upload", "collect source file", or similar producer task for a user-supplied file. Attach the file InputSpec directly to the first real task that uses it.
 - Only include a source or input file in artifactSlots when the user explicitly requests a newly generated copy or transformed version as a deliverable. The transformed output must have its own output-oriented slot ID and title.
@@ -190,7 +191,7 @@ No other top-level fields are allowed.
 {
   "id": "string (required)",
   "title": "string (required) — a deliverable output shown in the Results shelf; never the original/source/input file",
-  "kind": "string (required) — e.g. text, document, image, code",
+  "kind": "string (required) — e.g. text, document, image, code, url. Use url for an actual absolute http/https link rather than a file.",
   "expectedCount": integer (required),
   "required": boolean (required)
 }

@@ -169,6 +169,9 @@ func (s *Service) UpdateArtifactSlot(ctx context.Context, input UpdateArtifactSl
 		if !validArtifactRefStatus(ref.Status) {
 			return nil, fmt.Errorf("work: UpdateArtifactSlot: refs[%d].status %q is invalid", i, ref.Status)
 		}
+		if strings.TrimSpace(ref.URL) != "" && !ValidateArtifactURL(ref.URL) {
+			return nil, fmt.Errorf("work: UpdateArtifactSlot: refs[%d].url %q is not an absolute http(s) URL", i, ref.URL)
+		}
 	}
 
 	current, state, err := s.store.LoadState(input.WorkID, input.RequestID)

@@ -4259,6 +4259,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                     tabID={activeTab.id}
                     sessionId={sessionSurfaceProps.activeSessionId ?? sessionSurfaceProps.renderSessionId}
                     onArtifactOpen={(intent) => app.OpenWorkArtifactForTab(activeTab.id, intent)}
+                    onArtifactOpenURL={(intent) => app.OpenWorkArtifactURLForTab(activeTab.id, intent)}
                     onArtifactLocate={(intent) => app.RevealWorkArtifactForTab(activeTab.id, intent)}
                     resolveSessionSurface={resolveSessionSurface}
                     onOpenSession={handleNavigateToLinkedSession}

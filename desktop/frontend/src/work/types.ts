@@ -234,6 +234,8 @@ export interface ArtifactRef {
   sourceRunId?: string;
   lastVerifiedAt?: string;
   error?: string;
+  /** Authoritative link for url/link artifact slots (absolute http/https). */
+  url?: string;
 }
 
 export interface SessionRef {

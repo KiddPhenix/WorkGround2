@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,10 +10,23 @@ import (
 	"strings"
 	"unicode"
 
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"workground2/internal/config"
 	"workground2/internal/fileutil"
 	"workground2/internal/work"
 )
+
+// openExternalBrowser opens a validated URL through the Wails Desktop browser
+// handler. Kept as a variable so tests can record calls without a Wails
+// runtime context.
+var openExternalBrowser = func(ctx context.Context, url string) error {
+	if ctx == nil {
+		return errors.New("work artifact: browser context is unavailable")
+	}
+	wruntime.BrowserOpenURL(ctx, url)
+	return nil
+}
 
 // WorkArtifactFileIntent identifies one immutable artifact revision. Host file
 // actions never accept a caller-provided path.
@@ -42,6 +56,37 @@ func (a *App) RevealWorkArtifactForTab(tabID string, input WorkArtifactFileInten
 		return err
 	}
 	return revealPath(path)
+}
+
+// OpenWorkArtifactURLForTab opens an authoritative URL artifact in the Desktop
+// browser. The URL is resolved from the Work projection by the same strict
+// slot/revision/ref identity as file artifacts — a caller-provided URL is
+// never trusted. Only available refs with a valid absolute http(s) URL open;
+// file-only refs fail with an explicit error.
+func (a *App) OpenWorkArtifactURLForTab(tabID string, input WorkArtifactFileIntent) error {
+	if err := validateWorkArtifactFileIntent(input); err != nil {
+		return err
+	}
+	wc, err := a.resolveWorkController(tabID)
+	if err != nil {
+		return err
+	}
+	view, err := wc.GetWork(a.bootContext(), input.WorkID)
+	if err != nil {
+		return fmt.Errorf("work artifact: load authoritative view: %w", err)
+	}
+	ref, ok := findWorkArtifactRef(view, input)
+	if !ok {
+		return errors.New("work artifact: artifact revision changed or is unavailable")
+	}
+	if ref.Status != work.ArtifactRefStatusAvailable {
+		return fmt.Errorf("work artifact: artifact status is %q", ref.Status)
+	}
+	target := strings.TrimSpace(ref.URL)
+	if !work.ValidateArtifactURL(target) {
+		return errors.New("work artifact: authoritative artifact URL is invalid or unsafe")
+	}
+	return openExternalBrowser(a.ctx, target)
 }
 
 func (a *App) resolveWorkArtifactFile(tabID string, input WorkArtifactFileIntent) (string, error) {
@@ -104,8 +149,14 @@ func findWorkArtifactRef(view *work.WorkView, input WorkArtifactFileIntent) (*wo
 	if view == nil {
 		return nil, false
 	}
-	for i := range view.ArtifactSlots {
-		slot := &view.ArtifactSlots[i]
+	// The V2 transport projection may keep slots under the Work; fall back the
+	// same way the task artifact reporter does.
+	slots := view.ArtifactSlots
+	if len(slots) == 0 && view.Work != nil {
+		slots = view.Work.V2ArtifactSlots
+	}
+	for i := range slots {
+		slot := &slots[i]
 		if slot.WorkID != input.WorkID ||
 			slot.DefinitionRev != input.DefinitionRevision ||
 			slot.ID != input.SlotID ||

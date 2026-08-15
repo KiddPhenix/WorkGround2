@@ -367,6 +367,18 @@ eq(
 );
 
 eq(
+  projectTreeTrashTarget({ key: "orphan-work", kind: "work_session", label: "New Work", sessionPath: "/tmp/orphan-work.jsonl", sessionKind: "work" }),
+  { kind: "session", path: "/tmp/orphan-work.jsonl" },
+  "historical unbound Work Session without topicId falls back to a session trash target",
+);
+
+eq(
+  projectTreeTrashTarget({ key: "orphan-work", kind: "work_session", label: "New Work", sessionPath: "   ", sessionKind: "work" }),
+  null,
+  "unbound Work Session without a path still has no trash target",
+);
+
+eq(
   projectTreeTrashTarget({ key: "session-a", kind: "session", label: "Run", topicId: "topic-a", sessionPath: "/tmp/run.jsonl" }),
   { kind: "session", path: "/tmp/run.jsonl" },
   "runtime Session rows move only the selected session to trash",

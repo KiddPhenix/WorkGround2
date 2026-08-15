@@ -119,7 +119,15 @@ export type ProjectTreeTrashTarget =
 export function projectTreeTrashTarget(node: ProjectNode): ProjectTreeTrashTarget | null {
   if (node.sessionKind === "work" || isTopicNode(node)) {
     const topicId = (node.topicId ?? "").trim();
-    return topicId ? { kind: "topic", topicId } : null;
+    if (topicId) return { kind: "topic", topicId };
+    // Historical orphan "New Work" rows may have lost their topic binding but
+    // still own a Session path. Fall back to a session trash target so they
+    // remain removable; normal Work topics stay topic-scoped above.
+    if (isRuntimeSessionNode(node)) {
+      const path = (node.sessionPath ?? "").trim();
+      if (path) return { kind: "session", path };
+    }
+    return null;
   }
   if (isRuntimeSessionNode(node) || isCrewSessionNode(node)) {
     const path = (node.sessionPath ?? "").trim();

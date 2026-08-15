@@ -59,6 +59,12 @@ type ArtifactRef struct {
 	SourceRunID    string     `json:"sourceRunId,omitempty"`
 	LastVerifiedAt *time.Time `json:"lastVerifiedAt,omitempty" ts_type:"string"`
 	Error          string     `json:"error,omitempty"`
+	// URL is the optional authoritative link for url/link artifact slots. It
+	// must be an absolute http/https URL with a host (ValidateArtifactURL).
+	// File-backed refs leave it empty; old events and file refs remain
+	// compatible. Available URL refs count toward ExpectedCount exactly like
+	// available file refs.
+	URL string `json:"url,omitempty"`
 }
 
 // ── SessionRef ─────────────────────────────────────────────────────────────

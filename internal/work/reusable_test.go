@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReusableFlowV1PersistsAndRunsIdempotently(t *testing.T) {
@@ -142,6 +143,117 @@ func TestReusableFlowV2FreezesDefinitionAndSeedsInputs(t *testing.T) {
 	if source.ReusableFlowID != "" || source.RerunOf != "" {
 		t.Fatalf("source provenance mutated = %+v", source)
 	}
+}
+
+func TestReusableFlowV2DispatchReturnsBeforeDAGAndConverges(t *testing.T) {
+	store := newTestFileWorkStore(t)
+	svc := NewService(store, nil, nil)
+	ctx := context.Background()
+
+	view, err := svc.BeginWorkPlanning(ctx, BeginWorkPlanningInput{
+		SessionID: "reusable-async-session", RequestID: "reusable-async-source",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := v2def(view.Work.ID, 2)
+	candidate.Goal = "制作第一卷小说"
+	candidate.InputSpecs[0].Label = "主题"
+	candidate.InputSpecs[0].DefaultValue = json.RawMessage(`"海洋"`)
+	// No artifact slots: completion depends only on node runtimes.
+	candidate.ArtifactSlots = nil
+	created, err := svc.CreateCandidateRevision(ctx, view.Work.ID, candidate, "reusable-async-candidate", view.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := store.LoadState(view.Work.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApplyDefinition(ctx, ApplyDefinitionInput{
+		WorkID: view.Work.ID, Revision: created.Revision,
+		ExpectedRevision: state.Revision, RequestID: "reusable-async-apply",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flow, err := svc.SaveReusableFlow(ctx, SaveReusableFlowInput{
+		SourceWorkID: view.Work.ID, Name: "异步流程",
+		VariableKeys: []string{"goal", "input:is1"}, RequestID: "save-reusable-async",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestID := "run-reusable-async"
+	workID := workIDForRequest(requestID + "/work")
+	runID := workflowRunID(workID, requestID+"/apply")
+	executor := &coordinatorExecutor{
+		blockRun: runID,
+		started:  make(chan TaskExecuteInput, 1),
+		release:  make(chan struct{}),
+	}
+	svc.SetTaskExecutor(executor)
+	input := RunReusableFlowInput{
+		FlowID: flow.ID,
+		Values: map[string]json.RawMessage{
+			"goal":      json.RawMessage(`"制作第二卷小说"`),
+			"input:is1": json.RawMessage(`"山地"`),
+		},
+		RequestID: requestID,
+	}
+
+	startedAt := time.Now()
+	run, err := svc.RunReusableFlow(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The DAG executor is blocked, so a prompt return proves the create/apply
+	// returned before foreground node execution could block.
+	if run.Work == nil || run.Work.ID != workID || run.Run == nil {
+		t.Fatalf("reusable async run = %+v", run)
+	}
+	select {
+	case <-executor.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reusable DAG wake was never dispatched")
+	}
+	if elapsed := time.Since(startedAt); elapsed > 3*time.Second {
+		t.Fatalf("RunReusableFlow blocked on the DAG for %v", elapsed)
+	}
+	// Release the DAG and await durable completion.
+	close(executor.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, _, loadErr := store.LoadState(workID, "")
+		if loadErr == nil && current.State == WorkCompleted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reusable run did not complete: err=%v state=%v", loadErr, currentStateName(store, workID, loadErr))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// A restart with the same request converges to the same Work (and the
+	// Session binding derives from the same request ID), never a new Work.
+	restarted := NewService(store, nil, nil)
+	restarted.SetTaskExecutor(&fakeRunnerExecutor{})
+	replay, err := restarted.RunReusableFlow(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replay.Duplicate || replay.Work == nil || replay.Work.ID != workID {
+		t.Fatalf("reusable replay = %+v", replay)
+	}
+}
+
+func currentStateName(store *FileWorkStore, workID string, loadErr error) WorkState {
+	if loadErr == nil {
+		if current, _, err := store.LoadState(workID, ""); err == nil {
+			return current.State
+		}
+	}
+	return ""
 }
 
 func TestReusableFlowRejectsFixedFieldOverride(t *testing.T) {
