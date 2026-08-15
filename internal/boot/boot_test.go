@@ -2277,6 +2277,75 @@ model = "x"
 	}
 }
 
+func TestBuildBridgesRealDSHTodoTool(t *testing.T) {
+	dshRoot := strings.TrimSpace(os.Getenv("DSH_COMPAT_TEST_ROOT"))
+	if dshRoot == "" {
+		t.Skip("set DSH_COMPAT_TEST_ROOT to a deepseek-harness checkout")
+	}
+	isolateConfigHome(t)
+	home := robustTempDir(t)
+	t.Setenv("WorkGround2_HOME", home)
+	t.Setenv("DSH_RUNTIME_ANCHOR", filepath.Join(dshRoot, "apps", "cli", "package.json"))
+	workspace := robustTempDir(t)
+	t.Chdir(workspace)
+	writeFile(t, workspace, "WorkGround2.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+	bundleRoot := filepath.Join(dshRoot, "packages", "bundle", "base")
+	if err := pluginpkg.Upsert(home, pluginpkg.InstalledPlugin{
+		Name:         "dsh-base",
+		Source:       bundleRoot,
+		Root:         bundleRoot,
+		Version:      "test",
+		ManifestKind: "dsh",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("dsh-bridge",
+		testutil.Turn{ToolCalls: []provider.ToolCall{{
+			ID:        "dsh-todo-1",
+			Name:      "dsh__dsh_base__todo_write",
+			Arguments: `{"todos":[{"content":"bridge through WG2","status":"in_progress"}]}`,
+		}}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	ctrl, err := Build(ctx, Options{Sink: event.Discard, WorkspaceRoot: workspace})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(ctx, "verify DSH bridge"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requests := prov.Requests()
+	if len(requests) != 2 || !requestHasTool(requests[0], "dsh__dsh_base__todo_write") {
+		t.Fatalf("DSH tool not exposed; requests=%d tools=%v", len(requests), toolSchemaNames(requests[0].Tools))
+	}
+	foundResult := false
+	for _, message := range requests[1].Messages {
+		if message.Role == provider.RoleTool && strings.Contains(message.Content, "1 in progress") {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatalf("bridged todo result missing from second request: %+v", requests[1].Messages)
+	}
+}
+
 func TestBuildSkipsDrawImageToolWhenProvidersDisabled(t *testing.T) {
 	isolateConfigHome(t)
 	home := robustTempDir(t)

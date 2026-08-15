@@ -27,6 +27,7 @@ import (
 	"workground2/internal/command"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/dshcompat"
 	"workground2/internal/environment"
 	"workground2/internal/event"
 	"workground2/internal/guardian"
@@ -520,6 +521,37 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	readPathResolver := builtin.NewPathResolver()
 	addBuiltins(reg, enabledBuiltins, cfg.WriteRootsForRoot(root), bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, cfg.ForbidReadRootsForRoot(root), readPathResolver, opts.FileOverlay, opts.TerminalRunner)
+
+	// DSH Bundles run out-of-process, but remain session-owned: each Controller
+	// gets one Cordis Agent per enabled Bundle and closes it with the session.
+	dshSpecs, dshWarnings := dshcompat.Discover(config.WorkGround2HomeDir(), root, stderr)
+	for _, warning := range dshWarnings {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: warning})
+	}
+	var dshClients []*dshcompat.Client
+	dshTransferred := false
+	defer func() {
+		if dshTransferred {
+			return
+		}
+		for i := len(dshClients) - 1; i >= 0; i-- {
+			_ = dshClients[i].Close()
+		}
+	}()
+	for _, spec := range dshSpecs {
+		startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		client, startErr := dshcompat.Start(startCtx, spec)
+		cancel()
+		if startErr != nil {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: fmt.Sprintf("dsh %s: %v", spec.Name, startErr)})
+			continue
+		}
+		dshClients = append(dshClients, client)
+		for _, dshTool := range client.Tools() {
+			reg.Add(dshTool)
+		}
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("dsh %s: %d tools bridged", spec.Name, len(client.Tools()))})
+	}
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -692,6 +724,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// close it. A no-op cleanup keeps Controller.Close happy without
 		// shutting down MCP processes that other controllers still use.
 		cleanup = func() {}
+	}
+	if len(dshClients) > 0 {
+		previousCleanup := cleanup
+		cleanup = func() {
+			for i := len(dshClients) - 1; i >= 0; i-- {
+				_ = dshClients[i].Close()
+			}
+			previousCleanup()
+		}
 	}
 
 	// LSP tools resolve their servers on PATH and spawn lazily on first query, so
@@ -1593,6 +1634,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if workSvc != nil && cfg.Work.CollaborationWorkbenchV2 {
 		startBackgroundWorkRecovery(workRecoveryCtx, workDir, workSvc, sink)
 	}
+	dshTransferred = true
 	return ctrl, nil
 }
 

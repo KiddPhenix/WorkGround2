@@ -62,6 +62,7 @@ import type {
   DrawAddonProviderInput,
   DrawAddonProviderView,
   DrawAddonTaskView,
+	DSHWorkbenchView,
   EffortInfo,
   FilePreview,
   HistoryMessage,
@@ -465,6 +466,9 @@ export interface AppBindings extends WailsWorkBindings {
   SetPluginEnabled(name: string, enabled: boolean): Promise<void>;
   UpdatePlugin(name: string): Promise<string>;
   PluginDoctor(name: string): Promise<PluginView>;
+	StartDSHWorkbench(name: string): Promise<DSHWorkbenchView>;
+	DSHWorkbench(name: string): Promise<DSHWorkbenchView>;
+	StopDSHWorkbench(name: string): Promise<DSHWorkbenchView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
@@ -3521,6 +3525,15 @@ function makeMockApp(): AppBindings {
         error: "plugin is not installed",
       };
     },
+		async StartDSHWorkbench(name: string) {
+			return { pluginName: name, url: "http://127.0.0.1:3080", status: "ready" as const, startedAt: new Date().toISOString() };
+		},
+		async DSHWorkbench(name: string) {
+			return { pluginName: name, status: "stopped" as const };
+		},
+		async StopDSHWorkbench(name: string) {
+			return { pluginName: name, status: "stopped" as const };
+		},
     async AddMCPServer(input: MCPServerInput) {
       const tools = input.transport === "stdio" ? 3 : 5;
       capServers.push({

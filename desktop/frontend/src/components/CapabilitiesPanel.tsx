@@ -12,6 +12,7 @@ import type {
 	DrawAddonProviderInput,
 	DrawAddonProviderView,
 	DrawAddonTaskView,
+	DSHWorkbenchView,
 	MCPServerInput,
 	PluginInstallOptions,
 	PluginView,
@@ -1713,6 +1714,7 @@ export function PluginsSettingsPage() {
 	const [skillProfiles, setSkillProfiles] = useState<SkillShareProfileView[] | null>(null);
 	const [flowSkillProfiles, setFlowSkillProfiles] = useState<SkillShareProfileView[] | null>(null);
 	const [drawProviders, setDrawProviders] = useState<DrawAddonProviderView[] | null>(null);
+	const [dshWorkbenches, setDSHWorkbenches] = useState<Record<string, DSHWorkbenchView>>({});
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [installMode, setInstallMode] = useState<PluginInstallMode>("local");
@@ -1773,6 +1775,10 @@ export function PluginsSettingsPage() {
 			app.DrawAddonProviders().catch(() => []),
 		]);
 		const normalizedPlugins = normalizePluginViews(nextPlugins);
+		const workbenchPairs = await Promise.all(normalizedPlugins.filter((plugin) => plugin.dsh).map(async (plugin) => [
+			plugin.name,
+			await app.DSHWorkbench(plugin.name).catch(() => ({ pluginName: plugin.name, status: "stopped" as const })),
+		] as const));
 		const [normalizedPanelSchemas, normalizedProfiles, normalizedFlowProfiles, normalizedDrawProviders] = await Promise.all([
 			loadAddOnPanelSchemas(normalizedPlugins),
 			Promise.resolve(normalizeSkillShareProfiles(nextProfiles)),
@@ -1785,6 +1791,7 @@ export function PluginsSettingsPage() {
 		flowSkillShareSettingsSnapshot = { key, value: normalizedFlowProfiles };
 		drawAddonSettingsSnapshot = { key, value: normalizedDrawProviders };
 		setPlugins(normalizedPlugins);
+		setDSHWorkbenches(Object.fromEntries(workbenchPairs));
 		setAddonPanelSchemas(normalizedPanelSchemas);
 		setSkillProfiles(normalizedProfiles);
 		setFlowSkillProfiles(normalizedFlowProfiles);
@@ -2011,6 +2018,18 @@ export function PluginsSettingsPage() {
 	const updatePluginPackage = (pluginName: string) => {
 		void run(() => app.UpdatePlugin(pluginName));
 	};
+	const startDSHWorkbench = (pluginName: string) => {
+		void run(async () => {
+			const view = await app.StartDSHWorkbench(pluginName);
+			setDSHWorkbenches((prev) => ({ ...prev, [pluginName]: view }));
+		}, false);
+	};
+	const stopDSHWorkbench = (pluginName: string) => {
+		void run(async () => {
+			const view = await app.StopDSHWorkbench(pluginName);
+			setDSHWorkbenches((prev) => ({ ...prev, [pluginName]: view }));
+		}, false);
+	};
 	const removePluginPackage = (pluginName: string) => {
 		void run(() => app.RemovePlugin(pluginName));
 	};
@@ -2163,6 +2182,9 @@ export function PluginsSettingsPage() {
 							onUpdate={() => updatePluginPackage(plugin.name)}
 							onRemove={() => removePluginPackage(plugin.name)}
 							onSetEnabled={(enabled) => setPluginPackageEnabled(plugin.name, enabled)}
+							workbench={dshWorkbenches[plugin.name]}
+							onStartWorkbench={() => startDSHWorkbench(plugin.name)}
+							onStopWorkbench={() => stopDSHWorkbench(plugin.name)}
 						>
 							<AddOnPanelRenderer
 								plugin={plugin}
@@ -2337,6 +2359,9 @@ function ExternalAddonPackageBlock({
 	onUpdate,
 	onRemove,
 	onSetEnabled,
+	workbench,
+	onStartWorkbench,
+	onStopWorkbench,
 	children,
 }: {
 	plugin: PluginView;
@@ -2344,6 +2369,9 @@ function ExternalAddonPackageBlock({
 	onUpdate: () => void;
 	onRemove: () => void;
 	onSetEnabled: (enabled: boolean) => void;
+	workbench?: DSHWorkbenchView;
+	onStartWorkbench: () => void;
+	onStopWorkbench: () => void;
 	children?: ReactNode;
 }) {
 	const t = useT();
@@ -2355,7 +2383,7 @@ function ExternalAddonPackageBlock({
 				<div className="cap-source__warning" key={`${warning}-${idx}`}>{warning}</div>
 			))}
 			{plugin.dsh && (
-				<div className="cap-server-details">
+				<div className="cap-server-details dsh-workbench">
 					<div className="cap-detail-grid">
 						<div className="cap-detail">
 							<span className="cap-detail__label">{t("caps.dshRuntime")}</span>
@@ -2375,9 +2403,40 @@ function ExternalAddonPackageBlock({
 								<span className="cap-detail__code">{plugin.dsh.nodePath}</span>
 							</div>
 						)}
+						{plugin.dsh.runtimeAnchor && (
+							<div className="cap-detail cap-detail--wide">
+								<span className="cap-detail__label">{t("caps.dshRuntimeAnchor")}</span>
+								<span className="cap-detail__code">{plugin.dsh.runtimeAnchor}</span>
+							</div>
+						)}
 					</div>
 					{asArray(plugin.dsh.missingPackages).length > 0 && (
 						<div className="cap-source__warning">{t("caps.dshMissingPackages", { count: asArray(plugin.dsh.missingPackages).length })}</div>
+					)}
+					<div className="dsh-workbench__actions">
+						{workbench?.status === "ready" && workbench.url ? (
+							<>
+								<button className="btn btn--small" type="button" onClick={() => openExternal(workbench.url!)}>{t("caps.dshOpenExternal")}</button>
+								<button className="btn btn--small" disabled={busy} type="button" onClick={onStopWorkbench}>{t("caps.dshStopMirror")}</button>
+							</>
+						) : (
+							<button className="btn btn--primary btn--small" disabled={busy || !plugin.enabled || !plugin.dsh.runtimeReady} type="button" onClick={onStartWorkbench}>
+								{t("caps.dshStartMirror")}
+							</button>
+						)}
+					</div>
+					{workbench?.error && <div className="cap-source__warning">{workbench.error}</div>}
+					{workbench?.status === "ready" && workbench.url && (
+						<div className="dsh-workbench__frame-wrap">
+							<div className="dsh-workbench__notice">{t("caps.dshMirrorNotice")}</div>
+							<iframe
+								className="dsh-workbench__frame"
+								title={t("caps.dshMirrorTitle", { name: plugin.name })}
+								src={workbench.url}
+								sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
+								referrerPolicy="no-referrer"
+							/>
+						</div>
 					)}
 				</div>
 			)}

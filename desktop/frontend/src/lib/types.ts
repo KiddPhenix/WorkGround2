@@ -882,7 +882,15 @@ export interface DSHView {
   overridePatches: number;
   missingPackages?: string[];
   nodePath?: string;
+  runtimeAnchor?: string;
   runtimeReady: boolean;
+}
+export interface DSHWorkbenchView {
+  pluginName: string;
+  url?: string;
+  status: "stopped" | "ready" | "failed";
+  error?: string;
+  startedAt?: string;
 }
 export interface AddOnView {
   kind?: string;

@@ -131,6 +131,11 @@ type App struct {
 	sharedHosts   map[string]*sharedPluginHost
 	sharedHostsMu sync.Mutex
 
+	// dshWorkbenches are opt-in, isolated React 18 browser surfaces. They are
+	// process-owned and never share a DOM or mutable state tree with WG2.
+	dshWorkbenchMu sync.Mutex
+	dshWorkbenches map[string]*dshWorkbench
+
 	// tabsSaveMu serializes writes to desktop-tabs.json and its fixed .tmp path.
 	tabsSaveMu             sync.Mutex
 	tabsSaveVersion        uint64 // protected by mu; assigned when collecting a snapshot
@@ -402,6 +407,7 @@ func NewApp() *App {
 		background:       newSessionBackgroundService(),
 		botInstalls:      map[string]*botInstallSession{},
 		botRuntime:       newDesktopBotRuntime(),
+		dshWorkbenches:   map[string]*dshWorkbench{},
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	if root == "" {
@@ -741,6 +747,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.closeDSHWorkbenches()
 	a.closeCollaborations()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
