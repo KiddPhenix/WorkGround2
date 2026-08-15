@@ -2017,7 +2017,7 @@ export function PluginsSettingsPage() {
 	const setPluginPackageEnabled = (pluginName: string, enabled: boolean) => {
 		void run(() => app.SetPluginEnabled(pluginName, enabled));
 	};
-	const externalAddonPlugins = asArray(plugins).filter((plugin) => plugin.addon);
+	const externalAddonPlugins = asArray(plugins).filter((plugin) => plugin.addon || plugin.dsh);
 	const addonAdapters: AddOnPanelAdapterMap = {
 		"skill-share/profiles.json": {
 			records: skillProfiles as unknown as AddOnRecord[] | null,
@@ -2147,13 +2147,13 @@ export function PluginsSettingsPage() {
 					<PluginSettingsBlock
 						key={plugin.name}
 						id={blockID}
-						title={plugin.addon?.displayName || plugin.name}
-						hint={plugin.description || t("caps.addonPackageHint")}
+						title={plugin.addon?.displayName || plugin.dsh?.packageName || plugin.name}
+						hint={plugin.description || (plugin.dsh ? t("caps.dshPackageHint") : t("caps.addonPackageHint"))}
 						version={meta.version}
 						hasError={meta.hasError}
 						updateAvailable={meta.updateAvailable}
 						remoteVersion={meta.remoteVersion}
-						summary={meta.summary}
+						summary={plugin.dsh ? t("caps.dshPackageSummary", { level: plugin.dsh.level, rows: plugin.dsh.rows, clients: plugin.dsh.clientRows }) : meta.summary}
 						expanded={expandedSettings.has(blockID)}
 						onToggle={() => toggleSettingsBlock(blockID)}
 					>
@@ -2354,6 +2354,33 @@ function ExternalAddonPackageBlock({
 			{asArray(plugin.warnings).map((warning, idx) => (
 				<div className="cap-source__warning" key={`${warning}-${idx}`}>{warning}</div>
 			))}
+			{plugin.dsh && (
+				<div className="cap-server-details">
+					<div className="cap-detail-grid">
+						<div className="cap-detail">
+							<span className="cap-detail__label">{t("caps.dshRuntime")}</span>
+							<span className="cap-detail__value">{plugin.dsh.runtimeReady ? t("caps.dshReady") : t("caps.dshDegraded")}</span>
+						</div>
+						<div className="cap-detail">
+							<span className="cap-detail__label">{t("caps.dshCompatibility")}</span>
+							<span className="cap-detail__value">{plugin.dsh.level}</span>
+						</div>
+						<div className="cap-detail cap-detail--wide">
+							<span className="cap-detail__label">{t("caps.dshPatch")}</span>
+							<span className="cap-detail__code">{plugin.dsh.patch}</span>
+						</div>
+						{plugin.dsh.nodePath && (
+							<div className="cap-detail cap-detail--wide">
+								<span className="cap-detail__label">Node.js</span>
+								<span className="cap-detail__code">{plugin.dsh.nodePath}</span>
+							</div>
+						)}
+					</div>
+					{asArray(plugin.dsh.missingPackages).length > 0 && (
+						<div className="cap-source__warning">{t("caps.dshMissingPackages", { count: asArray(plugin.dsh.missingPackages).length })}</div>
+					)}
+				</div>
+			)}
 			{children}
 			<div className="cap-detail-actions">
 				<button className="btn btn--small" disabled={busy} type="button" onClick={() => onSetEnabled(!plugin.enabled)}>
@@ -2667,6 +2694,20 @@ function normalizePluginView(plugin: PluginView): PluginView {
 		remoteVersion: plugin.remoteVersion || "",
 		warnings: asArray(plugin.warnings),
 		addon: normalizeAddOnView(plugin.addon),
+		dsh: plugin.dsh ? {
+			...plugin.dsh,
+			packageName: plugin.dsh.packageName || "",
+			patch: plugin.dsh.patch || "",
+			level: plugin.dsh.level || "L1",
+			status: plugin.dsh.status || "recognized",
+			rows: Number.isFinite(plugin.dsh.rows) ? plugin.dsh.rows : 0,
+			resolvedRows: Number.isFinite(plugin.dsh.resolvedRows) ? plugin.dsh.resolvedRows : 0,
+			clientRows: Number.isFinite(plugin.dsh.clientRows) ? plugin.dsh.clientRows : 0,
+			dynamicValues: Number.isFinite(plugin.dsh.dynamicValues) ? plugin.dsh.dynamicValues : 0,
+			overridePatches: Number.isFinite(plugin.dsh.overridePatches) ? plugin.dsh.overridePatches : 0,
+			missingPackages: asArray(plugin.dsh.missingPackages),
+			runtimeReady: Boolean(plugin.dsh.runtimeReady),
+		} : undefined,
 	};
 }
 

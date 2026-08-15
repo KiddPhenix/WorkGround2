@@ -161,12 +161,12 @@ func pluginRootInExtractedDir(root string) (string, error) {
 	case 1:
 		return matches[0], nil
 	case 0:
-		return "", fmt.Errorf("no %s or %s found in plugin archive", pluginpkg.NativeManifest, pluginpkg.CodexManifest)
+		return "", fmt.Errorf("no %s, %s, or DSH bundle %s found in plugin archive", pluginpkg.NativeManifest, pluginpkg.CodexManifest, pluginpkg.DSHManifest)
 	default:
 		return "", fmt.Errorf("plugin archive contains multiple plugin roots: %s", strings.Join(matches, ", "))
 	}
 }
 
 func isMissingPluginManifest(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "no "+pluginpkg.NativeManifest+" or "+pluginpkg.CodexManifest+" found")
+	return err != nil && strings.Contains(err.Error(), "no "+pluginpkg.NativeManifest+", "+pluginpkg.CodexManifest+", or DSH bundle "+pluginpkg.DSHManifest+" found")
 }

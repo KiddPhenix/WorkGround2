@@ -255,6 +255,61 @@ func TestApplyLocalCodexPluginPackage(t *testing.T) {
 	}
 }
 
+func TestApplyLocalDSHBundlePackage(t *testing.T) {
+	project := t.TempDir()
+	home := t.TempDir()
+	src := filepath.Join(t.TempDir(), "dsh-bundle")
+	writeFile(t, filepath.Join(src, pluginpkg.DSHManifest), `{
+  "name": "@deepseek-ai/dsh-mini",
+  "version": "0.1.0",
+  "description": "Mini DSH bundle",
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}`)
+	writeFile(t, filepath.Join(src, "cordis.patch.yml"), `
+- insert:
+    - id: todo
+      name: '@deepseek-ai/dsh-tool-todo'
+`)
+
+	tl := NewTool(Options{ProjectRoot: project, HomeDir: home})
+	planned := execInstall(t, tl, map[string]any{
+		"source": src,
+		"kind":   "plugin",
+	})
+	if !planned.OK || planned.Status != "planned" || len(planned.Actions) != 1 {
+		t.Fatalf("planned = %+v", planned)
+	}
+	act := planned.Actions[0]
+	if act.Name != "dsh-mini" || act.ManifestKind != "dsh" || act.Version != "0.1.0" || act.DSHLevel != "L1" || act.DSHRows != 1 {
+		t.Fatalf("action = %+v", act)
+	}
+	if !strings.Contains(strings.Join(act.RiskReasons, "\n"), "Node/Cordis") {
+		t.Fatalf("risk reasons = %v", act.RiskReasons)
+	}
+
+	done := execInstall(t, tl, map[string]any{
+		"source": src,
+		"kind":   "plugin",
+		"apply":  true,
+	})
+	if !done.OK || done.Status != "done" {
+		t.Fatalf("done = %+v", done)
+	}
+	stateHome := filepath.Join(home, ".WorkGround2")
+	st, err := pluginpkg.LoadState(stateHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Plugins) != 1 || st.Plugins[0].Name != "dsh-mini" || st.Plugins[0].ManifestKind != "dsh" {
+		t.Fatalf("state = %+v", st.Plugins)
+	}
+	for _, rel := range []string{pluginpkg.DSHManifest, "cordis.patch.yml"} {
+		if _, err := os.Stat(filepath.Join(stateHome, "plugins", "dsh-mini", rel)); err != nil {
+			t.Fatalf("installed %s missing: %v", rel, err)
+		}
+	}
+}
+
 func TestApplyLocalPluginPackageZip(t *testing.T) {
 	project := t.TempDir()
 	home := t.TempDir()

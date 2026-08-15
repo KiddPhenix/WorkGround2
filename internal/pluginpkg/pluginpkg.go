@@ -22,6 +22,7 @@ import (
 const (
 	NativeManifest = "WorkGround2-plugin.json"
 	CodexManifest  = ".codex-plugin/plugin.json"
+	DSHManifest    = "package.json"
 	StateFilename  = "plugin-packages.json"
 )
 
@@ -45,6 +46,7 @@ type Manifest struct {
 	Hooks       map[string][]Hook
 	MCPServers  map[string]MCPServer
 	AddOn       *AddOn
+	DSH         *DshBundle
 }
 
 type AddOn struct {
@@ -293,7 +295,15 @@ func ParseDir(root string) (Package, []string, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Package{}, warnings, err
 	}
-	return Package{}, nil, fmt.Errorf("no %s or %s found", NativeManifest, CodexManifest)
+	dshPath := filepath.Join(root, DSHManifest)
+	if pkg, warnings, err := parseDSH(dshPath, root); err == nil {
+		return pkg, warnings, nil
+	} else if !errors.Is(err, errNotDSHBundle) {
+		if _, statErr := os.Stat(dshPath); !errors.Is(statErr, os.ErrNotExist) {
+			return Package{}, warnings, err
+		}
+	}
+	return Package{}, nil, fmt.Errorf("no %s, %s, or DSH bundle %s found", NativeManifest, CodexManifest, DSHManifest)
 }
 
 func parseNative(path, root string) (Package, []string, error) {

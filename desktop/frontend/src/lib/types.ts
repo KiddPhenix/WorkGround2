@@ -868,6 +868,21 @@ export interface PluginView {
   warnings?: string[];
   error?: string;
   addon?: AddOnView;
+  dsh?: DSHView;
+}
+export interface DSHView {
+  packageName: string;
+  patch: string;
+  level: string;
+  status: string;
+  rows: number;
+  resolvedRows: number;
+  clientRows: number;
+  dynamicValues: number;
+  overridePatches: number;
+  missingPackages?: string[];
+  nodePath?: string;
+  runtimeReady: boolean;
 }
 export interface AddOnView {
   kind?: string;

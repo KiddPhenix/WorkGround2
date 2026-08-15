@@ -50,6 +50,136 @@ func TestParseDirDecodesGB18030Manifest(t *testing.T) {
 	}
 }
 
+func TestParseDSHBundleManifestAndPatch(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, DSHManifest), `{
+  "name": "@deepseek-ai/dsh-test-bundle",
+  "version": "0.2.0",
+  "description": "DSH test bundle",
+  "repository": {"type":"git", "url":"git+https://example.com/dsh.git"},
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}`)
+	writeTestFile(t, filepath.Join(root, "cordis.patch.yml"), `
+- insert:
+    - id: todo
+      name: '@deepseek-ai/dsh-tool-todo'
+      config:
+        timeout: !!js process.env.DSH_TIMEOUT ?? 1000
+    - id: goal-ui
+      name: '@deepseek-ai/dsh-client-ui-goal'
+- id: todo
+  disabled: false
+`)
+	writeTestFile(t, filepath.Join(root, "node_modules", "@deepseek-ai", "dsh-tool-todo", DSHManifest), `{
+  "name": "@deepseek-ai/dsh-tool-todo"
+}`)
+	writeTestFile(t, filepath.Join(root, "node_modules", "@deepseek-ai", "dsh-client-ui-goal", DSHManifest), `{
+  "name": "@deepseek-ai/dsh-client-ui-goal",
+  "exports": {"./client": "./lib/client.js"},
+  "dsh": {"client": {"platform": "web"}}
+}`)
+
+	pkg, warnings, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if pkg.ManifestKind != "dsh" || pkg.Manifest.Name != "dsh-test-bundle" || pkg.Manifest.Version != "0.2.0" {
+		t.Fatalf("pkg = %+v", pkg)
+	}
+	if pkg.Manifest.Repository != "git+https://example.com/dsh.git" {
+		t.Fatalf("repository = %q", pkg.Manifest.Repository)
+	}
+	dsh := pkg.Manifest.DSH
+	if dsh == nil || dsh.PackageName != "@deepseek-ai/dsh-test-bundle" || dsh.Patch != "cordis.patch.yml" {
+		t.Fatalf("dsh = %+v", dsh)
+	}
+	if len(dsh.Rows) != 2 || !dsh.Rows[0].Resolved || !dsh.Rows[1].Client || dsh.Rows[1].ClientEntry != "./client" {
+		t.Fatalf("rows = %+v", dsh.Rows)
+	}
+	if dsh.Report.Level != "L1" || dsh.Report.Status != "recognized" || dsh.Report.Rows != 2 ||
+		dsh.Report.ResolvedRows != 2 || dsh.Report.ClientRows != 1 || dsh.Report.DynamicValues != 1 || dsh.Report.OverridePatches != 1 {
+		t.Fatalf("report = %+v", dsh.Report)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "left unevaluated") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}
+
+func TestParseDSHBundleReportsMissingPackages(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, DSHManifest), `{
+  "name": "@vendor/missing-deps",
+  "dsh": {"bundle": {"patch": "patch.yml"}}
+}`)
+	writeTestFile(t, filepath.Join(root, "patch.yml"), `
+- insert:
+    - id: missing
+      name: '@vendor/missing-plugin'
+`)
+
+	pkg, warnings, err := ParseDir(root)
+	if err != nil {
+		t.Fatalf("ParseDir: %v", err)
+	}
+	if pkg.Manifest.Name != "missing-deps" || pkg.Manifest.DSH.Report.MissingPackages[0] != "@vendor/missing-plugin" {
+		t.Fatalf("pkg = %+v", pkg)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "not resolvable") {
+		t.Fatalf("warnings = %v", warnings)
+	}
+}
+
+func TestNodePackageNameSupportsExportsWithoutPathEscape(t *testing.T) {
+	tests := map[string]string{
+		"@deepseek-ai/dsh-tool-subagent-control/list-agents": "@deepseek-ai/dsh-tool-subagent-control",
+		"plain/subpath": "plain",
+	}
+	for input, want := range tests {
+		if got, ok := nodePackageName(input); !ok || got != want {
+			t.Fatalf("nodePackageName(%q) = %q, %v; want %q", input, got, ok, want)
+		}
+	}
+	for _, input := range []string{"../outside", "@scope/../outside", "@/bad", "C:\\outside"} {
+		if got, ok := nodePackageName(input); ok {
+			t.Fatalf("nodePackageName(%q) = %q, true; want rejection", input, got)
+		}
+	}
+}
+
+func TestParseDSHBundleRejectsEscapingOrMissingPatch(t *testing.T) {
+	for _, patch := range []string{"../outside.yml", "missing.yml"} {
+		t.Run(patch, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestFile(t, filepath.Join(root, DSHManifest), `{"name":"bad","dsh":{"bundle":{"patch":"`+patch+`"}}}`)
+			if _, _, err := ParseDir(root); err == nil || !strings.Contains(err.Error(), "dsh.bundle.patch") {
+				t.Fatalf("ParseDir error = %v", err)
+			}
+		})
+	}
+}
+
+func TestParseRealDSHBundles(t *testing.T) {
+	repo := strings.TrimSpace(os.Getenv("DSH_COMPAT_TEST_ROOT"))
+	if repo == "" {
+		t.Skip("set DSH_COMPAT_TEST_ROOT to a deepseek-harness checkout")
+	}
+	for _, name := range []string{"base", "headless", "web-app"} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(repo, "packages", "bundle", name)
+			pkg, _, err := ParseDir(root)
+			if err != nil {
+				t.Fatalf("ParseDir(%s): %v", root, err)
+			}
+			if pkg.ManifestKind != "dsh" || pkg.Manifest.DSH == nil {
+				t.Fatalf("pkg = %+v", pkg)
+			}
+			if pkg.Manifest.DSH.Report.Rows+pkg.Manifest.DSH.Report.OverridePatches == 0 {
+				t.Fatalf("empty compatibility report: %+v", pkg.Manifest.DSH.Report)
+			}
+		})
+	}
+}
+
 func TestRejectsEscapingSkillPath(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, NativeManifest), `{

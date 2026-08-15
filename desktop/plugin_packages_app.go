@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -32,6 +33,22 @@ type PluginView struct {
 	Warnings        []string   `json:"warnings,omitempty"`
 	Error           string     `json:"error,omitempty"`
 	AddOn           *AddOnView `json:"addon,omitempty"`
+	DSH             *DSHView   `json:"dsh,omitempty"`
+}
+
+type DSHView struct {
+	PackageName     string   `json:"packageName"`
+	Patch           string   `json:"patch"`
+	Level           string   `json:"level"`
+	Status          string   `json:"status"`
+	Rows            int      `json:"rows"`
+	ResolvedRows    int      `json:"resolvedRows"`
+	ClientRows      int      `json:"clientRows"`
+	DynamicValues   int      `json:"dynamicValues"`
+	OverridePatches int      `json:"overridePatches"`
+	MissingPackages []string `json:"missingPackages,omitempty"`
+	NodePath        string   `json:"nodePath,omitempty"`
+	RuntimeReady    bool     `json:"runtimeReady"`
 }
 
 type AddOnView struct {
@@ -101,6 +118,7 @@ func (a *App) Plugins() []PluginView {
 		if pkg, warnings, err := pluginpkg.ParseDir(view.Root); err == nil {
 			view.Skills, view.Hooks, view.MCPServers = pkg.CapabilityCounts()
 			view.AddOn = addOnView(pkg.Manifest.AddOn)
+			view.DSH = dshView(pkg.Manifest.DSH)
 			view.Warnings = warnings
 		} else {
 			view.Error = err.Error()
@@ -108,6 +126,30 @@ func (a *App) Plugins() []PluginView {
 		out = append(out, view)
 	}
 	return out
+}
+
+func dshView(bundle *pluginpkg.DshBundle) *DSHView {
+	if bundle == nil {
+		return nil
+	}
+	report := bundle.Report
+	view := &DSHView{
+		PackageName:     bundle.PackageName,
+		Patch:           bundle.Patch,
+		Level:           report.Level,
+		Status:          report.Status,
+		Rows:            report.Rows,
+		ResolvedRows:    report.ResolvedRows,
+		ClientRows:      report.ClientRows,
+		DynamicValues:   report.DynamicValues,
+		OverridePatches: report.OverridePatches,
+		MissingPackages: append([]string(nil), report.MissingPackages...),
+	}
+	if nodePath, err := exec.LookPath("node"); err == nil {
+		view.NodePath = nodePath
+		view.RuntimeReady = len(view.MissingPackages) == 0
+	}
+	return view
 }
 
 func addOnView(addon *pluginpkg.AddOn) *AddOnView {
@@ -237,6 +279,17 @@ func (a *App) PluginDoctor(name string) PluginView {
 		if _, err := os.Stat(p.Root); err != nil {
 			p.Error = err.Error()
 			return p
+		}
+		if p.DSH != nil {
+			if nodePath, err := exec.LookPath("node"); err == nil {
+				p.DSH.NodePath = nodePath
+				p.DSH.RuntimeReady = len(p.DSH.MissingPackages) == 0
+			} else {
+				p.Warnings = append(p.Warnings, "Node.js was not found; DSH Host runtime cannot start")
+			}
+			if len(p.DSH.MissingPackages) > 0 {
+				p.Warnings = append(p.Warnings, fmt.Sprintf("DSH runtime is waiting for %d unresolved package(s)", len(p.DSH.MissingPackages)))
+			}
 		}
 		return p
 	}

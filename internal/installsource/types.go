@@ -98,6 +98,9 @@ type action struct {
 	AddOnRuntime  string            `json:"addonRuntime,omitempty"`
 	AddOnPanels   int               `json:"addonPanels,omitempty"`
 	AddOnSecrets  int               `json:"addonSecrets,omitempty"`
+	DSHLevel      string            `json:"dshLevel,omitempty"`
+	DSHRows       int               `json:"dshRows,omitempty"`
+	DSHClientRows int               `json:"dshClientRows,omitempty"`
 	ManifestKind  string            `json:"manifestKind,omitempty"`
 	Version       string            `json:"version,omitempty"`
 	Warnings      []string          `json:"warnings,omitempty"`
