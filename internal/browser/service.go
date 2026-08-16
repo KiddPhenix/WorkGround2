@@ -46,6 +46,12 @@ type Driver interface {
 	CloseTab(ctx context.Context, targetID string) error
 	Invalidations() <-chan Invalidation
 	Close() error
+
+	// WithOptions variants let callers override per-action dialog policy while
+	// keeping the plain methods as the safe defaults.
+	NavigateWithOptions(ctx context.Context, url string, opts ActionOptions) error
+	ClickWithOptions(ctx context.Context, ref NodeRef, opts ActionOptions) error
+	CloseTabWithOptions(ctx context.Context, targetID string, opts ActionOptions) error
 }
 
 // Options configures a Manager instance.

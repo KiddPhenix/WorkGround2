@@ -1801,9 +1801,19 @@ func (c *Controller) Ask(ctx context.Context, questions []event.AskQuestion) ([]
 // AnswerQuestion resolves a pending AskRequest by ID with the user's selections.
 // Unknown/expired IDs are ignored.
 func (c *Controller) AnswerQuestion(id string, answers []event.AskAnswer) {
+	c.ResolveQuestion(id, answers)
+}
+
+// ResolveQuestion resolves one pending AskRequest and reports whether this
+// Controller still owned the ID. The boolean lets durable decision routers
+// distinguish a successful handoff from a late/orphaned answer while keeping
+// AnswerQuestion's compatibility surface unchanged.
+func (c *Controller) ResolveQuestion(id string, answers []event.AskAnswer) bool {
 	if pending, ok := c.approval.resolveAsk(id); ok {
 		pending.reply <- answers // buffered, never blocks
+		return true
 	}
+	return false
 }
 
 // ReplayPendingPrompts re-emits the ApprovalRequest / AskRequest event for every

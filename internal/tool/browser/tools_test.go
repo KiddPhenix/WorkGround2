@@ -487,6 +487,111 @@ func TestWrappedBrowserErrorKeepsStructuredCode(t *testing.T) {
 	}
 }
 
+func TestDialogBlockedErrorEnvelopeCarriesDialogContext(t *testing.T) {
+	svc := newFakeService()
+	svc.navigateFn = func(context.Context, string, browser.NavigateRequest) (browser.ActionResult, error) {
+		return browser.ActionResult{}, browser.NewDialogBlockedError(
+			browser.DialogContext{TargetID: "tab-1", Type: browser.DialogBeforeUnload, Message: "Leave site?"},
+			"navigation blocked by beforeunload dialog; page stayed",
+			nil,
+		)
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_navigate" {
+			continue
+		}
+		output, err := bt.Execute(context.Background(), json.RawMessage(`{"url":"https://example.com","request_id":"nav-1"}`))
+		if err == nil || !strings.Contains(output, `"code":"dialog_blocked"`) {
+			t.Fatalf("output=%q err=%v", output, err)
+		}
+		if !strings.Contains(output, `"dialog":{"target_id":"tab-1","type":"beforeunload"`) {
+			t.Fatalf("dialog context missing from envelope: %q", output)
+		}
+		if !strings.Contains(output, `"recoverable":true`) || !strings.Contains(output, `"outcome_known":true`) {
+			t.Fatalf("dialog_blocked must be recoverable and outcome_known: %q", output)
+		}
+	}
+}
+
+func TestActionSchemasHaveAllowLeave(t *testing.T) {
+	for _, bt := range browsertool.NewTools(newFakeService()) {
+		switch bt.Name() {
+		case "browser_navigate", "browser_click", "browser_tab":
+		default:
+			continue
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(bt.Schema(), &schema); err != nil {
+			t.Fatalf("%s schema: %v", bt.Name(), err)
+		}
+		if schema["additionalProperties"] != false {
+			t.Errorf("%s must remain a closed schema", bt.Name())
+		}
+		props, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties missing", bt.Name())
+		}
+		allowLeave, ok := props["allow_leave"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s schema missing allow_leave", bt.Name())
+		}
+		if allowLeave["type"] != "boolean" {
+			t.Errorf("%s allow_leave must be boolean, got %v", bt.Name(), allowLeave["type"])
+		}
+	}
+}
+
+func TestNavigatePassesAllowLeave(t *testing.T) {
+	svc := newFakeService()
+	var gotAllowLeave bool
+	svc.navigateFn = func(_ context.Context, _ string, req browser.NavigateRequest) (browser.ActionResult, error) {
+		gotAllowLeave = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2, URL: req.URL}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		if bt.Name() != "browser_navigate" {
+			continue
+		}
+		if _, err := bt.Execute(context.Background(), json.RawMessage(`{"url":"https://example.com","allow_leave":true,"request_id":"nav-1"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !gotAllowLeave {
+		t.Fatal("allow_leave=true not passed to the service")
+	}
+}
+
+func TestClickAndTabClosePassAllowLeave(t *testing.T) {
+	svc := newFakeService()
+	var gotClick, gotClose bool
+	svc.clickFn = func(_ context.Context, _ string, req browser.ClickRequest) (browser.ActionResult, error) {
+		gotClick = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+	}
+	svc.tabFn = func(_ context.Context, _ string, req browser.TabRequest) (browser.ActionResult, error) {
+		gotClose = req.AllowLeave
+		return browser.ActionResult{BeforeRevision: 1, AfterRevision: 2}, nil
+	}
+	for _, bt := range browsertool.NewTools(svc) {
+		switch bt.Name() {
+		case "browser_click":
+			if _, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":1,"index":1,"allow_leave":true,"request_id":"c-1"}`)); err != nil {
+				t.Fatal(err)
+			}
+		case "browser_tab":
+			if _, err := bt.Execute(context.Background(), json.RawMessage(`{"revision":1,"action":"close","tab_id":"tab-2","allow_leave":true,"request_id":"t-1"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !gotClick {
+		t.Error("allow_leave=true not passed for browser_click")
+	}
+	if !gotClose {
+		t.Error("allow_leave=true not passed for browser_tab close")
+	}
+}
+
 func TestNoCredentialToolRegistered(t *testing.T) {
 	for _, bt := range browsertool.NewTools(newFakeService()) {
 		if strings.Contains(bt.Name(), "credential") || strings.Contains(bt.Name(), "password") {

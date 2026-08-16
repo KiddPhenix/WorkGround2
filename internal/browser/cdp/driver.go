@@ -22,6 +22,20 @@ import (
 	"workground2/internal/proc"
 )
 
+// defaultDialogSettle bounds how long an action waits for a beforeunload
+// event to land after the underlying CDP action returned. It is far shorter
+// than any action timeout, so a blocked navigation reports dialog_blocked
+// promptly instead of hanging. Every successful action pays this small tax
+// because a dialog event can arrive just after the CDP command returns; the
+// window is polled so a blocked dialog is detected in milliseconds.
+const defaultDialogSettle = 100 * time.Millisecond
+
+// defaultDialogResolveWait bounds how long an action waits for the dialog
+// dismissal CDP command to complete before reporting the blocked outcome.
+// HandleJavaScriptDialog round-trips in milliseconds; this only guards against
+// a wedged connection and stays far below any action timeout.
+const defaultDialogResolveWait = 2 * time.Second
+
 type driver struct {
 	opts         browser.DriverOptions
 	execPath     string
@@ -55,6 +69,12 @@ type driver struct {
 	closeErrPending bool
 	closed          atomic.Bool
 	processExited   atomic.Bool
+
+	// dialogs holds the per-target dialog policy for the in-flight operations.
+	// Guarded by mu; entries are acquired/released around each operation.
+	dialogs      map[string]*dialogPolicy
+	dialogExec   dialogExecutor
+	dialogSettle time.Duration
 }
 
 func (d *driver) Info() browser.BrowserInfo {
@@ -196,8 +216,17 @@ func (d *driver) startWithAllocator(initialTarget string) error {
 			return fmt.Errorf("deny downloads: %w", err)
 		}
 	}
+	d.mu.Lock()
+	if d.dialogExec == nil {
+		d.dialogExec = cdpDialogExecutor{}
+	}
+	d.mu.Unlock()
 	d.listenTarget(initialCtx)
-	chromedp.ListenBrowser(initialCtx, d.handleEvent)
+	// Browser-level events (target created/changed/destroyed) must outlive the
+	// initial tab: closing the active tab later cancels the initial context,
+	// which would silently drop the target listener if it were registered on
+	// it. browserBase never cancels, so the listener survives tab closes.
+	chromedp.ListenBrowser(d.browserBase, d.handleEvent)
 	return nil
 }
 
@@ -253,6 +282,10 @@ func validateBrowserVersion(kind browser.BrowserKind, product, protocol string) 
 }
 
 func (d *driver) Navigate(ctx context.Context, url string) error {
+	return d.NavigateWithOptions(ctx, url, browser.ActionOptions{})
+}
+
+func (d *driver) NavigateWithOptions(ctx context.Context, url string, opts browser.ActionOptions) error {
 	if err := validateNavigationURL(url); err != nil {
 		return err
 	}
@@ -261,7 +294,19 @@ func (d *driver) Navigate(ctx context.Context, url string) error {
 		return err
 	}
 	defer cancel()
-	return chromedp.Run(opCtx, chromedp.Navigate(url))
+	targetID := d.activeTargetID()
+	policy := d.acquireDialogPolicy(targetID, opts)
+	policy.setOpCancel(cancel)
+	defer d.releaseDialogPolicy(targetID, policy)
+	err = chromedp.Run(opCtx, chromedp.Navigate(url))
+	dialog, blocked, resolveErr := d.dialogOutcome(policy)
+	if resolveErr != nil {
+		return browser.NewDialogResolutionError(dialog, resolveErr)
+	}
+	if blocked {
+		return browser.NewDialogBlockedError(dialog, fmt.Sprintf("navigation blocked by %s dialog; dialog dismissed", dialog.Type), err)
+	}
+	return err
 }
 
 func (d *driver) Observe(ctx context.Context, opts browser.ObserveOptions) (browser.Observation, error) {
@@ -323,12 +368,30 @@ func (d *driver) Observe(ctx context.Context, opts browser.ObserveOptions) (brow
 }
 
 func (d *driver) Click(ctx context.Context, ref browser.NodeRef) error {
+	return d.ClickWithOptions(ctx, ref, browser.ActionOptions{})
+}
+
+func (d *driver) ClickWithOptions(ctx context.Context, ref browser.NodeRef, opts browser.ActionOptions) error {
 	opCtx, cancel, err := d.operationContextForTarget(ctx, ref.TargetID)
 	if err != nil {
 		return err
 	}
 	defer cancel()
+	targetID := ref.TargetID
+	if targetID == "" {
+		targetID = d.activeTargetID()
+	}
+	policy := d.acquireDialogPolicy(targetID, opts)
+	policy.setOpCancel(cancel)
+	defer d.releaseDialogPolicy(targetID, policy)
 	_, err = clickNodeWithMethod(opCtx, ref)
+	dialog, blocked, resolveErr := d.dialogOutcome(policy)
+	if resolveErr != nil {
+		return browser.NewDialogResolutionError(dialog, resolveErr)
+	}
+	if blocked {
+		return browser.NewDialogBlockedUnknownError(dialog, fmt.Sprintf("click blocked by %s dialog; dialog dismissed", dialog.Type), err)
+	}
 	return err
 }
 
@@ -406,10 +469,19 @@ func (d *driver) ActivateTab(ctx context.Context, targetID string) error {
 }
 
 func (d *driver) CloseTab(ctx context.Context, targetID string) error {
-	opCtx, cancel, err := d.operationContext(ctx)
+	return d.CloseTabWithOptions(ctx, targetID, browser.ActionOptions{})
+}
+
+func (d *driver) CloseTabWithOptions(ctx context.Context, targetID string, opts browser.ActionOptions) error {
+	// Page.close must run on the target being closed. This also guarantees that
+	// its beforeunload events are observed even when it is not the active tab.
+	opCtx, cancel, err := d.operationContextForTarget(ctx, targetID)
 	if err != nil {
 		return err
 	}
+	policy := d.acquireDialogPolicy(targetID, opts)
+	policy.setOpCancel(cancel)
+	defer d.releaseDialogPolicy(targetID, policy)
 	tabs, err := listTabsInternal(opCtx, d.activeTargetID())
 	if err != nil {
 		cancel()
@@ -420,28 +492,64 @@ func (d *driver) CloseTab(ctx context.Context, targetID string) error {
 		cancel()
 		return replacementErr
 	}
-	if targetID == d.activeTargetID() {
+	// Chrome's Page.close/Target.closeTarget may bypass beforeunload entirely.
+	// Navigate the target to about:blank first so the page gets the same leave
+	// decision as a user-initiated close. If the default policy dismisses the
+	// dialog the original page remains intact; once navigation is allowed, the
+	// now-blank target can be closed without losing unapproved page state.
+	err = chromedp.Run(opCtx, chromedp.Navigate("about:blank"))
+	dialog, blocked, resolveErr := d.dialogOutcome(policy)
+	if resolveErr != nil {
 		cancel()
-		d.mu.RLock()
-		oldCtx := d.cdpCtx
-		d.mu.RUnlock()
+		return browser.NewDialogResolutionError(dialog, resolveErr)
+	}
+	if blocked {
+		cancel()
+		return browser.NewDialogBlockedError(dialog, fmt.Sprintf("tab close blocked by %s dialog; dialog dismissed", dialog.Type), err)
+	}
+	if err != nil {
+		cancel()
+		return dispatchedError("prepare target close", err)
+	}
+	if targetID == d.activeTargetID() {
+		// Active target: close it first so its beforeunload dialog events
+		// arrive on the still-attached session, then activate the replacement.
+		// If beforeunload blocks the close, the active pointer is untouched and
+		// the caller sees an honest dialog_blocked instead of a half-switched
+		// tab. This also avoids chromedp.Cancel on the initial context, which
+		// would gracefully close the whole browser.
+		err := closeTab(opCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			return dispatchedError("target close failed", err)
+		}
 		if err := d.switchTarget(ctx, replacement); err != nil {
 			return dispatchedError("activate replacement tab", err)
 		}
-		closeCtx, closeCancel := context.WithTimeout(oldCtx, 10*time.Second)
-		err := chromedp.Cancel(closeCtx)
-		closeCancel()
-		if err != nil && ctx.Err() == nil {
-			return dispatchedError("active target close failed", err)
-		}
+		d.dropTarget(targetID)
 		return nil
 	}
-	err = closeTab(opCtx, targetID)
+	err = closeTab(opCtx)
 	cancel()
 	if err != nil {
 		return dispatchedError("target close failed", err)
 	}
+	d.dropTarget(targetID)
 	return nil
+}
+
+// dropTarget releases the cached context/cancel for a target that was closed
+// by this driver (either explicitly or via tab close). The active pointer is
+// never cleared here: the active-close path has already switched to the
+// replacement and the non-active path never matches the active target.
+func (d *driver) dropTarget(targetID string) {
+	d.mu.Lock()
+	if cancel := d.targetCancels[targetID]; cancel != nil {
+		cancel()
+	}
+	delete(d.targetCancels, targetID)
+	delete(d.targetContexts, targetID)
+	d.mu.Unlock()
 }
 
 func dispatchedError(action string, err error) error {
@@ -588,6 +696,11 @@ func (d *driver) Close() error {
 	d.closeOnce.Do(func() {
 		d.closed.Store(true)
 		d.emit(browser.Invalidation{Kind: browser.InvalidationClosed, At: time.Now().UTC()})
+		d.mu.Lock()
+		// Drop any residual dialog policies: the driver is going away and no
+		// operation may resolve them anymore.
+		d.dialogs = nil
+		d.mu.Unlock()
 		d.mu.RLock()
 		cancels := make([]context.CancelFunc, 0, len(d.targetCancels))
 		for _, cancel := range d.targetCancels {
@@ -713,35 +826,60 @@ func (d *driver) consumeCloseError() error {
 }
 
 func (d *driver) listenTarget(ctx context.Context) {
-	chromedp.ListenTarget(ctx, d.handleEvent)
+	targetID := ""
+	if c := chromedp.FromContext(ctx); c != nil && c.Target != nil {
+		targetID = string(c.Target.TargetID)
+	}
+	chromedp.ListenTarget(ctx, func(event any) { d.handleTargetEvent(targetID, event) })
 }
 
+// handleEvent routes browser-level events (target lifecycle). DOM/frame/dialog
+// events arrive per target via handleTargetEvent.
 func (d *driver) handleEvent(event any) {
+	switch value := event.(type) {
+	case *target.EventTargetCreated:
+		if value.TargetInfo != nil {
+			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: time.Now().UTC()})
+		}
+	case *target.EventTargetInfoChanged:
+		if value.TargetInfo != nil {
+			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: time.Now().UTC()})
+		}
+	case *target.EventTargetDestroyed:
+		d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetID), At: time.Now().UTC()})
+	}
+}
+
+// handleTargetEvent routes events for one attached target. targetID comes from
+// the context the listener was registered on, so dialog policy and
+// invalidation are scoped to the right tab even with concurrent tabs.
+func (d *driver) handleTargetEvent(targetID string, event any) {
 	now := time.Now().UTC()
 	switch value := event.(type) {
 	case *dom.EventDocumentUpdated, *dom.EventAttributeModified, *dom.EventAttributeRemoved,
 		*dom.EventCharacterDataModified, *dom.EventChildNodeCountUpdated,
 		*dom.EventChildNodeInserted, *dom.EventChildNodeRemoved:
-		d.emit(browser.Invalidation{Kind: browser.InvalidationDocument, TargetID: d.activeTargetID(), At: now})
+		d.emit(browser.Invalidation{Kind: browser.InvalidationDocument, TargetID: d.targetOrActive(targetID), At: now})
 	case *page.EventFrameNavigated:
 		frameID := ""
 		if value.Frame != nil {
 			frameID = string(value.Frame.ID)
 		}
-		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.activeTargetID(), FrameID: frameID, At: now})
+		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.targetOrActive(targetID), FrameID: frameID, At: now})
 	case *page.EventFrameStartedLoading:
-		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.activeTargetID(), FrameID: string(value.FrameID), At: now})
-	case *target.EventTargetCreated:
-		if value.TargetInfo != nil {
-			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: now})
-		}
-	case *target.EventTargetInfoChanged:
-		if value.TargetInfo != nil {
-			d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetInfo.TargetID), At: now})
-		}
-	case *target.EventTargetDestroyed:
-		d.emit(browser.Invalidation{Kind: browser.InvalidationTarget, TargetID: string(value.TargetID), At: now})
+		d.emit(browser.Invalidation{Kind: browser.InvalidationFrame, TargetID: d.targetOrActive(targetID), FrameID: string(value.FrameID), At: now})
+	case *page.EventJavascriptDialogOpening:
+		d.onDialogOpening(d.targetOrActive(targetID), value)
+	case *page.EventJavascriptDialogClosed:
+		// Resolution already happened on opening; nothing further to do.
 	}
+}
+
+func (d *driver) targetOrActive(targetID string) string {
+	if targetID != "" {
+		return targetID
+	}
+	return d.activeTargetID()
 }
 
 func (d *driver) emit(event browser.Invalidation) {

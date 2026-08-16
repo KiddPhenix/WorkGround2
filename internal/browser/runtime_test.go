@@ -49,6 +49,15 @@ func (d *stubDriver) NewTab(context.Context, string) (string, error)  { return "
 func (d *stubDriver) ActivateTab(context.Context, string) error       { return nil }
 func (d *stubDriver) CloseTab(context.Context, string) error          { return nil }
 func (d *stubDriver) Invalidations() <-chan Invalidation              { return nil }
+func (d *stubDriver) NavigateWithOptions(context.Context, string, ActionOptions) error {
+	return nil
+}
+func (d *stubDriver) ClickWithOptions(context.Context, NodeRef, ActionOptions) error {
+	return nil
+}
+func (d *stubDriver) CloseTabWithOptions(context.Context, string, ActionOptions) error {
+	return nil
+}
 
 // versionClient returns an http.Client whose transport always answers
 // /json/version with the supplied websocket URL.

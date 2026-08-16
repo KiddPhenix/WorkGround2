@@ -131,10 +131,22 @@ type OpenResult struct {
 	Browser   BrowserInfo `json:"browser"`
 }
 
+// ActionOptions carries per-action policy overrides. The zero value keeps the
+// safe default behavior for every action.
+type ActionOptions struct {
+	// AllowLeave accepts a beforeunload dialog triggered by the action
+	// (navigate / click / tab close), letting the page leave. Default false:
+	// the dialog is dismissed (stay), the action is NOT completed, and the
+	// driver returns dialog_blocked.
+	AllowLeave bool
+}
+
 // NavigateRequest navigates the active tab to a URL.
 type NavigateRequest struct {
 	URL       string
 	RequestID string
+	// AllowLeave accepts a beforeunload dialog triggered by this navigation.
+	AllowLeave bool
 }
 
 // StateRequest requests a page state snapshot.
@@ -157,6 +169,8 @@ type ClickRequest struct {
 	Revision  uint64
 	Index     int
 	RequestID string
+	// AllowLeave accepts a beforeunload dialog triggered by this click.
+	AllowLeave bool
 }
 
 // TypeRequest types text into an editable element.
@@ -203,6 +217,8 @@ type TabRequest struct {
 	TabID     string
 	URL       string
 	RequestID string
+	// AllowLeave accepts a beforeunload dialog triggered by a tab close.
+	AllowLeave bool
 }
 
 // ── Results ─────────────────────────────────────────────────────────────────

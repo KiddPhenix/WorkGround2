@@ -892,6 +892,9 @@ type closeableEventSink interface {
 }
 
 func (s *tabEventSink) Emit(e event.Event) {
+	if s.app != nil && e.Kind == event.AskRequest && !s.app.observeDecisionAsk(s.tabID, e.Ask) {
+		return
+	}
 	if s.app != nil {
 		s.app.observeCollaborationAgentEvent(s.tabID, e)
 		s.app.observeSessionUnread(s.tabID, e)

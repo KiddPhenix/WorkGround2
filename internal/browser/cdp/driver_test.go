@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
 	"workground2/internal/browser"
@@ -106,7 +107,7 @@ func TestHandleEventsMapToInvalidations(t *testing.T) {
 		eventDone: make(chan struct{}), eventCancel: eventCancel, activeTarget: "tab-1",
 	}
 	go d.runEventLoop(lifecycle)
-	d.handleEvent(&dom.EventDocumentUpdated{})
+	d.handleTargetEvent("tab-1", &dom.EventDocumentUpdated{})
 	select {
 	case got := <-d.Invalidations():
 		if got.Kind != browser.InvalidationDocument || got.TargetID != "tab-1" {
@@ -114,6 +115,25 @@ func TestHandleEventsMapToInvalidations(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no DOM invalidation")
+	}
+	_ = d.Close()
+}
+
+func TestHandleEventRoutesTargetLifecycle(t *testing.T) {
+	lifecycle, eventCancel := context.WithCancel(context.Background())
+	d := &driver{
+		events: make(chan browser.Invalidation, 16), invalCh: make(chan browser.Invalidation, 16),
+		eventDone: make(chan struct{}), eventCancel: eventCancel, activeTarget: "tab-1",
+	}
+	go d.runEventLoop(lifecycle)
+	d.handleEvent(&target.EventTargetDestroyed{TargetID: "tab-9"})
+	select {
+	case got := <-d.Invalidations():
+		if got.Kind != browser.InvalidationTarget || got.TargetID != "tab-9" {
+			t.Fatalf("unexpected invalidation: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no target invalidation")
 	}
 	_ = d.Close()
 }

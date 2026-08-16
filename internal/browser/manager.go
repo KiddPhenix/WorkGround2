@@ -406,6 +406,21 @@ func completeDriverError(s *Session, rec *RequestRecord, action string, err erro
 	return completeAction(s, rec, ActionResult{}, NewError(ErrElementNotInteractable, action+" failed", err))
 }
 
+// isDialogError reports whether err is a structured native-dialog result. It
+// must pass through unchanged instead of being remapped to a generic timeout
+// or interactability error; each error already declares whether its outcome is
+// known.
+func handleDialogErrorState(s *Session, err error) bool {
+	var be *Error
+	if !errors.As(err, &be) || (be.Code != ErrDialogBlocked && be.Code != ErrDialogResolutionFailed) {
+		return false
+	}
+	if !be.OutcomeKnown {
+		s.bumpGeneration()
+	}
+	return true
+}
+
 func beginOpen(ctx context.Context, s *Session, requestID, sig string) (*RequestRecord, OpenResult, bool, error) {
 	rec, leader, err := s.requests.Begin(requestID, sig)
 	if err != nil {
@@ -571,7 +586,7 @@ func (m *Manager) Navigate(ctx context.Context, ownerID string, req NavigateRequ
 	s.touch()
 	defer s.touch()
 
-	sig := requestSignature("browser_navigate", map[string]any{"url": req.URL})
+	sig := requestSignature("browser_navigate", map[string]any{"url": req.URL, "allow_leave": req.AllowLeave})
 	rec, cached, leader, err := beginAction(ctx, s, req.RequestID, sig)
 	if err != nil || !leader {
 		return cached, err
@@ -593,7 +608,10 @@ func (m *Manager) Navigate(ctx context.Context, ownerID string, req NavigateRequ
 	if err != nil {
 		return completeAction(s, rec, ActionResult{}, err)
 	}
-	if err := driver.Navigate(callCtx, nav); err != nil {
+	if err := driver.NavigateWithOptions(callCtx, nav, ActionOptions{AllowLeave: req.AllowLeave}); err != nil {
+		if handleDialogErrorState(s, err) {
+			return completeAction(s, rec, ActionResult{}, err)
+		}
 		return completeAction(s, rec, ActionResult{}, NewError(ErrNavigationTimeout, "navigation failed", err))
 	}
 
@@ -724,7 +742,7 @@ func (m *Manager) Click(ctx context.Context, ownerID string, req ClickRequest) (
 	defer s.touch()
 
 	// Idempotency check.
-	sig := requestSignature("browser_click", map[string]any{"revision": req.Revision, "index": req.Index})
+	sig := requestSignature("browser_click", map[string]any{"revision": req.Revision, "index": req.Index, "allow_leave": req.AllowLeave})
 	rec, cached, leader, err := beginAction(ctx, s, req.RequestID, sig)
 	if err != nil || !leader {
 		return cached, err
@@ -754,9 +772,12 @@ func (m *Manager) Click(ctx context.Context, ownerID string, req ClickRequest) (
 	defer cancel()
 
 	// Dispatch the click.
-	dispatchErr := driver.Click(callCtx, ref)
+	dispatchErr := driver.ClickWithOptions(callCtx, ref, ActionOptions{AllowLeave: req.AllowLeave})
 
 	if dispatchErr != nil {
+		if handleDialogErrorState(s, dispatchErr) {
+			return completeAction(s, rec, ActionResult{}, dispatchErr)
+		}
 		return completeDriverError(s, rec, "click", dispatchErr)
 	}
 
@@ -1003,12 +1024,19 @@ func (m *Manager) Tab(ctx context.Context, ownerID string, req TabRequest) (Acti
 	s.touch()
 	defer s.touch()
 
-	sig := requestSignature("browser_tab", map[string]any{
+	sigArgs := map[string]any{
 		"revision": req.Revision,
 		"action":   string(req.Action),
 		"tab_id":   req.TabID,
 		"url":      req.URL,
-	})
+	}
+	// allow_leave only has meaning for action=close; keeping it out of the
+	// signature for new/activate lets a retry with a flipped (irrelevant) flag
+	// still hit the idempotency cache instead of reporting a conflict.
+	if req.Action == TabClose {
+		sigArgs["allow_leave"] = req.AllowLeave
+	}
+	sig := requestSignature("browser_tab", sigArgs)
 	rec, cached, leader, err := beginAction(ctx, s, req.RequestID, sig)
 	if err != nil || !leader {
 		return cached, err
@@ -1077,7 +1105,10 @@ func (m *Manager) Tab(ctx context.Context, ownerID string, req TabRequest) (Acti
 		if snap != nil && len(snap.State.Tabs) <= 1 {
 			return completeAction(s, rec, ActionResult{}, NewError(ErrLastTab, "cannot close the last tab; use browser_close", nil))
 		}
-		if err := driver.CloseTab(callCtx, req.TabID); err != nil {
+		if err := driver.CloseTabWithOptions(callCtx, req.TabID, ActionOptions{AllowLeave: req.AllowLeave}); err != nil {
+			if handleDialogErrorState(s, err) {
+				return completeAction(s, rec, ActionResult{}, err)
+			}
 			if outcomeUnknown(err) {
 				s.bumpGeneration()
 				return completeAction(s, rec, ActionResult{}, NewError(ErrOutcomeUnknown, "tab close outcome is unknown", err))

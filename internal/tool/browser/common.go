@@ -24,11 +24,12 @@ type ToolResponse[T any] struct {
 
 // ErrorInfo is the structured error in the envelope.
 type ErrorInfo struct {
-	Code         browser.ErrorCode `json:"code"`
-	Message      string            `json:"message"`
-	Recoverable  bool              `json:"recoverable"`
-	OutcomeKnown bool              `json:"outcome_known"`
-	Next         string            `json:"next,omitempty"`
+	Code         browser.ErrorCode      `json:"code"`
+	Message      string                 `json:"message"`
+	Recoverable  bool                   `json:"recoverable"`
+	OutcomeKnown bool                   `json:"outcome_known"`
+	Next         string                 `json:"next,omitempty"`
+	Dialog       *browser.DialogContext `json:"dialog,omitempty"`
 }
 
 // ownerFromContext extracts the parent session ID from the context.
@@ -85,6 +86,7 @@ func marshalError[T any](err *browser.Error) (string, error) {
 			Recoverable:  err.Recoverable,
 			OutcomeKnown: err.OutcomeKnown,
 			Next:         err.Next,
+			Dialog:       err.Dialog,
 		},
 	}
 	b, marshalErr := json.Marshal(resp)
