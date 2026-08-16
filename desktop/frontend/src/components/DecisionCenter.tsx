@@ -9,7 +9,8 @@ interface Props {
 }
 
 const emptyChannel = { id: "", name: "微信主人", kind: "weixin", enabled: true, connectionId: "", domain: "", chatId: "", chatType: "dm" };
-type DecisionDraft = { title: string; task: string; why: string; prompt: string; optionA: string; impactA: string; optionB: string; impactB: string };
+type DecisionDraft = { kind: "ask" | "notify"; title: string; task: string; why: string; prompt: string; optionA: string; impactA: string; optionB: string; impactB: string };
+const emptyDraft: DecisionDraft = { kind: "ask", title: "", task: "", why: "", prompt: "", optionA: "", impactA: "", optionB: "", impactB: "" };
 
 export function normalizeDecisionState(state: DecisionStateView): DecisionStateView {
   return {
@@ -27,7 +28,7 @@ export function DecisionCenter({ open, onClose }: Props) {
   const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [draft, setDraft] = useState({ title: "", task: "", why: "", prompt: "", optionA: "", impactA: "", optionB: "", impactB: "" });
+  const [draft, setDraft] = useState<DecisionDraft>(emptyDraft);
   const [channel, setChannel] = useState(emptyChannel);
 
   useEffect(() => {
@@ -50,16 +51,17 @@ export function DecisionCenter({ open, onClose }: Props) {
     try {
       await app.CreateDecision({
         idempotencyKey: `desktop-manual:${crypto.randomUUID()}`,
+        kind: draft.kind,
         agentId: "desktop-user", threadId: "", workspaceRoot: "", sessionId: "",
         title: draft.title, taskSummary: draft.task, whyNow: draft.why,
-        questions: [{ id: "choice", header: draft.title, prompt: draft.prompt, multiSelect: false, options: [
+        questions: draft.kind === "notify" ? [] : [{ id: "choice", header: draft.title, prompt: draft.prompt, multiSelect: false, options: [
           { label: draft.optionA, impact: draft.impactA }, { label: draft.optionB, impact: draft.impactB },
         ] }],
-        noAnswerPolicy: "任务保持暂停，不会自动替你选择。",
+        noAnswerPolicy: draft.kind === "notify" ? "" : "任务保持暂停，不会自动替你选择。",
       });
       setState(normalizeDecisionState(await app.DecisionState()));
       setCreateOpen(false);
-      setDraft({ title: "", task: "", why: "", prompt: "", optionA: "", impactA: "", optionB: "", impactB: "" });
+      setDraft(emptyDraft);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(""); }
   };
 
@@ -139,13 +141,15 @@ function QueuedCard({ value, index, deferred, busy, onRun }: { value: DecisionVi
 function HistoryRow({ value }: { value: DecisionView }) {
   const answer = value.answer?.selections.flatMap((selection) => selection.selected).join("、");
   const decidedAt = value.decided_at ? new Date(value.decided_at).toLocaleString() : "";
-  return <div className="decision-history-row"><span className={`decision-status decision-status--${value.status}`}>{value.status}</span><div><b>{value.presentation.title}</b><small>{answer ? `${value.responder?.label || "主人"}：${answer}${decidedAt ? ` · ${decidedAt}` : ""}` : value.last_error || value.id}</small></div></div>;
+  const detail = value.kind === "notify" ? value.presentation.task_summary : answer ? `${value.responder?.label || "主人"}：${answer}${decidedAt ? ` · ${decidedAt}` : ""}` : value.last_error || "未产生回答";
+  return <div className="decision-history-row"><span className={`decision-status decision-status--${value.status}`}>{value.kind === "notify" ? "通知" : value.status}</span><div><b>{value.presentation.title}</b><small>{detail}</small></div></div>;
 }
 
 function CreateForm({ draft, setDraft, busy, onCreate }: { draft: DecisionDraft; setDraft: Dispatch<SetStateAction<DecisionDraft>>; busy: boolean; onCreate: () => void }) {
   const field = (key: keyof DecisionDraft, label: string, placeholder: string) => <label><span>{label}</span><input value={draft[key]} placeholder={placeholder} onChange={(event) => setDraft((current) => ({ ...current, [key]: event.target.value }))} /></label>;
-  const ready = (["title", "task", "why", "prompt", "optionA", "impactA", "optionB", "impactB"] as Array<keyof DecisionDraft>).every((key) => draft[key].trim());
-  return <div className="decision-create"><h3>创建一个独立问题</h3><div className="decision-create__grid">{field("title", "标题", "例如：确定主角图策略")}{field("task", "任务背景", "我正在为活动页生成主视觉")}{field("why", "为什么现在问", "下一步会锁定角色一致性")}{field("prompt", "要决定什么", "生成新的还是复用主角图？")}{field("optionA", "选项 A", "复用主角图")}{field("impactA", "A 的影响", "角色稳定，创意变化较少")}{field("optionB", "选项 B", "生成新图")}{field("impactB", "B 的影响", "创意空间大，需重新确认一致性")}</div><button className="btn btn--primary" type="button" disabled={!ready || busy} onClick={onCreate}>加入全局决策队列</button></div>;
+  const required = draft.kind === "notify" ? ["title", "task"] : ["title", "task", "why", "prompt", "optionA", "impactA", "optionB", "impactB"];
+  const ready = (required as Array<keyof DecisionDraft>).every((key) => draft[key].trim());
+  return <div className="decision-create"><h3>{draft.kind === "notify" ? "发送一条通知" : "创建一个独立问题"}</h3><div className="decision-create__grid"><label><span>类型</span><select value={draft.kind} onChange={(event) => setDraft((current) => ({ ...current, kind: event.target.value as DecisionDraft["kind"] }))}><option value="ask">需要回答</option><option value="notify">仅通知</option></select></label>{field("title", "标题", draft.kind === "notify" ? "例如：构建已完成" : "例如：确定主角图策略")}{field("task", draft.kind === "notify" ? "通知内容" : "任务背景", draft.kind === "notify" ? "已完成构建和检查，可以开始验收。" : "我正在为活动页生成主视觉")}{field("why", draft.kind === "notify" ? "补充说明（可选）" : "为什么现在问", draft.kind === "notify" ? "产物位置或下一步建议" : "下一步会锁定角色一致性")}{draft.kind === "ask" && <>{field("prompt", "要决定什么", "生成新的还是复用主角图？")}{field("optionA", "选项 A", "复用主角图")}{field("impactA", "A 的影响", "角色稳定，创意变化较少")}{field("optionB", "选项 B", "生成新图")}{field("impactB", "B 的影响", "创意空间大，需重新确认一致性")}</>}</div><button className="btn btn--primary" type="button" disabled={!ready || busy} onClick={onCreate}>{draft.kind === "notify" ? "发送通知" : "加入全局决策队列"}</button></div>;
 }
 
 function SettingsPanel({ state, busy, channel, setChannel, onRun, onError, onNotice }: { state: DecisionStateView; busy: string; channel: typeof emptyChannel; setChannel: Dispatch<SetStateAction<typeof emptyChannel>>; onRun: (key: string, action: () => Promise<DecisionStateView>) => Promise<void>; onError: (value: string) => void; onNotice: (value: string) => void }) {

@@ -1,17 +1,18 @@
 ---
 name: ask-workground2-owner
-description: Ask the human owner a durable, standalone decision through WorkGround2, then observe or wait for the first answer from Desktop or WeChat. Use when an agent is blocked on a consequential choice that requires human judgment and may remain unanswered for hours or days.
+description: Ask the human owner a durable, standalone decision or send a durable notification through WorkGround2. Use for consequential choices that need a Desktop or WeChat answer, or when the user explicitly requests a completion or attention notification.
 ---
 
 # Ask WorkGround2 Owner
 
-Use WorkGround2's process-wide DecisionBroker for a human decision that must survive agent, workspace, or application restarts. The first valid answer from Desktop or a configured IM channel wins.
+Use WorkGround2's process-wide DecisionBroker for human decisions and durable notifications that must survive agent, workspace, or application restarts. The first valid decision answer from Desktop or a configured IM channel wins; notifications require no reply and never occupy the decision queue.
 
 ## Requirements
 
 - WorkGround2 Desktop must be running.
 - Run `scripts/decision.ps1` from this skill directory.
-- Do not use this channel for routine progress updates or questions the agent can safely resolve itself.
+- Do not use this channel for routine progress updates unless the user explicitly requested a notification.
+- Do not ask questions the agent can safely resolve itself.
 
 ## Workflow
 
@@ -56,6 +57,26 @@ $request = @{
 
 The output is JSON. Persist the returned `id` in the task state.
 
+## Notify without asking
+
+Use `notify` for a standalone completion or attention message. It is durably retried through the configured channel, requires no options or answer, and does not block later questions:
+
+```powershell
+$request = @{
+  idempotencyKey = "codex:<thread-or-task-id>:build-complete"
+  agentId = "codex"
+  threadId = "<current task id>"
+  workspaceRoot = "<absolute workspace path>"
+  title = "WorkGround2 修改已完成"
+  taskSummary = "微信决策消息已隐藏内部协议、修复选项换行，并合并了回答确认。"
+  whyNow = "新构建已通过检查，可以开始验收。"
+} | ConvertTo-Json -Depth 10 -Compress
+
+& "<skill-dir>\scripts\decision.ps1" -Action notify -Json $request
+```
+
+The script forces `kind = notify`; callers do not need to add empty questions or a no-answer policy.
+
 ## Observe and wait
 
 Use a bounded wait so the agent remains responsive:
@@ -84,3 +105,4 @@ Cancellation is explicit and releases the global queue for the next question.
 - Every option needs a concrete impact. Avoid generic text such as “按这个方向继续”.
 - State the no-answer behavior. Default to pausing rather than silently choosing.
 - Keep one decision focused. If several choices are coupled, include them as ordered questions in the same decision.
+- Notifications must state what completed or needs attention and the useful next step. They must not look like a question or request a reply.

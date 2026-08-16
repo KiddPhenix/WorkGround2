@@ -4,15 +4,16 @@
 
 DecisionBroker 是 WorkGround2 进程级的人类决策中心。来自任意 workspace、Session、Work 或外部 Agent 的长期问题先登记为持久化 `Decision`，再由桌面端、微信等端点展示。所有回答进入同一个解析入口，第一个有效回答生效，其余端点同步显示“已经回答”。
 
-它解决五个问题：
+它解决六个问题：
 
 - 问题不再绑定某个 workspace 的前台生命周期。
 - 人类在桌面或微信任一端回答，结果只应用一次。
 - 多个任务同时提问时，全应用一次只展示一个问题。
 - 问题可等待数天，应用重启后仍可发现、回答和恢复。
 - Codex 等外部 Agent 可通过稳定 API 和 Skill 使用同一能力。
+- Agent 可发送无需回答的持久通知，复用同一投递、重试和审计链路且不占用决策队列。
 
-第一阶段只承载业务选择型 `Ask`。工具审批保留独立权限语义，数据模型预留 `approval` 类型但不自动接入。
+当前承载业务选择型 `ask` 和仅通知型 `notify`。工具审批保留独立权限语义，数据模型预留 `approval` 类型但不自动接入。
 
 ## 2. 核心原则
 
@@ -94,6 +95,8 @@ type Decision struct {
 
 `OriginRef` 至少包含来源类型、workspace、Session path/ID、Controller generation、Agent/thread 标识和恢复 payload。`IdempotencyKey` 由来源生成，重复创建必须返回同一条 Decision。
 
+`kind=ask` 进入全局串行队列；`kind=notify` 创建后直接进入历史并写入 `presented` 投递，不生成回答或后续 `resolved` 投递，也不占用唯一可回答槽。两类消息均按幂等键去重并持久化。
+
 ### 4.2 Presentation
 
 ```go
@@ -127,6 +130,8 @@ type Delivery struct {
 ```
 
 同一端点严格按 `Sequence` 投递。上一题的 `resolved` 必须先于下一题的 `presented` 到达。
+
+回答来源端点直接收到一次友好确认，不再给该端点追加重复的 `resolved` 消息；其他已展示端点收到“已在其他端回答”。所有用户侧消息隐藏内部 Decision ID、远端用户 ID 和 `/answer` 协议，只提示直接回复选项编号。
 
 ## 5. 状态机
 
@@ -213,6 +218,8 @@ Broker 同时最多有一个 `presented`。当前题进入 `decided`、`deferred
 
 内置 `ask-workground2-owner` Skill 是调用规范层，要求 Agent 提供完整人类可读上下文、幂等 key 和可恢复 origin；其 PowerShell 客户端发现 Desktop 端口并调用本地 HTTP API。单次等待有界，Decision 本身默认不超时，Agent 可以跨 turn、跨重启继续等待。Skill 本身不充当消息队列。
 
+`create` 根据 `kind` 同时承载 `ask` 和 `notify`。Skill 提供 `ask` 与 `notify` 两个动作；`notify` 强制写入通知类型，只要求独立可读的标题和内容，不需要 questions 或 no-answer policy。
+
 ## 11. 安全与隐私
 
 - Presentation 不能包含 secret、token、原始凭据或未经授权的本地文件内容。
@@ -229,5 +236,7 @@ Broker 同时最多有一个 `presented`。当前题进入 `decided`、`deferred
 - 问题包含任务背景、原因、选项影响和无回答策略；Agent 提供推荐时必须同时提供理由。
 - 默认长期有效；重启后恢复当前问题和队列顺序。
 - 外部 Agent 可通过 API 创建、查询、等待和取消，并可使用安装的 Skill。
+- 外部 Agent 和桌面创建入口均可发送仅通知消息；通知不占用当前问题或后续队列，发送失败可安全重试。
+- 微信问题不展示内部编号、命令协议或原始用户 ID；选项稳定分行，回答端只收到一条友好确认。
 - 已连接 Bot 有一个或多个会话时，可以明确选择目标并一键设置为问答通道，无需手抄连接或远端 ID。
 - 发送/应用失败可观察、可重试、可恢复。

@@ -2354,12 +2354,15 @@ function makeMockApp(): AppBindings {
 		async DecisionState() { return structuredClone(mockDecisionState); },
 		async CreateDecision(input) {
 			const now = new Date().toISOString();
+			const notify = input.kind === "notify";
 			const value = {
 				id: `D-MOCK-${Date.now()}`,
-				status: mockDecisionState.active ? "queued" as const : "presented" as const,
+				kind: notify ? "notify" as const : "ask" as const,
+				status: notify ? "applied" as const : mockDecisionState.active ? "queued" as const : "presented" as const,
 				queue_seq: mockDecisionState.revision + 1,
 				created_at: now,
-				presented_at: mockDecisionState.active ? undefined : now,
+				presented_at: notify || !mockDecisionState.active ? now : undefined,
+				applied_at: notify ? now : undefined,
 				origin: { kind: "agent", agent_id: input.agentId, thread_id: input.threadId, workspace_root: input.workspaceRoot },
 				presentation: {
 					title: input.title, task_summary: input.taskSummary, why_now: input.whyNow,
@@ -2367,7 +2370,8 @@ function makeMockApp(): AppBindings {
 					no_answer_policy: input.noAnswerPolicy,
 				},
 			};
-			if (mockDecisionState.active) mockDecisionState.queue.push(value);
+			if (notify) mockDecisionState.history.unshift(value);
+			else if (mockDecisionState.active) mockDecisionState.queue.push(value);
 			else mockDecisionState.active = value;
 			mockDecisionState.revision++;
 			return value;
