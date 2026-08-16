@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, FolderPlus, Images, KeyRound, Loader2, Play, QrCode, RefreshCw, Send, Trash2 } from "lucide-react";
 import { asArray } from "../lib/array";
+import { botDecisionTargets, decisionChannelInputForBot } from "../lib/botDecisionChannel";
 import { useDeferredClose } from "../lib/useMountTransition";
 import { app } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
@@ -1781,6 +1782,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const [install, setInstall] = useState<BotInstallState>({ target: "qq", result: null, status: "idle", timeLeft: 0, message: "" });
   const [diagnostics, setDiagnostics] = useState<Record<string, BotConnectionDiagnostic | string>>({});
   const [testTargets, setTestTargets] = useState<Record<string, string>>({});
+  const [decisionTargetIndexes, setDecisionTargetIndexes] = useState<Record<string, number>>({});
+  const [savedDecisionTargets, setSavedDecisionTargets] = useState<Record<string, string>>({});
   const [connectionSecrets, setConnectionSecrets] = useState<Record<string, string>>({});
   const [qqSecretValue, setQQSecretValue] = useState("");
   const [expandedConnectionId, setExpandedConnectionId] = useState("");
@@ -2130,6 +2133,14 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const selectedDiagnostic = selectedConnection ? diagnostics[selectedConnection.id] : undefined;
   const selectedDiagnosticDetail = diagnosticReportDetail(selectedDiagnostic);
   const selectedConnectionRemote = selectedConnection ? firstConnectionRemote(selectedConnection) : "";
+  const selectedDecisionTargets = selectedConnection ? botDecisionTargets(selectedConnection) : [];
+  const selectedDecisionTargetIndex = selectedConnection
+    ? Math.min(decisionTargetIndexes[selectedConnection.id] ?? 0, Math.max(selectedDecisionTargets.length - 1, 0))
+    : 0;
+  const selectedDecisionTarget = selectedDecisionTargets[selectedDecisionTargetIndex];
+  const selectedDecisionTargetKey = selectedConnection && selectedDecisionTarget
+    ? `${selectedConnection.id}:${selectedDecisionTarget.remoteId}:${selectedDecisionTarget.chatType}`
+    : "";
   const selectedConnectionToolApprovalMode = selectedConnection ? normalizeBotToolApprovalMode(selectedConnection.toolApprovalMode, true) : "";
   const selectedAllowlistTargetReady = selectedQQ || Boolean(selectedConnection);
   useEffect(() => {
@@ -2552,6 +2563,39 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                     <strong>{selectedConnection.status === "connected" ? t("settings.botConnectionConnected") : selectedConnection.status || t("settings.botConnectionDisconnected")}</strong>
                   </div>
                 </div>
+              </section>
+
+              <section className="bot-detail-section">
+                <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
+                <p className="bot-detail-card__desc">{selectedDecisionTarget ? t("settings.botDecisionChannelHint") : t("settings.botDecisionChannelNoTarget")}</p>
+                {selectedDecisionTarget ? (
+                  <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
+                    <div className="bot-secret-row">
+                      <select
+                        className="mem-input"
+                        value={selectedDecisionTargetIndex}
+                        disabled={busy}
+                        onChange={(event) => setDecisionTargetIndexes((current) => ({ ...current, [selectedConnection.id]: Number(event.target.value) }))}
+                      >
+                        {selectedDecisionTargets.map((target, index) => (
+                          <option key={`${target.remoteId}:${target.chatType}`} value={index}>{target.remoteId} · {target.chatType}</option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="btn btn--primary btn--small"
+                        disabled={busy || !selectedConnection.enabled}
+                        onClick={() => void apply(async () => {
+                          await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
+                          setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
+                          return t("settings.botDecisionChannelSuccess");
+                        })}
+                      >
+                        {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey ? t("settings.botDecisionChannelSet") : t("settings.botDecisionChannelAction")}
+                      </button>
+                    </div>
+                  </SettingsField>
+                ) : null}
               </section>
 
               <details
