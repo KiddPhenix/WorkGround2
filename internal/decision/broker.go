@@ -116,7 +116,11 @@ func (b *Broker) Create(req CreateRequest) (CreateResult, error) {
 	if req.IdempotencyKey == "" {
 		return CreateResult{}, errors.New("decision idempotency key is required")
 	}
-	if err := validatePresentation(req.Presentation); err != nil {
+	kind, err := normalizeKind(req.Kind)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	if err := validatePresentation(kind, req.Presentation); err != nil {
 		return CreateResult{}, err
 	}
 	b.mu.Lock()
@@ -135,14 +139,19 @@ func (b *Broker) Create(req CreateRequest) (CreateResult, error) {
 	b.state.NextQueueSeq++
 	status := StatusQueued
 	var presentedAt *time.Time
-	if b.activeIndexLocked() < 0 {
+	var appliedAt *time.Time
+	if kind == KindNotify {
+		status = StatusApplied
+		presentedAt = timePtr(now)
+		appliedAt = timePtr(now)
+	} else if b.activeIndexLocked() < 0 {
 		status = StatusPresented
 		presentedAt = timePtr(now)
 	}
 	d := Decision{
 		ID:             id,
 		IdempotencyKey: req.IdempotencyKey,
-		Kind:           firstNonEmpty(strings.TrimSpace(req.Kind), "ask"),
+		Kind:           kind,
 		Origin:         req.Origin,
 		Presentation:   normalizePresentation(req.Presentation),
 		Status:         status,
@@ -150,6 +159,7 @@ func (b *Broker) Create(req CreateRequest) (CreateResult, error) {
 		QueueSeq:       b.state.NextQueueSeq,
 		CreatedAt:      now,
 		PresentedAt:    presentedAt,
+		AppliedAt:      appliedAt,
 		BusinessDueAt:  cloneTime(req.BusinessDueAt),
 		StaleAfter:     cloneTime(req.StaleAfter),
 	}
@@ -701,7 +711,27 @@ func (b *Broker) publishLocked(change Change) {
 	}
 }
 
-func validatePresentation(p Presentation) error {
+func normalizeKind(kind Kind) (Kind, error) {
+	switch Kind(strings.ToLower(strings.TrimSpace(string(kind)))) {
+	case "", KindAsk:
+		return KindAsk, nil
+	case KindNotify:
+		return KindNotify, nil
+	default:
+		return "", fmt.Errorf("unsupported decision kind %q", kind)
+	}
+}
+
+func validatePresentation(kind Kind, p Presentation) error {
+	if kind == KindNotify {
+		if strings.TrimSpace(p.Title) == "" || strings.TrimSpace(p.TaskSummary) == "" {
+			return errors.New("insufficient_context: notification title and task_summary are required")
+		}
+		if len(p.Questions) != 0 || p.Recommendation != nil {
+			return errors.New("notification cannot contain questions or a recommendation")
+		}
+		return nil
+	}
 	if strings.TrimSpace(p.Title) == "" || strings.TrimSpace(p.TaskSummary) == "" || strings.TrimSpace(p.WhyNow) == "" || strings.TrimSpace(p.NoAnswerPolicy) == "" {
 		return errors.New("insufficient_context: title, task_summary, why_now and no_answer_policy are required")
 	}

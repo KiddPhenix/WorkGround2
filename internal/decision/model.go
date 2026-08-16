@@ -5,6 +5,13 @@ import "time"
 
 const SchemaVersion = 1
 
+type Kind string
+
+const (
+	KindAsk    Kind = "ask"
+	KindNotify Kind = "notify"
+)
+
 type Status string
 
 const (
@@ -112,7 +119,7 @@ type Responder struct {
 type Decision struct {
 	ID             string       `json:"id"`
 	IdempotencyKey string       `json:"idempotency_key"`
-	Kind           string       `json:"kind"`
+	Kind           Kind         `json:"kind"`
 	Origin         Origin       `json:"origin"`
 	Presentation   Presentation `json:"presentation"`
 	Status         Status       `json:"status"`
@@ -184,7 +191,7 @@ type Snapshot struct {
 
 type CreateRequest struct {
 	IdempotencyKey string
-	Kind           string
+	Kind           Kind
 	Origin         Origin
 	Presentation   Presentation
 	BusinessDueAt  *time.Time

@@ -68,6 +68,7 @@ type DecisionResolveInput struct {
 
 type DecisionCreateInput struct {
 	IdempotencyKey string                   `json:"idempotencyKey"`
+	Kind           string                   `json:"kind"`
 	AgentID        string                   `json:"agentId"`
 	ThreadID       string                   `json:"threadId"`
 	WorkspaceRoot  string                   `json:"workspaceRoot"`
@@ -177,6 +178,7 @@ func (a *App) CreateDecision(input DecisionCreateInput) (decision.Decision, erro
 	}
 	result, err := a.decisionBroker.Create(decision.CreateRequest{
 		IdempotencyKey: input.IdempotencyKey,
+		Kind:           decision.Kind(input.Kind),
 		Origin: decision.Origin{
 			Kind: "agent", AgentID: strings.TrimSpace(input.AgentID), ThreadID: strings.TrimSpace(input.ThreadID),
 			WorkspaceRoot: strings.TrimSpace(input.WorkspaceRoot), SessionID: strings.TrimSpace(input.SessionID),
@@ -579,12 +581,20 @@ func (a *App) syncDecisionDeliveries(ctx context.Context) {
 			continue
 		}
 		for _, value := range snapshot.Decisions {
+			if value.Kind == decision.KindNotify {
+				if !decisionWasPresentedTo(snapshot.Deliveries, channel.ID, value.ID) && a.decisionBroker.ExternalDeliveryEnabled(now, true, value.PresentedAt) {
+					_, _, _ = a.decisionBroker.EnqueueDelivery(channel.ID, value.ID, decision.DeliveryPresented)
+				}
+				continue
+			}
 			if !decisionWasPresentedTo(snapshot.Deliveries, channel.ID, value.ID) {
 				continue
 			}
 			switch value.Status {
 			case decision.StatusDecided, decision.StatusApplied, decision.StatusApplyFailed:
-				_, _, _ = a.decisionBroker.EnqueueDelivery(channel.ID, value.ID, decision.DeliveryResolved)
+				if decisionNeedsResolvedDelivery(value, channel.ID) {
+					_, _, _ = a.decisionBroker.EnqueueDelivery(channel.ID, value.ID, decision.DeliveryResolved)
+				}
 			case decision.StatusCancelled, decision.StatusOrphaned:
 				_, _, _ = a.decisionBroker.EnqueueDelivery(channel.ID, value.ID, decision.DeliveryCancelled)
 			}
@@ -594,6 +604,10 @@ func (a *App) syncDecisionDeliveries(ctx context.Context) {
 		}
 		a.sendNextDecisionDelivery(ctx, channel)
 	}
+}
+
+func decisionNeedsResolvedDelivery(value decision.Decision, endpointID string) bool {
+	return value.Kind != decision.KindNotify && (value.Responder == nil || value.Responder.EndpointID != endpointID)
 }
 
 func decisionWasPresentedTo(deliveries []decision.Delivery, endpointID, decisionID string) bool {
@@ -645,32 +659,36 @@ func decisionRetryDelay(attempt int) time.Duration {
 
 func renderDecisionDelivery(value decision.Decision, kind decision.DeliveryEvent) string {
 	if kind == decision.DeliveryResolved {
-		who := "其他端点"
-		if value.Responder != nil {
-			who = firstNonEmpty(value.Responder.Label, value.Responder.Kind, who)
-		}
-		when := ""
-		if value.DecidedAt != nil {
-			when = "（" + value.DecidedAt.Local().Format("01-02 15:04") + "）"
-		}
-		return fmt.Sprintf("✅ 问题 %s 已由%s回答%s：%s", value.ID, who, when, decisionAnswerText(value))
+		return fmt.Sprintf("✅ 这个问题已在其他端回答，当前采用：「%s」。", decisionAnswerText(value))
 	}
 	if kind == decision.DeliveryCancelled {
-		return fmt.Sprintf("问题 %s 已取消或来源已失效。", value.ID)
+		return "这个问题已取消，不再需要回答。"
 	}
 	var b strings.Builder
+	if value.Kind == decision.KindNotify {
+		fmt.Fprintf(&b, "【通知｜%s】\n\n%s", value.Presentation.Title, value.Presentation.TaskSummary)
+		if value.Presentation.WhyNow != "" {
+			fmt.Fprintf(&b, "\n\n%s", value.Presentation.WhyNow)
+		}
+		return b.String()
+	}
 	fmt.Fprintf(&b, "【需要你决定｜%s】\n\n", value.Presentation.Title)
 	fmt.Fprintf(&b, "正在做：%s\n\n为什么现在问：%s\n", value.Presentation.TaskSummary, value.Presentation.WhyNow)
 	for i, question := range value.Presentation.Questions {
-		fmt.Fprintf(&b, "\n%d. %s\n", i+1, question.Prompt)
+		fmt.Fprintf(&b, "\n%d. %s\n\n", i+1, question.Prompt)
 		for j, option := range question.Options {
-			fmt.Fprintf(&b, "  %d) %s — %s\n", j+1, option.Label, option.Impact)
+			fmt.Fprintf(&b, "%d) %s\n影响：%s\n\n", j+1, option.Label, option.Impact)
 		}
 	}
 	if rec := value.Presentation.Recommendation; rec != nil {
-		fmt.Fprintf(&b, "\n建议：%s\n原因：%s\n", rec.Option, rec.Reason)
+		fmt.Fprintf(&b, "建议：%s\n原因：%s\n\n", rec.Option, rec.Reason)
 	}
-	fmt.Fprintf(&b, "\n未回答时：%s\n编号：%s\n回复：/answer %s <选项编号>", value.Presentation.NoAnswerPolicy, value.ID, value.ID)
+	fmt.Fprintf(&b, "未回答时：%s\n\n", value.Presentation.NoAnswerPolicy)
+	if len(value.Presentation.Questions) == 1 {
+		b.WriteString("请直接回复选项编号，例如：1。")
+	} else {
+		b.WriteString("请按问题顺序回复选项编号，并用逗号分隔，例如：1,2。")
+	}
 	return b.String()
 }
 
@@ -702,7 +720,7 @@ func (a *App) handleDecisionInbound(msg bot.InboundMessage) (string, bool, error
 		return "", true, err
 	}
 	responderID := firstNonEmpty(strings.TrimSpace(msg.OperatorID), strings.TrimSpace(msg.UserID))
-	responderLabel := firstNonEmpty(strings.TrimSpace(msg.UserName), responderID, "微信主人")
+	responderLabel := decisionResponderLabel(msg, responderID)
 	result, err := a.decisionBroker.Resolve(value.ID, answer, decision.Responder{
 		Kind:       string(msg.Platform),
 		ID:         responderID,
@@ -713,13 +731,20 @@ func (a *App) handleDecisionInbound(msg bot.InboundMessage) (string, bool, error
 		return "", true, err
 	}
 	if result.AlreadyResolved {
-		who := "其他端点"
-		if result.Decision.Responder != nil {
-			who = firstNonEmpty(result.Decision.Responder.Label, result.Decision.Responder.Kind, who)
-		}
-		return fmt.Sprintf("问题 %s 已由%s回答：%s", result.Decision.ID, who, decisionAnswerText(result.Decision)), true, nil
+		return fmt.Sprintf("这个问题已经回答过，当前采用：「%s」。", decisionAnswerText(result.Decision)), true, nil
 	}
-	return fmt.Sprintf("已记录问题 %s：%s", result.Decision.ID, decisionAnswerText(result.Decision)), true, nil
+	return fmt.Sprintf("✅ 已收到，你的选择是：「%s」。", decisionAnswerText(result.Decision)), true, nil
+}
+
+func decisionResponderLabel(msg bot.InboundMessage, responderID string) string {
+	label := strings.TrimSpace(msg.UserName)
+	if label == "" || label == responderID || strings.Contains(strings.ToLower(label), "@im.wechat") {
+		if msg.Platform == bot.PlatformWeixin {
+			return "微信用户"
+		}
+		return "通道用户"
+	}
+	return label
 }
 
 func (a *App) decisionChannelForInbound(msg bot.InboundMessage) (decision.Channel, bool) {
@@ -745,11 +770,11 @@ func (a *App) parseDecisionReply(text string) (decision.Decision, []string, bool
 	fields := strings.Fields(text)
 	if len(fields) > 0 && strings.EqualFold(fields[0], "/answer") {
 		if len(fields) < 3 {
-			return decision.Decision{}, nil, true, errors.New("格式应为 /answer <问题编号> <选项编号>，多问用逗号分隔")
+			return decision.Decision{}, nil, true, errors.New("请直接回复选项编号；有多个问题时用逗号分隔")
 		}
 		value, ok := a.decisionBroker.Get(fields[1])
 		if !ok {
-			return decision.Decision{}, nil, true, fmt.Errorf("找不到问题 %s", fields[1])
+			return decision.Decision{}, nil, true, errors.New("找不到这个问题，它可能已经结束")
 		}
 		return value, strings.Split(strings.Join(fields[2:], ""), ","), true, nil
 	}

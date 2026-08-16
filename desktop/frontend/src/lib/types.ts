@@ -1559,6 +1559,7 @@ export interface DecisionQuestionView {
 
 export interface DecisionView {
   id: string;
+  kind: "ask" | "notify";
   status: DecisionStatus;
   queue_seq: number;
   created_at: string;
@@ -1610,6 +1611,7 @@ export interface DecisionResolveInput {
 
 export interface DecisionCreateInput {
   idempotencyKey: string;
+  kind?: "ask" | "notify";
   agentId: string;
   threadId: string;
   workspaceRoot: string;

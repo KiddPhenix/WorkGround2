@@ -76,6 +76,24 @@ func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
 	}
 }
 
+func TestRemoteDecisionAPI_CreateNotification(t *testing.T) {
+	broker, _ := decision.Open("")
+	api := &remoteAPI{app: &App{decisionBroker: broker}}
+	body := `{"idempotencyKey":"codex:task:done","kind":"notify","agentId":"codex","threadId":"task","title":"处理完成","taskSummary":"修复版已经构建并通过检查。","whyNow":"可以开始验收。","questions":[],"noAnswerPolicy":""}`
+	rec := httptest.NewRecorder()
+	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create notification code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created decision.Decision
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Kind != decision.KindNotify || created.Status != decision.StatusApplied {
+		t.Fatalf("notification=%+v err=%v", created, err)
+	}
+	if _, ok := broker.Active(); ok {
+		t.Fatal("remote notification occupied decision queue")
+	}
+}
+
 func TestRemoteAPIActiveWorkspaceReadyStates(t *testing.T) {
 	root := t.TempDir()
 	ctrl := control.New(control.Options{Label: "ready"})

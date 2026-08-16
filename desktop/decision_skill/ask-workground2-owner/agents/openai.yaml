@@ -1,5 +1,5 @@
 interface:
   display_name: "询问 WorkGround2 主人"
-  short_description: "通过全局主人决策通道提问，并等待桌面端或微信上的回答"
+  short_description: "通过全局主人通道发送持久问题或仅通知消息"
   brand_color: "#D97757"
-  default_prompt: "Use $ask-workground2-owner to ask the human for a durable decision and wait for the answer."
+  default_prompt: "Use $ask-workground2-owner to ask for a durable decision or send the owner a standalone notification."

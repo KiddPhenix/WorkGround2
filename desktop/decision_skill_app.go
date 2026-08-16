@@ -12,7 +12,7 @@ import (
 var decisionSkillRaw embed.FS
 
 const (
-	decisionSkillVersion  = "1.0.0"
+	decisionSkillVersion  = "1.1.0"
 	decisionSkillProtocol = "decision-broker-local-api-v1"
 )
 

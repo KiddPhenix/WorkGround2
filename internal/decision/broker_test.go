@@ -79,6 +79,42 @@ func TestBrokerCreateIsIdempotentAndDurable(t *testing.T) {
 	}
 }
 
+func TestBrokerNotificationIsDurableAndDoesNotOccupyQueue(t *testing.T) {
+	b, err := Open(filepath.Join(t.TempDir(), "decision.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	notice, err := b.Create(CreateRequest{
+		IdempotencyKey: "build-ready",
+		Kind:           KindNotify,
+		Origin:         Origin{Kind: "agent", AgentID: "codex"},
+		Presentation:   Presentation{Title: "构建完成", TaskSummary: "修复版已经完成构建，可以开始验收。"},
+	})
+	if err != nil || notice.Decision.Status != StatusApplied || notice.Decision.Kind != KindNotify || notice.Decision.AppliedAt == nil {
+		t.Fatalf("notification = %+v err=%v", notice, err)
+	}
+	if _, ok := b.Active(); ok {
+		t.Fatal("notification must not occupy the active decision slot")
+	}
+	asked, err := b.Create(validRequest("after-notice", "需要选择"))
+	if err != nil || asked.Decision.Status != StatusPresented {
+		t.Fatalf("decision after notification = %+v err=%v", asked, err)
+	}
+	again, err := b.Create(CreateRequest{IdempotencyKey: "build-ready", Kind: KindNotify, Presentation: Presentation{Title: "重复", TaskSummary: "重复"}})
+	if err != nil || !again.Duplicate || again.Decision.ID != notice.Decision.ID {
+		t.Fatalf("duplicate notification = %+v err=%v", again, err)
+	}
+}
+
+func TestBrokerRejectsNotificationQuestions(t *testing.T) {
+	b, _ := Open("")
+	req := validRequest("bad-notice", "Bad")
+	req.Kind = KindNotify
+	if _, err := b.Create(req); err == nil {
+		t.Fatal("notification with questions should fail")
+	}
+}
+
 func TestBrokerDeferReleasesAttentionWithoutAnswering(t *testing.T) {
 	b, _ := Open("")
 	first, _ := b.Create(validRequest("one", "One"))

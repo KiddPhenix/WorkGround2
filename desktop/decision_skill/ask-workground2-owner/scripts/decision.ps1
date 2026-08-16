@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('ask', 'get', 'list', 'wait', 'cancel')]
+    [ValidateSet('ask', 'notify', 'get', 'list', 'wait', 'cancel')]
     [string]$Action,
     [string]$Id,
     [string]$Json,
@@ -45,10 +45,23 @@ function Invoke-DecisionApi {
     return Invoke-RestMethod @args
 }
 
+function Set-DecisionKind {
+    param([string]$Body, [string]$Kind)
+    $request = $Body | ConvertFrom-Json
+    $request | Add-Member -NotePropertyName 'kind' -NotePropertyValue $Kind -Force
+    return $request | ConvertTo-Json -Depth 20 -Compress
+}
+
 switch ($Action) {
     'ask' {
         if ([string]::IsNullOrWhiteSpace($Json)) { throw '-Json is required for ask.' }
-        $result = Invoke-DecisionApi -Method Post -Path '/api/v1/decisions/create' -Body $Json
+		$body = Set-DecisionKind -Body $Json -Kind 'ask'
+		$result = Invoke-DecisionApi -Method Post -Path '/api/v1/decisions/create' -Body $body
+	}
+	'notify' {
+		if ([string]::IsNullOrWhiteSpace($Json)) { throw '-Json is required for notify.' }
+		$body = Set-DecisionKind -Body $Json -Kind 'notify'
+		$result = Invoke-DecisionApi -Method Post -Path '/api/v1/decisions/create' -Body $body
     }
     'get' {
 		if ([string]::IsNullOrWhiteSpace($Id) -or [string]::IsNullOrWhiteSpace($ThreadId)) { throw '-Id and -ThreadId are required for get.' }
