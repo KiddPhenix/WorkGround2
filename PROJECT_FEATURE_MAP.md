@@ -12,7 +12,7 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ### DecisionBroker 全局主人决策通道
 - Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/decision_skill`
-- Summary: 状态 `done`，分支 `developping/decision-broker+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；桌面 Decision Center 支持创建/回答/排队/延后/取消/历史/通道配置，localhost API 与 `ask-workground2-owner` Skill 支持外部 Agent 按 `agentId + threadId` 隔离地创建、查询、长等待和取消。
+- Summary: 状态 `done`，修复分支 `developping/decision-center-null-state+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；桌面 Decision Center 支持创建/回答/排队/延后/取消/历史/通道配置，localhost API 与 `ask-workground2-owner` Skill 支持外部 Agent 按 `agentId + threadId` 隔离地创建、查询、长等待和取消。空状态集合由后端稳定输出 JSON 数组，前端也会兼容旧版本或异常事件中的 `null`，未配置通道时可正常打开界面。
 - Keywords: DecisionBroker, Owner Inbox, Decision Center, human decision, Ask, Weixin, resolve, defer, waiting_decision, decision skill
 - Source: user-requested+verified-by-search
 - Updated: 2026-08-16

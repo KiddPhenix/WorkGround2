@@ -135,13 +135,17 @@ func (a *App) DecisionState() DecisionStateView {
 		return DecisionStateView{Error: message, Queue: []decision.Decision{}, Deferred: []decision.Decision{}, History: []decision.Decision{}, Channels: []decision.Channel{}}
 	}
 	snapshot := a.decisionBroker.Snapshot()
+	channels := a.decisionBroker.Channels()
+	if channels == nil {
+		channels = []decision.Channel{}
+	}
 	view := DecisionStateView{
 		Available: true,
 		Revision:  snapshot.Revision,
 		Queue:     []decision.Decision{},
 		Deferred:  []decision.Decision{},
 		History:   []decision.Decision{},
-		Channels:  a.decisionBroker.Channels(),
+		Channels:  channels,
 		Settings:  decisionSettingsView(snapshot.Settings),
 	}
 	for i := range snapshot.Decisions {
