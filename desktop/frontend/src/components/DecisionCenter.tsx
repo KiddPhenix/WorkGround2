@@ -11,6 +11,16 @@ interface Props {
 const emptyChannel = { id: "", name: "微信主人", kind: "weixin", enabled: true, connectionId: "", domain: "", chatId: "", chatType: "dm" };
 type DecisionDraft = { title: string; task: string; why: string; prompt: string; optionA: string; impactA: string; optionB: string; impactB: string };
 
+export function normalizeDecisionState(state: DecisionStateView): DecisionStateView {
+  return {
+    ...state,
+    queue: state.queue ?? [],
+    deferred: state.deferred ?? [],
+    history: state.history ?? [],
+    channels: state.channels ?? [],
+  };
+}
+
 export function DecisionCenter({ open, onClose }: Props) {
   const [state, setState] = useState<DecisionStateView | null>(null);
   const [busy, setBusy] = useState("");
@@ -23,15 +33,15 @@ export function DecisionCenter({ open, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     let alive = true;
-    void app.DecisionState().then((next) => alive && setState(next)).catch((cause) => alive && setError(String(cause)));
-    const off = onDecisionState((next) => alive && setState(next));
+    void app.DecisionState().then((next) => alive && setState(normalizeDecisionState(next))).catch((cause) => alive && setError(String(cause)));
+    const off = onDecisionState((next) => alive && setState(normalizeDecisionState(next)));
     return () => { alive = false; off(); };
   }, [open]);
 
   const run = async (key: string, action: () => Promise<DecisionStateView>) => {
     setBusy(key);
     setError("");
-    try { setState(await action()); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(""); }
+    try { setState(normalizeDecisionState(await action())); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(""); }
   };
 
   const createDecision = async () => {
@@ -47,7 +57,7 @@ export function DecisionCenter({ open, onClose }: Props) {
         ] }],
         noAnswerPolicy: "任务保持暂停，不会自动替你选择。",
       });
-      setState(await app.DecisionState());
+      setState(normalizeDecisionState(await app.DecisionState()));
       setCreateOpen(false);
       setDraft({ title: "", task: "", why: "", prompt: "", optionA: "", impactA: "", optionB: "", impactB: "" });
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setBusy(""); }

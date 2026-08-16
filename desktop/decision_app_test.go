@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,26 @@ import (
 	"workground2/internal/bot"
 	"workground2/internal/decision"
 )
+
+func TestDecisionStateUsesEmptyArrays(t *testing.T) {
+	broker, err := decision.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := (&App{decisionBroker: broker}).DecisionState()
+	if state.Queue == nil || state.Deferred == nil || state.History == nil || state.Channels == nil {
+		t.Fatalf("empty collections must be arrays: %+v", state)
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"queue":[]`, `"deferred":[]`, `"history":[]`, `"channels":[]`} {
+		if !strings.Contains(string(payload), field) {
+			t.Fatalf("state JSON missing %s: %s", field, payload)
+		}
+	}
+}
 
 func TestInstallDecisionSkillIsIdempotentAndBacksUpChanges(t *testing.T) {
 	root := t.TempDir()
