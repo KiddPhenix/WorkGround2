@@ -1434,6 +1434,10 @@ func checkTextField(text, path string, issues *[]string) {
 		*issues = append(*issues, fmt.Sprintf("%s contains secret-like plaintext", path))
 		return
 	}
+	if isBareSecretIdentifier(text) {
+		*issues = append(*issues, fmt.Sprintf("%s contains secret-like plaintext", path))
+		return
+	}
 	if containsAuthorizationCredential(text) {
 		*issues = append(*issues, fmt.Sprintf("%s contains an inline authorization credential", path))
 		return
@@ -1479,6 +1483,33 @@ func containsSecretLiteral(text string) bool {
 	for _, candidate := range jwtPattern.FindAllString(text, -1) {
 		if len(candidate) > 40 {
 			return true
+		}
+	}
+	return false
+}
+
+// isBareSecretIdentifier flags placeholder-style identifiers such as
+// REDACTED_TEST_SLACK_TOKEN or SLACK_API_KEY: a single whitespace-free,
+// uppercase snake-case token whose name contains a secret keyword segment.
+// Natural-language sentences ("... is a label"), lowercase ids (req-secret-x)
+// and reference forms ("api_key=${VAR}") are not flagged.
+func isBareSecretIdentifier(text string) bool {
+	value := strings.TrimSpace(text)
+	if value == "" || strings.ContainsAny(value, " \t=:") || isSecretRef(value) {
+		return false
+	}
+	if strings.ToUpper(value) != value {
+		return false // mixed/lowercase identifiers are request ids / paths, not placeholders
+	}
+	parts := strings.Split(value, "_")
+	for index, part := range parts {
+		if part == "APIKEY" || (part == "API" && index+1 < len(parts) && parts[index+1] == "KEY") {
+			return true
+		}
+		for _, pat := range secretFieldPatterns {
+			if strings.EqualFold(part, strings.ToUpper(pat)) {
+				return true
+			}
 		}
 	}
 	return false

@@ -14,7 +14,7 @@ import (
 
 func TestValidateArtifactSlotTransition_Valid(t *testing.T) {
 	pairs := [][2]ArtifactSlotState{
-		{SlotReserved, SlotGenerating}, {SlotReserved, SlotReady}, {SlotReserved, SlotPartial}, {SlotReserved, SlotStale},
+		{SlotReserved, SlotGenerating}, {SlotReserved, SlotReady}, {SlotReserved, SlotPartial}, {SlotReserved, SlotFailed}, {SlotReserved, SlotStale},
 		{SlotGenerating, SlotReady}, {SlotGenerating, SlotPartial}, {SlotGenerating, SlotFailed}, {SlotGenerating, SlotStale},
 		{SlotReady, SlotStale}, {SlotReady, SlotGenerating},
 		{SlotReady, SlotPartial}, {SlotReady, SlotReserved},
@@ -39,7 +39,6 @@ func TestValidateArtifactSlotTransition_SameState(t *testing.T) {
 
 func TestValidateArtifactSlotTransition_Invalid(t *testing.T) {
 	pairs := [][2]ArtifactSlotState{
-		{SlotReserved, SlotFailed},
 		{SlotGenerating, SlotReserved},
 		{SlotReady, SlotFailed},
 		{SlotPartial, SlotReserved},

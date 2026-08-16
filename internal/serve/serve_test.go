@@ -302,6 +302,7 @@ func TestServeIndexPagePassesLanguagePreferenceToClient(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 
 	bc := NewBroadcaster()
 	ctrl := control.New(control.Options{Sink: bc})

@@ -2,6 +2,7 @@ package work
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,7 +75,7 @@ func (s *FileWorkStore) StoreV2Receipt(workID string, receipt *V2IntentReceipt) 
 		return err
 	}
 	dir := filepath.Join(wp, v2ReceiptSubDir)
-	path := filepath.Join(dir, receipt.RequestID+".json")
+	path := filepath.Join(dir, receiptCacheFileName(receipt.RequestID))
 
 	data, err := json.MarshalIndent(receipt, "", "  ")
 	if err != nil {
@@ -108,7 +109,15 @@ func (s *FileWorkStore) StoreV2Receipt(workID string, receipt *V2IntentReceipt) 
 // LoadV2Receipt reconstructs the authoritative receipt from the event log.
 // The receipts directory is only a backwards-compatible cache; correctness
 // never depends on a sidecar written after the domain event committed.
-func (s *FileWorkStore) LoadV2Receipt(workID, requestID string) (*V2IntentReceipt, error) {
+func (s *FileWorkStore) LoadV2Receipt(workID, requestID string) (receipt *V2IntentReceipt, retErr error) {
+	// Read under the per-Work lifecycle lock so a concurrent
+	// CommitDefinitionRevision/CommitEvents cannot expose a mid-batch event log
+	// (partial revision chain) to the replay below.
+	done, err := s.beginWorkOp(workID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { retErr = errors.Join(retErr, done()) }()
 	wp, err := s.workPath(workID)
 	if err != nil {
 		return nil, err
@@ -249,7 +258,7 @@ func (s *FileWorkStore) LoadV2Receipt(workID, requestID string) (*V2IntentReceip
 	}
 
 	// Compatibility with receipts written by the pre-event-backed V2 draft.
-	path := filepath.Join(wp, v2ReceiptSubDir, requestID+".json")
+	path := filepath.Join(wp, v2ReceiptSubDir, receiptCacheFileName(requestID))
 	data, readErr := os.ReadFile(path)
 	if readErr != nil {
 		if os.IsNotExist(readErr) {
@@ -257,9 +266,9 @@ func (s *FileWorkStore) LoadV2Receipt(workID, requestID string) (*V2IntentReceip
 		}
 		return nil, fmt.Errorf("work: read receipt %s for %s: %w", requestID, workID, readErr)
 	}
-	var receipt V2IntentReceipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	var cached V2IntentReceipt
+	if err := json.Unmarshal(data, &cached); err != nil {
 		return nil, fmt.Errorf("work: corrupt receipt %s for %s: %w", requestID, workID, err)
 	}
-	return &receipt, nil
+	return &cached, nil
 }

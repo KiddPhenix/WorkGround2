@@ -107,11 +107,15 @@ func (s *patchFaultStore) CommitEvents(workID string, events []WorkEvent) ([]int
 		defer func() { _ = releaseStoreLease(workPath) }()
 		return s.FileWorkStore.CommitEvents(workID, events)
 	case "second-event":
+		// Revision-chain tampering is no longer a failure: 60425c825 made the
+		// store rebase service events onto the authoritative chain. Simulate a
+		// batch that fails mid-way by making the second event rejected by the
+		// reducer (invalid payload) so the atomic batch aborts.
 		corrupt := append([]WorkEvent(nil), events...)
 		if len(corrupt) < 2 {
 			return nil, errors.New("test fault requires a multi-event batch")
 		}
-		corrupt[1].BaseRevision++
+		corrupt[1].Payload = json.RawMessage(`{"broken":`)
 		return s.FileWorkStore.CommitEvents(workID, corrupt)
 	default:
 		return nil, errors.New("unknown patch fault mode")

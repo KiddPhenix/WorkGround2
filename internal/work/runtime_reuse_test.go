@@ -391,9 +391,18 @@ func TestV2InputScope_OldRunSameSpecCannotSatisfyCurrentRun_FileStore(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The old run's input must not satisfy the new run under its old identity.
+	// ApplyDefinition carries compatible user values into the new run as their
+	// own input objects (new input ID, new RunID) — never as the old run's
+	// submitted record.
+	carried := findV2TaskInput(projection.V2Inputs, applied.Intent.RunID, taskID, "topic")
+	if carried == nil || carried.ID == old.ID || carried.RunID != applied.Intent.RunID ||
+		carried.State != InputSubmitted || string(carried.Value) != `"old"` {
+		t.Fatalf("old-run input was not re-carried for current run: old=%+v carried=%+v", old, carried)
+	}
 	runtime := projection.V2TaskRuntimes[taskID]
-	if runtime == nil || runtime.State != TaskWaitingInput || executor.callCount() != 0 {
-		t.Fatalf("old-run input released current task: runtime=%+v calls=%d", runtime, executor.callCount())
+	if runtime == nil || runtime.State != TaskCompleted || executor.callCount() != 1 {
+		t.Fatalf("carried input did not release current task: runtime=%+v calls=%d", runtime, executor.callCount())
 	}
 }
 

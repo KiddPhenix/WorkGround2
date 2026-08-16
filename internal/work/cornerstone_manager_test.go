@@ -1252,6 +1252,7 @@ func TestCornerstone_SecretDetectorMatchesWorkPolicy(t *testing.T) {
 	positives := []string{
 		"sk-proj-abcdefghijklmnopqrstuvwxyz",
 		"REDACTED_TEST_SLACK_TOKEN",
+		"REDACTED_OPENAI_API_KEY",
 		"github_pat_1234567890abcdefghijklmnop",
 		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123456",
 		"api_key=shortvalue",

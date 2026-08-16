@@ -771,7 +771,7 @@ func TestServiceProjectionFailureReplaysDuplicateRequest(t *testing.T) {
 	writeDerivedFile = func(path string, data []byte, mode fs.FileMode) error {
 		if filepath.Base(path) == "projection.json" && filepath.Dir(path) == filepath.Join(f.root, value.ID) {
 			projectionWrites++
-			if projectionWrites == 2 {
+			if projectionWrites == 1 {
 				return errors.New("injected projection failure")
 			}
 		}

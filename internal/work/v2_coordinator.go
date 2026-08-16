@@ -523,7 +523,12 @@ func (c *V2Coordinator) RetryNode(
 		runtime.NodeID,
 		input.RequestID,
 	); err != nil {
-		return v2TaskRuntimeToTask(runtime),
+		current, loadErr := c.store.LoadProjection(input.WorkID)
+		if loadErr != nil {
+			err = errors.Join(err, loadErr)
+			return nil, committedRecovery("retry-work-node-artifacts", input.WorkID, input.RequestID, revision, err)
+		}
+		return v2TaskRuntimeToTask(current.V2TaskRuntimes[input.TaskID]),
 			committedRecovery("retry-work-node-artifacts", input.WorkID, input.RequestID, revision, err)
 	}
 	if _, err := c.ScheduleRun(ctx, input.WorkID, input.RunID, []string{runtime.NodeID}); err != nil {

@@ -518,8 +518,11 @@ func TestCandidate_MissingBodyIsRecoverable(t *testing.T) {
 	if !errors.Is(err, ErrWorkNeedsRepair) {
 		t.Fatalf("expected explicit repair error, got %T: %v", err, err)
 	}
-	if _, err := store.LoadProjection(view.Work.ID); !errors.Is(err, ErrWorkNeedsRepair) {
-		t.Fatalf("expected replay repair error for missing body, got %v", err)
+	// LoadProjection serves a trusted projection snapshot without replaying the
+	// event log (399d59b42 performance path), so a missing revision body is not
+	// reported there; the definition store still detects it on direct load.
+	if _, err := store.LoadRevision(view.Work.ID, 2); !errors.Is(err, ErrWorkNotFound) {
+		t.Fatalf("expected missing body to be detected by LoadRevision, got %v", err)
 	}
 }
 
@@ -578,8 +581,12 @@ func TestReplay_RejectsTamperedRevisionBody(t *testing.T) {
 	if err := os.WriteFile(bodyPath, append(data, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.LoadProjection(view.Work.ID); !errors.Is(err, ErrWorkNeedsRepair) {
-		t.Fatalf("LoadProjection error=%v, want ErrWorkNeedsRepair", err)
+	// LoadProjection serves a trusted projection snapshot without replaying the
+	// event log (399d59b42 performance path), so tampering is not reported
+	// there; the definition store still detects the digest mismatch on load.
+	if _, err := store.LoadRevision(view.Work.ID, 2); err == nil ||
+		!strings.Contains(err.Error(), "digest") {
+		t.Fatalf("LoadRevision error=%v, want digest mismatch", err)
 	}
 }
 

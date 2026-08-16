@@ -39,7 +39,7 @@ type Item struct {
 	Kind       string    `json:"kind"`
 	Priority   Priority  `json:"priority"`
 	AuthorID   string    `json:"authorId,omitempty"`
-	OccurredAt time.Time `json:"occurredAt"`
+	OccurredAt time.Time `json:"occurredAt" ts_type:"string"`
 }
 
 // Conversation is a read-only projection returned to callers.
@@ -52,7 +52,7 @@ type Conversation struct {
 	ReadSequence      uint64    `json:"readSequence"`
 	UnreadCount       int       `json:"unreadCount"`
 	HighPriorityCount int       `json:"highPriorityCount"`
-	LastUnreadAt      time.Time `json:"lastUnreadAt,omitempty"`
+	LastUnreadAt      time.Time `json:"lastUnreadAt,omitempty" ts_type:"string"`
 	Items             []Item    `json:"items,omitempty"`
 }
 

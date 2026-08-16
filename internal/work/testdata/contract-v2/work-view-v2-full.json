@@ -1,15 +1,25 @@
 {
   "artifactSlots": [
     {
-      "artifactRefs": null,
+      "artifactRefs": [
+        {
+          "blobDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "id": "task-fixture",
+          "name": "slot",
+          "sourceRunId": "run-fixture",
+          "status": "available",
+          "type": "text"
+        }
+      ],
       "definitionRev": 2,
       "expectedCount": 1,
       "id": "slot",
       "kind": "text",
       "required": true,
-      "revision": 1,
-      "state": "reserved",
+      "revision": 2,
+      "state": "ready",
       "title": "Output",
+      "upstreamDigest": "inputs:none",
       "workId": "work-502e10e247ec70fa50211dc1"
     }
   ],
@@ -117,7 +127,7 @@
       "workId": "work-502e10e247ec70fa50211dc1"
     }
   ],
-  "revision": 15,
+  "revision": 18,
   "schemaVersion": 2,
   "tasks": [
     {
@@ -183,37 +193,41 @@
       }
     },
     "id": "work-502e10e247ec70fa50211dc1",
+    "locale": "en",
     "name": "New Work",
     "placements": [],
     "prompt": "",
     "runs": [
       {
         "definitionDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "finishedAt": "2026-07-24T08:00:00Z",
         "id": "run-fixture",
         "requestId": "apply-TestWorkViewV2FullGolden_FileWorkStore",
         "stages": [
           {
+            "finishedAt": "2026-07-24T08:00:00Z",
             "id": "n1",
             "name": "Produce report",
             "startedAt": "2026-07-24T08:00:00Z",
-            "state": "pending",
+            "state": "completed",
             "tasks": [
               {
                 "attempts": [],
+                "finishedAt": "2026-07-24T08:00:00Z",
                 "id": "n1",
                 "name": "Produce report",
-                "state": "pending"
+                "state": "completed"
               }
             ]
           }
         ],
         "startedAt": "2026-07-24T08:00:00Z",
-        "state": "pending",
+        "state": "completed",
         "workId": "work-502e10e247ec70fa50211dc1"
       }
     ],
     "schemaVersion": 2,
-    "state": "running",
+    "state": "completed",
     "updatedAt": "2026-07-24T08:00:00Z",
     "v2CurrentRevision": 2,
     "v2LatestRevision": 2
