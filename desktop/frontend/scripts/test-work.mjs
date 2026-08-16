@@ -1,11 +1,8 @@
-import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-
-const require = createRequire(import.meta.url);
 const root = fileURLToPath(new URL('..', import.meta.url));
-const tsx = require.resolve('tsx/cli');
 const tests = [
+  'src/work/wailsAdapterV2.test.ts',
   'src/__tests__/work-v2-contract.test.ts',
   'src/__tests__/work-contract.test.ts',
   'src/__tests__/work-controller-mutation.test.ts',
@@ -37,27 +34,63 @@ const tests = [
   'src/__tests__/app-work-integration.test.tsx',
   'src/__tests__/cornerstone-drawer.test.tsx',
   'src/__tests__/run-progress.test.tsx',
+  'src/__tests__/browser-sensitive-settings.test.tsx',
+  'src/__tests__/bridge-mock-approval-mode.test.ts',
+  'src/__tests__/at-matches.test.ts',
+  'src/__tests__/artifact-shelf-scale.test.tsx',
+  'src/__tests__/artifact-projection.test.ts',
+  'src/__tests__/artifact-image-display.test.tsx',
+  'src/__tests__/composer-draft-key.test.ts',
+  'src/__tests__/desktop-ui-stores.test.ts',
+  'src/__tests__/desktop-ui-components.test.tsx',
+  'src/__tests__/iris-fixture.test.ts',
+  'src/__tests__/relay-settings-contract.test.ts',
+  'src/__tests__/run-stream-placement.test.tsx',
+  'src/__tests__/run-events.test.ts',
+  'src/__tests__/session-background.test.tsx',
+  'src/__tests__/structure-clarification-card.test.tsx',
+  'src/__tests__/theme-iris.test.tsx',
+  'src/__tests__/work-parse-date.test.ts',
+  'src/__tests__/work-v2-recovery-entry.test.tsx',
+  'src/__tests__/workbench-layout.test.ts',
 ];
 
+const hook = new URL('./test-asset-hook.mjs', import.meta.url).href;
+const concurrency = Math.min(4, tests.length);
+let next = 0;
 let failed = false;
-for (const test of tests) {
-  const args = test.endsWith('app-work-integration.test.tsx')
-    ? ['--import', 'tsx', '--import', new URL('./test-asset-hook.mjs', import.meta.url).href, test]
-    : [tsx, test];
-  const result = spawnSync(process.execPath, args, {
-    cwd: root,
-    encoding: 'utf8',
-    maxBuffer: 16 * 1024 * 1024,
+
+function run(test) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', '--import', hook, test], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (data) => { stdout += data; });
+    child.stderr.on('data', (data) => { stderr += data; });
+    child.on('error', (error) => {
+      stderr += `${error.message}\n`;
+    });
+    child.on('close', (code) => {
+      if (code === 0) {
+        process.stdout.write(`PASS ${test}\n`);
+      } else {
+        failed = true;
+        process.stderr.write(`FAIL ${test}\n${stdout}${stderr}`);
+      }
+      resolve();
+    });
   });
-  if (result.status !== 0 || result.error) {
-    process.stderr.write(`FAIL ${test}\n`);
-    process.stdout.write(result.stdout ?? '');
-    process.stderr.write(result.stderr ?? '');
-    if (result.error) process.stderr.write(`${result.error.message}\n`);
-    failed = true;
-    continue;
-  }
-  process.stdout.write(`PASS ${test}\n`);
 }
 
+async function worker() {
+  while (next < tests.length) {
+    const test = tests[next++];
+    await run(test);
+  }
+}
+
+await Promise.all(Array.from({ length: concurrency }, worker));
 if (failed) process.exit(1);

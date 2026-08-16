@@ -24,18 +24,18 @@ function eq(actual: unknown, expected: unknown, label: string) {
   ok(actual === expected, `${label}${actual === expected ? "" : `: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`}`);
 }
 
-function flushPromises(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+function flushPromises(delayMs = 0): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 async function waitFor(label: string, predicate: () => boolean) {
-	for (let attempt = 0; attempt < 50; attempt += 1) {
-		await act(async () => {
-			await flushPromises(20);
-		});
-		if (predicate()) return;
-	}
-	throw new Error(`timed out waiting for ${label}`);
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    await act(async () => {
+      await flushPromises(10);
+    });
+    if (predicate()) return;
+  }
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
@@ -107,8 +107,13 @@ const effort: EffortInfo = { supported: true, current: "auto", default: "auto", 
 
 window.runtime = {
   EventsOn: (name: string, cb: (payload: unknown) => void) => {
-    if (name === "agent:event") eventHandlers.push(cb as (e: WireEvent) => void);
-    return () => {};
+    if (name !== "agent:event") return () => {};
+    const handler = cb as (e: WireEvent) => void;
+    eventHandlers.push(handler);
+    return () => {
+      const index = eventHandlers.indexOf(handler);
+      if (index >= 0) eventHandlers.splice(index, 1);
+    };
   },
   BrowserOpenURL: () => {},
 };
@@ -152,13 +157,16 @@ await act(async () => {
 });
 await waitFor("active tab", () => controller?.activeTabId === "tab-a");
 await waitFor("initial hydration", () => controller?.state.hydrating === false && controller.state.meta?.ready === true);
+await waitFor("event subscription", () => eventHandlers.length === 1);
 
 backendRunning = true;
 await act(async () => {
-  for (const handler of eventHandlers) handler({ kind: "turn_started", tabId: "tab-a" });
+  eventHandlers[0]({ kind: "turn_started", tabId: "tab-a" });
+  await flushPromises();
   await flushPromises();
 });
-eq(controller?.state.running, true, "turn_started marks the tab running");
+await act(async () => { root.render(<Probe />); await flushPromises(); });
+await waitFor("turn_started marks the tab running", () => controller?.state.running === true);
 
 await act(async () => {
   controller?.cancel();

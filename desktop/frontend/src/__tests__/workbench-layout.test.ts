@@ -33,7 +33,7 @@ function ok(value: boolean, label: string) {
 }
 
 function includes(text: string, pattern: string): boolean {
-  return text.includes(pattern);
+  return text.replace(/\r\n/g, "\n").includes(pattern);
 }
 
 function finalDeclaration(source: string, selector: string, property: string): string | undefined {
@@ -252,7 +252,7 @@ ok(composerMaxW === "100%", `CSS: workbench composer-card max-width is 100% (got
 
 // CSS: conversation-viewport padding is compact
 const viewportPad = finalDeclaration(stylesSource, ".conversation-viewport", "padding");
-ok(viewportPad === "48px 48px 24px 48px", `CSS: conversation-viewport padding is compact (got: ${viewportPad})`);
+ok(viewportPad === "24px 48px 22px", `CSS: conversation-viewport padding is compact (got: ${viewportPad})`);
 
 // Windows frameless chrome: one compact utility row and a real drag surface.
 ok(
@@ -436,7 +436,7 @@ ok(memBorderT === "1px solid var(--border)", `CSS: workbench TaskMemoryBar has t
 
 // task-memory-bar base still has bottom border (workbench keeps it)
 const memBorderB = finalDeclaration(stylesSource, ".task-memory-bar", "border-bottom");
-ok(memBorderB === "1px solid var(--border)", `CSS: base task-memory-bar has bottom hairline (got: ${memBorderB})`);
+ok(memBorderB === "1px solid var(--border-soft)", `CSS: base task-memory-bar has bottom hairline (got: ${memBorderB})`);
 
 const memSlotFlex = finalDeclaration(stylesSource, ".task-memory-bar__segment-slot", "flex");
 ok(memSlotFlex === "1 1 0", `CSS: memory segments share available width (got: ${memSlotFlex})`);
@@ -448,21 +448,21 @@ ok(noCurrentGoalGrow === "2", `CSS: goal expands when current is absent (got: ${
 
 // Verify both share one rule (same property source)
 ok(
-  includes(stylesSource, ".session-footer-dock > .artifact-shelf,\n.session-footer-dock > .queue-tray,\n.session-footer-dock > .composer-wrap,\n.session-footer-dock > .runtime-config-bar"),
+  includes(stylesSource, ".session-footer-dock .artifact-shelf,\n.session-footer-dock .queue-tray,\n.session-footer-dock .composer-wrap,\n.session-footer-dock .runtime-config-bar"),
   "CSS: composer-wrap and runtime-config-bar share one explicit rule with artifact-shelf and queue-tray",
 );
 
 // The shared rule must have width: auto; max-width: none; for the border-box width contract.
 // Use includes because finalDeclaration cannot extract from comma-separated selectors.
 const sharedBlock = stylesSource.slice(
-  stylesSource.indexOf(".session-footer-dock > .artifact-shelf,"),
-  stylesSource.indexOf("}", stylesSource.indexOf(".session-footer-dock > .artifact-shelf,")) + 1,
+  stylesSource.indexOf(".session-footer-dock .artifact-shelf,"),
+  stylesSource.indexOf("}", stylesSource.indexOf(".session-footer-dock .artifact-shelf,")) + 1,
 );
 ok(sharedBlock.includes("width: auto;"), "CSS: shared rule has width: auto for border-box contract");
 ok(sharedBlock.includes("max-width: none;"), "CSS: shared rule has max-width: none for border-box contract");
 
 ok(
-  includes(stylesSource, ".layout--workbench .session-footer-dock > .composer-wrap,\n.layout--workbench .session-footer-dock > .runtime-config-bar {") &&
+  includes(stylesSource, ".layout--workbench .session-footer-dock .composer-wrap,\n.layout--workbench .session-footer-dock .runtime-config-bar {") &&
     includes(stylesSource, "box-sizing: border-box;"),
   "CSS: high-specificity workbench rule defeats themed composer auto margins",
 );
@@ -471,9 +471,9 @@ ok(
 const cwWidthWorkbench = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .composer-wrap", "width");
 ok(cwWidthWorkbench === "auto", `CSS: workbench composer-wrap width is auto (got: ${cwWidthWorkbench})`);
 
-// The runtime-config-bar workbench override must NOT set width itself (inherits from shared rule)
+// The workbench override repeats width explicitly so later theme rules cannot narrow it.
 const rcbWidthOverride = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .runtime-config-bar", "width");
-ok(rcbWidthOverride == null, `CSS: runtime-config-bar workbench override does NOT set separate width (got: ${rcbWidthOverride})`);
+ok(rcbWidthOverride === "auto", `CSS: runtime-config-bar workbench override preserves auto width (got: ${rcbWidthOverride})`);
 
 ok(
   includes(runtimeConfigSource, "<ModelSwitcher") && includes(runtimeConfigSource, "onPick={onSwitchModel}"),
@@ -485,7 +485,7 @@ ok(
   "RuntimeConfigBar: context and approval labels use compact meaningful copy",
 );
 ok(
-  includes(runtimeConfigSource, "onSetApprovalMode(next)") && includes(appSource, "onSetApprovalMode={applyToolApprovalMode}"),
+  includes(runtimeConfigSource, "onSetApprovalMode(next)") && includes(appSource, "onSetToolApprovalMode={applyToolApprovalMode}"),
   "RuntimeConfigBar: approval control updates the real session mode",
 );
 
@@ -574,7 +574,7 @@ ok(
 
 ok(
   includes(appSource, 'className="workspace-sidebar__settings"') &&
-    includes(appSource, "onClick={openGeneralSettings}") &&
+    includes(appSource, "runKeyboardClick(event, openGeneralSettings)") &&
     includes(appSource, 'setSettingsTarget("general")'),
   "App.tsx: Session List bottom settings entry uses the shared general-settings opener",
 );
@@ -679,13 +679,13 @@ ok(
   "App.tsx: every collapsed Work and Room state exposes one App-owned sidebar restore control",
 );
 
-// App.tsx: expand button in session-header when collapsed
+// App.tsx: regular session topicbar exposes the expand button when collapsed.
 ok(
-  includes(appSource, 'className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}') &&
-    includes(appSource, 'className="session-header__identity"') &&
-    includes(appSource, "{sidebarCollapsed && (") &&
-    includes(appSource, '<PanelRight size={15} aria-hidden="true" />'),
-  "App.tsx: session-header shows PanelRight expand button when sidebar is collapsed",
+  includes(appSource, '"topicbar__chrome-btn--sidebar"') &&
+    includes(appSource, 'className="topicbar__identity"') &&
+    includes(appSource, "workbenchChromeHidden && sidebarCollapsed && (") &&
+    includes(appSource, '<PanelRight size={15} />'),
+  "App.tsx: topicbar shows PanelRight expand button when sidebar is collapsed",
 );
 
 ok(
