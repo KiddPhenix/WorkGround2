@@ -2360,6 +2360,7 @@ function makeMockApp(): AppBindings {
 				queue_seq: mockDecisionState.revision + 1,
 				created_at: now,
 				presented_at: mockDecisionState.active ? undefined : now,
+				origin: { kind: "agent", agent_id: input.agentId, thread_id: input.threadId, workspace_root: input.workspaceRoot },
 				presentation: {
 					title: input.title, task_summary: input.taskSummary, why_now: input.whyNow,
 					questions: input.questions.map((q) => ({ id: q.id, header: q.header, prompt: q.prompt, options: q.options, multi_select: q.multiSelect })),

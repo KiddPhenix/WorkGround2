@@ -1563,7 +1563,10 @@ export interface DecisionView {
   queue_seq: number;
   created_at: string;
   presented_at?: string;
+  decided_at?: string;
+  applied_at?: string;
   last_error?: string;
+  origin: { kind: string; workspace_root?: string; session_title?: string; agent_id?: string; thread_id?: string };
   presentation: {
     title: string;
     task_summary: string;

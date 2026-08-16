@@ -104,10 +104,12 @@ function DecisionCard({ value, busy, onRun }: { value: DecisionView; busy: strin
   const initial = useMemo(() => Object.fromEntries(value.presentation.questions.map((question) => [question.id, [] as string[]])), [value.id]);
   const [selected, setSelected] = useState<Record<string, string[]>>(initial);
   const complete = value.presentation.questions.every((question) => (selected[question.id]?.length ?? 0) > 0);
+  const source = value.origin.session_title || value.origin.agent_id || value.origin.workspace_root || value.origin.kind;
   const answer = () => onRun(`answer:${value.id}`, () => app.ResolveDecision({ decisionId: value.id, responder: "WorkGround2 桌面端", selections: value.presentation.questions.map((question) => ({ questionId: question.id, selected: selected[question.id] || [] })) }));
   return <article className="decision-card decision-card--active">
     <div className="decision-card__id">{value.id}</div>
     <h4>{value.presentation.title}</h4>
+    <p><strong>来源：</strong>{source}</p>
     <p><strong>正在做：</strong>{value.presentation.task_summary}</p>
     <p><strong>为什么现在问：</strong>{value.presentation.why_now}</p>
     {value.presentation.questions.map((question) => <fieldset key={question.id} className="decision-card__question"><legend>{question.prompt}</legend>{question.options.map((option) => {
@@ -126,7 +128,8 @@ function QueuedCard({ value, index, deferred, busy, onRun }: { value: DecisionVi
 
 function HistoryRow({ value }: { value: DecisionView }) {
   const answer = value.answer?.selections.flatMap((selection) => selection.selected).join("、");
-  return <div className="decision-history-row"><span className={`decision-status decision-status--${value.status}`}>{value.status}</span><div><b>{value.presentation.title}</b><small>{answer ? `${value.responder?.label || "主人"}：${answer}` : value.last_error || value.id}</small></div></div>;
+  const decidedAt = value.decided_at ? new Date(value.decided_at).toLocaleString() : "";
+  return <div className="decision-history-row"><span className={`decision-status decision-status--${value.status}`}>{value.status}</span><div><b>{value.presentation.title}</b><small>{answer ? `${value.responder?.label || "主人"}：${answer}${decidedAt ? ` · ${decidedAt}` : ""}` : value.last_error || value.id}</small></div></div>;
 }
 
 function CreateForm({ draft, setDraft, busy, onCreate }: { draft: DecisionDraft; setDraft: Dispatch<SetStateAction<DecisionDraft>>; busy: boolean; onCreate: () => void }) {
