@@ -57,6 +57,9 @@ import type {
   ContextPanelInfo,
   DirEntry,
   DesktopStartupSettingsView,
+	DecisionCreateInput,
+	DecisionResolveInput,
+	DecisionStateView,
   DroppedItem,
   DrawAddonGenerateInput,
   DrawAddonProviderInput,
@@ -288,6 +291,17 @@ export interface WorkArtifactFileIntent {
 
 export interface AppBindings extends WailsWorkBindings {
   Platform(): Promise<string>;
+	DecisionState(): Promise<DecisionStateView>;
+	CreateDecision(input: DecisionCreateInput): Promise<unknown>;
+	ResolveDecision(input: DecisionResolveInput): Promise<DecisionStateView>;
+	DeferDecision(id: string): Promise<DecisionStateView>;
+	ResumeDecision(id: string): Promise<DecisionStateView>;
+	CancelDecision(id: string): Promise<DecisionStateView>;
+	SaveDecisionSettings(input: { externalMode: string; localOnlyUntil: string; smartGraceSec: number }): Promise<DecisionStateView>;
+	SaveDecisionChannel(input: { id: string; name: string; kind: string; enabled: boolean; connectionId: string; domain: string; chatId: string; chatType: string }): Promise<DecisionStateView>;
+	DeleteDecisionChannel(id: string): Promise<DecisionStateView>;
+	TestDecisionChannel(id: string): Promise<void>;
+	InstallDecisionSkill(): Promise<AICollaborationInjectResult>;
   UnreadState(): Promise<UnreadState>;
   MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
   ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
@@ -955,6 +969,13 @@ export function onSessionActivated(cb: (event: SessionActivatedEvent) => void): 
 export function onCollaborationState(cb: (payload: unknown) => void): () => void {
   if (realApp() && typeof window !== "undefined" && window.runtime) {
     return window.runtime.EventsOn("collaboration:state", (payload?: unknown) => cb(payload));
+  }
+  return () => {};
+}
+
+export function onDecisionState(cb: (state: DecisionStateView) => void): () => void {
+  if (realApp() && typeof window !== "undefined" && window.runtime) {
+    return window.runtime.EventsOn("decision:state", (payload?: unknown) => cb(payload as DecisionStateView));
   }
   return () => {};
 }
@@ -2320,7 +2341,80 @@ function makeMockApp(): AppBindings {
       "Work features are not available in the browser dev mock. " +
       "Run the desktop app (wails dev / wails build) to use Work.",
     );
+	let mockDecisionState: DecisionStateView = {
+		available: true,
+		revision: 1,
+		queue: [],
+		deferred: [],
+		history: [],
+		channels: [],
+		settings: { externalMode: "smart", smartGraceSec: 30 },
+	};
   return {
+		async DecisionState() { return structuredClone(mockDecisionState); },
+		async CreateDecision(input) {
+			const now = new Date().toISOString();
+			const value = {
+				id: `D-MOCK-${Date.now()}`,
+				status: mockDecisionState.active ? "queued" as const : "presented" as const,
+				queue_seq: mockDecisionState.revision + 1,
+				created_at: now,
+				presented_at: mockDecisionState.active ? undefined : now,
+				origin: { kind: "agent", agent_id: input.agentId, thread_id: input.threadId, workspace_root: input.workspaceRoot },
+				presentation: {
+					title: input.title, task_summary: input.taskSummary, why_now: input.whyNow,
+					questions: input.questions.map((q) => ({ id: q.id, header: q.header, prompt: q.prompt, options: q.options, multi_select: q.multiSelect })),
+					no_answer_policy: input.noAnswerPolicy,
+				},
+			};
+			if (mockDecisionState.active) mockDecisionState.queue.push(value);
+			else mockDecisionState.active = value;
+			mockDecisionState.revision++;
+			return value;
+		},
+		async ResolveDecision(input) {
+			if (mockDecisionState.active?.id === input.decisionId) {
+				mockDecisionState.history.unshift({ ...mockDecisionState.active, status: "applied", answer: { selections: input.selections.map((s) => ({ question_id: s.questionId, selected: s.selected })) }, responder: { kind: "desktop", label: input.responder } });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+				if (mockDecisionState.active) mockDecisionState.active.status = "presented";
+			}
+			mockDecisionState.revision++;
+			return structuredClone(mockDecisionState);
+		},
+		async DeferDecision(id) {
+			if (mockDecisionState.active?.id === id) {
+				mockDecisionState.deferred.push({ ...mockDecisionState.active, status: "deferred" });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+			}
+			return structuredClone(mockDecisionState);
+		},
+		async ResumeDecision(id) {
+			const index = mockDecisionState.deferred.findIndex((item) => item.id === id);
+			if (index >= 0) mockDecisionState.queue.push({ ...mockDecisionState.deferred.splice(index, 1)[0], status: "queued" });
+			return structuredClone(mockDecisionState);
+		},
+		async CancelDecision(id) {
+			if (mockDecisionState.active?.id === id) {
+				mockDecisionState.history.unshift({ ...mockDecisionState.active, status: "cancelled" });
+				mockDecisionState.active = mockDecisionState.queue.shift();
+			}
+			return structuredClone(mockDecisionState);
+		},
+		async SaveDecisionSettings(input) {
+			mockDecisionState.settings = { externalMode: input.externalMode, localOnlyUntil: input.localOnlyUntil || undefined, smartGraceSec: input.smartGraceSec };
+			return structuredClone(mockDecisionState);
+		},
+		async SaveDecisionChannel(input) {
+			const channel = { id: input.id || `channel-${Date.now()}`, name: input.name, kind: input.kind, enabled: input.enabled, connection_id: input.connectionId, domain: input.domain, chat_id: input.chatId, chat_type: input.chatType };
+			mockDecisionState.channels = [...mockDecisionState.channels.filter((item) => item.id !== channel.id), channel];
+			return structuredClone(mockDecisionState);
+		},
+		async DeleteDecisionChannel(id) {
+			mockDecisionState.channels = mockDecisionState.channels.filter((item) => item.id !== id);
+			return structuredClone(mockDecisionState);
+		},
+		async TestDecisionChannel() {},
+		async InstallDecisionSkill() { return { ok: true, path: "", skillPath: "~/.codex/skills/ask-workground2-owner" }; },
     async GetCollaborationState() { return { status: "disconnected", members: [], timeline: [] }; },
     async RetryCollaboration() { return { status: "disconnected", members: [], timeline: [] }; },
     async HostCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },

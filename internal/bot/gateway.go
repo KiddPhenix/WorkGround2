@@ -55,6 +55,10 @@ type GatewayConfig struct {
 	// from triggering the same work twice; an error leaves the message retryable.
 	AcceptInbound func(InboundMessage) (InboundAcceptance, error)
 	OnInbound     func(InboundMessage)
+	// HandleDecision intercepts authorized messages that answer a process-wide
+	// human decision. handled=true prevents the same reply from starting or
+	// steering a regular bot turn.
+	HandleDecision func(InboundMessage) (response string, handled bool, err error)
 	// OnSessionReady notifies the host after the bot has created or reused the
 	// controller for an inbound remote. Hosts may persist the concrete session ID
 	// or keep the remote as a read-only channel.
@@ -620,6 +624,23 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 	}
 	if gw.cfg.OnInbound != nil {
 		gw.cfg.OnInbound(msg)
+	}
+	if gw.cfg.HandleDecision != nil && strings.HasPrefix(strings.ToLower(strings.TrimSpace(msg.Text)), "/answer d-") && !gw.checkCommandRole(binding.Platform, msg, "approver") {
+		_ = gw.sendText(ctx, binding.Adapter, msg, "抱歉，你没有回答主人决策的权限。")
+		return
+	}
+	if gw.cfg.HandleDecision != nil && gw.checkCommandRole(binding.Platform, msg, "approver") {
+		response, handled, err := gw.cfg.HandleDecision(msg)
+		if handled {
+			if err != nil {
+				gw.logger.Warn("bot decision reply failed", "platform", binding.Platform, "connection", msg.ConnectionID, "message", hashID(msg.MessageID), "err", err)
+				response = "这个决定暂时无法记录：" + err.Error()
+			}
+			if strings.TrimSpace(response) != "" {
+				_ = gw.sendText(ctx, binding.Adapter, msg, response)
+			}
+			return
+		}
 	}
 
 	if normalized, ok := gw.normalizeApprovalShortcut(key, msg.Text); ok {

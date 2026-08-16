@@ -18,6 +18,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/decision"
 )
 
 // remoteAPI is a minimal HTTP server on 127.0.0.1 that lets the CLI send
@@ -75,6 +76,11 @@ func (a *App) startRemoteAPI() {
 	mux.HandleFunc("/api/v1/workspace/switch", api.handleWorkspaceSwitch)
 	mux.HandleFunc("/api/v1/window/focus", api.handleWindowFocus)
 	mux.HandleFunc("/api/v1/status", api.handleStatus)
+	mux.HandleFunc("/api/v1/decisions/create", api.handleDecisionCreate)
+	mux.HandleFunc("/api/v1/decisions/get", api.handleDecisionGet)
+	mux.HandleFunc("/api/v1/decisions/list", api.handleDecisionList)
+	mux.HandleFunc("/api/v1/decisions/wait", api.handleDecisionWait)
+	mux.HandleFunc("/api/v1/decisions/cancel", api.handleDecisionCancel)
 
 	api.srv = &http.Server{
 		Handler:      mux,
@@ -204,6 +210,173 @@ func (api *remoteAPI) handleWindowFocus(w http.ResponseWriter, r *http.Request) 
 	runtime.WindowShow(ctx)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (api *remoteAPI) handleDecisionCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body DecisionCreateInput
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
+		http.Error(w, "invalid decision request", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.AgentID) == "" || strings.TrimSpace(body.ThreadID) == "" || strings.TrimSpace(body.IdempotencyKey) == "" {
+		http.Error(w, "invalid decision request: agentId, threadId and idempotencyKey are required", http.StatusBadRequest)
+		return
+	}
+	body.IdempotencyKey = "remote:" + strings.TrimSpace(body.AgentID) + ":" + strings.TrimSpace(body.ThreadID) + ":" + strings.TrimSpace(body.IdempotencyKey)
+	value, err := api.app.CreateDecision(body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	api.writeJSON(w, value)
+}
+
+func (api *remoteAPI) handleDecisionGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if api.app.decisionBroker == nil {
+		http.Error(w, "decision broker unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	value, ok := api.app.decisionBroker.Get(strings.TrimSpace(r.URL.Query().Get("id")))
+	if !ok {
+		http.Error(w, decision.ErrNotFound.Error(), http.StatusNotFound)
+		return
+	}
+	if !remoteDecisionOwned(value, r.URL.Query().Get("agentId"), r.URL.Query().Get("threadId")) {
+		http.Error(w, "decision is not owned by this caller", http.StatusForbidden)
+		return
+	}
+	api.writeJSON(w, value)
+}
+
+func (api *remoteAPI) handleDecisionList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	agentID, threadID := strings.TrimSpace(r.URL.Query().Get("agentId")), strings.TrimSpace(r.URL.Query().Get("threadId"))
+	if agentID == "" || threadID == "" || api.app.decisionBroker == nil {
+		http.Error(w, "agentId and threadId are required", http.StatusBadRequest)
+		return
+	}
+	values := api.app.decisionBroker.List(decision.ListFilter{Origin: &decision.Origin{Kind: "agent", AgentID: agentID, ThreadID: threadID}})
+	api.writeJSON(w, map[string]any{"revision": api.app.decisionBroker.Snapshot().Revision, "decisions": values})
+}
+
+func (api *remoteAPI) handleDecisionWait(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if api.app.decisionBroker == nil {
+		http.Error(w, "decision broker unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	agentID, threadID := strings.TrimSpace(r.URL.Query().Get("agentId")), strings.TrimSpace(r.URL.Query().Get("threadId"))
+	if agentID == "" || threadID == "" {
+		http.Error(w, "agentId and threadId are required", http.StatusBadRequest)
+		return
+	}
+	timeoutSec, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
+	if timeoutSec <= 0 || timeoutSec > 25 {
+		timeoutSec = 25
+	}
+	if id != "" {
+		value, ok := api.app.decisionBroker.Get(id)
+		if !ok {
+			http.Error(w, decision.ErrNotFound.Error(), http.StatusNotFound)
+			return
+		}
+		if !remoteDecisionOwned(value, agentID, threadID) {
+			http.Error(w, "decision is not owned by this caller", http.StatusForbidden)
+			return
+		}
+		if decisionWaitTerminal(value.Status) {
+			api.writeRemoteDecisionList(w, agentID, threadID)
+			return
+		}
+	} else if current := api.app.decisionBroker.Snapshot(); current.Revision > after {
+		api.writeRemoteDecisionList(w, agentID, threadID)
+		return
+	}
+	changes, unsubscribe := api.app.decisionBroker.Subscribe(64)
+	defer unsubscribe()
+	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case change := <-changes:
+			if id == "" || change.Decision.ID == id {
+				api.writeRemoteDecisionList(w, agentID, threadID)
+				return
+			}
+		case <-timer.C:
+			api.writeRemoteDecisionList(w, agentID, threadID)
+			return
+		}
+	}
+}
+
+func decisionWaitTerminal(status decision.Status) bool {
+	switch status {
+	case decision.StatusDecided, decision.StatusApplied, decision.StatusCancelled, decision.StatusOrphaned, decision.StatusApplyFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (api *remoteAPI) handleDecisionCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		ID       string `json:"id"`
+		AgentID  string `json:"agentId"`
+		ThreadID string `json:"threadId"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil || strings.TrimSpace(body.ID) == "" {
+		http.Error(w, "invalid request: id is required", http.StatusBadRequest)
+		return
+	}
+	value, ok := api.app.decisionBroker.Get(strings.TrimSpace(body.ID))
+	if !ok {
+		http.Error(w, decision.ErrNotFound.Error(), http.StatusNotFound)
+		return
+	}
+	if !remoteDecisionOwned(value, body.AgentID, body.ThreadID) {
+		http.Error(w, "decision is not owned by this caller", http.StatusForbidden)
+		return
+	}
+	transition, err := api.app.decisionBroker.Cancel(body.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	api.writeJSON(w, transition.Decision)
+}
+
+func remoteDecisionOwned(value decision.Decision, agentID, threadID string) bool {
+	agentID = strings.TrimSpace(agentID)
+	threadID = strings.TrimSpace(threadID)
+	return agentID != "" && threadID != "" && value.Origin.Kind == "agent" && value.Origin.AgentID == agentID && value.Origin.ThreadID == threadID
+}
+
+func (api *remoteAPI) writeRemoteDecisionList(w http.ResponseWriter, agentID, threadID string) {
+	values := api.app.decisionBroker.List(decision.ListFilter{Origin: &decision.Origin{Kind: "agent", AgentID: agentID, ThreadID: threadID}})
+	api.writeJSON(w, map[string]any{"revision": api.app.decisionBroker.Snapshot().Revision, "decisions": values})
 }
 
 func (api *remoteAPI) handleStatus(w http.ResponseWriter, r *http.Request) {

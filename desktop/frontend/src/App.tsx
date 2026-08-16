@@ -26,6 +26,7 @@ import {
   GitBranch,
   History,
   MessageSquare,
+	MessageCircleQuestion,
   Settings as SettingsIcon,
   Pencil,
   Trash2,
@@ -185,6 +186,7 @@ import type { CollaborationWorkspaceOption } from "./collab/types";
 const HistoryPanel = lazy(() => import("./components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel").then((module) => ({ default: module.SettingsPanel })));
 const AddOnDialogModal = lazy(() => import("./components/addons/AddOnDialogModal").then((module) => ({ default: module.AddOnDialogModal })));
+const DecisionCenter = lazy(() => import("./components/DecisionCenter").then((module) => ({ default: module.DecisionCenter })));
 
 const CHAT_MIN_WIDTH = 400;
 const CHAT_COMFORT_MIN_WIDTH = 560;
@@ -1193,6 +1195,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const singleSurfaceLayout = desktopLayoutStyle === "workbench" || desktopLayoutStyle === "creation";
   const [startupUpdateChecksEnabled, setStartupUpdateChecksEnabled] = useState<boolean | null>(null);
   const [histView, setHistView] = useState<HistoryViewState | null>(null);
+	const [decisionCenterOpen, setDecisionCenterOpen] = useState(false);
   const paletteOpen = useOverlayStore((s) => s.paletteOpen);
   const setPaletteOpen = useOverlayStore((s) => s.setPaletteOpen);
   const shortcutsOpen = useOverlayStore((s) => s.shortcutsOpen);
@@ -5172,6 +5175,14 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
           />
         </Suspense>
       )}
+
+	  <button className="decision-launcher" type="button" onClick={() => setDecisionCenterOpen(true)} aria-label="打开主人决策">
+		<MessageCircleQuestion size={15} />
+		<span>主人决策</span>
+	  </button>
+	  <Suspense fallback={null}>
+		<DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />
+	  </Suspense>
 
       {settingsTarget !== null && (
         <Suspense fallback={null}>

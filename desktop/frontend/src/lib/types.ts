@@ -1542,6 +1542,85 @@ export interface DesktopStartupSettingsView {
   widgetSkin: string; // widget visual skin
 }
 
+export type DecisionStatus = "queued" | "presented" | "decided" | "applied" | "deferred" | "cancelled" | "orphaned" | "apply_failed";
+
+export interface DecisionOptionView {
+  label: string;
+  impact: string;
+}
+
+export interface DecisionQuestionView {
+  id: string;
+  header: string;
+  prompt: string;
+  options: DecisionOptionView[];
+  multi_select?: boolean;
+}
+
+export interface DecisionView {
+  id: string;
+  status: DecisionStatus;
+  queue_seq: number;
+  created_at: string;
+  presented_at?: string;
+  decided_at?: string;
+  applied_at?: string;
+  last_error?: string;
+  origin: { kind: string; workspace_root?: string; session_title?: string; agent_id?: string; thread_id?: string };
+  presentation: {
+    title: string;
+    task_summary: string;
+    why_now: string;
+    questions: DecisionQuestionView[];
+    recommendation?: { question_id: string; option: string; reason: string };
+    no_answer_policy: string;
+  };
+  answer?: { selections: Array<{ question_id: string; selected: string[] }> };
+  responder?: { kind: string; id?: string; label?: string; endpoint_id?: string };
+}
+
+export interface DecisionChannelView {
+  id: string;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  connection_id?: string;
+  domain?: string;
+  chat_id?: string;
+  chat_type?: string;
+}
+
+export interface DecisionStateView {
+  available: boolean;
+  error?: string;
+  revision: number;
+  active?: DecisionView;
+  queue: DecisionView[];
+  deferred: DecisionView[];
+  history: DecisionView[];
+  channels: DecisionChannelView[];
+  settings: { externalMode: string; localOnlyUntil?: string; smartGraceSec: number };
+}
+
+export interface DecisionResolveInput {
+  decisionId: string;
+  selections: Array<{ questionId: string; selected: string[] }>;
+  responder: string;
+}
+
+export interface DecisionCreateInput {
+  idempotencyKey: string;
+  agentId: string;
+  threadId: string;
+  workspaceRoot: string;
+  sessionId: string;
+  title: string;
+  taskSummary: string;
+  whyNow: string;
+  questions: Array<{ id: string; header: string; prompt: string; options: DecisionOptionView[]; multiSelect: boolean }>;
+  noAnswerPolicy: string;
+}
+
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;
 // UpdateProgress streams on the "updater:progress" event during download/install.
 export interface UpdateInfo {

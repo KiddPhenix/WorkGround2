@@ -36,6 +36,7 @@ import (
 	"workground2/internal/botruntime"
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/decision"
 	"workground2/internal/event"
 	"workground2/internal/evidence"
 	"workground2/internal/fileref"
@@ -151,10 +152,15 @@ type App struct {
 	trayReady           bool
 	tray                *desktopTray
 
-	mediaTokens *mediaTokenStore
-	background  *sessionBackgroundService
-	botInstalls map[string]*botInstallSession
-	botRuntime  *desktopBotRuntime
+	mediaTokens     *mediaTokenStore
+	background      *sessionBackgroundService
+	botInstalls     map[string]*botInstallSession
+	botRuntime      *desktopBotRuntime
+	decisionBroker  *decision.Broker
+	decisionErr     error
+	decisionCancel  context.CancelFunc
+	decisionApplyMu sync.Mutex
+	decisionSending atomic.Bool
 
 	unreadMu           sync.RWMutex
 	unreadStore        *unread.Store
@@ -410,6 +416,11 @@ func NewApp() *App {
 		dshWorkbenches:   map[string]*dshWorkbench{},
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
+	decisionPath := ""
+	if root != "" {
+		decisionPath = filepath.Join(root, "decision-broker-v1.json")
+	}
+	a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
 	if root == "" {
 		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
 		a.unreadErr = errors.New("unread data directory is unavailable")
@@ -453,6 +464,7 @@ func (a *App) startup(ctx context.Context) {
 
 	a.goSafe("startSessionWatcher", a.startSessionWatcher)
 	a.goSafe("startRemoteAPI", a.startRemoteAPI)
+	a.startDecisionRuntime()
 
 	go a.restoreOrBuildTabs()
 	a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
@@ -747,6 +759,7 @@ func (a *App) snapshotAllTabs() {
 
 // shutdown snapshots all tabs, saves the final window geometry, and closes tabs.
 func (a *App) shutdown(context.Context) {
+	a.stopDecisionRuntime()
 	a.closeDSHWorkbenches()
 	a.closeCollaborations()
 	if a.heartbeat != nil {
@@ -1478,6 +1491,12 @@ func (a *App) AnswerQuestionForTab(tabID, id string, answers []QuestionAnswer) {
 	for i, an := range answers {
 		out[i] = event.AskAnswer{QuestionID: an.QuestionID, Selected: an.Selected}
 	}
+	if handled, err := a.resolveAskThroughDecision(tabID, id, out, "WorkGround2 桌面端"); handled {
+		if err != nil {
+			slog.Warn("desktop: answer global decision", "ask", id, "err", err)
+		}
+		return
+	}
 	ctrl.AnswerQuestion(id, out)
 }
 
@@ -1549,6 +1568,9 @@ func (a *App) answerPendingQuestionForTab(tabID, id string, answers []QuestionAn
 		return fmt.Errorf("unknown question %q", questionID)
 	}
 
+	if handled, err := a.resolveAskThroughDecision(tabID, pending.Ask.ID, out, "WorkGround2 桌面端"); handled {
+		return err
+	}
 	ctrl.AnswerQuestion(pending.Ask.ID, out)
 	return nil
 }
