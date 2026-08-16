@@ -38,6 +38,19 @@ func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" || created.Status != decision.StatusPresented {
 		t.Fatalf("created=%+v err=%v", created, err)
 	}
+	rec = httptest.NewRecorder()
+	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(body)))
+	var duplicate decision.Decision
+	if err := json.Unmarshal(rec.Body.Bytes(), &duplicate); err != nil || duplicate.ID != created.ID {
+		t.Fatalf("duplicate=%+v err=%v", duplicate, err)
+	}
+	foreignBody := strings.Replace(body, `"threadId":"task"`, `"threadId":"other"`, 1)
+	rec = httptest.NewRecorder()
+	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(foreignBody)))
+	var foreign decision.Decision
+	if err := json.Unmarshal(rec.Body.Bytes(), &foreign); err != nil || foreign.ID == "" || foreign.ID == created.ID {
+		t.Fatalf("foreign=%+v err=%v", foreign, err)
+	}
 
 	rec = httptest.NewRecorder()
 	api.handleDecisionGet(rec, httptest.NewRequest(http.MethodGet, "/api/v1/decisions/get?id="+created.ID+"&agentId=codex&threadId=task", nil))

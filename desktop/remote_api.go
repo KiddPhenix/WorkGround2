@@ -222,10 +222,11 @@ func (api *remoteAPI) handleDecisionCreate(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid decision request", http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(body.AgentID) == "" || strings.TrimSpace(body.ThreadID) == "" {
-		http.Error(w, "invalid decision request: agentId and threadId are required", http.StatusBadRequest)
+	if strings.TrimSpace(body.AgentID) == "" || strings.TrimSpace(body.ThreadID) == "" || strings.TrimSpace(body.IdempotencyKey) == "" {
+		http.Error(w, "invalid decision request: agentId, threadId and idempotencyKey are required", http.StatusBadRequest)
 		return
 	}
+	body.IdempotencyKey = "remote:" + strings.TrimSpace(body.AgentID) + ":" + strings.TrimSpace(body.ThreadID) + ":" + strings.TrimSpace(body.IdempotencyKey)
 	value, err := api.app.CreateDecision(body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -307,7 +308,7 @@ func (api *remoteAPI) handleDecisionWait(w http.ResponseWriter, r *http.Request)
 		api.writeRemoteDecisionList(w, agentID, threadID)
 		return
 	}
-	changes, unsubscribe := api.app.decisionBroker.Subscribe(1)
+	changes, unsubscribe := api.app.decisionBroker.Subscribe(64)
 	defer unsubscribe()
 	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
 	defer timer.Stop()

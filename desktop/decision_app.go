@@ -645,7 +645,11 @@ func renderDecisionDelivery(value decision.Decision, kind decision.DeliveryEvent
 		if value.Responder != nil {
 			who = firstNonEmpty(value.Responder.Label, value.Responder.Kind, who)
 		}
-		return fmt.Sprintf("✅ 问题 %s 已由%s回答：%s", value.ID, who, decisionAnswerText(value))
+		when := ""
+		if value.DecidedAt != nil {
+			when = "（" + value.DecidedAt.Local().Format("01-02 15:04") + "）"
+		}
+		return fmt.Sprintf("✅ 问题 %s 已由%s回答%s：%s", value.ID, who, when, decisionAnswerText(value))
 	}
 	if kind == decision.DeliveryCancelled {
 		return fmt.Sprintf("问题 %s 已取消或来源已失效。", value.ID)
