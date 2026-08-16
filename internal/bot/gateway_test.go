@@ -671,6 +671,57 @@ func TestGatewayNumericApprovalShortcutActiveWithoutPendingSendsGuidance(t *test
 	}
 }
 
+func TestGatewayDecisionHandlerInterceptsAuthorizedReply(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	called := false
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{AllowAll: true},
+		HandleDecision: func(msg InboundMessage) (string, bool, error) {
+			called = true
+			if msg.ConnectionID != "weixin-owner" {
+				t.Fatalf("connection = %q", msg.ConnectionID)
+			}
+			return "已记录主人回答", true, nil
+		},
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Domain: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "owner", UserID: "allowed", MessageID: "answer-1", Text: "/answer D-1 2"})
+	if !called {
+		t.Fatal("decision handler was not called")
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || sent[0].Text != "已记录主人回答" {
+		t.Fatalf("sent = %#v", sent)
+	}
+	if gw.sessions.ActiveCount() != 0 {
+		t.Fatal("decision reply must not start a normal bot session")
+	}
+}
+
+func TestGatewayDecisionHandlerRejectsNonApprover(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	called := false
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{
+			Enabled:   true,
+			Users:     map[Platform][]string{PlatformWeixin: {"ordinary"}},
+			Approvers: map[Platform][]string{PlatformWeixin: {"owner"}},
+		},
+		HandleDecision: func(InboundMessage) (string, bool, error) { called = true; return "", true, nil },
+	}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Platform: PlatformWeixin, Adapter: adapter}
+	gw.handleMessage(context.Background(), binding, InboundMessage{ChatType: ChatDM, ChatID: "owner-chat", UserID: "ordinary", MessageID: "answer-2", Text: "/answer D-ABC 1"})
+	if called {
+		t.Fatal("non-approver reached decision handler")
+	}
+	sent := adapter.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "没有回答主人决策的权限") {
+		t.Fatalf("sent = %#v", sent)
+	}
+}
+
 func TestGatewayApproveWithoutSessionSendsGuidance(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	gw := NewGateway(GatewayConfig{}, nil, logger)

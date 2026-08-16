@@ -148,3 +148,46 @@ func TestExternalDeliveryModes(t *testing.T) {
 		t.Fatal("local-only should auto-expire")
 	}
 }
+
+func TestLocalOnlyWithoutDeadlineStaysDisabled(t *testing.T) {
+	b, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.SetSettings(Settings{ExternalMode: ExternalLocalOnly, SmartGrace: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if b.ExternalDeliveryEnabled(time.Now().Add(24*time.Hour), false, nil) {
+		t.Fatal("local-only without a deadline must stay disabled")
+	}
+}
+
+func TestAuditRecordsDecisionAndDeliveryFailures(t *testing.T) {
+	b, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := b.Create(validRequest("audit-key", "Audit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery, _, err := b.EnqueueDelivery("owner", created.Decision.ID, DeliveryPresented)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.CompleteDelivery(delivery.ID, "", errors.New("network down"), time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Resolve(created.Decision.ID, answer("复用"), Responder{Kind: "desktop", Label: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, entry := range b.Snapshot().Audit {
+		kinds[entry.Kind] = true
+	}
+	for _, want := range []string{"created", "delivery_queued", "delivery_failed", "resolved"} {
+		if !kinds[want] {
+			t.Fatalf("audit kinds = %#v, missing %q", kinds, want)
+		}
+	}
+}

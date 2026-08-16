@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,10 +16,52 @@ import (
 	"workground2/internal/agent"
 	"workground2/internal/autoresearch"
 	"workground2/internal/control"
+	"workground2/internal/decision"
 	"workground2/internal/event"
 	"workground2/internal/provider"
 	"workground2/internal/tool"
 )
+
+func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
+	broker, err := decision.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &remoteAPI{app: &App{decisionBroker: broker}}
+	body := `{"idempotencyKey":"codex:task:choice","agentId":"codex","threadId":"task","title":"确定发布策略","taskSummary":"正在准备桌面版本发布","whyNow":"下一步会生成安装包，需要先确定范围","questions":[{"id":"scope","header":"发布范围","prompt":"这次发布稳定版还是预览版？","options":[{"label":"稳定版","impact":"所有用户可见"},{"label":"预览版","impact":"只给测试用户"}],"multiSelect":false}],"noAnswerPolicy":"保持暂停"}`
+	rec := httptest.NewRecorder()
+	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created decision.Decision
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.ID == "" || created.Status != decision.StatusPresented {
+		t.Fatalf("created=%+v err=%v", created, err)
+	}
+
+	rec = httptest.NewRecorder()
+	api.handleDecisionGet(rec, httptest.NewRequest(http.MethodGet, "/api/v1/decisions/get?id="+created.ID+"&agentId=codex&threadId=task", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), created.ID) {
+		t.Fatalf("get code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	api.handleDecisionGet(rec, httptest.NewRequest(http.MethodGet, "/api/v1/decisions/get?id="+created.ID+"&agentId=codex&threadId=other", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign get code=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	after := broker.Snapshot().Revision
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = broker.Resolve(created.ID, decision.Answer{Selections: []decision.Selection{{QuestionID: "scope", Selected: []string{"预览版"}}}}, decision.Responder{Kind: "test", Label: "owner"})
+	}()
+	rec = httptest.NewRecorder()
+	path := fmt.Sprintf("/api/v1/decisions/wait?id=%s&agentId=codex&threadId=task&after=%d&timeout=2", created.ID, after)
+	api.handleDecisionWait(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"decided"`) {
+		t.Fatalf("wait code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 func TestRemoteAPIActiveWorkspaceReadyStates(t *testing.T) {
 	root := t.TempDir()

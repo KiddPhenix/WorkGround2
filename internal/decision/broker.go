@@ -155,6 +155,7 @@ func (b *Broker) Create(req CreateRequest) (CreateResult, error) {
 	}
 	b.state.Decisions = append(b.state.Decisions, d)
 	b.bumpLocked(now)
+	b.auditLocked(d.ID, "created", d.Origin.Kind, now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return CreateResult{}, err
@@ -197,6 +198,7 @@ func (b *Broker) Resolve(id string, answer Answer, responder Responder) (Resolve
 	b.state.Decisions[idx] = current
 	promoted := b.promoteLocked(now)
 	b.bumpLocked(now)
+	b.auditLocked(current.ID, "resolved", responder.Label, now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return ResolveResult{}, err
@@ -263,6 +265,7 @@ func (b *Broker) MarkApplied(id string) (Decision, error) {
 	d.Revision++
 	b.state.Decisions[idx] = d
 	b.bumpLocked(now)
+	b.auditLocked(d.ID, "applied", "", now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return Decision{}, err
@@ -291,6 +294,7 @@ func (b *Broker) MarkApplyFailed(id string, applyErr error) (Decision, error) {
 	d.Revision++
 	b.state.Decisions[idx] = d
 	b.bumpLocked(now)
+	b.auditLocked(d.ID, "apply_failed", d.LastError, now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return Decision{}, err
@@ -334,7 +338,7 @@ func (b *Broker) ExternalDeliveryEnabled(now time.Time, desktopActive bool, pres
 	case ExternalOff:
 		return false
 	case ExternalLocalOnly:
-		return settings.LocalOnlyUntil == nil || !now.Before(*settings.LocalOnlyUntil)
+		return settings.LocalOnlyUntil != nil && !now.Before(*settings.LocalOnlyUntil)
 	case ExternalAlways:
 		return true
 	default:
@@ -456,6 +460,7 @@ func (b *Broker) EnqueueDelivery(endpointID, decisionID string, event DeliveryEv
 	delivery := Delivery{ID: id, DecisionID: decisionID, EndpointID: endpointID, Sequence: seq, Event: event, Status: DeliveryPending, CreatedAt: now, UpdatedAt: now}
 	b.state.Deliveries = append(b.state.Deliveries, delivery)
 	b.bumpLocked(now)
+	b.auditLocked(decisionID, "delivery_queued", endpointID+":"+string(event), now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return Delivery{}, false, err
@@ -516,6 +521,11 @@ func (b *Broker) CompleteDelivery(id, remoteMessage string, sendErr error, retry
 	}
 	b.state.Deliveries[idx] = d
 	b.bumpLocked(now)
+	auditKind := "delivery_sent"
+	if sendErr != nil {
+		auditKind = "delivery_failed"
+	}
+	b.auditLocked(d.DecisionID, auditKind, d.EndpointID+":"+d.LastError, now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return Delivery{}, err
@@ -560,6 +570,7 @@ func (b *Broker) transitionOpen(id, kind string, change func(*Decision, time.Tim
 	b.state.Decisions[idx] = d
 	promoted := b.promoteLocked(now)
 	b.bumpLocked(now)
+	b.auditLocked(d.ID, kind, "", now)
 	if err := b.saveLocked(); err != nil {
 		b.state = before
 		return Transition{}, err
@@ -648,6 +659,22 @@ func (b *Broker) bumpLocked(now time.Time) {
 	b.state.Version = SchemaVersion
 	b.state.Revision++
 	b.state.UpdatedAt = now
+}
+
+func (b *Broker) auditLocked(decisionID, kind, detail string, now time.Time) {
+	const maxAuditEntries = 10000
+	entry := AuditEntry{
+		ID:         fmt.Sprintf("A-%d-%d", b.state.Revision, len(b.state.Audit)+1),
+		DecisionID: strings.TrimSpace(decisionID),
+		Kind:       strings.TrimSpace(kind),
+		Revision:   b.state.Revision,
+		Detail:     strings.TrimSpace(detail),
+		At:         now.UTC(),
+	}
+	b.state.Audit = append(b.state.Audit, entry)
+	if len(b.state.Audit) > maxAuditEntries {
+		b.state.Audit = append([]AuditEntry(nil), b.state.Audit[len(b.state.Audit)-maxAuditEntries:]...)
+	}
 }
 
 func (b *Broker) saveLocked() error {

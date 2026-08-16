@@ -45,16 +45,17 @@ const (
 )
 
 type Origin struct {
-	Kind          string `json:"kind"`
-	WorkspaceRoot string `json:"workspace_root,omitempty"`
-	SessionID     string `json:"session_id,omitempty"`
-	SessionPath   string `json:"session_path,omitempty"`
-	SessionTitle  string `json:"session_title,omitempty"`
-	ControllerGen string `json:"controller_generation,omitempty"`
-	AgentID       string `json:"agent_id,omitempty"`
-	ThreadID      string `json:"thread_id,omitempty"`
-	ResumePayload string `json:"resume_payload,omitempty"`
-	Snapshot      string `json:"snapshot,omitempty"`
+	Kind           string `json:"kind"`
+	WorkspaceRoot  string `json:"workspace_root,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	SessionPath    string `json:"session_path,omitempty"`
+	SessionTitle   string `json:"session_title,omitempty"`
+	ControllerGen  string `json:"controller_generation,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
+	ThreadID       string `json:"thread_id,omitempty"`
+	LocalRequestID string `json:"local_request_id,omitempty"`
+	ResumePayload  string `json:"resume_payload,omitempty"`
+	Snapshot       string `json:"snapshot,omitempty"`
 }
 
 type Reference struct {
@@ -160,15 +161,25 @@ type Delivery struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
+type AuditEntry struct {
+	ID         string    `json:"id"`
+	DecisionID string    `json:"decision_id,omitempty"`
+	Kind       string    `json:"kind"`
+	Revision   int64     `json:"revision"`
+	Detail     string    `json:"detail,omitempty"`
+	At         time.Time `json:"at"`
+}
+
 type Snapshot struct {
-	Version      int        `json:"version"`
-	Revision     int64      `json:"revision"`
-	NextQueueSeq int64      `json:"next_queue_seq"`
-	Decisions    []Decision `json:"decisions"`
-	Channels     []Channel  `json:"channels,omitempty"`
-	Deliveries   []Delivery `json:"deliveries,omitempty"`
-	Settings     Settings   `json:"settings"`
-	UpdatedAt    time.Time  `json:"updated_at"`
+	Version      int          `json:"version"`
+	Revision     int64        `json:"revision"`
+	NextQueueSeq int64        `json:"next_queue_seq"`
+	Decisions    []Decision   `json:"decisions"`
+	Channels     []Channel    `json:"channels,omitempty"`
+	Deliveries   []Delivery   `json:"deliveries,omitempty"`
+	Audit        []AuditEntry `json:"audit,omitempty"`
+	Settings     Settings     `json:"settings"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 type CreateRequest struct {
