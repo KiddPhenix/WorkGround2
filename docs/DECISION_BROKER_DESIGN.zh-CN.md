@@ -190,11 +190,11 @@ Broker 同时最多有一个 `presented`。当前题进入 `decided`、`deferred
 
 桌面新增“主人决策”入口：
 
-- 当前问题：全局唯一决策卡片，显示来源、背景、影响、推荐和引用。
+- 当前问题：全局唯一决策卡片，显示来源、背景、选项影响和可选推荐。
 - 队列：只显示后续数量和简短标题，避免同时争夺注意力。
-- 历史：已回答、已取消、等待过久和 orphaned。
+- 历史：已回答、应用失败、已取消和 orphaned。
 - 通道：创建/编辑微信等 DecisionChannel、选择目标对话、测试发送和诊断。
-- 静默：暂停 30 分钟、1 小时、到今天下班或手动恢复。
+- 静默：可设置暂停到具体时间、无限期只在本机，或手动恢复外部发送。
 
 回答后所有表面立即禁用原选项，展示“由谁、在哪个端点、何时回答”。
 
@@ -202,15 +202,15 @@ Broker 同时最多有一个 `presented`。当前题进入 `decided`、`deferred
 
 稳定接口：
 
-- `decision_ask`
-- `decision_get`
-- `decision_list`
-- `decision_wait`
-- `decision_cancel`
+- `POST /api/v1/decisions/create`（`decision_ask`）
+- `GET /api/v1/decisions/get`（`decision_get`）
+- `GET /api/v1/decisions/list`（`decision_list`）
+- `GET /api/v1/decisions/wait`（`decision_wait`，单次最长 25 秒，可安全重复）
+- `POST /api/v1/decisions/cancel`（`decision_cancel`）
 
-外部调用方只能查看和取消自己创建的 Decision。回答接口只开放给经过认证的 Owner/Approver 端点。
+接口只监听 Desktop 的 `127.0.0.1` 随机端口；外部调用方必须携带创建时的 `agentId + threadId`，只能查看、等待和取消自己创建的 Decision。回答接口只开放给桌面用户和经过 Bot allowlist/Approver 校验的 Owner 端点。
 
-Skill 是调用规范层，要求 Agent 提供完整人类可读上下文、幂等 key 和可恢复 origin。可靠传输由 MCP/HTTP/CLI 工具提供，Skill 本身不充当消息队列。
+内置 `ask-workground2-owner` Skill 是调用规范层，要求 Agent 提供完整人类可读上下文、幂等 key 和可恢复 origin；其 PowerShell 客户端发现 Desktop 端口并调用本地 HTTP API。单次等待有界，Decision 本身默认不超时，Agent 可以跨 turn、跨重启继续等待。Skill 本身不充当消息队列。
 
 ## 11. 安全与隐私
 
@@ -225,7 +225,7 @@ Skill 是调用规范层，要求 Agent 提供完整人类可读上下文、幂�
 - 桌面和微信并发回答只有一个胜出，另一端看到“已经回答”。
 - 重复创建、重复回答、乱序投递和进程重启均不产生重复副作用。
 - 暂停外部投递不影响桌面回答；到期自动恢复。
-- 问题包含任务背景、原因、选项影响、推荐理由和无回答策略。
+- 问题包含任务背景、原因、选项影响和无回答策略；Agent 提供推荐时必须同时提供理由。
 - 默认长期有效；重启后恢复当前问题和队列顺序。
 - 外部 Agent 可通过 API 创建、查询、等待和取消，并可使用安装的 Skill。
 - 发送/应用失败可观察、可重试、可恢复。
