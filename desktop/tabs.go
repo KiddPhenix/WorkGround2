@@ -2521,8 +2521,18 @@ func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
 		closed := make([]*WorkspaceTab, 0, len(hidden))
 		detached := make([]*WorkspaceTab, 0, len(hidden))
 		for id, tab := range hidden {
-			if a.detachSessionRuntimeLocked(tab) {
-				detached = append(detached, tab)
+			// Runtimes with live work, and any session that owns a concrete
+			// SessionID (e.g. an external API session), detach so they stay
+			// addressable. Blank transient tabs are removed outright so their
+			// temporary session artifacts are cleaned up.
+			if (tab.Ctrl != nil && tab.hasActiveRuntimeWork()) ||
+				strings.TrimSpace(tab.SessionID) != "" {
+				if a.detachSessionRuntimeLocked(tab) {
+					detached = append(detached, tab)
+				} else {
+					a.markTabRemovedLocked(tab)
+					closed = append(closed, tab)
+				}
 			} else {
 				a.markTabRemovedLocked(tab)
 				closed = append(closed, tab)

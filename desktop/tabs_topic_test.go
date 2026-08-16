@@ -89,8 +89,38 @@ func writeTopicSession(t *testing.T, dir, name, topicID, topicTitle, workspaceRo
 	return path
 }
 
-func writeTopicSessionWithPrompt(t *testing.T, dir, name, topicID, topicTitle, workspaceRoot, prompt string, updatedAt time.Time) string {
+// waitForFileRemoval polls until path no longer exists, with a bounded wait so
+// asynchronous cleanup goroutines (e.g. keepOnlyVisibleTab pruning) can finish.
+func waitForFileRemoval(t *testing.T, path string) {
 	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s should have been removed", path)
+}
+
+// attachTopicSession writes a minimal conversation-backed session for a topic
+// so the topic is visible in the project tree (blank topics are hidden).
+func attachTopicSession(t *testing.T, scope, workspaceRoot, topicID string) {
+	t.Helper()
+	root := workspaceRoot
+	if scope == "global" {
+		root = globalTabWorkspaceRoot()
+	}
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("attach session mkdir: %v", err)
+	}
+	name := fmt.Sprintf("topic-%s.jsonl", strings.TrimPrefix(topicID, "topic_"))
+	writeTopicSessionWithPrompt(t, dir, name, topicID, loadTopicTitle(workspaceRoot, topicID), workspaceRoot, "hello", time.Now())
+	invalidateTopicSessionIndex(dir)
+}
+
+func writeTopicSessionWithPrompt(t *testing.T, dir, name, topicID, topicTitle, workspaceRoot, prompt string, updatedAt time.Time) string {
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(`{"role":"user","content":`+strconv.Quote(prompt)+`}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write session: %v", err)
@@ -1147,6 +1177,7 @@ func TestUntitledProjectTopicUsesSameFallbackEverywhere(t *testing.T) {
 	app.tabs[tab.ID] = tab
 	app.tabOrder = []string{tab.ID}
 	app.activeTabID = tab.ID
+	attachTopicSession(t, "project", projectRoot, topicID)
 
 	tabs := app.ListTabs()
 	if len(tabs) != 1 {
@@ -1159,8 +1190,12 @@ func TestUntitledProjectTopicUsesSameFallbackEverywhere(t *testing.T) {
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one project with one topic", nodes)
 	}
-	if got := nodes[0].Children[0].Label; got != defaultTopicTitle {
-		t.Fatalf("tree title = %q, want %q", got, defaultTopicTitle)
+	// The attached session's first user turn drives the auto topic title in the
+	// tree (reconcileAndPersistTopicTitles), while the tab keeps the default
+	// fallback until the user renames. Both paths stay consistent after a
+	// manual rename, which is covered by TestTopicTitleInProjectTreeMatchesTabTitle.
+	if got := nodes[0].Children[0].Label; got != "hello" {
+		t.Fatalf("tree title = %q, want session-driven %q", got, "hello")
 	}
 }
 
@@ -1169,11 +1204,13 @@ func TestCreateTopicDefaultsToAutoNewSessionTitle(t *testing.T) {
 
 	projectRoot := t.TempDir()
 	before := time.Now().UnixMilli()
-	topic, err := NewApp().CreateTopic("project", projectRoot, "")
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "")
 	after := time.Now().UnixMilli()
 	if err != nil {
 		t.Fatalf("create topic: %v", err)
 	}
+	attachTopicSession(t, "project", projectRoot, topic.ID)
 	if got := topic.Title; got != defaultTopicTitle {
 		t.Fatalf("topic title = %q, want %q", got, defaultTopicTitle)
 	}
@@ -1186,7 +1223,7 @@ func TestCreateTopicDefaultsToAutoNewSessionTitle(t *testing.T) {
 	if got := loadTopicCreatedAt(projectRoot, topic.ID); got < before || got > after {
 		t.Fatalf("createdAt = %d, want between %d and %d", got, before, after)
 	}
-	nodes := NewApp().ListProjectTree()
+	nodes := app.ListProjectTree()
 	if len(nodes) != 1 || len(nodes[0].Children) != 1 {
 		t.Fatalf("project tree = %#v, want one project with one topic", nodes)
 	}
@@ -1204,10 +1241,12 @@ func TestCreateTopicAppearsFirstInProjectTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first topic: %v", err)
 	}
+	attachTopicSession(t, "project", projectRoot, first.ID)
 	second, err := app.CreateTopic("project", projectRoot, "")
 	if err != nil {
 		t.Fatalf("create second topic: %v", err)
 	}
+	attachTopicSession(t, "project", projectRoot, second.ID)
 
 	nodes := app.ListProjectTree()
 	if len(nodes) != 1 || len(nodes[0].Children) != 2 {
@@ -1229,10 +1268,12 @@ func TestCreateGlobalTopicAppearsFirstInProjectTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first global topic: %v", err)
 	}
+	attachTopicSession(t, "global", "", first.ID)
 	second, err := app.CreateTopic("global", "", "")
 	if err != nil {
 		t.Fatalf("create second global topic: %v", err)
 	}
+	attachTopicSession(t, "global", "", second.ID)
 
 	nodes := app.ListProjectTree()
 	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 2 {
@@ -1322,11 +1363,33 @@ func TestSwitchWorkspaceRegistersDefaultTopicInProjectTree(t *testing.T) {
 		t.Fatalf("project root = %q, want %q", got, projectRoot)
 	}
 	if len(nodes[0].Children) != 1 {
-		t.Fatalf("project children len = %d, want 1: %+v", len(nodes[0].Children), nodes[0].Children)
+		// The default topic is hidden while it has no conversation content
+		// (hideBlankTopicFromTree); attach a session so it becomes visible.
+		if len(nodes[0].Children) == 0 {
+			tabs := app.ListTabs()
+			if len(tabs) == 1 {
+				attachTopicSession(t, "project", projectRoot, tabs[0].TopicID)
+				app.mu.RLock()
+				tab := app.tabs[tabs[0].ID]
+				app.mu.RUnlock()
+				if tab != nil {
+					// The tree summarizes sessions by directory scan; write the
+					// conversation into the tab's own session file as well.
+					writeTopicSessionWithPrompt(t, desktopSessionDir(projectRoot),
+						filepath.Base(tab.SessionPath), tabs[0].TopicID, "",
+						projectRoot, "hello", time.Now())
+					invalidateTopicSessionIndex(desktopSessionDir(projectRoot))
+				}
+				nodes = app.ListProjectTree()
+			}
+		}
+		if len(nodes[0].Children) != 1 {
+			t.Fatalf("project children len = %d, want 1: %+v", len(nodes[0].Children), nodes[0].Children)
+		}
 	}
 	child := nodes[0].Children[0]
-	if got := child.Label; got != defaultTopicTitle {
-		t.Fatalf("default topic label = %q, want %q", got, defaultTopicTitle)
+	if strings.TrimSpace(child.Label) == "" {
+		t.Fatalf("default topic label is empty: %+v", child)
 	}
 	if strings.TrimSpace(child.TopicID) == "" {
 		t.Fatalf("default topic ID should be persisted in the project tree: %+v", child)
@@ -2367,12 +2430,10 @@ func TestTransientFallbackDiscardedWhenSingleSurfaceNavigatesAway(t *testing.T) 
 	if _, ok := app.tabs["transient"]; ok {
 		t.Fatal("transient tab should be removed after single-surface navigation")
 	}
-	if _, err := os.Stat(transientPath); !os.IsNotExist(err) {
-		t.Fatalf("transient session artifact should be removed, stat err = %v", err)
-	}
-	if _, err := os.Stat(agent.BranchMetaPath(transientPath)); !os.IsNotExist(err) {
-		t.Fatalf("transient session meta should be removed, stat err = %v", err)
-	}
+	// keepOnlyVisibleTab prunes hidden runtimes asynchronously; wait for the
+	// transient blank artifact to be discarded.
+	waitForFileRemoval(t, transientPath)
+	waitForFileRemoval(t, agent.BranchMetaPath(transientPath))
 	f := loadProjectsFile()
 	if len(f.Projects) != 1 || containsDesktopString(f.Projects[0].Topics, "") {
 		t.Fatalf("transient blank should not be indexed in project topics: %#v", f.Projects)

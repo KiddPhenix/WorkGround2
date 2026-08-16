@@ -109,6 +109,9 @@ func isolateDesktopUserDirs(t *testing.T) string {
 	t.Setenv("WorkGround2_STATE_HOME", filepath.Join(home, "state"))
 	t.Setenv("WorkGround2_CACHE_HOME", filepath.Join(home, "cache"))
 	t.Setenv("AppData", appData)
+	// These tests assert the default user-then-project merge order. A machine
+	// that exports WorkGround2_PREFER_USER_CONFIG must not flip it.
+	t.Setenv("WorkGround2_PREFER_USER_CONFIG", "")
 	return home
 }
 
@@ -172,7 +175,7 @@ func TestCodexLocalCLIPresetUsesJSONLStream(t *testing.T) {
 }
 
 func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	home := "/Users/tester"
 	got := darwinCLICommandCandidates(onboardingLocalCLIPreset{
 		ID:       "codex",
 		Commands: []string{"codex", "codex.exe", "codex.cmd"},
@@ -181,9 +184,9 @@ func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.
 		"/Applications/Codex.app/Contents/Resources/codex",
 		"/opt/homebrew/bin/codex",
 		"/usr/local/bin/codex",
-		filepath.Join(home, "Applications", "Codex.app", "Contents", "Resources", "codex"),
-		filepath.Join(home, ".local", "bin", "codex"),
-		filepath.Join(home, "Library", "pnpm", "codex"),
+		"/Users/tester/Applications/Codex.app/Contents/Resources/codex",
+		"/Users/tester/.local/bin/codex",
+		"/Users/tester/Library/pnpm/codex",
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("darwin Codex candidates missing %q: %+v", want, got)
@@ -192,7 +195,7 @@ func TestDarwinCLICommandCandidatesCoverGUIAndPackageManagerInstalls(t *testing.
 }
 
 func TestDarwinCLICommandCandidatesSupportEveryPreset(t *testing.T) {
-	home := filepath.Join(string(filepath.Separator), "Users", "tester")
+	home := "/Users/tester"
 	for _, preset := range onboardingLocalCLIPresets {
 		got := darwinCLICommandCandidates(preset, home)
 		wantCommand := ""
@@ -207,9 +210,9 @@ func TestDarwinCLICommandCandidatesSupportEveryPreset(t *testing.T) {
 			t.Fatalf("preset %q has no macOS command", preset.ID)
 		}
 		for _, want := range []string{
-			filepath.Join("/opt/homebrew/bin", wantCommand),
-			filepath.Join(home, ".local", "bin", wantCommand),
-			filepath.Join(home, "Library", "pnpm", wantCommand),
+			"/opt/homebrew/bin/" + wantCommand,
+			home + "/.local/bin/" + wantCommand,
+			home + "/Library/pnpm/" + wantCommand,
 		} {
 			if !slices.Contains(got, want) {
 				t.Errorf("preset %q missing darwin candidate %q", preset.ID, want)

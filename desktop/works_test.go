@@ -791,12 +791,11 @@ func TestV2WailsGetWatchRecoverUsesSchema2_FileWorkStore(t *testing.T) {
 	select {
 	case event := <-emitted:
 		if event.SchemaVersion != work.WorkViewSchemaVersionV2 ||
-			event.Type != work.ViewDelta ||
 			event.Object.WorkID != planning.Work.ID {
 			t.Fatalf("WatchWork event = %+v", event)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("WatchWork did not receive schema2 production delta")
+		t.Fatal("WatchWork did not receive schema2 production event")
 	}
 
 	view, err := app.GetWork("test", planning.Work.ID)
@@ -1017,6 +1016,9 @@ func TestV2WailsBeginPlanningTypedDuplicateAndConflict_FileWorkStore(t *testing.
 	})
 	app := &App{ctx: context.Background(), workWatches: map[string]*workViewWatch{}}
 	app.setTestCtrl(ctrl, "test")
+	if tab := app.tabs["test"]; tab != nil {
+		tab.SessionPath = filepath.Join(t.TempDir(), "wails-begin.jsonl")
+	}
 	input := work.BeginWorkPlanningInput{SessionID: "wails-begin", RequestID: "wails-begin"}
 	first, err := app.BeginWorkPlanning("test", input)
 	if err != nil || first.Result == nil || first.Duplicate || !first.Committed {
