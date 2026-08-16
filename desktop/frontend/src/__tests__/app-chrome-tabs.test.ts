@@ -187,6 +187,16 @@ ok(
 );
 
 ok(
+  /workspace-sidebar__brand-actions/.test(appSource) &&
+    /workspace-sidebar__decision-btn/.test(appSource) &&
+    /aria-label="打开主人决策"/.test(appSource) &&
+    /<MessageCircleQuestion size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
+    !/decision-launcher/.test(appSource) &&
+    !/\.decision-launcher/.test(stylesSource),
+  "owner decision uses a small sidebar-header icon and no longer renders a floating launcher",
+);
+
+ok(
   /const \[transcriptRevealSignal, setTranscriptRevealSignal\] = useState\(0\);/.test(appSource) &&
     /revealActiveSignal=\{tabRevealSignal\}/.test(appSource) &&
     /revealSignal=\{transcriptRevealSignal\}/.test(appSource),

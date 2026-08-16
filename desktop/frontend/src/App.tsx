@@ -4131,17 +4131,29 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                   className="workspace-sidebar__brand-logo"
                   draggable={false}
                 />
-                <Tooltip label={sidebarToggleTitle} side="right">
-                  <button
-                    className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
-                    type="button"
-                    onClick={toggleSidebar}
-                    aria-label={sidebarToggleTitle}
-                    aria-pressed={!sidebarCollapsed}
-                  >
-                    <PanelLeft size={15} aria-hidden="true" />
-                  </button>
-                </Tooltip>
+                <div className="workspace-sidebar__brand-actions">
+                  <Tooltip label="主人决策" side="bottom">
+                    <button
+                      className="workspace-sidebar__decision-btn"
+                      type="button"
+                      onClick={() => setDecisionCenterOpen(true)}
+                      aria-label="打开主人决策"
+                    >
+                      <MessageCircleQuestion size={15} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label={sidebarToggleTitle} side="right">
+                    <button
+                      className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
+                      type="button"
+                      onClick={toggleSidebar}
+                      aria-label={sidebarToggleTitle}
+                      aria-pressed={!sidebarCollapsed}
+                    >
+                      <PanelLeft size={15} aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </div>
               </div>
 
               <button
@@ -5176,10 +5188,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         </Suspense>
       )}
 
-	  <button className="decision-launcher" type="button" onClick={() => setDecisionCenterOpen(true)} aria-label="打开主人决策">
-		<MessageCircleQuestion size={15} />
-		<span>主人决策</span>
-	  </button>
 	  <Suspense fallback={null}>
 		<DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />
 	  </Suspense>
