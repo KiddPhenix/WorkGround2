@@ -11,8 +11,8 @@ Concise, incremental index of confirmed feature locations in this repository.
 ## Entries
 
 ### DecisionBroker 全局主人决策通道
-- Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/decision_skill`
-- Summary: 状态 `done`，分支 `developping/decision-notify-ux+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；已连接 Bot 可一键设为问答通道；`ask` 进入全局问答队列，`notify` 直接进入历史并复用持久 outbox，不占用问答槽；微信用户侧隐藏 Decision ID、命令协议和原始远端 ID，选项强制分段，回答端只收到一次友好确认。
+- Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/decision_skill`
+- Summary: 状态 `done`，分支 `developping/decision-entry-sidebar+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；已连接 Bot 可一键设为问答通道；`ask` 进入全局问答队列，`notify` 直接进入历史并复用持久 outbox，不占用问答槽；微信用户侧隐藏 Decision ID、命令协议和原始远端 ID；遮挡内容的右下角固定入口已移到侧边栏收起按钮旁，以纯图标打开主人决策。
 - Keywords: DecisionBroker, Owner Inbox, Decision Center, human decision, Ask, Notify, Weixin, resolve, defer, waiting_decision, decision skill
 - Source: user-requested+verified-by-search
 - Updated: 2026-08-16

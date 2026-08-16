@@ -1665,8 +1665,6 @@
 .decision-settings h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; font-size: 13px; }
 .decision-settings label + label, .decision-settings label + button { margin-top: 10px; }
 .decision-center__long-wait { margin-top: 22px; border-left: 3px solid var(--accent); }
-.decision-launcher { position: fixed; right: 18px; bottom: 18px; z-index: var(--z-dock); display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); border-radius: 999px; color: var(--fg); background: color-mix(in srgb, var(--bg-elev) 92%, var(--accent)); box-shadow: 0 8px 28px rgba(0,0,0,.2); }
-.decision-launcher:hover { border-color: var(--accent); transform: translateY(-1px); }
 @media (max-width: 850px) { .decision-center__body { grid-template-columns: 1fr; } .decision-center__aside { border-top: 1px solid var(--border); border-left: 0; } .decision-create__grid { grid-template-columns: 1fr; } }
 :root[data-theme="light"][data-theme-style="verdant"] {
   --stage: #eaf0ed;
@@ -32956,13 +32954,20 @@ body > .mermaid-diagram--fullscreen {
   user-select: none;
 }
 
-.workspace-sidebar__collapse-btn {
+.workspace-sidebar__brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.workspace-sidebar__collapse-btn,
+.workspace-sidebar__decision-btn {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 30px;
   height: 30px;
-  margin-left: auto;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -32972,11 +32977,13 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
   transition: background var(--dur-fast) ease-out, color var(--dur-fast) ease-out;
 }
-.workspace-sidebar__collapse-btn:hover {
+.workspace-sidebar__collapse-btn:hover,
+.workspace-sidebar__decision-btn:hover {
   background: var(--sidebar-hover);
   color: var(--fg);
 }
-.workspace-sidebar__collapse-btn:focus-visible {
+.workspace-sidebar__collapse-btn:focus-visible,
+.workspace-sidebar__decision-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
 }
