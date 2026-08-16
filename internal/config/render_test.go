@@ -19,6 +19,9 @@ func isolateUserConfigHome(t *testing.T) string {
 	t.Setenv("WorkGround2_CREDENTIALS_STORE", "file")
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+	// These tests assert the default user-then-project merge order. A machine
+	// that exports WorkGround2_PREFER_USER_CONFIG must not flip it.
+	t.Setenv("WorkGround2_PREFER_USER_CONFIG", "")
 	return home
 }
 

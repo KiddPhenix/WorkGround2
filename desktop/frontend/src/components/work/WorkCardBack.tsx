@@ -831,7 +831,7 @@ export const WorkCardBack: React.FC<WorkCardBackProps> = ({
         />
       )}
 
-      {displayDefinition && !suppressEmptyPlaceholder && (
+      {displayDefinition && (!suppressEmptyPlaceholder || (candidateBase && !onCreateCandidate)) && (
         <section
           className="wg2-work-planning-definition"
           data-testid="work-planning-definition"

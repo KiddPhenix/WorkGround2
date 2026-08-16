@@ -1004,9 +1004,11 @@ async function runTests(): Promise<void> {
     ok(Array.isArray(slots), 'golden: artifactSlots is array');
     ok(slots.length >= 1, 'golden: at least 1 slot');
     const slot0 = slots[0];
-    eq(slot0.state, 'reserved', 'golden: state=reserved');
+    eq(slot0.state, 'ready', 'golden: produced slot is ready');
     eq(slot0.id, 'slot', 'golden: id=slot');
-    eq(slot0.artifactRefs, null, 'golden: null refs');
+    ok(Array.isArray(slot0.artifactRefs), 'golden: produced artifactRefs is an array');
+    eq(slot0.artifactRefs.length, 1, 'golden: produced slot has one artifact ref');
+    eq(slot0.artifactRefs[0]?.blobDigest, 'sha256:' + '0'.repeat(64), 'golden: artifact ref digest');
     // Mount it
     const slot: ArtifactSlot = { ...slot0, artifactRefs: slot0.artifactRefs ?? [] };
     const { host, cleanup } = await mount(<ResultCard slot={slot} />);

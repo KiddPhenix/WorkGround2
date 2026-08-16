@@ -180,9 +180,9 @@ ok(
 
 ok(
   /workspace-sidebar__collapse-btn/.test(appSource) &&
-    /session-header__expand-btn/.test(appSource) &&
-    /workspace-sidebar--collapsed/.test(appSource) &&
-    /sidebarCollapsed &&\s*\([\s\S]*?session-header__expand-btn/.test(appSource),
+    /<PanelLeft size=\{15\} aria-hidden="true" \/>/.test(appSource) &&
+    /aria-pressed=\{!sidebarCollapsed\}/.test(appSource) &&
+    /const sidebarCollapsed = useLayoutStore\(\(s\) => s\.sidebarCollapsed\);/.test(appSource),
   "real workbench puts PanelLeft collapse in sidebar brand and PanelRight expand in session header when collapsed",
 );
 
@@ -236,7 +236,7 @@ ok(
 );
 
 ok(
-  /const controllerReady = state\.meta\?\.ready === true && !state\.backendActivationPending;/.test(appSource) &&
+  /const controllerReady = workControllerReady;/.test(appSource) &&
     /onPrompt=\{handleTranscriptPrompt\}/.test(appSource) &&
     /submitDisabled=\{false\}/.test(appSource) &&
     appSource.includes("retryTabStartup") &&
@@ -246,7 +246,7 @@ ok(
 );
 
 ok(
-  /const transcriptHydrating = state\.hydrating && !state\.hydrateHistoryLoaded;/.test(appSource) &&
+  /const transcriptHydrating = state\.historyLoading;/.test(appSource) &&
     /hydrating=\{transcriptHydrating\}/.test(appSource),
   "Welcome is suppressed only until transcript history has loaded",
 );
@@ -277,13 +277,13 @@ ok(
 );
 
 ok(
-  /else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock) &&
+  /else \{[\s\S]*?openBlankTarget\([\s\S]*?\);\s*\n\s*if \(!latest\(\)\) return;\s*\n\s*if \(!\(await resumeSession\(session\.path, targetTab\.id\)\)\)/.test(navigationBlock) &&
     /scope === "project" && session\.workspaceRoot \? "project" : "global"/.test(navigationBlock),
   "history navigation opens CLI sessions without topic metadata on a blank scoped tab",
 );
 
 ok(
-  /else if \(scope === "global" && session\.topicId\) \{[\s\S]*?openTopicTarget\("global", "", session\.topicId, session\.path\);[\s\S]*?\} else \{[\s\S]*?await resumeSession\(session\.path, targetTab\.id\);/.test(navigationBlock),
+  /else if \(scope === "global" && session\.topicId\) \{[\s\S]*?openTopicTarget\("global", "", session\.topicId, session\.path\);[\s\S]*?\} else \{[\s\S]*?openBlankTarget\([\s\S]*?\);\s*\n\s*if \(!latest\(\)\) return;\s*\n\s*if \(!\(await resumeSession\(session\.path, targetTab\.id\)\)\)/.test(navigationBlock),
   "history navigation does not re-resume a session that OpenTopicSession already pinned",
 );
 

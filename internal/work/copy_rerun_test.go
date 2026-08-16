@@ -14,8 +14,8 @@ func TestServiceListBlueprintsAndCopyWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListBlueprints: %v", err)
 	}
-	if len(blueprints) != 4 {
-		t.Fatalf("blueprints = %d, want 4", len(blueprints))
+	if len(blueprints) != 9 {
+		t.Fatalf("blueprints = %d, want 9", len(blueprints))
 	}
 
 	source := mustServiceCreate(t, f.svc, "copy-source")
@@ -35,7 +35,8 @@ func TestServiceListBlueprintsAndCopyWork(t *testing.T) {
 	if copied.ID == source.ID || copied.CopiedFrom != source.ID || copied.State != WorkDraft {
 		t.Fatalf("copied identity/state = %+v", copied)
 	}
-	if copied.Prompt != prompt || copied.Name != source.Name+" - 副本" {
+	latest := mustServiceView(t, f.svc, source.ID)
+	if copied.Prompt != prompt || copied.Name != latest.Work.Name+" - 副本" {
 		t.Fatalf("copied editable data = name %q prompt %q", copied.Name, copied.Prompt)
 	}
 	if len(copied.Runs) != 0 || copied.ArchiveState != ArchiveActive {

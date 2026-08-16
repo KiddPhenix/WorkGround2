@@ -606,6 +606,12 @@ func TestFileWorkStore_TaskV2StateEvents(t *testing.T) {
 
 	taskID, _ := DeriveTaskID(runID, "n1")
 
+	emit := storeEventEmitter(store, workID)
+	rt := V2NewTaskRuntime(workID, runID, "n1", 1, "read", now)
+	if err := emitRuntimeCreated(emit, rt, now); err != nil {
+		t.Fatal(err)
+	}
+
 	events := []struct {
 		typ     WorkEventType
 		payload json.RawMessage
@@ -621,7 +627,7 @@ func TestFileWorkStore_TaskV2StateEvents(t *testing.T) {
 			Payload: ev.payload,
 			Object: ObjectContext{
 				Kind: ObjectTask, WorkID: workID, ID: taskID,
-				RunID: runID, TaskID: taskID,
+				RunID: runID, TaskID: taskID, DefinitionRevision: int64Ptr(1),
 			},
 		})
 		if err != nil {
@@ -1642,7 +1648,7 @@ func TestV2Scheduler_AuthoritativeRefreshProducesStaleResult(t *testing.T) {
 	store := newTestFileWorkStore(t)
 	workID, runID, nodeID := "w-live-stale", "r-live-stale", "render"
 	now := time.Date(2026, 7, 24, 2, 0, 0, 0, time.UTC)
-	if err := createMinimalV2WorkStore(t, store, workID, now); err != nil {
+	if err := createMinimalV2WorkStoreAtRevision(t, store, workID, 2, now); err != nil {
 		t.Fatal(err)
 	}
 	authority, err := NewFileV2RuntimeAuthority(store, workID)
@@ -1692,7 +1698,7 @@ func TestV2Scheduler_AuthoritativeRefreshProducesStaleResult(t *testing.T) {
 		runID,
 		[]NodeDef{{ID: nodeID}},
 		nil,
-		1,
+		2,
 		nil,
 		nil,
 		nil,
@@ -2754,16 +2760,23 @@ func storeEventEmitter(store *FileWorkStore, workID string) V2EventEmitter {
 }
 
 func createMinimalV2WorkStore(t *testing.T, store *FileWorkStore, workID string, now time.Time) error {
+	return createMinimalV2WorkStoreAtRevision(t, store, workID, 1, now)
+}
+
+func createMinimalV2WorkStoreAtRevision(t *testing.T, store *FileWorkStore, workID string, revision int64, now time.Time) error {
 	t.Helper()
 	w := &Work{
-		SchemaVersion: SchemaVersionV2,
-		ID:            workID,
-		Name:          "Test Work",
-		State:         WorkDraft,
-		ArchiveState:  ArchiveActive,
-		BlueprintRef:  BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		SchemaVersion:     SchemaVersionV2,
+		ID:                workID,
+		Name:              "Test Work",
+		State:             WorkDraft,
+		ArchiveState:      ArchiveActive,
+		BlueprintRef:      BlueprintRef{ID: "blueprint:blank", SchemaVersion: 1, Version: 1},
+		V2CurrentRevision: revision,
+		V2LatestRevision:  revision,
+		V2RevisionStates:  map[int64]DefinitionStatus{revision: DefActive},
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	return store.CreateWorkDir(CreateWorkDirInput{
 		RequestID: workID + "/create",

@@ -482,8 +482,10 @@ func TestReduceUpdate_ArtifactBlobChangeDoesNotStale(t *testing.T) {
 	}, "req-1"); err != nil {
 		t.Fatal(err)
 	}
+	// Replacing the produced blob is a normal completion, not a stale signal:
+	// an explicit ready with the new digest keeps the slot ready.
 	if err := reduceArtifactSlotUpdated(w, ArtifactSlotUpdatedPayload{
-		SlotID: "s1", WorkID: "w1", State: SlotGenerating, Revision: 3,
+		SlotID: "s1", WorkID: "w1", State: SlotReady, Revision: 3,
 		Refs: []ArtifactRef{{ID: "a", Status: ArtifactRefStatusAvailable, BlobDigest: "d2"}}, UpstreamDigest: "up-1",
 	}, "req-2"); err != nil {
 		t.Fatal(err)
@@ -541,9 +543,10 @@ func TestReduceUpdate_ProgressSummaryError(t *testing.T) {
 func TestReduceUpdate_InvalidTransition(t *testing.T) {
 	w := &Work{ID: "w1"}
 	reduceArtifactSlotDeclared(w, "s1", "w1", 1, "R", "pdf", 1, true)
-	// First set to ready.
+	// First set to ready with a usable ref so ComputeSlotState keeps it ready.
 	reduceArtifactSlotUpdated(w, ArtifactSlotUpdatedPayload{
 		SlotID: "s1", WorkID: "w1", State: SlotReady, Revision: 2,
+		Refs: []ArtifactRef{{ID: "r1", Status: ArtifactRefStatusAvailable}},
 	}, "req-1")
 	// ready → failed is invalid.
 	err := reduceArtifactSlotUpdated(w, ArtifactSlotUpdatedPayload{
@@ -836,7 +839,7 @@ func TestE2E_UpdateArtifactSlotProjectionFailureRecoversAfterRestart(t *testing.
 	writeDerivedFile = func(path string, data []byte, mode os.FileMode) error {
 		if filepath.Clean(path) == filepath.Clean(projectionPath) {
 			projectionWrites++
-			if projectionWrites == 2 {
+			if projectionWrites == 1 {
 				return errors.New("injected artifact slot projection failure")
 			}
 		}

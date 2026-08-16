@@ -583,7 +583,7 @@ func projectArtifactSlotUpdate(existing *ArtifactSlot, payload ArtifactSlotUpdat
 	} else if payload.State == SlotGenerating || payload.State == SlotReady || payload.State == SlotPartial {
 		updated.Error = nil
 	}
-	if updated.State != SlotStale && updated.State != SlotFailed {
+	if updated.State != SlotStale && updated.State != SlotFailed && updated.State != SlotGenerating {
 		updated.State = ComputeSlotState(&updated)
 	}
 	updated.Revision = payload.Revision

@@ -2751,7 +2751,9 @@ func workForView(value *Work) *Work {
 	view.Blocks = append([]BlockInstance{}, value.Blocks...)
 	view.Placements = append([]BlockPlacement{}, value.Placements...)
 	view.Cornerstones = append([]Cornerstone{}, value.Cornerstones...)
-	view.V2ArtifactSlots = append([]ArtifactSlot{}, value.V2ArtifactSlots...)
+	if value.V2ArtifactSlots != nil {
+		view.V2ArtifactSlots = append([]ArtifactSlot{}, value.V2ArtifactSlots...)
+	}
 	view.Runs = append([]WorkflowRun{}, value.Runs...)
 	for runIndex := range view.Runs {
 		view.Runs[runIndex].Stages = append([]Stage{}, value.Runs[runIndex].Stages...)

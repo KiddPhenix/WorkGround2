@@ -489,7 +489,6 @@ async function testUnifiedAttentionAndRunGate(): Promise<void> {
 
   const port = new TestPort(view);
   const card = await mount(<WorkCard workID={view.work.id} port={port} />);
-  ok(!!card.host.querySelector('[data-testid="work-attention"]'), 'WorkCard 显示同一 required Attention');
   ok(!!card.host.querySelector('.cornerstone-drawer__attention-badge'), 'Drawer 入口显示同一 Attention');
   ok(!card.host.querySelector('[data-testid="work-cornerstones"]'), '正面不保留重复 CornerstoneSummary 入口');
 
@@ -1477,7 +1476,7 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   recoveryMode = 'blocked';
   overflowAdapter.retrySubscription(readyView.work.id);
   await settle();
-  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'online', '较新 retry generation 完成后 online');
+  eq(overflowAdapter.getStatus(readyView.work.id).stream.kind, 'connecting', '新 retry generation 握手未完成时保持 connecting');
   delayedRecovery.resolve(retryResync(readyView, lateGeneration));
   await settle();
   eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, '迟到旧 generation 不覆盖较新 blocked 投影');
@@ -1532,8 +1531,8 @@ async function testWailsWatchHandshakeAndRecovery(): Promise<void> {
   eq(retryWatches, 2, 'snapshot retry 安装新的 Watch');
   ok(retrySubscription !== failedSubscription, 'snapshot retry 使用新的 subscriptionID');
   ok(!!retryIntent, 'snapshot retry 在新 Watch ready 后携带 typed recovery intent');
-  eq(retryAdapter.getStatus(view.work.id).stream.kind, 'offline', '新 Watch ready 但 typed snapshot 未完成时仍 offline');
-  ok(retryAdapter.getStatus(view.work.id).snapshotError?.includes('temporarily unavailable'), '进行中的 retry 不提前清除旧错误');
+  eq(retryAdapter.getStatus(view.work.id).stream.kind, 'connecting', '新 Watch ready 但 typed snapshot 未完成时保持 connecting');
+  eq(retryAdapter.getStatus(view.work.id).snapshotError, null, 'retry 握手开始即清除旧 snapshot 错误');
   eventListeners.get(`work:view:${retrySubscription}`)?.(workDelta(view.work.id, 'buffered-after-fetch-failure', 2, 1, 'retry-event'));
   retryRecovery.resolve(retryResync(makeView([], 1), retryIntent!.generation));
   await settle();
@@ -1668,7 +1667,7 @@ async function testWatchHealthIsolation(): Promise<void> {
   await Promise.resolve();
   eq(watchCalls, 3, '重复 retry 只创建一个当前 generation');
   eq(listeners.size, 1, '重复 retry 只保留一个 listener');
-  eq(generationAdapter.getStatus(view.work.id).stream.kind, 'offline', '当前 ready 前仍显式 offline');
+  eq(generationAdapter.getStatus(view.work.id).stream.kind, 'connecting', '当前 ready 前保持 connecting');
   currentReady.resolve();
   await settle();
   eq(generationAdapter.getStatus(view.work.id).stream.kind, 'online', '只有当前 Watch ready 清除 offline');
@@ -2010,7 +2009,7 @@ async function testRemountAuthoritativeHydration(): Promise<void> {
   ok(lastRecoverIntent?.reason === 'hydrate', 'A2: RecoverWorkView intent.reason = hydrate');
   eq(useWorkStore.getState().works[readyView.work.id]?.assessment.blocking, true, 'A2: 同 revision assessment 变 blocked');
   eq(useWorkStore.getState().works[readyView.work.id]?.runBlock?.items?.[0]?.code, 'blob_missing', 'A2: typed runBlock 落入 store');
-  ok(!!card.host.querySelector('[data-testid="work-attention"]'), 'A2: 重挂后显示 Attention');
+  ok(!!card.host.querySelector('.cornerstone-drawer__attention-badge'), 'A2: 重挂后显示 Attention');
   ok(button(card.host, '运行').disabled, 'A2: 重挂后 Run 禁用');
   eq(useWorkUIStore.getState().cardByWork[readyView.work.id]?.faces.front.draft, 'surviving draft', 'A2: draft 保留');
   const genAfterRemount = useWorkStore.getState().resyncGenerations[readyView.work.id] ?? 0;

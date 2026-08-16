@@ -355,17 +355,34 @@ func TestAcquireLockRespectsContext(t *testing.T) {
 
 func TestAcquireLockHeartbeatPreventsLiveHolderReap(t *testing.T) {
 	dir := t.TempDir()
-	rt := newSharedRuntime(RuntimeOptions{Dir: dir, ProfileDir: filepath.Join(dir, "profile"), StaleAfter: 30 * time.Millisecond, Poll: 5 * time.Millisecond})
+	rt := newSharedRuntime(RuntimeOptions{Dir: dir, ProfileDir: filepath.Join(dir, "profile"), StaleAfter: 300 * time.Millisecond, Poll: 5 * time.Millisecond})
 	release, err := rt.acquireLock(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	time.Sleep(100 * time.Millisecond)
+	initial, err := os.Stat(rt.lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		info, statErr := os.Stat(rt.lockPath)
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		if info.ModTime().After(initial.ModTime()) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lock heartbeat did not refresh modification time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if rt.lockStale() {
 		t.Fatal("heartbeat allowed a live launch lock to become stale")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	if _, err := rt.acquireLock(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("second acquire error = %v, want deadline", err)

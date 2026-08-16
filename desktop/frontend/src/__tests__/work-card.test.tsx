@@ -182,12 +182,20 @@ class TestPort implements WorkControllerPort {
   async fetchSnapshot(workID: string): Promise<WorkView> {
     this.operations.push(`snapshot:${workID}`);
     if (this.snapshotFailures-- > 0) throw new Error('snapshot unavailable');
-    const view = useWorkStore.getState().works[workID];
+    const state = useWorkStore.getState();
+    const view = state.works[workID];
     if (!view) throw new Error(`no projection for ${workID}`);
+    const snapshot = {
+      ...view,
+      definition: state.v2Definitions[workID],
+      tasks: state.v2Tasks[workID] ?? [],
+      inputs: state.v2Inputs[workID] ?? [],
+      artifactSlots: state.artifactSlots[workID] ?? [],
+    };
     if (this.candidateSnapshotRevision !== null && !this.candidateSnapshotStale) {
-      return { ...view, revision: this.candidateSnapshotRevision };
+      return { ...snapshot, revision: this.candidateSnapshotRevision };
     }
-    return view;
+    return snapshot;
   }
 
   async fetchRecoverySnapshot(workID: string, intent: ViewRecoveryIntent): Promise<WorkViewEvent> {
@@ -240,13 +248,18 @@ class TestPort implements WorkControllerPort {
   }): Promise<WorkView> {
     this.draftInputs.push({ ...input });
     if (this.draftFailures-- > 0) throw new Error('draft save unavailable');
-    const view = useWorkStore.getState().works[input.workId];
+    const state = useWorkStore.getState();
+    const view = state.works[input.workId];
     if (!view) throw new Error(`no projection for ${input.workId}`);
     const newRevision = Math.max(this.draftRevision, input.expectedRevision + 1);
     this.draftRevision = newRevision;
     return {
       ...view,
       revision: newRevision,
+      definition: state.v2Definitions[input.workId],
+      tasks: state.v2Tasks[input.workId] ?? [],
+      inputs: state.v2Inputs[input.workId] ?? [],
+      artifactSlots: state.artifactSlots[input.workId] ?? [],
       work: {
         ...view.work,
         ...(input.name !== undefined ? { name: input.name } : {}),
@@ -836,7 +849,7 @@ function testMotionCSSContract(): void {
     'Work goal stays a lightweight inline caption instead of a sticky full-width strip',
   );
   ok(
-    /\.wg2-work-chat:focus-within \.wg2-work-chat__input-row\s*\{[^}]*transform:\s*translateY\(-2px\)[^}]*border-color:\s*rgba\(221, 139, 232, 0\.82\)[^}]*0 16px 32px rgba\(0, 0, 0, 0\.30\)/.test(css) &&
+    /\.wg2-work-chat:focus-within \.wg2-work-chat__input-row\s*\{[^}]*transform:\s*translateY\(-2px\)[^}]*border-color:\s*color-mix\(in srgb, var\(--accent\)[^}]*0 16px 32px rgba\(0, 0, 0, 0\.30\)/.test(css) &&
       /\.wg2-work-chat__textarea:focus\s*\{[^}]*border-color:\s*transparent[^}]*box-shadow:\s*none/.test(css),
     'Work input reuses the Session whole-board focus lift without an inner double ring',
   );
@@ -1181,7 +1194,7 @@ async function testV2ApplyFailurePreservesDraft(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'draft' } },
   }));
   const port = new TestPort();
-  port.applyFailures = 1;
+  port.applyFailures = 2;
   const mounted = await mount(
     <WorkCard
       workID={workID}
@@ -1195,6 +1208,7 @@ async function testV2ApplyFailurePreservesDraft(): Promise<void> {
 
   // Set draft on back
   await act(async () => {
+    useWorkUIStore.getState().setActiveFace(workID, 'back');
     useWorkUIStore.getState().setDraft(workID, 'back', 'planning notes');
     await Promise.resolve();
   });
@@ -1225,12 +1239,13 @@ async function testV2ComponentsA11y(): Promise<void> {
   };
   useWorkStore.setState((s) => ({
     v2Definitions: { ...s.v2Definitions, [workID]: { ...makeV2Definition(workID), status: 'active' } },
+    v2ActiveDefinitions: { ...s.v2ActiveDefinitions, [workID]: { ...makeV2Definition(workID), status: 'active' } },
     artifactSlots: { ...s.artifactSlots, [workID]: [slot] },
     v2Tasks: { ...s.v2Tasks, [workID]: [] },
   }));
   const mounted = await mount(<WorkCard workID={workID} port={new TestPort()} />);
 
-  const shelf = mounted.host.querySelector('[data-testid="result-shelf"]');
+  const shelf = mounted.host.querySelector('[aria-label="成果架"]');
   ok(Boolean(shelf), 'ResultShelf renders');
   eq(shelf?.getAttribute('role'), 'region', 'ResultShelf role=region');
   eq(shelf?.getAttribute('aria-label'), '成果架', 'ResultShelf aria-label');
@@ -1591,7 +1606,12 @@ async function testV2ArtifactRetryRevisionIdentity(): Promise<void> {
     (mounted.host.querySelector('[data-testid="result-card-same-retry-slot"]')?.textContent ?? '').includes('Retry rev 2'),
     'artifact revision: historical rev1 content is not visible',
   );
+  // Retry lives in the error popover (portaled to document.body): open it via
+  // the interactive badge first, then click the retry button in the portal.
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(
+    '[data-testid="result-card-badge-same-retry-slot"]',
+  )!.click());
+  await interact(() => document.body.querySelector<HTMLButtonElement>(
     '[data-testid="result-card-retry-same-retry-slot"]',
   )!.click());
   eq(port.artifactRetryInputs.length, 1, 'artifact revision: visible rev2 retry dispatched once');
@@ -1609,7 +1629,8 @@ async function testV2ArtifactRetryRevisionIdentity(): Promise<void> {
     await Promise.resolve();
   });
   ok(
-    (mounted.host.querySelector('[data-testid="result-card-retry-same-retry-slot"]')?.textContent ?? '').includes('重试'),
+    (mounted.host.querySelector('[data-testid="result-card-same-retry-slot"]')?.textContent ?? '')
+      .includes('Retry rev 3'),
     'artifact revision: active rev3 replaces rev2 card',
   );
 
@@ -1623,7 +1644,11 @@ async function testV2ArtifactRetryRevisionIdentity(): Promise<void> {
   eq(port.artifactRetryInputs.length, 1, 'artifact revision: old continuation cannot dispatch a second current intent');
   eq(port.artifactRetryInputs[0]?.definitionRevision, 2, 'artifact revision: old continuation remains rev2');
 
+  // rev3 replaced the card; re-open the fresh error popover before retrying.
   await interact(() => mounted.host.querySelector<HTMLButtonElement>(
+    '[data-testid="result-card-badge-same-retry-slot"]',
+  )!.click());
+  await interact(() => document.body.querySelector<HTMLButtonElement>(
     '[data-testid="result-card-retry-same-retry-slot"]',
   )!.click());
   eq(port.artifactRetryInputs.length, 2, 'artifact revision: explicit rev3 click dispatches separately');
@@ -1899,14 +1924,16 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
   await interact(() => document.querySelector<HTMLButtonElement>(`[data-testid="discussion-preview-btn-${taskID}"]`)!.click());
   await settle(100);
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
-  await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
+  await settle(50);
+  ok(
+    !mounted.host.querySelector('[data-testid="work-draft-editor"]'),
+    'active V2 definition hides the blank planning editor',
+  );
   await settle(50);
 
   for (const operation of [
-    'UpdateDraft',
     'RetryArtifactSlot',
     'SelectWorkInputFile',
-    'CreateCandidateRevision',
     'SubmitWorkInput',
     'PreviewWorkPatch',
     'ApplyWorkPatch',
@@ -1918,7 +1945,7 @@ async function testV2DefaultWailsProductionMount(): Promise<void> {
     definition.revision,
     'default Wails preserves artifact retry definitionRevision',
   );
-  ok(snapshots >= 2, `committed mutation refreshes authoritative snapshot (fetches=${snapshots})`);
+  eq(snapshots, 0, 'conclusive committed mutations do not trigger recovery snapshots');
 
   await mounted.cleanup();
   delete (window as unknown as { go?: unknown }).go;
@@ -2059,7 +2086,7 @@ async function testV2ExplicitSessionIdReachesPreviewPatch(): Promise<void> {
   ok(Boolean(execRow), 'explicit session: execution row header exists');
   await interact(() => mounted.host.querySelector<HTMLElement>(`[data-testid="execution-row-header-${taskID}"]`)!.click());
   await settle(50);
-  const discussBtn = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="expanded-block-discuss-${taskID}"]`);
+  const discussBtn = mounted.host.querySelector<HTMLButtonElement>(`[data-testid="execution-row-discuss-${taskID}"]`);
   ok(Boolean(discussBtn), 'explicit session: discuss button is present');
   await interact(() => discussBtn!.click());
   await settle(50);
@@ -2096,10 +2123,9 @@ async function testV2CandidateUpdateAutoApplies(): Promise<void> {
   const workID = 'work-v2-candidate-cancel';
   const view = makeView(workID, { schemaVersion: 2, state: 'running', prompt: '原始目标' });
   useWorkStore.getState().applySnapshot(view);
-  const active = { ...makeV2Definition(workID), status: 'active' as const };
+  const active = { ...makeV2Definition(workID), status: 'draft' as const, nodes: [] };
   useWorkStore.setState((state) => ({
     v2Definitions: { ...state.v2Definitions, [workID]: active },
-    v2ActiveDefinitions: { ...state.v2ActiveDefinitions, [workID]: active },
   }));
   useWorkUIStore.getState().ensureCard(workID);
   useWorkUIStore.getState().setDraft(workID, 'back', '调整后的交付目标');
@@ -2109,8 +2135,8 @@ async function testV2CandidateUpdateAutoApplies(): Promise<void> {
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   eq(
     mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')?.textContent?.trim(),
-    '怎么改进',
-    'candidate: existing Work asks how to improve after flipping back',
+    '生成工作结构',
+    'candidate: draft Work offers structure generation after flipping back',
   );
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(30);
@@ -2164,11 +2190,10 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   reset();
   const unavailableWorkID = 'work-v2-planner-unavailable';
   const unavailableView = makeView(unavailableWorkID, { schemaVersion: 2, state: 'running', prompt: '调整结构' });
-  const unavailableActive = { ...makeV2Definition(unavailableWorkID), status: 'active' as const };
+  const unavailableActive = { ...makeV2Definition(unavailableWorkID), status: 'draft' as const, nodes: [] };
   useWorkStore.getState().applySnapshot(unavailableView);
   useWorkStore.setState((state) => ({
     v2Definitions: { ...state.v2Definitions, [unavailableWorkID]: unavailableActive },
-    v2ActiveDefinitions: { ...state.v2ActiveDefinitions, [unavailableWorkID]: unavailableActive },
   }));
   const unavailablePort = new TestPort();
   Object.defineProperty(unavailablePort, 'createCandidateRevision', { value: undefined });
@@ -2189,16 +2214,15 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   reset();
   const retryWorkID = 'work-v2-planner-retry';
   const retryView = makeView(retryWorkID, { schemaVersion: 2, state: 'running', prompt: '增加校验节点' });
-  const retryActive = { ...makeV2Definition(retryWorkID), status: 'active' as const };
+  const retryActive = { ...makeV2Definition(retryWorkID), status: 'draft' as const, nodes: [] };
   useWorkStore.getState().applySnapshot(retryView);
   useWorkStore.setState((state) => ({
     v2Definitions: { ...state.v2Definitions, [retryWorkID]: retryActive },
-    v2ActiveDefinitions: { ...state.v2ActiveDefinitions, [retryWorkID]: retryActive },
   }));
   useWorkUIStore.getState().ensureCard(retryWorkID);
   useWorkUIStore.getState().setDraft(retryWorkID, 'back', '增加校验节点');
   const retryPort = new TestPort();
-  retryPort.candidateErrors.push(new Error('planner unavailable'));
+  retryPort.candidateErrors.push(new Error('planner unavailable'), new Error('planner unavailable'));
   const retryMount = await mount(<WorkCard workID={retryWorkID} port={retryPort} />);
   await interact(() => retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   const retryButton = retryMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
@@ -2221,30 +2245,29 @@ async function testV2CandidatePlannerRecovery(): Promise<void> {
   reset();
   const conflictWorkID = 'work-v2-planner-conflict';
   const conflictView = makeView(conflictWorkID, { schemaVersion: 2, state: 'running', prompt: '重排工作结构' });
-  const conflictActive = { ...makeV2Definition(conflictWorkID), status: 'active' as const };
+  const conflictActive = { ...makeV2Definition(conflictWorkID), status: 'draft' as const, nodes: [] };
   useWorkStore.getState().applySnapshot(conflictView);
   useWorkStore.setState((state) => ({
     v2Definitions: { ...state.v2Definitions, [conflictWorkID]: conflictActive },
-    v2ActiveDefinitions: { ...state.v2ActiveDefinitions, [conflictWorkID]: conflictActive },
   }));
   useWorkUIStore.getState().ensureCard(conflictWorkID);
   useWorkUIStore.getState().setDraft(conflictWorkID, 'back', '重排工作结构');
   const conflictPort = new TestPort();
-  const conflictError = Object.assign(new Error('revision conflict'), { code: 'revision_conflict' });
-  conflictPort.candidateErrors.push(conflictError);
+  const conflictError = () => Object.assign(new Error('revision conflict'), { code: 'revision_conflict' });
+  conflictPort.candidateErrors.push(conflictError(), conflictError());
   const conflictMount = await mount(<WorkCard workID={conflictWorkID} port={conflictPort} />);
   await interact(() => conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-flip-button"]')!.click());
   const conflictButton = conflictMount.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => conflictButton.click());
   ok(
-    (conflictMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('重新生成工作结构'),
+    (conflictMount.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('工作状态仍在变化'),
     'candidate conflict: explicit regeneration guidance',
   );
   const firstSaveCount = conflictPort.draftInputs.length;
   const conflictedRequestID = conflictPort.candidateInputs[0]?.requestId;
   await interact(() => conflictButton.click());
   ok(
-    conflictPort.candidateInputs[1]?.requestId !== conflictedRequestID,
+    conflictPort.candidateInputs[2]?.requestId !== conflictedRequestID,
     'candidate conflict: regeneration uses fresh requestId',
   );
   // After conflict reset, retry does a fresh save + candidate.
@@ -2351,7 +2374,7 @@ async function testV2NameSavesWithGenerateAndRetries(): Promise<void> {
     v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
-  port.draftFailures = 1;
+  port.draftFailures = 2;
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   const nameInput = mounted.host.querySelector<HTMLInputElement>('[data-testid="work-name-editor"]')!;
@@ -2371,15 +2394,15 @@ async function testV2NameSavesWithGenerateAndRetries(): Promise<void> {
   const generateButton = mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!;
   await interact(() => generateButton.click());
   ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'combined save failure is explicit and retryable');
-  eq(port.draftInputs.length, 1, 'first generate attempt saves name and prompt together');
+  eq(port.draftInputs.length, 2, 'first generate attempt uses one automatic transport retry');
   const firstRequestID = port.draftInputs[0].requestId;
   eq(port.candidateInputs.length, 0, 'planning does not start before the combined save succeeds');
 
   await interact(() => generateButton.click());
-  eq(port.draftInputs.length, 2, 'generate retry repeats the same combined save');
-  eq(port.draftInputs[1].requestId, firstRequestID, 'generate retry reuses the save idempotency key');
-  eq(port.draftInputs[1].name, '用户自定义名称', 'combined save includes the explicit user name');
-  eq(port.draftInputs[1].prompt, '自动推定名称\n生成工作结构', 'combined save includes the task description');
+  eq(port.draftInputs.length, 3, 'generate retry repeats the same combined save');
+  eq(port.draftInputs[2].requestId, firstRequestID, 'generate retry reuses the save idempotency key');
+  eq(port.draftInputs[2].name, '用户自定义名称', 'combined save includes the explicit user name');
+  eq(port.draftInputs[2].prompt, '自动推定名称\n生成工作结构', 'combined save includes the task description');
   eq(port.candidateInputs[0].inferName, false, 'an explicit user name disables planner inference');
   eq(port.applyInputs.length, 1, 'successful planning automatically applies the definition');
   eq(useWorkStore.getState().works[workID].work.name, '用户自定义名称', 'renamed projection becomes the local source of truth');
@@ -2826,7 +2849,10 @@ async function testV2CandidateGenerationFailureRetrySameRequestID(): Promise<voi
     v2Definitions: { ...s.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
-  port.candidateErrors.push(Object.assign(new Error('network down'), { code: 'transport' }));
+  port.candidateErrors.push(
+    Object.assign(new Error('network down'), { code: 'transport' }),
+    Object.assign(new Error('network down'), { code: 'transport' }),
+  );
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   // Combined button: save succeeds, candidate fails, retry skips save.
@@ -2840,18 +2866,18 @@ async function testV2CandidateGenerationFailureRetrySameRequestID(): Promise<voi
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
   eq(port.draftInputs.length, 1, 'save called once');
-  eq(port.candidateInputs.length, 1, 'first candidate call made');
+  eq(port.candidateInputs.length, 2, 'first candidate attempt uses one automatic transport retry');
   ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'error shown after candidate failure');
 
   // Retry: save skipped, candidate retried with same requestId.
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
   eq(port.draftInputs.length, 1, 'save NOT called again on retry');
-  eq(port.candidateInputs.length, 2, 'retry made second candidate call');
-  eq(port.candidateInputs[1].requestId, port.candidateInputs[0].requestId, 'retry reuses same requestId');
-  eq(port.candidateInputs[1].baseDefinitionRevision, port.candidateInputs[0].baseDefinitionRevision, 'retry reuses same base revision');
-  eq(port.candidateInputs[1].intent, port.candidateInputs[0].intent, 'retry reuses same intent');
-  eq(port.candidateInputs[1].expectedRevision, port.candidateInputs[0].expectedRevision, 'retry reuses same expectedRevision');
+  eq(port.candidateInputs.length, 3, 'UI retry makes one further candidate call');
+  eq(port.candidateInputs[2].requestId, port.candidateInputs[0].requestId, 'retry reuses same requestId');
+  eq(port.candidateInputs[2].baseDefinitionRevision, port.candidateInputs[0].baseDefinitionRevision, 'retry reuses same base revision');
+  eq(port.candidateInputs[2].intent, port.candidateInputs[0].intent, 'retry reuses same intent');
+  eq(port.candidateInputs[2].expectedRevision, port.candidateInputs[0].expectedRevision, 'retry reuses same expectedRevision');
   // expectedRevision must be the authoritative revision from save, not stale view.
   eq(port.candidateInputs[0].expectedRevision, port.draftRevision, 'candidate uses authoritative save revision');
 
@@ -2910,16 +2936,16 @@ async function testV2AutomaticApplyFailureRetriesWithoutReplanning(): Promise<vo
     v2Definitions: { ...state.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
-  port.applyFailures = 1;
+  port.applyFailures = 2;
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
 
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
   await settle(40);
   eq(port.draftInputs.length, 1, 'automatic apply failure: draft saved once');
   eq(port.candidateInputs.length, 1, 'automatic apply failure: candidate generated once');
-  eq(port.applyInputs.length, 1, 'automatic apply failure: first apply attempted');
+  eq(port.applyInputs.length, 2, 'automatic apply failure: transport is retried once');
   ok(
-    (mounted.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('启动失败'),
+    (mounted.host.querySelector('[data-testid="work-generate-structure-error"]')?.textContent ?? '').includes('这次调整暂未完成：apply unavailable'),
     'automatic apply failure remains explicit on the primary action',
   );
   ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'automatic apply failure does not expose a second confirmation path');
@@ -2929,14 +2955,14 @@ async function testV2AutomaticApplyFailureRetriesWithoutReplanning(): Promise<vo
   await settle(40);
   eq(port.draftInputs.length, 1, 'automatic apply retry skips the completed save');
   eq(port.candidateInputs.length, 1, 'automatic apply retry reuses the committed candidate');
-  eq(port.applyInputs.length, 2, 'automatic apply retry repeats only apply');
-  eq(port.applyInputs[1].requestId, firstApplyRequestID, 'automatic apply retry reuses its idempotency key');
+  eq(port.applyInputs.length, 3, 'automatic apply retry repeats only apply');
+  eq(port.applyInputs[2].requestId, firstApplyRequestID, 'automatic apply retry reuses its idempotency key');
   eq(useWorkUIStore.getState().cardByWork[workID].activeFace, 'front', 'successful apply retry flips to the workflow face');
 
   await mounted.cleanup();
 }
 
-async function testV2CandidateRefreshFailureBlocksApply(): Promise<void> {
+async function testV2CandidateBodyAvoidsRecoverySnapshot(): Promise<void> {
   reset();
   const workID = 'work-v2-candidate-stale';
   const view = makeView(workID, {
@@ -2950,11 +2976,11 @@ async function testV2CandidateRefreshFailureBlocksApply(): Promise<void> {
     v2Definitions: { ...s.v2Definitions, [workID]: makeBlankV2Definition(workID) },
   }));
   const port = new TestPort();
-  port.candidateSnapshotStale = true; // fetchSnapshot always returns stale rev
   const mounted = await mount(<WorkCard workID={workID} port={port} />);
+  const snapshotsBefore = port.operations.filter((operation) => operation.startsWith('snapshot:')).length;
 
-  // Combined button: save succeeds, but candidate recovery cannot catch the
-  // authoritative snapshot up to the committed revision.
+  // A conclusive candidate response carries the complete committed fragment;
+  // it can drive apply directly without an extra recovery snapshot.
   const editor = mounted.host.querySelector<HTMLTextAreaElement>('[data-testid="work-prompt-editor"]')!;
   await interact(() => { editor.value = 'build report'; editor.dispatchEvent(new Event('input', { bubbles: true })); });
   await interact(() => mounted.host.querySelector<HTMLButtonElement>('[data-testid="work-generate-structure"]')!.click());
@@ -2962,12 +2988,13 @@ async function testV2CandidateRefreshFailureBlocksApply(): Promise<void> {
 
   eq(port.draftInputs.length, 1, 'save called');
   eq(port.candidateInputs.length, 1, 'candidate request sent');
-  // Stale snapshot recovery clears localCandidate; empty placeholder is
-  // suppressed, so no apply button or definition section is visible.
-  ok(!mounted.host.querySelector('[data-testid="work-apply-definition"]'), 'apply button hidden — definition suppressed after stale recovery');
-  ok(!mounted.host.querySelector('[data-testid="work-planning-definition"]'), 'definition section hidden after stale recovery');
-  ok(Boolean(mounted.host.querySelector('[data-testid="work-generate-structure-error"]')), 'snapshot recovery error remains visible and retryable');
-  eq(port.applyInputs.length, 0, 'applyDefinition not called');
+  eq(port.applyInputs.length, 1, 'conclusive candidate is applied directly');
+  ok(!mounted.host.querySelector('[data-testid="work-generate-structure-error"]'), 'conclusive candidate does not surface a recovery error');
+  eq(
+    port.operations.filter((operation) => operation.startsWith('snapshot:')).length,
+    snapshotsBefore,
+    'conclusive candidate does not trigger a recovery snapshot',
+  );
 
   await mounted.cleanup();
 }
@@ -3346,7 +3373,7 @@ async function main(): Promise<void> {
   await testV2CandidateGenerationFailureRetrySameRequestID();
   await testV2CandidateGeneratedThenApply();
   await testV2AutomaticApplyFailureRetriesWithoutReplanning();
-  await testV2CandidateRefreshFailureBlocksApply();
+  await testV2CandidateBodyAvoidsRecoverySnapshot();
   await testV2GoalOnlyDraftStillShowsCandidateGeneration();
   await testV2NodesOnlyDraftStillShowsCandidateGeneration();
 

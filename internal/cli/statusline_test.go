@@ -58,7 +58,11 @@ func TestModelSwitchRefreshesCustomStatusline(t *testing.T) {
 	oldCtrl := control.New(control.Options{Label: "old-model"})
 	newCtrl := control.New(control.Options{Label: "new-model"})
 	m := newChatTUI(oldCtrl, "", make(chan event.Event, 1), 80)
-	m.statuslineCmd = "cat"
+	stdinCmd := "cat"
+	if runtime.GOOS == "windows" {
+		stdinCmd = "more"
+	}
+	m.statuslineCmd = stdinCmd
 	m.statuslineOut = `{"model":"old-model"}`
 
 	_, cmd := m.Update(modelSwitchMsg{

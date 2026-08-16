@@ -126,10 +126,40 @@ func (p *fakeCollaborationPeer) Leave(context.Context, string) error {
 	return p.leaveErr
 }
 
-func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map[string]string) {
+// lockedSecretMap guards the test collaboration's secret store against the
+// background auto-receive scanner goroutine (signalAutoReceiveFiles), which can
+// read secrets after the test's main goroutine has written them.
+type lockedSecretMap struct {
+	mu  sync.Mutex
+	val map[string]string
+}
+
+func newLockedSecretMap() *lockedSecretMap {
+	return &lockedSecretMap{val: map[string]string{}}
+}
+
+func (s *lockedSecretMap) put(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.val[key] = value
+}
+
+func (s *lockedSecretMap) get(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.val[key]
+}
+
+func (s *lockedSecretMap) del(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.val, key)
+}
+
+func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, *lockedSecretMap) {
 	t.Helper()
 	app := &App{}
-	secrets := map[string]string{}
+	secrets := newLockedSecretMap()
 	c := &desktopCollaboration{
 		app: app, ownerSessionID: "session-a", state: CollaborationState{Status: "disconnected", SessionID: "session-a"},
 		starts: map[string]collaborationStartRecord{}, runs: map[string]*collaborationAgentRun{},
@@ -137,9 +167,9 @@ func newTestDesktopCollaboration(t *testing.T) (*App, *desktopCollaboration, map
 		persistPath:    filepath.Join(t.TempDir(), "collaboration.json"), writeState: fileutil.AtomicWriteFile,
 		validateAgent: func(string) error { return nil },
 	}
-	c.setSecret = func(key, value string) error { secrets[key] = value; return nil }
-	c.getSecret = func(key string) string { return secrets[key] }
-	c.removeSecret = func(key string) error { delete(secrets, key); return nil }
+	c.setSecret = func(key, value string) error { secrets.put(key, value); return nil }
+	c.getSecret = func(key string) string { return secrets.get(key) }
+	c.removeSecret = func(key string) error { secrets.del(key); return nil }
 	app.collaborations = map[string]*desktopCollaboration{"session-a": c}
 	return app, c, secrets
 }
@@ -509,7 +539,7 @@ func TestCollaborationJoinDoesNotResumeMemberFromAnotherWorkspace(t *testing.T) 
 func TestCollaborationJoinDoesNotLoadResumeCredentialAcrossWorkspaceRuntimes(t *testing.T) {
 	_, c, secrets := newTestDesktopCollaboration(t)
 	const resume = "cs1.saved-for-member"
-	secrets[collaborationSecretRef("10.0.0.8", 39170, "room-a", "member-a")] = resume
+	secrets.put(collaborationSecretRef("10.0.0.8", 39170, "room-a", "member-a"), resume)
 	gotResume := ""
 	var gotIdentity collab.MemberDescriptor
 	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, identity collab.MemberDescriptor, value string) (*collaborationConnection, error) {
@@ -595,7 +625,7 @@ func TestCollaborationRevokedSessionCannotOverwriteNewWorkspaceCredential(t *tes
 	_, c, secrets := newTestDesktopCollaboration(t)
 	conn := testConnection(&fakeCollaborationPeer{}, "client", "old-workspace")
 	ref := collaborationSecretRef(conn.hostName, conn.port, conn.room, conn.memberID)
-	secrets[ref] = "cs1.new-workspace-session"
+	secrets.put(ref, "cs1.new-workspace-session")
 	c.conn = conn
 	c.state = CollaborationState{
 		Status: "connected", Mode: "client", Host: conn.hostName, Port: conn.port, Room: conn.room,
@@ -603,8 +633,8 @@ func TestCollaborationRevokedSessionCannotOverwriteNewWorkspaceCredential(t *tes
 	}
 	c.markReconnect(conn, &collab.Error{Code: collab.CodeUnauthorized, Message: "connection session is invalid"})
 	state := c.snapshot()
-	if state.Status != "failed" || !state.Retryable || c.conn != nil || secrets[ref] != "cs1.new-workspace-session" {
-		t.Fatalf("revoked session state=%+v conn=%p credential=%q", state, c.conn, secrets[ref])
+	if state.Status != "failed" || !state.Retryable || c.conn != nil || secrets.get(ref) != "cs1.new-workspace-session" {
+		t.Fatalf("revoked session state=%+v conn=%p credential=%q", state, c.conn, secrets.get(ref))
 	}
 }
 
@@ -1347,7 +1377,7 @@ func TestCollaborationRestartRecoveryKeepsSecretReferenceAndCursor(t *testing.T)
 		t.Fatalf("unsafe or missing persisted secret reference: %s", data)
 	}
 	c2 := &desktopCollaboration{state: CollaborationState{Status: "disconnected"}, starts: map[string]collaborationStartRecord{}, runs: map[string]*collaborationAgentRun{}, persistPath: c.persistPath}
-	c2.getSecret = func(key string) string { return secrets[key] }
+	c2.getSecret = func(key string) string { return secrets.get(key) }
 	c2.loadPersisted()
 	state := c2.snapshot()
 	if state.Host != conn.hostName || state.Room != conn.room || state.SessionID != conn.sessionID || state.Snapshot.LatestSequence != conn.initialSnapshot.LatestSequence ||
@@ -1700,7 +1730,7 @@ func TestCollaborationLegacyMigrationRejectsMismatchedSessionID(t *testing.T) {
 func TestCollaborationRetryRepairsLegacyHostIdentityFromSnapshot(t *testing.T) {
 	_, c, secrets := newTestDesktopCollaboration(t)
 	connectionRef := collaborationSecretRef("127.0.0.1", 39170, "room-a", "member-a")
-	secrets[connectionRef] = "cs1.recover-me"
+	secrets.put(connectionRef, "cs1.recover-me")
 	persisted := collaborationPersistedState{
 		Mode: "host", Host: "127.0.0.1", Port: 39170, Room: "room-a", MemberID: "member-a", AgentID: "agent-a",
 		Snapshot: collab.Snapshot{
@@ -1858,9 +1888,9 @@ func TestCollaborationRetryRestoresPersistedClient(t *testing.T) {
 			return nil
 		},
 	}
-	c2.setSecret = func(key, value string) error { secrets[key] = value; return nil }
-	c2.getSecret = func(key string) string { return secrets[key] }
-	c2.removeSecret = func(key string) error { delete(secrets, key); return nil }
+	c2.setSecret = func(key, value string) error { secrets.put(key, value); return nil }
+	c2.getSecret = func(key string) string { return secrets.get(key) }
+	c2.removeSecret = func(key string) error { secrets.del(key); return nil }
 	c2.loadPersisted()
 	var gotToken, gotResume string
 	c2.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, resume string) (*collaborationConnection, error) {

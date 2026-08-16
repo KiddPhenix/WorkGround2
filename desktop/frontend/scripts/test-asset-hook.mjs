@@ -28,10 +28,10 @@ registerHooks({
           const gsap = {
             registerPlugin() {},
             context(callback) { callback?.(); return tween; },
-            fromTo() { return tween; },
+            fromTo(_target, _from, config) { config?.onComplete?.(); return tween; },
             killTweensOf() {},
             set() { return tween; },
-            to() { return tween; },
+            to(_target, config) { config?.onComplete?.(); return tween; },
           };
           export default gsap;
         `,

@@ -120,12 +120,12 @@ type Decision struct {
 	Responder      *Responder   `json:"responder,omitempty"`
 	Revision       int64        `json:"revision"`
 	QueueSeq       int64        `json:"queue_seq"`
-	CreatedAt      time.Time    `json:"created_at"`
-	PresentedAt    *time.Time   `json:"presented_at,omitempty"`
-	DecidedAt      *time.Time   `json:"decided_at,omitempty"`
-	AppliedAt      *time.Time   `json:"applied_at,omitempty"`
-	BusinessDueAt  *time.Time   `json:"business_due_at,omitempty"`
-	StaleAfter     *time.Time   `json:"stale_after,omitempty"`
+	CreatedAt      time.Time    `json:"created_at" ts_type:"string"`
+	PresentedAt    *time.Time   `json:"presented_at,omitempty" ts_type:"string"`
+	DecidedAt      *time.Time   `json:"decided_at,omitempty" ts_type:"string"`
+	AppliedAt      *time.Time   `json:"applied_at,omitempty" ts_type:"string"`
+	BusinessDueAt  *time.Time   `json:"business_due_at,omitempty" ts_type:"string"`
+	StaleAfter     *time.Time   `json:"stale_after,omitempty" ts_type:"string"`
 	LastError      string       `json:"last_error,omitempty"`
 }
 
@@ -142,7 +142,7 @@ type Channel struct {
 
 type Settings struct {
 	ExternalMode   ExternalMode  `json:"external_mode"`
-	LocalOnlyUntil *time.Time    `json:"local_only_until,omitempty"`
+	LocalOnlyUntil *time.Time    `json:"local_only_until,omitempty" ts_type:"string"`
 	SmartGrace     time.Duration `json:"smart_grace"`
 }
 
@@ -155,10 +155,10 @@ type Delivery struct {
 	Status        DeliveryStatus `json:"status"`
 	RemoteMessage string         `json:"remote_message,omitempty"`
 	Attempts      int            `json:"attempts"`
-	NextRetryAt   time.Time      `json:"next_retry_at,omitempty"`
+	NextRetryAt   time.Time      `json:"next_retry_at,omitempty" ts_type:"string"`
 	LastError     string         `json:"last_error,omitempty"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	CreatedAt     time.Time      `json:"created_at" ts_type:"string"`
+	UpdatedAt     time.Time      `json:"updated_at" ts_type:"string"`
 }
 
 type AuditEntry struct {
@@ -167,7 +167,7 @@ type AuditEntry struct {
 	Kind       string    `json:"kind"`
 	Revision   int64     `json:"revision"`
 	Detail     string    `json:"detail,omitempty"`
-	At         time.Time `json:"at"`
+	At         time.Time `json:"at" ts_type:"string"`
 }
 
 type Snapshot struct {
@@ -179,7 +179,7 @@ type Snapshot struct {
 	Deliveries   []Delivery   `json:"deliveries,omitempty"`
 	Audit        []AuditEntry `json:"audit,omitempty"`
 	Settings     Settings     `json:"settings"`
-	UpdatedAt    time.Time    `json:"updated_at"`
+	UpdatedAt    time.Time    `json:"updated_at" ts_type:"string"`
 }
 
 type CreateRequest struct {

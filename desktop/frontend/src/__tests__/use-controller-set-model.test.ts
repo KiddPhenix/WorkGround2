@@ -35,7 +35,7 @@ async function setModelPattern(
     await setModelFn();
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err ?? "");
-    dispatchFn({ type: "local_notice", level: "warn", text: `Model switch failed: ${msg}` });
+    dispatchFn({ type: "local_notice", level: "warn", text: `Model switch to ${modelName} failed: ${msg}` });
     throw err;
   }
 }
