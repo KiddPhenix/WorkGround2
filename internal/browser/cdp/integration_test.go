@@ -723,3 +723,145 @@ func TestPersistentBrowserDetachAndReattach(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+func TestChromeBeforeUnloadDialogHandling(t *testing.T) {
+	if os.Getenv("WORKGROUND2_BROWSER_INTEGRATION") != "1" {
+		t.Skip("set WORKGROUND2_BROWSER_INTEGRATION=1 and use -tags browser_integration")
+	}
+	info, err := cdp.Discover(browser.BrowserAuto, os.Getenv("WORKGROUND2_BROWSER_EXECUTABLE"))
+	if err != nil {
+		t.Skipf("no supported Chrome/Chromium browser installed: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><title>Guard</title>
+<button id="arm" onclick="window.addEventListener('beforeunload', function (e) { e.preventDefault(); e.returnValue = 'stay'; }); this.textContent='armed'">Arm</button>
+<p id="marker">guard-page</p>`)
+	})
+	mux.HandleFunc("/next", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `<!doctype html><title>Next</title><p>next-page</p>`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	profileRoot := t.TempDir()
+	captured := &captureFactory{base: cdp.NewFactory(cdp.Options{})}
+	mgr, err := browser.NewManager(ctx, browser.Options{
+		Factory: captured, BrowserKind: info.Kind, ExecutablePath: info.ExecutablePath,
+		Headless: true, ProfileRoot: profileRoot, ActionTimeout: 20 * time.Second,
+		StateTimeout: 20 * time.Second, IdleTimeout: time.Minute, SettleWindow: 200 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+
+	const owner = "dialog-test"
+	if _, err := mgr.Open(ctx, owner, browser.OpenRequest{URL: server.URL, RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	clickHTTPRelay(t, ctx, mgr, owner, server.URL, "relay-open")
+
+	// Arm the beforeunload handler with real user activation.
+	state, err := mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	armIndex := findElement(t, state, func(element browser.Element) bool { return element.Name == "Arm" })
+	if _, err := mgr.Click(ctx, owner, browser.ClickRequest{Revision: state.Revision, Index: armIndex, RequestID: "arm-click"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default: navigation must be blocked (stay) with a structured
+	// dialog_blocked error, and the page must not move.
+	_, err = mgr.Navigate(ctx, owner, browser.NavigateRequest{URL: server.URL + "/next", RequestID: "nav-stay"})
+	var blockedErr *browser.Error
+	if !errors.As(err, &blockedErr) || blockedErr.Code != browser.ErrDialogBlocked {
+		t.Fatalf("navigate over beforeunload = %v, want dialog_blocked", err)
+	}
+	if blockedErr.Dialog == nil || blockedErr.Dialog.Type != browser.DialogBeforeUnload {
+		t.Fatalf("dialog context = %+v", blockedErr.Dialog)
+	}
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Text, "guard-page") || strings.Contains(state.Text, "next-page") {
+		t.Fatalf("page moved after blocked navigation: %q", state.Text)
+	}
+
+	// allow_leave=true: the dialog is accepted and navigation completes.
+	// HTTP URLs land on the relay interstitial first, which the workflow then
+	// clicks through (same as TestChromeWorkflow).
+	if _, err := mgr.Navigate(ctx, owner, browser.NavigateRequest{URL: server.URL + "/next", RequestID: "nav-leave", AllowLeave: true}); err != nil {
+		t.Fatalf("navigate with allow_leave: %v", err)
+	}
+	clickHTTPRelay(t, ctx, mgr, owner, server.URL+"/next", "relay-nav-leave")
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(state.Text, "next-page") {
+		t.Fatalf("allow_leave navigation did not reach next page: %q", state.Text)
+	}
+
+	// Tab close over beforeunload: default stays (dialog_blocked, active tab
+	// unchanged), allow_leave=true closes.
+	newTab, err := mgr.Tab(ctx, owner, browser.TabRequest{
+		Revision: state.Revision, Action: browser.TabNew, URL: server.URL, RequestID: "tab-new",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clickHTTPRelay(t, ctx, mgr, owner, server.URL, "relay-tab-new")
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	armIndex = findElement(t, state, func(element browser.Element) bool { return element.Name == "Arm" })
+	if _, err := mgr.Click(ctx, owner, browser.ClickRequest{Revision: state.Revision, Index: armIndex, RequestID: "arm-2"}); err != nil {
+		t.Fatal(err)
+	}
+	var guardTab string
+	for _, tab := range state.Tabs {
+		if tab.Active {
+			guardTab = tab.ID
+		}
+	}
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Default close runs Page.close, dismisses beforeunload, and keeps the tab.
+	_, err = mgr.Tab(ctx, owner, browser.TabRequest{
+		Revision: state.Revision, Action: browser.TabClose, TabID: guardTab, RequestID: "tab-close-stay",
+	})
+	if !errors.As(err, &blockedErr) || blockedErr.Code != browser.ErrDialogBlocked {
+		t.Fatalf("tab close over beforeunload = %v, want dialog_blocked", err)
+	}
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Tabs) != 2 {
+		t.Fatalf("guarded tab closed despite dismissed beforeunload: %+v", state.Tabs)
+	}
+
+	// Explicit leave accepts beforeunload and closes the guarded tab.
+	if _, err := mgr.Tab(ctx, owner, browser.TabRequest{
+		Revision: state.Revision, Action: browser.TabClose, TabID: guardTab, RequestID: "tab-close-leave", AllowLeave: true,
+	}); err != nil {
+		t.Fatalf("tab close with allow_leave: %v", err)
+	}
+	state, err = mgr.State(ctx, owner, browser.StateRequest{Refresh: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Tabs) != 1 {
+		t.Fatalf("guarded tab did not close: %+v", state.Tabs)
+	}
+	_ = newTab
+}

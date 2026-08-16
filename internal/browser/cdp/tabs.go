@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 
@@ -36,8 +37,10 @@ func activateTab(ctx context.Context, targetID string) error {
 	}))
 }
 
-// closeTab closes the specified tab.
-func closeTab(ctx context.Context, targetID string) error {
+// closeTab closes the target attached to ctx through Page.close. Unlike
+// Target.closeTarget, Page.close runs beforeunload hooks, allowing the shared
+// dialog policy to preserve the page or explicitly authorize leaving.
+func closeTab(ctx context.Context) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		// Get targets to check count.
 		targets, err := target.GetTargets().Do(ctx)
@@ -53,6 +56,6 @@ func closeTab(ctx context.Context, targetID string) error {
 		if pageCount <= 1 {
 			return fmt.Errorf("cannot close last tab")
 		}
-		return target.CloseTarget(target.ID(targetID)).Do(ctx)
+		return page.Close().Do(ctx)
 	}))
 }

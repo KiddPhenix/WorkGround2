@@ -84,7 +84,8 @@ func (t *navigateTool) ReadOnly() bool     { return false }
 func (t *navigateTool) PlanModeSafe() bool { return false }
 
 func (t *navigateTool) Description() string {
-	return "Navigate the active browser tab to a URL. Returns before/after revision."
+	return "Navigate the active browser tab to a URL. Returns before/after revision. " +
+		"If the page blocks navigation with a beforeunload dialog, the dialog is dismissed (page stays) and dialog_blocked is returned; pass allow_leave=true to accept and leave."
 }
 
 func (t *navigateTool) Schema() json.RawMessage {
@@ -93,6 +94,7 @@ func (t *navigateTool) Schema() json.RawMessage {
 "additionalProperties":false,
 "properties":{
   "url":{"type":"string","description":"Absolute http/https URL to navigate to, up to 8192 characters.","maxLength":8192},
+  "allow_leave":{"type":"boolean","description":"Accept a beforeunload dialog triggered by this navigation, leaving the page. Default false (dismiss, stay, returns dialog_blocked)."},
   "request_id":{"type":"string","description":"Idempotency key, 1-128 chars.","minLength":1,"maxLength":128}
 },
 "required":["url","request_id"]
@@ -102,8 +104,9 @@ func (t *navigateTool) Schema() json.RawMessage {
 func (t *navigateTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	owner := ownerFromContext(ctx)
 	var p struct {
-		URL       string `json:"url"`
-		RequestID string `json:"request_id"`
+		URL        string `json:"url"`
+		AllowLeave bool   `json:"allow_leave"`
+		RequestID  string `json:"request_id"`
 	}
 	if err := decodeArgs(args, &p); err != nil {
 		return marshalError[browser.ActionResult](err)
@@ -114,7 +117,7 @@ func (t *navigateTool) Execute(ctx context.Context, args json.RawMessage) (strin
 	if !validRequestID(p.RequestID) {
 		return marshalError[browser.ActionResult](invalidArgs("request_id must contain 1-128 characters"))
 	}
-	result, err := t.svc.Navigate(ctx, owner, browser.NavigateRequest{URL: p.URL, RequestID: p.RequestID})
+	result, err := t.svc.Navigate(ctx, owner, browser.NavigateRequest{URL: p.URL, RequestID: p.RequestID, AllowLeave: p.AllowLeave})
 	if err != nil {
 		return marshalBrowserError[browser.ActionResult](err)
 	}
@@ -199,7 +202,8 @@ func (t *clickTool) PlanModeSafe() bool { return false }
 
 func (t *clickTool) Description() string {
 	return "Click an interactive element identified by its index from browser_state. " +
-		"Must pass the current revision to prevent stale element clicks."
+		"Must pass the current revision to prevent stale element clicks. " +
+		"If the click triggers a beforeunload dialog, the dialog is dismissed (page stays) and dialog_blocked is returned; pass allow_leave=true to accept and leave."
 }
 
 func (t *clickTool) Schema() json.RawMessage {
@@ -209,6 +213,7 @@ func (t *clickTool) Schema() json.RawMessage {
 "properties":{
   "revision":{"type":"integer","description":"Page revision from browser_state. Minimum 1.","minimum":1},
   "index":{"type":"integer","description":"Element index from browser_state. Minimum 1.","minimum":1},
+  "allow_leave":{"type":"boolean","description":"Accept a beforeunload dialog triggered by this click, leaving the page. Default false (dismiss, stay, returns dialog_blocked)."},
   "request_id":{"type":"string","description":"Idempotency key, 1-128 chars.","minLength":1,"maxLength":128}
 },
 "required":["revision","index","request_id"]
@@ -218,9 +223,10 @@ func (t *clickTool) Schema() json.RawMessage {
 func (t *clickTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	owner := ownerFromContext(ctx)
 	var p struct {
-		Revision  uint64 `json:"revision"`
-		Index     int    `json:"index"`
-		RequestID string `json:"request_id"`
+		Revision   uint64 `json:"revision"`
+		Index      int    `json:"index"`
+		AllowLeave bool   `json:"allow_leave"`
+		RequestID  string `json:"request_id"`
 	}
 	if err := decodeArgs(args, &p); err != nil {
 		return marshalError[browser.ActionResult](err)
@@ -229,7 +235,7 @@ func (t *clickTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 		return marshalError[browser.ActionResult](invalidArgs("revision and index must be at least 1, and request_id must contain 1-128 characters"))
 	}
 	result, err := t.svc.Click(ctx, owner, browser.ClickRequest{
-		Revision: p.Revision, Index: p.Index, RequestID: p.RequestID,
+		Revision: p.Revision, Index: p.Index, RequestID: p.RequestID, AllowLeave: p.AllowLeave,
 	})
 	if err != nil {
 		return marshalBrowserError[browser.ActionResult](err)
@@ -354,7 +360,8 @@ func (t *tabTool) ReadOnly() bool     { return false }
 func (t *tabTool) PlanModeSafe() bool { return false }
 
 func (t *tabTool) Description() string {
-	return "Manage browser tabs: new (create), activate (switch to), close. Cannot close the last tab."
+	return "Manage browser tabs: new (create), activate (switch to), close. Cannot close the last tab. " +
+		"If closing a tab triggers a beforeunload dialog, the dialog is dismissed (tab stays) and dialog_blocked is returned; pass allow_leave=true to accept and close."
 }
 
 func (t *tabTool) Schema() json.RawMessage {
@@ -366,6 +373,7 @@ func (t *tabTool) Schema() json.RawMessage {
   "action":{"type":"string","enum":["new","activate","close"],"description":"Tab action: new, activate, or close."},
   "tab_id":{"type":"string","description":"Target tab ID. Required for activate and close."},
   "url":{"type":"string","description":"URL for new tab. Default about:blank.","maxLength":8192},
+  "allow_leave":{"type":"boolean","description":"Accept a beforeunload dialog triggered by closing the tab, closing it anyway. Only applies to action=close. Default false (dismiss, tab stays, returns dialog_blocked)."},
   "request_id":{"type":"string","description":"Idempotency key, 1-128 chars.","minLength":1,"maxLength":128}
 },
 "required":["revision","action","request_id"],
@@ -380,11 +388,12 @@ func (t *tabTool) Schema() json.RawMessage {
 func (t *tabTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	owner := ownerFromContext(ctx)
 	var p struct {
-		Revision  uint64 `json:"revision"`
-		Action    string `json:"action"`
-		TabID     string `json:"tab_id"`
-		URL       string `json:"url"`
-		RequestID string `json:"request_id"`
+		Revision   uint64 `json:"revision"`
+		Action     string `json:"action"`
+		TabID      string `json:"tab_id"`
+		URL        string `json:"url"`
+		AllowLeave bool   `json:"allow_leave"`
+		RequestID  string `json:"request_id"`
 	}
 	if err := decodeArgs(args, &p); err != nil {
 		return marshalError[browser.ActionResult](err)
@@ -409,7 +418,7 @@ func (t *tabTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	result, err := t.svc.Tab(ctx, owner, browser.TabRequest{
 		Revision: p.Revision, Action: action, TabID: p.TabID,
-		URL: p.URL, RequestID: p.RequestID,
+		URL: p.URL, RequestID: p.RequestID, AllowLeave: p.AllowLeave,
 	})
 	if err != nil {
 		return marshalBrowserError[browser.ActionResult](err)

@@ -52,12 +52,12 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 | --- | --- | --- |
 | `browser_open` | false | 幂等打开当前会话浏览器，可选导航到 HTTP/HTTPS URL。 |
 | `browser_attach` | true | 返回当前会话的回环 CDP endpoint，供 Playwright `chromium.connectOverCDP()` 使用。必须先 `browser_open`；绝不启动第二个浏览器。任何 Playwright 写操作后必须调用 `browser_state(refresh=true)`。 |
-| `browser_navigate` | false | 导航当前标签页，要求稳定的 `request_id`。 |
+| `browser_navigate` | false | 导航当前标签页，要求稳定的 `request_id`。`allow_leave=true` 时接受 `beforeunload` 对话框并离开页面；默认留在页面并返回 `dialog_blocked`。 |
 | `browser_state` | true | 返回页面文本、标签页、`revision` 和带编号交互元素；不返回截图或表单值。 |
-| `browser_click` | false | 按指定 `revision` 和元素编号点击，陈旧 revision 显式失败。 |
+| `browser_click` | false | 按指定 `revision` 和元素编号点击，陈旧 revision 显式失败。`allow_leave=true` 时接受点击触发的 `beforeunload` 对话框；默认留在页面并返回 `dialog_blocked`。 |
 | `browser_type` | false | 向可编辑元素输入普通文本；password 输入在 `allow_password_input=false` 时拒绝，file 输入始终拒绝。 |
 | `browser_scroll` | false | 按 revision 滚动视口或指定元素。 |
-| `browser_tab` | false | 按 revision 新建、激活或关闭标签页。 |
+| `browser_tab` | false | 按 revision 新建、激活或关闭标签页。关闭被 `beforeunload` 阻止的标签页时返回 `dialog_blocked`，除非 `allow_leave=true`。 |
 | `browser_upload` | false | 向 `input[type=file]` 设置 1-20 个存在的本地普通文件，所选文件内容会交给页面。路径会原样进入 ToolCall transcript；多文件目标要求 `multiple` 属性；`allow_file_upload=false` 时拒绝。 |
 | `browser_close` | false | 幂等仅分离当前 parent session 的浏览器客户端；共享 Chromium 及其持久化 profile 继续存活。 |
 
@@ -69,6 +69,14 @@ Chromium 和 Chrome for Testing。V1 只使用独立的自动化 Profile（区�
 `allow_file_upload` 默认均开启且可独立关闭；下载保持拒绝。
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` 会校验真实 boot registry 合约和 provider request 一致，包括 read-only 标记和 canonical schema。
+
+### JavaScript 对话框处理
+
+原生 JavaScript 对话框（`alert`、`confirm`、`prompt`、`beforeunload`）按 target 处理，绝不让操作挂到超时：
+
+- `beforeunload` 默认 dismiss（留在页面，未保存数据保留）；发起动作的 `browser_navigate` / `browser_click` / `browser_tab` `action=close` 返回结构化 `dialog_blocked` 错误，而不是超时或静默成功。同一工具传 `allow_leave=true` 可接受对话框并离开页面。
+- 意外的 `alert` 会被接受以免页面死锁；意外的 `confirm` / `prompt` 默认 dismiss 并返回 `dialog_blocked`。需要接受时，通过 `browser_attach` 交给 Playwright 处理。
+- `dialog_blocked` 可恢复并携带 `dialog` 上下文（target id、类型、消息）。导航和关闭标签页的结果明确为“已停留”；点击可能已执行部分页面 handler，因此返回 outcome-unknown，调用方应先用 `browser_state` 对账再决定是否重试。CDP 接受/取消失败返回 outcome-unknown 的 `dialog_resolution_failed`。策略按 target 和请求限定，并在成功、失败、取消、迟到事件、target 切换与 driver 关闭时清理。
 
 ## Token Economy Boot Surface
 

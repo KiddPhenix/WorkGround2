@@ -43,6 +43,8 @@ type fakeDriver struct {
 	blockClick       chan struct{}
 	blockNavigate    chan struct{}
 	clickErr         error
+	navigateErr      error
+	closeTabErr      error
 	uploadErr        error
 	closeErrOnce     atomic.Bool
 	closeFailures    atomic.Int32
@@ -50,6 +52,12 @@ type fakeDriver struct {
 	closeSawCanceled atomic.Bool
 	newTabErr        error
 	newTabCalls      atomic.Int32
+
+	// opts records the per-action ActionOptions passed via the WithOptions
+	// entry points.
+	navigateOpts []browser.ActionOptions
+	clickOpts    []browser.ActionOptions
+	closeTabOpts []browser.ActionOptions
 
 	mu sync.Mutex
 }
@@ -115,6 +123,9 @@ func (d *fakeDriver) Close() error {
 
 func (d *fakeDriver) Navigate(ctx context.Context, url string) error {
 	d.navigateCalls.Add(1)
+	if d.navigateErr != nil {
+		return d.navigateErr
+	}
 	if d.blockNavigate != nil {
 		select {
 		case <-d.blockNavigate:
@@ -219,6 +230,9 @@ func (d *fakeDriver) ActivateTab(ctx context.Context, targetID string) error {
 }
 
 func (d *fakeDriver) CloseTab(ctx context.Context, targetID string) error {
+	if d.closeTabErr != nil {
+		return d.closeTabErr
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for i, t := range d.tabs {
@@ -228,6 +242,27 @@ func (d *fakeDriver) CloseTab(ctx context.Context, targetID string) error {
 		}
 	}
 	return fmt.Errorf("tab not found")
+}
+
+func (d *fakeDriver) NavigateWithOptions(ctx context.Context, url string, opts browser.ActionOptions) error {
+	d.mu.Lock()
+	d.navigateOpts = append(d.navigateOpts, opts)
+	d.mu.Unlock()
+	return d.Navigate(ctx, url)
+}
+
+func (d *fakeDriver) ClickWithOptions(ctx context.Context, ref browser.NodeRef, opts browser.ActionOptions) error {
+	d.mu.Lock()
+	d.clickOpts = append(d.clickOpts, opts)
+	d.mu.Unlock()
+	return d.Click(ctx, ref)
+}
+
+func (d *fakeDriver) CloseTabWithOptions(ctx context.Context, targetID string, opts browser.ActionOptions) error {
+	d.mu.Lock()
+	d.closeTabOpts = append(d.closeTabOpts, opts)
+	d.mu.Unlock()
+	return d.CloseTab(ctx, targetID)
 }
 
 func (d *fakeDriver) Invalidations() <-chan browser.Invalidation {
@@ -2178,5 +2213,261 @@ func TestURLValidationRejectsUnsafeSchemesAndRelative(t *testing.T) {
 		URL: "http://user:pass@example.com", RequestID: "nav-creds",
 	}); err == nil {
 		t.Fatal("Navigate must reject embedded credentials")
+	}
+}
+
+// ── Dialog handling (allow_leave / dialog_blocked) ─────────────────────────
+
+func TestAllowLeaveDispatchedToDriver(t *testing.T) {
+	t.Run("navigate", func(t *testing.T) {
+		factory := newFakeFactory()
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{
+			URL: "https://example.com", RequestID: "nav", AllowLeave: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		driver := factory.only(t)
+		driver.mu.Lock()
+		opts := append([]browser.ActionOptions(nil), driver.navigateOpts...)
+		driver.mu.Unlock()
+		if len(opts) != 1 || !opts[0].AllowLeave {
+			t.Fatalf("navigate options = %+v, want AllowLeave=true", opts)
+		}
+	})
+
+	t.Run("click", func(t *testing.T) {
+		factory := newFakeFactory()
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		opened, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Click(ctx, "owner-1", browser.ClickRequest{
+			Revision: opened.Revision, Index: 1, RequestID: "click", AllowLeave: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		driver := factory.only(t)
+		driver.mu.Lock()
+		opts := append([]browser.ActionOptions(nil), driver.clickOpts...)
+		driver.mu.Unlock()
+		if len(opts) != 1 || !opts[0].AllowLeave {
+			t.Fatalf("click options = %+v, want AllowLeave=true", opts)
+		}
+	})
+
+	t.Run("tab close", func(t *testing.T) {
+		factory := newFakeFactory()
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Tab(ctx, "owner-1", browser.TabRequest{
+			Revision: 1, Action: browser.TabNew, RequestID: "tab-new",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Tab(ctx, "owner-1", browser.TabRequest{
+			Revision: 2, Action: browser.TabClose, TabID: "tab-2", RequestID: "tab-close", AllowLeave: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		driver := factory.only(t)
+		driver.mu.Lock()
+		opts := append([]browser.ActionOptions(nil), driver.closeTabOpts...)
+		driver.mu.Unlock()
+		if len(opts) != 1 || !opts[0].AllowLeave {
+			t.Fatalf("close tab options = %+v, want AllowLeave=true", opts)
+		}
+	})
+}
+
+func TestAllowLeavePartOfIdempotencySignature(t *testing.T) {
+	mgr := newTestManager(t)
+	defer mgr.Close()
+	ctx := context.Background()
+	if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{
+		URL: "https://example.com", RequestID: "nav", AllowLeave: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Same request_id + same URL but different allow_leave is a parameter
+	// conflict, never a cache hit.
+	_, err := mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{
+		URL: "https://example.com", RequestID: "nav", AllowLeave: true,
+	})
+	var browserErr *browser.Error
+	if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrRequestIDConflict {
+		t.Fatalf("reusing request_id with different allow_leave = %v, want request_id_conflict", err)
+	}
+}
+
+func TestDialogBlockedPassesThrough(t *testing.T) {
+	blocked := browser.NewDialogBlockedError(
+		browser.DialogContext{TargetID: "tab-1", Type: browser.DialogBeforeUnload, Message: "Leave?"},
+		"blocked by beforeunload dialog; page stayed",
+		nil,
+	)
+
+	t.Run("navigate", func(t *testing.T) {
+		factory := newFakeFactory()
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+			t.Fatal(err)
+		}
+		// Inject the blocked error after Open so the open-time about:blank
+		// navigation is not affected.
+		factory.only(t).navigateErr = blocked
+		_, err = mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{URL: "https://example.com", RequestID: "nav"})
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrDialogBlocked {
+			t.Fatalf("navigate dialog_blocked remapped to %v", err)
+		}
+		if browserErr.Dialog == nil || browserErr.Dialog.Type != browser.DialogBeforeUnload {
+			t.Fatalf("dialog context lost: %+v", browserErr)
+		}
+	})
+
+	t.Run("click", func(t *testing.T) {
+		factory := newFakeFactory()
+		factory.configure = func(d *fakeDriver) {
+			d.clickErr = browser.NewDialogBlockedUnknownError(
+				browser.DialogContext{TargetID: "tab-1", Type: browser.DialogConfirm},
+				"click blocked by confirm dialog; dialog dismissed",
+				nil,
+			)
+		}
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		opened, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = mgr.Click(ctx, "owner-1", browser.ClickRequest{Revision: opened.Revision, Index: 1, RequestID: "click"})
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrDialogBlocked {
+			t.Fatalf("click dialog_blocked remapped to %v", err)
+		}
+		if browserErr.OutcomeKnown {
+			t.Fatal("click dialog_blocked must remain outcome-unknown")
+		}
+		factory.only(t).clickErr = nil
+		_, err = mgr.Click(ctx, "owner-1", browser.ClickRequest{Revision: opened.Revision, Index: 1, RequestID: "click-after"})
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrStaleState {
+			t.Fatalf("snapshot after outcome-unknown click = %v, want stale_state", err)
+		}
+	})
+
+	t.Run("tab close", func(t *testing.T) {
+		factory := newFakeFactory()
+		factory.configure = func(d *fakeDriver) { d.closeTabErr = blocked }
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Tab(ctx, "owner-1", browser.TabRequest{
+			Revision: 1, Action: browser.TabNew, RequestID: "tab-new",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = mgr.Tab(ctx, "owner-1", browser.TabRequest{
+			Revision: 2, Action: browser.TabClose, TabID: "tab-2", RequestID: "tab-close",
+		})
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrDialogBlocked {
+			t.Fatalf("tab close dialog_blocked remapped to %v", err)
+		}
+	})
+
+	t.Run("resolution failure", func(t *testing.T) {
+		factory := newFakeFactory()
+		mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer mgr.Close()
+		ctx := context.Background()
+		if _, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"}); err != nil {
+			t.Fatal(err)
+		}
+		factory.only(t).navigateErr = browser.NewDialogResolutionError(
+			browser.DialogContext{TargetID: "tab-1", Type: browser.DialogBeforeUnload},
+			errors.New("CDP command failed"),
+		)
+		_, err = mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{URL: "https://example.com", RequestID: "nav"})
+		var browserErr *browser.Error
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrDialogResolutionFailed {
+			t.Fatalf("dialog resolution failure remapped to %v", err)
+		}
+		if browserErr.OutcomeKnown || browserErr.Dialog == nil {
+			t.Fatalf("resolution failure lost outcome/dialog context: %+v", browserErr)
+		}
+		_, err = mgr.Click(ctx, "owner-1", browser.ClickRequest{Revision: 1, Index: 1, RequestID: "click-after"})
+		if !errors.As(err, &browserErr) || browserErr.Code != browser.ErrStaleState {
+			t.Fatalf("snapshot after dialog resolution failure = %v, want stale_state", err)
+		}
+	})
+}
+
+func TestDialogBlockedDoesNotBumpGeneration(t *testing.T) {
+	// dialog_blocked is outcome-known: the action did not complete and the
+	// page stayed, so the snapshot must remain valid for a follow-up retry
+	// with allow_leave=true.
+	factory := newFakeFactory()
+	mgr, err := browser.NewManager(context.Background(), browser.Options{Factory: factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	ctx := context.Background()
+	opened, err := mgr.Open(ctx, "owner-1", browser.OpenRequest{RequestID: "open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory.only(t).navigateErr = browser.NewDialogBlockedError(browser.DialogContext{Type: browser.DialogBeforeUnload}, "stayed", nil)
+	_, err = mgr.Navigate(ctx, "owner-1", browser.NavigateRequest{URL: "https://example.com", RequestID: "nav"})
+	if err == nil {
+		t.Fatal("expected dialog_blocked")
+	}
+	// The revision-pinned click must still succeed: the snapshot was not
+	// invalidated by a blocked navigation.
+	if _, err := mgr.Click(ctx, "owner-1", browser.ClickRequest{Revision: opened.Revision, Index: 1, RequestID: "click"}); err != nil {
+		t.Fatalf("click after dialog_blocked failed: %v", err)
 	}
 }
