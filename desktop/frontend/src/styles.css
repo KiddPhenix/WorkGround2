@@ -1663,6 +1663,7 @@
 .decision-create input:focus, .decision-settings input:focus, .decision-settings select:focus { border-color: var(--accent); }
 .decision-settings + .decision-settings { margin-top: 22px; }
 .decision-settings h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; font-size: 13px; }
+.decision-settings__skill-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
 .decision-settings label + label, .decision-settings label + button { margin-top: 10px; }
 .decision-center__long-wait { margin-top: 22px; border-left: 3px solid var(--accent); }
 @media (max-width: 850px) { .decision-center__body { grid-template-columns: 1fr; } .decision-center__aside { border-top: 1px solid var(--border); border-left: 0; } .decision-create__grid { grid-template-columns: 1fr; } }
