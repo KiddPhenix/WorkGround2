@@ -1,6 +1,8 @@
 package botruntime
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -199,6 +201,52 @@ func ConnectionAccessConfigs(cfg *config.Config) map[string]bot.AccessConfig {
 		return nil
 	}
 	return out
+}
+
+// RefreshAccessSnapshot reloads the user config and rebuilds the complete
+// admission snapshot for the gateway's refresh-on-miss hook. The gateway keeps its
+// previous snapshot and stays denied when this fails, so approvals written by
+// another process (e.g. `bot pairing approve`) take effect on the next message
+// without a gateway restart.
+func RefreshAccessSnapshot() (bot.AccessSnapshot, error) {
+	path := config.UserConfigPath()
+	if strings.TrimSpace(path) == "" {
+		return bot.AccessSnapshot{}, errors.New("WorkGround2 user config path is unavailable")
+	}
+	cfg, err := config.LoadForEditChecked(path)
+	if err != nil {
+		return bot.AccessSnapshot{}, fmt.Errorf("load WorkGround2 user config: %w", err)
+	}
+	if cfg == nil {
+		return bot.AccessSnapshot{}, errors.New("WorkGround2 user config load returned nil")
+	}
+	return bot.AccessSnapshot{
+		ConnectionAccess: ConnectionAccessConfigs(cfg),
+		Allowlist: bot.AllowlistConfig{
+			Enabled:  cfg.Bot.Allowlist.Enabled,
+			AllowAll: cfg.Bot.Allowlist.AllowAll,
+			Users: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQUsers,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuUsers,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinUsers,
+			},
+			Approvers: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQApprovers,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuApprovers,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinApprovers,
+			},
+			Admins: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQAdmins,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuAdmins,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinAdmins,
+			},
+			Groups: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQGroups,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuGroups,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinGroups,
+			},
+		},
+	}, nil
 }
 
 func BotAccessActive(access config.BotAccessConfig) bool {

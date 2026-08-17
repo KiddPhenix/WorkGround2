@@ -1070,7 +1070,14 @@ func backfillWeixinConnection(cfg *config.Config) bool {
 		Status:   "connected",
 		Access: config.BotAccessConfig{
 			Enabled:        cfg.Bot.Allowlist.Enabled,
+			AllowAll:       cfg.Bot.Allowlist.AllowAll,
 			PairingEnabled: true,
+			// 连接级 access 生效后全局 allowlist 不再参与判断：
+			// 把已有全局授权（含 allow_all 放行）搬进连接级，避免连接级配置覆盖全局授权。
+			Users:     appendUniqueBotString(append([]string(nil), cfg.Bot.Allowlist.WeixinUsers...), picked.UserID),
+			Groups:    append([]string(nil), cfg.Bot.Allowlist.WeixinGroups...),
+			Approvers: append([]string(nil), cfg.Bot.Allowlist.WeixinApprovers...),
+			Admins:    append([]string(nil), cfg.Bot.Allowlist.WeixinAdmins...),
 		},
 		Credential: config.BotConnectionCredential{
 			AccountID: picked.AccountID,
@@ -1121,7 +1128,14 @@ func backfillFeishuConnection(cfg *config.Config) bool {
 		Status:   "connected",
 		Access: config.BotAccessConfig{
 			Enabled:        cfg.Bot.Allowlist.Enabled,
+			AllowAll:       cfg.Bot.Allowlist.AllowAll,
 			PairingEnabled: true,
+			// 连接级 access 生效后全局 allowlist 不再参与判断：
+			// 把已有全局授权（含 allow_all 放行）搬进连接级，避免连接级配置覆盖全局授权。
+			Users:     append([]string(nil), cfg.Bot.Allowlist.FeishuUsers...),
+			Groups:    append([]string(nil), cfg.Bot.Allowlist.FeishuGroups...),
+			Approvers: append([]string(nil), cfg.Bot.Allowlist.FeishuApprovers...),
+			Admins:    append([]string(nil), cfg.Bot.Allowlist.FeishuAdmins...),
 		},
 		Credential: config.BotConnectionCredential{
 			AppID:        feishu.AppID,

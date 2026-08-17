@@ -190,6 +190,15 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Skills.DisabledSkills = []string{"review", "explore"}
 	orig.Skills.MaxDepth = 2
 	orig.Bot.ToolApprovalMode = "auto"
+	orig.Bot.QQ.Access = BotAccessConfig{
+		Enabled:        true,
+		AllowAll:       false,
+		PairingEnabled: true,
+		Users:          []string{"qq_user_1"},
+		Groups:         []string{"qq_group_1"},
+		Approvers:      []string{"qq_user_1"},
+		Admins:         []string{"qq_admin"},
+	}
 	orig.Bot.Connections = []BotConnectionConfig{{
 		ID:               "feishu-lark",
 		Provider:         "feishu",
@@ -200,7 +209,16 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		Model:            "deepseek-pro",
 		ToolApprovalMode: "yolo",
 		WorkspaceRoot:    "/tmp/WorkGround2-bot",
-		Credential:       BotConnectionCredential{AppID: "cli_lark", AppSecretEnv: "LARK_BOT_APP_SECRET"},
+		Access: BotAccessConfig{
+			Enabled:        true,
+			AllowAll:       false,
+			PairingEnabled: true,
+			Users:          []string{"ou_user_a", "ou_user_b"},
+			Groups:         []string{"oc_group_1"},
+			Approvers:      []string{"ou_user_a"},
+			Admins:         []string{"ou_admin"},
+		},
+		Credential: BotConnectionCredential{AppID: "cli_lark", AppSecretEnv: "LARK_BOT_APP_SECRET"},
 		SessionMappings: []BotConnectionSessionMapping{{
 			RemoteID:      "ou_123",
 			SessionID:     "topic:topic_bot",
@@ -309,6 +327,12 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if len(got.Bot.Connections[0].SessionMappings) != 1 || got.Bot.Connections[0].SessionMappings[0].Scope != "project" || got.Bot.Connections[0].SessionMappings[0].WorkspaceRoot != "/tmp/WorkGround2-bot" {
 		t.Errorf("bot session mapping scope not preserved: %+v", got.Bot.Connections[0].SessionMappings)
+	}
+	if want := orig.Bot.Connections[0].Access; !reflect.DeepEqual(got.Bot.Connections[0].Access, want) {
+		t.Errorf("bot connection access not preserved through render round-trip: got %+v, want %+v", got.Bot.Connections[0].Access, want)
+	}
+	if want := orig.Bot.QQ.Access; !reflect.DeepEqual(got.Bot.QQ.Access, want) {
+		t.Errorf("bot qq access not preserved through render round-trip: got %+v, want %+v", got.Bot.QQ.Access, want)
 	}
 	if got.Agent.Temperature != orig.Agent.Temperature {
 		t.Errorf("temperature = %v, want %v", got.Agent.Temperature, orig.Agent.Temperature)

@@ -567,6 +567,14 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.QQ.AppID)
 		fmt.Fprintf(&b, "app_secret_env = %q\n", c.Bot.QQ.AppSecretEnv)
 		fmt.Fprintf(&b, "sandbox = %v\n", c.Bot.QQ.Sandbox)
+		b.WriteString("\n[bot.qq.access]\n")
+		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.QQ.Access.Enabled)
+		fmt.Fprintf(&b, "allow_all = %v\n", c.Bot.QQ.Access.AllowAll)
+		fmt.Fprintf(&b, "pairing_enabled = %v\n", c.Bot.QQ.Access.PairingEnabled)
+		fmt.Fprintf(&b, "users = %s\n", renderStringArray(c.Bot.QQ.Access.Users))
+		fmt.Fprintf(&b, "groups = %s\n", renderStringArray(c.Bot.QQ.Access.Groups))
+		fmt.Fprintf(&b, "approvers = %s\n", renderStringArray(c.Bot.QQ.Access.Approvers))
+		fmt.Fprintf(&b, "admins = %s\n", renderStringArray(c.Bot.QQ.Access.Admins))
 		b.WriteString("\n[bot.feishu]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Feishu.Enabled)
 		fmt.Fprintf(&b, "app_id = %q\n", c.Bot.Feishu.AppID)
@@ -613,6 +621,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if len(conn.SessionMappings) > 0 {
 				fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(conn.SessionMappings))
 			}
+			// access must be the last sub-table of the connection record: keys
+			// after a [bot.connections.access] header would belong to access.
+			b.WriteString("\n[bot.connections.access]\n")
+			fmt.Fprintf(&b, "enabled = %v\n", conn.Access.Enabled)
+			fmt.Fprintf(&b, "allow_all = %v\n", conn.Access.AllowAll)
+			fmt.Fprintf(&b, "pairing_enabled = %v\n", conn.Access.PairingEnabled)
+			fmt.Fprintf(&b, "users = %s\n", renderStringArray(conn.Access.Users))
+			fmt.Fprintf(&b, "groups = %s\n", renderStringArray(conn.Access.Groups))
+			fmt.Fprintf(&b, "approvers = %s\n", renderStringArray(conn.Access.Approvers))
+			fmt.Fprintf(&b, "admins = %s\n", renderStringArray(conn.Access.Admins))
 		}
 		b.WriteString("\n")
 	}

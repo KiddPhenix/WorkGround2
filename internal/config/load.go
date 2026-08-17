@@ -424,6 +424,13 @@ func LoadForEdit(path string) *Config {
 	return cfg
 }
 
+// LoadForEditChecked loads the editable user configuration without falling
+// back to defaults. Runtime reload paths use it so a transient read or parse
+// failure cannot replace a previously valid in-memory access snapshot.
+func LoadForEditChecked(path string) (*Config, error) {
+	return loadForEditStrict(path, true)
+}
+
 func LoadForEditWithoutCredentials(path string) *Config {
 	cfg, err := loadForEditStrict(path, false)
 	if err == nil {

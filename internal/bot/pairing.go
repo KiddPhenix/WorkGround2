@@ -22,6 +22,8 @@ const (
 	pairingAlphabet          = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 )
 
+var errPairingCodeNotFound = errors.New("pairing code not found or expired")
+
 type PairingConfig struct {
 	Enabled               bool
 	RequestTTL            time.Duration
@@ -148,7 +150,9 @@ func ListPairingRequests() ([]PairingRequest, error) {
 }
 
 func ApprovePairingCode(code string) (PairingRequest, error) {
-	req, err := removePairingCode(code)
+	// 先定位请求但不删除：授权必须先持久化成功，配对请求才允许消失，
+	// 这样配置保存失败时用户仍可用同一码重试。
+	req, err := findPairingCode(code)
 	if err != nil {
 		return PairingRequest{}, err
 	}
@@ -160,35 +164,45 @@ func ApprovePairingCode(code string) (PairingRequest, error) {
 	defer unlock()
 	cfg := config.LoadForEdit(userPath)
 	if approvePairingForConnectionAccess(&cfg.Bot, req) {
-		if err := cfg.SaveTo(userPath); err != nil {
-			return PairingRequest{}, err
-		}
-		return req, nil
-	}
-	cfg.Bot.Allowlist.Enabled = true
-	switch req.Platform {
-	case PlatformQQ:
-		cfg.Bot.Allowlist.QQUsers, _ = appendUnique(cfg.Bot.Allowlist.QQUsers, req.UserID)
-	case PlatformFeishu:
-		cfg.Bot.Allowlist.FeishuUsers, _ = appendUnique(cfg.Bot.Allowlist.FeishuUsers, req.UserID)
-	case PlatformWeixin:
-		cfg.Bot.Allowlist.WeixinUsers, _ = appendUnique(cfg.Bot.Allowlist.WeixinUsers, req.UserID)
-	}
-	if allowlistAdminCount(cfg.Bot.Allowlist) == 0 {
+		// 连接级授权已写入 cfg.Bot.Connections / cfg.Bot.QQ.Access。
+	} else {
+		cfg.Bot.Allowlist.Enabled = true
 		switch req.Platform {
 		case PlatformQQ:
-			cfg.Bot.Allowlist.QQAdmins, _ = appendUnique(cfg.Bot.Allowlist.QQAdmins, req.UserID)
-			cfg.Bot.Allowlist.QQApprovers, _ = appendUnique(cfg.Bot.Allowlist.QQApprovers, req.UserID)
+			cfg.Bot.Allowlist.QQUsers, _ = appendUnique(cfg.Bot.Allowlist.QQUsers, req.UserID)
 		case PlatformFeishu:
-			cfg.Bot.Allowlist.FeishuAdmins, _ = appendUnique(cfg.Bot.Allowlist.FeishuAdmins, req.UserID)
-			cfg.Bot.Allowlist.FeishuApprovers, _ = appendUnique(cfg.Bot.Allowlist.FeishuApprovers, req.UserID)
+			cfg.Bot.Allowlist.FeishuUsers, _ = appendUnique(cfg.Bot.Allowlist.FeishuUsers, req.UserID)
 		case PlatformWeixin:
-			cfg.Bot.Allowlist.WeixinAdmins, _ = appendUnique(cfg.Bot.Allowlist.WeixinAdmins, req.UserID)
-			cfg.Bot.Allowlist.WeixinApprovers, _ = appendUnique(cfg.Bot.Allowlist.WeixinApprovers, req.UserID)
+			cfg.Bot.Allowlist.WeixinUsers, _ = appendUnique(cfg.Bot.Allowlist.WeixinUsers, req.UserID)
+		}
+		if allowlistAdminCount(cfg.Bot.Allowlist) == 0 {
+			switch req.Platform {
+			case PlatformQQ:
+				cfg.Bot.Allowlist.QQAdmins, _ = appendUnique(cfg.Bot.Allowlist.QQAdmins, req.UserID)
+				cfg.Bot.Allowlist.QQApprovers, _ = appendUnique(cfg.Bot.Allowlist.QQApprovers, req.UserID)
+			case PlatformFeishu:
+				cfg.Bot.Allowlist.FeishuAdmins, _ = appendUnique(cfg.Bot.Allowlist.FeishuAdmins, req.UserID)
+				cfg.Bot.Allowlist.FeishuApprovers, _ = appendUnique(cfg.Bot.Allowlist.FeishuApprovers, req.UserID)
+			case PlatformWeixin:
+				cfg.Bot.Allowlist.WeixinAdmins, _ = appendUnique(cfg.Bot.Allowlist.WeixinAdmins, req.UserID)
+				cfg.Bot.Allowlist.WeixinApprovers, _ = appendUnique(cfg.Bot.Allowlist.WeixinApprovers, req.UserID)
+			}
 		}
 	}
 	if err := cfg.SaveTo(userPath); err != nil {
+		// 请求未删除，保留原码可安全重试。
 		return PairingRequest{}, err
+	}
+	// 授权已持久化，最后删除配对请求。删除失败且请求仍在时返回错误
+	// （可重试，access 追加幂等）；请求已不存在（并发批准或恰好过期）时
+	// 授权已经生效，视为成功。
+	if _, err := removePairingCode(code); err != nil {
+		if _, findErr := findPairingCode(code); errors.Is(findErr, errPairingCodeNotFound) {
+			return req, nil
+		} else if findErr != nil {
+			return PairingRequest{}, fmt.Errorf("pairing approved and saved, but the pending request state could not be verified (re-approving the same code is safe): %w", findErr)
+		}
+		return PairingRequest{}, fmt.Errorf("pairing approved and saved, but removing the pending request failed (re-approving the same code is safe): %w", err)
 	}
 	return req, nil
 }
@@ -260,6 +274,33 @@ func RejectPairingCode(code string) (PairingRequest, error) {
 	return removePairingCode(code)
 }
 
+// findPairingCode locates a live pairing request without modifying the store.
+// It is the read side of approve: the request must survive until the granted
+// access is durably saved, so a failed config write stays retryable.
+func findPairingCode(code string) (PairingRequest, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return PairingRequest{}, errors.New("pairing code is required")
+	}
+	path := PairingStorePath()
+	if path == "" {
+		return PairingRequest{}, errors.New("WorkGround2 user state directory is unavailable")
+	}
+	pairingMu.Lock()
+	defer pairingMu.Unlock()
+	store, err := loadPairingFile(path)
+	if err != nil {
+		return PairingRequest{}, err
+	}
+	now := time.Now().UTC()
+	for _, req := range pruneExpiredPairingRequests(store.Requests, now) {
+		if strings.EqualFold(req.Code, code) {
+			return req, nil
+		}
+	}
+	return PairingRequest{}, fmt.Errorf("%w: %s", errPairingCodeNotFound, code)
+}
+
 func removePairingCode(code string) (PairingRequest, error) {
 	code = strings.ToUpper(strings.TrimSpace(code))
 	if code == "" {
@@ -287,7 +328,7 @@ func removePairingCode(code string) (PairingRequest, error) {
 		kept = append(kept, req)
 	}
 	if found.Code == "" {
-		return PairingRequest{}, fmt.Errorf("pairing code %s not found or expired", code)
+		return PairingRequest{}, fmt.Errorf("%w: %s", errPairingCodeNotFound, code)
 	}
 	store.Requests = kept
 	return found, savePairingFile(path, store)
