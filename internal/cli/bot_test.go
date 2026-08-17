@@ -143,6 +143,8 @@ func TestBotDoctorReportsSessionMappingCounts(t *testing.T) {
 		{ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected"},
 	}
 	cfg.Bot.Connections[0].SessionMappings = []config.BotConnectionSessionMapping{{RemoteID: "oc-chat-1", Scope: "global"}}
+	// 已登记端点（无 Session binding）也计入连接健康，即使 mapping 被回收。
+	cfg.Bot.Connections[1].Endpoints = []config.BotConnectionRemote{{RemoteID: "wx-chat-1", ChatType: "dm"}}
 	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
@@ -154,8 +156,8 @@ func TestBotDoctorReportsSessionMappingCounts(t *testing.T) {
 	})
 	for _, want := range []string{
 		`"name":"bot.connections","status":"ok","detail":"enabled=2 total=2"`,
-		`"name":"bot.connection.feishu-feishu.session_mappings","status":"ok","detail":"provider=feishu mappings=1"`,
-		`"name":"bot.connection.weixin-weixin.session_mappings","status":"missing","detail":"provider=weixin mappings=0"`,
+		`"name":"bot.connection.feishu-feishu.session_mappings","status":"ok","detail":"provider=feishu mappings=1 endpoints=0"`,
+		`"name":"bot.connection.weixin-weixin.session_mappings","status":"ok","detail":"provider=weixin mappings=0 endpoints=1"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("bot doctor output missing %s:\n%s", want, out)
@@ -193,7 +195,7 @@ enabled = false
 	for _, want := range []string{
 		`"name":"bot.enabled","status":"ok"`,
 		`"name":"bot.connections","status":"ok","detail":"enabled=1 total=1"`,
-		`"name":"bot.connection.feishu-lark.session_mappings","status":"missing","detail":"provider=feishu mappings=0"`,
+		`"name":"bot.connection.feishu-lark.session_mappings","status":"missing","detail":"provider=feishu mappings=0 endpoints=0"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("bot doctor output missing %s:\n%s", want, out)

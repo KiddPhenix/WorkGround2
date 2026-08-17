@@ -621,6 +621,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if len(conn.SessionMappings) > 0 {
 				fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(conn.SessionMappings))
 			}
+			if len(conn.Endpoints) > 0 {
+				fmt.Fprintf(&b, "endpoints = %s\n", renderBotEndpoints(conn.Endpoints))
+			}
 			// access must be the last sub-table of the connection record: keys
 			// after a [bot.connections.access] header would belong to access.
 			b.WriteString("\n[bot.connections.access]\n")
@@ -1539,6 +1542,31 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 		}
 		if mapping.UpdatedAt != "" {
 			parts["updated_at"] = mapping.UpdatedAt
+		}
+		b.WriteString(renderStringMap(parts))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func renderBotEndpoints(endpoints []BotConnectionRemote) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, endpoint := range endpoints {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		parts := map[string]string{
+			"remote_id": endpoint.RemoteID,
+		}
+		if endpoint.ChatType != "" {
+			parts["chat_type"] = endpoint.ChatType
+		}
+		if endpoint.ThreadID != "" {
+			parts["thread_id"] = endpoint.ThreadID
+		}
+		if endpoint.UpdatedAt != "" {
+			parts["updated_at"] = endpoint.UpdatedAt
 		}
 		b.WriteString(renderStringMap(parts))
 	}

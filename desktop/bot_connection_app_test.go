@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"workground2/internal/bot"
 	"workground2/internal/config"
 )
 
@@ -533,7 +534,7 @@ func TestDiagnoseWeixinConnectionDetectsMissingSavedAccountWithoutTokenEnv(t *te
 	}
 }
 
-func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
+func TestRememberBotConnectionRemoteStoresStableEndpoint(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	app := NewApp()
 	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
@@ -549,9 +550,19 @@ func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
 	if err := app.rememberBotConnectionRemote("feishu-lark", "ou_global"); err != nil {
 		t.Fatalf("remember global remote: %v", err)
 	}
+	if err := app.rememberBotConnectionRemote("feishu-lark", "ou_global"); err != nil {
+		t.Fatalf("remember global remote again: %v", err)
+	}
 	cfg := config.LoadForEdit(config.UserConfigPath())
-	if got := cfg.Bot.Connections[0].SessionMappings[0]; got.Scope != "global" || got.WorkspaceRoot != "" || got.RemoteID != "ou_global" {
-		t.Fatalf("global mapping = %+v, want scope=global without workspace", got)
+	endpoints := cfg.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 {
+		t.Fatalf("endpoints = %+v, want one stable endpoint", endpoints)
+	}
+	if got := endpoints[0]; got.RemoteID != "ou_global" || got.ChatType != string(bot.ChatDM) || got.UpdatedAt == "" {
+		t.Fatalf("global endpoint = %+v, want dm endpoint with updated_at", got)
+	}
+	if mappings := cfg.Bot.Connections[0].SessionMappings; len(mappings) != 0 {
+		t.Fatalf("session mappings = %+v, want untouched by remote registration", mappings)
 	}
 
 	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
@@ -569,14 +580,50 @@ func TestRememberBotConnectionRemoteStoresStableScope(t *testing.T) {
 		t.Fatalf("remember project remote: %v", err)
 	}
 	cfg = config.LoadForEdit(config.UserConfigPath())
-	var projectMapping config.BotConnectionSessionMapping
+	var projectEndpoint config.BotConnectionRemote
 	for _, conn := range cfg.Bot.Connections {
-		if conn.ID == "weixin-project" && len(conn.SessionMappings) == 1 {
-			projectMapping = conn.SessionMappings[0]
+		if conn.ID == "weixin-project" && len(conn.Endpoints) == 1 {
+			projectEndpoint = conn.Endpoints[0]
 		}
 	}
-	if projectMapping.Scope != "project" || projectMapping.WorkspaceRoot != "/tmp/WorkGround2-project" || projectMapping.RemoteID != "wxid_project" {
-		t.Fatalf("project mapping = %+v, want project scope and workspace", projectMapping)
+	if projectEndpoint.RemoteID != "wxid_project" || projectEndpoint.ChatType != string(bot.ChatDM) {
+		t.Fatalf("project endpoint = %+v, want stable dm endpoint", projectEndpoint)
+	}
+}
+
+func TestUpsertBotConnectionPreservesRegisteredEndpoints(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
+		ID:       "weixin-weixin",
+		Provider: "weixin",
+		Domain:   "weixin",
+		Label:    "微信",
+		Enabled:  true,
+		Status:   "connected",
+	}, nil); err != nil {
+		t.Fatalf("upsert connection: %v", err)
+	}
+	if err := app.rememberBotConnectionRemote("weixin-weixin", "wx-owner"); err != nil {
+		t.Fatalf("remember remote: %v", err)
+	}
+
+	// 重装/重配对会整体替换连接记录：已登记端点必须保留（通知目标数据源）。
+	if _, err := app.upsertBotConnection(config.BotConnectionConfig{
+		ID:       "weixin-weixin",
+		Provider: "weixin",
+		Domain:   "weixin",
+		Label:    "微信",
+		Enabled:  true,
+		Status:   "connected",
+	}, nil); err != nil {
+		t.Fatalf("re-upsert connection: %v", err)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	endpoints := cfg.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 || endpoints[0].RemoteID != "wx-owner" || endpoints[0].ChatType != string(bot.ChatDM) {
+		t.Fatalf("endpoints = %+v, want preserved after re-install", endpoints)
 	}
 }
 

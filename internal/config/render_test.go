@@ -226,6 +226,10 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 			WorkspaceRoot: "/tmp/WorkGround2-bot",
 			UpdatedAt:     "2026-06-11T00:00:00Z",
 		}},
+		Endpoints: []BotConnectionRemote{
+			{RemoteID: "ou_123", ChatType: "dm", UpdatedAt: "2026-06-11T00:00:00Z"},
+			{RemoteID: "oc_group_1", ChatType: "group", ThreadID: "thread-1", UpdatedAt: "2026-06-11T00:01:00Z"},
+		},
 	}}
 	orig.LSP = LSPConfig{
 		Enabled: true,
@@ -327,6 +331,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if len(got.Bot.Connections[0].SessionMappings) != 1 || got.Bot.Connections[0].SessionMappings[0].Scope != "project" || got.Bot.Connections[0].SessionMappings[0].WorkspaceRoot != "/tmp/WorkGround2-bot" {
 		t.Errorf("bot session mapping scope not preserved: %+v", got.Bot.Connections[0].SessionMappings)
+	}
+	if want := orig.Bot.Connections[0].Endpoints; !reflect.DeepEqual(got.Bot.Connections[0].Endpoints, want) {
+		t.Errorf("bot endpoints not preserved through render round-trip: got %+v, want %+v", got.Bot.Connections[0].Endpoints, want)
 	}
 	if want := orig.Bot.Connections[0].Access; !reflect.DeepEqual(got.Bot.Connections[0].Access, want) {
 		t.Errorf("bot connection access not preserved through render round-trip: got %+v, want %+v", got.Bot.Connections[0].Access, want)

@@ -1370,6 +1370,13 @@ export interface BotConnectionSessionMappingView {
   updatedAt: string;
 }
 
+export interface BotConnectionEndpointView {
+  remoteId: string;
+  chatType: string;
+  threadId: string;
+  updatedAt: string;
+}
+
 export interface BotAccessView {
   enabled: boolean;
   allowAll: boolean;
@@ -1393,6 +1400,7 @@ export interface BotConnectionView {
   access: BotAccessView;
   credential: BotConnectionCredentialView;
   sessionMappings: BotConnectionSessionMappingView[];
+  endpoints: BotConnectionEndpointView[];
   lastError: string;
   createdAt: string;
   updatedAt: string;

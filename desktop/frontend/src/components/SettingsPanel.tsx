@@ -1,9 +1,9 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, FolderPlus, Images, KeyRound, Loader2, Play, QrCode, RefreshCw, Send, Trash2 } from "lucide-react";
 import { asArray } from "../lib/array";
-import { botDecisionTargets, decisionChannelInputForBot } from "../lib/botDecisionChannel";
+import { botDecisionTargets, decisionChannelInputForBot, decisionTargetKey, savedDecisionChannelForConnection } from "../lib/botDecisionChannel";
 import { useDeferredClose } from "../lib/useMountTransition";
-import { app } from "../lib/bridge";
+import { app, onDecisionState } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerRequiresKey } from "../lib/providerModels";
 import { useUpdater } from "../lib/useUpdater";
@@ -46,7 +46,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, DecisionChannelView, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { DYNAMIC_WALLPAPER_SCENES, DynamicWallpaper, isSceneName } from "./DynamicWallpaper";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
@@ -965,6 +965,12 @@ function normalizeBotConnection(raw: any) {
         : "",
       updatedAt: String(item?.updatedAt ?? "").trim(),
     })),
+    endpoints: asArray(raw?.endpoints).map((item: any) => ({
+      remoteId: String(item?.remoteId ?? "").trim(),
+      chatType: String(item?.chatType ?? "").trim(),
+      threadId: String(item?.threadId ?? "").trim(),
+      updatedAt: String(item?.updatedAt ?? "").trim(),
+    })).filter((item) => item.remoteId),
     lastError: String(raw?.lastError ?? "").trim(),
     createdAt: String(raw?.createdAt ?? "").trim(),
     updatedAt: String(raw?.updatedAt ?? "").trim(),
@@ -1784,6 +1790,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const [testTargets, setTestTargets] = useState<Record<string, string>>({});
   const [decisionTargetIndexes, setDecisionTargetIndexes] = useState<Record<string, number>>({});
   const [savedDecisionTargets, setSavedDecisionTargets] = useState<Record<string, string>>({});
+  const [decisionChannels, setDecisionChannels] = useState<DecisionChannelView[]>([]);
   const [connectionSecrets, setConnectionSecrets] = useState<Record<string, string>>({});
   const [qqSecretValue, setQQSecretValue] = useState("");
   const [expandedConnectionId, setExpandedConnectionId] = useState("");
@@ -1835,6 +1842,27 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     clearInstallTimers();
     setInstall({ target: installTarget, result: null, status: "idle", timeLeft: 0, message: "" });
   }, [installTarget]);
+  // 已保存的 Decision Channel 是通知/问答目标的单一可信源：即使
+  // sessionMappings 被自动回收清空，设置页仍能显示"已设置"并允许测试。
+  useEffect(() => {
+    let alive = true;
+    void app.DecisionState().then((state) => alive && setDecisionChannels(state.channels ?? [])).catch(() => undefined);
+    const off = onDecisionState((state) => alive && setDecisionChannels(state.channels ?? []));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+  useEffect(() => {
+    const seed: Record<string, string> = {};
+    for (const channel of decisionChannels) {
+      const connection = draft.connections.find((item) => item.id === channel.connection_id);
+      if (!connection || !channel.chat_id?.trim()) continue;
+      seed[connection.id] = decisionTargetKey(connection, channel);
+    }
+    // seed 来自 broker（单一可信源），优先于本地瞬时状态，避免已删除通道残留。
+    setSavedDecisionTargets(seed);
+  }, [decisionChannels, draft.connections]);
   useEffect(() => () => {
     installAttemptRef.current += 1;
     clearInstallTimers();
@@ -2141,6 +2169,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const selectedDecisionTargetKey = selectedConnection && selectedDecisionTarget
     ? `${selectedConnection.id}:${selectedDecisionTarget.remoteId}:${selectedDecisionTarget.chatType}`
     : "";
+  const selectedSavedDecisionChannel = selectedConnection ? savedDecisionChannelForConnection(selectedConnection, decisionChannels) : null;
   const selectedConnectionToolApprovalMode = selectedConnection ? normalizeBotToolApprovalMode(selectedConnection.toolApprovalMode, true) : "";
   const selectedAllowlistTargetReady = selectedQQ || Boolean(selectedConnection);
   useEffect(() => {
@@ -2567,7 +2596,13 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
 
               <section className="bot-detail-section">
                 <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
-                <p className="bot-detail-card__desc">{selectedDecisionTarget ? t("settings.botDecisionChannelHint") : t("settings.botDecisionChannelNoTarget")}</p>
+                <p className="bot-detail-card__desc">
+                  {selectedDecisionTarget
+                    ? t("settings.botDecisionChannelHint")
+                    : selectedSavedDecisionChannel
+                      ? t("settings.botDecisionChannelSavedOnly")
+                      : t("settings.botDecisionChannelNoTarget")}
+                </p>
                 {selectedDecisionTarget ? (
                   <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
                     <div className="bot-secret-row">
@@ -2586,7 +2621,8 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                         className="btn btn--primary btn--small"
                         disabled={busy || !selectedConnection.enabled}
                         onClick={() => void apply(async () => {
-                          await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
+                          const state = await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
+                          if (state?.channels) setDecisionChannels(state.channels);
                           setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
                           return t("settings.botDecisionChannelSuccess");
                         })}
@@ -2595,6 +2631,28 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                       </button>
                     </div>
                   </SettingsField>
+                ) : null}
+                {selectedSavedDecisionChannel ? (
+                  <div className="bot-secret-row bot-detail-card__saved-channel">
+                    <span className="bot-detail-card__saved-channel-label">
+                      {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey
+                        ? t("settings.botDecisionChannelSet")
+                        : t("settings.botDecisionChannelSaved")}
+                      {" · "}
+                      {selectedSavedDecisionChannel.chat_id} · {selectedSavedDecisionChannel.chat_type?.trim() || "dm"}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      disabled={busy || !selectedConnection.enabled}
+                      onClick={() => void apply(async () => {
+                        await app.TestDecisionChannel(selectedSavedDecisionChannel!.id);
+                        return t("settings.botDecisionChannelTestSent");
+                      })}
+                    >
+                      {t("settings.botDecisionChannelTest")}
+                    </button>
+                  </div>
                 ) : null}
               </section>
 

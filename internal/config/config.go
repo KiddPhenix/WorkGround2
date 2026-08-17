@@ -774,9 +774,23 @@ type BotConnectionConfig struct {
 	Access           BotAccessConfig               `toml:"access"`
 	Credential       BotConnectionCredential       `toml:"credential"`
 	SessionMappings  []BotConnectionSessionMapping `toml:"session_mappings"`
-	LastError        string                        `toml:"last_error"`
-	CreatedAt        string                        `toml:"created_at"`
-	UpdatedAt        string                        `toml:"updated_at"`
+	// Endpoints 是已授权远端会话的稳定端点登记表，独立于 Session binding：
+	// 自动 IM Session 回收只清理 session_mappings，不删除已登记端点。端点用于
+	// 主人通知/问答通道的目标发现与发送，不创建或恢复任何 AI Session。
+	Endpoints []BotConnectionRemote `toml:"endpoints"`
+	LastError string                `toml:"last_error"`
+	CreatedAt string                `toml:"created_at"`
+	UpdatedAt string                `toml:"updated_at"`
+}
+
+// BotConnectionRemote 是一条与 Session 生命周期无关的远端端点。RemoteID 是
+// 平台会话 ID（ChatID）；ChatType/ThreadID 用于区分同一 RemoteID 下的群、
+// 话题等不同目标。同一 (RemoteID, ChatType, ThreadID) 重复入站幂等复用。
+type BotConnectionRemote struct {
+	RemoteID  string `toml:"remote_id"`
+	ChatType  string `toml:"chat_type"`
+	ThreadID  string `toml:"thread_id"`
+	UpdatedAt string `toml:"updated_at"`
 }
 
 type BotConnectionCredential struct {
