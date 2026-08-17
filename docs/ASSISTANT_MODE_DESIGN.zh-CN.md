@@ -97,6 +97,16 @@ type Routine struct {
 - 时区和可选运行时间窗口。
 - 默认 `coalesce_latest`：离线错过多个周期时只补一次。
 
+日历边界采用固定语义，避免依赖 `time.AddDate` 的隐式归一化：
+
+- 所有 occurrence 以 UTC instant 持久化，Schedule 同时保留 IANA timezone。
+- 夏令时跳过的本地时间移动到缺口后的第一个有效 instant；重复的本地时间只取第一次。
+- 每月 29/30/31 在目标月份不存在时收敛到该月最后一天。
+- 每年 2 月 29 日在非闰年收敛到 2 月最后一天。
+- 跨午夜时间窗口合法，例如 `22:00-06:00`；落在窗口外的 interval 推迟到下一个窗口起点。
+- interval 使用上一次计划 occurrence 推进，避免执行耗时造成持续漂移。
+- timezone 无效时拒绝保存，不静默回退本机时区。
+
 ### 4.3 Run
 
 ```go
@@ -321,4 +331,3 @@ desktop/frontend/src/App.tsx            一级入口和表面切换
 desktop/heartbeat.go                    兼容与转换来源
 Codex/KnowledgeBase/FeatureMap.md        功能状态
 ```
-
