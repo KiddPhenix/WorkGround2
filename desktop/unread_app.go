@@ -478,17 +478,7 @@ func (a *App) ResolveLegacySessionUnread(conversationKey string) (ResolvedSessio
 	if store == nil {
 		return ResolvedSession{}, errors.New("unread store unavailable")
 	}
-	// Find the conversation to access its SessionID and metadata.
-	summary := store.Summary()
-	var conv unread.Conversation
-	found := false
-	for _, c := range summary.Conversations {
-		if c.Key == key {
-			conv = c
-			found = true
-			break
-		}
-	}
+	conv, found := findUnreadConversation(store, key)
 	if !found {
 		return ResolvedSession{}, fmt.Errorf("unread conversation %q not found", key)
 	}
@@ -496,6 +486,55 @@ func (a *App) ResolveLegacySessionUnread(conversationKey string) (ResolvedSessio
 	if conv.Source != unread.SourceSession {
 		return ResolvedSession{}, fmt.Errorf("unread conversation %q has source %q, only session is supported", key, conv.Source)
 	}
+	return a.resolveSessionSourceUnread(store, conv)
+}
+
+// ResolveUnreadSession resolves the navigation target for a supported unread
+// fallback conversation. Session-source keys keep the legacy resolution path;
+// IM-source keys bound to a path:… session file are resolved live, or restored
+// from the local trash when the external session GC moved them there, so a
+// valid IM unread never becomes an un-navigable dead row. Missing targets,
+// out-of-scope paths and invalid meta fail explicitly and leave the unread
+// intact for a later retry.
+func (a *App) ResolveUnreadSession(conversationKey string) (ResolvedSession, error) {
+	key := strings.TrimSpace(conversationKey)
+	if key == "" {
+		return ResolvedSession{}, errors.New("conversation key is required")
+	}
+	store, err := a.currentUnreadStore()
+	if err != nil {
+		return ResolvedSession{}, fmt.Errorf("unread store unavailable: %w", err)
+	}
+	if store == nil {
+		return ResolvedSession{}, errors.New("unread store unavailable")
+	}
+	conv, found := findUnreadConversation(store, key)
+	if !found {
+		return ResolvedSession{}, fmt.Errorf("unread conversation %q not found", key)
+	}
+	switch conv.Source {
+	case unread.SourceSession:
+		return a.resolveSessionSourceUnread(store, conv)
+	case unread.SourceIM:
+		return a.resolveIMSourceUnread(store, conv)
+	default:
+		return ResolvedSession{}, fmt.Errorf("unread conversation %q has source %q, only session and im are supported", key, conv.Source)
+	}
+}
+
+func findUnreadConversation(store *unread.Store, key string) (unread.Conversation, bool) {
+	for _, c := range store.Summary().Conversations {
+		if c.Key == key {
+			return c, true
+		}
+	}
+	return unread.Conversation{}, false
+}
+
+// resolveSessionSourceUnread implements legacy SESSION resolution: map a
+// UUID-style SessionID (or an existing path: binding) to a concrete session
+// file under the known session dirs and self-heal the binding.
+func (a *App) resolveSessionSourceUnread(store *unread.Store, conv unread.Conversation) (ResolvedSession, error) {
 	sessionID := strings.TrimSpace(conv.SessionID)
 	if sessionID == "" {
 		return ResolvedSession{}, errors.New("legacy session unread has no session ID")
@@ -508,15 +547,101 @@ func (a *App) ResolveLegacySessionUnread(conversationKey string) (ResolvedSessio
 		resolvedPath = a.runtimeSessionPath(sessionID)
 	}
 	if resolvedPath == "" {
+		var err error
 		resolvedPath, err = resolveSessionByID(dirs, sessionID, conv.Title, conv.LastUnreadAt)
+		if err != nil {
+			return ResolvedSession{}, err
+		}
 	}
+	return a.resolvedSessionForPath(store, conv, resolvedPath)
+}
+
+// resolveIMSourceUnread resolves an IM unread conversation whose session
+// binding is a path:… absolute session file. A live session becomes the
+// navigation target directly. When the live file is missing, its local trash
+// copy (.trash/<basename>/<basename>) is restored first (full artifacts) so
+// the unread remains navigable after the external session GC ran. Failures
+// are explicit and keep the unread so the caller can retry.
+func (a *App) resolveIMSourceUnread(store *unread.Store, conv unread.Conversation) (ResolvedSession, error) {
+	sessionID := strings.TrimSpace(conv.SessionID)
+	if !strings.HasPrefix(strings.ToLower(sessionID), "path:") {
+		return ResolvedSession{}, fmt.Errorf("IM unread %q has unsupported session binding %q", conv.Key, sessionID)
+	}
+	livePath := strings.TrimSpace(sessionID[len("path:"):])
+	if livePath == "" {
+		return ResolvedSession{}, fmt.Errorf("IM unread %q has an empty session path", conv.Key)
+	}
+	dir, livePath, err := a.sessionDirForPath(livePath)
 	if err != nil {
-		return ResolvedSession{}, err
+		return ResolvedSession{}, fmt.Errorf("IM unread session path is outside known session directories: %w", err)
 	}
-	if !sessionPathInDirs(dirs, resolvedPath) {
+	info, err := os.Stat(livePath)
+	switch {
+	case err == nil && info.IsDir():
+		return ResolvedSession{}, fmt.Errorf("IM unread session path %q is not a session file", livePath)
+	case err == nil:
+		// Live target: navigate directly.
+	case os.IsNotExist(err):
+		if err := a.restoreTrashedIMSession(dir, livePath); err != nil {
+			return ResolvedSession{}, err
+		}
+	default:
+		return ResolvedSession{}, fmt.Errorf("stat IM unread session %q: %w", livePath, err)
+	}
+	return a.resolvedSessionForPath(store, conv, livePath)
+}
+
+// restoreTrashedIMSession restores a session the external session GC moved
+// into the local trash back to its live path. The whole restore is serialized
+// so repeated clicks and concurrent restores stay idempotent: a leftover live
+// target wins the race, and only a missing trash copy or a real restore
+// failure is reported (and retryable).
+func (a *App) restoreTrashedIMSession(dir, livePath string) error {
+	a.unreadRestoreMu.Lock()
+	defer a.unreadRestoreMu.Unlock()
+	// Another click may have restored the session while this caller waited for
+	// the restore lock. Re-check the live target before inspecting the now-
+	// consumed trash entry so the late caller observes the completed state.
+	if info, err := os.Stat(livePath); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("IM unread session path %q is not a session file", livePath)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat IM unread session %q: %w", livePath, err)
+	}
+	key := filepath.Base(livePath)
+	trashPath := filepath.Join(sessionTrashPath(dir), key, key)
+	if _, _, _, err := validateTrashedSessionPath(dir, trashPath); err != nil {
+		return fmt.Errorf("IM unread session %q is neither live nor in the trash", key)
+	}
+	// RestoreSession treats a missing trash copy as a no-op, so confirm the
+	// trash file really exists before delegating. A concurrent restore may
+	// have consumed it in the meantime — then the live file wins.
+	if info, err := os.Stat(trashPath); err != nil || info.IsDir() {
+		if live, statErr := os.Stat(livePath); statErr == nil && !live.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("IM unread session %q is neither live nor in the trash", key)
+	}
+	if err := a.RestoreSession(trashPath); err != nil {
+		// A concurrent restore may have won the race; the live file now exists.
+		if info, statErr := os.Stat(livePath); statErr == nil && !info.IsDir() {
+			return nil
+		}
+		return fmt.Errorf("restore IM unread session %q: %w", key, err)
+	}
+	return nil
+}
+
+// resolvedSessionForPath finalizes a navigation target from a concrete session
+// file: validates it stays inside the known session directories, loads branch
+// meta and self-heals the unread binding. BindSession is idempotent, so a
+// stale double-click or retry remains safe.
+func (a *App) resolvedSessionForPath(store *unread.Store, conv unread.Conversation, resolvedPath string) (ResolvedSession, error) {
+	if !sessionPathInDirs(a.knownSessionDirs(), resolvedPath) {
 		return ResolvedSession{}, fmt.Errorf("resolved session path %q is outside known session directories", resolvedPath)
 	}
-	// Load meta for scope/workspace/topic.
 	meta, ok, err := agent.LoadBranchMeta(resolvedPath)
 	if err != nil || !ok {
 		return ResolvedSession{}, fmt.Errorf("cannot load session meta for %q: %w", resolvedPath, err)
@@ -525,11 +650,9 @@ func (a *App) ResolveLegacySessionUnread(conversationKey string) (ResolvedSessio
 	workspaceRoot := meta.WorkspaceRoot
 	topicID := meta.TopicID
 	topicTitle := firstNonEmpty(meta.TopicTitle, meta.CustomTitle, conv.Title)
-	// Self-heal: bind the resolved path back to the unread store. BindSession is
-	// idempotent, so a stale double-click or retry remains safe.
 	newSessionID := "path:" + resolvedPath
 	before := store.Summary().Revision
-	if err := store.BindSession(key, newSessionID); err != nil {
+	if err := store.BindSession(conv.Key, newSessionID); err != nil {
 		return ResolvedSession{}, fmt.Errorf("bind resolved session path: %w", err)
 	}
 	state := a.UnreadState()

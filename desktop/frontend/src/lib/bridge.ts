@@ -307,6 +307,7 @@ export interface AppBindings extends WailsWorkBindings {
   UnreadState(): Promise<UnreadState>;
   MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
   ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
+  ResolveUnreadSession(conversationKey: string): Promise<ResolvedSession>;
   EnterWidgetMode(): Promise<WidgetSnapshot>;
   ExitWidgetMode(tabID: string): Promise<void>;
   IsWidgetMode(): Promise<boolean>;
@@ -4243,6 +4244,9 @@ function makeMockApp(): AppBindings {
     },
     async ResolveLegacySessionUnread(_conversationKey: string) {
       throw new Error("ResolveLegacySessionUnread is not available in browser dev mode");
+    },
+    async ResolveUnreadSession(_conversationKey: string) {
+      throw new Error("ResolveUnreadSession is not available in browser dev mode");
     },
     async SessionBackground(_tabID: string) {
       return { path: "", url: "" };

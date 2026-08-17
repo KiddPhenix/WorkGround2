@@ -184,7 +184,12 @@ export function projectTreeUnreadFallbackConversation(node: ProjectNode, convers
   return conversations.find((conversation) => unreadFallbackKey(conversation) === key && conversation.unreadCount > 0);
 }
 
-export async function openLegacyUnreadConversation(
+/** Sources whose unread fallback row can resolve to a navigable session. */
+export function projectTreeUnreadFallbackSupported(source: UnreadConversation["source"]): boolean {
+  return source === "session" || source === "im";
+}
+
+export async function openUnreadFallbackConversation(
   conversation: UnreadConversation,
   resolve: (key: string) => Promise<ResolvedSession>,
   open: (target: ResolvedSession) => Promise<void> | void,
@@ -1684,10 +1689,10 @@ export function ProjectTree({
                 return;
               }
               if (unreadFallbackConv) {
-                if (unreadFallbackConv.source === "session") {
-                  void openLegacyUnreadConversation(
+                if (projectTreeUnreadFallbackSupported(unreadFallbackConv.source)) {
+                  void openUnreadFallbackConversation(
                     unreadFallbackConv,
-                    (conversationKey) => app.ResolveLegacySessionUnread(conversationKey),
+                    (conversationKey) => app.ResolveUnreadSession(conversationKey),
                     (resolved) => onOpenTopic(resolved.scope, resolved.workspaceRoot, resolved.topicId, resolved.sessionPath),
                     async (conversationKey, upToSequence) => {
                       const next = await app.MarkUnreadRead({ conversationKey, upToSequence });
@@ -1697,7 +1702,7 @@ export function ProjectTree({
                     markNodeRead(node);
                   }).catch((error) => {
                     showToast(t("projectTree.unreadFallbackOpenError"), "error");
-                    console.error("open legacy session unread failed", error);
+                    console.error("open unread fallback failed", error);
                   });
                 } else {
                   showToast(t("projectTree.unreadFallbackOpenError"), "error");

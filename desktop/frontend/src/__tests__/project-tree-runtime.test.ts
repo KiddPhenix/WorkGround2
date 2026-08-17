@@ -25,7 +25,8 @@ import {
   projectTreeCanRenameTopic,
   projectTreeRenameTarget,
   projectTreeUnreadFallbackConversation,
-  openLegacyUnreadConversation,
+  openUnreadFallbackConversation,
+  projectTreeUnreadFallbackSupported,
 } from "../components/ProjectTree";
 import type { ProjectNode, UnreadConversation } from "../lib/types";
 
@@ -811,7 +812,7 @@ if (sessionFallbackRow) {
 }
 
 const legacyOpenSteps: string[] = [];
-await openLegacyUnreadConversation(
+await openUnreadFallbackConversation(
   sessionFallbackConvs[0],
   async (key) => {
     legacyOpenSteps.push(`resolve:${key}`);
@@ -828,7 +829,7 @@ eq(
 
 const failedOpenSteps: string[] = [];
 try {
-  await openLegacyUnreadConversation(
+  await openUnreadFallbackConversation(
     sessionFallbackConvs[0],
     async () => ({ scope: "project", workspaceRoot: "/ut", topicId: "ua", sessionPath: "/ut/missing.jsonl", topicTitle: "Legacy Session" }),
     async () => { failedOpenSteps.push("open"); throw new Error("open failed"); },
@@ -838,6 +839,47 @@ try {
   failedOpenSteps.push("error");
 }
 eq(failedOpenSteps, ["open", "error"], "failed legacy Session open preserves unread state");
+
+// 10. IM-source unread fallback is supported by the unified resolver and keeps
+// the same resolve → open → mark-read ordering, so a failed resolve never
+// clears the unread.
+eq(projectTreeUnreadFallbackSupported("session"), true, "session fallback is supported");
+eq(projectTreeUnreadFallbackSupported("im"), true, "IM fallback is supported");
+eq(projectTreeUnreadFallbackSupported("room"), false, "room fallback is not supported");
+eq(projectTreeUnreadFallbackSupported("work"), false, "work fallback is not supported");
+
+const imFallbackConv: UnreadConversation = {
+  key: "im:chat-1", source: "im", sessionId: "path:D:\\sessions\\im.jsonl",
+  unreadCount: 2, latestSequence: 4, readSequence: 2, highPriorityCount: 0, title: "IM Chat",
+};
+const imOpenSteps: string[] = [];
+await openUnreadFallbackConversation(
+  imFallbackConv,
+  async (key) => {
+    imOpenSteps.push(`resolve:${key}`);
+    return { scope: "project", workspaceRoot: "/ut", topicId: "ua", sessionPath: "D:\\sessions\\im.jsonl", topicTitle: "IM Chat" };
+  },
+  async (target) => { imOpenSteps.push(`open:${target.sessionPath}`); },
+  async (key, sequence) => { imOpenSteps.push(`read:${key}:${sequence}`); },
+);
+eq(
+  imOpenSteps,
+  ["resolve:im:chat-1", "open:D:\\sessions\\im.jsonl", "read:im:chat-1:4"],
+  "IM unread is marked read only after its resolved Session opens",
+);
+
+const imResolveFailSteps: string[] = [];
+try {
+  await openUnreadFallbackConversation(
+    { key: "im:chat-1", source: "im", sessionId: "path:D:\\sessions\\gone.jsonl", unreadCount: 2, latestSequence: 4, readSequence: 2, highPriorityCount: 0 },
+    async () => { imResolveFailSteps.push("resolve"); throw new Error("target not found"); },
+    async () => { imResolveFailSteps.push("open"); },
+    async () => { imResolveFailSteps.push("read"); },
+  );
+} catch {
+  imResolveFailSteps.push("error");
+}
+eq(imResolveFailSteps, ["resolve", "error"], "failed IM fallback resolve preserves unread state");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

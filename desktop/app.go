@@ -170,6 +170,10 @@ type App struct {
 	unreadBadgeMu      sync.Mutex
 	unreadBadgeTarget  int
 	unreadBadgeRunning bool
+	// unreadRestoreMu serializes trash restores triggered by unread fallback
+	// navigation so concurrent clicks cannot interleave RestoreSession with a
+	// sibling's meta load (Windows file-lock races) or double-restore.
+	unreadRestoreMu sync.Mutex
 	// sessionDirsOverride replaces knownSessionDirs() when non-nil (test-only).
 	sessionDirsOverride []string
 
