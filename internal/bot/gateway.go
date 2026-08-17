@@ -47,9 +47,20 @@ type GatewayConfig struct {
 	ConnectionChannels map[string]ChannelConfig
 	Routes             []RouteConfig
 	ConnectionAccess   map[string]AccessConfig
-	Allowlist          AllowlistConfig
-	Enabled            map[Platform]bool
-	Debounce           time.Duration
+	// RefreshAccess reloads the complete persisted admission snapshot from
+	// disk. The gateway calls it once when an access check fails, so an
+	// approval written by another process takes effect on the next message
+	// without reading config for every inbound message. A nil function
+	// disables refresh-on-miss; a failed refresh keeps the previous snapshot
+	// and the check stays denied (fail closed).
+	RefreshAccess func() (AccessSnapshot, error)
+	// AccessRefreshCooldown limits how often refresh-on-miss re-reads config,
+	// so a flood of denied messages cannot hammer the disk. Zero uses the
+	// default cooldown; a negative value disables the cooldown (tests).
+	AccessRefreshCooldown time.Duration
+	Allowlist             AllowlistConfig
+	Enabled               map[Platform]bool
+	Debounce              time.Duration
 	// AcceptInbound durably records an authorized, non-self message before any
 	// command, queue, or Agent processing. Returning Duplicate stops redelivery
 	// from triggering the same work twice; an error leaves the message retryable.
@@ -141,6 +152,14 @@ type AccessConfig struct {
 	Admins         []string
 }
 
+// AccessSnapshot is the complete mutable admission state reloaded from
+// persistent config. ConnectionAccess and Allowlist move together because
+// legacy bots and unmatched connection IDs fall back to the global allowlist.
+type AccessSnapshot struct {
+	ConnectionAccess map[string]AccessConfig
+	Allowlist        AllowlistConfig
+}
+
 // AdapterHealthSnapshot describes the gateway's current view of one adapter.
 type AdapterHealthSnapshot struct {
 	ID            string    `json:"id"`
@@ -168,6 +187,8 @@ type BotGateway struct {
 	startErr []error
 
 	mu                      sync.Mutex
+	accessMu                sync.RWMutex             // guards cfg.ConnectionAccess swaps on refresh-on-miss
+	lastAccessRefresh       time.Time                // guarded by accessMu; cooldown for refresh-on-miss
 	controllers             map[string]*sessionState // session key -> active state
 	pendingReactionCleanups map[string][]func()
 	allowlist               map[Platform]map[string]bool
@@ -233,6 +254,10 @@ type pendingReactionAdapter interface {
 }
 
 const outboundEchoTTL = 10 * time.Minute
+
+// defaultAccessRefreshCooldown bounds how often a denied message can trigger a
+// config re-read, so a flood of unauthorized messages cannot hammer the disk.
+const defaultAccessRefreshCooldown = 5 * time.Second
 
 const botIdleSessionLimit = 4 * time.Hour
 
@@ -324,19 +349,26 @@ func normalizeAdapterBindings(adapters []AdapterBinding) []AdapterBinding {
 }
 
 func (gw *BotGateway) buildAllowlist() {
+	gw.allowlist, gw.groupAllowlist = buildAllowlistMaps(gw.cfg.Allowlist)
+}
+
+func buildAllowlistMaps(cfg AllowlistConfig) (map[Platform]map[string]bool, map[Platform]map[string]bool) {
+	allowlist := make(map[Platform]map[string]bool)
+	groupAllowlist := make(map[Platform]map[string]bool)
 	for _, plat := range []Platform{PlatformQQ, PlatformFeishu, PlatformWeixin} {
-		gw.allowlist[plat] = make(map[string]bool)
-		if !gw.cfg.Allowlist.Enabled {
+		allowlist[plat] = make(map[string]bool)
+		groupAllowlist[plat] = make(map[string]bool)
+		if !cfg.Enabled {
 			continue
 		}
-		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Users[plat])
-		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Admins[plat])
-		addAllowlistUsers(gw.allowlist[plat], gw.cfg.Allowlist.Approvers[plat])
-		gw.groupAllowlist[plat] = make(map[string]bool)
-		for _, gid := range gw.cfg.Allowlist.Groups[plat] {
-			gw.groupAllowlist[plat][gid] = true
+		addAllowlistUsers(allowlist[plat], cfg.Users[plat])
+		addAllowlistUsers(allowlist[plat], cfg.Admins[plat])
+		addAllowlistUsers(allowlist[plat], cfg.Approvers[plat])
+		for _, gid := range cfg.Groups[plat] {
+			groupAllowlist[plat][gid] = true
 		}
 	}
+	return allowlist, groupAllowlist
 }
 
 func addAllowlistUsers(dst map[string]bool, users []string) {
@@ -879,6 +911,12 @@ func outboundMessageKey(platform Platform, connID, domain, chatID, messageID str
 }
 
 func (gw *BotGateway) connectionAccess(msg InboundMessage) (AccessConfig, bool) {
+	gw.accessMu.RLock()
+	defer gw.accessMu.RUnlock()
+	return gw.connectionAccessLocked(msg)
+}
+
+func (gw *BotGateway) connectionAccessLocked(msg InboundMessage) (AccessConfig, bool) {
 	if gw.cfg.ConnectionAccess == nil {
 		return AccessConfig{}, false
 	}
@@ -907,7 +945,21 @@ func accessConfigActive(access AccessConfig) bool {
 }
 
 func (gw *BotGateway) checkAllowlist(plat Platform, msg InboundMessage) bool {
-	if access, ok := gw.connectionAccess(msg); ok {
+	if gw.checkAllowlistOnce(plat, msg) {
+		return true
+	}
+	// 初判失败：从持久配置刷新访问快照并只重试一次，让外部批准无需重启
+	// 即在下一条消息生效。刷新失败或刷新后仍不匹配都保持默认拒绝。
+	if gw.refreshAccessSnapshot() {
+		return gw.checkAllowlistOnce(plat, msg)
+	}
+	return false
+}
+
+func (gw *BotGateway) checkAllowlistOnce(plat Platform, msg InboundMessage) bool {
+	gw.accessMu.RLock()
+	defer gw.accessMu.RUnlock()
+	if access, ok := gw.connectionAccessLocked(msg); ok {
 		return checkConnectionAllowlist(access, msg)
 	}
 	if gw.cfg.Allowlist.AllowAll {
@@ -927,6 +979,48 @@ func (gw *BotGateway) checkAllowlist(plat Platform, msg InboundMessage) bool {
 	if chatUsesGroupAllowlist(msg.ChatType) && len(groups) > 0 && !groups[msg.ChatID] {
 		return false
 	}
+	return true
+}
+
+// refreshAccessSnapshot reloads the complete access snapshot from the
+// persisted config via the RefreshAccess hook, at most once per cooldown. It
+// swaps the complete live snapshot whenever reload succeeds, including an empty
+// connection map used to revoke the last connection-level grant. On error or
+// cooldown it leaves the previous snapshot in place, so the current check stays
+// denied and a later message can retry.
+func (gw *BotGateway) refreshAccessSnapshot() bool {
+	gw.accessMu.RLock()
+	refresh := gw.cfg.RefreshAccess
+	cooldown := gw.cfg.AccessRefreshCooldown
+	gw.accessMu.RUnlock()
+	if refresh == nil {
+		return false
+	}
+	if cooldown == 0 {
+		cooldown = defaultAccessRefreshCooldown
+	}
+	if cooldown > 0 {
+		gw.accessMu.Lock()
+		now := time.Now()
+		if now.Before(gw.lastAccessRefresh.Add(cooldown)) {
+			gw.accessMu.Unlock()
+			return false
+		}
+		gw.lastAccessRefresh = now
+		gw.accessMu.Unlock()
+	}
+	snapshot, err := refresh()
+	if err != nil {
+		gw.logger.Warn("bot access snapshot refresh failed; keeping previous access control", "err", err)
+		return false
+	}
+	allowlist, groups := buildAllowlistMaps(snapshot.Allowlist)
+	gw.accessMu.Lock()
+	gw.cfg.ConnectionAccess = snapshot.ConnectionAccess
+	gw.cfg.Allowlist = snapshot.Allowlist
+	gw.allowlist = allowlist
+	gw.groupAllowlist = groups
+	gw.accessMu.Unlock()
 	return true
 }
 
@@ -967,7 +1061,9 @@ func (gw *BotGateway) checkCommandRole(plat Platform, msg InboundMessage, role s
 	if strings.TrimSpace(actor) == "" {
 		return false
 	}
-	if access, ok := gw.connectionAccess(msg); ok {
+	gw.accessMu.RLock()
+	defer gw.accessMu.RUnlock()
+	if access, ok := gw.connectionAccessLocked(msg); ok {
 		admins := stringSet(access.Admins)
 		approvers := stringSet(access.Approvers)
 		if len(admins) == 0 && len(approvers) == 0 {

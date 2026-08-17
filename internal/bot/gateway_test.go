@@ -1885,3 +1885,166 @@ func TestBotSessionDirUsesProjectWorkspaceRoot(t *testing.T) {
 		t.Fatalf("project session dir = %q, want project-specific dir", got)
 	}
 }
+
+// TestGatewayRefreshAccessAdmitsApprovedUserOnNextMessage verifies the
+// refresh-on-miss path: an access check that fails against the startup snapshot
+// is retried once after reloading the persisted snapshot, so an external
+// approval takes effect on the next message without a gateway restart. Follow-up
+// checks hit the refreshed snapshot and do not reload again.
+func TestGatewayRefreshAccessAdmitsApprovedUserOnNextMessage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var mu sync.Mutex
+	refreshCount := 0
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true, Users: map[Platform][]string{PlatformFeishu: {}}},
+		RefreshAccess: func() (AccessSnapshot, error) {
+			mu.Lock()
+			refreshCount++
+			mu.Unlock()
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted after refresh-on-miss")
+	}
+	mu.Lock()
+	got := refreshCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("refresh called %d times for first message, want exactly 1", got)
+	}
+	// Follow-up message hits the refreshed snapshot; no extra disk reload.
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted on follow-up message")
+	}
+	mu.Lock()
+	got = refreshCount
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("refresh called %d times after follow-up, want still 1", got)
+	}
+}
+
+// TestGatewayRefreshAccessFailureKeepsDenialAndRetryable verifies a failed
+// reload keeps the previous (denying) snapshot and the check stays denied;
+// the next message can retry the reload instead of being wedged.
+func TestGatewayRefreshAccessFailureKeepsDenialAndRetryable(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var mu sync.Mutex
+	fail := true
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if fail {
+				return AccessSnapshot{}, errors.New("disk unavailable")
+			}
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	if gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user admitted although refresh failed; want fail closed")
+	}
+	// Reload recovers: the next message retries and is admitted.
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("user not admitted after refresh recovers")
+	}
+}
+
+func TestGatewayRefreshAccessReloadsGlobalAllowlist(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{Allowlist: AllowlistConfig{
+				Enabled: true,
+				Users: map[Platform][]string{
+					PlatformFeishu: {"ou_user_1"},
+				},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ChatType: ChatDM, UserID: "ou_user_1"}
+	if !gw.checkAllowlist(PlatformFeishu, msg) {
+		t.Fatal("legacy/global allowlist grant did not take effect after refresh")
+	}
+}
+
+func TestGatewayRefreshAccessCanClearLastConnectionGrant(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		ConnectionAccess: map[string]AccessConfig{
+			"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+		},
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{Allowlist: AllowlistConfig{Enabled: true}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{Platform: PlatformFeishu, ConnectionID: "feishu-main", ChatType: ChatDM, UserID: "ou_user_1"}
+	if !gw.checkAllowlistOnce(PlatformFeishu, msg) {
+		t.Fatal("initial connection grant missing")
+	}
+	if !gw.refreshAccessSnapshot() {
+		t.Fatal("successful empty snapshot was not applied")
+	}
+	if gw.checkAllowlistOnce(PlatformFeishu, msg) {
+		t.Fatal("removed connection grant remained active after refresh")
+	}
+}
+
+// TestGatewayRefreshAccessConcurrentSafe hammers checkAllowlist and
+// refreshAccessSnapshot from concurrent goroutines; run with -race to prove
+// the snapshot swap is data-race free.
+func TestGatewayRefreshAccessConcurrentSafe(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{
+		Allowlist: AllowlistConfig{Enabled: true}, AccessRefreshCooldown: -1,
+		RefreshAccess: func() (AccessSnapshot, error) {
+			return AccessSnapshot{ConnectionAccess: map[string]AccessConfig{
+				"feishu-main": {Enabled: true, Users: []string{"ou_user_1"}},
+			}}, nil
+		},
+	}, nil, logger)
+	msg := InboundMessage{
+		Platform:     PlatformFeishu,
+		ConnectionID: "feishu-main",
+		ChatType:     ChatDM,
+		ChatID:       "chat",
+		UserID:       "ou_user_1",
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				gw.checkAllowlist(PlatformFeishu, msg)
+				gw.refreshAccessSnapshot()
+			}
+		}()
+	}
+	wg.Wait()
+}

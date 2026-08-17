@@ -120,6 +120,7 @@ func botStart(args []string, version string) int {
 		ConnectionChannels: botruntime.ConnectionChannelConfigs(cfg.Bot.Connections, *model == "", *dir == ""),
 		Routes:             botruntime.RouteConfigs(cfg.Bot.Routes, *model == "", *dir == ""),
 		ConnectionAccess:   botruntime.ConnectionAccessConfigs(cfg),
+		RefreshAccess:      botruntime.RefreshAccessSnapshot,
 		Enabled:            enabledPlatforms,
 		Allowlist: bot.AllowlistConfig{
 			Enabled:  cfg.Bot.Allowlist.Enabled,

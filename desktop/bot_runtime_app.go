@@ -149,6 +149,7 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 		ConnectionChannels: connectionChannels,
 		Routes:             botruntime.RouteConfigs(cfg.Bot.Routes, true, true),
 		ConnectionAccess:   botruntime.ConnectionAccessConfigs(cfg),
+		RefreshAccess:      botruntime.RefreshAccessSnapshot,
 		Enabled:            plan.Enabled,
 		Allowlist: bot.AllowlistConfig{
 			Enabled:  cfg.Bot.Allowlist.Enabled,
