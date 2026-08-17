@@ -68,6 +68,7 @@ import { SessionBackground } from "./components/SessionBackground";
 import { AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
+import { AssistantSidebarEntry, AssistantWorkspace } from "./custom/features/assistant/AssistantWorkspace";
 import { WorkCard } from "./components/work/WorkCard";
 import { LinkedSessionCard } from "./components/work/LinkedSessionCard";
 import { WorkAvailabilitySurface } from "./components/work/WorkAvailabilitySurface";
@@ -1210,6 +1211,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
   const setSidebarCollapsed = useLayoutStore((s) => s.setSidebarCollapsed);
   const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [collaborationDialog, setCollaborationDialog] = useState<{
     sessionID?: string;
     workspaces: CollaborationWorkspaceOption[];
@@ -3161,6 +3163,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const handleNewTab = useCallback(async () => {
     closeTransientOverlays();
+    setAssistantOpen(false);
     setSidebarImDetailConnectionId("");
     const target = blankSessionTarget();
     await openBlankSession(target.scope, target.workspaceRoot);
@@ -3168,6 +3171,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const handleOpenTopic = useCallback((scope: string, workspaceRoot: string, topicId: string, sessionPath?: string, runtimeHint?: ProjectTopicRuntimeHint): Promise<void> => {
     closeTransientOverlays();
+    setAssistantOpen(false);
     setSidebarImDetailConnectionId("");
     return enqueueNavigation({ kind: "topic", scope, workspaceRoot, topicId, sessionPath, runtimeHint });
   }, [closeTransientOverlays, enqueueNavigation]);
@@ -3418,6 +3422,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const openCollaborationDialog = useCallback(async (sessionID?: string) => {
     closeTransientOverlays();
+    setAssistantOpen(false);
     setSidebarImDetailConnectionId("");
     collabResolveGen.current++;
     let workspaces: CollaborationWorkspaceOption[] = [];
@@ -3962,6 +3967,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 
   const showCollaborationSurface = activeTab?.sessionKind === "collaboration";
   const showWorkSurface = activeTab?.sessionKind === "work";
+  const showAssistantSurface = assistantOpen;
   const workbenchSidebarRestoreControl = sidebarCollapsed ? (
     <button
       className={`workbench-surface-sidebar-restore${sidebarTogglePressed ? " workbench-surface-sidebar-restore--pressed" : ""}`}
@@ -4093,7 +4099,9 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
         browserPreviewChrome ? "app--browser-preview" : "",
         sidebarWorkbench ? "app--workbench" : "",
         sidebarWorkbench
-          ? showCollaborationSurface
+          ? showAssistantSurface
+            ? "app--workbench-assistant"
+            : showCollaborationSurface
             ? "app--workbench-room"
             : showWorkSurface
               ? "app--workbench-work"
@@ -4176,6 +4184,8 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
                 <span>{collaborationLabel}</span>
               </button>
 
+              <AssistantSidebarEntry active={showAssistantSurface} onClick={() => { closeTransientOverlays(); setAssistantOpen(true); }} />
+
               <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
                 {irisFixtureActive ? (
                   <nav className="iris-fixture-tree" aria-label="工作区与会话">
@@ -4232,9 +4242,16 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
               </button>
             </aside>
 
-            {(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl}
+            {(showWorkSurface || showCollaborationSurface || showAssistantSurface) && workbenchSidebarRestoreControl}
 
-            {showCollaborationSurface && activeTab?.sessionId ? (
+            {showAssistantSurface ? (
+              <AssistantWorkspace onOpenSession={(scope, workspaceRoot, sessionPath) => {
+                setAssistantOpen(false);
+                void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)
+                  .then(() => refreshProjectsAndTabs())
+                  .catch((error) => showToast(error instanceof Error ? error.message : String(error), "error"));
+              }} />
+            ) : showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
                 sessionID={activeTab.sessionId}
                 tabID={activeTabId || undefined}

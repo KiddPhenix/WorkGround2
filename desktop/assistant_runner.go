@@ -1,0 +1,676 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"workground2/internal/assistant"
+	"workground2/internal/control"
+	"workground2/internal/event"
+	"workground2/internal/permission"
+)
+
+const (
+	assistantTickInterval = 30 * time.Second
+	assistantLeaseTTL     = 2 * time.Minute
+	assistantReadyTimeout = 20 * time.Second
+)
+
+type assistantSession struct {
+	TabID       string
+	SessionPath string
+}
+
+type assistantSessionHost interface {
+	PrepareSession(assistant.Run) (assistantSession, error)
+	WaitReady(context.Context, string, time.Duration) (assistantController, error)
+	TrySubmit(string, string, assistant.Policy, []control.ToolGrant, func() bool, func()) (bool, error)
+	Cancel(string)
+}
+
+type assistantController interface {
+	SetToolApprovalMode(string)
+}
+
+type appAssistantSessionHost struct{ app *App }
+
+func (h appAssistantSessionHost) PrepareSession(run assistant.Run) (assistantSession, error) {
+	var tab *WorkspaceTab
+	var err error
+	if strings.TrimSpace(run.SessionPath) != "" {
+		tab, err = h.app.ensureTabForSessionPath(run.SessionPath)
+	} else {
+		scope := "global"
+		workspaceRoot := ""
+		if run.Scope == assistant.ScopeWorkspace {
+			scope, workspaceRoot = "project", run.WorkspaceRoot
+		}
+		tab, err = h.app.ensureBlankBackgroundTab(scope, workspaceRoot)
+	}
+	if err != nil {
+		return assistantSession{}, err
+	}
+	if tab == nil {
+		return assistantSession{}, errors.New("assistant session tab was not created")
+	}
+	path := strings.TrimSpace(tab.currentSessionPath())
+	if path == "" {
+		return assistantSession{}, errors.New("assistant session path is unavailable")
+	}
+	return assistantSession{TabID: tab.ID, SessionPath: path}, nil
+}
+
+func (h appAssistantSessionHost) WaitReady(ctx context.Context, tabID string, timeout time.Duration) (assistantController, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		tab, ctrl := h.app.tabAndCtrlByID(tabID)
+		if ctrl != nil {
+			return ctrl, nil
+		}
+		if tab != nil && tab.Ready && strings.TrimSpace(tab.StartupErr) != "" {
+			return nil, fmt.Errorf("assistant session startup: %s", tab.StartupErr)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, errors.New("assistant session startup timed out")
+		case <-ticker.C:
+		}
+	}
+}
+
+func (h appAssistantSessionHost) TrySubmit(tabID, prompt string, policy assistant.Policy, grants []control.ToolGrant, claim func() bool, release func()) (bool, error) {
+	tab, ctrl := h.app.tabAndCtrlByID(tabID)
+	if tab == nil || ctrl == nil {
+		return false, workspaceNotReadyErr(tab)
+	}
+	if err := h.app.applyPendingModelForTab(tab); err != nil {
+		return false, err
+	}
+	tab, ctrl = h.app.tabAndCtrlByID(tabID)
+	if tab == nil || ctrl == nil {
+		return false, workspaceNotReadyErr(tab)
+	}
+	if err := h.app.ensureTabControllerWorkspace(tab); err != nil {
+		return false, err
+	}
+	tab.reconcileMu.Lock()
+	defer tab.reconcileMu.Unlock()
+	tab, ctrl = h.app.tabAndCtrlByID(tabID)
+	if ctrl == nil || tab.sink == nil {
+		return false, workspaceNotReadyErr(tab)
+	}
+	tab.sink.assistantMu.Lock()
+	defer tab.sink.assistantMu.Unlock()
+	if !claim() {
+		return false, nil
+	}
+	if !ctrl.TrySubmitUserTurnWithPolicy(prompt, prompt, buildAssistantPermissionPolicy(policy), control.ToolApprovalAsk, grants...) {
+		release()
+		return false, nil
+	}
+	h.app.ensureTabTopicIndexedForUserTurn(tab)
+	h.app.maybeAutoTitleTopicFromText(tab, prompt)
+	h.app.emitProjectTreeChanged()
+	return true, nil
+}
+
+func (h appAssistantSessionHost) Cancel(tabID string) { h.app.CancelTab(tabID) }
+
+type assistantTurnResult struct {
+	Err         error
+	Summary     string
+	Attention   bool
+	Action      string
+	Tool        string
+	Subject     string
+	ResumeToken string
+}
+
+type assistantInFlight struct {
+	runID   string
+	tabID   string
+	done    chan assistantTurnResult
+	once    sync.Once
+	summary string
+}
+
+func (f *assistantInFlight) complete(result assistantTurnResult) {
+	f.once.Do(func() { f.done <- result })
+}
+
+// AssistantRuntime owns one process-local scheduler owner and executes claimed
+// runs in inactive Desktop sessions. The Store lease remains the authority;
+// this map only correlates Controller events while this process is alive.
+type AssistantRuntime struct {
+	store     *assistant.Store
+	scheduler *assistant.Scheduler
+	runner    *assistant.Runner
+	host      assistantSessionHost
+
+	mu       sync.Mutex
+	inflight map[string]*assistantInFlight // tab ID -> run event correlation
+	byRun    map[string]*assistantInFlight
+	cancel   context.CancelFunc
+	done     chan struct{}
+	wake     chan struct{}
+	wg       sync.WaitGroup
+	running  atomic.Bool
+	tick     time.Duration
+
+	diagnosticMu sync.RWMutex
+	diagnostics  []AssistantDiagnostic
+}
+
+func NewAssistantRuntime(app *App, root string) (*AssistantRuntime, error) {
+	if app == nil {
+		return nil, errors.New("assistant runtime requires an app")
+	}
+	store, err := assistant.NewStore(root)
+	if err != nil {
+		return nil, err
+	}
+	scheduler, err := assistant.NewScheduler(store)
+	if err != nil {
+		return nil, err
+	}
+	owner := fmt.Sprintf("desktop:%d:%d", os.Getpid(), time.Now().UnixNano())
+	runner, err := assistant.NewRunner(store, owner, assistantLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	return &AssistantRuntime{
+		store: store, scheduler: scheduler, runner: runner,
+		host: appAssistantSessionHost{app: app}, inflight: map[string]*assistantInFlight{},
+		byRun: map[string]*assistantInFlight{}, tick: assistantTickInterval,
+		wake: make(chan struct{}, 1),
+	}, nil
+}
+
+func (r *AssistantRuntime) Start() {
+	if r == nil || !r.running.CompareAndSwap(false, true) {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.mu.Lock()
+	if r.wake == nil {
+		r.wake = make(chan struct{}, 1)
+	}
+	r.cancel = cancel
+	r.done = make(chan struct{})
+	done := r.done
+	r.mu.Unlock()
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer close(done)
+		r.loop(ctx)
+	}()
+}
+
+func (r *AssistantRuntime) Stop() {
+	if r == nil || !r.running.CompareAndSwap(true, false) {
+		return
+	}
+	r.mu.Lock()
+	cancel, done := r.cancel, r.done
+	active := make([]*assistantInFlight, 0, len(r.byRun))
+	for _, in := range r.byRun {
+		active = append(active, in)
+	}
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	for _, in := range active {
+		r.host.Cancel(in.tabID)
+	}
+	if done != nil {
+		<-done
+	}
+	r.wg.Wait()
+}
+
+func (r *AssistantRuntime) loop(ctx context.Context) {
+	r.tickOnce(ctx)
+	ticker := time.NewTicker(r.tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.wake:
+			r.tickOnce(ctx)
+		case <-ticker.C:
+			r.tickOnce(ctx)
+		}
+	}
+}
+
+// Wake requests an immediate scheduler/runner pass. Capacity one coalesces
+// bursts from repeated idempotent UI calls without blocking the Wails thread.
+func (r *AssistantRuntime) Wake() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	wake := r.wake
+	r.mu.Unlock()
+	if wake == nil {
+		return
+	}
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (r *AssistantRuntime) tickOnce(ctx context.Context) {
+	now := time.Now()
+	if result, err := r.scheduler.Tick(now); err != nil {
+		r.recordDiagnostic("schedule", err)
+		slog.Error("desktop: assistant schedule tick failed", "err", err, "failures", len(result.Failures))
+	}
+	for {
+		acquired, err := r.runner.Acquire(time.Now())
+		if err != nil {
+			r.recordDiagnostic("acquire", err)
+			slog.Error("desktop: assistant acquire failed", "err", err)
+			return
+		}
+		for _, diagnostic := range acquired.Diagnostics {
+			r.recordDiagnostic("recovery", errors.New(diagnostic))
+			slog.Warn("desktop: assistant recovery diagnostic", "detail", diagnostic)
+		}
+		if acquired.Run == nil {
+			return
+		}
+		run := *acquired.Run
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.execute(ctx, run)
+		}()
+	}
+}
+
+func (r *AssistantRuntime) recordDiagnostic(operation string, err error) {
+	if r == nil || err == nil {
+		return
+	}
+	r.diagnosticMu.Lock()
+	r.diagnostics = append(r.diagnostics, AssistantDiagnostic{
+		At: time.Now(), Operation: operation, Message: err.Error(),
+	})
+	if len(r.diagnostics) > 50 {
+		r.diagnostics = append([]AssistantDiagnostic(nil), r.diagnostics[len(r.diagnostics)-50:]...)
+	}
+	r.diagnosticMu.Unlock()
+}
+
+func (r *AssistantRuntime) Diagnostics() []AssistantDiagnostic {
+	if r == nil {
+		return []AssistantDiagnostic{}
+	}
+	r.diagnosticMu.RLock()
+	defer r.diagnosticMu.RUnlock()
+	return append([]AssistantDiagnostic(nil), r.diagnostics...)
+}
+
+func (r *AssistantRuntime) execute(ctx context.Context, run assistant.Run) {
+	defer r.Wake()
+	if err := validateAssistantWorkspace(run); err != nil {
+		if attentionErr := r.requestWorkspaceAttention(run, err); attentionErr != nil {
+			r.recordDiagnostic("workspace_attention", errors.Join(err, attentionErr))
+			slog.Error("desktop: persist assistant workspace attention failed", "run", run.ID, "err", attentionErr)
+		}
+		return
+	}
+	session, err := r.host.PrepareSession(run)
+	if err != nil {
+		r.failKnown(run, "session_prepare", err, true)
+		return
+	}
+	_, err = r.host.WaitReady(ctx, session.TabID, assistantReadyTimeout)
+	if err != nil {
+		r.failKnown(run, "session_startup", err, true)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		r.failKnown(run, "runtime_stopped", err, true)
+		return
+	}
+	bindRequest := fmt.Sprintf("bind-session:%s:%d", run.ID, run.LeaseFence)
+	bound, err := r.runner.BindSession(run, bindRequest, session.SessionPath, time.Now())
+	if err != nil {
+		r.failKnown(run, "session_bind", err, true)
+		return
+	}
+	run = *bound
+
+	prompt, grants, err := r.promptFor(run)
+	if err != nil {
+		r.failKnown(run, "prompt_build", err, true)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		r.failKnown(run, "runtime_stopped", err, true)
+		return
+	}
+	in := &assistantInFlight{runID: run.ID, tabID: session.TabID, done: make(chan assistantTurnResult, 1)}
+	accepted, err := r.host.TrySubmit(session.TabID, prompt, run.Policy, grants, func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.inflight[session.TabID] != nil || r.byRun[run.ID] != nil {
+			return false
+		}
+		r.inflight[session.TabID], r.byRun[run.ID] = in, in
+		return true
+	}, func() {
+		r.removeInFlight(in)
+	})
+	if err != nil {
+		r.failKnown(run, "submit", err, true)
+		return
+	}
+	if !accepted {
+		r.failKnown(run, "session_busy", errors.New("assistant session already has an active turn"), true)
+		return
+	}
+	defer r.removeInFlight(in)
+
+	renew := time.NewTicker(assistantLeaseTTL / 2)
+	defer renew.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			// Process shutdown intentionally leaves the lease to expire. Recovery
+			// will surface the unknown outcome instead of guessing completion.
+			return
+		case result := <-in.done:
+			if errors.Is(result.Err, context.Canceled) {
+				return
+			}
+			if result.Attention {
+				if strings.TrimSpace(result.ResumeToken) == "" {
+					result.ResumeToken = fmt.Sprintf("resume:%s:%d", run.ID, run.LeaseFence)
+				}
+				_, requestErr := r.store.RequestApproval(assistant.ApprovalInput{
+					RequestID: "attention:" + run.ID + ":" + fmt.Sprint(run.LeaseFence),
+					RunID:     run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
+					Action: result.Action, Summary: result.Summary, Tool: result.Tool, Subject: result.Subject,
+					SessionPath: session.SessionPath,
+					ResumeToken: result.ResumeToken, Now: time.Now(),
+				})
+				if requestErr != nil {
+					r.recordDiagnostic("attention", requestErr)
+					slog.Error("desktop: persist assistant attention failed", "run", run.ID, "err", requestErr)
+					_, failErr := r.runner.Fail(run, assistant.Failure{
+						Code: "attention_persist_failed", Message: requestErr.Error(), Retryable: false,
+						OutcomeKnown: false, Now: time.Now(),
+					})
+					if failErr != nil {
+						slog.Error("desktop: persist assistant unknown outcome failed", "run", run.ID, "err", failErr)
+					}
+				}
+				r.host.Cancel(session.TabID)
+				return
+			}
+			if result.Err != nil {
+				_, failErr := r.runner.Fail(run, assistant.Failure{
+					Code: "turn_failed", Message: result.Err.Error(), Retryable: false,
+					OutcomeKnown: false, Now: time.Now(),
+				})
+				if failErr != nil {
+					r.recordDiagnostic("turn_failure", failErr)
+					slog.Error("desktop: persist assistant failure failed", "run", run.ID, "err", failErr)
+				}
+				return
+			}
+			if _, finishErr := r.runner.Finish(run, result.Summary, session.SessionPath, time.Now()); finishErr != nil {
+				r.recordDiagnostic("finish", finishErr)
+				slog.Error("desktop: finish assistant run failed", "run", run.ID, "err", finishErr)
+			}
+			return
+		case <-renew.C:
+			renewed, renewErr := r.runner.Renew(run, time.Now())
+			if renewErr != nil {
+				r.recordDiagnostic("renew", renewErr)
+				slog.Error("desktop: renew assistant lease failed", "run", run.ID, "err", renewErr)
+				r.host.Cancel(session.TabID)
+				return
+			}
+			run = *renewed
+		}
+	}
+}
+
+func validateAssistantWorkspace(run assistant.Run) error {
+	if run.Scope != assistant.ScopeWorkspace {
+		return nil
+	}
+	root := strings.TrimSpace(run.WorkspaceRoot)
+	if root == "" || !filepath.IsAbs(root) {
+		return fmt.Errorf("frozen workspace path is invalid: %q", run.WorkspaceRoot)
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("frozen workspace is unavailable: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("frozen workspace is not a directory: %s", root)
+	}
+	return nil
+}
+
+func (r *AssistantRuntime) requestWorkspaceAttention(run assistant.Run, cause error) error {
+	_, err := r.store.RequireAttention(assistant.RequireAttentionInput{
+		RequestID: fmt.Sprintf("workspace-attention:%s:%d", run.ID, run.LeaseFence),
+		RunID:     run.ID, LeaseOwner: run.LeaseOwner, LeaseFence: run.LeaseFence,
+		Action:      "cancel_recreate",
+		Summary:     fmt.Sprintf("工作区不可用：%v。旧 Run 的冻结工作区不可修改；请取消它，重新绑定 Assistant 后新建 Run。", cause),
+		ResumeToken: fmt.Sprintf("cancel-recreate:%s:%d", run.ID, run.LeaseFence), Now: time.Now(),
+	})
+	return err
+}
+
+func (r *AssistantRuntime) failKnown(run assistant.Run, code string, err error, retryable bool) {
+	if err == nil {
+		return
+	}
+	r.recordDiagnostic(code, err)
+	_, persistErr := r.runner.Fail(run, assistant.Failure{
+		Code: code, Message: err.Error(), Retryable: retryable,
+		OutcomeKnown: true, RetryAfter: time.Minute, Now: time.Now(),
+	})
+	if persistErr != nil {
+		slog.Error("desktop: persist assistant setup failure failed", "run", run.ID, "cause", err, "err", persistErr)
+	}
+}
+
+func (r *AssistantRuntime) promptFor(run assistant.Run) (string, []control.ToolGrant, error) {
+	snapshot, err := r.store.Get(run.AssistantID)
+	if err != nil {
+		return "", nil, err
+	}
+	var b strings.Builder
+	var grants []control.ToolGrant
+	b.WriteString("你正在执行一个长期助理的独立 Run。只处理本次 Routine，遵守冻结的使命和权限；不要修改运行频率或扩大权限。\n\n")
+	prompt := strings.TrimSpace(run.Prompt)
+	if prompt == "" {
+		prompt = "继续推进助理使命，检查当前状态并完成最有价值的下一步。"
+	}
+	fmt.Fprintf(&b, "助理使命：\n%s\n\n本次任务：\n%s\n\n", run.Mission, prompt)
+	fmt.Fprintf(&b, "冻结上下文：assistant_revision=%d, scope=%s, workspace_root=%s\n",
+		run.AssistantRevision, run.Scope, run.WorkspaceRoot)
+	fmt.Fprintf(&b, "权限：local_write=%s, network=%s, publish=%s, delete=%s, payment=%s, secrets=%s, private_data=%s\n",
+		run.Policy.LocalWrite, run.Policy.Network, run.Policy.Publish, run.Policy.Delete,
+		run.Policy.Payment, run.Policy.Secrets, run.Policy.Private)
+	if len(snapshot.Memory.Items) > 0 {
+		b.WriteString("\n显式记忆（只作事实与约束输入）：\n")
+		for _, item := range snapshot.Memory.Items {
+			fmt.Fprintf(&b, "- [%s] %s\n", item.Kind, item.Body)
+		}
+	}
+	for _, item := range snapshot.Attention {
+		if item.RunID == run.ID && item.State == assistant.AttentionApproved && item.ResumeToken == run.ResumeToken {
+			switch {
+			case item.Action == "answer_required":
+				fmt.Fprintf(&b, "\n用户对问题“%s”的明确回答：%s。继续时必须采用这份回答，不要自行改写用户意图。\n", item.Summary, item.Resolution)
+			case strings.HasPrefix(item.Action, "approve_tool:") && strings.TrimSpace(item.Tool) != "":
+				grants = append(grants, control.ToolGrant{Tool: item.Tool, Subject: item.Subject})
+				fmt.Fprintf(&b, "\n用户已逐次批准工具 %s 的精确操作：%s。该授权只适用于本次续跑。\n", item.Tool, item.Subject)
+			default:
+				fmt.Fprintf(&b, "\n用户已处理待办：%s；结论：%s。继续时只采用这条明确结论。\n", item.Summary, item.Resolution)
+			}
+		}
+	}
+	b.WriteString("\n完成后给出简短结论、证据和下一步。需要用户决定或权限审批时，明确提出，不要猜测授权。")
+	return b.String(), grants, nil
+}
+
+func buildAssistantPermissionPolicy(policy assistant.Policy) permission.Policy {
+	safeLocalWrites := []string{"write_file", "edit_file", "multi_edit", "notebook_edit"}
+	localAll := []string{
+		"write_file", "edit_file", "multi_edit", "notebook_edit",
+		"move_file", "delete_range", "delete_symbol", "bash",
+	}
+	networkTools := []string{
+		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll",
+		"browser_tab", "browser_close", "browser_click", "browser_type", "browser_upload", "browser_attach",
+	}
+	networkAllow := []string{
+		"web_fetch", "web_search", "browser_open", "browser_navigate", "browser_state", "browser_scroll", "browser_tab", "browser_close",
+	}
+	allow := make([]string, 0, len(safeLocalWrites)+len(networkAllow))
+	deny := make([]string, 0, len(localAll)+len(networkTools))
+	if policy.LocalWrite == assistant.AccessAllow {
+		allow = append(allow, safeLocalWrites...)
+	} else if policy.LocalWrite == assistant.AccessDeny {
+		deny = append(deny, localAll...)
+	}
+	if policy.Network == assistant.AccessAllow {
+		allow = append(allow, networkAllow...)
+	} else if policy.Network == assistant.AccessDeny {
+		deny = append(deny, networkTools...)
+		deny = append(deny, "mcp__*")
+	}
+	// Ask has precedence over Allow. These cover destructive local operations,
+	// shell escape hatches and browser actions that can publish or disclose data.
+	ask := []string{
+		"bash", "delete_range", "delete_symbol",
+		"browser_click", "browser_type", "browser_upload", "browser_attach",
+		"mcp__*",
+	}
+	if policy.Network == assistant.AccessApprove {
+		ask = append(ask, networkTools...)
+	}
+	// Publish/Delete/Payment/Secrets/Private are deliberately never translated
+	// into Allow or Deny rules here: every concrete writer remains Ask even when
+	// those Assistant fields are configured as allow.
+	return permission.New("ask", allow, ask, deny)
+}
+
+func (r *AssistantRuntime) removeInFlight(in *assistantInFlight) {
+	r.mu.Lock()
+	if r.inflight[in.tabID] == in {
+		delete(r.inflight, in.tabID)
+	}
+	if r.byRun[in.runID] == in {
+		delete(r.byRun, in.runID)
+	}
+	r.mu.Unlock()
+}
+
+func (r *AssistantRuntime) ObserveEvent(tabID string, value event.Event) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	in := r.inflight[tabID]
+	if in == nil {
+		r.mu.Unlock()
+		return false
+	}
+	switch value.Kind {
+	case event.Message:
+		if strings.TrimSpace(value.Text) != "" {
+			in.summary = strings.TrimSpace(value.Text)
+		}
+		r.mu.Unlock()
+		return false
+	case event.ApprovalRequest:
+		tool := strings.TrimSpace(value.Approval.Tool)
+		action := "approve_tool"
+		if tool != "" {
+			action += ":" + tool
+		}
+		summary := strings.TrimSpace(value.Approval.Subject)
+		if summary == "" {
+			summary = strings.TrimSpace(value.Approval.Summary)
+		} else if detail := strings.TrimSpace(value.Approval.Summary); detail != "" && detail != summary {
+			summary += " — " + detail
+		}
+		if summary == "" {
+			summary = "助理执行需要用户审批"
+		}
+		token := strings.TrimSpace(value.Approval.ID)
+		r.mu.Unlock()
+		in.complete(assistantTurnResult{
+			Attention: true, Action: action, Summary: summary,
+			Tool: tool, Subject: strings.TrimSpace(value.Approval.Subject), ResumeToken: token,
+		})
+		return true
+	case event.AskRequest:
+		summary := "助理执行需要用户输入"
+		if len(value.Ask.Questions) > 0 && strings.TrimSpace(value.Ask.Questions[0].Prompt) != "" {
+			summary = strings.TrimSpace(value.Ask.Questions[0].Prompt)
+		}
+		token := strings.TrimSpace(value.Ask.ID)
+		r.mu.Unlock()
+		in.complete(assistantTurnResult{Attention: true, Action: "answer_required", Summary: summary, ResumeToken: token})
+		return true
+	case event.TurnDone:
+		summary := in.summary
+		if summary == "" && value.Err == nil {
+			summary = "助理已完成本次运行"
+		}
+		r.mu.Unlock()
+		in.complete(assistantTurnResult{Err: value.Err, Summary: summary})
+		return false
+	default:
+		r.mu.Unlock()
+		return false
+	}
+}
+
+func (r *AssistantRuntime) CancelRun(runID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	in := r.byRun[runID]
+	if in != nil {
+		delete(r.byRun, runID)
+		if r.inflight[in.tabID] == in {
+			delete(r.inflight, in.tabID)
+		}
+	}
+	r.mu.Unlock()
+	if in != nil {
+		in.complete(assistantTurnResult{Err: context.Canceled})
+		r.host.Cancel(in.tabID)
+	}
+}

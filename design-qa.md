@@ -34,6 +34,41 @@ final result: passed
 
 ---
 
+# 助理模式阶段 2 Design QA（2026-08-17）
+
+- Source visual truth: `D:\Codex\.codex\attachments\5d0419fd-8f95-4a89-94f3-fca4a8e55422\image-1.png`（1487 × 1058）。
+- Native empty-state capture: `D:\Work\WorkGround2\.codex-preview\assistant-mode-empty.png`（1550 × 1041）。
+- Native create-flow capture: `D:\Work\WorkGround2\.codex-preview\assistant-mode-create-form.png`（1240 × 720）。
+- Runtime: `desktop\build\bin\WorkGround2-assistant-qa.exe`，Wails production assets；创建流程使用隔离 `WorkGround2_HOME`，没有写入用户助理数据。
+- State: 真实 Desktop 侧栏进入“助理”；空态、创建表单、加载态，以及参考图驱动的时间线布局。
+
+## 同屏对照与结论
+
+- 参考图与原生空态在同一比较输入中检查；保留现有 Workbench 侧栏和窗口壳，主工作区收敛为深黑纸张质感、高留白、暖白衬线标题、低对比说明及橙色主操作。
+- 有数据状态由 `AssistantWorkspace` 使用同一视觉骨架渲染：顶部助理名/醒着状态/继续工作，日期衬线标题、橙色下划线、时间/节点/虚线组成的纵向时间轴，以及底部单行交办入口。
+- 创建弹窗延续暖白标题、暗色表单、紫色焦点和橙色确认操作；名称、使命、工作区、频率和时间均有明确标签与可访问控件。
+- 与方向稿的差异是有意状态差异：方向稿展示已运行助理，首次进入展示空态；入口放在现有 Workbench 一级导航，同时有数据后通过顶部助理选择器切换，避免复制一套项目树状态源。
+
+## Fidelity
+
+- Layout: 左侧栏约占 22%，与参考图接近；主区内容宽度、留白和时间线最大宽度均有上限，窄屏时侧栏可折叠、管理面板转全宽。
+- Typography: 日期与关键结论使用 Georgia/宋体衬线链；正文、状态和表单沿用 Inter/Segoe UI/苹方/微软雅黑链，层级与方向稿一致。
+- Color and shape: 暖白 `#e7e0d5`、橙色 `#ed7a3b`、绿色运行态及低饱和紫色选中态均集中在 Assistant token；边框、圆角和弱底色沿用 Desktop 体系。
+- Assets: 图标来自现有 `lucide-react`；参考图没有需要复制的位图资产，未新增近似绘制或占位图。
+- Copy and content: 空态、使命、频率、记忆、历史、待处理及人工结算均使用真实领域字段，不通过标题或日志文本猜测状态。
+
+## 交互与工程证据
+
+- UI 写操作使用持久 mutation packet：`requestId` 与 CAS `expectedRevision` 一起冻结，响应丢失、刷新和重复点击可安全重放。
+- 审批、Ask、外部结果未知三类恢复路径均可从 Inbox 继续；`verify_run_outcome` 明确提供“确认重试 / 标记成功 / 标记失败”。
+- exact grant 仅注入当前 `ResumeToken`，连续 A→B 审批不会复活 A；缺失工作区进入可观察 Attention，不会静默创建目录。
+- Core Assistant/Control/Permission 测试与 vet、Desktop Assistant 专项与 vet、前端 Assistant 57/57、TypeScript 和 production build 全部通过。
+- P0 / P1 / P2: none。原生空态和创建流无裁切、重叠、错误字号、异常边框或不可见主操作。
+
+final result: passed
+
+---
+
 # 最近会话 Pin 视觉修正 Design QA（2026-08-13）
 
 - Source visual truth: `D:\Temp\codex-clipboard-39c9b9b4-167a-44cc-bb29-883f7e3a7476.png`

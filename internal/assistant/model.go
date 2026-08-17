@@ -217,6 +217,11 @@ const (
 	AttentionCancelled AttentionState = "cancelled"
 )
 
+const (
+	AttentionActionRebindWorkspace = "rebind_workspace"
+	AttentionActionCancelRecreate  = "cancel_recreate"
+)
+
 type AttentionItem struct {
 	ID          string         `json:"id"`
 	AssistantID string         `json:"assistant_id"`
@@ -224,6 +229,8 @@ type AttentionItem struct {
 	RequestID   string         `json:"request_id"`
 	Action      string         `json:"action"`
 	Summary     string         `json:"summary"`
+	Tool        string         `json:"tool,omitempty"`
+	Subject     string         `json:"subject,omitempty"`
 	ResumeToken string         `json:"resume_token,omitempty"`
 	State       AttentionState `json:"state"`
 	Resolution  string         `json:"resolution,omitempty"`
@@ -301,6 +308,20 @@ type CancelInput struct {
 }
 
 type ApprovalInput struct {
+	RequestID   string
+	RunID       string
+	LeaseOwner  string
+	LeaseFence  int64
+	Action      string
+	Summary     string
+	Tool        string
+	Subject     string
+	SessionPath string
+	ResumeToken string
+	Now         time.Time
+}
+
+type RequireAttentionInput struct {
 	RequestID   string
 	RunID       string
 	LeaseOwner  string

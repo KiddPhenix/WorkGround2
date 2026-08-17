@@ -199,7 +199,9 @@ type App struct {
 	skillRootsMu    sync.Mutex
 	skillRootsCache skillRootsCache
 
-	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
+	heartbeat    *HeartbeatEngine  // scheduled heartbeat tasks; nil until startup
+	assistant    *AssistantRuntime // long-lived assistant scheduler and background runner
+	assistantErr error             // explicit startup failure surfaced by bound APIs
 
 	externalSessionGCRunning atomic.Bool
 
@@ -463,6 +465,15 @@ func (a *App) startup(ctx context.Context) {
 
 	a.heartbeat = newHeartbeatEngine(a)
 	a.heartbeat.Start()
+
+	assistantRoot := filepath.Join(config.MemoryUserDir(), "assistants")
+	if service, err := NewAssistantRuntime(a, assistantRoot); err != nil {
+		a.assistantErr = err
+		slog.Error("desktop: assistant runtime unavailable", "err", err)
+	} else {
+		a.assistant = service
+		a.assistant.Start()
+	}
 
 	a.goSafe("startSessionWatcher", a.startSessionWatcher)
 	a.goSafe("startRemoteAPI", a.startRemoteAPI)
@@ -766,6 +777,9 @@ func (a *App) shutdown(context.Context) {
 	a.closeCollaborations()
 	if a.heartbeat != nil {
 		a.heartbeat.Stop()
+	}
+	if a.assistant != nil {
+		a.assistant.Stop()
 	}
 	a.stopBotRuntime()
 	a.stopTray()

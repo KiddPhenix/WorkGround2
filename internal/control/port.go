@@ -20,6 +20,13 @@ import (
 	"workground2/internal/skill"
 )
 
+// ToolGrant allows one exact tool and subject pair for the next accepted turn.
+// It is runtime-only and is cleared by the following configured submission.
+type ToolGrant struct {
+	Tool    string
+	Subject string
+}
+
 // This file defines the driving port: the typed, segregated interface surface
 // that frontends (cli, desktop, bot, acp, serve) consume instead of coupling to
 // the concrete *Controller and its ~99 methods. Each frontend depends only on
@@ -54,6 +61,7 @@ type TurnControl interface {
 	SubmitHTTP(input string)
 	SubmitUserTurn(input, display string)
 	TrySubmitUserTurn(input, display string) bool
+	TrySubmitUserTurnWithPolicy(input, display string, policy permission.Policy, toolMode string, grants ...ToolGrant) bool
 	SubmitWorkChat(display, userText, contextBlock string)
 	Send(input string)
 	SendWithRaw(input, raw string)

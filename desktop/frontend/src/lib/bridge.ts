@@ -10,6 +10,23 @@
 import type * as GeneratedApp from "../../wailsjs/go/main/App";
 import type { WailsWorkBindings } from "../work/wailsAdapter";
 import type {
+  AssistantAttentionItem,
+  AssistantCancelInput,
+  AssistantCreateInput,
+  AssistantMemory,
+  AssistantMemoryInput,
+  AssistantListResult,
+  AssistantRecord,
+  AssistantResolveAttentionInput,
+  AssistantResumeInput,
+  AssistantRoutine,
+  AssistantRoutineInput,
+  AssistantRun,
+  AssistantRunNowInput,
+  AssistantSnapshot,
+  AssistantUpdateInput,
+} from "../custom/features/assistant/assistant.types";
+import type {
   CollaborationActionResult,
   CollaborationInvite,
   CollaborationIntentResult,
@@ -351,6 +368,17 @@ export interface AppBindings extends WailsWorkBindings {
   HeartbeatSaveTasks(tasks: unknown): Promise<void>;
   HeartbeatTriggerNow(id: string): Promise<void>;
   HeartbeatGenerateID(): Promise<string>;
+  // ── Assistant mode ──
+  AssistantList(): Promise<AssistantListResult>;
+  AssistantGet(assistantId: string): Promise<AssistantSnapshot>;
+  AssistantCreate(input: AssistantCreateInput): Promise<AssistantSnapshot>;
+  AssistantUpdate(input: AssistantUpdateInput): Promise<AssistantRecord>;
+  AssistantPutRoutine(input: AssistantRoutineInput): Promise<AssistantRoutine>;
+  AssistantApplyMemory(input: AssistantMemoryInput): Promise<AssistantMemory>;
+  AssistantRunNow(input: AssistantRunNowInput): Promise<AssistantRun>;
+  AssistantResolveAttention(input: AssistantResolveAttentionInput): Promise<AssistantAttentionItem>;
+  AssistantResume(input: AssistantResumeInput): Promise<AssistantRun>;
+  AssistantCancel(input: AssistantCancelInput): Promise<AssistantRun>;
   Submit(input: string): Promise<void>;
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
@@ -2362,6 +2390,115 @@ function makeMockApp(): AppBindings {
 		channels: [],
 		settings: { externalMode: "smart", smartGraceSec: 30 },
 	};
+  const assistantNow = new Date();
+  const assistantISO = (hour: number, minute: number) => {
+    const value = new Date(assistantNow);
+    value.setHours(hour, minute, 0, 0);
+    return value.toISOString();
+  };
+  const mockAssistant: AssistantRecord = {
+    id: "assistant-code-project",
+    name: "代码项目助理",
+    description: "持续关注项目健康度和发布准备情况",
+    mission: "定期扫描项目修改、测试和构建结果，整理风险；发布条件满足时先询问我是否发布。",
+    scope: "workspace",
+    workspace_root: "~/projects/WorkGround2",
+    lifecycle: "active",
+    policy: {
+      local_write: "allow",
+      network: "deny",
+      publish: "approve",
+      delete: "approve",
+      payment: "approve",
+      secrets: "approve",
+      private_data: "approve",
+    },
+    memory_revision: 1,
+    revision: 1,
+    created_at: assistantISO(8, 20),
+    updated_at: assistantISO(10, 5),
+  };
+  const mockRoutine: AssistantRoutine = {
+    id: "routine-release-check",
+    assistant_id: mockAssistant.id,
+    title: "发布准备检查",
+    prompt: "检查最近提交、测试与构建产物，确认发布风险并总结下一步。",
+    schedule: { kind: "daily", timezone: "Asia/Singapore", at: "18:00" },
+    enabled: true,
+    catch_up: "coalesce_latest",
+    last_scheduled_for: assistantISO(9, 30),
+    revision: 1,
+    created_at: assistantISO(8, 20),
+    updated_at: assistantISO(8, 20),
+  };
+  let mockAssistantSnapshots: AssistantSnapshot[] = freshMock ? [] : [{
+    revision: 1,
+    assistant: mockAssistant,
+    routines: [mockRoutine],
+    memory: {
+      revision: 1,
+      items: [{
+        id: "memory-windows-process",
+        kind: "strategy",
+        body: "Windows 构建前，先确认旧进程已经退出。",
+        evidence: "上次构建失败源于残留进程占用端口。",
+        source_run: "run-memory",
+        locked: false,
+        revision: 1,
+        created_at: assistantISO(10, 5),
+        updated_at: assistantISO(10, 5),
+      }],
+    },
+    runs: [
+      {
+        id: "run-scan",
+        assistant_id: mockAssistant.id,
+        routine_id: mockRoutine.id,
+        request_id: "mock-run-scan",
+        trigger: "scheduled",
+        state: "succeeded",
+        attempt: 1,
+        max_attempts: 3,
+        session_path: "/mock/sessions/assistant-scan.jsonl",
+        scheduled_for: assistantISO(9, 30),
+        started_at: assistantISO(9, 30),
+        finished_at: assistantISO(9, 34),
+        summary: "测试都通过了，但发布说明还缺一段升级提醒。所有单元测试与集成测试通过，构建产物已生成。变更包括任务取消逻辑修复、日志脱敏优化，以及 Windows 构建脚本的健壮性增强。CI 日志、构建产物与差异统计已归档。",
+        revision: 1,
+        created_at: assistantISO(9, 30),
+        updated_at: assistantISO(9, 34),
+      },
+      {
+        id: "run-memory",
+        assistant_id: mockAssistant.id,
+        routine_id: mockRoutine.id,
+        request_id: "mock-run-memory",
+        trigger: "scheduled",
+        state: "succeeded",
+        attempt: 1,
+        max_attempts: 3,
+        scheduled_for: assistantISO(10, 5),
+        started_at: assistantISO(10, 5),
+        finished_at: assistantISO(10, 6),
+        summary: "已把上次构建失败的根因写入显式记忆，并加入构建脚本前置检查。",
+        revision: 1,
+        created_at: assistantISO(10, 5),
+        updated_at: assistantISO(10, 6),
+      },
+    ],
+    attention: [],
+    updated_at: assistantISO(10, 6),
+  }];
+  const cloneAssistant = <T,>(value: T): T => structuredClone(value);
+  const findAssistantSnapshot = (id: string): AssistantSnapshot => {
+    const snapshot = mockAssistantSnapshots.find((item) => item.assistant.id === id);
+    if (!snapshot) throw new Error("找不到助理");
+    return snapshot;
+  };
+  const touchAssistantSnapshot = (snapshot: AssistantSnapshot) => {
+    snapshot.revision += 1;
+    snapshot.updated_at = new Date().toISOString();
+  };
   return {
 		async DecisionState() { return structuredClone(mockDecisionState); },
 		async CreateDecision(input) {
@@ -4541,6 +4678,148 @@ function makeMockApp(): AppBindings {
     async HeartbeatSaveTasks(_tasks: unknown) {},
     async HeartbeatTriggerNow(_id: string) {},
     async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
+    // ── Assistant mode mock ──
+    async AssistantList() {
+      return cloneAssistant({
+        items: mockAssistantSnapshots.map((item) => item.assistant),
+        diagnostics: widgetScenario === "assistant-diagnostic"
+          ? [{ at: new Date().toISOString(), operation: "list", message: "一个助理快照损坏，已跳过；健康助理仍可使用。" }]
+          : [],
+      });
+    },
+    async AssistantGet(assistantId: string) {
+      return cloneAssistant(findAssistantSnapshot(assistantId));
+    },
+    async AssistantCreate(input: AssistantCreateInput) {
+      const existing = mockAssistantSnapshots.find((item) => item.assistant.id === input.assistant.id);
+      if (existing) return cloneAssistant(existing);
+      const now = new Date().toISOString();
+      const assistant = { ...input.assistant, revision: 1, memory_revision: 0, created_at: now, updated_at: now };
+      const routines = input.routines.map((routine, index) => ({
+        ...routine,
+        id: routine.id || `routine-${Date.now()}-${index}`,
+        assistant_id: assistant.id,
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+      }));
+      const snapshot: AssistantSnapshot = {
+        revision: 1,
+        assistant,
+        routines,
+        memory: { revision: 0, items: [] },
+        runs: [],
+        attention: [],
+        updated_at: now,
+      };
+      mockAssistantSnapshots.push(snapshot);
+      return cloneAssistant(snapshot);
+    },
+    async AssistantUpdate(input: AssistantUpdateInput) {
+      const snapshot = findAssistantSnapshot(input.assistant.id);
+      snapshot.assistant = {
+        ...input.assistant,
+        revision: snapshot.assistant.revision + 1,
+        updated_at: new Date().toISOString(),
+      };
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(snapshot.assistant);
+    },
+    async AssistantPutRoutine(input: AssistantRoutineInput) {
+      const snapshot = findAssistantSnapshot(input.routine.assistant_id);
+      const index = snapshot.routines.findIndex((item) => item.id === input.routine.id);
+      const now = new Date().toISOString();
+      const routine = {
+        ...input.routine,
+        revision: index >= 0 ? snapshot.routines[index].revision + 1 : 1,
+        created_at: index >= 0 ? snapshot.routines[index].created_at : now,
+        updated_at: now,
+      };
+      if (index >= 0) snapshot.routines[index] = routine;
+      else snapshot.routines.push(routine);
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(routine);
+    },
+    async AssistantApplyMemory(input: AssistantMemoryInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const remove = new Set(input.patch.delete ?? []);
+      snapshot.memory.items = snapshot.memory.items.filter((item) => !remove.has(item.id));
+      for (const item of input.patch.upsert ?? []) {
+        const index = snapshot.memory.items.findIndex((current) => current.id === item.id);
+        if (index >= 0) snapshot.memory.items[index] = { ...item, revision: snapshot.memory.items[index].revision + 1, updated_at: new Date().toISOString() };
+        else snapshot.memory.items.push({ ...item, revision: 1 });
+      }
+      snapshot.memory.revision += 1;
+      snapshot.assistant.memory_revision = snapshot.memory.revision;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(snapshot.memory);
+    },
+    async AssistantRunNow(input: AssistantRunNowInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const now = new Date().toISOString();
+      const routine = snapshot.routines.find((item) => item.id === input.routineId) ?? snapshot.routines[0];
+      const run: AssistantRun = {
+        id: `run-${Date.now()}`,
+        assistant_id: snapshot.assistant.id,
+        routine_id: routine?.id,
+        request_id: input.requestId,
+        trigger: "manual",
+        state: "queued",
+        attempt: 0,
+        max_attempts: input.maxAttempts ?? 3,
+        scheduled_for: now,
+        revision: 1,
+        created_at: now,
+        updated_at: now,
+      };
+      snapshot.runs.unshift(run);
+      touchAssistantSnapshot(snapshot);
+      window.setTimeout(() => {
+        run.state = "succeeded";
+        run.attempt = 1;
+        run.started_at = now;
+        run.finished_at = new Date().toISOString();
+        run.updated_at = run.finished_at;
+        run.summary = "已完成手动检查：当前分支测试通过，没有发现新的阻塞风险。";
+        run.revision += 1;
+        touchAssistantSnapshot(snapshot);
+      }, 900);
+      return cloneAssistant(run);
+    },
+    async AssistantResolveAttention(input: AssistantResolveAttentionInput) {
+      const snapshot = findAssistantSnapshot(input.assistantId);
+      const item = snapshot.attention.find((current) => current.id === input.attentionId);
+      if (!item) throw new Error("待处理事项已不存在");
+      item.state = input.state;
+      item.resolution = input.resolution;
+      item.revision += 1;
+      item.updated_at = new Date().toISOString();
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(item);
+    },
+    async AssistantResume(input: AssistantResumeInput) {
+      const snapshot = mockAssistantSnapshots.find((item) => item.runs.some((run) => run.id === input.runId));
+      const run = snapshot?.runs.find((item) => item.id === input.runId);
+      if (!snapshot || !run) throw new Error("运行记录已不存在");
+      run.state = "queued";
+      run.error = undefined;
+      run.updated_at = new Date().toISOString();
+      run.revision += 1;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(run);
+    },
+    async AssistantCancel(input: AssistantCancelInput) {
+      const snapshot = mockAssistantSnapshots.find((item) => item.runs.some((run) => run.id === input.runId));
+      const run = snapshot?.runs.find((item) => item.id === input.runId);
+      if (!snapshot || !run) throw new Error("运行记录已不存在");
+      run.state = "cancelled";
+      run.summary = input.reason;
+      run.finished_at = new Date().toISOString();
+      run.updated_at = run.finished_at;
+      run.revision += 1;
+      touchAssistantSnapshot(snapshot);
+      return cloneAssistant(run);
+    },
     async SetTrayLocale(_locale: "en" | "zh" | "zh-TW") {},
     async SetAutoApproveTools(on: boolean) {
       await this.SetToolApprovalMode(on ? "yolo" : "ask");

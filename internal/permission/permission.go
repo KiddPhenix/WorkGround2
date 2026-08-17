@@ -517,14 +517,36 @@ func IsFileMutationTool(toolName string) bool {
 
 func ruleToolMatches(ruleTool, toolName string) bool {
 	ruleTool = canonicalRuleTool(ruleTool)
-	return ruleTool == toolName || (ruleTool == "file_mutation" && IsFileMutationTool(toolName))
+	if ruleTool == toolName || (ruleTool == "file_mutation" && IsFileMutationTool(toolName)) {
+		return true
+	}
+	prefix, ok := trailingToolPrefix(ruleTool)
+	return ok && strings.HasPrefix(toolName, prefix)
 }
 
 func ruleToolCompatible(existingTool, candidateTool string) bool {
 	existingTool = canonicalRuleTool(existingTool)
 	candidateTool = canonicalRuleTool(candidateTool)
-	return existingTool == candidateTool ||
-		(existingTool == "file_mutation" && (candidateTool == "file_mutation" || IsFileMutationTool(candidateTool)))
+	if existingTool == candidateTool ||
+		(existingTool == "file_mutation" && (candidateTool == "file_mutation" || IsFileMutationTool(candidateTool))) {
+		return true
+	}
+	prefix, ok := trailingToolPrefix(existingTool)
+	if !ok {
+		return false
+	}
+	if candidatePrefix, candidateIsPrefix := trailingToolPrefix(candidateTool); candidateIsPrefix {
+		return strings.HasPrefix(candidatePrefix, prefix)
+	}
+	return strings.HasPrefix(candidateTool, prefix)
+}
+
+func trailingToolPrefix(tool string) (string, bool) {
+	if !strings.HasSuffix(tool, "*") || strings.Count(tool, "*") != 1 {
+		return "", false
+	}
+	prefix := strings.TrimSuffix(tool, "*")
+	return prefix, prefix != ""
 }
 
 func canonicalRuleTool(toolName string) string {

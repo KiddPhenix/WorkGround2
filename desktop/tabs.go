@@ -887,6 +887,7 @@ type tabEventSink struct {
 	botSink       event.Sink // optional: when set, events are also forwarded here
 	ownerMu       sync.Mutex
 	ownerTurn     ownerTurnState
+	assistantMu   sync.Mutex // serializes assistant ownership registration with Controller submission
 }
 
 type closeableEventSink interface {
@@ -894,6 +895,17 @@ type closeableEventSink interface {
 }
 
 func (s *tabEventSink) Emit(e event.Event) {
+	s.assistantMu.Lock()
+	consumedByAssistant := false
+	if s.app != nil {
+		if service := s.app.assistant; service != nil {
+			consumedByAssistant = service.ObserveEvent(s.tabID, e)
+		}
+	}
+	s.assistantMu.Unlock()
+	if consumedByAssistant {
+		return
+	}
 	if s.app != nil && e.Kind == event.AskRequest && !s.app.observeDecisionAsk(s.tabID, e.Ask) {
 		return
 	}

@@ -658,7 +658,7 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 			clearLease(run)
 			run.Revision++
 			run.UpdatedAt = now
-			ensureAttention(agg, *run, now)
+			ensureAttention(agg, run, now)
 			dirty = true
 		}
 		busy := false
@@ -844,11 +844,11 @@ func (s *Store) withRunLeaseRequest(runID, owner string, fence int64, requestID,
 	}
 	run.Revision++
 	run.UpdatedAt = now
-	if run.State == RunWaitingAttention {
-		ensureAttention(agg, *run, now)
-	}
 	if after != nil {
 		after(agg, *run, now)
+	}
+	if run.State == RunWaitingAttention && !hasOpenAttention(agg, run.ID) {
+		ensureAttention(agg, run, now)
 	}
 	result := clone(*run)
 	touch(agg, now)
@@ -866,18 +866,26 @@ func (s *Store) RequestApproval(in ApprovalInput) (*Run, error) {
 		return nil, err
 	}
 	in.Action, in.Summary = strings.TrimSpace(in.Action), strings.TrimSpace(in.Summary)
+	in.Tool, in.Subject = strings.TrimSpace(in.Tool), strings.TrimSpace(in.Subject)
 	in.SessionPath, in.ResumeToken = strings.TrimSpace(in.SessionPath), strings.TrimSpace(in.ResumeToken)
 	if in.Action == "" || in.Summary == "" || in.ResumeToken == "" {
 		return nil, errors.New("assistant: approval action, summary, and resume token are required")
 	}
-	preSubmit := in.Action == "rebind_workspace" || in.Action == "cancel_recreate"
+	if strings.HasPrefix(in.Action, "approve_tool") {
+		if in.Tool == "" {
+			return nil, errors.New("assistant: tool approval requires a tool")
+		}
+	} else {
+		in.Tool, in.Subject = "", ""
+	}
+	preSubmit := in.Action == AttentionActionRebindWorkspace || in.Action == AttentionActionCancelRecreate
 	if in.SessionPath == "" && !preSubmit {
 		return nil, errors.New("assistant: approval session path is required after submission")
 	}
 	fp, err := inputFingerprint(struct {
-		RunID, Owner, Action, Summary, SessionPath, ResumeToken string
-		Fence                                                   int64
-	}{in.RunID, in.LeaseOwner, in.Action, in.Summary, in.SessionPath, in.ResumeToken, in.LeaseFence})
+		RunID, Owner, Action, Summary, Tool, Subject, SessionPath, ResumeToken string
+		Fence                                                                  int64
+	}{in.RunID, in.LeaseOwner, in.Action, in.Summary, in.Tool, in.Subject, in.SessionPath, in.ResumeToken, in.LeaseFence})
 	if err != nil {
 		return nil, err
 	}
@@ -888,6 +896,53 @@ func (s *Store) RequestApproval(in ApprovalInput) (*Run, error) {
 		run.Summary = in.Summary
 		run.SessionPath = in.SessionPath
 		run.ResumeToken = in.ResumeToken
+		clearLease(run)
+		return nil
+	}, func(agg *aggregate, run Run, now time.Time) {
+		id := StableID("att", in.RequestID)
+		for i := range agg.Attention {
+			if agg.Attention[i].ID == id {
+				return
+			}
+		}
+		agg.Attention = append(agg.Attention, AttentionItem{
+			ID: id, AssistantID: run.AssistantID, RunID: run.ID, RequestID: in.RequestID,
+			Action: in.Action, Summary: in.Summary, Tool: in.Tool, Subject: in.Subject, ResumeToken: in.ResumeToken,
+			State: AttentionOpen, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		})
+	})
+}
+
+// RequireAttention records a known, pre-side-effect configuration blocker and
+// releases the active lease. It is distinct from approval and unknown-outcome
+// recovery: the run cannot execute again until its attention is resolved.
+func (s *Store) RequireAttention(in RequireAttentionInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	in.Action, in.Summary = strings.TrimSpace(in.Action), strings.TrimSpace(in.Summary)
+	in.SessionPath, in.ResumeToken = strings.TrimSpace(in.SessionPath), strings.TrimSpace(in.ResumeToken)
+	if in.Action == "" || in.Summary == "" || in.ResumeToken == "" {
+		return nil, errors.New("assistant: attention action, summary, and resume token are required")
+	}
+	fp, err := inputFingerprint(struct {
+		RunID, Owner, Action, Summary, SessionPath, ResumeToken string
+		Fence                                                   int64
+	}{in.RunID, in.LeaseOwner, in.Action, in.Summary, in.SessionPath, in.ResumeToken, in.LeaseFence})
+	if err != nil {
+		return nil, err
+	}
+	return s.withRunLeaseRequest(in.RunID, in.LeaseOwner, in.LeaseFence, in.RequestID, "require_attention", fp, storeNow(in.Now), func(run *Run, now time.Time) error {
+		if err := moveRun(run, RunWaitingAttention); err != nil {
+			return err
+		}
+		run.Summary = in.Summary
+		run.SessionPath = in.SessionPath
+		run.ResumeToken = in.ResumeToken
+		run.Error = &RunError{
+			Code: "config_attention", Message: in.Summary,
+			Retryable: false, OutcomeKnown: true, At: now,
+		}
 		clearLease(run)
 		return nil
 	}, func(agg *aggregate, run Run, now time.Time) {
@@ -1043,31 +1098,56 @@ func (s *Store) Resume(in ResumeInput) (*Run, error) {
 		if run.State != RunWaitingApproval && run.State != RunWaitingAttention {
 			return fmt.Errorf("%w: cannot resume run in %s", ErrTransition, run.State)
 		}
-		found := false
-		for _, item := range agg.Attention {
+		var current *AttentionItem
+		for i := range agg.Attention {
+			item := &agg.Attention[i]
 			if item.RunID != run.ID {
 				continue
 			}
-			found = true
-			if item.State != AttentionApproved {
-				return fmt.Errorf("%w: attention %s is %s", ErrTransition, item.ID, item.State)
+			if item.ResumeToken != run.ResumeToken {
+				if item.State == AttentionOpen {
+					return fmt.Errorf("%w: historical attention %s is still open", ErrTransition, item.ID)
+				}
+				continue
 			}
-			if item.Action == "verify_run_outcome" && item.Resolution != "retry_acknowledged" {
-				return fmt.Errorf("%w: outcome attention %s was resolved as %s", ErrTransition, item.ID, item.Resolution)
+			if current != nil {
+				return fmt.Errorf("%w: multiple current attention items match resume token", ErrTransition)
 			}
-			if item.Action != "verify_run_outcome" && (item.ResumeToken == "" || run.SessionPath == "" || run.ResumeToken != item.ResumeToken) {
-				return fmt.Errorf("%w: approval %s has no matching persisted resume context", ErrTransition, item.ID)
-			}
+			current = item
 		}
-		if !found {
-			return errors.New("assistant: waiting run has no attention item")
+		if current == nil {
+			return errors.New("assistant: waiting run has no current attention item")
+		}
+		if current.State != AttentionApproved {
+			return fmt.Errorf("%w: attention %s is %s", ErrTransition, current.ID, current.State)
+		}
+		if current.Action == "verify_run_outcome" && current.Resolution != "retry_acknowledged" {
+			return fmt.Errorf("%w: outcome attention %s was resolved as %s", ErrTransition, current.ID, current.Resolution)
+		}
+		if current.Action != "verify_run_outcome" && !attentionActionSupportsResume(current.Action) {
+			return fmt.Errorf("%w: attention action %s requires cancellation or recreation", ErrTransition, current.Action)
+		}
+		if current.Action != "verify_run_outcome" && (current.ResumeToken == "" || run.SessionPath == "") {
+			return fmt.Errorf("%w: approval %s has no matching persisted resume context", ErrTransition, current.ID)
 		}
 		if err := moveRun(run, RunQueued); err != nil {
 			return err
 		}
+		if run.Error != nil && run.Error.Code == "config_attention" {
+			run.Error = nil
+		}
 		run.RetryAt = time.Time{}
 		return nil
 	})
+}
+
+func attentionActionSupportsResume(action string) bool {
+	switch action {
+	case AttentionActionRebindWorkspace, AttentionActionCancelRecreate, "inspect_run_failure":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Store) mutateRun(runID, requestID, operation, fingerprint string, now time.Time, mutate func(*aggregate, *Run, time.Time) error) (*Run, error) {
@@ -1135,7 +1215,7 @@ func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mu
 	run.Revision++
 	run.UpdatedAt = now
 	if run.State == RunWaitingAttention {
-		ensureAttention(agg, *run, now)
+		ensureAttention(agg, run, now)
 	}
 	touch(agg, now)
 	if err := s.write(agg); err != nil {
@@ -1218,7 +1298,7 @@ func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) (bool, erro
 				agg.Runs[i].Revision++
 				agg.Runs[i].UpdatedAt = now
 				if agg.Runs[i].State == RunWaitingAttention {
-					ensureAttention(agg, agg.Runs[i], now)
+					ensureAttention(agg, &agg.Runs[i], now)
 				}
 				changed = append(changed, clone(agg.Runs[i]))
 				dirty = true
@@ -1565,14 +1645,22 @@ func moveRun(run *Run, next RunState) error {
 	return nil
 }
 
-func ensureAttention(agg *aggregate, run Run, now time.Time) {
+func ensureAttention(agg *aggregate, run *Run, now time.Time) {
 	requestID := fmt.Sprintf("run-attention:%s:%d", run.ID, run.LeaseFence)
 	id := StableID("att", requestID)
+	resumeToken := StableID("resume", requestID)
 	for i := range agg.Attention {
 		if agg.Attention[i].ID == id {
+			if agg.Attention[i].ResumeToken == "" {
+				agg.Attention[i].ResumeToken = resumeToken
+				agg.Attention[i].UpdatedAt = now
+				agg.Attention[i].Revision++
+			}
+			run.ResumeToken = agg.Attention[i].ResumeToken
 			return
 		}
 	}
+	run.ResumeToken = resumeToken
 	action := "inspect_run_failure"
 	if run.Error != nil && !run.Error.OutcomeKnown {
 		action = "verify_run_outcome"
@@ -1583,9 +1671,18 @@ func ensureAttention(agg *aggregate, run Run, now time.Time) {
 	}
 	agg.Attention = append(agg.Attention, AttentionItem{
 		ID: id, AssistantID: run.AssistantID, RunID: run.ID, RequestID: requestID,
-		Action: action, Summary: summary,
+		Action: action, Summary: summary, ResumeToken: resumeToken,
 		State: AttentionOpen, Revision: 1, CreatedAt: now, UpdatedAt: now,
 	})
+}
+
+func hasOpenAttention(agg *aggregate, runID string) bool {
+	for i := range agg.Attention {
+		if agg.Attention[i].RunID == runID && agg.Attention[i].State == AttentionOpen {
+			return true
+		}
+	}
+	return false
 }
 
 func clone[T any](in T) T {
