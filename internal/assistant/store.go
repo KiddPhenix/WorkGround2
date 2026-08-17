@@ -592,7 +592,9 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	run := Run{
 		ID: StableID("run", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID,
 		RoutineID: in.RoutineID, RequestID: in.RequestID, OccurrenceKey: occurrenceKey,
-		Trigger: in.Trigger, RoutineRevision: frozenRoutine.Revision, Prompt: frozenRoutine.Prompt,
+		Trigger: in.Trigger, AssistantRevision: agg.Assistant.Revision,
+		Scope: agg.Assistant.Scope, WorkspaceRoot: agg.Assistant.WorkspaceRoot,
+		RoutineRevision: frozenRoutine.Revision, Prompt: frozenRoutine.Prompt,
 		Mission: agg.Assistant.Mission, Policy: agg.Assistant.Policy, State: RunQueued, MaxAttempts: in.MaxAttempts,
 		ScheduledFor: in.ScheduledFor.UTC(), Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
@@ -714,6 +716,30 @@ func (s *Store) Renew(runID, owner string, fence int64, now time.Time, lease tim
 		run.LeaseUntil = at.Add(lease)
 		return nil
 	})
+}
+
+// BindSession durably records the execution session before the host submits
+// work to the controller. A crash after this commit leaves an auditable session
+// reference on the run recovered into attention.
+func (s *Store) BindSession(in BindSessionInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	in.SessionPath = strings.TrimSpace(in.SessionPath)
+	if in.SessionPath == "" {
+		return nil, errors.New("assistant: session path is required")
+	}
+	fp, err := inputFingerprint(struct {
+		RunID, Owner, SessionPath string
+		Fence                     int64
+	}{in.RunID, in.LeaseOwner, in.SessionPath, in.LeaseFence})
+	if err != nil {
+		return nil, err
+	}
+	return s.withRunLeaseRequest(in.RunID, in.LeaseOwner, in.LeaseFence, in.RequestID, "bind_session", fp, storeNow(in.Now), func(run *Run, _ time.Time) error {
+		run.SessionPath = in.SessionPath
+		return nil
+	}, nil)
 }
 
 func (s *Store) Finish(in FinishInput) (*Run, error) {

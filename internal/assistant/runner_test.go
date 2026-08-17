@@ -77,6 +77,9 @@ func (f *runnerFake) Renew(_ string, owner string, fence int64, _ time.Time, _ t
 	f.owner, f.fence = owner, fence
 	return &Run{LeaseOwner: owner, LeaseFence: fence}, nil
 }
+func (f *runnerFake) BindSession(input BindSessionInput) (*Run, error) {
+	return &Run{ID: input.RunID, State: RunRunning, SessionPath: input.SessionPath, LeaseFence: input.LeaseFence}, nil
+}
 func (f *runnerFake) Finish(input FinishInput) (*Run, error) {
 	f.finish = input
 	return &Run{ID: input.RunID, State: RunSucceeded}, nil

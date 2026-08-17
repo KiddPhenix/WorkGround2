@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -280,6 +281,42 @@ func TestStoreFinishAndFailAreIdempotent(t *testing.T) {
 	})
 }
 
+func TestStoreBindSessionIsFencedAndIdempotent(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-bind")
+	run, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", run, ok, err)
+	}
+	in := BindSessionInput{
+		RequestID: "bind-session-1", RunID: run.ID, LeaseOwner: "worker-a",
+		LeaseFence: run.LeaseFence, SessionPath: "sessions/run-1.json", Now: testEpoch.Add(time.Second),
+	}
+	first, err := store.BindSession(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.State != RunRunning || first.SessionPath != in.SessionPath {
+		t.Fatalf("bound run=%+v", first)
+	}
+	in.Now = testEpoch.Add(2 * time.Second)
+	replay, err := store.BindSession(in)
+	if err != nil || replay.Revision != first.Revision || replay.SessionPath != first.SessionPath {
+		t.Fatalf("BindSession replay=%+v err=%v", replay, err)
+	}
+	in.SessionPath = "sessions/different.json"
+	if _, err := store.BindSession(in); !errors.Is(err, ErrIdempotency) {
+		t.Fatalf("BindSession fingerprint conflict=%v", err)
+	}
+	if _, err := store.BindSession(BindSessionInput{
+		RequestID: "bind-session-stale", RunID: run.ID, LeaseOwner: "worker-a",
+		LeaseFence: run.LeaseFence - 1, SessionPath: "sessions/stale.json", Now: testEpoch.Add(3 * time.Second),
+	}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("BindSession stale fence=%v", err)
+	}
+}
+
 func TestStoreRejectsRequestIDWhitespace(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	in := testCreateInput("helper-a", " create-1")
@@ -375,14 +412,21 @@ func TestStoreRoutineEditPreservesSchedulingCursor(t *testing.T) {
 
 func TestStoreQueuedRunFreezesExecutionInputs(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
-	created := mustCreate(t, store, "helper-a")
+	in := testCreateInput("helper-a", "create-helper-a")
+	in.Assistant.Scope = ScopeWorkspace
+	in.Assistant.WorkspaceRoot = filepath.Join(t.TempDir(), "workspace-a")
+	created, err := store.Create(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	queued := mustTrigger(t, store, "manual-frozen")
-	if queued.RoutineRevision != created.Routines[0].Revision || queued.Prompt != created.Routines[0].Prompt || queued.Mission != created.Assistant.Mission || queued.Policy != created.Assistant.Policy {
+	if queued.AssistantRevision != created.Assistant.Revision || queued.Scope != created.Assistant.Scope || queued.WorkspaceRoot != created.Assistant.WorkspaceRoot || queued.RoutineRevision != created.Routines[0].Revision || queued.Prompt != created.Routines[0].Prompt || queued.Mission != created.Assistant.Mission || queued.Policy != created.Assistant.Policy {
 		t.Fatalf("run did not freeze creation inputs: %+v", queued)
 	}
 
 	desired := created.Assistant
 	desired.Mission = "new mission"
+	desired.WorkspaceRoot = filepath.Join(t.TempDir(), "workspace-b")
 	desired.Policy.Network = AccessAllow
 	if _, err := store.UpdateAssistant("assistant-edit-frozen", desired, desired.Revision, testEpoch.Add(time.Minute)); err != nil {
 		t.Fatal(err)
@@ -398,8 +442,28 @@ func TestStoreQueuedRunFreezesExecutionInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := snapshot.Runs[0]
-	if got.RoutineRevision != queued.RoutineRevision || got.Prompt != queued.Prompt || got.Mission != queued.Mission || got.Policy != queued.Policy {
+	if got.AssistantRevision != queued.AssistantRevision || got.Scope != queued.Scope || got.WorkspaceRoot != queued.WorkspaceRoot || got.RoutineRevision != queued.RoutineRevision || got.Prompt != queued.Prompt || got.Mission != queued.Mission || got.Policy != queued.Policy {
 		t.Fatalf("queued run inputs changed after edits: before=%+v after=%+v", queued, got)
+	}
+}
+
+func TestStoreRejectsLegacyRunWithoutFrozenAssistantContext(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "assistants")
+	store := testStore(t, root)
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-legacy")
+	path := filepath.Join(root, "helper-a", "aggregate.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Replace(string(data), `"assistant_revision": 1,`, ``, 1)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Get("helper-a")
+	if !errors.Is(err, ErrCorrupt) || !strings.Contains(err.Error(), "migrate or recreate") {
+		t.Fatalf("legacy run error=%v, want explicit migration corruption", err)
 	}
 }
 

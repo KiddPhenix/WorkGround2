@@ -220,6 +220,21 @@ func validateRun(r Run) error {
 	if r.Attempt < 0 || r.MaxAttempts < 1 || r.Revision < 1 {
 		return errors.New("assistant: invalid run counters")
 	}
+	if r.AssistantRevision < 1 || r.Scope == "" {
+		return errors.New("assistant: legacy run missing frozen assistant context; migrate or recreate the run")
+	}
+	switch r.Scope {
+	case ScopeGlobal:
+		if strings.TrimSpace(r.WorkspaceRoot) != "" {
+			return errors.New("assistant: frozen global run cannot have a workspace root")
+		}
+	case ScopeWorkspace:
+		if strings.TrimSpace(r.WorkspaceRoot) == "" {
+			return errors.New("assistant: frozen workspace run requires a workspace root")
+		}
+	default:
+		return fmt.Errorf("assistant: invalid frozen run scope %q", r.Scope)
+	}
 	if strings.TrimSpace(r.Mission) == "" {
 		return errors.New("assistant: run requires a frozen mission")
 	}
