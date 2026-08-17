@@ -63,6 +63,55 @@ func TestLatestDueCoalescesMissedIntervals(t *testing.T) {
 	}
 }
 
+func TestMonthlyScheduleClampsToMonthEnd(t *testing.T) {
+	t.Parallel()
+	schedule := Schedule{Kind: ScheduleMonthly, Timezone: "UTC", At: "09:00", Day: 31}
+	after := time.Date(2026, 1, 31, 9, 0, 0, 0, time.UTC)
+	next, ok, err := NextOccurrence(schedule, after)
+	if err != nil || !ok {
+		t.Fatalf("NextOccurrence: ok=%v err=%v", ok, err)
+	}
+	want := time.Date(2026, 2, 28, 9, 0, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("next=%s want=%s", next, want)
+	}
+}
+
+func TestDailyScheduleDSTGapUsesFirstValidMinute(t *testing.T) {
+	t.Parallel()
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Skipf("timezone database unavailable: %v", err)
+	}
+	schedule := Schedule{Kind: ScheduleDaily, Timezone: loc.String(), At: "02:30"}
+	after := time.Date(2026, 3, 7, 2, 30, 0, 0, loc)
+	next, ok, err := NextOccurrence(schedule, after)
+	if err != nil || !ok {
+		t.Fatalf("NextOccurrence: ok=%v err=%v", ok, err)
+	}
+	local := next.In(loc)
+	if local.Year() != 2026 || local.Month() != time.March || local.Day() != 8 || local.Hour() != 3 || local.Minute() != 0 {
+		t.Fatalf("DST gap occurrence=%s", local)
+	}
+}
+
+func TestWrappedWindow(t *testing.T) {
+	t.Parallel()
+	schedule := Schedule{
+		Kind: ScheduleInterval, IntervalSeconds: 3600, Timezone: "UTC",
+		Window: TimeWindow{Start: "22:00", End: "06:00"},
+	}
+	after := time.Date(2026, 8, 17, 6, 30, 0, 0, time.UTC)
+	next, ok, err := NextOccurrence(schedule, after)
+	if err != nil || !ok {
+		t.Fatalf("NextOccurrence: ok=%v err=%v", ok, err)
+	}
+	want := time.Date(2026, 8, 17, 22, 0, 0, 0, time.UTC)
+	if !next.Equal(want) {
+		t.Fatalf("next=%s want=%s", next, want)
+	}
+}
+
 func TestSchedulerCoalescesAndRepeatTickIsIdempotent(t *testing.T) {
 	t.Parallel()
 	start := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)

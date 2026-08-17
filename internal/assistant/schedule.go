@@ -62,9 +62,7 @@ func NextOccurrence(schedule Schedule, after time.Time) (time.Time, bool, error)
 		}
 		if schedule.Kind == ScheduleBiweekly {
 			anchor := schedule.StartAt.In(loc)
-			anchorDate := dateOnly(anchor)
-			candidateDate := dateOnly(candidate)
-			weeks := int(candidateDate.Sub(anchorDate).Hours()) / (24 * 7)
+			weeks := calendarDaysBetween(anchor, candidate) / 7
 			if weeks%2 != 0 {
 				candidate = candidate.AddDate(0, 0, 7)
 			}
@@ -141,7 +139,7 @@ func nextWindowStart(schedule Schedule, value time.Time) time.Time {
 		dayOffset = 1
 	}
 	date := local.AddDate(0, 0, dayOffset)
-	return time.Date(date.Year(), date.Month(), date.Day(), startHour, startMinute, 0, 0, loc).UTC()
+	return clockOn(time.Date(date.Year(), date.Month(), date.Day(), 12, 0, 0, 0, loc), startHour, startMinute).UTC()
 }
 
 func scheduleLocation(schedule Schedule) (*time.Location, error) {
@@ -174,18 +172,37 @@ func parseClock(value string) (int, int, error) {
 
 func clockOn(value time.Time, hour, minute int) time.Time {
 	year, month, day := value.Date()
-	return time.Date(year, month, day, hour, minute, 0, 0, value.Location())
+	candidate := time.Date(year, month, day, hour, minute, 0, 0, value.Location())
+	cy, cm, cd := candidate.In(value.Location()).Date()
+	if cy == year && cm == month && cd == day && candidate.Hour() == hour && candidate.Minute() == minute {
+		return candidate
+	}
+	// A DST spring-forward gap has no exact wall-clock value. Run at the first
+	// valid minute after the requested time on the same local date.
+	midnight := time.Date(year, month, day, 0, 0, 0, 0, value.Location())
+	wanted := hour*60 + minute
+	for offset := 0; offset <= 26*60; offset++ {
+		probe := midnight.Add(time.Duration(offset) * time.Minute).In(value.Location())
+		py, pm, pd := probe.Date()
+		if py == year && pm == month && pd == day && probe.Hour()*60+probe.Minute() >= wanted {
+			return probe
+		}
+	}
+	return candidate
 }
 
 func monthClock(year int, month time.Month, day, hour, minute int, loc *time.Location) time.Time {
-	base := time.Date(year, month+1, 0, hour, minute, 0, 0, loc)
+	base := time.Date(year, month+1, 0, 12, 0, 0, 0, loc)
 	if day > base.Day() {
 		day = base.Day()
 	}
-	return time.Date(year, month, day, hour, minute, 0, 0, loc)
+	return clockOn(time.Date(year, month, day, 12, 0, 0, 0, loc), hour, minute)
 }
 
-func dateOnly(value time.Time) time.Time {
-	year, month, day := value.Date()
-	return time.Date(year, month, day, 0, 0, 0, 0, value.Location())
+func calendarDaysBetween(left, right time.Time) int {
+	ly, lm, ld := left.Date()
+	ry, rm, rd := right.Date()
+	l := time.Date(ly, lm, ld, 0, 0, 0, 0, time.UTC)
+	r := time.Date(ry, rm, rd, 0, 0, 0, 0, time.UTC)
+	return int(r.Sub(l) / (24 * time.Hour))
 }

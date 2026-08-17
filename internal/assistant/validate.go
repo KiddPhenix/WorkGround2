@@ -16,7 +16,9 @@ func ValidateRoutine(value Routine) error     { return validateRoutine(value) }
 func ValidateSchedule(value Schedule) error   { return validateSchedule(value) }
 
 func validateID(kind, id string) error {
-	id = strings.TrimSpace(id)
+	if id != strings.TrimSpace(id) {
+		return fmt.Errorf("assistant: %s id must not have surrounding whitespace", kind)
+	}
 	if id == "" {
 		return fmt.Errorf("assistant: %s id is required", kind)
 	}
@@ -27,7 +29,10 @@ func validateID(kind, id string) error {
 }
 
 func validateRequestID(id string) error {
-	if strings.TrimSpace(id) == "" {
+	if id != strings.TrimSpace(id) {
+		return errors.New("assistant: request id must not have surrounding whitespace")
+	}
+	if id == "" {
 		return errors.New("assistant: request id is required")
 	}
 	if len(id) > 512 {
@@ -198,6 +203,11 @@ func validateRun(r Run) error {
 	if err := validateRequestID(r.RequestID); err != nil {
 		return err
 	}
+	switch r.Trigger {
+	case TriggerManual, TriggerScheduled:
+	default:
+		return fmt.Errorf("assistant: invalid run trigger %q", r.Trigger)
+	}
 	switch r.State {
 	case RunQueued, RunRunning, RunSucceeded, RunWaitingApproval, RunRetryWait,
 		RunWaitingAttention, RunFailed, RunCancelled:
@@ -209,6 +219,15 @@ func validateRun(r Run) error {
 	}
 	if r.Attempt < 0 || r.MaxAttempts < 1 || r.Revision < 1 {
 		return errors.New("assistant: invalid run counters")
+	}
+	if strings.TrimSpace(r.Mission) == "" {
+		return errors.New("assistant: run requires a frozen mission")
+	}
+	if err := validatePolicy(r.Policy); err != nil {
+		return err
+	}
+	if r.RoutineID != "" && (r.RoutineRevision < 1 || strings.TrimSpace(r.Prompt) == "") {
+		return errors.New("assistant: routine run requires frozen routine revision and prompt")
 	}
 	return nil
 }

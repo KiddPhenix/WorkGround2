@@ -17,6 +17,8 @@ type Scheduler struct {
 	store ScheduleStore
 }
 
+var _ ScheduleStore = (*Store)(nil)
+
 func NewScheduler(store ScheduleStore) (*Scheduler, error) {
 	if store == nil {
 		return nil, errors.New("assistant: scheduler store is required")
@@ -41,11 +43,15 @@ type TickResult struct {
 func (s *Scheduler) Tick(now time.Time) (TickResult, error) {
 	now = utcNow(now)
 	assistants, err := s.store.List()
-	if err != nil {
+	if err != nil && len(assistants) == 0 {
 		return TickResult{}, fmt.Errorf("assistant: list scheduled assistants: %w", err)
 	}
 	var result TickResult
 	var failures []error
+	if err != nil {
+		result.addFailure("", "", err)
+		failures = append(failures, err)
+	}
 	for _, a := range assistants {
 		if a.Lifecycle != LifecycleActive {
 			continue

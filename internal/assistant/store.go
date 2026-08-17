@@ -91,23 +91,47 @@ func NewStore(root string) (*Store, error) {
 		return nil, fmt.Errorf("assistant: refusing dangerous store root %q", abs)
 	}
 	if info, statErr := os.Lstat(abs); statErr == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, resolveErr := filepath.EvalSymlinks(abs)
-			if resolveErr != nil {
-				return nil, fmt.Errorf("assistant: resolve store root symlink: %w", resolveErr)
-			}
-			abs = filepath.Clean(resolved)
-			if isVolumeRoot(abs) {
-				return nil, fmt.Errorf("assistant: refusing dangerous store root %q", abs)
-			}
-		} else if !info.IsDir() {
+		if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			return nil, fmt.Errorf("assistant: store root %q is not a directory", abs)
 		}
 	} else if !os.IsNotExist(statErr) {
 		return nil, fmt.Errorf("assistant: inspect store root: %w", statErr)
 	}
+	abs, err = canonicalStoreRoot(abs)
+	if err != nil {
+		return nil, err
+	}
+	if isVolumeRoot(abs) {
+		return nil, fmt.Errorf("assistant: refusing dangerous store root %q", abs)
+	}
 	gateValue, _ := storeGates.LoadOrStore(abs, &storeGate{})
 	return &Store{root: abs, gate: gateValue.(*storeGate)}, nil
+}
+
+func canonicalStoreRoot(path string) (string, error) {
+	current := path
+	missing := make([]string, 0)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("assistant: inspect store root ancestor: %w", err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+	resolved, err := filepath.EvalSymlinks(current)
+	if err != nil {
+		return "", fmt.Errorf("assistant: resolve store root: %w", err)
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		resolved = filepath.Join(resolved, missing[i])
+	}
+	return filepath.Clean(resolved), nil
 }
 
 func isVolumeRoot(path string) bool {
@@ -223,6 +247,7 @@ func (s *Store) List() ([]Assistant, error) {
 		return nil, fmt.Errorf("assistant: list store: %w", err)
 	}
 	result := make([]Assistant, 0, len(entries))
+	var issues []error
 	for _, entry := range entries {
 		if !entry.IsDir() || validateID("assistant", entry.Name()) != nil {
 			continue
@@ -231,7 +256,8 @@ func (s *Store) List() ([]Assistant, error) {
 		agg, readErr := s.read(entry.Name())
 		unlock()
 		if readErr != nil {
-			return nil, readErr
+			issues = append(issues, readErr)
+			continue
 		}
 		result = append(result, clone(agg.Assistant))
 	}
@@ -241,6 +267,9 @@ func (s *Store) List() ([]Assistant, error) {
 		}
 		return result[i].UpdatedAt.After(result[j].UpdatedAt)
 	})
+	if len(issues) > 0 {
+		return result, fmt.Errorf("%w: %w", ErrCorrupt, errors.Join(issues...))
+	}
 	return result, nil
 }
 
@@ -332,6 +361,8 @@ func (s *Store) PutRoutine(in RoutineInput) (Routine, error) {
 	if index < 0 {
 		r.Revision, r.CreatedAt = 1, now
 	} else {
+		// Scheduling progress is Store-owned. UI edits cannot erase or rewind it.
+		r.LastScheduledFor = agg.Routines[index].LastScheduledFor
 		r.Revision, r.CreatedAt = agg.Routines[index].Revision+1, agg.Routines[index].CreatedAt
 	}
 	r.UpdatedAt = now
@@ -452,6 +483,12 @@ func (s *Store) ApplyMemory(assistantID, requestID string, expectedRevision int6
 }
 
 func (s *Store) Trigger(in TriggerInput) (Run, error) {
+	if in.Trigger == "" {
+		in.Trigger = TriggerManual
+	}
+	if in.Trigger != TriggerManual {
+		return Run{}, fmt.Errorf("assistant: public trigger only accepts %q: %w", TriggerManual, ErrTransition)
+	}
 	return s.trigger(in, false)
 }
 
@@ -502,6 +539,7 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	if agg.Assistant.Lifecycle != LifecycleActive {
 		return Run{}, fmt.Errorf("assistant: %s is %s: %w", in.AssistantID, agg.Assistant.Lifecycle, ErrTransition)
 	}
+	frozenRoutine := Routine{}
 	if in.RoutineID != "" {
 		idx := routineIndex(agg, in.RoutineID)
 		if idx < 0 {
@@ -510,6 +548,7 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 		if occurrence && !agg.Routines[idx].Enabled {
 			return Run{}, fmt.Errorf("assistant: routine %s is disabled: %w", in.RoutineID, ErrTransition)
 		}
+		frozenRoutine = agg.Routines[idx]
 	}
 	now := storeNow(in.Now)
 	occurrenceKey := ""
@@ -553,7 +592,8 @@ func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
 	run := Run{
 		ID: StableID("run", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID,
 		RoutineID: in.RoutineID, RequestID: in.RequestID, OccurrenceKey: occurrenceKey,
-		Trigger: in.Trigger, State: RunQueued, MaxAttempts: in.MaxAttempts,
+		Trigger: in.Trigger, RoutineRevision: frozenRoutine.Revision, Prompt: frozenRoutine.Prompt,
+		Mission: agg.Assistant.Mission, Policy: agg.Assistant.Policy, State: RunQueued, MaxAttempts: in.MaxAttempts,
 		ScheduledFor: in.ScheduledFor.UTC(), Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if occurrence {
@@ -589,6 +629,7 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 		return nil, false, fmt.Errorf("assistant: list claim candidates: %w", err)
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	var issues []error
 	for _, entry := range entries {
 		assistantID := entry.Name()
 		if !entry.IsDir() || validateID("assistant", assistantID) != nil {
@@ -598,22 +639,50 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 		agg, readErr := s.read(assistantID)
 		if readErr != nil {
 			unlock()
-			return nil, false, readErr
+			issues = append(issues, readErr)
+			continue
+		}
+		dirty := false
+		for i := range agg.Runs {
+			run := &agg.Runs[i]
+			if run.State != RunRunning || run.LeaseUntil.After(now) {
+				continue
+			}
+			if err := moveRun(run, RunWaitingAttention); err != nil {
+				unlock()
+				return nil, false, err
+			}
+			run.Error = &RunError{Code: "outcome_unknown", Message: "execution lease expired; external outcome is unknown", OutcomeKnown: false, At: now}
+			clearLease(run)
+			run.Revision++
+			run.UpdatedAt = now
+			ensureAttention(agg, *run, now)
+			dirty = true
 		}
 		busy := false
 		for i := range agg.Runs {
-			if agg.Runs[i].State == RunRunning {
+			switch agg.Runs[i].State {
+			case RunRunning, RunWaitingApproval, RunWaitingAttention:
 				busy = true
-				break
 			}
 		}
-		idx := nextQueuedIndex(agg)
-		if busy || idx < 0 {
+		idx := nextQueuedIndex(agg, now)
+		if busy || idx < 0 || agg.Assistant.Lifecycle != LifecycleActive {
+			if dirty {
+				touch(agg, now)
+				if writeErr := s.write(agg); writeErr != nil {
+					unlock()
+					return nil, false, writeErr
+				}
+			}
 			unlock()
 			continue
 		}
 		run := &agg.Runs[idx]
-		run.State = RunRunning
+		if err := moveRun(run, RunRunning); err != nil {
+			unlock()
+			return nil, false, err
+		}
 		run.Attempt++
 		run.LeaseOwner = owner
 		run.LeaseFence++
@@ -631,6 +700,9 @@ func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, b
 		unlock()
 		return &result, true, nil
 	}
+	if len(issues) > 0 {
+		return nil, false, fmt.Errorf("%w: %w", ErrCorrupt, errors.Join(issues...))
+	}
 	return nil, false, nil
 }
 
@@ -645,37 +717,364 @@ func (s *Store) Renew(runID, owner string, fence int64, now time.Time, lease tim
 }
 
 func (s *Store) Finish(in FinishInput) (*Run, error) {
-	return s.withRunLease(in.RunID, in.LeaseOwner, in.LeaseFence, storeNow(in.Now), func(run *Run, at time.Time) error {
-		run.State = RunSucceeded
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	fp, err := inputFingerprint(struct {
+		RunID, Owner, Summary, SessionPath string
+		Fence                              int64
+	}{in.RunID, in.LeaseOwner, strings.TrimSpace(in.Summary), strings.TrimSpace(in.SessionPath), in.LeaseFence})
+	if err != nil {
+		return nil, err
+	}
+	return s.withRunLeaseRequest(in.RunID, in.LeaseOwner, in.LeaseFence, in.RequestID, "finish", fp, storeNow(in.Now), func(run *Run, at time.Time) error {
+		if err := moveRun(run, RunSucceeded); err != nil {
+			return err
+		}
 		run.Summary = strings.TrimSpace(in.Summary)
 		run.SessionPath = strings.TrimSpace(in.SessionPath)
 		run.FinishedAt = at
 		clearLease(run)
 		return nil
-	})
+	}, nil)
 }
 
 func (s *Store) Fail(in FailInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
 	failure := in.Failure
 	now := storeNow(failure.Now)
-	return s.withRunLease(in.RunID, in.LeaseOwner, in.LeaseFence, now, func(run *Run, at time.Time) error {
-		run.Error = &RunError{Code: strings.TrimSpace(failure.Code), Message: strings.TrimSpace(failure.Message), Retryable: failure.Retryable, At: at}
+	failureIntent := failure
+	failureIntent.Now = time.Time{}
+	fp, err := inputFingerprint(struct {
+		RunID, Owner string
+		Fence        int64
+		Failure      Failure
+	}{in.RunID, in.LeaseOwner, in.LeaseFence, failureIntent})
+	if err != nil {
+		return nil, err
+	}
+	return s.withRunLeaseRequest(in.RunID, in.LeaseOwner, in.LeaseFence, in.RequestID, "fail", fp, now, func(run *Run, at time.Time) error {
+		failure.Code, failure.Message, failure.Provider = strings.TrimSpace(failure.Code), strings.TrimSpace(failure.Message), strings.TrimSpace(failure.Provider)
+		if failure.Code == "" || failure.Message == "" {
+			return errors.New("assistant: failure code and message are required")
+		}
+		run.Error = &RunError{
+			Code: failure.Code, Message: failure.Message, Provider: failure.Provider,
+			Retryable: failure.Retryable, OutcomeKnown: failure.OutcomeKnown, At: at,
+		}
 		clearLease(run)
 		if !failure.OutcomeKnown {
-			run.State = RunWaitingAttention
+			if err := moveRun(run, RunWaitingAttention); err != nil {
+				return err
+			}
 			run.Error.Retryable = false
 		} else if failure.Retryable && run.Attempt < run.MaxAttempts {
-			run.State = RunRetryWait
+			if err := moveRun(run, RunRetryWait); err != nil {
+				return err
+			}
 			if failure.RetryAfter < 0 {
 				failure.RetryAfter = 0
 			}
 			run.RetryAt = at.Add(failure.RetryAfter)
 		} else {
-			run.State = RunFailed
+			if err := moveRun(run, RunFailed); err != nil {
+				return err
+			}
 			run.FinishedAt = at
 		}
 		return nil
+	}, nil)
+}
+
+func (s *Store) withRunLeaseRequest(runID, owner string, fence int64, requestID, operation, fingerprint string, now time.Time, mutate func(*Run, time.Time) error, after func(*aggregate, Run, time.Time)) (*Run, error) {
+	if err := validateID("run", runID); err != nil {
+		return nil, err
+	}
+	assistantID, err := s.runOwner(runID)
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	if result, ok, receiptErr := receiptResult[Run](agg, requestID, operation, fingerprint); ok || receiptErr != nil {
+		return &result, receiptErr
+	}
+	idx := runIndex(agg, runID)
+	if idx < 0 {
+		return nil, ErrNotFound
+	}
+	run := &agg.Runs[idx]
+	if run.State != RunRunning || run.LeaseOwner != owner || run.LeaseFence != fence || !now.Before(run.LeaseUntil) {
+		return nil, fmt.Errorf("assistant: run %s fence %d is stale: %w", runID, fence, ErrLeaseLost)
+	}
+	if err := mutate(run, now); err != nil {
+		return nil, err
+	}
+	run.Revision++
+	run.UpdatedAt = now
+	if run.State == RunWaitingAttention {
+		ensureAttention(agg, *run, now)
+	}
+	if after != nil {
+		after(agg, *run, now)
+	}
+	result := clone(*run)
+	touch(agg, now)
+	if err := putReceipt(agg, requestID, operation, fingerprint, result, now); err != nil {
+		return nil, err
+	}
+	if err := s.write(agg); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *Store) RequestApproval(in ApprovalInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	in.Action, in.Summary = strings.TrimSpace(in.Action), strings.TrimSpace(in.Summary)
+	in.SessionPath, in.ResumeToken = strings.TrimSpace(in.SessionPath), strings.TrimSpace(in.ResumeToken)
+	if in.Action == "" || in.Summary == "" || in.SessionPath == "" || in.ResumeToken == "" {
+		return nil, errors.New("assistant: approval action, summary, session path, and resume token are required")
+	}
+	fp, err := inputFingerprint(struct {
+		RunID, Owner, Action, Summary, SessionPath, ResumeToken string
+		Fence                                                   int64
+	}{in.RunID, in.LeaseOwner, in.Action, in.Summary, in.SessionPath, in.ResumeToken, in.LeaseFence})
+	if err != nil {
+		return nil, err
+	}
+	return s.withRunLeaseRequest(in.RunID, in.LeaseOwner, in.LeaseFence, in.RequestID, "request_approval", fp, storeNow(in.Now), func(run *Run, _ time.Time) error {
+		if err := moveRun(run, RunWaitingApproval); err != nil {
+			return err
+		}
+		run.Summary = in.Summary
+		run.SessionPath = in.SessionPath
+		run.ResumeToken = in.ResumeToken
+		clearLease(run)
+		return nil
+	}, func(agg *aggregate, run Run, now time.Time) {
+		id := StableID("att", in.RequestID)
+		for i := range agg.Attention {
+			if agg.Attention[i].ID == id {
+				return
+			}
+		}
+		agg.Attention = append(agg.Attention, AttentionItem{
+			ID: id, AssistantID: run.AssistantID, RunID: run.ID, RequestID: in.RequestID,
+			Action: in.Action, Summary: in.Summary, ResumeToken: in.ResumeToken,
+			State: AttentionOpen, Revision: 1, CreatedAt: now, UpdatedAt: now,
+		})
 	})
+}
+
+func (s *Store) Cancel(in CancelInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	fp, err := inputFingerprint(struct{ RunID, Reason string }{in.RunID, in.Reason})
+	if err != nil {
+		return nil, err
+	}
+	return s.mutateRun(in.RunID, in.RequestID, "cancel", fp, storeNow(in.Now), func(agg *aggregate, run *Run, now time.Time) error {
+		if err := moveRun(run, RunCancelled); err != nil {
+			return err
+		}
+		clearLease(run)
+		run.Summary = in.Reason
+		run.FinishedAt = now
+		for i := range agg.Attention {
+			if agg.Attention[i].RunID == run.ID && agg.Attention[i].State == AttentionOpen {
+				agg.Attention[i].State = AttentionCancelled
+				agg.Attention[i].Resolution = in.Reason
+				agg.Attention[i].Revision++
+				agg.Attention[i].UpdatedAt = now
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) ResolveAttention(in ResolveAttentionInput) (*AttentionItem, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return nil, err
+	}
+	if err := validateID("attention", in.AttentionID); err != nil {
+		return nil, err
+	}
+	switch in.State {
+	case AttentionApproved, AttentionRejected, AttentionCancelled:
+	default:
+		return nil, errors.New("assistant: attention resolution must be approved, rejected, or cancelled")
+	}
+	in.Resolution = strings.TrimSpace(in.Resolution)
+	fp, err := inputFingerprint(struct {
+		AttentionID string
+		Expected    int64
+		State       AttentionState
+		Resolution  string
+	}{in.AttentionID, in.ExpectedRevision, in.State, in.Resolution})
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockAssistant(in.AssistantID)
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return nil, err
+	}
+	if result, ok, receiptErr := receiptResult[AttentionItem](agg, in.RequestID, "resolve_attention", fp); ok || receiptErr != nil {
+		return &result, receiptErr
+	}
+	idx := attentionIndex(agg, in.AttentionID)
+	if idx < 0 {
+		return nil, ErrNotFound
+	}
+	item := &agg.Attention[idx]
+	if item.Revision != in.ExpectedRevision {
+		return nil, conflict("attention", item.ID, in.ExpectedRevision, item.Revision)
+	}
+	if item.State != AttentionOpen {
+		return nil, fmt.Errorf("%w: attention %s is %s", ErrTransition, item.ID, item.State)
+	}
+	now := storeNow(in.Now)
+	runIdx := runIndex(agg, item.RunID)
+	if runIdx < 0 {
+		return nil, fmt.Errorf("assistant: attention %s run is missing: %w", item.ID, ErrCorrupt)
+	}
+	run := &agg.Runs[runIdx]
+	if item.Action == "verify_run_outcome" && in.State == AttentionApproved {
+		switch in.Resolution {
+		case "retry_acknowledged":
+		case "mark_succeeded":
+			if err := moveRun(run, RunSucceeded); err != nil {
+				return nil, err
+			}
+			run.FinishedAt = now
+			run.Error = nil
+		case "mark_failed":
+			if err := moveRun(run, RunFailed); err != nil {
+				return nil, err
+			}
+			run.FinishedAt = now
+			provider := ""
+			if run.Error != nil {
+				provider = run.Error.Provider
+			}
+			run.Error = &RunError{
+				Code: "outcome_failed_confirmed", Message: "external outcome manually confirmed as failed",
+				Provider: provider, Retryable: false, OutcomeKnown: true, At: now,
+			}
+		default:
+			return nil, errors.New("assistant: unknown outcome requires retry_acknowledged, mark_succeeded, or mark_failed")
+		}
+	} else if in.State == AttentionRejected || in.State == AttentionCancelled {
+		if err := moveRun(run, RunCancelled); err != nil {
+			return nil, err
+		}
+		run.FinishedAt = now
+	}
+	if run.State == RunSucceeded || run.State == RunFailed || run.State == RunCancelled {
+		clearLease(run)
+		run.UpdatedAt, run.Revision = now, run.Revision+1
+	}
+	item.State, item.Resolution, item.UpdatedAt, item.Revision = in.State, in.Resolution, now, item.Revision+1
+	result := clone(*item)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "resolve_attention", fp, result, item.UpdatedAt); err != nil {
+		return nil, err
+	}
+	if err := s.write(agg); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *Store) Resume(in ResumeInput) (*Run, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return nil, err
+	}
+	fp, err := inputFingerprint(struct{ RunID string }{in.RunID})
+	if err != nil {
+		return nil, err
+	}
+	return s.mutateRun(in.RunID, in.RequestID, "resume", fp, storeNow(in.Now), func(agg *aggregate, run *Run, _ time.Time) error {
+		if run.State != RunWaitingApproval && run.State != RunWaitingAttention {
+			return fmt.Errorf("%w: cannot resume run in %s", ErrTransition, run.State)
+		}
+		found := false
+		for _, item := range agg.Attention {
+			if item.RunID != run.ID {
+				continue
+			}
+			found = true
+			if item.State != AttentionApproved {
+				return fmt.Errorf("%w: attention %s is %s", ErrTransition, item.ID, item.State)
+			}
+			if item.Action == "verify_run_outcome" && item.Resolution != "retry_acknowledged" {
+				return fmt.Errorf("%w: outcome attention %s was resolved as %s", ErrTransition, item.ID, item.Resolution)
+			}
+			if item.Action != "verify_run_outcome" && (item.ResumeToken == "" || run.SessionPath == "" || run.ResumeToken != item.ResumeToken) {
+				return fmt.Errorf("%w: approval %s has no matching persisted resume context", ErrTransition, item.ID)
+			}
+		}
+		if !found {
+			return errors.New("assistant: waiting run has no attention item")
+		}
+		if err := moveRun(run, RunQueued); err != nil {
+			return err
+		}
+		run.RetryAt = time.Time{}
+		return nil
+	})
+}
+
+func (s *Store) mutateRun(runID, requestID, operation, fingerprint string, now time.Time, mutate func(*aggregate, *Run, time.Time) error) (*Run, error) {
+	if err := validateID("run", runID); err != nil {
+		return nil, err
+	}
+	assistantID, err := s.runOwner(runID)
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	if result, ok, receiptErr := receiptResult[Run](agg, requestID, operation, fingerprint); ok || receiptErr != nil {
+		return &result, receiptErr
+	}
+	idx := runIndex(agg, runID)
+	if idx < 0 {
+		return nil, ErrNotFound
+	}
+	run := &agg.Runs[idx]
+	if err := mutate(agg, run, now); err != nil {
+		return nil, err
+	}
+	run.UpdatedAt, run.Revision = now, run.Revision+1
+	result := clone(*run)
+	touch(agg, now)
+	if err := putReceipt(agg, requestID, operation, fingerprint, result, now); err != nil {
+		return nil, err
+	}
+	if err := s.write(agg); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mutate func(*Run, time.Time) error) (*Run, error) {
@@ -705,6 +1104,9 @@ func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mu
 	}
 	run.Revision++
 	run.UpdatedAt = now
+	if run.State == RunWaitingAttention {
+		ensureAttention(agg, *run, now)
+	}
 	touch(agg, now)
 	if err := s.write(agg); err != nil {
 		return nil, err
@@ -714,10 +1116,7 @@ func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mu
 }
 
 func (s *Store) runOwner(runID string) (string, error) {
-	assistants, err := s.List()
-	if err != nil {
-		return "", err
-	}
+	assistants, listErr := s.List()
 	for _, assistant := range assistants {
 		unlock := s.lockAssistant(assistant.ID)
 		agg, readErr := s.read(assistant.ID)
@@ -729,6 +1128,9 @@ func (s *Store) runOwner(runID string) (string, error) {
 			return assistant.ID, nil
 		}
 	}
+	if listErr != nil {
+		return "", errors.Join(ErrNotFound, listErr)
+	}
 	return "", ErrNotFound
 }
 
@@ -737,36 +1139,36 @@ func (s *Store) runOwner(runID string) (string, error) {
 // automatic replay would be unsafe.
 func (s *Store) Recover(now time.Time) ([]Run, error) {
 	now = storeNow(now)
-	return s.scanRuns(now, func(run *Run, at time.Time) bool {
+	return s.scanRuns(now, func(run *Run, at time.Time) (bool, error) {
 		if run.State != RunRunning || run.LeaseUntil.After(at) {
-			return false
+			return false, nil
 		}
-		run.State = RunWaitingAttention
-		run.Error = &RunError{Code: "outcome_unknown", Message: "execution lease expired; external outcome is unknown", Retryable: false, At: at}
+		if err := moveRun(run, RunWaitingAttention); err != nil {
+			return false, err
+		}
+		run.Error = &RunError{Code: "outcome_unknown", Message: "execution lease expired; external outcome is unknown", Retryable: false, OutcomeKnown: false, At: at}
 		run.FinishedAt = time.Time{}
 		clearLease(run)
-		return true
+		return true, nil
 	})
 }
 
 func (s *Store) RetryDue(now time.Time) ([]Run, error) {
 	now = storeNow(now)
-	return s.scanRuns(now, func(run *Run, at time.Time) bool {
+	return s.scanRuns(now, func(run *Run, at time.Time) (bool, error) {
 		if run.State != RunRetryWait || run.RetryAt.After(at) {
-			return false
+			return false, nil
 		}
-		run.State = RunQueued
-		run.Trigger = TriggerRetry
+		if err := moveRun(run, RunQueued); err != nil {
+			return false, err
+		}
 		run.RetryAt = time.Time{}
-		return true
+		return true, nil
 	})
 }
 
-func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) bool) ([]Run, error) {
-	assistants, err := s.List()
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) (bool, error)) ([]Run, error) {
+	assistants, listErr := s.List()
 	changed := make([]Run, 0)
 	for _, a := range assistants {
 		unlock := s.lockAssistant(a.ID)
@@ -777,9 +1179,17 @@ func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) bool) ([]Ru
 		}
 		dirty := false
 		for i := range agg.Runs {
-			if mutate(&agg.Runs[i], now) {
+			changedRun, mutateErr := mutate(&agg.Runs[i], now)
+			if mutateErr != nil {
+				unlock()
+				return nil, mutateErr
+			}
+			if changedRun {
 				agg.Runs[i].Revision++
 				agg.Runs[i].UpdatedAt = now
+				if agg.Runs[i].State == RunWaitingAttention {
+					ensureAttention(agg, agg.Runs[i], now)
+				}
 				changed = append(changed, clone(agg.Runs[i]))
 				dirty = true
 			}
@@ -793,7 +1203,7 @@ func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) bool) ([]Ru
 		}
 		unlock()
 	}
-	return changed, nil
+	return changed, listErr
 }
 
 func applyMemoryPatch(memory *Memory, patch MemoryPatch, now time.Time) error {
@@ -885,6 +1295,9 @@ func (s *Store) read(assistantID string) (*aggregate, error) {
 	if agg.Occurrences == nil {
 		agg.Occurrences = map[string]string{}
 	}
+	if err := validateAggregate(&agg); err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrCorrupt, assistantID, err)
+	}
 	return &agg, nil
 }
 
@@ -922,7 +1335,15 @@ func (s *Store) aggregatePath(assistantID string, create bool) (string, error) {
 	} else if !create {
 		return filepath.Join(dir, "aggregate.json"), nil
 	}
-	return filepath.Join(dir, "aggregate.json"), nil
+	path := filepath.Join(dir, "aggregate.json")
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return "", fmt.Errorf("assistant: unsafe aggregate file for %q", assistantID)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("assistant: inspect aggregate file: %w", statErr)
+	}
+	return path, nil
 }
 
 func receiptResult[T any](agg *aggregate, requestID, operation, fingerprint string) (T, bool, error) {
@@ -967,6 +1388,7 @@ func assistantIntent(a Assistant) Assistant {
 
 func routineIntent(r Routine) Routine {
 	r.Revision = 0
+	r.LastScheduledFor = time.Time{}
 	r.CreatedAt, r.UpdatedAt = time.Time{}, time.Time{}
 	return r
 }
@@ -1035,6 +1457,15 @@ func runIndex(agg *aggregate, id string) int {
 	return -1
 }
 
+func attentionIndex(agg *aggregate, id string) int {
+	for i := range agg.Attention {
+		if agg.Attention[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
 func findRun(agg *aggregate, id string) (Run, bool) {
 	idx := runIndex(agg, id)
 	if idx < 0 {
@@ -1045,17 +1476,21 @@ func findRun(agg *aggregate, id string) (Run, bool) {
 
 func coalescibleRunIndex(agg *aggregate, routineID string) int {
 	for i := range agg.Runs {
-		if agg.Runs[i].RoutineID == routineID && agg.Runs[i].Trigger == TriggerScheduled && agg.Runs[i].State == RunQueued {
+		state := agg.Runs[i].State
+		if agg.Runs[i].RoutineID == routineID && agg.Runs[i].Trigger == TriggerScheduled && (state == RunQueued || state == RunRetryWait) {
 			return i
 		}
 	}
 	return -1
 }
 
-func nextQueuedIndex(agg *aggregate) int {
+func nextQueuedIndex(agg *aggregate, now time.Time) int {
 	best := -1
 	for i := range agg.Runs {
 		if agg.Runs[i].State != RunQueued {
+			continue
+		}
+		if !agg.Runs[i].ScheduledFor.IsZero() && agg.Runs[i].ScheduledFor.After(now) {
 			continue
 		}
 		if best < 0 || runBefore(agg.Runs[i], agg.Runs[best]) {
@@ -1084,9 +1519,158 @@ func clearLease(run *Run) {
 	run.LeaseUntil = time.Time{}
 }
 
+func moveRun(run *Run, next RunState) error {
+	allowed := map[RunState]map[RunState]bool{
+		RunQueued:           {RunRunning: true, RunCancelled: true},
+		RunRunning:          {RunSucceeded: true, RunWaitingApproval: true, RunRetryWait: true, RunWaitingAttention: true, RunFailed: true, RunCancelled: true},
+		RunWaitingApproval:  {RunQueued: true, RunRunning: true, RunWaitingAttention: true, RunCancelled: true},
+		RunRetryWait:        {RunQueued: true, RunWaitingAttention: true, RunCancelled: true},
+		RunWaitingAttention: {RunQueued: true, RunSucceeded: true, RunFailed: true, RunCancelled: true},
+		RunFailed:           {RunQueued: true},
+	}
+	if !allowed[run.State][next] {
+		return fmt.Errorf("%w: %s -> %s", ErrTransition, run.State, next)
+	}
+	run.State = next
+	return nil
+}
+
+func ensureAttention(agg *aggregate, run Run, now time.Time) {
+	requestID := fmt.Sprintf("run-attention:%s:%d", run.ID, run.LeaseFence)
+	id := StableID("att", requestID)
+	for i := range agg.Attention {
+		if agg.Attention[i].ID == id {
+			return
+		}
+	}
+	action := "inspect_run_failure"
+	if run.Error != nil && !run.Error.OutcomeKnown {
+		action = "verify_run_outcome"
+	}
+	summary := "run requires attention"
+	if run.Error != nil && run.Error.Message != "" {
+		summary = run.Error.Message
+	}
+	agg.Attention = append(agg.Attention, AttentionItem{
+		ID: id, AssistantID: run.AssistantID, RunID: run.ID, RequestID: requestID,
+		Action: action, Summary: summary,
+		State: AttentionOpen, Revision: 1, CreatedAt: now, UpdatedAt: now,
+	})
+}
+
 func clone[T any](in T) T {
 	data, _ := json.Marshal(in)
 	var out T
 	_ = json.Unmarshal(data, &out)
 	return out
+}
+
+func validateAggregate(agg *aggregate) error {
+	if agg.Revision < 1 || agg.UpdatedAt.IsZero() {
+		return errors.New("aggregate revision and timestamp are required")
+	}
+	if err := validateAssistant(agg.Assistant); err != nil {
+		return err
+	}
+	if agg.Memory.Revision != agg.Assistant.MemoryRev {
+		return fmt.Errorf("memory revision %d does not match assistant %d", agg.Memory.Revision, agg.Assistant.MemoryRev)
+	}
+	memoryIDs := make(map[string]bool, len(agg.Memory.Items))
+	for _, item := range agg.Memory.Items {
+		if err := validateMemoryItem(item); err != nil {
+			return err
+		}
+		if memoryIDs[item.ID] {
+			return fmt.Errorf("duplicate memory %s", item.ID)
+		}
+		memoryIDs[item.ID] = true
+		if item.Revision < 1 || item.CreatedAt.IsZero() || item.UpdatedAt.IsZero() {
+			return fmt.Errorf("memory %s has invalid revision or timestamps", item.ID)
+		}
+	}
+	routineIDs := make(map[string]bool, len(agg.Routines))
+	for _, routine := range agg.Routines {
+		if err := validateRoutine(routine); err != nil {
+			return err
+		}
+		if routine.AssistantID != agg.Assistant.ID {
+			return fmt.Errorf("routine %s belongs to %s", routine.ID, routine.AssistantID)
+		}
+		if routineIDs[routine.ID] {
+			return fmt.Errorf("duplicate routine %s", routine.ID)
+		}
+		routineIDs[routine.ID] = true
+	}
+	runIDs := make(map[string]Run, len(agg.Runs))
+	for _, run := range agg.Runs {
+		if err := validateRun(run); err != nil {
+			return err
+		}
+		if run.AssistantID != agg.Assistant.ID {
+			return fmt.Errorf("run %s belongs to %s", run.ID, run.AssistantID)
+		}
+		if run.RoutineID != "" && !routineIDs[run.RoutineID] {
+			return fmt.Errorf("run %s references missing routine %s", run.ID, run.RoutineID)
+		}
+		if _, exists := runIDs[run.ID]; exists {
+			return fmt.Errorf("duplicate run %s", run.ID)
+		}
+		if run.State != RunRunning && (run.LeaseOwner != "" || !run.LeaseUntil.IsZero()) {
+			return fmt.Errorf("non-running run %s retains a lease", run.ID)
+		}
+		if run.State == RunRetryWait && run.RetryAt.IsZero() {
+			return fmt.Errorf("retry run %s has no retry time", run.ID)
+		}
+		runIDs[run.ID] = run
+	}
+	for key, runID := range agg.Occurrences {
+		run, ok := runIDs[runID]
+		if !ok || !hasOccurrenceKey(run, key) {
+			return fmt.Errorf("occurrence %s references inconsistent run %s", key, runID)
+		}
+	}
+	attentionIDs := make(map[string]bool, len(agg.Attention))
+	for _, item := range agg.Attention {
+		if err := validateID("attention", item.ID); err != nil {
+			return err
+		}
+		if item.AssistantID != agg.Assistant.ID || item.Revision < 1 || item.CreatedAt.IsZero() || item.UpdatedAt.IsZero() {
+			return fmt.Errorf("attention %s has invalid ownership, revision, or timestamps", item.ID)
+		}
+		if item.RunID != "" {
+			if _, ok := runIDs[item.RunID]; !ok {
+				return fmt.Errorf("attention %s references missing run %s", item.ID, item.RunID)
+			}
+		}
+		switch item.State {
+		case AttentionOpen, AttentionApproved, AttentionRejected, AttentionCancelled:
+		default:
+			return fmt.Errorf("attention %s has invalid state %s", item.ID, item.State)
+		}
+		if attentionIDs[item.ID] {
+			return fmt.Errorf("duplicate attention %s", item.ID)
+		}
+		attentionIDs[item.ID] = true
+	}
+	for requestID, receipt := range agg.Requests {
+		if err := validateRequestID(requestID); err != nil {
+			return err
+		}
+		if receipt.Operation == "" || receipt.Fingerprint == "" || receipt.CreatedAt.IsZero() || !json.Valid(receipt.Result) {
+			return fmt.Errorf("request %s has invalid receipt", requestID)
+		}
+	}
+	return nil
+}
+
+func hasOccurrenceKey(run Run, key string) bool {
+	if run.OccurrenceKey == key {
+		return true
+	}
+	for _, occurrence := range run.Occurrences {
+		if occurrence == key {
+			return true
+		}
+	}
+	return false
 }
