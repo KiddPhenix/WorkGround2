@@ -56,6 +56,7 @@ type WorkService interface {
 	PrepareReusableFlow(context.Context, work.PrepareReusableFlowInput) (*work.ReusableFlowSetup, error)
 	SaveReusableFlow(context.Context, work.SaveReusableFlowInput) (*work.ReusableFlow, error)
 	RunReusableFlow(context.Context, work.RunReusableFlowInput) (*work.ReusableFlowRun, error)
+	ReusableRunCommitted(context.Context, string) (bool, error)
 	UpdateDraft(context.Context, work.UpdateDraftInput) (*work.WorkView, error)
 	UpsertBlock(context.Context, work.BlockUpsertInput) (*work.WorkView, error)
 	RunWork(context.Context, string, string) (*work.WorkflowRun, error)
@@ -342,6 +343,13 @@ func (w workMethods) RunReusableFlow(ctx context.Context, input work.RunReusable
 		return nil, errWorkDisabled
 	}
 	return w.svc.RunReusableFlow(ctx, input)
+}
+
+func (w workMethods) ReusableRunCommitted(ctx context.Context, requestID string) (bool, error) {
+	if nilutil.IsNil(w.svc) {
+		return false, errWorkDisabled
+	}
+	return w.svc.ReusableRunCommitted(ctx, requestID)
 }
 
 func (w workMethods) UpdateDraft(ctx context.Context, input work.UpdateDraftInput) (*work.WorkView, error) {

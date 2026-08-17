@@ -220,6 +220,30 @@ func (s *Service) reusableFlowStore() (ReusableFlowStore, error) {
 	return repo, nil
 }
 
+// ReusableRunCommitted reports whether RunReusableFlow durably created a Work
+// for requestID. It is a read-only state probe: hosts call it after a failed
+// RunReusableFlow to decide whether a Session created only for that run can be
+// rolled back (false) or must stay as the retry/recovery entry (true).
+func (s *Service) ReusableRunCommitted(ctx context.Context, requestID string) (bool, error) {
+	if err := checkServiceContext(ctx); err != nil {
+		return false, err
+	}
+	if _, err := requireRequestID("ReusableRunCommitted", requestID); err != nil {
+		return false, err
+	}
+	if err := s.requireStore(); err != nil {
+		return false, err
+	}
+	workID := workIDForRequest(requestID + "/work")
+	_, _, err := s.store.LoadState(workID, "")
+	if err == nil {
+		return true, nil
+	} else if errors.Is(err, ErrWorkNotFound) {
+		return false, nil
+	}
+	return false, fmt.Errorf("work: ReusableRunCommitted: %w", err)
+}
+
 func (s *Service) reusableFields(source *Work) ([]ReusableField, *WorkDefinitionRevision, error) {
 	if source == nil {
 		return nil, nil, ErrWorkNilInput

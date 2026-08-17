@@ -431,3 +431,44 @@ func TestReusableFlowV1PreservesCurrentStructure(t *testing.T) {
 		t.Fatal("source cornerstone was mutated")
 	}
 }
+
+// TestReusableRunCommitted guards the host rollback probe: before a
+// RunReusableFlow commits, ReusableRunCommitted is false; after a committed
+// run (or replay), it is true; an unknown requestID is false, not an error.
+func TestReusableRunCommitted(t *testing.T) {
+	f := newRunnerFixture(t)
+	ctx := context.Background()
+	const requestID = "run-committed-probe"
+	if committed, err := f.svc.ReusableRunCommitted(ctx, requestID); err != nil || committed {
+		t.Fatalf("pre-commit probe = (%v, %v), want (false, nil)", committed, err)
+	}
+
+	bp := testBlueprint("blueprint:reusable-committed", 1, testWorkflow("draft", "write"))
+	bp.InputSchema = json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string","title":"主题"}},"required":["topic"]}`)
+	f.registerBlueprint(t, bp)
+	source, err := f.svc.Create(ctx, CreateWorkInput{
+		BlueprintRef: BlueprintRef{ID: bp.ID, SchemaVersion: SchemaVersion, Version: 1},
+		Name:         "提交探测", Prompt: "写一份报告", RequestID: "run-committed-source",
+		Inputs: map[string]any{"topic": "报告主题"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flow, err := f.svc.SaveReusableFlow(ctx, SaveReusableFlowInput{
+		SourceWorkID: source.ID, Name: "提交探测", VariableKeys: []string{"prompt"}, RequestID: "save-committed-probe",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.RunReusableFlow(ctx, RunReusableFlowInput{
+		FlowID: flow.ID, Values: map[string]json.RawMessage{"prompt": json.RawMessage(`"报告"`)}, RequestID: requestID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if committed, err := f.svc.ReusableRunCommitted(ctx, requestID); err != nil || !committed {
+		t.Fatalf("post-commit probe = (%v, %v), want (true, nil)", committed, err)
+	}
+	if committed, err := f.svc.ReusableRunCommitted(ctx, "run-never-started"); err != nil || committed {
+		t.Fatalf("unknown request probe = (%v, %v), want (false, nil)", committed, err)
+	}
+}
