@@ -303,20 +303,44 @@ func (a *App) CreateReusableWorkSession(sourceTabID string, input CreateReusable
 		return result, nil
 	}
 	scope := strings.TrimSpace(source.Scope)
-	workspaceRoot := source.WorkspaceRoot
+	sourceCtrl := source.Ctrl
 	a.mu.RUnlock()
 	if scope == "" {
 		scope = "global"
 	}
-	if scope == "project" {
-		workspaceRoot = normalizeProjectRoot(workspaceRoot)
+
+	// Route the new Session by the source Controller's actual workspace, not
+	// by tab metadata: SaveReusableFlow persisted the flow inside the source
+	// Controller's Work store, and tab metadata can briefly drift from the
+	// controller's real workspace. The new Session still runs the flow through
+	// its own Controller (RunReusableFlow below); only the routing target is
+	// taken from the authoritative Controller.
+	actualRoot, ok := safeControllerWorkspaceRoot(sourceCtrl)
+	if !ok {
+		result.Error = "source Work Session workspace is unavailable"
+		result.Recoverable = true
+		return result, nil
+	}
+	var workspaceRoot string
+	switch scope {
+	case "project":
+		workspaceRoot = normalizeProjectRoot(actualRoot)
 		if workspaceRoot == "" {
-			result.Error = "source Work Session workspace is unavailable"
+			result.Error = "source Work Session workspace conflicts with its project scope"
+			result.Recoverable = true
 			return result, nil
 		}
-	} else {
-		scope = "global"
+	case "global":
+		if normalizeProjectRoot(actualRoot) != normalizeProjectRoot(globalWorkspaceRoot()) {
+			result.Error = "source Work Session workspace conflicts with its global scope"
+			result.Recoverable = true
+			return result, nil
+		}
 		workspaceRoot = ""
+	default:
+		result.Error = fmt.Sprintf("source Work Session has unsupported scope %q", scope)
+		result.Recoverable = true
+		return result, nil
 	}
 
 	createWorkSessionMu.Lock()

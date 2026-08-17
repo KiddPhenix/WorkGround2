@@ -2285,3 +2285,145 @@ func TestV2HistoricalZeroTime_FileWorkStoreRestartAppGetWork(t *testing.T) {
 	}
 	t.Log("historical zero-time natively survives FileWorkStore restart + App.GetWork: OK")
 }
+
+// openProjectWorkTab opens a ready project tab whose Controller owns the given
+// workspace root. It mirrors how the UI opens a real project Session.
+func openProjectWorkTab(t *testing.T, app *App, root, title string) *WorkspaceTab {
+	t.Helper()
+	topic, err := app.CreateTopic("project", root, title)
+	if err != nil {
+		t.Fatalf("create topic: %v", err)
+	}
+	meta, err := app.OpenProjectTab(root, topic.ID)
+	if err != nil {
+		t.Fatalf("open project tab: %v", err)
+	}
+	return waitForTabReady(t, app, meta.ID)
+}
+
+// saveReusableFlowInTab freezes a Work inside the tab's own Controller, the
+// same path the UI "再次运行" dialog uses before creating a new Session.
+func saveReusableFlowInTab(t *testing.T, app *App, tabID, name, requestID string) *work.ReusableFlow {
+	t.Helper()
+	created, err := app.CreateWork(tabID, work.CreateWorkInput{
+		BlueprintRef: work.BlueprintRef{ID: "blueprint:blank", SchemaVersion: work.SchemaVersion, Version: 1},
+		Name:         name, Prompt: "把调研结论整理成一份报告", RequestID: requestID + "-create",
+	})
+	if err != nil {
+		t.Fatalf("CreateWork: %v", err)
+	}
+	flow, err := app.SaveReusableFlow(tabID, work.SaveReusableFlowInput{
+		SourceWorkID: created.ID, Name: name, VariableKeys: []string{"prompt"}, RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("SaveReusableFlow: %v", err)
+	}
+	return flow
+}
+
+// TestCreateReusableWorkSessionRoutesBySourceControllerWorkspace guards the
+// "再次运行" flow against tab metadata drifting from the source Controller's
+// real workspace. The flow is saved in the Controller's Work store, so the new
+// Session must be routed by the Controller workspace, never by stale metadata.
+func TestCreateReusableWorkSessionRoutesBySourceControllerWorkspace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	// The source Controller genuinely owns projectA; the tab metadata later
+	// drifts to projectB. The flow lives in projectA's Work store.
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	source := openProjectWorkTab(t, app, projectA, "源项目")
+	flow := saveReusableFlowInTab(t, app, source.ID, "常用流程", "reusable-source-1")
+
+	// Simulate tab metadata drifting away from the Controller's real workspace.
+	app.mu.Lock()
+	source.WorkspaceRoot = projectB
+	app.mu.Unlock()
+
+	result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flow.ID, RequestID: "reusable-session-1",
+	})
+	if err != nil {
+		t.Fatalf("CreateReusableWorkSession: %v", err)
+	}
+	if result.Error != "" {
+		t.Fatalf("CreateReusableWorkSession error: %s", result.Error)
+	}
+	if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+		t.Fatalf("reusable run = %+v", result.Run)
+	}
+	target := app.tabByID(result.TabMeta.ID)
+	if target == nil {
+		t.Fatalf("target tab %q not found", result.TabMeta.ID)
+	}
+	// The new Session must be routed to the Controller's actual workspace
+	// (projectA), never the drifted metadata root (projectB).
+	if got := normalizeProjectRoot(target.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("target workspace root = %q, want %q", got, projectA)
+	}
+	if got, ok := safeControllerWorkspaceRoot(target.Ctrl); !ok || normalizeProjectRoot(got) != normalizeProjectRoot(projectA) {
+		t.Fatalf("target controller workspace = (%q, %v), want %q", got, ok, projectA)
+	}
+
+	// The same requestId resumes the same target Session (idempotent retry).
+	retry, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flow.ID, RequestID: "reusable-session-1",
+	})
+	if err != nil || retry.Error != "" {
+		t.Fatalf("retry = %+v, %v", retry, err)
+	}
+	if !retry.Duplicate || retry.TabMeta.ID != result.TabMeta.ID {
+		t.Fatalf("retry did not resume: first=%q retry=%q duplicate=%v", result.TabMeta.ID, retry.TabMeta.ID, retry.Duplicate)
+	}
+}
+
+// TestCreateReusableWorkSessionProjectAndGlobalUnchanged verifies the normal
+// project and global routing paths keep working when metadata is consistent.
+func TestCreateReusableWorkSessionProjectAndGlobalUnchanged(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	t.Run("project", func(t *testing.T) {
+		project := t.TempDir()
+		source := openProjectWorkTab(t, app, project, "项目")
+		flow := saveReusableFlowInTab(t, app, source.ID, "项目流程", "reusable-project")
+		result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+			FlowID: flow.ID, RequestID: "reusable-project-session",
+		})
+		if err != nil || result.Error != "" {
+			t.Fatalf("CreateReusableWorkSession = %+v, %v", result, err)
+		}
+		if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+			t.Fatalf("project reusable run = %+v", result.Run)
+		}
+		target := app.tabByID(result.TabMeta.ID)
+		if target == nil || target.Scope != "project" || normalizeProjectRoot(target.WorkspaceRoot) != normalizeProjectRoot(project) {
+			t.Fatalf("target = %+v, want project scope %q", target, project)
+		}
+	})
+
+	t.Run("global", func(t *testing.T) {
+		tab, err := app.ensureBlankBackgroundTab("global", "")
+		if err != nil {
+			t.Fatalf("ensure blank global Session: %v", err)
+		}
+		waitForTabReady(t, app, tab.ID)
+		flow := saveReusableFlowInTab(t, app, tab.ID, "全局流程", "reusable-global")
+		result, err := app.CreateReusableWorkSession(tab.ID, CreateReusableWorkSessionInput{
+			FlowID: flow.ID, RequestID: "reusable-global-session",
+		})
+		if err != nil || result.Error != "" {
+			t.Fatalf("CreateReusableWorkSession = %+v, %v", result, err)
+		}
+		if result.Run == nil || result.Run.Work == nil || result.Run.Work.ReusableFlowID != flow.ID {
+			t.Fatalf("global reusable run = %+v", result.Run)
+		}
+		target := app.tabByID(result.TabMeta.ID)
+		if target == nil || target.Scope != "global" {
+			t.Fatalf("target = %+v, want global scope", target)
+		}
+	})
+}
