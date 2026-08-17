@@ -32,6 +32,11 @@ type WorkController interface {
 	// RunReusableFlow 从常用流程创建并启动独立 Work。
 	RunReusableFlow(ctx context.Context, input RunReusableFlowInput) (*ReusableFlowRun, error)
 
+	// ReusableRunCommitted 报告指定 requestID 的可复用运行是否已持久化创建 Work。
+	// 只读查询；宿主在 RunReusableFlow 失败后用它判断本次新建的空 Session
+	// 是否可以安全回滚（未提交）还是必须保留为恢复入口（已提交）。
+	ReusableRunCommitted(ctx context.Context, requestID string) (bool, error)
+
 	// UpdateDraft 更新草稿 Work 的可编辑字段。
 	UpdateDraft(ctx context.Context, input UpdateDraftInput) (*WorkView, error)
 

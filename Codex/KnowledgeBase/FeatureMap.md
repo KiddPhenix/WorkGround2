@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 可复用 Work Session 失败补偿与孤儿清理 | `done` | `developping/reusable-flow-orphan-cleanup+2026-08-17` | `Codex + WorkGround2` | `internal/work/reusable.go`、`desktop/works.go`、`desktop/tabs.go`、相关测试 | 可复用流程在 Work 尚未提交的确定性失败下回滚本次新建空 Session；已提交、状态探测失败或既有同 requestId Session 保留恢复入口。历史无 Topic 的半完成 Work Session 会归入对应 Project/Global，保留标题与 SessionPath，可安全移入回收站。新增核心用例、Reusable/Control Work 定向回归及受影响包 vet 通过；按用户要求未跑全量测试。 |
 | `notify-me` 主人完成通知 | `done` | `developping/notify-me+2026-08-17` | `Codex` | `internal/skill/builtins.go`、`internal/agent/notify_me.go`、`desktop/owner_notify.go`、`desktop/decision_skill/notify-me/` | 内置 Skill 承接显式“任务结束后通知我”；Desktop 在任务结束时读取 Windows 系统最后输入时间，AFK 满 5 分钟默认创建无需回复的主人通知。同一轮显式通知会抑制自动重复，创建与重试使用稳定幂等键；成功、失败、取消均有人类可读终态。Skill 校验、相关 Go 测试、Desktop 全包、全仓 Go 测试、两套 vet、前端生产构建与 Wails 正式构建通过。 |
 | 常用流程跨 Session workspace 路由修复 | `done` | `developping/reusable-flow-workspace-route+2026-08-17` | `Codex + WorkGround2` | `desktop/works.go`、`desktop/works_test.go` | `CreateReusableWorkSession` 以保存流程的源 Controller 实际 workspace 为路由依据，避免 Tab 元数据短暂漂移时新 Session 到错误 Work store 查询 flow；目标 Session 仍由自身 Controller 执行 DAG，路由冲突显式返回可恢复错误。同 requestId 幂等重放、正常 project/global 回归、Desktop 全量测试（236.884s）与 Desktop vet 均通过。 |
 | 全量测试稳定性修复 | `done` | `developping/full-test-stability+2026-08-16` | `Codex + WorkGround2` | 根模块、`desktop/` 及失败测试涉及的实现与测试 | 修复 Windows receipt 并发/文件名、V2 重试投影、时间类型契约等真实缺陷；更新过时测试与 golden；前端 `test:all` 覆盖全部 127 个测试文件并以 4 个隔离进程并行。同步最新 `main` 后，根模块与 Desktop 全量、前端全量和生产构建、两套 vet 均通过。 |

@@ -2427,3 +2427,133 @@ func TestCreateReusableWorkSessionProjectAndGlobalUnchanged(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateReusableWorkSessionFlowNotFoundRollsBackEmptySession reproduces
+// the orphan bug: a deterministic pre-commit failure ("flow not found") left a
+// session_kind=work Session with workRequestID but no workID that the user
+// could not delete. A Session created by this call must be rolled back cleanly
+// (tab, topic title, session artifacts) so nothing is left behind.
+func TestCreateReusableWorkSessionFlowNotFoundRollsBackEmptySession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	project := t.TempDir()
+	source := openProjectWorkTab(t, app, project, "源项目")
+	sessionDir := desktopSessionDir(project)
+	before, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions before: %v", err)
+	}
+
+	const requestID = "reusable-missing-flow"
+	result, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: "flow-does-not-exist", RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("CreateReusableWorkSession: %v", err)
+	}
+	if result.Error == "" {
+		t.Fatalf("expected deterministic error, got %+v", result)
+	}
+	if result.Recoverable {
+		t.Fatalf("rolled-back failure must not claim a recovery entry: %+v", result)
+	}
+	if result.TabMeta.ID != "" {
+		t.Fatalf("rolled-back Session must not return TabMeta: %+v", result.TabMeta)
+	}
+
+	// No runtime tab may keep the failed Work request binding.
+	app.mu.RLock()
+	for id, tab := range app.tabs {
+		if tab != nil && tab.workRequestID == requestID {
+			t.Errorf("tab %q still holds failed work request %q", id, requestID)
+		}
+	}
+	app.mu.RUnlock()
+
+	// No new session file survives outside the trash, and the "New Work" topic
+	// title is gone.
+	after, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions after: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("session count changed by failed run: before=%d after=%d", len(before), len(after))
+	}
+	trashed, err := listTrashedSessionFiles(sessionDir)
+	if err != nil {
+		t.Fatalf("list trash: %v", err)
+	}
+	if len(trashed) == 0 {
+		t.Fatal("rolled-back session did not land in the session trash")
+	}
+	for topicID, title := range loadTopicTitles(project) {
+		if title == "New Work" {
+			t.Errorf("topic %q title %q survived the rollback", topicID, title)
+		}
+	}
+
+	// Retrying with the same requestId is a fresh, clean attempt: it fails the
+	// same way without accumulating another session.
+	retry, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: "flow-does-not-exist", RequestID: requestID,
+	})
+	if err != nil || retry.Error == "" || retry.Recoverable {
+		t.Fatalf("retry = %+v, %v; want clean deterministic failure", retry, err)
+	}
+	afterRetry, err := agent.ListSessions(sessionDir)
+	if err != nil {
+		t.Fatalf("list sessions after retry: %v", err)
+	}
+	if len(afterRetry) != len(before) {
+		t.Fatalf("retry accumulated sessions: before=%d after=%d", len(before), len(afterRetry))
+	}
+}
+
+// TestCreateReusableWorkSessionKeepsRecoveryEntryWhenWorkCommitted guards the
+// no-misdelete rule: when a Work for the requestId was already committed, a
+// failing RunReusableFlow (requestId reused with a different flow) must keep
+// the Session as the retry/recovery entry instead of rolling it back.
+func TestCreateReusableWorkSessionKeepsRecoveryEntryWhenWorkCommitted(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	t.Cleanup(func() { app.shutdown(context.Background()) })
+
+	project := t.TempDir()
+	source := openProjectWorkTab(t, app, project, "源项目")
+	flowOne := saveReusableFlowInTab(t, app, source.ID, "流程一", "reusable-keep-1")
+	flowTwo := saveReusableFlowInTab(t, app, source.ID, "流程二", "reusable-keep-2")
+
+	const requestID = "reusable-committed-session"
+	first, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flowOne.ID, RequestID: requestID,
+	})
+	if err != nil || first.Error != "" {
+		t.Fatalf("first run = %+v, %v", first, err)
+	}
+	bound := app.tabByID(first.TabMeta.ID)
+	if bound == nil || bound.workID == "" || bound.workRequestID != requestID {
+		t.Fatalf("first run did not bind a Work: %+v", bound)
+	}
+
+	// Reusing the requestId with a different flow is a deterministic failure
+	// AFTER the Work was committed (ErrWorkRequestIDConflict). The Session must
+	// stay as the recovery entry.
+	second, err := app.CreateReusableWorkSession(source.ID, CreateReusableWorkSessionInput{
+		FlowID: flowTwo.ID, RequestID: requestID,
+	})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if second.Error == "" || !second.Recoverable {
+		t.Fatalf("conflict failure must stay recoverable: %+v", second)
+	}
+	if second.TabMeta.ID != first.TabMeta.ID {
+		t.Fatalf("recovery entry changed: first=%q second=%q", first.TabMeta.ID, second.TabMeta.ID)
+	}
+	kept := app.tabByID(first.TabMeta.ID)
+	if kept == nil || kept.workRequestID != requestID || kept.workID == "" {
+		t.Fatalf("recovery Session was damaged: %+v", kept)
+	}
+}
