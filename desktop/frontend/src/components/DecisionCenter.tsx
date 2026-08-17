@@ -156,10 +156,20 @@ function SettingsPanel({ state, busy, channel, setChannel, onRun, onError, onNot
   const [mode, setMode] = useState(state.settings.externalMode);
   const [until, setUntil] = useState(state.settings.localOnlyUntil?.slice(0, 16) || "");
   const [grace, setGrace] = useState(state.settings.smartGraceSec || 30);
+  const [exporting, setExporting] = useState(false);
   const saveSettings = () => onRun("settings", () => app.SaveDecisionSettings({ externalMode: mode, localOnlyUntil: until ? new Date(until).toISOString() : "", smartGraceSec: grace }));
   const saveChannel = () => onRun("channel", () => app.SaveDecisionChannel(channel));
+  const exportSkills = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const result = await app.ExportDecisionSkills();
+      // A cancelled save dialog is a normal outcome: no success or error notice.
+      if (result.exported) onNotice(result.path ? `主人决策 Skill 已导出到 ${result.path}` : "主人决策 Skill 已导出");
+    } catch (cause) { onError(cause instanceof Error ? cause.message : String(cause)); } finally { setExporting(false); }
+  };
   return <><section className="decision-settings"><h3><Settings2 size={15} />外部发送</h3><label><span>模式</span><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="smart">智能：本机宽限后发送</option><option value="always">始终发送</option><option value="local_only_until">暂时只在本机</option><option value="off">关闭外部发送</option></select></label>{mode === "smart" && <label><span>本机宽限（秒）</span><input type="number" min={0} value={grace} onChange={(event) => setGrace(Number(event.target.value))} /></label>}{mode === "local_only_until" && <label><span>恢复时间（留空=无限期）</span><input type="datetime-local" value={until} onChange={(event) => setUntil(event.target.value)} /></label>}<button className="btn btn--secondary btn--small" type="button" disabled={!!busy} onClick={() => void saveSettings()}>保存发送策略</button></section>
     <section className="decision-settings"><h3>对话通道</h3>{state.channels.map((item) => <div className="decision-channel" key={item.id}><div><b>{item.name}</b><small>{item.kind} · {item.chat_id}</small></div><button type="button" onClick={() => void app.TestDecisionChannel(item.id).catch((cause) => onError(String(cause)))}>测试</button><button type="button" aria-label="删除" onClick={() => void onRun(`delete:${item.id}`, () => app.DeleteDecisionChannel(item.id))}><Trash2 size={13} /></button></div>)}<label><span>名称</span><input value={channel.name} onChange={(event) => setChannel((current) => ({ ...current, name: event.target.value }))} /></label><label><span>连接 ID</span><input value={channel.connectionId} placeholder="微信连接的 adapter ID" onChange={(event) => setChannel((current) => ({ ...current, connectionId: event.target.value }))} /></label><label><span>Chat ID</span><input value={channel.chatId} placeholder="接收问题的个人/群 Chat ID" onChange={(event) => setChannel((current) => ({ ...current, chatId: event.target.value }))} /></label><button className="btn btn--secondary btn--small" type="button" disabled={!channel.chatId.trim() || !!busy} onClick={() => void saveChannel()}>添加微信通道</button></section>
-    <section className="decision-settings"><h3>给其他 Agent 使用</h3><p className="decision-center__hint">安装后，Codex 等 Agent 可用 $ask-workground2-owner 提问，也可用 $notify-me 在任务结束后发送仅通知消息。</p><button className="btn btn--secondary btn--small" type="button" onClick={() => void app.InstallDecisionSkill().then(() => onNotice('主人提问与完成通知 Skill 已安装')).catch((cause) => onError(String(cause)))}>安装 / 更新 Codex Skill</button></section>
+    <section className="decision-settings"><h3>给其他 Agent 使用</h3><p className="decision-center__hint">安装后，Codex 等 Agent 可用 $ask-workground2-owner 提问，也可用 $notify-me 在任务结束后发送仅通知消息。</p><div className="decision-settings__skill-actions"><button className="btn btn--secondary btn--small" type="button" onClick={() => void app.InstallDecisionSkill().then(() => onNotice('主人提问与完成通知 Skill 已安装')).catch((cause) => onError(String(cause)))}>安装 / 更新 Codex Skill</button><button className="btn btn--secondary btn--small" type="button" disabled={exporting} onClick={() => void exportSkills()}>{exporting ? "导出中…" : "导出 Skill"}</button></div></section>
     <div className="decision-center__long-wait">问题默认没有技术超时。关闭应用或隔几天回来，队列仍会保留；回答前来源任务会重新检查现场。</div></>;
 }

@@ -1161,6 +1161,14 @@ export interface AICollaborationInjectResult {
   backups?: string[];
 }
 
+// DecisionSkillExportResult is the outcome of ExportDecisionSkills: exactly one
+// of exported/canceled is true, and path carries the written file when exported.
+export interface DecisionSkillExportResult {
+  exported: boolean;
+  canceled: boolean;
+  path?: string;
+}
+
 // Settings panel payloads (desktop/settings_app.go).
 export interface ProviderView {
   name: string;

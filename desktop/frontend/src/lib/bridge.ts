@@ -55,6 +55,7 @@ import type {
   CollaborationSettingsView,
   ContextInfo,
   ContextPanelInfo,
+  DecisionSkillExportResult,
   DirEntry,
   DesktopStartupSettingsView,
 	DecisionCreateInput,
@@ -302,6 +303,7 @@ export interface AppBindings extends WailsWorkBindings {
 	DeleteDecisionChannel(id: string): Promise<DecisionStateView>;
 	TestDecisionChannel(id: string): Promise<void>;
 	InstallDecisionSkill(): Promise<AICollaborationInjectResult>;
+	ExportDecisionSkills(): Promise<DecisionSkillExportResult>;
   UnreadState(): Promise<UnreadState>;
   MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
   ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
@@ -1150,6 +1152,16 @@ function mockWidgetSkin(): string {
   if (typeof window === "undefined") return "classic";
   const value = new URLSearchParams(window.location.search).get("skin")?.trim().toLowerCase() ?? "";
   return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
+}
+
+// mockDecisionSkillExportFn lets tests drive the browser mock's
+// ExportDecisionSkills outcome (exported/canceled/failure) without touching
+// Wails. Null (the default) uses the canned success result below.
+let mockDecisionSkillExportFn: (() => Promise<DecisionSkillExportResult>) | null = null;
+
+/** Test-only override for the decision-skill export browser mock. */
+export function setMockDecisionSkillExport(fn: (() => Promise<DecisionSkillExportResult>) | null): void {
+  mockDecisionSkillExportFn = fn;
 }
 
 function makeMockApp(): AppBindings {
@@ -2419,6 +2431,10 @@ function makeMockApp(): AppBindings {
 		},
 		async TestDecisionChannel() {},
 		async InstallDecisionSkill() { return { ok: true, path: "", skillPath: "~/.codex/skills/ask-workground2-owner" }; },
+		async ExportDecisionSkills() {
+			if (mockDecisionSkillExportFn) return mockDecisionSkillExportFn();
+			return { exported: true, canceled: false, path: "C:\\Downloads\\workground2-owner-skills.zip" };
+		},
     async GetCollaborationState() { return { status: "disconnected", members: [], timeline: [] }; },
     async RetryCollaboration() { return { status: "disconnected", members: [], timeline: [] }; },
     async HostCollaborationRoom() { throw new Error("Use the collaboration browser transport in preview mode"); },
