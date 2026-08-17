@@ -43,9 +43,14 @@ session, memory, skill, subagent, LSP, install, and slash-command tools below:
 
 `ask`, `browser_attach`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
-`lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
+`lsp_references`, `memory`, `notify_me`, `parallel_tasks`, `read_only_skill`,
 `read_only_task`, `read_session`, `read_skill`, `rebuild_vocabulary`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+`notify_me` creates one durable, no-reply owner notification after an explicitly
+requested task reaches a terminal outcome. It is side-effecting, unavailable in
+plan and token-economy modes, and configured deny/ask rules still take precedence
+over its default allow rule.
 
 The ten runtime-bound browser tools share one persistent automation browser per
 user across controllers, tasks, settings rebuilds and app restarts:

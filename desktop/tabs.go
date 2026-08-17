@@ -885,6 +885,8 @@ type tabEventSink struct {
 	ctx           context.Context
 	runtimeEvents asyncRuntimeEmitter
 	botSink       event.Sink // optional: when set, events are also forwarded here
+	ownerMu       sync.Mutex
+	ownerTurn     ownerTurnState
 }
 
 type closeableEventSink interface {
@@ -896,6 +898,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 		return
 	}
 	if s.app != nil {
+		s.app.observeOwnerNotifyEvent(s, e)
 		s.app.observeCollaborationAgentEvent(s.tabID, e)
 		s.app.observeSessionUnread(s.tabID, e)
 	}

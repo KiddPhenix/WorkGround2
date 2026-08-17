@@ -1,0 +1,5 @@
+interface:
+  display_name: "完成后通知我"
+  short_description: "任务结束后通过 WorkGround2 主人通道发送通知"
+  brand_color: "#D97757"
+  default_prompt: "Use $notify-me to notify me after this task finishes."

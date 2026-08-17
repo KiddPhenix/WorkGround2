@@ -799,7 +799,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// in an interactive gate later via Controller.EnableInteractiveApproval.
 	// Sub-agents always run headless: they have no UI to answer a prompt, so they
 	// inherit this same gate.
-	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
+	// Completion notifications are explicitly requested through notify-me and
+	// must still work after the owner has gone AFK. Allow them by default while
+	// preserving configured ask/deny precedence.
+	permissionAllow := append([]string(nil), cfg.Permissions.Allow...)
+	permissionAllow = append(permissionAllow, "notify_me")
+	policy := permission.New(cfg.Permissions.Mode, permissionAllow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 	headlessGate := permission.NewGate(policy, nil)
 
 	// Hooks: load the global settings.json plus the project's (only when trusted —
@@ -933,6 +938,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// frontends wire to the controller (EnableInteractiveApproval); a headless run
 	// has none, so ask resolves to "decide for yourself".
 	reg.Add(agent.NewAskTool())
+	if builtinToolEnabled(enabledBuiltins, "notify_me") {
+		reg.Add(agent.NewNotifyMeTool())
+	}
 
 	childOptions := func(sctx context.Context, steps, childDepth, ctxWin int, price *provider.Pricing) agent.Options {
 		return agent.Options{

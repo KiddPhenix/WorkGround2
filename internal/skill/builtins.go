@@ -196,6 +196,17 @@ const builtinRebuildVocabularyBody = `This skill is INLINED. Rebuild the current
 2. Report whether the vocabulary changed, how many files were scanned and terms generated, the output path, and the first warning when present.
 3. If the tool fails validation, report the exact error and inspect the referenced .WorkGround2/vocabulary.toml entry when possible. Never claim that /rebuild_vocabulary does not exist.`
 
+const builtinNotifyMeBody = `This skill is INLINED. The owner explicitly asked to be notified when the current task finishes.
+
+1. Finish the requested task first. Do not send the notification while implementation, verification, or a required user decision is still pending.
+2. After the final outcome is known, call notify_me exactly once. This is a no-reply notification, never a question.
+3. Make the message standalone and human-readable for someone who cannot see this conversation:
+   - title: the result in a few words;
+   - task_summary: what task finished and whether it succeeded, failed, or was cancelled;
+   - why_now: the useful next step, such as what can now be reviewed or retried.
+4. If notify_me fails, report that failure explicitly in the final answer. Do not claim the owner was notified.
+5. Do not use this skill for routine progress messages. One terminal task outcome gets at most one notification.`
+
 // CodeGraphReadTools returns read-only tool names that look like an installed
 // codegraph MCP surface. Writable or untrusted tools stay out of subagents.
 func CodeGraphReadTools(reg *tool.Registry) []string {
@@ -302,6 +313,14 @@ func builtinSkills() []Skill {
 			Name:        "rebuild_vocabulary",
 			Description: "Deterministically rescan the current workspace and rebuild .WorkGround2/vocabulary.toml, then refresh this Session's completion vocabulary.",
 			Body:        builtinRebuildVocabularyBody,
+			Scope:       ScopeBuiltin,
+			Path:        "(builtin)",
+			RunAs:       RunInline,
+		},
+		{
+			Name:        "notify-me",
+			Description: "Notify the owner once after the current task reaches a terminal outcome. Use when the user explicitly says to notify, alert, ping, or message them when the task is done; the notification is durable, standalone, and requires no reply.",
+			Body:        builtinNotifyMeBody,
 			Scope:       ScopeBuiltin,
 			Path:        "(builtin)",
 			RunAs:       RunInline,

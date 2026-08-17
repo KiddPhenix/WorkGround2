@@ -161,6 +161,8 @@ type App struct {
 	decisionCancel  context.CancelFunc
 	decisionApplyMu sync.Mutex
 	decisionSending atomic.Bool
+	ownerIdleProbe  func() (time.Duration, error) // nil uses the platform probe
+	ownerNow        func() time.Time              // nil uses time.Now
 
 	unreadMu           sync.RWMutex
 	unreadStore        *unread.Store
