@@ -1,0 +1,1092 @@
+package assistant
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"workground2/internal/fileutil"
+)
+
+const aggregateVersion = 1
+
+var storeGates sync.Map
+
+// Snapshot is the externally visible, immutable-by-convention projection of an
+// assistant aggregate. Callers receive deep copies, so mutating a result never
+// changes Store state without a subsequent CAS operation.
+type Snapshot struct {
+	Revision  int64            `json:"revision"`
+	Assistant Assistant        `json:"assistant"`
+	Routines  []Routine        `json:"routines"`
+	Memory    Memory           `json:"memory"`
+	Runs      []Run            `json:"runs"`
+	Attention []AttentionItem  `json:"attention"`
+	Receipts  []RequestReceipt `json:"receipts"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+type RequestReceipt struct {
+	RequestID   string    `json:"request_id"`
+	Operation   string    `json:"operation"`
+	Fingerprint string    `json:"fingerprint"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type requestReceipt struct {
+	Operation   string          `json:"operation"`
+	Fingerprint string          `json:"fingerprint"`
+	Result      json.RawMessage `json:"result"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type aggregate struct {
+	Version     int                       `json:"version"`
+	Revision    int64                     `json:"revision"`
+	Assistant   Assistant                 `json:"assistant"`
+	Routines    []Routine                 `json:"routines"`
+	Memory      Memory                    `json:"memory"`
+	Runs        []Run                     `json:"runs"`
+	Attention   []AttentionItem           `json:"attention"`
+	Requests    map[string]requestReceipt `json:"requests"`
+	Occurrences map[string]string         `json:"occurrences"`
+	UpdatedAt   time.Time                 `json:"updated_at"`
+}
+
+type storeGate struct {
+	root       sync.Mutex
+	assistants sync.Map
+}
+
+type Store struct {
+	root string
+	gate *storeGate
+}
+
+// NewStore opens a root dedicated to assistant state. Empty paths, relative
+// paths and volume roots are rejected so a configuration mistake cannot turn
+// the filesystem root (or the process working directory) into the store.
+func NewStore(root string) (*Store, error) {
+	raw := strings.TrimSpace(root)
+	if raw == "" {
+		return nil, errors.New("assistant: store root is required")
+	}
+	if !filepath.IsAbs(raw) {
+		return nil, fmt.Errorf("assistant: store root must be absolute: %q", root)
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return nil, fmt.Errorf("assistant: resolve store root: %w", err)
+	}
+	abs = filepath.Clean(abs)
+	if isVolumeRoot(abs) {
+		return nil, fmt.Errorf("assistant: refusing dangerous store root %q", abs)
+	}
+	if info, statErr := os.Lstat(abs); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, resolveErr := filepath.EvalSymlinks(abs)
+			if resolveErr != nil {
+				return nil, fmt.Errorf("assistant: resolve store root symlink: %w", resolveErr)
+			}
+			abs = filepath.Clean(resolved)
+			if isVolumeRoot(abs) {
+				return nil, fmt.Errorf("assistant: refusing dangerous store root %q", abs)
+			}
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("assistant: store root %q is not a directory", abs)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("assistant: inspect store root: %w", statErr)
+	}
+	gateValue, _ := storeGates.LoadOrStore(abs, &storeGate{})
+	return &Store{root: abs, gate: gateValue.(*storeGate)}, nil
+}
+
+func isVolumeRoot(path string) bool {
+	volume := filepath.VolumeName(path)
+	rest := strings.TrimPrefix(path, volume)
+	rest = strings.Trim(rest, `\/`)
+	return rest == ""
+}
+
+func (s *Store) lockAssistant(id string) func() {
+	value, _ := s.gate.assistants.LoadOrStore(id, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (s *Store) Create(in CreateInput) (Snapshot, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Snapshot{}, err
+	}
+	if err := validateID("assistant", in.Assistant.ID); err != nil {
+		return Snapshot{}, err
+	}
+	now := storeNow(in.Now)
+	fingerprint, err := inputFingerprint(struct {
+		Assistant Assistant
+		Routines  []Routine
+	}{assistantIntent(in.Assistant), routineIntents(in.Routines)})
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	s.gate.root.Lock()
+	defer s.gate.root.Unlock()
+	unlock := s.lockAssistant(in.Assistant.ID)
+	defer unlock()
+
+	current, err := s.read(in.Assistant.ID)
+	if err == nil {
+		if result, ok, receiptErr := receiptResult[Snapshot](current, in.RequestID, "create", fingerprint); ok || receiptErr != nil {
+			return result, receiptErr
+		}
+		return Snapshot{}, fmt.Errorf("assistant: %s already exists: %w", in.Assistant.ID, ErrConflict)
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return Snapshot{}, err
+	}
+
+	a := in.Assistant
+	a.Revision = 1
+	a.MemoryRev = 1
+	a.CreatedAt, a.UpdatedAt = now, now
+	if err := validateAssistant(a); err != nil {
+		return Snapshot{}, err
+	}
+	routines := make([]Routine, len(in.Routines))
+	seen := make(map[string]struct{}, len(in.Routines))
+	for i := range in.Routines {
+		r := in.Routines[i]
+		if r.AssistantID == "" {
+			r.AssistantID = a.ID
+		}
+		if r.AssistantID != a.ID {
+			return Snapshot{}, fmt.Errorf("assistant: routine %s belongs to %s", r.ID, r.AssistantID)
+		}
+		if _, exists := seen[r.ID]; exists {
+			return Snapshot{}, fmt.Errorf("assistant: duplicate routine %s", r.ID)
+		}
+		seen[r.ID] = struct{}{}
+		r.Revision = 1
+		r.CreatedAt, r.UpdatedAt = now, now
+		if err := validateRoutine(r); err != nil {
+			return Snapshot{}, err
+		}
+		routines[i] = r
+	}
+	agg := &aggregate{
+		Version: aggregateVersion, Revision: 1, Assistant: a, Routines: routines,
+		Memory: Memory{Revision: 1, Items: []MemoryItem{}}, Runs: []Run{}, Attention: []AttentionItem{},
+		Requests: map[string]requestReceipt{}, Occurrences: map[string]string{}, UpdatedAt: now,
+	}
+	result := snapshotOf(agg)
+	if err := putReceipt(agg, in.RequestID, "create", fingerprint, result, now); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Snapshot{}, err
+	}
+	return clone(result), nil
+}
+
+func (s *Store) Get(assistantID string) (Snapshot, error) {
+	if err := validateID("assistant", assistantID); err != nil {
+		return Snapshot{}, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return clone(snapshotOf(agg)), nil
+}
+
+func (s *Store) List() ([]Assistant, error) {
+	s.gate.root.Lock()
+	defer s.gate.root.Unlock()
+	entries, err := os.ReadDir(s.root)
+	if os.IsNotExist(err) {
+		return []Assistant{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("assistant: list store: %w", err)
+	}
+	result := make([]Assistant, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || validateID("assistant", entry.Name()) != nil {
+			continue
+		}
+		unlock := s.lockAssistant(entry.Name())
+		agg, readErr := s.read(entry.Name())
+		unlock()
+		if readErr != nil {
+			return nil, readErr
+		}
+		result = append(result, clone(agg.Assistant))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result, nil
+}
+
+func (s *Store) Routines(assistantID string) ([]Routine, error) {
+	snapshot, err := s.Get(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	return clone(snapshot.Routines), nil
+}
+
+func (s *Store) UpdateAssistant(requestID string, desired Assistant, expectedRevision int64, now time.Time) (Assistant, error) {
+	if err := validateRequestID(requestID); err != nil {
+		return Assistant{}, err
+	}
+	if err := validateID("assistant", desired.ID); err != nil {
+		return Assistant{}, err
+	}
+	fingerprint, err := inputFingerprint(struct {
+		Assistant Assistant
+		Expected  int64
+	}{assistantIntent(desired), expectedRevision})
+	if err != nil {
+		return Assistant{}, err
+	}
+	unlock := s.lockAssistant(desired.ID)
+	defer unlock()
+	agg, err := s.read(desired.ID)
+	if err != nil {
+		return Assistant{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Assistant](agg, requestID, "update_assistant", fingerprint); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	if agg.Assistant.Revision != expectedRevision {
+		return Assistant{}, conflict("assistant", desired.ID, expectedRevision, agg.Assistant.Revision)
+	}
+	current := agg.Assistant
+	desired.Revision = current.Revision + 1
+	desired.MemoryRev = current.MemoryRev
+	desired.CreatedAt = current.CreatedAt
+	desired.UpdatedAt = storeNow(now)
+	if err := validateAssistant(desired); err != nil {
+		return Assistant{}, err
+	}
+	agg.Assistant = desired
+	touch(agg, desired.UpdatedAt)
+	if err := putReceipt(agg, requestID, "update_assistant", fingerprint, desired, desired.UpdatedAt); err != nil {
+		return Assistant{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Assistant{}, err
+	}
+	return clone(desired), nil
+}
+
+func (s *Store) PutRoutine(in RoutineInput) (Routine, error) {
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Routine{}, err
+	}
+	if err := validateID("assistant", in.Routine.AssistantID); err != nil {
+		return Routine{}, err
+	}
+	fingerprint, err := inputFingerprint(struct {
+		Routine  Routine
+		Expected int64
+	}{routineIntent(in.Routine), in.ExpectedRevision})
+	if err != nil {
+		return Routine{}, err
+	}
+	unlock := s.lockAssistant(in.Routine.AssistantID)
+	defer unlock()
+	agg, err := s.read(in.Routine.AssistantID)
+	if err != nil {
+		return Routine{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Routine](agg, in.RequestID, "put_routine", fingerprint); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	index := routineIndex(agg, in.Routine.ID)
+	if index < 0 && in.ExpectedRevision != 0 {
+		return Routine{}, conflict("routine", in.Routine.ID, in.ExpectedRevision, 0)
+	}
+	if index >= 0 && agg.Routines[index].Revision != in.ExpectedRevision {
+		return Routine{}, conflict("routine", in.Routine.ID, in.ExpectedRevision, agg.Routines[index].Revision)
+	}
+	now := storeNow(in.Now)
+	r := in.Routine
+	if index < 0 {
+		r.Revision, r.CreatedAt = 1, now
+	} else {
+		r.Revision, r.CreatedAt = agg.Routines[index].Revision+1, agg.Routines[index].CreatedAt
+	}
+	r.UpdatedAt = now
+	if err := validateRoutine(r); err != nil {
+		return Routine{}, err
+	}
+	if index < 0 {
+		agg.Routines = append(agg.Routines, r)
+	} else {
+		agg.Routines[index] = r
+	}
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, "put_routine", fingerprint, r, now); err != nil {
+		return Routine{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Routine{}, err
+	}
+	return clone(r), nil
+}
+
+func (s *Store) AdvanceRoutine(assistantID, routineID, requestID string, expectedRevision int64, scheduledFor, now time.Time) (*Routine, error) {
+	if err := validateID("assistant", assistantID); err != nil {
+		return nil, err
+	}
+	if err := validateID("routine", routineID); err != nil {
+		return nil, err
+	}
+	if err := validateRequestID(requestID); err != nil {
+		return nil, err
+	}
+	scheduledFor = scheduledFor.UTC()
+	if scheduledFor.IsZero() {
+		return nil, errors.New("assistant: routine cursor time is required")
+	}
+	fingerprint, err := inputFingerprint(struct {
+		RoutineID   string
+		Expected    int64
+		ScheduledAt time.Time
+	}{routineID, expectedRevision, scheduledFor})
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	if result, ok, receiptErr := receiptResult[Routine](agg, requestID, "advance_routine", fingerprint); ok || receiptErr != nil {
+		return &result, receiptErr
+	}
+	idx := routineIndex(agg, routineID)
+	if idx < 0 {
+		return nil, ErrNotFound
+	}
+	routine := &agg.Routines[idx]
+	if routine.Revision != expectedRevision {
+		return nil, conflict("routine", routineID, expectedRevision, routine.Revision)
+	}
+	if routine.LastScheduledFor.After(scheduledFor) {
+		return nil, fmt.Errorf("assistant: routine cursor cannot move backwards: %w", ErrConflict)
+	}
+	at := storeNow(now)
+	routine.LastScheduledFor = scheduledFor
+	routine.Revision++
+	routine.UpdatedAt = at
+	result := clone(*routine)
+	touch(agg, at)
+	if err := putReceipt(agg, requestID, "advance_routine", fingerprint, result, at); err != nil {
+		return nil, err
+	}
+	if err := s.write(agg); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func (s *Store) ApplyMemory(assistantID, requestID string, expectedRevision int64, patch MemoryPatch, now time.Time) (Memory, error) {
+	if err := validateID("assistant", assistantID); err != nil {
+		return Memory{}, err
+	}
+	if err := validateRequestID(requestID); err != nil {
+		return Memory{}, err
+	}
+	fingerprint, err := inputFingerprint(struct {
+		Expected int64
+		Patch    MemoryPatch
+	}{expectedRevision, memoryIntent(patch)})
+	if err != nil {
+		return Memory{}, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return Memory{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Memory](agg, requestID, "apply_memory", fingerprint); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	if agg.Memory.Revision != expectedRevision {
+		return Memory{}, conflict("memory", assistantID, expectedRevision, agg.Memory.Revision)
+	}
+	if err := applyMemoryPatch(&agg.Memory, patch, storeNow(now)); err != nil {
+		return Memory{}, err
+	}
+	agg.Assistant.MemoryRev = agg.Memory.Revision
+	touch(agg, storeNow(now))
+	result := clone(agg.Memory)
+	if err := putReceipt(agg, requestID, "apply_memory", fingerprint, result, storeNow(now)); err != nil {
+		return Memory{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Memory{}, err
+	}
+	return result, nil
+}
+
+func (s *Store) Trigger(in TriggerInput) (Run, error) {
+	return s.trigger(in, false)
+}
+
+func (s *Store) CreateOccurrence(in TriggerInput) (*Run, error) {
+	in.Trigger = TriggerScheduled
+	run, err := s.trigger(in, true)
+	if err != nil {
+		return nil, err
+	}
+	return &run, nil
+}
+
+func (s *Store) trigger(in TriggerInput, occurrence bool) (Run, error) {
+	if err := validateID("assistant", in.AssistantID); err != nil {
+		return Run{}, err
+	}
+	if err := validateRequestID(in.RequestID); err != nil {
+		return Run{}, err
+	}
+	if in.MaxAttempts < 1 {
+		in.MaxAttempts = 3
+	}
+	operation := "trigger"
+	if occurrence {
+		operation = "create_occurrence"
+		if in.RoutineID == "" || in.ScheduledFor.IsZero() {
+			return Run{}, errors.New("assistant: occurrence requires routine and scheduled time")
+		}
+	}
+	fingerprint, err := inputFingerprint(struct {
+		AssistantID, RoutineID string
+		Trigger                TriggerKind
+		ScheduledFor           time.Time
+		MaxAttempts            int
+	}{in.AssistantID, in.RoutineID, in.Trigger, in.ScheduledFor.UTC(), in.MaxAttempts})
+	if err != nil {
+		return Run{}, err
+	}
+	unlock := s.lockAssistant(in.AssistantID)
+	defer unlock()
+	agg, err := s.read(in.AssistantID)
+	if err != nil {
+		return Run{}, err
+	}
+	if result, ok, receiptErr := receiptResult[Run](agg, in.RequestID, operation, fingerprint); ok || receiptErr != nil {
+		return result, receiptErr
+	}
+	if agg.Assistant.Lifecycle != LifecycleActive {
+		return Run{}, fmt.Errorf("assistant: %s is %s: %w", in.AssistantID, agg.Assistant.Lifecycle, ErrTransition)
+	}
+	if in.RoutineID != "" {
+		idx := routineIndex(agg, in.RoutineID)
+		if idx < 0 {
+			return Run{}, fmt.Errorf("assistant: routine %s: %w", in.RoutineID, ErrNotFound)
+		}
+		if occurrence && !agg.Routines[idx].Enabled {
+			return Run{}, fmt.Errorf("assistant: routine %s is disabled: %w", in.RoutineID, ErrTransition)
+		}
+	}
+	now := storeNow(in.Now)
+	occurrenceKey := ""
+	if occurrence {
+		occurrenceKey = OccurrenceKey(in.AssistantID, in.RoutineID, in.ScheduledFor)
+		if runID := agg.Occurrences[occurrenceKey]; runID != "" {
+			run, ok := findRun(agg, runID)
+			if !ok {
+				return Run{}, fmt.Errorf("assistant: occurrence %s references missing run %s", occurrenceKey, runID)
+			}
+			if err := putReceipt(agg, in.RequestID, operation, fingerprint, run, now); err != nil {
+				return Run{}, err
+			}
+			touch(agg, now)
+			if err := s.write(agg); err != nil {
+				return Run{}, err
+			}
+			return clone(run), nil
+		}
+		if idx := coalescibleRunIndex(agg, in.RoutineID); idx >= 0 {
+			run := &agg.Runs[idx]
+			run.Occurrences = append(run.Occurrences, occurrenceKey)
+			agg.Occurrences[occurrenceKey] = run.ID
+			if run.ScheduledFor.Before(in.ScheduledFor) {
+				run.ScheduledFor = in.ScheduledFor.UTC()
+				run.OccurrenceKey = occurrenceKey
+			}
+			run.Revision++
+			run.UpdatedAt = now
+			result := clone(*run)
+			touch(agg, now)
+			if err := putReceipt(agg, in.RequestID, operation, fingerprint, result, now); err != nil {
+				return Run{}, err
+			}
+			if err := s.write(agg); err != nil {
+				return Run{}, err
+			}
+			return result, nil
+		}
+	}
+	run := Run{
+		ID: StableID("run", in.AssistantID+"/"+in.RequestID), AssistantID: in.AssistantID,
+		RoutineID: in.RoutineID, RequestID: in.RequestID, OccurrenceKey: occurrenceKey,
+		Trigger: in.Trigger, State: RunQueued, MaxAttempts: in.MaxAttempts,
+		ScheduledFor: in.ScheduledFor.UTC(), Revision: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	if occurrence {
+		run.Occurrences = []string{occurrenceKey}
+		agg.Occurrences[occurrenceKey] = run.ID
+	}
+	if err := validateRun(run); err != nil {
+		return Run{}, err
+	}
+	agg.Runs = append(agg.Runs, run)
+	touch(agg, now)
+	if err := putReceipt(agg, in.RequestID, operation, fingerprint, run, now); err != nil {
+		return Run{}, err
+	}
+	if err := s.write(agg); err != nil {
+		return Run{}, err
+	}
+	return clone(run), nil
+}
+
+func (s *Store) Claim(owner string, now time.Time, lease time.Duration) (*Run, bool, error) {
+	if strings.TrimSpace(owner) == "" || lease <= 0 {
+		return nil, false, errors.New("assistant: claim requires owner and positive lease")
+	}
+	now = storeNow(now)
+	s.gate.root.Lock()
+	defer s.gate.root.Unlock()
+	entries, err := os.ReadDir(s.root)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("assistant: list claim candidates: %w", err)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		assistantID := entry.Name()
+		if !entry.IsDir() || validateID("assistant", assistantID) != nil {
+			continue
+		}
+		unlock := s.lockAssistant(assistantID)
+		agg, readErr := s.read(assistantID)
+		if readErr != nil {
+			unlock()
+			return nil, false, readErr
+		}
+		busy := false
+		for i := range agg.Runs {
+			if agg.Runs[i].State == RunRunning {
+				busy = true
+				break
+			}
+		}
+		idx := nextQueuedIndex(agg)
+		if busy || idx < 0 {
+			unlock()
+			continue
+		}
+		run := &agg.Runs[idx]
+		run.State = RunRunning
+		run.Attempt++
+		run.LeaseOwner = owner
+		run.LeaseFence++
+		run.LeaseUntil = now.Add(lease)
+		run.StartedAt = now
+		run.UpdatedAt = now
+		run.Revision++
+		run.Error, run.RetryAt, run.FinishedAt = nil, time.Time{}, time.Time{}
+		touch(agg, now)
+		if writeErr := s.write(agg); writeErr != nil {
+			unlock()
+			return nil, false, writeErr
+		}
+		result := clone(*run)
+		unlock()
+		return &result, true, nil
+	}
+	return nil, false, nil
+}
+
+func (s *Store) Renew(runID, owner string, fence int64, now time.Time, lease time.Duration) (*Run, error) {
+	if lease <= 0 {
+		return nil, errors.New("assistant: renew requires positive lease")
+	}
+	return s.withRunLease(runID, owner, fence, storeNow(now), func(run *Run, at time.Time) error {
+		run.LeaseUntil = at.Add(lease)
+		return nil
+	})
+}
+
+func (s *Store) Finish(in FinishInput) (*Run, error) {
+	return s.withRunLease(in.RunID, in.LeaseOwner, in.LeaseFence, storeNow(in.Now), func(run *Run, at time.Time) error {
+		run.State = RunSucceeded
+		run.Summary = strings.TrimSpace(in.Summary)
+		run.SessionPath = strings.TrimSpace(in.SessionPath)
+		run.FinishedAt = at
+		clearLease(run)
+		return nil
+	})
+}
+
+func (s *Store) Fail(in FailInput) (*Run, error) {
+	failure := in.Failure
+	now := storeNow(failure.Now)
+	return s.withRunLease(in.RunID, in.LeaseOwner, in.LeaseFence, now, func(run *Run, at time.Time) error {
+		run.Error = &RunError{Code: strings.TrimSpace(failure.Code), Message: strings.TrimSpace(failure.Message), Retryable: failure.Retryable, At: at}
+		clearLease(run)
+		if !failure.OutcomeKnown {
+			run.State = RunWaitingAttention
+			run.Error.Retryable = false
+		} else if failure.Retryable && run.Attempt < run.MaxAttempts {
+			run.State = RunRetryWait
+			if failure.RetryAfter < 0 {
+				failure.RetryAfter = 0
+			}
+			run.RetryAt = at.Add(failure.RetryAfter)
+		} else {
+			run.State = RunFailed
+			run.FinishedAt = at
+		}
+		return nil
+	})
+}
+
+func (s *Store) withRunLease(runID, owner string, fence int64, now time.Time, mutate func(*Run, time.Time) error) (*Run, error) {
+	if err := validateID("run", runID); err != nil {
+		return nil, err
+	}
+	assistantID, err := s.runOwner(runID)
+	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockAssistant(assistantID)
+	defer unlock()
+	agg, err := s.read(assistantID)
+	if err != nil {
+		return nil, err
+	}
+	idx := runIndex(agg, runID)
+	if idx < 0 {
+		return nil, ErrNotFound
+	}
+	run := &agg.Runs[idx]
+	if run.State != RunRunning || run.LeaseOwner != owner || run.LeaseFence != fence || !now.Before(run.LeaseUntil) {
+		return nil, fmt.Errorf("assistant: run %s fence %d is stale: %w", runID, fence, ErrLeaseLost)
+	}
+	if err := mutate(run, now); err != nil {
+		return nil, err
+	}
+	run.Revision++
+	run.UpdatedAt = now
+	touch(agg, now)
+	if err := s.write(agg); err != nil {
+		return nil, err
+	}
+	result := clone(*run)
+	return &result, nil
+}
+
+func (s *Store) runOwner(runID string) (string, error) {
+	assistants, err := s.List()
+	if err != nil {
+		return "", err
+	}
+	for _, assistant := range assistants {
+		unlock := s.lockAssistant(assistant.ID)
+		agg, readErr := s.read(assistant.ID)
+		unlock()
+		if readErr != nil {
+			return "", readErr
+		}
+		if runIndex(agg, runID) >= 0 {
+			return assistant.ID, nil
+		}
+	}
+	return "", ErrNotFound
+}
+
+// Recover converts expired running leases to waiting_attention. The process
+// cannot know whether an external side effect completed before the crash, so
+// automatic replay would be unsafe.
+func (s *Store) Recover(now time.Time) ([]Run, error) {
+	now = storeNow(now)
+	return s.scanRuns(now, func(run *Run, at time.Time) bool {
+		if run.State != RunRunning || run.LeaseUntil.After(at) {
+			return false
+		}
+		run.State = RunWaitingAttention
+		run.Error = &RunError{Code: "outcome_unknown", Message: "execution lease expired; external outcome is unknown", Retryable: false, At: at}
+		run.FinishedAt = time.Time{}
+		clearLease(run)
+		return true
+	})
+}
+
+func (s *Store) RetryDue(now time.Time) ([]Run, error) {
+	now = storeNow(now)
+	return s.scanRuns(now, func(run *Run, at time.Time) bool {
+		if run.State != RunRetryWait || run.RetryAt.After(at) {
+			return false
+		}
+		run.State = RunQueued
+		run.Trigger = TriggerRetry
+		run.RetryAt = time.Time{}
+		return true
+	})
+}
+
+func (s *Store) scanRuns(now time.Time, mutate func(*Run, time.Time) bool) ([]Run, error) {
+	assistants, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	changed := make([]Run, 0)
+	for _, a := range assistants {
+		unlock := s.lockAssistant(a.ID)
+		agg, readErr := s.read(a.ID)
+		if readErr != nil {
+			unlock()
+			return nil, readErr
+		}
+		dirty := false
+		for i := range agg.Runs {
+			if mutate(&agg.Runs[i], now) {
+				agg.Runs[i].Revision++
+				agg.Runs[i].UpdatedAt = now
+				changed = append(changed, clone(agg.Runs[i]))
+				dirty = true
+			}
+		}
+		if dirty {
+			touch(agg, now)
+			if writeErr := s.write(agg); writeErr != nil {
+				unlock()
+				return nil, writeErr
+			}
+		}
+		unlock()
+	}
+	return changed, nil
+}
+
+func applyMemoryPatch(memory *Memory, patch MemoryPatch, now time.Time) error {
+	byID := make(map[string]int, len(memory.Items))
+	for i := range memory.Items {
+		byID[memory.Items[i].ID] = i
+	}
+	deleteSet := make(map[string]struct{}, len(patch.Delete))
+	for _, id := range patch.Delete {
+		if err := validateID("memory", id); err != nil {
+			return err
+		}
+		if _, duplicate := deleteSet[id]; duplicate {
+			continue
+		}
+		deleteSet[id] = struct{}{}
+		if idx, exists := byID[id]; exists && memory.Items[idx].Locked {
+			return fmt.Errorf("assistant: memory %s is locked: %w", id, ErrConflict)
+		}
+	}
+	seenUpsert := make(map[string]struct{}, len(patch.Upsert))
+	for _, raw := range patch.Upsert {
+		if _, duplicate := seenUpsert[raw.ID]; duplicate {
+			return fmt.Errorf("assistant: duplicate memory upsert %s", raw.ID)
+		}
+		seenUpsert[raw.ID] = struct{}{}
+		if _, deleting := deleteSet[raw.ID]; deleting {
+			return fmt.Errorf("assistant: memory %s cannot be deleted and upserted", raw.ID)
+		}
+		if idx, exists := byID[raw.ID]; exists && memory.Items[idx].Locked {
+			return fmt.Errorf("assistant: memory %s is locked: %w", raw.ID, ErrConflict)
+		}
+	}
+	items := make([]MemoryItem, 0, len(memory.Items)+len(patch.Upsert))
+	for _, item := range memory.Items {
+		if _, deleting := deleteSet[item.ID]; !deleting {
+			items = append(items, item)
+		}
+	}
+	byID = make(map[string]int, len(items))
+	for i := range items {
+		byID[items[i].ID] = i
+	}
+	for _, item := range patch.Upsert {
+		if idx, exists := byID[item.ID]; exists {
+			item.Revision = items[idx].Revision + 1
+			item.CreatedAt = items[idx].CreatedAt
+			item.UpdatedAt = now
+			if err := validateMemoryItem(item); err != nil {
+				return err
+			}
+			items[idx] = item
+		} else {
+			item.Revision, item.CreatedAt, item.UpdatedAt = 1, now, now
+			if err := validateMemoryItem(item); err != nil {
+				return err
+			}
+			byID[item.ID] = len(items)
+			items = append(items, item)
+		}
+	}
+	memory.Items = items
+	memory.Revision++
+	return nil
+}
+
+func (s *Store) read(assistantID string) (*aggregate, error) {
+	path, err := s.aggregatePath(assistantID, false)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("assistant: %s: %w", assistantID, ErrNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("assistant: read %s: %w", assistantID, err)
+	}
+	var agg aggregate
+	if err := json.Unmarshal(data, &agg); err != nil {
+		return nil, fmt.Errorf("assistant: parse %s aggregate: %w", assistantID, err)
+	}
+	if agg.Version != aggregateVersion || agg.Assistant.ID != assistantID {
+		return nil, fmt.Errorf("assistant: invalid %s aggregate identity or version", assistantID)
+	}
+	if agg.Requests == nil {
+		agg.Requests = map[string]requestReceipt{}
+	}
+	if agg.Occurrences == nil {
+		agg.Occurrences = map[string]string{}
+	}
+	return &agg, nil
+}
+
+func (s *Store) write(agg *aggregate) error {
+	path, err := s.aggregatePath(agg.Assistant.ID, true)
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(agg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("assistant: marshal %s aggregate: %w", agg.Assistant.ID, err)
+	}
+	data = append(data, '\n')
+	if err := fileutil.AtomicWriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("assistant: commit %s aggregate: %w", agg.Assistant.ID, err)
+	}
+	return nil
+}
+
+func (s *Store) aggregatePath(assistantID string, create bool) (string, error) {
+	if err := validateID("assistant", assistantID); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(s.root, assistantID)
+	rel, err := filepath.Rel(s.root, dir)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", fmt.Errorf("assistant: unsafe aggregate path for %q", assistantID)
+	}
+	if info, statErr := os.Lstat(dir); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("assistant: unsafe aggregate directory for %q", assistantID)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return "", fmt.Errorf("assistant: inspect aggregate directory: %w", statErr)
+	} else if !create {
+		return filepath.Join(dir, "aggregate.json"), nil
+	}
+	return filepath.Join(dir, "aggregate.json"), nil
+}
+
+func receiptResult[T any](agg *aggregate, requestID, operation, fingerprint string) (T, bool, error) {
+	var zero T
+	receipt, exists := agg.Requests[requestID]
+	if !exists {
+		return zero, false, nil
+	}
+	if receipt.Operation != operation || receipt.Fingerprint != fingerprint {
+		return zero, true, &IdempotencyError{RequestID: requestID, Operation: operation}
+	}
+	var result T
+	if err := json.Unmarshal(receipt.Result, &result); err != nil {
+		return zero, true, fmt.Errorf("assistant: decode request %q receipt: %w", requestID, err)
+	}
+	return result, true, nil
+}
+
+func putReceipt(agg *aggregate, requestID, operation, fingerprint string, result any, now time.Time) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("assistant: encode %s receipt: %w", operation, err)
+	}
+	agg.Requests[requestID] = requestReceipt{Operation: operation, Fingerprint: fingerprint, Result: data, CreatedAt: now}
+	return nil
+}
+
+func inputFingerprint(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("assistant: fingerprint input: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func assistantIntent(a Assistant) Assistant {
+	a.MemoryRev, a.Revision = 0, 0
+	a.CreatedAt, a.UpdatedAt = time.Time{}, time.Time{}
+	return a
+}
+
+func routineIntent(r Routine) Routine {
+	r.Revision = 0
+	r.CreatedAt, r.UpdatedAt = time.Time{}, time.Time{}
+	return r
+}
+
+func routineIntents(in []Routine) []Routine {
+	out := make([]Routine, len(in))
+	for i := range in {
+		out[i] = routineIntent(in[i])
+	}
+	return out
+}
+
+func memoryIntent(patch MemoryPatch) MemoryPatch {
+	patch = clone(patch)
+	for i := range patch.Upsert {
+		patch.Upsert[i].Revision = 0
+		patch.Upsert[i].CreatedAt, patch.Upsert[i].UpdatedAt = time.Time{}, time.Time{}
+	}
+	return patch
+}
+
+func snapshotOf(agg *aggregate) Snapshot {
+	receipts := make([]RequestReceipt, 0, len(agg.Requests))
+	for id, receipt := range agg.Requests {
+		receipts = append(receipts, RequestReceipt{RequestID: id, Operation: receipt.Operation, Fingerprint: receipt.Fingerprint, CreatedAt: receipt.CreatedAt})
+	}
+	sort.Slice(receipts, func(i, j int) bool { return receipts[i].RequestID < receipts[j].RequestID })
+	return Snapshot{
+		Revision: agg.Revision, Assistant: agg.Assistant, Routines: agg.Routines,
+		Memory: agg.Memory, Runs: agg.Runs, Attention: agg.Attention,
+		Receipts: receipts, UpdatedAt: agg.UpdatedAt,
+	}
+}
+
+func touch(agg *aggregate, now time.Time) {
+	agg.Revision++
+	agg.UpdatedAt = now
+}
+
+func storeNow(now time.Time) time.Time {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	return now.UTC()
+}
+
+func conflict(entity, id string, expected, actual int64) error {
+	return &ConflictError{Entity: entity, ID: id, Expected: expected, Actual: actual}
+}
+
+func routineIndex(agg *aggregate, id string) int {
+	for i := range agg.Routines {
+		if agg.Routines[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func runIndex(agg *aggregate, id string) int {
+	for i := range agg.Runs {
+		if agg.Runs[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func findRun(agg *aggregate, id string) (Run, bool) {
+	idx := runIndex(agg, id)
+	if idx < 0 {
+		return Run{}, false
+	}
+	return agg.Runs[idx], true
+}
+
+func coalescibleRunIndex(agg *aggregate, routineID string) int {
+	for i := range agg.Runs {
+		if agg.Runs[i].RoutineID == routineID && agg.Runs[i].Trigger == TriggerScheduled && agg.Runs[i].State == RunQueued {
+			return i
+		}
+	}
+	return -1
+}
+
+func nextQueuedIndex(agg *aggregate) int {
+	best := -1
+	for i := range agg.Runs {
+		if agg.Runs[i].State != RunQueued {
+			continue
+		}
+		if best < 0 || runBefore(agg.Runs[i], agg.Runs[best]) {
+			best = i
+		}
+	}
+	return best
+}
+
+func runBefore(a, b Run) bool {
+	aTime, bTime := a.ScheduledFor, b.ScheduledFor
+	if aTime.IsZero() {
+		aTime = a.CreatedAt
+	}
+	if bTime.IsZero() {
+		bTime = b.CreatedAt
+	}
+	if aTime.Equal(bTime) {
+		return a.ID < b.ID
+	}
+	return aTime.Before(bTime)
+}
+
+func clearLease(run *Run) {
+	run.LeaseOwner = ""
+	run.LeaseUntil = time.Time{}
+}
+
+func clone[T any](in T) T {
+	data, _ := json.Marshal(in)
+	var out T
+	_ = json.Unmarshal(data, &out)
+	return out
+}

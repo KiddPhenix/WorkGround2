@@ -134,46 +134,48 @@ const (
 )
 
 type RunError struct {
-	Code      string    `json:"code"`
-	Message   string    `json:"message"`
-	Retryable bool      `json:"retryable"`
-	At        time.Time `json:"at"`
+	Code         string    `json:"code"`
+	Message      string    `json:"message"`
+	Provider     string    `json:"provider,omitempty"`
+	Retryable    bool      `json:"retryable"`
+	OutcomeKnown bool      `json:"outcome_known"`
+	At           time.Time `json:"at"`
 }
 
 type Run struct {
-	ID             string      `json:"id"`
-	AssistantID    string      `json:"assistant_id"`
-	RoutineID      string      `json:"routine_id,omitempty"`
-	RequestID      string      `json:"request_id"`
-	OccurrenceKey  string      `json:"occurrence_key,omitempty"`
-	Occurrences    []string    `json:"occurrences,omitempty"`
-	Trigger        TriggerKind `json:"trigger"`
-	State          RunState    `json:"state"`
-	Attempt        int         `json:"attempt"`
-	MaxAttempts    int         `json:"max_attempts"`
-	SessionPath    string      `json:"session_path,omitempty"`
-	LeaseOwner     string      `json:"lease_owner,omitempty"`
-	LeaseFence     int64       `json:"lease_fence"`
-	LeaseUntil     time.Time   `json:"lease_until,omitempty"`
-	ScheduledFor   time.Time   `json:"scheduled_for,omitempty"`
-	RetryAt        time.Time   `json:"retry_at,omitempty"`
-	StartedAt      time.Time   `json:"started_at,omitempty"`
-	FinishedAt     time.Time   `json:"finished_at,omitempty"`
-	Summary        string      `json:"summary,omitempty"`
-	Error          *RunError   `json:"error,omitempty"`
-	Revision       int64       `json:"revision"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	ID            string      `json:"id"`
+	AssistantID   string      `json:"assistant_id"`
+	RoutineID     string      `json:"routine_id,omitempty"`
+	RequestID     string      `json:"request_id"`
+	OccurrenceKey string      `json:"occurrence_key,omitempty"`
+	Occurrences   []string    `json:"occurrences,omitempty"`
+	Trigger       TriggerKind `json:"trigger"`
+	State         RunState    `json:"state"`
+	Attempt       int         `json:"attempt"`
+	MaxAttempts   int         `json:"max_attempts"`
+	SessionPath   string      `json:"session_path,omitempty"`
+	LeaseOwner    string      `json:"lease_owner,omitempty"`
+	LeaseFence    int64       `json:"lease_fence"`
+	LeaseUntil    time.Time   `json:"lease_until,omitempty"`
+	ScheduledFor  time.Time   `json:"scheduled_for,omitempty"`
+	RetryAt       time.Time   `json:"retry_at,omitempty"`
+	StartedAt     time.Time   `json:"started_at,omitempty"`
+	FinishedAt    time.Time   `json:"finished_at,omitempty"`
+	Summary       string      `json:"summary,omitempty"`
+	Error         *RunError   `json:"error,omitempty"`
+	Revision      int64       `json:"revision"`
+	CreatedAt     time.Time   `json:"created_at"`
+	UpdatedAt     time.Time   `json:"updated_at"`
 }
 
 type MemoryKind string
 
 const (
-	MemoryCharter   MemoryKind = "charter"
-	MemoryFact      MemoryKind = "facts"
-	MemoryStrategy  MemoryKind = "strategy"
-	MemoryOpenLoop  MemoryKind = "open_loops"
-	MemoryMetric    MemoryKind = "metrics"
+	MemoryCharter  MemoryKind = "charter"
+	MemoryFact     MemoryKind = "facts"
+	MemoryStrategy MemoryKind = "strategy"
+	MemoryOpenLoop MemoryKind = "open_loops"
+	MemoryMetric   MemoryKind = "metrics"
 )
 
 type MemoryItem struct {
@@ -247,9 +249,27 @@ type TriggerInput struct {
 }
 
 type Failure struct {
-	Code       string
-	Message    string
-	Retryable  bool
-	RetryAfter time.Duration
-	Now        time.Time
+	Code         string
+	Message      string
+	Provider     string
+	Retryable    bool
+	OutcomeKnown bool
+	RetryAfter   time.Duration
+	Now          time.Time
+}
+
+type FinishInput struct {
+	RunID       string
+	LeaseOwner  string
+	LeaseFence  int64
+	Summary     string
+	SessionPath string
+	Now         time.Time
+}
+
+type FailInput struct {
+	RunID      string
+	LeaseOwner string
+	LeaseFence int64
+	Failure    Failure
 }

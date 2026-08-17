@@ -6,9 +6,9 @@ import (
 )
 
 var (
-	ErrNotFound = errors.New("assistant: not found")
-	ErrConflict = errors.New("assistant: revision conflict")
-	ErrBusy     = errors.New("assistant: run already active")
+	ErrNotFound    = errors.New("assistant: not found")
+	ErrConflict    = errors.New("assistant: revision conflict")
+	ErrBusy        = errors.New("assistant: run already active")
 	ErrIdempotency = errors.New("assistant: request id reused with different input")
 	ErrLeaseLost   = errors.New("assistant: run lease lost")
 	ErrTransition  = errors.New("assistant: invalid run state transition")
