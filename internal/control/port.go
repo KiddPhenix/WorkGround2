@@ -14,6 +14,7 @@ import (
 	"workground2/internal/hook"
 	"workground2/internal/jobs"
 	"workground2/internal/memory"
+	"workground2/internal/permission"
 	"workground2/internal/plugin"
 	"workground2/internal/provider"
 	"workground2/internal/skill"
@@ -52,6 +53,7 @@ type TurnControl interface {
 	SubmitEditedDisplay(display, input, original string)
 	SubmitHTTP(input string)
 	SubmitUserTurn(input, display string)
+	TrySubmitUserTurn(input, display string) bool
 	SubmitWorkChat(display, userText, contextBlock string)
 	Send(input string)
 	SendWithRaw(input, raw string)
@@ -87,6 +89,7 @@ type Approvals interface {
 	Bypass() bool
 	SetBypass(on bool)
 	SetMode(plan, autoApproveTools bool)
+	SetPermissionPolicy(permission.Policy)
 }
 
 // Goals covers the active-goal FSM and plan mode.

@@ -506,6 +506,60 @@ func TestStoreClaimRecoversExpiredLeaseBeforeSelectingWork(t *testing.T) {
 	}
 }
 
+func TestStoreRequestApprovalAllowsPreSubmitWithoutSession(t *testing.T) {
+	for _, action := range []string{"rebind_workspace", "cancel_recreate"} {
+		t.Run(action, func(t *testing.T) {
+			store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+			mustCreate(t, store, "helper-a")
+			mustTrigger(t, store, "manual-"+action)
+			running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+			if err != nil || !ok {
+				t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+			}
+			approval := ApprovalInput{
+				RequestID: "approval-" + action, RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+				Action: action, Summary: "workspace configuration needs attention", ResumeToken: "resume-" + action, Now: testEpoch.Add(time.Second),
+			}
+			waiting, err := store.RequestApproval(approval)
+			if err != nil || waiting.State != RunWaitingApproval || waiting.SessionPath != "" {
+				t.Fatalf("RequestApproval: run=%+v err=%v", waiting, err)
+			}
+			approval.Now = testEpoch.Add(2 * time.Second)
+			replayed, err := store.RequestApproval(approval)
+			if err != nil || replayed.Revision != waiting.Revision {
+				t.Fatalf("RequestApproval replay: run=%+v err=%v", replayed, err)
+			}
+			snapshot, err := store.Get("helper-a")
+			if err != nil || len(snapshot.Attention) != 1 {
+				t.Fatalf("approval replay duplicated attention: attention=%+v err=%v", snapshot.Attention, err)
+			}
+		})
+	}
+}
+
+func TestStoreRequestApprovalRequiresSessionAfterSubmit(t *testing.T) {
+	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
+	mustCreate(t, store, "helper-a")
+	mustTrigger(t, store, "manual-publish")
+	running, ok, err := store.Claim("worker-a", testEpoch, time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("Claim: run=%+v ok=%v err=%v", running, ok, err)
+	}
+	approval := ApprovalInput{
+		RequestID: "approval-publish", RunID: running.ID, LeaseOwner: "worker-a", LeaseFence: running.LeaseFence,
+		Action: "publish", Summary: "publish release", ResumeToken: "resume-publish", Now: testEpoch.Add(time.Second),
+	}
+	if _, err := store.RequestApproval(approval); err == nil {
+		t.Fatal("RequestApproval accepted an empty session path for a submitted action")
+	}
+	approval.RequestID = "approval-rebind-no-token"
+	approval.Action = "rebind_workspace"
+	approval.ResumeToken = ""
+	if _, err := store.RequestApproval(approval); err == nil {
+		t.Fatal("RequestApproval accepted a pre-submit action without a resume token")
+	}
+}
+
 func TestStoreApprovalResolveResumeAndCancelAreIdempotent(t *testing.T) {
 	store := testStore(t, filepath.Join(t.TempDir(), "assistants"))
 	mustCreate(t, store, "helper-a")

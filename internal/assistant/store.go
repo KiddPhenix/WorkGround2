@@ -867,8 +867,12 @@ func (s *Store) RequestApproval(in ApprovalInput) (*Run, error) {
 	}
 	in.Action, in.Summary = strings.TrimSpace(in.Action), strings.TrimSpace(in.Summary)
 	in.SessionPath, in.ResumeToken = strings.TrimSpace(in.SessionPath), strings.TrimSpace(in.ResumeToken)
-	if in.Action == "" || in.Summary == "" || in.SessionPath == "" || in.ResumeToken == "" {
-		return nil, errors.New("assistant: approval action, summary, session path, and resume token are required")
+	if in.Action == "" || in.Summary == "" || in.ResumeToken == "" {
+		return nil, errors.New("assistant: approval action, summary, and resume token are required")
+	}
+	preSubmit := in.Action == "rebind_workspace" || in.Action == "cancel_recreate"
+	if in.SessionPath == "" && !preSubmit {
+		return nil, errors.New("assistant: approval session path is required after submission")
 	}
 	fp, err := inputFingerprint(struct {
 		RunID, Owner, Action, Summary, SessionPath, ResumeToken string

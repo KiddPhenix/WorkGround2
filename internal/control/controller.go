@@ -162,6 +162,10 @@ type Controller struct {
 	// (requestApproval/Ask emit events + fire hooks + rebuild the executor gate).
 	// See approval.go.
 	approval approvalManager
+	// permissionGate is installed on executor once and swaps its inner policy
+	// atomically, avoiding races with tool calls during runtime policy changes.
+	permissionGate      *runtimePermissionGate
+	interactiveApproval bool
 
 	// pinnedMemos owns the session-scoped pinned-memory store (a list of
 	// transcript excerpts the user wants the model to remember). It is
@@ -529,6 +533,7 @@ func New(opts Options) *Controller {
 		actionRootCancel:           actionRootCancel,
 		actionRuns:                 make(map[string]map[uint64]context.CancelFunc),
 	}
+	c.permissionGate = newRuntimePermissionGate(permission.NewGate(clonePermissionPolicy(opts.Policy), nil))
 	if !nilutil.IsNil(opts.Work) {
 		if binder, ok := opts.Work.(interface{ SetPermissionChecker(work.PermissionChecker) }); ok {
 			binder.SetPermissionChecker(c)
@@ -548,6 +553,7 @@ func New(opts Options) *Controller {
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
+		c.executor.SetGate(c.permissionGate)
 		c.executor.SetPreEditHook(func(ch diff.Change) {
 			c.checkpoints.snapshot(ch)
 		})
@@ -660,11 +666,11 @@ func (c *Controller) beginCheckpoint(input string) {
 // context, guarding against concurrent turns and emitting a TurnDone event when
 // it finishes (Err set on failure; nil also for a user Cancel). A no-op if a
 // turn is already in flight.
-func (c *Controller) runGuarded(body func(ctx context.Context) error) {
+func (c *Controller) runGuarded(body func(ctx context.Context) error) bool {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -708,6 +714,7 @@ func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 		}
 		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: explainError(err)})
 	}()
+	return true
 }
 
 // Send starts a turn with an uncomposed message. The controller applies
@@ -897,7 +904,16 @@ func (c *Controller) SubmitEditedDisplay(display, input, original string) {
 // commands. It still resolves references, so callers can submit trusted
 // user-authored prompt text without expanding the command surface.
 func (c *Controller) SubmitUserTurn(input, display string) {
-	c.runRefTurn(input, display)
+	c.TrySubmitUserTurn(input, display)
+}
+
+// TrySubmitUserTurn atomically reserves the foreground turn slot and starts a
+// normal user turn. It returns false without side effects when another turn is
+// already active.
+func (c *Controller) TrySubmitUserTurn(input, display string) bool {
+	return c.runGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
+	})
 }
 
 func (c *Controller) submit(input, display, editedOriginal string) {
@@ -1635,8 +1651,11 @@ func (c *Controller) ApprovePending(allow bool) {
 // silent gate and a nil asker from setup.
 func (c *Controller) EnableInteractiveApproval() {
 	trustGate := planModeReadOnlyTrustApprover{c}
+	c.mu.Lock()
+	c.interactiveApproval = true
+	c.mu.Unlock()
+	c.refreshInteractiveGate()
 	if c.executor != nil {
-		c.executor.SetGate(c.newInteractiveGate())
 		c.executor.SetPlanModeReadOnlyTrustGate(trustGate)
 		c.executor.SetAsker(c)
 	}
@@ -1708,7 +1727,9 @@ func plannerUserDecisionAnswer(question event.AskQuestion, answers []event.AskAn
 }
 
 func (c *Controller) newInteractiveGate() *permission.Gate {
-	policy := c.policy
+	c.mu.Lock()
+	policy := clonePermissionPolicy(c.policy)
+	c.mu.Unlock()
 	mode := c.approval.mode()
 	switch mode {
 	case ToolApprovalAuto, ToolApprovalYolo:
@@ -1730,9 +1751,31 @@ func (c *Controller) newInteractiveGate() *permission.Gate {
 }
 
 func (c *Controller) refreshInteractiveGate() {
-	if c.executor != nil {
-		c.executor.SetGate(c.newInteractiveGate())
+	c.mu.Lock()
+	interactive := c.interactiveApproval
+	policy := clonePermissionPolicy(c.policy)
+	gate := c.permissionGate
+	c.mu.Unlock()
+	if gate == nil {
+		return
 	}
+	if interactive {
+		gate.update(c.newInteractiveGate())
+		return
+	}
+	gate.update(permission.NewGate(policy, nil))
+}
+
+// SetPermissionPolicy atomically replaces the runtime base policy. Existing
+// session grants are cleared before the executor observes the new gate, so an
+// earlier allow cannot bypass a new ask or deny rule.
+func (c *Controller) SetPermissionPolicy(policy permission.Policy) {
+	policy = clonePermissionPolicy(policy)
+	c.approval.setPolicy(policy)
+	c.mu.Lock()
+	c.policy = policy
+	c.mu.Unlock()
+	c.refreshInteractiveGate()
 }
 
 // Steer queues mid-turn guidance without interrupting the in-flight request.

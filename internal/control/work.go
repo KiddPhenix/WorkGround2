@@ -699,7 +699,7 @@ func (c *Controller) CheckPermission(ctx context.Context, input work.PermissionR
 	grantKey := actionSessionGrantFor(input)
 	subject := actionApprovalSubject(grantKey)
 	readOnly := input.Risk == string(work.RiskRead) && !input.ConfirmRequired
-	decision := c.policy.DecideSubject(input.ToolName, readOnly, subject)
+	decision := c.permissionPolicy().DecideSubject(input.ToolName, readOnly, subject)
 	if decision == permission.Deny {
 		return work.PermissionDecision{Reason: "denied by permission policy"}, nil
 	}

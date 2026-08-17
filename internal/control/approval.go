@@ -20,7 +20,7 @@ import (
 // — approval, unlike the goal FSM, blocks on user input and has side effects, so
 // only the bookkeeping is extracted, not the orchestration.
 type approvalManager struct {
-	// policy is the immutable base permission policy, captured at construction.
+	// policy is the current base permission policy.
 	// Used to decide whether a tool call would auto-approve under the writer
 	// fallback (autoApprovalWouldAllowLocked); the Controller keeps its own copy
 	// for building the executor gate.
@@ -64,6 +64,18 @@ func newApprovalManager(policy permission.Policy, mode string, timeout time.Dura
 		actionGrants:     map[actionSessionGrantKey]bool{},
 		toolApprovalMode: mode,
 		approvalTimeout:  timeout,
+	}
+}
+
+func (a *approvalManager) setPolicy(policy permission.Policy) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.policy = clonePermissionPolicy(policy)
+	clear(a.granted)
+	clear(a.actionGrants)
+	for id, pending := range a.approvals {
+		pending.autoDrain = !pending.fresh && a.autoApprovalWouldAllowLocked(pending.tool, pending.subject)
+		a.approvals[id] = pending
 	}
 }
 
