@@ -42,6 +42,11 @@ func TestInstallDecisionSkillIsIdempotentAndBacksUpChanges(t *testing.T) {
 	if err != nil || !strings.Contains(string(original), "Ask WorkGround2 Owner") {
 		t.Fatalf("installed skill invalid: %v", err)
 	}
+	notifyFile := filepath.Join(root, "skills", "notify-me", "SKILL.md")
+	notifyBody, err := os.ReadFile(notifyFile)
+	if err != nil || !strings.Contains(string(notifyBody), "# Notify Me") {
+		t.Fatalf("installed notify-me skill invalid: %v", err)
+	}
 	second, err := installDecisionSkill(root)
 	if err != nil || len(second.Backups) != 0 {
 		t.Fatalf("idempotent install=%+v err=%v", second, err)

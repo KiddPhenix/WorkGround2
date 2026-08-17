@@ -155,7 +155,7 @@ func TestBuiltinReviewAndSecurityReviewAreReadOnly(t *testing.T) {
 
 func TestBuiltinInlineSkillsAreNotReadOnly(t *testing.T) {
 	skills := builtinSkills()
-	for _, name := range []string{"init", "test", "install-capability", "rebuild_vocabulary"} {
+	for _, name := range []string{"init", "test", "install-capability", "rebuild_vocabulary", "notify-me"} {
 		var sk *Skill
 		for i := range skills {
 			if skills[i].Name == name {
@@ -168,6 +168,18 @@ func TestBuiltinInlineSkillsAreNotReadOnly(t *testing.T) {
 		}
 		if sk.ReadOnly {
 			t.Errorf("builtin inline skill %q should NOT be ReadOnly=true", name)
+		}
+	}
+}
+
+func TestBuiltinNotifyMeUsesTerminalNotificationTool(t *testing.T) {
+	sk, ok := find(builtinSkills(), "notify-me")
+	if !ok {
+		t.Fatal("notify-me skill not found")
+	}
+	for _, want := range []string{"explicitly asked", "call notify_me exactly once", "After the final outcome is known", "standalone"} {
+		if !strings.Contains(sk.Body, want) {
+			t.Fatalf("notify-me body missing %q:\n%s", want, sk.Body)
 		}
 	}
 }

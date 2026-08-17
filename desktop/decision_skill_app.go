@@ -12,7 +12,7 @@ import (
 var decisionSkillRaw embed.FS
 
 const (
-	decisionSkillVersion  = "1.1.0"
+	decisionSkillVersion  = "1.2.0"
 	decisionSkillProtocol = "decision-broker-local-api-v1"
 )
 
@@ -28,21 +28,34 @@ func (a *App) InstallDecisionSkill() (AICollaborationInjectResult, error) {
 }
 
 func installDecisionSkill(codexDir string) (AICollaborationInjectResult, error) {
-	target := filepath.Join(codexDir, "skills", "ask-workground2-owner")
-	root, err := fs.Sub(decisionSkillRaw, "decision_skill/ask-workground2-owner")
+	askPath, askBackups, err := installBundledDecisionSkill(codexDir, "ask-workground2-owner")
 	if err != nil {
-		return AICollaborationInjectResult{}, fmt.Errorf("decision skill embed: %w", err)
+		return AICollaborationInjectResult{SkillPath: askPath, Backups: askBackups}, err
+	}
+	_, notifyBackups, err := installBundledDecisionSkill(codexDir, "notify-me")
+	backups := append(askBackups, notifyBackups...)
+	if err != nil {
+		return AICollaborationInjectResult{SkillPath: askPath, Backups: backups}, err
+	}
+	return AICollaborationInjectResult{OK: true, SkillPath: askPath, Backups: backups}, nil
+}
+
+func installBundledDecisionSkill(codexDir, name string) (string, []string, error) {
+	target := filepath.Join(codexDir, "skills", name)
+	root, err := fs.Sub(decisionSkillRaw, "decision_skill/"+name)
+	if err != nil {
+		return target, nil, fmt.Errorf("decision skill %s embed: %w", name, err)
 	}
 	files, err := bundledFilesFromFS(root, ".")
 	if err != nil {
-		return AICollaborationInjectResult{}, err
+		return target, nil, err
 	}
 	previous := readManifest(target)
 	var backups []string
 	for _, file := range files {
 		backup, writeErr := safeWriteSkillFile(target, file, previous)
 		if writeErr != nil {
-			return AICollaborationInjectResult{SkillPath: target, Backups: backups}, writeErr
+			return target, backups, writeErr
 		}
 		if backup != "" {
 			backups = append(backups, backup)
@@ -54,10 +67,10 @@ func installDecisionSkill(codexDir string) (AICollaborationInjectResult, error) 
 	}
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return AICollaborationInjectResult{SkillPath: target, Backups: backups}, err
+		return target, backups, err
 	}
 	if err := atomicWrite(filepath.Join(target, "manifest.json"), string(raw)+"\n"); err != nil {
-		return AICollaborationInjectResult{SkillPath: target, Backups: backups}, err
+		return target, backups, err
 	}
-	return AICollaborationInjectResult{OK: true, SkillPath: target, Backups: backups}, nil
+	return target, backups, nil
 }

@@ -1355,6 +1355,7 @@ func defaultFullBootToolNames() []string {
 		"move_file",
 		"multi_edit",
 		"notebook_edit",
+		"notify_me",
 		"parallel_tasks",
 		"read_file",
 		"read_only_skill",

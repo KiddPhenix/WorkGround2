@@ -42,9 +42,12 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 
 `ask`, `browser_attach`, `browser_click`, `browser_close`, `browser_navigate`, `browser_open`, `browser_scroll`, `browser_state`, `browser_tab`, `browser_type`, `browser_upload`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
-`lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
+`lsp_references`, `memory`, `notify_me`, `parallel_tasks`, `read_only_skill`,
 `read_only_task`, `read_session`, `read_skill`, `rebuild_vocabulary`, `remember`, `request_help`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+`notify_me` 会在用户明确要求的任务进入终态后，创建一条持久且无需回复的主人通知。
+它有副作用，在计划模式和 Token Economy 模式下不可用；用户配置的 deny/ask 规则仍优先于默认允许规则。
 
 十个运行时绑定的浏览器工具按用户共享一个持久化自动化浏览器（跨 Controller、Task、设置重建和应用重启复用）：
 
