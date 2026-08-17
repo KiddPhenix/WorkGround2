@@ -10,13 +10,6 @@ Concise, incremental index of confirmed feature locations in this repository.
 
 ## Entries
 
-### DecisionBroker 全局主人决策通道
-- Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/decision_skill`
-- Summary: 状态 `done`，分支 `developping/decision-entry-sidebar+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；已连接 Bot 可一键设为问答通道；`ask` 进入全局问答队列，`notify` 直接进入历史并复用持久 outbox，不占用问答槽；微信用户侧隐藏 Decision ID、命令协议和原始远端 ID；遮挡内容的右下角固定入口已移到侧边栏收起按钮旁，以纯图标打开主人决策。
-- Keywords: DecisionBroker, Owner Inbox, Decision Center, human decision, Ask, Notify, Weixin, resolve, defer, waiting_decision, decision skill
-- Source: user-requested+verified-by-search
-- Updated: 2026-08-16
-
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `desktop/frontend/src/components/CapabilitiesPanel.tsx`, `cmd/workground2-addon-pack`, `scripts/build-addons.ps1`, `docs/addons`, `D:\Work\wg2addons`, `D:\Work\WG2AddOnsExample`
 - Summary: plugin package 是运行时 AddOn 的落点，负责安装来源、manifest、启用状态、skill/hook/MCP/AddOn metadata 合并和桌面管理入口；外部 AddOn 包已迁移到 `D:\Work\wg2addons`，`docs/HOST_INTERFACES.zh-CN.md` 记录主项目提供给 AddOn 的 manifest、安装/打包、MCP newline JSON-RPC、panel/query/action、runtime env、skills/protected frontmatter、hooks 和公开 `pkg/drawaddon` 接口；`D:\Work\WG2AddOnsExample` 是可推送的示例仓库。
@@ -51,6 +44,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: cli.Run, WorkGround2 run, desktop status, pendingInteraction, desktop answer, desktop approve, serve, setup, bot, mcp, plugin
 - Source: verified-by-search
 - Updated: 2026-07-10
+
+### DecisionBroker 全局主人决策通道
+- Location: `docs/DECISION_BROKER_DESIGN.zh-CN.md`, `internal/decision`, `desktop/decision_app.go`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/DecisionCenter.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/decision_skill`
+- Summary: 状态 `done`，分支 `developping/decision-entry-sidebar+2026-08-16`；应用级 Broker 汇聚跨 workspace/Agent 的长期人类决策，统一桌面与微信抢答、全局串行、静默策略、原子持久化、审计和可重试投递；已连接 Bot 可一键设为问答通道；`ask` 进入全局问答队列，`notify` 直接进入历史并复用持久 outbox，不占用问答槽；微信用户侧隐藏 Decision ID、命令协议和原始远端 ID；遮挡内容的右下角固定入口已移到侧边栏收起按钮旁，以纯图标打开主人决策。
+- Keywords: DecisionBroker, Owner Inbox, Decision Center, human decision, Ask, Notify, Weixin, resolve, defer, waiting_decision, decision skill
+- Source: user-requested+verified-by-search
+- Updated: 2026-08-16
 
 ### Desktop AI 协作导出
 - Location: `desktop/ai_collaboration_app.go`, `desktop/ai_collaboration_app_test.go`, `desktop/ai_collaboration_skill/`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`
@@ -303,6 +303,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Keywords: PreviewWorkPatch, ApplyWorkPatch, DeriveTaskID, pending node, V2TaskRuntime
 - Source: verified-by-search
 - Updated: 2026-08-01
+
+### Work 模式模型路由
+- Location: `internal/boot/boot.go`, `WorkGround2.toml`, `desktop/work_chat.go`
+- Summary: Work Session、结构规划、输入推断、Patch 规划和任务执行均由 Controller 启动时解析的模型 Provider 驱动；结构规划/输入推断在配置独立 planner_model 时改用 Planner，其余仍用执行模型。
+- Keywords: Work mode, default_model, planner_model, workDefinitionProv, execProv, TaskExecutorAdapter
+- Source: verified-by-search
+- Updated: 2026-08-17
 
 ### Work 结构化产物能力预执行
 - Location: `internal/work/ports.go`, `internal/work/scheduler_v2.go`, `internal/agent/agent.go`, `internal/control/controller.go`, `internal/control/taskexec.go`
