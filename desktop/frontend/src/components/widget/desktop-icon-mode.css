@@ -1,0 +1,131 @@
+:root:has(.desktop-icon-mode) {
+  background: transparent;
+  color-scheme: dark;
+}
+
+body:has(.desktop-icon-mode),
+body:has(.desktop-icon-mode) #root {
+  overflow: clip;
+  background: transparent !important;
+}
+
+.desktop-icon-mode {
+  --icon-size: 58px;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  color: #f7f7fb;
+  font-family: var(--font-ui, "Segoe UI Variable Text", "Microsoft YaHei UI", sans-serif);
+  pointer-events: auto;
+  background: transparent;
+	overflow: hidden;
+}
+
+.desktop-icon-grid {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  display: grid;
+  gap: 6px;
+  max-width: calc(100vw - 36px);
+}
+
+.desktop-icon-row { display: flex; justify-content: flex-end; align-items: end; gap: 6px; min-height: 78px; }
+.desktop-icon-row--top { padding-right: 4px; }
+.desktop-icon-row--bottom .desktop-icon-wrap--workspace { margin-left: 8px; }
+.desktop-icon-row--bottom .desktop-icon-wrap--fixed:first-of-type { margin-left: 8px; }
+.desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; }
+
+.desktop-icon {
+  position: relative;
+  width: 66px;
+  min-height: 74px;
+  padding: 4px 2px 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #f5f7fb;
+  background: transparent;
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+}
+
+.desktop-icon:hover, .desktop-icon:focus-visible, .desktop-icon[aria-expanded="true"] { background: rgb(94 111 148 / 22%); border-color: rgb(193 210 255 / 30%); outline: none; }
+.desktop-icon:focus-visible { box-shadow: 0 0 0 2px #a88cff; }
+.desktop-icon__art { position: relative; display: grid; place-items: center; width: var(--icon-size); height: var(--icon-size); margin: 0 auto; border-radius: 13px; background: linear-gradient(145deg, #303440, #151821); border: 1px solid rgb(255 255 255 / 16%); box-shadow: 0 8px 18px rgb(0 0 0 / 35%); transition: transform 120ms ease, filter 120ms ease; }
+.desktop-icon:hover .desktop-icon__art { transform: translateY(-2px); filter: brightness(1.13); }
+.desktop-icon__art > svg { width: 29px; height: 29px; stroke-width: 1.7; }
+.desktop-icon__shortcut { position: absolute; left: -2px; bottom: -2px; display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #172033; border-radius: 3px; color: #10213a; background: #f4f8ff; box-shadow: 0 1px 3px rgb(0 0 0 / 45%); }
+.desktop-icon__shortcut > svg { width: 13px; height: 13px; stroke-width: 2.8; }
+.desktop-icon__letter { font-size: 22px; font-weight: 720; color: #cfc1ff; }
+.desktop-icon__label { display: block; overflow: hidden; margin-top: 3px; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
+.desktop-icon__unread, .desktop-icon__activity { position: absolute; z-index: 3; right: 1px; top: 0; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; color: white; background: #7450df; border: 2px solid #171922; font-size: 10px; font-weight: 700; }
+.desktop-icon__activity { background: #137d89; }
+.desktop-icon__status { position: absolute; z-index: 4; right: 1px; top: 41px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; border: 2px solid #171922; background: #4a2b8f; }
+.desktop-icon__status svg { width: 13px; height: 13px; stroke-width: 3; }
+.desktop-icon--done .desktop-icon__status { background: #16865e; }
+.desktop-icon--failed .desktop-icon__status { background: #c73749; }
+.desktop-icon--needs_confirm .desktop-icon__status { background: #b48620; }
+.desktop-icon__ring { position: absolute; left: 2px; top: 2px; width: 62px; height: 62px; border: 2px solid transparent; border-top-color: #aa8cff; border-right-color: #54d9df; border-radius: 18px; animation: desktop-icon-spin 3.2s linear infinite; }
+
+.desktop-icon-popup {
+	--arrow-left: 50%;
+  position: absolute;
+  bottom: 104px;
+  width: min(330px, calc(100vw - 20px));
+  padding: 15px;
+  border: 1px solid rgb(184 169 238 / 32%);
+  border-radius: 12px;
+  background: rgb(25 27 34 / 96%);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 48%);
+  backdrop-filter: blur(18px);
+}
+.desktop-icon-popup--preview { width: auto; max-width: 300px; padding: 9px 12px; pointer-events: auto; }
+.desktop-icon-popup--preview p { margin: 0; white-space: nowrap; }
+.desktop-icon-popup__arrow { position: absolute; left: var(--arrow-left); bottom: -7px; width: 13px; height: 13px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgb(184 169 238 / 32%); border-bottom: 1px solid rgb(184 169 238 / 32%); background: #191b22; }
+.desktop-icon-popup__eyebrow { margin-bottom: 5px; color: #ad92ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.desktop-icon-popup strong { display: block; font-size: 15px; }
+.desktop-icon-popup p { margin: 8px 0 12px; color: #d8dbe4; line-height: 1.45; }
+.desktop-icon-popup button, .desktop-icon-popup input, .desktop-icon-popup textarea, .desktop-icon-menu button, .desktop-icon-exit { min-height: 36px; font: inherit; }
+.desktop-icon-popup button { padding: 7px 12px; border: 1px solid #8e74e3; border-radius: 7px; color: white; background: #5e43b5; }
+.desktop-icon-popup button.subtle { border-color: rgb(255 255 255 / 16%); background: transparent; }
+.desktop-icon-popup button.danger { border-color: #a74655; background: #652c39; }
+.desktop-icon-popup button:focus-visible, .desktop-icon-menu button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
+.desktop-icon-popup button:disabled { opacity: .55; }
+.desktop-icon-popup__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.desktop-icon-popup__answers { display: grid; gap: 7px; }
+.desktop-icon-popup__answers > button { display: grid; width: 100%; text-align: left; }
+.desktop-icon-popup__answers small { color: #ccc4e4; }
+.desktop-icon-popup input, .desktop-icon-popup textarea { box-sizing: border-box; width: 100%; border: 1px solid #4e5261; border-radius: 8px; color: white; background: #101218; padding: 8px 10px; }
+.desktop-icon-popup textarea { min-height: 126px; resize: vertical; }
+.desktop-icon-popup__facts { display: flex; gap: 6px; flex-wrap: wrap; }
+.desktop-icon-popup__facts span { padding: 3px 7px; border-radius: 10px; background: #30333d; color: #cfd2dc; font-size: 11px; }
+.desktop-icon-popup__stages { margin: 10px 0; padding-left: 20px; color: #aeb2bf; font-size: 12px; }
+.desktop-icon-popup__stages .done::marker { color: #38b887; }
+.desktop-icon-popup__stages .active::marker { color: #a78bfa; }
+.desktop-icon-popup__history { display: block; margin-top: 9px; color: #8f93a0; }
+.desktop-icon-popup__workspace { display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; gap: 8px; margin-bottom: 10px; text-align: center; }
+.desktop-icon-popup__workspace button { padding: 4px; }
+.desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
+.desktop-icon-popup__searchbox { display: grid; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
+.desktop-icon-popup__searchbox svg { width: 18px; }
+.desktop-icon-popup__searchbox button { padding: 4px; border: 0; background: transparent; }
+.desktop-icon-popup__results { max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
+.desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
+.desktop-icon-popup__results small { color: #969ba8; }
+
+.desktop-icon-menu { position: absolute; right: 0; bottom: 78px; z-index: 4; display: grid; min-width: 126px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
+.desktop-icon-menu button { padding: 6px 9px; border: 0; color: #e8eaf0; background: transparent; text-align: left; }
+.desktop-icon-menu button:hover { background: #353947; }
+.desktop-icon-toast { position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; max-width: 420px; padding: 9px 12px; border: 1px solid #8f3949; border-radius: 8px; background: #321c23; }
+.desktop-icon-toast button { width: 28px; height: 28px; border: 0; color: inherit; background: transparent; }
+.desktop-icon-toast svg { width: 16px; }
+.desktop-icon-exit { position: absolute; left: 10px; top: 10px; padding: 7px 11px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 7px; color: #d8dbe4; background: rgb(22 24 31 / 84%); opacity: .34; }
+.desktop-icon-exit:hover, .desktop-icon-exit:focus-visible { opacity: 1; }
+
+@keyframes desktop-icon-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .desktop-icon__ring { animation: none; border-color: #9b83e8 #54d9df #9b83e8 #54d9df; }
+  .desktop-icon__art { transition: filter 80ms linear; }
+  .desktop-icon:hover .desktop-icon__art { transform: none; }
+}

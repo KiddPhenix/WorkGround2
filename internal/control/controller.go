@@ -661,10 +661,17 @@ func (c *Controller) beginCheckpoint(input string) {
 // it finishes (Err set on failure; nil also for a user Cancel). A no-op if a
 // turn is already in flight.
 func (c *Controller) runGuarded(body func(ctx context.Context) error) {
+	c.tryRunGuarded(body)
+}
+
+// tryRunGuarded atomically accepts one turn or reports that another turn owns
+// the controller. Callers that must not silently drop input use its boolean;
+// legacy fire-and-forget entry points keep using runGuarded.
+func (c *Controller) tryRunGuarded(body func(ctx context.Context) error) bool {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
@@ -708,6 +715,7 @@ func (c *Controller) runGuarded(body func(ctx context.Context) error) {
 		}
 		c.sink.Emit(event.Event{Kind: event.TurnDone, Err: explainError(err)})
 	}()
+	return true
 }
 
 // Send starts a turn with an uncomposed message. The controller applies
@@ -898,6 +906,15 @@ func (c *Controller) SubmitEditedDisplay(display, input, original string) {
 // user-authored prompt text without expanding the command surface.
 func (c *Controller) SubmitUserTurn(input, display string) {
 	c.runRefTurn(input, display)
+}
+
+// TrySubmitUserTurn uses the same reference-aware user-turn pipeline as
+// SubmitUserTurn while returning whether the turn was atomically accepted.
+// false means busy; no user input was queued or written.
+func (c *Controller) TrySubmitUserTurn(input, display string) bool {
+	return c.tryRunGuarded(func(ctx context.Context) error {
+		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
+	})
 }
 
 func (c *Controller) submit(input, display, editedOriginal string) {

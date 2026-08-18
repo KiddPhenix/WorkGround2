@@ -276,6 +276,28 @@ export interface WidgetConversationResult {
   snapshot: WidgetSnapshot;
 }
 
+export type DesktopIconStatus = "idle" | "unread" | "thinking" | "running" | "needs_input" | "needs_confirm" | "done" | "failed";
+
+export interface DesktopIconNotice {
+  id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
+  priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
+  readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+}
+
+export interface DesktopIconPosition { row: "top" | "bottom"; zone: "conversation" | "running" | "workspace" | "fixed"; order: number; }
+export interface DesktopIconRuntime { phase: string; summary: string; elapsedMs: number; updatedAt: number; }
+export interface DesktopIconItem {
+  id: string; kind: "room" | "person" | "task" | "workspace" | "fixed"; sourceId: string; title: string;
+  subtitle?: string; icon?: string; status: DesktopIconStatus; unreadCount: number; activityCount?: number; notifications: DesktopIconNotice[];
+  runtimeStatus?: DesktopIconRuntime; position: DesktopIconPosition; revision: string; retained?: boolean;
+}
+export interface DesktopIconSnapshot { items: DesktopIconItem[]; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
+export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
+export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
+export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
+export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
+export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+
 // AppBindings is the hand-written contract between the React app and the Go
 // kernel. It uses local types (types.ts) so components don't import generated
 // model classes. _CheckGeneratedBindings catches drift: when a Go method is
@@ -315,6 +337,10 @@ export interface AppBindings extends WailsWorkBindings {
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
+	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
+	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
+	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
 	RefreshWidgetWindowRegion(): Promise<void>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -631,6 +657,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
   SetDesktopWidgetSkin(skin: string): Promise<void>;
+  SetDesktopWidgetStyle(style: string): Promise<void>;
+  SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
   SetMemoryCompilerEnabled(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
@@ -1155,6 +1183,11 @@ function mockWidgetSkin(): string {
   return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
 }
 
+function mockWidgetStyle(): "pager" | "icons" {
+  if (typeof window === "undefined") return "pager";
+  return new URLSearchParams(window.location.search).get("widgetStyle") === "icons" ? "icons" : "pager";
+}
+
 // mockDecisionSkillExportFn lets tests drive the browser mock's
 // ExportDecisionSkills outcome (exported/canceled/failure) without touching
 // Wails. Null (the default) uses the canned success result below.
@@ -1175,6 +1208,7 @@ function makeMockApp(): AppBindings {
     : new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
   const desktopZoomFactor = mockDesktopZoomFactor();
   const desktopWidgetSkin = mockWidgetSkin();
+	let desktopWidgetStyle = mockWidgetStyle();
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1316,6 +1350,16 @@ function makeMockApp(): AppBindings {
       },
     };
   };
+	const mockDesktopIconSnapshot = (): DesktopIconSnapshot => ({
+		style: desktopWidgetStyle, revision: `icons-${widgetRevision}`, hoverStatusDelayMs: settings?.hoverStatusDelayMs ?? 1200,
+		unreadRevision: widgetRevision,
+		items: [
+			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
+			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: "thinking", unreadCount: 0, runtimeStatus: { phase: "Thinking", summary: "正在整理交互状态", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
+			{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] },
+			...(["new", "delegate", "knowledge", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", knowledge: "知识库", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
+		],
+	});
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
     {
@@ -1840,6 +1884,8 @@ function makeMockApp(): AppBindings {
     widgetEnabled: true,
     widgetAlwaysOnTop: true,
     widgetSkin: "classic",
+		widgetStyle: "pager",
+		hoverStatusDelayMs: 1200,
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
     providerKinds: ["cli", "openai"],
@@ -1847,6 +1893,7 @@ function makeMockApp(): AppBindings {
     bypass: false,
   };
   settings.widgetSkin = desktopWidgetSkin;
+	settings.widgetStyle = desktopWidgetStyle;
   let sessionBackgroundSettings: SessionBackgroundSettingsView = {
 		mode: "pattern",
     enabled: false,
@@ -2518,6 +2565,23 @@ function makeMockApp(): AppBindings {
 				{ scope: "global", name: "Global" },
 			];
 		},
+		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async DesktopIconSearch(query) {
+			const needle = query.trim().toLowerCase();
+			const items: DesktopIconSearchItem[] = [
+				{ id: "search:task", kind: "task", title: "实现桌面图标模式", subtitle: "WorkGround2", sourceId: "mock-task" },
+				{ id: "search:workspace", kind: "workspace", title: "WorkGround2", subtitle: "~/projects/WorkGround2", sourceId: "~/projects/WorkGround2" },
+			];
+			return { items: items.filter((item) => `${item.title} ${item.subtitle || ""}`.toLowerCase().includes(needle)) };
+		},
+		async ApplyDesktopIconAction(input) {
+			const current = mockDesktopIconSnapshot();
+			const item = current.items.find((candidate) => candidate.id === input.itemId);
+			if (!item || item.revision !== input.revision) return { status: "stale", error: "图标状态已经变化", snapshot: current };
+			widgetRevision += 1;
+			return { status: "accepted", snapshot: mockDesktopIconSnapshot() };
+		},
+		async SetDesktopIconHitRegions() {},
 		async RefreshWidgetWindowRegion() {
 			// no-op in mock — the real Wails binding calls the Go backend
 		},
@@ -4201,7 +4265,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetSkin } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetSkin, widgetStyle, hoverStatusDelayMs } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -4215,6 +4279,8 @@ function makeMockApp(): AppBindings {
         checkUpdates,
         widgetEnabled,
         widgetSkin,
+			widgetStyle,
+			hoverStatusDelayMs,
       })) as DesktopStartupSettingsView;
     },
     async Settings() {
@@ -4521,6 +4587,8 @@ function makeMockApp(): AppBindings {
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;
         },
+		async SetDesktopWidgetStyle(style: string) { desktopWidgetStyle = style === "icons" ? "icons" : "pager"; settings.widgetStyle = desktopWidgetStyle; },
+		async SetDesktopHoverStatusDelayMs(delay: number) { settings.hoverStatusDelayMs = Math.max(0, Math.min(10_000, delay)); },
         async SetMemoryCompilerEnabled(enabled: boolean) {
           settings.memoryCompilerEnabled = enabled;
         },

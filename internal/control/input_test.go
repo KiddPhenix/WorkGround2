@@ -37,6 +37,21 @@ type fakeTurnRunner struct {
 	memoryCompilerSkips  []bool
 }
 
+type blockingTurnRunner struct {
+	started chan string
+	release chan struct{}
+}
+
+func (r *blockingTurnRunner) Run(ctx context.Context, input string) error {
+	r.started <- input
+	select {
+	case <-r.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (f *fakeTurnRunner) Run(ctx context.Context, input string) error {
 	f.inputs = append(f.inputs, input)
 	f.memoryCompilerSkips = append(f.memoryCompilerSkips, agent.MemoryCompilerSkipFromContext(ctx))
@@ -713,6 +728,33 @@ func TestSubmitUserTurnBypassesCommandDispatch(t *testing.T) {
 	if runner.inputs[0] != "!echo should stay a prompt" || runner.inputs[1] != "/clear" {
 		t.Fatalf("SubmitUserTurn inputs = %q", runner.inputs)
 	}
+}
+
+func TestTrySubmitUserTurnReportsBusyWithoutDroppingRetry(t *testing.T) {
+	runner := &blockingTurnRunner{started: make(chan string, 2), release: make(chan struct{})}
+	events := make(chan event.Event, 4)
+	c := New(Options{AutoPlan: "off", Runner: runner, Sink: event.FuncSink(func(e event.Event) { events <- e })})
+	if !c.TrySubmitUserTurn("first", "first") {
+		t.Fatal("first turn was not accepted")
+	}
+	if got := <-runner.started; got != "first" {
+		t.Fatalf("first input = %q", got)
+	}
+	if c.TrySubmitUserTurn("retry", "retry") {
+		t.Fatal("busy controller accepted a second turn")
+	}
+	close(runner.release)
+	waitForTurnDone(t, events)
+
+	runner.release = make(chan struct{})
+	if !c.TrySubmitUserTurn("retry", "retry") {
+		t.Fatal("retry was not accepted after the controller became idle")
+	}
+	if got := <-runner.started; got != "retry" {
+		t.Fatalf("retry input = %q", got)
+	}
+	close(runner.release)
+	waitForTurnDone(t, events)
 }
 
 func TestSubmitRememberCommandQuickAddsMemory(t *testing.T) {

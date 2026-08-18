@@ -24,8 +24,11 @@ var (
 	procEnumDisplay       = user32.NewProc("EnumDisplayMonitors")
 	procMonitorFromWindow = user32.NewProc("MonitorFromWindow")
 	procGetMonitorInfoW   = user32.NewProc("GetMonitorInfoW")
+	procGetClientRect     = user32.NewProc("GetClientRect")
 	procSetWindowRgn      = user32.NewProc("SetWindowRgn")
 	procCreatePolygonRgn  = gdi32.NewProc("CreatePolygonRgn")
+	procCreateRectRgn     = gdi32.NewProc("CreateRectRgn")
+	procCombineRgn        = gdi32.NewProc("CombineRgn")
 	procDeleteObject      = gdi32.NewProc("DeleteObject")
 	procGetDpiForMonitor  = shcore.NewProc("GetDpiForMonitor")
 	procDwmFlush          = dwmapi.NewProc("DwmFlush")
@@ -341,6 +344,32 @@ func defaultWidgetWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowS
 	return state
 }
 
+func nativeDefaultDesktopIconWindowState(_ context.Context) (WidgetWindowState, bool) {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return WidgetWindowState{}, false
+	}
+	monitor, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), monitorDefaultNearest)
+	if monitor == 0 {
+		return WidgetWindowState{}, false
+	}
+	info := w32MonitorInfo{Size: uint32(unsafe.Sizeof(w32MonitorInfo{}))}
+	ret, _, _ := procGetMonitorInfoW.Call(monitor, uintptr(unsafe.Pointer(&info)))
+	if ret == 0 {
+		return WidgetWindowState{}, false
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(uintptr(hwnd))
+	return defaultDesktopIconWindowStateForWorkArea(info.Work, uint32(dpi)), true
+}
+
+func defaultDesktopIconWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowState {
+	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
+	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
+	width := min(desktopIconWidth, max(desktopIconMinWidth, logicalWidth-widgetEdgeGap*2))
+	height := min(desktopIconHeight, max(desktopIconMinHeight, logicalHeight-widgetBottomGap*2))
+	return WidgetWindowState{Width: width, Height: height, X: int(work.Right) - scaleForDPI(width+widgetEdgeGap, dpi), Y: int(work.Bottom) - scaleForDPI(height+widgetBottomGap, dpi)}
+}
+
 // setWidgetWindowRegion clips the native window to the same octagonal shape as
 // the CSS clip-path on .widget-shell. width and height come from Wails window
 // coordinates; SetWindowRgn needs them scaled by the target window DPI.
@@ -375,6 +404,55 @@ func setWidgetWindowRegion(width, height int) error {
 		return fmt.Errorf("setWidgetWindowRegion: SetWindowRgn failed")
 	}
 	return redrawWidgetWindow(hwnd)
+}
+
+func setDesktopIconHitRegions(rects []DesktopIconRect) error {
+	hwnd := findWidgetHWND()
+	if hwnd == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: window not found")
+	}
+	if len(rects) == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: at least one hit rectangle is required")
+	}
+	var client w32Rect
+	ret, _, _ := procGetClientRect.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&client)))
+	if ret == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: GetClientRect failed")
+	}
+	rects = normalizeDesktopIconRects(rects, int(client.Right-client.Left), int(client.Bottom-client.Top))
+	if len(rects) == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: no hit rectangle intersects the client area")
+	}
+	combined, _, _ := procCreateRectRgn.Call(0, 0, 0, 0)
+	if combined == 0 {
+		return fmt.Errorf("setDesktopIconHitRegions: CreateRectRgn failed")
+	}
+	for _, rect := range rects {
+		left, top := rect.X, rect.Y
+		right, bottom := rect.X+rect.Width, rect.Y+rect.Height
+		part, _, _ := procCreateRectRgn.Call(uintptr(left), uintptr(top), uintptr(right), uintptr(bottom))
+		if part == 0 {
+			procDeleteObject.Call(combined)
+			return fmt.Errorf("setDesktopIconHitRegions: CreateRectRgn part failed")
+		}
+		result, _, _ := procCombineRgn.Call(combined, combined, part, 2) // RGN_OR
+		procDeleteObject.Call(part)
+		if result == 0 {
+			procDeleteObject.Call(combined)
+			return fmt.Errorf("setDesktopIconHitRegions: CombineRgn failed")
+		}
+	}
+	// Replace the region in one operation. Restoring the full window before every
+	// update makes the whole transparent surface flash during icon clicks.
+	ret, _, _ = procSetWindowRgn.Call(uintptr(hwnd), combined, 1)
+	if ret == 0 {
+		procDeleteObject.Call(combined)
+		return fmt.Errorf("setDesktopIconHitRegions: apply hit region failed")
+	}
+	// bRedraw=TRUE already invalidates the visible region. A second synchronous
+	// RedrawWindow/DwmFlush can present the old and new transparent surfaces in
+	// separate frames, which exposes region edges as orange seams.
+	return nil
 }
 
 // clearWidgetWindowRegion restores the native window to a full rectangle.

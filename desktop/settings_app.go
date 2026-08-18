@@ -229,6 +229,8 @@ type SettingsView struct {
 	WidgetEnabled           bool                      `json:"widgetEnabled"`
 	WidgetAlwaysOnTop       bool                      `json:"widgetAlwaysOnTop"`
 	WidgetSkin              string                    `json:"widgetSkin"`
+	WidgetStyle             string                    `json:"widgetStyle"`
+	HoverStatusDelayMs      int                       `json:"hoverStatusDelayMs"`
 	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
 	ExpandThinking          bool                      `json:"expandThinking"`
 	ConfigPath              string                    `json:"configPath"`
@@ -260,6 +262,8 @@ type DesktopStartupSettingsView struct {
 	CheckUpdates       bool            `json:"checkUpdates"`
 	WidgetEnabled      bool            `json:"widgetEnabled"`
 	WidgetSkin         string          `json:"widgetSkin"`
+	WidgetStyle        string          `json:"widgetStyle"`
+	HoverStatusDelayMs int             `json:"hoverStatusDelayMs"`
 }
 
 func nonNil(s []string) []string {
@@ -540,6 +544,8 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			CheckUpdates:       true,
 			WidgetEnabled:      true,
 			WidgetSkin:         "classic",
+			WidgetStyle:        "pager",
+			HoverStatusDelayMs: 1200,
 		}
 	}
 	return DesktopStartupSettingsView{
@@ -555,6 +561,8 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		CheckUpdates:       cfg.DesktopCheckUpdates(),
 		WidgetEnabled:      cfg.DesktopWidgetEnabled(),
 		WidgetSkin:         cfg.DesktopWidgetSkin(),
+		WidgetStyle:        cfg.DesktopWidgetStyle(),
+		HoverStatusDelayMs: cfg.DesktopHoverStatusDelayMs(),
 	}
 }
 
@@ -608,6 +616,8 @@ func (a *App) Settings() SettingsView {
 			WidgetEnabled:           true,
 			WidgetAlwaysOnTop:       true,
 			WidgetSkin:              "classic",
+			WidgetStyle:             "pager",
+			HoverStatusDelayMs:      1200,
 			MemoryCompiler:          true,
 			ExpandThinking:          false,
 		}
@@ -676,6 +686,8 @@ func (a *App) Settings() SettingsView {
 		WidgetEnabled:           cfg.DesktopWidgetEnabled(),
 		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
 		WidgetSkin:              cfg.DesktopWidgetSkin(),
+		WidgetStyle:             cfg.DesktopWidgetStyle(),
+		HoverStatusDelayMs:      cfg.DesktopHoverStatusDelayMs(),
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
 		ConfigPath:              cfgPath,
@@ -2401,6 +2413,42 @@ func (a *App) SetDesktopWidgetSkin(skin string) error {
 	}
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "widget:skin", skin)
+	}
+	return nil
+}
+
+func (a *App) SetDesktopWidgetStyle(style string) error {
+	style = strings.ToLower(strings.TrimSpace(style))
+	probe := &config.Config{}
+	if err := probe.SetDesktopWidgetStyle(style); err != nil {
+		return err
+	}
+	style = probe.DesktopWidgetStyle()
+	cfg, _, err := a.loadDesktopUserConfigForView()
+	if err != nil {
+		return err
+	}
+	oldStyle := cfg.DesktopWidgetStyle()
+	alwaysOnTop := cfg.DesktopWidgetAlwaysOnTop()
+	if err := a.switchDesktopWidgetStyle(style, alwaysOnTop); err != nil {
+		return fmt.Errorf("switch widget style: %w", err)
+	}
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetStyle(style) }); err != nil {
+		_ = a.switchDesktopWidgetStyle(oldStyle, alwaysOnTop)
+		return err
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:style", strings.ToLower(strings.TrimSpace(style)))
+	}
+	return nil
+}
+
+func (a *App) SetDesktopHoverStatusDelayMs(delay int) error {
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopHoverStatusDelayMs(delay) }); err != nil {
+		return err
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:hover-delay", delay)
 	}
 	return nil
 }

@@ -117,6 +117,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if skin := c.DesktopWidgetSkin(); skin != "classic" {
 			fmt.Fprintf(&b, "widget_skin = %q   # desktop: widget visual skin: classic|bp|instant|pet|recorder\n", skin)
 		}
+		fmt.Fprintf(&b, "widget_style = %q   # desktop: pager|icons widget presentation\n", c.DesktopWidgetStyle())
+		fmt.Fprintf(&b, "hover_status_delay_ms = %d   # desktop icon widget preview delay; 0 disables delayed preview\n", c.DesktopHoverStatusDelayMs())
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}

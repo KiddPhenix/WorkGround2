@@ -241,6 +241,10 @@ func (a *App) RefreshWidgetWindowRegion() error {
 	if a.ctx == nil {
 		return nil
 	}
+	style, _ := a.desktopIconPreferences()
+	if style == "icons" {
+		return nil
+	}
 	return a.refreshWidgetRegion(
 		func() (int, int) { return runtime.WindowGetSize(a.ctx) },
 		setWidgetWindowRegion,
@@ -263,6 +267,68 @@ func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) err
 		return err
 	}
 	return setWidgetWindowRegion(state.Width, state.Height)
+}
+
+func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool) error {
+	runtime.WindowUnmaximise(a.ctx)
+	runtime.WindowSetMinSize(a.ctx, desktopIconMinWidth, desktopIconMinHeight)
+	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
+	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+		return err
+	}
+	// Keep the full transparent surface available until React reports the first
+	// real icon rectangles. Pre-clipping to the exit button prevents WebView2
+	// from composing the later bottom-right controls outside that tiny region.
+	return clearWidgetWindowRegion()
+}
+
+func (a *App) switchDesktopWidgetStyle(style string, alwaysOnTop bool) error {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode || a.widgetStyle == style {
+		return nil
+	}
+	w, h := runtime.WindowGetSize(a.ctx)
+	x, y := runtime.WindowGetPosition(a.ctx)
+	oldStyle := a.widgetStyle
+	oldState := WidgetWindowState{Width: w, Height: h, X: x, Y: y}
+	saveOld := saveWidgetWindowState
+	if oldStyle == "icons" {
+		saveOld = saveDesktopIconWindowState
+	}
+	if err := saveOld(oldState); err != nil {
+		return fmt.Errorf("save %s widget geometry: %w", oldStyle, err)
+	}
+	target, ok := loadWidgetWindowState()
+	if style == "icons" {
+		var windowErr error
+		target, ok, windowErr = loadDesktopIconWindowState()
+		a.recordDesktopIconWindowError(windowErr)
+	}
+	if !ok {
+		if style == "icons" {
+			target = defaultDesktopIconWindowState(a.ctx)
+		} else {
+			target = defaultWidgetWindowState(a.ctx)
+		}
+	}
+	normalized, err := normalizeWidgetWindowState(a.ctx, target)
+	if err != nil {
+		return err
+	}
+	apply := a.applyWidgetGeometry
+	if style == "icons" {
+		apply = a.applyDesktopIconGeometry
+	}
+	if err := apply(normalized, alwaysOnTop); err != nil {
+		rollback := a.applyWidgetGeometry
+		if oldStyle == "icons" {
+			rollback = a.applyDesktopIconGeometry
+		}
+		return errors.Join(err, rollback(oldState, alwaysOnTop))
+	}
+	a.widgetStyle = style
+	return nil
 }
 
 func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
@@ -305,19 +371,34 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 		if err := saveMainWindowState(mainState); err != nil {
 			return fmt.Errorf("save main window: %w", err)
 		}
+		style, _ := a.desktopIconPreferences()
 		state, ok := loadWidgetWindowState()
+		if style == "icons" {
+			var windowErr error
+			state, ok, windowErr = loadDesktopIconWindowState()
+			a.recordDesktopIconWindowError(windowErr)
+		}
 		if !ok {
-			state = defaultWidgetWindowState(a.ctx)
+			if style == "icons" {
+				state = defaultDesktopIconWindowState(a.ctx)
+			} else {
+				state = defaultWidgetWindowState(a.ctx)
+			}
 		}
 		normalized, normalizeErr := normalizeWidgetWindowState(a.ctx, state)
 		if normalizeErr != nil {
 			return fmt.Errorf("normalize widget window: %w", normalizeErr)
 		}
 		state = normalized
-		if err := a.applyWidgetGeometry(state, widgetAlwaysOnTop); err != nil {
+		apply := a.applyWidgetGeometry
+		if style == "icons" {
+			apply = a.applyDesktopIconGeometry
+		}
+		if err := apply(state, widgetAlwaysOnTop); err != nil {
 			rollbackErr := a.restoreMainGeometry(mainState, true)
 			return errors.Join(fmt.Errorf("apply widget window: %w", err), rollbackErr)
 		}
+		a.widgetStyle = style
 		return nil
 	})
 	if err != nil {
@@ -339,7 +420,12 @@ func (a *App) ExitWidgetMode(tabID string) error {
 		w, h := runtime.WindowGetSize(a.ctx)
 		x, y := runtime.WindowGetPosition(a.ctx)
 		widgetState := WidgetWindowState{Width: w, Height: h, X: x, Y: y}
-		if err := saveWidgetWindowState(widgetState); err != nil {
+		style := a.widgetStyle
+		save := saveWidgetWindowState
+		if style == "icons" {
+			save = saveDesktopIconWindowState
+		}
+		if err := save(widgetState); err != nil {
 			return fmt.Errorf("save widget window: %w", err)
 		}
 		state, ok := loadWindowState()
@@ -349,7 +435,11 @@ func (a *App) ExitWidgetMode(tabID string) error {
 				fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
 				alwaysOnTop = true
 			}
-			rollbackErr := a.applyWidgetGeometry(widgetState, alwaysOnTop)
+			apply := a.applyWidgetGeometry
+			if style == "icons" {
+				apply = a.applyDesktopIconGeometry
+			}
+			rollbackErr := apply(widgetState, alwaysOnTop)
 			return errors.Join(fmt.Errorf("restore main window: %w", err), rollbackErr)
 		}
 		return nil
@@ -397,6 +487,28 @@ func defaultWidgetWindowStateForScreens(width, height int) WidgetWindowState {
 		X: max(widgetEdgeGap, width-widgetWidth-widgetEdgeGap),
 		Y: max(widgetBottomGap, height-widgetHeight-widgetBottomGap),
 	}
+}
+
+func defaultDesktopIconWindowState(ctx context.Context) WidgetWindowState {
+	if state, ok := nativeDefaultDesktopIconWindowState(ctx); ok {
+		return state
+	}
+	screens, err := runtime.ScreenGetAll(ctx)
+	if err != nil || len(screens) == 0 {
+		return WidgetWindowState{Width: desktopIconWidth, Height: desktopIconHeight, X: widgetEdgeGap, Y: widgetBottomGap}
+	}
+	selected := screens[0]
+	for _, screen := range screens {
+		if screen.IsCurrent || (!selected.IsCurrent && screen.IsPrimary) {
+			selected = screen
+		}
+		if screen.IsCurrent {
+			break
+		}
+	}
+	width := min(desktopIconWidth, max(desktopIconMinWidth, selected.Size.Width-widgetEdgeGap*2))
+	height := min(desktopIconHeight, max(desktopIconMinHeight, selected.Size.Height-widgetBottomGap*2))
+	return WidgetWindowState{Width: width, Height: height, X: max(widgetEdgeGap, selected.Size.Width-width-widgetEdgeGap), Y: max(widgetBottomGap, selected.Size.Height-height-widgetBottomGap)}
 }
 
 func (a *App) widgetSources() []widgetSource {

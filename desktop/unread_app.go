@@ -117,6 +117,10 @@ func (a *App) acceptIMUnread(msg bot.InboundMessage) (bot.InboundAcceptance, err
 	a.recordUnreadError(nil)
 	if !receipt.Duplicate {
 		a.emitUnreadState(a.UnreadState())
+		// 新入站消息到达后立即重试待投递的主人决策：微信通道的 context_token
+		// 只在收到用户消息时刷新，主动推送若因 token 缺失/过期失败会进入退避重试，
+		// 这里让刚发消息的用户立刻收到补送的通知/问题，而不是等下一次退避窗口。
+		a.kickDecisionDeliveries(a.bootContext())
 	}
 	return bot.InboundAcceptance{Duplicate: receipt.Duplicate}, nil
 }

@@ -112,7 +112,6 @@ func (a *App) startDecisionRuntime() {
 				a.handleDecisionChange(change)
 			case <-ticker.C:
 				a.retryDecisionApplications()
-				a.suspendLongDecisionPrompt()
 				a.kickDecisionDeliveries(ctx)
 			}
 		}
@@ -513,28 +512,6 @@ func (a *App) retryDecisionApplications() {
 	}
 }
 
-func (a *App) suspendLongDecisionPrompt() {
-	if a == nil || a.decisionBroker == nil {
-		return
-	}
-	active, ok := a.decisionBroker.Active()
-	if !ok || active.PresentedAt == nil {
-		return
-	}
-	grace := a.decisionBroker.Settings().SmartGrace
-	if grace <= 0 || time.Since(*active.PresentedAt) < grace {
-		return
-	}
-	tab := a.decisionOriginTab(active.Origin)
-	if tab == nil || tab.Ctrl == nil {
-		return
-	}
-	pending, ok := tab.Ctrl.PendingInteraction()
-	if ok && pending.Kind == control.PendingInteractionAsk && pending.Ask.ID == active.Origin.LocalRequestID {
-		tab.Ctrl.Cancel()
-	}
-}
-
 func (a *App) decisionForAsk(tabID, localID string) (decision.Decision, bool) {
 	if a == nil || a.decisionBroker == nil {
 		return decision.Decision{}, false
@@ -557,6 +534,17 @@ func (a *App) resolveAskThroughDecision(tabID, localID string, answers []event.A
 	value, ok := a.decisionForAsk(tabID, localID)
 	if !ok {
 		return false, nil
+	}
+	// 桌面 dismiss：空答案表示放弃本次决策，取消决策并取消控制器上挂起的 ask，
+	// 让桌面 prompt 立即关闭，外部通道同步收到"已取消"投递。
+	if len(answers) == 0 {
+		if _, err := a.decisionBroker.Cancel(value.ID); err != nil {
+			return true, err
+		}
+		if tab := a.decisionOriginTab(value.Origin); tab != nil && tab.Ctrl != nil && tab.Ctrl.PendingPrompt() {
+			tab.Ctrl.Cancel()
+		}
+		return true, nil
 	}
 	selections := make([]decision.Selection, len(answers))
 	for i, answer := range answers {
@@ -639,6 +627,11 @@ func (a *App) sendNextDecisionDelivery(parent context.Context, channel decision.
 		ConnectionID: channel.ConnectionID, Domain: channel.Domain, ChatID: channel.ChatID,
 		ChatType: bot.ChatType(channel.ChatType), Text: renderDecisionDelivery(value, delivery.Event),
 	})
+	if err != nil {
+		slog.Warn("desktop: decision delivery failed, will retry",
+			"delivery", delivery.ID, "decision", delivery.DecisionID, "channel", channel.ID,
+			"event", delivery.Event, "attempts", delivery.Attempts+1, "err", err)
+	}
 	retry := time.Now().Add(decisionRetryDelay(delivery.Attempts + 1))
 	_, completeErr := a.decisionBroker.CompleteDelivery(delivery.ID, result.MessageID, err, retry)
 	if completeErr != nil {
@@ -685,7 +678,7 @@ func renderDecisionDelivery(value decision.Decision, kind decision.DeliveryEvent
 	}
 	fmt.Fprintf(&b, "未回答时：%s\n\n", value.Presentation.NoAnswerPolicy)
 	if len(value.Presentation.Questions) == 1 {
-		b.WriteString("请直接回复选项编号，例如：1。")
+		b.WriteString("请直接回复选项编号或选项文字，例如：1 或「复用」。")
 	} else {
 		b.WriteString("请按问题顺序回复选项编号，并用逗号分隔，例如：1,2。")
 	}
@@ -770,7 +763,7 @@ func (a *App) parseDecisionReply(text string) (decision.Decision, []string, bool
 	fields := strings.Fields(text)
 	if len(fields) > 0 && strings.EqualFold(fields[0], "/answer") {
 		if len(fields) < 3 {
-			return decision.Decision{}, nil, true, errors.New("请直接回复选项编号；有多个问题时用逗号分隔")
+			return decision.Decision{}, nil, true, errors.New("请直接回复选项编号或选项文字；有多个问题时用逗号分隔")
 		}
 		value, ok := a.decisionBroker.Get(fields[1])
 		if !ok {
@@ -779,13 +772,136 @@ func (a *App) parseDecisionReply(text string) (decision.Decision, []string, bool
 		return value, strings.Split(strings.Join(fields[2:], ""), ","), true, nil
 	}
 	active, ok := a.decisionBroker.Active()
-	if !ok || len(active.Presentation.Questions) != 1 || len(fields) != 1 {
+	if !ok || len(active.Presentation.Questions) != 1 {
 		return decision.Decision{}, nil, false, nil
 	}
-	if _, err := strconv.Atoi(fields[0]); err != nil {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
 		return decision.Decision{}, nil, false, nil
 	}
-	return active, fields, true, nil
+	// 纯数字编号保持原快捷路径（单字段、无空格）。
+	if len(fields) == 1 {
+		if _, err := strconv.Atoi(fields[0]); err == nil {
+			return active, fields, true, nil
+		}
+	}
+	// 文字回复：按选项文字或序号匹配。
+	choices, handled, err := matchOptionReply(active.Presentation.Questions[0], trimmed)
+	if !handled {
+		return decision.Decision{}, nil, false, nil
+	}
+	return active, choices, true, err
+}
+
+// matchOptionReply 把用户文字回复解析为 1 基选项编号列表。
+// handled=true 表示这确实是一条决策回答：文字唯一命中选项或给出序号时返回对应编号，
+// 序号越界由调用方校验报错，文字匹配到多个选项返回明确错误，完全不匹配返回 handled=false。
+func matchOptionReply(question decision.Question, text string) ([]string, bool, error) {
+	normalized := normalizeOptionText(text)
+	if normalized == "" {
+		return nil, false, nil
+	}
+	// 序号形式：1 / 二 / 第3个 / 选项一 / 选2
+	if n, ok := optionIndexFromText(normalized); ok {
+		return []string{strconv.Itoa(n)}, true, nil
+	}
+	// 精确匹配优先：避免"复用"被"复用并检查"之类的包含关系拖入歧义。
+	exact := make([]int, 0, len(question.Options))
+	for i, option := range question.Options {
+		if label := normalizeOptionText(option.Label); label == normalized {
+			exact = append(exact, i+1)
+		}
+	}
+	if len(exact) > 0 {
+		if len(exact) == 1 {
+			return []string{strconv.Itoa(exact[0])}, true, nil
+		}
+		return nil, true, errors.New("回复匹配到多个选项（" + optionLabels(question, exact) + "），请回复更明确的选项文字")
+	}
+	// 包含匹配：回复包含选项文字或选项文字包含回复，要求唯一命中。
+	contains := make([]int, 0, len(question.Options))
+	for i, option := range question.Options {
+		label := normalizeOptionText(option.Label)
+		if label == "" {
+			continue
+		}
+		if strings.Contains(normalized, label) || strings.Contains(label, normalized) {
+			contains = append(contains, i+1)
+		}
+	}
+	switch len(contains) {
+	case 1:
+		return []string{strconv.Itoa(contains[0])}, true, nil
+	case 0:
+		return nil, false, nil
+	default:
+		return nil, true, errors.New("回复匹配到多个选项（" + optionLabels(question, contains) + "），请回复编号或更明确的选项文字")
+	}
+}
+
+func optionLabels(question decision.Question, indexes []int) string {
+	labels := make([]string, 0, len(indexes))
+	for _, idx := range indexes {
+		labels = append(labels, question.Options[idx-1].Label)
+	}
+	return strings.Join(labels, "、")
+}
+
+// optionIndexFromText 识别序号形式：数字 / 中文数字 / 第X个 / 选项X / 选X（X 可为数字、中文数字或"第N个"）。
+func optionIndexFromText(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	if n, ok := plainOptionIndex(s); ok {
+		return n, true
+	}
+	if strings.HasPrefix(s, "第") {
+		for _, suffix := range []string{"个", "项"} {
+			if mid, ok := plainOptionIndex(strings.TrimSuffix(strings.TrimPrefix(s, "第"), suffix)); ok {
+				return mid, true
+			}
+		}
+	}
+	for _, prefix := range []string{"选项", "选择", "选"} {
+		if !strings.HasPrefix(s, prefix) {
+			continue
+		}
+		if n, ok := optionIndexFromText(strings.TrimPrefix(s, prefix)); ok {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+// plainOptionIndex 识别纯数字或单个中文数字。
+func plainOptionIndex(s string) (int, bool) {
+	if n, err := strconv.Atoi(s); err == nil {
+		return n, true
+	}
+	return chineseNumeral(s)
+}
+
+// chineseNumeral 把单个中文数字映射为阿拉伯数字（十以内）。
+func chineseNumeral(s string) (int, bool) {
+	digits := map[string]int{"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+	n, ok := digits[s]
+	return n, ok
+}
+
+// normalizeOptionText 归一化文本用于匹配：小写、全角数字转半角、中文标点转空白、压缩空白。
+func normalizeOptionText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '，', '。', '！', '？', '、', '；', '：', '（', '）', '．', '·':
+			return ' '
+		}
+		if r >= '０' && r <= '９' {
+			return r - '０' + '0'
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), "")
 }
 
 func decisionAnswerFromChoices(value decision.Decision, choices []string) (decision.Answer, error) {

@@ -54,6 +54,15 @@ func TestDefaultWidgetWindowStateUsesAbsoluteWorkArea(t *testing.T) {
 	}
 }
 
+func TestDefaultDesktopIconWindowStateUsesWorkAreaAndDPI(t *testing.T) {
+	work := w32Rect{Left: -1920, Top: 48, Right: 0, Bottom: 1080}
+	state := defaultDesktopIconWindowStateForWorkArea(work, 120)
+	want := WidgetWindowState{Width: 900, Height: 600, X: -1145, Y: 300}
+	if state != want {
+		t.Fatalf("state = %#v, want %#v", state, want)
+	}
+}
+
 func TestScaleForDPIRoundTrip(t *testing.T) {
 	for _, value := range []int{16, 176, 590, 1536} {
 		physical := scaleForDPI(value, 120)

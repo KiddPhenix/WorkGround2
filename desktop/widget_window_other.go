@@ -27,3 +27,9 @@ func setWidgetWindowRegion(width, height int) error { return nil }
 
 // clearWidgetWindowRegion is a no-op on non-Windows platforms.
 func clearWidgetWindowRegion() error { return nil }
+
+func setDesktopIconHitRegions([]DesktopIconRect) error { return nil }
+
+func nativeDefaultDesktopIconWindowState(context.Context) (WidgetWindowState, bool) {
+	return WidgetWindowState{}, false
+}

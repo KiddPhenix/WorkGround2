@@ -192,3 +192,95 @@ func TestDecisionAnswerFromChoicesSupportsOrderedMultiQuestion(t *testing.T) {
 		t.Fatalf("answer=%+v err=%v", answer, err)
 	}
 }
+
+func TestDecisionInboundAcceptsTextReply(t *testing.T) {
+	newActiveDecision := func(t *testing.T) *App {
+		t.Helper()
+		broker, err := decision.Open("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := broker.UpsertChannel(decision.Channel{ID: "owner-weixin", Name: "主人", Kind: "weixin", Enabled: true, ConnectionID: "wx-main", Domain: "weixin", ChatID: "owner", ChatType: "dm"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := broker.Create(decision.CreateRequest{
+			IdempotencyKey: "agent:text-reply",
+			Origin:         decision.Origin{Kind: "agent", AgentID: "codex"},
+			Presentation: decision.Presentation{
+				Title: "确定主角图", TaskSummary: "正在制作活动页视觉", WhyNow: "批量生成前需要锁定角色策略", NoAnswerPolicy: "保持暂停",
+				Questions: []decision.Question{{ID: "hero", Prompt: "复用还是新建？", Options: []decision.Option{{Label: "复用", Impact: "一致性高"}, {Label: "新建", Impact: "创意空间大"}}}},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return &App{decisionBroker: broker}
+	}
+
+	cases := []struct {
+		name    string
+		text    string
+		handled bool
+		want    string
+	}{
+		{name: "exact label", text: "复用", handled: true, want: "复用"},
+		{name: "label with spaces", text: "选 复用", handled: true, want: "复用"},
+		{name: "chinese numeral", text: "选第二个", handled: true, want: "新建"},
+		{name: "option prefix", text: "选项2", handled: true, want: "新建"},
+		{name: "full-width digits", text: "１", handled: true, want: "复用"},
+		{name: "unrelated text", text: "随便吧", handled: false, want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newActiveDecision(t)
+			msg := bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "wx-main", Domain: "weixin", ChatType: bot.ChatDM, ChatID: "owner", UserID: "u1", UserName: "主人", Text: tc.text}
+			response, handled, err := app.handleDecisionInbound(msg)
+			if handled != tc.handled {
+				t.Fatalf("handled = %v, want %v (response=%q err=%v)", handled, tc.handled, response, err)
+			}
+			if !handled {
+				return
+			}
+			if err != nil {
+				t.Fatalf("reply error = %v", err)
+			}
+			want := "✅ 已收到，你的选择是：「" + tc.want + "」。"
+			if response != want {
+				t.Fatalf("response = %q, want %q", response, want)
+			}
+		})
+	}
+}
+
+func TestMatchOptionReplyPrecedenceAndAmbiguity(t *testing.T) {
+	question := decision.Question{Options: []decision.Option{{Label: "发送"}, {Label: "接收"}, {Label: "发送并接收"}}}
+	// 精确匹配优先于包含匹配："发送" 不应被 "发送并接收" 拖入歧义。
+	choices, handled, err := matchOptionReply(question, "发送")
+	if !handled || err != nil || len(choices) != 1 || choices[0] != "1" {
+		t.Fatalf("发送 = %v handled=%v err=%v", choices, handled, err)
+	}
+	// "接收" 同时被 "发送并接收" 包含，唯一精确命中仍应胜出。
+	choices, handled, err = matchOptionReply(question, "接收")
+	if !handled || err != nil || len(choices) != 1 || choices[0] != "2" {
+		t.Fatalf("接收 = %v handled=%v err=%v", choices, handled, err)
+	}
+	// 包含匹配歧义：短文字命中多个选项时报错。
+	choices, handled, err = matchOptionReply(question, "发送接收")
+	if !handled || err == nil {
+		t.Fatalf("ambiguous reply handled=%v err=%v choices=%v", handled, err, choices)
+	}
+	// 包含匹配唯一命中。
+	choices, handled, err = matchOptionReply(question, "发送到微信")
+	if !handled || err != nil || len(choices) != 1 || choices[0] != "1" {
+		t.Fatalf("发送到微信 = %v handled=%v err=%v", choices, handled, err)
+	}
+	// 完全不匹配：不是决策回答。
+	choices, handled, err = matchOptionReply(question, "今天天气不错")
+	if handled || err != nil {
+		t.Fatalf("unrelated reply handled=%v err=%v choices=%v", handled, err, choices)
+	}
+	// 序号形式。
+	choices, handled, err = matchOptionReply(question, "第2个")
+	if !handled || err != nil || len(choices) != 1 || choices[0] != "2" {
+		t.Fatalf("第2个 = %v handled=%v err=%v", choices, handled, err)
+	}
+}

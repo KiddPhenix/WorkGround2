@@ -1510,6 +1510,8 @@ export interface SettingsView {
   widgetEnabled: boolean; // show the widget entry in the window frame
   widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
   widgetSkin: string; // widget visual skin: classic|bp|instant|pet|recorder
+  widgetStyle?: string; // pager|icons
+  hoverStatusDelayMs?: number;
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
@@ -1556,6 +1558,8 @@ export interface DesktopStartupSettingsView {
   checkUpdates: boolean; // check for new versions on startup
   widgetEnabled: boolean; // show the widget entry in the window frame
   widgetSkin: string; // widget visual skin
+  widgetStyle?: string; // pager|icons
+  hoverStatusDelayMs?: number;
 }
 
 export type DecisionStatus = "queued" | "presented" | "decided" | "applied" | "deferred" | "cancelled" | "orphaned" | "apply_failed";

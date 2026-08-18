@@ -227,12 +227,22 @@ type App struct {
 	widgetActionMu       sync.Mutex
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
+	widgetStyle          string
 	widgetStateLoaded    bool
 	widgetState          widgetPersistedState
 	widgetIdleSince      int64 // protected by widgetActionMu
 	widgetInfoMu         sync.Mutex
 	widgetInfoCache      widgetInfoCache
 	widgetSystemProbe    func() WidgetSystemInfo
+
+	// iconWidgetMu owns the additive desktop-icon widget projection. The
+	// pager widget above remains available; both views consume the same
+	// Controller/unread sources and only persist presentation receipts here.
+	iconWidgetMu          sync.Mutex
+	iconWidgetStateLoaded bool
+	iconWidgetState       desktopIconPersistedState
+	iconWidgetStateErr    error
+	iconWidgetWindowErr   error
 
 	sessionRefs    work.SessionRefStore
 	sessionRefsErr error

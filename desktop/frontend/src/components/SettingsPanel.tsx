@@ -297,7 +297,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetSkin={s.widgetSkin} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetSkin={s.widgetSkin} widgetStyle={s.widgetStyle || "pager"} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -6561,12 +6561,16 @@ export function WidgetSection({
   widgetEnabled,
   widgetAlwaysOnTop,
   widgetSkin,
+	widgetStyle,
+	hoverStatusDelayMs,
   settingsBusy,
   applySettings,
 }: {
   widgetEnabled: boolean;
   widgetAlwaysOnTop: boolean;
   widgetSkin: string;
+	widgetStyle: string;
+	hoverStatusDelayMs: number;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
 }) {
@@ -6583,6 +6587,18 @@ export function WidgetSection({
   return (
     <SettingsSection title={t("settings.tab.widget")}>
       <SettingsField
+		className="settings-field--wide-copy"
+		label={t("settings.widget.styleLabel")}
+		hint={t("settings.widget.styleHint")}
+	  >
+		<div className="settings-segmented" role="radiogroup" aria-label={t("settings.widget.styleLabel")}>
+		  {(["pager", "icons"] as const).map((style) => <button key={style} type="button" role="radio" aria-checked={widgetStyle === style} className={widgetStyle === style ? "active" : ""} disabled={settingsBusy} onClick={() => void applySettings(() => app.SetDesktopWidgetStyle(style))}>{t(style === "icons" ? "settings.widget.styleIcons" : "settings.widget.stylePager")}</button>)}
+		</div>
+	  </SettingsField>
+	  {widgetStyle === "icons" && <SettingsField className="settings-field--wide-copy" label={t("settings.widget.hoverDelayLabel")} hint={t("settings.widget.hoverDelayHint")}>
+		<input type="number" min={0} max={10000} step={100} value={hoverStatusDelayMs} disabled={settingsBusy} aria-label={t("settings.widget.hoverDelayLabel")} onChange={(event) => void applySettings(() => app.SetDesktopHoverStatusDelayMs(Number(event.target.value)))} />
+	  </SettingsField>}
+	  <SettingsField
         className="settings-field--wide-copy"
         label={t("settings.widget.enableLabel")}
         hint={t("settings.widget.enableHint")}
