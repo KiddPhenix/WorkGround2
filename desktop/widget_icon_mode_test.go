@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/control"
 	"workground2/internal/unread"
 )
 
@@ -38,7 +39,7 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 }
 
 func TestBuildDesktopIconSnapshotSeparatesRuntimeFromUnread(t *testing.T) {
-	sources := []widgetSource{{meta: TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true, TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()}}}
+	sources := []widgetSource{{meta: TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true, ActivityStatus: topicStatusThinking, ActivityText: "正在核对真实运行状态", TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()}}}
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.Runtime == nil || task.UnreadCount != 0 {
@@ -47,9 +48,27 @@ func TestBuildDesktopIconSnapshotSeparatesRuntimeFromUnread(t *testing.T) {
 	if task.Status != "thinking" {
 		t.Fatalf("status = %q, want thinking", task.Status)
 	}
+	if task.Runtime.Summary != "正在核对真实运行状态" {
+		t.Fatalf("summary = %q, want live reasoning text", task.Runtime.Summary)
+	}
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.UnreadCount != 0 || delegate.ActivityCount != 0 {
 		t.Fatalf("delegate = %#v", delegate)
+	}
+}
+
+func TestBuildDesktopIconSnapshotDistinguishesToolRunning(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{
+		ID: "task-1", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true,
+		RuntimeMode: string(control.RuntimeModeForeground), ActivityStatus: topicStatusRunning, ActivityText: "read_file 执行中",
+	}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	task := findDesktopIconItem(snapshot.Items, "task:task-1")
+	if task == nil || task.Runtime == nil || task.Status != "running" || task.Runtime.Phase != "Running" {
+		t.Fatalf("tool-running task = %#v", task)
+	}
+	if task.Runtime.Summary != "read_file 执行中" {
+		t.Fatalf("summary = %q, want real tool stage", task.Runtime.Summary)
 	}
 }
 

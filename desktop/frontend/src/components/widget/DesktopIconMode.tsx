@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpen, Bot, Check, ChevronDown, ChevronUp, CircleAlert, HelpCircle, MessageCircle, Plus, Search, Users, X } from "lucide-react";
+import { BookOpen, Bot, Check, ChevronDown, ChevronUp, CircleAlert, HelpCircle, Loader2, MessageCircle, Plus, Search, Users, X } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { isComposerSubmitKey } from "../../lib/composerKeyboard";
 import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "./desktopIconLayout";
@@ -58,11 +58,29 @@ function itemGlyph(item: DesktopIconItem) {
 }
 
 function previewText(item: DesktopIconItem): string {
-  if (item.runtimeStatus) return `${item.runtimeStatus.phase} · ${Math.max(0, Math.round(item.runtimeStatus.elapsedMs / 1000))} 秒`;
+  if (item.runtimeStatus) return `${item.runtimeStatus.summary || item.runtimeStatus.phase} · ${Math.max(0, Math.round(item.runtimeStatus.elapsedMs / 1000))} 秒`;
   if (item.unreadCount > 0) return `${item.unreadCount} 条待处理信息`;
   if (item.kind === "workspace") return `${item.title} · 快速发起`;
   if (item.status === "done") return item.subtitle || "已完成，可在搜索中找到记录";
   return item.title;
+}
+
+function runtimeTail(text: string, limit = 13): string {
+	const chars = Array.from(text.trim());
+	return chars.length > limit ? `…${chars.slice(-limit).join("")}` : chars.join("");
+}
+
+function RuntimeIndicator({ item }: { item: DesktopIconItem }) {
+	if (item.status !== "thinking" && item.status !== "running") return null;
+	const summary = item.runtimeStatus?.summary || (item.status === "thinking" ? "正在等待思考内容" : "正在执行");
+	return <span className={`desktop-icon__runtime desktop-icon__runtime--${item.status}`} aria-label={`${item.status === "thinking" ? "Thinking" : "Running"}：${summary}`}>
+		<span className="desktop-icon__runtime-state">
+			{item.status === "thinking" ? <i aria-hidden="true" /> : <Loader2 aria-hidden="true" />}
+			{item.status === "thinking" ? "Thinking" : "Running"}
+		</span>
+		<span key={summary} className="desktop-icon__runtime-copy" title={summary}>{runtimeTail(summary)}</span>
+		{item.status === "running" && <span className="desktop-icon__runtime-track" aria-hidden="true"><i /><i /><i /></span>}
+	</span>;
 }
 
 function NoticeBody({ item, notice, busy, run }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => void }) {
@@ -100,7 +118,6 @@ function RuntimeBody({ item, busy, run }: { item: DesktopIconItem; busy: boolean
     <strong>{item.title}</strong>
     <p>{runtime?.summary || "正在执行当前任务"}</p>
     <div className="desktop-icon-popup__facts"><span>{runtime?.phase || "Running"}</span><span>{Math.max(0, Math.round((runtime?.elapsedMs || 0) / 1000))} 秒</span><span>{item.subtitle}</span></div>
-    <ol className="desktop-icon-popup__stages"><li className="done">已读取当前 Workspace</li><li className="active">{runtime?.summary || "正在处理"}</li><li>即将组织结果</li></ol>
     <div className="desktop-icon-popup__actions"><button disabled={busy} onClick={() => run("open")}>打开任务</button><button disabled={busy} className="danger" onClick={() => run("stop")}>停止</button></div>
   </>;
 }
@@ -369,12 +386,12 @@ export function DesktopIconMode() {
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); setMenuID(item.id); setActiveID(""); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
-      <span className="desktop-icon__art">{itemGlyph(item)}</span>
+      <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
+		<RuntimeIndicator item={item} />
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
-      {(item.status === "running" || item.status === "thinking") && <span className="desktop-icon__ring" aria-hidden="true" />}
     </button>
 		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
   </div>;

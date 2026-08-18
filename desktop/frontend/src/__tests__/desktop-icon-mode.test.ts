@@ -66,6 +66,15 @@ assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
 assert.doesNotMatch(css, /desktop-icon__shortcut/, "shortcut-arrow badge styles are removed");
+assert.match(component, /desktop-icon__runtime--\$\{item\.status\}/, "thinking and running keep an always-visible compact status below the icon");
+assert.match(component, /runtimeStatus\?\.summary/, "the compact status renders live backend activity text");
+assert.match(component, /key=\{summary\}/, "streamed thinking text visibly refreshes when its real reasoning tail changes");
+assert.match(component, /desktop-icon__runtime-track[\s\S]*<i \/><i \/><i \/>/, "running uses a compact Session-like activity rail without a total-step count");
+assert.doesNotMatch(component, /已读取当前 Workspace|即将组织结果|desktop-icon-popup__stages/, "runtime UI does not fabricate future or completed steps");
+assert.doesNotMatch(component, /desktop-icon__ring/, "the shared legacy orbit is removed");
+assert.match(css, /\.desktop-icon__motion--thinking[^}]*desktop-icon-thinking-breathe/, "thinking has a breathing visual language");
+assert.match(css, /\.desktop-icon__motion--running[^}]*desktop-icon-running-trace/, "running has a distinct precise trace animation");
+assert.match(css, /\.desktop-icon__runtime--running[^}]*#8cebf0/, "running status uses a distinct cyan treatment");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
 assert.match(css, /max-height:\s*calc\(7 \* 44px\)/, "search results have a seven-row height cap");

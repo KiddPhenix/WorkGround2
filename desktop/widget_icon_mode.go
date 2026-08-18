@@ -752,12 +752,14 @@ func desktopTaskItem(source widgetSource, order int) DesktopIconItem {
 		if meta.TurnStartedAt > 0 {
 			elapsed = max(int64(0), now-meta.TurnStartedAt)
 		}
-		phase := "Running"
-		status := "running"
-		if meta.ForegroundActive && meta.RuntimeMode == "" {
+		phase, status := "Running", "running"
+		summary := firstNonEmpty(strings.TrimSpace(meta.ActivityText), "正在执行当前任务")
+		if meta.ActivityStatus == topicStatusThinking || meta.ActivityStatus == topicStatusStreaming ||
+			(meta.ActivityStatus == "" && meta.ForegroundActive && meta.RuntimeMode == "") {
 			phase, status = "Thinking", "thinking"
+			summary = firstNonEmpty(strings.TrimSpace(meta.ActivityText), "正在等待思考内容")
 		}
-		item.Runtime = &DesktopIconRuntime{Phase: phase, Summary: "正在执行当前任务", ElapsedMs: elapsed, UpdatedAt: now}
+		item.Runtime = &DesktopIconRuntime{Phase: phase, Summary: summary, ElapsedMs: elapsed, UpdatedAt: now}
 		item.Status = status
 	}
 	return item

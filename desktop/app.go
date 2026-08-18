@@ -1280,6 +1280,7 @@ func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
 		tab.Ready = false
 		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
+		tab.ActivityText = ""
 		if tab.sink == nil {
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		}
@@ -3850,6 +3851,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		tab.Ready = false
 		clearTabStartupError(tab)
 		tab.ActivityStatus = ""
+		tab.ActivityText = ""
 		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		a.saveTabsLocked()
 		a.mu.Unlock()
@@ -3887,6 +3889,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	tab.Ready = false
 	clearTabStartupError(tab)
 	tab.ActivityStatus = ""
+	tab.ActivityText = ""
 	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 	a.saveTabsLocked()
 	a.mu.Unlock()
