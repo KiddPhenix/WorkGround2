@@ -887,6 +887,104 @@ func TestBeforeCloseAllowsSystemQuitWhenBackgroundCloseEnabled(t *testing.T) {
 	}
 }
 
+func TestBeforeCloseEntersWidgetModeWhenEnabled(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	if prevent := app.beforeClose(context.Background()); !prevent {
+		t.Fatal("close with widget enabled should be absorbed by widget mode")
+	}
+	if entered != 1 {
+		t.Fatalf("widget entry calls = %d, want 1", entered)
+	}
+}
+
+func TestBeforeCloseWidgetIdempotentOnRepeatedClose(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.widgetMode = true // already compact: repeated close must stay in the widget
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	for i := 0; i < 2; i++ {
+		if prevent := app.beforeClose(context.Background()); !prevent {
+			t.Fatalf("repeated close in widget mode (call %d) must keep the widget", i+1)
+		}
+	}
+	if entered != 2 {
+		t.Fatalf("widget entry calls = %d, want 2 (one per close)", entered)
+	}
+}
+
+func TestBeforeCloseWidgetDisabledFallsBackToQuit(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.SetDesktopCloseBehavior("quit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SetDesktopWidgetEnabled(false); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.widgetModeEnter = func() error {
+		t.Fatal("disabled widget must not attempt the transition")
+		return nil
+	}
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("disabled widget must fall back to quit")
+	}
+}
+
+func TestBeforeCloseWidgetFailureFallsBackToQuit(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.SetDesktopCloseBehavior("quit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp()
+	app.widgetModeEnter = func() error { return errors.New("window resize failed") }
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("widget transition failure must fall back to quit")
+	}
+}
+
+func TestBeforeCloseForceQuitBypassesWidget(t *testing.T) {
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	app.forceQuit.Store(true)
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("forceQuit must bypass widget close absorption")
+	}
+	if entered != 0 {
+		t.Fatalf("widget entry calls = %d, want 0", entered)
+	}
+}
+
+func TestBeforeCloseSystemQuitBypassesWidget(t *testing.T) {
+	consumeSystemQuitRequested()
+	t.Cleanup(func() { consumeSystemQuitRequested() })
+	app := NewApp()
+	entered := 0
+	app.widgetModeEnter = func() error { entered++; return nil }
+	markSystemQuitRequested()
+	if prevent := app.beforeClose(context.Background()); prevent {
+		t.Fatal("system quit must bypass widget close absorption")
+	}
+	if entered != 0 {
+		t.Fatalf("widget entry calls = %d, want 0", entered)
+	}
+	if consumeSystemQuitRequested() {
+		t.Fatal("system quit marker should be consumed by beforeClose")
+	}
+}
+
 func TestBackgroundCloseHideStrategyByPlatform(t *testing.T) {
 	tests := []struct {
 		goos string

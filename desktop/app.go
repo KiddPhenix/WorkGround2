@@ -152,6 +152,10 @@ type App struct {
 	trayReady           bool
 	tray                *desktopTray
 
+	// widgetModeEnter overrides the shared widget entry transition used by
+	// startup and close handling (test-only seam; nil uses EnterWidgetMode).
+	widgetModeEnter func() error
+
 	mediaTokens     *mediaTokenStore
 	background      *sessionBackgroundService
 	botInstalls     map[string]*botInstallSession
@@ -493,6 +497,9 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
+	if a.closeToWidget() {
+		return true
+	}
 	cfg, _, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		cfg = config.LoadForEdit(config.UserConfigPath())
@@ -508,6 +515,46 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		return true
 	}
 	return false
+}
+
+// closeToWidget switches the window into widget mode instead of closing, when
+// the widget feature is enabled. It reuses EnterWidgetMode so the transition
+// shares one idempotent code path with the UI and repeated closes are harmless.
+// Returns true when the close was absorbed by the widget. A disabled widget
+// quietly keeps the configured close policy; transition failures are logged
+// before that same fallback so the app never gets stuck.
+func (a *App) closeToWidget() bool {
+	entered, err := a.enterWidgetIfEnabled()
+	if err != nil {
+		slog.Error("desktop: enter widget mode on close failed, falling back to default close behavior", "err", err)
+		return false
+	}
+	return entered
+}
+
+func (a *App) enterWidgetIfEnabled() (bool, error) {
+	enabled, _, err := a.desktopWidgetPreferences()
+	if err != nil || !enabled {
+		return false, err
+	}
+	if err := a.enterWidgetMode(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *App) enterWidgetMode() error {
+	enter := a.widgetModeEnter
+	if enter == nil {
+		enter = func() error {
+			if a.ctx == nil {
+				return errors.New("desktop window is not ready")
+			}
+			_, err := a.EnterWidgetMode()
+			return err
+		}
+	}
+	return enter()
 }
 
 const backgroundCloseTrayReadyTimeout = 500 * time.Millisecond
@@ -846,6 +893,15 @@ func (a *App) domReady(_ context.Context) {
 
 	if ok && state.Maximised {
 		runtime.WindowMaximise(a.ctx)
+	}
+
+	// Enter widget mode before the first WindowShow so the app opens directly
+	// as the icons widget without flashing the main window. The React
+	// side reconciles the late widget:mode event via IsWidgetMode. When the
+	// widget is disabled or the transition fails, fall through to the normal
+	// main-window show with the error logged.
+	if _, enterErr := a.enterWidgetIfEnabled(); enterErr != nil {
+		slog.Error("desktop: enter widget mode at startup failed, showing main window", "err", enterErr)
 	}
 
 	runtime.WindowShow(a.ctx)
