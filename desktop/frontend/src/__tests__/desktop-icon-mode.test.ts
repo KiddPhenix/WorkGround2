@@ -73,7 +73,9 @@ assert.match(component, /desktop-icon__runtime-track[\s\S]*<i \/><i \/><i \/>/, 
 assert.doesNotMatch(component, /已读取当前 Workspace|即将组织结果|desktop-icon-popup__stages/, "runtime UI does not fabricate future or completed steps");
 assert.doesNotMatch(component, /desktop-icon__ring/, "the shared legacy orbit is removed");
 assert.match(css, /\.desktop-icon__motion--thinking[^}]*desktop-icon-thinking-breathe/, "thinking has a breathing visual language");
-assert.match(component, /<RuntimeIndicator item=\{item\} \/>[\s\S]*desktop-icon__art/, "thinking and running status stays above the icon art");
+assert.match(component, /desktop-icon-wrap[^\n]*>[\s\S]*<RuntimeIndicator item=\{item\} \/>[\s\S]*<button[^>]*>[\s\S]*desktop-icon__art/, "thinking and running status uses a dedicated layer outside the icon button");
+assert.match(css, /\.desktop-icon__runtime[^}]*position:\s*absolute[^}]*pointer-events:\s*none[^}]*translate\(-50%,\s*calc\(-100% - 3px\)\)/, "the runtime layer stays above the icon without contributing to grid row height");
+assert.doesNotMatch(css, /\.desktop-icon--thinking,\s*\.desktop-icon--running\s*\{[^}]*min-height/, "runtime states keep the regular icon cell height");
 assert.match(component, /desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner/, "running renders four explicit scan corners");
 assert.doesNotMatch(css, /-webkit-mask-composite|conic-gradient|desktop-icon-running-trace/, "running has no WebView mask or continuous rotating ring");
 assert.match(css, /\.desktop-icon__motion-corner[^}]*desktop-icon-running-frame[^}]*steps\(1, end\)/, "running uses a discrete sequence-frame animation");
