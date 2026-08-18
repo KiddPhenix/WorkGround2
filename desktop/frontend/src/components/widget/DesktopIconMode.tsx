@@ -386,9 +386,9 @@ export function DesktopIconMode() {
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); setMenuID(item.id); setActiveID(""); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+		<RuntimeIndicator item={item} />
       <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
-		<RuntimeIndicator item={item} />
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
