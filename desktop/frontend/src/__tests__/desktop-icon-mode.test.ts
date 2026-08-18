@@ -116,6 +116,8 @@ assert.doesNotMatch(component, /SearchPanel items=\{snapshot\.items\}/, "search 
 assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "Room and person notices both expose inline reply");
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
+assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+clickTimer\.current = window\.setTimeout/, "pointer up schedules a click only after a matching primary pointer down");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); window\.clearTimeout\(clickTimer\.current\); setMenuID\(item\.id\); setActiveID\(""\); \}\}/, "opening the context menu cancels any delayed primary click before showing right-click actions");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");

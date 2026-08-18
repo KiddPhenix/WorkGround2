@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 图标右键菜单事件竞争修复 | `done` | `developping/widget-context-menu+2026-08-19` | `subagent + Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 非主键 `pointerUp` 不再进入延迟单击路径；打开右键菜单时同步取消残留单击定时器，避免菜单被普通弹窗覆盖。图标专项测试与 diff 检查通过；小范围交互修复未使用 WorkGround2 Worker。 |
 | Session 窗口控制语义调整 | `done` | `developping/widget-runtime-status-motion+2026-08-18` | `Codex` | `desktop/frontend/src/App.tsx`、`styles.css`、窗口控制契约测试 | 独立小组件与最小化按钮已收敛为一个“收起到小组件”入口，切换时保留当前 Session 的桌面图标；最大化/恢复保持不变；关闭按钮仅改为 Dismiss 表达与视觉，继续复用原关闭策略。契约测试、Go 定向测试、TypeScript/CSS 检查及前端生产构建均通过。截图驱动小范围 GUI 调整，按规则不使用 WorkGround2 Worker。 |
 | 新建对话词表行内补全 | `done` | `developping/widget-runtime-status-motion+2026-08-18` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`quickStartCompletion.ts`、`desktop-icon-mode.css`、相关测试 | QuickStart 词表响应已从上方候选卡片改为与 Session 一致的输入框行内暗色后缀：仅显示首选项，Tab 接受、Esc 隐藏、滚动位置同步，并保留使用回执。`/`、`$`、`@` 菜单不变；QuickStart/图标专项与 TypeScript 检查通过。不使用 WorkGround2 Worker，不涉及 `desktop/tabs.go`。 |
 | 新建对话候选区与操作按钮紧凑化 | `done` | `developping/widget-runtime-status-motion+2026-08-18` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.css`、`desktop-icon-mode.test.ts` | `/` 候选区由 180px 收紧为 128px（约三行），保留完整候选、滚动与键盘选择；仅将新建对话的发送/取消按钮缩至 30px。图标专项与 TypeScript 检查通过。截图驱动小范围 GUI 调整，不使用 WorkGround2 Worker，不涉及 `desktop/tabs.go`。 |
