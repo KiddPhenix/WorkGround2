@@ -86,8 +86,12 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon__motion { position: absolute; z-index: 0; inset: -4px; border-radius: 18px; pointer-events: none; }
 .desktop-icon__motion--thinking { border: 1px solid rgb(181 142 255 / 58%); box-shadow: 0 0 0 2px rgb(160 116 255 / 8%), 0 0 16px rgb(128 82 232 / 30%); animation: desktop-icon-thinking-breathe 2.4s ease-in-out infinite; }
 .desktop-icon__motion--thinking::after { content: ""; position: absolute; inset: 5px; border: 1px solid rgb(102 224 234 / 34%); border-radius: 14px; animation: desktop-icon-thinking-breathe 2.4s .8s ease-in-out infinite; }
-.desktop-icon__motion--running { border: 1px solid rgb(67 223 231 / 42%); box-shadow: 0 0 12px rgb(67 223 231 / 20%); }
-.desktop-icon__motion--running::before { content: ""; position: absolute; inset: -2px; border: 2px solid transparent; border-top-color: #c6fbff; border-right-color: #43dfe7; border-radius: inherit; animation: desktop-icon-running-trace 1.05s linear infinite; }
+.desktop-icon__motion--running { inset: -3px; border-radius: 17px; }
+.desktop-icon__motion-corner { position: absolute; width: 13px; height: 13px; opacity: .24; filter: none; animation: desktop-icon-running-frame 1.2s steps(1, end) infinite; }
+.desktop-icon__motion-corner:nth-child(1) { top: 0; left: 0; border-top: 2px solid #bffcff; border-left: 2px solid #43dfe7; border-radius: 7px 0 0; }
+.desktop-icon__motion-corner:nth-child(2) { top: 0; right: 0; border-top: 2px solid #bffcff; border-right: 2px solid #43dfe7; border-radius: 0 7px 0 0; animation-delay: -.9s; }
+.desktop-icon__motion-corner:nth-child(3) { right: 0; bottom: 0; border-right: 2px solid #43dfe7; border-bottom: 2px solid #bffcff; border-radius: 0 0 7px; animation-delay: -.6s; }
+.desktop-icon__motion-corner:nth-child(4) { bottom: 0; left: 0; border-bottom: 2px solid #bffcff; border-left: 2px solid #43dfe7; border-radius: 0 0 0 7px; animation-delay: -.3s; }
 .desktop-icon__runtime { display: grid; justify-items: center; gap: 1px; width: 78px; min-height: 27px; margin: 0 auto 4px; text-shadow: 0 1px 3px #000; }
 .desktop-icon__runtime-state { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 750; line-height: 11px; letter-spacing: .045em; }
 .desktop-icon__runtime-state > i { width: 5px; height: 5px; border-radius: 50%; background: #b99bff; box-shadow: 0 0 8px #9b74f2; animation: desktop-icon-thinking-dot 1.2s ease-in-out infinite; }
@@ -167,12 +171,13 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 
 @keyframes desktop-icon-thinking-breathe { 0%, 100% { opacity: .45; transform: scale(.96); } 50% { opacity: 1; transform: scale(1.045); } }
 @keyframes desktop-icon-thinking-dot { 0%, 100% { opacity: .45; transform: scale(.72); } 50% { opacity: 1; transform: scale(1.18); } }
-@keyframes desktop-icon-running-trace { to { transform: rotate(360deg); } }
+@keyframes desktop-icon-running-frame { 0%, 24.99% { opacity: 1; filter: drop-shadow(0 0 5px #43dfe7); transform: scale(1.08); } 25%, 100% { opacity: .2; filter: none; transform: scale(.92); } }
 @keyframes desktop-icon-running-spin { to { transform: rotate(360deg); } }
 @keyframes desktop-icon-running-step { 0%, 70%, 100% { background: rgb(83 220 227 / 24%); transform: scaleX(.72); } 35% { background: #61e5eb; transform: scaleX(1); } }
 @keyframes desktop-icon-copy-in { from { opacity: .25; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) {
-  .desktop-icon__motion, .desktop-icon__motion::before, .desktop-icon__motion::after, .desktop-icon__runtime-state > i, .desktop-icon__runtime-state > svg, .desktop-icon__runtime-track i, .desktop-icon__runtime-copy { animation: none; }
+  .desktop-icon__motion, .desktop-icon__motion::before, .desktop-icon__motion::after, .desktop-icon__motion-corner, .desktop-icon__runtime-state > i, .desktop-icon__runtime-state > svg, .desktop-icon__runtime-track i, .desktop-icon__runtime-copy { animation: none; }
+  .desktop-icon__motion-corner { opacity: .55; filter: none; transform: none; }
   .desktop-icon__runtime-track i { background: #61e5eb; transform: none; }
   .desktop-icon__art { transition: filter 80ms linear; }
   .desktop-icon:hover .desktop-icon__art { transform: none; }

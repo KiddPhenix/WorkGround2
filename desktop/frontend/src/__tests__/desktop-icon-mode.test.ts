@@ -74,9 +74,10 @@ assert.doesNotMatch(component, /已读取当前 Workspace|即将组织结果|des
 assert.doesNotMatch(component, /desktop-icon__ring/, "the shared legacy orbit is removed");
 assert.match(css, /\.desktop-icon__motion--thinking[^}]*desktop-icon-thinking-breathe/, "thinking has a breathing visual language");
 assert.match(component, /<RuntimeIndicator item=\{item\} \/>[\s\S]*desktop-icon__art/, "thinking and running status stays above the icon art");
-assert.match(css, /\.desktop-icon__motion--running\s*\{[^}]*border:/, "running uses a border-only base treatment");
-assert.doesNotMatch(css, /-webkit-mask-composite|conic-gradient/, "running avoids WebView mask-composite fallback artifacts");
-assert.match(css, /\.desktop-icon__motion--running::before[^}]*desktop-icon-running-trace/, "running has a distinct border-only trace animation");
+assert.match(component, /desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner[^\n]*desktop-icon__motion-corner/, "running renders four explicit scan corners");
+assert.doesNotMatch(css, /-webkit-mask-composite|conic-gradient|desktop-icon-running-trace/, "running has no WebView mask or continuous rotating ring");
+assert.match(css, /\.desktop-icon__motion-corner[^}]*desktop-icon-running-frame[^}]*steps\(1, end\)/, "running uses a discrete sequence-frame animation");
+assert.match(css, /\.desktop-icon__motion-corner:nth-child\(4\)/, "all four scan-frame corners have explicit placement");
 assert.match(css, /\.desktop-icon__runtime--running[^}]*#8cebf0/, "running status uses a distinct cyan treatment");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
