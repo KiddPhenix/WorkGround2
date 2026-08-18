@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { BookOpen, Bot, Check, ChevronDown, ChevronUp, CircleAlert, HelpCircle, MessageCircle, Plus, Search, Users, X } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { isComposerSubmitKey } from "../../lib/composerKeyboard";
-import { clampClusterAnchor, DEFAULT_CLUSTER_STATE, iconHitRect, parseClusterState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeClusterState, type ClusterAnchor, type ClusterState } from "./desktopIconLayout";
+import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "./desktopIconLayout";
 import logoSymbol from "../../assets/logo-symbol.svg";
 import { quickStartApprovalLabel, quickStartModelLabel, quickStartPreferences, type QuickStartPreferences } from "./quickStartPreferences";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
@@ -12,7 +12,6 @@ const CLICK_DELAY = 240;
 const DRAG_THRESHOLD = 7;
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
 const CLUSTER_KEY = "wg2.icon-widget-cluster";
-const CLUSTER_MARGIN = 18;
 const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
 
 function nativeHitPadding(node: HTMLElement): number {
@@ -30,13 +29,13 @@ function requestID(prefix: string): string {
   return `${prefix}:${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`;
 }
 
-function readClusterState(): ClusterState {
-  try { return parseClusterState(localStorage.getItem(CLUSTER_KEY)) ?? DEFAULT_CLUSTER_STATE; }
-  catch { return DEFAULT_CLUSTER_STATE; }
+function readCollapsedState(): boolean {
+  try { return parseCollapseState(localStorage.getItem(CLUSTER_KEY)); }
+  catch { return false; }
 }
 
-function writeClusterState(state: ClusterState): void {
-  try { localStorage.setItem(CLUSTER_KEY, serializeClusterState(state)); } catch { /* storage unavailable */ }
+function writeCollapsedState(collapsed: boolean): void {
+  try { localStorage.setItem(CLUSTER_KEY, serializeCollapseState(collapsed)); } catch { /* storage unavailable */ }
 }
 
 function statusGlyph(item: DesktopIconItem) {
@@ -240,15 +239,7 @@ export function DesktopIconMode() {
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
 	const regionKey = useRef("");
 	const regionQueue = useRef<Promise<void>>(Promise.resolve());
-	const [collapsed, setCollapsed] = useState(() => readClusterState().collapsed);
-	const [anchorN, setAnchorN] = useState(() => readClusterState().anchor);
-	const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-	const [dragging, setDragging] = useState(false);
-	const [clusterSize, setClusterSize] = useState({ width: 0, height: 0 });
-	const [popupTick, setPopupTick] = useState(0);
-	const clusterRef = useRef<HTMLDivElement | null>(null);
-	const clusterDrag = useRef<(ClusterAnchor & { x: number; y: number }) | null>(null);
-	const clusterPersist = useRef<ClusterState | null>(null);
+	const [collapsed, setCollapsed] = useState(readCollapsedState);
 
   const refresh = useCallback(async () => {
     try { const next = await app.GetDesktopIconSnapshot(); setSnapshot(next); setError(next.error || ""); }
@@ -262,23 +253,6 @@ export function DesktopIconMode() {
 			.catch(() => { if (alive) setDesktopZoom(1); });
 		return () => { alive = false; };
 	}, []);
-	useEffect(() => {
-		const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
-		window.addEventListener("resize", onResize);
-		return () => window.removeEventListener("resize", onResize);
-	}, []);
-	useLayoutEffect(() => {
-		const node = clusterRef.current;
-		if (!node) return;
-		const update = () => {
-			const rect = node.getBoundingClientRect();
-			setClusterSize({ width: rect.width * desktopZoom, height: rect.height * desktopZoom });
-		};
-		update();
-		const observer = new ResizeObserver(update);
-		observer.observe(node);
-		return () => observer.disconnect();
-	}, [desktopZoom]);
 	useLayoutEffect(() => {
 		let frame = 0;
 		let alive = true;
@@ -307,7 +281,7 @@ export function DesktopIconMode() {
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
-	}, [activeID, menuID, previewID, snapshot.revision, anchorN, collapsed]);
+	}, [activeID, menuID, previewID, snapshot.revision, collapsed]);
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition) => {
     setBusy(true); setError("");
@@ -336,7 +310,6 @@ export function DesktopIconMode() {
 		const close = () => {
 			window.clearTimeout(clickTimer.current); window.clearTimeout(hoverTimer.current); window.clearTimeout(previewCloseTimer.current);
 			drag.current = null;
-			if (clusterDrag.current) { clusterDrag.current = null; setDragging(false); if (clusterPersist.current) writeClusterState(clusterPersist.current); }
 			setActiveID(""); setPreviewID(""); setMenuID("");
 		};
 		window.addEventListener("blur", close);
@@ -392,14 +365,7 @@ export function DesktopIconMode() {
 		const width = active ? 330 : Math.min(300, viewportWidth - 20);
 		const placed = placeIconPopup(rect, viewportWidth, viewportHeight, width);
 		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px` } as CSSProperties;
-	}, [active, desktopZoom, popupItem, snapshot.revision, popupTick]);
-	// Re-measure popup geometry after the cluster's new position commits, so a
-	// popup open during a cluster drag follows the icons as one cluster instead
-	// of lagging one frame behind (the memo above reads DOM rects pre-commit).
-	useLayoutEffect(() => {
-		if (!popupItem) return;
-		setPopupTick((current) => current + 1);
-	}, [anchorN, clusterSize, popupItem, snapshot.revision]);
+	}, [active, desktopZoom, popupItem, snapshot.revision]);
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); setMenuID(item.id); setActiveID(""); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
@@ -421,53 +387,27 @@ export function DesktopIconMode() {
 		transformOrigin: "left top",
 	};
 
-	const viewportLogical = useMemo(() => ({ width: viewport.width * desktopZoom, height: viewport.height * desktopZoom }), [viewport, desktopZoom]);
-	const anchorPx = useMemo(() => clampClusterAnchor(
-		{ right: anchorN.x * viewportLogical.width, bottom: anchorN.y * viewportLogical.height },
-		clusterSize, viewportLogical, CLUSTER_MARGIN,
-	), [anchorN, clusterSize, viewportLogical]);
-	const clusterStyle: CSSProperties = { right: `${viewportLogical.width - anchorPx.right}px`, bottom: `${viewportLogical.height - anchorPx.bottom}px` };
+	// The WG2 anchor is a native Wails window drag handle (CSS
+	// --wails-draggable: drag). The cluster itself is pinned to the bottom-right
+	// corner of the transparent window, so dragging moves the whole window and
+	// the native position restore path owns persistence — no cluster coordinates.
 	const toggleCollapsed = () => {
 		const next = !collapsed;
 		setCollapsed(next);
 		if (next) { setActiveID(""); setPreviewID(""); setMenuID(""); }
-		clusterPersist.current = { collapsed: next, anchor: anchorN };
-		writeClusterState({ collapsed: next, anchor: anchorN });
-	};
-	const anchorPointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-		if (event.button !== 0) return;
-		clusterDrag.current = { x: event.clientX, y: event.clientY, right: anchorPx.right, bottom: anchorPx.bottom };
-		event.currentTarget.setPointerCapture(event.pointerId);
-		setDragging(true);
-	};
-	const anchorPointerMove = (event: ReactPointerEvent<HTMLButtonElement>) => {
-		const start = clusterDrag.current;
-		if (!start) return;
-		const next = clampClusterAnchor(
-			{ right: start.right + (event.clientX - start.x) * desktopZoom, bottom: start.bottom + (event.clientY - start.y) * desktopZoom },
-			clusterSize, viewportLogical, CLUSTER_MARGIN,
-		);
-		const normalized = { x: next.right / viewportLogical.width, y: next.bottom / viewportLogical.height };
-		setAnchorN(normalized);
-		clusterPersist.current = { collapsed, anchor: normalized };
-	};
-	const endClusterDrag = () => {
-		if (!clusterDrag.current) return;
-		clusterDrag.current = null;
-		setDragging(false);
-		if (clusterPersist.current) writeClusterState(clusterPersist.current);
+		writeCollapsedState(next);
 	};
 
   return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件" onPointerDown={(event) => { if (event.target === event.currentTarget) { setActiveID(""); setMenuID(""); } }}>
 		<span className="sr-only" aria-live="polite">{snapshot.items.reduce((count, item) => count + item.unreadCount, 0)} 条桌面待处理信息</span>
-		<div className="desktop-icon-cluster" style={clusterStyle} ref={clusterRef}>
+		<div className="desktop-icon-cluster">
 			<div className="desktop-icon-grid" id="desktop-icon-grid">
 				{!collapsed && <div className="desktop-icon-row desktop-icon-row--top">{rows.top.map(renderItem)}</div>}
 				{!collapsed && <div className="desktop-icon-row desktop-icon-row--bottom">{rows.bottom.map(renderItem)}</div>}
 			</div>
 			<div className="desktop-icon-controls">
 				<button type="button" className="desktop-icon-collapse" title={collapsed ? "展开图标组" : "收起图标组"} aria-label={collapsed ? "展开图标组" : "收起图标组"} aria-expanded={!collapsed} aria-controls="desktop-icon-grid" onClick={toggleCollapsed}>{collapsed ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-				<button type="button" className={`desktop-icon-anchor${dragging ? " desktop-icon-anchor--dragging" : ""}`} title="移动图标组" aria-label="移动图标组" onPointerDown={anchorPointerDown} onPointerMove={anchorPointerMove} onPointerUp={endClusterDrag} onPointerCancel={endClusterDrag} onLostPointerCapture={endClusterDrag}><img src={logoSymbol} alt="" draggable={false} /></button>
+				<button type="button" className="desktop-icon-anchor" title="拖动窗口移动小组件" aria-label="移动小组件窗口"><img src={logoSymbol} alt="" draggable={false} /></button>
 			</div>
 		</div>
 		{popupItem && <section className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => window.clearTimeout(previewCloseTimer.current)} onMouseLeave={closePreviewSoon}>

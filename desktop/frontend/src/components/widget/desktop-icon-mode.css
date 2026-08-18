@@ -9,6 +9,15 @@ body:has(.desktop-icon-mode) #root {
   background: transparent !important;
 }
 
+/* Icons-only mode keeps MainApp mounted (React state stays alive) but fully
+   hidden, so the transparent surface shows only the desktop behind the window.
+   widget-mode.css normally provides this for the pager; the icons-only path
+   loads only this stylesheet, so the rule is repeated here. */
+body:has(.desktop-icon-mode) .app,
+body:has(.desktop-icon-mode) .app--widget-hidden {
+  display: none !important;
+}
+
 .desktop-icon-mode {
   --icon-size: 58px;
   position: fixed;
@@ -23,6 +32,8 @@ body:has(.desktop-icon-mode) #root {
 
 .desktop-icon-cluster {
   position: absolute;
+  right: 18px;
+  bottom: 18px;
 }
 
 .desktop-icon-grid {
@@ -39,10 +50,13 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-collapse { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid rgb(255 255 255 / 14%); border-radius: 8px; color: #d8dbe4; background: rgb(22 25 33 / 92%); cursor: pointer; touch-action: manipulation; }
 .desktop-icon-collapse:hover { border-color: rgb(193 210 255 / 40%); color: #fff; }
 .desktop-icon-collapse svg { width: 15px; height: 15px; pointer-events: none; }
-.desktop-icon-anchor { display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; touch-action: none; user-select: none; }
+.desktop-icon-anchor { --wails-draggable: drag; display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; user-select: none; }
 .desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
-.desktop-icon-anchor--dragging, .desktop-icon-anchor:active { cursor: grabbing; }
 .desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; }
+/* Interactive controls stay clickable: never inherit a drag region. */
+.desktop-icon-collapse, .desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast {
+  --wails-draggable: no-drag;
+}
 .desktop-icon-collapse:focus-visible, .desktop-icon-anchor:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { clampClusterAnchor, DEFAULT_CLUSTER_STATE, iconHitRect, parseClusterState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeClusterState } from "../components/widget/desktopIconLayout";
+import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "../components/widget/desktopIconLayout";
 import { quickStartApprovalLabel, quickStartModelLabel, quickStartPreferences } from "../components/widget/quickStartPreferences";
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
@@ -42,6 +42,8 @@ assert.doesNotMatch(component, /onExit|返回主窗口|desktop-icon-exit/, "icon
 assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
 assert.match(css, /:root:has\(\.desktop-icon-mode\)\s*\{[^}]*background:\s*transparent;/s, "native icon hit regions must not expose the app root background");
 assert.match(css, /body:has\(\.desktop-icon-mode\),\s*body:has\(\.desktop-icon-mode\) #root\s*\{[^}]*background:\s*transparent\s*!important;/s, "the WebView body and root stay transparent around desktop icons");
+assert.match(css, /body:has\(\.desktop-icon-mode\) \.app[\s\S]*display:\s*none\s*!important/, "MainApp stays mounted in React but is removed from layout and compositing, so no descendant can leak through the transparent surface");
+assert.doesNotMatch(component, /widget-mode\.css/, "the icons-only path loads desktop-icon-mode.css alone, so the .app visibility rule must live here");
 assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hit rectangles to the native window");
 assert.match(component, /getClientRects\(\)\.length\s*>\s*0/, "popup visibility does not depend on offsetParent semantics");
 assert.match(component, /new ResizeObserver\(sync\)/, "native regions follow popup and menu content size changes");
@@ -71,50 +73,44 @@ assert.match(backend, /desktopIconHeight\s*=\s*600[\s\S]+desktopIconMinHeight\s*
 assert.match(css, /prefers-reduced-motion:\s*reduce/, "motion has a reduced-motion fallback");
 assert.match(css, /left:\s*var\(--arrow-left\)/, "popup arrow uses the computed source anchor");
 
-// --- cluster control geometry: whole cluster stays inside the safe band ---
-const clusterViewport = { width: 1000, height: 700 };
-const clusterSize = { width: 320, height: 210 };
-assert.deepEqual(clampClusterAnchor({ right: 500, bottom: 350 }, clusterSize, clusterViewport), { right: 500, bottom: 350 }, "an anchor inside the safe band stays put");
-assert.deepEqual(clampClusterAnchor({ right: 1000, bottom: 700 }, clusterSize, clusterViewport), { right: 982, bottom: 682 }, "an anchor at the viewport corner clamps to the bottom-right margin");
-assert.deepEqual(clampClusterAnchor({ right: 0, bottom: 0 }, clusterSize, clusterViewport), { right: 338, bottom: 228 }, "an anchor near the top-left clamps so the whole cluster stays visible");
-assert.deepEqual(clampClusterAnchor({ right: 300, bottom: 300 }, { width: 2000, height: 2000 }, clusterViewport), { right: 982, bottom: 682 }, "a cluster larger than the viewport keeps the anchor reachable at the viewport edge");
-assert.deepEqual(clampClusterAnchor({ right: 400, bottom: 300 }, clusterSize, { width: 200, height: 150 }), { right: 182, bottom: 132 }, "a tiny viewport still keeps the anchor inside its own margins");
+// --- collapse persistence: the WG2 anchor now drags the native window, so
+// only the collapsed flag survives under the stable cluster key ---
+assert.equal(parseCollapseState(null), false, "missing persisted state is expanded");
+assert.equal(parseCollapseState(""), false, "empty persisted state is expanded");
+assert.equal(parseCollapseState("not json"), false, "malformed JSON falls back to expanded");
+assert.equal(parseCollapseState('{"anchor":{"x":0.5,"y":0.5}}'), false, "legacy state without a collapsed flag defaults to expanded");
+assert.equal(parseCollapseState('{"collapsed":true}'), true, "legacy anchor state keeps its collapsed flag");
+assert.equal(parseCollapseState('{"collapsed":"yes"}'), false, "non-boolean collapsed flag falls back");
+assert.equal(parseCollapseState("true"), true, "a bare boolean round-trips");
+assert.equal(parseCollapseState("false"), false, "a bare false round-trips");
+assert.deepEqual(JSON.parse(serializeCollapseState(true)), { collapsed: true }, "new writes carry only the collapsed flag");
+assert.equal(parseCollapseState(serializeCollapseState(false)), false, "serialize/parse round-trips expanded");
 
-// --- cluster control persistence: malformed falls back, valid round-trips ---
-assert.deepEqual(DEFAULT_CLUSTER_STATE, { collapsed: false, anchor: { x: 1, y: 1 } }, "default state is bottom-right and expanded");
-assert.equal(parseClusterState(null), null, "missing persisted state falls back");
-assert.equal(parseClusterState(""), null, "empty persisted state falls back");
-assert.equal(parseClusterState("not json"), null, "malformed JSON falls back");
-assert.equal(parseClusterState("[]"), null, "array payload falls back");
-assert.equal(parseClusterState('{"collapsed":true}'), null, "state without an anchor falls back");
-assert.equal(parseClusterState('{"collapsed":"yes","anchor":{"x":0.5,"y":0.5}}'), null, "non-boolean collapsed flag falls back");
-assert.equal(parseClusterState('{"collapsed":true,"anchor":{"x":"a","y":0.5}}'), null, "non-numeric anchor falls back");
-assert.deepEqual(parseClusterState('{"collapsed":true,"anchor":{"x":0.5,"y":0.25}}'), { collapsed: true, anchor: { x: 0.5, y: 0.25 } }, "valid state round-trips");
-assert.deepEqual(parseClusterState('{"anchor":{"x":1.7,"y":-0.3}}'), { collapsed: false, anchor: { x: 1, y: 0 } }, "out-of-range anchor normalizes into 0..1 and a missing collapsed flag defaults to expanded");
-assert.deepEqual(parseClusterState(serializeClusterState({ collapsed: false, anchor: { x: 0.8, y: 0.6 } })), { collapsed: false, anchor: { x: 0.8, y: 0.6 } }, "serialize/parse round-trips");
-
-// --- cluster control component/CSS contracts ---
+// --- anchor and toggle contracts ---
 const logoSymbol = readFileSync(resolve(import.meta.dirname, "../assets/logo-symbol.svg"), "utf8");
 assert.match(logoSymbol, /aria-label="WorkGround2"/, "the anchor reuses the real WG2 logo-symbol asset");
 assert.match(component, /logo-symbol\.svg/, "the component imports the real logo-symbol.svg for the anchor");
-assert.match(component, /aria-label="移动图标组"/, "the WG2 anchor exposes a distinct draggable label");
+assert.match(component, /aria-label="移动小组件窗口"/, "the WG2 anchor describes that it moves the native widget window");
 assert.match(component, /aria-label=\{collapsed \? "展开图标组" : "收起图标组"\}/, "the toggle label distinguishes collapse and expand by state");
 assert.match(component, /aria-expanded=\{!collapsed\}/, "the toggle reflects the group visibility for assistive tech");
 assert.match(component, /desktop-icon-collapse[^>]*onClick=/, "the toggle is a keyboard-activatable button without drag handlers");
-assert.doesNotMatch(component, /desktop-icon-collapse[^>]*onPointerDown/, "the toggle must never start a cluster drag");
-assert.match(component, /setPointerCapture\(event\.pointerId\)/, "the anchor drag uses pointer capture");
-assert.match(component, /clampClusterAnchor\(/, "cluster position is clamped during drag and restore");
-assert.match(component, /next\.right \/ viewportLogical\.width/, "dragged positions persist as viewport-normalized coordinates");
-assert.match(component, /parseClusterState\(/, "cluster state loads through the validated parser");
-assert.match(component, /wg2\.icon-widget-cluster/, "cluster persistence uses a stable localStorage key");
+assert.doesNotMatch(component, /desktop-icon-collapse[^>]*onPointerDown/, "the toggle must never start a drag");
+assert.doesNotMatch(component, /anchorPointerDown|anchorPointerMove|endClusterDrag|clusterDrag|clampClusterAnchor|viewportLogical|anchorN|setPointerCapture\(event\.pointerId\)[\s\S]{0,80}anchor/, "the anchor has no hand-written pointer-move drag and no normalized cluster position");
+const anchorRule = css.match(/\.desktop-icon-anchor\s*\{[^}]*\}/)?.[0] ?? "";
+assert.match(anchorRule, /--wails-draggable:\s*drag/, "the WG2 anchor is a native Wails window drag handle");
+assert.doesNotMatch(anchorRule, /touch-action/, "the native anchor no longer claims pointer capture");
+assert.doesNotMatch(anchorRule, /grabbing/, "the native anchor no longer fakes a grab/grabbing cursor pair");
+assert.match(css, /--wails-draggable:\s*no-drag/, "interactive controls explicitly opt out of the native drag region");
+assert.match(component, /wg2\.icon-widget-cluster/, "collapse persistence uses the stable localStorage key");
+assert.match(component, /writeCollapsedState\(next\)/, "the toggle persists the collapsed flag");
+assert.match(component, /readCollapsedState/, "collapse state loads through the validated parser");
 assert.match(component, /!collapsed &&[\s\S]*desktop-icon-row--top/, "collapsing unmounts the top icon row");
 assert.match(component, /!collapsed &&[\s\S]*desktop-icon-row--bottom/, "collapsing unmounts the bottom icon row");
 assert.match(component, /desktop-icon-grid[\s\S]*desktop-icon-controls/, "the control row sits below the icon rows");
 assert.match(component, /desktop-icon-collapse[\s\S]*desktop-icon-anchor/, "the toggle sits immediately left of the WG2 anchor");
 assert.match(component, /\.desktop-icon-anchor, \.desktop-icon-collapse/, "anchor and toggle report native hit regions so the transparent window receives pointer input");
 assert.match(css, /\.desktop-icon-cluster[\s\S]*position:\s*absolute/, "the cluster is positioned by its anchored corner");
+assert.match(css, /\.desktop-icon-cluster[\s\S]*right:\s*18px[\s\S]*bottom:\s*18px/, "the cluster stays pinned to the bottom-right corner of the transparent window");
 assert.match(css, /\.desktop-icon-controls[\s\S]*justify-content:\s*flex-end/, "the control row is right-aligned under the icon rows");
-assert.match(css, /\.desktop-icon-anchor[\s\S]*touch-action:\s*none/, "the anchor owns pointer capture with touch-action none");
-assert.match(css, /cursor:\s*grab[\s\S]*grabbing/, "the anchor advertises grab/grabbing affordance");
 
 console.log("desktop icon mode tests passed");

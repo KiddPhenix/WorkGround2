@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 图标小组件原生窗口拖动与背景修复 | `done` | `developping/widget-native-window-drag+2026-08-18` | `Codex + WorkGround2` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.css`、`desktopIconLayout.ts`、`desktop/window_state.go`、相关测试 | 图标模式将仍挂载的 MainApp 从布局/合成层移除，透明背景不再透出主界面残片；WG2 锚点使用 Wails 原生 drag 区域拖动整个透明窗口，图标组固定窗口右下角，收起按钮等交互明确 no-drag。icons/pager/main 几何分别持久化，icons 恢复继续走 monitor normalization。图标、布局、TypeScript、Go 保存路由、diff 及浏览器视觉验收通过；按用户要求未运行全量测试或构建。 |
 | 图标小组件图标组拖动锚点 | `done` | `developping/widget-icon-group-anchor+2026-08-18` | `Codex + WorkGround2` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktopIconLayout.ts`、`desktop-icon-mode.css`、相关测试 | 右下角增加 WG2 拖动锚点和左侧收起/展开按钮；整组位置与收起状态持久化，按当前视口归一化并在缩放/屏幕变化后重新夹回安全区，锚点与图标组不会停留在可见区域外；两个控制均纳入透明窗口原生命中区域。图标专项、TypeScript、diff 检查和 1138×703→700×540 浏览器缩屏验收通过；按用户要求未运行全量测试。 |
 | 小图标打开主窗口默认无侧边栏 | `done` | `developping/widget-main-no-sidebar+2026-08-18` | `Codex` | `desktop/frontend/src/lib/widgetModeCoordinator.ts`、`desktop/frontend/src/App.tsx`、相关测试 | 仅在小组件从开启态切回主窗口时临时折叠侧边栏，并关闭可能残留的侧栏搜索；普通启动不受影响，不覆盖用户持久化偏好。协调器定向测试和 TypeScript 检查通过；按用户要求未运行全量测试。 |
 | 图标小组件快速新建配置对齐 | `done` | `developping/widget-quickstart-settings+2026-08-18` | `Codex` | `desktop/widget_conversation.go`、`desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.css`、相关测试 | 快速新建窗口展示用户默认模型与审批模式；发起时复用同一默认配置，键盘提交遵循 Enter / Ctrl+Enter 用户设置。前端图标专项、提交键测试、TypeScript 检查、Go 定向测试和浏览器视觉验收通过；按用户要求未运行全量测试。 |
