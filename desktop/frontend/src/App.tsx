@@ -4093,6 +4093,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogS
         className={[
         "app",
         widgetActive ? "app--widget-hidden" : "",
+        settingsTarget !== null ? "app--settings-open" : "",
         `app--${desktopPlatform}`,
         windowsFramelessChrome ? "app--windows-frameless" : "",
         browserPreviewChrome ? "app--browser-preview" : "",
@@ -5313,6 +5314,26 @@ export default function App() {
     void widgetCoordinator.exit().then(() => setCollabDialogSignal((count) => count + 1)).catch(reportWidgetError).finally(() => { widgetRoomRequest.current = false; });
   }, [reportWidgetError, widgetCoordinator]);
 
+  // Settings from the widget anchor exits widget mode first and only then
+  // reveals the settings panel; a failed exit must never open settings from
+  // the still-hidden widget window. The ref guards the async exit round-trip
+  // so a fast double right-click cannot open settings twice, and the promise
+  // rejection surfaces in the widget's own visible error toast (the main
+  // window is hidden, so a main-window toast would be invisible) — the same
+  // 设置 click then becomes a safe retry.
+  const widgetSettingsRequest = useRef(false);
+  const openWidgetSettings = useCallback(async () => {
+    if (widgetSettingsRequest.current) return;
+    widgetSettingsRequest.current = true;
+    try {
+      await widgetCoordinator.exit();
+      useOverlayStore.getState().setSettingsFocus(null);
+      useOverlayStore.getState().setSettingsTarget("general");
+    } finally {
+      widgetSettingsRequest.current = false;
+    }
+  }, [widgetCoordinator]);
+
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
       setWidgetEnabled(s.widgetEnabled);
@@ -5354,7 +5375,7 @@ export default function App() {
   return (
 	<>
 	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
-	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} />}
+	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} />}
 	</>
   );
 }

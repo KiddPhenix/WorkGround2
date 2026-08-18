@@ -120,7 +120,7 @@ assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "R
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
 assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+clickTimer\.current = window\.setTimeout/, "pointer up schedules a click only after a matching primary pointer down");
-assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); window\.clearTimeout\(clickTimer\.current\); setMenuID\(item\.id\); setActiveID\(""\); \}\}/, "opening the context menu cancels any delayed primary click before showing right-click actions");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); window\.clearTimeout\(clickTimer\.current\); setMenuID\(item\.id\); setActiveID\(""\); setAnchorMenuOpen\(false\); \}\}/, "opening an icon context menu cancels any delayed primary click and closes the anchor menu before showing right-click actions");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
@@ -349,6 +349,21 @@ assert.match(appSource, /const widgetRoomRequest = useRef\(false\)[\s\S]+if \(wi
 assert.match(appSource, /appliedCollabDialogSignal = useRef\(0\)[\s\S]+collabDialogSignal > 0 && collabDialogSignal !== appliedCollabDialogSignal\.current/, "MainApp opens the collaboration dialog exactly once per distinct signal, never on initial mount");
 assert.match(appSource, /void openCollaborationDialog\(\)/, "MainApp reuses its existing openCollaborationDialog to show the Host/Join Room form");
 assert.match(appSource, /collabDialogSignal=\{collabDialogSignal\}/, "the root App forwards the signal to MainApp");
-assert.match(appSource, /<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} \/>/, "DesktopIconMode receives the room open/new coordination callbacks");
+assert.match(appSource, /<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} \/>/, "DesktopIconMode receives the room open/new and settings-open coordination callbacks");
+
+// --- anchor context menu: right-click opens a settings entry without
+// triggering anchor drag, icon actions, or a delayed primary click ---
+assert.match(component, /const \[anchorMenuOpen, setAnchorMenuOpen\] = useState\(false\)/, "the anchor menu owns its own open state");
+assert.match(component, /onContextMenu=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?window\.clearTimeout\(clickTimer\.current\);[\s\S]*?window\.clearTimeout\(hoverTimer\.current\);[\s\S]*?window\.clearTimeout\(previewCloseTimer\.current\);[\s\S]*?drag\.current = null;[\s\S]*?setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(true\)[\s\S]*?\}\}/, "right-clicking the anchor only opens its menu: it cancels every click/hover/preview timer, clears the drag state, and closes icon popups and the plain icon menu");
+assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anchor keeps no pointer handlers, so left-button window dragging stays native Wails drag");
+assert.match(component, /desktop-icon-anchor-menu" role="menu"[\s\S]*?<button type="button" role="menuitem" onClick=\{\(\) => \{[\s\S]*?setAnchorMenuOpen\(false\);[\s\S]*?void onOpenSettings\(\)\.catch\(\(cause\) => setError\(cause instanceof Error \? cause\.message : String\(cause\)\)\)/, "the anchor menu exposes a non-submitting 设置 button, closes itself, and surfaces a failed settings open in the widget's visible error toast for a safe retry");
+assert.match(component, /event\.key === "Escape"\) \{ setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); \}/, "Escape closes the anchor menu with the same key handler");
+assert.match(component, /const close = \(\) => \{[\s\S]*?setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\);[\s\S]*?addEventListener\("blur", close\)/, "losing desktop-window focus closes the anchor menu too");
+assert.match(component, /if \(event\.target === event\.currentTarget\) \{ setActiveID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); \}/, "clicking the empty desktop closes the anchor menu");
+assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");
+assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu/, "the anchor menu gets the same shadow padding in native hit regions");
+assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
+assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu");
+assert.match(css, /\.desktop-icon-anchor\s*\{[^}]*--wails-draggable:\s*drag;/, "the anchor itself stays a native window drag handle for left-button dragging");
 
 console.log("desktop icon mode tests passed");

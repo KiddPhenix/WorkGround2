@@ -44,7 +44,7 @@ assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget
 // The desktop widget is icons-only: App renders only DesktopIconMode, and the
 // icon mode has no return-to-main button or onExit chain.
 assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
-assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new coordination");
+assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new and settings coordination");
 const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
 const iconCSS = read("../components/widget/desktop-icon-mode.css");
 assert.doesNotMatch(iconModeSource, /onExit|返回主窗口|desktop-icon-exit/, "icon mode has no return-to-main button or onExit prop");
@@ -64,5 +64,22 @@ for (const id of ["classic", "bp", "instant", "pet", "recorder"]) {
 assert.match(skinsSource, /export function resolveWidgetSkin/, "skin registry exports resolveWidgetSkin helper");
 assert.match(skinsSource, /export function widgetSkinTiles/, "skin registry exports widgetSkinTiles helper");
 assert.match(skinsSource, /export function widgetSkinPreview/, "skin registry exports widgetSkinPreview helper");
+
+// --- anchor settings entry: exit-before-open, in-flight guard, retryable ---
+// Opening settings from the widget must first exit widget mode; settings only
+// reveal after a successful exit, and a failed exit stays visible in the
+// widget (the main window is hidden) so the same 设置 click is a safe retry.
+assert.match(
+  appSource,
+  /const widgetSettingsRequest = useRef\(false\);[\s\S]*?if \(widgetSettingsRequest\.current\) return;[\s\S]*?await widgetCoordinator\.exit\(\);[\s\S]*?useOverlayStore\.getState\(\)\.setSettingsFocus\(null\);[\s\S]*?useOverlayStore\.getState\(\)\.setSettingsTarget\("general"\);[\s\S]*?finally \{[\s\S]*?widgetSettingsRequest\.current = false[\s\S]*?\}/,
+  "the widget settings entry exits widget mode first, opens settings only after the exit succeeds, and guards the async round-trip against double invocation",
+);
+assert.doesNotMatch(
+  appSource,
+  /setSettingsTarget\("general"\)[\s\S]{0,120}widgetCoordinator\.exit/,
+  "settings must never open before the widget exit resolves",
+);
+assert.match(iconModeSource, /onOpenSettings: \(\) => Promise<void>/, "DesktopIconMode receives an async settings-open callback from the root App");
+assert.doesNotMatch(iconModeSource, /onOpenSettings[\s\S]{0,80}\.then\(\(\) => setSettingsTarget/, "the widget never opens settings directly; only the root App owns the exit-before-open flow");
 
 console.log("widget settings contract tests passed");

@@ -21,7 +21,7 @@ const CLICK_DELAY = 240;
 const DRAG_THRESHOLD = 7;
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
 const CLUSTER_KEY = "wg2.icon-widget-cluster";
-const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
+const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
 const IME_CONFIRM_GRACE_MS = 100;
 
 // IME composition must never leak into completion or submit handling: the
@@ -34,7 +34,7 @@ function isWidgetImeKeyEvent(event: ReactKeyboardEvent<HTMLTextAreaElement>, com
 
 function nativeHitPadding(node: HTMLElement): number {
 	if (node.matches(".desktop-icon-popup")) return 40;
-	if (node.matches(".desktop-icon-menu, .desktop-icon-toast")) return 30;
+	if (node.matches(".desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor-menu")) return 30;
 	if (node.matches(".desktop-icon")) return 20;
 	return 8;
 }
@@ -705,12 +705,13 @@ function pinnedIcon(row: { pinned: boolean }) {
   return row.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />;
 }
 
-export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void> }) {
+export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void> }) {
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
   const [activeID, setActiveID] = useState("");
   const [previewID, setPreviewID] = useState("");
   const [menuID, setMenuID] = useState("");
+  const [anchorMenuOpen, setAnchorMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([]);
@@ -787,7 +788,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setActiveID(""); setPreviewID(""); setMenuID(""); }
+      if (event.key === "Escape") { setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
@@ -796,7 +797,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 		const close = () => {
 			window.clearTimeout(clickTimer.current); window.clearTimeout(hoverTimer.current); window.clearTimeout(previewCloseTimer.current);
 			drag.current = null;
-			setActiveID(""); setPreviewID(""); setMenuID("");
+			setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false);
 		};
 		window.addEventListener("blur", close);
 		return () => { close(); window.removeEventListener("blur", close); };
@@ -818,7 +819,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 			setActiveID(item.id);
 		}
     else setActiveID((current) => current === item.id ? "" : item.id);
-    setPreviewID(""); setMenuID("");
+    setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false);
   };
   const enter = (item: DesktopIconItem) => {
     window.clearTimeout(hoverTimer.current);
@@ -882,7 +883,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); window.clearTimeout(clickTimer.current); setMenuID(item.id); setActiveID(""); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); window.clearTimeout(clickTimer.current); setMenuID(item.id); setActiveID(""); setAnchorMenuOpen(false); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
       <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
@@ -908,10 +909,11 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 		const next = !collapsed;
 		setCollapsed(next);
 		if (next) { setActiveID(""); setPreviewID(""); setMenuID(""); }
+		setAnchorMenuOpen(false);
 		writeCollapsedState(next);
 	};
 
-  return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件" onPointerDown={(event) => { if (event.target === event.currentTarget) { setActiveID(""); setMenuID(""); } }}>
+  return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件" onPointerDown={(event) => { if (event.target === event.currentTarget) { setActiveID(""); setMenuID(""); setAnchorMenuOpen(false); } }}>
 		<span className="sr-only" aria-live="polite">{snapshot.items.reduce((count, item) => count + item.unreadCount, 0)} 条桌面待处理信息</span>
 		<div className="desktop-icon-cluster">
 			<div className="desktop-icon-grid" id="desktop-icon-grid">
@@ -920,7 +922,18 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom }: { onNewRoom: () => vo
 			</div>
 			<div className="desktop-icon-controls">
 				<button type="button" className="desktop-icon-collapse" title={collapsed ? "展开图标组" : "收起图标组"} aria-label={collapsed ? "展开图标组" : "收起图标组"} aria-expanded={!collapsed} aria-controls="desktop-icon-grid" onClick={toggleCollapsed}>{collapsed ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-				<button type="button" className="desktop-icon-anchor" title="拖动窗口移动小组件" aria-label="移动小组件窗口"><img src={logoSymbol} alt="" draggable={false} /></button>
+				<button type="button" className={`desktop-icon-anchor${anchorMenuOpen ? " desktop-icon-anchor--menu-open" : ""}`} title="拖动窗口移动小组件" aria-label="移动小组件窗口" aria-expanded={anchorMenuOpen} onContextMenu={(event) => {
+					event.preventDefault();
+					window.clearTimeout(clickTimer.current);
+					window.clearTimeout(hoverTimer.current);
+					window.clearTimeout(previewCloseTimer.current);
+					drag.current = null;
+					setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(true);
+				}}><img src={logoSymbol} alt="" draggable={false} /></button>
+				{anchorMenuOpen && <div className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => {
+					setAnchorMenuOpen(false);
+					void onOpenSettings().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+				}}>设置</button></div>}
 			</div>
 		</div>
 		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => window.clearTimeout(previewCloseTimer.current)} onMouseLeave={closePreviewSoon}>

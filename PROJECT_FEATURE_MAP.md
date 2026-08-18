@@ -339,6 +339,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-07
 
+### 全窗口设置与锚点菜单入口
+- Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
+- Summary: 设置 overlay 由 SettingsPanel 与全局 overlay store 驱动；小组件锚点菜单位于 DesktopIconMode，入口应先退出 Widget 再打开通用设置。
+- Keywords: SettingsPanel, settingsTarget, DesktopIconMode, desktop-icon-anchor, widgetCoordinator
+- Source: verified-by-search
+- Updated: 2026-08-19
+
 ### 共享启动装配
 - Location: `internal/boot/boot.go`
 - Summary: boot.Build 是配置到运行时 Controller 的唯一装配点，解析模型、工具、插件、权限、memory、skills、jobs 并供 CLI/serve/desktop 共用。

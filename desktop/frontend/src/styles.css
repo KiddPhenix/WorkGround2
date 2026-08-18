@@ -111,6 +111,7 @@
   --z-topicbar-menu: 210;
   --z-startup-overlay: 300;
   --z-modal: 1200;
+  --z-settings-chrome: 1210;
   --z-overlay-backdrop: 1300;
   --z-popover: 1301;
   --z-toast: 1302;
@@ -14138,13 +14139,47 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
-/* ── settings centre modal ──────────────────────────────────────────────────── */
+/* ── settings centre modal ────────────────────────────────────────────────────
+   Settings open full-window: the panel replaces the session content area the
+   way a sidebar-collapsed session does. The backdrop stretches edge to edge
+   (no card margin) and the modal fills 100% of it with no radius or shadow.
+   The top strip stays reserved for the native window bar / caption controls:
+   --settings-top-offset matches the per-mode window-bar height below, and the
+   bar is raised above the modal via --z-settings-chrome so window dragging and
+   minimize/maximize/close stay usable while settings are open. */
 .settings-modal-backdrop {
   --wails-draggable: no-drag;
+  padding: var(--settings-top-offset, 0px) 0 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background: var(--bg);
 }
 
 .settings-modal {
-  width: min(1360px, calc(100vw - 96px));
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--bg-soft);
+}
+
+/* Per-mode top inset: keep the window bar (classic/darwin/linux) or the
+   floating caption controls (workbench/creation) fully visible and clickable
+   above the settings layer. Values mirror --app-chrome-height and the caption
+   control geometry of each layout style. */
+.app--darwin .settings-modal-backdrop {
+  --settings-top-offset: 44px;
+}
+.app--windows-frameless:not(.app--workbench):not(.app--creation) .settings-modal-backdrop,
+.app--linux .settings-modal-backdrop {
+  --settings-top-offset: 38px;
+}
+.app--windows-frameless.app--workbench .settings-modal-backdrop {
+  --settings-top-offset: 55px;
+}
+.app--windows-frameless.app--creation .settings-modal-backdrop {
+  --settings-top-offset: 56px;
 }
 
 /* ── settings centre layout ─────────────────────────────────────────────────── */
@@ -15582,12 +15617,12 @@ body > .mermaid-diagram--fullscreen {
 /* ── responsive: compact side nav on narrow and mid screens ────────────────── */
 @media (max-width: 900px) {
   .settings-modal-backdrop {
-    padding: 16px;
+    padding: var(--settings-top-offset, 0px) 0 0;
   }
 
   .settings-modal {
     width: 100%;
-    height: min(900px, calc(100vh - 32px));
+    height: 100%;
   }
 
   .settings-center {
@@ -15705,7 +15740,7 @@ body > .mermaid-diagram--fullscreen {
 
 @media (max-width: 760px) {
   .settings-modal-backdrop {
-    padding: 0;
+    padding: var(--settings-top-offset, 0px) 0 0;
   }
 
   .settings-modal {
@@ -28005,22 +28040,22 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .settings-modal-backdrop,
 :root[data-theme-style] .app--creation .settings-modal-backdrop {
-  padding: clamp(24px, 5vh, 48px) clamp(32px, 6vw, 72px);
-  background: rgba(18, 20, 26, 0.36);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  padding: var(--settings-top-offset, 0px) 0 0;
+  background: var(--bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .app--creation .settings-modal,
 :root[data-theme-style] .app--creation .settings-modal {
-  width: min(980px, calc(100vw - 160px));
-  height: min(690px, calc(100vh - 112px));
-  border-color: color-mix(in srgb, var(--fg-faint) 18%, transparent);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
-  backdrop-filter: blur(18px) saturate(1.08);
-  -webkit-backdrop-filter: blur(18px) saturate(1.08);
-  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.06);
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-soft);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
 }
 
 .app--creation .settings-modal__head,
@@ -44999,4 +45034,40 @@ body > .mermaid-diagram--fullscreen {
   .app--workbench .workspace-sidebar .project-tree__topic-visual--running {
     animation: none;
   }
+}
+
+/* ── full-window settings: keep the native window bar usable ──────────────────
+   While the settings layer is open (.app--settings-open), the top window bar
+   (classic app chrome) and the caption controls are raised above the modal so
+   window dragging and minimize/maximize/close never get covered. Everything
+   below the reserved top strip belongs to the settings surface. */
+.settings-modal-backdrop,
+:root[data-theme-style] .settings-modal-backdrop,
+.app--creation .settings-modal-backdrop,
+:root[data-theme-style] .app--creation .settings-modal-backdrop {
+  padding: var(--settings-top-offset, 0px) 0 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background: var(--bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.settings-modal,
+:root[data-theme-style] .settings-modal,
+.app--creation .settings-modal,
+:root[data-theme-style] .app--creation .settings-modal {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.app--settings-open .app-chrome,
+.app--settings-open.app--windows-frameless .windows-window-controls {
+  z-index: var(--z-settings-chrome);
 }
