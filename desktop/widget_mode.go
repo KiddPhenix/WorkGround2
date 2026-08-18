@@ -131,6 +131,21 @@ type widgetSource struct {
 	totalTokens  int
 	tokenTracked bool
 	model        string
+	sessionDir   string // controller session dir; subagent meta lives under <dir>/subagents
+	branchID     string // agent.BranchID(currentSessionPath); matches subagent ParentSession
+}
+
+type widgetSubagentKey struct {
+	sessionDir string
+	branchID   string
+}
+
+func newWidgetSubagentKey(sessionDir, branchID string) widgetSubagentKey {
+	sessionDir = strings.TrimSpace(sessionDir)
+	if sessionDir != "" {
+		sessionDir = filepath.Clean(sessionDir)
+	}
+	return widgetSubagentKey{sessionDir: sessionDir, branchID: strings.TrimSpace(branchID)}
 }
 
 func widgetWindowStatePath() string {
@@ -520,6 +535,10 @@ func (a *App) widgetSources() []widgetSource {
 			continue
 		}
 		source := widgetSource{meta: a.tabMeta(tab, tab.ID == a.activeTabID), rank: rank}
+		if tab.Ctrl != nil {
+			source.sessionDir = tab.Ctrl.SessionDir()
+		}
+		source.branchID = agent.BranchID(tab.currentSessionPath())
 		telemetry := tab.telemetrySnapshot().Usage
 		source.totalTokens = telemetry.TotalTokens
 		source.tokenTracked = telemetry.RequestCount > 0 || telemetry.TotalTokens > 0
@@ -532,6 +551,34 @@ func (a *App) widgetSources() []widgetSource {
 	}
 	a.mu.RUnlock()
 	return out
+}
+
+// widgetSubagentCounts scans each unique session dir exactly once and returns
+// running sub-agent counts keyed by parent branch ID. The scan performs file
+// I/O and must never run while a.mu is held; widgetSources() has already
+// released a.mu when this is called, and failures are returned so they surface
+// in the snapshot instead of being mistaken for idle state.
+func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKey]int, error) {
+	dirs := map[string]bool{}
+	for _, source := range sources {
+		if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+			dirs[filepath.Clean(dir)] = true
+		}
+	}
+	counts := map[widgetSubagentKey]int{}
+	var errs []error
+	for dir := range dirs {
+		got, err := agent.RunningSubagentCounts(dir)
+		for parent, n := range got {
+			counts[newWidgetSubagentKey(dir, parent)] += n
+		}
+		if err != nil {
+			// Keep the usable partial counts; the error still surfaces in the
+			// snapshot instead of being mistaken for idle state.
+			errs = append(errs, err)
+		}
+	}
+	return counts, errors.Join(errs...)
 }
 
 // retryLeaseTabs retries startup after a session lease becomes available.

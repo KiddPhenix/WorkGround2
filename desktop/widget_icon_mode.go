@@ -290,13 +290,19 @@ func (a *App) GetDesktopIconSnapshot() DesktopIconSnapshot {
 func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	recoveryErr := a.recoverDesktopIconActionsLocked()
 	sources := a.widgetSources()
+	// Subagent metadata scanning happens after widgetSources released a.mu,
+	// so file I/O never runs under the App's main lock.
+	subagentCounts, subagentErr := a.widgetSubagentCounts(sources)
 	unreadState := a.UnreadState()
 	spaces := a.ListWidgetWorkspaces()
 	style, hover := a.desktopIconPreferences()
-	snapshot := buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, a.desktopRoomSummaries())
+	snapshot := buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, a.desktopRoomSummaries(), subagentCounts)
 	snapshot.Style = style
 	if recoveryErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, recoveryErr.Error())
+	}
+	if subagentErr != nil {
+		snapshot.Error = firstNonEmpty(snapshot.Error, subagentErr.Error())
 	}
 	if a.iconWidgetStateErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, a.iconWidgetStateErr.Error())
@@ -544,7 +550,7 @@ func (a *App) openDesktopIconSearchItem(id string) error {
 	return errors.New("search result is no longer available")
 }
 
-func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string) DesktopIconSnapshot {
+func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string, subagentCounts map[widgetSubagentKey]int) DesktopIconSnapshot {
 	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision}
 	items := make([]DesktopIconItem, 0, len(sources)+len(spaces)+8)
 	taskBySource := map[string]int{}
@@ -563,12 +569,23 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		if strings.EqualFold(meta.SessionSource, "cli") || meta.SessionKind == "collaboration" {
 			continue
 		}
+		// Real running sub-agents owned by this session are the authoritative
+		// delegation signal. Foreground parents keep their own task icon below
+		// and still contribute their running sub-agents to the fixed entry.
+		realRunning := subagentCounts[newWidgetSubagentKey(source.sessionDir, source.branchID)]
 		if meta.BackgroundOnly {
-			if meta.RunningWork {
+			// The legacy compatibility path counts the background tab itself
+			// as the delegated work. When the same source owns real running
+			// sub-agents, those are authoritative and count instead, so a
+			// source is never double counted by both signals — even when the
+			// tab's own turn has already ended (RunningWork=false).
+			delegatedRunning += realRunning
+			if realRunning == 0 && meta.RunningWork {
 				delegatedRunning++
 			}
 			continue
 		}
+		delegatedRunning += realRunning
 		if !meta.RunningWork && !meta.NeedsAttention && strings.TrimSpace(meta.StartupErr) == "" && !source.has {
 			continue
 		}

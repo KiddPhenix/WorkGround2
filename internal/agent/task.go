@@ -504,6 +504,15 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	}
 
 	// Foreground: run synchronously, nesting events under this call.
+	// Persist the running state before entering the provider stream so desktop
+	// projections can observe foreground delegation while the parent turn is
+	// still active. Background runs do the same immediately before job start.
+	if t.transcripts != nil && run != nil && run.Ref != "" {
+		if err := t.transcripts.MarkRunning(run); err != nil {
+			run.Release()
+			return "", err
+		}
+	}
 	defer run.Release()
 	answer, err := t.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, run.Session, childDepth)
 	if err != nil {

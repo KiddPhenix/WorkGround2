@@ -17,7 +17,7 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 		Key: "room:design", Source: unread.SourceRoom, SessionID: "room-session", Title: "产品 Room",
 	}}}}
 	spaces := []WidgetWorkspaceOption{{Scope: "auto", Name: "自动"}, {Scope: "project", Name: "WorkGround2", Root: `D:\Work\WorkGround2`}}
-	snapshot := buildDesktopIconSnapshot(nil, state, spaces, desktopIconPersistedState{}, 1200, nil)
+	snapshot := buildDesktopIconSnapshot(nil, state, spaces, desktopIconPersistedState{}, 1200, nil, nil)
 	room := findDesktopIconItem(snapshot.Items, "conversation:room:design")
 	if room == nil || room.Position.Row != "top" || room.UnreadCount != 0 {
 		t.Fatalf("read Room projection = %#v", room)
@@ -36,7 +36,7 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 
 func TestBuildDesktopIconSnapshotSeparatesRuntimeFromUnread(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true, TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.Runtime == nil || task.UnreadCount != 0 {
 		t.Fatalf("running task = %#v", task)
@@ -73,7 +73,7 @@ func TestBuildDesktopIconSnapshotDoesNotDoubleCountTaskUnread(t *testing.T) {
 		Key: "session:session-1", Source: unread.SourceSession, SessionID: "session-1", LatestSequence: 7, UnreadCount: 1,
 		Items: []unread.Item{{ID: "turn:1", Sequence: 7, Kind: "completed", OccurredAt: time.UnixMilli(12)}},
 	}}}}
-	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 1200, nil)
+	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 1200, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.UnreadCount != 1 || len(task.Notifications) != 1 {
 		t.Fatalf("task unread projection = %#v", task)
@@ -88,13 +88,166 @@ func TestBuildDesktopIconSnapshotDoesNotDoubleCountTaskUnread(t *testing.T) {
 
 func TestBuildDesktopIconSnapshotAggregatesDelegatedActivity(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "delegated", RunningWork: true, BackgroundOnly: true}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 1 || delegate.UnreadCount != 0 || delegate.Status != "running" {
 		t.Fatalf("delegate = %#v", delegate)
 	}
 	if findDesktopIconItem(snapshot.Items, "task:delegated") != nil {
 		t.Fatal("delegated task received an independent running icon")
+	}
+}
+
+func TestBuildDesktopIconSnapshotCountsRealRunningSubagents(t *testing.T) {
+	sources := []widgetSource{{
+		meta:       TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "父任务", RunningWork: true, ForegroundActive: true, TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()},
+		sessionDir: "dir-a",
+		branchID:   "branch-a",
+	}}
+	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-a", "branch-a"): 2}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, counts)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
+		t.Fatalf("delegate = %#v, want activity 2 running", delegate)
+	}
+	task := findDesktopIconItem(snapshot.Items, "task:task-1")
+	if task == nil {
+		t.Fatal("foreground parent lost its own task icon")
+	}
+}
+
+func TestBuildDesktopIconSnapshotRealSubagentsDoNotDoubleCountBackgroundCompat(t *testing.T) {
+	sources := []widgetSource{{
+		meta:       TabMeta{ID: "background-1", RunningWork: true, BackgroundOnly: true},
+		sessionDir: "dir-b",
+		branchID:   "branch-b",
+	}}
+	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-b", "branch-b"): 2}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
+		t.Fatalf("delegate = %#v, want activity 2 (not 3) running", delegate)
+	}
+}
+
+func TestBuildDesktopIconSnapshotRealSubagentsSurviveBackgroundTurnEnd(t *testing.T) {
+	sources := []widgetSource{{
+		meta:       TabMeta{ID: "background-1", BackgroundOnly: true}, // RunningWork=false: own turn ended
+		sessionDir: "dir-b",
+		branchID:   "branch-b",
+	}}
+	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-b", "branch-b"): 2}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
+		t.Fatalf("delegate = %#v, want real sub-agents counted after background turn ended", delegate)
+	}
+}
+
+func TestBuildDesktopIconSnapshotIgnoresSubagentsOfInactiveSessions(t *testing.T) {
+	sources := []widgetSource{{
+		meta:       TabMeta{ID: "idle-1", SessionID: "session-1", TopicTitle: "空闲任务"},
+		sessionDir: "dir-idle",
+		branchID:   "branch-idle",
+	}}
+	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-idle", "branch-other"): 3}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
+		t.Fatalf("delegate = %#v, want idle without activity", delegate)
+	}
+}
+
+func TestWidgetSubagentScanSurfacesCorruptMeta(t *testing.T) {
+	dir := t.TempDir()
+	subagentDir := filepath.Join(dir, "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "sa_20260102_030405_000000000_aabbccddeeff"
+	if err := os.WriteFile(filepath.Join(subagentDir, ref+".meta.json"), []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	sources := []widgetSource{{sessionDir: dir}}
+	counts, err := app.widgetSubagentCounts(sources)
+	if err == nil || !strings.Contains(err.Error(), "decode subagent metadata") {
+		t.Fatalf("widgetSubagentCounts error = %v, counts = %v; want decode error surfaced", err, counts)
+	}
+	if counts[newWidgetSubagentKey(dir, ref)] != 0 {
+		t.Fatalf("corrupt meta must not count as running: %v", counts)
+	}
+}
+
+func TestWidgetSubagentScanKeepsCountsDespiteCorruptSibling(t *testing.T) {
+	dir := t.TempDir()
+	subagentDir := filepath.Join(dir, "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := "sa_20260102_030405_000000000_aabbccddeeff"
+	writeRunningSubagentMeta(t, filepath.Join(subagentDir, good+".meta.json"), "branch-a")
+	bad := "sa_20260102_030405_000000000_112233445566"
+	if err := os.WriteFile(filepath.Join(subagentDir, bad+".meta.json"), []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	sources := []widgetSource{{sessionDir: dir}}
+	counts, err := app.widgetSubagentCounts(sources)
+	if err == nil || !strings.Contains(err.Error(), "decode subagent metadata") {
+		t.Fatalf("widgetSubagentCounts error = %v, counts = %v; want decode error surfaced", err, counts)
+	}
+	if counts[newWidgetSubagentKey(dir, "branch-a")] != 1 {
+		t.Fatalf("counts = %v, want usable counts kept despite corrupt sibling", counts)
+	}
+}
+
+func TestWidgetSubagentScanScansEachUniqueDirOnce(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	for dir, parent := range map[string]string{dirA: "branch-a", dirB: "branch-b"} {
+		subagentDir := filepath.Join(dir, "subagents")
+		if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeRunningSubagentMeta(t, filepath.Join(subagentDir, "sa_20260102_030405_000000000_aabbccddeeff.meta.json"), parent)
+	}
+	app := &App{}
+	sources := []widgetSource{{sessionDir: dirA, branchID: "branch-a"}, {sessionDir: dirA, branchID: "branch-dup"}, {sessionDir: dirB, branchID: "branch-b"}}
+	counts, err := app.widgetSubagentCounts(sources)
+	if err != nil {
+		t.Fatalf("widgetSubagentCounts: %v", err)
+	}
+	if counts[newWidgetSubagentKey(dirA, "branch-a")] != 1 || counts[newWidgetSubagentKey(dirB, "branch-b")] != 1 || len(counts) != 2 {
+		t.Fatalf("counts = %v, want branch-a:1 branch-b:1", counts)
+	}
+}
+
+func TestWidgetSubagentCountsKeepSessionDirsIsolated(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	for _, dir := range []string{dirA, dirB} {
+		subagentDir := filepath.Join(dir, "subagents")
+		if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeRunningSubagentMeta(t, filepath.Join(subagentDir, "sa_20260102_030405_000000000_aabbccddeeff.meta.json"), "same-branch")
+	}
+	app := &App{}
+	counts, err := app.widgetSubagentCounts([]widgetSource{{sessionDir: dirA}, {sessionDir: dirB}})
+	if err != nil {
+		t.Fatalf("widgetSubagentCounts: %v", err)
+	}
+	if counts[newWidgetSubagentKey(dirA, "same-branch")] != 1 || counts[newWidgetSubagentKey(dirB, "same-branch")] != 1 || len(counts) != 2 {
+		t.Fatalf("counts = %v, want one isolated count per session dir", counts)
+	}
+}
+
+func writeRunningSubagentMeta(t *testing.T, metaPath, parentSession string) {
+	t.Helper()
+	data := []byte(`{"ref":"sa_x","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","status":"running","kind":"task","name":"n","workspaceRoot":"","parentSession":"` + parentSession + `","systemPromptHash":"","toolScope":[],"toolSchemaHash":"","model":"","effort":""}` + "\n")
+	if err := os.WriteFile(metaPath, data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
