@@ -5274,7 +5274,10 @@ export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
   const { showToast } = useToast();
-  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode), []);
+  const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
+    useLayoutStore.getState().setSidebarCollapsed(true);
+    useOverlayStore.getState().setSidebarSearchOpen(false);
+  }), []);
   const reportWidgetError = useCallback((cause: unknown) => {
     showToast(cause instanceof Error ? cause.message : String(cause), "error");
   }, [showToast]);

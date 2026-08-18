@@ -14,16 +14,23 @@ export interface WidgetModeCoordinator {
 export function createWidgetModeCoordinator(
   backend: WidgetModeBackend,
   publish: (active: boolean) => void,
+  onMainWindowOpen: () => void = () => {},
 ): WidgetModeCoordinator {
   let active = false;
   let desired = false;
   let exitTabID = "";
   let pending: Promise<void> | null = null;
 
-  const sync = (next: boolean) => {
+  const publishState = (next: boolean) => {
+    const openedMainWindow = active && !next;
     active = next;
-    if (!pending) desired = next;
+    if (openedMainWindow) onMainWindowOpen();
     publish(next);
+  };
+
+  const sync = (next: boolean) => {
+    if (!pending) desired = next;
+    publishState(next);
   };
 
   const drain = () => {
@@ -34,8 +41,7 @@ export function createWidgetModeCoordinator(
           const target = desired;
           if (target) await backend.EnterWidgetMode();
           else await backend.ExitWidgetMode(exitTabID);
-          active = target;
-          publish(target);
+          publishState(target);
         }
       } catch (cause) {
         desired = active;
