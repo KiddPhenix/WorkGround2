@@ -388,6 +388,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-requested+design-approved+verified-by-search
 - Updated: 2026-07-18
 
+### 桌面图标小组件工作区管理
+- Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/tabs.go`
+- Summary: 图标小组件入口与弹窗位于 DesktopIconMode；工作区新建/删除/重命名/Pin 复用 Desktop 现有项目树方法与 projects 持久化。
+- Keywords: Workspace, DesktopIconMode, PickWorkspace, RemoveWorkspace, RenameProject, SetProjectPinned
+- Source: verified-by-search
+- Updated: 2026-08-19
+
 ### 桌面通用设置精简
 - Location: `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/locales/zh.ts`, `desktop/frontend/src/locales/en.ts`, `desktop/frontend/src/locales/zh-TW.ts`
 - Summary: 通用设置页隐藏桌面风格、会话展示、底部信息栏配置，保留工作台默认及兼容配置，并细化新会话审批选项说明。

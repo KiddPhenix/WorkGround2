@@ -206,6 +206,35 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__results { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
 .desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
 .desktop-icon-popup__results small { color: #969ba8; }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }
+.desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.desktop-icon-popup__workspace-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
+.desktop-icon-popup__workspace-head strong { font-size: 15px; }
+.desktop-icon-popup__workspace-head button { min-height: 30px; padding: 4px 12px; }
+.desktop-icon-popup__workspace-note { margin: 14px 0 4px; color: #969ba8; font-size: 12px; text-align: center; }
+.desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: calc(5 * 72px); overflow-y: auto; margin-top: 8px; }
+.desktop-icon-popup__workspace-row { padding: 7px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__workspace-row.is-armed { margin: 0 -6px; padding: 7px 6px; border-radius: 8px; background: rgb(167 70 85 / 12%); }
+.desktop-icon-popup__workspace-row:last-child { border-bottom: 0; }
+.desktop-icon-popup__workspace-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.desktop-icon-popup__workspace-glyph { display: grid; place-items: center; flex: 0 0 auto; width: 26px; height: 26px; border-radius: 7px; background: #30333d; color: #cfc1ff; font-size: 13px; }
+.desktop-icon-popup__workspace-glyph svg { width: 15px; height: 15px; }
+.desktop-icon-popup__workspace-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__workspace-main input { flex: 1 1 auto; min-width: 0; min-height: 30px; padding: 4px 8px; }
+.desktop-icon-popup__workspace-pin { display: grid; place-items: center; flex: 0 0 auto; width: 30px; height: 30px; padding: 0; border: 1px solid rgb(255 255 255 / 16%); background: transparent; color: #969ba8; }
+.desktop-icon-popup__workspace-pin[aria-pressed="true"] { border-color: #8e74e3; color: #ad92ff; background: #3a2f5e; }
+.desktop-icon-popup__workspace-pin svg { width: 14px; height: 14px; }
+.desktop-icon-popup__workspace-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; padding-left: 34px; }
+.desktop-icon-popup__workspace-actions button { min-height: 28px; padding: 3px 10px; font-size: 11px; }
+.desktop-icon-popup__workspace-actions button svg { width: 12px; height: 12px; }
+.desktop-icon-popup__workspace-actions--confirm { padding-left: 0; }
+.desktop-icon-popup__workspace-warn { flex: 1 1 auto; min-width: 0; color: #ffacb7; font-size: 12px; }
+.desktop-icon-popup__workspace-delete:hover { border-color: #a74655; color: #ffb3bd; }
+.desktop-icon-popup__workspace-soon { display: inline-block; margin-left: 6px; color: #969ba8; font-size: 10px; font-weight: 400; }
+.desktop-icon-popup__workspace-hint { margin-left: auto; color: #969ba8; font-size: 10px; white-space: nowrap; }
+.desktop-icon-popup__workspace-foot { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.desktop-icon-popup__workspace-foot button { min-height: 30px; padding: 4px 12px; }
+.desktop-icon-popup__workspace-foot small { color: #969ba8; font-size: 10px; }
 
 .desktop-icon-menu { position: absolute; right: 0; bottom: 78px; z-index: 4; display: grid; min-width: 126px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
 .desktop-icon-menu button { padding: 6px 9px; border: 0; color: #e8eaf0; background: transparent; text-align: left; }

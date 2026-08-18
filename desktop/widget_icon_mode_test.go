@@ -27,14 +27,50 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" {
 		t.Fatalf("workspace projection = %#v", workspace)
 	}
-	for _, id := range []string{"fixed:new", "fixed:delegate", "fixed:search"} {
+	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:delegate", "fixed:search"} {
 		item := findDesktopIconItem(snapshot.Items, id)
 		if item == nil || item.Position.Row != "bottom" || item.Position.Zone != "fixed" {
 			t.Fatalf("fixed item %s = %#v", id, item)
 		}
 	}
+	// The fixed bottom bar order is a Go contract: 新建 → 工作区 → 委托 → 搜索.
+	// Order comes from the declared slice index, never map iteration.
+	wantOrder := []string{"new", "workspace", "delegate", "search"}
+	for order, sourceID := range wantOrder {
+		item := findDesktopIconItem(snapshot.Items, "fixed:"+sourceID)
+		if item == nil || item.SourceID != sourceID || item.Position.Order != order {
+			t.Fatalf("fixed order %d = %#v, want sourceId %q order %d", order, item, sourceID, order)
+		}
+	}
 	if findDesktopIconItem(snapshot.Items, "fixed:knowledge") != nil {
 		t.Fatal("knowledge entry should stay hidden until the feature is ready")
+	}
+}
+
+func TestDesktopIconWorkspaceFixedItemContract(t *testing.T) {
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	workspace := findDesktopIconItem(snapshot.Items, "fixed:workspace")
+	if workspace == nil {
+		t.Fatal("fixed workspace icon is missing")
+	}
+	if workspace.Kind != "fixed" || workspace.SourceID != "workspace" || workspace.Icon != "workspace" {
+		t.Fatalf("workspace fixed item = %#v, want kind fixed sourceId workspace icon workspace", workspace)
+	}
+	if workspace.Title != "工作区" {
+		t.Fatalf("workspace fixed title = %q, want 工作区", workspace.Title)
+	}
+	if workspace.ActivityCount != 0 || workspace.UnreadCount != 0 {
+		t.Fatalf("workspace fixed item must stay idle without badges: %#v", workspace)
+	}
+}
+
+func TestDesktopIconWorkspaceOpenIsRejected(t *testing.T) {
+	app := &App{}
+	err := app.applyDesktopIconActionLocked(DesktopIconItem{
+		ID: "fixed:workspace", Kind: "fixed", SourceID: "workspace",
+	}, nil, DesktopIconActionInput{Action: "open"})
+	if err == nil || !strings.Contains(err.Error(), "management dialog") {
+		t.Fatalf("open on fixed workspace = %v, want explicit management-dialog guard", err)
 	}
 }
 

@@ -4926,7 +4926,9 @@ function makeMockApp(): AppBindings {
       const node = workspaceRoot
         ? mockProjectTree.find((item) => item.root === workspaceRoot)
         : mockProjectTree.find((item) => item.kind === "global_folder");
-      if (node) node.label = title.trim() || (node.kind === "global_folder" ? "Global" : node.label);
+      // Mirror the real backend: an empty title clears the display override and
+      // restores the folder-name semantics instead of keeping the old label.
+      if (node) node.label = title.trim() || (node.kind === "global_folder" ? "Global" : baseName(node.root || node.label));
     },
     async SetProjectColor(workspaceRoot: string, color: string) {
       const node = workspaceRoot
