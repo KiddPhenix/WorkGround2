@@ -56,6 +56,49 @@ func TestVocabularyCompletionRejectsMissingTabIdentity(t *testing.T) {
 	}
 }
 
+func TestVocabularyCompletionUsesActiveTabFallback(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".WorkGround2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".WorkGround2", vocabulary.ProjectFile), []byte(`[[terms]]
+text = "多模态生视频V5"
+kind = "noun"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "state")
+	svc := vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: state})
+	ctrl := control.New(control.Options{WorkspaceRoot: root, Vocabulary: svc})
+	app := NewApp()
+	app.setTestCtrl(ctrl, "test")
+
+	got, err := app.CompleteVocabulary("多模", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Text != "多模态生视频V5" {
+		t.Fatalf("active-tab completion = %+v", got)
+	}
+	if err := app.RecordVocabularyUse(got[0].ID, "use-widget"); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: state})
+	if ranked := reloaded.Complete("多模", 1); len(ranked) != 1 {
+		t.Fatalf("recorded widget vocabulary missing after reload: %+v", ranked)
+	}
+
+	// Without any active tab the widget gets an empty list, never an error.
+	empty := NewApp()
+	got, err = empty.CompleteVocabulary("多模", 5)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("empty active tab = %+v, err = %v; want empty list", got, err)
+	}
+	if err := empty.RecordVocabularyUse("term", "use-1"); err != nil {
+		t.Fatalf("empty active tab use should be a safe no-op, got %v", err)
+	}
+}
+
 func TestSkillVocabularyActivationIsTabScoped(t *testing.T) {
 	root := t.TempDir()
 	svc := vocabulary.New(vocabulary.Options{WorkspaceRoot: root, StateDir: filepath.Join(t.TempDir(), "state")})

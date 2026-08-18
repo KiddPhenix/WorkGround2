@@ -22,10 +22,12 @@ const (
 	desktopIconMaxRooms    = 6
 	desktopIconMaxTasks    = 8
 	desktopIconMaxSpaces   = 5
-	desktopIconWidth       = 900
-	desktopIconHeight      = 600
+	desktopIconWidth       = 1080
+	desktopIconHeight      = 720
 	desktopIconMinWidth    = 640
 	desktopIconMinHeight   = 540
+	legacyIconWidth        = 900
+	legacyIconHeight       = 600
 )
 
 // DesktopIconNotice is one durable or Controller-backed event attached to its
@@ -46,6 +48,10 @@ type DesktopIconNotice struct {
 	QuestionID    string         `json:"questionId,omitempty"`
 	Options       []WidgetOption `json:"options"`
 	Retryable     bool           `json:"retryable,omitempty"`
+	// SummaryStatus reports the news-style summary state for completion
+	// notices: empty while generating (mechanical body), "ready" once the
+	// LLM summary is cached, or "failed" after a visible generation error.
+	SummaryStatus string `json:"summaryStatus,omitempty"`
 }
 
 type DesktopIconRuntime struct {
@@ -197,6 +203,10 @@ type desktopIconPersistedState struct {
 	Positions map[string]DesktopIconPosition `json:"positions,omitempty"`
 	Kept      map[string]desktopIconKept     `json:"kept,omitempty"`
 	Applied   []desktopIconReceipt           `json:"applied,omitempty"`
+	// CompletionSummaries caches LLM news-style summaries keyed by
+	// desktopIconCompletionKey; entries survive restarts so already-generated
+	// summaries are never regenerated and failed ones retry on backoff.
+	CompletionSummaries map[string]desktopIconCompletionSummary `json:"completionSummaries,omitempty"`
 }
 
 func desktopIconStatePath() string {
@@ -216,6 +226,12 @@ func loadDesktopIconWindowState() (WidgetWindowState, bool, error) {
 	var state WidgetWindowState
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return WidgetWindowState{}, false, fmt.Errorf("load desktop icon window state: %w", err)
+	}
+	// The original icon surface was 900×600. Recompute the enlarged default
+	// from the active monitor instead of reusing its old bottom-right position,
+	// which could move the wider/taller window outside the work area.
+	if state.Width == legacyIconWidth && state.Height == legacyIconHeight {
+		return WidgetWindowState{}, false, nil
 	}
 	if state.Width < desktopIconMinWidth || state.Height < desktopIconMinHeight {
 		return WidgetWindowState{}, false, fmt.Errorf("load desktop icon window state: saved size %dx%d is below %dx%d", state.Width, state.Height, desktopIconMinWidth, desktopIconMinHeight)
@@ -246,8 +262,9 @@ func (a *App) loadDesktopIconStateLocked() {
 	}
 	a.iconWidgetStateLoaded = true
 	a.iconWidgetState = desktopIconPersistedState{
-		Positions: map[string]DesktopIconPosition{},
-		Kept:      map[string]desktopIconKept{},
+		Positions:           map[string]DesktopIconPosition{},
+		Kept:                map[string]desktopIconKept{},
+		CompletionSummaries: map[string]desktopIconCompletionSummary{},
 	}
 	raw, err := readFileUTF8(desktopIconStatePath())
 	if err == nil {
@@ -263,6 +280,9 @@ func (a *App) loadDesktopIconStateLocked() {
 	}
 	if a.iconWidgetState.Kept == nil {
 		a.iconWidgetState.Kept = map[string]desktopIconKept{}
+	}
+	if a.iconWidgetState.CompletionSummaries == nil {
+		a.iconWidgetState.CompletionSummaries = map[string]desktopIconCompletionSummary{}
 	}
 }
 
@@ -290,6 +310,10 @@ func (a *App) GetDesktopIconSnapshot() DesktopIconSnapshot {
 func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	recoveryErr := a.recoverDesktopIconActionsLocked()
 	sources := a.widgetSources()
+	// Completion summaries are generated asynchronously: only the request
+	// collection and goroutine start happen under iconWidgetMu, and the
+	// network calls run inside the goroutines, never under an App/widget lock.
+	a.maybeGenerateCompletionSummariesLocked(a.completionSummaryRequestsLocked(sources))
 	// Subagent metadata scanning happens after widgetSources released a.mu,
 	// so file I/O never runs under the App's main lock.
 	subagentCounts, subagentErr := a.widgetSubagentCounts(sources)
@@ -365,6 +389,17 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 	for i := range a.iconWidgetState.Applied {
 		receipt := &a.iconWidgetState.Applied[i]
 		if receipt.Status != "pending" {
+			continue
+		}
+		if receipt.Action == "continue" && receipt.Text != "" {
+			beforeDelivery := receipt.Delivery
+			progress, err := a.advanceDesktopIconTaskContinue(receipt)
+			if err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon task continuation %s: %w", receipt.RequestID, err))
+				continue
+			}
+			applyDesktopIconReplyProgress(receipt, progress)
+			changed = changed || receipt.Status == "applied" || receipt.Delivery != beforeDelivery
 			continue
 		}
 		if receipt.Action == "reply" && receipt.Text != "" {
@@ -589,7 +624,7 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		if !meta.RunningWork && !meta.NeedsAttention && strings.TrimSpace(meta.StartupErr) == "" && !source.has {
 			continue
 		}
-		item := desktopTaskItem(source, len(items))
+		item := desktopTaskItem(source, len(items), persisted.CompletionSummaries)
 		items = append(items, item)
 		taskCount++
 		index := len(items) - 1
@@ -716,7 +751,7 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	return snapshot
 }
 
-func desktopTaskItem(source widgetSource, order int) DesktopIconItem {
+func desktopTaskItem(source widgetSource, order int, summaries map[string]desktopIconCompletionSummary) DesktopIconItem {
 	meta := source.meta
 	title := firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "当前任务")
 	item := DesktopIconItem{
@@ -732,19 +767,25 @@ func desktopTaskItem(source widgetSource, order int) DesktopIconItem {
 		}
 		item.Notifications = append(item.Notifications, desktopNoticeForMessage(message, kind, 1, meta.NeedsAttentionAt))
 	} else if text := strings.TrimSpace(meta.StartupErr); text != "" {
-		message := baseWidgetMessage(meta, "error", "任务失败", conciseWidgetText(text, 110))
+		body, summaryStatus := desktopIconCompletionSummaryFor(summaries, desktopIconFailureKey(meta.ID, text), conciseWidgetText(text, 110))
+		message := baseWidgetMessage(meta, "error", "任务失败", body)
 		message.ID = "error:" + meta.ID
 		message.Revision = widgetMessageRevision(message)
-		item.Notifications = append(item.Notifications, desktopNoticeForMessage(message, "failed", 2, meta.NeedsAttentionAt))
+		notice := desktopNoticeForMessage(message, "failed", 2, meta.NeedsAttentionAt)
+		notice.SummaryStatus = summaryStatus
+		item.Notifications = append(item.Notifications, notice)
 	} else if meta.NeedsAttention {
 		body := conciseWidgetText(source.resultText, 140)
 		if body == "" {
 			body = "任务已完成，记录仍可在搜索中找到。"
 		}
+		body, summaryStatus := desktopIconCompletionSummaryFor(summaries, desktopIconCompletionKey(meta.ID, "completed", meta.NeedsAttentionAt), body)
 		message := baseWidgetMessage(meta, "result", "任务完成", body)
 		message.ID = fmt.Sprintf("result:%s:%d", meta.ID, meta.NeedsAttentionAt)
 		message.Revision = widgetMessageRevision(message)
-		item.Notifications = append(item.Notifications, desktopNoticeForMessage(message, "completed", 2, meta.NeedsAttentionAt))
+		notice := desktopNoticeForMessage(message, "completed", 2, meta.NeedsAttentionAt)
+		notice.SummaryStatus = summaryStatus
+		item.Notifications = append(item.Notifications, notice)
 	}
 	if meta.RunningWork {
 		now := time.Now().UnixMilli()
@@ -888,15 +929,19 @@ func validDesktopIconPosition(item DesktopIconItem, position DesktopIconPosition
 
 func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersistedState {
 	clone := desktopIconPersistedState{
-		Positions: make(map[string]DesktopIconPosition, len(state.Positions)),
-		Kept:      make(map[string]desktopIconKept, len(state.Kept)),
-		Applied:   append([]desktopIconReceipt(nil), state.Applied...),
+		Positions:           make(map[string]DesktopIconPosition, len(state.Positions)),
+		Kept:                make(map[string]desktopIconKept, len(state.Kept)),
+		Applied:             append([]desktopIconReceipt(nil), state.Applied...),
+		CompletionSummaries: make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
 	}
 	for id, position := range state.Positions {
 		clone.Positions[id] = position
 	}
 	for id, kept := range state.Kept {
 		clone.Kept[id] = kept
+	}
+	for key, summary := range state.CompletionSummaries {
+		clone.CompletionSummaries[key] = summary
 	}
 	return clone
 }
@@ -1010,6 +1055,21 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("invalid", errors.New("requestId was already used for another action"))
 		}
 		if receipt.Status == "pending" {
+			if input.Action == "continue" && receipt.Text != "" {
+				progress, err := a.advanceDesktopIconTaskContinue(receipt)
+				if err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				applyDesktopIconReplyProgress(receipt, progress)
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				status := "accepted"
+				if progress == desktopIconReplyConfirmed {
+					status = "already_applied"
+				}
+				return DesktopIconActionResult{Status: status, Snapshot: a.desktopIconSnapshotLocked()}
+			}
 			if input.Action == "reply" && receipt.Text != "" {
 				progress, err := a.advanceDesktopIconPersonReply(receipt)
 				if err != nil {
@@ -1085,14 +1145,20 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 		notice = &item.Notifications[0]
 	}
 
-	if input.Action == "ok" || input.Action == "dismiss" {
+	if input.Action == "ok" {
+		// OK only closes the popup — a purely local frontend action. It must
+		// not acknowledge, clear attention, write a receipt, or turn the item
+		// into the retained "open-only" state, so reopening the same item
+		// still shows the same summary and the same three buttons. Old
+		// pending "ok" receipts are still recovered by
+		// recoverDesktopIconActionsLocked and the pending branch above.
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "dismiss" {
 		if item.Kind != "task" || notice == nil || (notice.Kind != "completed" && notice.Kind != "failed") {
 			return a.desktopIconActionErrorLocked("invalid", errors.New("completion notification is required"))
 		}
 		delete(a.iconWidgetState.Kept, item.ID)
-		if input.Action == "ok" {
-			a.iconWidgetState.Kept[item.ID] = desktopIconKept{ItemID: item.ID, SourceID: item.SourceID, Title: item.Title, Summary: notice.Body, Order: item.Position.Order, Revision: widgetRevision(item.ID, notice.Revision, "kept")}
-		}
 		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{RequestID: input.RequestID, Intent: intent, Status: "pending", Action: input.Action, ItemID: item.ID, TabID: notice.TabID, Conversation: notice.Conversation, ReadSequence: notice.ReadSequence, AppliedAt: time.Now().UnixMilli()})
 		if err := a.saveDesktopIconStateLocked(); err != nil {
 			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare completion action: %w", err))
@@ -1108,6 +1174,9 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 	}
 	if input.Action == "reply" && item.Kind == "person" {
 		return a.applyDesktopIconPersonReplyLocked(*item, notice, input, intent)
+	}
+	if input.Action == "continue" {
+		return a.applyDesktopIconTaskContinueLocked(*item, notice, input, intent)
 	}
 	if input.Action == "open_search" {
 		if item.ID != "fixed:search" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
@@ -1262,6 +1331,36 @@ func (a *App) applyDesktopIconPersonReplyLocked(item DesktopIconItem, notice *De
 	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 }
 
+func (a *App) applyDesktopIconTaskContinueLocked(item DesktopIconItem, notice *DesktopIconNotice, input DesktopIconActionInput, intent string) DesktopIconActionResult {
+	if item.Kind != "task" || notice == nil || (notice.Kind != "completed" && notice.Kind != "failed") || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
+		return a.desktopIconActionErrorLocked("invalid", errors.New("completed task and continuation text are required"))
+	}
+	tabID := firstNonEmpty(strings.TrimSpace(notice.TabID), strings.TrimSpace(item.SourceID))
+	ctrl := a.ctrlByTabID(tabID)
+	if ctrl == nil {
+		return a.desktopIconActionErrorLocked("retryable_error", errors.New("completed task controller is not ready"))
+	}
+	receipt := desktopIconReceipt{
+		RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "continue", ItemID: item.ID,
+		TabID: tabID, Text: strings.TrimSpace(input.Values[0]), BaseUserTurns: len(desktopIconUserMessages(ctrl.History())), AppliedAt: time.Now().UnixMilli(),
+	}
+	a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, receipt)
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		a.iconWidgetState.Applied = a.iconWidgetState.Applied[:len(a.iconWidgetState.Applied)-1]
+		return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare task continuation: %w", err))
+	}
+	stored := &a.iconWidgetState.Applied[len(a.iconWidgetState.Applied)-1]
+	progress, err := a.advanceDesktopIconTaskContinue(stored)
+	if err != nil {
+		return a.desktopIconActionErrorLocked("retryable_error", err)
+	}
+	applyDesktopIconReplyProgress(stored, progress)
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save task continuation progress: %w", err))
+	}
+	return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+}
+
 func (a *App) resumeDesktopIconReplyLocked(replyKey string) (DesktopIconActionResult, bool) {
 	i := desktopIconReplyReceiptIndex(a.iconWidgetState.Applied, replyKey)
 	if i < 0 {
@@ -1352,6 +1451,36 @@ func (a *App) advanceDesktopIconPersonReply(receipt *desktopIconReceipt) (deskto
 	}
 }
 
+func (a *App) advanceDesktopIconTaskContinue(receipt *desktopIconReceipt) (desktopIconReplyProgress, error) {
+	ctrl := a.ctrlByTabID(receipt.TabID)
+	if ctrl == nil {
+		return "", errors.New("completed task controller is not ready")
+	}
+	users := desktopIconUserMessages(ctrl.History())
+	step, err := desktopIconTurnNextStep(users, receipt.BaseUserTurns, receipt.Text, receipt.Delivery, ctrl.Running(), "task conversation")
+	if err != nil {
+		return "", err
+	}
+	switch step {
+	case desktopIconReplyWaitStep:
+		return desktopIconReplyAccepted, nil
+	case desktopIconReplySubmitStep:
+		accepted, err := a.tryDesktopIconReply(receipt.TabID, receipt.Text)
+		if err != nil {
+			return "", fmt.Errorf("continue completed task: %w", err)
+		}
+		if !accepted {
+			return "", errors.New("task conversation is busy; continuation remains pending and can be retried")
+		}
+		receipt.Delivery = string(desktopIconReplyAccepted)
+		return desktopIconReplyAccepted, nil
+	case desktopIconReplyConfirmStep:
+		return desktopIconReplyConfirmed, nil
+	default:
+		return "", errors.New("invalid task continuation recovery step")
+	}
+}
+
 type desktopIconTurnSubmitter interface {
 	TrySubmitUserTurn(input, display string) bool
 }
@@ -1392,14 +1521,18 @@ func (a *App) tryDesktopIconReply(tabID, text string) (bool, error) {
 }
 
 func desktopIconReplyNextStep(users []string, base int, text, delivery string, running bool) (desktopIconReplyStep, error) {
+	return desktopIconTurnNextStep(users, base, text, delivery, running, "personal conversation")
+}
+
+func desktopIconTurnNextStep(users []string, base int, text, delivery string, running bool, context string) (desktopIconReplyStep, error) {
 	if len(users) > base {
 		if strings.TrimSpace(users[base]) == strings.TrimSpace(text) {
 			return desktopIconReplyConfirmStep, nil
 		}
-		return "", errors.New("personal conversation changed while recovering reply; retry was stopped to avoid a duplicate")
+		return "", fmt.Errorf("%s changed while recovering the user turn; retry was stopped to avoid a duplicate", context)
 	}
 	if len(users) < base {
-		return "", errors.New("personal conversation history moved backwards; reply recovery is unsafe")
+		return "", fmt.Errorf("%s history moved backwards; user-turn recovery is unsafe", context)
 	}
 	if delivery == string(desktopIconReplyAccepted) && running {
 		return desktopIconReplyWaitStep, nil

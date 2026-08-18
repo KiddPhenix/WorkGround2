@@ -407,7 +407,14 @@ const cwWidth = finalDeclaration(stylesSource, ".layout--workbench .session-foot
 ok(cwWidth === "auto", `CSS: composer-wrap respects shared 48px margins (got width: ${cwWidth})`);
 
 const composerMinH = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .composer-card", "min-height");
-ok(composerMinH === "128px", `CSS: composer editor frame is 128px (got: ${composerMinH})`);
+ok(composerMinH === "76px", `CSS: composer editor frame is compact at 76px (got: ${composerMinH})`);
+
+const messageMarginTop = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .msg", "margin-top");
+const messageMarginBottom = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .msg", "margin-bottom");
+ok(messageMarginTop === "8px" && messageMarginBottom === "8px", `CSS: Session messages use compact 8px vertical margins (got: ${messageMarginTop}/${messageMarginBottom})`);
+
+const reasoningHeadMinH = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .turn-collapse:not(.turn-collapse--active) .reasoning__head", "min-height");
+ok(reasoningHeadMinH === "28px", `CSS: completed reasoning rows are compact at 28px (got: ${reasoningHeadMinH})`);
 
 // 32px bottom breathing room
 const dockPadB = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock", "padding-bottom");

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -110,5 +112,129 @@ func TestApplyWidgetConversationDefaultsRefreshesReusableBlankTab(t *testing.T) 
 	}
 	if tab.toolApprovalMode != control.ToolApprovalAuto {
 		t.Fatalf("approval mode = %q, want user default auto", tab.toolApprovalMode)
+	}
+}
+
+func TestWidgetConversationRejectsUnknownModelSelection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+
+	result := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: "req-model", Workspace: "global",
+		Model: "ghost/ghost-model",
+	})
+	if result.Status != "invalid" {
+		t.Fatalf("status = %q, want invalid for an unconfigured model", result.Status)
+	}
+	if result.Error == "" {
+		t.Fatal("missing model must surface an explicit error")
+	}
+}
+
+func TestWidgetConversationModelApprovalGateIsIdempotentAndStrict(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+
+	seed := widgetConversationReceipt{
+		RequestID: "req-gate", PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: "global", Model: "deepseek/deepseek-v4", ToolApprovalMode: control.ToolApprovalAuto,
+		Scope: "global", WorkspaceName: "Global", Status: "submitted",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+
+	// Same intent retry stays idempotent (the gate accepts the exact retry).
+	same := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: "req-gate", Workspace: "global",
+		Model: "deepseek/deepseek-v4", ApprovalMode: control.ToolApprovalAuto,
+	})
+	if same.Status != "already_applied" {
+		t.Fatalf("same-intent retry = %+v, want already_applied", same)
+	}
+
+	// A model change on the same requestId is an explicit error, never a silent
+	// reuse of the old selection.
+	changedModel := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: "req-gate", Workspace: "global",
+		Model: "deepseek/deepseek-v5", ApprovalMode: control.ToolApprovalAuto,
+	})
+	if changedModel.Status != "invalid" {
+		t.Fatalf("changed model = %+v, want invalid", changedModel)
+	}
+
+	// An approval change on the same requestId is rejected too.
+	changedApproval := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: "req-gate", Workspace: "global",
+		Model: "deepseek/deepseek-v4", ApprovalMode: control.ToolApprovalYolo,
+	})
+	if changedApproval.Status != "invalid" {
+		t.Fatalf("changed approval = %+v, want invalid", changedApproval)
+	}
+}
+
+func TestWidgetConversationEmptyModelRetryDoesNotDeadlock(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	app.ctx = context.Background()
+
+	// First attempt had no usable model (empty selection), so the receipt was
+	// filled with the user defaults. The retry still sends model:"" — the gate
+	// must treat an empty selection as "use defaults", never as a change.
+	seed := widgetConversationReceipt{
+		RequestID: "req-empty-model", PromptHash: fmt.Sprintf("%x", sha256.Sum256([]byte("fix it"))),
+		WorkspaceSelection: "global", Model: "default/default-model", ToolApprovalMode: control.ToolApprovalAuto,
+		Scope: "global", WorkspaceName: "Global", Status: "submitted",
+	}
+	if err := app.saveWidgetConversationReceipt(seed); err != nil {
+		t.Fatalf("seed receipt: %v", err)
+	}
+
+	retry := app.startWidgetConversationOnce(WidgetConversationInput{
+		Prompt: "fix it", RequestID: "req-empty-model", Workspace: "global",
+		ApprovalMode: control.ToolApprovalAuto,
+	})
+	if retry.Status != "already_applied" {
+		t.Fatalf("empty-model retry = %+v, want already_applied (no deadlock)", retry)
+	}
+}
+
+func TestWidgetModelRefExists(t *testing.T) {
+	models := []ModelInfo{
+		{Ref: "deepseek/deepseek-v4", Provider: "deepseek", Model: "deepseek-v4"},
+		{Ref: "openai/gpt-5", Provider: "openai", Model: "gpt-5"},
+	}
+	for _, ref := range []string{"deepseek/deepseek-v4", "openai/gpt-5"} {
+		if !widgetModelRefExists(models, ref) {
+			t.Fatalf("ref %q should resolve", ref)
+		}
+	}
+	for _, ref := range []string{"", "  ", "ghost/ghost", "deepseek/ deepseek-v4"} {
+		if widgetModelRefExists(models, ref) {
+			t.Fatalf("ref %q must not resolve", ref)
+		}
+	}
+}
+
+func TestWidgetApprovalModePreservesOptionalDefault(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"  ", ""},
+		{control.ToolApprovalAsk, control.ToolApprovalAsk},
+		{control.ToolApprovalAuto, control.ToolApprovalAuto},
+		{control.ToolApprovalYolo, control.ToolApprovalYolo},
+	} {
+		got, err := widgetApprovalMode(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("widgetApprovalMode(%q) = %q, %v; want %q", tc.input, got, err, tc.want)
+		}
+	}
+	if _, err := widgetApprovalMode("sometimes"); err == nil {
+		t.Fatal("unknown approval mode must fail explicitly")
 	}
 }

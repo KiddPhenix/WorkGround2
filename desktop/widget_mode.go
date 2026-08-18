@@ -127,6 +127,7 @@ type widgetSource struct {
 	pending      control.PendingInteraction
 	has          bool
 	rank         int
+	requestText  string // first user request, used for completion summaries
 	resultText   string
 	totalTokens  int
 	tokenTracked bool
@@ -545,6 +546,7 @@ func (a *App) widgetSources() []widgetSource {
 		source.model = strings.TrimSpace(tab.Label)
 		if tab.Ctrl != nil {
 			source.pending, source.has = tab.Ctrl.PendingInteraction()
+			source.requestText = firstWidgetUserText(tab.Ctrl.History())
 			source.resultText = lastWidgetAssistantText(tab.Ctrl.History())
 		}
 		out = append(out, source)
@@ -751,6 +753,20 @@ func lastWidgetAssistantText(messages []provider.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == provider.RoleAssistant {
 			if text := strings.TrimSpace(messages[i].Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+// firstWidgetUserText returns the first non-empty user request of a history.
+// It is the task-level ask used as completion-summary material; it never
+// inspects or mutates the session itself.
+func firstWidgetUserText(messages []provider.Message) string {
+	for _, message := range messages {
+		if message.Role == provider.RoleUser {
+			if text := strings.TrimSpace(message.Content); text != "" {
 				return text
 			}
 		}

@@ -248,6 +248,13 @@ type App struct {
 	iconWidgetStateErr    error
 	iconWidgetWindowErr   error
 
+	// completionSummaryGen is the injection seam for async news-style
+	// completion summaries (nil uses the configured provider backend).
+	// completionSummaryInFlight is the singleflight slot map; both are
+	// guarded by iconWidgetMu.
+	completionSummaryGen      completionSummaryGenerator
+	completionSummaryInFlight map[string]*completionSummaryCall
+
 	sessionRefs    work.SessionRefStore
 	sessionRefsErr error
 	purgeSession   func(dir, path string) error // test seam for durable cleanup recovery
@@ -426,14 +433,15 @@ func (a *App) workspaceMediaMiddleware() func(http.Handler) http.Handler {
 // last session's desktop-tabs.json.
 func NewApp() *App {
 	a := &App{
-		tabs:             map[string]*WorkspaceTab{},
-		detachedSessions: map[string]*WorkspaceTab{},
-		workWatches:      map[string]*workViewWatch{},
-		mediaTokens:      newMediaTokenStore(),
-		background:       newSessionBackgroundService(),
-		botInstalls:      map[string]*botInstallSession{},
-		botRuntime:       newDesktopBotRuntime(),
-		dshWorkbenches:   map[string]*dshWorkbench{},
+		tabs:                      map[string]*WorkspaceTab{},
+		detachedSessions:          map[string]*WorkspaceTab{},
+		workWatches:               map[string]*workViewWatch{},
+		mediaTokens:               newMediaTokenStore(),
+		background:                newSessionBackgroundService(),
+		botInstalls:               map[string]*botInstallSession{},
+		botRuntime:                newDesktopBotRuntime(),
+		dshWorkbenches:            map[string]*dshWorkbench{},
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
 	}
 	root := strings.TrimSpace(config.MemoryUserDir())
 	decisionPath := ""
@@ -8557,6 +8565,18 @@ func (a *App) ListDirForTab(tabID, rel string) []DirEntry {
 	if !ok {
 		return []DirEntry{}
 	}
+	return a.listDirForWorkspace(root, ctrl, rel)
+}
+
+// ListDirForWorkspace lists one directory level against an explicit workspace
+// root, so the desktop widget's QuickStart can complete "@" file references
+// against the workspace it will actually start the conversation in. An empty
+// root keeps the legacy CWD behaviour of ListDir.
+func (a *App) ListDirForWorkspace(root, rel string) []DirEntry {
+	return a.listDirForWorkspace(strings.TrimSpace(root), nil, rel)
+}
+
+func (a *App) listDirForWorkspace(root string, ctrl control.SessionAPI, rel string) []DirEntry {
 	if browser := externalFolderRefBrowserFromController(ctrl); browser != nil {
 		if entries, handled := browser.ListExternalFolderRefDir(rel); handled {
 			return externalFolderDirEntries(entries)
@@ -8610,6 +8630,17 @@ func (a *App) SearchFileRefsForTab(tabID, query string) []DirEntry {
 	if !ok {
 		return []DirEntry{}
 	}
+	return a.searchFileRefsForWorkspace(root, ctrl, query)
+}
+
+// SearchFileRefsForWorkspace searches file references against an explicit
+// workspace root — the widget-side counterpart of ListDirForWorkspace. An empty
+// root keeps the legacy CWD behaviour of SearchFileRefs.
+func (a *App) SearchFileRefsForWorkspace(root, query string) []DirEntry {
+	return a.searchFileRefsForWorkspace(strings.TrimSpace(root), nil, query)
+}
+
+func (a *App) searchFileRefsForWorkspace(root string, ctrl control.SessionAPI, query string) []DirEntry {
 	base, err := workspaceBaseFromRoot(root)
 	if err != nil {
 		return []DirEntry{}

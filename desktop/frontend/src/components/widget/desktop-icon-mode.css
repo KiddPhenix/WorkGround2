@@ -122,6 +122,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
   box-shadow: 0 14px 38px rgb(0 0 0 / 48%);
   backdrop-filter: blur(18px);
 }
+.desktop-icon-popup:has(.desktop-icon-popup__search) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }
 .desktop-icon-popup--preview { width: auto; max-width: 300px; padding: 9px 12px; pointer-events: auto; }
 .desktop-icon-popup--preview p { margin: 0; white-space: nowrap; }
 .desktop-icon-popup__arrow { position: absolute; left: var(--arrow-left); bottom: -7px; width: 13px; height: 13px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgb(184 169 238 / 32%); border-bottom: 1px solid rgb(184 169 238 / 32%); background: #191b22; }
@@ -132,32 +133,77 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup button { padding: 7px 12px; border: 1px solid #8e74e3; border-radius: 7px; color: white; background: #5e43b5; }
 .desktop-icon-popup button.subtle { border-color: rgb(255 255 255 / 16%); background: transparent; }
 .desktop-icon-popup button.danger { border-color: #a74655; background: #652c39; }
+/* Completion notice actions keep a fixed order with three distinct semantic
+   colors: OK closes locally (green), Detail opens the session (primary), and
+   Dismiss clears the completion (red). */
+.desktop-icon-popup button.desktop-icon-popup__ok { border-color: #3da06c; background: #2b7a4f; }
+.desktop-icon-popup button.desktop-icon-popup__detail { border-color: #8e74e3; background: #5e43b5; }
+.desktop-icon-popup button.desktop-icon-popup__dismiss { border-color: #c04a5a; background: #7a3240; }
+.desktop-icon-popup__actions button:not(:disabled):hover { filter: brightness(1.18); }
 .desktop-icon-popup button:focus-visible, .desktop-icon-menu button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-popup button:disabled { opacity: .55; }
 .desktop-icon-popup__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.desktop-icon-popup__actions--completion button { min-height: 30px; padding: 4px 10px; }
+.desktop-icon-popup__actions--quick button { min-height: 30px; padding: 4px 10px; }
+.desktop-icon-popup__dialog { margin-top: 9px; }
+.desktop-icon-popup__dialog-trigger { width: 100%; min-height: 32px; padding: 5px 10px; border-color: rgb(255 255 255 / 16%); color: #b9bdc9; background: #20232b; text-align: left; }
+.desktop-icon-popup__dialog.is-open { padding-top: 1px; }
+.desktop-icon-popup__dialog textarea { min-height: 112px; border-color: #d9dce6; border-radius: 9px; }
+.desktop-icon-popup__dialog textarea:focus { border-color: #f0f2f7; outline: 1px solid #f0f2f7; }
+.desktop-icon-popup__dialog-actions { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+.desktop-icon-popup__dialog-actions button { min-height: 32px; padding: 5px 12px; }
+.desktop-icon-popup__dialog-actions small { margin-left: auto; color: #8f93a0; font-size: 10px; }
 .desktop-icon-popup__answers { display: grid; gap: 7px; }
 .desktop-icon-popup__answers > button { display: grid; width: 100%; text-align: left; }
 .desktop-icon-popup__answers small { color: #ccc4e4; }
 .desktop-icon-popup input, .desktop-icon-popup textarea { box-sizing: border-box; width: 100%; border: 1px solid #4e5261; border-radius: 8px; color: white; background: #101218; padding: 8px 10px; }
-.desktop-icon-popup textarea { min-height: 126px; resize: vertical; }
+.desktop-icon-popup textarea { min-height: 126px; resize: none; }
 .desktop-icon-popup__facts { display: flex; gap: 6px; flex-wrap: wrap; }
 .desktop-icon-popup__facts span { padding: 3px 7px; border-radius: 10px; background: #30333d; color: #cfd2dc; font-size: 11px; }
 .desktop-icon-popup__history { display: block; margin-top: 9px; color: #8f93a0; }
-.desktop-icon-popup__workspace { display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; gap: 8px; margin-bottom: 10px; text-align: center; }
-.desktop-icon-popup__workspace button { padding: 4px; }
-.desktop-icon-popup__quick-meta { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .75fr); gap: 7px; margin-bottom: 8px; }
-.desktop-icon-popup__quick-meta > span { min-width: 0; padding: 6px 8px; border: 1px solid rgb(255 255 255 / 9%); border-radius: 7px; background: #242731; }
-.desktop-icon-popup__quick-meta small { display: block; margin-bottom: 2px; color: #969ba8; font-size: 10px; }
-.desktop-icon-popup__quick-meta strong { overflow: hidden; color: #e8eaf0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__summary-failed { display: block; margin-top: 9px; color: #e0a0a8; font-size: 11px; }
+.desktop-icon-popup__workspace { display: grid; grid-template-columns: 54px 1fr 54px; align-items: center; gap: 8px; margin-bottom: 10px; text-align: center; }
+.desktop-icon-popup__workspace button { padding: 4px; font-size: 12px; }
+.desktop-icon-popup__quick-meta { position: relative; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .75fr); gap: 7px; margin-bottom: 8px; }
+.desktop-icon-popup__quick-composer { position: relative; overflow: hidden; border-radius: 8px; background: #101218; }
+.desktop-icon-popup__quick-composer textarea { position: relative; z-index: 1; background: transparent; line-height: 1.35; }
+.desktop-icon-popup__vocab-ghost { position: absolute; z-index: 0; left: 0; right: 0; box-sizing: border-box; min-height: 100%; padding: 8px 10px; border: 1px solid transparent; color: transparent; font: inherit; line-height: 1.35; white-space: pre-wrap; overflow-wrap: break-word; pointer-events: none; user-select: none; }
+.desktop-icon-popup__vocab-ghost b { color: #727784; font: inherit; }
+.desktop-icon-popup__quick-chip-wrap { position: relative; min-width: 0; }
+.desktop-icon-popup__quick-chip { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 40px; padding: 5px 8px; border: 1px solid rgb(255 255 255 / 12%); border-radius: 7px; color: #e8eaf0; background: #242731; text-align: left; }
+.desktop-icon-popup__quick-chip:hover { border-color: rgb(193 210 255 / 40%); }
+.desktop-icon-popup__quick-chip[aria-expanded="true"] { border-color: #8e74e3; }
+.desktop-icon-popup__quick-chip:disabled { opacity: .65; }
+.desktop-icon-popup__quick-chip svg { flex: 0 0 auto; width: 13px; height: 13px; color: #969ba8; }
+.desktop-icon-popup__quick-chip-copy { flex: 1 1 auto; min-width: 0; }
+.desktop-icon-popup__quick-chip-copy small { display: block; margin-bottom: 2px; color: #969ba8; font-size: 10px; }
+.desktop-icon-popup__quick-chip-copy strong { overflow: hidden; color: #e8eaf0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__picker { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; right: 0; max-height: 220px; overflow-y: auto; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
+.desktop-icon-popup__picker-search { display: grid; grid-template-columns: 18px 1fr; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid #4e5261; border-radius: 7px; margin-bottom: 4px; }
+.desktop-icon-popup__picker-search svg { width: 13px; color: #969ba8; }
+.desktop-icon-popup__picker-search input { min-height: 28px; padding: 2px 0; border: 0; background: transparent; }
+.desktop-icon-popup__picker-item { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 32px; padding: 5px 8px; border: 0; border-radius: 6px; color: #e8eaf0; background: transparent; text-align: left; }
+.desktop-icon-popup__picker-item:hover, .desktop-icon-popup__picker-item.is-active { background: #353947; }
+.desktop-icon-popup__picker-item svg { width: 13px; height: 13px; color: #7ed6a8; }
+.desktop-icon-popup__picker-name { flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__picker-meta { flex: 0 0 auto; color: #969ba8; font-size: 10px; }
+.desktop-icon-popup__picker-empty { padding: 8px; color: #969ba8; font-size: 11px; }
+.desktop-icon-popup__completion { max-height: 128px; overflow-y: auto; margin-bottom: 7px; padding: 4px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; }
+.desktop-icon-popup__completion-item { display: flex; align-items: baseline; gap: 8px; width: 100%; min-height: 30px; padding: 5px 8px; border: 0; border-radius: 6px; color: #e8eaf0; background: transparent; text-align: left; }
+.desktop-icon-popup__completion-item:hover, .desktop-icon-popup__completion-item.is-active { background: #353947; }
+.desktop-icon-popup__completion-name { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__completion-desc { flex: 1 1 auto; min-width: 0; overflow: hidden; color: #969ba8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__completion-kind { flex: 0 0 auto; padding: 1px 6px; border-radius: 8px; background: #30333d; color: #cfd2dc; font-size: 10px; }
 .desktop-icon-popup__submit-hint { align-self: center; margin-left: auto; color: #969ba8; font-size: 10px; white-space: nowrap; }
 .desktop-icon-popup__settings-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #ffacb7; font-size: 11px; }
 .desktop-icon-popup__settings-error span { flex: 1; min-width: 0; }
 .desktop-icon-popup__settings-error button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
 .desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
-.desktop-icon-popup__searchbox { display: grid; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
+.desktop-icon-popup__search { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.desktop-icon-popup__searchbox { display: grid; flex: 0 0 auto; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
 .desktop-icon-popup__searchbox svg { width: 18px; }
 .desktop-icon-popup__searchbox button { padding: 4px; border: 0; background: transparent; }
-.desktop-icon-popup__results { max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
+.desktop-icon-popup__results { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
 .desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
 .desktop-icon-popup__results small { color: #969ba8; }
 

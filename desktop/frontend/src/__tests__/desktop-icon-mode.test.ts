@@ -2,13 +2,42 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "../components/widget/desktopIconLayout";
-import { quickStartApprovalLabel, quickStartModelLabel, quickStartPreferences } from "../components/widget/quickStartPreferences";
+import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
 assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");
 assert.deepEqual([quickStartApprovalLabel("ask"), quickStartApprovalLabel("auto"), quickStartApprovalLabel("yolo")], ["需要批准", "自动批准", "全部允许"], "QuickStart shows all configured approval postures");
 assert.deepEqual(quickStartPreferences({ defaultModel: "provider/model", defaultToolApprovalMode: "auto", composerSubmitKey: "ctrl_enter" }), { model: "provider/model", approvalMode: "auto", submitKey: "ctrl_enter" }, "QuickStart normalizes the shared new-session settings as one snapshot");
 
+// --- model / approval picker selection logic (pure) ---
+const catalog = [
+  { ref: "deepseek/deepseek-v4", model: "deepseek-v4", provider: "deepseek", current: false },
+  { ref: "openai/gpt-5", model: "gpt-5", provider: "openai", current: true },
+];
+assert.equal(resolveQuickStartModel("", "deepseek/deepseek-v4", catalog), "deepseek/deepseek-v4", "settings default model wins when nothing is remembered");
+assert.equal(resolveQuickStartModel("openai/gpt-5", "deepseek/deepseek-v4", catalog), "openai/gpt-5", "the remembered widget choice wins over the default");
+assert.equal(resolveQuickStartModel("ghost/ghost", "deepseek/deepseek-v4", catalog), "deepseek/deepseek-v4", "a stale remembered ref falls back to the default");
+assert.equal(resolveQuickStartModel("ghost/ghost", "", catalog), "deepseek/deepseek-v4", "the first configured model is the final fallback");
+assert.equal(resolveQuickStartModel("ghost/ghost", "", []), "", "no configured models means no selection (backend defaults apply)");
+assert.equal(resolveQuickStartApproval("", "auto"), "auto", "empty remembered approval keeps the settings default");
+assert.equal(resolveQuickStartApproval("yolo", "ask"), "yolo", "a remembered real mode wins");
+assert.equal(resolveQuickStartApproval("garbage", "auto"), "auto", "a corrupt remembered value falls back to the current settings default");
+assert.deepEqual([nextQuickStartApproval("ask"), nextQuickStartApproval("auto"), nextQuickStartApproval("yolo")], ["auto", "yolo", "ask"], "approval clicks cycle through every mode and wrap safely");
+assert.deepEqual(quickStartModelOptions(catalog), [
+  { ref: "deepseek/deepseek-v4", label: "deepseek-v4", provider: "deepseek", current: false },
+  { ref: "openai/gpt-5", label: "gpt-5", provider: "openai", current: true },
+], "model options mirror the shared catalog");
+
+// --- send intent idempotency: a retry reuses the requestId only when every
+// send input is identical, so the backend receipt gate stays consistent ---
+const intent = { id: "icon-new:1", prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v4", approvalMode: "auto" };
+assert.equal(sameQuickStartIntent(intent, { prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v4", approvalMode: "auto" }), true, "identical retry reuses the requestId");
+assert.equal(sameQuickStartIntent(null, { prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v4", approvalMode: "auto" }), false, "no pending intent starts fresh");
+assert.equal(sameQuickStartIntent(intent, { prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v5", approvalMode: "auto" }), false, "a model change starts a fresh requestId");
+assert.equal(sameQuickStartIntent(intent, { prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v4", approvalMode: "yolo" }), false, "an approval change starts a fresh requestId");
+assert.equal(sameQuickStartIntent(intent, { prompt: "fix it", workspace: "global", model: "deepseek/deepseek-v4", approvalMode: "auto" }), false, "a workspace change starts a fresh requestId");
+// legacy pending records (pre model/approval) never match the new shape
+assert.equal(sameQuickStartIntent({ id: "old", prompt: "fix it", workspace: "auto", model: "", approvalMode: "" }, { prompt: "fix it", workspace: "auto", model: "deepseek/deepseek-v4", approvalMode: "auto" }), false, "legacy pending without model/approval cannot reuse the requestId");
 const workspaceKeys = ["auto", "project:D:/Work/A", "project:D:/Work/B", "global"];
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "project:D:/Work/B", "project:D:/Work/A", "global"), 2, "pending retry wins over requested and remembered workspaces");
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "project:D:/Work/A", "global"), 1, "source workspace wins over remembered selection");
@@ -21,6 +50,10 @@ assert.equal(left.arrowLeft, 22, "left-edge arrow still targets the icon center"
 const middle = placeIconPopup({ left: 418, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(middle.left, 285, "middle popup centers on its icon");
 assert.equal(middle.arrowLeft, 165, "middle arrow stays centered");
+
+const preview = placeIconPopup({ left: 418, top: 480, width: 64, height: 72 }, 900, 600, 108);
+assert.equal(preview.left, 396, "content-width preview centers on its icon");
+assert.equal(preview.arrowLeft, 54, "content-width preview keeps its arrow centered");
 
 const right = placeIconPopup({ left: 836, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(right.left, 560, "right-edge popup clamps inside the viewport");
@@ -51,12 +84,33 @@ assert.match(component, /regionQueue\.current/, "native region updates are seria
 assert.match(component, /nativeHitPadding\(node\)/, "native regions retain CSS shadows beyond element border boxes");
 assert.match(component, /app\.GetDesktopZoomFactor\(\)/, "icon mode reads the active WebView zoom factor");
 assert.match(component, /resolveWidgetZoomFrame\(desktopZoom\)/, "icon mode neutralizes WebView zoom for stable desktop-sized icons");
+assert.match(component, /popupRef\.current[\s\S]+getBoundingClientRect\(\)\.width \* desktopZoom/, "popup placement measures the rendered width in logical window units");
+assert.match(component, /const width = popupWidth \|\| fallbackWidth;[\s\S]+placeIconPopup\(rect, viewportWidth, viewportHeight, width\)/, "popup placement uses the rendered preview width instead of the interactive panel maximum");
 assert.match(component, /iconHitRect\(node\.getBoundingClientRect\(\), window\.devicePixelRatio, nativeHitPadding\(node\)\)/, "native clipping converts WebView CSS rectangles directly to physical pixels");
 assert.match(component, /getGamepads[\s\S]+buttons\[6\][\s\S]+buttons\[7\]/, "QuickStart supports LT/RT gamepad edge polling");
 assert.match(component, /app\.Settings\(\)[\s\S]+quickStartPreferences\(settings\)/, "QuickStart reads model, approval, and submit key from the shared user settings snapshot");
 assert.match(component, /isComposerSubmitKey\(event, preferences\.submitKey, event\.nativeEvent\.isComposing\)/, "QuickStart reuses the shared Enter/Ctrl+Enter and IME-safe submit rule");
-assert.match(component, /模型[\s\S]+quickStartModelLabel[\s\S]+审批[\s\S]+quickStartApprovalLabel/, "QuickStart visibly exposes model and approval state");
+assert.doesNotMatch(component, /<small>模型<\/small>|<small>审批<\/small>/, "QuickStart omits redundant model and approval captions");
+assert.match(component, /onClick=\{\(\) => pickApproval\(nextQuickStartApproval\(selectedApproval\)\)\}/, "QuickStart cycles approval directly on click");
+assert.doesNotMatch(component, /aria-label="选择审批模式"/, "QuickStart does not open an approval picker");
 assert.match(component, /Ctrl\+Enter 发送[\s\S]+Enter 发送/, "QuickStart shows the active keyboard submission hint");
+assert.match(component, />上一个<\/button>[\s\S]+>下一个<\/button>/, "QuickStart workspace buttons read 上一个 / 下一个");
+assert.match(component, /上一个 Workspace（LT 或 Ctrl\+←）[\s\S]+下一个 Workspace（RT 或 Ctrl\+→）/, "LT/RT gamepad hints stay on the workspace buttons");
+assert.match(component, /\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+ArrowLeft[\s\S]+ArrowRight[\s\S]+event\.preventDefault\(\)[\s\S]+switchBy/, "Ctrl+ArrowLeft/Right switch workspaces and stop the default caret movement");
+assert.match(component, /StartWidgetConversation\(\{ prompt, workspace, requestId: attempt\.id, model: modelRef, approvalMode \}\)/, "QuickStart sends the selected model and approval mode with the prompt");
+assert.match(component, /resolveQuickStartModel\(model, preferences\?\.model \?\? "", models\)/, "QuickStart resolves the real configured model, never a display-only label");
+assert.match(component, /resolveQuickStartApproval\(approval, preferences\?\.approvalMode \?\? "ask"\)/, "QuickStart resolves a real approval posture from the picker");
+assert.match(component, /sameQuickStartIntent\(pending, \{ prompt, workspace, model: modelRef, approvalMode \}\)/, "a retry reuses the requestId only when model/approval are unchanged");
+assert.match(component, /app\.CompleteVocabulary\(vocabularyToken\.prefix, 5\)/, "QuickStart vocabulary completion reuses the shared controller data source");
+assert.match(component, /const first = asArray\(items\)\.find[\s\S]+setVocabMatch\(first\)/, "QuickStart follows Session by showing only the best vocabulary match");
+assert.match(component, /desktop-icon-popup__vocab-ghost[\s\S]+<span>\{draft\}<\/span><b>\{vocabMatch\.suffix\}<\/b>/, "vocabulary renders as an inline ghost suffix inside the input");
+assert.match(component, /event\.key === "Tab"[\s\S]+vocabMatch && vocabToken[\s\S]+acceptVocab\(\)/, "plain Tab accepts the inline vocabulary suffix");
+assert.match(component, /event\.key === "Escape" && vocabMatch[\s\S]+setVocabDismissed\(true\)/, "Escape dismisses inline vocabulary until the input changes");
+assert.match(component, /RecordVocabularyUse\(vocabMatch\.id, useID\)/, "accepted inline vocabulary keeps the usage receipt");
+assert.doesNotMatch(component, /completion\.kind === "vocab"/, "vocabulary never renders as an elevated candidate card");
+assert.match(component, /quickStartCompletionKey\(completion, event, composing, preferences\?\.submitKey \?\? "enter"\)/, "QuickStart routes completion keys through the shared key decision");
+assert.match(component, /onCompositionStart=[\s\S]+onCompositionEnd=/, "QuickStart tracks IME composition for safe completion and submit");
+assert.match(component, /settings-error[\s\S]+onClick=\{loadPreferences\}/, "settings/model load failure is explicitly retryable");
 assert.match(component, /DesktopIconSearch\(query\)/, "search popup queries the independent backend history index");
 assert.doesNotMatch(component, /SearchPanel items=\{snapshot\.items\}/, "search is independent from the visible icon cap");
 assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "Room and person notices both expose inline reply");
@@ -83,10 +137,21 @@ assert.match(css, /\.desktop-icon__motion-corner:nth-child\(4\)/, "all four scan
 assert.match(css, /\.desktop-icon__runtime--running[^}]*#8cebf0/, "running status uses a distinct cyan treatment");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
+assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search\)[^}]*max-height:\s*calc\(100vh - 114px\)/, "search popup stays within the viewport above its fixed bottom anchor");
+assert.match(css, /\.desktop-icon-popup__results[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/, "search results shrink and scroll instead of clipping the popup");
 assert.match(css, /max-height:\s*calc\(7 \* 44px\)/, "search results have a seven-row height cap");
-assert.match(backend, /desktopIconHeight\s*=\s*600[\s\S]+desktopIconMinHeight\s*=\s*540/, "native icon window keeps enough persisted-state height for seven search rows");
+assert.match(backend, /desktopIconWidth\s*=\s*1080[\s\S]+desktopIconHeight\s*=\s*720[\s\S]+legacyIconWidth\s*=\s*900[\s\S]+legacyIconHeight\s*=\s*600/, "native icon window enlarges to 1080×720 and recognizes the legacy default for migration");
 assert.match(css, /prefers-reduced-motion:\s*reduce/, "motion has a reduced-motion fallback");
 assert.match(css, /left:\s*var\(--arrow-left\)/, "popup arrow uses the computed source anchor");
+assert.match(css, /\.desktop-icon-popup textarea\s*\{[^}]*resize:\s*none/, "the QuickStart textarea cannot be resized by its corner handle");
+assert.match(css, /\.desktop-icon-popup__quick-chip\s*\{/, "model/approval chips are compact clickable controls");
+assert.match(css, /\.desktop-icon-popup__picker\s*\{[^}]*position:\s*absolute/, "the picker menus float above the QuickStart content");
+assert.match(css, /\.desktop-icon-popup__completion\s*\{[^}]*max-height:\s*128px/, "slash completion candidates stay in a compact roughly three-row scroll area");
+assert.match(css, /\.desktop-icon-popup__quick-composer\s*\{[^}]*position:\s*relative[^}]*overflow:\s*hidden/, "QuickStart clips the Session-style ghost suffix to the textarea");
+assert.match(css, /\.desktop-icon-popup__vocab-ghost\s*\{[^}]*color:\s*transparent[^}]*white-space:\s*pre-wrap[^}]*pointer-events:\s*none/, "the ghost mirrors multiline input without intercepting interaction");
+assert.match(css, /\.desktop-icon-popup__vocab-ghost b\s*\{[^}]*color:\s*#727784/, "only the suggested vocabulary suffix is visibly muted");
+assert.match(component, /desktop-icon-popup__actions desktop-icon-popup__actions--quick/, "QuickStart actions have a dedicated compact style hook");
+assert.match(css, /\.desktop-icon-popup__actions--quick button\s*\{[^}]*min-height:\s*30px;[^}]*padding:\s*4px 10px;/, "QuickStart send and cancel buttons use the compact height");
 
 // --- collapse persistence: the WG2 anchor now drags the native window, so
 // only the collapsed flag survives under the stable cluster key ---
@@ -127,5 +192,36 @@ assert.match(component, /\.desktop-icon-anchor, \.desktop-icon-collapse/, "ancho
 assert.match(css, /\.desktop-icon-cluster[\s\S]*position:\s*absolute/, "the cluster is positioned by its anchored corner");
 assert.match(css, /\.desktop-icon-cluster[\s\S]*right:\s*18px[\s\S]*bottom:\s*18px/, "the cluster stays pinned to the bottom-right corner of the transparent window");
 assert.match(css, /\.desktop-icon-controls[\s\S]*justify-content:\s*flex-end/, "the control row is right-aligned under the icon rows");
+
+// --- completion notice: fixed OK / Detail / Dismiss with distinct colors ---
+assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}>OK<\/button>[\s\S]{0,200}desktop-icon-popup__detail"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("open"\)\}>Detail<\/button>[\s\S]{0,200}desktop-icon-popup__dismiss"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("dismiss"\)\}>Dismiss<\/button>/, "completion notices always render OK / Detail / Dismiss in fixed order with their class contracts");
+assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}>OK/, "OK only closes the popup locally");
+assert.match(component, /desktop-icon-popup__ok"\s*onClick=\{onClose\}/, "OK is not gated by busy: the class is directly followed by the local-close handler");
+assert.doesNotMatch(component, /desktop-icon-popup__ok[\s\S]{0,200}run\("ok"\)/, "OK never dispatches a backend ok action");
+assert.doesNotMatch(component, /\[\"ok\", \"dismiss\", \"later\", \"open\", \"reply\"\]/, "ok is no longer a backend-acknowledged action that closes the popup");
+assert.match(component, /\[\"dismiss\", \"later\", \"open\", \"reply\", \"continue\"\]/, "dismiss/open/continue close the popup after a successful backend roundtrip");
+assert.match(component, /onClose=\{\(\) => \{ setActiveID\(""\);\s*setPreviewID\(""\);\s*\}\}/, "OK closes the popup and its hover preview together");
+assert.match(component, /desktop-icon-popup__dialog-trigger[\s\S]{0,160}>对话框<\/button>/, "completion notices expose a collapsed conversation entry below the action row");
+assert.match(component, /dialogOpen &&[\s\S]+<textarea autoFocus[\s\S]+告诉 WorkGround2 接下来要完成什么/, "focusing the conversation entry expands it into a taller composer");
+assert.match(component, /run\(\"continue\", \[text\]\)/, "the completion composer continues the current task instead of starting a separate conversation");
+assert.match(component, /event\.key === \"Enter\" && \(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+sendFollowup\(\)/, "Ctrl+Enter submits the continuation");
+assert.match(component, /onClick=\{sendFollowup\}>[\s\S]{0,80}\"发送\"[\s\S]{0,100}onClick=\{closeDialog\}>取消<\/button>/, "the expanded composer provides explicit send and cancel actions");
+assert.match(component, /notice\.summaryStatus === "failed"/, "a failed summary surfaces an explicit retryable hint");
+assert.match(css, /\.desktop-icon-popup__summary-failed/, "the failed-summary hint has its own style");
+const okRule = css.match(/\.desktop-icon-popup button\.desktop-icon-popup__ok\s*\{[^}]*\}/)?.[0] ?? "";
+const detailRule = css.match(/\.desktop-icon-popup button\.desktop-icon-popup__detail\s*\{[^}]*\}/)?.[0] ?? "";
+const dismissRule = css.match(/\.desktop-icon-popup button\.desktop-icon-popup__dismiss\s*\{[^}]*\}/)?.[0] ?? "";
+assert.ok(okRule && detailRule && dismissRule, "all three completion buttons carry explicit semantic styles");
+const ruleColor = (rule: string) => rule.match(/background:\s*([^;]+)/)?.[1] ?? "";
+assert.notEqual(ruleColor(okRule), ruleColor(detailRule), "OK and Detail use distinct semantic colors");
+assert.notEqual(ruleColor(detailRule), ruleColor(dismissRule), "Detail and Dismiss use distinct semantic colors");
+assert.notEqual(ruleColor(okRule), ruleColor(dismissRule), "OK and Dismiss use distinct semantic colors");
+assert.match(css, /\.desktop-icon-popup__actions--completion button\s*\{[^}]*min-height:\s*30px;[^}]*padding:\s*4px 10px;/, "the three completion actions use a shorter compact height");
+assert.match(css, /\.desktop-icon-popup__dialog textarea\s*\{[^}]*min-height:\s*112px;/, "the focused completion composer expands to a clearly taller input");
+assert.match(backend, /Status:\s*\"pending\", Action:\s*\"continue\"/, "task continuation persists a pending receipt before delivery");
+assert.match(backend, /advanceDesktopIconTaskContinue[\s\S]+tryDesktopIconReply/, "task continuation uses the acknowledged and recoverable user-turn pipeline");
+assert.match(css, /\.desktop-icon-popup__actions button:not\(:disabled\):hover/, "action buttons keep an accessible hover state");
+assert.match(css, /button:focus-visible[\s\S]*outline: 2px solid #70dfe8/, "action buttons keep a visible focus ring");
+assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay visibly disabled");
 
 console.log("desktop icon mode tests passed");

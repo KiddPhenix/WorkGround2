@@ -3805,6 +3805,47 @@ func TestFileRefsForTabIgnoreActiveParentWorkspace(t *testing.T) {
 	}
 }
 
+func TestFileRefsForWorkspaceRootResolveExplicitly(t *testing.T) {
+	firstRoot := robustTempDir(t)
+	secondRoot := robustTempDir(t)
+	for root, files := range map[string]map[string]string{
+		firstRoot: {
+			"first-only.txt": "first",
+			"shared.txt":     "first shared",
+		},
+		secondRoot: {
+			"second-only.txt": "second",
+			"shared.txt":      "second shared",
+		},
+	} {
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	app := &App{}
+
+	listed := app.ListDirForWorkspace(firstRoot, "")
+	if !hasDirEntry(listed, "first-only.txt") || hasDirEntry(listed, "second-only.txt") {
+		t.Fatalf("ListDirForWorkspace(first) = %+v, want only first root entries", listed)
+	}
+	other := app.ListDirForWorkspace(secondRoot, "")
+	if !hasDirEntry(other, "second-only.txt") || hasDirEntry(other, "first-only.txt") {
+		t.Fatalf("ListDirForWorkspace(second) = %+v, want only second root entries", other)
+	}
+	if found := app.SearchFileRefsForWorkspace(secondRoot, "shared"); !hasDirEntry(found, "shared.txt") {
+		t.Fatalf("SearchFileRefsForWorkspace(second) = %+v, want second root shared.txt", found)
+	}
+	if got := app.ListDirForWorkspace(filepath.Join(secondRoot, "missing"), ""); got == nil || len(got) != 0 {
+		t.Fatalf("ListDirForWorkspace(missing) = %+v, want non-nil empty result", got)
+	}
+	if got := app.SearchFileRefsForWorkspace("", "anything"); got == nil {
+		t.Fatalf("SearchFileRefsForWorkspace(\"\") = %+v, want non-nil result", got)
+	}
+}
+
 func TestFileRefsIncludeRegisteredExternalFolderChildren(t *testing.T) {
 	workspace := robustTempDir(t)
 	external := filepath.Join(robustTempDir(t), "Folder With Spaces")

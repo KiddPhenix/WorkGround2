@@ -312,6 +312,14 @@ function writeWorkDraft(requestID: string, prompt: string): void {
 function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
   const { maximised, syncMaximised } = useWindowsMaximisedState();
 
+  const minimizeWindow = useCallback(() => {
+    if (widgetEnabled) {
+      void onEnterWidgetMode();
+      return;
+    }
+    void app.MinimiseMainWindow();
+  }, [onEnterWidgetMode, widgetEnabled]);
+
   const toggleMaximise = useCallback(() => {
     void app.ToggleMaximiseMainWindow()
       .then(() => window.setTimeout(syncMaximised, 80))
@@ -320,31 +328,17 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
 
   return (
     <div className="windows-window-controls" aria-label="Window controls">
-      {widgetEnabled && (
-	  <button
-		className="windows-window-control windows-window-control--widget"
-		type="button"
-		aria-label="进入小组件模式"
-		title="小组件模式"
-		onPointerDown={stopFramelessPointerDown}
-		onPointerUp={(event) => runFramelessPointerAction(event, () => void onEnterWidgetMode())}
-		onMouseDown={stopFramelessMouseDown}
-		onClick={(event) => runKeyboardClick(event, () => void onEnterWidgetMode())}
-	  >
-		<PictureInPicture2 size={13} strokeWidth={1.8} />
-	  </button>
-      )}
       <button
-        className="windows-window-control windows-window-control--minimize"
+        className={`windows-window-control windows-window-control--minimize${widgetEnabled ? " windows-window-control--widget" : ""}`}
         type="button"
-        aria-label="Minimize window"
-        title="Minimize"
+        aria-label={widgetEnabled ? "收起到小组件" : "Minimize window"}
+        title={widgetEnabled ? "收起到小组件" : "Minimize"}
         onPointerDown={stopFramelessPointerDown}
-        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.MinimiseMainWindow())}
+        onPointerUp={(event) => runFramelessPointerAction(event, minimizeWindow)}
         onMouseDown={stopFramelessMouseDown}
-        onClick={(event) => runKeyboardClick(event, () => void app.MinimiseMainWindow())}
+        onClick={(event) => runKeyboardClick(event, minimizeWindow)}
       >
-        <Minus size={13} strokeWidth={1.9} />
+        {widgetEnabled ? <PictureInPicture2 size={13} strokeWidth={1.8} /> : <Minus size={13} strokeWidth={1.9} />}
       </button>
       <button
         className="windows-window-control windows-window-control--maximize"
@@ -360,10 +354,10 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         {maximised ? <RestoreIcon size={12} strokeWidth={1.75} /> : <Square size={11} strokeWidth={1.8} />}
       </button>
       <button
-        className="windows-window-control windows-window-control--close"
+        className="windows-window-control windows-window-control--dismiss"
         type="button"
-        aria-label="Close window"
-        title="Close"
+        aria-label="Dismiss window"
+        title="Dismiss"
         onPointerDown={stopFramelessPointerDown}
         onPointerUp={(event) => runFramelessPointerAction(event, () => void app.CloseMainWindow())}
         onMouseDown={stopFramelessMouseDown}
@@ -3726,7 +3720,6 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     displayItems,
     live: state.live,
     running: state.running || rewindCommitting,
-    memoryRunning: state.running,
     controllerReady,
     footerHeight,
     transcriptHydrating,

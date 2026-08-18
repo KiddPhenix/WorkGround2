@@ -48,6 +48,26 @@ func TestWidgetTransitionPublishesModeAfterApply(t *testing.T) {
 	}
 }
 
+func TestWidgetTransitionPreservesVisibleTabForIconProjection(t *testing.T) {
+	tab := &WorkspaceTab{ID: "tab-1"}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"tab-1": tab},
+		tabOrder:    []string{"tab-1"},
+		activeTabID: "tab-1",
+	}
+
+	changed, err := app.transitionWidgetMode(true, func() error { return nil })
+	if err != nil || !changed {
+		t.Fatalf("enter widget mode: changed=%v err=%v", changed, err)
+	}
+
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	if app.tabs["tab-1"] != tab || len(app.tabOrder) != 1 || app.tabOrder[0] != "tab-1" || app.activeTabID != "tab-1" {
+		t.Fatalf("widget transition changed visible tab registry: tabs=%v order=%v active=%q", app.tabs, app.tabOrder, app.activeTabID)
+	}
+}
+
 func TestWidgetTransitionSerialisesOpposingCalls(t *testing.T) {
 	app := &App{}
 	enterStarted := make(chan struct{})

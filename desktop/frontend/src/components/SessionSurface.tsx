@@ -8,7 +8,6 @@ import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
 import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
 import { Tooltip } from './Tooltip';
-import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
 import { SessionStatusIndicators } from './SessionStatusIndicators';
 import { AddOnLauncherButton } from './desktop-ui/IrisInfoComponents';
 import { ArrowLeft, PanelRight, Command } from 'lucide-react';
@@ -44,7 +43,6 @@ export interface SessionSurfaceProps {
   displayItems: TranscriptProps['items'];
   live: TranscriptProps['live'];
   running: boolean;
-  memoryRunning: boolean;
   controllerReady: boolean;
   footerHeight: number;
   transcriptHydrating: boolean;
@@ -165,7 +163,6 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   displayItems,
   live,
   running,
-  memoryRunning,
   controllerReady,
   footerHeight,
   transcriptHydrating,
@@ -305,8 +302,6 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
           </button>
         </div>
       </header>}
-
-      {!embedded && <SessionMemoryBar sessionId={renderSessionId} items={displayItems} running={memoryRunning} />}
 
       <div className="conversation-viewport" ref={conversationViewportRef}>
         {irisFixtureActive ? (

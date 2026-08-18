@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { BookOpen, Bot, Check, ChevronDown, ChevronUp, CircleAlert, HelpCircle, Loader2, MessageCircle, Plus, Search, Users, X } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { asArray } from "../../lib/array";
+import { filterAtMatches } from "../../lib/atMatches";
 import { isComposerSubmitKey } from "../../lib/composerKeyboard";
+import { activeFileReferenceToken } from "../FileReferenceMenu";
+import type { CommandInfo, DirEntry, ModelInfo, SlashArgItem, ToolApprovalMode, VocabularyMatch } from "../../lib/types";
+import { acceptVocabulary, type VocabularyToken } from "../../lib/vocabularyCompletion";
 import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "./desktopIconLayout";
 import logoSymbol from "../../assets/logo-symbol.svg";
-import { quickStartApprovalLabel, quickStartModelLabel, quickStartPreferences, type QuickStartPreferences } from "./quickStartPreferences";
+import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent, type QuickStartIntent, type QuickStartPreferences } from "./quickStartPreferences";
+import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import "./desktop-icon-mode.css";
 
@@ -13,6 +19,15 @@ const DRAG_THRESHOLD = 7;
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
 const CLUSTER_KEY = "wg2.icon-widget-cluster";
 const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
+const IME_CONFIRM_GRACE_MS = 100;
+
+// IME composition must never leak into completion or submit handling: the
+// native isComposing flag, the WebView2 keyCode 229 convention, and a short
+// grace after compositionend cover the confirm-Enter that lands right after.
+function isWidgetImeKeyEvent(event: ReactKeyboardEvent<HTMLTextAreaElement>, composing: boolean, lastCompositionEndAt: number): boolean {
+	const native = event.nativeEvent as globalThis.KeyboardEvent & { isComposing?: boolean; keyCode?: number };
+	return composing || native.isComposing === true || native.keyCode === 229 || Date.now() - lastCompositionEndAt < IME_CONFIRM_GRACE_MS;
+}
 
 function nativeHitPadding(node: HTMLElement): number {
 	if (node.matches(".desktop-icon-popup")) return 40;
@@ -83,12 +98,19 @@ function RuntimeIndicator({ item }: { item: DesktopIconItem }) {
 	</span>;
 }
 
-function NoticeBody({ item, notice, busy, run }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => void }) {
+function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => Promise<boolean>; onClose: () => void }) {
   const [answer, setAnswer] = useState("");
 	const [selected, setSelected] = useState("");
 	const [reply, setReply] = useState("");
+	const [dialogOpen, setDialogOpen] = useState(false);
+	const [followup, setFollowup] = useState("");
   const needsAnswer = notice.kind === "needs_input";
   const completion = notice.kind === "completed" || notice.kind === "failed";
+	const closeDialog = () => { setDialogOpen(false); setFollowup(""); };
+	const sendFollowup = () => {
+		const text = followup.trim();
+		if (!busy && text) void run("continue", [text]);
+	};
   return <>
     <div className="desktop-icon-popup__eyebrow">{notice.title}</div>
     <strong>{item.title}</strong>
@@ -98,15 +120,26 @@ function NoticeBody({ item, notice, busy, run }: { item: DesktopIconItem; notice
       <label><span className="sr-only">自定义回答</span><input value={answer} disabled={busy} placeholder="自定义回答" onChange={(event) => setAnswer(event.target.value)} /></label>
     </div>}
 	{notice.kind === "message" && (item.kind === "room" || item.kind === "person") && <label className="desktop-icon-popup__reply"><span className="sr-only">快速回复</span><input value={reply} disabled={busy} placeholder="快速回复" onChange={(event) => setReply(event.target.value)} /></label>}
-    <div className="desktop-icon-popup__actions">
+    <div className={`desktop-icon-popup__actions${completion ? " desktop-icon-popup__actions--completion" : ""}`}>
 		{needsAnswer && <button disabled={busy || !(answer.trim() || selected)} onClick={() => run("answer", [answer.trim() || selected])}>提交回答</button>}
       {notice.kind === "needs_confirm" && <><button disabled={busy} onClick={() => run("approve")}>允许</button><button disabled={busy} onClick={() => run("deny")}>拒绝</button></>}
       {notice.kind === "failed" && notice.retryable && <button disabled={busy} onClick={() => run("retry")}>重试</button>}
-      {completion && <><button disabled={busy} onClick={() => run("ok")}>OK</button><button disabled={busy} className="subtle" onClick={() => run("dismiss")}>Dismiss</button></>}
+      {completion && <><button type="button" className="desktop-icon-popup__ok" onClick={onClose}>OK</button><button type="button" className="desktop-icon-popup__detail" disabled={busy} onClick={() => run("open")}>Detail</button><button type="button" className="desktop-icon-popup__dismiss" disabled={busy} onClick={() => run("dismiss")}>Dismiss</button></>}
       {(needsAnswer || notice.kind === "needs_confirm") && <button disabled={busy} className="subtle" onClick={() => run("later")}>稍后处理</button>}
 		{notice.kind === "message" && (item.kind === "room" || item.kind === "person") && <button disabled={busy || !reply.trim()} onClick={() => run("reply", [reply.trim()])}>回复</button>}
 		{notice.kind === "message" && <button disabled={busy} onClick={() => run("open")}>打开会话</button>}
     </div>
+	{completion && <div className={`desktop-icon-popup__dialog${dialogOpen ? " is-open" : ""}`}>
+		{!dialogOpen && <button type="button" className="desktop-icon-popup__dialog-trigger" disabled={busy} onClick={() => setDialogOpen(true)}>对话框</button>}
+		{dialogOpen && <>
+			<label><span className="sr-only">继续当前任务</span><textarea autoFocus value={followup} disabled={busy} placeholder="告诉 WorkGround2 接下来要完成什么…" onChange={(event) => setFollowup(event.target.value)} onKeyDown={(event) => {
+				if (event.key === "Escape") { event.preventDefault(); closeDialog(); return; }
+				if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); sendFollowup(); }
+			}} /></label>
+			<div className="desktop-icon-popup__dialog-actions"><button type="button" disabled={busy || !followup.trim()} onClick={sendFollowup}>{busy ? "发送中…" : "发送"}</button><button type="button" className="subtle" disabled={busy} onClick={closeDialog}>取消</button><small>Ctrl+Enter 发送</small></div>
+		</>}
+	</div>}
+    {completion && notice.summaryStatus === "failed" && <small className="desktop-icon-popup__summary-failed">摘要生成失败，稍后自动重试</small>}
     {completion && <small className="desktop-icon-popup__history">记录仍可在搜索中找到</small>}
   </>;
 }
@@ -124,8 +157,8 @@ function RuntimeBody({ item, busy, run }: { item: DesktopIconItem; busy: boolean
 
 function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces: WidgetWorkspaceOption[]; initialWorkspace?: string; onClose: () => void }) {
   const choices = workspaces.length ? workspaces : [{ scope: "auto", name: "自动" } as WidgetWorkspaceOption];
-	const [pending, setPendingState] = useState<{ id: string; prompt: string; workspace: string } | null>(() => {
-		try { return JSON.parse(localStorage.getItem("wg2.icon-widget-pending") || "null"); } catch { return null; }
+	const [pending, setPendingState] = useState<QuickStartIntent | null>(() => {
+		try { return JSON.parse(localStorage.getItem("wg2.icon-widget-pending") || "null") as QuickStartIntent | null; } catch { return null; }
 	});
 	const keys = useMemo(() => choices.map(widgetWorkspaceKey), [workspaces]);
 	const keysToken = keys.join("\n");
@@ -136,9 +169,22 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
   const [error, setError] = useState("");
 	const [preferences, setPreferences] = useState<QuickStartPreferences | null>(null);
 	const [preferencesError, setPreferencesError] = useState("");
+	const [models, setModels] = useState<ModelInfo[]>([]);
+	const [model, setModel] = useState(() => localStorage.getItem(QUICK_MODEL_KEY) || "");
+	const [approval, setApproval] = useState(() => localStorage.getItem(QUICK_APPROVAL_KEY) || "");
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [modelQuery, setModelQuery] = useState("");
+	const [completion, setCompletion] = useState<QuickStartCompletion | null>(null);
+	const [completionDismissed, setCompletionDismissed] = useState(false);
+	const [caret, setCaret] = useState({ start: 0, end: 0 });
+	const [commands, setCommands] = useState<CommandInfo[]>([]);
+	const composingRef = useRef(false);
+	const lastCompositionEndAt = useRef(0);
+	const preferencesLoad = useRef(0);
+	const taRef = useRef<HTMLTextAreaElement>(null);
   const choice = choices[index % choices.length];
   const workspace = widgetWorkspaceKey(choice);
-	const setPending = (next: { id: string; prompt: string; workspace: string } | null) => { setPendingState(next); if (next) localStorage.setItem("wg2.icon-widget-pending", JSON.stringify(next)); else localStorage.removeItem("wg2.icon-widget-pending"); };
+	const setPending = (next: QuickStartIntent | null) => { setPendingState(next); if (next) localStorage.setItem("wg2.icon-widget-pending", JSON.stringify(next)); else localStorage.removeItem("wg2.icon-widget-pending"); };
 	useEffect(() => {
 		if (!pending) return;
 		const pendingIndex = keys.indexOf(pending.workspace);
@@ -151,11 +197,20 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 	}, [initialWorkspace, keys, keysToken, pending]);
 	useEffect(() => { if (workspaces.length) localStorage.setItem(QUICK_WORKSPACE_KEY, workspace); }, [workspace, workspaces.length]);
 	const loadPreferences = useCallback(() => {
+		const generation = ++preferencesLoad.current;
 		setPreferencesError("");
-		void app.Settings()
-			.then((settings) => setPreferences(quickStartPreferences(settings)))
+		void Promise.all([app.Settings(), app.Models(), app.Commands()])
+			.then(([settings, nextModels, nextCommands]) => {
+				if (generation !== preferencesLoad.current) return;
+				setPreferences(quickStartPreferences(settings));
+				setModels(asArray(nextModels));
+				setCommands(asArray(nextCommands));
+			})
 			.catch((cause) => {
+				if (generation !== preferencesLoad.current) return;
 				setPreferences(null);
+				setModels([]);
+				setCommands([]);
 				setPreferencesError(cause instanceof Error ? cause.message : String(cause));
 			});
 	}, []);
@@ -184,36 +239,205 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 		setPending(null);
 		localStorage.setItem("wg2.icon-widget-draft", text);
   };
+	// Model / approval: remember the QuickStart-specific choice so a retry
+	// replays the exact same intent (same requestId) until one of the four
+	// inputs changes; the send passes both fields to the backend.
+	const selectedModel = useMemo(() => resolveQuickStartModel(model, preferences?.model ?? "", models), [model, models, preferences]);
+	const selectedApproval = useMemo(() => resolveQuickStartApproval(approval, preferences?.approvalMode ?? "ask"), [approval, preferences]);
+	const modelOptions = useMemo(() => quickStartModelOptions(models), [models]);
+	const modelKeyword = modelQuery.trim().toLowerCase();
+	const filteredModelOptions = useMemo(
+		() => modelKeyword ? modelOptions.filter((option) => option.label.toLowerCase().includes(modelKeyword) || option.provider.toLowerCase().includes(modelKeyword)) : modelOptions,
+		[modelKeyword, modelOptions],
+	);
+	const pickModel = (ref: string) => { setModel(ref); localStorage.setItem(QUICK_MODEL_KEY, ref); setModelMenuOpen(false); setModelQuery(""); setPending(null); };
+	const pickApproval = (mode: ToolApprovalMode) => { setApproval(mode); localStorage.setItem(QUICK_APPROVAL_KEY, mode); setModelMenuOpen(false); setPending(null); };
+
+	// --- menu completions: slash commands, slash args, $ skills, @ file refs ---
+	const slashQuery = useMemo(() => quickStartSlashQuery(draft), [draft]);
+	const slashMatches = useMemo(() => quickStartSlashMatches(slashQuery, commands), [slashQuery, commands]);
+	const skillQuery = useMemo(() => quickStartSkillQuery(draft), [draft]);
+	const skillMatches = useMemo(() => quickStartSkillMatches(skillQuery, commands), [skillQuery, commands]);
+	const [argRes, setArgRes] = useState<{ items: SlashArgItem[]; from: number } | null>(null);
+	useEffect(() => {
+		if (!draft.startsWith("/") || !/\s/.test(draft)) { setArgRes(null); return; }
+		let live = true;
+		const timer = window.setTimeout(() => {
+			app.SlashArgs(draft)
+				.then((result) => {
+					if (!live) return;
+					const items = asArray(result?.items);
+					const from = result?.from ?? 0;
+					const useful = items.filter((item) => draft.slice(0, from) + item.insert !== draft);
+					setArgRes(useful.length > 0 ? { items: useful, from } : null);
+				})
+				.catch(() => {});
+		}, 120);
+		return () => { live = false; window.clearTimeout(timer); };
+	}, [draft]);
+	const atToken = useMemo(() => activeFileReferenceToken(draft), [draft]);
+	const atRoot = choice.scope === "project" ? (choice.root ?? "") : "";
+	const [atEntries, setAtEntries] = useState<DirEntry[]>([]);
+	useEffect(() => {
+		if (!atToken) { setAtEntries([]); return; }
+		let live = true;
+		const { dir, frag } = atToken;
+		const request = dir !== "" || frag === ""
+			? app.ListDirForWorkspace(atRoot, dir)
+			: app.SearchFileRefsForWorkspace(atRoot, frag);
+		request
+			.then((entries) => { if (live) setAtEntries(entries ?? []); })
+			.catch(() => {});
+		return () => { live = false; };
+	}, [atRoot, atToken]);
+	const atMatches = useMemo(() => {
+		if (!atToken) return [];
+		return atToken.dir !== "" ? filterAtMatches(atEntries, [], atToken.frag) : atEntries;
+	}, [atEntries, atToken]);
+	const menuBase = useMemo(
+		() => completionDismissed ? null : quickStartPickMenu({
+			slashMatches,
+			slashArgs: argRes,
+			skillMatches,
+			at: atToken ? { token: atToken, items: quickStartAtItems(atMatches) } : null,
+		}),
+		[argRes, atMatches, atToken, completionDismissed, skillMatches, slashMatches],
+	);
+	const [vocabMatch, setVocabMatch] = useState<VocabularyMatch | null>(null);
+	const [vocabToken, setVocabToken] = useState<VocabularyToken | null>(null);
+	const [vocabDismissed, setVocabDismissed] = useState(false);
+	const [vocabScrollTop, setVocabScrollTop] = useState(0);
+	const vocabularyToken = useMemo(
+		() => composingRef.current ? null : quickStartVocabularyToken(draft, caret.start, caret.end),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[draft, caret],
+	);
+	useEffect(() => {
+		if (menuBase || vocabDismissed || !vocabularyToken) { setVocabMatch(null); setVocabToken(null); return; }
+		let live = true;
+		const timer = window.setTimeout(() => {
+			app.CompleteVocabulary(vocabularyToken.prefix, 5)
+				.then((items) => {
+					if (!live) return;
+					const first = asArray(items).find((item) => item.text !== vocabularyToken.prefix) ?? null;
+					setVocabMatch(first);
+					setVocabToken(first ? vocabularyToken : null);
+				})
+				.catch(() => { if (live) { setVocabMatch(null); setVocabToken(null); } });
+		}, 90);
+		return () => { live = false; window.clearTimeout(timer); };
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [menuBase, vocabDismissed, vocabularyToken?.from, vocabularyToken?.prefix]);
+	useEffect(() => { setCompletion(menuBase); }, [menuBase]);
+	useEffect(() => { setCompletionDismissed(false); }, [draft]);
+	useEffect(() => { setVocabDismissed(false); }, [draft, caret.start, caret.end]);
+	const applyCompletion = (target?: QuickStartCompletion) => {
+		const menu = target ?? completion;
+		if (!menu) return;
+		const accepted = quickStartAcceptCompletion(menu, draft);
+		saveDraft(accepted.text);
+		setCaret({ start: accepted.cursor, end: accepted.cursor });
+		if (accepted.recordUse) void app.RecordVocabularyUse(accepted.recordUse.id, accepted.recordUse.useID).catch(() => {});
+		requestAnimationFrame(() => {
+			const node = taRef.current;
+			if (node) { node.focus(); node.selectionStart = node.selectionEnd = accepted.cursor; }
+		});
+	};
+	const acceptVocab = () => {
+		if (!vocabMatch || !vocabToken) return;
+		const accepted = acceptVocabulary(draft, vocabToken, vocabMatch);
+		saveDraft(accepted.value);
+		setCaret({ start: accepted.cursor, end: accepted.cursor });
+		setVocabMatch(null);
+		setVocabToken(null);
+		setVocabDismissed(true);
+		const useID = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+		void app.RecordVocabularyUse(vocabMatch.id, useID).catch(() => {});
+		requestAnimationFrame(() => {
+			const node = taRef.current;
+			if (node) { node.focus(); node.selectionStart = node.selectionEnd = accepted.cursor; }
+		});
+	};
+	const completionItemClass = (index: number) => `desktop-icon-popup__completion-item${index === completion?.active ? " is-active" : ""}`;
+	const completionItem = (index: number) => ({
+		onMouseDown: (event: ReactPointerEvent<HTMLButtonElement>) => event.preventDefault(),
+		onMouseMove: () => setCompletion((current) => current ? { ...current, active: index } : current),
+		onClick: () => { const target = completion ? { ...completion, active: index } : null; if (target) applyCompletion(target); },
+	});
+
   const send = async () => {
     const prompt = draft.trim();
 		if (!prompt || !preferences) return;
-    const attempt = pending && pending.prompt === prompt && pending.workspace === workspace ? pending : { id: requestID("icon-new"), prompt, workspace };
+		const modelRef = selectedModel;
+		const approvalMode = selectedApproval;
+    const attempt = pending && sameQuickStartIntent(pending, { prompt, workspace, model: modelRef, approvalMode })
+			? pending
+			: { id: requestID("icon-new"), prompt, workspace, model: modelRef, approvalMode };
 		setPending(attempt); setBusy(true); setError("");
     try {
-      const result = await app.StartWidgetConversation({ prompt, workspace, requestId: attempt.id });
+      const result = await app.StartWidgetConversation({ prompt, workspace, requestId: attempt.id, model: modelRef, approvalMode });
 		if (result.status === "accepted" || result.status === "already_applied") { saveDraft(""); setPending(null); onClose(); }
       else setError(result.error || "发起失败，可安全重试");
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
 		finally { setBusy(false); }
   };
   return <div className="desktop-icon-popup__quick" onKeyDown={(event) => {
-    if (event.key === "Escape") onClose();
-    if (event.key === "PageUp") switchBy(-1);
-    if (event.key === "PageDown") switchBy(1);
+    if (event.key === "Escape") { onClose(); return; }
+    if ((event.ctrlKey || event.metaKey) && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+      event.preventDefault();
+      switchBy(event.key === "ArrowLeft" ? -1 : 1);
+      return;
+    }
+    if (event.key === "PageUp") { event.preventDefault(); switchBy(-1); return; }
+    if (event.key === "PageDown") { event.preventDefault(); switchBy(1); }
   }}>
-    <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT）" onClick={() => switchBy(-1)}>LT</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT）" onClick={() => switchBy(1)}>RT</button></div>
-		<div className="desktop-icon-popup__quick-meta" aria-live="polite">
-			<span><small>模型</small><strong title={preferences?.model}>{preferences ? quickStartModelLabel(preferences.model) : "读取中…"}</strong></span>
-			<span><small>审批</small><strong>{preferences ? quickStartApprovalLabel(preferences.approvalMode) : "读取中…"}</strong></span>
+    <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT 或 Ctrl+←）" title="上一个（LT / Ctrl+←）" onClick={() => switchBy(-1)}>上一个</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT 或 Ctrl+→）" title="下一个（RT / Ctrl+→）" onClick={() => switchBy(1)}>下一个</button></div>
+		<div className="desktop-icon-popup__quick-meta">
+			<div className="desktop-icon-popup__quick-chip-wrap">
+				<button type="button" className="desktop-icon-popup__quick-chip" aria-label="选择模型" aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={!preferences || busy} onClick={() => setModelMenuOpen((open) => !open)}>
+					<span className="desktop-icon-popup__quick-chip-copy"><strong title={preferences?.model}>{preferences ? quickStartModelLabel(selectedModel) : "读取中…"}</strong></span>
+					<ChevronDown aria-hidden="true" />
+				</button>
+				{modelMenuOpen && <div className="desktop-icon-popup__picker" role="listbox" aria-label="选择模型">
+					<div className="desktop-icon-popup__picker-search"><Search aria-hidden="true" /><input autoFocus value={modelQuery} placeholder="搜索模型" onChange={(event) => setModelQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setModelMenuOpen(false); } }} /></div>
+					{filteredModelOptions.length === 0 && <div className="desktop-icon-popup__picker-empty">没有可用模型</div>}
+					{filteredModelOptions.map((option) => <button key={option.ref} type="button" role="option" aria-selected={option.ref === selectedModel} className={`desktop-icon-popup__picker-item${option.ref === selectedModel ? " is-active" : ""}`} onMouseDown={(event) => event.preventDefault()} onClick={() => pickModel(option.ref)}><span className="desktop-icon-popup__picker-name">{option.label}</span><span className="desktop-icon-popup__picker-meta">{option.provider}</span>{option.ref === selectedModel && <Check aria-hidden="true" />}</button>)}
+				</div>}
+			</div>
+			<div className="desktop-icon-popup__quick-chip-wrap">
+				<button type="button" className="desktop-icon-popup__quick-chip" aria-label={`审批：${preferences ? quickStartApprovalLabel(selectedApproval) : "读取中"}，点击切换`} disabled={!preferences || busy} onClick={() => pickApproval(nextQuickStartApproval(selectedApproval))}>
+					<span className="desktop-icon-popup__quick-chip-copy"><strong>{preferences ? quickStartApprovalLabel(selectedApproval) : "读取中…"}</strong></span>
+				</button>
+			</div>
 		</div>
-		<textarea autoFocus value={draft} placeholder="告诉 WorkGround2 你要完成什么…" onChange={(event) => saveDraft(event.target.value)} onKeyDown={(event) => {
-			if (!preferences || !isComposerSubmitKey(event, preferences.submitKey, event.nativeEvent.isComposing)) return;
-			event.preventDefault();
-			if (!busy && draft.trim()) void send();
-		}} />
+		{completion && <div className="desktop-icon-popup__completion" role="listbox" aria-label="补全候选">
+			{completion.kind === "slash" && completion.items.map((item, index) => <button key={`${item.kind}:${item.name}`} type="button" role="option" aria-selected={index === completion.active} className={completionItemClass(index)} {...completionItem(index)}><span className="desktop-icon-popup__completion-name">/{item.name}</span><span className="desktop-icon-popup__completion-desc">{item.description}</span>{item.kind !== "builtin" && <span className="desktop-icon-popup__completion-kind">{item.kind === "skill" ? "技能" : item.kind === "custom" ? "项目" : item.kind === "mcp" ? "MCP" : item.kind}</span>}</button>)}
+			{completion.kind === "slasharg" && completion.items.map((item, index) => <button key={`${item.label}:${index}`} type="button" role="option" aria-selected={index === completion.active} className={completionItemClass(index)} {...completionItem(index)}><span className="desktop-icon-popup__completion-name">{item.label}</span>{item.hint && <span className="desktop-icon-popup__completion-desc">{item.hint}</span>}</button>)}
+			{completion.kind === "skill" && completion.items.map((item, index) => <button key={`skill:${item.name}`} type="button" role="option" aria-selected={index === completion.active} className={completionItemClass(index)} {...completionItem(index)}><span className="desktop-icon-popup__completion-name">${item.name}</span><span className="desktop-icon-popup__completion-desc">{item.description}</span><span className="desktop-icon-popup__completion-kind">技能</span></button>)}
+			{completion.kind === "at" && completion.items.map((item, index) => <button key={`${item.isDir ? "d:" : "f:"}${item.path}`} type="button" role="option" aria-selected={index === completion.active} className={completionItemClass(index)} {...completionItem(index)}><span className="desktop-icon-popup__completion-name">{item.label}{item.isDir ? "/" : ""}</span><span className="desktop-icon-popup__completion-desc">{item.isDir ? "目录" : "文件"}</span></button>)}
+		</div>}
+		<div className="desktop-icon-popup__quick-composer">
+			{vocabMatch && vocabToken && <div className="desktop-icon-popup__vocab-ghost" aria-hidden="true" style={{ top: `${-vocabScrollTop}px` }}><span>{draft}</span><b>{vocabMatch.suffix}</b></div>}
+			<textarea autoFocus ref={taRef} value={draft} aria-describedby={vocabMatch ? "desktop-icon-vocab-hint" : undefined} placeholder="告诉 WorkGround2 你要完成什么…" onChange={(event) => { saveDraft(event.target.value); setCaret({ start: event.target.selectionStart ?? event.target.value.length, end: event.target.selectionEnd ?? event.target.value.length }); setVocabMatch(null); }} onSelect={() => { const node = taRef.current; if (node) setCaret({ start: node.selectionStart, end: node.selectionEnd }); }} onClick={() => { const node = taRef.current; if (node) setCaret({ start: node.selectionStart, end: node.selectionEnd }); }} onKeyUp={() => { const node = taRef.current; if (node) setCaret({ start: node.selectionStart, end: node.selectionEnd }); }} onScroll={(event) => setVocabScrollTop(event.currentTarget.scrollTop)} onKeyDown={(event) => {
+			const composing = isWidgetImeKeyEvent(event, composingRef.current, lastCompositionEndAt.current);
+			if (event.key === "Enter" && composing) return;
+			if (!completion && event.key === "Tab" && !event.shiftKey && vocabMatch && vocabToken && !composing) { event.preventDefault(); acceptVocab(); return; }
+			if (!completion && event.key === "Escape" && vocabMatch && !composing) { event.preventDefault(); setVocabMatch(null); setVocabToken(null); setVocabDismissed(true); return; }
+			const action = quickStartCompletionKey(completion, event, composing, preferences?.submitKey ?? "enter");
+			if (action.type === "move") { event.preventDefault(); setCompletion(quickStartCompletionMove(completion, action.delta)); return; }
+			if (action.type === "accept") { event.preventDefault(); applyCompletion(); return; }
+			if (action.type === "close") { event.preventDefault(); event.stopPropagation(); setCompletionDismissed(true); return; }
+			if (action.type === "submit") {
+				if (!preferences || !isComposerSubmitKey(event, preferences.submitKey, event.nativeEvent.isComposing)) return;
+				event.preventDefault();
+				if (!busy && draft.trim()) void send();
+			}
+			}} onCompositionStart={() => { composingRef.current = true; setCompletionDismissed(true); setVocabMatch(null); }} onCompositionEnd={(event) => { composingRef.current = false; lastCompositionEndAt.current = Date.now(); setCaret({ start: event.currentTarget.selectionStart ?? draft.length, end: event.currentTarget.selectionEnd ?? draft.length }); }} />
+			{vocabMatch && <span id="desktop-icon-vocab-hint" className="sr-only">按 Tab 补全为 {vocabMatch.text}</span>}
+		</div>
 		{preferencesError && <div role="alert" className="desktop-icon-popup__settings-error"><span>读取新会话设置失败：{preferencesError}</span><button type="button" className="subtle" onClick={loadPreferences}>重试</button></div>}
     {error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
-		<div className="desktop-icon-popup__actions"><button disabled={busy || !draft.trim() || !preferences} onClick={() => void send()}>{busy ? "发送中…" : !preferences ? "读取设置…" : pending ? "重试" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
+		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={busy || !draft.trim() || !preferences} onClick={() => void send()}>{busy ? "发送中…" : !preferences ? "读取设置…" : pending ? "重试" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
   </div>;
 }
 
@@ -254,6 +478,8 @@ export function DesktopIconMode() {
   const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean } | null>(null);
 	const actionRequests = useRef(new Map<string, string>());
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+	const popupRef = useRef<HTMLElement>(null);
+	const [popupWidth, setPopupWidth] = useState(0);
 	const regionKey = useRef("");
 	const regionQueue = useRef<Promise<void>>(Promise.resolve());
 	const [collapsed, setCollapsed] = useState(readCollapsedState);
@@ -309,7 +535,7 @@ export function DesktopIconMode() {
     try {
       const result = await app.ApplyDesktopIconAction(input);
       setSnapshot(result.snapshot);
-		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["ok", "dismiss", "later", "open", "reply"].includes(action)) setActiveID(""); }
+		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue"].includes(action)) setActiveID(""); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || "操作失败，可安全重试"); }
 		return result.status === "accepted" || result.status === "already_applied";
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
@@ -373,16 +599,32 @@ export function DesktopIconMode() {
   const active = snapshot.items.find((item) => item.id === activeID);
   const preview = snapshot.items.find((item) => item.id === previewID);
   const popupItem = active || preview;
+	useLayoutEffect(() => {
+		const node = popupRef.current;
+		if (!popupItem || !node) {
+			setPopupWidth(0);
+			return;
+		}
+		const measure = () => {
+			const width = node.getBoundingClientRect().width * desktopZoom;
+			setPopupWidth((current) => Math.abs(current - width) < 0.5 ? current : width);
+		};
+		const observer = new ResizeObserver(measure);
+		observer.observe(node);
+		measure();
+		return () => observer.disconnect();
+	}, [desktopZoom, popupItem]);
 	const popupStyle = useMemo(() => {
     if (!popupItem) return {};
     const node = itemRefs.current.get(popupItem.id); if (!node) return {};
 		const rect = scaleIconRect(node.getBoundingClientRect(), desktopZoom);
 		const viewportWidth = window.innerWidth * desktopZoom;
 		const viewportHeight = window.innerHeight * desktopZoom;
-		const width = active ? 330 : Math.min(300, viewportWidth - 20);
+		const fallbackWidth = active ? 330 : Math.min(300, viewportWidth - 20);
+		const width = popupWidth || fallbackWidth;
 		const placed = placeIconPopup(rect, viewportWidth, viewportHeight, width);
 		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px` } as CSSProperties;
-	}, [active, desktopZoom, popupItem, snapshot.revision]);
+	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision]);
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
@@ -427,12 +669,12 @@ export function DesktopIconMode() {
 				<button type="button" className="desktop-icon-anchor" title="拖动窗口移动小组件" aria-label="移动小组件窗口"><img src={logoSymbol} alt="" draggable={false} /></button>
 			</div>
 		</div>
-		{popupItem && <section className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => window.clearTimeout(previewCloseTimer.current)} onMouseLeave={closePreviewSoon}>
+		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => window.clearTimeout(previewCloseTimer.current)} onMouseLeave={closePreviewSoon}>
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} onClose={() => setActiveID("")} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
-      {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => void run(active, action, values)} />}
+      {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
       {active && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
     </section>}

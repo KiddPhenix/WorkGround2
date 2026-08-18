@@ -257,6 +257,10 @@ export interface WidgetConversationInput {
   prompt: string;
   requestId: string;
   workspace?: string;
+  /** Per-send model ref override (must be one of app.Models() refs); empty = user default. */
+  model?: string;
+  /** Per-send tool approval posture; empty = user default. */
+  approvalMode?: string;
 }
 
 export interface WidgetWorkspaceOption {
@@ -282,6 +286,7 @@ export interface DesktopIconNotice {
   id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
   priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
   readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+  summaryStatus?: "ready" | "failed";
 }
 
 export interface DesktopIconPosition { row: "top" | "bottom"; zone: "conversation" | "running" | "workspace" | "fixed"; order: number; }
@@ -534,10 +539,16 @@ export interface AppBindings extends WailsWorkBindings {
   CompleteVocabularyForTab(tabID: string, prefix: string, limit: number): Promise<VocabularyMatch[]>;
   RecordVocabularyUseForTab(tabID: string, id: string, useID: string): Promise<void>;
   ActivateSkillVocabularyForTab(tabID: string, name: string): Promise<VocabularyRefreshResult>;
+  // Active-tab fallbacks used by the desktop widget (which has no tab of its
+  // own until a conversation starts); same data sources as the main Composer.
+  CompleteVocabulary(prefix: string, limit: number): Promise<VocabularyMatch[]>;
+  RecordVocabularyUse(id: string, useID: string): Promise<void>;
   ListDir(rel: string): Promise<DirEntry[]>;
   ListDirForTab(tabID: string, rel: string): Promise<DirEntry[]>;
+  ListDirForWorkspace(root: string, rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   SearchFileRefsForTab(tabID: string, query: string): Promise<DirEntry[]>;
+  SearchFileRefsForWorkspace(root: string, query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
   ReadFileForTab(tabID: string, rel: string): Promise<FilePreview>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
@@ -3927,6 +3938,12 @@ function makeMockApp(): AppBindings {
     async ActivateSkillVocabularyForTab(_tabID: string, name: string) {
       return { skill: name, termCount: 2, added: 2, warnings: [] };
     },
+    async CompleteVocabulary(prefix: string, limit: number) {
+      return this.CompleteVocabularyForTab("mock-active", prefix, limit);
+    },
+    async RecordVocabularyUse(id: string, useID: string) {
+      return this.RecordVocabularyUseForTab("mock-active", id, useID);
+    },
     async ListDir(rel: string) {
       // A tiny fake tree so the @ menu is navigable in browser dev.
       if (rel === "" || rel === "./") {
@@ -3949,6 +3966,9 @@ function makeMockApp(): AppBindings {
     async ListDirForTab(_tabID: string, rel: string) {
       return this.ListDir(rel);
     },
+    async ListDirForWorkspace(_root: string, rel: string) {
+      return this.ListDir(rel);
+    },
     async SearchFileRefs(query: string) {
       const q = query.toLowerCase();
       return ["desktop/frontend/src/lib/bridge.ts", "frontend/wailsjs/runtime/runtime.js", "internal/control/refs.go"]
@@ -3956,6 +3976,9 @@ function makeMockApp(): AppBindings {
         .map((name) => ({ name, isDir: false }));
     },
     async SearchFileRefsForTab(_tabID: string, query: string) {
+      return this.SearchFileRefs(query);
+    },
+    async SearchFileRefsForWorkspace(_root: string, query: string) {
       return this.SearchFileRefs(query);
     },
     async ReadFile(rel: string) {

@@ -24,7 +24,11 @@ assert.match(appSource, /DesktopStartupSettings\(\)[\s\S]+setWidgetEnabled\(s\.w
 assert.match(appSource, /EventsOn\("widget:enabled"/, "widget enabled changes propagate without restart");
 assert.match(appSource, /WindowsWindowControls widgetEnabled=\{widgetEnabled\}/, "window chrome hides the widget entry when disabled");
 assert.match(appSource, /EventsOn\("widget:mode"/, "native widget mode events update React state");
-assert.match(appSource, /createWidgetModeCoordinator\(app, setWidgetMode\)/, "widget transitions share one state coordinator");
+assert.match(
+  appSource,
+  /createWidgetModeCoordinator\(app,\s*setWidgetMode,\s*\(\) => \{/,
+  "widget transitions share one state coordinator with main-window restore cleanup",
+);
 assert.doesNotMatch(appSource + composerSource, /widget-mode-change/, "widget state does not depend on an ad-hoc DOM event");
 assert.match(composerSource, /onEnterWidgetMode/, "Composer delegates widget entry to the shared coordinator");
 assert.match(widgetCSS, /\.app--widget-hidden\s*\{[^}]*visibility:\s*hidden/s, "main content has an explicit widget-mode hiding fallback");

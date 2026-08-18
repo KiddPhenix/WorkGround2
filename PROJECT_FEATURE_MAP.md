@@ -346,6 +346,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### 图标小组件快速新建
+- Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/quickStartPreferences.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: QuickStart 的工作区、模型与审批交互位于 DesktopIconMode；偏好归一化和审批循环规则位于 quickStartPreferences，契约测试固定无标签与点击循环行为。
+- Keywords: QuickStart, DesktopIconMode, 审批循环, 模型选择
+- Source: verified-by-search
+- Updated: 2026-08-19
+
 ### 性能压力仅写日志
 - Location: `desktop/frontend/src/lib/crash.ts`, `desktop/frontend/src/__tests__/crash-reporting.test.ts`
 - Summary: 桌面前端继续监控长任务、事件循环延迟和 JS 堆压力，但不再显示报告弹窗；诊断按 10 分钟节流写入 Wails warning 日志，失败回退 console.warn。

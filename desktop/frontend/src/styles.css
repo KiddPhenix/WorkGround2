@@ -20292,10 +20292,10 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
 }
 
-.windows-window-control--close:hover,
-.windows-window-control--close:focus-visible {
-  color: #fff;
-  background: #c42b1c;
+.windows-window-control--dismiss:hover,
+.windows-window-control--dismiss:focus-visible {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
 .app--darwin .app-chrome--tabs {
@@ -31173,7 +31173,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--windows-frameless {
-  --windows-window-controls-width: 184px;
+  --windows-window-controls-width: 138px;
   --windows-window-control-width: 46px;
   --windows-window-controls-gap: 18px;
   --windows-window-controls-safe: calc(var(--windows-window-controls-width) + var(--windows-window-controls-gap));
@@ -34561,7 +34561,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .layout--workbench .session-footer-dock .composer-card {
-  min-height: 128px;
+  min-height: 76px;
   border-radius: 8px 8px 0 0;
   max-width: 100%;
 }
@@ -43192,7 +43192,7 @@ body > .mermaid-diagram--fullscreen {
    The rail sits inside the Session plate instead of introducing a second
    window-shaped surface at the viewport edge. */
 .app--windows-frameless.app--workbench {
-  --windows-window-controls-width: 160px;
+  --windows-window-controls-width: 120px;
   --windows-window-control-width: 40px;
   --windows-window-controls-height: 32px;
   --session-top-utility-width: 204px;
@@ -43561,6 +43561,24 @@ body > .mermaid-diagram--fullscreen {
   padding: 24px 48px 22px;
 }
 
+.app--workbench .conversation-viewport .msg {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.app--workbench .conversation-viewport .msg--assistant {
+  gap: 4px;
+}
+
+.app--workbench .conversation-viewport .turn-collapse {
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.app--workbench .conversation-viewport .turn-collapse:not(.turn-collapse--active) .reasoning__head {
+  min-height: 28px;
+}
+
 .app--workbench .iris-fixture-conversation,
 .app--workbench .session-run-stream {
   width: 100%;
@@ -43733,7 +43751,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--workbench .session-footer-dock .composer-card {
-  min-height: 118px;
+  min-height: 76px;
   border-color: rgba(220, 224, 234, 0.26);
   border-radius: 8px 8px 0 0;
   background: rgba(18, 20, 26, 0.96);

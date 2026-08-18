@@ -401,6 +401,21 @@ func TestDesktopIconReplyRecoveryStateMachine(t *testing.T) {
 	}
 }
 
+func TestDesktopIconTaskContinueRecoveryStateMachine(t *testing.T) {
+	if step, err := desktopIconTurnNextStep([]string{"before"}, 1, "continue", "accepted", true, "task conversation"); err != nil || step != desktopIconReplyWaitStep {
+		t.Fatalf("running continuation = step %q, err %v", step, err)
+	}
+	if step, err := desktopIconTurnNextStep([]string{"before", "continue"}, 1, "continue", "accepted", false, "task conversation"); err != nil || step != desktopIconReplyConfirmStep {
+		t.Fatalf("confirmed continuation = step %q, err %v", step, err)
+	}
+	if step, err := desktopIconTurnNextStep([]string{"before"}, 1, "continue", "accepted", false, "task conversation"); err != nil || step != desktopIconReplySubmitStep {
+		t.Fatalf("restart continuation = step %q, err %v", step, err)
+	}
+	if _, err := desktopIconTurnNextStep([]string{"before", "other"}, 1, "continue", "accepted", false, "task conversation"); err == nil || !strings.Contains(err.Error(), "task conversation") {
+		t.Fatalf("conflicting continuation history = %v", err)
+	}
+}
+
 func TestDesktopIconReplyBusinessKeyReusesOldRequest(t *testing.T) {
 	key := desktopIconReplyKey("im:alice", 9, " hello   world ")
 	receipts := []desktopIconReceipt{{RequestID: "old-request", Status: "pending", Action: "reply", Conversation: "im:alice", ReadSequence: 9, Text: "hello world"}}
@@ -463,10 +478,25 @@ func TestDesktopIconWindowStateRejectsOldShortGeometryWithError(t *testing.T) {
 	}
 }
 
+func TestDesktopIconWindowStateMigratesLegacyDefaultGeometry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", home)
+	path := desktopIconWindowStatePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"width":900,"height":600,"x":120,"y":80}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := loadDesktopIconWindowState(); ok || err != nil || got != (WidgetWindowState{}) {
+		t.Fatalf("legacy icon geometry = %+v ok %v err %v, want default recompute", got, ok, err)
+	}
+}
+
 func TestSaveCurrentWindowStateRoutesIconsToIconWindowState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WorkGround2_STATE_HOME", home)
-	state := DesktopWindowState{Width: 900, Height: 600, X: 120, Y: 80}
+	state := DesktopWindowState{Width: desktopIconWidth, Height: desktopIconHeight, X: 120, Y: 80}
 	if err := saveCurrentWindowStateTo(true, "icons", state); err != nil {
 		t.Fatalf("icons geometry save: %v", err)
 	}
@@ -474,7 +504,7 @@ func TestSaveCurrentWindowStateRoutesIconsToIconWindowState(t *testing.T) {
 	if !ok || err != nil {
 		t.Fatalf("icons geometry did not reach icon window state: ok %v err %v", ok, err)
 	}
-	if got.Width != 900 || got.Height != 600 || got.X != 120 || got.Y != 80 {
+	if got.Width != desktopIconWidth || got.Height != desktopIconHeight || got.X != 120 || got.Y != 80 {
 		t.Fatalf("icons state = %+v", got)
 	}
 	if _, ok := loadWidgetWindowState(); ok {
@@ -522,4 +552,132 @@ func findDesktopIconItem(items []DesktopIconItem, id string) *DesktopIconItem {
 		}
 	}
 	return nil
+}
+
+func TestCloneDesktopIconStateKeepsSummaryCacheIndependent(t *testing.T) {
+	state := desktopIconPersistedState{
+		Positions: map[string]DesktopIconPosition{},
+		Kept:      map[string]desktopIconKept{},
+		CompletionSummaries: map[string]desktopIconCompletionSummary{
+			"summary": {Status: completionSummaryReady, Text: "新闻体摘要"},
+		},
+	}
+	clone := cloneDesktopIconState(state)
+	delete(clone.CompletionSummaries, "summary")
+	if state.CompletionSummaries["summary"].Text != "新闻体摘要" {
+		t.Fatal("clone shares the summary cache map with authoritative state")
+	}
+}
+
+// keptFixture returns a completed task whose item is also retained in the
+// persisted Kept map, mirroring the pre-fix state that "OK" used to create.
+func keptCompletionFixture(t *testing.T, attentionAt int64) (*App, *WorkspaceTab, string) {
+	t.Helper()
+	tab, sp := completionTestTab(t, attentionAt)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.iconWidgetState.Kept["task:task-1"] = desktopIconKept{
+		ItemID: "task:task-1", SourceID: "task-1", Title: "标题", Summary: "旧摘要", Order: 0, Revision: "r",
+	}
+	return app, tab, sp
+}
+
+func completedIconItem(t *testing.T, app *App) (DesktopIconItem, DesktopIconNotice) {
+	t.Helper()
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:task-1")
+	if item == nil || len(item.Notifications) != 1 || item.Notifications[0].Kind != "completed" {
+		t.Fatalf("completed task projection = %+v", snapshot.Items)
+	}
+	return *item, item.Notifications[0]
+}
+
+func TestDesktopIconOkActionIsLocalCloseOnly(t *testing.T) {
+	app, _, sp := keptCompletionFixture(t, 1000)
+	item, notice := completedIconItem(t, app)
+
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, NoticeID: notice.ID, Revision: item.Revision,
+		RequestID: "req-ok", Action: "ok",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("ok status = %q error %q", result.Status, result.Error)
+	}
+	if len(app.iconWidgetState.Applied) != 0 {
+		t.Fatalf("ok created a backend receipt: %+v", app.iconWidgetState.Applied)
+	}
+	if kept := app.iconWidgetState.Kept["task:task-1"]; kept.Title != "标题" {
+		t.Fatalf("ok changed the kept item: %+v", kept)
+	}
+	meta, _, err := agent.LoadBranchMeta(sp)
+	if err != nil || !meta.NeedsAttention {
+		t.Fatalf("ok cleared completion attention: %v meta %+v", err, meta)
+	}
+	// Reopening the same item still shows the same summary notice and buttons.
+	again, noticeAgain := completedIconItem(t, app)
+	if again.Revision != item.Revision || noticeAgain.ID != notice.ID || noticeAgain.Body != notice.Body {
+		t.Fatalf("reopen changed the notice: %+v vs %+v", noticeAgain, notice)
+	}
+}
+
+func TestDesktopIconDismissClearsAndStaysRecoverable(t *testing.T) {
+	app, _, sp := keptCompletionFixture(t, 1000)
+	item, notice := completedIconItem(t, app)
+
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, NoticeID: notice.ID, Revision: item.Revision,
+		RequestID: "req-dismiss", Action: "dismiss",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("dismiss status = %q error %q", result.Status, result.Error)
+	}
+	if _, kept := app.iconWidgetState.Kept["task:task-1"]; kept {
+		t.Fatal("dismiss kept the completion item")
+	}
+	// The receipt settles to "applied" on success; "pending" only exists in
+	// the crash window between the receipt save and the attention clear.
+	if len(app.iconWidgetState.Applied) != 1 || app.iconWidgetState.Applied[0].Action != "dismiss" || app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("dismiss receipt = %+v", app.iconWidgetState.Applied)
+	}
+	meta, _, err := agent.LoadBranchMeta(sp)
+	if err != nil || meta.NeedsAttention {
+		t.Fatalf("dismiss did not clear attention: %v meta %+v", err, meta)
+	}
+
+	// Restart recovery: the pending dismiss receipt is applied idempotently
+	// without error, so a crash between receipt and attention-clear is safe.
+	restarted := &App{
+		tabs:                      app.tabs,
+		activeTabID:               app.activeTabID,
+		iconWidgetStateLoaded:     true,
+		iconWidgetState:           desktopIconPersistedState{Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{}, Applied: append([]desktopIconReceipt(nil), app.iconWidgetState.Applied...)},
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
+	}
+	if err := restarted.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("recover pending dismiss: %v", err)
+	}
+	if restarted.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("dismiss receipt did not settle: %+v", restarted.iconWidgetState.Applied[0])
+	}
+}
+
+func TestDesktopIconPendingOkReceiptRecoveryCompatible(t *testing.T) {
+	tab, sp := completionTestTab(t, 1000)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	// A legacy frontend (pre-fix) persisted a pending "ok" receipt that was
+	// never settled. Startup recovery must still finish it exactly like a
+	// dismiss: clear attention and mark it applied.
+	app.iconWidgetState.Applied = []desktopIconReceipt{{
+		RequestID: "legacy-ok", Intent: "intent", Status: "pending", Action: "ok",
+		ItemID: "task:task-1", TabID: "task-1", AppliedAt: time.Now().UnixMilli(),
+	}}
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("recover legacy pending ok: %v", err)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("legacy ok receipt did not settle: %+v", app.iconWidgetState.Applied[0])
+	}
+	meta, _, err := agent.LoadBranchMeta(sp)
+	if err != nil || meta.NeedsAttention {
+		t.Fatalf("legacy ok receipt did not clear attention: %v meta %+v", err, meta)
+	}
 }

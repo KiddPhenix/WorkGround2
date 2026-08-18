@@ -108,6 +108,33 @@ ok(
   "Windows caption controls and bottom settings isolate pointer down and act on pointer up while retaining keyboard clicks",
 );
 
+const minimizeWindowSource = appSource.slice(
+  appSource.indexOf("const minimizeWindow = useCallback(() => {"),
+  appSource.indexOf("const toggleMaximise = useCallback", appSource.indexOf("const minimizeWindow = useCallback(() => {")),
+);
+ok(
+  minimizeWindowSource.includes("if (widgetEnabled) {") &&
+    minimizeWindowSource.includes("void onEnterWidgetMode();") &&
+    minimizeWindowSource.includes("void app.MinimiseMainWindow();") &&
+    !/CloseTab|onTabClose|ApplyDesktopIconAction/.test(minimizeWindowSource) &&
+    !appSource.includes('className="windows-window-control windows-window-control--widget"') &&
+    appSource.includes('aria-label={widgetEnabled ? "收起到小组件" : "Minimize window"}') &&
+    appSource.includes("runFramelessPointerAction(event, minimizeWindow)") &&
+    appSource.includes("runKeyboardClick(event, minimizeWindow)"),
+  "Windows minimize and widget controls merge into one retryable widget entry with a disabled-feature fallback",
+);
+
+ok(
+  appSource.includes('className="windows-window-control windows-window-control--dismiss"') &&
+    appSource.includes('aria-label="Dismiss window"') &&
+    appSource.includes('title="Dismiss"') &&
+    /aria-label="Dismiss window"[\s\S]*?app\.CloseMainWindow\(\)/.test(appSource) &&
+    finalDeclaration(".windows-window-control--dismiss:hover", "color") === "var(--danger)" &&
+    finalDeclaration(".app--windows-frameless", "--windows-window-controls-width") === "138px" &&
+    finalDeclaration(".app--windows-frameless.app--workbench", "--windows-window-controls-width") === "120px",
+  "Windows Dismiss keeps the existing close route while the three-control rail uses custom semantics",
+);
+
 ok(
   finalDeclaration(".windows-resize-handle--right", "right") === "0" &&
     finalDeclaration(".windows-resize-handle--right", "cursor") === "ew-resize" &&
