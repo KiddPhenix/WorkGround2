@@ -21,10 +21,11 @@ body:has(.desktop-icon-mode) #root {
 	overflow: hidden;
 }
 
-.desktop-icon-grid {
+.desktop-icon-cluster {
   position: absolute;
-  right: 18px;
-  bottom: 18px;
+}
+
+.desktop-icon-grid {
   display: grid;
   gap: 6px;
   max-width: calc(100vw - 36px);
@@ -34,6 +35,15 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-row--top { padding-right: 4px; }
 .desktop-icon-row--bottom .desktop-icon-wrap--workspace { margin-left: 8px; }
 .desktop-icon-row--bottom .desktop-icon-wrap--fixed:first-of-type { margin-left: 8px; }
+.desktop-icon-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.desktop-icon-collapse { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid rgb(255 255 255 / 14%); border-radius: 8px; color: #d8dbe4; background: rgb(22 25 33 / 92%); cursor: pointer; touch-action: manipulation; }
+.desktop-icon-collapse:hover { border-color: rgb(193 210 255 / 40%); color: #fff; }
+.desktop-icon-collapse svg { width: 15px; height: 15px; pointer-events: none; }
+.desktop-icon-anchor { display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; touch-action: none; user-select: none; }
+.desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
+.desktop-icon-anchor--dragging, .desktop-icon-anchor:active { cursor: grabbing; }
+.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; }
+.desktop-icon-collapse:focus-visible, .desktop-icon-anchor:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; }
 
 .desktop-icon {
