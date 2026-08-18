@@ -84,8 +84,20 @@ func (a *App) saveCurrentWindowState() error {
 		Y:         y,
 		Maximised: max,
 	}
-	if a.widgetMode {
-		return saveWidgetWindowState(WidgetWindowState{Width: w, Height: h, X: x, Y: y})
+	return saveCurrentWindowStateTo(a.widgetMode, a.widgetStyle, state)
+}
+
+// saveCurrentWindowStateTo routes one authoritative geometry snapshot to the
+// state file of the current mode. The desktop icon window persists separately,
+// so positions reached through the native Wails anchor drag are restored
+// independently of pager geometry and never overwrite the main window.
+func saveCurrentWindowStateTo(widgetMode bool, widgetStyle string, state DesktopWindowState) error {
+	if widgetMode {
+		widget := WidgetWindowState{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y}
+		if widgetStyle == "icons" {
+			return saveDesktopIconWindowState(widget)
+		}
+		return saveWidgetWindowState(widget)
 	}
 	return saveMainWindowState(state)
 }

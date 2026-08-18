@@ -51,49 +51,23 @@ export function placeIconPopup(anchor: IconRect, viewportWidth: number, viewport
   };
 }
 
-// Cluster control geometry and persistence. The WG2 anchor sits at the
-// bottom-right corner of the icon cluster; rows and controls grow left/up
-// from it, so its position is stored as viewport-normalized fractions that
-// recover safely across monitor and window-size changes.
-export interface ClusterAnchor { right: number; bottom: number; }
-export interface ClusterSize { width: number; height: number; }
-export interface ClusterViewport { width: number; height: number; }
-export interface ClusterState { collapsed: boolean; anchor: { x: number; y: number }; }
-
-export const DEFAULT_CLUSTER_STATE: ClusterState = { collapsed: false, anchor: { x: 1, y: 1 } };
-
-// clampClusterAnchor keeps the whole visible cluster inside a safe margin.
-// When the cluster is too large for the viewport, the anchor itself stays
-// reachable at the viewport edge and the cluster may overflow left/up.
-export function clampClusterAnchor(anchor: ClusterAnchor, size: ClusterSize, viewport: ClusterViewport, margin = 18): ClusterAnchor {
-  const maxRight = Math.max(margin, viewport.width - margin);
-  const maxBottom = Math.max(margin, viewport.height - margin);
-  const minRight = Math.min(size.width + margin, maxRight);
-  const minBottom = Math.min(size.height + margin, maxBottom);
-  return {
-    right: Math.min(Math.max(minRight, anchor.right), maxRight),
-    bottom: Math.min(Math.max(minBottom, anchor.bottom), maxBottom),
-  };
+// Collapse state is persisted under the stable cluster key. The old format
+// carried a viewport-normalized anchor next to `collapsed`; that anchor is
+// deliberately dropped because the WG2 anchor now drags the whole native
+// window (CSS --wails-draggable) and the cluster is pinned to the bottom-right
+// corner of the transparent window.
+export function parseCollapseState(raw: string | null): boolean {
+  if (!raw) return false;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (typeof value === "boolean") return value;
+    if (typeof value === "object" && value !== null && typeof (value as { collapsed?: unknown }).collapsed === "boolean") {
+      return (value as { collapsed: boolean }).collapsed;
+    }
+  } catch { /* storage unavailable */ }
+  return false;
 }
 
-// parseClusterState accepts only well-formed persisted state. Malformed or
-// missing input returns null so the caller falls back to bottom-right/expanded;
-// out-of-range anchor fractions are normalized into 0..1.
-export function parseClusterState(raw: string | null): ClusterState | null {
-  if (!raw) return null;
-  let value: unknown;
-  try { value = JSON.parse(raw); } catch { return null; }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.collapsed !== "undefined" && typeof record.collapsed !== "boolean") return null;
-  const collapsed = record.collapsed === true;
-  const anchor = record.anchor;
-  if (typeof anchor !== "object" || anchor === null || Array.isArray(anchor)) return null;
-  const { x, y } = anchor as Record<string, unknown>;
-  if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) return null;
-  return { collapsed, anchor: { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } };
-}
-
-export function serializeClusterState(state: ClusterState): string {
-  return JSON.stringify(state);
+export function serializeCollapseState(collapsed: boolean): string {
+  return JSON.stringify({ collapsed });
 }

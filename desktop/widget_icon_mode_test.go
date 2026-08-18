@@ -408,7 +408,7 @@ func TestDesktopIconReplyNewRequestReturnsAlreadyApplied(t *testing.T) {
 
 func TestDesktopIconCorruptStateIsVisibleInSnapshot(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("WorkGround2_HOME", home)
+	t.Setenv("WorkGround2_STATE_HOME", home)
 	path := desktopIconStatePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -425,7 +425,7 @@ func TestDesktopIconCorruptStateIsVisibleInSnapshot(t *testing.T) {
 
 func TestDesktopIconWindowStateRejectsOldShortGeometryWithError(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("WorkGround2_HOME", home)
+	t.Setenv("WorkGround2_STATE_HOME", home)
 	path := desktopIconWindowStatePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
@@ -441,6 +441,58 @@ func TestDesktopIconWindowStateRejectsOldShortGeometryWithError(t *testing.T) {
 	}
 	if _, ok, err := loadDesktopIconWindowState(); ok || err == nil || !strings.Contains(err.Error(), "load desktop icon window state") {
 		t.Fatalf("corrupt icon geometry = ok %v, err %v", ok, err)
+	}
+}
+
+func TestSaveCurrentWindowStateRoutesIconsToIconWindowState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", home)
+	state := DesktopWindowState{Width: 900, Height: 600, X: 120, Y: 80}
+	if err := saveCurrentWindowStateTo(true, "icons", state); err != nil {
+		t.Fatalf("icons geometry save: %v", err)
+	}
+	got, ok, err := loadDesktopIconWindowState()
+	if !ok || err != nil {
+		t.Fatalf("icons geometry did not reach icon window state: ok %v err %v", ok, err)
+	}
+	if got.Width != 900 || got.Height != 600 || got.X != 120 || got.Y != 80 {
+		t.Fatalf("icons state = %+v", got)
+	}
+	if _, ok := loadWidgetWindowState(); ok {
+		t.Fatal("icons geometry leaked into pager window state")
+	}
+	if _, ok := loadWindowState(); ok {
+		t.Fatal("icons geometry leaked into main window state")
+	}
+}
+
+func TestSaveCurrentWindowStateRoutesPagerAndMain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", home)
+
+	pager := DesktopWindowState{Width: 590, Height: 176, X: 10, Y: 20}
+	if err := saveCurrentWindowStateTo(true, "pager", pager); err != nil {
+		t.Fatalf("pager geometry save: %v", err)
+	}
+	if got, ok := loadWidgetWindowState(); !ok || got.Width != 590 || got.Height != 176 || got.X != 10 || got.Y != 20 {
+		t.Fatalf("pager state = %+v ok %v", got, ok)
+	}
+	if _, ok, _ := loadDesktopIconWindowState(); ok {
+		t.Fatal("pager geometry leaked into icon window state")
+	}
+
+	main := DesktopWindowState{Width: 1280, Height: 800, X: 30, Y: 40}
+	if err := saveCurrentWindowStateTo(false, "", main); err != nil {
+		t.Fatalf("main geometry save: %v", err)
+	}
+	if got, ok := loadWindowState(); !ok || got.Width != 1280 || got.Height != 800 || got.X != 30 || got.Y != 40 {
+		t.Fatalf("main state = %+v ok %v", got, ok)
+	}
+	if got, ok := loadWidgetWindowState(); !ok || got.Width != 590 {
+		t.Fatalf("main geometry overwrote pager window state: %+v ok %v", got, ok)
+	}
+	if _, ok, _ := loadDesktopIconWindowState(); ok {
+		t.Fatal("main geometry leaked into icon window state")
 	}
 }
 
