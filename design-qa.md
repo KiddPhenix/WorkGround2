@@ -34,6 +34,34 @@ final result: passed
 
 ---
 
+# Design QA — 图标小组件快速新建配置对齐（2026-08-18）
+
+- Source visual truth：`D:/Temp/codex-clipboard-a16c5e65-8775-46c5-b4bc-5921c7777109.png`（462 × 367 px）。
+- Browser implementation：`D:/Temp/workground2-widget-quickstart-full.png`；聚焦截图：`D:/Temp/workground2-widget-quickstart-popup-final.png`（330 × 315 px）。
+- Combined comparison：`D:/Temp/workground2-widget-quickstart-comparison.png`；参考图等比归一到 330 × 262 px，与 330 × 315 px 实现并排比较。
+- Viewport：1138 × 703 CSS px，device pixel ratio 1.1；状态为默认模型 `deepseek`、审批 `ask`、提交键 `Enter`。
+
+## 对照与交互证据
+
+- Full view：弹窗仍锚定“新建”图标上方，工作区切换、输入区和操作区顺序保持；新增的模型、审批信息位于工作区标题和输入区之间，没有遮挡或横向溢出。
+- Focused view：模型和审批分别使用两个紧凑信息块，长模型名可省略且保留 title；底部明确显示当前提交键提示。
+- Typography：沿用图标小组件既有字体和层级；配置标签弱化、值和主操作保持清楚。
+- Spacing/layout：输入区仍为约 126 CSS px 高；新增配置行使弹窗合理向上增长，按钮和提示没有挤压。
+- Colors/tokens：完全复用现有深色、紫色强调、边框和弱文本 token。
+- Images/assets：该弹窗不含图片资产；既有 Lucide 图标和桌面图标未改变。
+- Copy/content：模型、审批状态、Enter 提示均与 mock 用户设置一致。
+- Interaction：点击“新建”后读取设置；输入文本并按 Enter 后快速新建被接受，活动弹窗关闭；控制台 error/warning 为 0。
+
+## Comparison history
+
+- Pass 1：发现底层图标的未读角标会叠到弹窗输入区右下角，属于 P2 层级问题。
+- Fix：为 `.desktop-icon-popup` 设置明确的 `z-index: 5`，保证弹窗覆盖图标状态层。
+- Pass 2：同尺寸复验后角标不再穿透，模型、审批、输入区、按钮和快捷键提示均完整可读；无遗留 P0/P1/P2。
+
+final result: passed
+
+---
+
 # 最近会话 Pin 视觉修正 Design QA（2026-08-13）
 
 - Source visual truth: `D:\Temp\codex-clipboard-39c9b9b4-167a-44cc-bb29-883f7e3a7476.png`

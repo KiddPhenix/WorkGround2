@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
+
+	"workground2/internal/config"
+	"workground2/internal/control"
 )
 
 func TestRetryWidgetConversationRetriesFiveTimesWithSameInput(t *testing.T) {
@@ -68,5 +72,43 @@ func TestRetryWidgetConversationDoesNotRetryTerminalResult(t *testing.T) {
 				t.Fatalf("result = %+v, calls = %d; want one terminal call", result, calls)
 			}
 		})
+	}
+}
+
+func TestApplyWidgetConversationDefaultsRefreshesReusableBlankTab(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	cfg := config.Default()
+	cfg.DefaultModel = "new/new-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:               "blank",
+		Scope:            "global",
+		WorkspaceRoot:    globalWorkspaceRoot(),
+		model:            "old/old-model",
+		toolApprovalMode: control.ToolApprovalAsk,
+		disabledMCP:      map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.applyWidgetConversationDefaults(tab.ID, "new/new-model", control.ToolApprovalAuto); err != nil {
+		t.Fatalf("applyWidgetConversationDefaults: %v", err)
+	}
+	if tab.pendingModel != "new/new-model" {
+		t.Fatalf("pending model = %q, want user default", tab.pendingModel)
+	}
+	if tab.toolApprovalMode != control.ToolApprovalAuto {
+		t.Fatalf("approval mode = %q, want user default auto", tab.toolApprovalMode)
 	}
 }

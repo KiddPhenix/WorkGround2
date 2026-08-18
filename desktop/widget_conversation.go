@@ -70,6 +70,8 @@ type widgetConversationReceipt struct {
 	RequestID          string `json:"requestId"`
 	PromptHash         string `json:"promptHash"`
 	WorkspaceSelection string `json:"workspaceSelection,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ToolApprovalMode   string `json:"toolApprovalMode,omitempty"`
 	Scope              string `json:"scope"`
 	WorkspaceRoot      string `json:"workspaceRoot,omitempty"`
 	WorkspaceName      string `json:"workspaceName"`
@@ -179,6 +181,15 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 	if found && receipt.Status == "submitted" {
 		return a.widgetConversationResult("already_applied", nil, receipt)
 	}
+	if strings.TrimSpace(receipt.Model) == "" || strings.TrimSpace(receipt.ToolApprovalMode) == "" {
+		model, approvalMode := desktopNewSessionDefaults()
+		if strings.TrimSpace(receipt.Model) == "" {
+			receipt.Model = model
+		}
+		if strings.TrimSpace(receipt.ToolApprovalMode) == "" {
+			receipt.ToolApprovalMode = approvalMode
+		}
+	}
 	if !found {
 		candidates := a.widgetWorkspaceCandidates()
 		route, routeErr := resolveWidgetWorkspace(wsSelection, prompt, candidates)
@@ -188,7 +199,8 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		receipt = widgetConversationReceipt{
 			RequestID: requestID, PromptHash: promptHash,
 			WorkspaceSelection: wsSelection,
-			Scope:              route.Scope, WorkspaceRoot: route.Root, WorkspaceName: route.Name,
+			Model:              receipt.Model, ToolApprovalMode: receipt.ToolApprovalMode,
+			Scope: route.Scope, WorkspaceRoot: route.Root, WorkspaceName: route.Name,
 			RouteReason: route.Reason, RouteReasonCode: route.ReasonCode,
 			Status: "routing", UpdatedAt: time.Now().UnixMilli(),
 		}
@@ -210,6 +222,12 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话状态: %w", err), receipt)
 		}
+	}
+	if err := a.applyWidgetConversationDefaults(receipt.TabID, receipt.Model, receipt.ToolApprovalMode); err != nil {
+		receipt.Status = "created"
+		receipt.Error = err.Error()
+		_ = a.saveWidgetConversationReceipt(receipt)
+		return a.widgetConversationResult("retryable_error", fmt.Errorf("应用新对话设置: %w", err), receipt)
 	}
 
 	ctrl, err := a.waitWidgetTabReady(receipt.TabID, widgetReadyWait)
@@ -245,6 +263,20 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("保存发送回执: %w", err), receipt)
 	}
 	return a.widgetConversationResult("accepted", nil, receipt)
+}
+
+// applyWidgetConversationDefaults makes a reused blank tab match the same
+// user-level defaults shown in QuickStart. Model changes remain pending until
+// SubmitToTab's existing idle rebuild gate applies them; approval posture is
+// updated immediately and is carried into that rebuild.
+func (a *App) applyWidgetConversationDefaults(tabID, model, approvalMode string) error {
+	if model = strings.TrimSpace(model); model != "" {
+		if err := a.SetModelForTab(tabID, model); err != nil {
+			return err
+		}
+	}
+	a.SetToolApprovalModeForTab(tabID, approvalMode)
+	return nil
 }
 
 func (a *App) widgetConversationResult(status string, err error, receipt widgetConversationReceipt) WidgetConversationResult {

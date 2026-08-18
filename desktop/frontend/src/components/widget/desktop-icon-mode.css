@@ -69,6 +69,7 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-popup {
 	--arrow-left: 50%;
   position: absolute;
+  z-index: 5;
   bottom: 104px;
   width: min(330px, calc(100vw - 20px));
   padding: 15px;
@@ -104,6 +105,14 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-popup__history { display: block; margin-top: 9px; color: #8f93a0; }
 .desktop-icon-popup__workspace { display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; gap: 8px; margin-bottom: 10px; text-align: center; }
 .desktop-icon-popup__workspace button { padding: 4px; }
+.desktop-icon-popup__quick-meta { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, .75fr); gap: 7px; margin-bottom: 8px; }
+.desktop-icon-popup__quick-meta > span { min-width: 0; padding: 6px 8px; border: 1px solid rgb(255 255 255 / 9%); border-radius: 7px; background: #242731; }
+.desktop-icon-popup__quick-meta small { display: block; margin-bottom: 2px; color: #969ba8; font-size: 10px; }
+.desktop-icon-popup__quick-meta strong { overflow: hidden; color: #e8eaf0; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__submit-hint { align-self: center; margin-left: auto; color: #969ba8; font-size: 10px; white-space: nowrap; }
+.desktop-icon-popup__settings-error { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: #ffacb7; font-size: 11px; }
+.desktop-icon-popup__settings-error span { flex: 1; min-width: 0; }
+.desktop-icon-popup__settings-error button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
 .desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
 .desktop-icon-popup__searchbox { display: grid; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
 .desktop-icon-popup__searchbox svg { width: 18px; }

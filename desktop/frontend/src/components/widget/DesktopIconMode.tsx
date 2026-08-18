@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BookOpen, Bot, Check, CircleAlert, HelpCircle, MessageCircle, Plus, Search, Users, X } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { isComposerSubmitKey } from "../../lib/composerKeyboard";
 import { iconHitRect, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect } from "./desktopIconLayout";
+import { quickStartApprovalLabel, quickStartModelLabel, quickStartPreferences, type QuickStartPreferences } from "./quickStartPreferences";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import "./desktop-icon-mode.css";
 
@@ -103,6 +105,8 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 	const [draft, setDraft] = useState(() => localStorage.getItem("wg2.icon-widget-draft") || "");
 	const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+	const [preferences, setPreferences] = useState<QuickStartPreferences | null>(null);
+	const [preferencesError, setPreferencesError] = useState("");
   const choice = choices[index % choices.length];
   const workspace = widgetWorkspaceKey(choice);
 	const setPending = (next: { id: string; prompt: string; workspace: string } | null) => { setPendingState(next); if (next) localStorage.setItem("wg2.icon-widget-pending", JSON.stringify(next)); else localStorage.removeItem("wg2.icon-widget-pending"); };
@@ -117,6 +121,16 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 		setIndex(quickStartWorkspaceIndex(keys, pending?.workspace, initialWorkspace, localStorage.getItem(QUICK_WORKSPACE_KEY) || ""));
 	}, [initialWorkspace, keys, keysToken, pending]);
 	useEffect(() => { if (workspaces.length) localStorage.setItem(QUICK_WORKSPACE_KEY, workspace); }, [workspace, workspaces.length]);
+	const loadPreferences = useCallback(() => {
+		setPreferencesError("");
+		void app.Settings()
+			.then((settings) => setPreferences(quickStartPreferences(settings)))
+			.catch((cause) => {
+				setPreferences(null);
+				setPreferencesError(cause instanceof Error ? cause.message : String(cause));
+			});
+	}, []);
+	useEffect(() => { loadPreferences(); }, [loadPreferences]);
 	const switchBy = (delta: number) => { setIndex((current) => (current + delta + choices.length) % choices.length); setPending(null); };
 	useEffect(() => {
 		let frame = 0;
@@ -143,7 +157,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
   };
   const send = async () => {
     const prompt = draft.trim();
-    if (!prompt) return;
+		if (!prompt || !preferences) return;
     const attempt = pending && pending.prompt === prompt && pending.workspace === workspace ? pending : { id: requestID("icon-new"), prompt, workspace };
 		setPending(attempt); setBusy(true); setError("");
     try {
@@ -159,9 +173,18 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
     if (event.key === "PageDown") switchBy(1);
   }}>
     <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT）" onClick={() => switchBy(-1)}>LT</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT）" onClick={() => switchBy(1)}>RT</button></div>
-    <textarea autoFocus value={draft} placeholder="告诉 WorkGround2 你要完成什么…" onChange={(event) => saveDraft(event.target.value)} />
+		<div className="desktop-icon-popup__quick-meta" aria-live="polite">
+			<span><small>模型</small><strong title={preferences?.model}>{preferences ? quickStartModelLabel(preferences.model) : "读取中…"}</strong></span>
+			<span><small>审批</small><strong>{preferences ? quickStartApprovalLabel(preferences.approvalMode) : "读取中…"}</strong></span>
+		</div>
+		<textarea autoFocus value={draft} placeholder="告诉 WorkGround2 你要完成什么…" onChange={(event) => saveDraft(event.target.value)} onKeyDown={(event) => {
+			if (!preferences || !isComposerSubmitKey(event, preferences.submitKey, event.nativeEvent.isComposing)) return;
+			event.preventDefault();
+			if (!busy && draft.trim()) void send();
+		}} />
+		{preferencesError && <div role="alert" className="desktop-icon-popup__settings-error"><span>读取新会话设置失败：{preferencesError}</span><button type="button" className="subtle" onClick={loadPreferences}>重试</button></div>}
     {error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
-		<div className="desktop-icon-popup__actions"><button disabled={busy || !draft.trim()} onClick={() => void send()}>{busy ? "发送中…" : pending ? "重试" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button></div>
+		<div className="desktop-icon-popup__actions"><button disabled={busy || !draft.trim() || !preferences} onClick={() => void send()}>{busy ? "发送中…" : !preferences ? "读取设置…" : pending ? "重试" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
   </div>;
 }
 
