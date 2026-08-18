@@ -94,7 +94,7 @@ assert.doesNotMatch(component, /<small>模型<\/small>|<small>审批<\/small>/, 
 assert.match(component, /onClick=\{\(\) => pickApproval\(nextQuickStartApproval\(selectedApproval\)\)\}/, "QuickStart cycles approval directly on click");
 assert.doesNotMatch(component, /aria-label="选择审批模式"/, "QuickStart does not open an approval picker");
 assert.match(component, /Ctrl\+Enter 发送[\s\S]+Enter 发送/, "QuickStart shows the active keyboard submission hint");
-assert.match(component, />上一个<\/button>[\s\S]+>下一个<\/button>/, "QuickStart workspace buttons read 上一个 / 下一个");
+assert.match(component, />Ctrl \+ ←<\/button>[\s\S]+>Ctrl \+ →<\/button>/, "QuickStart workspace buttons explain the Ctrl+ArrowLeft/Right shortcuts");
 assert.match(component, /上一个 Workspace（LT 或 Ctrl\+←）[\s\S]+下一个 Workspace（RT 或 Ctrl\+→）/, "LT/RT gamepad hints stay on the workspace buttons");
 assert.match(component, /\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+ArrowLeft[\s\S]+ArrowRight[\s\S]+event\.preventDefault\(\)[\s\S]+switchBy/, "Ctrl+ArrowLeft/Right switch workspaces and stop the default caret movement");
 assert.match(component, /StartWidgetConversation\(\{ prompt, workspace, requestId: attempt\.id, model: modelRef, approvalMode \}\)/, "QuickStart sends the selected model and approval mode with the prompt");

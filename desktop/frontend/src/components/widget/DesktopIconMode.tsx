@@ -391,7 +391,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
     if (event.key === "PageUp") { event.preventDefault(); switchBy(-1); return; }
     if (event.key === "PageDown") { event.preventDefault(); switchBy(1); }
   }}>
-    <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT 或 Ctrl+←）" title="上一个（LT / Ctrl+←）" onClick={() => switchBy(-1)}>上一个</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT 或 Ctrl+→）" title="下一个（RT / Ctrl+→）" onClick={() => switchBy(1)}>下一个</button></div>
+    <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT 或 Ctrl+←）" title="上一个（LT / Ctrl+←）" onClick={() => switchBy(-1)}>Ctrl + ←</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT 或 Ctrl+→）" title="下一个（RT / Ctrl+→）" onClick={() => switchBy(1)}>Ctrl + →</button></div>
 		<div className="desktop-icon-popup__quick-meta">
 			<div className="desktop-icon-popup__quick-chip-wrap">
 				<button type="button" className="desktop-icon-popup__quick-chip" aria-label="选择模型" aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={!preferences || busy} onClick={() => setModelMenuOpen((open) => !open)}>
