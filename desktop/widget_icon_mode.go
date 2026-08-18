@@ -669,7 +669,7 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	}
 
 	fixed := []struct{ id, title, icon string }{
-		{"new", "新建", "plus"}, {"delegate", "委托", "users"}, {"knowledge", "知识库", "book"}, {"search", "搜索", "search"},
+		{"new", "新建", "plus"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
 	}
 	for i, entry := range fixed {
 		status, count := "idle", 0

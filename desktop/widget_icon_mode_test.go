@@ -26,11 +26,14 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" {
 		t.Fatalf("workspace projection = %#v", workspace)
 	}
-	for _, id := range []string{"fixed:new", "fixed:delegate", "fixed:knowledge", "fixed:search"} {
+	for _, id := range []string{"fixed:new", "fixed:delegate", "fixed:search"} {
 		item := findDesktopIconItem(snapshot.Items, id)
 		if item == nil || item.Position.Row != "bottom" || item.Position.Zone != "fixed" {
 			t.Fatalf("fixed item %s = %#v", id, item)
 		}
+	}
+	if findDesktopIconItem(snapshot.Items, "fixed:knowledge") != nil {
+		t.Fatal("knowledge entry should stay hidden until the feature is ready")
 	}
 }
 

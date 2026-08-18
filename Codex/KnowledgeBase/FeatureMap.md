@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 图标小组件暂隐知识库入口 | `done` | `developping/widget-hide-knowledge-icon+2026-08-18` | `Codex` | `desktop/widget_icon_mode.go`、`desktop/frontend/src/lib/bridge.ts`、`desktop/widget_icon_mode_test.go` | 真实快照与开发 mock 均暂时移除“知识库”固定入口；图标组件、动作和功能代码保持可恢复。Go 定向用例、图标专项前端测试及 TypeScript 检查通过；按用户要求未运行全量测试。 |
 | 图标小组件委托运行状态 | `done` | `developping/widget-delegate-running-status+2026-08-18` | `Codex + WorkGround2` | `internal/agent/task.go`、`subagent_store.go`、`desktop/widget_mode.go`、`desktop/widget_icon_mode.go`、相关测试 | 前台委托进入模型流前持久化 running；图标快照按 Session 目录单次扫描真实 subagent 状态，并用“目录 + branch”隔离归属。固定“委托”入口显示运行环和活动数量，完成/失败/中断后恢复空闲；普通父 Session 图标与后台兼容路径保留且不重复计数。Agent 与 Desktop 定向测试通过；按用户要求未运行全量测试。 |
 | 图标小组件移除快捷方式角标 | `done` | `developping/widget-remove-shortcut-badges+2026-08-18` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.css`、`desktop-icon-mode.test.ts` | 删除所有图标左下角的白色快捷方式箭头角标及无用依赖/样式，保留未读、活动和运行状态等业务徽标。图标小组件定向契约与 TypeScript 检查通过。 |
 | 小组件启动与关闭自动回归 | `done` | `developping/widget-auto-enter+2026-08-18` | `Codex + WorkGround2` | `desktop/app.go`、`desktop/app_test.go` | `domReady` 在首次 `WindowShow` 前通过统一入口自动进入图标小组件，React 可用 `IsWidgetMode` 对账迟到状态；普通关闭与 Alt+F4 幂等回到小组件，force/system quit 保持真正退出。禁用时沿用原关闭策略，切换失败显式记录并安全回退。`TestBeforeClose*`、Widget 切换/退出定向测试及 Desktop 当前包 vet 通过；按用户要求未运行全量测试。 |
