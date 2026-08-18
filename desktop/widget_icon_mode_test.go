@@ -27,15 +27,15 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" {
 		t.Fatalf("workspace projection = %#v", workspace)
 	}
-	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:delegate", "fixed:search"} {
+	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:rooms", "fixed:delegate", "fixed:search"} {
 		item := findDesktopIconItem(snapshot.Items, id)
 		if item == nil || item.Position.Row != "bottom" || item.Position.Zone != "fixed" {
 			t.Fatalf("fixed item %s = %#v", id, item)
 		}
 	}
-	// The fixed bottom bar order is a Go contract: 新建 → 工作区 → 委托 → 搜索.
+	// The fixed bottom bar order is a Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
 	// Order comes from the declared slice index, never map iteration.
-	wantOrder := []string{"new", "workspace", "delegate", "search"}
+	wantOrder := []string{"new", "workspace", "rooms", "delegate", "search"}
 	for order, sourceID := range wantOrder {
 		item := findDesktopIconItem(snapshot.Items, "fixed:"+sourceID)
 		if item == nil || item.SourceID != sourceID || item.Position.Order != order {
@@ -71,6 +71,39 @@ func TestDesktopIconWorkspaceOpenIsRejected(t *testing.T) {
 	}, nil, DesktopIconActionInput{Action: "open"})
 	if err == nil || !strings.Contains(err.Error(), "management dialog") {
 		t.Fatalf("open on fixed workspace = %v, want explicit management-dialog guard", err)
+	}
+}
+
+func TestDesktopIconRoomsFixedItemContract(t *testing.T) {
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	rooms := findDesktopIconItem(snapshot.Items, "fixed:rooms")
+	if rooms == nil {
+		t.Fatal("fixed rooms icon is missing")
+	}
+	if rooms.Kind != "fixed" || rooms.SourceID != "rooms" || rooms.Icon != "rooms" {
+		t.Fatalf("rooms fixed item = %#v, want kind fixed sourceId rooms icon rooms", rooms)
+	}
+	if rooms.Title != "Rooms" {
+		t.Fatalf("rooms fixed title = %q, want Rooms", rooms.Title)
+	}
+	if rooms.ActivityCount != 0 || rooms.UnreadCount != 0 {
+		t.Fatalf("rooms fixed item must stay idle without badges: %#v", rooms)
+	}
+	// The rooms icon sits between 工作区 and 委托 in the fixed bar.
+	workspace := findDesktopIconItem(snapshot.Items, "fixed:workspace")
+	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
+	if workspace == nil || delegate == nil || workspace.Position.Order+1 != rooms.Position.Order || rooms.Position.Order+1 != delegate.Position.Order {
+		t.Fatalf("fixed bar order around rooms = workspace %#v rooms %#v delegate %#v", workspace, rooms, delegate)
+	}
+}
+
+func TestDesktopIconRoomsOpenIsRejected(t *testing.T) {
+	app := &App{}
+	err := app.applyDesktopIconActionLocked(DesktopIconItem{
+		ID: "fixed:rooms", Kind: "fixed", SourceID: "rooms",
+	}, nil, DesktopIconActionInput{Action: "open"})
+	if err == nil || !strings.Contains(err.Error(), "management dialog") {
+		t.Fatalf("open on fixed rooms = %v, want explicit management-dialog guard", err)
 	}
 }
 

@@ -388,6 +388,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-requested+design-approved+verified-by-search
 - Updated: 2026-07-18
 
+### 桌面图标小组件 Rooms 管理
+- Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/collab`, `desktop/tabs.go`
+- Summary: Room 以 collaboration Session/Topic 为权威，管理操作复用 Topic API。
+- Keywords: Rooms, Room, DesktopIconMode, collaboration, Session, Topic, Topic API
+- Source: user-stated
+- Updated: 2026-08-19
+
 ### 桌面图标小组件工作区管理
 - Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/ProjectTree.tsx`, `desktop/tabs.go`
 - Summary: 图标小组件入口与弹窗位于 DesktopIconMode；工作区新建/删除/重命名/Pin 复用 Desktop 现有项目树方法与 projects 持久化。

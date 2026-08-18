@@ -6,6 +6,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| 图标小组件 Rooms 管理 | `done` | `developping/widget-rooms-manager+2026-08-19` | `WorkGround2 + Codex` | `desktop/widget_icon_mode.go`、`desktop/frontend/src/App.tsx`、`desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`roomsManager.ts`、CSS/bridge/相关测试 | 已实现固定 Rooms 图标、权威 collaboration Topic 列表、打开/新增、重命名、两步移入回收站、Pin/Unpin、图标占位与失败重试；Go 定向测试/vet、`test:widget-icons`、`typecheck`、`test:typecheck` 通过。 |
 | 图标小组件工作区管理 | `done` | `developping/widget-workspace-manager+2026-08-19` | `WorkGround2 + Codex` | `desktop/widget_icon_mode.go`、`desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.css`、bridge/types、相关测试 | 已实现新建、重命名、两步删除、Pin/Unpin、图标占位、现有图标键规范映射与失败可重试；Go 定向测试/vet、`test:widget-icons`、`typecheck`、`test:typecheck` 通过。 |
 | 图标右键菜单事件竞争修复 | `done` | `developping/widget-context-menu+2026-08-19` | `subagent + Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 非主键 `pointerUp` 不再进入延迟单击路径；打开右键菜单时同步取消残留单击定时器，避免菜单被普通弹窗覆盖。图标专项测试与 diff 检查通过；小范围交互修复未使用 WorkGround2 Worker。 |
 | Session 窗口控制语义调整 | `done` | `developping/widget-runtime-status-motion+2026-08-18` | `Codex` | `desktop/frontend/src/App.tsx`、`styles.css`、窗口控制契约测试 | 独立小组件与最小化按钮已收敛为一个“收起到小组件”入口，切换时保留当前 Session 的桌面图标；最大化/恢复保持不变；关闭按钮仅改为 Dismiss 表达与视觉，继续复用原关闭策略。契约测试、Go 定向测试、TypeScript/CSS 检查及前端生产构建均通过。截图驱动小范围 GUI 调整，按规则不使用 WorkGround2 Worker。 |

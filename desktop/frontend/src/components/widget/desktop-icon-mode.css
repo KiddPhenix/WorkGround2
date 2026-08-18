@@ -206,7 +206,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__results { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
 .desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
 .desktop-icon-popup__results small { color: #969ba8; }
-.desktop-icon-popup:has(.desktop-icon-popup__workspaces) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }
 .desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; }
 .desktop-icon-popup__workspace-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
 .desktop-icon-popup__workspace-head strong { font-size: 15px; }

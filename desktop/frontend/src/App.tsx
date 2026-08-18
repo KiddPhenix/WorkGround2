@@ -1083,7 +1083,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
+function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void>; collabDialogSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -3441,6 +3441,18 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
     if (initial && !initialSession) void selectCollaborationWorkspace(initial.root);
   }, [activeTab?.scope, activeTab?.workspaceRoot, closeTransientOverlays, selectCollaborationWorkspace, tabMetas]);
 
+  // The Rooms widget requests a new Room by exiting widget mode first and then
+  // bumping the root App's monotonic signal. A ref remembers the last applied
+  // signal so the dialog opens exactly once per request: never on the initial
+  // mount (0) and never again when unrelated state recreates this callback.
+  const appliedCollabDialogSignal = useRef(0);
+  useEffect(() => {
+    if (collabDialogSignal > 0 && collabDialogSignal !== appliedCollabDialogSignal.current) {
+      appliedCollabDialogSignal.current = collabDialogSignal;
+      void openCollaborationDialog();
+    }
+  }, [collabDialogSignal, openCollaborationDialog]);
+
   const finishCollaborationConnect = useCallback(async () => {
     await refreshProjectsAndTabs();
     setCollaborationDialog(null);
@@ -5266,6 +5278,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
+  // Monotonic collaboration-dialog request signal: the Rooms widget exits
+  // widget mode first and bumps this counter only on a successful exit, so
+  // MainApp opens the Host/Join Room form exactly once per request.
+  const [collabDialogSignal, setCollabDialogSignal] = useState(0);
   const { showToast } = useToast();
   const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode, () => {
     useLayoutStore.getState().setSidebarCollapsed(true);
@@ -5278,6 +5294,24 @@ export default function App() {
 		() => widgetCoordinator.enter().catch(reportWidgetError),
     [reportWidgetError, widgetCoordinator],
   );
+  // Opening an existing Room exits the widget and focuses the tab that
+  // OpenTopicSession returned. The exit promise is returned so the Rooms
+  // popup can surface a failed exit (the main window is still hidden, so a
+  // main-window toast would be invisible); the tab itself stays open and the
+  // same 打开 click becomes a safe retry.
+  const openWidgetRoom = useCallback((tabID: string) => {
+    return widgetCoordinator.exit(tabID);
+  }, [widgetCoordinator]);
+  // A new Room exits the widget first and bumps the dialog signal only when
+  // the exit succeeded; a failed exit must never open the dialog from the
+  // still-hidden widget window. The ref guards the async exit round-trip so a
+  // fast double-click cannot bump the signal twice.
+  const widgetRoomRequest = useRef(false);
+  const requestWidgetRoomDialog = useCallback(() => {
+    if (widgetRoomRequest.current) return;
+    widgetRoomRequest.current = true;
+    void widgetCoordinator.exit().then(() => setCollabDialogSignal((count) => count + 1)).catch(reportWidgetError).finally(() => { widgetRoomRequest.current = false; });
+  }, [reportWidgetError, widgetCoordinator]);
 
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
@@ -5319,8 +5353,8 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} />
-	  {widgetMode && <DesktopIconMode />}
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
+	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} />}
 	</>
   );
 }

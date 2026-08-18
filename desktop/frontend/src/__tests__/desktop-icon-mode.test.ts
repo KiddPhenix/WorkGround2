@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "../components/widget/desktopIconLayout";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle } from "../components/widget/workspaceManager";
+import { roomRows } from "../components/widget/roomsManager";
 import type { ProjectNode } from "../lib/types";
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
@@ -228,9 +229,9 @@ assert.match(css, /\.desktop-icon-popup__actions button:not\(:disabled\):hover/,
 assert.match(css, /button:focus-visible[\s\S]*outline: 2px solid #70dfe8/, "action buttons keep a visible focus ring");
 assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay visibly disabled");
 
-// --- workspace management: the fixed workspace icon between 新建 and 委托 ---
-// The backend fixed bar is the declared Go contract: 新建 → 工作区 → 委托 → 搜索.
-assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → 委托 → 搜索 by declaration");
+// --- workspace management: the fixed workspace icon between 新建 and Rooms ---
+// The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
+assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 委托 → 搜索 by declaration");
 assert.match(component, /item\.sourceId === "workspace"\) return <Folder \/>/, "the workspace fixed icon renders a clear folder glyph");
 assert.match(component, /item\.kind === "fixed" && item\.sourceId === "workspace"[\s\S]{0,200}setActiveID\(item\.id\)/, "single click on the workspace icon opens the management dialog");
 assert.doesNotMatch(component, /item\.sourceId === "workspace"[\s\S]{0,80}run\(item, "open"\)/, "the workspace icon never runs the generic fixed action");
@@ -280,5 +281,74 @@ assert.deepEqual(deleteConfirmNext("a", "b"), { armed: "b", confirmed: false }, 
 assert.deepEqual(deleteConfirmNext(null, ""), { armed: "", confirmed: false }, "rows always have a root for the delete key");
 assert.equal(renameTitle("  新名字  "), "新名字", "rename trims surrounding whitespace");
 assert.equal(renameTitle("   "), "", "an empty rename stays empty so the backend restores the folder name");
+
+// --- rooms manager pure projection: authoritative collaboration topics only ---
+const roomsTree: ProjectNode[] = [
+  {
+    key: "global_folder", kind: "global_folder", label: "Global",
+    children: [
+      { key: "g_room", kind: "global_topic", label: "联调 Room", topicId: "topic_g", sessionKind: "collaboration", sessionPath: "/tmp/room-g.jsonl", pinned: true, lastActivityAt: 300 },
+      { key: "g_plain", kind: "global_topic", label: "普通会话", topicId: "topic_g_plain", sessionKind: "normal", sessionPath: "/tmp/plain.jsonl" },
+      { key: "g_no_path", kind: "global_topic", label: "无会话", topicId: "topic_g_nopath", sessionKind: "collaboration" },
+      { key: "g_work", kind: "global_topic", label: "Work", topicId: "topic_g_work", sessionKind: "work", sessionPath: "/tmp/work.jsonl" },
+    ],
+  },
+  {
+    key: "project_a", kind: "project", label: "Alpha", root: "~/alpha",
+    children: [
+      { key: "a_room", kind: "topic", label: "设计 Room", root: "~/alpha", topicId: "topic_a", sessionKind: "collaboration", sessionPath: "/tmp/room-a.jsonl", lastActivityAt: 200 },
+      { key: "a_dupe", kind: "topic", label: "重复", root: "~/alpha", topicId: "topic_a", sessionKind: "collaboration", sessionPath: "/tmp/room-a-dup.jsonl" },
+      { key: "a_crew", kind: "crew_session", label: "Crew", root: "~/alpha", topicId: "topic_a_crew", sessionKind: "collaboration", sessionPath: "/tmp/crew.jsonl" },
+      { key: "a_im", kind: "topic", label: "IM", root: "~/alpha", topicId: "topic_a_im", sessionKind: "normal", sessionPath: "/tmp/im.jsonl", sessionSource: "im" },
+    ],
+  },
+  { key: "project_b", kind: "project", label: "Beta", root: "~/beta" },
+];
+assert.deepEqual(roomRows(roomsTree), [
+  { topicId: "topic_g", label: "联调 Room", pinned: true, scope: "global", workspaceRoot: "", sessionPath: "/tmp/room-g.jsonl" },
+  { topicId: "topic_a", label: "设计 Room", pinned: false, scope: "project", workspaceRoot: "~/alpha", sessionPath: "/tmp/room-a.jsonl" },
+], "rooms project only collaboration topic/global_topic nodes with a real topicId+sessionPath, dedupe by topicId, and keep the backend tree order");
+assert.deepEqual(roomRows([
+  { key: "g", kind: "global_topic", label: "no session", topicId: "t1", sessionKind: "collaboration" },
+  { key: "p", kind: "topic", label: "no topicId", sessionKind: "collaboration", sessionPath: "/tmp/x.jsonl" },
+  { key: "s", kind: "session", label: "child", sessionKind: "collaboration", topicId: "t2", sessionPath: "/tmp/s.jsonl" },
+]), [], "collaboration topics without a topicId or sessionPath, and bare session nodes, never become Rooms");
+assert.deepEqual(roomRows([]), [], "an empty tree yields an empty Rooms list");
+
+// --- rooms fixed icon: glyph, dialog open, and the generic fallback exclusion ---
+assert.match(component, /item\.sourceId === "rooms"\) return <MessagesSquare \/>/, "the rooms fixed icon renders its own distinct glyph");
+assert.match(component, /item\.kind === "fixed" && item\.sourceId === "rooms"[\s\S]{0,220}setActiveID\(item\.id\)/, "single click on the rooms icon opens the management dialog");
+assert.doesNotMatch(component, /item\.sourceId === "rooms"[\s\S]{0,80}run\(item, "open"\)/, "the rooms icon never runs the generic fixed action");
+assert.match(component, /active\.sourceId === "rooms" && <RoomsManager/, "the rooms popup renders the management dialog");
+assert.match(component, /active\.sourceId !== "rooms"/, "the generic fixed popup fallback explicitly excludes the rooms icon");
+assert.match(component, /<RoomsManager onClose=\{\(\) => setActiveID\(""\)\}\s*onNewRoom=\{onNewRoom\}\s*onOpenRoom=\{onOpenRoom\}/, "RoomsManager receives the exit-and-open coordination callbacks");
+
+// --- rooms manager dialog contract: authoritative load, safe mutations, no
+// optimistic writes, explicit placeholder ---
+assert.match(component, /const reload = useCallback\(async \(\) => \{[\s\S]+app\.ListProjectTree\(\)[\s\S]+roomRows\(tree\)/, "RoomsManager loads its authoritative list from ListProjectTree through the roomRows projection");
+assert.match(component, /app\.OpenTopicSession\(row\.scope, row\.workspaceRoot, row\.topicId, row\.sessionPath\)[\s\S]+onOpenRoom\(meta\.id\)/, "opening a Room activates the backend tab and exits the widget focused on it");
+assert.match(component, /app\.SetTopicPinned\(row\.topicId, !row\.pinned\)[\s\S]+await reload\(\)/, "Pin toggles through SetTopicPinned then reloads the authoritative list");
+assert.match(component, /app\.RenameTopic\(row\.topicId, renameTitle\(renameDraft\)\)/, "rename commits the raw input through the shared empty-title contract");
+assert.match(component, /留空恢复自动标题/, "the room rename editor explains the empty-title restore semantics");
+assert.match(component, /deleteConfirmNext\(armed, row\.topicId\)[\s\S]+next\.confirmed\) void confirmTrash\(row\)/, "trash uses the two-step confirm state machine before calling the backend");
+assert.match(component, /app\.TrashTopic\(row\.topicId\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "trash calls the backend only on the confirmed step, then clears the arm and reloads");
+assert.doesNotMatch(component, /TrashTopic[\s\S]{0,60}setRows/, "trash never optimistically removes the row before the backend confirms");
+assert.match(component, />修改图标<small className="desktop-icon-popup__workspace-soon">即将支持<\/small>/, "the room icon button is an explicit 即将支持 placeholder");
+assert.doesNotMatch(component, /app\.SetTopicIcon|SetRoomIcon/, "the room placeholder must never write icon data");
+assert.match(component, /desktop-icon-popup__workspaces desktop-icon-popup__rooms/, "RoomsManager reuses the WorkspaceManager layout and marks its own popup root");
+assert.match(component, /onClick=\{onNewRoom\}>新增<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
+assert.doesNotMatch(component, /openCollaborationDialog|CreateCollaboration|HostRoom|JoinRoom/, "RoomsManager never re-implements the Host/Join Room form; the root App owns openCollaborationDialog");
+assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__rooms\)/, "the rooms popup keeps the same bounded popup layout as the workspace manager");
+
+// --- App coordination: monotonic signal, exit-before-open, tab-focus exit ---
+const appSource = readFileSync(resolve(import.meta.dirname, "../App.tsx"), "utf8");
+assert.match(appSource, /const \[collabDialogSignal, setCollabDialogSignal\] = useState\(0\)/, "the root App owns a monotonic collaboration-dialog signal that starts at 0");
+assert.match(appSource, /widgetCoordinator\.exit\(\)\.then\(\(\) => setCollabDialogSignal\(\(count\) => count \+ 1\)\)/, "the Rooms 新增 signal is bumped only after the widget exit succeeds");
+assert.match(appSource, /widgetCoordinator\.exit\(tabID\)/, "opening an existing Room exits the widget and focuses the returned tab");
+assert.match(appSource, /const widgetRoomRequest = useRef\(false\)[\s\S]+if \(widgetRoomRequest\.current\) return;[\s\S]+\.finally\(\(\) => \{ widgetRoomRequest\.current = false; \}\)/, "the Rooms 新增 request is guarded against double-invocation while the widget exit is in flight");
+assert.match(appSource, /appliedCollabDialogSignal = useRef\(0\)[\s\S]+collabDialogSignal > 0 && collabDialogSignal !== appliedCollabDialogSignal\.current/, "MainApp opens the collaboration dialog exactly once per distinct signal, never on initial mount");
+assert.match(appSource, /void openCollaborationDialog\(\)/, "MainApp reuses its existing openCollaborationDialog to show the Host/Join Room form");
+assert.match(appSource, /collabDialogSignal=\{collabDialogSignal\}/, "the root App forwards the signal to MainApp");
+assert.match(appSource, /<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} \/>/, "DesktopIconMode receives the room open/new coordination callbacks");
 
 console.log("desktop icon mode tests passed");

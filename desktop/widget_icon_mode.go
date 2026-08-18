@@ -704,10 +704,11 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	}
 
 	// The fixed bottom bar is the declared order of the stable source ids:
-	// 新建 → 工作区 → 委托 → 搜索. Position.Order is derived from this slice
-	// index, never from map iteration, so the bar order is a Go contract.
+	// 新建 → 工作区 → Rooms → 委托 → 搜索. Position.Order is derived from
+	// this slice index, never from map iteration, so the bar order is a Go
+	// contract.
 	fixed := []struct{ id, title, icon string }{
-		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
+		{"new", "新建", "plus"}, {"workspace", "工作区", "workspace"}, {"rooms", "Rooms", "rooms"}, {"delegate", "委托", "users"}, {"search", "搜索", "search"},
 	}
 	for i, entry := range fixed {
 		status, count := "idle", 0
@@ -1232,10 +1233,11 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 func (a *App) applyDesktopIconActionLocked(item DesktopIconItem, notice *DesktopIconNotice, input DesktopIconActionInput) error {
 	switch input.Action {
 	case "open":
-		if item.Kind == "fixed" && item.SourceID == "workspace" {
-			// The workspace icon opens the management dialog on the frontend;
-			// it must never fall through to the generic fixed exit action.
-			return errors.New("workspace icon opens the management dialog instead of exiting")
+		if item.Kind == "fixed" && (item.SourceID == "workspace" || item.SourceID == "rooms") {
+			// The workspace and rooms icons open management dialogs on the
+			// frontend; they must never fall through to the generic fixed
+			// exit action.
+			return fmt.Errorf("%s icon opens the management dialog instead of exiting", item.SourceID)
 		}
 		if item.Kind == "task" {
 			return a.ExitWidgetMode(item.SourceID)

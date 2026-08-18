@@ -44,7 +44,7 @@ assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget
 // The desktop widget is icons-only: App renders only DesktopIconMode, and the
 // icon mode has no return-to-main button or onExit chain.
 assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
-assert.match(appSource, /widgetMode && <DesktopIconMode \/>/, "widget mode renders only the icon mode");
+assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new coordination");
 const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
 const iconCSS = read("../components/widget/desktop-icon-mode.css");
 assert.doesNotMatch(iconModeSource, /onExit|返回主窗口|desktop-icon-exit/, "icon mode has no return-to-main button or onExit prop");

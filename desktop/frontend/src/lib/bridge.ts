@@ -2022,6 +2022,7 @@ function makeMockApp(): AppBindings {
         { key: "global_topic_product", kind: "global_topic", label: t("mock.topicProduct"), topicId: "topic_product", turns: 5, lastActivityAt: mockNow - 8 * 24 * 60 * 60_000 },
         { key: "global_topic_ai", kind: "global_topic", label: t("mock.topicAi"), topicId: "topic_ai", turns: 8, lastActivityAt: mockNow - 10 * 24 * 60 * 60_000 },
         { key: "global_topic_lab", kind: "global_topic", label: t("mock.topicLab"), topicId: "topic_lab", turns: 2, lastActivityAt: mockNow - 12 * 24 * 60 * 60_000 },
+        { key: "global_topic_room", kind: "global_topic", label: "联调 Room", topicId: "topic_room", sessionKind: "collaboration", sessionPath: "~/wg2-sessions/topic_room.jsonl", turns: 12, lastActivityAt: mockNow - 30 * 60_000 },
       ],
     },
   ];
