@@ -108,7 +108,7 @@ type DesktopConfig struct {
 	WidgetEnabled           *bool                          `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
 	WidgetAlwaysOnTop       *bool                          `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
 	WidgetSkin              string                         `toml:"widget_skin"`                // widget visual skin: classic|bp|instant|pet|recorder; empty/unknown → classic
-	WidgetStyle             string                         `toml:"widget_style"`               // pager|icons; pager preserves the original compact widget
+	WidgetStyle             string                         `toml:"widget_style"`               // icons-only; legacy pager/empty values normalize to icons
 	HoverStatusDelayMs      *int                           `toml:"hover_status_delay_ms"`      // icon widget read-only preview delay; nil defaults to 1200
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
@@ -615,12 +615,11 @@ func (c *Config) DesktopWidgetSkin() string {
 	return "classic"
 }
 
-// DesktopWidgetStyle keeps the original pager as the compatibility default.
+// DesktopWidgetStyle returns the desktop widget presentation. The widget is
+// icons-only: any legacy "pager" or unknown persisted value normalizes to
+// "icons", so old configurations never re-enter the pager at runtime.
 func (c *Config) DesktopWidgetStyle() string {
-	if c != nil && strings.EqualFold(strings.TrimSpace(c.Desktop.WidgetStyle), "icons") {
-		return "icons"
-	}
-	return "pager"
+	return "icons"
 }
 
 // DesktopHoverStatusDelayMs returns the icon preview delay. Zero disables the

@@ -469,11 +469,8 @@ func (c *Config) SetDesktopWidgetSkin(skin string) error {
 
 func (c *Config) SetDesktopWidgetStyle(style string) error {
 	style = strings.ToLower(strings.TrimSpace(style))
-	if style == "" {
-		style = "pager"
-	}
-	if style != "pager" && style != "icons" {
-		return fmt.Errorf("unknown widget style %q (valid: pager, icons)", style)
+	if style != "icons" {
+		return fmt.Errorf("unsupported widget style %q: the desktop widget is icons-only (valid: icons)", style)
 	}
 	c.Desktop.WidgetStyle = style
 	return nil

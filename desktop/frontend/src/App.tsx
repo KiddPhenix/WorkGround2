@@ -178,7 +178,6 @@ import { useGlobalShortcut } from "./lib/keyboardShortcuts";
 import { topicShortcutIndexFromEvent, useTopicShortcuts, type TopicShortcutEntry } from "./lib/topicShortcuts";
 import { composerDraftKeyForTab } from "./lib/composerDraftKey";
 import logoWordmark from "./assets/logo-wordmark.png";
-import { WidgetMode } from "./components/widget/WidgetMode";
 import { DesktopIconMode } from "./components/widget/DesktopIconMode";
 import { createWidgetModeCoordinator } from "./lib/widgetModeCoordinator";
 import { CollaborationWorkspace } from "./collab/CollaborationWorkspace";
@@ -5274,33 +5273,21 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode }: { widgetEna
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
-	const [widgetStyle, setWidgetStyle] = useState<"pager" | "icons">("pager");
-  const [composerSubmitKey, setComposerSubmitKey] = useState<ComposerSubmitKey>("enter");
   const { showToast } = useToast();
   const widgetCoordinator = useMemo(() => createWidgetModeCoordinator(app, setWidgetMode), []);
   const reportWidgetError = useCallback((cause: unknown) => {
     showToast(cause instanceof Error ? cause.message : String(cause), "error");
   }, [showToast]);
   const enterWidgetMode = useCallback(
-		() => app.DesktopStartupSettings().then((settings) => {
-			setWidgetStyle(settings.widgetStyle === "icons" ? "icons" : "pager");
-			return widgetCoordinator.enter();
-		}).catch(reportWidgetError),
+		() => widgetCoordinator.enter().catch(reportWidgetError),
     [reportWidgetError, widgetCoordinator],
   );
 
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
-      setComposerSubmitKey(normalizeComposerSubmitKey(s.composerSubmitKey));
       setWidgetEnabled(s.widgetEnabled);
-		setWidgetStyle(s.widgetStyle === "icons" ? "icons" : "pager");
     }).catch(() => {});
   }, []);
-
-	useEffect(() => {
-		if (typeof window === "undefined" || !window.runtime) return;
-		return window.runtime.EventsOn("widget:style", (payload: unknown) => setWidgetStyle(payload === "icons" ? "icons" : "pager"));
-	}, []);
 
   // Live widget-enabled toggle from Settings panel.
   useEffect(() => {
@@ -5337,8 +5324,7 @@ export default function App() {
   return (
 	<>
 	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} />
-	  {widgetMode && widgetStyle === "pager" && <WidgetMode onExit={() => widgetCoordinator.sync(false)} submitKey={composerSubmitKey} />}
-	  {widgetMode && widgetStyle === "icons" && <DesktopIconMode onExit={() => widgetCoordinator.sync(false)} />}
+	  {widgetMode && <DesktopIconMode />}
 	</>
   );
 }

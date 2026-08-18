@@ -32,6 +32,8 @@ assert.deepEqual(iconHitRect(physicalRect, 1.5), { x: 445, y: 625, width: 108, h
 const component = readFileSync(resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"), "utf8");
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
+assert.doesNotMatch(component, /onExit|返回主窗口|desktop-icon-exit/, "icon mode is self-contained: no exit-to-main button and no onExit chain");
+assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
 assert.match(css, /:root:has\(\.desktop-icon-mode\)\s*\{[^}]*background:\s*transparent;/s, "native icon hit regions must not expose the app root background");
 assert.match(css, /body:has\(\.desktop-icon-mode\),\s*body:has\(\.desktop-icon-mode\) #root\s*\{[^}]*background:\s*transparent\s*!important;/s, "the WebView body and root stay transparent around desktop icons");
 assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hit rectangles to the native window");

@@ -18,8 +18,8 @@ assert.match(settingsSource, /SETTINGS_TABS[^\n]+"widget"/, "Settings navigation
 assert.match(settingsSource, /tab === "widget"[\s\S]+<WidgetSection/, "Widget tab renders its settings section");
 assert.match(settingsSource, /SetDesktopWidgetEnabled\(enabled\)/, "enable switch persists through the backend");
 assert.match(settingsSource, /SetDesktopWidgetAlwaysOnTop\(on\)/, "always-on-top switch persists through the backend");
-assert.match(settingsSource, /SetDesktopWidgetSkin\(skin\.id\)/, "skin picker persists through the backend");
-assert.match(settingsSource, /widgetSkin/, "WidgetSection receives widgetSkin prop");
+assert.doesNotMatch(settingsSource, /SetDesktopWidgetStyle\(|stylePager|styleIcons|SetDesktopWidgetSkin\(|settings-widget-skin-grid/, "Settings exposes no pager style picker and no pager-only skin picker");
+assert.match(settingsSource, /SetDesktopHoverStatusDelayMs\(/, "icon hover delay stays configurable without a style picker");
 assert.match(appSource, /DesktopStartupSettings\(\)[\s\S]+setWidgetEnabled\(s\.widgetEnabled\)/, "startup reads widget enabled state");
 assert.match(appSource, /EventsOn\("widget:enabled"/, "widget enabled changes propagate without restart");
 assert.match(appSource, /WindowsWindowControls widgetEnabled=\{widgetEnabled\}/, "window chrome hides the widget entry when disabled");
@@ -35,14 +35,21 @@ assert.match(typesSource, /widgetSkin: string/, "frontend settings contract incl
 assert.match(bridgeSource, /DesktopStartupSettings\(\)[\s\S]+widgetEnabled/, "browser mock preserves widget enabled startup state");
 assert.match(bridgeSource, /SetDesktopWidgetSkin\(skin: string\)/, "bridge exposes SetDesktopWidgetSkin API");
 assert.match(bridgeSource, /widgetSkin: "classic"/, "browser mock defaults widgetSkin to classic");
+assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget style to icons");
+
+// The desktop widget is icons-only: App renders only DesktopIconMode, and the
+// icon mode has no return-to-main button or onExit chain.
+assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
+assert.match(appSource, /widgetMode && <DesktopIconMode \/>/, "widget mode renders only the icon mode");
+const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
+const iconCSS = read("../components/widget/desktop-icon-mode.css");
+assert.doesNotMatch(iconModeSource, /onExit|返回主窗口|desktop-icon-exit/, "icon mode has no return-to-main button or onExit prop");
+assert.doesNotMatch(iconCSS, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
 
 for (const locale of ["en", "zh", "zh-TW"]) {
   const source = read(`../locales/${locale}.ts`);
   assert.ok(source.includes('"settings.tab.widget"'), `${locale} includes the Widget tab label`);
   assert.ok(source.includes('"settings.widget.alwaysOnTopLabel"'), `${locale} includes the always-on-top label`);
-  assert.ok(source.includes('"settings.widget.skinLabel"'), `${locale} includes the skin label`);
-  assert.ok(source.includes('"settings.widget.skinClassic"'), `${locale} includes the classic skin label`);
-  assert.ok(source.includes('"settings.widget.skinPet"'), `${locale} includes the pet skin label`);
 }
 
 // Widget skin registry contract.

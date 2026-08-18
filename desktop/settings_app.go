@@ -544,7 +544,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 			CheckUpdates:       true,
 			WidgetEnabled:      true,
 			WidgetSkin:         "classic",
-			WidgetStyle:        "pager",
+			WidgetStyle:        "icons",
 			HoverStatusDelayMs: 1200,
 		}
 	}
@@ -616,7 +616,7 @@ func (a *App) Settings() SettingsView {
 			WidgetEnabled:           true,
 			WidgetAlwaysOnTop:       true,
 			WidgetSkin:              "classic",
-			WidgetStyle:             "pager",
+			WidgetStyle:             "icons",
 			HoverStatusDelayMs:      1200,
 			MemoryCompiler:          true,
 			ExpandThinking:          false,

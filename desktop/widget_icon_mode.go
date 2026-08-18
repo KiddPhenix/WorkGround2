@@ -406,7 +406,7 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 func (a *App) desktopIconPreferences() (string, int) {
 	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
-		return "pager", 1200
+		return "icons", 1200
 	}
 	return cfg.DesktopWidgetStyle(), cfg.DesktopHoverStatusDelayMs()
 }

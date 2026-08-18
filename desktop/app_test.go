@@ -1130,6 +1130,9 @@ status_bar_items = ["cost", "balance"]
 	if got.WidgetSkin != "pet" {
 		t.Fatalf("desktop widget skin = %q, want pet", got.WidgetSkin)
 	}
+	if got.WidgetStyle != "icons" {
+		t.Fatalf("desktop widget style = %q, want icons", got.WidgetStyle)
+	}
 }
 
 func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayload(t *testing.T) {
@@ -1177,6 +1180,9 @@ func TestDesktopStartupSettingsUsesUserDesktopPreferencesWithoutFullSettingsPayl
 	if got.WidgetSkin != "recorder" {
 		t.Fatalf("DesktopStartupSettings widget skin = %q, want recorder", got.WidgetSkin)
 	}
+	if got.WidgetStyle != "icons" {
+		t.Fatalf("DesktopStartupSettings widget style = %q, want icons", got.WidgetStyle)
+	}
 	if !got.Bot.Enabled || !got.Bot.Allowlist.Enabled || !reflect.DeepEqual(got.Bot.Allowlist.QQUsers, []string{"alice"}) {
 		t.Fatalf("DesktopStartupSettings bot settings = %+v, want lightweight bot snapshot", got.Bot)
 	}
@@ -1204,6 +1210,25 @@ func TestSetDesktopWidgetSkinPersistsAndRejectsUnknown(t *testing.T) {
 	}
 	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetSkin(); got != "pet" {
 		t.Fatalf("failed update changed widget skin to %q, want pet", got)
+	}
+}
+
+func TestSetDesktopWidgetStyleOnlyAcceptsIcons(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := NewApp()
+	for i := 0; i < 2; i++ {
+		if err := app.SetDesktopWidgetStyle("icons"); err != nil {
+			t.Fatalf("SetDesktopWidgetStyle(icons) attempt %d: %v", i+1, err)
+		}
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetStyle(); got != "icons" {
+		t.Fatalf("persisted widget style = %q, want icons", got)
+	}
+	if err := app.SetDesktopWidgetStyle("pager"); err == nil {
+		t.Fatal("SetDesktopWidgetStyle(pager) should fail")
+	}
+	if got := config.LoadForEdit(config.UserConfigPath()).DesktopWidgetStyle(); got != "icons" {
+		t.Fatalf("failed update changed widget style to %q, want icons", got)
 	}
 }
 

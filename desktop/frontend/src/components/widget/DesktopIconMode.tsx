@@ -186,7 +186,7 @@ function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: 
   return <div className="desktop-icon-popup__search"><div className="desktop-icon-popup__searchbox"><Search /><input autoFocus value={query} disabled={opening} placeholder="搜索历史任务、Room、Workspace" onChange={(event) => setQuery(event.target.value)} /><button aria-label="关闭搜索" disabled={opening} onClick={onClose}><X /></button></div>{error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}<div className="desktop-icon-popup__results" role="listbox" aria-busy={loading || opening}>{results.map((item) => <button key={item.id} role="option" disabled={opening} onClick={() => { setOpening(true); void onPick(item).finally(() => setOpening(false)); }}><span>{item.title}</span><small>{item.subtitle || item.kind}</small></button>)}{!loading && !results.length && <p className="desktop-icon-popup__empty">没有匹配结果</p>}</div></div>;
 }
 
-export function DesktopIconMode({ onExit }: { onExit: () => void }) {
+export function DesktopIconMode() {
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
   const [activeID, setActiveID] = useState("");
@@ -210,7 +210,6 @@ export function DesktopIconMode({ onExit }: { onExit: () => void }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   }, []);
   useEffect(() => { void refresh(); void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {}); const timer = window.setInterval(() => void refresh(), 1000); return () => window.clearInterval(timer); }, [refresh]);
-  useEffect(() => { if (snapshot.style === "pager") onExit(); }, [onExit, snapshot.style]);
 	useEffect(() => {
 		let alive = true;
 		void app.GetDesktopZoomFactor()
@@ -234,7 +233,7 @@ export function DesktopIconMode({ onExit }: { onExit: () => void }) {
 		const sync = () => {
 			cancelAnimationFrame(frame);
 			frame = requestAnimationFrame(() => {
-				const nodes = document.querySelectorAll<HTMLElement>(".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast, .desktop-icon-exit");
+				const nodes = document.querySelectorAll<HTMLElement>(".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast");
 				const rects = Array.from(nodes)
 					.filter((node) => node.getClientRects().length > 0)
 					.map((node) => iconHitRect(node.getBoundingClientRect(), window.devicePixelRatio, nativeHitPadding(node)));
@@ -242,7 +241,7 @@ export function DesktopIconMode({ onExit }: { onExit: () => void }) {
 			});
 		};
 		const observer = new ResizeObserver(sync);
-		document.querySelectorAll<HTMLElement>(".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast, .desktop-icon-exit").forEach((node) => observer.observe(node));
+		document.querySelectorAll<HTMLElement>(".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-toast").forEach((node) => observer.observe(node));
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
@@ -358,12 +357,11 @@ export function DesktopIconMode({ onExit }: { onExit: () => void }) {
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} onClose={() => setActiveID("")} />}
-      {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={async (result) => { const opened = await run(active, "open_search", [result.id]); if (opened) onExit(); return opened; }} />}
+      {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => void run(active, action, values)} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
       {active && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
     </section>}
     {error && <div className="desktop-icon-toast" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}><X /></button></div>}
-    <button className="desktop-icon-exit" onClick={() => void app.ExitWidgetMode("").then(onExit)}>返回主窗口</button>
   </main>;
 }

@@ -1510,7 +1510,7 @@ export interface SettingsView {
   widgetEnabled: boolean; // show the widget entry in the window frame
   widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
   widgetSkin: string; // widget visual skin: classic|bp|instant|pet|recorder
-  widgetStyle?: string; // pager|icons
+  widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
   hoverStatusDelayMs?: number;
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
@@ -1558,7 +1558,7 @@ export interface DesktopStartupSettingsView {
   checkUpdates: boolean; // check for new versions on startup
   widgetEnabled: boolean; // show the widget entry in the window frame
   widgetSkin: string; // widget visual skin
-  widgetStyle?: string; // pager|icons
+  widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
   hoverStatusDelayMs?: number;
 }
 

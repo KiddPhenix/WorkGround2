@@ -86,7 +86,7 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-popup__eyebrow { margin-bottom: 5px; color: #ad92ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .desktop-icon-popup strong { display: block; font-size: 15px; }
 .desktop-icon-popup p { margin: 8px 0 12px; color: #d8dbe4; line-height: 1.45; }
-.desktop-icon-popup button, .desktop-icon-popup input, .desktop-icon-popup textarea, .desktop-icon-menu button, .desktop-icon-exit { min-height: 36px; font: inherit; }
+.desktop-icon-popup button, .desktop-icon-popup input, .desktop-icon-popup textarea, .desktop-icon-menu button { min-height: 36px; font: inherit; }
 .desktop-icon-popup button { padding: 7px 12px; border: 1px solid #8e74e3; border-radius: 7px; color: white; background: #5e43b5; }
 .desktop-icon-popup button.subtle { border-color: rgb(255 255 255 / 16%); background: transparent; }
 .desktop-icon-popup button.danger { border-color: #a74655; background: #652c39; }
@@ -120,8 +120,6 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon-toast { position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; max-width: 420px; padding: 9px 12px; border: 1px solid #8f3949; border-radius: 8px; background: #321c23; }
 .desktop-icon-toast button { width: 28px; height: 28px; border: 0; color: inherit; background: transparent; }
 .desktop-icon-toast svg { width: 16px; }
-.desktop-icon-exit { position: absolute; left: 10px; top: 10px; padding: 7px 11px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 7px; color: #d8dbe4; background: rgb(22 24 31 / 84%); opacity: .34; }
-.desktop-icon-exit:hover, .desktop-icon-exit:focus-visible { opacity: 1; }
 
 @keyframes desktop-icon-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {

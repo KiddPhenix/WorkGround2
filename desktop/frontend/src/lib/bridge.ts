@@ -1183,9 +1183,8 @@ function mockWidgetSkin(): string {
   return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
 }
 
-function mockWidgetStyle(): "pager" | "icons" {
-  if (typeof window === "undefined") return "pager";
-  return new URLSearchParams(window.location.search).get("widgetStyle") === "icons" ? "icons" : "pager";
+function mockWidgetStyle(): "icons" {
+  return "icons";
 }
 
 // mockDecisionSkillExportFn lets tests drive the browser mock's
@@ -1884,7 +1883,7 @@ function makeMockApp(): AppBindings {
     widgetEnabled: true,
     widgetAlwaysOnTop: true,
     widgetSkin: "classic",
-		widgetStyle: "pager",
+		widgetStyle: "icons",
 		hoverStatusDelayMs: 1200,
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
@@ -4587,7 +4586,11 @@ function makeMockApp(): AppBindings {
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;
         },
-		async SetDesktopWidgetStyle(style: string) { desktopWidgetStyle = style === "icons" ? "icons" : "pager"; settings.widgetStyle = desktopWidgetStyle; },
+		async SetDesktopWidgetStyle(style: string) {
+			if (style !== "icons") throw new Error(`unsupported widget style ${JSON.stringify(style)}: icons only`);
+			desktopWidgetStyle = "icons";
+			settings.widgetStyle = "icons";
+		},
 		async SetDesktopHoverStatusDelayMs(delay: number) { settings.hoverStatusDelayMs = Math.max(0, Math.min(10_000, delay)); },
         async SetMemoryCompilerEnabled(enabled: boolean) {
           settings.memoryCompilerEnabled = enabled;
