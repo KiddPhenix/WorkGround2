@@ -33,3 +33,7 @@ func setDesktopIconHitRegions([]DesktopIconRect) error { return nil }
 func nativeDefaultDesktopIconWindowState(context.Context) (WidgetWindowState, bool) {
 	return WidgetWindowState{}, false
 }
+
+// setWidgetTaskbarHidden is a no-op on non-Windows platforms: there is no
+// Windows taskbar button to hide from.
+func setWidgetTaskbarHidden(bool) error { return nil }

@@ -156,6 +156,11 @@ type App struct {
 	// startup and close handling (test-only seam; nil uses EnterWidgetMode).
 	widgetModeEnter func() error
 
+	// widgetTaskbarToggle overrides the native taskbar-button switch used by
+	// widget-mode transitions (test-only seam; nil uses the platform impl,
+	// which is a no-op outside Windows).
+	widgetTaskbarToggle func(hide bool) error
+
 	mediaTokens     *mediaTokenStore
 	background      *sessionBackgroundService
 	botInstalls     map[string]*botInstallSession

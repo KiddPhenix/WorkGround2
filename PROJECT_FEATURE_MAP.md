@@ -395,6 +395,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: user-requested+design-approved+verified-by-search
 - Updated: 2026-07-18
 
+### Windows 小组件任务栏可见性
+- Location: `desktop/widget_mode.go`, `desktop/widget_window_windows.go`, `desktop/widget_window_other.go`, `desktop/widget_mode_test.go`, `desktop/widget_window_windows_test.go`
+- Summary: Windows 进入小组件时隐藏主窗口任务栏图标，退出时恢复；样式修改与几何切换共用原子状态转换和失败回滚，非 Windows 保持 no-op。
+- Keywords: Windows, widget mode, taskbar, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW, atomic rollback
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-19
+
 ### 桌面图标小组件 Rooms 管理
 - Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/App.tsx`, `desktop/frontend/src/collab`, `desktop/tabs.go`
 - Summary: Room 以 collaboration Session/Topic 为权威，管理操作复用 Topic API。

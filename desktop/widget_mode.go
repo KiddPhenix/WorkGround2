@@ -224,6 +224,18 @@ func (a *App) IsWidgetMode() bool {
 	return a.widgetMode
 }
 
+// toggleWidgetTaskbar hides or restores the taskbar button while the native
+// window switches between widget and main geometry. widgetTaskbarToggle is a
+// test seam; nil uses the platform implementation, which is a no-op outside
+// Windows.
+func (a *App) toggleWidgetTaskbar(hide bool) error {
+	toggle := a.widgetTaskbarToggle
+	if toggle == nil {
+		toggle = setWidgetTaskbarHidden
+	}
+	return toggle(hide)
+}
+
 // transitionWidgetMode serialises the complete native-window transition and
 // publishes the new mode only after every transition step has finished.
 func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error) {
@@ -237,6 +249,45 @@ func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error
 	}
 	a.widgetMode = target
 	return true, nil
+}
+
+type widgetWindowTransition struct {
+	widget func() error
+	main   func() error
+	hide   func() error
+	show   func() error
+}
+
+// runWidgetWindowTransition applies geometry before taskbar visibility. When a
+// later step fails it restores both pieces in the opposite order, keeping the
+// primary and every rollback error. transitionWidgetMode holds widgetMu around
+// this helper, so native window steps cannot interleave with another mode
+// transition.
+func runWidgetWindowTransition(enter bool, steps widgetWindowTransition) error {
+	if enter {
+		if err := steps.widget(); err != nil {
+			return errors.Join(fmt.Errorf("apply widget window: %w", err), steps.main())
+		}
+		if err := steps.hide(); err != nil {
+			return errors.Join(
+				fmt.Errorf("hide taskbar for widget mode: %w", err),
+				steps.main(),
+				steps.show(),
+			)
+		}
+		return nil
+	}
+	if err := steps.main(); err != nil {
+		return errors.Join(fmt.Errorf("restore main window: %w", err), steps.widget())
+	}
+	if err := steps.show(); err != nil {
+		return errors.Join(
+			fmt.Errorf("restore taskbar for main window: %w", err),
+			steps.widget(),
+			steps.hide(),
+		)
+	}
+	return nil
 }
 
 func (a *App) refreshWidgetRegion(size func() (int, int), apply func(int, int) error) error {
@@ -410,9 +461,13 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 		if style == "icons" {
 			apply = a.applyDesktopIconGeometry
 		}
-		if err := apply(state, widgetAlwaysOnTop); err != nil {
-			rollbackErr := a.restoreMainGeometry(mainState, true)
-			return errors.Join(fmt.Errorf("apply widget window: %w", err), rollbackErr)
+		if err := runWidgetWindowTransition(true, widgetWindowTransition{
+			widget: func() error { return apply(state, widgetAlwaysOnTop) },
+			main:   func() error { return a.restoreMainGeometry(mainState, true) },
+			hide:   func() error { return a.toggleWidgetTaskbar(true) },
+			show:   func() error { return a.toggleWidgetTaskbar(false) },
+		}); err != nil {
+			return err
 		}
 		a.widgetStyle = style
 		return nil
@@ -445,20 +500,12 @@ func (a *App) ExitWidgetMode(tabID string) error {
 			return fmt.Errorf("save widget window: %w", err)
 		}
 		state, ok := loadWindowState()
-		if err := a.restoreMainGeometry(state, ok); err != nil {
-			_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
-			if configErr != nil {
-				fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
-				alwaysOnTop = true
-			}
-			apply := a.applyWidgetGeometry
-			if style == "icons" {
-				apply = a.applyDesktopIconGeometry
-			}
-			rollbackErr := apply(widgetState, alwaysOnTop)
-			return errors.Join(fmt.Errorf("restore main window: %w", err), rollbackErr)
-		}
-		return nil
+		return runWidgetWindowTransition(false, widgetWindowTransition{
+			widget: func() error { return a.reapplyWidgetGeometry(widgetState, style) },
+			main:   func() error { return a.restoreMainGeometry(state, ok) },
+			hide:   func() error { return a.toggleWidgetTaskbar(true) },
+			show:   func() error { return a.toggleWidgetTaskbar(false) },
+		})
 	})
 	if err != nil {
 		return err
@@ -473,6 +520,22 @@ func (a *App) ExitWidgetMode(tabID string) error {
 		a.emitSessionActivated("widget-open")
 	}
 	return nil
+}
+
+// reapplyWidgetGeometry rolls a failed exit back to the saved widget geometry,
+// reloading the always-on-top preference because the main restore already
+// cleared it.
+func (a *App) reapplyWidgetGeometry(state WidgetWindowState, style string) error {
+	_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
+	if configErr != nil {
+		fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
+		alwaysOnTop = true
+	}
+	apply := a.applyWidgetGeometry
+	if style == "icons" {
+		apply = a.applyDesktopIconGeometry
+	}
+	return apply(state, alwaysOnTop)
 }
 
 func defaultWidgetWindowState(ctx context.Context) WidgetWindowState {
