@@ -52,8 +52,8 @@ assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequen
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
-assert.match(component, /CornerUpRight/, "every desktop shortcut renders the Windows-style arrow glyph");
-assert.match(css, /\.desktop-icon__shortcut\s*\{[^}]*left:\s*-2px;[^}]*bottom:\s*-2px;/, "shortcut arrow stays fixed at the lower-left corner");
+assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
+assert.doesNotMatch(css, /desktop-icon__shortcut/, "shortcut-arrow badge styles are removed");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
 assert.match(css, /max-height:\s*calc\(7 \* 44px\)/, "search results have a seven-row height cap");

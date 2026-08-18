@@ -55,8 +55,6 @@ body:has(.desktop-icon-mode) #root {
 .desktop-icon__art { position: relative; display: grid; place-items: center; width: var(--icon-size); height: var(--icon-size); margin: 0 auto; border-radius: 13px; background: linear-gradient(145deg, #303440, #151821); border: 1px solid rgb(255 255 255 / 16%); box-shadow: 0 8px 18px rgb(0 0 0 / 35%); transition: transform 120ms ease, filter 120ms ease; }
 .desktop-icon:hover .desktop-icon__art { transform: translateY(-2px); filter: brightness(1.13); }
 .desktop-icon__art > svg { width: 29px; height: 29px; stroke-width: 1.7; }
-.desktop-icon__shortcut { position: absolute; left: -2px; bottom: -2px; display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #172033; border-radius: 3px; color: #10213a; background: #f4f8ff; box-shadow: 0 1px 3px rgb(0 0 0 / 45%); }
-.desktop-icon__shortcut > svg { width: 13px; height: 13px; stroke-width: 2.8; }
 .desktop-icon__letter { font-size: 22px; font-weight: 720; color: #cfc1ff; }
 .desktop-icon__label { display: block; overflow: hidden; margin-top: 3px; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
 .desktop-icon__unread, .desktop-icon__activity { position: absolute; z-index: 3; right: 1px; top: 0; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center; color: white; background: #7450df; border: 2px solid #171922; font-size: 10px; font-weight: 700; }

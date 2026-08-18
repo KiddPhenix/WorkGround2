@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpen, Bot, Check, CircleAlert, CornerUpRight, HelpCircle, MessageCircle, Plus, Search, Users, X } from "lucide-react";
+import { BookOpen, Bot, Check, CircleAlert, HelpCircle, MessageCircle, Plus, Search, Users, X } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { iconHitRect, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect } from "./desktopIconLayout";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
@@ -332,7 +332,7 @@ export function DesktopIconMode() {
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); setMenuID(item.id); setActiveID(""); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
-      <span className="desktop-icon__art">{itemGlyph(item)}<span className="desktop-icon__shortcut" aria-hidden="true"><CornerUpRight /></span></span>
+      <span className="desktop-icon__art">{itemGlyph(item)}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
