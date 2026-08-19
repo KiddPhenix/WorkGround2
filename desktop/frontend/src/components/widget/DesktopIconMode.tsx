@@ -12,7 +12,7 @@ import logoSymbol from "../../assets/logo-symbol.svg";
 import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
 import { DRAG_THRESHOLD, IconTimers, windowTimerHost } from "./desktopIconTimers";
-import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createLatestAppliedGuard, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
+import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle, type WorkspaceRow } from "./workspaceManager";
 import { roomRows, type RoomRow } from "./roomsManager";
@@ -895,32 +895,42 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
 	}, [cancelTransientTimers]);
 
-	// pollGuard gives every poll a monotonic generation with
-	// latest-successfully-applied semantics: starting a new poll never
-	// invalidates an older response (so slow polls cannot starve each other
-	// out when calls exceed the 1s interval), and only a newer response that
-	// actually applied makes an older one stale — an older response resolving
-	// after a newer one applied can never regress the surface to an empty
-	// frame or reconcile with stale items.
-	const pollGuard = useRef(createLatestAppliedGuard());
-  const refresh = useCallback(async () => {
-		const generation = pollGuard.current.begin();
-    try {
-			const next = await app.GetDesktopIconSnapshot();
-			if (!pollGuard.current.mayApply(generation)) return; // a newer response already applied
-			pollGuard.current.markApplied(generation);
-			setSnapshot(next);
-			setError(next.error || "");
+	// Share one in-flight snapshot request across every caller. Polling waits for
+	// completion before starting its one-second delay, so a slow backend can
+	// reduce the refresh rate but can never build an unbounded request queue.
+	const refreshPending = useRef<Promise<void> | null>(null);
+  const refresh = useCallback(() => {
+		if (refreshPending.current) return refreshPending.current;
+		const pending = (async () => {
+			try {
+				const next = await app.GetDesktopIconSnapshot();
+				setSnapshot((current) => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
+				setError(next.error || "");
 			// Accepted jobs hand off to their real task:task:<tabId> icon the
 			// moment this refreshed snapshot contains it (same render, no
 			// empty-frame gap, no duplicate). Polls never touch other phases,
 			// and no timer ever evicts an accepted job whose real icon is
 			// filtered/capped out of the snapshot.
-			quickJobs.reconcile(next.items);
-		}
-    catch (cause) { if (pollGuard.current.mayApply(generation)) setError(cause instanceof Error ? cause.message : String(cause)); }
+				quickJobs.reconcile(next.items);
+			} catch (cause) {
+				setError(cause instanceof Error ? cause.message : String(cause));
+			}
+		})();
+		refreshPending.current = pending;
+		void pending.finally(() => { if (refreshPending.current === pending) refreshPending.current = null; });
+		return pending;
   }, [quickJobs.reconcile]);
-  useEffect(() => { void refresh(); void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {}); const timer = window.setInterval(() => void refresh(), 1000); return () => window.clearInterval(timer); }, [refresh]);
+  useEffect(() => {
+		let stopped = false;
+		let timer = 0;
+		const poll = async () => {
+			await refresh();
+			if (!stopped) timer = window.setTimeout(() => void poll(), 1000);
+		};
+		void poll();
+		void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {});
+		return () => { stopped = true; window.clearTimeout(timer); };
+	}, [refresh]);
 	useEffect(() => {
 		let alive = true;
 		void app.GetDesktopZoomFactor()
@@ -1146,7 +1156,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); setPreviewID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
       <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}

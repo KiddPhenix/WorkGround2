@@ -193,7 +193,7 @@ assert.match(component, /const optimisticItems = useMemo\([\s\S]{0,120}quickStar
 assert.match(component, /const mergedItems = useMemo\(\(\) => mergeQuickStartItems\(snapshot\.items, optimisticItems\)/, "optimistic icons merge with the authoritative snapshot items");
 assert.match(component, /isQuickStartJobItem\(item\)\) openQuickStartJob\(item\); else void run\(item, "open"\)/, "double-clicking an optimistic job opens its popup (or the real task for an accepted job) instead of dispatching a backend open on the fake opt: id");
 assert.match(component, /isQuickStartJobItem\(item\)\) return;[\s\S]{0,80}void run\(item, "move"/, "dragging an optimistic job never dispatches a backend move");
-assert.match(component, /if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); setPreviewID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job opens its popup instead of the backend context menu");
+assert.match(component, /setPreviewID\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job closes the hover preview and opens its popup instead of the backend context menu");
 assert.match(component, /<QuickStartJobBody job=\{activeQuickJob\}[\s\S]{0,260}onRetry=\{\(requestId\) => \{ quickJobs\.retry\(requestId\); \}\}[\s\S]{0,120}onEdit=\{editQuickStartJob\}[\s\S]{0,120}onDismiss=\{\(requestId\) => \{ if \(quickJobs\.dismiss\(requestId\)\) \{ setActiveID\(""\); setPreviewID\(""\); \} \}\}[\s\S]{0,80}onOpenMain=\{openMainWindow\}[\s\S]{0,160}onOpenTask=\{activeQuickJob\?\.phase === "accepted" && activeQuickJob\.tabId \? \(\) => void openQuickStartTask\(activeQuickJob\) : undefined\}/, "the optimistic popup exposes retry/edit/dismiss wired to the runner, an open-main action for running jobs, and open-task for accepted jobs");
 assert.match(component, /const editQuickStartJob = \(job: QuickStartJob\) => \{[\s\S]{0,80}setQuickStartEditJob\(job\);[\s\S]{0,80}setQuickWorkspace\(job\.intent\.workspace \|\| ""\);[\s\S]{0,80}setActiveID\("fixed:new"\);[\s\S]{0,20}\};/, "editing a failed job passes the frozen intent through state/props (never localStorage) and tracks the source requestId");
 const jobsSource = readFileSync(resolve(import.meta.dirname, "../components/widget/widgetQuickStartJobs.ts"), "utf8");
@@ -210,13 +210,14 @@ assert.match(jobsSource, /return item\.status === "failed" \? "发送失败，�
 // no front-end flight timeout / no accepted-grace eviction (#2, #3)
 assert.doesNotMatch(jobsSource, /flightTimeoutMs|acceptedGraceMs|QUICK_JOB_FLIGHT_TIMEOUT|QUICK_JOB_ACCEPTED_GRACE|后台发送超时/, "the front end has no flight timeout and no accepted-grace timer");
 assert.match(jobsSource, /There is no front-end flight timeout/, "the module documents why the queued backend call is never fenced");
-// latest-successfully-applied poll guard (#4): starting a new poll never
-// invalidates an older response (slow polls cannot starve each other out when
-// calls exceed the 1s interval); only a newer response that actually applied
-// makes an older one stale, so an old(no-real) response resolving after a
-// new(real) one can never regress to an empty frame or resurrect jobs.
-assert.match(component, /const pollGuard = useRef\(createLatestAppliedGuard\(\)\);/, "polls get a latest-successfully-applied generation guard");
-assert.match(component, /if \(!pollGuard\.current\.mayApply\(generation\)\) return; \/\/ a newer response already applied[\s\S]{0,80}markApplied\(generation\)/, "only a response newer than the newest APPLIED response may apply; starting a new poll never starves an older response");
+// Single-flight polling (#4): a slow snapshot request is shared by every
+// caller, and the next one-second delay starts only after it finishes. Stable
+// snapshots reuse the current React state so idle polling does not repaint.
+assert.match(component, /const refreshPending = useRef<Promise<void> \| null>\(null\);/, "snapshot polling owns one shared in-flight request");
+assert.match(component, /if \(refreshPending\.current\) return refreshPending\.current;[\s\S]{0,1200}refreshPending\.current = pending;/, "concurrent refresh callers share the current snapshot request");
+assert.match(component, /await refresh\(\);[\s\S]{0,100}window\.setTimeout\(\(\) => void poll\(\), 1000\)/, "the next poll is scheduled one second after the current request completes");
+assert.doesNotMatch(component, /setInterval\(\(\) => void refresh\(\), 1000\)/, "snapshot polling never creates overlapping interval requests");
+assert.match(component, /current\.revision === next\.revision && \(current\.error \|\| ""\) === \(next\.error \|\| ""\) \? current : next/, "an unchanged snapshot reuses React state and avoids an idle repaint");
 // process-level shared runner (#1): every mount shares one runner and one
 // in-flight registry, with safe subscribe/unsubscribe.
 assert.match(jobsSource, /getSharedQuickStartJobRunner/, "the hook mounts one process-level shared runner");
@@ -261,7 +262,7 @@ assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "R
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
 assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+timers\.current\?\.scheduleClick/, "pointer up schedules a click only after a matching primary pointer down");
-assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); setPreviewID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \} \}\}/, "opening an icon context menu cancels every delayed timer and closes the anchor menu and quick toolbar before showing right-click actions; an optimistic job opens its popup instead of the backend menu");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); setPreviewID\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \} \}\}/, "opening an icon context menu immediately closes the hover preview, cancels every delayed timer, and closes the anchor menu and quick toolbar before showing right-click actions; an optimistic job opens its popup instead of the backend menu");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
@@ -550,8 +551,8 @@ assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wr
 // poll must never erase an action failure (toggle, open main/settings, or the
 // initial always-on-top read) ---
 assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
-assert.match(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,340}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
-assert.doesNotMatch(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,340}setQuickError/, "the snapshot poll never touches the quick-error channel");
+assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
+assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "the snapshot poll never touches the quick-error channel");
 assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError\) && <div className="desktop-icon-toast" role="alert">/, "the toast surfaces snapshot, quick-control, and durable-storage errors together");
 assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(TOPMOST_READ_ERROR\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");
@@ -662,7 +663,7 @@ assert.match(component, /<WorkspaceGlyph icon=\{row\.icon\} \/>/, "the workspace
 assert.doesNotMatch(component, /row\.icon \? row\.icon/, "the workspace row never renders the raw icon string");
 assert.match(component, /onKeyDown=\{\(event\) => \{[\s\S]{0,80}if \(event\.key === "Enter" && !event\.nativeEvent\.isComposing\)[\s\S]+void commitRename\(row\)[\s\S]+if \(event\.key === "Escape"\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); cancelRename\(\); \}/, "rename confirms with Enter and cancels with Escape without closing the dialog");
 assert.match(component, /if \(renamingBusy\) return;[\s\S]+setRenamingBusy\(true\)/, "rename guards against duplicate submission");
-assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*max-height:\s*calc\(100vh - 114px\)/, "the workspace popup stays within the viewport above its fixed bottom anchor");
+assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*max-height:\s*var\(--popup-max-height, 420px\)/, "the workspace popup uses the measured space above its anchor");
 assert.match(css, /\.desktop-icon-popup__workspace-list[^}]*max-height:\s*calc\(5 \* 72px\)[^}]*overflow-y:\s*auto/, "the workspace list scrolls with a bounded height");
 assert.match(css, /\.desktop-icon-popup__workspace-name[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/, "long workspace names truncate instead of overflowing a narrow window");
 assert.match(css, /\.desktop-icon-popup__workspace-actions[^}]*flex-wrap:\s*wrap/, "row actions wrap on narrow windows");

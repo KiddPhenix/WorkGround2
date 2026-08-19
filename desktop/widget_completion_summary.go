@@ -372,7 +372,11 @@ func (a *App) generateCompletionSummary(ctx context.Context, req desktopIconComp
 			{Role: provider.RoleUser, Content: buildCompletionSummaryPrompt(req)},
 		},
 		Temperature: 0.3,
-		MaxTokens:   300,
+		// 300 is too small for a thinking-mode DeepSeek model: reasoning can
+		// consume the whole output budget, leaving no visible content and making
+		// cleanCompletionSummary report an empty result. 2048 leaves room for
+		// both the chain-of-thought and the ≤260-rune news summary.
+		MaxTokens: 2048,
 	})
 	if err != nil {
 		return "", fmt.Errorf("completion summary: %w", err)

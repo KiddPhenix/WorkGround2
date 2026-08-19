@@ -385,9 +385,7 @@ func nativeDefaultDesktopIconWindowState(_ context.Context) (WidgetWindowState, 
 func defaultDesktopIconWindowStateForWorkArea(work w32Rect, dpi uint32) WidgetWindowState {
 	logicalWidth := scaleToDefaultDPI(int(work.Right-work.Left), dpi)
 	logicalHeight := scaleToDefaultDPI(int(work.Bottom-work.Top), dpi)
-	width := min(desktopIconWidth, max(desktopIconMinWidth, logicalWidth-widgetEdgeGap*2))
-	height := min(desktopIconHeight, max(desktopIconMinHeight, logicalHeight-widgetBottomGap*2))
-	return WidgetWindowState{Width: width, Height: height, X: int(work.Right) - scaleForDPI(width+widgetEdgeGap, dpi), Y: int(work.Bottom) - scaleForDPI(height+widgetBottomGap, dpi)}
+	return WidgetWindowState{Width: logicalWidth, Height: logicalHeight, X: int(work.Left), Y: int(work.Top)}
 }
 
 // setWidgetWindowRegion clips the native window to the same octagonal shape as

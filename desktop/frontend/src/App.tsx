@@ -309,7 +309,7 @@ function writeWorkDraft(requestID: string, prompt: string): void {
   } catch { /* localStorage unavailable */ }
 }
 
-function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void> }) {
+function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode, onDismissWindow }: { widgetEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void> }) {
   const { maximised, syncMaximised } = useWindowsMaximisedState();
 
   const minimizeWindow = useCallback(() => {
@@ -359,9 +359,9 @@ function WindowsWindowControls({ widgetEnabled, onEnterWidgetMode }: { widgetEna
         aria-label="Dismiss window"
         title="Dismiss"
         onPointerDown={stopFramelessPointerDown}
-        onPointerUp={(event) => runFramelessPointerAction(event, () => void app.CloseMainWindow())}
+        onPointerUp={(event) => runFramelessPointerAction(event, () => void onDismissWindow())}
         onMouseDown={stopFramelessMouseDown}
-        onClick={(event) => runKeyboardClick(event, () => void app.CloseMainWindow())}
+        onClick={(event) => runKeyboardClick(event, () => void onDismissWindow())}
       >
         <X size={13} strokeWidth={1.9} />
       </button>
@@ -1083,7 +1083,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; collabDialogSignal?: number }) {
+function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, onDismissWindow, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; onDismissWindow: () => void | Promise<void>; collabDialogSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -5272,7 +5272,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
         />
       )}
       {windowsFramelessChrome && <WindowsResizeHandles />}
-      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} />}
+      {windowsFramelessChrome && <WindowsWindowControls widgetEnabled={widgetEnabled} onEnterWidgetMode={onEnterWidgetMode} onDismissWindow={onDismissWindow} />}
     </div>
     </ShellExpandProvider>
   );
@@ -5300,6 +5300,10 @@ export default function App() {
   const enterWidgetMode = useCallback(
 		() => widgetCoordinator.enter().catch(reportWidgetError),
     [reportWidgetError, widgetCoordinator],
+  );
+  const dismissMainWindow = useCallback(
+    () => app.DismissMainWindow().catch(reportWidgetError),
+    [reportWidgetError],
   );
   // Opening an existing Room exits the widget and focuses the tab that
   // OpenTopicSession returned. The exit promise is returned so the Rooms
@@ -5387,7 +5391,7 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} onDismissWindow={dismissMainWindow} collabDialogSignal={collabDialogSignal} />
 	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} />}
 	</>
   );

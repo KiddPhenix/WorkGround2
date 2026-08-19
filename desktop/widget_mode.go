@@ -314,8 +314,16 @@ func (a *App) RefreshWidgetWindowRegion() error {
 	}
 	return a.refreshWidgetRegion(
 		func() (int, int) { return runtime.WindowGetSize(a.ctx) },
-		setWidgetWindowRegion,
+		func(w, h int) error {
+			return a.applyWidgetRegion(func() error { return setWidgetWindowRegion(w, h) })
+		},
 	)
+}
+
+func (a *App) applyWidgetRegion(apply func() error) error {
+	a.widgetRegionMu.Lock()
+	defer a.widgetRegionMu.Unlock()
+	return apply()
 }
 
 func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) {
@@ -336,7 +344,9 @@ func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) err
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
 		return err
 	}
-	return setWidgetWindowRegion(state.Width, state.Height)
+	return a.applyWidgetRegion(func() error {
+		return setWidgetWindowRegion(state.Width, state.Height)
+	})
 }
 
 func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool) error {
@@ -352,7 +362,7 @@ func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool
 	// Keep the full transparent surface available until React reports the first
 	// real icon rectangles. Pre-clipping to the exit button prevents WebView2
 	// from composing the later bottom-right controls outside that tiny region.
-	return clearWidgetWindowRegion()
+	return a.applyWidgetRegion(clearWidgetWindowRegion)
 }
 
 // widgetWindowOps is the test-only seam that replaces the native window
@@ -431,9 +441,10 @@ func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
 	}
 	target, ok := loadWidgetWindowState()
 	if style == "icons" {
-		var windowErr error
-		target, ok, windowErr = loadDesktopIconWindowState()
-		a.recordDesktopIconWindowError(windowErr)
+		// Icon mode is a transparent desktop surface, so its drawing area follows
+		// the current monitor on every switch. Persisted compact-window geometry
+		// must not shrink the canvas after a display or DPI change.
+		target, ok = a.desktopIconTargetState(), true
 	}
 	if !ok {
 		if style == "icons" {
@@ -466,7 +477,7 @@ func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
 		return a.widgetWindowOps.restoreMain(state, ok)
 	}
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	regionErr := clearWidgetWindowRegion()
+	regionErr := a.applyWidgetRegion(clearWidgetWindowRegion)
 	runtime.WindowSetMinSize(a.ctx, 760, 480)
 	if !ok {
 		runtime.WindowSetSize(a.ctx, 1280, 800)
@@ -523,9 +534,9 @@ func (a *App) applyEnterWidgetMode() error {
 	style, _ := a.desktopIconPreferences()
 	state, ok := loadWidgetWindowState()
 	if style == "icons" {
-		var windowErr error
-		state, ok, windowErr = loadDesktopIconWindowState()
-		a.recordDesktopIconWindowError(windowErr)
+		// Always rebuild the icon canvas from the monitor that owns the main
+		// window. The saved icon bounds remain useful for exit rollback only.
+		state, ok = a.desktopIconTargetState(), true
 	}
 	if !ok {
 		if style == "icons" {
@@ -561,20 +572,61 @@ func (a *App) ExitWidgetMode(tabID string) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
-	changed, err := a.transitionWidgetMode(false, func() error { return a.applyExitWidgetMode() })
+	// Opening a task from the widget must not change the icon's existence:
+	// remember it as retained so the icon survives the task finishing and is
+	// only removed by an explicit dismiss/remove. Best-effort — a failed
+	// persist never blocks the window transition.
+	a.rememberDesktopIconTask(tabID)
+	return a.exitWidgetMode(tabID)
+}
+
+func (a *App) exitWidgetMode(tabID string) error {
+	if a.ctx == nil {
+		return errors.New("desktop window is not ready")
+	}
+	_, err := a.transitionWidgetMode(false, func() error { return a.applyExitWidgetMode() })
 	if err != nil {
 		return err
 	}
-	if changed {
-		runtime.EventsEmit(a.ctx, "widget:mode", false)
+	var activateErr error
+	if strings.TrimSpace(tabID) != "" {
+		activateErr = a.SetActiveTab(tabID)
+	}
+	reconciled, reconcileErr := a.reconcileMainWindow()
+	if reconcileErr != nil {
+		return errors.Join(activateErr, reconcileErr)
+	}
+	if reconciled {
+		// Publish only after the final native reconciliation. This keeps React
+		// from exposing MainApp through a stale icon HRGN and also lets a repeated
+		// exit repair an already-diverged logical/native window state.
+		a.runtimeEvents.Emit(a.ctx, "widget:mode", false)
+	}
+	if activateErr != nil {
+		return activateErr
 	}
 	if strings.TrimSpace(tabID) != "" {
-		if err := a.SetActiveTab(tabID); err != nil {
-			return err
-		}
 		a.emitSessionActivated("widget-open")
 	}
 	return nil
+}
+
+// reconcileMainWindow is the idempotent commit point for every widget exit.
+// It intentionally runs even when transitionWidgetMode found widgetMode
+// already false: the logical bit may survive while Win32 still has widget
+// bounds, WS_EX_TOOLWINDOW or an icon HRGN. Reapplying the authoritative main
+// geometry and taskbar state makes the same exit call a safe recovery action.
+func (a *App) reconcileMainWindow() (bool, error) {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if a.widgetMode {
+		return false, nil
+	}
+	state, ok := loadWindowState()
+	if err := errors.Join(a.restoreMainGeometry(state, ok), a.toggleWidgetTaskbar(false)); err != nil {
+		return false, fmt.Errorf("reconcile main window: %w", err)
+	}
+	return true, nil
 }
 
 // applyExitWidgetMode runs inside transitionWidgetMode's widgetMu critical
@@ -663,9 +715,22 @@ func defaultDesktopIconWindowState(ctx context.Context) WidgetWindowState {
 			break
 		}
 	}
-	width := min(desktopIconWidth, max(desktopIconMinWidth, selected.Size.Width-widgetEdgeGap*2))
-	height := min(desktopIconHeight, max(desktopIconMinHeight, selected.Size.Height-widgetBottomGap*2))
-	return WidgetWindowState{Width: width, Height: height, X: max(widgetEdgeGap, selected.Size.Width-width-widgetEdgeGap), Y: max(widgetBottomGap, selected.Size.Height-height-widgetBottomGap)}
+	return WidgetWindowState{Width: selected.Size.Width, Height: selected.Size.Height}
+}
+
+// desktopIconTargetState keeps native production entry tied to the current
+// monitor while preserving the injected geometry contract used by tests and
+// non-window orchestration. A real window never reuses the persisted compact
+// bounds, so stale display geometry cannot shrink the transparent canvas.
+func (a *App) desktopIconTargetState() WidgetWindowState {
+	if a.widgetWindowOps != nil {
+		state, ok, err := loadDesktopIconWindowState()
+		a.recordDesktopIconWindowError(err)
+		if ok {
+			return state
+		}
+	}
+	return defaultDesktopIconWindowState(a.ctx)
 }
 
 func (a *App) widgetSources() []widgetSource {

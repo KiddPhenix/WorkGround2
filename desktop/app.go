@@ -247,6 +247,7 @@ type App struct {
 	// action ledger. It is intentionally independent from a.mu: widget actions
 	// may call normal tab APIs, which acquire a.mu themselves.
 	widgetMu             sync.Mutex
+	widgetRegionMu       sync.Mutex
 	widgetActionMu       sync.Mutex
 	widgetConversationMu sync.Mutex
 	widgetMode           bool

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -526,6 +527,76 @@ func TestDesktopIconCorruptStateIsVisibleInSnapshot(t *testing.T) {
 	}
 }
 
+func TestPinNewDesktopIconTaskOrdersAppendsToEnd(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", home)
+	app := &App{iconWidgetStateLoaded: true, iconWidgetState: desktopIconPersistedState{
+		Positions: map[string]DesktopIconPosition{
+			"task:old": {Row: "bottom", Zone: "running", Order: 0},
+		},
+	}}
+	snapshot := DesktopIconSnapshot{Items: []DesktopIconItem{
+		{ID: "task:old", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 0}},
+		{ID: "task:new", Kind: "task", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 5}},
+		{ID: "fixed:new", Kind: "fixed", Position: DesktopIconPosition{Row: "bottom", Zone: "fixed", Order: 0}},
+	}}
+	if !app.pinNewDesktopIconTaskOrdersLocked(snapshot) {
+		t.Fatal("new task icon was not pinned")
+	}
+	got, ok := app.iconWidgetState.Positions["task:new"]
+	if !ok || got.Row != "bottom" || got.Zone != "running" || got.Order != 1 {
+		t.Fatalf("pinned position = %+v ok=%v, want running/order 1", got, ok)
+	}
+	if old := app.iconWidgetState.Positions["task:old"]; old.Order != 0 {
+		t.Fatalf("existing pinned icon changed = %+v", old)
+	}
+	// Idempotent: a second call with no new unpinned tasks must be a no-op.
+	if app.pinNewDesktopIconTaskOrdersLocked(snapshot) {
+		t.Fatal("second pin call must be a no-op")
+	}
+}
+
+func TestPinNewDesktopIconTaskOrdersSkipsRetained(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WorkGround2_STATE_HOME", home)
+	app := &App{iconWidgetStateLoaded: true, iconWidgetState: desktopIconPersistedState{
+		Positions: map[string]DesktopIconPosition{},
+	}}
+	snapshot := DesktopIconSnapshot{Items: []DesktopIconItem{
+		{ID: "task:kept", Kind: "task", Retained: true, Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: 3}},
+	}}
+	if app.pinNewDesktopIconTaskOrdersLocked(snapshot) {
+		t.Fatal("retained icons must not be pinned")
+	}
+	if _, ok := app.iconWidgetState.Positions["task:kept"]; ok {
+		t.Fatalf("retained icon was pinned: %+v", app.iconWidgetState.Positions)
+	}
+}
+
+func TestGetDesktopIconSnapshotPinsNewTaskOrderStably(t *testing.T) {
+	tab, _ := completionTestTab(t, 1000) // NeedsAttention makes the task visible in the snapshot
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	// A fresh task (no prior drag) must be pinned into Positions on first
+	// snapshot so its order never re-derives from the map iteration again.
+	first := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(first.Items, "task:task-1")
+	if item == nil {
+		t.Fatalf("task icon missing from snapshot: %+v", first.Items)
+	}
+	pinned, ok := app.iconWidgetState.Positions["task:task-1"]
+	if !ok || pinned.Row != "bottom" || pinned.Zone != "running" {
+		t.Fatalf("task icon was not pinned: %+v ok=%v", pinned, ok)
+	}
+	second := app.GetDesktopIconSnapshot()
+	again := findDesktopIconItem(second.Items, "task:task-1")
+	if again == nil || again.Position != item.Position {
+		t.Fatalf("task order changed across snapshots: first %+v second %+v", item.Position, again.Position)
+	}
+	if again.Position != pinned {
+		t.Fatalf("rendered position %+v differs from pinned %+v", again.Position, pinned)
+	}
+}
+
 func TestDesktopIconWindowStateRejectsOldShortGeometryWithError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("WorkGround2_STATE_HOME", home)
@@ -748,5 +819,547 @@ func TestDesktopIconPendingOkReceiptRecoveryCompatible(t *testing.T) {
 	meta, _, err := agent.LoadBranchMeta(sp)
 	if err != nil || meta.NeedsAttention {
 		t.Fatalf("legacy ok receipt did not clear attention: %v meta %+v", err, meta)
+	}
+}
+func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
+	tab, _ := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	app.rememberDesktopIconTask(tab.ID)
+
+	kept, ok := app.iconWidgetState.Kept["task:"+tab.ID]
+	if !ok {
+		t.Fatalf("opened task was not retained: %+v", app.iconWidgetState.Kept)
+	}
+	if kept.SourceID != tab.ID {
+		t.Fatalf("kept sourceID = %q, want %q", kept.SourceID, tab.ID)
+	}
+	if kept.Title == "" {
+		t.Fatal("kept title is empty")
+	}
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:"+tab.ID)
+	if item == nil {
+		t.Fatalf("retained icon missing from snapshot: %+v", snapshot.Items)
+	}
+	if item.Kind != "task" || !item.Retained || item.Status != "done" {
+		t.Fatalf("retained icon = kind %q retained %v status %q, want task/done/true", item.Kind, item.Retained, item.Status)
+	}
+}
+
+func TestRememberDesktopIconTaskIdempotentKeepsOriginalSummary(t *testing.T) {
+	tab, _ := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+
+	app.rememberDesktopIconTask(tab.ID)
+	app.iconWidgetState.Kept["task:"+tab.ID] = desktopIconKept{
+		ItemID: "task:" + tab.ID, SourceID: tab.ID, Title: "原标题", Summary: "原摘要", Order: 3,
+	}
+	app.rememberDesktopIconTask(tab.ID)
+
+	kept := app.iconWidgetState.Kept["task:"+tab.ID]
+	if kept.Summary != "原摘要" || kept.Title != "原标题" || kept.Order != 3 {
+		t.Fatalf("re-retain overwrote the kept entry: %+v", kept)
+	}
+}
+
+func TestRememberDesktopIconTaskSkipsCliAndCollaboration(t *testing.T) {
+	cliTab, cliSP := completionTestTab(t, 0)
+	cliTab.ID = "cli-tab"
+	cliMeta, _, err := agent.LoadBranchMeta(cliSP)
+	if err != nil {
+		t.Fatalf("load cli branch meta: %v", err)
+	}
+	cliMeta.SessionSource = "cli"
+	if err := agent.SaveBranchMeta(cliSP, cliMeta); err != nil {
+		t.Fatalf("stamp cli source: %v", err)
+	}
+	collabTab, _ := completionTestTab(t, 0)
+	collabTab.ID = "collab-tab"
+	collabTab.sessionKind = agent.SessionKindCollaboration
+	app := newSummaryTestApp(t, cliTab, fakeCompletionSummaryGenerator{})
+	app.tabs[collabTab.ID] = collabTab
+	app.widgetMode = true
+
+	app.rememberDesktopIconTask(cliTab.ID)
+	app.rememberDesktopIconTask(collabTab.ID)
+
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("cli/collaboration tabs were retained: %+v", app.iconWidgetState.Kept)
+	}
+}
+
+func TestRememberDesktopIconTaskRequiresWidgetModeAndKnownTab(t *testing.T) {
+	tab, _ := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = false
+
+	app.rememberDesktopIconTask(tab.ID)
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("retained while not in widget mode: %+v", app.iconWidgetState.Kept)
+	}
+	app.rememberDesktopIconTask("")
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("retained an empty tab id: %+v", app.iconWidgetState.Kept)
+	}
+	app.widgetMode = true
+	app.rememberDesktopIconTask("missing-tab")
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("retained an unknown tab: %+v", app.iconWidgetState.Kept)
+	}
+}
+
+func TestDesktopIconRemoveDeletesRetainedIcon(t *testing.T) {
+	tab, _ := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "task:"+tab.ID)
+	if item == nil {
+		t.Fatal("retained icon missing before remove")
+	}
+
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-remove", Action: "remove",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("remove status = %q error %q", result.Status, result.Error)
+	}
+	if _, kept := app.iconWidgetState.Kept["task:"+tab.ID]; kept {
+		t.Fatal("remove kept the retained icon")
+	}
+	if findDesktopIconItem(result.Snapshot.Items, "task:"+tab.ID) != nil {
+		t.Fatal("removed icon still in snapshot")
+	}
+}
+
+// TestDesktopIconOpenActivatesRespectiveTab reproduces the icon→session
+// binding contract: opening two different task icons must activate their own
+// tabs, and the second open must never fall back to the first icon's session.
+func TestDesktopIconOpenActivatesRespectiveTab(t *testing.T) {
+	tabA, spA := completionTestTab(t, 1000)
+	tabB, spB := completionTestTab(t, 1000)
+	tabA.ID = "task-a"
+	tabB.ID = "task-b"
+	app := newSummaryTestApp(t, tabA, fakeCompletionSummaryGenerator{})
+	app.tabs[tabB.ID] = tabB
+	app.sessionDirsOverride = []string{filepath.Dir(spA), filepath.Dir(spB)}
+	app.activeTabID = tabA.ID
+	app.widgetMode = true
+	app.ctx = context.Background()
+	app.widgetWindowOps = &widgetWindowOps{
+		read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+		restoreMain: func(DesktopWindowState, bool) error { return nil },
+		applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+	}
+	app.widgetTaskbarToggle = func(bool) error { return nil }
+	var activated []string
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
+		if name == "session:activated" {
+			activated = append(activated, app.activeTabID)
+		}
+	}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	itemA := findDesktopIconItem(snapshot.Items, "task:task-a")
+	itemB := findDesktopIconItem(snapshot.Items, "task:task-b")
+	if itemA == nil || itemB == nil {
+		t.Fatalf("both task icons must be visible: %+v", snapshot.Items)
+	}
+	if itemA.SourceID != "task-a" || itemB.SourceID != "task-b" {
+		t.Fatalf("icon source ids = %q %q, want task-a/task-b", itemA.SourceID, itemB.SourceID)
+	}
+	// Live task icons carry the backend-generated session ref that routes the
+	// open, not the tab SourceID.
+	if itemA.SessionRef == nil || itemA.SessionRef.SessionPath != spA || itemB.SessionRef == nil || itemB.SessionRef.SessionPath != spB {
+		t.Fatalf("live task session refs = %#v / %#v, want paths %q / %q", itemA.SessionRef, itemB.SessionRef, spA, spB)
+	}
+
+	// Open icon A (already the active tab) then icon B: B must become active.
+	// Re-read the snapshot first so the action submits the current revision.
+	snapshot = app.GetDesktopIconSnapshot()
+	itemB = findDesktopIconItem(snapshot.Items, "task:task-b")
+	if itemB == nil {
+		t.Fatalf("task B icon missing before open: %+v", snapshot.Items)
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: itemB.ID, Revision: itemB.Revision, RequestID: "req-open-b", Action: "open"}); result.Status != "accepted" {
+		t.Fatalf("open B status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != "task-b" {
+		t.Fatalf("active tab after opening B = %q, want task-b", app.activeTabID)
+	}
+	if sessionRuntimeKey(app.tabs[app.activeTabID].currentSessionPath()) != sessionRuntimeKey(spB) {
+		t.Fatalf("active session after opening B = %q, want %q", app.tabs[app.activeTabID].currentSessionPath(), spB)
+	}
+	// Re-enter widget mode and re-read the fresh snapshot (async completion
+	// summaries can advance item revisions), then open icon A: must switch
+	// back to A's session.
+	app.widgetMode = true
+	app.activeTabID = "task-b"
+	snapshot = app.GetDesktopIconSnapshot()
+	itemA = findDesktopIconItem(snapshot.Items, "task:task-a")
+	if itemA == nil {
+		t.Fatalf("task A icon missing after reopen: %+v", snapshot.Items)
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: itemA.ID, Revision: itemA.Revision, RequestID: "req-open-a", Action: "open"}); result.Status != "accepted" {
+		t.Fatalf("open A status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != "task-a" {
+		t.Fatalf("active tab after opening A = %q, want task-a", app.activeTabID)
+	}
+	if sessionRuntimeKey(app.tabs[app.activeTabID].currentSessionPath()) != sessionRuntimeKey(spA) {
+		t.Fatalf("active session after opening A = %q, want %q", app.tabs[app.activeTabID].currentSessionPath(), spA)
+	}
+	if len(activated) != 2 || activated[0] != "task-b" || activated[1] != "task-a" {
+		t.Fatalf("session:activated payloads = %+v, want [task-b task-a]", activated)
+	}
+}
+
+// TestDesktopIconOpenRetainedIconWithMissingTab verifies the durable-identity
+// path: a retained task icon whose tab was closed reopens the same session
+// through its recorded identity — reusing an existing tab for that session —
+// instead of falling back to the previously active session.
+func TestDesktopIconOpenRetainedIconWithMissingTab(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := &App{
+		// The kept icon points at "task-a" whose tab is gone; a live tab
+		// "task-1" still owns the same session path.
+		tabs:                  map[string]*WorkspaceTab{tab.ID: tab},
+		activeTabID:           "stale-active",
+		widgetMode:            true,
+		ctx:                   context.Background(),
+		sessionDirsOverride:   []string{filepath.Dir(sp)},
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{},
+			Kept: map[string]desktopIconKept{
+				"task:task-a": {
+					ItemID: "task:task-a", SourceID: "task-a", Title: "任务A", Order: 0,
+					Scope: "global", TopicID: "topic-a", SessionPath: sp,
+				},
+			},
+			CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil },
+			applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:task-a")
+	if item == nil {
+		t.Fatalf("retained icon missing: %+v", snapshot.Items)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-open-kept", Action: "open",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("open retained icon status = %q error %q", result.Status, result.Error)
+	}
+	active := app.tabs[app.activeTabID]
+	if active == nil {
+		t.Fatalf("no tab behind active id %q", app.activeTabID)
+	}
+	if sessionRuntimeKey(active.currentSessionPath()) != sessionRuntimeKey(sp) {
+		t.Fatalf("opened session path %q, want %q", active.currentSessionPath(), sp)
+	}
+}
+
+// TestDesktopIconOpenRetainedIconWithoutIdentityFailsExplicitly pins the
+// failure mode for kept entries recorded before session identity existed:
+// the open must surface an explicit error instead of silently showing the
+// previously active session.
+func TestDesktopIconOpenRetainedIconWithoutIdentityFailsExplicitly(t *testing.T) {
+	app := &App{
+		tabs:                  map[string]*WorkspaceTab{},
+		activeTabID:           "stale-active",
+		widgetMode:            true,
+		ctx:                   context.Background(),
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{},
+			Kept: map[string]desktopIconKept{
+				"task:task-a": {ItemID: "task:task-a", SourceID: "task-a", Title: "任务A", Order: 0},
+			},
+			CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil },
+			applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:task-a")
+	if item == nil {
+		t.Fatalf("retained icon missing: %+v", snapshot.Items)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-open-kept", Action: "open",
+	})
+	if result.Status == "accepted" {
+		t.Fatalf("open without identity unexpectedly accepted (active=%q)", app.activeTabID)
+	}
+	if !strings.Contains(result.Error, "identity") {
+		t.Fatalf("open without identity error = %q, want explicit identity error", result.Error)
+	}
+	if app.activeTabID != "stale-active" {
+		t.Fatalf("failed open changed active tab to %q", app.activeTabID)
+	}
+}
+
+// TestDesktopIconResolveTaskRequiresSessionRef pins the unified identity
+// contract at the resolver level: SourceID alone is never a valid open target,
+// and a missing ref or session path fails explicitly instead of returning a
+// tab or falling back to the active session.
+func TestDesktopIconResolveTaskRequiresSessionRef(t *testing.T) {
+	app := &App{tabs: map[string]*WorkspaceTab{}}
+	if tabID, err := app.resolveDesktopIconTaskTab(DesktopIconItem{ID: "task:x", Kind: "task", SourceID: "tab-1"}); err == nil || tabID != "" {
+		t.Fatalf("live icon without ref resolved to %q, %v; want explicit identity failure", tabID, err)
+	}
+	if _, err := app.resolveDesktopIconTaskTab(DesktopIconItem{ID: "task:x", Kind: "task", SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "topic-a"}}); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("missing session path = %v, want explicit identity error", err)
+	}
+	if _, err := app.resolveDesktopIconTaskTab(DesktopIconItem{ID: "task:x", Kind: "task", SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "topic-a", SessionPath: `D:\no\such\session.jsonl`}}); err == nil {
+		t.Fatal("an unvalidatable session path must fail through OpenTopicSession")
+	}
+}
+
+// TestDesktopIconOpenStaleSourceIDUsesSessionRef verifies that a retained icon
+// whose SourceID names a live-but-wrong tab still opens the session recorded in
+// its snapshot ref. The resolver must not consult SourceID/tabID at all.
+func TestDesktopIconOpenStaleSourceIDUsesSessionRef(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	tabWrong, spWrong := completionTestTab(t, 0) // idle tab, invisible as a task icon
+	tabRight, sp := completionTestTab(t, 0)      // idle tab owning the kept session
+	tabWrong.ID = "task-wrong"
+	tabRight.ID = "task-right"
+	app := &App{
+		tabs:                  map[string]*WorkspaceTab{tabWrong.ID: tabWrong, tabRight.ID: tabRight},
+		activeTabID:           tabRight.ID,
+		widgetMode:            true,
+		ctx:                   context.Background(),
+		sessionDirsOverride:   []string{filepath.Dir(spWrong), filepath.Dir(sp)},
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{},
+			Kept: map[string]desktopIconKept{
+				"task:stale": {
+					ItemID: "task:stale", SourceID: "task-wrong", Title: "任务A", Order: 0,
+					Scope: "global", TopicID: "topic-a", SessionPath: sp,
+				},
+			},
+			CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil },
+			applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:stale")
+	if item == nil {
+		t.Fatalf("retained icon missing: %+v", snapshot.Items)
+	}
+	if item.SessionRef == nil || item.SessionRef.SessionPath != sp {
+		t.Fatalf("retained item session ref = %#v, want path %q", item.SessionRef, sp)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-open-stale", Action: "open",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("open stale-source icon status = %q error %q", result.Status, result.Error)
+	}
+	active := app.tabs[app.activeTabID]
+	if active == nil || active.ID != tabRight.ID {
+		t.Fatalf("open landed on %q, want %q (SourceID must not win)", app.activeTabID, tabRight.ID)
+	}
+	if sessionRuntimeKey(active.currentSessionPath()) != sessionRuntimeKey(sp) {
+		t.Fatalf("opened session path %q, want %q", active.currentSessionPath(), sp)
+	}
+}
+
+// TestDesktopIconOpenSameTopicDifferentSessionPathReusesCorrectSession verifies
+// that two live sessions under one topic open their own session: the ref's
+// sessionPath selects the tab, never the shared topic.
+func TestDesktopIconOpenSameTopicDifferentSessionPathReusesCorrectSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	tabA, spA := completionTestTab(t, 1000)
+	tabB, spB := completionTestTab(t, 1000)
+	tabA.ID = "task-a"
+	tabB.ID = "task-b"
+	tabA.TopicID = "topic-x"
+	tabB.TopicID = "topic-x"
+	app := newSummaryTestApp(t, tabA, fakeCompletionSummaryGenerator{})
+	app.tabs[tabB.ID] = tabB
+	app.sessionDirsOverride = []string{filepath.Dir(spA), filepath.Dir(spB)}
+	app.activeTabID = tabA.ID
+	app.widgetMode = true
+	app.ctx = context.Background()
+	app.widgetWindowOps = &widgetWindowOps{
+		read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+		restoreMain: func(DesktopWindowState, bool) error { return nil },
+		applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+	}
+	app.widgetTaskbarToggle = func(bool) error { return nil }
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	itemB := findDesktopIconItem(snapshot.Items, "task:task-b")
+	if itemB == nil || itemB.SessionRef == nil || itemB.SessionRef.TopicID != "topic-x" || itemB.SessionRef.SessionPath != spB {
+		t.Fatalf("task B ref = %#v item=%+v, want topic-x path %q", itemB.SessionRef, itemB, spB)
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: itemB.ID, Revision: itemB.Revision, RequestID: "req-open-b", Action: "open"}); result.Status != "accepted" {
+		t.Fatalf("open B status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != tabB.ID {
+		t.Fatalf("open B activated %q, want %q", app.activeTabID, tabB.ID)
+	}
+	if sessionRuntimeKey(app.tabs[app.activeTabID].currentSessionPath()) != sessionRuntimeKey(spB) {
+		t.Fatalf("open B session = %q, want %q", app.tabs[app.activeTabID].currentSessionPath(), spB)
+	}
+	// Re-enter widget mode, then open session A: the same topic must not
+	// redirect the open onto B's tab.
+	app.widgetMode = true
+	app.activeTabID = tabB.ID
+	snapshot = app.GetDesktopIconSnapshot()
+	itemA := findDesktopIconItem(snapshot.Items, "task:task-a")
+	if itemA == nil || itemA.SessionRef == nil {
+		t.Fatalf("task A ref missing: %+v", snapshot.Items)
+	}
+	if result := app.ApplyDesktopIconAction(DesktopIconActionInput{ItemID: itemA.ID, Revision: itemA.Revision, RequestID: "req-open-a", Action: "open"}); result.Status != "accepted" {
+		t.Fatalf("open A status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != tabA.ID {
+		t.Fatalf("open A activated %q, want %q", app.activeTabID, tabA.ID)
+	}
+	if sessionRuntimeKey(app.tabs[app.activeTabID].currentSessionPath()) != sessionRuntimeKey(spA) {
+		t.Fatalf("open A session = %q, want %q", app.tabs[app.activeTabID].currentSessionPath(), spA)
+	}
+}
+
+// TestDesktopIconTaskRevisionIncludesSessionIdentity pins requirement that the
+// session identity participates in the item revision: an identity change must
+// invalidate the revision (so the frontend stale check fires), while identical
+// identity keeps the revision stable.
+func TestDesktopIconTaskRevisionIncludesSessionIdentity(t *testing.T) {
+	base := DesktopIconItem{
+		ID: "task:1", Kind: "task", Status: "idle",
+		Position:   DesktopIconPosition{Row: "bottom", Zone: "running", Order: 0},
+		SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "topic-a", SessionPath: "sp-a"},
+	}
+	clone := func(ref *DesktopIconTaskRef) DesktopIconItem {
+		item := base
+		if ref != nil {
+			copy := *ref
+			item.SessionRef = &copy
+		} else {
+			item.SessionRef = nil
+		}
+		return item
+	}
+	if desktopIconItemRevision(clone(&DesktopIconTaskRef{Scope: "global", TopicID: "topic-a", SessionPath: "sp-b"})) == desktopIconItemRevision(base) {
+		t.Fatal("a session path change must change the item revision")
+	}
+	if desktopIconItemRevision(clone(nil)) == desktopIconItemRevision(base) {
+		t.Fatal("losing the session identity must change the item revision")
+	}
+	if desktopIconItemRevision(clone(&DesktopIconTaskRef{Scope: "global", TopicID: "topic-a", SessionPath: "sp-a"})) != desktopIconItemRevision(base) {
+		t.Fatal("identical session identity must keep a stable revision")
+	}
+}
+
+// TestRememberDesktopIconTaskSameSessionRefreshesNotDuplicates verifies the
+// same-session dedupe: reopening a closed task (new tab ID, same session path)
+// refreshes the existing kept entry instead of adding a second icon.
+func TestRememberDesktopIconTaskSameSessionRefreshesNotDuplicates(t *testing.T) {
+	tab, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.widgetMode = true
+	app.rememberDesktopIconTask(tab.ID)
+	if len(app.iconWidgetState.Kept) != 1 {
+		t.Fatalf("first retain kept %d entries: %+v", len(app.iconWidgetState.Kept), app.iconWidgetState.Kept)
+	}
+	// The tab is recreated with a new ID but the same session path.
+	recreated := &WorkspaceTab{ID: "task-1-reborn", SessionPath: sp, disabledMCP: map[string]ServerView{}}
+	app.tabs[recreated.ID] = recreated
+	app.rememberDesktopIconTask(recreated.ID)
+	if len(app.iconWidgetState.Kept) != 1 {
+		t.Fatalf("reopen accumulated %d kept entries: %+v", len(app.iconWidgetState.Kept), app.iconWidgetState.Kept)
+	}
+	kept, ok := app.iconWidgetState.Kept["task:task-1"]
+	if !ok || kept.SourceID != "task-1-reborn" {
+		t.Fatalf("kept entry not refreshed to live tab: %+v", app.iconWidgetState.Kept)
+	}
+}
+
+func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	for _, root := range []string{rootA, rootB} {
+		if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("workspace"), 0o600); err != nil {
+			t.Fatalf("seed workspace %s: %v", root, err)
+		}
+	}
+	for _, root := range []string{rootA, rootB} {
+		if err := addProject(root, ""); err != nil {
+			t.Fatalf("register workspace %s: %v", root, err)
+		}
+	}
+	tabA := &WorkspaceTab{ID: "tab-a", Scope: "project", WorkspaceRoot: rootA, TopicID: "topic-a"}
+	tabB := &WorkspaceTab{ID: "tab-b", Scope: "project", WorkspaceRoot: rootB, TopicID: "topic-b"}
+	app := &App{
+		tabs:                  map[string]*WorkspaceTab{tabA.ID: tabA, tabB.ID: tabB},
+		tabOrder:              []string{tabA.ID, tabB.ID},
+		activeTabID:           tabA.ID,
+		ctx:                   context.Background(),
+		widgetMode:            true,
+		widgetStyle:           "icons",
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{},
+			CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+	}
+	app.widgetWindowOps = &widgetWindowOps{
+		read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 1080, Height: 720}, false },
+		restoreMain: func(DesktopWindowState, bool) error { return nil },
+		applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+	}
+	app.widgetTaskbarToggle = func(bool) error { return nil }
+	app.runtimeEvents.emit = func(context.Context, string, ...interface{}) {}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "workspace:"+rootB)
+	if item == nil {
+		t.Fatalf("workspace B icon missing: %+v", snapshot.Items)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "open-workspace-b", Action: "open",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("open workspace B status = %q error %q", result.Status, result.Error)
+	}
+	active := app.activeTab()
+	if active == nil || normalizeProjectRoot(active.WorkspaceRoot) != normalizeProjectRoot(rootB) {
+		got := ""
+		if active != nil {
+			got = active.WorkspaceRoot
+		}
+		t.Fatalf("active workspace = %q, want %q", got, rootB)
 	}
 }

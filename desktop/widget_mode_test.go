@@ -753,10 +753,12 @@ func TestExitWidgetModeEmitsSessionActivated(t *testing.T) {
 	events := make(chan sessionActivatedEvent, 1)
 	tab := &WorkspaceTab{ID: "result-tab"}
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{"result-tab": tab},
-		activeTabID: "result-tab",
-		widgetMode:  false, // not in widget mode → window ops skipped, goes straight to SetActiveTab
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{"result-tab": tab},
+		activeTabID:         "result-tab",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
 		if name != "session:activated" {
@@ -790,10 +792,12 @@ func TestExitWidgetModeNoTabIDDoesNotEmitSessionActivated(t *testing.T) {
 	emitted := false
 	tab := &WorkspaceTab{ID: "idle-tab"}
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{"idle-tab": tab},
-		activeTabID: "idle-tab",
-		widgetMode:  false,
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{"idle-tab": tab},
+		activeTabID:         "idle-tab",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
 		if name == "session:activated" {
@@ -812,10 +816,12 @@ func TestExitWidgetModeNoTabIDDoesNotEmitSessionActivated(t *testing.T) {
 func TestExitWidgetModeSetActiveTabFailureDoesNotEmitSessionActivated(t *testing.T) {
 	emitted := false
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{},
-		activeTabID: "missing",
-		widgetMode:  false,
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{},
+		activeTabID:         "missing",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
 		if name == "session:activated" {

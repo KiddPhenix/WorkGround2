@@ -59,7 +59,7 @@ func TestDefaultWidgetWindowStateUsesAbsoluteWorkArea(t *testing.T) {
 func TestDefaultDesktopIconWindowStateUsesWorkAreaAndDPI(t *testing.T) {
 	work := w32Rect{Left: -1920, Top: 48, Right: 0, Bottom: 1080}
 	state := defaultDesktopIconWindowStateForWorkArea(work, 120)
-	want := WidgetWindowState{Width: 1080, Height: 720, X: -1370, Y: 150}
+	want := WidgetWindowState{Width: 1536, Height: 826, X: -1920, Y: 48}
 	if state != want {
 		t.Fatalf("state = %#v, want %#v", state, want)
 	}

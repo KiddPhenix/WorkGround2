@@ -128,11 +128,12 @@ ok(
   appSource.includes('className="windows-window-control windows-window-control--dismiss"') &&
     appSource.includes('aria-label="Dismiss window"') &&
     appSource.includes('title="Dismiss"') &&
-    /aria-label="Dismiss window"[\s\S]*?app\.CloseMainWindow\(\)/.test(appSource) &&
+    /aria-label="Dismiss window"[\s\S]*?onDismissWindow\(\)/.test(appSource) &&
+    appSource.includes("app.DismissMainWindow().catch(reportWidgetError)") &&
     finalDeclaration(".windows-window-control--dismiss:hover", "color") === "var(--danger)" &&
     finalDeclaration(".app--windows-frameless", "--windows-window-controls-width") === "138px" &&
     finalDeclaration(".app--windows-frameless.app--workbench", "--windows-window-controls-width") === "120px",
-  "Windows Dismiss keeps the existing close route while the three-control rail uses custom semantics",
+  "Windows Dismiss removes the active session icon and returns to widget mode through its dedicated route",
 );
 
 ok(
