@@ -1896,6 +1896,7 @@ function makeMockApp(): AppBindings {
     widgetSkin: "classic",
 		widgetStyle: "icons",
 		hoverStatusDelayMs: 1200,
+    ownerDecisionEnabled: false, // master kill switch for the 主人决策 feature (default off)
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
     providerKinds: ["cli", "openai"],
@@ -4288,7 +4289,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetAlwaysOnTop, widgetSkin, widgetStyle, hoverStatusDelayMs } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetAlwaysOnTop, widgetSkin, widgetStyle, hoverStatusDelayMs, ownerDecisionEnabled } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -4305,6 +4306,7 @@ function makeMockApp(): AppBindings {
         widgetSkin,
 			widgetStyle,
 			hoverStatusDelayMs,
+        ownerDecisionEnabled,
       })) as DesktopStartupSettingsView;
     },
     async Settings() {

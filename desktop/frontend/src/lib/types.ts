@@ -1512,6 +1512,7 @@ export interface SettingsView {
   widgetSkin: string; // widget visual skin: classic|bp|instant|pet|recorder
   widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
   hoverStatusDelayMs?: number;
+  ownerDecisionEnabled: boolean; // master kill switch for the 主人决策 feature (default off)
   memoryCompilerEnabled: boolean; // Memory v5 execution compiler
   configPath: string;
   providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
@@ -1561,6 +1562,7 @@ export interface DesktopStartupSettingsView {
   widgetSkin: string; // widget visual skin
   widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
   hoverStatusDelayMs?: number;
+  ownerDecisionEnabled: boolean; // master kill switch for the 主人决策 feature (default off)
 }
 
 export type DecisionStatus = "queued" | "presented" | "decided" | "applied" | "deferred" | "cancelled" | "orphaned" | "apply_failed";
