@@ -672,7 +672,10 @@ func executorToolHandoffContext(a *Agent) string {
 	if a == nil || a.tools == nil {
 		return ""
 	}
-	schemas := a.tools.Schemas()
+	// Use the effective schemas so the handoff lists exactly what the first
+	// request exposes — during the anchored bootstrap that is the trio, and
+	// the executor learns the rest after promotion.
+	schemas := a.effectiveSchemas()
 	if len(schemas) == 0 {
 		return ""
 	}

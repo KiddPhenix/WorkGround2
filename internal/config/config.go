@@ -1228,6 +1228,22 @@ type AgentConfig struct {
 	// AssistMaxAttempts bounds how many candidate providers are tried per
 	// request_help call. Zero (default) means 3.
 	AssistMaxAttempts int `toml:"assist_max_attempts"`
+	// AnchoredBootstrap gates the DeepSeek two-phase bootstrap: the first
+	// model request exposes only bash + read_file + edit_file with the
+	// memory/skills injection deferred, then the full catalog returns after
+	// the first assistant reply and stays resident (compaction never demotes).
+	// Auto: enabled by default for DeepSeek-family providers; opt out with
+	// anchored_bootstrap = false.
+	AnchoredBootstrap *bool `toml:"anchored_bootstrap"`
+}
+
+// AnchoredBootstrapEnabled reports whether the DeepSeek two-phase bootstrap
+// is enabled. Missing config defaults to true (auto).
+func (c *Config) AnchoredBootstrapEnabled() bool {
+	if c == nil || c.Agent.AnchoredBootstrap == nil {
+		return true
+	}
+	return *c.Agent.AnchoredBootstrap
 }
 
 // MemoryCompilerConfig controls the v5 execution-memory compiler.

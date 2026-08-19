@@ -67,6 +67,10 @@ Thumbs.db
 .vscode/
 /site/public/av/
 
+# Local debug / test artifacts
+.diagnostics/
+*.test.exe
+
 benchmarks/context-maintenance-e2e/run/
 
 # Local Session flow concept; intentionally excluded from source control.
