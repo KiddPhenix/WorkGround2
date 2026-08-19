@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "../components/widget/desktopIconLayout";
+import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom } from "../components/widget/desktopIconLayout";
+import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type TimerHost } from "../components/widget/desktopIconTimers";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle } from "../components/widget/workspaceManager";
 import { roomRows } from "../components/widget/roomsManager";
@@ -74,8 +75,21 @@ assert.deepEqual(iconHitRect(physicalRect, 1.5), { x: 445, y: 625, width: 108, h
 const component = readFileSync(resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"), "utf8");
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
-assert.doesNotMatch(component, /onExit|返回主窗口|desktop-icon-exit/, "icon mode is self-contained: no exit-to-main button and no onExit chain");
+assert.doesNotMatch(component, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button class");
 assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
+assert.match(component, /onOpenMain: \(\) => Promise<void>/, "the quick toolbar receives the open-main callback from the root App");
+assert.match(component, /const \[quickOpen, setQuickOpen\] = useState\(false\)/, "the quick toolbar owns its own open state");
+assert.match(component, /desktop-icon-collapse[\s\S]*desktop-icon-quick[\s\S]*desktop-icon-anchor/, "the quick toolbar renders between the collapse toggle and the WG2 anchor");
+assert.match(component, /role="toolbar" aria-label="小组件快捷操作"/, "the quick toolbar is a labelled toolbar surface");
+assert.match(component, /aria-label="缩小图标"[\s\S]*aria-label="放大图标"[\s\S]*aria-label="打开主窗口"[\s\S]*aria-label="设置"/, "the quick toolbar exposes zoom out, zoom in, open main, and settings in order");
+assert.match(component, /role="switch" aria-checked=\{topmost\}/, "the always-on-top control is a switch with an explicit checked state");
+assert.match(component, /DesktopStartupSettings\(\)[\s\S]+widgetAlwaysOnTop/, "the initial always-on-top state comes through the existing startup settings contract");
+assert.match(component, /SetDesktopWidgetAlwaysOnTop\(next\)[\s\S]+setTopmost\(next\)/, "the always-on-top switch persists through the backend and only reflects the confirmed config state");
+assert.match(component, /catch \(cause\) \{\s*setQuickError\(cause instanceof Error \? cause\.message : String\(cause\)\);[\s\S]*?setTopmostBusy\(false\)/, "a failed always-on-top toggle stays visible in the quick-error channel and retryable without flipping the switch");
+assert.match(component, /if \(exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\) return;[\s\S]+setTopmostBusy\(true\)/, "the always-on-top toggle is guarded against double submission, exits, and stays disabled after a failed initial read");
+assert.match(component, /const openMainWindow = async \(\) => \{[\s\S]*if \(exitRequest\.current\) return;[\s\S]*await onOpenMain\(\)/, "open main guards the async exit round-trip and delegates to the root App");
+assert.match(component, /const openSettingsWindow = async \(\) => \{[\s\S]*if \(exitRequest\.current\) return;[\s\S]*await onOpenSettings\(\)/, "open settings reuses the guarded exit-before-open flow");
+assert.doesNotMatch(component, /onOpenSettings\(\)\.catch\(\(cause\) => setError/, "settings never opens through an unguarded inline call");
 assert.match(css, /:root:has\(\.desktop-icon-mode\)\s*\{[^}]*background:\s*transparent;/s, "native icon hit regions must not expose the app root background");
 assert.match(css, /body:has\(\.desktop-icon-mode\),\s*body:has\(\.desktop-icon-mode\) #root\s*\{[^}]*background:\s*transparent\s*!important;/s, "the WebView body and root stay transparent around desktop icons");
 assert.match(css, /body:has\(\.desktop-icon-mode\) \.app[\s\S]*display:\s*none\s*!important/, "MainApp stays mounted in React but is removed from layout and compositing, so no descendant can leak through the transparent surface");
@@ -119,8 +133,8 @@ assert.doesNotMatch(component, /SearchPanel items=\{snapshot\.items\}/, "search 
 assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "Room and person notices both expose inline reply");
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
-assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+clickTimer\.current = window\.setTimeout/, "pointer up schedules a click only after a matching primary pointer down");
-assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); window\.clearTimeout\(clickTimer\.current\); setMenuID\(item\.id\); setActiveID\(""\); setAnchorMenuOpen\(false\); \}\}/, "opening an icon context menu cancels any delayed primary click and closes the anchor menu before showing right-click actions");
+assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+timers\.current\?\.scheduleClick/, "pointer up schedules a click only after a matching primary pointer down");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setMenuID\(item\.id\); setActiveID\(""\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); \}\}/, "opening an icon context menu cancels every delayed timer and closes the anchor menu and quick toolbar before showing right-click actions");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
@@ -171,6 +185,155 @@ assert.equal(parseCollapseState("false"), false, "a bare false round-trips");
 assert.deepEqual(JSON.parse(serializeCollapseState(true)), { collapsed: true }, "new writes carry only the collapsed flag");
 assert.equal(parseCollapseState(serializeCollapseState(false)), false, "serialize/parse round-trips expanded");
 
+// --- widget-specific cluster zoom: instant, persisted, clamped to [0.75, 1.5] ---
+assert.equal(normalizeIconZoom(1), 1, "default zoom is 1");
+assert.equal(normalizeIconZoom(1.2), 1.2, "in-range zoom round-trips");
+assert.equal(normalizeIconZoom(0.74), 1, "below-min zoom falls back to default");
+assert.equal(normalizeIconZoom(1.51), 1, "above-max zoom falls back to default");
+assert.equal(normalizeIconZoom(1.05), 1.1, "in-range zoom snaps to the 0.1 step");
+assert.equal(ICON_ZOOM_MIN, 0.75, "zoom minimum is 0.75");
+assert.equal(ICON_ZOOM_MAX, 1.5, "zoom maximum is 1.5");
+assert.equal(ICON_ZOOM_STEP, 0.1, "zoom steps by 0.1");
+assert.equal(stepIconZoom(1, ICON_ZOOM_STEP), 1.1, "zoom in steps by 0.1");
+assert.equal(stepIconZoom(1, -ICON_ZOOM_STEP), 0.9, "zoom out steps by 0.1");
+assert.equal(stepIconZoom(ICON_ZOOM_MIN, -ICON_ZOOM_STEP), ICON_ZOOM_MIN, "zoom out clamps at the minimum");
+assert.equal(stepIconZoom(ICON_ZOOM_MAX, ICON_ZOOM_STEP), ICON_ZOOM_MAX, "zoom in clamps at the maximum");
+assert.equal(stepIconZoom(1.04, ICON_ZOOM_STEP), 1.1, "step snaps from an off-grid value");
+assert.equal(parseIconZoom(null), 1, "missing stored zoom falls back to 1");
+assert.equal(parseIconZoom("not json"), 1, "corrupt stored zoom falls back to 1");
+assert.equal(parseIconZoom('"1.3"'), 1, "non-number stored zoom falls back to 1");
+assert.equal(parseIconZoom("0.9"), 0.9, "a stored number round-trips");
+assert.equal(parseIconZoom(serializeIconZoom(1.3)), 1.3, "serialize/parse round-trips");
+assert.equal(parseIconZoom(serializeIconZoom(1.6)), 1, "an out-of-range stored zoom falls back");
+// Endpoints are reachable step targets and must survive every
+// normalize/step/apply round-trip, or the stored minimum would snap to 0.8 on
+// the next read and the zoom-out button would never stay disabled at 0.75.
+assert.equal(normalizeIconZoom(ICON_ZOOM_MIN), ICON_ZOOM_MIN, "the minimum endpoint survives normalization");
+assert.equal(normalizeIconZoom(ICON_ZOOM_MAX), ICON_ZOOM_MAX, "the maximum endpoint survives normalization");
+assert.equal(parseIconZoom(serializeIconZoom(ICON_ZOOM_MIN)), ICON_ZOOM_MIN, "a stored minimum round-trips through serialize/parse");
+assert.equal(parseIconZoom(serializeIconZoom(ICON_ZOOM_MAX)), ICON_ZOOM_MAX, "a stored maximum round-trips through serialize/parse");
+assert.equal(normalizeIconZoom(stepIconZoom(ICON_ZOOM_MIN, -ICON_ZOOM_STEP)), ICON_ZOOM_MIN, "stepping down from the minimum stays at the minimum after normalization");
+assert.equal(normalizeIconZoom(stepIconZoom(ICON_ZOOM_MAX, ICON_ZOOM_STEP)), ICON_ZOOM_MAX, "stepping up from the maximum stays at the maximum after normalization");
+assert.equal(normalizeIconZoom(stepIconZoom(0.8, -ICON_ZOOM_STEP)), ICON_ZOOM_MIN, "stepping below 0.8 clamps to the reachable minimum, which normalize then preserves");
+assert.equal(stepIconZoom(ICON_ZOOM_MIN, ICON_ZOOM_STEP), 0.9, "stepping up from the minimum lands on the next reachable grid value");
+assert.equal(stepIconZoom(1.4, ICON_ZOOM_STEP), ICON_ZOOM_MAX, "stepping up from 1.4 reaches the maximum");
+
+// --- cluster max-width: the transformed cluster bound must stay inside the
+// visible root for every desktopZoom (0.5..2) × clusterZoom (0.75..1.5)
+// combination at any viewport >= 640, so overflow:hidden never clips it.
+// The reverse-zoomed frame makes 1 CSS px inside equal 1 physical px, so the
+// visible width is innerWidth × desktopZoom and the 18px edge margins are
+// physical px that must not be divided by the zoom.
+assert.equal(clusterGridMaxWidth(640, 1, 1), 604, "at zoom 1 the grid max-width leaves both 18px edge margins");
+assert.equal(clusterGridMaxWidth(640, 1, 1.5), 604 / 1.5, "cluster zoom divides the available physical width");
+assert.equal(clusterGridMaxWidth(900, 1, 0.75), (900 - 36) / 0.75, "zooming out widens the grid proportionally");
+for (const viewport of [640, 1280, 2560]) {
+  for (const desktopZoom of [0.5, 1, 2]) {
+    for (const clusterZoom of [0.75, 1, 1.25, 1.5]) {
+      const physical = viewport * desktopZoom;
+      const maxWidth = clusterGridMaxWidth(viewport, desktopZoom, clusterZoom);
+      const transformed = maxWidth * clusterZoom;
+      assert.ok(
+        transformed <= physical - 36 + 1e-9,
+        `desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom} at viewport ${viewport}: transformed ${transformed} > visible ${physical - 36}`,
+      );
+      assert.ok(transformed >= 0, "max-width never goes negative");
+    }
+  }
+}
+assert.equal(clusterGridMaxWidth(640, 0.5, 1.5), (320 - 36) / 1.5, "the desktop zoom widens the visible frame (innerWidth × zoom) before the margins");
+assert.equal(clusterGridMaxWidth(640, 2, 1), 1280 - 36, "a 2x desktop zoom doubles the physical width available inside the reverse-zoomed frame");
+assert.equal(clusterGridMaxWidth(1, 0.5, 1.5), 0, "a viewport narrower than the margins clamps to zero instead of overflowing");
+
+// --- extracted transient-UI timer scheduling: one cancel path clears every
+// delayed click/hover/preview so a close or drag can never be resurrected ---
+class FakeTimerHost implements TimerHost {
+  private next = 1;
+  private scheduled = new Map<number, () => void>();
+  setTimeout(fn: () => void, _delay: number): number {
+    const id = this.next++;
+    this.scheduled.set(id, fn);
+    return id;
+  }
+  clearTimeout(id: number): void { this.scheduled.delete(id); }
+  fire(id: number): void {
+    const fn = this.scheduled.get(id);
+    if (fn) { this.scheduled.delete(id); fn(); }
+  }
+  pending(): number[] { return [...this.scheduled.keys()].sort((a, b) => a - b); }
+}
+
+{
+  const host = new FakeTimerHost();
+  const timers = new IconTimers(host);
+  assert.deepEqual(timers.pending(), [], "a fresh timer set schedules nothing");
+  timers.scheduleClick(() => {});
+  timers.scheduleHover(() => {}, 1200);
+  timers.schedulePreviewClose(() => {});
+  assert.deepEqual(timers.pending(), ["click", "hover", "previewClose"], "all three transient timers are scheduled independently");
+  timers.cancel();
+  assert.deepEqual(timers.pending(), [], "cancel clears every scheduled transient timer");
+}
+
+{
+  // A close or drag must never leave a delayed open/preview behind.
+  const host = new FakeTimerHost();
+  const timers = new IconTimers(host);
+  let opened = 0;
+  timers.scheduleClick(() => { opened++; });
+  timers.scheduleHover(() => { opened++; }, 1200);
+  timers.schedulePreviewClose(() => { opened++; });
+  timers.cancel();
+  assert.equal(host.pending().length, 0, "cancel leaves no deadline in the host");
+  assert.equal(opened, 0, "no delayed open/preview fires after cancel");
+  // Pointer-down (drag start) uses the same cancel, so a pending click from a
+  // previous press cannot open an icon while the pointer is down.
+  timers.scheduleClick(() => { opened++; });
+  timers.cancel();
+  assert.equal(opened, 0, "drag start cancels a pending delayed click");
+}
+
+{
+  // Re-scheduling one kind replaces the previous deadline: two quick presses
+  // never double-open, and a fresh hover replaces a stale preview close.
+  const host = new FakeTimerHost();
+  const timers = new IconTimers(host);
+  let opened = 0;
+  timers.scheduleClick(() => { opened++; });
+  const first = host.pending()[0];
+  timers.scheduleClick(() => { opened++; });
+  const second = host.pending()[0];
+  assert.notEqual(first, second, "a new click schedule replaces the pending one");
+  assert.equal(host.pending().length, 1, "only the latest click stays scheduled");
+  host.fire(second);
+  assert.equal(host.pending().length, 0, "the fired click consumed its deadline");
+  assert.equal(opened, 1, "only the replacement click fired");
+  // The replaced deadline was cancelled inside the host, so re-firing its
+  // stale id is a no-op even if some other code still holds it.
+  host.fire(first);
+  assert.equal(opened, 1, "a cancelled deadline never fires even when its stale id is re-fired");
+}
+
+{
+  // Individual clear helpers keep enter() (hover restart) and popup hover-out
+  // from killing unrelated timers: clearing hover + previewClose must not
+  // cancel a click that is already in flight.
+  const host = new FakeTimerHost();
+  const timers = new IconTimers(host);
+  let opened = 0;
+  timers.scheduleClick(() => { opened++; });
+  timers.scheduleHover(() => { opened++; }, 1200);
+  timers.schedulePreviewClose(() => { opened++; });
+  timers.clearHover();
+  timers.clearPreviewClose();
+  assert.deepEqual(timers.pending(), ["click"], "clearHover/clearPreviewClose leave the delayed click intact");
+  host.fire(host.pending()[0]);
+  assert.equal(opened, 1, "the delayed click still fires after hover/previewClose were cleared");
+}
+assert.equal(CLICK_DELAY, 240, "the delayed-click window stays 240ms");
+assert.equal(PREVIEW_CLOSE_DELAY, 180, "the preview-close window stays 180ms");
+assert.equal(DRAG_THRESHOLD, 7, "the drag threshold stays 7px");
+
 // --- anchor and toggle contracts ---
 const logoSymbol = readFileSync(resolve(import.meta.dirname, "../assets/logo-symbol.svg"), "utf8");
 assert.match(logoSymbol, /aria-label="WorkGround2"/, "the anchor reuses the real WG2 logo-symbol asset");
@@ -197,6 +360,58 @@ assert.match(component, /\.desktop-icon-anchor, \.desktop-icon-collapse/, "ancho
 assert.match(css, /\.desktop-icon-cluster[\s\S]*position:\s*absolute/, "the cluster is positioned by its anchored corner");
 assert.match(css, /\.desktop-icon-cluster[\s\S]*right:\s*18px[\s\S]*bottom:\s*18px/, "the cluster stays pinned to the bottom-right corner of the transparent window");
 assert.match(css, /\.desktop-icon-controls[\s\S]*justify-content:\s*flex-end/, "the control row is right-aligned under the icon rows");
+
+// --- anchor left-click quick controls: native drag preserved, mutual
+// exclusion with the right-click menu and icon menus, delayed-click safety ---
+assert.match(component, /desktop-icon-anchor[^>]*onClick=\{toggleQuick\}/, "left-clicking the WG2 anchor toggles the quick toolbar without pointer handlers, so native window dragging is preserved");
+assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anchor keeps no pointer handlers, so left-button window dragging stays native Wails drag");
+assert.match(component, /const cancelTransientTimers = useCallback\(\(\) => \{[\s\S]*timers\.current\?\.cancel\(\);[\s\S]*drag\.current = null;[\s\S]*\}, \[\]\)/, "the central timer cancel clears every scheduled click/hover/preview and the in-flight drag");
+assert.match(component, /const closeTransient = useCallback\(\(\) => \{[\s\S]*cancelTransientTimers\(\);[\s\S]*setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "the central close path cancels the timers before clearing every transient surface");
+assert.match(component, /const toggleQuick = \(\) => \{[\s\S]*closeTransient\(\);[\s\S]*const next = !quickOpen;[\s\S]*setQuickOpen\(next\);[\s\S]*if \(next && topmostReadFailed\) setTopmostAttempt\(\(attempt\) => attempt \+ 1\);/, "anchor left-click closes every transient surface through the central path before toggling the toolbar, and reopening retries a failed always-on-top read");
+assert.match(component, /closeTransient\(\);[\s\S]*setAnchorMenuOpen\(true\)/, "anchor right-click closes every transient surface before opening its settings menu");
+assert.match(component, /aria-expanded=\{quickOpen\} aria-controls="desktop-icon-quick"/, "the anchor's aria-expanded/controls describe only its own left-click surface (the quick toolbar)");
+assert.match(component, /aria-haspopup="menu"/, "the right-click context menu is announced as a menu popup");
+assert.match(component, /id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu"/, "the anchor menu carries its own id for the aria-controls/menu contract");
+assert.match(component, /setAnchorMenuOpen\(false\);[\s\S]*?setQuickOpen\(false\);[\s\S]*?writeCollapsedState/, "the collapse toggle closes the quick toolbar");
+assert.match(component, /desktop-icon-cluster" style=\{\{ transform: `scale\(\$\{clusterZoom\}\)`, transformOrigin: "bottom right", "--cluster-zoom": String\(clusterZoom\), "--cluster-max-width": `\$\{clusterMaxWidth\}px` \} as CSSProperties\}/, "the cluster zoom scales around the bottom-right anchor and binds the computed desktopZoom-aware max-width to a CSS variable for the grid");
+assert.match(component, /stepIconZoom\(clusterZoom, -ICON_ZOOM_STEP\)[\s\S]*stepIconZoom\(clusterZoom, ICON_ZOOM_STEP\)/, "zoom buttons step through the shared layout contract");
+assert.match(component, /disabled=\{exiting \|\| clusterZoom <= ICON_ZOOM_MIN\}[\s\S]*disabled=\{exiting \|\| clusterZoom >= ICON_ZOOM_MAX\}/, "zoom buttons disable while exiting and exactly at the layout endpoints");
+assert.match(component, /const applyClusterZoom = \(next: number\) => \{[\s\S]*const zoom = normalizeIconZoom\(next\);[\s\S]*setClusterZoom\(zoom\);[\s\S]*writeClusterZoom\(zoom\);/, "the zoom apply path normalizes exactly once before persisting");
+assert.match(component, /wg2\.icon-widget-zoom/, "widget zoom persists under a stable widget-local key");
+assert.match(css, /\.desktop-icon-quick\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the quick toolbar never inherits the window drag region");
+assert.match(css, /\.desktop-icon-quick__btn\[aria-checked|\.desktop-icon-quick__btn--on/, "the always-on-top switch has a distinct checked style");
+const quickRule = css.match(/\.desktop-icon-quick\s*\{[^}]*\}/)?.[0] ?? "";
+assert.doesNotMatch(quickRule, /position:\s*absolute/, "the quick toolbar renders inline in the control row, never absolutely above the cluster");
+assert.match(css, /\.desktop-icon-grid\s*\{[^}]*max-width:\s*var\(--cluster-max-width, calc\(\(100vw - 36px\) \/ var\(--cluster-zoom, 1\)\)\);/, "the unscaled grid width is the computed desktopZoom-aware cluster max-width with a static calc fallback");
+assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wrap instead of clipping when the scaled cluster is narrow");
+
+// --- quick-control failures use their own error channel: the 1s snapshot
+// poll must never erase an action failure (toggle, open main/settings, or the
+// initial always-on-top read) ---
+assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
+assert.match(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,260}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
+assert.doesNotMatch(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,260}setQuickError/, "the snapshot poll never touches the quick-error channel");
+assert.match(component, /\(error \|\| quickError\) && <div className="desktop-icon-toast" role="alert">/, "the toast surfaces snapshot and quick-control errors together");
+assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(TOPMOST_READ_ERROR\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
+assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");
+assert.match(component, /const \[topmostAttempt, setTopmostAttempt\] = useState\(0\);/, "the always-on-top read retry is driven by an explicit attempt counter");
+
+// --- transient anchor UI closes on any real interaction, and hover preview
+// is suppressed while the quick toolbar or anchor menu is open ---
+assert.match(component, /if \(!snapshot\.hoverStatusDelayMs \|\| activeID \|\| menuID \|\| drag\.current \|\| anchorMenuOpen \|\| quickOpen\) return;/, "hover preview is suppressed while the quick toolbar or anchor menu is open");
+assert.match(component, /drag\.current = \{ item, x: event\.clientX, y: event\.clientY, moved: false \};[\s\S]*setAnchorMenuOpen\(false\);[\s\S]*setQuickOpen\(false\);/, "pointer-down on an icon closes the transient anchor UI immediately");
+assert.match(component, /const doubleClick = \(item: DesktopIconItem\) => \{ timers\.current\?\.cancel\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "double-click cancels every delayed timer before running the icon action");
+assert.match(component, /setBusy\(true\); setError\(""\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "a normal icon action cancels the delayed timers and closes the transient anchor UI");
+assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "a document-level outside-click handler closes every transient surface (timers included) on any container/grid/control gap");
+assert.match(component, /TRANSIENT_PROTECTED_SELECTOR = "\.desktop-icon-quick, \.desktop-icon-anchor, \.desktop-icon-anchor-menu, \.desktop-icon-menu, \.desktop-icon, \.desktop-icon-collapse, \.desktop-icon-popup, \.desktop-icon-toast"/, "the outside-click exclusion list covers the toolbar, anchor, menus, valid icons, popups and the toast");
+assert.doesNotMatch(component, /event\.target === event\.currentTarget/, "outside-click detection no longer relies on the main element alone");
+
+// --- exit round-trip: main/settings disable and the toolbar announces busy,
+// and the right-click settings entry stays open on failure (visible retry) ---
+assert.match(component, /aria-busy=\{exiting\}/, "the quick toolbar announces the exit round-trip through aria-busy");
+assert.match(component, /disabled=\{exiting\} onClick=\{\(\) => void openMainWindow\(\)\}[\s\S]*disabled=\{exiting\} onClick=\{\(\) => void openSettingsWindow\(\)\}/, "open main and settings are disabled while the exit round-trip is in flight");
+assert.match(component, /onKeyDown=\{quickRove\}/, "the quick toolbar implements arrow-key roving");
+assert.match(component, /const quickRove =[\s\S]*ArrowRight[\s\S]*ArrowLeft[\s\S]*Home[\s\S]*End[\s\S]*buttons\[next\]\.focus\(\)/, "roving moves focus with Left/Right/Home/End and lands on an enabled button");
 
 // --- completion notice: fixed OK / Detail / Dismiss with distinct colors ---
 assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}>OK<\/button>[\s\S]{0,200}desktop-icon-popup__detail"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("open"\)\}>Detail<\/button>[\s\S]{0,200}desktop-icon-popup__dismiss"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("dismiss"\)\}>Dismiss<\/button>/, "completion notices always render OK / Detail / Dismiss in fixed order with their class contracts");
@@ -349,21 +564,25 @@ assert.match(appSource, /const widgetRoomRequest = useRef\(false\)[\s\S]+if \(wi
 assert.match(appSource, /appliedCollabDialogSignal = useRef\(0\)[\s\S]+collabDialogSignal > 0 && collabDialogSignal !== appliedCollabDialogSignal\.current/, "MainApp opens the collaboration dialog exactly once per distinct signal, never on initial mount");
 assert.match(appSource, /void openCollaborationDialog\(\)/, "MainApp reuses its existing openCollaborationDialog to show the Host/Join Room form");
 assert.match(appSource, /collabDialogSignal=\{collabDialogSignal\}/, "the root App forwards the signal to MainApp");
-assert.match(appSource, /<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} \/>/, "DesktopIconMode receives the room open/new and settings-open coordination callbacks");
+assert.match(appSource, /const openWidgetMain = useCallback\(\(\) => \{[\s\S]*return widgetCoordinator\.exit\(\);[\s\S]*\}, \[widgetCoordinator\]\)/, "open main exits widget mode through the shared coordinator");
+assert.match(appSource, /<DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} onOpenMain=\{openWidgetMain\} \/>/, "DesktopIconMode receives the room open/new, settings-open, and open-main coordination callbacks");
 
 // --- anchor context menu: right-click opens a settings entry without
 // triggering anchor drag, icon actions, or a delayed primary click ---
 assert.match(component, /const \[anchorMenuOpen, setAnchorMenuOpen\] = useState\(false\)/, "the anchor menu owns its own open state");
-assert.match(component, /onContextMenu=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?window\.clearTimeout\(clickTimer\.current\);[\s\S]*?window\.clearTimeout\(hoverTimer\.current\);[\s\S]*?window\.clearTimeout\(previewCloseTimer\.current\);[\s\S]*?drag\.current = null;[\s\S]*?setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(true\)[\s\S]*?\}\}/, "right-clicking the anchor only opens its menu: it cancels every click/hover/preview timer, clears the drag state, and closes icon popups and the plain icon menu");
+assert.match(component, /onContextMenu=\{\(event\) => \{[\s\S]*?event\.preventDefault\(\);[\s\S]*?closeTransient\(\);[\s\S]*?setAnchorMenuOpen\(true\)[\s\S]*?\}\}/, "right-clicking the anchor only opens its menu: the central close cancels every click/hover/preview timer, clears the drag state, and closes icon popups and the plain icon menu");
 assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anchor keeps no pointer handlers, so left-button window dragging stays native Wails drag");
-assert.match(component, /desktop-icon-anchor-menu" role="menu"[\s\S]*?<button type="button" role="menuitem" onClick=\{\(\) => \{[\s\S]*?setAnchorMenuOpen\(false\);[\s\S]*?void onOpenSettings\(\)\.catch\(\(cause\) => setError\(cause instanceof Error \? cause\.message : String\(cause\)\)\)/, "the anchor menu exposes a non-submitting 设置 button, closes itself, and surfaces a failed settings open in the widget's visible error toast for a safe retry");
-assert.match(component, /event\.key === "Escape"\) \{ setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); \}/, "Escape closes the anchor menu with the same key handler");
-assert.match(component, /const close = \(\) => \{[\s\S]*?setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\);[\s\S]*?addEventListener\("blur", close\)/, "losing desktop-window focus closes the anchor menu too");
-assert.match(component, /if \(event\.target === event\.currentTarget\) \{ setActiveID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); \}/, "clicking the empty desktop closes the anchor menu");
+assert.match(component, /id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu"[\s\S]*?<button type="button" role="menuitem" disabled=\{exiting\} onClick=\{\(\) => void openSettingsWindow\(\)\}/, "the anchor menu 设置 button routes through the guarded exit-before-open flow and stays open, so a failed exit keeps the same click retryable");
+assert.doesNotMatch(component, /setAnchorMenuOpen\(false\);[\s\S]{0,60}void openSettingsWindow/, "a failed settings exit must not close the anchor menu before the exit resolves");
+assert.match(component, /event\.key === "Escape"\) \{ closeTransient\(\); \}/, "Escape closes every transient surface through the central close path");
+assert.match(component, /const close = \(\) => closeTransient\(\);[\s\S]*?addEventListener\("blur", close\)/, "losing desktop-window focus closes every transient surface through the central close path");
+assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "clicking the empty desktop or any container/grid/control gap closes every transient surface through the central close path");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");
-assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu/, "the anchor menu gets the same shadow padding in native hit regions");
+assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-quick/, "the quick toolbar joins the native hit-region reporting so the transparent window keeps it clickable");
+assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom\]\);/, "hit-region refresh depends on the transient anchor UI (including the previously omitted anchor menu) and the cluster zoom");
+assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu, \.desktop-icon-quick/, "the quick toolbar gets the same shadow padding in native hit regions");
 assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
-assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu");
+assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-quick, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu and quick toolbar");
 assert.match(css, /\.desktop-icon-anchor\s*\{[^}]*--wails-draggable:\s*drag;/, "the anchor itself stays a native window drag handle for left-button dragging");
 
 console.log("desktop icon mode tests passed");

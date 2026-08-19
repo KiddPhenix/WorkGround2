@@ -42,13 +42,23 @@ assert.match(bridgeSource, /widgetSkin: "classic"/, "browser mock defaults widge
 assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget style to icons");
 
 // The desktop widget is icons-only: App renders only DesktopIconMode, and the
-// icon mode has no return-to-main button or onExit chain.
+// icon mode owns its exit-to-main and settings entries through App callbacks.
 assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
-assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new and settings coordination");
+assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} onOpenMain=\{openWidgetMain\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new, settings, and open-main coordination");
 const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
 const iconCSS = read("../components/widget/desktop-icon-mode.css");
-assert.doesNotMatch(iconModeSource, /onExit|返回主窗口|desktop-icon-exit/, "icon mode has no return-to-main button or onExit prop");
-assert.doesNotMatch(iconCSS, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
+assert.match(iconModeSource, /onOpenMain: \(\) => Promise<void>/, "icon mode receives an async open-main callback from the root App");
+assert.match(iconModeSource, /role="switch" aria-checked=\{topmost\}/, "the quick toolbar always-on-top control is an ARIA switch");
+assert.match(appSource, /const openWidgetMain = useCallback\(\(\) => \{[\s\S]*return widgetCoordinator\.exit\(\);/, "open main exits widget mode through the shared coordinator");
+assert.doesNotMatch(iconCSS, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button styles");
+
+// --- generated Wails binding contract: DesktopStartupSettingsView must carry
+// the always-on-top field in the same shape as the Go struct, so the frontend
+// startup read and the browser mock agree with the native binding ---
+const modelsSource = read("../../wailsjs/go/models.ts");
+const settingsViewClass = modelsSource.match(/export class DesktopStartupSettingsView \{[\s\S]*?\n\s*\}[\s\S]*?\n\s*}/)?.[0] ?? "";
+assert.match(settingsViewClass, /widgetAlwaysOnTop: boolean;/, "the generated models.ts binding declares widgetAlwaysOnTop as boolean");
+assert.match(settingsViewClass, /this\.widgetAlwaysOnTop = source\["widgetAlwaysOnTop"\];/, "the generated constructor projects widgetAlwaysOnTop from the Go JSON key");
 
 for (const locale of ["en", "zh", "zh-TW"]) {
   const source = read(`../locales/${locale}.ts`);
@@ -80,6 +90,7 @@ assert.doesNotMatch(
   "settings must never open before the widget exit resolves",
 );
 assert.match(iconModeSource, /onOpenSettings: \(\) => Promise<void>/, "DesktopIconMode receives an async settings-open callback from the root App");
+assert.match(iconModeSource, /DesktopStartupSettings\(\)[\s\S]+widgetAlwaysOnTop/, "the quick toolbar reads the initial always-on-top value through the existing startup contract");
 assert.doesNotMatch(iconModeSource, /onOpenSettings[\s\S]{0,80}\.then\(\(\) => setSettingsTarget/, "the widget never opens settings directly; only the root App owns the exit-before-open flow");
 
 console.log("widget settings contract tests passed");

@@ -39,10 +39,16 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-grid {
   display: grid;
   gap: 6px;
-  max-width: calc(100vw - 36px);
+  /* The cluster scales around its bottom-right anchor, so the unscaled grid
+     must stay within the visible root divided by the active zoom: the final
+     transformed bounds never exceed the window even at 1.5x with many icons.
+     --cluster-max-width is computed from the reverse-zoomed frame (visible
+     width = innerWidth × desktopZoom) minus both 18px edge margins, then
+     divided by the cluster zoom; the calc stays as a static fallback. */
+  max-width: var(--cluster-max-width, calc((100vw - 36px) / var(--cluster-zoom, 1)));
 }
 
-.desktop-icon-row { display: flex; justify-content: flex-end; align-items: end; gap: 6px; min-height: 78px; }
+.desktop-icon-row { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: end; gap: 6px; min-height: 78px; }
 .desktop-icon-row--top { padding-right: 4px; }
 .desktop-icon-row--bottom .desktop-icon-wrap--workspace { margin-left: 8px; }
 .desktop-icon-row--bottom .desktop-icon-wrap--fixed:first-of-type { margin-left: 8px; }
@@ -52,8 +58,21 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-collapse svg { width: 15px; height: 15px; pointer-events: none; }
 .desktop-icon-anchor { --wails-draggable: drag; display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; user-select: none; }
 .desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
-.desktop-icon-anchor--menu-open { border-color: rgb(193 210 255 / 62%); }
+.desktop-icon-anchor--menu-open, .desktop-icon-anchor--quick-open { border-color: rgb(193 210 255 / 62%); }
 .desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; }
+/* The quick toolbar renders inline in the control row between the collapse
+   toggle and the WG2 anchor: it must never float above the cluster (no
+   absolute positioning), so the toolbar scales and wraps with the cluster and
+   keeps the collapse → zoom out → zoom in → topmost → main → settings → anchor
+   reading order. It stays an interactive no-drag surface. */
+.desktop-icon-quick { --wails-draggable: no-drag; display: inline-flex; align-items: center; gap: 5px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
+.desktop-icon-quick__btn { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid rgb(255 255 255 / 12%); border-radius: 6px; color: #d8dbe4; background: transparent; cursor: pointer; touch-action: manipulation; }
+.desktop-icon-quick__btn:hover:not(:disabled) { border-color: rgb(193 210 255 / 40%); color: #fff; }
+.desktop-icon-quick__btn:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
+.desktop-icon-quick__btn:disabled { opacity: .45; cursor: default; }
+.desktop-icon-quick__btn svg { width: 15px; height: 15px; pointer-events: none; }
+.desktop-icon-quick__btn--on { border-color: #8e74e3; color: #ad92ff; background: #3a2f5e; }
+.desktop-icon-quick__btn .desktop-icon-quick__spin { animation: desktop-icon-running-spin .9s linear infinite; }
 /* The anchor context menu is an interactive surface: never inherit the
    window-drag region, and never let the anchor's own drag start from it. */
 .desktop-icon-anchor-menu { --wails-draggable: no-drag; position: absolute; right: 0; bottom: calc(100% + 10px); z-index: 6; display: grid; min-width: 126px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
@@ -61,7 +80,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-anchor-menu button:hover { background: #353947; }
 .desktop-icon-anchor-menu button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 /* Interactive controls stay clickable: never inherit a drag region. */
-.desktop-icon-collapse, .desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-toast {
+.desktop-icon-collapse, .desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-quick, .desktop-icon-toast {
   --wails-draggable: no-drag;
 }
 .desktop-icon-collapse:focus-visible, .desktop-icon-anchor:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }

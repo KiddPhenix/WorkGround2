@@ -5303,6 +5303,12 @@ export default function App() {
   const openWidgetRoom = useCallback((tabID: string) => {
     return widgetCoordinator.exit(tabID);
   }, [widgetCoordinator]);
+  // Opening the main window from the quick toolbar exits widget mode through
+  // the shared coordinator; a failed exit rejects so the widget keeps the
+  // error visible and the same 打开主窗口 click becomes a safe retry.
+  const openWidgetMain = useCallback(() => {
+    return widgetCoordinator.exit();
+  }, [widgetCoordinator]);
   // A new Room exits the widget first and bumps the dialog signal only when
   // the exit succeeded; a failed exit must never open the dialog from the
   // still-hidden widget window. The ref guards the async exit round-trip so a
@@ -5375,7 +5381,7 @@ export default function App() {
   return (
 	<>
 	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
-	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} />}
+	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} />}
 	</>
   );
 }

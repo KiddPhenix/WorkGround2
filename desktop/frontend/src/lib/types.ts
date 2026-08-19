@@ -1557,6 +1557,7 @@ export interface DesktopStartupSettingsView {
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
   widgetEnabled: boolean; // show the widget entry in the window frame
+  widgetAlwaysOnTop: boolean; // keep the widget window always-on-top
   widgetSkin: string; // widget visual skin
   widgetStyle?: string; // icons-only; legacy pager/empty values normalize to icons
   hoverStatusDelayMs?: number;

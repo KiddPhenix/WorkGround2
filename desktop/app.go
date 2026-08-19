@@ -161,6 +161,17 @@ type App struct {
 	// which is a no-op outside Windows).
 	widgetTaskbarToggle func(hide bool) error
 
+	// widgetWindowOps overrides the native window geometry interaction used by
+	// widget-mode transitions and style switches (test-only seam; nil uses the
+	// Wails/Win32 runtime). Injecting it lets tests drive the real orchestration
+	// paths (Enter/ExitWidgetMode, SetDesktopWidgetStyle) without a live window.
+	widgetWindowOps *widgetWindowOps
+
+	// windowSetAlwaysOnTop overrides the runtime always-on-top flag used by
+	// SetDesktopWidgetAlwaysOnTop while widget mode is active (test-only seam;
+	// nil wraps runtime.WindowSetAlwaysOnTop).
+	windowSetAlwaysOnTop func(on bool) error
+
 	mediaTokens     *mediaTokenStore
 	background      *sessionBackgroundService
 	botInstalls     map[string]*botInstallSession

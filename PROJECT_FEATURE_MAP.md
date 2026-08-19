@@ -339,6 +339,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-07
 
+### 图标小组件锚点快捷控制
+- Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/App.tsx`, `desktop/settings_app.go`, `desktop/widget_mode.go`, `desktop/widget_window_windows.go`, related tests
+- Summary: 规划在图标小组件收起/展开按钮与 WG2 锚点之间增加左键快捷条，包含放大、缩小、总在最前开关、打开主界面和设置；锚点现有右键设置入口保留。
+- Keywords: DesktopIconMode, desktop-icon-anchor, quick controls, zoom, always on top, open main, settings
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-19
+
 ### 全窗口设置与锚点菜单入口
 - Location: `desktop/frontend/src/App.tsx`, `desktop/frontend/src/components/SettingsPanel.tsx`, `desktop/frontend/src/styles.css`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
 - Summary: 设置 overlay 由 SettingsPanel 与全局 overlay store 驱动；小组件锚点菜单位于 DesktopIconMode，入口应先退出 Widget 再打开通用设置。

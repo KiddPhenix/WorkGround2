@@ -4288,7 +4288,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetSkin, widgetStyle, hoverStatusDelayMs } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetAlwaysOnTop, widgetSkin, widgetStyle, hoverStatusDelayMs } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -4301,6 +4301,7 @@ function makeMockApp(): AppBindings {
         statusBarItems,
         checkUpdates,
         widgetEnabled,
+        widgetAlwaysOnTop,
         widgetSkin,
 			widgetStyle,
 			hoverStatusDelayMs,

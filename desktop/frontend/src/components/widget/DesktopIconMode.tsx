@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpen, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, Folder, HelpCircle, Loader2, MessageCircle, MessagesSquare, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Star, Trash2, Users, X, Zap } from "lucide-react";
+import { BookOpen, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, MessagesSquare, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
 import { filterAtMatches } from "../../lib/atMatches";
@@ -7,21 +7,28 @@ import { isComposerSubmitKey } from "../../lib/composerKeyboard";
 import { activeFileReferenceToken } from "../FileReferenceMenu";
 import type { CommandInfo, DirEntry, ModelInfo, SlashArgItem, ToolApprovalMode, VocabularyMatch } from "../../lib/types";
 import { acceptVocabulary, type VocabularyToken } from "../../lib/vocabularyCompletion";
-import { iconHitRect, parseCollapseState, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState } from "./desktopIconLayout";
+import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom } from "./desktopIconLayout";
 import logoSymbol from "../../assets/logo-symbol.svg";
 import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent, type QuickStartIntent, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
+import { DRAG_THRESHOLD, IconTimers, windowTimerHost } from "./desktopIconTimers";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle, type WorkspaceRow } from "./workspaceManager";
 import { roomRows, type RoomRow } from "./roomsManager";
 import type { ProjectIconKey } from "../../lib/projectIcons";
 import "./desktop-icon-mode.css";
 
-const CLICK_DELAY = 240;
-const DRAG_THRESHOLD = 7;
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
 const CLUSTER_KEY = "wg2.icon-widget-cluster";
-const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
+const QUICK_ZOOM_KEY = "wg2.icon-widget-zoom";
+const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-quick, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
+// Surfaces that own their own pointer handling: clicking them must never be
+// treated as an outside click. The document-level outside-click handler closes
+// transient anchor UI (quick toolbar / right-click menu / icon popups) only
+// when the pointer lands on the desktop background or a container/grid/control
+// gap.
+const TRANSIENT_PROTECTED_SELECTOR = ".desktop-icon-quick, .desktop-icon-anchor, .desktop-icon-anchor-menu, .desktop-icon-menu, .desktop-icon, .desktop-icon-collapse, .desktop-icon-popup, .desktop-icon-toast";
+const TOPMOST_READ_ERROR = "读取置顶状态失败，请重新打开快捷操作条重试";
 const IME_CONFIRM_GRACE_MS = 100;
 
 // IME composition must never leak into completion or submit handling: the
@@ -34,7 +41,7 @@ function isWidgetImeKeyEvent(event: ReactKeyboardEvent<HTMLTextAreaElement>, com
 
 function nativeHitPadding(node: HTMLElement): number {
 	if (node.matches(".desktop-icon-popup")) return 40;
-	if (node.matches(".desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor-menu")) return 30;
+	if (node.matches(".desktop-icon-menu, .desktop-icon-toast, .desktop-icon-anchor-menu, .desktop-icon-quick")) return 30;
 	if (node.matches(".desktop-icon")) return 20;
 	return 8;
 }
@@ -54,6 +61,15 @@ function readCollapsedState(): boolean {
 
 function writeCollapsedState(collapsed: boolean): void {
   try { localStorage.setItem(CLUSTER_KEY, serializeCollapseState(collapsed)); } catch { /* storage unavailable */ }
+}
+
+function readClusterZoom(): number {
+  try { return parseIconZoom(localStorage.getItem(QUICK_ZOOM_KEY)); }
+  catch { return 1; }
+}
+
+function writeClusterZoom(zoom: number): void {
+  try { localStorage.setItem(QUICK_ZOOM_KEY, serializeIconZoom(zoom)); } catch { /* storage unavailable */ }
 }
 
 function statusGlyph(item: DesktopIconItem) {
@@ -705,20 +721,29 @@ function pinnedIcon(row: { pinned: boolean }) {
   return row.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />;
 }
 
-export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void> }) {
+export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void> }) {
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
+	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [activeID, setActiveID] = useState("");
   const [previewID, setPreviewID] = useState("");
   const [menuID, setMenuID] = useState("");
   const [anchorMenuOpen, setAnchorMenuOpen] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [clusterZoom, setClusterZoom] = useState(readClusterZoom);
+  const [topmost, setTopmost] = useState(false);
+  const [topmostLoaded, setTopmostLoaded] = useState(false);
+  const [topmostBusy, setTopmostBusy] = useState(false);
+  const [topmostReadFailed, setTopmostReadFailed] = useState(false);
+  const [topmostAttempt, setTopmostAttempt] = useState(0);
+  const [exiting, setExiting] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [quickError, setQuickError] = useState("");
   const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([]);
 	const [quickWorkspace, setQuickWorkspace] = useState("");
-	const clickTimer = useRef<number | undefined>(undefined);
-	const hoverTimer = useRef<number | undefined>(undefined);
-	const previewCloseTimer = useRef<number | undefined>(undefined);
+	const timers = useRef<IconTimers | null>(null);
+	if (timers.current === null) timers.current = new IconTimers(windowTimerHost);
   const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean } | null>(null);
 	const actionRequests = useRef(new Map<string, string>());
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -727,6 +752,24 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 	const regionKey = useRef("");
 	const regionQueue = useRef<Promise<void>>(Promise.resolve());
 	const [collapsed, setCollapsed] = useState(readCollapsedState);
+	const exitRequest = useRef(false);
+
+	// cancelTransientTimers cancels every scheduled click/hover/preview and the
+	// in-flight drag: a delayed open or preview can never resurrect transient UI
+	// that was just closed, and never fires while a drag is in progress.
+	const cancelTransientTimers = useCallback(() => {
+		timers.current?.cancel();
+		drag.current = null;
+	}, []);
+	// closeTransient is the one entry point that closes every transient surface
+	// (icon popup, preview, icon menu, quick toolbar, anchor menu). Escape,
+	// document outside clicks, blur, collapse/expand, anchor interactions and
+	// every icon action route through it, so the timer cancellation always
+	// precedes the state clearing.
+	const closeTransient = useCallback(() => {
+		cancelTransientTimers();
+		setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
+	}, [cancelTransientTimers]);
 
   const refresh = useCallback(async () => {
     try { const next = await app.GetDesktopIconSnapshot(); setSnapshot(next); setError(next.error || ""); }
@@ -740,6 +783,32 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 			.catch(() => { if (alive) setDesktopZoom(1); });
 		return () => { alive = false; };
 	}, []);
+	// The reverse-zoomed frame's visible width is innerWidth × desktopZoom; it
+	// changes on window resize, so the grid max-width must follow it.
+	useEffect(() => {
+		const onResize = () => setViewportWidth(window.innerWidth);
+		window.addEventListener("resize", onResize);
+		return () => window.removeEventListener("resize", onResize);
+	}, []);
+	const clusterMaxWidth = useMemo(
+		() => clusterGridMaxWidth(viewportWidth, desktopZoom, clusterZoom),
+		[viewportWidth, desktopZoom, clusterZoom],
+	);
+	// The always-on-top switch mirrors the persisted config (single source of
+	// truth). The initial value comes through the existing lightweight startup
+	// contract, and the UI only ever reflects the last confirmed config state.
+	// A failed initial read stays visible, keeps the switch disabled, and never
+	// assumes false: reopening the quick toolbar bumps topmostAttempt, which
+	// retries the read so the switch can recover without a restart.
+	useEffect(() => {
+		let alive = true;
+		setTopmostBusy(true);
+		void app.DesktopStartupSettings()
+			.then((settings) => { if (alive) { setTopmost(Boolean(settings.widgetAlwaysOnTop)); setTopmostReadFailed(false); setQuickError((current) => current === TOPMOST_READ_ERROR ? "" : current); } })
+			.catch(() => { if (alive) { setTopmostReadFailed(true); setQuickError(TOPMOST_READ_ERROR); } })
+			.finally(() => { if (alive) { setTopmostLoaded(true); setTopmostBusy(false); } });
+		return () => { alive = false; };
+	}, [topmostAttempt]);
 	useLayoutEffect(() => {
 		let frame = 0;
 		let alive = true;
@@ -768,10 +837,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
-	}, [activeID, menuID, previewID, snapshot.revision, collapsed]);
+	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom]);
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition) => {
-    setBusy(true); setError("");
+    setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
 		const intent = JSON.stringify([item.id, notice?.id || "", item.revision, action, values, position || null]);
 		const stableID = actionRequests.current.get(intent) || requestID(`icon-${action}`);
 		actionRequests.current.set(intent, stableID);
@@ -788,22 +857,33 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); }
+      if (event.key === "Escape") { closeTransient(); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
-  }, []);
+  }, [closeTransient]);
 	useEffect(() => {
-		const close = () => {
-			window.clearTimeout(clickTimer.current); window.clearTimeout(hoverTimer.current); window.clearTimeout(previewCloseTimer.current);
-			drag.current = null;
-			setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false);
-		};
+		const close = () => closeTransient();
 		window.addEventListener("blur", close);
 		return () => { close(); window.removeEventListener("blur", close); };
-	}, []);
+	}, [closeTransient]);
+	// Outside-click detection covers the whole widget window, including the
+	// container/grid/control gaps that the old main-only handler missed.
+	// Protected surfaces (quick toolbar, anchor, menus, icons, popups, toast)
+	// own their own pointer handling and are excluded here.
+	useEffect(() => {
+		const onPointerDown = (event: PointerEvent) => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			if (target.closest(TRANSIENT_PROTECTED_SELECTOR)) return;
+			closeTransient();
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		return () => document.removeEventListener("pointerdown", onPointerDown);
+	}, [closeTransient]);
 
   const openItem = (item: DesktopIconItem) => {
+    cancelTransientTimers();
     if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setActiveID(item.id); }
 		else if (item.kind === "fixed" && item.sourceId === "search") {
 			setActiveID(item.id);
@@ -819,23 +899,28 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 			setActiveID(item.id);
 		}
     else setActiveID((current) => current === item.id ? "" : item.id);
-    setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false);
+    setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
   };
   const enter = (item: DesktopIconItem) => {
-    window.clearTimeout(hoverTimer.current);
-		window.clearTimeout(previewCloseTimer.current);
-    if (!snapshot.hoverStatusDelayMs || activeID || menuID || drag.current) return;
-    hoverTimer.current = window.setTimeout(() => setPreviewID(item.id), snapshot.hoverStatusDelayMs);
+    timers.current?.clearHover();
+		timers.current?.clearPreviewClose();
+    if (!snapshot.hoverStatusDelayMs || activeID || menuID || drag.current || anchorMenuOpen || quickOpen) return;
+    timers.current?.scheduleHover(() => setPreviewID(item.id), snapshot.hoverStatusDelayMs);
   };
-	const closePreviewSoon = () => { window.clearTimeout(previewCloseTimer.current); previewCloseTimer.current = window.setTimeout(() => setPreviewID(""), 180); };
+	const closePreviewSoon = () => { timers.current?.schedulePreviewClose(() => setPreviewID("")); };
   const pointerDown = (event: ReactPointerEvent, item: DesktopIconItem) => {
     if (event.button !== 0) return;
+    // Drag start must cancel any pending click/hover/preview so a delayed open
+    // or preview cannot resurrect while the pointer is down or mid-drag.
+    timers.current?.cancel();
     drag.current = { item, x: event.clientX, y: event.clientY, moved: false };
+    setAnchorMenuOpen(false);
+    setQuickOpen(false);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: ReactPointerEvent) => {
     if (!drag.current) return;
-    if (Math.hypot(event.clientX - drag.current.x, event.clientY - drag.current.y) > DRAG_THRESHOLD) { drag.current.moved = true; setPreviewID(""); window.clearTimeout(clickTimer.current); }
+    if (Math.hypot(event.clientX - drag.current.x, event.clientY - drag.current.y) > DRAG_THRESHOLD) { timers.current?.cancel(); drag.current.moved = true; setPreviewID(""); }
   };
   const pointerUp = (event: ReactPointerEvent, item: DesktopIconItem) => {
     const current = drag.current; drag.current = null;
@@ -845,10 +930,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
       void run(item, "move", [], undefined, { ...item.position, order: Math.max(0, item.position.order + delta) });
       return;
     }
-    window.clearTimeout(clickTimer.current);
-    clickTimer.current = window.setTimeout(() => openItem(item), CLICK_DELAY);
+    timers.current?.scheduleClick(() => openItem(item));
   };
-	const doubleClick = (item: DesktopIconItem) => { window.clearTimeout(clickTimer.current); if (item.kind === "fixed") openItem(item); else void run(item, "open"); };
+	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else void run(item, "open"); };
 
   const rows = { top: snapshot.items.filter((item) => item.position.row === "top"), bottom: snapshot.items.filter((item) => item.position.row === "bottom") };
   const active = snapshot.items.find((item) => item.id === activeID);
@@ -883,7 +967,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); window.clearTimeout(clickTimer.current); setMenuID(item.id); setActiveID(""); setAnchorMenuOpen(false); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { window.clearTimeout(hoverTimer.current); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setMenuID(item.id); setActiveID(""); setAnchorMenuOpen(false); setQuickOpen(false); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
       <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
@@ -906,37 +990,139 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
 	// corner of the transparent window, so dragging moves the whole window and
 	// the native position restore path owns persistence — no cluster coordinates.
 	const toggleCollapsed = () => {
+		closeTransient();
 		const next = !collapsed;
 		setCollapsed(next);
-		if (next) { setActiveID(""); setPreviewID(""); setMenuID(""); }
-		setAnchorMenuOpen(false);
 		writeCollapsedState(next);
 	};
 
-  return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件" onPointerDown={(event) => { if (event.target === event.currentTarget) { setActiveID(""); setMenuID(""); setAnchorMenuOpen(false); } }}>
+	const applyClusterZoom = (next: number) => {
+		if (exiting) return;
+		const zoom = normalizeIconZoom(next);
+		setClusterZoom(zoom);
+		writeClusterZoom(zoom);
+	};
+
+	// Left-clicking the anchor toggles the inline quick toolbar. Wails only
+	// starts the native window drag on mousemove, so a stationary primary click
+	// still reaches the button; clearing every click/hover/preview timer here
+	// stops a delayed icon click or hover from reopening transient UI over the
+	// toolbar, and the toolbar is mutually exclusive with every other menu.
+	const toggleQuick = () => {
+		closeTransient();
+		const next = !quickOpen;
+		setQuickOpen(next);
+		// Reopening the toolbar retries the always-on-top read that failed on
+		// mount, so the switch can recover without a restart.
+		if (next && topmostReadFailed) setTopmostAttempt((attempt) => attempt + 1);
+	};
+
+	// Always-on-top is config-owned: the switch never flips optimistically, it
+	// only reflects the last confirmed value and disables while a toggle is in
+	// flight or the initial read failed, so a double click cannot double-submit
+	// and an unconfirmed value is never acted on.
+	const toggleTopmost = async () => {
+		if (exiting || topmostBusy || !topmostLoaded || topmostReadFailed) return;
+		const next = !topmost;
+		setTopmostBusy(true);
+		setQuickError("");
+		try {
+			await app.SetDesktopWidgetAlwaysOnTop(next);
+			setTopmost(next);
+		} catch (cause) {
+			setQuickError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setTopmostBusy(false);
+		}
+	};
+
+	// Open main / open settings both exit widget mode through the root App.
+	// A failed exit stays in the widget (the main window is still hidden) and
+	// the error stays visible, so the same click is a safe retry. The shared
+	// guard keeps the async round-trips from double-submitting, and both
+	// entries are disabled (aria-busy) while the exit is in flight.
+	const openMainWindow = async () => {
+		if (exitRequest.current) return;
+		exitRequest.current = true;
+		setExiting(true);
+		try {
+			await onOpenMain();
+		} catch (cause) {
+			setQuickError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			exitRequest.current = false;
+			setExiting(false);
+		}
+	};
+	const openSettingsWindow = async () => {
+		if (exitRequest.current) return;
+		exitRequest.current = true;
+		setExiting(true);
+		try {
+			await onOpenSettings();
+		} catch (cause) {
+			// A failed exit stays in the widget; the toolbar stays open (like
+			// open main) so the same 设置 click is a safe retry.
+			setQuickError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			exitRequest.current = false;
+			setExiting(false);
+		}
+	};
+
+	// Arrow-key roving for the quick toolbar: Left/Right move focus, Home/End
+	// jump to the first/last control, and disabled buttons (e.g. zoom out at
+	// the minimum) are skipped.
+	const quickRove = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+		const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>(".desktop-icon-quick__btn"));
+		if (buttons.length < 2) return;
+		const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+		let next = -1;
+		if (event.key === "ArrowRight" || event.key === "ArrowLeft") {
+			const step = event.key === "ArrowRight" ? 1 : -1;
+			for (let offset = 1; offset <= buttons.length; offset++) {
+				const candidate = (index + step * offset + buttons.length) % buttons.length;
+				if (!buttons[candidate].disabled) { next = candidate; break; }
+			}
+		} else if (event.key === "Home") {
+			next = buttons.findIndex((button) => !button.disabled);
+		} else if (event.key === "End") {
+			for (let i = buttons.length - 1; i >= 0; i--) {
+				if (!buttons[i].disabled) { next = i; break; }
+			}
+		} else {
+			return;
+		}
+		if (next < 0) return;
+		event.preventDefault();
+		buttons[next].focus();
+	};
+
+  return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件">
 		<span className="sr-only" aria-live="polite">{snapshot.items.reduce((count, item) => count + item.unreadCount, 0)} 条桌面待处理信息</span>
-		<div className="desktop-icon-cluster">
+		<div className="desktop-icon-cluster" style={{ transform: `scale(${clusterZoom})`, transformOrigin: "bottom right", "--cluster-zoom": String(clusterZoom), "--cluster-max-width": `${clusterMaxWidth}px` } as CSSProperties}>
 			<div className="desktop-icon-grid" id="desktop-icon-grid">
 				{!collapsed && <div className="desktop-icon-row desktop-icon-row--top">{rows.top.map(renderItem)}</div>}
 				{!collapsed && <div className="desktop-icon-row desktop-icon-row--bottom">{rows.bottom.map(renderItem)}</div>}
 			</div>
 			<div className="desktop-icon-controls">
 				<button type="button" className="desktop-icon-collapse" title={collapsed ? "展开图标组" : "收起图标组"} aria-label={collapsed ? "展开图标组" : "收起图标组"} aria-expanded={!collapsed} aria-controls="desktop-icon-grid" onClick={toggleCollapsed}>{collapsed ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-				<button type="button" className={`desktop-icon-anchor${anchorMenuOpen ? " desktop-icon-anchor--menu-open" : ""}`} title="拖动窗口移动小组件" aria-label="移动小组件窗口" aria-expanded={anchorMenuOpen} onContextMenu={(event) => {
+				{quickOpen && <div id="desktop-icon-quick" className="desktop-icon-quick" role="toolbar" aria-label="小组件快捷操作" aria-busy={exiting} onKeyDown={quickRove} onClick={(event) => event.stopPropagation()}>
+					<button type="button" className="desktop-icon-quick__btn" aria-label="缩小图标" title="缩小图标" disabled={exiting || clusterZoom <= ICON_ZOOM_MIN} onClick={() => applyClusterZoom(stepIconZoom(clusterZoom, -ICON_ZOOM_STEP))}><ZoomOut aria-hidden="true" /></button>
+					<button type="button" className="desktop-icon-quick__btn" aria-label="放大图标" title="放大图标" disabled={exiting || clusterZoom >= ICON_ZOOM_MAX} onClick={() => applyClusterZoom(stepIconZoom(clusterZoom, ICON_ZOOM_STEP))}><ZoomIn aria-hidden="true" /></button>
+					<button type="button" className={`desktop-icon-quick__btn${topmost ? " desktop-icon-quick__btn--on" : ""}`} role="switch" aria-checked={topmost} aria-label={topmost ? "取消保持置顶" : "保持置顶"} title={topmost ? "取消保持置顶" : "保持置顶"} disabled={exiting || topmostBusy || !topmostLoaded || topmostReadFailed} onClick={() => void toggleTopmost()}>{topmostBusy ? <Loader2 className="desktop-icon-quick__spin" aria-hidden="true" /> : topmost ? <Pin aria-hidden="true" /> : <PinOff aria-hidden="true" />}</button>
+					<button type="button" className="desktop-icon-quick__btn" aria-label="打开主窗口" title="打开主窗口" disabled={exiting} onClick={() => void openMainWindow()}><ExternalLink aria-hidden="true" /></button>
+					<button type="button" className="desktop-icon-quick__btn" aria-label="设置" title="设置" disabled={exiting} onClick={() => void openSettingsWindow()}><SettingsIcon aria-hidden="true" /></button>
+				</div>}
+				<button type="button" className={`desktop-icon-anchor${anchorMenuOpen ? " desktop-icon-anchor--menu-open" : ""}${quickOpen ? " desktop-icon-anchor--quick-open" : ""}`} title="拖动窗口移动小组件，左键打开快捷操作" aria-label="移动小组件窗口" aria-expanded={quickOpen} aria-controls="desktop-icon-quick" aria-haspopup="menu" onClick={toggleQuick} onContextMenu={(event) => {
 					event.preventDefault();
-					window.clearTimeout(clickTimer.current);
-					window.clearTimeout(hoverTimer.current);
-					window.clearTimeout(previewCloseTimer.current);
-					drag.current = null;
-					setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(true);
+					closeTransient();
+					setAnchorMenuOpen(true);
 				}}><img src={logoSymbol} alt="" draggable={false} /></button>
-				{anchorMenuOpen && <div className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={() => {
-					setAnchorMenuOpen(false);
-					void onOpenSettings().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
-				}}>设置</button></div>}
+				{anchorMenuOpen && <div id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" disabled={exiting} onClick={() => void openSettingsWindow()}>设置</button></div>}
 			</div>
 		</div>
-		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => window.clearTimeout(previewCloseTimer.current)} onMouseLeave={closePreviewSoon}>
+		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={closePreviewSoon}>
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} onClose={() => setActiveID("")} />}
@@ -948,6 +1134,6 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings }: { onN
       {active && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
 
     </section>}
-    {error && <div className="desktop-icon-toast" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}><X /></button></div>}
+    {(error || quickError) && <div className="desktop-icon-toast" role="alert">{error}{error && quickError ? <span aria-hidden="true">；</span> : null}{quickError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); }}><X /></button></div>}
   </main>;
 }
