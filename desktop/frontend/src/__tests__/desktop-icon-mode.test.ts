@@ -114,10 +114,73 @@ assert.match(component, /Ctrl\+Enter 发送[\s\S]+Enter 发送/, "QuickStart sho
 assert.match(component, />Ctrl \+ ←<\/button>[\s\S]+>Ctrl \+ →<\/button>/, "QuickStart workspace buttons explain the Ctrl+ArrowLeft/Right shortcuts");
 assert.match(component, /上一个 Workspace（LT 或 Ctrl\+←）[\s\S]+下一个 Workspace（RT 或 Ctrl\+→）/, "LT/RT gamepad hints stay on the workspace buttons");
 assert.match(component, /\(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+ArrowLeft[\s\S]+ArrowRight[\s\S]+event\.preventDefault\(\)[\s\S]+switchBy/, "Ctrl+ArrowLeft/Right switch workspaces and stop the default caret movement");
-assert.match(component, /StartWidgetConversation\(\{ prompt, workspace, requestId: attempt\.id, model: modelRef, approvalMode \}\)/, "QuickStart sends the selected model and approval mode with the prompt");
+assert.match(component, /const submitted = submitJob\([\s\S]{0,120}\{ prompt, workspace, model: selectedModel, approvalMode: selectedApproval \},[\s\S]{0,80}editJob \? \{ replacesRequestId: editJob\.requestId \} : undefined[\s\S]{0,120}\)/, "QuickStart enqueues the selected model and approval mode with the prompt through the hoisted job runner; an edited job replaces its frozen requestId");
+assert.match(component, /if \(!submitted\.ok\) \{ setError\(submitted\.error\); sentRef\.current = false; return; \}[\s\S]{0,60}setDraft\(""\);[\s\S]{0,40}onClose\(\);/, "a successful submit closes the modal synchronously; a validation/persistence failure keeps it open with the error visible");
+assert.match(component, /sentRef\.current[\s\S]{0,60}sentRef\.current = true;[\s\S]{0,260}sentRef\.current = false;/, "a same-tick double submit (button + Enter) enqueues exactly one request");
+assert.doesNotMatch(component, /StartWidgetConversation\(/, "the QuickStart modal no longer owns the backend promise");
+assert.doesNotMatch(component, /wg2\.icon-widget-pending/, "the single pending slot is gone from QuickStart");
+const quickStartSource = component.slice(component.indexOf("function QuickStart("), component.indexOf("function SearchPanel("));
+assert.doesNotMatch(quickStartSource, /发送中…/, "the QuickStart modal never waits on the backend with a 发送中… state");
 assert.match(component, /resolveQuickStartModel\(model, preferences\?\.model \?\? "", models\)/, "QuickStart resolves the real configured model, never a display-only label");
 assert.match(component, /resolveQuickStartApproval\(approval, preferences\?\.approvalMode \?\? "ask"\)/, "QuickStart resolves a real approval posture from the picker");
-assert.match(component, /sameQuickStartIntent\(pending, \{ prompt, workspace, model: modelRef, approvalMode \}\)/, "a retry reuses the requestId only when model/approval are unchanged");
+assert.match(component, /useWidgetQuickStartJobs\(app\.StartWidgetConversation\)/, "async delivery is hoisted into DesktopIconMode through the job runner hook");
+assert.match(component, /quickJobs\.reconcile\(next\.items\)/, "each refreshed snapshot hands accepted jobs off to their real task icons");
+assert.match(component, /const optimisticItems = useMemo\([\s\S]{0,120}quickStartJobItem[\s\S]{0,120}\)/, "optimistic job icons are projected from the job ledger");
+assert.match(component, /const mergedItems = useMemo\(\(\) => mergeQuickStartItems\(snapshot\.items, optimisticItems\)/, "optimistic icons merge with the authoritative snapshot items");
+assert.match(component, /isQuickStartJobItem\(item\)\) openQuickStartJob\(item\); else void run\(item, "open"\)/, "double-clicking an optimistic job opens its popup (or the real task for an accepted job) instead of dispatching a backend open on the fake opt: id");
+assert.match(component, /isQuickStartJobItem\(item\)\) return;[\s\S]{0,80}void run\(item, "move"/, "dragging an optimistic job never dispatches a backend move");
+assert.match(component, /if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); setPreviewID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job opens its popup instead of the backend context menu");
+assert.match(component, /<QuickStartJobBody job=\{activeQuickJob\}[\s\S]{0,260}onRetry=\{\(requestId\) => \{ quickJobs\.retry\(requestId\); \}\}[\s\S]{0,120}onEdit=\{editQuickStartJob\}[\s\S]{0,120}onDismiss=\{\(requestId\) => \{ if \(quickJobs\.dismiss\(requestId\)\) \{ setActiveID\(""\); setPreviewID\(""\); \} \}\}[\s\S]{0,80}onOpenMain=\{openMainWindow\}[\s\S]{0,160}onOpenTask=\{activeQuickJob\?\.phase === "accepted" && activeQuickJob\.tabId \? \(\) => void openQuickStartTask\(activeQuickJob\) : undefined\}/, "the optimistic popup exposes retry/edit/dismiss wired to the runner, an open-main action for running jobs, and open-task for accepted jobs");
+assert.match(component, /const editQuickStartJob = \(job: QuickStartJob\) => \{[\s\S]{0,80}setQuickStartEditJob\(job\);[\s\S]{0,80}setQuickWorkspace\(job\.intent\.workspace \|\| ""\);[\s\S]{0,80}setActiveID\("fixed:new"\);[\s\S]{0,20}\};/, "editing a failed job passes the frozen intent through state/props (never localStorage) and tracks the source requestId");
+const jobsSource = readFileSync(resolve(import.meta.dirname, "../components/widget/widgetQuickStartJobs.ts"), "utf8");
+assert.match(jobsSource, /useEffect\(\(\) => \{[\s\S]{0,80}runner\.resume\(\);[\s\S]{0,8}\}, \[runner\]\);/, "mounting resumes nonterminal jobs through the runner");
+assert.match(jobsSource, /if \(running\.has\(requestId\)\) return;/, "the in-flight registry guards one dispatch per requestId");
+assert.match(jobsSource, /result\.status === "accepted" \|\| result\.status === "already_applied"/, "the backend receipt (accepted/already_applied) drives the accepted phase");
+assert.match(component, /desktop-icon__queued/, "a queued job renders a subtle pending dot on the task icon");
+// aria/title contracts (#6): an optimistic icon's accessible and mouse state
+// always announces 后台发送中 while delivering and 发送失败，可重试 once failed,
+// while the icon stays a plain keyboard-operable button.
+assert.match(component, /if \(isQuickStartJobItem\(item\)\) return quickStartJobStateLabel\(item\);/, "the optimistic preview announces the delivery state");
+assert.match(component, /aria-label=\{`\$\{item\.title\}，\$\{previewText\(item\)\}`\}[\s\S]{0,120}title=\{isQuickStartJobItem\(item\) \? `\$\{item\.title\}，\$\{quickStartJobStateLabel\(item\)\}` : undefined\}/, "optimistic icons carry the state in both aria-label and title");
+assert.match(jobsSource, /return item\.status === "failed" \? "发送失败，可重试" : "后台发送中"/, "the state label helper exposes the exact 后台发送中 / 发送失败，可重试 wording");
+// no front-end flight timeout / no accepted-grace eviction (#2, #3)
+assert.doesNotMatch(jobsSource, /flightTimeoutMs|acceptedGraceMs|QUICK_JOB_FLIGHT_TIMEOUT|QUICK_JOB_ACCEPTED_GRACE|后台发送超时/, "the front end has no flight timeout and no accepted-grace timer");
+assert.match(jobsSource, /There is no front-end flight timeout/, "the module documents why the queued backend call is never fenced");
+// latest-successfully-applied poll guard (#4): starting a new poll never
+// invalidates an older response (slow polls cannot starve each other out when
+// calls exceed the 1s interval); only a newer response that actually applied
+// makes an older one stale, so an old(no-real) response resolving after a
+// new(real) one can never regress to an empty frame or resurrect jobs.
+assert.match(component, /const pollGuard = useRef\(createLatestAppliedGuard\(\)\);/, "polls get a latest-successfully-applied generation guard");
+assert.match(component, /if \(!pollGuard\.current\.mayApply\(generation\)\) return; \/\/ a newer response already applied[\s\S]{0,80}markApplied\(generation\)/, "only a response newer than the newest APPLIED response may apply; starting a new poll never starves an older response");
+// process-level shared runner (#1): every mount shares one runner and one
+// in-flight registry, with safe subscribe/unsubscribe.
+assert.match(jobsSource, /getSharedQuickStartJobRunner/, "the hook mounts one process-level shared runner");
+assert.match(jobsSource, /subscribe\(onJobs\) \{[\s\S]{0,60}subscribers\.add\(onJobs\)[\s\S]{0,60}return \(\) => \{ subscribers\.delete\(onJobs\); \}/, "subscription mount/unmount is safe on the shared runner");
+assert.match(jobsSource, /const commit = \(transition: QuickStartTransition[\s\S]{0,260}const durable = readQuickStartJobs\(storage\);[\s\S]{0,120}saveQuickStartJobs\(storage, next\)/, "every transition merges against the current persisted ledger (merge-on-write) and refuses to write over an unreadable ledger");
+assert.match(jobsSource, /const dirty = new Map<string, QuickStartDirtyIntent>\(\);/, "background transitions keep a typed per-request dirty overlay for unpersistable intents");
+assert.match(jobsSource, /dirty\.clear\(\);[\s\S]{0,10}catch \(cause\) \{[\s\S]{0,40}error = cause instanceof Error \? cause\.message : String\(cause\);[\s\S]{0,40}const memoryBase = applyDirty\(jobs\);/, "dirty entries are cleared only after a save that included them succeeded; failures replay them over the memory view");
+assert.match(jobsSource, /applyDirty\(readQuickStartJobs\(storage\)\)[\s\S]{0,300}saveQuickStartJobs\(storage, next\);[\s\S]{0,10}dirty\.clear\(\);/, "submit merges pending dirty intents into the durable base before saving (a submit can never regress a pending phase)");
+assert.match(jobsSource, /if \(current\.phase === "running" \|\| \(current\.phase === "accepted" && !current\.tabId\)\) return false;/, "dismiss refuses running jobs and accepted jobs without a real tabId (only terminal-with-receipt entries may be removed)");
+assert.match(jobsSource, /commit\(\{ kind: "remove", requestId \}, false\);/, "dismiss removes the icon only after the durable save succeeds");
+// accepted job opens its real task through the same open action real task
+// icons use (#3): the gate passes ExitWidgetMode(tabId) exactly once per
+// invocation (double-click guard) and stays safe even when the real
+// task:<tabId> icon is filtered/capped out of the snapshot.
+assert.match(component, /quickTaskGate\.current\.open\(job, \(tabId\) => app\.ExitWidgetMode\(tabId\)\)/, "an accepted job opens its real task through the gate, passing the exact tabId once");
+assert.match(component, /const quickTaskGate = useRef\(createQuickStartOpenTaskGate\(\)\);/, "the accepted open-task action is gated against double invocation");
+// storage failures are explicit and visible (#5)
+assert.match(component, /quickJobs\.storageError[\s\S]{0,80}quickJobs\.clearStorageError\(\)/, "durable-storage failures surface in the toast and are dismissible");
+assert.match(component, /decideConsumedDraft\(localStorage, localStorage\.getItem\(QUICK_DRAFT_KEY\) \|\| "", activeQuickStartDrafts\)/, "the PURE decision receives active prompt→requestId mappings so an already-enqueued draft is suppressed and can be cleaned durably");
+assert.match(component, /initialDraft=\{quickDraftDecision\.draft\}/, "QuickStart renders the pure decision's draft without mutating storage");
+assert.doesNotMatch(component, /initialDraft=\{\(\(\) => \{[\s\S]{0,300}(removeItem|setItem|clearConsumedDraftMarker|cleanupConsumedDraft)/, "the initial-draft render path never writes storage (an aborted or StrictMode render cannot remove the draft/marker)");
+assert.match(component, /useEffect\(\(\) => \{[\s\S]{0,180}active && active\.sourceId === "new"[\s\S]{0,200}cleanupConsumedDraft\(localStorage, quickDraftDecision\.cleanupMarker\)[\s\S]{0,120}setQuickError/, "the committed cleanup can recreate a missing marker from the active requestId before removing the draft, and failures stay visible");
+assert.match(component, /recordConsumedDraftMarker\(localStorage, trimmed, result\.requestId\)[\s\S]{0,200}localStorage\.removeItem\(QUICK_DRAFT_KEY\)[\s\S]{0,120}clearConsumedDraftMarker\(localStorage\)/, "the consumed-draft marker is recorded BEFORE the best-effort draft removal and cleared once the removal succeeds");
+assert.match(component, /后台发送中，请等待/, "a running optimistic job explains itself with 后台发送中，请等待");
+assert.match(component, /job\.phase === "running" && <button onClick=\{onOpenMain\}>打开主窗口<\/button>/, "a running job offers an open-main action, never a delete");
+assert.match(component, /const dismissible = failed \|\| \(job\.phase === "accepted" && Boolean\(job\.tabId\)\);/, "only failed and accepted-with-tabId entries are dismissible");
+assert.match(component, /\{dismissible && <button className="subtle" onClick=\{\(\) => onDismiss\(job\.requestId\)\}>丢弃<\/button>\}/, "the dismiss action renders only when the entry is dismissible (never for running jobs)");
+assert.doesNotMatch(component, /后台发送中，请等待[\s\S]{0,120}onDismiss[\s\S]{0,80}丢弃/, "the running-job popup never offers deletion next to its waiting message");
 assert.match(component, /app\.CompleteVocabulary\(vocabularyToken\.prefix, 5\)/, "QuickStart vocabulary completion reuses the shared controller data source");
 assert.match(component, /const first = asArray\(items\)\.find[\s\S]+setVocabMatch\(first\)/, "QuickStart follows Session by showing only the best vocabulary match");
 assert.match(component, /desktop-icon-popup__vocab-ghost[\s\S]+<span>\{draft\}<\/span><b>\{vocabMatch\.suffix\}<\/b>/, "vocabulary renders as an inline ghost suffix inside the input");
@@ -134,7 +197,7 @@ assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "R
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
 assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+timers\.current\?\.scheduleClick/, "pointer up schedules a click only after a matching primary pointer down");
-assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setMenuID\(item\.id\); setActiveID\(""\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); \}\}/, "opening an icon context menu cancels every delayed timer and closes the anchor menu and quick toolbar before showing right-click actions");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); setPreviewID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \} \}\}/, "opening an icon context menu cancels every delayed timer and closes the anchor menu and quick toolbar before showing right-click actions; an optimistic job opens its popup instead of the backend menu");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
@@ -389,9 +452,9 @@ assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wr
 // poll must never erase an action failure (toggle, open main/settings, or the
 // initial always-on-top read) ---
 assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
-assert.match(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,260}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
-assert.doesNotMatch(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,260}setQuickError/, "the snapshot poll never touches the quick-error channel");
-assert.match(component, /\(error \|\| quickError\) && <div className="desktop-icon-toast" role="alert">/, "the toast surfaces snapshot and quick-control errors together");
+assert.match(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,340}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
+assert.doesNotMatch(component, /const refresh = useCallback\(async \(\) => \{[\s\S]{0,340}setQuickError/, "the snapshot poll never touches the quick-error channel");
+assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError\) && <div className="desktop-icon-toast" role="alert">/, "the toast surfaces snapshot, quick-control, and durable-storage errors together");
 assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(TOPMOST_READ_ERROR\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");
 assert.match(component, /const \[topmostAttempt, setTopmostAttempt\] = useState\(0\);/, "the always-on-top read retry is driven by an explicit attempt counter");
@@ -579,7 +642,7 @@ assert.match(component, /const close = \(\) => closeTransient\(\);[\s\S]*?addEve
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "clicking the empty desktop or any container/grid/control gap closes every transient surface through the central close path");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-quick/, "the quick toolbar joins the native hit-region reporting so the transparent window keeps it clickable");
-assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom\]\);/, "hit-region refresh depends on the transient anchor UI (including the previously omitted anchor menu) and the cluster zoom");
+assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems\]\);/, "hit-region refresh depends on the transient anchor UI (including the previously omitted anchor menu), the cluster zoom, and the optimistic job icons");
 assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu, \.desktop-icon-quick/, "the quick toolbar gets the same shadow padding in native hit regions");
 assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
 assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-quick, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu and quick toolbar");

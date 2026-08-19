@@ -23,6 +23,7 @@
     "test:settings-layout": "tsx src/__tests__/settings-full-window-layout.test.ts",
     "test:widget-mode": "tsx src/__tests__/widget-mode-coordinator.test.ts",
     "test:widget-icons": "tsx src/__tests__/desktop-icon-mode.test.ts",
+    "test:widget-jobs": "tsx src/__tests__/widget-quick-start-jobs.test.ts",
     "test:quickstart-completion": "tsx src/__tests__/quickstart-completion.test.ts",
     "test:widget-skins": "python scripts/validate-widget-skins.py --assets-root src/assets/widget-mode/skins",
     "pretest": "tsx src/__tests__/widget-layout-contract.test.ts && tsx src/__tests__/settings-full-window-layout.test.ts",

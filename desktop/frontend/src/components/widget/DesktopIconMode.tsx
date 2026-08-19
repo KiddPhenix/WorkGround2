@@ -9,9 +9,10 @@ import type { CommandInfo, DirEntry, ModelInfo, SlashArgItem, ToolApprovalMode, 
 import { acceptVocabulary, type VocabularyToken } from "../../lib/vocabularyCompletion";
 import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom } from "./desktopIconLayout";
 import logoSymbol from "../../assets/logo-symbol.svg";
-import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent, type QuickStartIntent, type QuickStartPreferences } from "./quickStartPreferences";
+import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
 import { DRAG_THRESHOLD, IconTimers, windowTimerHost } from "./desktopIconTimers";
+import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createLatestAppliedGuard, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle, type WorkspaceRow } from "./workspaceManager";
 import { roomRows, type RoomRow } from "./roomsManager";
@@ -54,6 +55,14 @@ function requestID(prefix: string): string {
   return `${prefix}:${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`;
 }
 
+function readLocalStorage(key: string): string {
+  try { return localStorage.getItem(key) || ""; } catch { return ""; }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* best-effort; callers degrade to in-memory state */ }
+}
+
 function readCollapsedState(): boolean {
   try { return parseCollapseState(localStorage.getItem(CLUSTER_KEY)); }
   catch { return false; }
@@ -94,6 +103,7 @@ function itemGlyph(item: DesktopIconItem) {
 }
 
 function previewText(item: DesktopIconItem): string {
+  if (isQuickStartJobItem(item)) return quickStartJobStateLabel(item);
   if (item.runtimeStatus) return `${item.runtimeStatus.summary || item.runtimeStatus.phase} · ${Math.max(0, Math.round(item.runtimeStatus.elapsedMs / 1000))} 秒`;
   if (item.unreadCount > 0) return `${item.unreadCount} 条待处理信息`;
   if (item.kind === "workspace") return `${item.title} · 快速发起`;
@@ -176,23 +186,58 @@ function RuntimeBody({ item, busy, run }: { item: DesktopIconItem; busy: boolean
   </>;
 }
 
-function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces: WidgetWorkspaceOption[]; initialWorkspace?: string; onClose: () => void }) {
+// QuickStartJobBody is the popup for an optimistic task icon. A failed job is
+// the only terminal state with retry/edit/dismiss actions: retry replays the
+// frozen requestId, edit opens QuickStart prefilled (a new requestId on
+// submit), and dismiss removes the entry. An accepted job stays until its
+// real task:<tabId> icon appears or the user dismisses it, and opens the real
+// task (ExitWidgetMode(tabId)) when available. A running job can NEVER be
+// dismissed or deleted: it is the only durable recovery intent until the
+// backend receipt exists, so the popup only reports 后台发送中，请等待 and offers
+// an open-main action.
+function QuickStartJobBody({ job, onRetry, onEdit, onDismiss, onOpenMain, onOpenTask }: { job: QuickStartJob | undefined; onRetry: (requestId: string) => void; onEdit: (job: QuickStartJob) => void; onDismiss: (requestId: string) => void; onOpenMain: () => void; onOpenTask: (() => void) | undefined }) {
+	if (!job) return null; // reconciled into the real task icon while open
+	const failed = job.phase === "failed";
+	// Only failed and accepted (with a real backend tabId) entries may be
+	// dismissed; a running job's ledger entry must never be removed.
+	const dismissible = failed || (job.phase === "accepted" && Boolean(job.tabId));
+	return <>
+		<div className="desktop-icon-popup__eyebrow">{failed ? "发送失败" : job.phase === "accepted" ? "正在运行" : "后台发送中"}</div>
+		<strong>{quickStartJobPromptLabel(job.intent)}</strong>
+		{failed ? <>
+			<p role="alert" className="desktop-icon-popup__error">{job.error || "发起失败，可安全重试"}</p>
+			<div className="desktop-icon-popup__job-facts"><span>{quickStartJobWorkspaceLabel(job.intent.workspace)}</span><span>{job.intent.model ? quickStartModelLabel(job.intent.model) : "默认模型"}</span><span>{quickStartApprovalLabel((job.intent.approvalMode || "ask") as ToolApprovalMode)}</span></div>
+			<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick">
+				<button onClick={() => onRetry(job.requestId)}>重试</button>
+				<button className="subtle" onClick={() => onEdit(job)}>编辑</button>
+				<button className="subtle" onClick={() => onDismiss(job.requestId)}>丢弃</button>
+			</div>
+		</> : <>
+			<p>{job.phase === "accepted" ? "任务已提交，正在同步为任务图标。" : "后台发送中，请等待；完成后会显示为任务图标。"}</p>
+			<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick">
+				{job.phase === "accepted" && onOpenTask && <button onClick={onOpenTask}>打开任务</button>}
+				{/* A running job is the only durable recovery intent: it cannot be
+				    deleted, only followed up in the main window. */}
+				{job.phase === "running" && <button onClick={onOpenMain}>打开主窗口</button>}
+				{dismissible && <button className="subtle" onClick={() => onDismiss(job.requestId)}>丢弃</button>}
+			</div>
+		</>}
+	</>;
+}
+
+function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initialDraft = "", submitJob, onClose }: { workspaces: WidgetWorkspaceOption[]; initialWorkspace?: string; editJob?: QuickStartJob | null; initialDraft?: string; submitJob: WidgetQuickStartJobsApi["submit"]; onClose: () => void }) {
   const choices = workspaces.length ? workspaces : [{ scope: "auto", name: "自动" } as WidgetWorkspaceOption];
-	const [pending, setPendingState] = useState<QuickStartIntent | null>(() => {
-		try { return JSON.parse(localStorage.getItem("wg2.icon-widget-pending") || "null") as QuickStartIntent | null; } catch { return null; }
-	});
 	const keys = useMemo(() => choices.map(widgetWorkspaceKey), [workspaces]);
 	const keysToken = keys.join("\n");
 	const initializedKeys = useRef(keysToken);
-	const [index, setIndex] = useState(() => quickStartWorkspaceIndex(keys, pending?.workspace, initialWorkspace, localStorage.getItem(QUICK_WORKSPACE_KEY) || ""));
-	const [draft, setDraft] = useState(() => localStorage.getItem("wg2.icon-widget-draft") || "");
-	const [busy, setBusy] = useState(false);
+	const [index, setIndex] = useState(() => quickStartWorkspaceIndex(keys, editJob?.intent.workspace ?? "", initialWorkspace, readLocalStorage(QUICK_WORKSPACE_KEY)));
+	const [draft, setDraft] = useState(() => editJob ? editJob.intent.prompt : initialDraft);
   const [error, setError] = useState("");
 	const [preferences, setPreferences] = useState<QuickStartPreferences | null>(null);
 	const [preferencesError, setPreferencesError] = useState("");
 	const [models, setModels] = useState<ModelInfo[]>([]);
-	const [model, setModel] = useState(() => localStorage.getItem(QUICK_MODEL_KEY) || "");
-	const [approval, setApproval] = useState(() => localStorage.getItem(QUICK_APPROVAL_KEY) || "");
+	const [model, setModel] = useState(() => editJob?.intent.model || readLocalStorage(QUICK_MODEL_KEY));
+	const [approval, setApproval] = useState(() => editJob?.intent.approvalMode || readLocalStorage(QUICK_APPROVAL_KEY));
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelQuery, setModelQuery] = useState("");
 	const [completion, setCompletion] = useState<QuickStartCompletion | null>(null);
@@ -202,21 +247,16 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 	const composingRef = useRef(false);
 	const lastCompositionEndAt = useRef(0);
 	const preferencesLoad = useRef(0);
+	const sentRef = useRef(false);
 	const taRef = useRef<HTMLTextAreaElement>(null);
   const choice = choices[index % choices.length];
   const workspace = widgetWorkspaceKey(choice);
-	const setPending = (next: QuickStartIntent | null) => { setPendingState(next); if (next) localStorage.setItem("wg2.icon-widget-pending", JSON.stringify(next)); else localStorage.removeItem("wg2.icon-widget-pending"); };
-	useEffect(() => {
-		if (!pending) return;
-		const pendingIndex = keys.indexOf(pending.workspace);
-		if (pendingIndex >= 0) setIndex(pendingIndex);
-	}, [keys, pending]);
 	useEffect(() => {
 		if (initializedKeys.current === keysToken) return;
 		initializedKeys.current = keysToken;
-		setIndex(quickStartWorkspaceIndex(keys, pending?.workspace, initialWorkspace, localStorage.getItem(QUICK_WORKSPACE_KEY) || ""));
-	}, [initialWorkspace, keys, keysToken, pending]);
-	useEffect(() => { if (workspaces.length) localStorage.setItem(QUICK_WORKSPACE_KEY, workspace); }, [workspace, workspaces.length]);
+		setIndex(quickStartWorkspaceIndex(keys, editJob?.intent.workspace ?? "", initialWorkspace, readLocalStorage(QUICK_WORKSPACE_KEY)));
+	}, [editJob, initialWorkspace, keys, keysToken]);
+	useEffect(() => { if (workspaces.length) writeLocalStorage(QUICK_WORKSPACE_KEY, workspace); }, [workspace, workspaces.length]);
 	const loadPreferences = useCallback(() => {
 		const generation = ++preferencesLoad.current;
 		setPreferencesError("");
@@ -236,7 +276,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 			});
 	}, []);
 	useEffect(() => { loadPreferences(); }, [loadPreferences]);
-	const switchBy = (delta: number) => { setIndex((current) => (current + delta + choices.length) % choices.length); setPending(null); };
+	const switchBy = (delta: number) => { setIndex((current) => (current + delta + choices.length) % choices.length); };
 	useEffect(() => {
 		let frame = 0;
 		let previous = { lt: false, rt: false };
@@ -246,8 +286,6 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 			if ((lt && !previous.lt) || (rt && !previous.rt)) {
 				const delta = lt ? -1 : 1;
 				setIndex((current) => (current + delta + choices.length) % choices.length);
-				setPendingState(null);
-				localStorage.removeItem("wg2.icon-widget-pending");
 			}
 			previous = { lt, rt };
 			frame = requestAnimationFrame(poll);
@@ -257,8 +295,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 	}, [choices.length]);
   const saveDraft = (text: string) => {
 		setDraft(text);
-		setPending(null);
-		localStorage.setItem("wg2.icon-widget-draft", text);
+		writeLocalStorage(QUICK_DRAFT_KEY, text);
   };
 	// Model / approval: remember the QuickStart-specific choice so a retry
 	// replays the exact same intent (same requestId) until one of the four
@@ -271,8 +308,8 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 		() => modelKeyword ? modelOptions.filter((option) => option.label.toLowerCase().includes(modelKeyword) || option.provider.toLowerCase().includes(modelKeyword)) : modelOptions,
 		[modelKeyword, modelOptions],
 	);
-	const pickModel = (ref: string) => { setModel(ref); localStorage.setItem(QUICK_MODEL_KEY, ref); setModelMenuOpen(false); setModelQuery(""); setPending(null); };
-	const pickApproval = (mode: ToolApprovalMode) => { setApproval(mode); localStorage.setItem(QUICK_APPROVAL_KEY, mode); setModelMenuOpen(false); setPending(null); };
+	const pickModel = (ref: string) => { setModel(ref); writeLocalStorage(QUICK_MODEL_KEY, ref); setModelMenuOpen(false); setModelQuery(""); };
+	const pickApproval = (mode: ToolApprovalMode) => { setApproval(mode); writeLocalStorage(QUICK_APPROVAL_KEY, mode); setModelMenuOpen(false); };
 
 	// --- menu completions: slash commands, slash args, $ skills, @ file refs ---
 	const slashQuery = useMemo(() => quickStartSlashQuery(draft), [draft]);
@@ -386,21 +423,24 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 		onClick: () => { const target = completion ? { ...completion, active: index } : null; if (target) applyCompletion(target); },
 	});
 
-  const send = async () => {
+  // send validates and enqueues synchronously: the modal closes and the
+	// optimistic icon appears immediately, while the job runner delivers in the
+	// background. A validation or ledger persistence failure keeps the modal
+	// open and exposes the error (draft preserved). sentRef makes a same-tick
+	// double submit (button + Enter) a single request. The stored draft is
+	// cleared/guarded by the parent's submit wrapper (best-effort): a cleanup
+	// failure never blocks the modal close or duplicates the dispatch.
+  const send = () => {
     const prompt = draft.trim();
-		if (!prompt || !preferences) return;
-		const modelRef = selectedModel;
-		const approvalMode = selectedApproval;
-    const attempt = pending && sameQuickStartIntent(pending, { prompt, workspace, model: modelRef, approvalMode })
-			? pending
-			: { id: requestID("icon-new"), prompt, workspace, model: modelRef, approvalMode };
-		setPending(attempt); setBusy(true); setError("");
-    try {
-      const result = await app.StartWidgetConversation({ prompt, workspace, requestId: attempt.id, model: modelRef, approvalMode });
-		if (result.status === "accepted" || result.status === "already_applied") { saveDraft(""); setPending(null); onClose(); }
-      else setError(result.error || "发起失败，可安全重试");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-		finally { setBusy(false); }
+		if (!prompt || !preferences || sentRef.current) return;
+		sentRef.current = true;
+    const submitted = submitJob(
+			{ prompt, workspace, model: selectedModel, approvalMode: selectedApproval },
+			editJob ? { replacesRequestId: editJob.requestId } : undefined,
+		);
+		if (!submitted.ok) { setError(submitted.error); sentRef.current = false; return; }
+		setDraft("");
+		onClose();
   };
   return <div className="desktop-icon-popup__quick" onKeyDown={(event) => {
     if (event.key === "Escape") { onClose(); return; }
@@ -415,7 +455,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
     <div className="desktop-icon-popup__workspace"><button aria-label="上一个 Workspace（LT 或 Ctrl+←）" title="上一个（LT / Ctrl+←）" onClick={() => switchBy(-1)}>Ctrl + ←</button><strong>{choice.name} · {index + 1} / {choices.length}</strong><button aria-label="下一个 Workspace（RT 或 Ctrl+→）" title="下一个（RT / Ctrl+→）" onClick={() => switchBy(1)}>Ctrl + →</button></div>
 		<div className="desktop-icon-popup__quick-meta">
 			<div className="desktop-icon-popup__quick-chip-wrap">
-				<button type="button" className="desktop-icon-popup__quick-chip" aria-label="选择模型" aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={!preferences || busy} onClick={() => setModelMenuOpen((open) => !open)}>
+				<button type="button" className="desktop-icon-popup__quick-chip" aria-label="选择模型" aria-haspopup="listbox" aria-expanded={modelMenuOpen} disabled={!preferences} onClick={() => setModelMenuOpen((open) => !open)}>
 					<span className="desktop-icon-popup__quick-chip-copy"><strong title={preferences?.model}>{preferences ? quickStartModelLabel(selectedModel) : "读取中…"}</strong></span>
 					<ChevronDown aria-hidden="true" />
 				</button>
@@ -426,7 +466,7 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 				</div>}
 			</div>
 			<div className="desktop-icon-popup__quick-chip-wrap">
-				<button type="button" className="desktop-icon-popup__quick-chip" aria-label={`审批：${preferences ? quickStartApprovalLabel(selectedApproval) : "读取中"}，点击切换`} disabled={!preferences || busy} onClick={() => pickApproval(nextQuickStartApproval(selectedApproval))}>
+				<button type="button" className="desktop-icon-popup__quick-chip" aria-label={`审批：${preferences ? quickStartApprovalLabel(selectedApproval) : "读取中"}，点击切换`} disabled={!preferences} onClick={() => pickApproval(nextQuickStartApproval(selectedApproval))}>
 					<span className="desktop-icon-popup__quick-chip-copy"><strong>{preferences ? quickStartApprovalLabel(selectedApproval) : "读取中…"}</strong></span>
 				</button>
 			</div>
@@ -451,14 +491,14 @@ function QuickStart({ workspaces, initialWorkspace = "", onClose }: { workspaces
 			if (action.type === "submit") {
 				if (!preferences || !isComposerSubmitKey(event, preferences.submitKey, event.nativeEvent.isComposing)) return;
 				event.preventDefault();
-				if (!busy && draft.trim()) void send();
+				if (draft.trim()) send();
 			}
 			}} onCompositionStart={() => { composingRef.current = true; setCompletionDismissed(true); setVocabMatch(null); }} onCompositionEnd={(event) => { composingRef.current = false; lastCompositionEndAt.current = Date.now(); setCaret({ start: event.currentTarget.selectionStart ?? draft.length, end: event.currentTarget.selectionEnd ?? draft.length }); }} />
 			{vocabMatch && <span id="desktop-icon-vocab-hint" className="sr-only">按 Tab 补全为 {vocabMatch.text}</span>}
 		</div>
 		{preferencesError && <div role="alert" className="desktop-icon-popup__settings-error"><span>读取新会话设置失败：{preferencesError}</span><button type="button" className="subtle" onClick={loadPreferences}>重试</button></div>}
     {error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}
-		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={busy || !draft.trim() || !preferences} onClick={() => void send()}>{busy ? "发送中…" : !preferences ? "读取设置…" : pending ? "重试" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
+		<div className="desktop-icon-popup__actions desktop-icon-popup__actions--quick"><button disabled={!draft.trim() || !preferences} onClick={send}>{!preferences ? "读取设置…" : "发送"}</button><button className="subtle" onClick={onClose}>取消</button>{preferences && <small className="desktop-icon-popup__submit-hint">{preferences.submitKey === "ctrl_enter" ? "Ctrl+Enter 发送" : "Enter 发送"}</small>}</div>
   </div>;
 }
 
@@ -742,6 +782,58 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const [quickError, setQuickError] = useState("");
   const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([]);
 	const [quickWorkspace, setQuickWorkspace] = useState("");
+	const [quickStartEditJob, setQuickStartEditJob] = useState<QuickStartJob | null>(null);
+	// QuickStart's async delivery is owned here, not by the modal: submit
+	// closes the modal synchronously and the optimistic icon renders
+	// immediately while the background runner delivers the job.
+	const quickJobs = useWidgetQuickStartJobs(app.StartWidgetConversation);
+	// submitQuickStart wraps the runner's submit with the durable consumed-draft
+	// marker flow: once ledger persistence + dispatch succeeded, a consumed
+	// marker keyed to the submitted draft/requestId is recorded BEFORE the
+	// best-effort draft removal — if the removal fails, the marker makes the
+	// NEXT mount ignore that exact stale draft and retries the cleanup; if the
+	// removal succeeds the marker is cleared so an intentionally identical
+	// future draft is never permanently suppressed. Marker read/write/remove
+	// errors stay visible (quickError) and never re-dispatch.
+	const submitQuickStart = (intent: QuickStartJobIntent, opts?: { replacesRequestId?: string }) => {
+		const result = quickJobs.submit(intent, opts);
+		if (result.ok) {
+			const trimmed = intent.prompt.trim();
+			let marked = false;
+			try {
+				recordConsumedDraftMarker(localStorage, trimmed, result.requestId);
+				marked = true;
+			} catch (cause) {
+				setQuickError(`发送成功，但记录草稿标记失败：${cause instanceof Error ? cause.message : String(cause)}`);
+			}
+			try {
+				localStorage.removeItem(QUICK_DRAFT_KEY);
+				if (marked) {
+					try { clearConsumedDraftMarker(localStorage); } catch (cause) {
+						setQuickError(`发送成功并清理草稿，但清除草稿标记失败：${cause instanceof Error ? cause.message : String(cause)}`);
+					}
+				}
+			} catch (cause) {
+				setQuickError(marked
+					? "发送成功，但清理本地草稿失败；该内容已标记为已发送，重新打开不会重复提交。"
+					: `发送成功，但清理本地草稿失败：${cause instanceof Error ? cause.message : String(cause)}`);
+			}
+		}
+		return result;
+	};
+	const optimisticItems = useMemo(
+		() => Object.values(quickJobs.jobs).sort((a, b) => a.createdAt - b.createdAt).map(quickStartJobItem),
+		[quickJobs.jobs],
+	);
+	// activeQuickStartDrafts maps normalized prompts to their real requestId.
+	// The pure consumed-draft decision uses it both to suppress an already
+	// submitted draft and to schedule committed marker+draft cleanup when the
+	// submit path could persist neither write.
+	const activeQuickStartDrafts = useMemo(
+		() => new Map(Object.values(quickJobs.jobs).map((job) => [job.intent.prompt.trim(), job.requestId])),
+		[quickJobs.jobs],
+	);
+	const mergedItems = useMemo(() => mergeQuickStartItems(snapshot.items, optimisticItems), [optimisticItems, snapshot.items]);
 	const timers = useRef<IconTimers | null>(null);
 	if (timers.current === null) timers.current = new IconTimers(windowTimerHost);
   const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean } | null>(null);
@@ -771,10 +863,31 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
 	}, [cancelTransientTimers]);
 
+	// pollGuard gives every poll a monotonic generation with
+	// latest-successfully-applied semantics: starting a new poll never
+	// invalidates an older response (so slow polls cannot starve each other
+	// out when calls exceed the 1s interval), and only a newer response that
+	// actually applied makes an older one stale — an older response resolving
+	// after a newer one applied can never regress the surface to an empty
+	// frame or reconcile with stale items.
+	const pollGuard = useRef(createLatestAppliedGuard());
   const refresh = useCallback(async () => {
-    try { const next = await app.GetDesktopIconSnapshot(); setSnapshot(next); setError(next.error || ""); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-  }, []);
+		const generation = pollGuard.current.begin();
+    try {
+			const next = await app.GetDesktopIconSnapshot();
+			if (!pollGuard.current.mayApply(generation)) return; // a newer response already applied
+			pollGuard.current.markApplied(generation);
+			setSnapshot(next);
+			setError(next.error || "");
+			// Accepted jobs hand off to their real task:task:<tabId> icon the
+			// moment this refreshed snapshot contains it (same render, no
+			// empty-frame gap, no duplicate). Polls never touch other phases,
+			// and no timer ever evicts an accepted job whose real icon is
+			// filtered/capped out of the snapshot.
+			quickJobs.reconcile(next.items);
+		}
+    catch (cause) { if (pollGuard.current.mayApply(generation)) setError(cause instanceof Error ? cause.message : String(cause)); }
+  }, [quickJobs.reconcile]);
   useEffect(() => { void refresh(); void app.ListWidgetWorkspaces().then(setWorkspaces).catch(() => {}); const timer = window.setInterval(() => void refresh(), 1000); return () => window.clearInterval(timer); }, [refresh]);
 	useEffect(() => {
 		let alive = true;
@@ -837,7 +950,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		sync(); window.addEventListener("resize", sync);
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
-	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom]);
+	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems]);
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition) => {
     setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
@@ -926,17 +1039,46 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     const current = drag.current; drag.current = null;
     if (!current) return;
     if (current.moved) {
+      // Optimistic jobs have no backend identity yet: dragging them must not
+      // dispatch a move against the backend.
+      if (isQuickStartJobItem(item)) return;
       const delta = Math.round((event.clientX - current.x) / 72);
       void run(item, "move", [], undefined, { ...item.position, order: Math.max(0, item.position.order + delta) });
       return;
     }
     timers.current?.scheduleClick(() => openItem(item));
   };
-	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else void run(item, "open"); };
+	// openQuickStartTask opens the real backend task behind an accepted job:
+	// ExitWidgetMode(tabId) is exactly what the existing run(item, "open")
+	// action performs for a real task icon, and it stays safe even when the
+	// real task:<tabId> icon is filtered/capped out of the snapshot. The gate
+	// passes the exact tabId at most once per invocation (double-click guard)
+	// and releases on failure, so a failed exit stays visible/retryable.
+	const quickTaskGate = useRef(createQuickStartOpenTaskGate());
+	const openQuickStartTask = async (job: QuickStartJob) => {
+		if (exitRequest.current || exiting) return;
+		exitRequest.current = true;
+		setExiting(true);
+		try {
+			await quickTaskGate.current.open(job, (tabId) => app.ExitWidgetMode(tabId));
+		} catch (cause) {
+			setQuickError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			exitRequest.current = false;
+			setExiting(false);
+		}
+	};
+	const openQuickStartJob = (item: DesktopIconItem) => {
+		const requestId = quickStartJobRequestIDFromItem(item.id);
+		const job = requestId ? quickJobs.jobs[requestId] : undefined;
+		if (job?.phase === "accepted" && job.tabId) { void openQuickStartTask(job); return; }
+		openItem(item);
+	};
+	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else if (isQuickStartJobItem(item)) openQuickStartJob(item); else void run(item, "open"); };
 
-  const rows = { top: snapshot.items.filter((item) => item.position.row === "top"), bottom: snapshot.items.filter((item) => item.position.row === "bottom") };
-  const active = snapshot.items.find((item) => item.id === activeID);
-  const preview = snapshot.items.find((item) => item.id === previewID);
+  const rows = { top: mergedItems.filter((item) => item.position.row === "top"), bottom: mergedItems.filter((item) => item.position.row === "bottom") };
+  const active = mergedItems.find((item) => item.id === activeID);
+  const preview = mergedItems.find((item) => item.id === previewID);
   const popupItem = active || preview;
 	useLayoutEffect(() => {
 		const node = popupRef.current;
@@ -967,8 +1109,8 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setMenuID(item.id); setActiveID(""); setAnchorMenuOpen(false); setQuickOpen(false); }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
-      <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}</span>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); setPreviewID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+      <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
@@ -1098,6 +1240,50 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		buttons[next].focus();
 	};
 
+	// editQuickStartJob reopens QuickStart prefilled with the failed job's
+	// frozen intent. The intent travels in state/props, never through
+	// localStorage, so a storage failure can never lose the edit target.
+	// Submitting the edited draft creates a NEW requestId (the failed entry is
+	// replaced on submit); the frozen intent itself is never mutated by later
+	// modal changes.
+	const editQuickStartJob = (job: QuickStartJob) => {
+		setQuickStartEditJob(job);
+		setQuickWorkspace(job.intent.workspace || "");
+		closeTransient();
+		setActiveID("fixed:new");
+	};
+
+	const quickDraftDecision: QuickStartConsumedDraftDecision = (() => {
+		if (!(active && active.sourceId === "new")) return { draft: "", cleanupPending: false };
+		try {
+			return decideConsumedDraft(localStorage, localStorage.getItem(QUICK_DRAFT_KEY) || "", activeQuickStartDrafts);
+		} catch {
+			return { draft: "", cleanupPending: false };
+		}
+	})();
+
+	// Committed-effect consumed-draft cleanup: opening QuickStart runs the
+	// idempotent cleanup AFTER commit (never during render), so an aborted
+	// render or a StrictMode double render cannot remove the draft or the
+	// marker; the second StrictMode effect run is a no-op once the cleanup
+	// succeeded. When the draft matches an active ledger job but the submit
+	// path wrote neither marker nor removal, cleanupMarker recreates the marker
+	// from that job's requestId before deleting the draft. A failed cleanup is
+	// retried by remount/open or later snapshot renders while remaining visible.
+	useEffect(() => {
+		if (!(active && active.sourceId === "new") || !quickDraftDecision.cleanupPending) return;
+		if (!cleanupConsumedDraft(localStorage, quickDraftDecision.cleanupMarker)) {
+			setQuickError("清理已发送的本地草稿失败，重新打开会重试。");
+		}
+	}, [active, quickDraftDecision.cleanupMarker?.prompt, quickDraftDecision.cleanupMarker?.requestId, quickDraftDecision.cleanupPending]);
+	// activeQuickJob is the ledger job behind the open optimistic icon; it can
+	// become undefined while the popup is open when the job was just
+	// reconciled into its real task icon.
+	const activeQuickJob = active && isQuickStartJobItem(active) ? (() => {
+		const requestId = quickStartJobRequestIDFromItem(active.id);
+		return requestId ? quickJobs.jobs[requestId] : undefined;
+	})() : undefined;
+
   return <main className="desktop-icon-mode" style={zoomStyle} aria-label="WorkGround2 桌面图标小组件">
 		<span className="sr-only" aria-live="polite">{snapshot.items.reduce((count, item) => count + item.unreadCount, 0)} 条桌面待处理信息</span>
 		<div className="desktop-icon-cluster" style={{ transform: `scale(${clusterZoom})`, transformOrigin: "bottom right", "--cluster-zoom": String(clusterZoom), "--cluster-max-width": `${clusterMaxWidth}px` } as CSSProperties}>
@@ -1125,15 +1311,16 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={closePreviewSoon}>
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p>{previewText(popupItem)}</p>}
-      {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} onClose={() => setActiveID("")} />}
+      {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager onClose={() => setActiveID("")} />}
       {active && active.sourceId === "rooms" && <RoomsManager onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
+      {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
+      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
 
     </section>}
-    {(error || quickError) && <div className="desktop-icon-toast" role="alert">{error}{error && quickError ? <span aria-hidden="true">；</span> : null}{quickError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); }}><X /></button></div>}
+    {(error || quickError || quickJobs.storageError) && <div className="desktop-icon-toast" role="alert">{error}{error && (quickError || quickJobs.storageError) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && quickJobs.storageError ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); quickJobs.clearStorageError(); }}><X /></button></div>}
   </main>;
 }

@@ -134,6 +134,10 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon--done .desktop-icon__status { background: #16865e; }
 .desktop-icon--failed .desktop-icon__status { background: #c73749; }
 .desktop-icon--needs_confirm .desktop-icon__status { background: #b48620; }
+/* A queued QuickStart job renders as a task icon with a subtle pulsing dot
+   until its backend turn is running (accepted) or fails. */
+.desktop-icon__queued { position: absolute; right: 2px; bottom: 2px; width: 8px; height: 8px; border-radius: 50%; background: #70dfe8; border: 1.5px solid #171922; box-shadow: 0 0 6px rgb(112 223 232 / 70%); animation: desktop-icon-queued-pulse 1.6s ease-in-out infinite; }
+@keyframes desktop-icon-queued-pulse { 50% { opacity: .35; } }
 
 .desktop-icon-popup {
 	--arrow-left: 50%;
@@ -171,6 +175,10 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .desktop-icon-popup__actions--completion button { min-height: 30px; padding: 4px 10px; }
 .desktop-icon-popup__actions--quick button { min-height: 30px; padding: 4px 10px; }
+/* The failed job popup shows the frozen workspace/model/approval facts and a
+   clear retry/edit/dismiss action row. */
+.desktop-icon-popup__job-facts { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 4px; }
+.desktop-icon-popup__job-facts span { padding: 2px 8px; border-radius: 999px; border: 1px solid rgb(255 255 255 / 14%); color: #b9bdc9; font-size: 11px; }
 .desktop-icon-popup__dialog { margin-top: 9px; }
 .desktop-icon-popup__dialog-trigger { width: 100%; min-height: 32px; padding: 5px 10px; border-color: rgb(255 255 255 / 16%); color: #b9bdc9; background: #20232b; text-align: left; }
 .desktop-icon-popup__dialog.is-open { padding-top: 1px; }
@@ -276,7 +284,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 @keyframes desktop-icon-running-step { 0%, 70%, 100% { background: rgb(83 220 227 / 24%); transform: scaleX(.72); } 35% { background: #61e5eb; transform: scaleX(1); } }
 @keyframes desktop-icon-copy-in { from { opacity: .25; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) {
-  .desktop-icon__motion, .desktop-icon__motion::before, .desktop-icon__motion::after, .desktop-icon__motion-corner, .desktop-icon__runtime-state > i, .desktop-icon__runtime-state > svg, .desktop-icon__runtime-track i, .desktop-icon__runtime-copy { animation: none; }
+  .desktop-icon__motion, .desktop-icon__motion::before, .desktop-icon__motion::after, .desktop-icon__motion-corner, .desktop-icon__runtime-state > i, .desktop-icon__runtime-state > svg, .desktop-icon__runtime-track i, .desktop-icon__runtime-copy, .desktop-icon__queued { animation: none; }
   .desktop-icon__motion-corner { opacity: .55; filter: none; transform: none; }
   .desktop-icon__runtime-track i { background: #61e5eb; transform: none; }
   .desktop-icon__art { transition: filter 80ms linear; }

@@ -360,6 +360,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-03
 
+### 图标小组件新建任务立即成图标
+- Location: `desktop/frontend/src/components/widget/widgetQuickStartJobs.ts`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/widget_conversation.go`, `desktop/widget_conversation_test.go`, `desktop/widget_icon_mode.go`, `desktop/widget_icon_mode_test.go`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/lib/types.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: 已实现为前端持久化乐观台账（localStorage ledger）+ 后端 requestId 幂等回执：QuickStart 提交后立即关闭新建弹窗并投影乐观任务图标（opt:<requestId>），后台投递完成后按真实 task:<tabId> 图标交接；发送失败在乐观图标上可见并可安全重试；不依赖后端 durable queued ack 或立即返回真实图标。
+- Keywords: QuickStart, StartWidgetConversation, frontend optimistic ledger, requestId idempotency, task icon, background submit, retry
+- Source: user-stated+verified-by-search
+- Updated: 2026-08-19
+
 ### 图标小组件快速新建
 - Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/quickStartPreferences.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
 - Summary: QuickStart 的工作区、模型与审批交互位于 DesktopIconMode；偏好归一化和审批循环规则位于 quickStartPreferences，契约测试固定无标签与点击循环行为。
