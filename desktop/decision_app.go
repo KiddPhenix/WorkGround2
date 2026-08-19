@@ -90,7 +90,7 @@ type DecisionQuestionInput struct {
 }
 
 func (a *App) startDecisionRuntime() {
-	if a == nil || a.decisionBroker == nil || a.decisionCancel != nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil || a.decisionCancel != nil {
 		return
 	}
 	ctx, cancel := context.WithCancel(a.bootContext())
@@ -127,7 +127,7 @@ func (a *App) stopDecisionRuntime() {
 }
 
 func (a *App) DecisionState() DecisionStateView {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		message := "decision broker is unavailable"
 		if a != nil && a.decisionErr != nil {
 			message = a.decisionErr.Error()
@@ -168,7 +168,7 @@ func (a *App) DecisionState() DecisionStateView {
 }
 
 func (a *App) CreateDecision(input DecisionCreateInput) (decision.Decision, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return decision.Decision{}, errors.New("decision broker is unavailable")
 	}
 	questions := make([]decision.Question, len(input.Questions))
@@ -194,7 +194,7 @@ func (a *App) CreateDecision(input DecisionCreateInput) (decision.Decision, erro
 }
 
 func (a *App) ResolveDecision(input DecisionResolveInput) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	selections := make([]decision.Selection, len(input.Selections))
@@ -209,7 +209,7 @@ func (a *App) ResolveDecision(input DecisionResolveInput) (DecisionStateView, er
 }
 
 func (a *App) DeferDecision(id string) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	_, err := a.decisionBroker.Defer(id)
@@ -217,7 +217,7 @@ func (a *App) DeferDecision(id string) (DecisionStateView, error) {
 }
 
 func (a *App) ResumeDecision(id string) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	_, err := a.decisionBroker.Resume(id)
@@ -225,7 +225,7 @@ func (a *App) ResumeDecision(id string) (DecisionStateView, error) {
 }
 
 func (a *App) CancelDecision(id string) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	_, err := a.decisionBroker.Cancel(id)
@@ -233,7 +233,7 @@ func (a *App) CancelDecision(id string) (DecisionStateView, error) {
 }
 
 func (a *App) SaveDecisionSettings(input DecisionSettingsInput) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	settings := decision.Settings{ExternalMode: decision.ExternalMode(strings.TrimSpace(input.ExternalMode)), SmartGrace: time.Duration(input.SmartGraceSec) * time.Second}
@@ -249,7 +249,7 @@ func (a *App) SaveDecisionSettings(input DecisionSettingsInput) (DecisionStateVi
 }
 
 func (a *App) SaveDecisionChannel(input DecisionChannelInput) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	channelID := strings.TrimSpace(input.ID)
@@ -265,7 +265,7 @@ func (a *App) SaveDecisionChannel(input DecisionChannelInput) (DecisionStateView
 }
 
 func (a *App) DeleteDecisionChannel(id string) (DecisionStateView, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return DecisionStateView{}, errors.New("decision broker is unavailable")
 	}
 	err := a.decisionBroker.DeleteChannel(id)
@@ -273,7 +273,7 @@ func (a *App) DeleteDecisionChannel(id string) (DecisionStateView, error) {
 }
 
 func (a *App) TestDecisionChannel(id string) error {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return errors.New("decision broker is unavailable")
 	}
 	for _, channel := range a.decisionBroker.Channels() {
@@ -295,7 +295,7 @@ func (a *App) TestDecisionChannel(id string) error {
 }
 
 func (a *App) observeDecisionAsk(tabID string, ask event.Ask) bool {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return true
 	}
 	tab, ctrl := a.tabAndCtrlByID(tabID)
@@ -382,6 +382,9 @@ func decisionAskKey(origin decision.Origin, ask event.Ask) string {
 }
 
 func (a *App) handleDecisionChange(change decision.Change) {
+	if !a.ownerDecisionActive() {
+		return
+	}
 	if change.Kind == "resolved" {
 		a.applyDecision(change.Decision)
 	}
@@ -393,7 +396,7 @@ func (a *App) handleDecisionChange(change decision.Change) {
 }
 
 func (a *App) kickDecisionDeliveries(ctx context.Context) {
-	if a == nil || !a.decisionSending.CompareAndSwap(false, true) {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil || !a.decisionSending.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
@@ -445,7 +448,7 @@ type decisionQuestionResolver interface {
 }
 
 func (a *App) applyDecision(value decision.Decision) {
-	if a == nil || a.decisionBroker == nil || (value.Status != decision.StatusDecided && value.Status != decision.StatusApplyFailed) || value.Answer == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil || (value.Status != decision.StatusDecided && value.Status != decision.StatusApplyFailed) || value.Answer == nil {
 		return
 	}
 	a.decisionApplyMu.Lock()
@@ -504,7 +507,7 @@ func decisionResumePrompt(value decision.Decision) string {
 }
 
 func (a *App) retryDecisionApplications() {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return
 	}
 	for _, value := range a.decisionBroker.List(decision.ListFilter{Statuses: []decision.Status{decision.StatusDecided, decision.StatusApplyFailed}}) {
@@ -513,7 +516,7 @@ func (a *App) retryDecisionApplications() {
 }
 
 func (a *App) decisionForAsk(tabID, localID string) (decision.Decision, bool) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return decision.Decision{}, false
 	}
 	tab, _ := a.tabAndCtrlByID(tabID)
@@ -558,7 +561,7 @@ func (a *App) resolveAskThroughDecision(tabID, localID string, answers []event.A
 }
 
 func (a *App) syncDecisionDeliveries(ctx context.Context) {
-	if a == nil || a.decisionBroker == nil || a.botRuntime == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil || a.botRuntime == nil {
 		return
 	}
 	snapshot := a.decisionBroker.Snapshot()
@@ -608,6 +611,9 @@ func decisionWasPresentedTo(deliveries []decision.Delivery, endpointID, decision
 }
 
 func (a *App) sendNextDecisionDelivery(parent context.Context, channel decision.Channel) {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil || a.botRuntime == nil {
+		return
+	}
 	delivery, ok := a.decisionBroker.NextDelivery(channel.ID, time.Now().UTC())
 	if !ok {
 		return
@@ -697,7 +703,7 @@ func decisionAnswerText(value decision.Decision) string {
 }
 
 func (a *App) handleDecisionInbound(msg bot.InboundMessage) (string, bool, error) {
-	if a == nil || a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return "", false, nil
 	}
 	channel, ok := a.decisionChannelForInbound(msg)

@@ -66,21 +66,7 @@ func (a *App) startRemoteAPI() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/session/open", api.handleSessionOpen)
-	mux.HandleFunc("/api/v1/session/new", api.handleSessionNew)
-	mux.HandleFunc("/api/v1/session/submit", api.handleSessionSubmit)
-	mux.HandleFunc("/api/v1/session/status", api.handleSessionStatus)
-	mux.HandleFunc("/api/v1/session/approve", api.handleSessionApprove)
-	mux.HandleFunc("/api/v1/session/answer", api.handleSessionAnswer)
-	mux.HandleFunc("/api/v1/workspaces", api.handleWorkspaces)
-	mux.HandleFunc("/api/v1/workspace/switch", api.handleWorkspaceSwitch)
-	mux.HandleFunc("/api/v1/window/focus", api.handleWindowFocus)
-	mux.HandleFunc("/api/v1/status", api.handleStatus)
-	mux.HandleFunc("/api/v1/decisions/create", api.handleDecisionCreate)
-	mux.HandleFunc("/api/v1/decisions/get", api.handleDecisionGet)
-	mux.HandleFunc("/api/v1/decisions/list", api.handleDecisionList)
-	mux.HandleFunc("/api/v1/decisions/wait", api.handleDecisionWait)
-	mux.HandleFunc("/api/v1/decisions/cancel", api.handleDecisionCancel)
+	api.registerRoutes(mux)
 
 	api.srv = &http.Server{
 		Handler:      mux,
@@ -106,6 +92,28 @@ func (a *App) startRemoteAPI() {
 
 	if err := api.srv.Serve(ln); err != http.ErrServerClosed {
 		log.Printf("[remote-api] serve: %v", err)
+	}
+}
+
+// registerRoutes 注册远程 API 路由。主人决策的 /api/v1/decisions/* 仅在
+// ownerDecisionEnabled 打开时注册；关闭时这些路径返回 404（fail closed）。
+func (api *remoteAPI) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/v1/session/open", api.handleSessionOpen)
+	mux.HandleFunc("/api/v1/session/new", api.handleSessionNew)
+	mux.HandleFunc("/api/v1/session/submit", api.handleSessionSubmit)
+	mux.HandleFunc("/api/v1/session/status", api.handleSessionStatus)
+	mux.HandleFunc("/api/v1/session/approve", api.handleSessionApprove)
+	mux.HandleFunc("/api/v1/session/answer", api.handleSessionAnswer)
+	mux.HandleFunc("/api/v1/workspaces", api.handleWorkspaces)
+	mux.HandleFunc("/api/v1/workspace/switch", api.handleWorkspaceSwitch)
+	mux.HandleFunc("/api/v1/window/focus", api.handleWindowFocus)
+	mux.HandleFunc("/api/v1/status", api.handleStatus)
+	if api.app.ownerDecisionActive() {
+		mux.HandleFunc("/api/v1/decisions/create", api.handleDecisionCreate)
+		mux.HandleFunc("/api/v1/decisions/get", api.handleDecisionGet)
+		mux.HandleFunc("/api/v1/decisions/list", api.handleDecisionList)
+		mux.HandleFunc("/api/v1/decisions/wait", api.handleDecisionWait)
+		mux.HandleFunc("/api/v1/decisions/cancel", api.handleDecisionCancel)
 	}
 }
 

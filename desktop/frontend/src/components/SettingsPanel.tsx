@@ -1841,7 +1841,9 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   }, [installTarget]);
   // 已保存的 Decision Channel 是通知/问答目标的单一可信源：即使
   // sessionMappings 被自动回收清空，设置页仍能显示"已设置"并允许测试。
+  // 主人决策功能关闭时不做任何决策状态订阅或 API 调用。
   useEffect(() => {
+    if (!s.ownerDecisionEnabled) return;
     let alive = true;
     void app.DecisionState().then((state) => alive && setDecisionChannels(state.channels ?? [])).catch(() => undefined);
     const off = onDecisionState((state) => alive && setDecisionChannels(state.channels ?? []));
@@ -1849,7 +1851,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
       alive = false;
       off();
     };
-  }, []);
+  }, [s.ownerDecisionEnabled]);
   useEffect(() => {
     const seed: Record<string, string> = {};
     for (const channel of decisionChannels) {
@@ -2591,67 +2593,69 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 </div>
               </section>
 
-              <section className="bot-detail-section">
-                <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
-                <p className="bot-detail-card__desc">
-                  {selectedDecisionTarget
-                    ? t("settings.botDecisionChannelHint")
-                    : selectedSavedDecisionChannel
-                      ? t("settings.botDecisionChannelSavedOnly")
-                      : t("settings.botDecisionChannelNoTarget")}
-                </p>
-                {selectedDecisionTarget ? (
-                  <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
-                    <div className="bot-secret-row">
-                      <select
-                        className="mem-input"
-                        value={selectedDecisionTargetIndex}
-                        disabled={busy}
-                        onChange={(event) => setDecisionTargetIndexes((current) => ({ ...current, [selectedConnection.id]: Number(event.target.value) }))}
-                      >
-                        {selectedDecisionTargets.map((target, index) => (
-                          <option key={`${target.remoteId}:${target.chatType}`} value={index}>{target.remoteId} · {target.chatType}</option>
-                        ))}
-                      </select>
+              {s.ownerDecisionEnabled && (
+                <section className="bot-detail-section">
+                  <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
+                  <p className="bot-detail-card__desc">
+                    {selectedDecisionTarget
+                      ? t("settings.botDecisionChannelHint")
+                      : selectedSavedDecisionChannel
+                        ? t("settings.botDecisionChannelSavedOnly")
+                        : t("settings.botDecisionChannelNoTarget")}
+                  </p>
+                  {selectedDecisionTarget ? (
+                    <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
+                      <div className="bot-secret-row">
+                        <select
+                          className="mem-input"
+                          value={selectedDecisionTargetIndex}
+                          disabled={busy}
+                          onChange={(event) => setDecisionTargetIndexes((current) => ({ ...current, [selectedConnection.id]: Number(event.target.value) }))}
+                        >
+                          {selectedDecisionTargets.map((target, index) => (
+                            <option key={`${target.remoteId}:${target.chatType}`} value={index}>{target.remoteId} · {target.chatType}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn--primary btn--small"
+                          disabled={busy || !selectedConnection.enabled}
+                          onClick={() => void apply(async () => {
+                            const state = await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
+                            if (state?.channels) setDecisionChannels(state.channels);
+                            setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
+                            return t("settings.botDecisionChannelSuccess");
+                          })}
+                        >
+                          {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey ? t("settings.botDecisionChannelSet") : t("settings.botDecisionChannelAction")}
+                        </button>
+                      </div>
+                    </SettingsField>
+                  ) : null}
+                  {selectedSavedDecisionChannel ? (
+                    <div className="bot-secret-row bot-detail-card__saved-channel">
+                      <span className="bot-detail-card__saved-channel-label">
+                        {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey
+                          ? t("settings.botDecisionChannelSet")
+                          : t("settings.botDecisionChannelSaved")}
+                        {" · "}
+                        {selectedSavedDecisionChannel.chat_id} · {selectedSavedDecisionChannel.chat_type?.trim() || "dm"}
+                      </span>
                       <button
                         type="button"
-                        className="btn btn--primary btn--small"
+                        className="btn btn--small"
                         disabled={busy || !selectedConnection.enabled}
                         onClick={() => void apply(async () => {
-                          const state = await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
-                          if (state?.channels) setDecisionChannels(state.channels);
-                          setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
-                          return t("settings.botDecisionChannelSuccess");
+                          await app.TestDecisionChannel(selectedSavedDecisionChannel!.id);
+                          return t("settings.botDecisionChannelTestSent");
                         })}
                       >
-                        {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey ? t("settings.botDecisionChannelSet") : t("settings.botDecisionChannelAction")}
+                        {t("settings.botDecisionChannelTest")}
                       </button>
                     </div>
-                  </SettingsField>
-                ) : null}
-                {selectedSavedDecisionChannel ? (
-                  <div className="bot-secret-row bot-detail-card__saved-channel">
-                    <span className="bot-detail-card__saved-channel-label">
-                      {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey
-                        ? t("settings.botDecisionChannelSet")
-                        : t("settings.botDecisionChannelSaved")}
-                      {" · "}
-                      {selectedSavedDecisionChannel.chat_id} · {selectedSavedDecisionChannel.chat_type?.trim() || "dm"}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn btn--small"
-                      disabled={busy || !selectedConnection.enabled}
-                      onClick={() => void apply(async () => {
-                        await app.TestDecisionChannel(selectedSavedDecisionChannel!.id);
-                        return t("settings.botDecisionChannelTestSent");
-                      })}
-                    >
-                      {t("settings.botDecisionChannelTest")}
-                    </button>
-                  </div>
-                ) : null}
-              </section>
+                  ) : null}
+                </section>
+              )}
 
               <details
                 ref={allowlistRef}

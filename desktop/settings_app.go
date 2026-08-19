@@ -232,6 +232,7 @@ type SettingsView struct {
 	WidgetSkin              string                    `json:"widgetSkin"`
 	WidgetStyle             string                    `json:"widgetStyle"`
 	HoverStatusDelayMs      int                       `json:"hoverStatusDelayMs"`
+	OwnerDecisionEnabled    bool                      `json:"ownerDecisionEnabled"` // master kill switch for the 主人决策 feature (default off)
 	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
 	ExpandThinking          bool                      `json:"expandThinking"`
 	ConfigPath              string                    `json:"configPath"`
@@ -266,6 +267,10 @@ type DesktopStartupSettingsView struct {
 	WidgetSkin         string          `json:"widgetSkin"`
 	WidgetStyle        string          `json:"widgetStyle"`
 	HoverStatusDelayMs int             `json:"hoverStatusDelayMs"`
+	// OwnerDecisionEnabled is the master kill switch for the 主人决策 feature;
+	// it mirrors ownerDecisionFeatureEnabled so the frontend can hide the
+	// decision centre and channel settings while the feature is disabled.
+	OwnerDecisionEnabled bool `json:"ownerDecisionEnabled"`
 }
 
 func nonNil(s []string) []string {
@@ -535,38 +540,40 @@ func officialProviderAddedSet(cfg *config.Config) map[string]bool {
 func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettingsView {
 	if cfg == nil {
 		return DesktopStartupSettingsView{
-			Bot:                botSettingsView(config.BotConfig{}),
-			DesktopLayoutStyle: "workbench",
-			DesktopTheme:       "auto",
-			DesktopThemeStyle:  "iris",
-			DisplayMode:        "standard",
-			ComposerSubmitKey:  "enter",
-			StatusBarStyle:     "text",
-			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
-			CheckUpdates:       true,
-			WidgetEnabled:      true,
-			WidgetAlwaysOnTop:  true,
-			WidgetSkin:         "classic",
-			WidgetStyle:        "icons",
-			HoverStatusDelayMs: 1200,
+			Bot:                  botSettingsView(config.BotConfig{}),
+			DesktopLayoutStyle:   "workbench",
+			DesktopTheme:         "auto",
+			DesktopThemeStyle:    "iris",
+			DisplayMode:          "standard",
+			ComposerSubmitKey:    "enter",
+			StatusBarStyle:       "text",
+			StatusBarItems:       config.DefaultDesktopStatusBarItems(),
+			CheckUpdates:         true,
+			WidgetEnabled:        true,
+			WidgetAlwaysOnTop:    true,
+			WidgetSkin:           "classic",
+			WidgetStyle:          "icons",
+			HoverStatusDelayMs:   1200,
+			OwnerDecisionEnabled: ownerDecisionFeatureEnabled,
 		}
 	}
 	return DesktopStartupSettingsView{
-		Bot:                botSettingsView(cfg.Bot),
-		DesktopLanguage:    cfg.DesktopLanguage(),
-		DesktopLayoutStyle: cfg.DesktopLayoutStyle(),
-		DesktopTheme:       cfg.DesktopTheme(),
-		DesktopThemeStyle:  cfg.DesktopThemeStyle(),
-		DisplayMode:        cfg.DesktopDisplayMode(),
-		ComposerSubmitKey:  cfg.DesktopComposerSubmitKey(),
-		StatusBarStyle:     cfg.DesktopStatusBarStyle(),
-		StatusBarItems:     cfg.DesktopStatusBarItems(),
-		CheckUpdates:       cfg.DesktopCheckUpdates(),
-		WidgetEnabled:      cfg.DesktopWidgetEnabled(),
-		WidgetAlwaysOnTop:  cfg.DesktopWidgetAlwaysOnTop(),
-		WidgetSkin:         cfg.DesktopWidgetSkin(),
-		WidgetStyle:        cfg.DesktopWidgetStyle(),
-		HoverStatusDelayMs: cfg.DesktopHoverStatusDelayMs(),
+		Bot:                  botSettingsView(cfg.Bot),
+		DesktopLanguage:      cfg.DesktopLanguage(),
+		DesktopLayoutStyle:   cfg.DesktopLayoutStyle(),
+		DesktopTheme:         cfg.DesktopTheme(),
+		DesktopThemeStyle:    cfg.DesktopThemeStyle(),
+		DisplayMode:          cfg.DesktopDisplayMode(),
+		ComposerSubmitKey:    cfg.DesktopComposerSubmitKey(),
+		StatusBarStyle:       cfg.DesktopStatusBarStyle(),
+		StatusBarItems:       cfg.DesktopStatusBarItems(),
+		CheckUpdates:         cfg.DesktopCheckUpdates(),
+		WidgetEnabled:        cfg.DesktopWidgetEnabled(),
+		WidgetAlwaysOnTop:    cfg.DesktopWidgetAlwaysOnTop(),
+		WidgetSkin:           cfg.DesktopWidgetSkin(),
+		WidgetStyle:          cfg.DesktopWidgetStyle(),
+		HoverStatusDelayMs:   cfg.DesktopHoverStatusDelayMs(),
+		OwnerDecisionEnabled: ownerDecisionFeatureEnabled,
 	}
 }
 
@@ -622,6 +629,7 @@ func (a *App) Settings() SettingsView {
 			WidgetSkin:              "classic",
 			WidgetStyle:             "icons",
 			HoverStatusDelayMs:      1200,
+			OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 			MemoryCompiler:          true,
 			ExpandThinking:          false,
 		}
@@ -692,6 +700,7 @@ func (a *App) Settings() SettingsView {
 		WidgetSkin:              cfg.DesktopWidgetSkin(),
 		WidgetStyle:             cfg.DesktopWidgetStyle(),
 		HoverStatusDelayMs:      cfg.DesktopHoverStatusDelayMs(),
+		OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
 		ConfigPath:              cfgPath,
