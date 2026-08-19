@@ -141,9 +141,11 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 
 .desktop-icon-popup {
 	--arrow-left: 50%;
+	--popup-pad-y: 15px;
   position: absolute;
   z-index: 5;
   bottom: 104px;
+  box-sizing: border-box;
   width: min(330px, calc(100vw - 20px));
   padding: 15px;
   border: 1px solid rgb(184 169 238 / 32%);
@@ -179,14 +181,23 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
    clear retry/edit/dismiss action row. */
 .desktop-icon-popup__job-facts { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 4px; }
 .desktop-icon-popup__job-facts span { padding: 2px 8px; border-radius: 999px; border: 1px solid rgb(255 255 255 / 14%); color: #b9bdc9; font-size: 11px; }
-.desktop-icon-popup__dialog { margin-top: 9px; }
-.desktop-icon-popup__dialog-trigger { width: 100%; min-height: 32px; padding: 5px 10px; border-color: rgb(255 255 255 / 16%); color: #b9bdc9; background: #20232b; text-align: left; }
-.desktop-icon-popup__dialog.is-open { padding-top: 1px; }
-.desktop-icon-popup__dialog textarea { min-height: 112px; border-color: #d9dce6; border-radius: 9px; }
-.desktop-icon-popup__dialog textarea:focus { border-color: #f0f2f7; outline: 1px solid #f0f2f7; }
-.desktop-icon-popup__dialog-actions { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
-.desktop-icon-popup__dialog-actions button { min-height: 32px; padding: 5px 12px; }
-.desktop-icon-popup__dialog-actions small { margin-left: auto; color: #8f93a0; font-size: 10px; }
+/* Notice bodies scroll inside the popup: the outer box keeps its shadow and
+   bottom arrow (overflow stays visible), while the inner scroll container is
+   bounded by the anchor-space max-height computed for the same logical
+   viewport. Long tokens wrap instead of forcing the popup wider. */
+.desktop-icon-popup__scroll {
+  max-height: calc(var(--popup-max-height, 420px) - 2 * var(--popup-pad-y, 15px) - 2px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.desktop-icon-popup__continue { margin-top: 9px; }
+.desktop-icon-popup .desktop-icon-popup__continue textarea { min-height: 64px; border-color: #d9dce6; border-radius: 9px; }
+.desktop-icon-popup .desktop-icon-popup__continue textarea:focus { border-color: #f0f2f7; outline: 1px solid #f0f2f7; }
+.desktop-icon-popup .desktop-icon-popup__continue textarea[readonly] { color: #c8cad3; background: #171920; cursor: default; }
+.desktop-icon-popup__continue-error { display: block; margin-top: 5px; color: #f2b1b8; font-size: 11px; }
+.desktop-icon-popup__continue-actions { display: flex; align-items: center; gap: 7px; margin-top: 7px; }
+.desktop-icon-popup__continue-actions button { min-height: 32px; padding: 5px 12px; }
+.desktop-icon-popup__continue-actions small { margin-left: auto; color: #8f93a0; font-size: 10px; }
 .desktop-icon-popup__answers { display: grid; gap: 7px; }
 .desktop-icon-popup__answers > button { display: grid; width: 100%; text-align: left; }
 .desktop-icon-popup__answers small { color: #ccc4e4; }

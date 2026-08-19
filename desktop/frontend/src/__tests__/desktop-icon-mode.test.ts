@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom } from "../components/widget/desktopIconLayout";
+import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom, widgetViewportSize } from "../components/widget/desktopIconLayout";
 import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type TimerHost } from "../components/widget/desktopIconTimers";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, projectWorkspaceRows, renameTitle } from "../components/widget/workspaceManager";
@@ -50,6 +50,8 @@ assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "", "global"), 3, "Quic
 const left = placeIconPopup({ left: 0, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(left.left, 10, "left-edge popup clamps to the safe margin");
 assert.equal(left.arrowLeft, 22, "left-edge arrow still targets the icon center");
+assert.equal(left.maxHeight, 480 - 9 - 10, "maxHeight is the real anchor-top space minus gap and margin");
+assert.equal(left.bottom + left.maxHeight, 600 - 10, "a maxHeight-tall popup lands exactly on the top margin");
 
 const middle = placeIconPopup({ left: 418, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(middle.left, 285, "middle popup centers on its icon");
@@ -62,6 +64,50 @@ assert.equal(preview.arrowLeft, 54, "content-width preview keeps its arrow cente
 const right = placeIconPopup({ left: 836, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(right.left, 560, "right-edge popup clamps inside the viewport");
 assert.equal(right.arrowLeft, 308, "right-edge arrow still targets the source");
+
+// An anchor near the top keeps only the real leftover headroom: maxHeight
+// shrinks to anchor.top - gap - margin and never goes negative, and the top
+// edge (viewportHeight - bottom - maxHeight) still cannot cross the margin.
+const low = placeIconPopup({ left: 418, top: 40, width: 64, height: 72 }, 900, 600, 330);
+assert.equal(low.bottom, 569, "an anchor near the top still places the popup bottom above it");
+assert.equal(low.maxHeight, 40 - 9 - 10, "maxHeight is the real leftover anchor-top space");
+assert.ok(low.bottom + low.maxHeight <= 600 - 10, "even the leftover headroom cannot cross the top margin");
+const clipped = placeIconPopup({ left: 418, top: 10, width: 64, height: 72 }, 900, 600, 330);
+assert.equal(clipped.maxHeight, 0, "no usable anchor-top space clamps maxHeight to zero instead of going negative");
+
+const originalViewport = widgetViewportSize(900, 600, 0.8);
+const resizedViewport = widgetViewportSize(900, 420, 0.8);
+assert.deepEqual(originalViewport, { width: 720, height: 480 }, "the logical viewport converts both CSS axes with desktop zoom");
+assert.deepEqual(resizedViewport, { width: 720, height: 336 }, "a height-only resize produces a new logical viewport height");
+const resizedPlacement = placeIconPopup({ left: 320, top: 300, width: 64, height: 72 }, resizedViewport.width, resizedViewport.height, 330);
+assert.equal(resizedPlacement.bottom, 45, "popup placement consumes the resized logical height instead of a stale window read");
+
+// The vertical constraint stays inside the client for every desktopZoom
+// (0.5..2) × clusterZoom (0.75..1.5) combination at the 640×540 minimum
+// window: the anchor rect is the real scaleIconRect'd logical geometry of a
+// bottom-right cluster icon (cluster zooms around its bottom-right origin, so
+// the icon top rises by zoom while the 18px corner margins stay physical).
+for (const desktopZoom of [0.5, 1, 2]) {
+  for (const clusterZoom of [0.75, 1, 1.25, 1.5]) {
+    const viewportWidth = 640 * desktopZoom;
+    const viewportHeight = 540 * desktopZoom;
+    const anchorTop = viewportHeight - (18 + 116 * clusterZoom) * desktopZoom;
+    const anchor = {
+      left: viewportWidth - (18 + 66 * clusterZoom) * desktopZoom,
+      top: anchorTop,
+      width: 66 * clusterZoom * desktopZoom,
+      height: 74 * clusterZoom * desktopZoom,
+    };
+    const width = 330 * desktopZoom;
+    const placed = placeIconPopup(anchor, viewportWidth, viewportHeight, width);
+    assert.ok(placed.left >= 10, `left edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+    assert.ok(placed.left + width <= viewportWidth - 10 + 1e-9, `right edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+    assert.ok(placed.bottom >= 10, `bottom edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+    assert.ok(placed.maxHeight > 0, `anchor-top space usable at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+    assert.ok(placed.maxHeight <= anchorTop - 9 - 10 + 1e-9, `maxHeight never exceeds the real anchor-top space at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+    assert.ok(placed.bottom + placed.maxHeight <= viewportHeight - 10 + 1e-9, `popup top edge stays inside the client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+  }
+}
 
 for (const zoom of [0.5, 0.8, 1, 1.25, 1.5, 2]) {
   const cssRect = { left: 300 / zoom, top: 420 / zoom, width: 66 / zoom, height: 74 / zoom };
@@ -102,7 +148,7 @@ assert.match(component, /nativeHitPadding\(node\)/, "native regions retain CSS s
 assert.match(component, /app\.GetDesktopZoomFactor\(\)/, "icon mode reads the active WebView zoom factor");
 assert.match(component, /resolveWidgetZoomFrame\(desktopZoom\)/, "icon mode neutralizes WebView zoom for stable desktop-sized icons");
 assert.match(component, /popupRef\.current[\s\S]+getBoundingClientRect\(\)\.width \* desktopZoom/, "popup placement measures the rendered width in logical window units");
-assert.match(component, /const width = popupWidth \|\| fallbackWidth;[\s\S]+placeIconPopup\(rect, viewportWidth, viewportHeight, width\)/, "popup placement uses the rendered preview width instead of the interactive panel maximum");
+assert.match(component, /const width = popupWidth \|\| fallbackWidth;[\s\S]+placeIconPopup\(rect, viewport\.width, viewport\.height, width\)/, "popup placement uses the rendered preview width and current logical viewport");
 assert.match(component, /iconHitRect\(node\.getBoundingClientRect\(\), window\.devicePixelRatio, nativeHitPadding\(node\)\)/, "native clipping converts WebView CSS rectangles directly to physical pixels");
 assert.match(component, /getGamepads[\s\S]+buttons\[6\][\s\S]+buttons\[7\]/, "QuickStart supports LT/RT gamepad edge polling");
 assert.match(component, /app\.Settings\(\)[\s\S]+quickStartPreferences\(settings\)/, "QuickStart reads model, approval, and submit key from the shared user settings snapshot");
@@ -484,11 +530,29 @@ assert.doesNotMatch(component, /desktop-icon-popup__ok[\s\S]{0,200}run\("ok"\)/,
 assert.doesNotMatch(component, /\[\"ok\", \"dismiss\", \"later\", \"open\", \"reply\"\]/, "ok is no longer a backend-acknowledged action that closes the popup");
 assert.match(component, /\[\"dismiss\", \"later\", \"open\", \"reply\", \"continue\"\]/, "dismiss/open/continue close the popup after a successful backend roundtrip");
 assert.match(component, /onClose=\{\(\) => \{ setActiveID\(""\);\s*setPreviewID\(""\);\s*\}\}/, "OK closes the popup and its hover preview together");
-assert.match(component, /desktop-icon-popup__dialog-trigger[\s\S]{0,160}>对话框<\/button>/, "completion notices expose a collapsed conversation entry below the action row");
-assert.match(component, /dialogOpen &&[\s\S]+<textarea autoFocus[\s\S]+告诉 WorkGround2 接下来要完成什么/, "focusing the conversation entry expands it into a taller composer");
-assert.match(component, /run\(\"continue\", \[text\]\)/, "the completion composer continues the current task instead of starting a separate conversation");
-assert.match(component, /event\.key === \"Enter\" && \(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+sendFollowup\(\)/, "Ctrl+Enter submits the continuation");
-assert.match(component, /onClick=\{sendFollowup\}>[\s\S]{0,80}\"发送\"[\s\S]{0,100}onClick=\{closeDialog\}>取消<\/button>/, "the expanded composer provides explicit send and cancel actions");
+// The continuation is a resident editable textarea on every completion
+// notice: no collapsed 对话框 trigger, no expanded/collapsed dialog state.
+assert.doesNotMatch(component, /desktop-icon-popup__dialog-trigger|>对话框<\/button>/, "completion notices no longer hide the continuation behind a 对话框 trigger button");
+assert.doesNotMatch(component, /dialogOpen|closeDialog|desktop-icon-popup__dialog/, "the continuation composer has no dialog state or 对话框 surface at all");
+assert.match(component, /desktop-icon-popup__continue[\s\S]+<textarea[\s\S]+placeholder="告诉 WorkGround2 接下来要完成什么…"/, "completion notices always render the resident continuation textarea");
+assert.match(component, /run\("continue", \[text\]\)/, "the completion composer continues the current task instead of starting a separate conversation");
+// Ctrl/Cmd+Enter submits, plain Enter stays a newline, and IME composition
+// (isComposing, keyCode 229, compositionend grace) never leaks into a send.
+assert.match(component, /event\.key === "Enter" && \(event\.ctrlKey \|\| event\.metaKey\)[\s\S]+isWidgetImeKeyEvent\(event, composingRef\.current, lastCompositionEndAt\.current\)[\s\S]+sendFollowup\(\)/, "Ctrl/Cmd+Enter submits the continuation only outside IME composition; plain Enter stays a newline");
+assert.match(component, /onCompositionStart=\{\(\) => \{ composingRef\.current = true; \}\}[\s\S]+onCompositionEnd=\{\(\) => \{ composingRef\.current = false; lastCompositionEndAt\.current = Date\.now\(\); \}\}/, "the continuation textarea tracks IME composition and the post-confirm grace");
+// Escape inside the focused input must never bubble to the global close.
+assert.match(component, /event\.key === "Escape"\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); return; \}/, "Escape inside the continuation input is consumed locally");
+assert.match(component, /event\.key === "Escape" && !\(event\.target instanceof HTMLElement && event\.target\.closest\("\.desktop-icon-popup__continue"\)\)\) \{ closeTransient\(\); \}/, "the global Escape handler skips the continuation input before closing transient surfaces");
+// Busy / accessibility / double-submit / retryable-failure retention contract.
+assert.match(component, /const sendFollowup = async \(\) => \{[\s\S]{0,120}const text = failedFollowup \|\| followup\.trim\(\);[\s\S]{0,100}if \(busy \|\| !text \|\| followupSent\.current\) return/, "the async continuation guards busy/empty before submitting the frozen intent");
+assert.match(component, /const freezeRetry = \(\) => \{[\s\S]{0,120}setFollowup\(text\);[\s\S]{0,100}setFailedFollowup\(text\);[\s\S]{0,100}followupSent\.current = false/, "retry freezing preserves the exact submitted text and releases the send guard");
+assert.match(component, /try \{[\s\S]{0,80}const status = await run\("continue", \[text\]\);[\s\S]{0,100}status === "retryable_error"[\s\S]{0,80}freezeRetry\(\)[\s\S]{0,260}catch \{[\s\S]{0,240}freezeRetry\(\)/, "both retryable results and rejected run promises freeze the original text without an unhandled rejection");
+assert.match(component, /desktop-icon-popup__continue" aria-busy=\{busy\}/, "the continuation area announces the busy state");
+assert.match(component, /disabled=\{busy\} readOnly=\{Boolean\(failedFollowup\)\}[\s\S]{0,180}aria-label="继续当前任务"/, "the continuation textarea is labelled, busy-disabled, and read-only only after retryable failure");
+assert.match(component, /aria-describedby=\{failedFollowup \? "desktop-icon-followup-error" : "desktop-icon-followup-hint"\}/, "the textarea describes both its normal keyboard help and retryable failure state");
+assert.match(component, /发送失败，可重试原内容[\s\S]{0,220}failedFollowup \? "重试发送" : "发送"[\s\S]{0,160}failedFollowup \? "原内容已锁定"/, "retryable failure explains that only the original content can be resent");
+assert.match(component, /desktop-icon-popup__scroll" tabIndex=\{0\} role="region" aria-label="任务通知详情"/, "the overflowing notice body is keyboard-focusable and named");
+assert.match(component, /role=\{active \? "dialog" : "status"\} aria-label=\{active \? `\$\{popupItem\.title\} 操作` : undefined\}/, "interactive popups expose a named dialog role");
 assert.match(component, /notice\.summaryStatus === "failed"/, "a failed summary surfaces an explicit retryable hint");
 assert.match(css, /\.desktop-icon-popup__summary-failed/, "the failed-summary hint has its own style");
 const okRule = css.match(/\.desktop-icon-popup button\.desktop-icon-popup__ok\s*\{[^}]*\}/)?.[0] ?? "";
@@ -500,7 +564,17 @@ assert.notEqual(ruleColor(okRule), ruleColor(detailRule), "OK and Detail use dis
 assert.notEqual(ruleColor(detailRule), ruleColor(dismissRule), "Detail and Dismiss use distinct semantic colors");
 assert.notEqual(ruleColor(okRule), ruleColor(dismissRule), "OK and Dismiss use distinct semantic colors");
 assert.match(css, /\.desktop-icon-popup__actions--completion button\s*\{[^}]*min-height:\s*30px;[^}]*padding:\s*4px 10px;/, "the three completion actions use a shorter compact height");
-assert.match(css, /\.desktop-icon-popup__dialog textarea\s*\{[^}]*min-height:\s*112px;/, "the focused completion composer expands to a clearly taller input");
+// The notice body scrolls inside the anchor-space max-height; the outer box
+// keeps its shadow and bottom arrow (no overflow clip), long tokens wrap, and
+// the resident continuation textarea stays compact.
+assert.match(css, /\.desktop-icon-popup__scroll[\s\S]*max-height:\s*calc\(var\(--popup-max-height[^}]*overflow-y:\s*auto/, "the notice body scrolls inside the computed anchor-space max-height");
+assert.match(css, /\.desktop-icon-popup__scroll[^}]*overflow-wrap:\s*anywhere/, "long tokens wrap inside the scroll container instead of forcing the popup wider");
+assert.match(css, /\.desktop-icon-popup\s*\{[^}]*box-sizing:\s*border-box;/, "the popup box is border-box");
+assert.match(css, /\.desktop-icon-popup__continue textarea\s*\{[^}]*min-height:\s*64px;/, "the resident continuation textarea stays compact");
+assert.match(component, /"--popup-max-height": `\$\{placed\.maxHeight\}px`/, "popup placement binds the computed anchor-space max-height to the popup box");
+assert.match(component, /const \[viewport, setViewport\] = useState\(\(\) => widgetViewportSize\(window\.innerWidth, window\.innerHeight, 1\)\)/, "viewport state owns both logical width and height");
+assert.match(component, /const onResize = \(\) => \{[\s\S]{0,180}widgetViewportSize\(window\.innerWidth, window\.innerHeight, desktopZoom\)[\s\S]{0,180}current\.width === next\.width && current\.height === next\.height/, "one resize path updates both logical axes and skips unchanged rerenders");
+assert.match(component, /placeIconPopup\(rect, viewport\.width, viewport\.height, width\)[\s\S]{0,220}\[active, desktopZoom, popupItem, popupWidth, snapshot\.revision, viewport\.height, viewport\.width\]/, "popup placement reacts to height-only viewport resizes");
 assert.match(backend, /Status:\s*\"pending\", Action:\s*\"continue\"/, "task continuation persists a pending receipt before delivery");
 assert.match(backend, /advanceDesktopIconTaskContinue[\s\S]+tryDesktopIconReply/, "task continuation uses the acknowledged and recoverable user-turn pipeline");
 assert.match(css, /\.desktop-icon-popup__actions button:not\(:disabled\):hover/, "action buttons keep an accessible hover state");
@@ -637,7 +711,7 @@ assert.match(component, /onContextMenu=\{\(event\) => \{[\s\S]*?event\.preventDe
 assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anchor keeps no pointer handlers, so left-button window dragging stays native Wails drag");
 assert.match(component, /id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu"[\s\S]*?<button type="button" role="menuitem" disabled=\{exiting\} onClick=\{\(\) => void openSettingsWindow\(\)\}/, "the anchor menu 设置 button routes through the guarded exit-before-open flow and stays open, so a failed exit keeps the same click retryable");
 assert.doesNotMatch(component, /setAnchorMenuOpen\(false\);[\s\S]{0,60}void openSettingsWindow/, "a failed settings exit must not close the anchor menu before the exit resolves");
-assert.match(component, /event\.key === "Escape"\) \{ closeTransient\(\); \}/, "Escape closes every transient surface through the central close path");
+assert.match(component, /event\.key === "Escape" && !\(event\.target instanceof HTMLElement && event\.target\.closest\("\.desktop-icon-popup__continue"\)\)\) \{ closeTransient\(\); \}/, "Escape closes every transient surface through the central close path, except while the continuation input is focused");
 assert.match(component, /const close = \(\) => closeTransient\(\);[\s\S]*?addEventListener\("blur", close\)/, "losing desktop-window focus closes every transient surface through the central close path");
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "clicking the empty desktop or any container/grid/control gap closes every transient surface through the central close path");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");

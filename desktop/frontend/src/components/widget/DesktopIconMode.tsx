@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { BookOpen, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, MessagesSquare, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
-import { app, type DesktopIconActionInput, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { app, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
 import { filterAtMatches } from "../../lib/atMatches";
 import { isComposerSubmitKey } from "../../lib/composerKeyboard";
 import { activeFileReferenceToken } from "../FileReferenceMenu";
 import type { CommandInfo, DirEntry, ModelInfo, SlashArgItem, ToolApprovalMode, VocabularyMatch } from "../../lib/types";
 import { acceptVocabulary, type VocabularyToken } from "../../lib/vocabularyCompletion";
-import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom } from "./desktopIconLayout";
+import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom, widgetViewportSize } from "./desktopIconLayout";
 import logoSymbol from "../../assets/logo-symbol.svg";
 import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
@@ -129,20 +129,45 @@ function RuntimeIndicator({ item }: { item: DesktopIconItem }) {
 	</span>;
 }
 
-function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => Promise<boolean>; onClose: () => void }) {
+function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconItem; notice: DesktopIconNotice; busy: boolean; run: (action: string, values?: string[]) => Promise<DesktopIconActionResult["status"]>; onClose: () => void }) {
   const [answer, setAnswer] = useState("");
 	const [selected, setSelected] = useState("");
 	const [reply, setReply] = useState("");
-	const [dialogOpen, setDialogOpen] = useState(false);
 	const [followup, setFollowup] = useState("");
+	const [failedFollowup, setFailedFollowup] = useState("");
+	const composingRef = useRef(false);
+	const lastCompositionEndAt = useRef(0);
+	const followupSent = useRef(false);
   const needsAnswer = notice.kind === "needs_input";
   const completion = notice.kind === "completed" || notice.kind === "failed";
-	const closeDialog = () => { setDialogOpen(false); setFollowup(""); };
-	const sendFollowup = () => {
-		const text = followup.trim();
-		if (!busy && text) void run("continue", [text]);
+	// The continuation input stays resident on completion notices. Sending
+	// guards busy/empty and a same-tick double submit (button + Ctrl+Enter).
+	// A retryable error freezes the exact submitted text: retry must reuse both
+	// that text and run()'s stable requestId until the backend accepts it.
+	const sendFollowup = async () => {
+		const text = failedFollowup || followup.trim();
+		if (busy || !text || followupSent.current) return;
+		followupSent.current = true;
+		const freezeRetry = () => {
+			setFollowup(text);
+			setFailedFollowup(text);
+			followupSent.current = false;
+		};
+		try {
+			const status = await run("continue", [text]);
+			if (status === "retryable_error") {
+				freezeRetry();
+			} else if (status !== "accepted" && status !== "already_applied") {
+				followupSent.current = false;
+			}
+		} catch {
+			// The prop is async and may reject before the shared run path can
+			// classify the failure. Treat it as retryable: keep the exact intent,
+			// release the guard, and never leak an unhandled rejection.
+			freezeRetry();
+		}
 	};
-  return <>
+  return <div className="desktop-icon-popup__scroll" tabIndex={0} role="region" aria-label="任务通知详情">
     <div className="desktop-icon-popup__eyebrow">{notice.title}</div>
     <strong>{item.title}</strong>
     <p>{notice.body}</p>
@@ -160,19 +185,17 @@ function NoticeBody({ item, notice, busy, run, onClose }: { item: DesktopIconIte
 		{notice.kind === "message" && (item.kind === "room" || item.kind === "person") && <button disabled={busy || !reply.trim()} onClick={() => run("reply", [reply.trim()])}>回复</button>}
 		{notice.kind === "message" && <button disabled={busy} onClick={() => run("open")}>打开会话</button>}
     </div>
-	{completion && <div className={`desktop-icon-popup__dialog${dialogOpen ? " is-open" : ""}`}>
-		{!dialogOpen && <button type="button" className="desktop-icon-popup__dialog-trigger" disabled={busy} onClick={() => setDialogOpen(true)}>对话框</button>}
-		{dialogOpen && <>
-			<label><span className="sr-only">继续当前任务</span><textarea autoFocus value={followup} disabled={busy} placeholder="告诉 WorkGround2 接下来要完成什么…" onChange={(event) => setFollowup(event.target.value)} onKeyDown={(event) => {
-				if (event.key === "Escape") { event.preventDefault(); closeDialog(); return; }
-				if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) { event.preventDefault(); sendFollowup(); }
-			}} /></label>
-			<div className="desktop-icon-popup__dialog-actions"><button type="button" disabled={busy || !followup.trim()} onClick={sendFollowup}>{busy ? "发送中…" : "发送"}</button><button type="button" className="subtle" disabled={busy} onClick={closeDialog}>取消</button><small>Ctrl+Enter 发送</small></div>
-		</>}
+	{completion && <div className="desktop-icon-popup__continue" aria-busy={busy}>
+		<label><span className="sr-only">继续当前任务</span><textarea value={followup} disabled={busy} readOnly={Boolean(failedFollowup)} placeholder="告诉 WorkGround2 接下来要完成什么…" aria-label="继续当前任务" aria-describedby={failedFollowup ? "desktop-icon-followup-error" : "desktop-icon-followup-hint"} onChange={(event) => setFollowup(event.target.value)} onKeyDown={(event) => {
+			if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); return; }
+			if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !isWidgetImeKeyEvent(event, composingRef.current, lastCompositionEndAt.current)) { event.preventDefault(); void sendFollowup(); }
+		}} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; lastCompositionEndAt.current = Date.now(); }} /></label>
+		{failedFollowup && <small id="desktop-icon-followup-error" role="status" className="desktop-icon-popup__continue-error">发送失败，可重试原内容</small>}
+		<div className="desktop-icon-popup__continue-actions"><button type="button" disabled={busy || !followup.trim()} onClick={() => void sendFollowup()}>{busy ? "发送中…" : failedFollowup ? "重试发送" : "发送"}</button><small id={failedFollowup ? undefined : "desktop-icon-followup-hint"}>{failedFollowup ? "原内容已锁定" : "Ctrl+Enter 发送，Enter 换行"}</small></div>
 	</div>}
     {completion && notice.summaryStatus === "failed" && <small className="desktop-icon-popup__summary-failed">摘要生成失败，稍后自动重试</small>}
     {completion && <small className="desktop-icon-popup__history">记录仍可在搜索中找到</small>}
-  </>;
+  </div>;
 }
 
 function RuntimeBody({ item, busy, run }: { item: DesktopIconItem; busy: boolean; run: (action: string) => void }) {
@@ -502,7 +525,7 @@ function QuickStart({ workspaces, initialWorkspace = "", editJob = null, initial
   </div>;
 }
 
-function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: DesktopIconSearchItem) => Promise<boolean> }) {
+function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: DesktopIconSearchItem) => Promise<unknown> }) {
   const [query, setQuery] = useState("");
 	const [results, setResults] = useState<DesktopIconSearchItem[]>([]);
 	const [loading, setLoading] = useState(false);
@@ -764,7 +787,7 @@ function pinnedIcon(row: { pinned: boolean }) {
 export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void> }) {
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
-	const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+	const [viewport, setViewport] = useState(() => widgetViewportSize(window.innerWidth, window.innerHeight, 1));
   const [activeID, setActiveID] = useState("");
   const [previewID, setPreviewID] = useState("");
   const [menuID, setMenuID] = useState("");
@@ -896,16 +919,21 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			.catch(() => { if (alive) setDesktopZoom(1); });
 		return () => { alive = false; };
 	}, []);
-	// The reverse-zoomed frame's visible width is innerWidth × desktopZoom; it
-	// changes on window resize, so the grid max-width must follow it.
+	// Keep one logical viewport state for popup placement. Resize updates width
+	// and height together; a zoom change immediately recomputes both in the same
+	// coordinate system. The equality guard avoids unrelated rerenders.
 	useEffect(() => {
-		const onResize = () => setViewportWidth(window.innerWidth);
+		const onResize = () => {
+			const next = widgetViewportSize(window.innerWidth, window.innerHeight, desktopZoom);
+			setViewport((current) => current.width === next.width && current.height === next.height ? current : next);
+		};
+		onResize();
 		window.addEventListener("resize", onResize);
 		return () => window.removeEventListener("resize", onResize);
-	}, []);
+	}, [desktopZoom]);
 	const clusterMaxWidth = useMemo(
-		() => clusterGridMaxWidth(viewportWidth, desktopZoom, clusterZoom),
-		[viewportWidth, desktopZoom, clusterZoom],
+		() => clusterGridMaxWidth(viewport.width / desktopZoom, desktopZoom, clusterZoom),
+		[viewport.width, desktopZoom, clusterZoom],
 	);
 	// The always-on-top switch mirrors the persisted config (single source of
 	// truth). The initial value comes through the existing lightweight startup
@@ -963,14 +991,16 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       setSnapshot(result.snapshot);
 		if (result.status === "accepted" || result.status === "already_applied") { actionRequests.current.delete(intent); if (["dismiss", "later", "open", "reply", "continue"].includes(action)) setActiveID(""); }
 		else { if (result.status === "stale" || result.status === "invalid") actionRequests.current.delete(intent); setError(result.error || "操作失败，可安全重试"); }
-		return result.status === "accepted" || result.status === "already_applied";
-    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return false; }
+		return result.status;
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); return "retryable_error"; }
     finally { setBusy(false); }
   }, []);
 
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { closeTransient(); }
+      // Escape inside the resident continuation input stays local (the
+      // textarea stops propagation as well): it must never close the popup.
+      if (event.key === "Escape" && !(event.target instanceof HTMLElement && event.target.closest(".desktop-icon-popup__continue"))) { closeTransient(); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
@@ -1099,13 +1129,11 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     if (!popupItem) return {};
     const node = itemRefs.current.get(popupItem.id); if (!node) return {};
 		const rect = scaleIconRect(node.getBoundingClientRect(), desktopZoom);
-		const viewportWidth = window.innerWidth * desktopZoom;
-		const viewportHeight = window.innerHeight * desktopZoom;
-		const fallbackWidth = active ? 330 : Math.min(300, viewportWidth - 20);
+		const fallbackWidth = active ? 330 : Math.min(300, viewport.width - 20);
 		const width = popupWidth || fallbackWidth;
-		const placed = placeIconPopup(rect, viewportWidth, viewportHeight, width);
-		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px` } as CSSProperties;
-	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision]);
+		const placed = placeIconPopup(rect, viewport.width, viewport.height, width);
+		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px`, "--popup-max-height": `${placed.maxHeight}px` } as CSSProperties;
+	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision, viewport.height, viewport.width]);
 
   const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
@@ -1308,7 +1336,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 				{anchorMenuOpen && <div id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" disabled={exiting} onClick={() => void openSettingsWindow()}>设置</button></div>}
 			</div>
 		</div>
-		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={closePreviewSoon}>
+		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}`} style={popupStyle} role={active ? "dialog" : "status"} aria-label={active ? `${popupItem.title} 操作` : undefined} aria-live={popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={closePreviewSoon}>
       <span className="desktop-icon-popup__arrow" aria-hidden="true" />
       {!active && <p>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}

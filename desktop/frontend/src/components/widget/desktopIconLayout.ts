@@ -1,8 +1,17 @@
 import { normalizeWidgetZoom } from "./widgetZoom";
 
 export interface IconRect { left: number; top: number; width: number; height: number; }
-export interface PopupPlacement { left: number; bottom: number; arrowLeft: number; }
+export interface PopupPlacement { left: number; bottom: number; arrowLeft: number; maxHeight: number; }
 export interface IconHitRect { x: number; y: number; width: number; height: number; }
+export interface WidgetViewportSize { width: number; height: number; }
+
+// Window resize events report CSS viewport pixels. Popup placement uses the
+// reverse-zoomed Wails logical coordinate system, so width and height must be
+// converted together with the same normalized desktop zoom.
+export function widgetViewportSize(width: number, height: number, value: unknown): WidgetViewportSize {
+  const zoom = normalizeWidgetZoom(value);
+  return { width: width * zoom, height: height * zoom };
+}
 
 // WebView2 reports DOM rectangles in its zoomed CSS viewport. Convert them
 // back to Wails logical window units before popup placement or Win32 clipping.
@@ -40,14 +49,20 @@ export function quickStartWorkspaceIndex(keys: string[], pending = "", requested
 }
 
 // placeIconPopup clamps the panel inside the viewport while retaining an arrow
-// that points at the source icon center.
+// that points at the source icon center. maxHeight is the real space available
+// above the anchor in the same logical coordinate system: the anchor's top
+// edge minus the gap and the top margin, capped at the full viewport minus
+// both margins. The popup bottom sits gap px above the anchor top, so a popup
+// exactly maxHeight tall lands with its top edge on the margin.
 export function placeIconPopup(anchor: IconRect, viewportWidth: number, viewportHeight: number, popupWidth: number, margin = 10, gap = 9): PopupPlacement {
   const center = anchor.left + anchor.width / 2;
   const left = Math.max(margin, Math.min(center - popupWidth / 2, viewportWidth - margin - popupWidth));
+  const maxHeight = Math.max(0, Math.min(anchor.top - gap - margin, viewportHeight - margin * 2));
   return {
     left,
     bottom: Math.max(margin, viewportHeight - anchor.top + gap),
     arrowLeft: Math.max(14, Math.min(center - left, popupWidth - 14)),
+    maxHeight,
   };
 }
 

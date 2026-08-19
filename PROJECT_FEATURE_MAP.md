@@ -339,6 +339,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-07-07
 
+### 图标完成通知输入框与可达布局
+- Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktopIconLayout.ts`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: 完成通知 NoticeBody 的续聊区改为常驻紧凑 textarea（无“对话框”触发/展开态）。Ctrl/Cmd+Enter 发送、普通 Enter 换行、IME（isComposing/keyCode 229/compositionend grace）与 Escape（不冒泡关闭）防护、busy/非空/同 tick 双提交防护、失败保留文本可安全重试。`placeIconPopup` 新增 `maxHeight`（锚点上方真实可用高度），NoticeBody 内容包 `.desktop-icon-popup__scroll` 内层滚动容器，外层保留阴影与底部箭头、border-box、长 token 可换行；640×540 长摘要下四边在 client 内，actions/输入框/footer 滚动可达。
+- Keywords: NoticeBody, DesktopIconMode, completion notice, 文字输入框, IME, Escape, placeIconPopup, maxHeight, internal scroll, viewport clamp
+- Source: verified-by-search
+- Updated: 2026-08-19
+
 ### 图标小组件锚点快捷控制
 - Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/App.tsx`, `desktop/settings_app.go`, `desktop/widget_mode.go`, `desktop/widget_window_windows.go`, related tests
 - Summary: 规划在图标小组件收起/展开按钮与 WG2 锚点之间增加左键快捷条，包含放大、缩小、总在最前开关、打开主界面和设置；锚点现有右键设置入口保留。
