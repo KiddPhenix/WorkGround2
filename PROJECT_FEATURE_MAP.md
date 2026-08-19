@@ -381,6 +381,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-19
 
+### 小组件 Think 悬停预览文本溢出
+- Location: `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: 状态 done；悬停预览正文使用 normal/anywhere 在 300px 框内换行，并按动态 `--popup-max-height` 扣除外框占用后独立滚动；图标与正文 focus 会清理待关闭 timer，鼠标离开已获焦预览时保持可操作，契约测试覆盖精确 CSS、动态高度及 focus/hover 竞态。
+- Keywords: DesktopIconMode, Think, thinking, hover preview, text overflow, white-space normal, overflow-wrap anywhere, dynamic maxHeight, focus timer
+- Source: verified-by-search
+- Updated: 2026-08-19
+
 ### 小组件搜索弹层动态高度
 - Location: `desktop/frontend/src/components/widget/desktopIconLayout.ts`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
 - Summary: 状态 done；搜索弹层通过动态 `--popup-max-height` 与 bottom 共用逻辑坐标，searchbox 固定可见，error / empty / results 统一在内部结果区滚动；真实 desktopZoom × clusterZoom 往返矩阵与 resize 契约覆盖顶部安全边距。

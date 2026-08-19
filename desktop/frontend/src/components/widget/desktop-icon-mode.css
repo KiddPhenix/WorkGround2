@@ -160,8 +160,20 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
    zoomed 100vh constant is gone because maxHeight and bottom share the same
    reverse-zoomed logical coordinate system via --popup-max-height. */
 .desktop-icon-popup:has(.desktop-icon-popup__search) { box-sizing: border-box; display: flex; }
+/* Hover preview text wraps inside the 300px box: continuous Chinese breaks
+   between ideographs, mixed CJK/ASCII wraps at spaces, and unbroken URL/path/
+   token runs break via overflow-wrap:anywhere (word-break:break-word is the
+   WebView-compatible fallback). The outer preview box keeps overflow visible
+   so its bottom arrow and shadow are never clipped. */
 .desktop-icon-popup--preview { width: auto; max-width: 300px; padding: 9px 12px; pointer-events: auto; }
-.desktop-icon-popup--preview p { margin: 0; white-space: nowrap; }
+.desktop-icon-popup--preview p {
+  max-height: max(0px, calc(var(--popup-max-height, 420px) - 18px - 2px));
+  overflow-y: auto;
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .desktop-icon-popup__arrow { position: absolute; left: var(--arrow-left); bottom: -7px; width: 13px; height: 13px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgb(184 169 238 / 32%); border-bottom: 1px solid rgb(184 169 238 / 32%); background: #191b22; }
 .desktop-icon-popup__eyebrow { margin-bottom: 5px; color: #ad92ff; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .desktop-icon-popup strong { display: block; font-size: 15px; }

@@ -305,6 +305,33 @@ assert.match(css, /\.desktop-icon-popup__vocab-ghost\s*\{[^}]*color:\s*transpare
 assert.match(css, /\.desktop-icon-popup__vocab-ghost b\s*\{[^}]*color:\s*#727784/, "only the suggested vocabulary suffix is visibly muted");
 assert.match(component, /desktop-icon-popup__actions desktop-icon-popup__actions--quick/, "QuickStart actions have a dedicated compact style hook");
 assert.match(css, /\.desktop-icon-popup__actions--quick button\s*\{[^}]*min-height:\s*30px;[^}]*padding:\s*4px 10px;/, "QuickStart send and cancel buttons use the compact height");
+// The hover preview paragraph wraps inside the 300px box instead of letting
+// a long mixed CJK/ASCII summary or an unbroken URL/path/token run paint past
+// the border. Rule-level extraction (not whole-file matching) keeps a stray
+// later rule from faking the pass.
+const exactRules = (selector: string) => [...css.matchAll(new RegExp(`(?:^|})\\s*${selector.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*\\{([^}]*)\\}`, "gm"))];
+const basePopupRules = exactRules(".desktop-icon-popup");
+const previewRules = exactRules(".desktop-icon-popup--preview");
+const previewTextRules = exactRules(".desktop-icon-popup--preview p");
+assert.equal(basePopupRules.length, 1, "the base popup has one exact rule (excluding :has and descendant selectors)");
+assert.equal(previewRules.length, 1, "the preview outer box has one exact rule");
+assert.equal(previewTextRules.length, 1, "the preview paragraph has one exact rule");
+const basePopupRule = basePopupRules[0]?.[1] ?? "";
+const previewBoxRule = previewRules[0]?.[1] ?? "";
+const previewRule = previewTextRules[0]?.[1] ?? "";
+const declarations = (rule: string, property: string) => [...rule.matchAll(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "g"))].map((match) => match[1].trim());
+assert.deepEqual(declarations(previewRule, "white-space"), ["normal"], "the sole preview white-space declaration wraps text without a later nowrap/pre cascade");
+assert.match(previewRule, /overflow-wrap:\s*anywhere/, "unbroken ASCII/URL/path tokens break anywhere inside the preview box");
+assert.match(previewRule, /word-break:\s*break-word/, "WebView-compatible breaking backs up overflow-wrap for the preview paragraph");
+assert.deepEqual(declarations(previewRule, "overflow-y"), ["auto"], "the preview paragraph owns vertical scrolling");
+assert.match(previewRule, /max-height:\s*max\(0px,\s*calc\(var\(--popup-max-height,\s*420px\)\s*-\s*18px\s*-\s*2px\)\)/, "the preview paragraph consumes the logical height budget after its outer padding and border");
+assert.match(previewBoxRule, /max-width:\s*300px/, "the preview outer box keeps its 300px bound as the wrap constraint");
+for (const [name, rule] of [["base popup", basePopupRule], ["preview outer box", previewBoxRule]] as const) {
+  const outerOverflow = [...rule.matchAll(/(?:^|;)\s*overflow(?:-[xy])?\s*:\s*([^;]+)/g)].map((match) => match[1].trim());
+  assert.ok(outerOverflow.every((value) => value === "visible"), `${name} never clips or scrolls its arrow and shadow`);
+}
+assert.match(component, /onMouseEnter=\{\(\) => timers\.current\?\.clearPreviewClose\(\)\} onMouseLeave=\{\(event\) => \{ if \(!event\.currentTarget\.contains\(document\.activeElement\)\) closePreviewSoon\(\); \}\}/, "pointer entry cancels hover-close and pointer exit cannot close a focused preview");
+assert.match(component, /!active && <p tabIndex=\{0\} aria-label=\{`\$\{popupItem\.title\}，\$\{previewText\(popupItem\)\}`\} onFocus=\{\(\) => timers\.current\?\.clearPreviewClose\(\)\} onBlur=\{closePreviewSoon\}>\{previewText\(popupItem\)\}<\/p>/, "the complete scrollable preview is keyboard-focusable and focus cancels the pending hover-close timer");
 
 // --- collapse persistence: the WG2 anchor now drags the native window, so
 // only the collapsed flag survives under the stable cluster key ---
@@ -539,6 +566,11 @@ assert.match(component, /setBusy\(true\); setError\(""\); cancelTransientTimers\
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "a document-level outside-click handler closes every transient surface (timers included) on any container/grid/control gap");
 assert.match(component, /TRANSIENT_PROTECTED_SELECTOR = "\.desktop-icon-quick, \.desktop-icon-anchor, \.desktop-icon-anchor-menu, \.desktop-icon-menu, \.desktop-icon, \.desktop-icon-collapse, \.desktop-icon-popup, \.desktop-icon-toast"/, "the outside-click exclusion list covers the toolbar, anchor, menus, valid icons, popups and the toast");
 assert.doesNotMatch(component, /event\.target === event\.currentTarget/, "outside-click detection no longer relies on the main element alone");
+const renderItemSource = component.match(/const renderItem = \(item: DesktopIconItem\)[\s\S]*?\n\s*const zoomFrame =/)?.[0] ?? "";
+assert.ok(renderItemSource, "all desktop icons are rendered through the shared renderItem path");
+assert.equal([...renderItemSource.matchAll(/onFocus=/g)].length, 1, "the shared icon renderer defines exactly one focus handler");
+const iconFocusBody = renderItemSource.match(/onFocus=\{\(\) => \{([\s\S]*?)\}\} onBlur=/)?.[1] ?? "";
+assert.match(iconFocusBody, /^\s*timers\.current\?\.clearPreviewClose\(\);\s*if \(!activeID && !anchorMenuOpen && !quickOpen\) setPreviewID\(item\.id\);\s*$/, "icon focus clears a stale preview-close timer before opening the focused icon preview");
 
 // --- exit round-trip: main/settings disable and the toolbar announces busy,
 // and the right-click settings entry stays open on failure (visible retry) ---
