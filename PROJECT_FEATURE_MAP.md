@@ -381,6 +381,13 @@ Concise, incremental index of confirmed feature locations in this repository.
 - Source: verified-by-search
 - Updated: 2026-08-19
 
+### 小组件搜索弹层动态高度
+- Location: `desktop/frontend/src/components/widget/desktopIconLayout.ts`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: 状态 done；搜索弹层通过动态 `--popup-max-height` 与 bottom 共用逻辑坐标，searchbox 固定可见，error / empty / results 统一在内部结果区滚动；真实 desktopZoom × clusterZoom 往返矩阵与 resize 契约覆盖顶部安全边距。
+- Keywords: DesktopIconMode, placeIconPopup, search popup, --popup-max-height, searchbox, viewport clamp, internal scroll, zoom round-trip
+- Source: user-stated
+- Updated: 2026-08-19
+
 ### 性能压力仅写日志
 - Location: `desktop/frontend/src/lib/crash.ts`, `desktop/frontend/src/__tests__/crash-reporting.test.ts`
 - Summary: 桌面前端继续监控长任务、事件循环延迟和 JS 堆压力，但不再显示报告弹窗；诊断按 10 分钟节流写入 Wails warning 日志，失败回退 console.warn。

@@ -154,7 +154,12 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
   box-shadow: 0 14px 38px rgb(0 0 0 / 48%);
   backdrop-filter: blur(18px);
 }
-.desktop-icon-popup:has(.desktop-icon-popup__search) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }
+/* The search popup bounds its height on the inner column (see
+   .desktop-icon-popup__search), never here: this outer box keeps overflow
+   visible so the shadow and the bottom arrow are never clipped, and the
+   zoomed 100vh constant is gone because maxHeight and bottom share the same
+   reverse-zoomed logical coordinate system via --popup-max-height. */
+.desktop-icon-popup:has(.desktop-icon-popup__search) { box-sizing: border-box; display: flex; }
 .desktop-icon-popup--preview { width: auto; max-width: 300px; padding: 9px 12px; pointer-events: auto; }
 .desktop-icon-popup--preview p { margin: 0; white-space: nowrap; }
 .desktop-icon-popup__arrow { position: absolute; left: var(--arrow-left); bottom: -7px; width: 13px; height: 13px; transform: translateX(-50%) rotate(45deg); border-right: 1px solid rgb(184 169 238 / 32%); border-bottom: 1px solid rgb(184 169 238 / 32%); background: #191b22; }
@@ -244,11 +249,18 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__settings-error span { flex: 1; min-width: 0; }
 .desktop-icon-popup__settings-error button { min-height: 28px; padding: 3px 8px; font-size: 11px; }
 .desktop-icon-popup__error, .desktop-icon-toast { color: #ffacb7; }
-.desktop-icon-popup__search { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+/* The height budget is the TS-computed logical --popup-max-height minus the
+   popup's own vertical padding/border, so a maxHeight-tall popup lands with
+   its top edge on the safe margin. The column keeps the searchbox fixed and
+   lets the single state/content region shrink and scroll. */
+.desktop-icon-popup__search { display: flex; flex: 1; min-height: 0; flex-direction: column; max-height: max(0px, calc(var(--popup-max-height, 420px) - 2 * var(--popup-pad-y, 15px) - 2px)); }
 .desktop-icon-popup__searchbox { display: grid; flex: 0 0 auto; grid-template-columns: 22px 1fr 36px; align-items: center; gap: 7px; }
 .desktop-icon-popup__searchbox svg { width: 18px; }
 .desktop-icon-popup__searchbox button { padding: 4px; border: 0; background: transparent; }
-.desktop-icon-popup__results { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; margin-top: 8px; }
+.desktop-icon-popup__search-content { flex: 1 1 auto; min-height: 0; max-height: calc(7 * 44px); overflow-y: auto; overflow-wrap: anywhere; margin-top: 8px; }
+.desktop-icon-popup__search-content > .desktop-icon-popup__error,
+.desktop-icon-popup__search-content > .desktop-icon-popup__empty { margin: 0; }
+.desktop-icon-popup__results { min-height: 0; }
 .desktop-icon-popup__results > button { display: grid; width: 100%; min-height: 44px; text-align: left; border-width: 0 0 1px; border-radius: 0; background: transparent; }
 .desktop-icon-popup__results small { color: #969ba8; }
 .desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms) { box-sizing: border-box; display: flex; max-height: calc(100vh - 114px); }

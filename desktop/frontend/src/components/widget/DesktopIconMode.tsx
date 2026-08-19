@@ -543,7 +543,16 @@ function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: 
 		}, 120);
 		return () => { cancelled = true; window.clearTimeout(timer); };
 	}, [query]);
-  return <div className="desktop-icon-popup__search"><div className="desktop-icon-popup__searchbox"><Search /><input autoFocus value={query} disabled={opening} placeholder="搜索历史任务、Room、Workspace" onChange={(event) => setQuery(event.target.value)} /><button aria-label="关闭搜索" disabled={opening} onClick={onClose}><X /></button></div>{error && <p role="alert" className="desktop-icon-popup__error">{error}</p>}<div className="desktop-icon-popup__results" role="listbox" aria-busy={loading || opening}>{results.map((item) => <button key={item.id} role="option" disabled={opening} onClick={() => { setOpening(true); void onPick(item).finally(() => setOpening(false)); }}><span>{item.title}</span><small>{item.subtitle || item.kind}</small></button>)}{!loading && !results.length && <p className="desktop-icon-popup__empty">没有匹配结果</p>}</div></div>;
+	return <div className="desktop-icon-popup__search">
+		<div className="desktop-icon-popup__searchbox"><Search /><input autoFocus value={query} disabled={opening} placeholder="搜索历史任务、Room、Workspace" onChange={(event) => setQuery(event.target.value)} /><button aria-label="关闭搜索" disabled={opening} onClick={onClose}><X /></button></div>
+		<div className="desktop-icon-popup__search-content" role="region" aria-label="搜索结果" aria-busy={loading || opening}>
+			{error
+				? <p role="alert" className="desktop-icon-popup__error">{error}</p>
+				: results.length
+					? <div className="desktop-icon-popup__results" role="listbox" aria-label="匹配结果">{results.map((item) => <button key={item.id} role="option" disabled={opening} onClick={() => { setOpening(true); void onPick(item).finally(() => setOpening(false)); }}><span>{item.title}</span><small>{item.subtitle || item.kind}</small></button>)}</div>
+					: !loading && <p role="status" className="desktop-icon-popup__empty">没有匹配结果</p>}
+		</div>
+	</div>;
 }
 
 // WorkspaceGlyph maps a normalized projectIconKey to the same Lucide glyphs

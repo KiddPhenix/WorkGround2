@@ -82,36 +82,54 @@ assert.deepEqual(resizedViewport, { width: 720, height: 336 }, "a height-only re
 const resizedPlacement = placeIconPopup({ left: 320, top: 300, width: 64, height: 72 }, resizedViewport.width, resizedViewport.height, 330);
 assert.equal(resizedPlacement.bottom, 45, "popup placement consumes the resized logical height instead of a stale window read");
 
-// The vertical constraint stays inside the client for every desktopZoom
-// (0.5..2) × clusterZoom (0.75..1.5) combination at the 640×540 minimum
-// window: the anchor rect is the real scaleIconRect'd logical geometry of a
-// bottom-right cluster icon (cluster zooms around its bottom-right origin, so
-// the icon top rises by zoom while the 18px corner margins stay physical).
-for (const desktopZoom of [0.5, 1, 2]) {
-  for (const clusterZoom of [0.75, 1, 1.25, 1.5]) {
-    const viewportWidth = 640 * desktopZoom;
-    const viewportHeight = 540 * desktopZoom;
-    const anchorTop = viewportHeight - (18 + 116 * clusterZoom) * desktopZoom;
-    const anchor = {
-      left: viewportWidth - (18 + 66 * clusterZoom) * desktopZoom,
-      top: anchorTop,
-      width: 66 * clusterZoom * desktopZoom,
-      height: 74 * clusterZoom * desktopZoom,
-    };
-    const width = 330 * desktopZoom;
-    const placed = placeIconPopup(anchor, viewportWidth, viewportHeight, width);
-    assert.ok(placed.left >= 10, `left edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
-    assert.ok(placed.left + width <= viewportWidth - 10 + 1e-9, `right edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
-    assert.ok(placed.bottom >= 10, `bottom edge inside client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
-    assert.ok(placed.maxHeight > 0, `anchor-top space usable at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
-    assert.ok(placed.maxHeight <= anchorTop - 9 - 10 + 1e-9, `maxHeight never exceeds the real anchor-top space at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
-    assert.ok(placed.bottom + placed.maxHeight <= viewportHeight - 10 + 1e-9, `popup top edge stays inside the client at desktopZoom ${desktopZoom} × clusterZoom ${clusterZoom}`);
+// Pure placement clamps remain valid for short viewports and near-top anchors.
+// These cases intentionally make no claim that the complete search UI fits:
+// they only verify the mathematical boundary returned by placeIconPopup.
+const SAFE_MARGIN = 10;
+for (const viewportHeight of [360, 540, 720]) {
+  for (const anchorTop of [10, 40, viewportHeight / 2]) {
+    const placed = placeIconPopup({ left: 418, top: anchorTop, width: 66, height: 74 }, 900, viewportHeight, 330);
+    const expectedBudget = Math.max(0, Math.min(anchorTop - 9 - SAFE_MARGIN, viewportHeight - SAFE_MARGIN * 2));
+    assert.equal(placed.maxHeight, expectedBudget, `placement clamps the mathematical budget at ${viewportHeight}px / top ${anchorTop}px`);
+    assert.equal(placed.bottom, Math.max(SAFE_MARGIN, viewportHeight - anchorTop + 9), `placement uses the anchor-relative bottom at ${viewportHeight}px / top ${anchorTop}px`);
   }
 }
 
-for (const zoom of [0.5, 0.8, 1, 1.25, 1.5, 2]) {
-  const cssRect = { left: 300 / zoom, top: 420 / zoom, width: 66 / zoom, height: 74 / zoom };
-  assert.deepEqual(scaleIconRect(cssRect, zoom), { left: 300, top: 420, width: 66, height: 74 }, `${zoom}x DOM coordinates convert back to Wails window units`);
+// Product search placement uses the real bottom-cluster coordinate chain.
+// window.inner* starts in the zoomed CSS viewport; widgetViewportSize returns
+// native logical dimensions. The cluster scales around the bottom-right
+// origin, then the outer inverse desktop transform produces the DOM rect;
+// scaleIconRect must reconstruct the same logical rect before placement.
+// Keeping both round-trip assertions makes either zoom transform observable.
+const SEARCH_CHROME_HEIGHT = 68; // popup padding/border plus fixed search row
+for (const [nativeWidth, nativeHeight] of [[640, 540], [1080, 720]] as const) {
+  for (const desktopZoom of [0.5, 0.8, 1, 1.25, 1.5, 2]) {
+    const cssWidth = nativeWidth / desktopZoom;
+    const cssHeight = nativeHeight / desktopZoom;
+    const viewport = widgetViewportSize(cssWidth, cssHeight, desktopZoom);
+    assert.deepEqual(viewport, { width: nativeWidth, height: nativeHeight }, `CSS viewport round-trips to ${nativeWidth}×${nativeHeight} at desktop zoom ${desktopZoom}`);
+    for (const clusterZoom of [0.75, 1, 1.25, 1.5]) {
+      const logicalAnchor: { left: number; top: number; width: number; height: number } = {
+        left: viewport.width - 18 - 66 * clusterZoom,
+        top: viewport.height - 18 - 116 * clusterZoom,
+        width: 66 * clusterZoom,
+        height: 74 * clusterZoom,
+      };
+      const cssAnchor = {
+        left: logicalAnchor.left / desktopZoom,
+        top: logicalAnchor.top / desktopZoom,
+        width: logicalAnchor.width / desktopZoom,
+        height: logicalAnchor.height / desktopZoom,
+      };
+      const anchor = scaleIconRect(cssAnchor, desktopZoom);
+      assert.deepEqual(anchor, logicalAnchor, `bottom search anchor round-trips at desktop ${desktopZoom} × cluster ${clusterZoom}`);
+      const placed = placeIconPopup(anchor, viewport.width, viewport.height, 330);
+      const popupTop: number = viewport.height - placed.bottom - placed.maxHeight;
+      const label = `${nativeWidth}×${nativeHeight}, desktop ${desktopZoom} × cluster ${clusterZoom}`;
+      assert.ok(popupTop >= SAFE_MARGIN - 1e-9, `product search popup respects the safe top margin at ${label}`);
+      assert.ok(placed.maxHeight >= SEARCH_CHROME_HEIGHT, `product search budget retains the fixed search controls at ${label}`);
+    }
+  }
 }
 
 const physicalRect = { left: 300, top: 420, width: 66, height: 74 };
@@ -265,9 +283,16 @@ assert.match(css, /\.desktop-icon__motion-corner:nth-child\(4\)/, "all four scan
 assert.match(css, /\.desktop-icon__runtime--running[^}]*#8cebf0/, "running status uses a distinct cyan treatment");
 assert.match(component, /position\.row === "top"/, "component renders a dedicated top row");
 assert.match(component, /position\.row === "bottom"/, "component renders a dedicated bottom row");
-assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search\)[^}]*max-height:\s*calc\(100vh - 114px\)/, "search popup stays within the viewport above its fixed bottom anchor");
-assert.match(css, /\.desktop-icon-popup__results[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*overflow-y:\s*auto/, "search results shrink and scroll instead of clipping the popup");
-assert.match(css, /max-height:\s*calc\(7 \* 44px\)/, "search results have a seven-row height cap");
+assert.doesNotMatch(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search\)[^}]*max-height/, "the search popup outer rule carries no max-height of its own (no zoomed 100vh constant, no inner-clipping overflow)");
+assert.doesNotMatch(css, /\.desktop-icon-popup__search[^}]*100vh\s*-\s*\d+px/, "search popup rules never bound height with a zoomed 100vh minus fixed-px constant");
+assert.match(css, /\.desktop-icon-popup__search\s*\{[^}]*max-height:\s*max\(0px,\s*calc\(var\(--popup-max-height[^}]*/, "the search column safely clamps the TS-computed logical budget at zero");
+assert.doesNotMatch(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__search\)[^}]*overflow/, "the search popup outer box keeps overflow visible so the shadow and bottom arrow are never clipped");
+assert.match(css, /\.desktop-icon-popup__searchbox[^}]*flex:\s*0 0 auto/, "the search input and close control stay fixed while the results list scrolls");
+assert.match(css, /\.desktop-icon-popup__search-content[^}]*flex:\s*1 1 auto[^}]*min-height:\s*0[^}]*max-height:\s*calc\(7 \* 44px\)[^}]*overflow-y:\s*auto[^}]*overflow-wrap:\s*anywhere/, "one inner region scrolls every search state and wraps long errors");
+const searchPanelSource = component.slice(component.indexOf("function SearchPanel("), component.indexOf("function WorkspaceGlyph("));
+assert.match(searchPanelSource, /desktop-icon-popup__searchbox[\s\S]*desktop-icon-popup__search-content" role="region" aria-label="搜索结果" aria-busy=/, "the fixed search controls precede the single scrolling content region");
+assert.match(searchPanelSource, /error[\s\S]*role="alert"[\s\S]*results\.length[\s\S]*role="listbox"[\s\S]*role="option"[\s\S]*!loading && <p role="status"/, "error, result listbox, and empty status are mutually exclusive states inside the scroll region");
+assert.doesNotMatch(searchPanelSource, /role="listbox"[^>]*>\{?(?:error|!loading)/, "non-option error and empty states never become direct listbox children");
 assert.match(backend, /desktopIconWidth\s*=\s*1080[\s\S]+desktopIconHeight\s*=\s*720[\s\S]+legacyIconWidth\s*=\s*900[\s\S]+legacyIconHeight\s*=\s*600/, "native icon window enlarges to 1080×720 and recognizes the legacy default for migration");
 assert.match(css, /prefers-reduced-motion:\s*reduce/, "motion has a reduced-motion fallback");
 assert.match(css, /left:\s*var\(--arrow-left\)/, "popup arrow uses the computed source anchor");
