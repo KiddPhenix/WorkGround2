@@ -181,8 +181,11 @@ type App struct {
 	decisionCancel  context.CancelFunc
 	decisionApplyMu sync.Mutex
 	decisionSending atomic.Bool
-	ownerIdleProbe  func() (time.Duration, error) // nil uses the platform probe
-	ownerNow        func() time.Time              // nil uses time.Now
+	// ownerDecisionEnabled 是“主人决策”功能的运行时开关，由 NewApp 从
+	// ownerDecisionFeatureEnabled 初始化（当前默认关闭）。测试可显式覆盖。
+	ownerDecisionEnabled bool
+	ownerIdleProbe       func() (time.Duration, error) // nil uses the platform probe
+	ownerNow             func() time.Time              // nil uses time.Now
 
 	unreadMu           sync.RWMutex
 	unreadStore        *unread.Store
@@ -464,7 +467,10 @@ func NewApp() *App {
 	if root != "" {
 		decisionPath = filepath.Join(root, "decision-broker-v1.json")
 	}
-	a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
+	a.ownerDecisionEnabled = ownerDecisionFeatureEnabled
+	if a.ownerDecisionEnabled {
+		a.decisionBroker, a.decisionErr = decision.Open(decisionPath)
+	}
 	if root == "" {
 		a.sessionRefsErr = errors.New("session ref data directory is unavailable")
 		a.unreadErr = errors.New("unread data directory is unavailable")

@@ -27,7 +27,7 @@ func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &remoteAPI{app: &App{decisionBroker: broker}}
+	api := &remoteAPI{app: &App{ownerDecisionEnabled: true, decisionBroker: broker}}
 	body := `{"idempotencyKey":"codex:task:choice","agentId":"codex","threadId":"task","title":"确定发布策略","taskSummary":"正在准备桌面版本发布","whyNow":"下一步会生成安装包，需要先确定范围","questions":[{"id":"scope","header":"发布范围","prompt":"这次发布稳定版还是预览版？","options":[{"label":"稳定版","impact":"所有用户可见"},{"label":"预览版","impact":"只给测试用户"}],"multiSelect":false}],"noAnswerPolicy":"保持暂停"}`
 	rec := httptest.NewRecorder()
 	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(body)))
@@ -78,7 +78,7 @@ func TestRemoteDecisionAPI_CreateGetAndLongPoll(t *testing.T) {
 
 func TestRemoteDecisionAPI_CreateNotification(t *testing.T) {
 	broker, _ := decision.Open("")
-	api := &remoteAPI{app: &App{decisionBroker: broker}}
+	api := &remoteAPI{app: &App{ownerDecisionEnabled: true, decisionBroker: broker}}
 	body := `{"idempotencyKey":"codex:task:done","kind":"notify","agentId":"codex","threadId":"task","title":"处理完成","taskSummary":"修复版已经构建并通过检查。","whyNow":"可以开始验收。","questions":[],"noAnswerPolicy":""}`
 	rec := httptest.NewRecorder()
 	api.handleDecisionCreate(rec, httptest.NewRequest(http.MethodPost, "/api/v1/decisions/create", strings.NewReader(body)))

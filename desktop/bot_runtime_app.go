@@ -77,7 +77,7 @@ func (a *App) refreshBotRuntime() {
 	// An empty root is the bot gateway's Global scope. The desktop tab layer
 	// uses globalTabWorkspaceRoot() as a storage/session path, but passing that
 	// path here would make an otherwise global group chat look like a project.
-	_ = a.botRuntime.apply(a.bootContext(), cfg, "", a.acceptIMUnread, a.bindIMUnread, a.handleDecisionInbound, a.persistRemoteBotToolApprovalMode, a.DeleteSession)
+	_ = a.botRuntime.apply(a.bootContext(), cfg, "", a.acceptIMUnread, a.bindIMUnread, a.decisionInboundHandler(), a.persistRemoteBotToolApprovalMode, a.DeleteSession)
 }
 
 func (a *App) loadDesktopBotConfig() (*config.Config, error) {

@@ -1083,7 +1083,7 @@ function linkedSessionOwnerWorkID(sessionSource: string | undefined): string {
   return sessionSource?.match(/^work:([^/]+)(?:\/|$)/)?.[1]?.trim() ?? "";
 }
 
-function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; onEnterWidgetMode: () => void | Promise<void>; collabDialogSignal?: number }) {
+function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWidgetMode, collabDialogSignal = 0 }: { widgetEnabled: boolean; widgetActive: boolean; ownerDecisionEnabled: boolean; onEnterWidgetMode: () => void | Promise<void>; collabDialogSignal?: number }) {
   const {
     state,
     activeTabId,
@@ -4138,16 +4138,18 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogS
                   draggable={false}
                 />
                 <div className="workspace-sidebar__brand-actions">
-                  <Tooltip label="主人决策" side="bottom">
-                    <button
-                      className="workspace-sidebar__decision-btn"
-                      type="button"
-                      onClick={() => setDecisionCenterOpen(true)}
-                      aria-label="打开主人决策"
-                    >
-                      <MessageCircleQuestion size={15} aria-hidden="true" />
-                    </button>
-                  </Tooltip>
+                  {ownerDecisionEnabled && (
+                    <Tooltip label="主人决策" side="bottom">
+                      <button
+                        className="workspace-sidebar__decision-btn"
+                        type="button"
+                        onClick={() => setDecisionCenterOpen(true)}
+                        aria-label="打开主人决策"
+                      >
+                        <MessageCircleQuestion size={15} aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  )}
                   <Tooltip label={sidebarToggleTitle} side="right">
                     <button
                       className={`workspace-sidebar__collapse-btn${sidebarTogglePressed ? " workspace-sidebar__collapse-btn--pressed" : ""}`}
@@ -5195,7 +5197,7 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogS
       )}
 
 	  <Suspense fallback={null}>
-		<DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />
+		{ownerDecisionEnabled && <DecisionCenter open={decisionCenterOpen} onClose={() => setDecisionCenterOpen(false)} />}
 	  </Suspense>
 
       {settingsTarget !== null && (
@@ -5279,6 +5281,10 @@ function MainApp({ widgetEnabled, widgetActive, onEnterWidgetMode, collabDialogS
 export default function App() {
   const [widgetMode, setWidgetMode] = useState(false);
   const [widgetEnabled, setWidgetEnabled] = useState(true);
+  // ownerDecisionEnabled mirrors the backend ownerDecisionFeatureEnabled kill
+  // switch (default off): while disabled, the sidebar entry and the decision
+  // centre stay hidden and no decision state is subscribed.
+  const [ownerDecisionEnabled, setOwnerDecisionEnabled] = useState(false);
   // Monotonic collaboration-dialog request signal: the Rooms widget exits
   // widget mode first and bumps this counter only on a successful exit, so
   // MainApp opens the Host/Join Room form exactly once per request.
@@ -5343,6 +5349,7 @@ export default function App() {
   useEffect(() => {
     app.DesktopStartupSettings().then((s) => {
       setWidgetEnabled(s.widgetEnabled);
+      setOwnerDecisionEnabled(s.ownerDecisionEnabled === true);
     }).catch(() => {});
   }, []);
 
@@ -5380,7 +5387,7 @@ export default function App() {
 
   return (
 	<>
-	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
+	  <MainApp widgetEnabled={widgetEnabled} widgetActive={widgetMode} ownerDecisionEnabled={ownerDecisionEnabled} onEnterWidgetMode={enterWidgetMode} collabDialogSignal={collabDialogSignal} />
 	  {widgetMode && <DesktopIconMode onNewRoom={requestWidgetRoomDialog} onOpenRoom={openWidgetRoom} onOpenSettings={openWidgetSettings} onOpenMain={openWidgetMain} />}
 	</>
   );

@@ -34,7 +34,7 @@ type ownerNotifyCandidate struct {
 }
 
 func (a *App) observeOwnerNotifyEvent(sink *tabEventSink, value event.Event) {
-	if a == nil || sink == nil || (value.Kind != event.TurnStarted && value.Kind != event.TurnDone) {
+	if a == nil || sink == nil || !a.ownerDecisionActive() || (value.Kind != event.TurnStarted && value.Kind != event.TurnDone) {
 		return
 	}
 	now := time.Now()
@@ -87,7 +87,7 @@ func (a *App) ownerNotifyCandidate(tabID string, value event.Event, state ownerT
 }
 
 func (a *App) notifyOwnerAfterAFK(candidate ownerNotifyCandidate) {
-	if a.decisionBroker == nil {
+	if a == nil || !a.ownerDecisionActive() || a.decisionBroker == nil {
 		return
 	}
 	probe := platformSystemIdleDuration

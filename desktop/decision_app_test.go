@@ -16,7 +16,7 @@ func TestDecisionStateUsesEmptyArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := (&App{decisionBroker: broker}).DecisionState()
+	state := (&App{ownerDecisionEnabled: true, decisionBroker: broker}).DecisionState()
 	if state.Queue == nil || state.Deferred == nil || state.History == nil || state.Channels == nil {
 		t.Fatalf("empty collections must be arrays: %+v", state)
 	}
@@ -79,7 +79,7 @@ func TestDecisionInboundFirstAnswerWins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := &App{decisionBroker: broker}
+	app := &App{ownerDecisionEnabled: true, decisionBroker: broker}
 	msg := bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "wx-main", Domain: "weixin", ChatType: bot.ChatDM, ChatID: "owner", UserID: "u1", UserName: "主人", Text: "/answer " + created.Decision.ID + " 2"}
 	response, handled, err := app.handleDecisionInbound(msg)
 	if err != nil || !handled || response != "✅ 已收到，你的选择是：「新建」。" {
@@ -147,7 +147,7 @@ func TestInboundResponderLabelDoesNotExposeRemoteID(t *testing.T) {
 		IdempotencyKey: "friendly-label",
 		Presentation:   decision.Presentation{Title: "选择", TaskSummary: "正在处理任务", WhyNow: "需要继续", NoAnswerPolicy: "保持暂停", Questions: []decision.Question{{ID: "q", Prompt: "继续吗？", Options: []decision.Option{{Label: "继续", Impact: "继续处理"}, {Label: "暂停", Impact: "保持暂停"}}}}},
 	})
-	app := &App{decisionBroker: broker}
+	app := &App{ownerDecisionEnabled: true, decisionBroker: broker}
 	_, _, err := app.handleDecisionInbound(bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "wx-main", Domain: "weixin", ChatType: bot.ChatDM, ChatID: "owner", UserID: "raw-remote-id", UserName: "raw-remote-id@im.wechat", Text: "/answer " + created.Decision.ID + " 1"})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +160,7 @@ func TestInboundResponderLabelDoesNotExposeRemoteID(t *testing.T) {
 
 func TestDecisionInboundIgnoresUnconfiguredChat(t *testing.T) {
 	broker, _ := decision.Open("")
-	app := &App{decisionBroker: broker}
+	app := &App{ownerDecisionEnabled: true, decisionBroker: broker}
 	_, handled, err := app.handleDecisionInbound(bot.InboundMessage{Platform: bot.PlatformWeixin, ChatType: bot.ChatDM, ChatID: "other", Text: "1"})
 	if err != nil || handled {
 		t.Fatalf("unconfigured reply handled=%v err=%v", handled, err)
@@ -169,7 +169,7 @@ func TestDecisionInboundIgnoresUnconfiguredChat(t *testing.T) {
 
 func TestSaveDecisionChannelRetryIsIdempotent(t *testing.T) {
 	broker, _ := decision.Open("")
-	app := &App{decisionBroker: broker}
+	app := &App{ownerDecisionEnabled: true, decisionBroker: broker}
 	input := DecisionChannelInput{Name: "主人", Kind: "weixin", Enabled: true, ConnectionID: "wx", Domain: "weixin", ChatID: "owner", ChatType: "dm"}
 	if _, err := app.SaveDecisionChannel(input); err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestDecisionInboundAcceptsTextReply(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		return &App{decisionBroker: broker}
+		return &App{ownerDecisionEnabled: true, decisionBroker: broker}
 	}
 
 	cases := []struct {
