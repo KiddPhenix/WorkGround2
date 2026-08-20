@@ -21,7 +21,7 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 		Key: "room:design", Source: unread.SourceRoom, SessionID: "room-session", Title: "产品 Room",
 	}}}}
 	spaces := []WidgetWorkspaceOption{{Scope: "auto", Name: "自动"}, {Scope: "project", Name: "WorkGround2", Root: `D:\Work\WorkGround2`, Icon: "python"}}
-	snapshot := buildDesktopIconSnapshot(nil, state, spaces, desktopIconPersistedState{}, 1200, nil, nil)
+	snapshot := buildDesktopIconSnapshot(nil, state, spaces, desktopIconPersistedState{}, 1200, nil, nil, nil)
 	room := findDesktopIconItem(snapshot.Items, "conversation:room:design")
 	if room == nil || room.Position.Row != "top" || room.UnreadCount != 0 {
 		t.Fatalf("read Room projection = %#v", room)
@@ -135,7 +135,7 @@ func TestBuildDesktopIconSnapshotShowsExactlyFourWorkspaceSlots(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		spaces = append(spaces, WidgetWorkspaceOption{Scope: "project", Name: fmt.Sprintf("P%d", i), Root: fmt.Sprintf("root-%d", i)})
 	}
-	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, spaces, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, spaces, desktopIconPersistedState{}, 0, nil, nil, nil)
 	count := 0
 	for _, item := range snapshot.Items {
 		if item.Kind != "workspace" {
@@ -152,7 +152,7 @@ func TestBuildDesktopIconSnapshotShowsExactlyFourWorkspaceSlots(t *testing.T) {
 }
 
 func TestDesktopIconWorkspaceFixedItemContract(t *testing.T) {
-	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, nil)
 	workspace := findDesktopIconItem(snapshot.Items, "fixed:workspace")
 	if workspace == nil {
 		t.Fatal("fixed workspace icon is missing")
@@ -179,7 +179,7 @@ func TestDesktopIconWorkspaceOpenIsRejected(t *testing.T) {
 }
 
 func TestDesktopIconRoomsFixedItemContract(t *testing.T) {
-	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, nil)
 	rooms := findDesktopIconItem(snapshot.Items, "fixed:rooms")
 	if rooms == nil {
 		t.Fatal("fixed rooms icon is missing")
@@ -213,7 +213,7 @@ func TestDesktopIconRoomsOpenIsRejected(t *testing.T) {
 
 func TestBuildDesktopIconSnapshotSeparatesRuntimeFromUnread(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "task-1", SessionID: "session-1", WorkspaceName: "WG2", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true, ActivityStatus: topicStatusThinking, ActivityText: "正在核对真实运行状态", TurnStartedAt: time.Now().Add(-time.Second).UnixMilli()}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.Runtime == nil || task.UnreadCount != 0 {
 		t.Fatalf("running task = %#v", task)
@@ -235,7 +235,7 @@ func TestBuildDesktopIconSnapshotDistinguishesToolRunning(t *testing.T) {
 		ID: "task-1", TopicTitle: "实现图标模式", RunningWork: true, ForegroundActive: true,
 		RuntimeMode: string(control.RuntimeModeForeground), ActivityStatus: topicStatusRunning, ActivityText: "read_file 执行中",
 	}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.Runtime == nil || task.Status != "running" || task.Runtime.Phase != "Running" {
 		t.Fatalf("tool-running task = %#v", task)
@@ -268,7 +268,7 @@ func TestBuildDesktopIconSnapshotDoesNotDoubleCountTaskUnread(t *testing.T) {
 		Key: "session:session-1", Source: unread.SourceSession, SessionID: "session-1", LatestSequence: 7, UnreadCount: 1,
 		Items: []unread.Item{{ID: "turn:1", Sequence: 7, Kind: "completed", OccurredAt: time.UnixMilli(12)}},
 	}}}}
-	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 1200, nil, nil)
+	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 1200, nil, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.UnreadCount != 1 || len(task.Notifications) != 1 {
 		t.Fatalf("task unread projection = %#v", task)
@@ -283,7 +283,7 @@ func TestBuildDesktopIconSnapshotDoesNotDoubleCountTaskUnread(t *testing.T) {
 
 func TestBuildDesktopIconSnapshotAggregatesDelegatedActivity(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "delegated", RunningWork: true, BackgroundOnly: true}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 1 || delegate.UnreadCount != 0 || delegate.Status != "running" {
 		t.Fatalf("delegate = %#v", delegate)
@@ -300,7 +300,7 @@ func TestBuildDesktopIconSnapshotCountsRealRunningSubagents(t *testing.T) {
 		branchID:   "branch-a",
 	}}
 	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-a", "branch-a"): 2}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, counts)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, counts)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
 		t.Fatalf("delegate = %#v, want activity 2 running", delegate)
@@ -318,7 +318,7 @@ func TestBuildDesktopIconSnapshotRealSubagentsDoNotDoubleCountBackgroundCompat(t
 		branchID:   "branch-b",
 	}}
 	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-b", "branch-b"): 2}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, counts)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
 		t.Fatalf("delegate = %#v, want activity 2 (not 3) running", delegate)
@@ -332,7 +332,7 @@ func TestBuildDesktopIconSnapshotRealSubagentsSurviveBackgroundTurnEnd(t *testin
 		branchID:   "branch-b",
 	}}
 	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-b", "branch-b"): 2}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, counts)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 2 || delegate.Status != "running" {
 		t.Fatalf("delegate = %#v, want real sub-agents counted after background turn ended", delegate)
@@ -346,7 +346,7 @@ func TestBuildDesktopIconSnapshotIgnoresSubagentsOfInactiveSessions(t *testing.T
 		branchID:   "branch-idle",
 	}}
 	counts := map[widgetSubagentKey]int{newWidgetSubagentKey("dir-idle", "branch-other"): 3}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, counts)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, counts)
 	delegate := findDesktopIconItem(snapshot.Items, "fixed:delegate")
 	if delegate == nil || delegate.ActivityCount != 0 || delegate.Status != "idle" {
 		t.Fatalf("delegate = %#v, want idle without activity", delegate)
@@ -827,7 +827,7 @@ func TestRetainedTaskAlwaysProjectsCompletionNotice(t *testing.T) {
 			key: {Status: completionSummaryReady, Text: "百字摘要"},
 		},
 	}
-	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, persisted, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, persisted, 0, nil, nil, nil)
 	for id, wantBody := range map[string]string{"task:task-1": "百字摘要", "task:legacy": "旧摘要"} {
 		item := findDesktopIconItem(snapshot.Items, id)
 		if item == nil || !item.Retained || len(item.Notifications) != 1 {
@@ -1385,6 +1385,260 @@ func TestDesktopIconOpenSameTopicDifferentSessionPathReusesCorrectSession(t *tes
 	}
 }
 
+// roomTestSession creates a real collaboration session file whose meta carries
+// the topic identity and collaboration kind a Room session ref is derived from
+// (the same fields collab session creation stamps).
+func roomTestSession(t *testing.T) string {
+	t.Helper()
+	_, sp := completionTestTab(t, 0)
+	meta, ok, err := agent.LoadBranchMeta(sp)
+	if err != nil || !ok {
+		t.Fatalf("load room branch meta: ok=%v err=%v", ok, err)
+	}
+	meta.TopicID = "room-topic"
+	meta.SessionKind = agent.SessionKindCollaboration
+	if err := agent.SaveBranchMeta(sp, meta); err != nil {
+		t.Fatalf("stamp room topic: %v", err)
+	}
+	return sp
+}
+
+// newRoomOpenTestApp assembles an icon-widget app whose unread store holds a
+// read Room conversation (no notice) bound to a collaboration runtime and a
+// live Room tab, mirroring the real snapshot pipeline.
+func newRoomOpenTestApp(t *testing.T, sp string) *App {
+	t.Helper()
+	isolateDesktopUserDirs(t)
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ObserveRoom(unread.RoomInput{
+		ConversationKey: "design", SessionID: "room-session", Title: "产品 Room", LocalMemberID: "self",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	roomTab := &WorkspaceTab{
+		ID: "room-tab", SessionID: "room-session", SessionPath: sp,
+		sessionKind: agent.SessionKindCollaboration, disabledMCP: map[string]ServerView{},
+	}
+	app := &App{
+		tabs:                  map[string]*WorkspaceTab{roomTab.ID: roomTab},
+		activeTabID:           roomTab.ID,
+		widgetMode:            true,
+		unreadStore:           store,
+		ctx:                   context.Background(),
+		sessionDirsOverride:   []string{filepath.Dir(sp)},
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+		widgetWindowOps: &widgetWindowOps{
+			read:        func() (WidgetWindowState, bool) { return WidgetWindowState{Width: 590, Height: 176}, false },
+			restoreMain: func(DesktopWindowState, bool) error { return nil },
+			applyWidget: func(WidgetWindowState, bool, bool) error { return nil },
+		},
+		widgetTaskbarToggle: func(bool) error { return nil },
+	}
+	app.collaborations = map[string]*desktopCollaboration{"room-session": {app: app, ownerSessionID: "room-session", ownerSessionPath: sp}}
+	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {}
+	return app
+}
+
+// TestDesktopIconRoomOpenReadRoomWithoutNotice verifies that a read Room icon
+// (no notice at all) still opens its exact session through the snapshot
+// session ref: the open never consults the first notice's TabID or the active
+// tab, reuses the existing Room tab, and leaves the unread conversation intact.
+func TestDesktopIconRoomOpenReadRoomWithoutNotice(t *testing.T) {
+	sp := roomTestSession(t)
+	app := newRoomOpenTestApp(t, sp)
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "conversation:room:design")
+	if item == nil {
+		t.Fatalf("read Room icon missing: %+v", snapshot.Items)
+	}
+	if len(item.Notifications) != 0 {
+		t.Fatalf("read Room must project no notice: %+v", item.Notifications)
+	}
+	if item.SessionRef == nil || item.SessionRef.SessionPath != sp || item.SessionRef.TopicID != "room-topic" {
+		t.Fatalf("Room session ref = %#v, want topic room-topic path %q", item.SessionRef, sp)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-open-room", Action: "open",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("open read Room status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != "room-tab" {
+		t.Fatalf("open landed on %q, want %q", app.activeTabID, "room-tab")
+	}
+	if len(app.tabs) != 1 {
+		t.Fatalf("open created duplicate tabs: %v", app.tabs)
+	}
+	if got := app.UnreadState().Summary; len(got.Conversations) != 1 || got.Conversations[0].Key != "room:design" {
+		t.Fatalf("Room open must not consume the unread conversation: %+v", got)
+	}
+	if len(app.iconWidgetState.Kept) != 0 {
+		t.Fatalf("Room open retained a task icon: %+v", app.iconWidgetState.Kept)
+	}
+}
+
+// TestDesktopIconRoomOpenRemountsDetachedSession verifies that a Room whose
+// tab was detached (not active, not in the visible tab set) is re-mounted and
+// focused through its session ref — never via SetActiveTab on a stale ID.
+func TestDesktopIconRoomOpenRemountsDetachedSession(t *testing.T) {
+	sp := roomTestSession(t)
+	app := newRoomOpenTestApp(t, sp)
+	tab := app.tabs["room-tab"]
+	tab.ID = "room-detached"
+	app.tabs = map[string]*WorkspaceTab{}
+	app.detachedSessions = map[string]*WorkspaceTab{sessionRuntimeKey(sp): tab}
+	app.activeTabID = ""
+
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "conversation:room:design")
+	if item == nil || item.SessionRef == nil || item.SessionRef.SessionPath != sp {
+		t.Fatalf("detached Room ref missing: %#v", item)
+	}
+	result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+		ItemID: item.ID, Revision: item.Revision, RequestID: "req-open-detached-room", Action: "open",
+	})
+	if result.Status != "accepted" {
+		t.Fatalf("open detached Room status = %q error %q", result.Status, result.Error)
+	}
+	if app.activeTabID != "room-detached" {
+		t.Fatalf("open focused %q, want remounted %q", app.activeTabID, "room-detached")
+	}
+	remounted := app.tabs["room-detached"]
+	if remounted == nil || sessionRuntimeKey(remounted.currentSessionPath()) != sessionRuntimeKey(sp) {
+		t.Fatalf("detached Room was not remounted: tabs=%v detached=%v", app.tabs, app.detachedSessions)
+	}
+	if len(app.detachedSessions) != 0 {
+		t.Fatalf("remounted session stayed detached: %+v", app.detachedSessions)
+	}
+}
+
+// TestDesktopIconRoomOpenIsIdempotent verifies repeated opens reuse the same
+// session tab instead of piling up duplicate tabs.
+func TestDesktopIconRoomOpenIsIdempotent(t *testing.T) {
+	sp := roomTestSession(t)
+	app := newRoomOpenTestApp(t, sp)
+	open := func(requestID string) {
+		snapshot := app.GetDesktopIconSnapshot()
+		item := findDesktopIconItem(snapshot.Items, "conversation:room:design")
+		if item == nil {
+			t.Fatalf("Room icon missing before %s", requestID)
+		}
+		result := app.ApplyDesktopIconAction(DesktopIconActionInput{
+			ItemID: item.ID, Revision: item.Revision, RequestID: requestID, Action: "open",
+		})
+		if result.Status != "accepted" {
+			t.Fatalf("open %s status = %q error %q", requestID, result.Status, result.Error)
+		}
+	}
+	open("req-room-1")
+	if app.activeTabID != "room-tab" {
+		t.Fatalf("first open focused %q, want %q", app.activeTabID, "room-tab")
+	}
+	// Re-enter widget mode and open the same Room again: the same tab must be
+	// reused and no second tab created.
+	app.widgetMode = true
+	open("req-room-2")
+	if app.activeTabID != "room-tab" {
+		t.Fatalf("second open focused %q, want reused %q", app.activeTabID, "room-tab")
+	}
+	if len(app.tabs) != 1 {
+		t.Fatalf("repeated Room open created duplicate tabs: %v", app.tabs)
+	}
+}
+
+// TestDesktopIconResolveRoomRequiresSessionRef pins the unified identity
+// contract for Rooms: SourceID/notice alone are never a valid open target, and
+// a missing ref or session path fails explicitly instead of falling back to
+// the active session.
+func TestDesktopIconResolveRoomRequiresSessionRef(t *testing.T) {
+	app := &App{tabs: map[string]*WorkspaceTab{}}
+	if tabID, err := app.resolveDesktopIconRoomTab(DesktopIconItem{ID: "conversation:room:design", Kind: "room", SourceID: "conversation:room:design"}); err == nil || tabID != "" || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("room without ref resolved to %q, %v; want explicit identity failure", tabID, err)
+	}
+	if _, err := app.resolveDesktopIconRoomTab(DesktopIconItem{ID: "conversation:room:design", Kind: "room", SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "room-topic"}}); err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("room with empty session path = %v, want explicit identity error", err)
+	}
+	if _, err := app.resolveDesktopIconRoomTab(DesktopIconItem{ID: "conversation:room:design", Kind: "room", SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "room-topic", SessionPath: `D:\no\such\room.jsonl`}}); err == nil {
+		t.Fatal("an unvalidatable Room session path must fail through OpenTopicSession")
+	}
+}
+
+// TestDesktopIconRoomOpenMissingRefKeepsActiveTab verifies a failed Room open
+// returns explicitly and never falls back to the currently active tab.
+func TestDesktopIconRoomOpenMissingRefKeepsActiveTab(t *testing.T) {
+	app := &App{
+		tabs:                  map[string]*WorkspaceTab{"stale-active": {ID: "stale-active"}},
+		activeTabID:           "stale-active",
+		iconWidgetStateLoaded: true,
+		iconWidgetState: desktopIconPersistedState{
+			Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{},
+		},
+	}
+	item := DesktopIconItem{
+		ID: "conversation:room:design", Kind: "room", SourceID: "conversation:room:design",
+		Title: "产品 Room", Status: "unread", Position: DesktopIconPosition{Row: "top", Zone: "conversation", Order: 0},
+	}
+	err := app.applyDesktopIconActionLocked(item, nil, DesktopIconActionInput{Action: "open"})
+	if err == nil || !strings.Contains(err.Error(), "identity") {
+		t.Fatalf("Room open without ref = %v, want explicit identity error", err)
+	}
+	if app.activeTabID != "stale-active" {
+		t.Fatalf("failed Room open changed the active tab to %q", app.activeTabID)
+	}
+}
+
+// TestBuildDesktopIconSnapshotRoomCarriesSessionRef pins that Room items carry
+// the backend-generated session identity while IM/person items keep their own
+// ResolveUnreadSession open route and never pick up a Room ref.
+func TestBuildDesktopIconSnapshotRoomCarriesSessionRef(t *testing.T) {
+	sp := `D:\Work\rooms\room.jsonl`
+	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 1, Conversations: []unread.Conversation{{
+		Key: "room:design", Source: unread.SourceRoom, SessionID: "room-session", Title: "产品 Room",
+	}}}}
+	refs := map[string]*DesktopIconTaskRef{"room-session": {Scope: "global", TopicID: "room-topic", SessionPath: sp}}
+	snapshot := buildDesktopIconSnapshot(nil, state, nil, desktopIconPersistedState{}, 0, nil, refs, nil)
+	room := findDesktopIconItem(snapshot.Items, "conversation:room:design")
+	if room == nil || room.SessionRef == nil || room.SessionRef.SessionPath != sp || room.SessionRef.TopicID != "room-topic" || room.SessionRef.Scope != "global" {
+		t.Fatalf("Room session ref = %#v item=%+v", room, room)
+	}
+
+	state.Summary.Conversations = []unread.Conversation{{
+		Key: "im:user-1", Source: unread.SourceIM, SessionID: "room-session", Title: "用户",
+	}}
+	snapshot = buildDesktopIconSnapshot(nil, state, nil, desktopIconPersistedState{}, 0, nil, refs, nil)
+	person := findDesktopIconItem(snapshot.Items, "conversation:im:user-1")
+	if person == nil || person.SessionRef != nil {
+		t.Fatalf("person must not carry a Room session ref: %#v", person)
+	}
+}
+
+// TestDesktopIconRoomRefsRestoresPersistedRoom verifies a Room remains
+// resolvable after its collaboration runtime has gone away and only the
+// persisted project tree plus session sidecar remain.
+func TestDesktopIconRoomRefsRestoresPersistedRoom(t *testing.T) {
+	sp := roomTestSession(t)
+	meta, ok, err := agent.LoadBranchMeta(sp)
+	if err != nil || !ok {
+		t.Fatalf("load room branch meta: ok=%v err=%v", ok, err)
+	}
+	app := &App{}
+	refs := app.desktopIconRoomRefs([]ProjectNode{{
+		Kind: "global_topic", TopicID: meta.TopicID, SessionPath: sp,
+		SessionKind: string(agent.SessionKindCollaboration),
+	}})
+	ref := refs[meta.ID]
+	if ref == nil || ref.SessionPath != sp || ref.TopicID != meta.TopicID || ref.Scope != "global" {
+		t.Fatalf("persisted Room ref = %#v, want session %q topic %q", ref, sp, meta.TopicID)
+	}
+}
+
 // TestDesktopIconTaskRevisionIncludesSessionIdentity pins requirement that the
 // session identity participates in the item revision: an identity change must
 // invalidate the revision (so the frontend stale check fires), while identical
@@ -1431,7 +1685,7 @@ func TestDesktopIconAgentIdentityFields(t *testing.T) {
 		ID: "task-1", SessionID: "session-1", Scope: "project", WorkspaceRoot: root,
 		TopicID: "topic-1", SessionPath: "sp-1", ProjectIcon: "python", RunningWork: true,
 	}}}
-	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil, nil)
 	task := findDesktopIconItem(snapshot.Items, "task:task-1")
 	if task == nil || task.SessionID != "session-1" || task.WorkspaceIcon != "python" {
 		t.Fatalf("live task identity = %#v, want sessionId session-1 / workspaceIcon python", task)
@@ -1442,7 +1696,7 @@ func TestDesktopIconAgentIdentityFields(t *testing.T) {
 		SessionID: "kept-session", Scope: "project", WorkspaceRoot: root, TopicID: "topic-1", SessionPath: "sp-1",
 	}
 	state := desktopIconPersistedState{Kept: map[string]desktopIconKept{kept.ItemID: kept}}
-	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil)
+	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil, nil)
 	retained := findDesktopIconItem(snapshot.Items, "task:kept-1")
 	if retained == nil || retained.SessionID != "kept-session" || retained.WorkspaceIcon != "python" {
 		t.Fatalf("retained task identity = %#v, want kept sessionId and project icon", retained)
@@ -1454,7 +1708,7 @@ func TestDesktopIconAgentIdentityFields(t *testing.T) {
 	legacy.ItemID = "task:legacy-1"
 	legacy.SessionID = ""
 	state = desktopIconPersistedState{Kept: map[string]desktopIconKept{legacy.ItemID: legacy}}
-	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil)
+	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil, nil)
 	old := findDesktopIconItem(snapshot.Items, "task:legacy-1")
 	if old == nil || old.SessionID != "" || old.WorkspaceIcon == "" || old.SessionRef == nil || old.SessionRef.SessionPath != "sp-1" {
 		t.Fatalf("legacy retained task = %#v, want empty sessionId with sessionRef fallback", old)

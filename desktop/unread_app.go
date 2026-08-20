@@ -211,6 +211,16 @@ func (a *App) unreadTargetVisible(sessionID, workID string) bool {
 		return false
 	}
 	sessionID, workID = strings.TrimSpace(sessionID), strings.TrimSpace(workID)
+	// 小组件模式下主窗口被小组件遮挡，后台 active tab 一律不可视为可见：
+	// 新消息必须保持未读，退出小组件后才按普通窗口语义自动已读。widgetMode
+	// 由 widgetMu 保护；这里先取位再释放，绝不同时持有 widgetMu 与 a.mu，
+	// 避免与现有锁顺序交叉产生死锁。
+	a.widgetMu.Lock()
+	widgetMode := a.widgetMode
+	a.widgetMu.Unlock()
+	if widgetMode {
+		return false
+	}
 	a.mu.RLock()
 	tab := a.tabs[a.activeTabID]
 	if tab == nil {
