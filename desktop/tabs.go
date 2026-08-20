@@ -4261,7 +4261,10 @@ func topicTitleFromText(text string) string {
 
 const desktopProjectsFile = "desktop-projects.json"
 const tabsFileName = "desktop-tabs.json"
-const desktopGlobalOrderToken = "__global__"
+const (
+	desktopGlobalOrderToken  = "__global__"
+	desktopWorkspacePinLimit = 4
+)
 const legacyProjectSidebarRecoveryMarker = "desktop-projects-legacy-recovered"
 
 var desktopProjectsFileMu sync.Mutex
@@ -4984,7 +4987,11 @@ func normalizeProjectColor(color string) string {
 func normalizeProjectIcon(icon string) string {
 	icon = strings.TrimSpace(strings.ToLower(icon))
 	switch icon {
-	case "star", "bookmark", "code", "terminal", "bolt":
+	case "star", "bookmark", "code", "terminal", "bolt",
+		"browser", "build", "cmd", "cpp", "csharp", "dart", "data", "database",
+		"delegate", "design", "discussion", "document", "edit", "folder", "game", "go", "java",
+		"javascript", "music", "php", "presentation", "publish", "python", "react",
+		"new", "research", "run", "rust", "sport", "sync", "test", "typescript", "unity", "video":
 		return icon
 	default:
 		// Empty and unknown values preserve the backwards-compatible dot icon.
@@ -6161,6 +6168,12 @@ func (a *App) SetProjectPinned(workspaceRoot string, pinned bool) error {
 		}
 		next := removeString(f.PinnedProjects, root)
 		if pinned {
+			if containsDesktopString(f.PinnedProjects, root) {
+				return false, nil
+			}
+			if len(uniqueStrings(next)) >= desktopWorkspacePinLimit {
+				return false, fmt.Errorf("desktop workspace pin limit reached (%d)", desktopWorkspacePinLimit)
+			}
 			next = prependUniqueString(f.PinnedProjects, root)
 		}
 		if sameStringList(next, f.PinnedProjects) {

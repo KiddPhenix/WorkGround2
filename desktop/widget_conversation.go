@@ -39,9 +39,12 @@ const (
 
 // WidgetWorkspaceOption is one selectable workspace for the widget dropdown.
 type WidgetWorkspaceOption struct {
-	Scope string `json:"scope"`          // "auto", "project", "global"
-	Name  string `json:"name"`           // display name
-	Root  string `json:"root,omitempty"` // project root, set only for scope="project"
+	Scope          string `json:"scope"`                    // "auto", "project", "global"
+	Name           string `json:"name"`                     // display name
+	Root           string `json:"root,omitempty"`           // project root, set only for scope="project"
+	Icon           string `json:"icon,omitempty"`           // normalized project icon key
+	Pinned         bool   `json:"pinned,omitempty"`         // pinned into a desktop workspace slot
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"` // newest activity inside the project
 }
 
 // WidgetConversationInput starts a normal controller turn without leaving the
@@ -518,9 +521,9 @@ func (a *App) ListWidgetWorkspaces() []WidgetWorkspaceOption {
 		if c.Transient {
 			continue
 		}
-		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root})
+		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root, Icon: projectIcon(c.Root)})
 	}
-	out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle()})
+	out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle(), Icon: globalProjectIcon()})
 	return out
 }
 

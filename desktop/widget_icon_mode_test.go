@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -18,14 +20,14 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 7, Conversations: []unread.Conversation{{
 		Key: "room:design", Source: unread.SourceRoom, SessionID: "room-session", Title: "产品 Room",
 	}}}}
-	spaces := []WidgetWorkspaceOption{{Scope: "auto", Name: "自动"}, {Scope: "project", Name: "WorkGround2", Root: `D:\Work\WorkGround2`}}
+	spaces := []WidgetWorkspaceOption{{Scope: "auto", Name: "自动"}, {Scope: "project", Name: "WorkGround2", Root: `D:\Work\WorkGround2`, Icon: "python"}}
 	snapshot := buildDesktopIconSnapshot(nil, state, spaces, desktopIconPersistedState{}, 1200, nil, nil)
 	room := findDesktopIconItem(snapshot.Items, "conversation:room:design")
 	if room == nil || room.Position.Row != "top" || room.UnreadCount != 0 {
 		t.Fatalf("read Room projection = %#v", room)
 	}
 	workspace := findDesktopIconItem(snapshot.Items, `workspace:D:\Work\WorkGround2`)
-	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" {
+	if workspace == nil || workspace.Position.Row != "bottom" || workspace.Position.Zone != "workspace" || workspace.Icon != "python" {
 		t.Fatalf("workspace projection = %#v", workspace)
 	}
 	for _, id := range []string{"fixed:new", "fixed:workspace", "fixed:rooms", "fixed:delegate", "fixed:search"} {
@@ -45,6 +47,86 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	}
 	if findDesktopIconItem(snapshot.Items, "fixed:knowledge") != nil {
 		t.Fatal("knowledge entry should stay hidden until the feature is ready")
+	}
+}
+
+func TestDesktopIconWorkspacesRespectConfiguredSlotsAndPriority(t *testing.T) {
+	tree := []ProjectNode{
+		{Kind: "project", Root: `D:\Work\old`, Label: "Old", Children: []ProjectNode{{LastActivityAt: 100}}},
+		{Kind: "project", Root: `D:\Work\pinned-a`, Label: "Pinned A", Pinned: true, Children: []ProjectNode{{LastActivityAt: 10}}},
+		{Kind: "global_folder", Label: "Global", Children: []ProjectNode{{LastActivityAt: 999}}},
+		{Kind: "project", Root: `D:\Work\newest`, Label: "Newest", ProjectIcon: "typescript", Children: []ProjectNode{{LastActivityAt: 500}, {Children: []ProjectNode{{LastActivityAt: 700}}}}},
+		{Kind: "project", Root: `D:\Work\pinned-b`, Label: "Pinned B", Pinned: true, Children: []ProjectNode{{LastActivityAt: 20}}},
+		{Kind: "project", Root: `D:\Work\middle`, Label: "Middle", Children: []ProjectNode{{LastActivityAt: 300}}},
+	}
+
+	spaces := desktopIconWorkspaces(tree, `D:\Work\old`, 4)
+	got := make([]string, 0, len(spaces))
+	for _, space := range spaces {
+		got = append(got, space.Name)
+	}
+	want := []string{"Pinned A", "Pinned B", "Old", "Newest"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("desktop workspace order = %v, want %v", got, want)
+	}
+	if spaces[3].LastActivityAt != 700 {
+		t.Fatalf("nested project activity = %d, want 700", spaces[3].LastActivityAt)
+	}
+	if spaces[3].Icon != "typescript" {
+		t.Fatalf("workspace icon = %q, want typescript", spaces[3].Icon)
+	}
+	if got := desktopIconWorkspaces(tree, `D:\Work\old`, 0); len(got) != 0 {
+		t.Fatalf("zero desktop workspace slots = %v, want none", got)
+	}
+	if got := desktopIconWorkspaces(tree, `D:\Work\old`, 2); len(got) != 2 || got[0].Name != "Pinned A" || got[1].Name != "Pinned B" {
+		t.Fatalf("two desktop workspace slots = %v, want pinned projects", got)
+	}
+}
+
+func TestDesktopWorkspaceSlotsPersistZeroAndRejectInvalidValues(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{}
+	if got := app.GetDesktopWorkspaceSlots(); got != desktopWorkspacePinLimit {
+		t.Fatalf("legacy/default desktop workspace slots = %d, want %d", got, desktopWorkspacePinLimit)
+	}
+	if err := app.SetDesktopWorkspaceSlots(0); err != nil {
+		t.Fatalf("set zero desktop workspace slots: %v", err)
+	}
+	if err := app.SetDesktopWorkspaceSlots(0); err != nil {
+		t.Fatalf("repeat zero desktop workspace slots: %v", err)
+	}
+	reloaded := &App{}
+	if got := reloaded.GetDesktopWorkspaceSlots(); got != 0 {
+		t.Fatalf("reloaded desktop workspace slots = %d, want 0", got)
+	}
+	for _, invalid := range []int{-1, desktopWorkspacePinLimit + 1} {
+		if err := reloaded.SetDesktopWorkspaceSlots(invalid); err == nil {
+			t.Fatalf("invalid desktop workspace slots %d succeeded", invalid)
+		}
+		if got := reloaded.GetDesktopWorkspaceSlots(); got != 0 {
+			t.Fatalf("invalid value %d changed desktop workspace slots to %d", invalid, got)
+		}
+	}
+}
+
+func TestBuildDesktopIconSnapshotShowsExactlyFourWorkspaceSlots(t *testing.T) {
+	spaces := []WidgetWorkspaceOption{{Scope: "auto", Name: "Auto"}}
+	for i := 0; i < 6; i++ {
+		spaces = append(spaces, WidgetWorkspaceOption{Scope: "project", Name: fmt.Sprintf("P%d", i), Root: fmt.Sprintf("root-%d", i)})
+	}
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, spaces, desktopIconPersistedState{}, 0, nil, nil)
+	count := 0
+	for _, item := range snapshot.Items {
+		if item.Kind != "workspace" {
+			continue
+		}
+		if item.Position.Order != count {
+			t.Fatalf("workspace order = %d, want %d", item.Position.Order, count)
+		}
+		count++
+	}
+	if count != desktopWorkspacePinLimit {
+		t.Fatalf("workspace icon count = %d, want %d", count, desktopWorkspacePinLimit)
 	}
 }
 
@@ -709,6 +791,37 @@ func TestCloneDesktopIconStateKeepsSummaryCacheIndependent(t *testing.T) {
 	}
 }
 
+func TestRetainedTaskAlwaysProjectsCompletionNotice(t *testing.T) {
+	key := desktopIconCompletionKey("task-1", "completed", 1000)
+	persisted := desktopIconPersistedState{
+		Positions: map[string]DesktopIconPosition{},
+		Kept: map[string]desktopIconKept{
+			"task:task-1": {
+				ItemID: "task:task-1", SourceID: "task-1", Title: "标题", Summary: "机械摘要",
+				CompletionKey: key, CompletedAt: 1000,
+			},
+			"task:legacy": {ItemID: "task:legacy", SourceID: "legacy", Title: "旧任务", Summary: "旧摘要"},
+		},
+		CompletionSummaries: map[string]desktopIconCompletionSummary{
+			key: {Status: completionSummaryReady, Text: "百字摘要"},
+		},
+	}
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{}, nil, persisted, 0, nil, nil)
+	for id, wantBody := range map[string]string{"task:task-1": "百字摘要", "task:legacy": "旧摘要"} {
+		item := findDesktopIconItem(snapshot.Items, id)
+		if item == nil || !item.Retained || len(item.Notifications) != 1 {
+			t.Fatalf("retained task %s did not project a completion notice: %+v", id, item)
+		}
+		if item.UnreadCount != 0 {
+			t.Fatalf("retained completion popup %s created an unread badge: %+v", id, item)
+		}
+		notice := item.Notifications[0]
+		if notice.Kind != "completed" || notice.Title != "任务完成" || notice.Body != wantBody || notice.TabID != item.SourceID {
+			t.Fatalf("retained notice %s = %+v", id, notice)
+		}
+	}
+}
+
 // keptFixture returns a completed task whose item is also retained in the
 // persisted Kept map, mirroring the pre-fix state that "OK" used to create.
 func keptCompletionFixture(t *testing.T, attentionAt int64) (*App, *WorkspaceTab, string) {
@@ -1282,6 +1395,62 @@ func TestDesktopIconTaskRevisionIncludesSessionIdentity(t *testing.T) {
 	}
 }
 
+// TestDesktopIconAgentIdentityFields verifies the display-only Agent Icon
+// identity carried by task snapshots: the stable SessionID seed (live tab or
+// retained kept; legacy kept entries stay empty for frontend fallback) and the
+// normalized workspace icon. These fields are revision-bearing so an identity
+// or icon change refreshes the icon, but they never participate in opening.
+func TestDesktopIconAgentIdentityFields(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := filepath.Join(t.TempDir(), "WG2")
+	if err := setProjectIcon(root, "python"); err != nil {
+		t.Fatalf("setProjectIcon: %v", err)
+	}
+	sources := []widgetSource{{meta: TabMeta{
+		ID: "task-1", SessionID: "session-1", Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-1", SessionPath: "sp-1", ProjectIcon: "python", RunningWork: true,
+	}}}
+	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 0, nil, nil)
+	task := findDesktopIconItem(snapshot.Items, "task:task-1")
+	if task == nil || task.SessionID != "session-1" || task.WorkspaceIcon != "python" {
+		t.Fatalf("live task identity = %#v, want sessionId session-1 / workspaceIcon python", task)
+	}
+
+	kept := desktopIconKept{
+		ItemID: "task:kept-1", SourceID: "kept-1", Title: "t", Summary: "s", Order: 0, Revision: "r",
+		SessionID: "kept-session", Scope: "project", WorkspaceRoot: root, TopicID: "topic-1", SessionPath: "sp-1",
+	}
+	state := desktopIconPersistedState{Kept: map[string]desktopIconKept{kept.ItemID: kept}}
+	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil)
+	retained := findDesktopIconItem(snapshot.Items, "task:kept-1")
+	if retained == nil || retained.SessionID != "kept-session" || retained.WorkspaceIcon != "python" {
+		t.Fatalf("retained task identity = %#v, want kept sessionId and project icon", retained)
+	}
+
+	// Legacy kept entries predate SessionID persistence: empty stays empty so
+	// the frontend falls back to sessionRef/sessionPath instead of guessing.
+	legacy := kept
+	legacy.ItemID = "task:legacy-1"
+	legacy.SessionID = ""
+	state = desktopIconPersistedState{Kept: map[string]desktopIconKept{legacy.ItemID: legacy}}
+	snapshot = buildDesktopIconSnapshot(nil, UnreadState{}, nil, state, 0, nil, nil)
+	old := findDesktopIconItem(snapshot.Items, "task:legacy-1")
+	if old == nil || old.SessionID != "" || old.WorkspaceIcon == "" || old.SessionRef == nil || old.SessionRef.SessionPath != "sp-1" {
+		t.Fatalf("legacy retained task = %#v, want empty sessionId with sessionRef fallback", old)
+	}
+
+	item := DesktopIconItem{ID: "task:1", Kind: "task", Status: "idle", Position: DesktopIconPosition{Row: "bottom", Zone: "running"}}
+	base := desktopIconItemRevision(item)
+	item.SessionID = "session-1"
+	if desktopIconItemRevision(item) == base {
+		t.Fatal("a changed identity seed must change the item revision")
+	}
+	item.WorkspaceIcon = "python"
+	if desktopIconItemRevision(item) == base {
+		t.Fatal("a changed workspace icon must change the item revision")
+	}
+}
+
 // TestRememberDesktopIconTaskSameSessionRefreshesNotDuplicates verifies the
 // same-session dedupe: reopening a closed task (new tab ID, same session path)
 // refreshes the existing kept entry instead of adding a second icon.
@@ -1331,7 +1500,7 @@ func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
 		widgetStyle:           "icons",
 		iconWidgetStateLoaded: true,
 		iconWidgetState: desktopIconPersistedState{
-			Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{},
+			Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, WorkspaceSlots: desktopWorkspacePinLimit,
 			CompletionSummaries: map[string]desktopIconCompletionSummary{},
 		},
 	}

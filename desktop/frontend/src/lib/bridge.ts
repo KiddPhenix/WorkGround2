@@ -267,6 +267,9 @@ export interface WidgetWorkspaceOption {
   scope: "auto" | "project" | "global";
   name: string;
   root?: string;
+  icon?: string;
+  pinned?: boolean;
+  lastActivityAt?: number;
 }
 
 export interface WidgetConversationResult {
@@ -291,10 +294,24 @@ export interface DesktopIconNotice {
 
 export interface DesktopIconPosition { row: "top" | "bottom"; zone: "conversation" | "running" | "workspace" | "fixed"; order: number; }
 export interface DesktopIconRuntime { phase: string; summary: string; elapsedMs: number; updatedAt: number; }
+// DesktopIconTaskRef is the typed session identity every task icon snapshot
+// carries (scope/workspaceRoot/topicID/sessionPath). It is display data for
+// the Agent Icon seed fallback; opening still routes through the backend.
+export interface DesktopIconTaskRef {
+  scope: string;
+  workspaceRoot?: string;
+  topicId?: string;
+  sessionPath?: string;
+}
 export interface DesktopIconItem {
   id: string; kind: "room" | "person" | "task" | "workspace" | "fixed"; sourceId: string; title: string;
   subtitle?: string; icon?: string; status: DesktopIconStatus; unreadCount: number; activityCount?: number; notifications: DesktopIconNotice[];
   runtimeStatus?: DesktopIconRuntime; position: DesktopIconPosition; revision: string; retained?: boolean;
+  // 纯展示字段（Agent Icon）：稳定身份 seed 与 workspace 图标键；旧 retained
+  // 数据可能缺 sessionId，前端按 sessionRef/sessionPath 稳定回退。
+  sessionId?: string;
+  workspaceIcon?: string;
+  sessionRef?: DesktopIconTaskRef;
 }
 export interface DesktopIconSnapshot { items: DesktopIconItem[]; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
 export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
@@ -302,6 +319,36 @@ export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error
 export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+// DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
+// icon widget for an idle-hover trace. It carries measurements and stable
+// widget markers only — never task content, prompts, icon titles or user
+// paths — and every field is validated on the Go side.
+export interface DesktopIconDiagnosticsInput {
+  kind: "hover_start" | "hover_recovery";
+  traceId: string;
+  targetKind?: "icon" | "anchor";
+  idleMs?: number;
+  ts?: number;
+  t0?: number;
+  visibility?: string;
+  focus?: boolean;
+  viewportW?: number;
+  viewportH?: number;
+  dpr?: number;
+  iconCount?: number;
+  revision?: string;
+  frames?: number;
+  worstFrameGapMs?: number;
+  avgFrameGapMs?: number;
+  longTasks?: number;
+  longTasksMaxMs?: number;
+  longTasksTotalMs?: number;
+  visibilityChanges?: number;
+  domMutations?: number;
+  layoutShifts?: number;
+  endedBy?: "healthy" | "timeout" | "aborted";
+  durationMs?: number;
+}
 
 // AppBindings is the hand-written contract between the React app and the Go
 // kernel. It uses local types (types.ts) so components don't import generated
@@ -343,9 +390,13 @@ export interface AppBindings extends WailsWorkBindings {
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	GetDesktopWorkspaceSlots(): Promise<number>;
 	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
 	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
 	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
+	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
+	WriteDesktopIconDiagnostics(input: DesktopIconDiagnosticsInput): Promise<void>;
+	DesktopIconDiagnosticsPath(): Promise<string>;
 	RefreshWidgetWindowRegion(): Promise<void>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
@@ -1220,6 +1271,7 @@ function makeMockApp(): AppBindings {
   const desktopZoomFactor = mockDesktopZoomFactor();
   const desktopWidgetSkin = mockWidgetSkin();
 	let desktopWidgetStyle = mockWidgetStyle();
+	let desktopWorkspaceSlots = 4;
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1367,7 +1419,7 @@ function makeMockApp(): AppBindings {
 		items: [
 			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
-			{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] },
+			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
 			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
 		],
 	});
@@ -2579,6 +2631,7 @@ function makeMockApp(): AppBindings {
 			];
 		},
 		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async GetDesktopWorkspaceSlots() { return desktopWorkspaceSlots; },
 		async DesktopIconSearch(query) {
 			const needle = query.trim().toLowerCase();
 			const items: DesktopIconSearchItem[] = [
@@ -2595,6 +2648,17 @@ function makeMockApp(): AppBindings {
 			return { status: "accepted", snapshot: mockDesktopIconSnapshot() };
 		},
 		async SetDesktopIconHitRegions() {},
+		async SetDesktopWorkspaceSlots(slots: number) {
+			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
+			desktopWorkspaceSlots = slots;
+			widgetRevision += 1;
+		},
+		async WriteDesktopIconDiagnostics() {},
+		async DesktopIconDiagnosticsPath() {
+			// Mirrors the Go-side stable per-user path suffix; the real binding
+			// returns the actual absolute path under the user state dir.
+			return "desktop-icon-diagnostics.ndjson";
+		},
 		async RefreshWidgetWindowRegion() {
 			// no-op in mock — the real Wails binding calls the Go backend
 		},

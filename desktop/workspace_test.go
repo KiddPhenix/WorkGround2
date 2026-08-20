@@ -79,6 +79,18 @@ func TestProjectIconRoundTripAndFallback(t *testing.T) {
 	if got := projectIcon(root); got != "star" {
 		t.Fatalf("projectIcon = %q, want star", got)
 	}
+	if err := setProjectIcon(root, " PYTHON "); err != nil {
+		t.Fatalf("set matte project icon: %v", err)
+	}
+	if got := projectIcon(root); got != "python" {
+		t.Fatalf("matte projectIcon = %q, want python", got)
+	}
+	if err := setProjectIcon(root, "delegate"); err != nil {
+		t.Fatalf("set generated matte project icon: %v", err)
+	}
+	if got := projectIcon(root); got != "delegate" {
+		t.Fatalf("generated matte projectIcon = %q, want delegate", got)
+	}
 	if err := setProjectIcon(root, "unknown"); err != nil {
 		t.Fatalf("reset invalid project icon: %v", err)
 	}

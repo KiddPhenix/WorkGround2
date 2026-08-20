@@ -11,6 +11,16 @@ export interface WorkspaceRow {
   icon: ProjectIconKey;
 }
 
+export const WORKSPACE_PIN_LIMIT = 4;
+
+export function pinnedWorkspaceRows(rows: WorkspaceRow[]): WorkspaceRow[] {
+  return rows.filter((row) => row.pinned).slice(0, WORKSPACE_PIN_LIMIT);
+}
+
+export function workspacePinsFull(rows: WorkspaceRow[]): boolean {
+  return rows.filter((row) => row.pinned).length >= WORKSPACE_PIN_LIMIT;
+}
+
 // projectWorkspaceRows projects only the backend's project nodes. Global and
 // folder nodes are excluded; a project without a root is skipped. The backend
 // tree already owns ordering (pinned first, then project file order), so rows

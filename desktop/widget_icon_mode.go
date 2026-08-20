@@ -22,7 +22,7 @@ const (
 	desktopIconActionLimit = 128
 	desktopIconMaxRooms    = 6
 	desktopIconMaxTasks    = 8
-	desktopIconMaxSpaces   = 5
+	desktopIconMaxSpaces   = desktopWorkspacePinLimit
 	desktopIconWidth       = 1080
 	desktopIconHeight      = 720
 	desktopIconMinWidth    = 640
@@ -156,12 +156,21 @@ func desktopIconTaskRef(scope, workspaceRoot, topicID, sessionPath string) *Desk
 // DesktopIconItem is the single frontend model for rooms, people, tasks,
 // workspaces and fixed actions.
 type DesktopIconItem struct {
-	ID            string              `json:"id"`
-	Kind          string              `json:"kind"`
-	SourceID      string              `json:"sourceId"`
-	Title         string              `json:"title"`
-	Subtitle      string              `json:"subtitle,omitempty"`
-	Icon          string              `json:"icon,omitempty"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	SourceID string `json:"sourceId"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Icon     string `json:"icon,omitempty"`
+	// SessionID is the stable identity seed for the Agent Icon (live tab
+	// SessionID, or the retained kept SessionID; legacy kept entries leave it
+	// empty and the frontend falls back to sessionRef/sessionPath). It is
+	// display-only: opening an icon still routes through SessionRef.
+	SessionID string `json:"sessionId,omitempty"`
+	// WorkspaceIcon is the normalized project icon key of the task's workspace
+	// (global-scope tasks carry the global project icon). The frontend reuses
+	// it for the Agent Icon workspace badge; display-only, stable per session.
+	WorkspaceIcon string              `json:"workspaceIcon,omitempty"`
 	Status        string              `json:"status"`
 	UnreadCount   int                 `json:"unreadCount"`
 	ActivityCount int                 `json:"activityCount,omitempty"`
@@ -239,8 +248,13 @@ type desktopIconKept struct {
 	SessionID string `json:"sessionId,omitempty"`
 	Title     string `json:"title"`
 	Summary   string `json:"summary"`
-	Order     int    `json:"order"`
-	Revision  string `json:"revision"`
+	// CompletionKey reconnects a retained icon to the async summary cache after
+	// opening its Session has cleared NeedsAttention. CompletedAt keeps the
+	// synthetic completion notice stable across snapshots and restarts.
+	CompletionKey string `json:"completionKey,omitempty"`
+	CompletedAt   int64  `json:"completedAt,omitempty"`
+	Order         int    `json:"order"`
+	Revision      string `json:"revision"`
 	// Session identity recorded at retain time. A tab can be closed while its
 	// kept icon stays visible; these fields let a later open reopen (or reuse)
 	// the same session instead of falling back to whatever tab is active.
@@ -254,10 +268,23 @@ type desktopIconPersistedState struct {
 	Positions map[string]DesktopIconPosition `json:"positions,omitempty"`
 	Kept      map[string]desktopIconKept     `json:"kept,omitempty"`
 	Applied   []desktopIconReceipt           `json:"applied,omitempty"`
+	// WorkspaceSlots is the user-selected number of project shortcuts shown on
+	// the desktop. Zero is a valid explicit value; legacy files default to four
+	// by being unmarshaled into newDesktopIconState's initialized value.
+	WorkspaceSlots int `json:"workspaceSlots"`
 	// CompletionSummaries caches LLM news-style summaries keyed by
 	// desktopIconCompletionKey; entries survive restarts so already-generated
 	// summaries are never regenerated and failed ones retry on backoff.
 	CompletionSummaries map[string]desktopIconCompletionSummary `json:"completionSummaries,omitempty"`
+}
+
+func newDesktopIconState() desktopIconPersistedState {
+	return desktopIconPersistedState{
+		Positions:           map[string]DesktopIconPosition{},
+		Kept:                map[string]desktopIconKept{},
+		WorkspaceSlots:      desktopWorkspacePinLimit,
+		CompletionSummaries: map[string]desktopIconCompletionSummary{},
+	}
 }
 
 func desktopIconStatePath() string {
@@ -312,19 +339,19 @@ func (a *App) loadDesktopIconStateLocked() {
 		return
 	}
 	a.iconWidgetStateLoaded = true
-	a.iconWidgetState = desktopIconPersistedState{
-		Positions:           map[string]DesktopIconPosition{},
-		Kept:                map[string]desktopIconKept{},
-		CompletionSummaries: map[string]desktopIconCompletionSummary{},
-	}
+	a.iconWidgetState = newDesktopIconState()
 	raw, err := readFileUTF8(desktopIconStatePath())
 	if err == nil {
 		if err := json.Unmarshal(raw, &a.iconWidgetState); err != nil {
 			a.iconWidgetStateErr = fmt.Errorf("load desktop icon state: %w", err)
-			a.iconWidgetState = desktopIconPersistedState{Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}}
+			a.iconWidgetState = newDesktopIconState()
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		a.iconWidgetStateErr = fmt.Errorf("load desktop icon state: %w", err)
+	}
+	if slots := a.iconWidgetState.WorkspaceSlots; slots < 0 || slots > desktopWorkspacePinLimit {
+		a.iconWidgetStateErr = fmt.Errorf("load desktop icon state: workspaceSlots %d is outside 0..%d", slots, desktopWorkspacePinLimit)
+		a.iconWidgetState.WorkspaceSlots = desktopWorkspacePinLimit
 	}
 	if a.iconWidgetState.Positions == nil {
 		a.iconWidgetState.Positions = map[string]DesktopIconPosition{}
@@ -396,9 +423,15 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		return
 	}
 	id := "task:" + meta.ID
-	summary := ""
+	summary, completionKey, completedAt := "", "", int64(0)
 	if tab.Ctrl != nil {
-		summary = conciseWidgetText(lastWidgetAssistantText(tab.Ctrl.History()), 120)
+		result := lastWidgetAssistantText(tab.Ctrl.History())
+		summary, _ = completionSummaryFallback(result)
+		if summary != "" && meta.NeedsAttentionAt > 0 {
+			completionKey = desktopIconCompletionKey(meta.ID, "completed", meta.NeedsAttentionAt)
+			completedAt = meta.NeedsAttentionAt
+			summary, _ = desktopIconCompletionSummaryFor(a.iconWidgetState.CompletionSummaries, completionKey, summary)
+		}
 	}
 	entry := desktopIconKept{
 		ItemID:        id,
@@ -406,6 +439,8 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		SessionID:     strings.TrimSpace(meta.SessionID),
 		Title:         firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "当前任务"),
 		Summary:       summary,
+		CompletionKey: completionKey,
+		CompletedAt:   completedAt,
 		Order:         rank,
 		Scope:         meta.Scope,
 		WorkspaceRoot: meta.WorkspaceRoot,
@@ -419,6 +454,12 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 		existing.WorkspaceRoot = entry.WorkspaceRoot
 		existing.TopicID = entry.TopicID
 		existing.SessionPath = entry.SessionPath
+		if entry.CompletionKey != "" && entry.CompletionKey != existing.CompletionKey {
+			existing.Title = entry.Title
+			existing.Summary = entry.Summary
+			existing.CompletionKey = entry.CompletionKey
+			existing.CompletedAt = entry.CompletedAt
+		}
 		a.iconWidgetState.Kept[id] = existing
 		if err := a.saveDesktopIconStateLocked(); err != nil {
 			slog.Error("desktop: refresh retained task icon", "tabID", tabID, "err", err)
@@ -440,6 +481,12 @@ func (a *App) rememberDesktopIconTaskLocked(tabID string) {
 			existing.WorkspaceRoot = entry.WorkspaceRoot
 			existing.TopicID = entry.TopicID
 			existing.SessionPath = entry.SessionPath
+			if entry.CompletionKey != "" && entry.CompletionKey != existing.CompletionKey {
+				existing.Title = entry.Title
+				existing.Summary = entry.Summary
+				existing.CompletionKey = entry.CompletionKey
+				existing.CompletedAt = entry.CompletedAt
+			}
 			a.iconWidgetState.Kept[existingID] = existing
 			if err := a.saveDesktopIconStateLocked(); err != nil {
 				slog.Error("desktop: refresh retained task icon", "tabID", tabID, "err", err)
@@ -631,6 +678,37 @@ func (a *App) GetDesktopIconSnapshot() DesktopIconSnapshot {
 	return a.desktopIconSnapshotLocked()
 }
 
+// GetDesktopWorkspaceSlots returns the persisted number of project shortcuts
+// shown on the desktop. It is safe to poll and defaults legacy state to four.
+func (a *App) GetDesktopWorkspaceSlots() int {
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	a.loadDesktopIconStateLocked()
+	return a.iconWidgetState.WorkspaceSlots
+}
+
+// SetDesktopWorkspaceSlots updates the desktop project shortcut capacity.
+// Repeating the same value is a no-op; a failed save restores the prior value
+// so frontend retries cannot leave runtime and persisted state divergent.
+func (a *App) SetDesktopWorkspaceSlots(slots int) error {
+	if slots < 0 || slots > desktopWorkspacePinLimit {
+		return fmt.Errorf("desktop workspace slots must be between 0 and %d", desktopWorkspacePinLimit)
+	}
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	a.loadDesktopIconStateLocked()
+	if a.iconWidgetState.WorkspaceSlots == slots {
+		return nil
+	}
+	previous := a.iconWidgetState.WorkspaceSlots
+	a.iconWidgetState.WorkspaceSlots = slots
+	if err := a.saveDesktopIconStateLocked(); err != nil {
+		a.iconWidgetState.WorkspaceSlots = previous
+		return fmt.Errorf("save desktop workspace slots: %w", err)
+	}
+	return nil
+}
+
 func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	recoveryErr := a.recoverDesktopIconActionsLocked()
 	sources := a.widgetSources()
@@ -642,7 +720,7 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	// so file I/O never runs under the App's main lock.
 	subagentCounts, subagentErr := a.widgetSubagentCounts(sources)
 	unreadState := a.UnreadState()
-	spaces := a.ListWidgetWorkspaces()
+	spaces := desktopIconWorkspaces(a.ListProjectTree(), desktopIconActiveWorkspace(sources), a.iconWidgetState.WorkspaceSlots)
 	style, hover := a.desktopIconPreferences()
 	roomSummaries := a.desktopRoomSummaries()
 	snapshot := buildDesktopIconSnapshot(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, subagentCounts)
@@ -974,6 +1052,60 @@ func (a *App) openDesktopIconSearchItemLocked(id string) error {
 	return errors.New("search result is no longer available")
 }
 
+// desktopIconWorkspaces is the single projection for the configurable desktop
+// slots. Pinned projects keep the backend pin order; the current project
+// follows, and remaining slots are filled by persisted activity time.
+func desktopIconWorkspaces(tree []ProjectNode, activeRoot string, slots int) []WidgetWorkspaceOption {
+	slots = max(0, min(desktopWorkspacePinLimit, slots))
+	if slots == 0 {
+		return nil
+	}
+	activeRoot = normalizeProjectRoot(activeRoot)
+	spaces := make([]WidgetWorkspaceOption, 0, len(tree))
+	for _, node := range tree {
+		root := normalizeProjectRoot(node.Root)
+		if node.Kind != "project" || root == "" || widgetIsTransientRoot(root, node.Label) {
+			continue
+		}
+		spaces = append(spaces, WidgetWorkspaceOption{
+			Scope: widgetWorkspaceProject, Name: firstNonEmpty(strings.TrimSpace(node.Label), workspaceName(root)), Root: root,
+			Icon: node.ProjectIcon, Pinned: node.Pinned, LastActivityAt: desktopIconProjectActivity(node),
+		})
+	}
+	sort.SliceStable(spaces, func(i, j int) bool {
+		left, right := spaces[i], spaces[j]
+		if left.Pinned != right.Pinned {
+			return left.Pinned
+		}
+		if left.Pinned {
+			return false
+		}
+		leftActive, rightActive := left.Root == activeRoot, right.Root == activeRoot
+		if leftActive != rightActive {
+			return leftActive
+		}
+		return left.LastActivityAt > right.LastActivityAt
+	})
+	return spaces[:min(slots, len(spaces))]
+}
+
+func desktopIconActiveWorkspace(sources []widgetSource) string {
+	for _, source := range sources {
+		if source.meta.Active && source.meta.Scope == widgetWorkspaceProject {
+			return source.meta.WorkspaceRoot
+		}
+	}
+	return ""
+}
+
+func desktopIconProjectActivity(node ProjectNode) int64 {
+	latest := node.LastActivityAt
+	for _, child := range node.Children {
+		latest = max(latest, desktopIconProjectActivity(child))
+	}
+	return latest
+}
+
 func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string, subagentCounts map[widgetSubagentKey]int) DesktopIconSnapshot {
 	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision}
 	items := make([]DesktopIconItem, 0, len(sources)+len(spaces)+8)
@@ -1040,10 +1172,12 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		if _, live := taskBySource[kept.SourceID]; live {
 			continue
 		}
+		notice := desktopIconNoticeForKept(kept, persisted.CompletionSummaries)
 		items = append(items, DesktopIconItem{
 			ID: kept.ItemID, Kind: "task", SourceID: kept.SourceID, Title: kept.Title,
 			Subtitle: kept.Summary, Status: "done", Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: kept.Order},
-			Revision: kept.Revision, Retained: true, Notifications: []DesktopIconNotice{},
+			Revision: kept.Revision, Retained: true, Notifications: []DesktopIconNotice{notice},
+			SessionID: strings.TrimSpace(kept.SessionID), WorkspaceIcon: projectIcon(kept.WorkspaceRoot),
 			SessionRef: desktopIconTaskRef(kept.Scope, kept.WorkspaceRoot, kept.TopicID, kept.SessionPath),
 		})
 		taskCount++
@@ -1081,16 +1215,21 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		roomCount++
 	}
 
-	for i, space := range spaces {
-		if i >= desktopIconMaxSpaces || space.Scope == "auto" {
+	spaceOrder := 0
+	for _, space := range spaces {
+		if space.Scope == "auto" {
 			continue
+		}
+		if spaceOrder >= desktopIconMaxSpaces {
+			break
 		}
 		id := "workspace:" + firstNonEmpty(space.Root, space.Scope)
 		items = append(items, DesktopIconItem{
 			ID: id, Kind: "workspace", SourceID: firstNonEmpty(space.Root, space.Scope), Title: space.Name,
-			Status: "idle", Notifications: []DesktopIconNotice{},
-			Position: DesktopIconPosition{Row: "bottom", Zone: "workspace", Order: i},
+			Icon: space.Icon, Status: "idle", Notifications: []DesktopIconNotice{},
+			Position: DesktopIconPosition{Row: "bottom", Zone: "workspace", Order: spaceOrder},
 		})
+		spaceOrder++
 	}
 
 	// The fixed bottom bar is the declared order of the stable source ids:
@@ -1118,7 +1257,7 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 			item.Position = position
 		}
 		sortDesktopIconNotices(item.Notifications)
-		item.UnreadCount = len(item.Notifications)
+		item.UnreadCount = desktopIconUnreadCount(*item)
 		if item.UnreadCount > 0 {
 			item.Status = desktopIconStatus(item.Notifications[0].Kind, item.Status)
 		}
@@ -1145,6 +1284,20 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 	return snapshot
 }
 
+// desktopIconUnreadCount keeps presentation-only retained completion notices
+// out of the unread badge. They exist solely so an opened Session reuses the
+// completion-card popup; live completion and actionable notices still count.
+func desktopIconUnreadCount(item DesktopIconItem) int {
+	count := 0
+	for _, notice := range item.Notifications {
+		if item.Retained && notice.Kind == "completed" && strings.HasPrefix(notice.ID, "retained:") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func desktopTaskItem(source widgetSource, order int, summaries map[string]desktopIconCompletionSummary) DesktopIconItem {
 	meta := source.meta
 	title := firstNonEmpty(strings.TrimSpace(meta.SessionDisplayTitle), strings.TrimSpace(meta.TopicTitle), "当前任务")
@@ -1152,6 +1305,7 @@ func desktopTaskItem(source widgetSource, order int, summaries map[string]deskto
 		ID: "task:" + meta.ID, Kind: "task", SourceID: meta.ID, Title: title,
 		Subtitle: firstNonEmpty(strings.TrimSpace(meta.WorkspaceName), "WorkGround2"), Status: "idle",
 		Notifications: []DesktopIconNotice{}, Position: DesktopIconPosition{Row: "bottom", Zone: "running", Order: order},
+		SessionID: strings.TrimSpace(meta.SessionID), WorkspaceIcon: strings.TrimSpace(meta.ProjectIcon),
 		SessionRef: desktopIconTaskRef(meta.Scope, meta.WorkspaceRoot, meta.TopicID, meta.SessionPath),
 	}
 	if source.has {
@@ -1170,11 +1324,14 @@ func desktopTaskItem(source widgetSource, order int, summaries map[string]deskto
 		notice.SummaryStatus = summaryStatus
 		item.Notifications = append(item.Notifications, notice)
 	} else if meta.NeedsAttention {
-		body := conciseWidgetText(source.resultText, 140)
+		body, needsSummary := completionSummaryFallback(source.resultText)
 		if body == "" {
 			body = "任务已完成，记录仍可在搜索中找到。"
 		}
-		body, summaryStatus := desktopIconCompletionSummaryFor(summaries, desktopIconCompletionKey(meta.ID, "completed", meta.NeedsAttentionAt), body)
+		summaryStatus := ""
+		if needsSummary {
+			body, summaryStatus = desktopIconCompletionSummaryFor(summaries, desktopIconCompletionKey(meta.ID, "completed", meta.NeedsAttentionAt), body)
+		}
 		message := baseWidgetMessage(meta, "result", "任务完成", body)
 		message.ID = fmt.Sprintf("result:%s:%d", meta.ID, meta.NeedsAttentionAt)
 		message.Revision = widgetMessageRevision(message)
@@ -1199,6 +1356,33 @@ func desktopTaskItem(source widgetSource, order int, summaries map[string]deskto
 		item.Status = status
 	}
 	return item
+}
+
+// desktopIconNoticeForKept gives an opened Session the same completion card as
+// a never-opened one. Legacy kept entries have no CompletionKey; their stored
+// summary still becomes a valid completion notice instead of the generic
+// open-only popup.
+func desktopIconNoticeForKept(kept desktopIconKept, summaries map[string]desktopIconCompletionSummary) DesktopIconNotice {
+	body := strings.TrimSpace(kept.Summary)
+	status := ""
+	if kept.CompletionKey != "" {
+		body, status = desktopIconCompletionSummaryFor(summaries, kept.CompletionKey, body)
+	}
+	body, _ = completionSummaryFallback(body)
+	if body == "" {
+		body = "任务已完成，记录仍可在搜索中找到。"
+	}
+	return DesktopIconNotice{
+		ID:            "retained:" + widgetRevision(kept.ItemID, kept.CompletionKey, body),
+		Revision:      widgetRevision(kept.CompletionKey, body, strconv.FormatInt(kept.CompletedAt, 10)),
+		Kind:          "completed",
+		Priority:      2,
+		Title:         "任务完成",
+		Body:          body,
+		CreatedAt:     kept.CompletedAt,
+		TabID:         kept.SourceID,
+		SummaryStatus: status,
+	}
 }
 
 func desktopNoticeForMessage(message WidgetMessage, kind string, priority int, at int64) DesktopIconNotice {
@@ -1272,6 +1456,9 @@ func desktopIconItemRevision(item DesktopIconItem) string {
 	if item.Runtime != nil {
 		parts = append(parts, item.Runtime.Phase)
 	}
+	// Identity seed and workspace icon are display-only but revision-bearing:
+	// a changed session identity or project icon must refresh the frontend icon.
+	parts = append(parts, item.SessionID, item.WorkspaceIcon)
 	if item.SessionRef != nil {
 		parts = append(parts, item.SessionRef.Scope, item.SessionRef.WorkspaceRoot, item.SessionRef.TopicID, item.SessionRef.SessionPath)
 	}
@@ -1330,6 +1517,7 @@ func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersisted
 		Positions:           make(map[string]DesktopIconPosition, len(state.Positions)),
 		Kept:                make(map[string]desktopIconKept, len(state.Kept)),
 		Applied:             append([]desktopIconReceipt(nil), state.Applied...),
+		WorkspaceSlots:      state.WorkspaceSlots,
 		CompletionSummaries: make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
 	}
 	for id, position := range state.Positions {

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpen, Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, MessagesSquare, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
+import { Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
 import { app, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
+import { AgentIcon } from "../agent-icon/AgentIcon";
+import { buildAgentIconViewModel, isAgentIconItem } from "../../lib/agentIcon/viewModel";
+import type { AgentIconViewModel } from "../../lib/agentIcon/types";
 import { filterAtMatches } from "../../lib/atMatches";
 import { isComposerSubmitKey } from "../../lib/composerKeyboard";
 import { activeFileReferenceToken } from "../FileReferenceMenu";
@@ -12,11 +15,13 @@ import logoSymbol from "../../assets/logo-symbol.svg";
 import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
 import { DRAG_THRESHOLD, IconTimers, windowTimerHost } from "./desktopIconTimers";
+import { IdleHoverTracer } from "./idleHoverTrace";
 import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
-import { deleteConfirmNext, projectWorkspaceRows, renameTitle, type WorkspaceRow } from "./workspaceManager";
+import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull, type WorkspaceRow } from "./workspaceManager";
 import { roomRows, type RoomRow } from "./roomsManager";
-import type { ProjectIconKey } from "../../lib/projectIcons";
+import { isWorkspaceMatteIcon, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
+import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
@@ -89,23 +94,29 @@ function statusGlyph(item: DesktopIconItem) {
   return null;
 }
 
-function itemGlyph(item: DesktopIconItem) {
+function itemGlyph(item: DesktopIconItem, agentViewModel?: AgentIconViewModel) {
   if (item.kind === "room") return <MessageCircle />;
   if (item.kind === "person") return <Users />;
-  if (item.kind === "task") return <Bot />;
-  if (item.kind === "workspace") return <span className="desktop-icon__letter">{item.title.slice(0, 1).toUpperCase()}</span>;
-  if (item.sourceId === "new") return <Plus />;
-  if (item.sourceId === "workspace") return <Folder />;
-  if (item.sourceId === "rooms") return <MessagesSquare />;
-  if (item.sourceId === "delegate") return <Users />;
-  if (item.sourceId === "knowledge") return <BookOpen />;
-  return <Search />;
+  // 真实 task/session 使用可组合 Agent Icon（身份/任务/徽标/状态眼睛）；
+  // QuickStart 乐观条目尚未形成真实 session，保留旧 Bot 图标。
+  if (item.kind === "task") return agentViewModel ? <AgentIcon viewModel={agentViewModel} /> : <Bot />;
+  if (item.kind === "workspace") return <WorkspaceMatteIcon icon={isWorkspaceMatteIcon(item.icon) ? item.icon : "folder"} className="desktop-icon__matte" />;
+  const fixedIcon: Record<string, WorkspaceMatteIconKey> = {
+    new: "new",
+    workspace: "folder",
+    rooms: "discussion",
+    delegate: "delegate",
+    knowledge: "document",
+    search: "research",
+  };
+  return <WorkspaceMatteIcon icon={fixedIcon[item.sourceId] ?? "research"} className="desktop-icon__matte" />;
 }
 
 function previewText(item: DesktopIconItem): string {
   if (isQuickStartJobItem(item)) return quickStartJobStateLabel(item);
   if (item.runtimeStatus) return `${item.runtimeStatus.summary || item.runtimeStatus.phase} · ${Math.max(0, Math.round(item.runtimeStatus.elapsedMs / 1000))} 秒`;
-  if (item.unreadCount > 0) return `${item.unreadCount} 条待处理信息`;
+  const noticeBody = item.notifications[0]?.body.trim();
+  if (noticeBody) return noticeBody;
   if (item.kind === "workspace") return `${item.title} · 快速发起`;
   if (item.status === "done") return item.subtitle || "已完成，可在搜索中找到记录";
   return item.title;
@@ -558,6 +569,7 @@ function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: 
 // WorkspaceGlyph maps a normalized projectIconKey to the same Lucide glyphs
 // ProjectTree uses; "" and any unknown key fall back to the plain folder.
 function WorkspaceGlyph({ icon, size = 16 }: { icon: ProjectIconKey; size?: number }) {
+  if (isWorkspaceMatteIcon(icon)) return <WorkspaceMatteIcon icon={icon} className="desktop-icon-popup__workspace-matte" />;
   switch (icon) {
     case "star": return <Star size={size} aria-hidden="true" />;
     case "bookmark": return <Bookmark size={size} aria-hidden="true" />;
@@ -568,7 +580,7 @@ function WorkspaceGlyph({ icon, size = 16 }: { icon: ProjectIconKey; size?: numb
   }
 }
 
-function WorkspaceManager({ onClose }: { onClose: () => void }) {
+function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChanged: () => Promise<void> }) {
   const [rows, setRows] = useState<WorkspaceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -579,12 +591,19 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
   const [armed, setArmed] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [pinning, setPinning] = useState<string | null>(null);
+	const [workspaceSlots, setWorkspaceSlots] = useState(WORKSPACE_PIN_LIMIT);
+	const [slotsBusy, setSlotsBusy] = useState(false);
+  const [iconEditing, setIconEditing] = useState<string | null>(null);
+  const [iconBusy, setIconBusy] = useState(false);
+  const pinnedRows = pinnedWorkspaceRows(rows);
+  const pinsFull = workspacePinsFull(rows);
   const reload = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const tree = await app.ListProjectTree();
+		const [tree, slots] = await Promise.all([app.ListProjectTree(), app.GetDesktopWorkspaceSlots()]);
       setRows(projectWorkspaceRows(tree));
+		setWorkspaceSlots(slots);
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
   }, []);
@@ -611,6 +630,17 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setPinning(null); }
   };
+	const chooseWorkspaceSlots = async (slots: number) => {
+		if (slotsBusy || slots === workspaceSlots) return;
+		setSlotsBusy(true);
+		setError("");
+		try {
+			await app.SetDesktopWorkspaceSlots(slots);
+			setWorkspaceSlots(slots);
+			await onChanged();
+		} catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+		finally { setSlotsBusy(false); }
+	};
   const startRename = (row: WorkspaceRow) => { setRenaming(row.root); setRenameDraft(row.label); setError(""); };
   const cancelRename = () => { setRenaming(null); setRenameDraft(""); setRenamingBusy(false); };
   const commitRename = async (row: WorkspaceRow) => {
@@ -625,6 +655,24 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
       // Keep the inline input open so the same edit can be retried safely.
       setError(cause instanceof Error ? cause.message : String(cause));
       setRenamingBusy(false);
+    }
+  };
+  const chooseIcon = async (row: WorkspaceRow, icon: WorkspaceMatteIconKey) => {
+    if (iconBusy) return;
+    if (row.icon === icon) { setIconEditing(null); return; }
+    setIconBusy(true);
+    setError("");
+    try {
+      await app.SetProjectIcon(row.root, icon);
+      await reload();
+      await onChanged();
+      setIconEditing(null);
+    } catch (cause) {
+      // Keep the palette open so a failed IPC or disk write can be retried
+      // without losing the user's target workspace and icon choice.
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIconBusy(false);
     }
   };
   const requestDelete = (row: WorkspaceRow) => {
@@ -663,14 +711,26 @@ function WorkspaceManager({ onClose }: { onClose: () => void }) {
       <div className="desktop-icon-popup__workspace-main">
         <span className="desktop-icon-popup__workspace-glyph"><WorkspaceGlyph icon={row.icon} /></span>
         {renaming === row.root ? renameRow(row) : <strong className="desktop-icon-popup__workspace-name" title={row.root}>{row.label}</strong>}
-        <button type="button" className="desktop-icon-popup__workspace-pin" aria-pressed={row.pinned} aria-label={row.pinned ? `取消固定 ${row.label}` : `固定 ${row.label}`} title={row.pinned ? "取消固定" : "固定"} disabled={pinning === row.root || renaming === row.root} onClick={() => void togglePin(row)}>{pinnedIcon(row)}</button>
+        <button type="button" className="desktop-icon-popup__workspace-pin" aria-pressed={row.pinned} aria-label={row.pinned ? `取消固定 ${row.label}` : `固定 ${row.label}`} title={row.pinned ? "取消固定" : pinsFull ? "4 个固定位置已满" : "固定到桌面"} disabled={pinning === row.root || renaming === row.root || (!row.pinned && pinsFull)} onClick={() => void togglePin(row)}>{pinnedIcon(row)}</button>
       </div>
       {renaming === row.root
         ? <div className="desktop-icon-popup__workspace-actions"><button disabled={renamingBusy} onClick={() => void commitRename(row)}>{renamingBusy ? "保存中…" : "确认"}</button><button type="button" className="subtle" disabled={renamingBusy} onClick={cancelRename}>取消</button><small className="desktop-icon-popup__workspace-hint">留空恢复目录名</small></div>
         : armed === row.root
           ? <div className="desktop-icon-popup__workspace-actions desktop-icon-popup__workspace-actions--confirm"><span className="desktop-icon-popup__workspace-warn">删除“{row.label}”？</span><button type="button" className="danger" disabled={deleting === row.root} onClick={() => void confirmDelete(row)}>{deleting === row.root ? "删除中…" : "确认删除"}</button><button type="button" className="subtle" disabled={deleting === row.root} onClick={() => setArmed(null)}>取消</button></div>
-          : <div className="desktop-icon-popup__workspace-actions"><button type="button" className="subtle" disabled={renamingBusy} onClick={() => startRename(row)}><Pencil aria-hidden="true" />重命名</button><button type="button" className="subtle" disabled title="修改图标功能即将支持">修改图标<small className="desktop-icon-popup__workspace-soon">即将支持</small></button><button type="button" className="subtle desktop-icon-popup__workspace-delete" onClick={() => requestDelete(row)}><Trash2 aria-hidden="true" />删除</button></div>}
+          : <><div className="desktop-icon-popup__workspace-actions"><button type="button" className="subtle" disabled={renamingBusy || iconBusy} onClick={() => startRename(row)}><Pencil aria-hidden="true" />重命名</button><button type="button" className={`subtle${iconEditing === row.root ? " is-active" : ""}`} disabled={iconBusy} aria-expanded={iconEditing === row.root} onClick={() => setIconEditing((current) => current === row.root ? null : row.root)}>修改图标</button><button type="button" className="subtle desktop-icon-popup__workspace-delete" disabled={iconBusy} onClick={() => requestDelete(row)}><Trash2 aria-hidden="true" />删除</button></div>
+            {iconEditing === row.root && <div className="desktop-icon-popup__workspace-icons" role="group" aria-label={`为 ${row.label} 选择图标`} aria-busy={iconBusy}>{WORKSPACE_MATTE_ICON_OPTIONS.map((option) => <button key={option.key} type="button" className={row.icon === option.key ? "is-selected" : ""} aria-pressed={row.icon === option.key} aria-label={option.label} title={option.label} disabled={iconBusy} onClick={() => void chooseIcon(row, option.key)}><WorkspaceMatteIcon icon={option.key} /></button>)}</div>}</>}
     </div>)}</div>}
+    <div className="desktop-icon-popup__workspace-pins">
+		<div className="desktop-icon-popup__workspace-count"><span>桌面显示数量<small>固定优先，空位由当前与最近活跃工作区补齐</small></span><div role="group" aria-label="桌面工作区显示数量">{Array.from({ length: WORKSPACE_PIN_LIMIT + 1 }, (_, slots) => <button key={slots} type="button" aria-pressed={workspaceSlots === slots} disabled={slotsBusy} onClick={() => void chooseWorkspaceSlots(slots)}>{slots}</button>)}</div></div>
+		<div className="desktop-icon-popup__workspace-pins-head"><span><Pin aria-hidden="true" />优先固定</span><small>{pinnedRows.length}/{WORKSPACE_PIN_LIMIT}</small></div>
+      <div className="desktop-icon-popup__workspace-slots">{Array.from({ length: WORKSPACE_PIN_LIMIT }, (_, index) => {
+        const row = pinnedRows[index];
+        return <div key={row?.root ?? `empty-${index}`} className={`desktop-icon-popup__workspace-slot${row ? " is-filled" : ""}`} title={row?.root}>
+          {row ? <><WorkspaceGlyph icon={row.icon} size={13} /><span>{row.label}</span></> : <span>空位</span>}
+        </div>;
+      })}</div>
+      {pinsFull && <small className="desktop-icon-popup__workspace-pin-limit">固定位置已满，取消一个后可固定其他工作区</small>}
+    </div>
     <div className="desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick={onClose}>关闭</button><small>Escape 关闭</small></div>
   </div>;
 }
@@ -783,7 +843,7 @@ function RoomsManager({ onClose, onNewRoom, onOpenRoom }: { onClose: () => void;
         ? <div className="desktop-icon-popup__workspace-actions"><button disabled={renamingBusy} onClick={() => void commitRename(row)}>{renamingBusy ? "保存中…" : "确认"}</button><button type="button" className="subtle" disabled={renamingBusy} onClick={cancelRename}>取消</button><small className="desktop-icon-popup__workspace-hint">留空恢复自动标题</small></div>
         : armed === row.topicId
           ? <div className="desktop-icon-popup__workspace-actions desktop-icon-popup__workspace-actions--confirm"><span className="desktop-icon-popup__workspace-warn">移入回收站“{row.label}”？</span><button type="button" className="danger" disabled={deleting === row.topicId} onClick={() => void confirmTrash(row)}>{deleting === row.topicId ? "移入中…" : "确认移入"}</button><button type="button" className="subtle" disabled={deleting === row.topicId} onClick={() => setArmed(null)}>取消</button></div>
-          : <div className="desktop-icon-popup__workspace-actions"><button type="button" className="desktop-icon-popup__room-open" disabled={opening === row.topicId} onClick={() => void open(row)}>{opening === row.topicId ? "打开中…" : "打开"}</button><button type="button" className="subtle" disabled={renamingBusy} onClick={() => startRename(row)}><Pencil aria-hidden="true" />重命名</button><button type="button" className="subtle" disabled title="修改图标功能即将支持">修改图标<small className="desktop-icon-popup__workspace-soon">即将支持</small></button><button type="button" className="subtle desktop-icon-popup__workspace-delete" onClick={() => requestTrash(row)}><Trash2 aria-hidden="true" />移入回收站</button></div>}
+          : <div className="desktop-icon-popup__workspace-actions"><button type="button" className="desktop-icon-popup__room-open" disabled={opening === row.topicId} onClick={() => void open(row)}>{opening === row.topicId ? "打开中…" : "打开"}</button><button type="button" className="subtle" disabled={renamingBusy} onClick={() => startRename(row)}><Pencil aria-hidden="true" />重命名</button><button type="button" className="subtle" disabled title="修改图标">修改图标</button><button type="button" className="subtle desktop-icon-popup__workspace-delete" onClick={() => requestTrash(row)}><Trash2 aria-hidden="true" />移入回收站</button></div>}
     </div>)}</div>}
     <div className="desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick={onClose}>关闭</button><small>Escape 关闭</small></div>
   </div>;
@@ -866,8 +926,26 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		[quickJobs.jobs],
 	);
 	const mergedItems = useMemo(() => mergeQuickStartItems(snapshot.items, optimisticItems), [optimisticItems, snapshot.items]);
+	// Agent Icon ViewModel 按真实 task 条目 memoize：身份/任务/状态推导只算
+	// 一次（每 session 一个），重复渲染、live→retained、重启后同 seed 输出
+	// 完全一致。动画帧不在这里 —— 由 AgentIcon 内部共享时钟推导。
+	const agentIconViewModels = useMemo(() => {
+		const map = new Map<string, AgentIconViewModel>();
+		for (const item of mergedItems) {
+			if (isAgentIconItem(item)) map.set(item.id, buildAgentIconViewModel(item));
+		}
+		return map;
+	}, [mergedItems]);
 	const timers = useRef<IconTimers | null>(null);
 	if (timers.current === null) timers.current = new IconTimers(windowTimerHost);
+	// idleTrace runs the low-overhead "first hover after idle" performance
+	// diagnostics: one hover_start write immediately on a qualifying hover,
+	// then one bounded hover_recovery summary. Write failures are swallowed
+	// inside the tracer, so diagnostics can never break widget interaction.
+	const idleTrace = useRef<IdleHoverTracer | null>(null);
+	if (idleTrace.current === null) idleTrace.current = new IdleHoverTracer({
+		write: (record) => { void app.WriteDesktopIconDiagnostics(record).catch(() => {}); },
+	});
   const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean } | null>(null);
 	const actionRequests = useRef(new Map<string, string>());
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -1029,6 +1107,19 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		window.addEventListener("blur", close);
 		return () => { close(); window.removeEventListener("blur", close); };
 	}, [closeTransient]);
+	// Pointer-inactivity tracking for the idle-hover trace: window listeners
+	// only stamp a monotonic clock (no timers, no per-event work), and the idle
+	// check happens lazily at the next meaningful hover.
+	useEffect(() => {
+		const trace = idleTrace.current;
+		if (!trace) return;
+		const onActivity = () => trace.pointerActivity();
+		const events = ["pointerover", "pointermove", "pointerdown", "pointerup", "wheel", "keydown"] as const;
+		events.forEach((name) => window.addEventListener(name, onActivity, true));
+		return () => events.forEach((name) => window.removeEventListener(name, onActivity, true));
+	}, []);
+	// Closing the widget aborts any in-flight recovery with an explicit summary.
+	useEffect(() => () => { idleTrace.current?.dispose(); }, []);
 	// Outside-click detection covers the whole widget window, including the
 	// container/grid/control gaps that the old main-only handler missed.
 	// Protected surfaces (quick toolbar, anchor, menus, icons, popups, toast)
@@ -1064,6 +1155,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
   };
   const enter = (item: DesktopIconItem) => {
+		idleTrace.current?.hoverEnter("icon", { iconCount: mergedItems.length, revision: snapshot.revision });
     timers.current?.clearHover();
 		timers.current?.clearPreviewClose();
     if (!snapshot.hoverStatusDelayMs || activeID || menuID || drag.current || anchorMenuOpen || quickOpen) return;
@@ -1154,17 +1246,21 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px`, "--popup-max-height": `${placed.maxHeight}px` } as CSSProperties;
 	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision, viewport.height, viewport.width]);
 
-  const renderItem = (item: DesktopIconItem) => <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
+  const renderItem = (item: DesktopIconItem) => {
+		const agentVM = agentIconViewModels.get(item.id);
+		const agentIcon = Boolean(agentVM);
+		return <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
-      <span className="desktop-icon__art">{itemGlyph(item)}{(item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}${item.unreadCount > 0 ? " desktop-icon--pending" : ""}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+      <span className="desktop-icon__art">{itemGlyph(item, agentVM)}{!agentIcon && (item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
-      {statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
+      {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
     </button>
 		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
   </div>;
+	};
 
 	const zoomFrame = resolveWidgetZoomFrame(desktopZoom);
 	const zoomStyle: CSSProperties = {
@@ -1347,7 +1443,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 					<button type="button" className="desktop-icon-quick__btn" aria-label="打开主窗口" title="打开主窗口" disabled={exiting} onClick={() => void openMainWindow()}><ExternalLink aria-hidden="true" /></button>
 					<button type="button" className="desktop-icon-quick__btn" aria-label="设置" title="设置" disabled={exiting} onClick={() => void openSettingsWindow()}><SettingsIcon aria-hidden="true" /></button>
 				</div>}
-				<button type="button" className={`desktop-icon-anchor${anchorMenuOpen ? " desktop-icon-anchor--menu-open" : ""}${quickOpen ? " desktop-icon-anchor--quick-open" : ""}`} title="拖动窗口移动小组件，左键打开快捷操作" aria-label="移动小组件窗口" aria-expanded={quickOpen} aria-controls="desktop-icon-quick" aria-haspopup="menu" onClick={toggleQuick} onContextMenu={(event) => {
+				<button type="button" className={`desktop-icon-anchor${anchorMenuOpen ? " desktop-icon-anchor--menu-open" : ""}${quickOpen ? " desktop-icon-anchor--quick-open" : ""}`} title="拖动窗口移动小组件，左键打开快捷操作" aria-label="移动小组件窗口" aria-expanded={quickOpen} aria-controls="desktop-icon-quick" aria-haspopup="menu" onClick={toggleQuick} onPointerEnter={() => idleTrace.current?.hoverEnter("anchor", { iconCount: mergedItems.length, revision: snapshot.revision })} onContextMenu={(event) => {
 					event.preventDefault();
 					closeTransient();
 					setAnchorMenuOpen(true);
@@ -1360,7 +1456,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {!active && <p tabIndex={0} aria-label={`${popupItem.title}，${previewText(popupItem)}`} onFocus={() => timers.current?.clearPreviewClose()} onBlur={closePreviewSoon}>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
-      {active && active.sourceId === "workspace" && <WorkspaceManager onClose={() => setActiveID("")} />}
+      {active && active.sourceId === "workspace" && <WorkspaceManager onClose={() => setActiveID("")} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}

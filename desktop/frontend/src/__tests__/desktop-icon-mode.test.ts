@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom, widgetViewportSize } from "../components/widget/desktopIconLayout";
 import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type TimerHost } from "../components/widget/desktopIconTimers";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
-import { deleteConfirmNext, projectWorkspaceRows, renameTitle } from "../components/widget/workspaceManager";
+import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull } from "../components/widget/workspaceManager";
 import { roomRows } from "../components/widget/roomsManager";
+import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
+import type { DesktopIconDiagnosticsInput } from "../lib/bridge";
+import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
 import type { ProjectNode } from "../lib/types";
+
+const widgetDir = resolve(import.meta.dirname, "../components/widget");
+const matteIconSource = readFileSync(resolve(widgetDir, "WorkspaceMatteIcon.tsx"), "utf8");
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
 assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");
@@ -267,6 +274,11 @@ assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
 assert.doesNotMatch(css, /desktop-icon__shortcut/, "shortcut-arrow badge styles are removed");
+assert.match(component, /const noticeBody = item\.notifications\[0\]\?\.body\.trim\(\);[\s\S]{0,80}if \(noticeBody\) return noticeBody;/, "hover previews use the first notice body instead of replacing it with an unread-count sentence");
+assert.doesNotMatch(component, /if \(item\.unreadCount > 0\) return `\$\{item\.unreadCount\} 条待处理信息`/, "unread state never collapses hover content to a count-only bubble");
+assert.match(component, /item\.unreadCount > 0 \? " desktop-icon--pending" : ""/, "true unread items opt into the subtle pending visual without changing their data semantics");
+assert.match(css, /\.desktop-icon--pending \.desktop-icon__art::after[^}]*desktop-icon-pending-breathe/, "pending icons use a small breathing outline around the icon art");
+assert.match(css, /prefers-reduced-motion:[\s\S]*\.desktop-icon--pending \.desktop-icon__art::after \{ animation: none;/, "the pending visual respects reduced-motion preferences");
 assert.match(component, /desktop-icon__runtime--\$\{item\.status\}/, "thinking and running keep an always-visible compact status above the icon");
 assert.match(component, /runtimeStatus\?\.summary/, "the compact status renders live backend activity text");
 assert.match(component, /key=\{summary\}/, "streamed thinking text visibly refreshes when its real reasoning tail changes");
@@ -588,6 +600,8 @@ assert.match(component, /onKeyDown=\{quickRove\}/, "the quick toolbar implements
 assert.match(component, /const quickRove =[\s\S]*ArrowRight[\s\S]*ArrowLeft[\s\S]*Home[\s\S]*End[\s\S]*buttons\[next\]\.focus\(\)/, "roving moves focus with Left/Right/Home/End and lands on an enabled button");
 
 // --- completion notice: fixed OK / Detail / Dismiss with distinct colors ---
+assert.match(backend, /notice := desktopIconNoticeForKept\(kept, persisted\.CompletionSummaries\)[\s\S]{0,360}Notifications: \[\]DesktopIconNotice\{notice\}/, "opened/retained task icons keep using the completion notice card instead of the generic open-only popup");
+assert.match(backend, /item\.UnreadCount = desktopIconUnreadCount\(\*item\)[\s\S]+item\.Retained && notice\.Kind == "completed" && strings\.HasPrefix\(notice\.ID, "retained:"\)/, "the retained completion card is presentation-only and never creates an unread badge");
 assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}>OK<\/button>[\s\S]{0,200}desktop-icon-popup__detail"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("open"\)\}>Detail<\/button>[\s\S]{0,200}desktop-icon-popup__dismiss"[\s\S]{0,200}disabled=\{busy\} onClick=\{\(\) => run\("dismiss"\)\}>Dismiss<\/button>/, "completion notices always render OK / Detail / Dismiss in fixed order with their class contracts");
 assert.match(component, /desktop-icon-popup__ok"[\s\S]{0,160}onClick=\{onClose\}>OK/, "OK only closes the popup locally");
 assert.match(component, /desktop-icon-popup__ok"\s*onClick=\{onClose\}/, "OK is not gated by busy: the class is directly followed by the local-close handler");
@@ -649,7 +663,7 @@ assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay
 // --- workspace management: the fixed workspace icon between 新建 and Rooms ---
 // The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
 assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 委托 → 搜索 by declaration");
-assert.match(component, /item\.sourceId === "workspace"\) return <Folder \/>/, "the workspace fixed icon renders a clear folder glyph");
+assert.match(component, /item\.kind === "workspace"[\s\S]{0,180}isWorkspaceMatteIcon\(item\.icon\)[\s\S]{0,120}"folder"/, "workspace desktop icons render their assigned matte asset and fall back to the matte folder");
 assert.match(component, /item\.kind === "fixed" && item\.sourceId === "workspace"[\s\S]{0,200}setActiveID\(item\.id\)/, "single click on the workspace icon opens the management dialog");
 assert.doesNotMatch(component, /item\.sourceId === "workspace"[\s\S]{0,80}run\(item, "open"\)/, "the workspace icon never runs the generic fixed action");
 assert.match(component, /active\.sourceId === "workspace" && <WorkspaceManager/, "the workspace popup renders the management dialog");
@@ -657,40 +671,57 @@ assert.match(component, /active\.sourceId !== "workspace"/, "the generic fixed p
 assert.match(component, /const reload = useCallback\(async \(\) => \{[\s\S]+app\.ListProjectTree\(\)[\s\S]+projectWorkspaceRows\(tree\)/, "the manager loads its authoritative workspace list from ListProjectTree");
 assert.match(component, /app\.PickWorkspace\(\)[\s\S]+if \(root\) await reload\(\)/, "a successful workspace pick reloads and keeps the dialog open; a cancelled picker is a no-op");
 assert.match(component, /app\.SetProjectPinned\(row\.root, !row\.pinned\)[\s\S]+await reload\(\)/, "Pin toggles through SetProjectPinned then reloads the authoritative list");
+assert.match(component, /Promise\.all\(\[app\.ListProjectTree\(\), app\.GetDesktopWorkspaceSlots\(\)\]\)/, "workspace rows and the persisted desktop count load together");
+assert.match(component, /await app\.SetDesktopWorkspaceSlots\(slots\)[\s\S]{0,120}setWorkspaceSlots\(slots\)[\s\S]{0,120}await onChanged\(\)/, "changing the 0-4 desktop count persists before refreshing the live snapshot");
+assert.match(component, /length: WORKSPACE_PIN_LIMIT \+ 1[\s\S]{0,300}aria-pressed=\{workspaceSlots === slots\}/, "the workspace manager exposes every desktop count from zero through four");
+assert.match(component, /固定优先，空位由当前与最近活跃工作区补齐/, "the count control explains the retained priority and auto-fill policy");
 assert.match(component, /app\.RenameProject\(row\.root, renameTitle\(renameDraft\)\)/, "rename commits the raw input through the shared empty-title contract");
 assert.match(component, /留空恢复目录名/, "the rename editor explains the empty-title restore semantics");
 assert.match(component, /deleteConfirmNext\(armed, row\.root\)[\s\S]+next\.confirmed\) void confirmDelete\(row\)/, "delete uses the two-step confirm state machine before calling the backend");
 assert.match(component, /app\.RemoveWorkspace\(row\.root\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "delete calls the backend only on the confirmed step, then clears the arm and reloads");
 assert.doesNotMatch(component, /RemoveWorkspace[\s\S]{0,60}setRows/, "delete never optimistically removes the row before the backend confirms");
 assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "delete failure keeps the row and the armed retry entry");
-assert.match(component, />修改图标<small className="desktop-icon-popup__workspace-soon">即将支持<\/small>/, "the icon button is an explicit 即将支持 placeholder");
-assert.doesNotMatch(component, /app\.SetProjectIcon/, "the placeholder must never call SetProjectIcon or write icon data");
-assert.match(component, /function WorkspaceGlyph[\s\S]+case "star": return <Star[\s\S]+case "bookmark": return <Bookmark[\s\S]+case "code": return <Code2[\s\S]+case "terminal": return <SquareTerminal[\s\S]+case "bolt": return <Zap[\s\S]+default: return <Folder/, "the workspace row maps project icons through the same key→Lucide glyphs as ProjectTree, with a folder fallback");
+assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
+assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
+assert.match(component, /<WorkspaceManager onClose=\{\(\) => setActiveID\(""\)\} onChanged=\{refresh\}/, "the workspace manager refreshes the live desktop snapshot through its parent-owned refresh entry");
+assert.match(component, /Keep the palette open[\s\S]{0,220}setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "an icon write failure stays visible and retryable without closing the palette");
+assert.match(component, /function WorkspaceGlyph[\s\S]+isWorkspaceMatteIcon\(icon\)[\s\S]+case "star": return <Star[\s\S]+default: return <Folder/, "workspace rows render matte assets while preserving legacy Lucide keys and folder fallback");
 assert.match(component, /<WorkspaceGlyph icon=\{row\.icon\} \/>/, "the workspace row renders the icon through the dedicated glyph component");
 assert.doesNotMatch(component, /row\.icon \? row\.icon/, "the workspace row never renders the raw icon string");
 assert.match(component, /onKeyDown=\{\(event\) => \{[\s\S]{0,80}if \(event\.key === "Enter" && !event\.nativeEvent\.isComposing\)[\s\S]+void commitRename\(row\)[\s\S]+if \(event\.key === "Escape"\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); cancelRename\(\); \}/, "rename confirms with Enter and cancels with Escape without closing the dialog");
 assert.match(component, /if \(renamingBusy\) return;[\s\S]+setRenamingBusy\(true\)/, "rename guards against duplicate submission");
 assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*max-height:\s*var\(--popup-max-height, 420px\)/, "the workspace popup uses the measured space above its anchor");
+assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*width:\s*min\(420px, calc\(100vw - 20px\)\)/, "the workspace popup is wider while still fitting narrow viewports");
 assert.match(css, /\.desktop-icon-popup__workspace-list[^}]*max-height:\s*calc\(5 \* 72px\)[^}]*overflow-y:\s*auto/, "the workspace list scrolls with a bounded height");
 assert.match(css, /\.desktop-icon-popup__workspace-name[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/, "long workspace names truncate instead of overflowing a narrow window");
 assert.match(css, /\.desktop-icon-popup__workspace-actions[^}]*flex-wrap:\s*wrap/, "row actions wrap on narrow windows");
 assert.match(css, /\.desktop-icon-popup__workspace-pin\[aria-pressed="true"\]/, "the pinned state has a distinct pressed style");
+assert.match(css, /\.desktop-icon-popup__workspace-count button\[aria-pressed="true"\]/, "the selected desktop workspace count has a distinct pressed style");
+assert.match(component, /Array\.from\(\{ length: WORKSPACE_PIN_LIMIT \}/, "the workspace footer always renders the fixed slot count");
+assert.match(component, /!row\.pinned && pinsFull/, "a full slot set disables only new pins so existing pins can still be removed");
+assert.match(css, /\.desktop-icon-popup__workspace-slots[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/, "the pin summary renders four equal desktop slots");
+assert.match(css, /\.desktop-icon-popup__workspace-icons[^}]*grid-template-columns:\s*repeat\(8, minmax\(0, 1fr\)\)/, "the matte workspace picker uses a compact eight-column grid");
+assert.match(css, /\.desktop-icon__matte[^}]*object-fit:\s*contain/, "matte bitmap icons preserve their aspect ratio in the desktop icon frame");
 
 // --- workspace manager pure logic: authoritative rows + two-step delete ---
-// projectIcon is a real stable key (star/bookmark/code/terminal/bolt); an
-// unknown key ("rocket") and a missing key both normalize to the folder "".
+// Legacy and matte project icons share one stable key contract; an unknown key
+// ("rocket") and a missing key both normalize to the folder fallback "".
 const tree: ProjectNode[] = [
   { key: "global_folder", kind: "global_folder", label: "Global", root: "~" },
   { key: "project_a", kind: "project", label: "Alpha", root: "~/projects/alpha", pinned: true, projectIcon: "star" },
   { key: "project_b", kind: "project", label: "Beta", root: "~/projects/beta", projectIcon: "rocket" },
-  { key: "project_c", kind: "project", label: "", root: "~/projects/gamma" },
+  { key: "project_c", kind: "project", label: "", root: "~/projects/gamma", projectIcon: "python" },
   { key: "orphan", kind: "topic", label: "topic", root: "~/projects/alpha", topicId: "t1" },
 ];
 assert.deepEqual(projectWorkspaceRows(tree), [
   { root: "~/projects/alpha", label: "Alpha", pinned: true, icon: "star" },
   { root: "~/projects/beta", label: "Beta", pinned: false, icon: "" },
-  { root: "~/projects/gamma", label: "~/projects/gamma", pinned: false, icon: "" },
+  { root: "~/projects/gamma", label: "~/projects/gamma", pinned: false, icon: "python" },
 ], "rows project only authoritative project nodes, keep the backend tree order, and normalize real/unknown icon keys to the ProjectTree contract");
+assert.equal(WORKSPACE_MATTE_ICON_OPTIONS.length, 34, "the typed catalog exposes every PNG in workspace-icons-matte-v1, including generated new and delegate assets");
+assert.equal(isWorkspaceMatteIcon("typescript"), true, "matte icon lookup accepts a catalog key");
+assert.equal(projectIconKey(" PYTHON "), "python", "matte project icons normalize case and whitespace");
+assert.equal(projectIconKey("rocket"), "", "unknown project icons still degrade safely to the legacy folder fallback");
 assert.deepEqual(projectWorkspaceRows([{ key: "global_folder", kind: "global_folder", label: "Global" }]), [], "a tree without project nodes yields an empty list");
 assert.deepEqual(deleteConfirmNext(null, "a"), { armed: "a", confirmed: false }, "the first delete click arms the row");
 assert.deepEqual(deleteConfirmNext("a", "a"), { armed: null, confirmed: true }, "the second click on the same row confirms");
@@ -698,6 +729,10 @@ assert.deepEqual(deleteConfirmNext("a", "b"), { armed: "b", confirmed: false }, 
 assert.deepEqual(deleteConfirmNext(null, ""), { armed: "", confirmed: false }, "rows always have a root for the delete key");
 assert.equal(renameTitle("  新名字  "), "新名字", "rename trims surrounding whitespace");
 assert.equal(renameTitle("   "), "", "an empty rename stays empty so the backend restores the folder name");
+assert.equal(WORKSPACE_PIN_LIMIT, 4, "the frontend pin capacity matches the four desktop slots");
+assert.deepEqual(pinnedWorkspaceRows(projectWorkspaceRows(tree)).map((row) => row.root), ["~/projects/alpha"], "pin slots contain only authoritative pinned rows");
+assert.equal(workspacePinsFull(projectWorkspaceRows(tree)), false, "fewer than four pinned rows leave pin actions enabled");
+assert.equal(workspacePinsFull(Array.from({ length: 4 }, (_, index) => ({ root: String(index), label: String(index), pinned: true, icon: "" }))), true, "four pinned rows fill the desktop slots");
 
 // --- rooms manager pure projection: authoritative collaboration topics only ---
 const roomsTree: ProjectNode[] = [
@@ -733,7 +768,7 @@ assert.deepEqual(roomRows([
 assert.deepEqual(roomRows([]), [], "an empty tree yields an empty Rooms list");
 
 // --- rooms fixed icon: glyph, dialog open, and the generic fallback exclusion ---
-assert.match(component, /item\.sourceId === "rooms"\) return <MessagesSquare \/>/, "the rooms fixed icon renders its own distinct glyph");
+assert.match(component, /rooms: "discussion"/, "the rooms fixed icon renders its own distinct matte discussion asset");
 assert.match(component, /item\.kind === "fixed" && item\.sourceId === "rooms"[\s\S]{0,220}setActiveID\(item\.id\)/, "single click on the rooms icon opens the management dialog");
 assert.doesNotMatch(component, /item\.sourceId === "rooms"[\s\S]{0,80}run\(item, "open"\)/, "the rooms icon never runs the generic fixed action");
 assert.match(component, /active\.sourceId === "rooms" && <RoomsManager/, "the rooms popup renders the management dialog");
@@ -750,7 +785,7 @@ assert.match(component, /留空恢复自动标题/, "the room rename editor expl
 assert.match(component, /deleteConfirmNext\(armed, row\.topicId\)[\s\S]+next\.confirmed\) void confirmTrash\(row\)/, "trash uses the two-step confirm state machine before calling the backend");
 assert.match(component, /app\.TrashTopic\(row\.topicId\)[\s\S]+setArmed\(null\)[\s\S]+await reload\(\)/, "trash calls the backend only on the confirmed step, then clears the arm and reloads");
 assert.doesNotMatch(component, /TrashTopic[\s\S]{0,60}setRows/, "trash never optimistically removes the row before the backend confirms");
-assert.match(component, />修改图标<small className="desktop-icon-popup__workspace-soon">即将支持<\/small>/, "the room icon button is an explicit 即将支持 placeholder");
+assert.doesNotMatch(component, /修改图标<small[^>]*>即将支持<\/small>/, "room rows also omit the visible 即将支持 suffix");
 assert.doesNotMatch(component, /app\.SetTopicIcon|SetRoomIcon/, "the room placeholder must never write icon data");
 assert.match(component, /desktop-icon-popup__workspaces desktop-icon-popup__rooms/, "RoomsManager reuses the WorkspaceManager layout and marks its own popup root");
 assert.match(component, /onClick=\{onNewRoom\}>新增<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
@@ -786,5 +821,329 @@ assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-ic
 assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
 assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-quick, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu and quick toolbar");
 assert.match(css, /\.desktop-icon-anchor\s*\{[^}]*--wails-draggable:\s*drag;/, "the anchor itself stays a native window drag handle for left-button dragging");
+
+// --- idle-hover diagnostics: pointer inactivity without timers, one start
+// write + one bounded recovery summary per qualifying trace, no content leak ---
+const traceSource = readFileSync(resolve(import.meta.dirname, "../components/widget/idleHoverTrace.ts"), "utf8");
+const bridgeSource = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
+assert.doesNotMatch(traceSource, /setInterval/, "idle tracking and the recovery window never use a periodic timer");
+assert.match(traceSource, /IDLE_HOVER_THRESHOLD_MS\s*=\s*5000/, "the qualifying idle threshold is five seconds");
+assert.match(traceSource, /IDLE_HOVER_RECOVERY_WINDOW_MS\s*=\s*3000/, "the recovery window has a hard three-second timeout");
+assert.match(traceSource, /IDLE_HOVER_HEALTHY_FRAMES\s*=\s*10/, "recovery finishes after a short healthy-frame streak");
+assert.match(traceSource, /\.disconnect\(\)/, "every recovery sensor disconnects when the window closes");
+assert.doesNotMatch(traceSource, /\btitle\b|\bprompt\b|\.body\b/, "diagnostics records never carry icon titles, prompts or message bodies");
+assert.match(traceSource, /finishRecovery\(session, "aborted"\)[\s\S]*finishRecovery\(session, "timeout"\)[\s\S]*finishRecovery\(session, "healthy"\)/, "the recovery window has exactly the three bounded end states");
+assert.match(component, /new IdleHoverTracer\(\{/, "the icon widget instantiates the idle-hover diagnostics tracer");
+assert.match(component, /app\.WriteDesktopIconDiagnostics\(record\)/, "trace records persist through the typed diagnostics binding");
+assert.match(component, /hoverEnter\("icon", \{ iconCount: mergedItems\.length, revision: snapshot\.revision \}\)/, "icon hovers open a trace with the rendered icon count and state revision");
+assert.match(component, /onPointerEnter=\{\(\) => idleTrace\.current\?\.hoverEnter\("anchor"/, "hovering the window-drag anchor also opens a trace (anchor kind)");
+assert.match(component, /"pointerover", "pointermove", "pointerdown", "pointerup", "wheel", "keydown"/, "pointer inactivity is stamped by window listeners only, with no idle timer");
+assert.match(component, /idleTrace\.current\?\.dispose\(\); \}/, "unmount disposes the tracer so an in-flight recovery closes with an aborted summary");
+assert.match(bridgeSource, /WriteDesktopIconDiagnostics\(input: DesktopIconDiagnosticsInput\): Promise<void>;/, "the frontend bridge exposes the typed diagnostics write");
+assert.match(bridgeSource, /DesktopIconDiagnosticsPath\(\): Promise<string>;/, "the frontend bridge exposes the diagnostics log path getter");
+
+// --- idle-hover tracer unit tests: deterministic fake clock, rAF queue and
+// sensors, mirroring the exact record schema the Go side validates ---
+class FakeIdleTraceEnv {
+  now = 0;
+  writes: DesktopIconDiagnosticsInput[] = [];
+  private rafQueue = new Map<number, (ts: number) => void>();
+  private timers = new Map<number, { fn: () => void; at: number }>();
+  private nextTimer = 1;
+  private nextRaf = 1;
+  private sensors: IdleHoverSensors = {
+    longtask: () => () => {},
+    layoutShift: () => () => {},
+    mutation: () => () => {},
+    visibilityChange: () => () => {},
+  };
+
+  tracer(overrides?: { sensors?: IdleHoverSensors; writeError?: Error }): IdleHoverTracer {
+    const write = (record: DesktopIconDiagnosticsInput) => {
+      if (overrides?.writeError) throw overrides.writeError;
+      this.writes.push(record);
+    };
+    return new IdleHoverTracer({
+      write,
+      mono: () => this.now,
+      wall: () => 1700000000000 + this.now,
+      raf: (cb) => { const id = this.nextRaf++; this.rafQueue.set(id, cb); return id; },
+      caf: (id) => { this.rafQueue.delete(id); },
+      setTimeout: (fn, ms) => { const id = this.nextTimer++; this.timers.set(id, { fn, at: this.now + ms }); return id; },
+      clearTimeout: (id) => { this.timers.delete(id); },
+      visibility: () => "visible",
+      focus: () => true,
+      viewport: () => ({ w: 1080, h: 720 }),
+      dpr: () => 1.5,
+      sensors: { ...this.sensors, ...overrides?.sensors },
+    });
+  }
+
+  pointer(tracer: IdleHoverTracer, at: number): void {
+    this.now = at;
+    tracer.pointerActivity();
+  }
+
+  hover(tracer: IdleHoverTracer, at: number, kind: "icon" | "anchor" = "icon"): void {
+    this.now = at;
+    tracer.hoverEnter(kind, { iconCount: 7, revision: "r1" });
+  }
+
+  frame(at: number): void {
+    this.now = at;
+    const first = [...this.rafQueue.entries()].sort((a, b) => a[0] - b[0])[0];
+    assert.ok(first, "expected a scheduled rAF frame");
+    this.rafQueue.delete(first[0]);
+    first[1](at);
+  }
+
+  fireTimeout(): void {
+    const earliest = [...this.timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    assert.ok(earliest, "expected a scheduled hard-timeout timer");
+    this.now = earliest[1].at;
+    this.timers.delete(earliest[0]);
+    earliest[1].fn();
+  }
+
+  hasPendingFrame(): boolean {
+    return this.rafQueue.size > 0;
+  }
+
+  startTrace(): { env: FakeIdleTraceEnv; tracer: IdleHoverTracer } {
+    const tracer = this.tracer();
+    this.pointer(tracer, 1000);
+    this.pointer(tracer, 11000);
+    this.hover(tracer, 11300, "icon");
+    return { env: this, tracer };
+  }
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer();
+  env.pointer(tracer, 1000);
+  env.hover(tracer, 1000 + IDLE_HOVER_THRESHOLD_MS - 1, "icon");
+  assert.equal(env.writes.length, 0, "a hover just below the idle threshold writes nothing");
+  assert.equal(tracer.active, false, "no trace is active after a sub-threshold hover");
+  env.hover(tracer, 1000 + IDLE_HOVER_THRESHOLD_MS, "icon");
+  assert.equal(env.writes.length, 1, "a hover exactly at the idle threshold qualifies");
+  assert.equal(tracer.active, true, "the qualifying hover opens an active recovery");
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer();
+  env.pointer(tracer, 1000); // activity at 1s
+  env.pointer(tracer, 11000); // 10s pause: this activity opens a burst
+  env.hover(tracer, 11300, "icon");
+  assert.equal(env.writes.length, 1, "a hover ending a >=5s idle period opens exactly one start record");
+  const start = env.writes[0];
+  assert.equal(start.kind, "hover_start");
+  assert.equal(start.targetKind, "icon");
+  assert.equal(start.idleMs, 10000, "the start record carries the true idle measured at burst start, not the approach movement");
+  assert.equal(start.t0, 11300);
+  assert.equal(start.ts, 1700000000000 + 11300);
+  assert.equal(start.iconCount, 7);
+  assert.equal(start.revision, "r1");
+  assert.equal(start.visibility, "visible");
+  assert.equal(start.focus, true);
+  assert.equal(start.viewportW, 1080);
+  assert.equal(start.viewportH, 720);
+  assert.equal(start.dpr, 1.5);
+  assert.equal(tracer.active, true, "a qualifying hover opens an active recovery");
+  // Repeated hovers / pointer movement during the same recovery must never
+  // open a second trace.
+  env.hover(tracer, 11350, "icon");
+  env.pointer(tracer, 11400);
+  env.hover(tracer, 11450, "anchor");
+  assert.equal(env.writes.length, 1, "repeated hovers and movement inside one recovery never start duplicate traces");
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer();
+  env.pointer(tracer, 1000.25);
+  env.pointer(tracer, 11000.75);
+  env.hover(tracer, 11300.5, "icon");
+  assert.equal(env.writes[0].idleMs, 10001, "fractional browser idle time is rounded for the Go int64 binding");
+  assert.equal(env.writes[0].t0, 11301, "fractional performance.now is rounded for the Go int64 binding");
+  env.frame(11500.75);
+  env.fireTimeout();
+  assert.ok(Number.isInteger(env.writes[1].durationMs), "recovery duration is an integer at the Wails boundary");
+  assert.ok(Number.isInteger(env.writes[1].worstFrameGapMs), "frame gaps are integers at the Wails boundary");
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer();
+  env.pointer(tracer, 11000); // burst opens with the full 11s idle
+  // The hover lands beyond the burst window: the inherited burst idle expires
+  // and the measurement falls back to the gap since the last pointer event.
+  env.hover(tracer, 11000 + IDLE_HOVER_BURST_WINDOW_MS + 500, "icon");
+  assert.equal(env.writes.length, 1, "a hover past the burst window still qualifies on its own idle");
+  assert.equal(env.writes[0].idleMs, IDLE_HOVER_BURST_WINDOW_MS + 500, "beyond the burst window idle is measured from the last event");
+}
+
+{
+  const { env, tracer } = new FakeIdleTraceEnv().startTrace();
+  env.frame(11500); // first frame gap 200ms -> unhealthy
+  for (let i = 1; i <= IDLE_HOVER_HEALTHY_FRAMES; i++) env.frame(11500 + i * (IDLE_HOVER_HEALTHY_GAP_MS - 24)); // 16ms gaps
+  assert.equal(env.writes.length, 2, "a healthy frame streak closes the trace with one summary");
+  assert.equal(env.hasPendingFrame(), false, "no rAF frame is left scheduled after a healthy finish");
+  const summary = env.writes[1];
+  assert.equal(summary.kind, "hover_recovery");
+  assert.equal(summary.traceId, env.writes[0].traceId, "the summary references the same trace");
+  assert.equal(summary.endedBy, "healthy");
+  assert.equal(summary.frames, 1 + IDLE_HOVER_HEALTHY_FRAMES, "the summary counts every sampled frame including the first");
+  assert.equal(summary.worstFrameGapMs, 200, "the worst frame gap is the first unhealthy gap");
+  const expectedAvg = Math.round((200 + (IDLE_HOVER_HEALTHY_FRAMES) * (IDLE_HOVER_HEALTHY_GAP_MS - 24)) / (1 + IDLE_HOVER_HEALTHY_FRAMES));
+  assert.equal(summary.avgFrameGapMs, expectedAvg, "the average frame gap covers all sampled frames");
+  assert.equal(tracer.active, false, "the tracer is free for the next qualifying trace after the summary");
+  // A new trace still needs a fresh >=5s idle period; activity resets it.
+  env.hover(tracer, 15000, "icon");
+  assert.equal(env.writes.length, 2, "a hover right after recovery has no fresh idle and writes nothing");
+  env.pointer(tracer, 16000);
+  env.hover(tracer, 23000, "anchor");
+  assert.equal(env.writes.length, 3, "after another >=5s pause a new trace opens");
+  assert.notEqual(env.writes[2].traceId, env.writes[0].traceId, "each trace has its own unique id");
+}
+
+{
+  const { env } = new FakeIdleTraceEnv().startTrace();
+  env.frame(11500);
+  env.fireTimeout(); // hard timeout: rAF stops (e.g. hidden document)
+  assert.equal(env.writes.length, 2, "the hard timeout closes the window and writes one summary");
+  const summary = env.writes[1];
+  assert.equal(summary.endedBy, "timeout");
+  assert.equal(summary.frames, 1);
+  assert.equal(summary.durationMs, IDLE_HOVER_RECOVERY_WINDOW_MS, "duration is the bounded window length");
+  assert.equal(env.hasPendingFrame(), false, "no frame remains scheduled after the timeout path");
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer({
+    sensors: {
+      longtask: (observe) => {
+        observe(100);
+        observe(50);
+        return () => {};
+      },
+      layoutShift: (observe) => {
+        observe({ value: 0.2, hadRecentInput: false });
+        observe({ value: 0.1, hadRecentInput: true });
+        return () => {};
+      },
+      mutation: (observe) => {
+        observe(5);
+        return () => {};
+      },
+      visibilityChange: (observe) => {
+        observe();
+        return () => {};
+      },
+    },
+  });
+  env.hover(tracer, 1000, "icon");
+  env.pointer(tracer, 11000);
+  env.hover(tracer, 11300, "icon");
+  env.frame(11500);
+  env.frame(11516);
+  env.frame(11532);
+  env.frame(11548);
+  env.frame(11564);
+  env.frame(11580);
+  env.frame(11596);
+  env.frame(11612);
+  env.frame(11628);
+  env.frame(11644);
+  env.frame(11660);
+  assert.equal(env.writes.length, 2, "sensor aggregates land in the single recovery summary");
+  const summary = env.writes[1];
+  assert.equal(summary.longTasks, 2);
+  assert.equal(summary.longTasksMaxMs, 100);
+  assert.equal(summary.longTasksTotalMs, 150);
+  assert.equal(summary.layoutShifts, 1, "recent-input layout shifts are excluded as unsafe");
+  assert.equal(summary.domMutations, 5);
+  assert.equal(summary.visibilityChanges, 1);
+  assert.equal(summary.endedBy, "healthy");
+}
+
+{
+  const env = new FakeIdleTraceEnv();
+  const tracer = env.tracer({ writeError: new Error("disk full") });
+  env.hover(tracer, 1000, "icon");
+  env.pointer(tracer, 11000);
+  env.hover(tracer, 11300, "icon");
+  env.frame(11500);
+  env.frame(11516);
+  env.frame(11532);
+  env.frame(11548);
+  env.frame(11564);
+  env.frame(11580);
+  env.frame(11596);
+  env.frame(11612);
+  env.frame(11628);
+  env.frame(11644);
+  env.frame(11660);
+  assert.equal(env.writes.length, 0, "a failing diagnostics write never throws into the widget and is dropped");
+  assert.equal(tracer.active, false, "a failed write still lets the recovery finish");
+}
+
+{
+  const { env, tracer } = new FakeIdleTraceEnv().startTrace();
+  env.frame(11500);
+  tracer.dispose();
+  assert.equal(env.writes.length, 2, "dispose closes an in-flight recovery with an aborted summary");
+  assert.equal(env.writes[1].endedBy, "aborted");
+  assert.equal(env.hasPendingFrame(), false, "dispose cancels the scheduled frame");
+  // React StrictMode double-mounts effects in dev (mount -> cleanup -> mount):
+  // the cleanup disposes the tracer, so the SAME instance must stay usable for
+  // a later qualifying trace instead of being permanently disabled.
+  env.pointer(tracer, 22000);
+  env.hover(tracer, 28500, "icon");
+  assert.equal(env.writes.length, 3, "a disposed tracer stays usable for a later qualifying trace (StrictMode remount)");
+  assert.equal(env.writes[2].idleMs, 6500, "the second trace measures the fresh idle period");
+}
+
+// --- Agent Icon 显示路径契约（真实 task ↔ QuickStart ↔ 旧动效抑制） ---
+
+import { isAgentIconItem } from "../lib/agentIcon/viewModel";
+
+const testDir = dirname(fileURLToPath(import.meta.url));
+
+assert.equal(
+  isAgentIconItem({ id: "task:tab-1", kind: "task", sourceId: "tab-1", title: "t", status: "idle", unreadCount: 0, notifications: [], position: { row: "bottom", zone: "running", order: 0 }, revision: "r" }),
+  true,
+  "real backend task items render the Agent Icon",
+);
+assert.equal(
+  isAgentIconItem({ id: "opt:job-1", kind: "task", sourceId: "job-1", title: "t", status: "idle", unreadCount: 0, notifications: [], position: { row: "bottom", zone: "running", order: 0 }, revision: "r" }),
+  false,
+  "QuickStart optimistic items keep the legacy Bot icon until a real session forms",
+);
+
+// 静态源码契约（本仓库既有做法，如 workbench-layout.test.ts）：真实 task 的
+// 图标框内只有 Agent Icon（frame/headwear/eyes/badge/tool），旧 Bot、状态
+// 动效、状态 glyph 在 Agent 条目上被抑制 —— 状态只由 LED 眼睛表达。
+{
+  const mode = readFileSync(resolve(testDir, "../components/widget/DesktopIconMode.tsx"), "utf8");
+  assert.match(mode, /if \(item\.kind === "task"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Bot \/>;/, "task branch renders AgentIcon for real tasks, Bot for QuickStart");
+  assert.match(mode, /!agentIcon && \(item\.status === "running" \|\| item\.status === "thinking"\)/, "old running/thinking motion corners are suppressed for Agent Icon items");
+  assert.match(mode, /!agentIcon && statusGlyph\(item\)/, "old status glyph overlay is suppressed for Agent Icon items");
+  assert.match(mode, /const agentIconViewModels = useMemo\([\s\S]{0,400}isAgentIconItem\(item\)[\s\S]{0,120}buildAgentIconViewModel\(item\)/, "viewModels are memoized once per real task item");
+  // 点击/打开行为零改动：pointerDown/pointerUp/doubleClick/run(open) 原样保留。
+  assert.match(mode, /onPointerDown=\{\(event\) => pointerDown\(event, item\)\}/, "pointerDown handler unchanged");
+  assert.match(mode, /onPointerUp=\{\(event\) => pointerUp\(event, item\)\}/, "pointerUp handler unchanged");
+  assert.match(mode, /onDoubleClick=\{\(\) => doubleClick\(item\)\}/, "doubleClick handler unchanged");
+  assert.match(mode, /void run\(item, "open"\)/, "run(item, \"open\") path unchanged");
+  assert.match(mode, /item\.kind === "fixed" \? openItem\(item\) : void run\(item, "open"\)/, "menu open path unchanged");
+}
+
+// bridge 快照类型携带 Agent Icon 展示字段（sessionId/workspaceIcon/sessionRef）。
+{
+  const bridge = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
+  assert.match(bridge, /sessionId\?: string;\s*\n\s*workspaceIcon\?: string;[\s\S]{0,120}sessionRef\?: DesktopIconTaskRef;/, "DesktopIconItem exposes the Agent Icon display fields");
+}
 
 console.log("desktop icon mode tests passed");

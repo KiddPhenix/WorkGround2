@@ -139,7 +139,7 @@ func TestCleanCompletionSummaryBoundedAndEmpty(t *testing.T) {
 	if len([]rune(got)) > completionSummaryMaxRunes {
 		t.Fatalf("cleaned summary exceeds the popup bound: %d", len([]rune(got)))
 	}
-	if !strings.Contains(completionSummarySystemPrompt, "最多 260 字") {
+	if !strings.Contains(completionSummarySystemPrompt, "约 100 字") || !strings.Contains(completionSummarySystemPrompt, "最多 100 字") {
 		t.Fatal("summary prompt must state the same popup maximum")
 	}
 	if _, err := cleanCompletionSummary("   "); err == nil {
@@ -147,6 +147,18 @@ func TestCleanCompletionSummaryBoundedAndEmpty(t *testing.T) {
 	}
 	if _, err := cleanCompletionSummary("```\n代码\n```\n`#`"); err == nil {
 		t.Fatal("markdown-only input must be an explicit error")
+	}
+}
+
+func TestCompletionSummaryFallbackUsesHundredRuneThreshold(t *testing.T) {
+	short := strings.Repeat("字", completionSummaryMaxRunes-2) + "\n结"
+	if got, needsSummary := completionSummaryFallback(short); got != short || needsSummary {
+		t.Fatalf("short reply = %q/%v, want verbatim without generation", got, needsSummary)
+	}
+	long := strings.Repeat("字", completionSummaryMaxRunes+1)
+	got, needsSummary := completionSummaryFallback(long)
+	if !needsSummary || len([]rune(got)) != completionSummaryMaxRunes || !strings.HasSuffix(got, "…") {
+		t.Fatalf("long reply fallback = %q/%v (%d runes)", got, needsSummary, len([]rune(got)))
 	}
 }
 
@@ -165,6 +177,10 @@ func TestDesktopIconCompletionSummaryForFallback(t *testing.T) {
 	}
 	if body, status := desktopIconCompletionSummaryFor(nil, key, mechanical); body != mechanical || status != "" {
 		t.Fatalf("missing projection = %q/%q", body, status)
+	}
+	summaries[key] = desktopIconCompletionSummary{Status: "ready", Text: strings.Repeat("旧摘要", completionSummaryMaxRunes)}
+	if body, status := desktopIconCompletionSummaryFor(summaries, key, mechanical); len([]rune(body)) != completionSummaryMaxRunes || status != "ready" {
+		t.Fatalf("legacy cached summary was not bounded = %q/%q", body, status)
 	}
 }
 
@@ -188,12 +204,16 @@ func TestSummaryGenerationDue(t *testing.T) {
 
 func TestCompletionSummaryRequestsCollectsAndSkips(t *testing.T) {
 	app := newSummaryTestApp(t, nil, fakeCompletionSummaryGenerator{})
+	longA := strings.Repeat("a", completionSummaryMaxRunes+1)
+	longB := strings.Repeat("b", completionSummaryMaxRunes+1)
+	longFailure := strings.Repeat("boom", completionSummaryMaxRunes)
 	sources := []widgetSource{
-		{meta: TabMeta{ID: "a", NeedsAttention: true, NeedsAttentionAt: 10}, requestText: "ask-a", resultText: "done-a"},
-		{meta: TabMeta{ID: "b", NeedsAttention: true, NeedsAttentionAt: 20}, requestText: "ask-b", resultText: "done-b"},
+		{meta: TabMeta{ID: "a", NeedsAttention: true, NeedsAttentionAt: 10}, requestText: "ask-a", resultText: longA},
+		{meta: TabMeta{ID: "b", NeedsAttention: true, NeedsAttentionAt: 20}, requestText: "ask-b", resultText: longB},
 		{meta: TabMeta{ID: "c"}, resultText: "no-attention"},
 		{meta: TabMeta{ID: "d", NeedsAttention: true, NeedsAttentionAt: 30}},
-		{meta: TabMeta{ID: "e", StartupErr: "boom"}, requestText: "ask-e"},
+		{meta: TabMeta{ID: "e", StartupErr: longFailure}, requestText: "ask-e"},
+		{meta: TabMeta{ID: "short", NeedsAttention: true, NeedsAttentionAt: 40}, resultText: "直接显示"},
 	}
 	app.iconWidgetState.CompletionSummaries[desktopIconCompletionKey("b", "completed", 20)] = desktopIconCompletionSummary{Status: "ready", Text: "x"}
 	app.completionSummaryInFlight[desktopIconCompletionKey("a", "completed", 10)] = &completionSummaryCall{done: make(chan struct{})}
@@ -203,7 +223,7 @@ func TestCompletionSummaryRequestsCollectsAndSkips(t *testing.T) {
 		t.Fatalf("requests = %+v, want only the failed task", requests)
 	}
 	req := requests[0]
-	if req.TaskID != "e" || req.Kind != "failed" || req.Revision != desktopIconFailureFingerprint("boom") || req.Key != desktopIconFailureKey("e", "boom") || req.Request != "ask-e" || req.Result != "boom" {
+	if req.TaskID != "e" || req.Kind != "failed" || req.Revision != desktopIconFailureFingerprint(longFailure) || req.Key != desktopIconFailureKey("e", longFailure) || req.Request != "ask-e" || req.Result != longFailure {
 		t.Fatalf("failed request = %+v", req)
 	}
 }
@@ -254,6 +274,28 @@ func TestCompletionSummaryLateResultDiscarded(t *testing.T) {
 	}
 }
 
+func TestCompletionSummaryLateResultSurvivesSessionOpen(t *testing.T) {
+	tab, sp := completionTestTab(t, 1000)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	key := desktopIconCompletionKey("task-1", "completed", 1000)
+	app.iconWidgetState.Kept["task:task-1"] = desktopIconKept{
+		ItemID: "task:task-1", SourceID: "task-1", Summary: "机械摘要", CompletionKey: key, CompletedAt: 1000,
+	}
+	if err := clearNeedsAttention(sp); err != nil {
+		t.Fatalf("simulate session open: %v", err)
+	}
+	req := desktopIconCompletionSummaryRequest{
+		Key: key, TaskID: "task-1", Kind: "completed", Revision: "completed:1000",
+		Title: "标题", Request: "请求", Result: strings.Repeat("长结果", completionSummaryMaxRunes),
+	}
+	done := make(chan struct{})
+	app.runCompletionSummary(req, &completionSummaryCall{done: done})
+	<-done
+	if entry := app.iconWidgetState.CompletionSummaries[key]; entry.Status != completionSummaryReady || entry.Text != "任务已完成。" {
+		t.Fatalf("retained completion did not accept late summary: %+v", entry)
+	}
+}
+
 func TestCompletionSummaryDiscardedAfterDismiss(t *testing.T) {
 	tab, _ := completionTestTab(t, 1000)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
@@ -282,9 +324,10 @@ func TestCompletionSummaryFailureDegradesAndRetries(t *testing.T) {
 	}}
 	app := newSummaryTestApp(t, tab, gen)
 	key := desktopIconCompletionKey("task-1", "completed", 1000)
+	longResult := strings.Repeat("机械结果", completionSummaryMaxRunes)
 	req := desktopIconCompletionSummaryRequest{
 		Key: key, TaskID: "task-1", Kind: "completed", Revision: "completed:1000",
-		Title: "标题", Request: "请求", Result: "结果",
+		Title: "标题", Request: "请求", Result: longResult,
 	}
 	done := make(chan struct{})
 	app.runCompletionSummary(req, &completionSummaryCall{done: done})
@@ -295,7 +338,7 @@ func TestCompletionSummaryFailureDegradesAndRetries(t *testing.T) {
 		t.Fatalf("failed entry = %+v", entry)
 	}
 	// The failed entry keeps the mechanical body on the snapshot and waits.
-	sources := []widgetSource{{meta: TabMeta{ID: "task-1", NeedsAttention: true, NeedsAttentionAt: 1000}, resultText: "机械"}}
+	sources := []widgetSource{{meta: TabMeta{ID: "task-1", NeedsAttention: true, NeedsAttentionAt: 1000}, resultText: longResult}}
 	if requests := app.completionSummaryRequestsLocked(sources); len(requests) != 0 {
 		t.Fatalf("retry fired before the backoff: %+v", requests)
 	}
@@ -338,7 +381,8 @@ func TestCompletionSummaryCacheBounded(t *testing.T) {
 }
 
 func TestDesktopTaskItemProjectsCachedSummary(t *testing.T) {
-	source := widgetSource{meta: TabMeta{ID: "task-1", SessionID: "session-1", TopicTitle: "实现图标模式", NeedsAttention: true, NeedsAttentionAt: 1000}, resultText: "机械结果"}
+	longResult := strings.Repeat("机械结果", completionSummaryMaxRunes)
+	source := widgetSource{meta: TabMeta{ID: "task-1", SessionID: "session-1", TopicTitle: "实现图标模式", NeedsAttention: true, NeedsAttentionAt: 1000}, resultText: longResult}
 	summaries := map[string]desktopIconCompletionSummary{
 		desktopIconCompletionKey("task-1", "completed", 1000): {Status: "ready", Text: "新闻体摘要"},
 	}
@@ -353,7 +397,12 @@ func TestDesktopTaskItemProjectsCachedSummary(t *testing.T) {
 	// The generation itself never touched the session history: the snapshot
 	// only reads the pre-captured request/result material.
 	mechanical := desktopTaskItem(source, 0, nil)
-	if mechanical.Notifications[0].Body != "机械结果" || mechanical.Notifications[0].SummaryStatus != "" {
+	if len([]rune(mechanical.Notifications[0].Body)) != completionSummaryMaxRunes || mechanical.Notifications[0].SummaryStatus != "" {
 		t.Fatalf("mechanical fallback notice = %+v", mechanical.Notifications[0])
+	}
+	short := "短回复\n保持原文"
+	direct := desktopTaskItem(widgetSource{meta: TabMeta{ID: "short", NeedsAttention: true, NeedsAttentionAt: 2000}, resultText: short}, 0, summaries)
+	if direct.Notifications[0].Body != short || direct.Notifications[0].SummaryStatus != "" {
+		t.Fatalf("short reply was summarized: %+v", direct.Notifications[0])
 	}
 }

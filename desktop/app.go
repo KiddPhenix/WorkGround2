@@ -268,6 +268,10 @@ type App struct {
 	iconWidgetStateErr    error
 	iconWidgetWindowErr   error
 
+	// iconDiagMu serializes appends to the per-user icon widget diagnostics
+	// log so concurrent hover traces can never interleave NDJSON lines.
+	iconDiagMu sync.Mutex
+
 	// completionSummaryGen is the injection seam for async news-style
 	// completion summaries (nil uses the configured provider backend).
 	// completionSummaryInFlight is the singleflight slot map; both are

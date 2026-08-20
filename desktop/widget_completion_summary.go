@@ -37,9 +37,10 @@ const (
 	// completionSummaryRetryAfter is the backoff before a failed generation is
 	// retried from the next snapshot.
 	completionSummaryRetryAfter = 5 * time.Minute
-	// completionSummaryMaxRunes matches the largest result body that remains
-	// comfortably readable in the enlarged desktop-icon popup.
-	completionSummaryMaxRunes = 260
+	// completionSummaryMaxRunes is both the direct-display threshold and the
+	// hard bound for generated completion summaries. Short replies bypass the
+	// model entirely; longer replies are compressed to roughly this size.
+	completionSummaryMaxRunes = 100
 )
 
 // desktopIconCompletionSummary is one persisted cache entry for a completion
@@ -105,6 +106,7 @@ func desktopIconCompletionSummaryFor(summaries map[string]desktopIconCompletionS
 	switch entry.Status {
 	case completionSummaryReady:
 		if text := strings.TrimSpace(entry.Text); text != "" {
+			text, _ = completionSummaryFallback(text)
 			return text, completionSummaryReady
 		}
 		return fallback, ""
@@ -128,7 +130,19 @@ func summaryGenerationDue(entry desktopIconCompletionSummary, now int64) bool {
 	}
 }
 
-const completionSummarySystemPrompt = "你是 WorkGround2 桌面小组件的新闻撰稿人。把下面的任务信息改写成一段中文“新闻体”短摘要：结论先行、事实明确，不带 Markdown 标题、代码块、文件路径或命令清单。最多 260 字。只输出摘要正文，不要引号包裹，不要任何解释。"
+const completionSummarySystemPrompt = "你是 WorkGround2 桌面小组件的新闻撰稿人。把下面的任务信息改写成一段约 100 字的中文“新闻体”短摘要：结论先行、事实明确，不带 Markdown 标题、代码块、文件路径或命令清单。最多 100 字。只输出摘要正文，不要引号包裹，不要任何解释。"
+
+// completionSummaryFallback preserves short replies verbatim (apart from
+// surrounding whitespace) and returns whether a model summary is required.
+// Long replies get a bounded mechanical fallback while generation is pending
+// or retrying, so the original completion always remains reachable via Detail.
+func completionSummaryFallback(result string) (string, bool) {
+	result = strings.TrimSpace(result)
+	if len([]rune(result)) <= completionSummaryMaxRunes {
+		return result, false
+	}
+	return conciseWidgetText(result, completionSummaryMaxRunes), true
+}
 
 // buildCompletionSummaryPrompt assembles the user-side material for the
 // one-shot prompt: the task title, the user request and the final assistant
@@ -186,6 +200,9 @@ func (a *App) completionSummaryRequestsLocked(sources []widgetSource) []desktopI
 		case strings.TrimSpace(source.meta.StartupErr) != "":
 			kind, result = "failed", source.meta.StartupErr
 		default:
+			continue
+		}
+		if _, needsSummary := completionSummaryFallback(result); !needsSummary {
 			continue
 		}
 		key := desktopIconCompletionKey(source.meta.ID, kind, at)
@@ -346,6 +363,17 @@ func (a *App) completionRevisionForTask(taskID string) (string, bool) {
 	}
 	if effective != 0 {
 		return "completed:" + strconv.FormatInt(effective, 10), true
+	}
+	// Opening a Session may clear BranchMeta attention while its completion
+	// summary is still generating. A retained icon records the same completion
+	// timestamp before that transition, so the late result remains valid. An
+	// explicit Dismiss removes the retained entry and therefore still rejects it.
+	a.iconWidgetMu.Lock()
+	defer a.iconWidgetMu.Unlock()
+	for _, kept := range a.iconWidgetState.Kept {
+		if kept.SourceID == taskID && kept.CompletedAt > 0 {
+			return desktopIconCompletionFingerprint("completed", kept.CompletedAt), true
+		}
 	}
 	return "", false
 }
