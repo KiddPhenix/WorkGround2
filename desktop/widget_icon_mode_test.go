@@ -107,6 +107,27 @@ func TestDesktopWorkspaceSlotsPersistZeroAndRejectInvalidValues(t *testing.T) {
 			t.Fatalf("invalid value %d changed desktop workspace slots to %d", invalid, got)
 		}
 	}
+	if err := os.WriteFile(desktopIconStatePath(), []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write legacy desktop icon state: %v", err)
+	}
+	legacy := &App{}
+	if got := legacy.GetDesktopWorkspaceSlots(); got != desktopWorkspacePinLimit {
+		t.Fatalf("legacy state without workspaceSlots = %d, want %d", got, desktopWorkspacePinLimit)
+	}
+	if err := os.WriteFile(desktopIconStatePath(), []byte(`{"workspaceSlots":9}`), 0o600); err != nil {
+		t.Fatalf("write invalid desktop icon state: %v", err)
+	}
+	repaired := &App{}
+	if got := repaired.GetDesktopWorkspaceSlots(); got != desktopWorkspacePinLimit || repaired.iconWidgetStateErr == nil {
+		t.Fatalf("invalid stored slots recovered as %d with error %v", got, repaired.iconWidgetStateErr)
+	}
+	if err := repaired.SetDesktopWorkspaceSlots(desktopWorkspacePinLimit); err != nil {
+		t.Fatalf("repair invalid stored slots: %v", err)
+	}
+	clean := &App{}
+	if got := clean.GetDesktopWorkspaceSlots(); got != desktopWorkspacePinLimit || clean.iconWidgetStateErr != nil {
+		t.Fatalf("repaired stored slots loaded as %d with error %v", got, clean.iconWidgetStateErr)
+	}
 }
 
 func TestBuildDesktopIconSnapshotShowsExactlyFourWorkspaceSlots(t *testing.T) {

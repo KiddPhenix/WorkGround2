@@ -697,7 +697,7 @@ func (a *App) SetDesktopWorkspaceSlots(slots int) error {
 	a.iconWidgetMu.Lock()
 	defer a.iconWidgetMu.Unlock()
 	a.loadDesktopIconStateLocked()
-	if a.iconWidgetState.WorkspaceSlots == slots {
+	if a.iconWidgetState.WorkspaceSlots == slots && a.iconWidgetStateErr == nil {
 		return nil
 	}
 	previous := a.iconWidgetState.WorkspaceSlots

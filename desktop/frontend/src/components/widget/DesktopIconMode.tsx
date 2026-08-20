@@ -636,8 +636,8 @@ function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChang
 		setError("");
 		try {
 			await app.SetDesktopWorkspaceSlots(slots);
-			setWorkspaceSlots(slots);
 			await onChanged();
+			setWorkspaceSlots(slots);
 		} catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
 		finally { setSlotsBusy(false); }
 	};

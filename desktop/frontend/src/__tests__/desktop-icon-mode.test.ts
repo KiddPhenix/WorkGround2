@@ -672,7 +672,7 @@ assert.match(component, /const reload = useCallback\(async \(\) => \{[\s\S]+app\
 assert.match(component, /app\.PickWorkspace\(\)[\s\S]+if \(root\) await reload\(\)/, "a successful workspace pick reloads and keeps the dialog open; a cancelled picker is a no-op");
 assert.match(component, /app\.SetProjectPinned\(row\.root, !row\.pinned\)[\s\S]+await reload\(\)/, "Pin toggles through SetProjectPinned then reloads the authoritative list");
 assert.match(component, /Promise\.all\(\[app\.ListProjectTree\(\), app\.GetDesktopWorkspaceSlots\(\)\]\)/, "workspace rows and the persisted desktop count load together");
-assert.match(component, /await app\.SetDesktopWorkspaceSlots\(slots\)[\s\S]{0,120}setWorkspaceSlots\(slots\)[\s\S]{0,120}await onChanged\(\)/, "changing the 0-4 desktop count persists before refreshing the live snapshot");
+assert.match(component, /await app\.SetDesktopWorkspaceSlots\(slots\)[\s\S]{0,120}await onChanged\(\)[\s\S]{0,120}setWorkspaceSlots\(slots\)/, "changing the 0-4 desktop count persists and refreshes before committing local UI state, so refresh failures remain retryable");
 assert.match(component, /length: WORKSPACE_PIN_LIMIT \+ 1[\s\S]{0,300}aria-pressed=\{workspaceSlots === slots\}/, "the workspace manager exposes every desktop count from zero through four");
 assert.match(component, /固定优先，空位由当前与最近活跃工作区补齐/, "the count control explains the retained priority and auto-fill policy");
 assert.match(component, /app\.RenameProject\(row\.root, renameTitle\(renameDraft\)\)/, "rename commits the raw input through the shared empty-title contract");
