@@ -386,6 +386,37 @@ func TestSetProjectPinnedOrdersProjectFolders(t *testing.T) {
 	}
 }
 
+func TestSetProjectPinnedRejectsFifthDesktopSlot(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	roots := make([]string, desktopWorkspacePinLimit+1)
+	app := NewApp()
+	for i := range roots {
+		roots[i] = t.TempDir()
+		if err := addProject(roots[i], fmt.Sprintf("Project %d", i)); err != nil {
+			t.Fatalf("add project %d: %v", i, err)
+		}
+		if i < desktopWorkspacePinLimit {
+			if err := app.SetProjectPinned(roots[i], true); err != nil {
+				t.Fatalf("pin project %d: %v", i, err)
+			}
+		}
+	}
+
+	if err := app.SetProjectPinned(roots[0], true); err != nil {
+		t.Fatalf("repeating an existing pin must stay idempotent: %v", err)
+	}
+	if err := app.SetProjectPinned(roots[desktopWorkspacePinLimit], true); err == nil || !strings.Contains(err.Error(), "pin limit") {
+		t.Fatalf("fifth pin error = %v, want explicit pin limit", err)
+	}
+	if err := app.SetProjectPinned(roots[0], false); err != nil {
+		t.Fatalf("unpin while full: %v", err)
+	}
+	if err := app.SetProjectPinned(roots[desktopWorkspacePinLimit], true); err != nil {
+		t.Fatalf("pin after freeing a slot: %v", err)
+	}
+}
+
 func TestDeleteTopicClearsPinnedTopic(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

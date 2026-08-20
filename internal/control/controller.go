@@ -666,13 +666,20 @@ func (c *Controller) beginCheckpoint(input string) {
 // context, guarding against concurrent turns and emitting a TurnDone event when
 // it finishes (Err set on failure; nil also for a user Cancel). A no-op if a
 // turn is already in flight.
-func (c *Controller) runGuarded(body func(ctx context.Context) error) bool {
-	return c.runGuardedWithSetup(body, nil)
+func (c *Controller) runGuarded(body func(ctx context.Context) error) {
+	c.tryRunGuarded(body)
 }
 
-// runGuardedWithSetup reserves a turn and applies setup while holding the same
-// controller lock. setup must not lock c.mu itself.
-func (c *Controller) runGuardedWithSetup(body func(ctx context.Context) error, setup func() []chan approvalReply) bool {
+// tryRunGuarded atomically accepts one turn or reports that another turn owns
+// the controller. Callers that must not silently drop input use its boolean;
+// legacy fire-and-forget entry points keep using runGuarded.
+func (c *Controller) tryRunGuarded(body func(ctx context.Context) error) bool {
+	return c.tryRunGuardedWithSetup(body, nil)
+}
+
+// tryRunGuardedWithSetup reserves a turn and applies setup while holding the
+// same controller lock. setup must not lock c.mu itself.
+func (c *Controller) tryRunGuardedWithSetup(body func(ctx context.Context) error, setup func() []chan approvalReply) bool {
 	c.mu.Lock()
 	if c.running {
 		c.mu.Unlock()
@@ -924,7 +931,7 @@ func (c *Controller) SubmitUserTurn(input, display string) {
 // normal user turn. It returns false without side effects when another turn is
 // already active.
 func (c *Controller) TrySubmitUserTurn(input, display string) bool {
-	return c.runGuarded(func(ctx context.Context) error {
+	return c.tryRunGuarded(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
 	})
 }
@@ -936,7 +943,7 @@ func (c *Controller) TrySubmitUserTurnWithPolicy(input, display string, policy p
 	policy = clonePermissionPolicy(policy)
 	toolMode = normalizeToolApprovalMode(toolMode)
 	grants = append([]ToolGrant(nil), grants...)
-	return c.runGuardedWithSetup(func(ctx context.Context) error {
+	return c.tryRunGuardedWithSetup(func(ctx context.Context) error {
 		return c.runRefTurnWithResolverSync(ctx, input, input, display, "", c.ResolveRefs)
 	}, func() []chan approvalReply {
 		pending := c.approval.configure(policy, toolMode, grants)

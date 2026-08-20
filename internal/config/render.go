@@ -117,6 +117,8 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if skin := c.DesktopWidgetSkin(); skin != "classic" {
 			fmt.Fprintf(&b, "widget_skin = %q   # desktop: widget visual skin: classic|bp|instant|pet|recorder\n", skin)
 		}
+		fmt.Fprintf(&b, "widget_style = %q   # desktop: icons-only widget presentation\n", c.DesktopWidgetStyle())
+		fmt.Fprintf(&b, "hover_status_delay_ms = %d   # desktop icon widget preview delay; 0 disables delayed preview\n", c.DesktopHoverStatusDelayMs())
 		if len(c.Desktop.ProviderAccess) > 0 {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
@@ -620,6 +622,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			}
 			if len(conn.SessionMappings) > 0 {
 				fmt.Fprintf(&b, "session_mappings = %s\n", renderBotSessionMappings(conn.SessionMappings))
+			}
+			if len(conn.Endpoints) > 0 {
+				fmt.Fprintf(&b, "endpoints = %s\n", renderBotEndpoints(conn.Endpoints))
 			}
 			// access must be the last sub-table of the connection record: keys
 			// after a [bot.connections.access] header would belong to access.
@@ -1539,6 +1544,31 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 		}
 		if mapping.UpdatedAt != "" {
 			parts["updated_at"] = mapping.UpdatedAt
+		}
+		b.WriteString(renderStringMap(parts))
+	}
+	b.WriteByte(']')
+	return b.String()
+}
+
+func renderBotEndpoints(endpoints []BotConnectionRemote) string {
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, endpoint := range endpoints {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		parts := map[string]string{
+			"remote_id": endpoint.RemoteID,
+		}
+		if endpoint.ChatType != "" {
+			parts["chat_type"] = endpoint.ChatType
+		}
+		if endpoint.ThreadID != "" {
+			parts["thread_id"] = endpoint.ThreadID
+		}
+		if endpoint.UpdatedAt != "" {
+			parts["updated_at"] = endpoint.UpdatedAt
 		}
 		b.WriteString(renderStringMap(parts))
 	}

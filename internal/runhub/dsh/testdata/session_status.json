@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"session.status","params":{"sessionId":"sess-1","status":"running"}}

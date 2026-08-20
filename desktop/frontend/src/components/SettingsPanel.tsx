@@ -1,9 +1,9 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Check, CheckCircle2, ChevronDown, ChevronUp, Clipboard, FolderPlus, Images, KeyRound, Loader2, Play, QrCode, RefreshCw, Send, Trash2 } from "lucide-react";
 import { asArray } from "../lib/array";
-import { botDecisionTargets, decisionChannelInputForBot } from "../lib/botDecisionChannel";
+import { botDecisionTargets, decisionChannelInputForBot, decisionTargetKey, savedDecisionChannelForConnection } from "../lib/botDecisionChannel";
 import { useDeferredClose } from "../lib/useMountTransition";
-import { app } from "../lib/bridge";
+import { app, onDecisionState } from "../lib/bridge";
 import { normalizeLangPref, useI18n, useT, type DictKey, type LangPref } from "../lib/i18n";
 import { apiKeyEnvFromProviderName, inferredVisionModels, mergedFetchedProviderModels, providerApiKeyEnvForSave, providerDefaultModel, providerIsConfigured, providerModelCandidates, providerRequiresKey } from "../lib/providerModels";
 import { useUpdater } from "../lib/useUpdater";
@@ -46,7 +46,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, CollaborationSettingsView, ComposerSubmitKey, DecisionChannelView, HookConfigView, HooksSettingsView, LocalCLIOptionView, NetworkView, ProviderView, RelayView, SessionBackgroundMode, SessionBackgroundSettingsView, SessionBackgroundSourceView, SettingsTab, SettingsView } from "../lib/types";
 import { DYNAMIC_WALLPAPER_SCENES, DynamicWallpaper, isSceneName } from "./DynamicWallpaper";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
@@ -57,9 +57,6 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 import { CopyButton } from "./CopyButton";
-import { WIDGET_SKIN_IDS, resolveWidgetSkin, widgetSkinPreview, type WidgetSkinId } from "./widget/widgetSkins";
-import "./widget/widget-settings.css";
-
 const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "ai", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "widget", "global", "about"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
@@ -297,7 +294,7 @@ export function SettingsPanel({
                     />
                   </SettingsPageShell>
                 )}
-                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} widgetSkin={s.widgetSkin} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
+                {tab === "widget" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><WidgetSection widgetEnabled={s.widgetEnabled} widgetAlwaysOnTop={s.widgetAlwaysOnTop} hoverStatusDelayMs={s.hoverStatusDelayMs ?? 1200} settingsBusy={busy} applySettings={apply} /></SettingsPageShell>}
                 {tab === "global" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GlobalSection s={s} busy={busy} apply={apply} /></SettingsPageShell>}
                 {tab === "about" && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}>
@@ -965,6 +962,12 @@ function normalizeBotConnection(raw: any) {
         : "",
       updatedAt: String(item?.updatedAt ?? "").trim(),
     })),
+    endpoints: asArray(raw?.endpoints).map((item: any) => ({
+      remoteId: String(item?.remoteId ?? "").trim(),
+      chatType: String(item?.chatType ?? "").trim(),
+      threadId: String(item?.threadId ?? "").trim(),
+      updatedAt: String(item?.updatedAt ?? "").trim(),
+    })).filter((item) => item.remoteId),
     lastError: String(raw?.lastError ?? "").trim(),
     createdAt: String(raw?.createdAt ?? "").trim(),
     updatedAt: String(raw?.updatedAt ?? "").trim(),
@@ -1784,6 +1787,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const [testTargets, setTestTargets] = useState<Record<string, string>>({});
   const [decisionTargetIndexes, setDecisionTargetIndexes] = useState<Record<string, number>>({});
   const [savedDecisionTargets, setSavedDecisionTargets] = useState<Record<string, string>>({});
+  const [decisionChannels, setDecisionChannels] = useState<DecisionChannelView[]>([]);
   const [connectionSecrets, setConnectionSecrets] = useState<Record<string, string>>({});
   const [qqSecretValue, setQQSecretValue] = useState("");
   const [expandedConnectionId, setExpandedConnectionId] = useState("");
@@ -1835,6 +1839,29 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     clearInstallTimers();
     setInstall({ target: installTarget, result: null, status: "idle", timeLeft: 0, message: "" });
   }, [installTarget]);
+  // 已保存的 Decision Channel 是通知/问答目标的单一可信源：即使
+  // sessionMappings 被自动回收清空，设置页仍能显示"已设置"并允许测试。
+  // 主人决策功能关闭时不做任何决策状态订阅或 API 调用。
+  useEffect(() => {
+    if (!s.ownerDecisionEnabled) return;
+    let alive = true;
+    void app.DecisionState().then((state) => alive && setDecisionChannels(state.channels ?? [])).catch(() => undefined);
+    const off = onDecisionState((state) => alive && setDecisionChannels(state.channels ?? []));
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [s.ownerDecisionEnabled]);
+  useEffect(() => {
+    const seed: Record<string, string> = {};
+    for (const channel of decisionChannels) {
+      const connection = draft.connections.find((item) => item.id === channel.connection_id);
+      if (!connection || !channel.chat_id?.trim()) continue;
+      seed[connection.id] = decisionTargetKey(connection, channel);
+    }
+    // seed 来自 broker（单一可信源），优先于本地瞬时状态，避免已删除通道残留。
+    setSavedDecisionTargets(seed);
+  }, [decisionChannels, draft.connections]);
   useEffect(() => () => {
     installAttemptRef.current += 1;
     clearInstallTimers();
@@ -2141,6 +2168,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const selectedDecisionTargetKey = selectedConnection && selectedDecisionTarget
     ? `${selectedConnection.id}:${selectedDecisionTarget.remoteId}:${selectedDecisionTarget.chatType}`
     : "";
+  const selectedSavedDecisionChannel = selectedConnection ? savedDecisionChannelForConnection(selectedConnection, decisionChannels) : null;
   const selectedConnectionToolApprovalMode = selectedConnection ? normalizeBotToolApprovalMode(selectedConnection.toolApprovalMode, true) : "";
   const selectedAllowlistTargetReady = selectedQQ || Boolean(selectedConnection);
   useEffect(() => {
@@ -2565,38 +2593,69 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
                 </div>
               </section>
 
-              <section className="bot-detail-section">
-                <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
-                <p className="bot-detail-card__desc">{selectedDecisionTarget ? t("settings.botDecisionChannelHint") : t("settings.botDecisionChannelNoTarget")}</p>
-                {selectedDecisionTarget ? (
-                  <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
-                    <div className="bot-secret-row">
-                      <select
-                        className="mem-input"
-                        value={selectedDecisionTargetIndex}
-                        disabled={busy}
-                        onChange={(event) => setDecisionTargetIndexes((current) => ({ ...current, [selectedConnection.id]: Number(event.target.value) }))}
-                      >
-                        {selectedDecisionTargets.map((target, index) => (
-                          <option key={`${target.remoteId}:${target.chatType}`} value={index}>{target.remoteId} · {target.chatType}</option>
-                        ))}
-                      </select>
+              {s.ownerDecisionEnabled && (
+                <section className="bot-detail-section">
+                  <div className="bot-detail-section__head">{t("settings.botDecisionChannel")}</div>
+                  <p className="bot-detail-card__desc">
+                    {selectedDecisionTarget
+                      ? t("settings.botDecisionChannelHint")
+                      : selectedSavedDecisionChannel
+                        ? t("settings.botDecisionChannelSavedOnly")
+                        : t("settings.botDecisionChannelNoTarget")}
+                  </p>
+                  {selectedDecisionTarget ? (
+                    <SettingsField label={t("settings.botDecisionChannelTarget")} hint={t("settings.botDecisionChannelTargetHint")}>
+                      <div className="bot-secret-row">
+                        <select
+                          className="mem-input"
+                          value={selectedDecisionTargetIndex}
+                          disabled={busy}
+                          onChange={(event) => setDecisionTargetIndexes((current) => ({ ...current, [selectedConnection.id]: Number(event.target.value) }))}
+                        >
+                          {selectedDecisionTargets.map((target, index) => (
+                            <option key={`${target.remoteId}:${target.chatType}`} value={index}>{target.remoteId} · {target.chatType}</option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          className="btn btn--primary btn--small"
+                          disabled={busy || !selectedConnection.enabled}
+                          onClick={() => void apply(async () => {
+                            const state = await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
+                            if (state?.channels) setDecisionChannels(state.channels);
+                            setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
+                            return t("settings.botDecisionChannelSuccess");
+                          })}
+                        >
+                          {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey ? t("settings.botDecisionChannelSet") : t("settings.botDecisionChannelAction")}
+                        </button>
+                      </div>
+                    </SettingsField>
+                  ) : null}
+                  {selectedSavedDecisionChannel ? (
+                    <div className="bot-secret-row bot-detail-card__saved-channel">
+                      <span className="bot-detail-card__saved-channel-label">
+                        {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey
+                          ? t("settings.botDecisionChannelSet")
+                          : t("settings.botDecisionChannelSaved")}
+                        {" · "}
+                        {selectedSavedDecisionChannel.chat_id} · {selectedSavedDecisionChannel.chat_type?.trim() || "dm"}
+                      </span>
                       <button
                         type="button"
-                        className="btn btn--primary btn--small"
+                        className="btn btn--small"
                         disabled={busy || !selectedConnection.enabled}
                         onClick={() => void apply(async () => {
-                          await app.SaveDecisionChannel(decisionChannelInputForBot(selectedConnection, selectedDecisionTarget));
-                          setSavedDecisionTargets((current) => ({ ...current, [selectedConnection.id]: selectedDecisionTargetKey }));
-                          return t("settings.botDecisionChannelSuccess");
+                          await app.TestDecisionChannel(selectedSavedDecisionChannel!.id);
+                          return t("settings.botDecisionChannelTestSent");
                         })}
                       >
-                        {savedDecisionTargets[selectedConnection.id] === selectedDecisionTargetKey ? t("settings.botDecisionChannelSet") : t("settings.botDecisionChannelAction")}
+                        {t("settings.botDecisionChannelTest")}
                       </button>
                     </div>
-                  </SettingsField>
-                ) : null}
-              </section>
+                  ) : null}
+                </section>
+              )}
 
               <details
                 ref={allowlistRef}
@@ -6502,29 +6561,23 @@ function AboutSection() {
 export function WidgetSection({
   widgetEnabled,
   widgetAlwaysOnTop,
-  widgetSkin,
+	hoverStatusDelayMs,
   settingsBusy,
   applySettings,
 }: {
   widgetEnabled: boolean;
   widgetAlwaysOnTop: boolean;
-  widgetSkin: string;
+	hoverStatusDelayMs: number;
   settingsBusy: boolean;
   applySettings: (fn: () => Promise<void>) => Promise<void>;
 }) {
   const t = useT();
-  const selectedSkin = resolveWidgetSkin(widgetSkin);
-  const skinCopy: Record<WidgetSkinId, { label: string; desc: string }> = {
-    classic: { label: t("settings.widget.skinClassic"), desc: t("settings.widget.skinClassicDesc") },
-    bp: { label: t("settings.widget.skinBP"), desc: t("settings.widget.skinBPDesc") },
-    instant: { label: t("settings.widget.skinInstant"), desc: t("settings.widget.skinInstantDesc") },
-    pet: { label: t("settings.widget.skinPet"), desc: t("settings.widget.skinPetDesc") },
-    recorder: { label: t("settings.widget.skinRecorder"), desc: t("settings.widget.skinRecorderDesc") },
-  };
-  const skins = WIDGET_SKIN_IDS.map((id) => ({ id, ...skinCopy[id], preview: widgetSkinPreview(id) }));
   return (
     <SettingsSection title={t("settings.tab.widget")}>
-      <SettingsField
+      <SettingsField className="settings-field--wide-copy" label={t("settings.widget.hoverDelayLabel")} hint={t("settings.widget.hoverDelayHint")}>
+		<input type="number" min={0} max={10000} step={100} value={hoverStatusDelayMs} disabled={settingsBusy} aria-label={t("settings.widget.hoverDelayLabel")} onChange={(event) => void applySettings(() => app.SetDesktopHoverStatusDelayMs(Number(event.target.value)))} />
+	  </SettingsField>
+	  <SettingsField
         className="settings-field--wide-copy"
         label={t("settings.widget.enableLabel")}
         hint={t("settings.widget.enableHint")}
@@ -6545,31 +6598,6 @@ export function WidgetSection({
           disabled={settingsBusy}
           onChange={(on) => void applySettings(() => app.SetDesktopWidgetAlwaysOnTop(on))}
         />
-      </SettingsField>
-      <SettingsField
-        className="settings-field--wide-copy"
-        label={t("settings.widget.skinLabel")}
-        hint={t("settings.widget.skinHint")}
-      >
-        <div className="settings-widget-skin-grid" role="radiogroup" aria-label={t("settings.widget.skinLabel")}>
-          {skins.map((skin) => (
-            <button
-              key={skin.id}
-              className={`settings-widget-skin-card${selectedSkin === skin.id ? " settings-widget-skin-card--selected" : ""}`}
-              type="button"
-              role="radio"
-              aria-checked={selectedSkin === skin.id}
-              disabled={settingsBusy}
-              onClick={() => void applySettings(() => app.SetDesktopWidgetSkin(skin.id))}
-            >
-              <span className="settings-widget-skin-card__preview" aria-hidden="true">
-                <img src={skin.preview} alt="" />
-              </span>
-              <span className="settings-widget-skin-card__label">{skin.label}</span>
-              <span className="settings-widget-skin-card__desc">{skin.desc}</span>
-            </button>
-          ))}
-        </div>
       </SettingsField>
     </SettingsSection>
   );

@@ -68,6 +68,7 @@ type WorkspaceTab struct {
 	sessionLease        *agent.SessionLease
 
 	ActivityStatus string // transient project-tree status for the in-flight turn
+	ActivityText   string // latest compact reasoning/tool activity for desktop surfaces
 
 	// Per-turn autosave per tab.
 	saveMu             sync.Mutex
@@ -121,6 +122,7 @@ type WorkspaceTab struct {
 
 const (
 	topicStatusThinking            = "thinking"
+	topicStatusRunning             = "running"
 	topicStatusStreaming           = "streaming"
 	topicStatusWaitingConfirmation = "waiting_confirmation"
 	topicStatusBackgroundJob       = "background_job"
@@ -475,6 +477,7 @@ func cloneDetachedRuntimeTab(tab *WorkspaceTab, key, path string) *WorkspaceTab 
 		remoteSubmitErr:     tab.remoteSubmitErr,
 		sink:                tab.sink,
 		ActivityStatus:      tab.ActivityStatus,
+		ActivityText:        tab.ActivityText,
 		readTelemetry:       readTelemetry,
 		usageTelemetry:      usageTelemetry,
 		model:               tab.model,
@@ -552,6 +555,7 @@ func applyRuntimeTab(target, source *WorkspaceTab, path string, wailsCtx context
 	}
 	target.remoteSubmitting = false
 	target.ActivityStatus = source.ActivityStatus
+	target.ActivityText = source.ActivityText
 	target.model = source.model
 	target.effort = cloneStringPtr(source.effort)
 	target.tokenMode = source.tokenMode
@@ -943,8 +947,7 @@ func (s *tabEventSink) Emit(e event.Event) {
 	}
 	s.emitRuntimeEvent(eventChannel, w)
 	if s.app != nil {
-		if status, update := topicActivityStatusFromEvent(e); update {
-			changed := s.app.setTabActivityStatus(s.tabID, status)
+		if changed, update := s.app.observeTabActivity(s.tabID, e); update {
 			if changed || isBackgroundJobLifecycleNotice(e) {
 				s.app.emitProjectTreeChanged()
 			}
@@ -1102,8 +1105,10 @@ func (e *asyncRuntimeEmitter) run() {
 
 func topicActivityStatusFromEvent(e event.Event) (string, bool) {
 	switch e.Kind {
-	case event.TurnStarted, event.Reasoning, event.ToolDispatch, event.ToolProgress, event.ToolResult, event.CompactionStarted, event.CompactionDone, event.Retrying:
+	case event.TurnStarted, event.Reasoning, event.Phase:
 		return topicStatusThinking, true
+	case event.ToolDispatch, event.ToolProgress, event.ToolResult, event.CompactionStarted, event.CompactionDone, event.Retrying:
+		return topicStatusRunning, true
 	case event.Text, event.Message:
 		return topicStatusStreaming, true
 	case event.ApprovalRequest, event.AskRequest:
@@ -1381,6 +1386,8 @@ type TabMeta struct {
 	BackgroundOnly      bool                     `json:"backgroundOnly"`
 	ActiveRuntimeWork   bool                     `json:"activeRuntimeWork"`
 	TurnStartedAt       int64                    `json:"turnStartedAt,omitempty"`
+	ActivityStatus      string                   `json:"activityStatus,omitempty"`
+	ActivityText        string                   `json:"activityText,omitempty"`
 	Mode                string                   `json:"mode"`
 	CollaborationMode   string                   `json:"collaborationMode"`
 	ToolApprovalMode    string                   `json:"toolApprovalMode"`
@@ -1452,6 +1459,8 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.ProjectIcon = projectIcon(tab.WorkspaceRoot)
 	}
 	m.SessionDisplayTitle = tabSessionDisplayTitle(tab)
+	m.ActivityStatus = tab.ActivityStatus
+	m.ActivityText = tab.ActivityText
 
 	// Populate session kind and work ID from tab runtime state.
 	if tab.sessionKind != "" {
@@ -4264,7 +4273,10 @@ func topicTitleFromText(text string) string {
 
 const desktopProjectsFile = "desktop-projects.json"
 const tabsFileName = "desktop-tabs.json"
-const desktopGlobalOrderToken = "__global__"
+const (
+	desktopGlobalOrderToken  = "__global__"
+	desktopWorkspacePinLimit = 4
+)
 const legacyProjectSidebarRecoveryMarker = "desktop-projects-legacy-recovered"
 
 var desktopProjectsFileMu sync.Mutex
@@ -4987,7 +4999,11 @@ func normalizeProjectColor(color string) string {
 func normalizeProjectIcon(icon string) string {
 	icon = strings.TrimSpace(strings.ToLower(icon))
 	switch icon {
-	case "star", "bookmark", "code", "terminal", "bolt":
+	case "star", "bookmark", "code", "terminal", "bolt",
+		"browser", "build", "cmd", "cpp", "csharp", "dart", "data", "database",
+		"delegate", "design", "discussion", "document", "edit", "folder", "game", "go", "java",
+		"javascript", "music", "php", "presentation", "publish", "python", "react",
+		"new", "research", "run", "rust", "sport", "sync", "test", "typescript", "unity", "video":
 		return icon
 	default:
 		// Empty and unknown values preserve the backwards-compatible dot icon.
@@ -6164,6 +6180,12 @@ func (a *App) SetProjectPinned(workspaceRoot string, pinned bool) error {
 		}
 		next := removeString(f.PinnedProjects, root)
 		if pinned {
+			if containsDesktopString(f.PinnedProjects, root) {
+				return false, nil
+			}
+			if len(uniqueStrings(next)) >= desktopWorkspacePinLimit {
+				return false, fmt.Errorf("desktop workspace pin limit reached (%d)", desktopWorkspacePinLimit)
+			}
 			next = prependUniqueString(f.PinnedProjects, root)
 		}
 		if sameStringList(next, f.PinnedProjects) {
@@ -6348,19 +6370,81 @@ func (a *App) updateTopicSessionTitles(topicID, title string) {
 	}
 }
 
-func (a *App) setTabActivityStatus(tabID, status string) bool {
+func (a *App) observeTabActivity(tabID string, e event.Event) (bool, bool) {
+	status, update := topicActivityStatusFromEvent(e)
+	if !update {
+		return false, false
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	tab := a.tabByEventSinkIDLocked(tabID)
 	if tab == nil {
-		return false
+		return false, true
 	}
-	status = normalizeTopicStatus(status)
-	if tab.ActivityStatus == status {
-		return false
-	}
+	status = normalizeTabActivityStatus(status)
+	previous := tab.ActivityStatus
+	changed := previous != status
 	tab.ActivityStatus = status
-	return true
+	tab.ActivityText = nextTabActivityText(tab.ActivityText, previous, e)
+	return changed, true
+}
+
+func normalizeTabActivityStatus(status string) string {
+	if status == topicStatusRunning {
+		return status
+	}
+	return normalizeTopicStatus(status)
+}
+
+func nextTabActivityText(current, previousStatus string, e event.Event) string {
+	switch e.Kind {
+	case event.TurnStarted, event.TurnDone, event.ApprovalRequest, event.AskRequest:
+		return ""
+	case event.Reasoning:
+		if previousStatus != topicStatusThinking {
+			current = ""
+		}
+		return tailActivityText(current+e.Text, 160)
+	case event.Text:
+		if previousStatus != topicStatusStreaming {
+			current = ""
+		}
+		return tailActivityText(current+e.Text, 160)
+	case event.Message, event.Phase:
+		return tailActivityText(e.Text, 160)
+	case event.ToolDispatch:
+		return toolActivityText(e.Tool.Name, "执行中")
+	case event.ToolResult:
+		return toolActivityText(e.Tool.Name, "执行完成")
+	case event.CompactionStarted:
+		return "正在整理上下文"
+	case event.CompactionDone:
+		return "上下文整理完成"
+	case event.Retrying:
+		if e.RetryMax > 0 {
+			return fmt.Sprintf("正在重试 %d/%d", e.RetryAttempt, e.RetryMax)
+		}
+		return "正在重试"
+	default:
+		return current
+	}
+}
+
+func toolActivityText(name, suffix string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "工具" + suffix
+	}
+	return name + " " + suffix
+}
+
+func tailActivityText(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if limit > 0 && len(runes) > limit {
+		runes = runes[len(runes)-limit:]
+	}
+	return strings.TrimSpace(string(runes))
 }
 
 func (a *App) emitProjectTreeChanged() {

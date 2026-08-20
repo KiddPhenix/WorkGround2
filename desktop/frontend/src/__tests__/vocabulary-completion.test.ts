@@ -20,6 +20,7 @@ eq(vocabularyTokenAt("请使用 多模", 6, 6), { from: 4, to: 6, prefix: "多�
 eq(vocabularyTokenAt("多", 1, 1), null, "one CJK rune is below threshold");
 eq(vocabularyTokenAt("abc", 2, 2), null, "selection away from input end does not ghost over trailing text");
 eq(vocabularyTokenAt("/mem", 4, 4), null, "slash command is excluded");
+eq(vocabularyTokenAt("$skill", 6, 6), null, "explicit Skill invocation is excluded");
 eq(vocabularyTokenAt("@src", 4, 4), null, "file reference is excluded");
 
 const accepted = acceptVocabulary("请使用 多模", { from: 4, to: 6, prefix: "多模" }, {

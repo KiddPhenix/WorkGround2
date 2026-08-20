@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"subagent.finished","params":{"provider":"codex","agentId":"sub-1","parentSessionId":"sess-1","childSessionId":"sub-1","status":"ok","stopReason":"completed","lastAssistantMessage":[{"type":"text","text":"done"}]}}

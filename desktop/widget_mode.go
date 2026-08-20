@@ -127,10 +127,26 @@ type widgetSource struct {
 	pending      control.PendingInteraction
 	has          bool
 	rank         int
+	requestText  string // first user request, used for completion summaries
 	resultText   string
 	totalTokens  int
 	tokenTracked bool
 	model        string
+	sessionDir   string // controller session dir; subagent meta lives under <dir>/subagents
+	branchID     string // agent.BranchID(currentSessionPath); matches subagent ParentSession
+}
+
+type widgetSubagentKey struct {
+	sessionDir string
+	branchID   string
+}
+
+func newWidgetSubagentKey(sessionDir, branchID string) widgetSubagentKey {
+	sessionDir = strings.TrimSpace(sessionDir)
+	if sessionDir != "" {
+		sessionDir = filepath.Clean(sessionDir)
+	}
+	return widgetSubagentKey{sessionDir: sessionDir, branchID: strings.TrimSpace(branchID)}
 }
 
 func widgetWindowStatePath() string {
@@ -208,6 +224,18 @@ func (a *App) IsWidgetMode() bool {
 	return a.widgetMode
 }
 
+// toggleWidgetTaskbar hides or restores the taskbar button while the native
+// window switches between widget and main geometry. widgetTaskbarToggle is a
+// test seam; nil uses the platform implementation, which is a no-op outside
+// Windows.
+func (a *App) toggleWidgetTaskbar(hide bool) error {
+	toggle := a.widgetTaskbarToggle
+	if toggle == nil {
+		toggle = setWidgetTaskbarHidden
+	}
+	return toggle(hide)
+}
+
 // transitionWidgetMode serialises the complete native-window transition and
 // publishes the new mode only after every transition step has finished.
 func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error) {
@@ -221,6 +249,45 @@ func (a *App) transitionWidgetMode(target bool, apply func() error) (bool, error
 	}
 	a.widgetMode = target
 	return true, nil
+}
+
+type widgetWindowTransition struct {
+	widget func() error
+	main   func() error
+	hide   func() error
+	show   func() error
+}
+
+// runWidgetWindowTransition applies geometry before taskbar visibility. When a
+// later step fails it restores both pieces in the opposite order, keeping the
+// primary and every rollback error. transitionWidgetMode holds widgetMu around
+// this helper, so native window steps cannot interleave with another mode
+// transition.
+func runWidgetWindowTransition(enter bool, steps widgetWindowTransition) error {
+	if enter {
+		if err := steps.widget(); err != nil {
+			return errors.Join(fmt.Errorf("apply widget window: %w", err), steps.main())
+		}
+		if err := steps.hide(); err != nil {
+			return errors.Join(
+				fmt.Errorf("hide taskbar for widget mode: %w", err),
+				steps.main(),
+				steps.show(),
+			)
+		}
+		return nil
+	}
+	if err := steps.main(); err != nil {
+		return errors.Join(fmt.Errorf("restore main window: %w", err), steps.widget())
+	}
+	if err := steps.show(); err != nil {
+		return errors.Join(
+			fmt.Errorf("restore taskbar for main window: %w", err),
+			steps.widget(),
+			steps.hide(),
+		)
+	}
+	return nil
 }
 
 func (a *App) refreshWidgetRegion(size func() (int, int), apply func(int, int) error) error {
@@ -241,10 +308,22 @@ func (a *App) RefreshWidgetWindowRegion() error {
 	if a.ctx == nil {
 		return nil
 	}
+	style, _ := a.desktopIconPreferences()
+	if style == "icons" {
+		return nil
+	}
 	return a.refreshWidgetRegion(
 		func() (int, int) { return runtime.WindowGetSize(a.ctx) },
-		setWidgetWindowRegion,
+		func(w, h int) error {
+			return a.applyWidgetRegion(func() error { return setWidgetWindowRegion(w, h) })
+		},
 	)
+}
+
+func (a *App) applyWidgetRegion(apply func() error) error {
+	a.widgetRegionMu.Lock()
+	defer a.widgetRegionMu.Unlock()
+	return apply()
 }
 
 func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) {
@@ -256,18 +335,149 @@ func (a *App) desktopWidgetPreferences() (enabled, alwaysOnTop bool, err error) 
 }
 
 func (a *App) applyWidgetGeometry(state WidgetWindowState, alwaysOnTop bool) error {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.applyWidget != nil {
+		return a.widgetWindowOps.applyWidget(state, alwaysOnTop, false)
+	}
 	runtime.WindowUnmaximise(a.ctx)
 	runtime.WindowSetMinSize(a.ctx, widgetMinWidth, widgetMinHeight)
 	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
 	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
 		return err
 	}
-	return setWidgetWindowRegion(state.Width, state.Height)
+	return a.applyWidgetRegion(func() error {
+		return setWidgetWindowRegion(state.Width, state.Height)
+	})
+}
+
+func (a *App) applyDesktopIconGeometry(state WidgetWindowState, alwaysOnTop bool) error {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.applyWidget != nil {
+		return a.widgetWindowOps.applyWidget(state, alwaysOnTop, true)
+	}
+	runtime.WindowUnmaximise(a.ctx)
+	runtime.WindowSetMinSize(a.ctx, desktopIconMinWidth, desktopIconMinHeight)
+	runtime.WindowSetAlwaysOnTop(a.ctx, alwaysOnTop)
+	if err := setDesktopWindowBounds(a.ctx, state.Width, state.Height, state.X, state.Y); err != nil {
+		return err
+	}
+	// Keep the full transparent surface available until React reports the first
+	// real icon rectangles. Pre-clipping to the exit button prevents WebView2
+	// from composing the later bottom-right controls outside that tiny region.
+	return a.applyWidgetRegion(clearWidgetWindowRegion)
+}
+
+// widgetWindowOps is the test-only seam that replaces the native window
+// geometry interaction inside widget-mode transitions and style switches.
+// Every field may be nil; nil uses the Wails/Win32 implementation.
+type widgetWindowOps struct {
+	// read reports the current window size/position and whether it is
+	// maximised.
+	read func() (WidgetWindowState, bool)
+	// normalize clamps a persisted widget geometry to a visible monitor.
+	normalize func(state WidgetWindowState) (WidgetWindowState, error)
+	// applyWidget applies widget geometry for the given style ("icons" selects
+	// the transparent icon surface, any other value the pager).
+	applyWidget func(state WidgetWindowState, alwaysOnTop bool, icons bool) error
+	// restoreMain restores the main-window geometry after widget mode.
+	restoreMain func(state DesktopWindowState, ok bool) error
+}
+
+// windowReadState returns the current native window geometry through the test
+// seam when present, otherwise through the Wails runtime.
+func (a *App) windowReadState() (WidgetWindowState, bool) {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.read != nil {
+		return a.widgetWindowOps.read()
+	}
+	w, h := runtime.WindowGetSize(a.ctx)
+	x, y := runtime.WindowGetPosition(a.ctx)
+	return WidgetWindowState{Width: w, Height: h, X: x, Y: y}, runtime.WindowIsMaximised(a.ctx)
+}
+
+// normalizeWidgetState clamps a persisted widget geometry through the test
+// seam when present, otherwise through the platform implementation.
+func (a *App) normalizeWidgetState(state WidgetWindowState) (WidgetWindowState, error) {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.normalize != nil {
+		return a.widgetWindowOps.normalize(state)
+	}
+	return normalizeWidgetWindowState(a.ctx, state)
+}
+
+// switchDesktopWidgetStyle acquires widgetMu around the style switch; see
+// switchDesktopWidgetStyleLocked.
+func (a *App) switchDesktopWidgetStyle(style string) (string, error) {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	return a.switchDesktopWidgetStyleLocked(style)
+}
+
+// switchDesktopWidgetStyleLocked applies the geometry for the requested widget
+// style while the compact window is active. The caller must hold widgetMu (the
+// public wrapper and SetDesktopWidgetStyle both do), so the always-on-top flag
+// read, the geometry switch, and the caller's persist form one atomic step that
+// can never interleave with Enter/ExitWidgetMode or another style toggle. It
+// returns the style that was active before the switch ("" when the call was a
+// no-op or ran outside widget mode), which the caller can restore after a
+// failed persist.
+func (a *App) switchDesktopWidgetStyleLocked(style string) (string, error) {
+	if !a.widgetMode {
+		return "", nil
+	}
+	cfg, _, err := a.loadDesktopUserConfigForView()
+	if err != nil {
+		return "", err
+	}
+	alwaysOnTop := cfg.DesktopWidgetAlwaysOnTop()
+	previous := a.widgetStyle
+	if previous == style {
+		return previous, nil
+	}
+	current, _ := a.windowReadState()
+	oldState := WidgetWindowState{Width: current.Width, Height: current.Height, X: current.X, Y: current.Y}
+	saveOld := saveWidgetWindowState
+	if previous == "icons" {
+		saveOld = saveDesktopIconWindowState
+	}
+	if err := saveOld(oldState); err != nil {
+		return previous, fmt.Errorf("save %s widget geometry: %w", previous, err)
+	}
+	target, ok := loadWidgetWindowState()
+	if style == "icons" {
+		// Icon mode is a transparent desktop surface, so its drawing area follows
+		// the current monitor on every switch. Persisted compact-window geometry
+		// must not shrink the canvas after a display or DPI change.
+		target, ok = a.desktopIconTargetState(), true
+	}
+	if !ok {
+		if style == "icons" {
+			target = defaultDesktopIconWindowState(a.ctx)
+		} else {
+			target = defaultWidgetWindowState(a.ctx)
+		}
+	}
+	normalized, err := a.normalizeWidgetState(target)
+	if err != nil {
+		return previous, err
+	}
+	apply := a.applyWidgetGeometry
+	if style == "icons" {
+		apply = a.applyDesktopIconGeometry
+	}
+	if err := apply(normalized, alwaysOnTop); err != nil {
+		rollback := a.applyWidgetGeometry
+		if previous == "icons" {
+			rollback = a.applyDesktopIconGeometry
+		}
+		return previous, errors.Join(err, rollback(oldState, alwaysOnTop))
+	}
+	a.widgetStyle = style
+	return previous, nil
 }
 
 func (a *App) restoreMainGeometry(state DesktopWindowState, ok bool) error {
+	if a.widgetWindowOps != nil && a.widgetWindowOps.restoreMain != nil {
+		return a.widgetWindowOps.restoreMain(state, ok)
+	}
 	runtime.WindowSetAlwaysOnTop(a.ctx, false)
-	regionErr := clearWidgetWindowRegion()
+	regionErr := a.applyWidgetRegion(clearWidgetWindowRegion)
 	runtime.WindowSetMinSize(a.ctx, 760, 480)
 	if !ok {
 		runtime.WindowSetSize(a.ctx, 1280, 800)
@@ -291,35 +501,7 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 	if a.ctx == nil {
 		return WidgetSnapshot{}, errors.New("desktop window is not ready")
 	}
-	widgetEnabled, widgetAlwaysOnTop, err := a.desktopWidgetPreferences()
-	if err != nil {
-		return WidgetSnapshot{}, fmt.Errorf("读取小组件设置: %w", err)
-	}
-	if !widgetEnabled {
-		return WidgetSnapshot{}, errors.New("小组件已在设置中禁用，请前往 设置 > 小组件 重新启用")
-	}
-	changed, err := a.transitionWidgetMode(true, func() error {
-		w, h := runtime.WindowGetSize(a.ctx)
-		x, y := runtime.WindowGetPosition(a.ctx)
-		mainState := DesktopWindowState{Width: w, Height: h, X: x, Y: y, Maximised: runtime.WindowIsMaximised(a.ctx)}
-		if err := saveMainWindowState(mainState); err != nil {
-			return fmt.Errorf("save main window: %w", err)
-		}
-		state, ok := loadWidgetWindowState()
-		if !ok {
-			state = defaultWidgetWindowState(a.ctx)
-		}
-		normalized, normalizeErr := normalizeWidgetWindowState(a.ctx, state)
-		if normalizeErr != nil {
-			return fmt.Errorf("normalize widget window: %w", normalizeErr)
-		}
-		state = normalized
-		if err := a.applyWidgetGeometry(state, widgetAlwaysOnTop); err != nil {
-			rollbackErr := a.restoreMainGeometry(mainState, true)
-			return errors.Join(fmt.Errorf("apply widget window: %w", err), rollbackErr)
-		}
-		return nil
-	})
+	changed, err := a.transitionWidgetMode(true, func() error { return a.applyEnterWidgetMode() })
 	if err != nil {
 		return WidgetSnapshot{}, err
 	}
@@ -329,44 +511,161 @@ func (a *App) EnterWidgetMode() (WidgetSnapshot, error) {
 	return a.GetWidgetSnapshot(), nil
 }
 
+// applyEnterWidgetMode runs inside transitionWidgetMode's widgetMu critical
+// section: it reads the persisted widget preferences and applies the native
+// window transition in the same atomic step, so a concurrent always-on-top or
+// style toggle can never interleave between the read and the apply and leave
+// the runtime window state differing from the persisted config. When widget
+// mode is already active the transition short-circuits before this closure,
+// keeping repeated entry idempotent.
+func (a *App) applyEnterWidgetMode() error {
+	widgetEnabled, widgetAlwaysOnTop, err := a.desktopWidgetPreferences()
+	if err != nil {
+		return fmt.Errorf("读取小组件设置: %w", err)
+	}
+	if !widgetEnabled {
+		return errors.New("小组件已在设置中禁用，请前往 设置 > 小组件 重新启用")
+	}
+	current, maximised := a.windowReadState()
+	mainState := DesktopWindowState{Width: current.Width, Height: current.Height, X: current.X, Y: current.Y, Maximised: maximised}
+	if err := saveMainWindowState(mainState); err != nil {
+		return fmt.Errorf("save main window: %w", err)
+	}
+	style, _ := a.desktopIconPreferences()
+	state, ok := loadWidgetWindowState()
+	if style == "icons" {
+		// Always rebuild the icon canvas from the monitor that owns the main
+		// window. The saved icon bounds remain useful for exit rollback only.
+		state, ok = a.desktopIconTargetState(), true
+	}
+	if !ok {
+		if style == "icons" {
+			state = defaultDesktopIconWindowState(a.ctx)
+		} else {
+			state = defaultWidgetWindowState(a.ctx)
+		}
+	}
+	normalized, normalizeErr := a.normalizeWidgetState(state)
+	if normalizeErr != nil {
+		return fmt.Errorf("normalize widget window: %w", normalizeErr)
+	}
+	state = normalized
+	apply := a.applyWidgetGeometry
+	if style == "icons" {
+		apply = a.applyDesktopIconGeometry
+	}
+	if err := runWidgetWindowTransition(true, widgetWindowTransition{
+		widget: func() error { return apply(state, widgetAlwaysOnTop) },
+		main:   func() error { return a.restoreMainGeometry(mainState, true) },
+		hide:   func() error { return a.toggleWidgetTaskbar(true) },
+		show:   func() error { return a.toggleWidgetTaskbar(false) },
+	}); err != nil {
+		return err
+	}
+	a.widgetStyle = style
+	return nil
+}
+
 // ExitWidgetMode saves compact geometry and restores the independent main
 // geometry. Passing a tab ID also opens that task in the restored window.
 func (a *App) ExitWidgetMode(tabID string) error {
 	if a.ctx == nil {
 		return errors.New("desktop window is not ready")
 	}
-	changed, err := a.transitionWidgetMode(false, func() error {
-		w, h := runtime.WindowGetSize(a.ctx)
-		x, y := runtime.WindowGetPosition(a.ctx)
-		widgetState := WidgetWindowState{Width: w, Height: h, X: x, Y: y}
-		if err := saveWidgetWindowState(widgetState); err != nil {
-			return fmt.Errorf("save widget window: %w", err)
-		}
-		state, ok := loadWindowState()
-		if err := a.restoreMainGeometry(state, ok); err != nil {
-			_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
-			if configErr != nil {
-				fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
-				alwaysOnTop = true
-			}
-			rollbackErr := a.applyWidgetGeometry(widgetState, alwaysOnTop)
-			return errors.Join(fmt.Errorf("restore main window: %w", err), rollbackErr)
-		}
-		return nil
-	})
+	// Opening a task from the widget must not change the icon's existence:
+	// remember it as retained so the icon survives the task finishing and is
+	// only removed by an explicit dismiss/remove. Best-effort — a failed
+	// persist never blocks the window transition.
+	a.rememberDesktopIconTask(tabID)
+	return a.exitWidgetMode(tabID)
+}
+
+func (a *App) exitWidgetMode(tabID string) error {
+	if a.ctx == nil {
+		return errors.New("desktop window is not ready")
+	}
+	_, err := a.transitionWidgetMode(false, func() error { return a.applyExitWidgetMode() })
 	if err != nil {
 		return err
 	}
-	if changed {
-		runtime.EventsEmit(a.ctx, "widget:mode", false)
+	var activateErr error
+	if strings.TrimSpace(tabID) != "" {
+		activateErr = a.SetActiveTab(tabID)
+	}
+	reconciled, reconcileErr := a.reconcileMainWindow()
+	if reconcileErr != nil {
+		return errors.Join(activateErr, reconcileErr)
+	}
+	if reconciled {
+		// Publish only after the final native reconciliation. This keeps React
+		// from exposing MainApp through a stale icon HRGN and also lets a repeated
+		// exit repair an already-diverged logical/native window state.
+		a.runtimeEvents.Emit(a.ctx, "widget:mode", false)
+	}
+	if activateErr != nil {
+		return activateErr
 	}
 	if strings.TrimSpace(tabID) != "" {
-		if err := a.SetActiveTab(tabID); err != nil {
-			return err
-		}
 		a.emitSessionActivated("widget-open")
 	}
 	return nil
+}
+
+// reconcileMainWindow is the idempotent commit point for every widget exit.
+// It intentionally runs even when transitionWidgetMode found widgetMode
+// already false: the logical bit may survive while Win32 still has widget
+// bounds, WS_EX_TOOLWINDOW or an icon HRGN. Reapplying the authoritative main
+// geometry and taskbar state makes the same exit call a safe recovery action.
+func (a *App) reconcileMainWindow() (bool, error) {
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if a.widgetMode {
+		return false, nil
+	}
+	state, ok := loadWindowState()
+	if err := errors.Join(a.restoreMainGeometry(state, ok), a.toggleWidgetTaskbar(false)); err != nil {
+		return false, fmt.Errorf("reconcile main window: %w", err)
+	}
+	return true, nil
+}
+
+// applyExitWidgetMode runs inside transitionWidgetMode's widgetMu critical
+// section: it saves the compact geometry, restores the independent main
+// geometry, and switches the taskbar visibility in one atomic step.
+func (a *App) applyExitWidgetMode() error {
+	current, _ := a.windowReadState()
+	widgetState := WidgetWindowState{Width: current.Width, Height: current.Height, X: current.X, Y: current.Y}
+	style := a.widgetStyle
+	save := saveWidgetWindowState
+	if style == "icons" {
+		save = saveDesktopIconWindowState
+	}
+	if err := save(widgetState); err != nil {
+		return fmt.Errorf("save widget window: %w", err)
+	}
+	state, ok := loadWindowState()
+	return runWidgetWindowTransition(false, widgetWindowTransition{
+		widget: func() error { return a.reapplyWidgetGeometry(widgetState, style) },
+		main:   func() error { return a.restoreMainGeometry(state, ok) },
+		hide:   func() error { return a.toggleWidgetTaskbar(true) },
+		show:   func() error { return a.toggleWidgetTaskbar(false) },
+	})
+}
+
+// reapplyWidgetGeometry rolls a failed exit back to the saved widget geometry,
+// reloading the always-on-top preference because the main restore already
+// cleared it.
+func (a *App) reapplyWidgetGeometry(state WidgetWindowState, style string) error {
+	_, alwaysOnTop, configErr := a.desktopWidgetPreferences()
+	if configErr != nil {
+		fmt.Printf("widget: reload always-on-top preference during rollback: %v\n", configErr)
+		alwaysOnTop = true
+	}
+	apply := a.applyWidgetGeometry
+	if style == "icons" {
+		apply = a.applyDesktopIconGeometry
+	}
+	return apply(state, alwaysOnTop)
 }
 
 func defaultWidgetWindowState(ctx context.Context) WidgetWindowState {
@@ -399,6 +698,41 @@ func defaultWidgetWindowStateForScreens(width, height int) WidgetWindowState {
 	}
 }
 
+func defaultDesktopIconWindowState(ctx context.Context) WidgetWindowState {
+	if state, ok := nativeDefaultDesktopIconWindowState(ctx); ok {
+		return state
+	}
+	screens, err := runtime.ScreenGetAll(ctx)
+	if err != nil || len(screens) == 0 {
+		return WidgetWindowState{Width: desktopIconWidth, Height: desktopIconHeight, X: widgetEdgeGap, Y: widgetBottomGap}
+	}
+	selected := screens[0]
+	for _, screen := range screens {
+		if screen.IsCurrent || (!selected.IsCurrent && screen.IsPrimary) {
+			selected = screen
+		}
+		if screen.IsCurrent {
+			break
+		}
+	}
+	return WidgetWindowState{Width: selected.Size.Width, Height: selected.Size.Height}
+}
+
+// desktopIconTargetState keeps native production entry tied to the current
+// monitor while preserving the injected geometry contract used by tests and
+// non-window orchestration. A real window never reuses the persisted compact
+// bounds, so stale display geometry cannot shrink the transparent canvas.
+func (a *App) desktopIconTargetState() WidgetWindowState {
+	if a.widgetWindowOps != nil {
+		state, ok, err := loadDesktopIconWindowState()
+		a.recordDesktopIconWindowError(err)
+		if ok {
+			return state
+		}
+	}
+	return defaultDesktopIconWindowState(a.ctx)
+}
+
 func (a *App) widgetSources() []widgetSource {
 	a.mu.RLock()
 	tabs := a.runtimeTabsLocked()
@@ -408,18 +742,51 @@ func (a *App) widgetSources() []widgetSource {
 			continue
 		}
 		source := widgetSource{meta: a.tabMeta(tab, tab.ID == a.activeTabID), rank: rank}
+		if tab.Ctrl != nil {
+			source.sessionDir = tab.Ctrl.SessionDir()
+		}
+		source.branchID = agent.BranchID(tab.currentSessionPath())
 		telemetry := tab.telemetrySnapshot().Usage
 		source.totalTokens = telemetry.TotalTokens
 		source.tokenTracked = telemetry.RequestCount > 0 || telemetry.TotalTokens > 0
 		source.model = strings.TrimSpace(tab.Label)
 		if tab.Ctrl != nil {
 			source.pending, source.has = tab.Ctrl.PendingInteraction()
+			source.requestText = firstWidgetUserText(tab.Ctrl.History())
 			source.resultText = lastWidgetAssistantText(tab.Ctrl.History())
 		}
 		out = append(out, source)
 	}
 	a.mu.RUnlock()
 	return out
+}
+
+// widgetSubagentCounts scans each unique session dir exactly once and returns
+// running sub-agent counts keyed by parent branch ID. The scan performs file
+// I/O and must never run while a.mu is held; widgetSources() has already
+// released a.mu when this is called, and failures are returned so they surface
+// in the snapshot instead of being mistaken for idle state.
+func (a *App) widgetSubagentCounts(sources []widgetSource) (map[widgetSubagentKey]int, error) {
+	dirs := map[string]bool{}
+	for _, source := range sources {
+		if dir := strings.TrimSpace(source.sessionDir); dir != "" {
+			dirs[filepath.Clean(dir)] = true
+		}
+	}
+	counts := map[widgetSubagentKey]int{}
+	var errs []error
+	for dir := range dirs {
+		got, err := agent.RunningSubagentCounts(dir)
+		for parent, n := range got {
+			counts[newWidgetSubagentKey(dir, parent)] += n
+		}
+		if err != nil {
+			// Keep the usable partial counts; the error still surfaces in the
+			// snapshot instead of being mistaken for idle state.
+			errs = append(errs, err)
+		}
+	}
+	return counts, errors.Join(errs...)
 }
 
 // retryLeaseTabs retries startup after a session lease becomes available.
@@ -592,6 +959,20 @@ func lastWidgetAssistantText(messages []provider.Message) string {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == provider.RoleAssistant {
 			if text := strings.TrimSpace(messages[i].Content); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+// firstWidgetUserText returns the first non-empty user request of a history.
+// It is the task-level ask used as completion-summary material; it never
+// inspects or mutates the session itself.
+func firstWidgetUserText(messages []provider.Message) string {
+	for _, message := range messages {
+		if message.Role == provider.RoleUser {
+			if text := strings.TrimSpace(message.Content); text != "" {
 				return text
 			}
 		}

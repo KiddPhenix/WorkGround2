@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -182,6 +183,84 @@ func TestDesktopRoomUnreadUsesStableSessionAndRoomIdentity(t *testing.T) {
 	read, err := app.MarkUnreadRead(MarkUnreadReadInput{ConversationKey: conversation.Key, UpToSequence: 3})
 	if err != nil || read.Summary.TotalUnread != 0 || read.Summary.Conversations[0].ReadSequence != 3 {
 		t.Fatalf("read state = %+v, err = %v", read, err)
+	}
+}
+
+// TestUnreadTargetVisibleWidgetModeBlocksBackgroundAutoRead pins the visibility
+// gate: while the main window is in widget mode the background active tab is
+// hidden behind the widget, so session/work targets must never count as
+// visible; normal window mode keeps the existing visible-equals-read semantics.
+func TestUnreadTargetVisibleWidgetModeBlocksBackgroundAutoRead(t *testing.T) {
+	app := &App{
+		widgetMode: true,
+		tabs: map[string]*WorkspaceTab{
+			"tab-1": {ID: "tab-1", SessionID: "session-1", workID: "work-1"},
+		},
+		activeTabID: "tab-1",
+	}
+	for _, probe := range []struct{ sessionID, workID string }{
+		{"session-1", ""},
+		{"", "work-1"},
+		{`path:D:\sessions\session-1.jsonl`, ""},
+	} {
+		if app.unreadTargetVisible(probe.sessionID, probe.workID) {
+			t.Fatalf("widget mode treated background target %q/%q as visible", probe.sessionID, probe.workID)
+		}
+	}
+	app.widgetMode = false
+	for _, probe := range []struct{ sessionID, workID string }{
+		{"session-1", ""},
+		{"", "work-1"},
+	} {
+		if !app.unreadTargetVisible(probe.sessionID, probe.workID) {
+			t.Fatalf("normal window mode did not treat %q/%q as visible", probe.sessionID, probe.workID)
+		}
+	}
+}
+
+// TestDesktopRoomUnreadRespectsWidgetModeVisibility verifies the Room unread
+// projection honors the widget-mode visibility gate: with widgetMode=true even
+// a matching active Room keeps a new remote message unread, while
+// widgetMode=false keeps the existing auto-read behavior for the visible Room.
+func TestDesktopRoomUnreadRespectsWidgetModeVisibility(t *testing.T) {
+	observe := func(widgetMode, matchActive bool) unread.Summary {
+		store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tabs := map[string]*WorkspaceTab{}
+		active := ""
+		if matchActive {
+			tabs["tab-1"] = &WorkspaceTab{ID: "tab-1", SessionID: "owner-session"}
+			active = "tab-1"
+		}
+		app := &App{unreadStore: store, widgetMode: widgetMode, tabs: tabs, activeTabID: active}
+		created := time.Date(2026, 8, 8, 6, 0, 0, 0, time.UTC)
+		c := &desktopCollaboration{
+			app: app, ownerSessionID: "owner-session", ownerSessionPath: `D:\sessions\owner.jsonl`,
+			state: CollaborationState{
+				Room: "room", MemberID: "self", AgentID: "self-agent", SessionID: "room-session",
+				Snapshot: collab.Snapshot{Room: collab.Room{ID: "room", Name: "Team", CreatedAt: created, LatestSequence: 2}, LatestSequence: 2},
+			},
+		}
+		c.observeUnread()
+		c.state.Snapshot.LatestSequence = 3
+		c.state.Snapshot.Room.LatestSequence = 3
+		c.state.Snapshot.Timeline = []collab.TimelineItem{{
+			ID: "chat", Sequence: 3, Type: collab.TimelineChat,
+			Chat: &collab.ChatMessage{ID: "chat", AuthorID: "other", MentionAgentIDs: []string{"self-agent"}, CreatedAt: created.Add(time.Minute)},
+		}}
+		c.observeUnread()
+		return app.UnreadState().Summary
+	}
+	if got := observe(true, true); got.TotalUnread != 1 {
+		t.Fatalf("widget mode with matching active Room = %+v, want 1 pending remote message", got)
+	}
+	if got := observe(false, true); got.TotalUnread != 0 {
+		t.Fatalf("normal window with matching active Room = %+v, want auto-read", got)
+	}
+	if got := observe(false, false); got.TotalUnread != 1 {
+		t.Fatalf("normal window without active Room = %+v, want 1 pending", got)
 	}
 }
 
@@ -440,5 +519,272 @@ func TestResolveLegacySessionUnreadDisambiguatesByTimestamp(t *testing.T) {
 	}
 	if resolved.SessionPath != closePath {
 		t.Fatalf("SessionPath = %q, want close path %q", resolved.SessionPath, closePath)
+	}
+}
+
+// seedIMSession writes a .jsonl session (with optional meta title/topic) under
+// dir and returns its absolute path.
+func seedIMSession(t *testing.T, dir, name, title, topicID string) string {
+	t.Helper()
+	sessionPath := filepath.Join(dir, name)
+	if err := os.WriteFile(sessionPath, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.EnsureBranchMeta(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	if title != "" || topicID != "" {
+		meta, _, _ := agent.LoadBranchMeta(sessionPath)
+		meta.TopicTitle = title
+		meta.TopicID = topicID
+		raw, _ := json.Marshal(meta)
+		if err := os.WriteFile(agent.BranchMetaPath(sessionPath), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sessionPath
+}
+
+// acceptIMUnreadForTest records one IM unread bound to sessionID and returns
+// the durable "im:" conversation key.
+func acceptIMUnreadForTest(t *testing.T, store *unread.Store, key, sessionID, title string) string {
+	t.Helper()
+	if _, err := store.AcceptIM(unread.IMInput{
+		ConversationKey: key,
+		MessageID:       "msg-" + key,
+		SessionID:       sessionID,
+		Title:           title,
+		ReceivedAt:      time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return "im:" + key
+}
+
+func TestResolveUnreadSessionIMByLivePath(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	sessionPath := seedIMSession(t, dir, "im-live.jsonl", "IM Live", "topic-im-live")
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := acceptIMUnreadForTest(t, store, "chat-live", "path:"+sessionPath, "IM Live")
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveUnreadSession(key)
+	if err != nil {
+		t.Fatalf("ResolveUnreadSession(im live): %v", err)
+	}
+	if resolved.SessionPath != sessionPath {
+		t.Fatalf("SessionPath = %q, want %q", resolved.SessionPath, sessionPath)
+	}
+	if resolved.TopicTitle != "IM Live" {
+		t.Fatalf("TopicTitle = %q, want IM Live", resolved.TopicTitle)
+	}
+	// Resolve alone must not clear the unread; only MarkUnreadRead does.
+	if got := app.UnreadState().Summary.TotalUnread; got != 1 {
+		t.Fatalf("unread should remain intact after resolve, got %d", got)
+	}
+	// Idempotent retry after success.
+	again, err := app.ResolveUnreadSession(key)
+	if err != nil || again.SessionPath != sessionPath {
+		t.Fatalf("idempotent IM resolve = %+v, %v", again, err)
+	}
+}
+
+func TestResolveUnreadSessionIMRestoresFromTrash(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	sessionPath := seedIMSession(t, dir, "im-trash.jsonl", "IM Trash", "topic-im-trash")
+	// Simulate the external session GC: move the session into the local trash.
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash IM session: %v", err)
+	}
+	if _, err := os.Stat(sessionPath); !os.IsNotExist(err) {
+		t.Fatalf("live session should be gone after trash, stat err = %v", err)
+	}
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := acceptIMUnreadForTest(t, store, "chat-trash", "path:"+sessionPath, "IM Trash")
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveUnreadSession(key)
+	if err != nil {
+		t.Fatalf("ResolveUnreadSession(im trash restore): %v", err)
+	}
+	if resolved.SessionPath != sessionPath {
+		t.Fatalf("SessionPath = %q, want %q", resolved.SessionPath, sessionPath)
+	}
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("session should be restored live: %v", err)
+	}
+	// The restore consumed the trash copy.
+	trashPath := filepath.Join(sessionTrashPath(dir), filepath.Base(sessionPath), filepath.Base(sessionPath))
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("trash copy should be consumed by restore, stat err = %v", err)
+	}
+	if got := app.UnreadState().Summary.TotalUnread; got != 1 {
+		t.Fatalf("unread should remain intact after restore resolve, got %d", got)
+	}
+	// Repeated restore after completion stays idempotent.
+	again, err := app.ResolveUnreadSession(key)
+	if err != nil || again.SessionPath != sessionPath {
+		t.Fatalf("idempotent restored IM resolve = %+v, %v", again, err)
+	}
+	// A caller that already entered the restore path before another caller won
+	// must also observe the completed live state after it acquires the lock.
+	if err := app.restoreTrashedIMSession(dir, sessionPath); err != nil {
+		t.Fatalf("late idempotent restore: %v", err)
+	}
+}
+
+func TestResolveUnreadSessionIMMissingTargetKeepsUnread(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "im-gone.jsonl") // never created, no trash copy
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := acceptIMUnreadForTest(t, store, "chat-gone", "path:"+sessionPath, "IM Gone")
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	if _, err := app.ResolveUnreadSession(key); err == nil {
+		t.Fatal("expected explicit error for missing live+trash target, got nil")
+	}
+	if got := app.UnreadState().Summary.TotalUnread; got != 1 {
+		t.Fatalf("unread must be preserved for retry, got %d", got)
+	}
+}
+
+func TestResolveUnreadSessionIMOutsideKnownDirs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := acceptIMUnreadForTest(t, store, "chat-outside", "path:"+outside, "IM Outside")
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	if _, err := app.ResolveUnreadSession(key); err == nil {
+		t.Fatal("expected explicit error for out-of-scope IM session path, got nil")
+	}
+	if got := app.UnreadState().Summary.TotalUnread; got != 1 {
+		t.Fatalf("unread must be preserved for retry, got %d", got)
+	}
+}
+
+func TestResolveUnreadSessionLegacySessionRegression(t *testing.T) {
+	dir := t.TempDir()
+	sessionPath := filepath.Join(dir, "session_f719de92b7ada7e462b8afd646331866.jsonl")
+	if err := os.WriteFile(sessionPath, []byte("[]"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.EnsureBranchMeta(sessionPath); err != nil {
+		t.Fatal(err)
+	}
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "session:session_f719de92b7ada7e462b8afd646331866"
+	if _, err := store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceSession, ConversationKey: key,
+		EventID: "turn:1", SessionID: "session_f719de92b7ada7e462b8afd646331866",
+		Title: "查看一下调用codex cli的方式", Kind: "completed", Priority: unread.PriorityNormal,
+		OccurredAt: time.Date(2026, 8, 9, 3, 21, 6, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	resolved, err := app.ResolveUnreadSession(key)
+	if err != nil || resolved.SessionPath != sessionPath {
+		t.Fatalf("ResolveUnreadSession legacy session = %+v, %v", resolved, err)
+	}
+	// The legacy bound method keeps working unchanged.
+	legacy, err := app.ResolveLegacySessionUnread(key)
+	if err != nil || legacy.SessionPath != sessionPath {
+		t.Fatalf("ResolveLegacySessionUnread regression = %+v, %v", legacy, err)
+	}
+}
+
+func TestResolveUnreadSessionUnsupportedSource(t *testing.T) {
+	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "work:job-1"
+	if _, err := store.AcceptAttention(unread.AttentionInput{
+		Source: unread.SourceWork, ConversationKey: key,
+		EventID: "input:1:waiting:1", SessionID: "work-session",
+		Title: "Work", Kind: "question", Priority: unread.PriorityHigh,
+		OccurredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{unreadStore: store}
+	if _, err := app.ResolveUnreadSession(key); err == nil {
+		t.Fatal("expected error for unsupported work source, got nil")
+	}
+	if _, err := app.ResolveUnreadSession(""); err == nil {
+		t.Fatal("expected error for empty key, got nil")
+	}
+	if _, err := app.ResolveUnreadSession("session:missing"); err == nil {
+		t.Fatal("expected error for missing conversation, got nil")
+	}
+}
+
+func TestResolveUnreadSessionIMConcurrentRestore(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := t.TempDir()
+	sessionPath := seedIMSession(t, dir, "im-race.jsonl", "IM Race", "topic-im-race")
+	if err := deleteSessionFile(dir, sessionPath); err != nil {
+		t.Fatalf("trash IM session: %v", err)
+	}
+	store, err := unread.Open(filepath.Join(dir, "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := acceptIMUnreadForTest(t, store, "chat-race", "path:"+sessionPath, "IM Race")
+	app := &App{unreadStore: store, sessionDirsOverride: []string{dir}}
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	targets := make([]ResolvedSession, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			targets[i], results[i] = app.ResolveUnreadSession(key)
+		}(i)
+	}
+	wg.Wait()
+	for i := 0; i < 2; i++ {
+		if results[i] != nil {
+			t.Fatalf("concurrent resolve %d failed: %v", i, results[i])
+		}
+		if targets[i].SessionPath != sessionPath {
+			t.Fatalf("concurrent resolve %d target = %q, want %q", i, targets[i].SessionPath, sessionPath)
+		}
+	}
+	// Exactly one live session copy, no duplicates from the racing restores.
+	if _, err := os.Stat(sessionPath); err != nil {
+		t.Fatalf("session should be restored live: %v", err)
+	}
+	trashPath := filepath.Join(sessionTrashPath(dir), filepath.Base(sessionPath), filepath.Base(sessionPath))
+	if _, err := os.Stat(trashPath); !os.IsNotExist(err) {
+		t.Fatalf("trash copy should be consumed exactly once, stat err = %v", err)
+	}
+	if got := app.UnreadState().Summary.TotalUnread; got != 1 {
+		t.Fatalf("unread should remain intact after concurrent resolves, got %d", got)
 	}
 }

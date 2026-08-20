@@ -39,18 +39,25 @@ const (
 
 // WidgetWorkspaceOption is one selectable workspace for the widget dropdown.
 type WidgetWorkspaceOption struct {
-	Scope string `json:"scope"`          // "auto", "project", "global"
-	Name  string `json:"name"`           // display name
-	Root  string `json:"root,omitempty"` // project root, set only for scope="project"
+	Scope          string `json:"scope"`                    // "auto", "project", "global"
+	Name           string `json:"name"`                     // display name
+	Root           string `json:"root,omitempty"`           // project root, set only for scope="project"
+	Icon           string `json:"icon,omitempty"`           // normalized project icon key
+	Pinned         bool   `json:"pinned,omitempty"`         // pinned into a desktop workspace slot
+	LastActivityAt int64  `json:"lastActivityAt,omitempty"` // newest activity inside the project
 }
 
 // WidgetConversationInput starts a normal controller turn without leaving the
 // compact surface. RequestID makes a send safe to retry after an IPC failure.
 // Workspace selects the target: "auto" (default), "global", or "project:<root>".
+// Model and ApprovalMode are optional per-send overrides; when empty the user
+// defaults from desktopNewSessionDefaults are applied to the new conversation.
 type WidgetConversationInput struct {
-	Prompt    string `json:"prompt"`
-	RequestID string `json:"requestId"`
-	Workspace string `json:"workspace,omitempty"`
+	Prompt       string `json:"prompt"`
+	RequestID    string `json:"requestId"`
+	Workspace    string `json:"workspace,omitempty"`
+	Model        string `json:"model,omitempty"`
+	ApprovalMode string `json:"approvalMode,omitempty"`
 }
 
 // WidgetConversationResult reports the chosen workspace and an explicit,
@@ -70,6 +77,8 @@ type widgetConversationReceipt struct {
 	RequestID          string `json:"requestId"`
 	PromptHash         string `json:"promptHash"`
 	WorkspaceSelection string `json:"workspaceSelection,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ToolApprovalMode   string `json:"toolApprovalMode,omitempty"`
 	Scope              string `json:"scope"`
 	WorkspaceRoot      string `json:"workspaceRoot,omitempty"`
 	WorkspaceName      string `json:"workspaceName"`
@@ -163,6 +172,11 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 	if len([]rune(prompt)) > widgetPromptLimit {
 		return a.widgetConversationResult("invalid", fmt.Errorf("对话内容最多 %d 个字符", widgetPromptLimit), widgetConversationReceipt{})
 	}
+	model := strings.TrimSpace(input.Model)
+	approvalMode, approvalErr := widgetApprovalMode(input.ApprovalMode)
+	if approvalErr != nil {
+		return a.widgetConversationResult("invalid", approvalErr, widgetConversationReceipt{})
+	}
 	promptHash := fmt.Sprintf("%x", sha256.Sum256([]byte(prompt)))
 
 	receipt, found, err := a.widgetConversationReceipt(requestID)
@@ -173,13 +187,36 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 	if receiptSelection == "" {
 		receiptSelection = widgetWorkspaceAuto
 	}
-	if found && (receipt.PromptHash != promptHash || receiptSelection != wsSelection) {
-		return a.widgetConversationResult("invalid", errors.New("同一 requestId 不能发送不同内容或切换工作区"), receipt)
+	if found && (receipt.PromptHash != promptHash || receiptSelection != wsSelection ||
+		(model != "" && receipt.Model != model) || (approvalMode != "" && receipt.ToolApprovalMode != approvalMode)) {
+		return a.widgetConversationResult("invalid", errors.New("同一 requestId 不能发送不同内容、切换工作区或变更模型/审批设置"), receipt)
 	}
 	if found && receipt.Status == "submitted" {
 		return a.widgetConversationResult("already_applied", nil, receipt)
 	}
+	if model != "" {
+		receipt.Model = model
+	}
+	if approvalMode != "" {
+		receipt.ToolApprovalMode = approvalMode
+	}
+	if strings.TrimSpace(receipt.Model) == "" || strings.TrimSpace(receipt.ToolApprovalMode) == "" {
+		defaultModel, defaultApproval := desktopNewSessionDefaults()
+		if strings.TrimSpace(receipt.Model) == "" {
+			receipt.Model = defaultModel
+		}
+		if strings.TrimSpace(receipt.ToolApprovalMode) == "" {
+			receipt.ToolApprovalMode = defaultApproval
+		}
+	}
 	if !found {
+		// A brand-new requestId validates the chosen model against the same
+		// configured-provider list the widget's picker offers. Retries reuse the
+		// receipt gate above instead, so a config change cannot invalidate an
+		// already-accepted intent.
+		if model != "" && !widgetModelRefExists(a.Models(), model) {
+			return a.widgetConversationResult("invalid", fmt.Errorf("模型 %q 不在当前可用列表中", model), widgetConversationReceipt{})
+		}
 		candidates := a.widgetWorkspaceCandidates()
 		route, routeErr := resolveWidgetWorkspace(wsSelection, prompt, candidates)
 		if routeErr != nil {
@@ -188,7 +225,8 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		receipt = widgetConversationReceipt{
 			RequestID: requestID, PromptHash: promptHash,
 			WorkspaceSelection: wsSelection,
-			Scope:              route.Scope, WorkspaceRoot: route.Root, WorkspaceName: route.Name,
+			Model:              receipt.Model, ToolApprovalMode: receipt.ToolApprovalMode,
+			Scope: route.Scope, WorkspaceRoot: route.Root, WorkspaceName: route.Name,
 			RouteReason: route.Reason, RouteReasonCode: route.ReasonCode,
 			Status: "routing", UpdatedAt: time.Now().UnixMilli(),
 		}
@@ -210,6 +248,12 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		if err := a.saveWidgetConversationReceipt(receipt); err != nil {
 			return a.widgetConversationResult("retryable_error", fmt.Errorf("保存新对话状态: %w", err), receipt)
 		}
+	}
+	if err := a.applyWidgetConversationDefaults(receipt.TabID, receipt.Model, receipt.ToolApprovalMode); err != nil {
+		receipt.Status = "created"
+		receipt.Error = err.Error()
+		_ = a.saveWidgetConversationReceipt(receipt)
+		return a.widgetConversationResult("retryable_error", fmt.Errorf("应用新对话设置: %w", err), receipt)
 	}
 
 	ctrl, err := a.waitWidgetTabReady(receipt.TabID, widgetReadyWait)
@@ -245,6 +289,20 @@ func (a *App) startWidgetConversationOnce(input WidgetConversationInput) WidgetC
 		return a.widgetConversationResult("retryable_error", fmt.Errorf("保存发送回执: %w", err), receipt)
 	}
 	return a.widgetConversationResult("accepted", nil, receipt)
+}
+
+// applyWidgetConversationDefaults makes a reused blank tab match the same
+// user-level defaults shown in QuickStart. Model changes remain pending until
+// SubmitToTab's existing idle rebuild gate applies them; approval posture is
+// updated immediately and is carried into that rebuild.
+func (a *App) applyWidgetConversationDefaults(tabID, model, approvalMode string) error {
+	if model = strings.TrimSpace(model); model != "" {
+		if err := a.SetModelForTab(tabID, model); err != nil {
+			return err
+		}
+	}
+	a.SetToolApprovalModeForTab(tabID, approvalMode)
+	return nil
 }
 
 func (a *App) widgetConversationResult(status string, err error, receipt widgetConversationReceipt) WidgetConversationResult {
@@ -326,6 +384,40 @@ func widgetHistoryHasPrompt(messages []provider.Message, prompt string) bool {
 		}
 	}
 	return false
+}
+
+// widgetModelRefExists reports whether ref names a configured, access-allowed
+// provider model — the same list the widget's model picker offers, so a
+// selection can never be silently replaced by the user defaults.
+func widgetModelRefExists(models []ModelInfo, ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	for _, m := range models {
+		if m.Ref == ref {
+			return true
+		}
+	}
+	return false
+}
+
+// widgetApprovalMode preserves the public input's optional semantics: empty
+// means "use the user's default", while an explicit value must be one of the
+// three modes the QuickStart picker exposes.
+func widgetApprovalMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return "", nil
+	case control.ToolApprovalAsk:
+		return control.ToolApprovalAsk, nil
+	case control.ToolApprovalAuto:
+		return control.ToolApprovalAuto, nil
+	case control.ToolApprovalYolo:
+		return control.ToolApprovalYolo, nil
+	default:
+		return "", fmt.Errorf("审批模式 %q 无效", value)
+	}
 }
 
 func (a *App) widgetWorkspaceCandidates() []widgetWorkspaceCandidate {
@@ -429,9 +521,9 @@ func (a *App) ListWidgetWorkspaces() []WidgetWorkspaceOption {
 		if c.Transient {
 			continue
 		}
-		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root})
+		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root, Icon: projectIcon(c.Root)})
 	}
-	out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle()})
+	out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle(), Icon: globalProjectIcon()})
 	return out
 }
 

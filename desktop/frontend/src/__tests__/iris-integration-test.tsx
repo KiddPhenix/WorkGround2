@@ -419,7 +419,7 @@ ok(!appSource.includes('desktopLayoutStyle === "iris"'), "Regression: no invalid
 // ── Regression: AddOn launcher uses setWorkbenchOpen (not AddOnDialog) ──────
 // The AddOnLauncherButton component calls setWorkbenchOpen — verified by
 // the AddOnWorkbenchOverlay appearing when we seed workbenchOpen=true
-ok(sessionSurfaceSource.includes("<AddOnLauncherButton />"), "Regression: workbench path renders the AddOn launcher");
+ok(appSource.includes("<AddOnLauncherButton />"), "Regression: workbench path renders the AddOn launcher");
 
 // ── Regression: Real workbench path uses correct selectors ──────────────────
 ok(appSource.includes('"app--workbench"'), "Real workbench: app--workbench CSS selector exists");

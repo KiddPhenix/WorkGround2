@@ -713,3 +713,129 @@ func prepareCompletedSubagentForLineageTest(t *testing.T, parentSession string) 
 	run.Release()
 	return sessionDir, store, run.Ref, spec
 }
+
+func TestRunningSubagentCountsGroupsRunningByParent(t *testing.T) {
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+
+	// parent-a owns two still-running sub-agents.
+	for i := 0; i < 2; i++ {
+		spec := testSubagentSpec(t, "review")
+		spec.ParentSession = "parent-a"
+		run, err := store.PrepareFresh(spec)
+		if err != nil {
+			t.Fatalf("PrepareFresh: %v", err)
+		}
+		if err := store.MarkRunning(run); err != nil {
+			t.Fatalf("MarkRunning: %v", err)
+		}
+		run.Release()
+	}
+
+	// parent-b owns one running, one completed and one failed sub-agent.
+	spec := testSubagentSpec(t, "review")
+	spec.ParentSession = "parent-b"
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	if err := store.MarkRunning(run); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	run.Release()
+	run, err = store.PrepareFresh(testSubagentSpec(t, "review"))
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	run.Meta.ParentSession = "parent-b"
+	if err := store.SaveCompleted(run); err != nil {
+		t.Fatalf("SaveCompleted: %v", err)
+	}
+	run.Release()
+	run, err = store.PrepareFresh(testSubagentSpec(t, "review"))
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	run.Meta.ParentSession = "parent-b"
+	if err := store.SaveFailed(run); err != nil {
+		t.Fatalf("SaveFailed: %v", err)
+	}
+	run.Release()
+
+	counts, err := RunningSubagentCounts(sessionDir)
+	if err != nil {
+		t.Fatalf("RunningSubagentCounts: %v", err)
+	}
+	if counts["parent-a"] != 2 || counts["parent-b"] != 1 || len(counts) != 2 {
+		t.Fatalf("counts = %v, want parent-a:2 parent-b:1 only", counts)
+	}
+}
+
+func TestRunningSubagentCountsExcludesInterrupted(t *testing.T) {
+	sessionDir := t.TempDir()
+	store := NewSubagentStore(filepath.Join(sessionDir, "subagents"))
+	run, err := store.PrepareFresh(testSubagentSpec(t, "review"))
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	if err := store.MarkRunning(run); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	run.Release()
+	if cleaned, err := store.CleanupStaleRunning(); err != nil || cleaned != 1 {
+		t.Fatalf("CleanupStaleRunning = %d, %v; want 1 cleaned", cleaned, err)
+	}
+	counts, err := RunningSubagentCounts(sessionDir)
+	if err != nil {
+		t.Fatalf("RunningSubagentCounts: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want interrupted sub-agent excluded", counts)
+	}
+}
+
+func TestRunningSubagentCountsMissingDirIsNotAnError(t *testing.T) {
+	counts, err := RunningSubagentCounts(filepath.Join(t.TempDir(), "no-sessions"))
+	if err != nil {
+		t.Fatalf("RunningSubagentCounts: %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want empty", counts)
+	}
+}
+
+func TestRunningSubagentCountsSurfacesCorruptMeta(t *testing.T) {
+	sessionDir := t.TempDir()
+	subagentDir := filepath.Join(sessionDir, "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "sa_20260102_030405_000000000_aabbccddeeff"
+	if err := os.WriteFile(filepath.Join(subagentDir, ref+".meta.json"), []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := RunningSubagentCounts(sessionDir)
+	if err == nil || !strings.Contains(err.Error(), "decode subagent metadata") {
+		t.Fatalf("RunningSubagentCounts error = %v, counts = %v; want decode error surfaced", err, counts)
+	}
+}
+
+func TestRunningSubagentCountsSurfacesRunningMetaWithoutParent(t *testing.T) {
+	sessionDir := t.TempDir()
+	subagentDir := filepath.Join(sessionDir, "subagents")
+	if err := os.MkdirAll(subagentDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ref := "sa_20260102_030405_000000000_aabbccddeeff"
+	data := []byte(`{"ref":"sa_x","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","status":"running","kind":"task","name":"n","workspaceRoot":"","parentSession":"","systemPromptHash":"","toolScope":[],"toolSchemaHash":"","model":"","effort":""}` + "\n")
+	if err := os.WriteFile(filepath.Join(subagentDir, ref+".meta.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := RunningSubagentCounts(sessionDir)
+	if err == nil || !strings.Contains(err.Error(), "without a parent session") {
+		t.Fatalf("RunningSubagentCounts error = %v, counts = %v; want orphan running meta surfaced", err, counts)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want orphan running meta excluded from counts", counts)
+	}
+}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +47,26 @@ func TestWidgetTransitionPublishesModeAfterApply(t *testing.T) {
 	}
 	if mode := <-observed; !mode {
 		t.Fatal("mode was not published after native transition finished")
+	}
+}
+
+func TestWidgetTransitionPreservesVisibleTabForIconProjection(t *testing.T) {
+	tab := &WorkspaceTab{ID: "tab-1"}
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"tab-1": tab},
+		tabOrder:    []string{"tab-1"},
+		activeTabID: "tab-1",
+	}
+
+	changed, err := app.transitionWidgetMode(true, func() error { return nil })
+	if err != nil || !changed {
+		t.Fatalf("enter widget mode: changed=%v err=%v", changed, err)
+	}
+
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	if app.tabs["tab-1"] != tab || len(app.tabOrder) != 1 || app.tabOrder[0] != "tab-1" || app.activeTabID != "tab-1" {
+		t.Fatalf("widget transition changed visible tab registry: tabs=%v order=%v active=%q", app.tabs, app.tabOrder, app.activeTabID)
 	}
 }
 
@@ -106,6 +128,131 @@ func TestWidgetTransitionFailureKeepsModeRetryable(t *testing.T) {
 	changed, err = app.transitionWidgetMode(true, func() error { return nil })
 	if err != nil || !changed || !app.IsWidgetMode() {
 		t.Fatalf("retry did not complete: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+	}
+}
+
+// TestWidgetTransitionTaskbarFailureStaysRetryable models the EnterWidgetMode
+// apply closure: a failure in the taskbar-hide step must not publish widget
+// mode, and a retry can still complete the transition.
+func TestWidgetTransitionTaskbarFailureStaysRetryable(t *testing.T) {
+	app := &App{}
+	taskbarErr := errors.New("taskbar style switch failed")
+	attempts := 0
+	apply := func() error {
+		attempts++
+		if attempts == 1 {
+			return taskbarErr
+		}
+		return nil
+	}
+	changed, err := app.transitionWidgetMode(true, apply)
+	if changed || !errors.Is(err, taskbarErr) || app.IsWidgetMode() {
+		t.Fatalf("failed taskbar transition published mode: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+	}
+	changed, err = app.transitionWidgetMode(true, func() error { return nil })
+	if err != nil || !changed || !app.IsWidgetMode() {
+		t.Fatalf("retry after taskbar failure: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+	}
+}
+
+func TestWidgetWindowTransitionOrderFailureAndRetry(t *testing.T) {
+	stepErr := func(name string) error { return fmt.Errorf("%s failed", name) }
+	tests := []struct {
+		name      string
+		enter     bool
+		fail      map[string]error
+		wantCalls []string
+		wantRetry []string
+	}{
+		{
+			name:      "enter geometry failure restores main",
+			enter:     true,
+			fail:      map[string]error{"widget": stepErr("widget"), "main": stepErr("main rollback")},
+			wantCalls: []string{"widget", "main"},
+			wantRetry: []string{"widget", "hide"},
+		},
+		{
+			name:      "enter hide failure restores main then show",
+			enter:     true,
+			fail:      map[string]error{"hide": stepErr("hide"), "main": stepErr("main rollback"), "show": stepErr("show rollback")},
+			wantCalls: []string{"widget", "hide", "main", "show"},
+			wantRetry: []string{"widget", "hide"},
+		},
+		{
+			name:      "exit geometry failure restores widget",
+			enter:     false,
+			fail:      map[string]error{"main": stepErr("main"), "widget": stepErr("widget rollback")},
+			wantCalls: []string{"main", "widget"},
+			wantRetry: []string{"main", "show"},
+		},
+		{
+			name:      "exit show failure restores widget then hide",
+			enter:     false,
+			fail:      map[string]error{"show": stepErr("show"), "widget": stepErr("widget rollback"), "hide": stepErr("hide rollback")},
+			wantCalls: []string{"main", "show", "widget", "hide"},
+			wantRetry: []string{"main", "show"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &App{widgetMode: !tt.enter}
+			var calls []string
+			step := func(name string) func() error {
+				return func() error {
+					calls = append(calls, name)
+					return tt.fail[name]
+				}
+			}
+			run := func() error {
+				return runWidgetWindowTransition(tt.enter, widgetWindowTransition{
+					widget: step("widget"),
+					main:   step("main"),
+					hide:   step("hide"),
+					show:   step("show"),
+				})
+			}
+			changed, err := app.transitionWidgetMode(tt.enter, run)
+			if changed || err == nil || app.IsWidgetMode() == tt.enter {
+				t.Fatalf("failed transition published mode: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+			}
+			if !reflect.DeepEqual(calls, tt.wantCalls) {
+				t.Fatalf("calls = %v, want %v", calls, tt.wantCalls)
+			}
+			for name, want := range tt.fail {
+				if !errors.Is(err, want) {
+					t.Fatalf("error lost %s failure %v: %v", name, want, err)
+				}
+			}
+
+			tt.fail = map[string]error{}
+			calls = nil
+			changed, err = app.transitionWidgetMode(tt.enter, run)
+			if err != nil || !changed || app.IsWidgetMode() != tt.enter {
+				t.Fatalf("retry: changed=%v err=%v mode=%v", changed, err, app.IsWidgetMode())
+			}
+			if !reflect.DeepEqual(calls, tt.wantRetry) {
+				t.Fatalf("retry calls = %v, want %v", calls, tt.wantRetry)
+			}
+		})
+	}
+}
+
+// TestToggleWidgetTaskbarUsesInjectedSeam verifies the test seam used by the
+// Enter/Exit widget transitions: when set, it replaces the platform taskbar
+// implementation and receives the requested visibility.
+func TestToggleWidgetTaskbarUsesInjectedSeam(t *testing.T) {
+	var got []bool
+	app := &App{widgetTaskbarToggle: func(hide bool) error {
+		got = append(got, hide)
+		return nil
+	}}
+	for _, hide := range []bool{true, false, true} {
+		if err := app.toggleWidgetTaskbar(hide); err != nil {
+			t.Fatalf("toggleWidgetTaskbar(%v): %v", hide, err)
+		}
+	}
+	if want := []bool{true, false, true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %v, want %v", got, want)
 	}
 }
 
@@ -606,10 +753,12 @@ func TestExitWidgetModeEmitsSessionActivated(t *testing.T) {
 	events := make(chan sessionActivatedEvent, 1)
 	tab := &WorkspaceTab{ID: "result-tab"}
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{"result-tab": tab},
-		activeTabID: "result-tab",
-		widgetMode:  false, // not in widget mode → window ops skipped, goes straight to SetActiveTab
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{"result-tab": tab},
+		activeTabID:         "result-tab",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, payload ...interface{}) {
 		if name != "session:activated" {
@@ -643,10 +792,12 @@ func TestExitWidgetModeNoTabIDDoesNotEmitSessionActivated(t *testing.T) {
 	emitted := false
 	tab := &WorkspaceTab{ID: "idle-tab"}
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{"idle-tab": tab},
-		activeTabID: "idle-tab",
-		widgetMode:  false,
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{"idle-tab": tab},
+		activeTabID:         "idle-tab",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
 		if name == "session:activated" {
@@ -665,10 +816,12 @@ func TestExitWidgetModeNoTabIDDoesNotEmitSessionActivated(t *testing.T) {
 func TestExitWidgetModeSetActiveTabFailureDoesNotEmitSessionActivated(t *testing.T) {
 	emitted := false
 	app := &App{
-		ctx:         context.Background(),
-		tabs:        map[string]*WorkspaceTab{},
-		activeTabID: "missing",
-		widgetMode:  false,
+		ctx:                 context.Background(),
+		tabs:                map[string]*WorkspaceTab{},
+		activeTabID:         "missing",
+		widgetMode:          false,
+		widgetWindowOps:     &widgetWindowOps{restoreMain: func(DesktopWindowState, bool) error { return nil }},
+		widgetTaskbarToggle: func(bool) error { return nil },
 	}
 	app.runtimeEvents.emit = func(_ context.Context, name string, _ ...interface{}) {
 		if name == "session:activated" {

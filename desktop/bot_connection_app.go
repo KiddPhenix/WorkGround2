@@ -39,6 +39,13 @@ type BotConnectionSessionMappingView struct {
 	UpdatedAt     string `json:"updatedAt"`
 }
 
+type BotConnectionEndpointView struct {
+	RemoteID  string `json:"remoteId"`
+	ChatType  string `json:"chatType"`
+	ThreadID  string `json:"threadId"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
 type BotAccessView struct {
 	Enabled        bool     `json:"enabled"`
 	AllowAll       bool     `json:"allowAll"`
@@ -62,6 +69,7 @@ type BotConnectionView struct {
 	Access           BotAccessView                     `json:"access"`
 	Credential       BotConnectionCredentialView       `json:"credential"`
 	SessionMappings  []BotConnectionSessionMappingView `json:"sessionMappings"`
+	Endpoints        []BotConnectionEndpointView       `json:"endpoints"`
 	LastError        string                            `json:"lastError"`
 	CreatedAt        string                            `json:"createdAt"`
 	UpdatedAt        string                            `json:"updatedAt"`
@@ -581,6 +589,11 @@ func (a *App) upsertBotConnection(conn config.BotConnectionConfig, updateLegacy 
 				if !botruntime.BotAccessActive(conn.Access) && botruntime.BotAccessActive(existing.Access) {
 					conn.Access = existing.Access
 				}
+				// 重装/重配对时保留已登记的稳定远端端点：它们是主人通知/问答
+				// 通道的目标数据源，不应因连接记录整体替换而静默丢失。
+				if len(conn.Endpoints) == 0 && len(existing.Endpoints) > 0 {
+					conn.Endpoints = append([]config.BotConnectionRemote(nil), existing.Endpoints...)
+				}
 				c.Bot.Connections[i] = conn
 				replaced = true
 				break
@@ -594,6 +607,9 @@ func (a *App) upsertBotConnection(conn config.BotConnectionConfig, updateLegacy 
 	return botConnectionView(conn), err
 }
 
+// rememberBotConnectionRemote registers a stable remote endpoint after a
+// successful test send. Endpoints are independent of Session binding and are
+// never removed by automatic IM session reclamation.
 func (a *App) rememberBotConnectionRemote(id, remoteID string) error {
 	id = strings.TrimSpace(id)
 	remoteID = strings.TrimSpace(remoteID)
@@ -606,26 +622,21 @@ func (a *App) rememberBotConnectionRemote(id, remoteID string) error {
 			if c.Bot.Connections[i].ID != id {
 				continue
 			}
-			for j := range c.Bot.Connections[i].SessionMappings {
-				if c.Bot.Connections[i].SessionMappings[j].RemoteID == remoteID {
-					workspaceRoot := firstNonEmptyBot(c.Bot.Connections[i].SessionMappings[j].WorkspaceRoot, c.Bot.Connections[i].WorkspaceRoot)
-					scope := botMappingScope(c.Bot.Connections[i].SessionMappings[j].Scope, workspaceRoot)
-					c.Bot.Connections[i].SessionMappings[j].Scope = scope
-					c.Bot.Connections[i].SessionMappings[j].WorkspaceRoot = botMappingWorkspaceRoot(scope, workspaceRoot)
-					c.Bot.Connections[i].SessionMappings[j].UpdatedAt = now
-					c.Bot.Connections[i].UpdatedAt = now
+			conn := &c.Bot.Connections[i]
+			for j := range conn.Endpoints {
+				if strings.TrimSpace(conn.Endpoints[j].RemoteID) == remoteID {
+					conn.Endpoints[j].ChatType = firstNonEmptyBot(strings.TrimSpace(conn.Endpoints[j].ChatType), string(bot.ChatDM))
+					conn.Endpoints[j].UpdatedAt = now
+					conn.UpdatedAt = now
 					return nil
 				}
 			}
-			scope := botMappingScope("", c.Bot.Connections[i].WorkspaceRoot)
-			c.Bot.Connections[i].SessionMappings = append(c.Bot.Connections[i].SessionMappings, config.BotConnectionSessionMapping{
-				RemoteID:      remoteID,
-				SessionID:     "",
-				Scope:         scope,
-				WorkspaceRoot: botMappingWorkspaceRoot(scope, c.Bot.Connections[i].WorkspaceRoot),
-				UpdatedAt:     now,
+			conn.Endpoints = append(conn.Endpoints, config.BotConnectionRemote{
+				RemoteID:  remoteID,
+				ChatType:  string(bot.ChatDM),
+				UpdatedAt: now,
 			})
-			c.Bot.Connections[i].UpdatedAt = now
+			conn.UpdatedAt = now
 			return nil
 		}
 		return nil
@@ -728,6 +739,7 @@ func botConnectionView(conn config.BotConnectionConfig) BotConnectionView {
 			SecretSet: botCredentialSecretSet(conn),
 		},
 		SessionMappings: botSessionMappingViews(conn.SessionMappings, conn.WorkspaceRoot),
+		Endpoints:       botEndpointViews(conn.Endpoints),
 		LastError:       conn.LastError, CreatedAt: conn.CreatedAt, UpdatedAt: conn.UpdatedAt,
 	}
 }
@@ -799,6 +811,7 @@ func botConnectionConfig(view BotConnectionView) config.BotConnectionConfig {
 			TokenEnv:     strings.TrimSpace(view.Credential.TokenEnv),
 		},
 		SessionMappings: botSessionMappingConfigs(view.SessionMappings, view.WorkspaceRoot),
+		Endpoints:       botEndpointConfigs(view.Endpoints),
 		LastError:       strings.TrimSpace(view.LastError),
 		CreatedAt:       strings.TrimSpace(view.CreatedAt),
 		UpdatedAt:       strings.TrimSpace(view.UpdatedAt),
@@ -915,6 +928,38 @@ func botSessionMappingConfigs(mappings []BotConnectionSessionMappingView, connec
 			Scope:         scope,
 			WorkspaceRoot: botMappingWorkspaceRoot(scope, workspaceRoot),
 			UpdatedAt:     strings.TrimSpace(m.UpdatedAt),
+		})
+	}
+	return out
+}
+
+func botEndpointViews(endpoints []config.BotConnectionRemote) []BotConnectionEndpointView {
+	if endpoints == nil {
+		return []BotConnectionEndpointView{}
+	}
+	out := make([]BotConnectionEndpointView, 0, len(endpoints))
+	for _, e := range endpoints {
+		out = append(out, BotConnectionEndpointView{
+			RemoteID:  e.RemoteID,
+			ChatType:  e.ChatType,
+			ThreadID:  e.ThreadID,
+			UpdatedAt: e.UpdatedAt,
+		})
+	}
+	return out
+}
+
+func botEndpointConfigs(endpoints []BotConnectionEndpointView) []config.BotConnectionRemote {
+	if endpoints == nil {
+		return nil
+	}
+	out := make([]config.BotConnectionRemote, 0, len(endpoints))
+	for _, e := range endpoints {
+		out = append(out, config.BotConnectionRemote{
+			RemoteID:  strings.TrimSpace(e.RemoteID),
+			ChatType:  strings.TrimSpace(e.ChatType),
+			ThreadID:  strings.TrimSpace(e.ThreadID),
+			UpdatedAt: strings.TrimSpace(e.UpdatedAt),
 		})
 	}
 	return out

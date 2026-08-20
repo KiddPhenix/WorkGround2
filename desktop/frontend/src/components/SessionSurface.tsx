@@ -1,4 +1,4 @@
-import React, { type ComponentProps } from 'react';
+import React, { type ComponentProps, type ReactNode } from 'react';
 
 import { Transcript } from './Transcript';
 import { TurnActions } from './Message';
@@ -7,17 +7,12 @@ import { ApprovalModal } from './ApprovalModal';
 import { AskCard } from './AskCard';
 import { ClearContextCard } from './ClearContextCard';
 import { SessionRunStream, SessionArtifactShelf, SessionQueueTray, SessionConfigBar } from './desktop-ui/IrisInfoComponents';
-import { Tooltip } from './Tooltip';
-import { SessionMemoryBar } from './desktop-ui/IrisInfoComponents';
-import { SessionStatusIndicators } from './SessionStatusIndicators';
-import { AddOnLauncherButton } from './desktop-ui/IrisInfoComponents';
-import { ArrowLeft, PanelRight, Command } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 
 import type {
   CollaborationMode,
   ComposerInsertRequest,
   ComposerSubmitKey,
-  TabMeta,
   TokenMode,
   ToolApprovalMode,
 } from '../lib/types';
@@ -38,13 +33,14 @@ export interface SessionSurfaceProps {
   activeTabId: string;
   activeSessionId: string | undefined;
   renderSessionId: string;
-  runtimeTabMetas: TabMeta[];
+
+  // App-owned top-right window action rail (shared with Room).
+  windowActions?: ReactNode;
 
   // Transcript state
   displayItems: TranscriptProps['items'];
   live: TranscriptProps['live'];
   running: boolean;
-  memoryRunning: boolean;
   controllerReady: boolean;
   footerHeight: number;
   transcriptHydrating: boolean;
@@ -95,9 +91,6 @@ export interface SessionSurfaceProps {
   workSendSelected: boolean;
 
   // Header state
-  sidebarCollapsed: boolean;
-  sidebarToggleTitle: string;
-  sidebarTogglePressed: boolean;
   headerTitle: string;
   irisFixtureActive: boolean;
   sidebarImDetailConnection: { title: string } | null;
@@ -136,10 +129,7 @@ export interface SessionSurfaceProps {
   onSetTokenMode: ComposerProps['onSetTokenMode'];
   onCancelClearContext: () => void;
   onConfirmClearContext: () => void;
-  onToggleSidebar: () => void;
-  onOpenPalette: () => void;
   onEnterWidgetMode: () => void;
-  onSwitchTab: (tab: TabMeta) => void;
   onSetInsertTarget: (target: "composer" | "planRevision") => void;
   onRevisePlan: (text: string) => void;
   onExitPlan: () => Promise<void>;
@@ -161,11 +151,10 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   activeTabId,
   activeSessionId,
   renderSessionId,
-  runtimeTabMetas,
+  windowActions,
   displayItems,
   live,
   running,
-  memoryRunning,
   controllerReady,
   footerHeight,
   transcriptHydrating,
@@ -210,9 +199,6 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   composerDisabled,
   workSendAvailable,
   workSendSelected,
-  sidebarCollapsed,
-  sidebarToggleTitle,
-  sidebarTogglePressed,
   headerTitle,
   irisFixtureActive,
   sidebarImDetailConnection,
@@ -243,10 +229,7 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
   onSetTokenMode,
   onCancelClearContext,
   onConfirmClearContext,
-  onToggleSidebar,
-  onOpenPalette,
   onEnterWidgetMode,
-  onSwitchTab,
   onSetInsertTarget,
   onRevisePlan,
   onExitPlan,
@@ -267,19 +250,6 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
     >
       {!embedded && <header className="session-header">
         <div className="session-header__identity">
-          {sidebarCollapsed && (
-            <Tooltip label={sidebarToggleTitle}>
-              <button
-                className={`session-header__expand-btn${sidebarTogglePressed ? " session-header__expand-btn--pressed" : ""}`}
-                type="button"
-                onClick={onToggleSidebar}
-                aria-label={sidebarToggleTitle}
-                aria-pressed={!sidebarCollapsed}
-              >
-                <PanelRight size={15} aria-hidden="true" />
-              </button>
-            </Tooltip>
-          )}
           {workReturn && (
             <button
               type="button"
@@ -297,16 +267,8 @@ export const SessionSurface: React.FC<SessionSurfaceProps> = ({
             {headerTitle}
           </h1>
         </div>
-        <div className="session-header__actions">
-          <SessionStatusIndicators tabs={runtimeTabMetas} activeTabId={activeTabId} onSwitchTab={(tab) => { void onSwitchTab(tab); }} t={t} />
-          <AddOnLauncherButton />
-          <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => { void onOpenPalette(); }}>
-            <Command size={16} />
-          </button>
-        </div>
+        {windowActions}
       </header>}
-
-      {!embedded && <SessionMemoryBar sessionId={renderSessionId} items={displayItems} running={memoryRunning} />}
 
       <div className="conversation-viewport" ref={conversationViewportRef}>
         {irisFixtureActive ? (

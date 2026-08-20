@@ -171,6 +171,58 @@ func ListSubagentsByParent(sessionDir, parentSession string) ([]SubagentArtifact
 	return out, nil
 }
 
+// RunningSubagentCounts returns the number of persisted running sub-agent
+// artifacts per parent session, scanning <sessionDir>/subagents exactly once.
+// completed/failed/interrupted artifacts are excluded. A missing folder is not
+// an error; unreadable or undecodable meta files are surfaced as errors so a
+// broken scan is never mistaken for idle state. Callers may retry safely.
+func RunningSubagentCounts(sessionDir string) (map[string]int, error) {
+	counts := map[string]int{}
+	if strings.TrimSpace(sessionDir) == "" {
+		return counts, nil
+	}
+	dir := filepath.Join(sessionDir, "subagents")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return counts, nil
+		}
+		return nil, err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+		ref := strings.TrimSuffix(entry.Name(), ".meta.json")
+		if !validSubagentRef(ref) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("read subagent metadata %q: %w", ref, err))
+			continue
+		}
+		var meta SubagentMeta
+		if err := json.Unmarshal(data, &meta); err != nil {
+			errs = append(errs, fmt.Errorf("decode subagent metadata %q: %w", ref, err))
+			continue
+		}
+		if meta.Status != SubagentRunning {
+			continue
+		}
+		parent := strings.TrimSpace(meta.ParentSession)
+		if parent == "" {
+			// A persisted "running" artifact without a parent owner is corrupt;
+			// surface it instead of silently dropping it from the counts.
+			errs = append(errs, fmt.Errorf("subagent metadata %q is running without a parent session", ref))
+			continue
+		}
+		counts[parent]++
+	}
+	return counts, errors.Join(errs...)
+}
+
 // DeleteSubagentsByParent permanently removes sub-agent artifacts owned by a
 // parent session. Missing counterpart files are ignored.
 func DeleteSubagentsByParent(sessionDir, parentSession string) error {

@@ -260,7 +260,7 @@ ok(
   "CSS: session header is a Wails window drag surface",
 );
 ok(
-  finalDeclaration(stylesSource, ".session-header__actions", "--wails-draggable") === "no-drag" &&
+  finalDeclaration(stylesSource, ".session-window-actions", "--wails-draggable") === "no-drag" &&
     finalDeclaration(stylesSource, ".session-header__addon-btn", "--wails-draggable") === "no-drag" &&
     finalDeclaration(stylesSource, ".session-header__more-btn", "--wails-draggable") === "no-drag",
   "CSS: interactive header controls opt out of window dragging",
@@ -279,11 +279,15 @@ ok(
   "CSS: Work detail header is draggable while its actions stay interactive",
 );
 ok(
-  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "top") === "4px" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "right") ===
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header", "display") === "grid" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header", "grid-template-columns") ===
+      "minmax(0, 1fr) auto" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header", "padding-right") ===
       "calc(var(--windows-window-controls-width) + 3px)" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-header__actions", "border-right") === "0",
-  "CSS: workbench utilities form the left half of the unified top-right rail",
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-window-actions", "position") === "relative" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-window-actions", "top") === "-22px" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .session-window-actions", "border-right") === "0",
+  "CSS: Session title yields to the real utility width while the rail stays on the native-control row",
 );
 ok(
   finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench .windows-window-controls", "top") === "15px" &&
@@ -293,21 +297,22 @@ ok(
   "CSS: native window controls complete the same inset rail without a detached window block",
 );
 ok(
-  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions::before", "inset") ===
-      "0 calc(0px - var(--windows-window-controls-width)) 0 -3px" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions::before", "border-radius") === "7px" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-session .session-header__actions", "border") === "0" &&
+  includes(stylesSource, ".app--windows-frameless.app--workbench-session .session-window-actions::before,\n.app--windows-frameless.app--workbench-room .session-window-actions::before {") &&
+    includes(stylesSource, "inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;") &&
+    includes(stylesSource, "border-radius: 7px;") &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-session .session-window-actions,\n.app--windows-frameless.app--workbench-room .session-window-actions {") &&
+    includes(stylesSource, "border: 0;") &&
     includes(stylesSource, ".app--windows-frameless.app--workbench-session .windows-window-controls,") &&
     includes(stylesSource, "border-left: 1px solid var(--border-soft);"),
-  "CSS: Session chrome uses one shared outer board with only an internal divider",
+  "CSS: Session and Room share one outer board with only an internal divider",
 );
 ok(
   includes(workWorkspaceSource, 'className="wg2-work-top-actions"') &&
-    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions,") &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions {") &&
     finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions", "top") === "4px" &&
     finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions", "right") ===
       "calc(4px + var(--windows-window-controls-width))" &&
-    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,") &&
+    includes(stylesSource, ".app--windows-frameless.app--workbench-work .wg2-work-top-actions::before {") &&
     includes(stylesSource, "inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;"),
   "CSS: Work actions stay joined and align to the real window top-right corner",
 );
@@ -344,12 +349,18 @@ ok(
 );
 ok(
   includes(collaborationSource, 'className="collab-topic-actions"') &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions", "position") === "fixed" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions", "right") ===
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .session-window-actions", "position") === "fixed" &&
+    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .session-window-actions", "right") ===
       "calc(14px + var(--windows-window-controls-width))" &&
-    finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions::before", "inset") ===
-      "0 calc(0px - var(--windows-window-controls-width)) 0 -3px",
-  "CSS: Room actions stay joined to caption controls independently of its member grid",
+    includes(stylesSource, ".app--windows-frameless.app--workbench-room .session-window-actions::before") &&
+    includes(stylesSource, "inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;"),
+  "CSS: Room window rail joins caption controls independently of its member grid",
+);
+ok(
+  finalDeclaration(stylesSource, ".app--windows-frameless.app--workbench-room .collab-topic-actions", "position") !== "fixed" &&
+    finalDeclaration(stylesSource, ".collab-topic-actions", "display") === "flex" &&
+    collaborationSource.includes("className=\"collab-topic-actions\""),
+  "CSS: Room reachability/invite/leave stay in the topicbar, not a fixed window rail",
 );
 ok(
   includes(collaborationSource, '<section className="collab-surface"') &&
@@ -407,7 +418,14 @@ const cwWidth = finalDeclaration(stylesSource, ".layout--workbench .session-foot
 ok(cwWidth === "auto", `CSS: composer-wrap respects shared 48px margins (got width: ${cwWidth})`);
 
 const composerMinH = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock .composer-card", "min-height");
-ok(composerMinH === "128px", `CSS: composer editor frame is 128px (got: ${composerMinH})`);
+ok(composerMinH === "76px", `CSS: composer editor frame is compact at 76px (got: ${composerMinH})`);
+
+const messageMarginTop = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .msg", "margin-top");
+const messageMarginBottom = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .msg", "margin-bottom");
+ok(messageMarginTop === "8px" && messageMarginBottom === "8px", `CSS: Session messages use compact 8px vertical margins (got: ${messageMarginTop}/${messageMarginBottom})`);
+
+const reasoningHeadMinH = finalDeclaration(stylesSource, ".app--workbench .conversation-viewport .turn-collapse:not(.turn-collapse--active) .reasoning__head", "min-height");
+ok(reasoningHeadMinH === "28px", `CSS: completed reasoning rows are compact at 28px (got: ${reasoningHeadMinH})`);
 
 // 32px bottom breathing room
 const dockPadB = finalDeclaration(stylesSource, ".layout--workbench .session-footer-dock", "padding-bottom");
@@ -666,7 +684,7 @@ ok(
 
 ok(
   includes(appSource, "const workbenchSidebarRestoreControl = sidebarCollapsed ? (") &&
-    includes(appSource, "(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl") &&
+    includes(appSource, "{workbenchSidebarRestoreControl}") &&
     includes(appSource, "workbench-surface-sidebar-restore") &&
     includes(appSource, 'aria-label={sidebarToggleTitle}') &&
     includes(appSource, '<PanelRight size={15} aria-hidden="true" />') &&
@@ -675,8 +693,8 @@ ok(
     finalDeclaration(stylesSource, ".app--workbench .layout--workbench > .workbench-surface-sidebar-restore", "left") === "24px" &&
     includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .wg2-work-outer-header,") &&
     includes(stylesSource, ".app--workbench .layout--sidebar-collapsed .collab-topicbar,") &&
-    includes(stylesSource, "padding-left: 54px;"),
-  "App.tsx: every collapsed Work and Room state exposes one App-owned sidebar restore control",
+    finalDeclaration(stylesSource, ".app--workbench .layout--workbench.layout--sidebar-collapsed .session-header", "padding-left") === "64px",
+  "App.tsx: every collapsed Session, Work, and Room state exposes one App-owned sidebar restore control",
 );
 
 // App.tsx: regular session topicbar exposes the expand button when collapsed.
@@ -691,31 +709,19 @@ ok(
 ok(
   finalDeclaration(stylesSource, ".session-header__identity", "min-width") === "0" &&
     finalDeclaration(stylesSource, ".session-header__identity", "flex") === "1 1 auto",
-  "CSS: session header identity keeps the expand button and ellipsized title in one flexible group",
+  "CSS: session header identity keeps the ellipsized title in one flexible group",
 );
 
-// CSS: collapse button is transparent with hover
+// CSS: collapse button is transparent with hover and opts out of dragging.
 ok(
-  finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "background") === "transparent",
-  "CSS: collapse button has transparent background by default",
-);
-ok(
-  finalDeclaration(stylesSource, ".workspace-sidebar__collapse-btn", "--wails-draggable") === "no-drag",
-  "CSS: collapse button opts out of window dragging",
+  includes(stylesSource, ".workspace-sidebar__collapse-btn,\n.workspace-sidebar__decision-btn {") &&
+    includes(stylesSource, "background: transparent;") &&
+    includes(stylesSource, "--wails-draggable: no-drag;"),
+  "CSS: collapse button is transparent and opts out of window dragging",
 );
 ok(
   finalDeclaration(stylesSource, ".app--workbench .workspace-sidebar__collapse-btn", "margin-right") === "-8px",
   "CSS: workbench collapse button sits 8px farther right",
-);
-
-// CSS: expand button in session header
-ok(
-  finalDeclaration(stylesSource, ".session-header__expand-btn", "margin-right") === "12px",
-  "CSS: expand button has right margin before title",
-);
-ok(
-  finalDeclaration(stylesSource, ".session-header__expand-btn", "--wails-draggable") === "no-drag",
-  "CSS: expand button opts out of window dragging",
 );
 
 // ── 820px responsive workspace-sidebar ──────────────────────────────────────

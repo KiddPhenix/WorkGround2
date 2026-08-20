@@ -18,13 +18,17 @@ assert.match(settingsSource, /SETTINGS_TABS[^\n]+"widget"/, "Settings navigation
 assert.match(settingsSource, /tab === "widget"[\s\S]+<WidgetSection/, "Widget tab renders its settings section");
 assert.match(settingsSource, /SetDesktopWidgetEnabled\(enabled\)/, "enable switch persists through the backend");
 assert.match(settingsSource, /SetDesktopWidgetAlwaysOnTop\(on\)/, "always-on-top switch persists through the backend");
-assert.match(settingsSource, /SetDesktopWidgetSkin\(skin\.id\)/, "skin picker persists through the backend");
-assert.match(settingsSource, /widgetSkin/, "WidgetSection receives widgetSkin prop");
+assert.doesNotMatch(settingsSource, /SetDesktopWidgetStyle\(|stylePager|styleIcons|SetDesktopWidgetSkin\(|settings-widget-skin-grid/, "Settings exposes no pager style picker and no pager-only skin picker");
+assert.match(settingsSource, /SetDesktopHoverStatusDelayMs\(/, "icon hover delay stays configurable without a style picker");
 assert.match(appSource, /DesktopStartupSettings\(\)[\s\S]+setWidgetEnabled\(s\.widgetEnabled\)/, "startup reads widget enabled state");
 assert.match(appSource, /EventsOn\("widget:enabled"/, "widget enabled changes propagate without restart");
 assert.match(appSource, /WindowsWindowControls widgetEnabled=\{widgetEnabled\}/, "window chrome hides the widget entry when disabled");
 assert.match(appSource, /EventsOn\("widget:mode"/, "native widget mode events update React state");
-assert.match(appSource, /createWidgetModeCoordinator\(app, setWidgetMode\)/, "widget transitions share one state coordinator");
+assert.match(
+  appSource,
+  /createWidgetModeCoordinator\(app,\s*setWidgetMode,\s*\(\) => \{/,
+  "widget transitions share one state coordinator with main-window restore cleanup",
+);
 assert.doesNotMatch(appSource + composerSource, /widget-mode-change/, "widget state does not depend on an ad-hoc DOM event");
 assert.match(composerSource, /onEnterWidgetMode/, "Composer delegates widget entry to the shared coordinator");
 assert.match(widgetCSS, /\.app--widget-hidden\s*\{[^}]*visibility:\s*hidden/s, "main content has an explicit widget-mode hiding fallback");
@@ -35,14 +39,31 @@ assert.match(typesSource, /widgetSkin: string/, "frontend settings contract incl
 assert.match(bridgeSource, /DesktopStartupSettings\(\)[\s\S]+widgetEnabled/, "browser mock preserves widget enabled startup state");
 assert.match(bridgeSource, /SetDesktopWidgetSkin\(skin: string\)/, "bridge exposes SetDesktopWidgetSkin API");
 assert.match(bridgeSource, /widgetSkin: "classic"/, "browser mock defaults widgetSkin to classic");
+assert.match(bridgeSource, /widgetStyle: "icons"/, "browser mock defaults widget style to icons");
+
+// The desktop widget is icons-only: App renders only DesktopIconMode, and the
+// icon mode owns its exit-to-main and settings entries through App callbacks.
+assert.doesNotMatch(appSource, /<WidgetMode/, "App never renders the legacy pager");
+assert.match(appSource, /widgetMode && <DesktopIconMode onNewRoom=\{requestWidgetRoomDialog\} onOpenRoom=\{openWidgetRoom\} onOpenSettings=\{openWidgetSettings\} onOpenMain=\{openWidgetMain\} \/>/, "widget mode renders only the icon mode, wired to the root App room open/new, settings, and open-main coordination");
+const iconModeSource = read("../components/widget/DesktopIconMode.tsx");
+const iconCSS = read("../components/widget/desktop-icon-mode.css");
+assert.match(iconModeSource, /onOpenMain: \(\) => Promise<void>/, "icon mode receives an async open-main callback from the root App");
+assert.match(iconModeSource, /role="switch" aria-checked=\{topmost\}/, "the quick toolbar always-on-top control is an ARIA switch");
+assert.match(appSource, /const openWidgetMain = useCallback\(\(\) => \{[\s\S]*return widgetCoordinator\.exit\(\);/, "open main exits widget mode through the shared coordinator");
+assert.doesNotMatch(iconCSS, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button styles");
+
+// --- generated Wails binding contract: DesktopStartupSettingsView must carry
+// the always-on-top field in the same shape as the Go struct, so the frontend
+// startup read and the browser mock agree with the native binding ---
+const modelsSource = read("../../wailsjs/go/models.ts");
+const settingsViewClass = modelsSource.match(/export class DesktopStartupSettingsView \{[\s\S]*?\n\s*\}[\s\S]*?\n\s*}/)?.[0] ?? "";
+assert.match(settingsViewClass, /widgetAlwaysOnTop: boolean;/, "the generated models.ts binding declares widgetAlwaysOnTop as boolean");
+assert.match(settingsViewClass, /this\.widgetAlwaysOnTop = source\["widgetAlwaysOnTop"\];/, "the generated constructor projects widgetAlwaysOnTop from the Go JSON key");
 
 for (const locale of ["en", "zh", "zh-TW"]) {
   const source = read(`../locales/${locale}.ts`);
   assert.ok(source.includes('"settings.tab.widget"'), `${locale} includes the Widget tab label`);
   assert.ok(source.includes('"settings.widget.alwaysOnTopLabel"'), `${locale} includes the always-on-top label`);
-  assert.ok(source.includes('"settings.widget.skinLabel"'), `${locale} includes the skin label`);
-  assert.ok(source.includes('"settings.widget.skinClassic"'), `${locale} includes the classic skin label`);
-  assert.ok(source.includes('"settings.widget.skinPet"'), `${locale} includes the pet skin label`);
 }
 
 // Widget skin registry contract.
@@ -53,5 +74,23 @@ for (const id of ["classic", "bp", "instant", "pet", "recorder"]) {
 assert.match(skinsSource, /export function resolveWidgetSkin/, "skin registry exports resolveWidgetSkin helper");
 assert.match(skinsSource, /export function widgetSkinTiles/, "skin registry exports widgetSkinTiles helper");
 assert.match(skinsSource, /export function widgetSkinPreview/, "skin registry exports widgetSkinPreview helper");
+
+// --- anchor settings entry: exit-before-open, in-flight guard, retryable ---
+// Opening settings from the widget must first exit widget mode; settings only
+// reveal after a successful exit, and a failed exit stays visible in the
+// widget (the main window is hidden) so the same 设置 click is a safe retry.
+assert.match(
+  appSource,
+  /const widgetSettingsRequest = useRef\(false\);[\s\S]*?if \(widgetSettingsRequest\.current\) return;[\s\S]*?await widgetCoordinator\.exit\(\);[\s\S]*?useOverlayStore\.getState\(\)\.setSettingsFocus\(null\);[\s\S]*?useOverlayStore\.getState\(\)\.setSettingsTarget\("general"\);[\s\S]*?finally \{[\s\S]*?widgetSettingsRequest\.current = false[\s\S]*?\}/,
+  "the widget settings entry exits widget mode first, opens settings only after the exit succeeds, and guards the async round-trip against double invocation",
+);
+assert.doesNotMatch(
+  appSource,
+  /setSettingsTarget\("general"\)[\s\S]{0,120}widgetCoordinator\.exit/,
+  "settings must never open before the widget exit resolves",
+);
+assert.match(iconModeSource, /onOpenSettings: \(\) => Promise<void>/, "DesktopIconMode receives an async settings-open callback from the root App");
+assert.match(iconModeSource, /DesktopStartupSettings\(\)[\s\S]+widgetAlwaysOnTop/, "the quick toolbar reads the initial always-on-top value through the existing startup contract");
+assert.doesNotMatch(iconModeSource, /onOpenSettings[\s\S]{0,80}\.then\(\(\) => setSettingsTarget/, "the widget never opens settings directly; only the root App owns the exit-before-open flow");
 
 console.log("widget settings contract tests passed");

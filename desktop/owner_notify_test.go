@@ -19,7 +19,7 @@ func TestAFKCompletionNotificationIsThresholdedAndIdempotent(t *testing.T) {
 	now := time.Now().UTC()
 	tab := &WorkspaceTab{ID: "tab-a", SessionID: "session-a", TopicTitle: "构建修复版", WorkspaceRoot: `D:\Work\Demo`}
 	app := &App{
-		tabs: map[string]*WorkspaceTab{"tab-a": tab}, decisionBroker: broker,
+		tabs: map[string]*WorkspaceTab{"tab-a": tab}, decisionBroker: broker, ownerDecisionEnabled: true,
 		ownerNow:       func() time.Time { return now },
 		ownerIdleProbe: func() (time.Duration, error) { return 4 * time.Minute, nil },
 	}
@@ -54,7 +54,7 @@ func TestAFKCompletionSkipsExplicitNotifyMeFromSameTurn(t *testing.T) {
 	now := time.Now().UTC()
 	tab := &WorkspaceTab{ID: "tab-a", SessionID: "session-a", TopicTitle: "任务 A"}
 	app := &App{
-		tabs: map[string]*WorkspaceTab{"tab-a": tab}, decisionBroker: broker,
+		tabs: map[string]*WorkspaceTab{"tab-a": tab}, decisionBroker: broker, ownerDecisionEnabled: true,
 		ownerNow:       func() time.Time { return now },
 		ownerIdleProbe: func() (time.Duration, error) { return 10 * time.Minute, nil },
 	}
@@ -87,7 +87,7 @@ func TestOwnerOutcomeDistinguishesFailureAndCancellation(t *testing.T) {
 
 func TestAFKProbeFailureDoesNotCreateNotification(t *testing.T) {
 	broker, _ := decision.Open("")
-	app := &App{decisionBroker: broker, ownerIdleProbe: func() (time.Duration, error) { return 0, errors.New("unsupported") }}
+	app := &App{ownerDecisionEnabled: true, decisionBroker: broker, ownerIdleProbe: func() (time.Duration, error) { return 0, errors.New("unsupported") }}
 	app.notifyOwnerAfterAFK(ownerNotifyCandidate{stateKey: "s", sequence: 1, sessionTitle: "任务"})
 	if got := len(broker.List(decision.ListFilter{})); got != 0 {
 		t.Fatalf("notifications = %d", got)

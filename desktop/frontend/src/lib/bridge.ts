@@ -274,12 +274,19 @@ export interface WidgetConversationInput {
   prompt: string;
   requestId: string;
   workspace?: string;
+  /** Per-send model ref override (must be one of app.Models() refs); empty = user default. */
+  model?: string;
+  /** Per-send tool approval posture; empty = user default. */
+  approvalMode?: string;
 }
 
 export interface WidgetWorkspaceOption {
   scope: "auto" | "project" | "global";
   name: string;
   root?: string;
+  icon?: string;
+  pinned?: boolean;
+  lastActivityAt?: number;
 }
 
 export interface WidgetConversationResult {
@@ -291,6 +298,73 @@ export interface WidgetConversationResult {
   routeReason?: string;
   routeReasonCode?: "global_fallback" | "recent" | "name_match" | "history" | "current" | "primary" | "manual";
   snapshot: WidgetSnapshot;
+}
+
+export type DesktopIconStatus = "idle" | "unread" | "thinking" | "running" | "needs_input" | "needs_confirm" | "done" | "failed";
+
+export interface DesktopIconNotice {
+  id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
+  priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
+  readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+  summaryStatus?: "ready" | "failed";
+}
+
+export interface DesktopIconPosition { row: "top" | "bottom"; zone: "conversation" | "running" | "workspace" | "fixed"; order: number; }
+export interface DesktopIconRuntime { phase: string; summary: string; elapsedMs: number; updatedAt: number; }
+// DesktopIconTaskRef is the typed session identity every task icon snapshot
+// carries (scope/workspaceRoot/topicID/sessionPath). It is display data for
+// the Agent Icon seed fallback; opening still routes through the backend.
+export interface DesktopIconTaskRef {
+  scope: string;
+  workspaceRoot?: string;
+  topicId?: string;
+  sessionPath?: string;
+}
+export interface DesktopIconItem {
+  id: string; kind: "room" | "person" | "task" | "workspace" | "fixed"; sourceId: string; title: string;
+  subtitle?: string; icon?: string; status: DesktopIconStatus; unreadCount: number; activityCount?: number; notifications: DesktopIconNotice[];
+  runtimeStatus?: DesktopIconRuntime; position: DesktopIconPosition; revision: string; retained?: boolean;
+  // 纯展示字段（Agent Icon）：稳定身份 seed 与 workspace 图标键；旧 retained
+  // 数据可能缺 sessionId，前端按 sessionRef/sessionPath 稳定回退。
+  sessionId?: string;
+  workspaceIcon?: string;
+  sessionRef?: DesktopIconTaskRef;
+}
+export interface DesktopIconSnapshot { items: DesktopIconItem[]; revision: string; hoverStatusDelayMs: number; style: "pager" | "icons"; unreadRevision: number; error?: string; }
+export interface DesktopIconSearchItem { id: string; kind: "session" | "room" | "person" | "task" | "workspace"; title: string; subtitle?: string; sourceId: string; lastActivityAt?: number; }
+export interface DesktopIconSearchResult { items: DesktopIconSearchItem[]; error?: string; }
+export interface DesktopIconActionInput { itemId: string; noticeId?: string; revision: string; requestId: string; action: string; values?: string[]; position?: DesktopIconPosition; conversation?: string; readSequence?: number; }
+export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
+export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
+// DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
+// icon widget for an idle-hover trace. It carries measurements and stable
+// widget markers only — never task content, prompts, icon titles or user
+// paths — and every field is validated on the Go side.
+export interface DesktopIconDiagnosticsInput {
+  kind: "hover_start" | "hover_recovery";
+  traceId: string;
+  targetKind?: "icon" | "anchor";
+  idleMs?: number;
+  ts?: number;
+  t0?: number;
+  visibility?: string;
+  focus?: boolean;
+  viewportW?: number;
+  viewportH?: number;
+  dpr?: number;
+  iconCount?: number;
+  revision?: string;
+  frames?: number;
+  worstFrameGapMs?: number;
+  avgFrameGapMs?: number;
+  longTasks?: number;
+  longTasksMaxMs?: number;
+  longTasksTotalMs?: number;
+  visibilityChanges?: number;
+  domMutations?: number;
+  layoutShifts?: number;
+  endedBy?: "healthy" | "timeout" | "aborted";
+  durationMs?: number;
 }
 
 // AppBindings is the hand-written contract between the React app and the Go
@@ -324,6 +398,7 @@ export interface AppBindings extends WailsWorkBindings {
   UnreadState(): Promise<UnreadState>;
   MarkUnreadRead(input: MarkUnreadReadInput): Promise<UnreadState>;
   ResolveLegacySessionUnread(conversationKey: string): Promise<ResolvedSession>;
+  ResolveUnreadSession(conversationKey: string): Promise<ResolvedSession>;
   EnterWidgetMode(): Promise<WidgetSnapshot>;
   ExitWidgetMode(tabID: string): Promise<void>;
   IsWidgetMode(): Promise<boolean>;
@@ -331,11 +406,20 @@ export interface AppBindings extends WailsWorkBindings {
 	ApplyWidgetAction(input: WidgetActionInput): Promise<WidgetActionResult>;
 	StartWidgetConversation(input: WidgetConversationInput): Promise<WidgetConversationResult>;
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
+	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
+	GetDesktopWorkspaceSlots(): Promise<number>;
+	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
+	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
+	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
+	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
+	WriteDesktopIconDiagnostics(input: DesktopIconDiagnosticsInput): Promise<void>;
+	DesktopIconDiagnosticsPath(): Promise<string>;
 	RefreshWidgetWindowRegion(): Promise<void>;
   MinimiseMainWindow(): Promise<void>;
   ToggleMaximiseMainWindow(): Promise<void>;
   IsMainWindowMaximised(): Promise<boolean>;
   CloseMainWindow(): Promise<void>;
+  DismissMainWindow(): Promise<void>;
   GetCollaborationState(sessionID: string): Promise<CollaborationState>;
   RetryCollaboration(sessionID: string): Promise<CollaborationState>;
   HostCollaborationRoom(input: HostCollaborationRoomInput): Promise<CollaborationState>;
@@ -535,10 +619,16 @@ export interface AppBindings extends WailsWorkBindings {
   CompleteVocabularyForTab(tabID: string, prefix: string, limit: number): Promise<VocabularyMatch[]>;
   RecordVocabularyUseForTab(tabID: string, id: string, useID: string): Promise<void>;
   ActivateSkillVocabularyForTab(tabID: string, name: string): Promise<VocabularyRefreshResult>;
+  // Active-tab fallbacks used by the desktop widget (which has no tab of its
+  // own until a conversation starts); same data sources as the main Composer.
+  CompleteVocabulary(prefix: string, limit: number): Promise<VocabularyMatch[]>;
+  RecordVocabularyUse(id: string, useID: string): Promise<void>;
   ListDir(rel: string): Promise<DirEntry[]>;
   ListDirForTab(tabID: string, rel: string): Promise<DirEntry[]>;
+  ListDirForWorkspace(root: string, rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   SearchFileRefsForTab(tabID: string, query: string): Promise<DirEntry[]>;
+  SearchFileRefsForWorkspace(root: string, query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
   ReadFileForTab(tabID: string, rel: string): Promise<FilePreview>;
   WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
@@ -658,6 +748,8 @@ export interface AppBindings extends WailsWorkBindings {
   SetDesktopWidgetEnabled(enabled: boolean): Promise<void>;
   SetDesktopWidgetAlwaysOnTop(on: boolean): Promise<void>;
   SetDesktopWidgetSkin(skin: string): Promise<void>;
+  SetDesktopWidgetStyle(style: string): Promise<void>;
+  SetDesktopHoverStatusDelayMs(delay: number): Promise<void>;
   SetMemoryCompilerEnabled(enabled: boolean): Promise<void>;
   SetExpandThinking(on: boolean): Promise<void>;
   MigrateDesktopPreferences(language: string, theme: string, style: string): Promise<void>;
@@ -1063,7 +1155,7 @@ function bridgeBreadcrumb(method: string): string {
     return `mcp ${method}`;
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion)/.test(method))
     return `skill ${method}`;
-  if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow)$/.test(method)) return `window ${method}`;
+  if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow|DismissMainWindow)$/.test(method)) return `window ${method}`;
   if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|OpenLinkedSession|EnsureBlankTab|ActivateTopic|ActivateLinkedSession|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
     return `nav ${method}`;
   return "";
@@ -1182,6 +1274,10 @@ function mockWidgetSkin(): string {
   return ["classic", "bp", "instant", "pet", "recorder"].includes(value) ? value : "classic";
 }
 
+function mockWidgetStyle(): "icons" {
+  return "icons";
+}
+
 // mockDecisionSkillExportFn lets tests drive the browser mock's
 // ExportDecisionSkills outcome (exported/canceled/failure) without touching
 // Wails. Null (the default) uses the canned success result below.
@@ -1202,6 +1298,8 @@ function makeMockApp(): AppBindings {
     : new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
   const desktopZoomFactor = mockDesktopZoomFactor();
   const desktopWidgetSkin = mockWidgetSkin();
+	let desktopWidgetStyle = mockWidgetStyle();
+	let desktopWorkspaceSlots = 4;
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1343,6 +1441,16 @@ function makeMockApp(): AppBindings {
       },
     };
   };
+	const mockDesktopIconSnapshot = (): DesktopIconSnapshot => ({
+		style: desktopWidgetStyle, revision: `icons-${widgetRevision}`, hoverStatusDelayMs: settings?.hoverStatusDelayMs ?? 1200,
+		unreadRevision: widgetRevision,
+		items: [
+			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
+			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
+			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
+			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
+		],
+	});
   // Mutable so MCP add/remove/retry are observable in browser dev.
   let capServers: ServerView[] = [
     {
@@ -1808,6 +1916,7 @@ function makeMockApp(): AppBindings {
               updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
             },
           ],
+          endpoints: [],
           lastError: "",
           createdAt: new Date(Date.now() - 86_400_000).toISOString(),
           updatedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
@@ -1843,6 +1952,7 @@ function makeMockApp(): AppBindings {
               updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
             },
           ],
+          endpoints: [],
           lastError: "",
           createdAt: new Date(Date.now() - 86_400_000).toISOString(),
           updatedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
@@ -1865,6 +1975,9 @@ function makeMockApp(): AppBindings {
     widgetEnabled: true,
     widgetAlwaysOnTop: true,
     widgetSkin: "classic",
+		widgetStyle: "icons",
+		hoverStatusDelayMs: 1200,
+    ownerDecisionEnabled: false, // master kill switch for the 主人决策 feature (default off)
     memoryCompilerEnabled: true,
     configPath: "~/projects/WorkGround2/WorkGround2.toml",
     providerKinds: ["cli", "openai"],
@@ -1872,6 +1985,7 @@ function makeMockApp(): AppBindings {
     bypass: false,
   };
   settings.widgetSkin = desktopWidgetSkin;
+	settings.widgetStyle = desktopWidgetStyle;
   let sessionBackgroundSettings: SessionBackgroundSettingsView = {
 		mode: "pattern",
     enabled: false,
@@ -1990,6 +2104,7 @@ function makeMockApp(): AppBindings {
         { key: "global_topic_product", kind: "global_topic", label: t("mock.topicProduct"), topicId: "topic_product", turns: 5, lastActivityAt: mockNow - 8 * 24 * 60 * 60_000 },
         { key: "global_topic_ai", kind: "global_topic", label: t("mock.topicAi"), topicId: "topic_ai", turns: 8, lastActivityAt: mockNow - 10 * 24 * 60 * 60_000 },
         { key: "global_topic_lab", kind: "global_topic", label: t("mock.topicLab"), topicId: "topic_lab", turns: 2, lastActivityAt: mockNow - 12 * 24 * 60 * 60_000 },
+        { key: "global_topic_room", kind: "global_topic", label: "联调 Room", topicId: "topic_room", sessionKind: "collaboration", sessionPath: "~/wg2-sessions/topic_room.jsonl", turns: 12, lastActivityAt: mockNow - 30 * 60_000 },
       ],
     },
   ];
@@ -2652,6 +2767,35 @@ function makeMockApp(): AppBindings {
 				{ scope: "global", name: "Global" },
 			];
 		},
+		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
+		async GetDesktopWorkspaceSlots() { return desktopWorkspaceSlots; },
+		async DesktopIconSearch(query) {
+			const needle = query.trim().toLowerCase();
+			const items: DesktopIconSearchItem[] = [
+				{ id: "search:task", kind: "task", title: "实现桌面图标模式", subtitle: "WorkGround2", sourceId: "mock-task" },
+				{ id: "search:workspace", kind: "workspace", title: "WorkGround2", subtitle: "~/projects/WorkGround2", sourceId: "~/projects/WorkGround2" },
+			];
+			return { items: items.filter((item) => `${item.title} ${item.subtitle || ""}`.toLowerCase().includes(needle)) };
+		},
+		async ApplyDesktopIconAction(input) {
+			const current = mockDesktopIconSnapshot();
+			const item = current.items.find((candidate) => candidate.id === input.itemId);
+			if (!item || item.revision !== input.revision) return { status: "stale", error: "图标状态已经变化", snapshot: current };
+			widgetRevision += 1;
+			return { status: "accepted", snapshot: mockDesktopIconSnapshot() };
+		},
+		async SetDesktopIconHitRegions() {},
+		async SetDesktopWorkspaceSlots(slots: number) {
+			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
+			desktopWorkspaceSlots = slots;
+			widgetRevision += 1;
+		},
+		async WriteDesktopIconDiagnostics() {},
+		async DesktopIconDiagnosticsPath() {
+			// Mirrors the Go-side stable per-user path suffix; the real binding
+			// returns the actual absolute path under the user state dir.
+			return "desktop-icon-diagnostics.ndjson";
+		},
 		async RefreshWidgetWindowRegion() {
 			// no-op in mock — the real Wails binding calls the Go backend
 		},
@@ -2666,6 +2810,9 @@ function makeMockApp(): AppBindings {
     },
     async CloseMainWindow() {
       console.info("mock CloseMainWindow");
+    },
+    async DismissMainWindow() {
+      console.info("mock DismissMainWindow");
     },
     async Platform() {
       const override = browserPlatformOverride();
@@ -3998,6 +4145,12 @@ function makeMockApp(): AppBindings {
     async ActivateSkillVocabularyForTab(_tabID: string, name: string) {
       return { skill: name, termCount: 2, added: 2, warnings: [] };
     },
+    async CompleteVocabulary(prefix: string, limit: number) {
+      return this.CompleteVocabularyForTab("mock-active", prefix, limit);
+    },
+    async RecordVocabularyUse(id: string, useID: string) {
+      return this.RecordVocabularyUseForTab("mock-active", id, useID);
+    },
     async ListDir(rel: string) {
       // A tiny fake tree so the @ menu is navigable in browser dev.
       if (rel === "" || rel === "./") {
@@ -4020,6 +4173,9 @@ function makeMockApp(): AppBindings {
     async ListDirForTab(_tabID: string, rel: string) {
       return this.ListDir(rel);
     },
+    async ListDirForWorkspace(_root: string, rel: string) {
+      return this.ListDir(rel);
+    },
     async SearchFileRefs(query: string) {
       const q = query.toLowerCase();
       return ["desktop/frontend/src/lib/bridge.ts", "frontend/wailsjs/runtime/runtime.js", "internal/control/refs.go"]
@@ -4027,6 +4183,9 @@ function makeMockApp(): AppBindings {
         .map((name) => ({ name, isDir: false }));
     },
     async SearchFileRefsForTab(_tabID: string, query: string) {
+      return this.SearchFileRefs(query);
+    },
+    async SearchFileRefsForWorkspace(_root: string, query: string) {
       return this.SearchFileRefs(query);
     },
     async ReadFile(rel: string) {
@@ -4335,7 +4494,7 @@ function makeMockApp(): AppBindings {
       return this.SaveDoc(path, body);
     },
     async DesktopStartupSettings() {
-      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetSkin } = settings;
+      const { bot, desktopLanguage, desktopLayoutStyle, desktopTheme, desktopThemeStyle, displayMode, composerSubmitKey, statusBarStyle, statusBarItems, checkUpdates, widgetEnabled, widgetAlwaysOnTop, widgetSkin, widgetStyle, hoverStatusDelayMs, ownerDecisionEnabled } = settings;
       return JSON.parse(JSON.stringify({
         bot,
         desktopLanguage,
@@ -4348,7 +4507,11 @@ function makeMockApp(): AppBindings {
         statusBarItems,
         checkUpdates,
         widgetEnabled,
+        widgetAlwaysOnTop,
         widgetSkin,
+			widgetStyle,
+			hoverStatusDelayMs,
+        ownerDecisionEnabled,
       })) as DesktopStartupSettingsView;
     },
     async Settings() {
@@ -4378,6 +4541,9 @@ function makeMockApp(): AppBindings {
     },
     async ResolveLegacySessionUnread(_conversationKey: string) {
       throw new Error("ResolveLegacySessionUnread is not available in browser dev mode");
+    },
+    async ResolveUnreadSession(_conversationKey: string) {
+      throw new Error("ResolveUnreadSession is not available in browser dev mode");
     },
     async SessionBackground(_tabID: string) {
       return { path: "", url: "" };
@@ -4580,6 +4746,7 @@ function makeMockApp(): AppBindings {
               secretSet: true,
             },
             sessionMappings: [],
+            endpoints: [],
             lastError: "",
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
@@ -4651,6 +4818,12 @@ function makeMockApp(): AppBindings {
         async SetDesktopWidgetSkin(skin: string) {
           settings.widgetSkin = skin;
         },
+		async SetDesktopWidgetStyle(style: string) {
+			if (style !== "icons") throw new Error(`unsupported widget style ${JSON.stringify(style)}: icons only`);
+			desktopWidgetStyle = "icons";
+			settings.widgetStyle = "icons";
+		},
+		async SetDesktopHoverStatusDelayMs(delay: number) { settings.hoverStatusDelayMs = Math.max(0, Math.min(10_000, delay)); },
         async SetMemoryCompilerEnabled(enabled: boolean) {
           settings.memoryCompilerEnabled = enabled;
         },
@@ -5104,7 +5277,9 @@ function makeMockApp(): AppBindings {
       const node = workspaceRoot
         ? mockProjectTree.find((item) => item.root === workspaceRoot)
         : mockProjectTree.find((item) => item.kind === "global_folder");
-      if (node) node.label = title.trim() || (node.kind === "global_folder" ? "Global" : node.label);
+      // Mirror the real backend: an empty title clears the display override and
+      // restores the folder-name semantics instead of keeping the old label.
+      if (node) node.label = title.trim() || (node.kind === "global_folder" ? "Global" : baseName(node.root || node.label));
     },
     async SetProjectColor(workspaceRoot: string, color: string) {
       const node = workspaceRoot

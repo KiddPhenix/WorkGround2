@@ -1,6 +1,7 @@
 package botruntime
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -370,6 +371,153 @@ func TestForgetAutoSessionMappingsForPathRemovesOnlyAutoPathTargets(t *testing.T
 	}
 	if got.Bot.Connections[0].UpdatedAt == "" {
 		t.Fatalf("connection UpdatedAt was not refreshed")
+	}
+}
+
+func TestRememberInboundRegistersEndpointWithoutSession(t *testing.T) {
+	isolateUserConfig(t)
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{
+		{ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dm := bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: bot.ChatDM, ChatID: "wx-chat-1", UserID: "wx-user-1"}
+	group := bot.InboundMessage{Platform: bot.PlatformWeixin, ConnectionID: "weixin-weixin", Domain: "weixin", ChatType: bot.ChatGroup, ChatID: "oc-group-1", UserID: "ou-user-1"}
+	if err := RememberInbound(dm); err != nil {
+		t.Fatalf("remember dm: %v", err)
+	}
+	if err := RememberInbound(group); err != nil {
+		t.Fatalf("remember group: %v", err)
+	}
+	// 重复入站幂等：不新增端点、不报错。
+	if err := RememberInbound(dm); err != nil {
+		t.Fatalf("remember dm again: %v", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	endpoints := got.Bot.Connections[0].Endpoints
+	if len(endpoints) != 2 {
+		t.Fatalf("endpoints = %+v, want dm + group endpoints", endpoints)
+	}
+	byRemote := map[string]config.BotConnectionRemote{}
+	for _, e := range endpoints {
+		byRemote[e.RemoteID] = e
+	}
+	if e := byRemote["wx-chat-1"]; e.ChatType != "dm" {
+		t.Fatalf("dm endpoint = %+v, want chat_type dm", e)
+	}
+	if e := byRemote["oc-group-1"]; e.ChatType != "group" {
+		t.Fatalf("group endpoint = %+v, want chat_type group", e)
+	}
+	if byRemote["wx-chat-1"].UpdatedAt == "" {
+		t.Fatalf("endpoint UpdatedAt was not set")
+	}
+}
+
+func TestRememberInboundEndpointGroupSharesOneTarget(t *testing.T) {
+	isolateUserConfig(t)
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{
+		{ID: "feishu-lark", Provider: "feishu", Domain: "lark", Label: "Lark", Enabled: true, Status: "connected"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	msg1 := bot.InboundMessage{Platform: bot.PlatformFeishu, ConnectionID: "feishu-lark", Domain: "lark", ChatType: bot.ChatGroup, ChatID: "oc-group-1", UserID: "ou-user-1"}
+	msg2 := bot.InboundMessage{Platform: bot.PlatformFeishu, ConnectionID: "feishu-lark", Domain: "lark", ChatType: bot.ChatGroup, ChatID: "oc-group-1", UserID: "ou-user-2"}
+	if err := RememberInbound(msg1); err != nil {
+		t.Fatalf("remember user 1: %v", err)
+	}
+	if err := RememberInbound(msg2); err != nil {
+		t.Fatalf("remember user 2: %v", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	endpoints := got.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 || endpoints[0].RemoteID != "oc-group-1" || endpoints[0].ChatType != "group" {
+		t.Fatalf("endpoints = %+v, want one shared group endpoint", endpoints)
+	}
+}
+
+func TestRememberInboundEndpointCapsPerConnection(t *testing.T) {
+	isolateUserConfig(t)
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{
+		{ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	for i := 0; i < maxEndpointsPerConnection+50; i++ {
+		if err := RememberInbound(bot.InboundMessage{
+			Platform:     bot.PlatformWeixin,
+			ConnectionID: "weixin-weixin",
+			Domain:       "weixin",
+			ChatType:     bot.ChatDM,
+			ChatID:       fmt.Sprintf("wx-chat-%03d", i),
+			UserID:       "wx-user",
+		}); err != nil {
+			t.Fatalf("remember chat %d: %v", i, err)
+		}
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	endpoints := got.Bot.Connections[0].Endpoints
+	if len(endpoints) != maxEndpointsPerConnection {
+		t.Fatalf("endpoints = %d, want capped at %d", len(endpoints), maxEndpointsPerConnection)
+	}
+	seen := make(map[string]bool)
+	for _, e := range endpoints {
+		if e.RemoteID == "" || e.UpdatedAt == "" {
+			t.Fatalf("endpoint = %+v, want remote_id and updated_at", e)
+		}
+		if seen[e.RemoteID] {
+			t.Fatalf("duplicate endpoint %q after cap", e.RemoteID)
+		}
+		seen[e.RemoteID] = true
+	}
+	latest := fmt.Sprintf("wx-chat-%03d", maxEndpointsPerConnection+49)
+	if !seen[latest] {
+		t.Fatalf("latest endpoint %q was discarded by the cap", latest)
+	}
+	if seen["wx-chat-000"] {
+		t.Fatal("oldest endpoint was not evicted by the cap")
+	}
+}
+
+func TestForgetAutoSessionMappingsKeepsRegisteredEndpoints(t *testing.T) {
+	isolateUserConfig(t)
+	target := filepath.Join(t.TempDir(), "bot-channel.jsonl")
+	cfg := config.Default()
+	cfg.Bot.Connections = []config.BotConnectionConfig{{
+		ID: "weixin-weixin", Provider: "weixin", Domain: "weixin", Label: "微信", Enabled: true, Status: "connected",
+		SessionMappings: []config.BotConnectionSessionMapping{
+			{RemoteID: "wx-chat-1", SessionID: "path:" + target, SessionSource: "auto"},
+		},
+		Endpoints: []config.BotConnectionRemote{
+			{RemoteID: "wx-chat-1", ChatType: "dm"},
+		},
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if err := ForgetAutoSessionMappingsForPath(target); err != nil {
+		t.Fatalf("forget auto session mappings: %v", err)
+	}
+
+	got := config.LoadForEdit(config.UserConfigPath())
+	if mappings := got.Bot.Connections[0].SessionMappings; len(mappings) != 0 {
+		t.Fatalf("session mappings = %+v, want cleared by GC", mappings)
+	}
+	endpoints := got.Bot.Connections[0].Endpoints
+	if len(endpoints) != 1 || endpoints[0].RemoteID != "wx-chat-1" || endpoints[0].ChatType != "dm" {
+		t.Fatalf("endpoints = %+v, want preserved after session GC", endpoints)
 	}
 }
 

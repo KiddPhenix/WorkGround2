@@ -25,7 +25,7 @@ export function vocabularyTokenAt(value: string, selectionStart: number | null, 
   }
   const prefix = value.slice(from, end);
   const marker = from > 0 ? value[from - 1] : "";
-  if (!prefix || marker === "/" || marker === "@" || marker === "!") return null;
+  if (!prefix || marker === "/" || marker === "$" || marker === "@" || marker === "!") return null;
   const min = /\p{Script=Han}/u.test(prefix) ? 2 : 3;
   if (Array.from(prefix).length < min) return null;
   return { from, to: end, prefix };

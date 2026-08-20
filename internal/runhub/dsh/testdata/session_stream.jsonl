@@ -1,0 +1,7 @@
+{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"cwd":"/work","provider":"deepseek-official","model":"deepseek-chat"}}
+{"jsonrpc":"2.0","id":"1","result":{"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}}}
+{"jsonrpc":"2.0","id":"2","method":"session/prompt","params":{"sessionId":"sess-1","contentBlocks":[{"type":"text","text":"hello"}]}}
+{"jsonrpc":"2.0","method":"session.event","params":{"sessionId":"sess-1","event":{"type":"turn/start"}}}
+{"jsonrpc":"2.0","method":"subagent.started","params":{"parentSessionId":"sess-1","childSessionId":"sub-1"}}
+{"jsonrpc":"2.0","method":"subagent.finished","params":{"provider":"codex","agentId":"sub-1","parentSessionId":"sess-1","childSessionId":"sub-1","status":"ok","stopReason":"completed"}}
+{"jsonrpc":"2.0","id":"3","method":"shutdown"}

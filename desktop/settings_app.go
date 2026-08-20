@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -229,6 +230,9 @@ type SettingsView struct {
 	WidgetEnabled           bool                      `json:"widgetEnabled"`
 	WidgetAlwaysOnTop       bool                      `json:"widgetAlwaysOnTop"`
 	WidgetSkin              string                    `json:"widgetSkin"`
+	WidgetStyle             string                    `json:"widgetStyle"`
+	HoverStatusDelayMs      int                       `json:"hoverStatusDelayMs"`
+	OwnerDecisionEnabled    bool                      `json:"ownerDecisionEnabled"` // master kill switch for the 主人决策 feature (default off)
 	MemoryCompiler          bool                      `json:"memoryCompilerEnabled"`
 	ExpandThinking          bool                      `json:"expandThinking"`
 	ConfigPath              string                    `json:"configPath"`
@@ -259,7 +263,14 @@ type DesktopStartupSettingsView struct {
 	StatusBarItems     []string        `json:"statusBarItems"`
 	CheckUpdates       bool            `json:"checkUpdates"`
 	WidgetEnabled      bool            `json:"widgetEnabled"`
+	WidgetAlwaysOnTop  bool            `json:"widgetAlwaysOnTop"`
 	WidgetSkin         string          `json:"widgetSkin"`
+	WidgetStyle        string          `json:"widgetStyle"`
+	HoverStatusDelayMs int             `json:"hoverStatusDelayMs"`
+	// OwnerDecisionEnabled is the master kill switch for the 主人决策 feature;
+	// it mirrors ownerDecisionFeatureEnabled so the frontend can hide the
+	// decision centre and channel settings while the feature is disabled.
+	OwnerDecisionEnabled bool `json:"ownerDecisionEnabled"`
 }
 
 func nonNil(s []string) []string {
@@ -529,32 +540,40 @@ func officialProviderAddedSet(cfg *config.Config) map[string]bool {
 func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettingsView {
 	if cfg == nil {
 		return DesktopStartupSettingsView{
-			Bot:                botSettingsView(config.BotConfig{}),
-			DesktopLayoutStyle: "workbench",
-			DesktopTheme:       "auto",
-			DesktopThemeStyle:  "iris",
-			DisplayMode:        "standard",
-			ComposerSubmitKey:  "enter",
-			StatusBarStyle:     "text",
-			StatusBarItems:     config.DefaultDesktopStatusBarItems(),
-			CheckUpdates:       true,
-			WidgetEnabled:      true,
-			WidgetSkin:         "classic",
+			Bot:                  botSettingsView(config.BotConfig{}),
+			DesktopLayoutStyle:   "workbench",
+			DesktopTheme:         "auto",
+			DesktopThemeStyle:    "iris",
+			DisplayMode:          "standard",
+			ComposerSubmitKey:    "enter",
+			StatusBarStyle:       "text",
+			StatusBarItems:       config.DefaultDesktopStatusBarItems(),
+			CheckUpdates:         true,
+			WidgetEnabled:        true,
+			WidgetAlwaysOnTop:    true,
+			WidgetSkin:           "classic",
+			WidgetStyle:          "icons",
+			HoverStatusDelayMs:   1200,
+			OwnerDecisionEnabled: ownerDecisionFeatureEnabled,
 		}
 	}
 	return DesktopStartupSettingsView{
-		Bot:                botSettingsView(cfg.Bot),
-		DesktopLanguage:    cfg.DesktopLanguage(),
-		DesktopLayoutStyle: cfg.DesktopLayoutStyle(),
-		DesktopTheme:       cfg.DesktopTheme(),
-		DesktopThemeStyle:  cfg.DesktopThemeStyle(),
-		DisplayMode:        cfg.DesktopDisplayMode(),
-		ComposerSubmitKey:  cfg.DesktopComposerSubmitKey(),
-		StatusBarStyle:     cfg.DesktopStatusBarStyle(),
-		StatusBarItems:     cfg.DesktopStatusBarItems(),
-		CheckUpdates:       cfg.DesktopCheckUpdates(),
-		WidgetEnabled:      cfg.DesktopWidgetEnabled(),
-		WidgetSkin:         cfg.DesktopWidgetSkin(),
+		Bot:                  botSettingsView(cfg.Bot),
+		DesktopLanguage:      cfg.DesktopLanguage(),
+		DesktopLayoutStyle:   cfg.DesktopLayoutStyle(),
+		DesktopTheme:         cfg.DesktopTheme(),
+		DesktopThemeStyle:    cfg.DesktopThemeStyle(),
+		DisplayMode:          cfg.DesktopDisplayMode(),
+		ComposerSubmitKey:    cfg.DesktopComposerSubmitKey(),
+		StatusBarStyle:       cfg.DesktopStatusBarStyle(),
+		StatusBarItems:       cfg.DesktopStatusBarItems(),
+		CheckUpdates:         cfg.DesktopCheckUpdates(),
+		WidgetEnabled:        cfg.DesktopWidgetEnabled(),
+		WidgetAlwaysOnTop:    cfg.DesktopWidgetAlwaysOnTop(),
+		WidgetSkin:           cfg.DesktopWidgetSkin(),
+		WidgetStyle:          cfg.DesktopWidgetStyle(),
+		HoverStatusDelayMs:   cfg.DesktopHoverStatusDelayMs(),
+		OwnerDecisionEnabled: ownerDecisionFeatureEnabled,
 	}
 }
 
@@ -608,6 +627,9 @@ func (a *App) Settings() SettingsView {
 			WidgetEnabled:           true,
 			WidgetAlwaysOnTop:       true,
 			WidgetSkin:              "classic",
+			WidgetStyle:             "icons",
+			HoverStatusDelayMs:      1200,
+			OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 			MemoryCompiler:          true,
 			ExpandThinking:          false,
 		}
@@ -676,6 +698,9 @@ func (a *App) Settings() SettingsView {
 		WidgetEnabled:           cfg.DesktopWidgetEnabled(),
 		WidgetAlwaysOnTop:       cfg.DesktopWidgetAlwaysOnTop(),
 		WidgetSkin:              cfg.DesktopWidgetSkin(),
+		WidgetStyle:             cfg.DesktopWidgetStyle(),
+		HoverStatusDelayMs:      cfg.DesktopHoverStatusDelayMs(),
+		OwnerDecisionEnabled:    ownerDecisionFeatureEnabled,
 		MemoryCompiler:          cfg.MemoryCompilerEnabled(),
 		ExpandThinking:          cfg.Desktop.ExpandThinking,
 		ConfigPath:              cfgPath,
@@ -2384,9 +2409,47 @@ func (a *App) SetDesktopWidgetEnabled(enabled bool) error {
 }
 
 // SetDesktopWidgetAlwaysOnTop sets whether the widget window stays
-// always-on-top. The change takes effect on the next EnterWidgetMode.
+// always-on-top. The config is the single source of truth. While widget mode
+// is active the runtime flag is applied immediately and the config persists in
+// the same serialized step as widget transitions (widgetMu), so a toggle can
+// never interleave with Enter/ExitWidgetMode or a style switch; a failed
+// persist rolls the runtime flag back so the window and the stored preference
+// never diverge. Outside widget mode the change takes effect on the next
+// EnterWidgetMode, as before.
 func (a *App) SetDesktopWidgetAlwaysOnTop(on bool) error {
-	return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetAlwaysOnTop(on) })
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode || a.ctx == nil {
+		return a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetAlwaysOnTop(on) })
+	}
+	_, previous, err := a.desktopWidgetPreferences()
+	if err != nil {
+		return fmt.Errorf("read always-on-top preference: %w", err)
+	}
+	if err := a.applyWindowAlwaysOnTop(on); err != nil {
+		return err
+	}
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopWidgetAlwaysOnTop(on) }); err != nil {
+		if rollbackErr := a.applyWindowAlwaysOnTop(previous); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("roll back runtime always-on-top after failed persist: %w", rollbackErr))
+		}
+		return err
+	}
+	return nil
+}
+
+// applyWindowAlwaysOnTop applies the runtime always-on-top flag through the
+// test seam; nil uses the Wails runtime call, which is fire-and-forget (the
+// config persist owns the reported failure and the rollback path).
+func (a *App) applyWindowAlwaysOnTop(on bool) error {
+	set := a.windowSetAlwaysOnTop
+	if set == nil {
+		set = func(on bool) error {
+			runtime.WindowSetAlwaysOnTop(a.ctx, on)
+			return nil
+		}
+	}
+	return set(on)
 }
 
 // SetDesktopWidgetSkin sets the widget visual skin, persists it to config, and
@@ -2401,6 +2464,55 @@ func (a *App) SetDesktopWidgetSkin(skin string) error {
 	}
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "widget:skin", skin)
+	}
+	return nil
+}
+
+func (a *App) SetDesktopWidgetStyle(style string) error {
+	style = strings.ToLower(strings.TrimSpace(style))
+	probe := &config.Config{}
+	if err := probe.SetDesktopWidgetStyle(style); err != nil {
+		return err
+	}
+	style = probe.DesktopWidgetStyle()
+	// The whole read-config → runtime switch → persist → failed-save runtime
+	// rollback sequence runs inside one widgetMu critical section:
+	// Enter/ExitWidgetMode and concurrent style toggles share the same lock, so
+	// the runtime window state and the persisted config can never diverge
+	// between the switch and its save, and an inactive setter cannot release
+	// the lock before the persist and race an Enter in between.
+	a.widgetMu.Lock()
+	previous, err := a.switchDesktopWidgetStyleLocked(style)
+	if err != nil {
+		a.widgetMu.Unlock()
+		return fmt.Errorf("switch widget style: %w", err)
+	}
+	if err := a.updateUserConfig(func(c *config.Config) error { return c.SetDesktopWidgetStyle(style) }); err != nil {
+		// The persist failed, so the config still holds the previous style.
+		// Restore the runtime under the same widgetMu boundary. An inactive
+		// setter (previous == "") never switched the window, so there is
+		// nothing to roll back: switching an active window to the empty style
+		// would leave the runtime mirror and geometry inconsistent.
+		var rollbackErr error
+		if previous != "" {
+			_, rollbackErr = a.switchDesktopWidgetStyleLocked(previous)
+		}
+		a.widgetMu.Unlock()
+		return errors.Join(err, rollbackErr)
+	}
+	a.widgetMu.Unlock()
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:style", strings.ToLower(strings.TrimSpace(style)))
+	}
+	return nil
+}
+
+func (a *App) SetDesktopHoverStatusDelayMs(delay int) error {
+	if err := a.applyConfigOnly(func(c *config.Config) error { return c.SetDesktopHoverStatusDelayMs(delay) }); err != nil {
+		return err
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "widget:hover-delay", delay)
 	}
 	return nil
 }

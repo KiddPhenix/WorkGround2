@@ -1,0 +1,86 @@
+/* Agent Icon 组件基础样式：所有图层都是完整 64×64 画布，绝对定位到同一
+ * 矩形；DOM 顺序即叠加顺序（frame → headwear → eyes → workspaceBadge →
+ * taskTool）。容器尺寸由使用方决定（小组件 58px，见 desktop-icon-mode.css）。
+ * 资源层坐标已在资产内固定，此处只做定位不做缩放变形。 */
+.agent-icon {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  user-select: none;
+}
+
+.agent-icon > img.agent-icon__layer,
+.agent-icon__layer--eyes,
+.agent-icon__layer--badge {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.agent-icon__layer {
+  object-fit: fill; /* 层本身即 64×64 画布，fill 恒等于原样 */
+}
+
+/* 眼睛层：横向 sprite 384×64（6 帧 × 64），帧号由组件以 translateX 位移，
+ * 共用同一张 sprite，避免逐帧切换 src 的解码开销。 */
+.agent-icon__layer--eyes {
+  overflow: hidden;
+}
+
+.agent-icon__eyes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  max-width: none;
+  object-fit: fill;
+  transform-origin: left top;
+}
+
+.agent-icon__eyes-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.agent-icon__layer--missing {
+  display: none;
+}
+
+/* Workspace 徽标：模板给出左下圆形（cx 9 / cy 51 / r 9），glyph 覆盖模板
+ * 内的占位菱形（12×12 @ 3,45 → 4.69% / 70.31% / 18.75%）。徽标小于任务工具。 */
+.agent-icon__badge-template {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.agent-icon__badge-glyph {
+  position: absolute;
+  left: 3.125%;
+  top: 68.75%;
+  display: grid;
+  place-items: center;
+  width: 21.875%;
+  height: 21.875%;
+}
+
+.agent-icon__badge-glyph svg {
+  width: 100%;
+  height: 100%;
+  stroke-width: 2.4;
+}
+
+.agent-icon__badge-glyph-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: none;
+  opacity: 1;
+}

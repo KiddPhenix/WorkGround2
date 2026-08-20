@@ -697,6 +697,28 @@ func TestGatewayDecisionHandlerInterceptsAuthorizedReply(t *testing.T) {
 	if gw.sessions.ActiveCount() != 0 {
 		t.Fatal("decision reply must not start a normal bot session")
 	}
+	if len(gw.controllers) != 0 {
+		t.Fatal("decision reply must not build a controller")
+	}
+}
+
+func TestGatewaySendToAdapterDoesNotCreateSession(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	gw := NewGateway(GatewayConfig{IgnoreSelfMessages: true}, nil, logger)
+	adapter := newFakeAdapter(PlatformWeixin, "fake-weixin")
+	binding := AdapterBinding{ID: "weixin-owner", Domain: "weixin", Platform: PlatformWeixin, Adapter: adapter}
+	gw.adapters = []AdapterBinding{binding}
+
+	result, err := gw.SendTextToAdapter(context.Background(), "weixin-owner", "weixin", "owner", ChatDM, "【通知】任务完成。")
+	if err != nil {
+		t.Fatalf("send notification: %v", err)
+	}
+	if result.MessageID == "" {
+		t.Fatal("notification send returned no message id")
+	}
+	if gw.sessions.ActiveCount() != 0 || len(gw.controllers) != 0 {
+		t.Fatal("notification send must not create or resume a session")
+	}
 }
 
 func TestGatewayDecisionHandlerRejectsNonApprover(t *testing.T) {

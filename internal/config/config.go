@@ -108,6 +108,8 @@ type DesktopConfig struct {
 	WidgetEnabled           *bool                          `toml:"widget_enabled"`             // show the widget entry in the window frame; nil keeps the default enabled
 	WidgetAlwaysOnTop       *bool                          `toml:"widget_always_on_top"`       // keep the widget window always-on-top; nil keeps the default enabled
 	WidgetSkin              string                         `toml:"widget_skin"`                // widget visual skin: classic|bp|instant|pet|recorder; empty/unknown → classic
+	WidgetStyle             string                         `toml:"widget_style"`               // icons-only; legacy pager/empty values normalize to icons
+	HoverStatusDelayMs      *int                           `toml:"hover_status_delay_ms"`      // icon widget read-only preview delay; nil defaults to 1200
 	SessionBackground       DesktopSessionBackgroundConfig `toml:"session_background"`         // desktop Session background image pool and rotation
 }
 
@@ -613,6 +615,22 @@ func (c *Config) DesktopWidgetSkin() string {
 	return "classic"
 }
 
+// DesktopWidgetStyle returns the desktop widget presentation. The widget is
+// icons-only: any legacy "pager" or unknown persisted value normalizes to
+// "icons", so old configurations never re-enter the pager at runtime.
+func (c *Config) DesktopWidgetStyle() string {
+	return "icons"
+}
+
+// DesktopHoverStatusDelayMs returns the icon preview delay. Zero disables the
+// delayed preview while preserving immediate hover feedback.
+func (c *Config) DesktopHoverStatusDelayMs() int {
+	if c == nil || c.Desktop.HoverStatusDelayMs == nil {
+		return 1200
+	}
+	return max(0, min(*c.Desktop.HoverStatusDelayMs, 10000))
+}
+
 // LSPConfig governs the optional Language Server Protocol tools (lsp_definition,
 // lsp_references, lsp_hover, lsp_diagnostics). Enabled defaults to true; the
 // servers themselves are never bundled — each resolves on PATH and the tool
@@ -774,9 +792,23 @@ type BotConnectionConfig struct {
 	Access           BotAccessConfig               `toml:"access"`
 	Credential       BotConnectionCredential       `toml:"credential"`
 	SessionMappings  []BotConnectionSessionMapping `toml:"session_mappings"`
-	LastError        string                        `toml:"last_error"`
-	CreatedAt        string                        `toml:"created_at"`
-	UpdatedAt        string                        `toml:"updated_at"`
+	// Endpoints 是已授权远端会话的稳定端点登记表，独立于 Session binding：
+	// 自动 IM Session 回收只清理 session_mappings，不删除已登记端点。端点用于
+	// 主人通知/问答通道的目标发现与发送，不创建或恢复任何 AI Session。
+	Endpoints []BotConnectionRemote `toml:"endpoints"`
+	LastError string                `toml:"last_error"`
+	CreatedAt string                `toml:"created_at"`
+	UpdatedAt string                `toml:"updated_at"`
+}
+
+// BotConnectionRemote 是一条与 Session 生命周期无关的远端端点。RemoteID 是
+// 平台会话 ID（ChatID）；ChatType/ThreadID 用于区分同一 RemoteID 下的群、
+// 话题等不同目标。同一 (RemoteID, ChatType, ThreadID) 重复入站幂等复用。
+type BotConnectionRemote struct {
+	RemoteID  string `toml:"remote_id"`
+	ChatType  string `toml:"chat_type"`
+	ThreadID  string `toml:"thread_id"`
+	UpdatedAt string `toml:"updated_at"`
 }
 
 type BotConnectionCredential struct {
@@ -1196,6 +1228,22 @@ type AgentConfig struct {
 	// AssistMaxAttempts bounds how many candidate providers are tried per
 	// request_help call. Zero (default) means 3.
 	AssistMaxAttempts int `toml:"assist_max_attempts"`
+	// AnchoredBootstrap gates the DeepSeek two-phase bootstrap: the first
+	// model request exposes only bash + read_file + edit_file with the
+	// memory/skills injection deferred, then the full catalog returns after
+	// the first assistant reply and stays resident (compaction never demotes).
+	// Auto: enabled by default for DeepSeek-family providers; opt out with
+	// anchored_bootstrap = false.
+	AnchoredBootstrap *bool `toml:"anchored_bootstrap"`
+}
+
+// AnchoredBootstrapEnabled reports whether the DeepSeek two-phase bootstrap
+// is enabled. Missing config defaults to true (auto).
+func (c *Config) AnchoredBootstrapEnabled() bool {
+	if c == nil || c.Agent.AnchoredBootstrap == nil {
+		return true
+	}
+	return *c.Agent.AnchoredBootstrap
 }
 
 // MemoryCompilerConfig controls the v5 execution-memory compiler.
