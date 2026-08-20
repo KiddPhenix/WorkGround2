@@ -1,6 +1,7 @@
 // Agent Icon 资源装载：manifest 静态 import 一次（模块级单例），PNG 以 Vite
 // 静态 import 建立 manifest 相对路径 → 打包后 URL 的只读表。运行时只按
-// manifest 相对路径查表，不拼接磁盘路径，不做 per-render 动态 import。
+// manifest 的 png/sprite 路径查表，不打包 SVG，不拼接磁盘路径，
+// 不做 per-render 动态 import。
 // 缺资源由 AgentIcon 组件经 onError 显式上报（同一资源去重）。
 import manifestJson from "../../assets/agent-icon/manifest.json";
 import frameAmber from "../../assets/agent-icon/png/frames/amber.png";

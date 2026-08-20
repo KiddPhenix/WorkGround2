@@ -6,12 +6,12 @@
     "viewBox": "0 0 64 64"
   },
   "format": {
-    "source": "SVG",
+    "source": "ImageGen PNG masters; SVG retained as metadata/reference",
     "raster": "PNG 64x64",
     "transparent": true,
-    "flat": true,
-    "gradients": false,
-    "shadows": false
+    "flat": false,
+    "gradients": true,
+    "shadows": true
   },
   "layerOrder": [
     "frame",

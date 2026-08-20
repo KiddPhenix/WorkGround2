@@ -1,6 +1,6 @@
 /* Agent Icon 组件基础样式：所有图层都是完整 64×64 画布，绝对定位到同一
  * 矩形；DOM 顺序即叠加顺序（frame → headwear → eyes → workspaceBadge →
- * taskTool）。容器尺寸由使用方决定（小组件 52px，见 desktop-icon-mode.css）。
+ * taskTool）。容器尺寸由使用方决定（小组件 58px，见 desktop-icon-mode.css）。
  * 资源层坐标已在资产内固定，此处只做定位不做缩放变形。 */
 .agent-icon {
   position: relative;
@@ -63,12 +63,12 @@
 
 .agent-icon__badge-glyph {
   position: absolute;
-  left: 4.6875%;
-  top: 70.3125%;
+  left: 3.125%;
+  top: 68.75%;
   display: grid;
   place-items: center;
-  width: 18.75%;
-  height: 18.75%;
+  width: 21.875%;
+  height: 21.875%;
 }
 
 .agent-icon__badge-glyph svg {
@@ -81,4 +81,6 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
+  filter: none;
+  opacity: 1;
 }

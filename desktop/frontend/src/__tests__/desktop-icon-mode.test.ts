@@ -7,6 +7,7 @@ import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type Time
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull } from "../components/widget/workspaceManager";
 import { roomRows } from "../components/widget/roomsManager";
+import { parseRoomIconVisibility, readRoomIconVisibility, ROOM_ICON_VISIBILITY_KEY, visibleDesktopIcons, writeRoomIconVisibility } from "../components/widget/roomIconVisibility";
 import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
 import type { DesktopIconDiagnosticsInput } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
@@ -523,6 +524,11 @@ assert.match(component, /desktop-icon-collapse[^>]*onClick=/, "the toggle is a k
 assert.doesNotMatch(component, /desktop-icon-collapse[^>]*onPointerDown/, "the toggle must never start a drag");
 assert.doesNotMatch(component, /anchorPointerDown|anchorPointerMove|endClusterDrag|clusterDrag|clampClusterAnchor|viewportLogical|anchorN|setPointerCapture\(event\.pointerId\)[\s\S]{0,80}anchor/, "the anchor has no hand-written pointer-move drag and no normalized cluster position");
 const anchorRule = css.match(/\.desktop-icon-anchor\s*\{[^}]*\}/)?.[0] ?? "";
+const anchorImageRule = css.match(/\.desktop-icon-anchor img\s*\{[^}]*\}/)?.[0] ?? "";
+assert.match(anchorImageRule, /animation:\s*desktop-icon-anchor-keepalive 6s ease-in-out infinite/, "the anchor image keeps a tiny compositor transform active while the widget is idle");
+assert.match(anchorImageRule, /will-change:\s*transform/, "the anchor keepalive owns a compositor transform layer");
+assert.match(css, /@keyframes desktop-icon-anchor-keepalive\s*\{[\s\S]*translate3d\(0, -\.6px, 0\)[\s\S]*translate3d\(0, \.6px, 0\)/, "the keepalive moves only a subpixel amount around the stationary anchor");
+assert.match(css, /prefers-reduced-motion:\s*reduce[\s\S]*\.desktop-icon-anchor img\s*\{\s*animation:\s*none;/, "the experimental anchor keepalive respects reduced-motion preferences");
 assert.match(anchorRule, /--wails-draggable:\s*drag/, "the WG2 anchor is a native Wails window drag handle");
 assert.doesNotMatch(anchorRule, /touch-action/, "the native anchor no longer claims pointer capture");
 assert.doesNotMatch(anchorRule, /grabbing/, "the native anchor no longer fakes a grab/grabbing cursor pair");
@@ -764,13 +770,36 @@ assert.deepEqual(roomRows([
 ]), [], "collaboration topics without a topicId or sessionPath, and bare session nodes, never become Rooms");
 assert.deepEqual(roomRows([]), [], "an empty tree yields an empty Rooms list");
 
+// --- persisted Room icon visibility: default-on, safe write, room-only filter ---
+assert.equal(parseRoomIconVisibility(null), true, "missing Room icon visibility keeps the legacy visible default");
+assert.equal(parseRoomIconVisibility("false"), false, "a persisted false value hides Room icons");
+assert.equal(parseRoomIconVisibility("true"), true, "a persisted true value shows Room icons");
+assert.equal(parseRoomIconVisibility("broken"), true, "corrupt Room icon visibility safely falls back to visible");
+const roomVisibilityStore = new Map<string, string>();
+const roomVisibilityStorage = {
+  getItem: (key: string) => roomVisibilityStore.get(key) ?? null,
+  setItem: (key: string, value: string) => { roomVisibilityStore.set(key, value); },
+};
+writeRoomIconVisibility(roomVisibilityStorage, false);
+assert.equal(roomVisibilityStore.get(ROOM_ICON_VISIBILITY_KEY), "false", "Room icon visibility persists under one stable widget-local key");
+assert.equal(readRoomIconVisibility(roomVisibilityStorage), false, "Room icon visibility reads the persisted choice across mounts");
+assert.throws(() => writeRoomIconVisibility({ getItem: () => null, setItem: () => { throw new Error("quota"); } }, false), /quota/, "Room icon visibility write failures stay explicit for a retryable UI path");
+const visibilityItems = [
+  { id: "conversation:room", kind: "room" },
+  { id: "conversation:person", kind: "person" },
+  { id: "task:one", kind: "task" },
+  { id: "fixed:rooms", kind: "fixed" },
+] as Parameters<typeof visibleDesktopIcons>[0];
+assert.deepEqual(visibleDesktopIcons(visibilityItems, false).map((item) => item.id), ["conversation:person", "task:one", "fixed:rooms"], "hiding Rooms removes only dynamic room icons and preserves the fixed Rooms manager entry");
+assert.equal(visibleDesktopIcons(visibilityItems, true), visibilityItems, "showing Rooms reuses the complete authoritative item list");
+
 // --- rooms fixed icon: glyph, dialog open, and the generic fallback exclusion ---
 assert.match(component, /rooms: "discussion"/, "the rooms fixed icon renders its own distinct matte discussion asset");
 assert.match(component, /item\.kind === "fixed" && item\.sourceId === "rooms"[\s\S]{0,220}setActiveID\(item\.id\)/, "single click on the rooms icon opens the management dialog");
 assert.doesNotMatch(component, /item\.sourceId === "rooms"[\s\S]{0,80}run\(item, "open"\)/, "the rooms icon never runs the generic fixed action");
 assert.match(component, /active\.sourceId === "rooms" && <RoomsManager/, "the rooms popup renders the management dialog");
 assert.match(component, /active\.sourceId !== "rooms"/, "the generic fixed popup fallback explicitly excludes the rooms icon");
-assert.match(component, /<RoomsManager onClose=\{\(\) => setActiveID\(""\)\}\s*onNewRoom=\{onNewRoom\}\s*onOpenRoom=\{onOpenRoom\}/, "RoomsManager receives the exit-and-open coordination callbacks");
+assert.match(component, /<RoomsManager roomIconsVisible=\{roomIconsVisible\} onRoomIconsVisibleChange=\{setRoomIconsVisible\} onClose=\{\(\) => setActiveID\(""\)\} onNewRoom=\{onNewRoom\} onOpenRoom=\{onOpenRoom\}/, "RoomsManager receives the visibility state and exit-and-open coordination callbacks");
 
 // --- rooms manager dialog contract: authoritative load, safe mutations, no
 // optimistic writes, explicit placeholder ---
@@ -786,6 +815,11 @@ assert.doesNotMatch(component, /修改图标<small[^>]*>即将支持<\/small>/, 
 assert.doesNotMatch(component, /app\.SetTopicIcon|SetRoomIcon/, "the room placeholder must never write icon data");
 assert.match(component, /desktop-icon-popup__workspaces desktop-icon-popup__rooms/, "RoomsManager reuses the WorkspaceManager layout and marks its own popup root");
 assert.match(component, /onClick=\{onNewRoom\}>新增<\/button>/, "the Rooms header 新增 delegates to the root App coordination callback");
+assert.match(component, /role="switch" aria-checked=\{roomIconsVisible\} aria-label="显示 Room 图标"/, "the Rooms manager exposes an accessible visibility switch with the confirmed state");
+assert.match(component, /writeRoomIconVisibility\(localStorage, next\);[\s\S]{0,100}onRoomIconsVisibleChange\(next\)/, "the Rooms switch persists before reflecting the new visible state");
+assert.match(component, /catch \(cause\) \{[\s\S]{0,120}保存 Room 图标显示设置失败/, "a Room visibility persistence failure remains explicit and retryable in the manager");
+assert.match(component, /visibleDesktopIcons\(mergedItems, roomIconsVisible\)/, "the widget derives one visible icon source from the persisted Room preference");
+assert.match(component, /!collapsed && rows\.top\.length > 0/, "a fully hidden Room row leaves no empty reserved row on the desktop");
 assert.doesNotMatch(component, /openCollaborationDialog|CreateCollaboration|HostRoom|JoinRoom/, "RoomsManager never re-implements the Host/Join Room form; the root App owns openCollaborationDialog");
 assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__rooms\)/, "the rooms popup keeps the same bounded popup layout as the workspace manager");
 
@@ -813,7 +847,7 @@ assert.match(component, /const close = \(\) => closeTransient\(\);[\s\S]*?addEve
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "clicking the empty desktop or any container/grid/control gap closes every transient surface through the central close path");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-anchor-menu/, "the anchor menu joins the native hit-region reporting so the transparent window keeps it clickable");
 assert.match(component, /HIT_REGION_SELECTOR[^;]*desktop-icon-quick/, "the quick toolbar joins the native hit-region reporting so the transparent window keeps it clickable");
-assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems\]\);/, "hit-region refresh depends on the transient anchor UI (including the previously omitted anchor menu), the cluster zoom, and the optimistic job icons");
+assert.match(component, /\}, \[activeID, menuID, previewID, snapshot\.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconsVisible\]\);/, "hit-region refresh depends on transient anchor UI, cluster zoom, optimistic jobs, and Room visibility changes");
 assert.match(component, /\.desktop-icon-menu, \.desktop-icon-toast, \.desktop-icon-anchor-menu, \.desktop-icon-quick/, "the quick toolbar gets the same shadow padding in native hit regions");
 assert.match(css, /\.desktop-icon-anchor-menu\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the anchor menu never inherits the window drag region");
 assert.match(css, /\.desktop-icon-collapse, \.desktop-icon, \.desktop-icon-popup, \.desktop-icon-menu, \.desktop-icon-anchor-menu, \.desktop-icon-quick, \.desktop-icon-toast\s*\{[^}]*--wails-draggable:\s*no-drag;/, "the shared interactive-controls rule covers the anchor menu and quick toolbar");
@@ -832,7 +866,7 @@ assert.doesNotMatch(traceSource, /\btitle\b|\bprompt\b|\.body\b/, "diagnostics r
 assert.match(traceSource, /finishRecovery\(session, "aborted"\)[\s\S]*finishRecovery\(session, "timeout"\)[\s\S]*finishRecovery\(session, "healthy"\)/, "the recovery window has exactly the three bounded end states");
 assert.match(component, /new IdleHoverTracer\(\{/, "the icon widget instantiates the idle-hover diagnostics tracer");
 assert.match(component, /app\.WriteDesktopIconDiagnostics\(record\)/, "trace records persist through the typed diagnostics binding");
-assert.match(component, /hoverEnter\("icon", \{ iconCount: mergedItems\.length, revision: snapshot\.revision \}\)/, "icon hovers open a trace with the rendered icon count and state revision");
+assert.match(component, /hoverEnter\("icon", \{ iconCount: visibleItems\.length, revision: snapshot\.revision \}\)/, "icon hovers open a trace with the actually visible icon count and state revision");
 assert.match(component, /onPointerEnter=\{\(\) => idleTrace\.current\?\.hoverEnter\("anchor"/, "hovering the window-drag anchor also opens a trace (anchor kind)");
 assert.match(component, /"pointerover", "pointermove", "pointerdown", "pointerup", "wheel", "keydown"/, "pointer inactivity is stamped by window listeners only, with no idle timer");
 assert.match(component, /idleTrace\.current\?\.dispose\(\); \}/, "unmount disposes the tracer so an in-flight recovery closes with an aborted summary");
@@ -1128,6 +1162,8 @@ assert.equal(
   assert.match(mode, /if \(item\.kind === "task"\) return agentViewModel \? <AgentIcon viewModel=\{agentViewModel\} \/> : <Bot \/>;/, "task branch renders AgentIcon for real tasks, Bot for QuickStart");
   assert.match(mode, /!agentIcon && \(item\.status === "running" \|\| item\.status === "thinking"\)/, "old running/thinking motion corners are suppressed for Agent Icon items");
   assert.match(mode, /!agentIcon && statusGlyph\(item\)/, "old status glyph overlay is suppressed for Agent Icon items");
+  assert.match(mode, /desktop-icon__art\$\{agentIcon \? " desktop-icon__art--agent" : ""\}/, "real task icons opt into the transparent Agent Icon art surface");
+  assert.match(css, /\.desktop-icon__art--agent\s*\{[^}]*width:\s*58px[^}]*border:\s*0[^}]*background:\s*transparent[^}]*box-shadow:\s*none/, "Agent Icon removes the generic rounded app-tile chrome and fills the desktop slot");
   assert.match(mode, /const agentIconViewModels = useMemo\([\s\S]{0,400}isAgentIconItem\(item\)[\s\S]{0,120}buildAgentIconViewModel\(item\)/, "viewModels are memoized once per real task item");
   // 点击/打开行为零改动：pointerDown/pointerUp/doubleClick/run(open) 原样保留。
   assert.match(mode, /onPointerDown=\{\(event\) => pointerDown\(event, item\)\}/, "pointerDown handler unchanged");

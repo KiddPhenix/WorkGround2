@@ -148,7 +148,7 @@ AgentIcon = 身份(seed) + 任务工具(任务类型) + Workspace徽标(空间) 
 
 ## 10. 实际美术资源
 
-已按本规范提供可直接组合的 64×64 透明 SVG 和 PNG：
+已按本规范提供可直接组合的 64×64 透明 PNG；SVG 仅作为结构元数据与平面参考，前端不加载 SVG：
 
 - [开发交接文档](DEVELOPMENT_GUIDE.zh-CN.md) — 前端开发者实施入口：接入点、类型与算法、资源接入策略、测试与验收清单
 - [资源使用说明](assets/README.md)
@@ -158,4 +158,4 @@ AgentIcon = 身份(seed) + 任务工具(任务类型) + Workspace徽标(空间) 
 - [实际组合预览](assets/previews/combinations.png)
 - [32px 可读性检查](assets/previews/small-size-check-2x.png)
 
-资源包含 15 个帽子、15 个发型、9 个外壳边框色、24 个常见任务工具，以及 5 种状态共 30 帧 LED 动画。生成源为 [generate-assets.mjs](generate-assets.mjs)，可重复执行并稳定重建全部资源。
+资源包含 15 个帽子、15 个发型、9 个外壳边框色、24 个常见任务工具，以及 5 种状态共 30 帧 LED 动画。帽子/发型、外壳、眼睛和工具徽章的原始母图位于 [imagegen-source](imagegen-source/)，由 ImageGen 按功能设计图重画；[generate-assets.mjs](generate-assets.mjs) 调用 [apply-imagegen-assets.mjs](apply-imagegen-assets.mjs) 完成透明抠图、64×64 对齐、外壳配色、工具切片和眼睛 sprite 生成，可重复执行。生产运行时只加载这些 PNG，不加载 SVG。

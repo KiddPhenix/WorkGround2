@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import { applyImagegenAssets } from './apply-imagegen-assets.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const outRoot = path.join(here, 'assets');
@@ -9,9 +10,10 @@ const svgRoot = path.join(outRoot, 'svg');
 const pngRoot = path.join(outRoot, 'png');
 const spriteRoot = path.join(outRoot, 'sprites');
 const previewRoot = path.join(outRoot, 'previews');
+const imagegenSourceRoot = path.join(here, 'imagegen-source');
 const runtimeRoot = process.env.CODEX_NODE_MODULES
   ? path.dirname(process.env.CODEX_NODE_MODULES)
-  : path.resolve(here, '..', '..', '..', 'desktop', 'frontend');
+  : path.resolve(here, '..', '..', 'desktop', 'frontend');
 const require = createRequire(path.join(runtimeRoot, 'package.json'));
 const sharp = require('sharp');
 
@@ -359,7 +361,15 @@ async function resetGeneratedDirs() {
     if (!resolvedDir.startsWith(actual + path.sep)) {
       throw new Error('Unsafe generated directory: ' + resolvedDir);
     }
-    await fs.rm(resolvedDir, { recursive: true, force: true });
+    try {
+      await fs.rm(resolvedDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (error) {
+      // Windows file watchers may keep the directory handle open even though
+      // individual generated files remain replaceable. Continue with an
+      // explicit warning; every declared asset is overwritten below.
+      if (error?.code !== 'EBUSY' && error?.code !== 'EPERM') throw error;
+      process.stderr.write('[agent-icon] generated directory is busy; overwriting in place: ' + resolvedDir + '\n');
+    }
   }
   await fs.rm(path.join(outRoot, 'manifest.json'), { force: true });
   await Promise.all([svgRoot, pngRoot, spriteRoot, previewRoot].map(function (dir) {
@@ -592,12 +602,12 @@ async function main() {
     version: 1,
     canvas: { width: 64, height: 64, viewBox: VIEWBOX },
     format: {
-      source: 'SVG',
+      source: 'ImageGen PNG masters; SVG retained as metadata/reference',
       raster: 'PNG 64x64',
       transparent: true,
-      flat: true,
-      gradients: false,
-      shadows: false
+      flat: false,
+      gradients: true,
+      shadows: true
     },
     layerOrder: ['frame', 'headwear', 'eyes', 'workspaceBadge', 'taskTool'],
     identityRule: {
@@ -637,6 +647,21 @@ async function main() {
   const neutralEyes = await writeSvgAndPng(path.join('templates', 'neutral-led-grid'), svg(dotGrid(), 'Neutral LED grid'));
   manifest.templates.workspaceBadge = workspaceTemplate;
   manifest.templates.neutralLedGrid = neutralEyes;
+
+  // Runtime core art is redrawn from ImageGen raster masters. SVG remains in
+  // the docs package for metadata/reference, while the app consumes only these
+  // generated PNG layers and eye sprites.
+  await applyImagegenAssets({
+    sharp,
+    sourceRoot: imagegenSourceRoot,
+    pngRoot,
+    spriteRoot,
+    previewRoot,
+    hats,
+    hair,
+    frameColors,
+    statuses
+  });
 
   await makeCatalogPreview();
   await makeEyePreview();

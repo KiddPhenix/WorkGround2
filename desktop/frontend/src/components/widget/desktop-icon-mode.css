@@ -59,7 +59,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-anchor { --wails-draggable: drag; display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; user-select: none; }
 .desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
 .desktop-icon-anchor--menu-open, .desktop-icon-anchor--quick-open { border-color: rgb(193 210 255 / 62%); }
-.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; }
+.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; will-change: transform; backface-visibility: hidden; animation: desktop-icon-anchor-keepalive 6s ease-in-out infinite; }
 /* The quick toolbar renders inline in the control row between the collapse
    toggle and the WG2 anchor: it must never float above the cluster (no
    absolute positioning), so the toolbar scales and wraps with the cluster and
@@ -107,9 +107,11 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon--pending .desktop-icon__art::after { content: ""; position: absolute; inset: -3px; border: 1px solid rgb(168 140 255 / 62%); border-radius: 16px; box-shadow: 0 0 8px rgb(116 80 223 / 26%); pointer-events: none; animation: desktop-icon-pending-breathe 2.2s ease-in-out infinite; }
 .desktop-icon__art > svg { width: 29px; height: 29px; stroke-width: 1.7; }
 .desktop-icon__matte { display: block; width: 50px; height: 50px; object-fit: contain; filter: drop-shadow(0 5px 8px rgb(0 0 0 / 28%)); pointer-events: none; user-select: none; }
-/* 真实 task 使用可组合 Agent Icon（58px art 框内的 52px 画布）；图层定位
-   与缺图降级由 agent-icon.css 负责，这里只定容器尺寸。 */
-.desktop-icon__art .agent-icon { width: 52px; height: 52px; }
+/* 真实 task 使用可组合 Agent Icon，透明画布直接填满 58px 桌面图标位；
+   图层定位与缺图降级由 agent-icon.css 负责。 */
+.desktop-icon__art--agent { width: 58px; height: 58px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.desktop-icon__art--agent .agent-icon { width: 58px; height: 58px; filter: drop-shadow(0 3px 4px rgb(0 0 0 / 42%)); }
+.desktop-icon--pending .desktop-icon__art--agent::after { inset: 3px; border: 0; border-radius: 50%; box-shadow: 0 0 10px rgb(116 80 223 / 36%); }
 .desktop-icon__letter { font-size: 22px; font-weight: 720; color: #cfc1ff; }
 .desktop-icon__label { display: block; overflow: hidden; margin-top: 3px; font-size: 11px; line-height: 14px; text-align: center; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
 .desktop-icon-wrap:has(.desktop-icon--thinking), .desktop-icon-wrap:has(.desktop-icon--running), .desktop-icon--thinking, .desktop-icon--running { width: 80px; flex-basis: 80px; }
@@ -298,6 +300,14 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__workspace-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
 .desktop-icon-popup__workspace-head strong { font-size: 15px; }
 .desktop-icon-popup__workspace-head button { min-height: 30px; padding: 4px 12px; }
+.desktop-icon-popup__room-visibility { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; padding: 8px 0; border-block: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__room-visibility > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
+.desktop-icon-popup__room-visibility small { color: #858b98; font-size: 9px; }
+.desktop-icon-popup__room-visibility button { position: relative; flex: 0 0 auto; width: 36px; height: 20px; min-height: 20px; padding: 0; border: 1px solid rgb(255 255 255 / 16%); border-radius: 999px; background: #30333d; }
+.desktop-icon-popup__room-visibility button i { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #aeb3bf; transition: transform .14s ease, background .14s ease; }
+.desktop-icon-popup__room-visibility button[aria-checked="true"] { border-color: #9b82ed; background: #6045ad; }
+.desktop-icon-popup__room-visibility button[aria-checked="true"] i { background: #fff; transform: translateX(16px); }
+.desktop-icon-popup__room-visibility button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-popup__workspace-note { margin: 14px 0 4px; color: #969ba8; font-size: 12px; text-align: center; }
 .desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: calc(5 * 72px); overflow-x: hidden; overflow-y: auto; margin-top: 8px; padding-right: 2px; }
 .desktop-icon-popup__workspace-row { padding: 7px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
@@ -361,9 +371,17 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 @keyframes desktop-icon-running-spin { to { transform: rotate(360deg); } }
 @keyframes desktop-icon-running-step { 0%, 70%, 100% { background: rgb(83 220 227 / 24%); transform: scaleX(.72); } 35% { background: #61e5eb; transform: scaleX(1); } }
 @keyframes desktop-icon-copy-in { from { opacity: .25; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
+/* Diagnostic keepalive: animate only the image inside the drag anchor so the
+   WebView compositor retains a tiny active transform layer while the native
+   hit target and window region remain stationary. */
+@keyframes desktop-icon-anchor-keepalive {
+  0%, 100% { transform: translate3d(0, -.6px, 0) scale(.995); }
+  50% { transform: translate3d(0, .6px, 0) scale(1.01); }
+}
 @media (prefers-reduced-motion: reduce) {
   .desktop-icon__motion, .desktop-icon__motion::before, .desktop-icon__motion::after, .desktop-icon__motion-corner, .desktop-icon__runtime-state > i, .desktop-icon__runtime-state > svg, .desktop-icon__runtime-track i, .desktop-icon__runtime-copy, .desktop-icon__queued, .desktop-icon--pending .desktop-icon__art::after { animation: none; }
   .desktop-icon__motion-corner { opacity: .55; filter: none; transform: none; }
   .desktop-icon__runtime-track i { background: #61e5eb; transform: none; }
   .desktop-icon:hover .desktop-icon__art { transform: none; }
+  .desktop-icon-anchor img { animation: none; transform: none; }
 }

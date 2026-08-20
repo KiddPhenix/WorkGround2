@@ -2,7 +2,7 @@
 //   node --import tsx --import ./scripts/test-asset-hook.mjs src/__tests__/agent-icon.test.ts
 // 断言：hash 稳定、帽发互斥、seed 回退链、未知任务 → general、状态映射、
 // fps/loop/holdLast 帧选择与 reduced-motion、manifest 计数/路径/sprite 宽、
-// docs ↔ src 同步（sha256）。
+// ImageGen 核心 PNG 尺寸/透明通道、docs ↔ src 同步（sha256）。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -222,6 +222,7 @@ console.log("\nagent icon — assets contract");
 // 运行时路径表必须覆盖 manifest 引用的全部运行时资源。
 {
   for (const path of runtimeAssetPaths(agentManifest)) {
+    ok(path.endsWith(".png"), `runtime asset is PNG-only: ${path}`);
     ok(Boolean(assetURL(path)), `assetURL resolves ${path}`);
   }
 }
@@ -259,11 +260,31 @@ console.log("\nagent icon — assets contract");
     ok(diskFiles.includes(`src/assets/agent-icon/${png}`), `disk contains manifest png ${png}`);
   }
   assert.equal(diskFiles.length, 100, "disk has exactly the 100 manifest pngs (no orphans)");
+  const corePngs = [
+    ...agentManifest.frames.map((item) => item.png),
+    ...agentManifest.hats.map((item) => item.png),
+    ...agentManifest.hair.map((item) => item.png),
+    ...agentManifest.tools.map((item) => item.png),
+    ...agentManifest.eyes.flatMap((eye) => eye.frames.map((frame) => frame.png)),
+  ];
+  for (const path of corePngs) {
+    const png = readFileSync(join(srcAssetDir, path));
+    assert.equal(png.readUInt32BE(16), 64, `${path} width 64`);
+    assert.equal(png.readUInt32BE(20), 64, `${path} height 64`);
+    assert.equal(png[25], 6, `${path} uses RGBA color type`);
+  }
   // sprite 宽度契约：384px（6 帧 × 64）
   for (const eye of agentManifest.eyes) {
     const png = readFileSync(join(srcAssetDir, eye.sprite));
     assert.equal(png.readUInt32BE(16), 384, `sprite ${eye.sprite} width 384`);
+    assert.equal(png.readUInt32BE(20), 64, `sprite ${eye.sprite} height 64`);
+    assert.equal(png[25], 6, `sprite ${eye.sprite} uses RGBA color type`);
   }
+}
+// Workspace 徽标必须保留既有 WorkspaceMatteIcon 的实际颜色，禁止再强制白化。
+{
+  const css = readFileSync(resolve(testDir, "../components/agent-icon/agent-icon.css"), "utf8");
+  assert.match(css, /\.agent-icon__badge-glyph-img\s*\{[^}]*filter:\s*none/s, "workspace matte icon keeps its real colors");
 }
 // 契约：identity.ts 身份选择链路禁止 Math.random / Date.now（源码静态断言）。
 {

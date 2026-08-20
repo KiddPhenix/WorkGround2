@@ -1,7 +1,7 @@
-// Agent Icon types: the manifest shape (mirroring
-// docs/Agent Icon/assets/manifest.json — the single source of truth) and the
-// normalized ViewModel the AgentIcon component consumes. This module is pure:
-// no DOM, no React, no side effects.
+// Agent Icon types: the runtime PNG-only projection of
+// docs/Agent Icon/assets/manifest.json and the normalized ViewModel consumed by
+// AgentIcon. SVG metadata intentionally stays outside the runtime contract, so
+// display code cannot accidentally switch the robot layers back to SVG.
 import type { ProjectIconKey } from "../projectIcons";
 
 export type AgentEyeStatus = "running" | "problem" | "success" | "failure" | "cleanup";
@@ -9,7 +9,6 @@ export type AgentEyeStatus = "running" | "problem" | "success" | "failure" | "cl
 export interface AgentManifestLayer {
   id: string;
   label: string;
-  svg: string;
   png: string;
 }
 
@@ -22,7 +21,6 @@ export interface AgentManifestTool extends AgentManifestLayer {
 }
 
 export interface AgentManifestEyeFrame {
-  svg: string;
   png: string;
 }
 

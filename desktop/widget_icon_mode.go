@@ -233,6 +233,7 @@ type desktopIconReceipt struct {
 	Action        string `json:"action,omitempty"`
 	ItemID        string `json:"itemId,omitempty"`
 	TabID         string `json:"tabId,omitempty"`
+	SessionPath   string `json:"sessionPath,omitempty"`
 	Conversation  string `json:"conversation,omitempty"`
 	ReadSequence  uint64 `json:"readSequence,omitempty"`
 	Text          string `json:"text,omitempty"`
@@ -985,7 +986,17 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon action %s: task id is missing", receipt.RequestID))
 			continue
 		}
-		if err := a.finishDesktopIconCompletionLocked(DesktopIconActionInput{ItemID: receipt.ItemID}, nil, receipt.TabID, receipt.Conversation, receipt.ReadSequence); err != nil {
+		// Legacy receipts predate sessionPath persistence and their tab ID is
+		// random (never restored across restarts), so once the tab is no longer
+		// live and no session path survives there is nothing left to clear: the
+		// dismiss already removed the kept item. Settle such receipts instead of
+		// surfacing the same error on every snapshot.
+		if receipt.SessionPath == "" && a.tabByID(receipt.TabID) == nil {
+			receipt.Status = "applied"
+			changed = true
+			continue
+		}
+		if err := a.finishDesktopIconCompletionLocked(DesktopIconActionInput{ItemID: receipt.ItemID}, nil, receipt.TabID, receipt.SessionPath, receipt.Conversation, receipt.ReadSequence); err != nil {
 			recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon action %s: %w", receipt.RequestID, err))
 			continue
 		}
@@ -1781,7 +1792,7 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			if input.Action != "ok" && input.Action != "dismiss" {
 				return a.desktopIconActionErrorLocked("retryable_error", errors.New("action receipt is pending recovery"))
 			}
-			if err := a.finishDesktopIconCompletionLocked(input, nil, receipt.TabID, receipt.Conversation, receipt.ReadSequence); err != nil {
+			if err := a.finishDesktopIconCompletionLocked(input, nil, receipt.TabID, receipt.SessionPath, receipt.Conversation, receipt.ReadSequence); err != nil {
 				return a.desktopIconActionErrorLocked("retryable_error", err)
 			}
 			a.markDesktopIconReceiptApplied(input.RequestID)
@@ -1842,11 +1853,15 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("invalid", errors.New("completion notification is required"))
 		}
 		delete(a.iconWidgetState.Kept, item.ID)
-		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{RequestID: input.RequestID, Intent: intent, Status: "pending", Action: input.Action, ItemID: item.ID, TabID: notice.TabID, Conversation: notice.Conversation, ReadSequence: notice.ReadSequence, AppliedAt: time.Now().UnixMilli()})
+		sessionPath := ""
+		if item.SessionRef != nil {
+			sessionPath = item.SessionRef.SessionPath
+		}
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{RequestID: input.RequestID, Intent: intent, Status: "pending", Action: input.Action, ItemID: item.ID, TabID: notice.TabID, SessionPath: sessionPath, Conversation: notice.Conversation, ReadSequence: notice.ReadSequence, AppliedAt: time.Now().UnixMilli()})
 		if err := a.saveDesktopIconStateLocked(); err != nil {
 			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare completion action: %w", err))
 		}
-		if err := a.finishDesktopIconCompletionLocked(input, notice, notice.TabID, notice.Conversation, notice.ReadSequence); err != nil {
+		if err := a.finishDesktopIconCompletionLocked(input, notice, notice.TabID, sessionPath, notice.Conversation, notice.ReadSequence); err != nil {
 			return a.desktopIconActionErrorLocked("retryable_error", err)
 		}
 		a.markDesktopIconReceiptApplied(input.RequestID)
@@ -2250,7 +2265,7 @@ func desktopIconUserMessages(history []provider.Message) []string {
 	return out
 }
 
-func (a *App) finishDesktopIconCompletionLocked(input DesktopIconActionInput, notice *DesktopIconNotice, fallbackTabID, conversation string, readSequence uint64) error {
+func (a *App) finishDesktopIconCompletionLocked(input DesktopIconActionInput, notice *DesktopIconNotice, fallbackTabID, sessionPath, conversation string, readSequence uint64) error {
 	tabID := fallbackTabID
 	if notice != nil {
 		tabID = notice.TabID
@@ -2261,11 +2276,20 @@ func (a *App) finishDesktopIconCompletionLocked(input DesktopIconActionInput, no
 	if tabID == "" {
 		return errors.New("completion task is unavailable")
 	}
+	sessionPath = strings.TrimSpace(sessionPath)
 	tab := a.tabByID(tabID)
 	if tab == nil {
-		return errors.New("completion task is not loaded yet")
-	}
-	if err := clearTabAttention(tab); err != nil {
+		// A retained task is only rendered while its tab is unloaded, so
+		// dismissing its completion card must not depend on a live tab. The
+		// persisted attention flag is keyed by session path, which the receipt
+		// carries; clear it directly instead of failing until the tab reloads.
+		if sessionPath == "" {
+			return errors.New("completion task is not loaded yet")
+		}
+		if err := clearNeedsAttention(sessionPath); err != nil {
+			return err
+		}
+	} else if err := clearTabAttention(tab); err != nil {
 		return err
 	}
 	if conversation != "" && readSequence > 0 {

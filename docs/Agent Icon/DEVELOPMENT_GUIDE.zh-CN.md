@@ -16,7 +16,7 @@
 
 ### 1.2 非目标
 
-- 不修改生成器、美术资源、manifest 或 Feature Map（本仓库 `docs/Agent Icon/` 下的 SVG/PNG/sprite 均为生成产物，改动走 `generate-assets.mjs`）。
+- 不直接手改生成后的 PNG/sprite 或 manifest：核心美术改动先更新 `imagegen-source/` 母图与 `apply-imagegen-assets.mjs`，再执行 `generate-assets.mjs`；SVG 只保留为结构参考。
 - 不做运行时从 `docs/` 目录读取资源（打包产物里没有 `docs/`）。
 - 不引入动画库；不把图标做成独立 npm 包。
 - 不在本轮实现中移除既有 `.project-tree__topic-visual` 状态圆点（它属于另一处已测试的状态摘要；只要求其状态来源与本图标同源，见 §3）。

@@ -955,6 +955,51 @@ func TestDesktopIconPendingOkReceiptRecoveryCompatible(t *testing.T) {
 		t.Fatalf("legacy ok receipt did not clear attention: %v meta %+v", err, meta)
 	}
 }
+
+func TestDesktopIconCompletionReceiptRecoversWithoutLiveTab(t *testing.T) {
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	_, sp := completionTestTab(t, 1000)
+	// The task's tab is not loaded (empty tabs map), but the pending dismiss
+	// receipt carries the session path. Recovery must clear the persisted
+	// attention flag directly instead of failing until the tab reloads.
+	app := &App{
+		tabs:                      map[string]*WorkspaceTab{},
+		activeTabID:               "",
+		iconWidgetStateLoaded:     true,
+		iconWidgetState:           desktopIconPersistedState{Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{}, Applied: []desktopIconReceipt{{RequestID: "req-dismiss", Intent: "intent", Status: "pending", Action: "dismiss", ItemID: "task:task-1", TabID: "task-1", SessionPath: sp, AppliedAt: time.Now().UnixMilli()}}},
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
+	}
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("recover pending dismiss without live tab: %v", err)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("dismiss receipt did not settle: %+v", app.iconWidgetState.Applied[0])
+	}
+	meta, _, err := agent.LoadBranchMeta(sp)
+	if err != nil || meta.NeedsAttention {
+		t.Fatalf("dismiss without live tab did not clear attention: %v meta %+v", err, meta)
+	}
+}
+
+func TestDesktopIconLegacyReceiptSettlesWithoutTrace(t *testing.T) {
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	// A pre-sessionPath receipt whose tab can never reload (tab IDs are random
+	// and not restored) has nothing left to clear. Recovery settles it instead
+	// of surfacing the same error on every snapshot.
+	app := &App{
+		tabs:                      map[string]*WorkspaceTab{},
+		activeTabID:               "",
+		iconWidgetStateLoaded:     true,
+		iconWidgetState:           desktopIconPersistedState{Positions: map[string]DesktopIconPosition{}, Kept: map[string]desktopIconKept{}, CompletionSummaries: map[string]desktopIconCompletionSummary{}, Applied: []desktopIconReceipt{{RequestID: "legacy-dismiss", Intent: "intent", Status: "pending", Action: "dismiss", ItemID: "task:gone-tab", TabID: "gone-tab", AppliedAt: time.Now().UnixMilli()}}},
+		completionSummaryInFlight: map[string]*completionSummaryCall{},
+	}
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("legacy receipt should settle without error: %v", err)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("legacy receipt did not settle: %+v", app.iconWidgetState.Applied[0])
+	}
+}
 func TestRememberDesktopIconTaskRetainsOpenedTask(t *testing.T) {
 	tab, _ := completionTestTab(t, 0)
 	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
