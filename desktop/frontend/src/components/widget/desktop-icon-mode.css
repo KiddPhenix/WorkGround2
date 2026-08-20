@@ -329,8 +329,8 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__workspace-count { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
 .desktop-icon-popup__workspace-count > span { display: grid; gap: 2px; color: #d8dae2; font-size: 11px; }
 .desktop-icon-popup__workspace-count > span small { color: #858b98; font-size: 9px; }
-.desktop-icon-popup__workspace-count > div { display: grid; grid-template-columns: repeat(5, 25px); gap: 3px; }
-.desktop-icon-popup__workspace-count button { min-width: 0; height: 25px; padding: 0; border: 1px solid rgb(255 255 255 / 14%); border-radius: 6px; color: #9da2ae; background: rgb(255 255 255 / 3%); font-size: 10px; }
+.desktop-icon-popup__workspace-count > div { display: grid; grid-template-columns: repeat(5, 28px); gap: 3px; }
+.desktop-icon-popup__workspace-count button { min-width: 0; min-height: 28px; height: 28px; padding: 0; border: 1px solid rgb(255 255 255 / 14%); border-radius: 6px; color: #9da2ae; background: rgb(255 255 255 / 3%); font-size: 10px; }
 .desktop-icon-popup__workspace-count button[aria-pressed="true"] { border-color: #9b82ed; color: #f3efff; background: #6045ad; box-shadow: inset 0 0 0 1px rgb(210 199 255 / 14%); }
 .desktop-icon-popup__workspace-count button:disabled { opacity: .58; }
 .desktop-icon-popup__workspace-pins-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #cfd2dc; font-size: 11px; }

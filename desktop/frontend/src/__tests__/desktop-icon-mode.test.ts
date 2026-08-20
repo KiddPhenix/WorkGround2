@@ -12,9 +12,6 @@ import type { DesktopIconDiagnosticsInput } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
 import type { ProjectNode } from "../lib/types";
 
-const widgetDir = resolve(import.meta.dirname, "../components/widget");
-const matteIconSource = readFileSync(resolve(widgetDir, "WorkspaceMatteIcon.tsx"), "utf8");
-
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
 assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");
 assert.deepEqual([quickStartApprovalLabel("ask"), quickStartApprovalLabel("auto"), quickStartApprovalLabel("yolo")], ["需要批准", "自动批准", "全部允许"], "QuickStart shows all configured approval postures");
