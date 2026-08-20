@@ -33654,6 +33654,14 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
+.session-window-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  --wails-draggable: no-drag;
+}
+
 /* On frameless Windows the utility actions belong to the native-control row.
    Keeping them beside, rather than below, the caption buttons leaves one clear
    titlebar and makes the rest of SessionHeader a large drag target. */
@@ -34297,31 +34305,6 @@ body > .mermaid-diagram--fullscreen {
 .session-status-popup__row-meta {
   font-size: 11px;
   color: var(--fg-dim);
-}
-
-.session-header__expand-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  margin-right: 12px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--fg-dim);
-  cursor: pointer;
-  flex-shrink: 0;
-  --wails-draggable: no-drag;
-  transition: background var(--dur-fast) ease-out, color var(--dur-fast) ease-out;
-}
-.session-header__expand-btn:hover {
-  background: var(--sidebar-hover);
-  color: var(--fg);
-}
-.session-header__expand-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-ring);
 }
 
 /* ConversationViewport */
@@ -43230,16 +43213,13 @@ body > .mermaid-diagram--fullscreen {
   --windows-window-controls-width: 120px;
   --windows-window-control-width: 40px;
   --windows-window-controls-height: 32px;
-  --session-top-utility-width: 204px;
 }
 
-.app--windows-frameless.app--workbench .session-header {
-  padding-right: calc(48px + var(--windows-window-controls-width) + var(--session-top-utility-width));
-}
-
-.app--windows-frameless.app--workbench .session-header__actions {
-  top: 4px;
-  right: calc(var(--windows-window-controls-width) + 3px);
+/* Session and Room share one App-owned action rail; the root-level caption
+   controls are its fixed right half. Session anchors to its own header while
+   Room escapes the filtered member plate, so both resolve to the same
+   top-right track. */
+.app--windows-frameless.app--workbench .session-window-actions {
   height: var(--windows-window-controls-height);
   gap: 4px;
   padding: 0 4px;
@@ -43249,17 +43229,38 @@ body > .mermaid-diagram--fullscreen {
   background: rgba(27, 29, 37, 0.74);
   box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
   backdrop-filter: blur(10px);
+  --wails-draggable: no-drag;
 }
 
-.app--windows-frameless.app--workbench .session-header__actions .session-status-indicator,
-.app--windows-frameless.app--workbench .session-header__actions .session-header__addon-btn,
-.app--windows-frameless.app--workbench .session-header__actions .session-header__more-btn {
+.app--windows-frameless.app--workbench-session .session-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-right: calc(var(--windows-window-controls-width) + 3px);
+}
+
+.app--windows-frameless.app--workbench-session .session-window-actions {
+  position: relative;
+  top: -22px;
+  right: auto;
+  z-index: var(--z-dock);
+}
+
+.app--windows-frameless.app--workbench-room .session-window-actions {
+  position: fixed;
+  top: 15px;
+  right: calc(14px + var(--windows-window-controls-width));
+  z-index: var(--z-dock);
+}
+
+.app--windows-frameless.app--workbench .session-window-actions .session-status-indicator,
+.app--windows-frameless.app--workbench .session-window-actions .session-header__addon-btn,
+.app--windows-frameless.app--workbench .session-window-actions .session-header__more-btn {
   height: 30px;
   border-color: transparent;
   background: transparent;
 }
 
-.app--windows-frameless.app--workbench .session-header__actions .session-status-indicator--attention:disabled:hover {
+.app--windows-frameless.app--workbench .session-window-actions .session-status-indicator--attention:disabled:hover {
   border-color: transparent;
   background: transparent;
 }
@@ -43281,7 +43282,8 @@ body > .mermaid-diagram--fullscreen {
 /* Each surface owns the action half of the same top-right rail. The backing
    plate extends behind the root-level caption controls so sidebar width and
    content grids cannot split the two halves apart. */
-.app--windows-frameless.app--workbench-session .session-header__actions::before {
+.app--windows-frameless.app--workbench-session .session-window-actions::before,
+.app--windows-frameless.app--workbench-room .session-window-actions::before {
   content: "";
   position: absolute;
   inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;
@@ -43294,7 +43296,8 @@ body > .mermaid-diagram--fullscreen {
   pointer-events: none;
 }
 
-.app--windows-frameless.app--workbench-session .session-header__actions {
+.app--windows-frameless.app--workbench-session .session-window-actions,
+.app--windows-frameless.app--workbench-room .session-window-actions {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -43302,16 +43305,15 @@ body > .mermaid-diagram--fullscreen {
   backdrop-filter: none;
 }
 
-.app--windows-frameless.app--workbench-work .wg2-work-top-actions,
-.app--windows-frameless.app--workbench-room .collab-topic-actions {
+.app--windows-frameless.app--workbench-work .wg2-work-top-actions {
   position: fixed;
   z-index: var(--z-dock);
-  top: 15px;
-  right: calc(14px + var(--windows-window-controls-width));
+  top: 4px;
+  right: calc(4px + var(--windows-window-controls-width));
   display: flex;
   align-items: center;
   height: var(--windows-window-controls-height);
-  gap: 4px;
+  gap: 2px;
   padding: 0 4px;
   border: 0;
   background: transparent;
@@ -43319,8 +43321,7 @@ body > .mermaid-diagram--fullscreen {
   --wails-draggable: no-drag;
 }
 
-.app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,
-.app--windows-frameless.app--workbench-room .collab-topic-actions::before {
+.app--windows-frameless.app--workbench-work .wg2-work-top-actions::before {
   content: "";
   position: absolute;
   inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;
@@ -43331,10 +43332,6 @@ body > .mermaid-diagram--fullscreen {
   box-shadow: 0 7px 18px rgba(0, 0, 0, 0.16);
   backdrop-filter: blur(10px);
   pointer-events: none;
-}
-
-.app--windows-frameless.app--workbench-room .collab-topic-actions::before {
-  background: color-mix(in srgb, var(--bg-elev) 66%, transparent);
 }
 
 /* Extend the member plate behind the shared caption rail. Its content keeps
@@ -43343,12 +43340,6 @@ body > .mermaid-diagram--fullscreen {
   height: 100%;
   margin-top: 0;
   padding-top: calc(20px + var(--windows-window-controls-height));
-}
-
-.app--windows-frameless.app--workbench-work .wg2-work-top-actions {
-  top: 4px;
-  right: calc(4px + var(--windows-window-controls-width));
-  gap: 2px;
 }
 
 .app--windows-frameless.app--workbench-work .windows-window-controls {
@@ -43363,9 +43354,7 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--windows-frameless.app--workbench-work .wg2-work-flip-button,
-.app--windows-frameless.app--workbench-work .cornerstone-drawer__toggle,
-.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-icon-button,
-.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-reachability > summary {
+.app--windows-frameless.app--workbench-work .cornerstone-drawer__toggle {
   height: 30px;
   border-color: transparent;
   border-radius: 5px;
@@ -43378,11 +43367,6 @@ body > .mermaid-diagram--fullscreen {
 
 .app--windows-frameless.app--workbench-work .cornerstone-drawer__toggle {
   padding: 0 10px;
-}
-
-.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-icon-button,
-.app--windows-frameless.app--workbench-room .collab-topic-actions .collab-reachability > summary {
-  width: 34px;
 }
 
 .app--windows-frameless.app--workbench-session .windows-window-controls,
@@ -43448,6 +43432,10 @@ body > .mermaid-diagram--fullscreen {
 .app--workbench .layout--sidebar-collapsed .collab-topicbar,
 .app--workbench .layout--sidebar-collapsed .work-page__header {
   padding-left: 54px;
+}
+
+.app--workbench .layout--workbench.layout--sidebar-collapsed .session-header {
+  padding-left: 64px;
 }
 
 .app--workbench .workspace-sidebar__new-session,
@@ -44088,17 +44076,18 @@ body > .mermaid-diagram--fullscreen {
   background: color-mix(in srgb, var(--accent) 88%, #312a88);
 }
 
-:root[data-theme="light"] .app--windows-frameless.app--workbench .session-header__actions,
+:root[data-theme="light"] .app--windows-frameless.app--workbench .session-window-actions,
 :root[data-theme="light"] .app--windows-frameless.app--workbench .windows-window-controls,
-:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-header__actions::before,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-window-actions::before,
 :root[data-theme="light"] .app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,
-:root[data-theme="light"] .app--windows-frameless.app--workbench-room .collab-topic-actions::before {
+:root[data-theme="light"] .app--windows-frameless.app--workbench-room .session-window-actions::before {
   background-color: rgba(255, 255, 255, 0.82);
   border-color: rgba(84, 96, 116, 0.20);
   box-shadow: 0 7px 18px rgba(48, 59, 76, 0.12);
 }
 
-:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-header__actions,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-window-actions,
+:root[data-theme="light"] .app--windows-frameless.app--workbench-room .session-window-actions,
 :root[data-theme="light"] .app--windows-frameless.app--workbench-session .windows-window-controls,
 :root[data-theme="light"] .app--windows-frameless.app--workbench-work .windows-window-controls,
 :root[data-theme="light"] .app--windows-frameless.app--workbench-room .windows-window-controls {
@@ -44133,10 +44122,6 @@ body > .mermaid-diagram--fullscreen {
   .app--workbench .task-memory-bar {
     padding-right: 24px;
     padding-left: 24px;
-  }
-
-  .app--windows-frameless.app--workbench .session-header {
-    padding-right: calc(24px + var(--windows-window-controls-width) + var(--session-top-utility-width));
   }
 
   .app--workbench .conversation-viewport {

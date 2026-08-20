@@ -65,7 +65,8 @@ import { AppChrome } from "./components/AppChrome";
 import { ShortcutsCheatsheet } from "./components/ShortcutsCheatsheet";
 import { ProjectTree } from "./components/ProjectTree";
 import { SessionBackground } from "./components/SessionBackground";
-import { AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
+import { AddOnLauncherButton, AddOnWorkbenchOverlay } from "./components/desktop-ui/IrisInfoComponents";
+import { SessionStatusIndicators } from "./components/SessionStatusIndicators";
 import { HeartbeatPanel } from "./custom/features/heartbeat/HeartbeatPanel";
 import "./custom/features/heartbeat/heartbeat.css";
 import { WorkCard } from "./components/work/WorkCard";
@@ -3724,11 +3725,28 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     ? Math.min(100, Math.round((state.context.used / state.context.window) * 100))
     : 0;
 
+  // The top-right window action rail is owned by App and shared verbatim by
+  // Session and Room so the two surfaces stay identical without a state copy.
+  const sessionWindowActions: ReactNode = (
+    <div className="session-window-actions">
+      <SessionStatusIndicators
+        tabs={runtimeTabMetas}
+        activeTabId={activeTabId || ""}
+        onSwitchTab={(tab) => { void handleOpenRuntimeTab(tab); }}
+        t={t}
+      />
+      <AddOnLauncherButton />
+      <button type="button" className="session-header__more-btn" aria-label={t("topicBar.command")} onClick={() => { void openPalette(); }}>
+        <Command size={16} />
+      </button>
+    </div>
+  );
+
   const sessionSurfaceProps: SessionSurfaceProps = {
     activeTabId: activeTabId || "",
     activeSessionId,
     renderSessionId,
-    runtimeTabMetas,
+    windowActions: sessionWindowActions,
     displayItems,
     live: state.live,
     running: state.running || rewindCommitting,
@@ -3776,9 +3794,6 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     composerDisabled: rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending,
     workSendAvailable,
     workSendSelected,
-    sidebarCollapsed,
-    sidebarToggleTitle,
-    sidebarTogglePressed,
     headerTitle: irisFixtureActive
       ? "桌面信息架构重构"
       : sidebarImDetailConnection
@@ -3812,10 +3827,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
     onSetTokenMode: applyTokenMode,
     onCancelClearContext: cancelClearContext,
     onConfirmClearContext: () => { void confirmClearContext(); },
-    onToggleSidebar: toggleSidebar,
-    onOpenPalette: () => { void openPalette(); },
     onEnterWidgetMode,
-    onSwitchTab: (tab) => { void handleOpenRuntimeTab(tab); },
     onSetInsertTarget: setWorkspaceInsertTarget,
     onRevisePlan: setPendingPlanRevision,
     onExitPlan: async () => { await applyCollaborationMode("normal"); },
@@ -4240,7 +4252,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               </button>
             </aside>
 
-            {(showWorkSurface || showCollaborationSurface) && workbenchSidebarRestoreControl}
+            {workbenchSidebarRestoreControl}
 
             {showCollaborationSurface && activeTab?.sessionId ? (
               <CollaborationWorkspace
@@ -4250,6 +4262,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 modelLabel={state.meta?.label ?? t("status.connecting")}
                 onSwitchModel={switchModel}
                 onConnectRequest={() => { void openCollaborationDialog(activeTab.sessionId); }}
+                windowActions={sessionWindowActions}
               />
             ) : showWorkSurface && activeTab?.workId && !workUnavailable ? (
               <div

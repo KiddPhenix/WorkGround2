@@ -204,24 +204,24 @@ ok(
   "workbench exposes stable Session, Room, and Work surface identities",
 );
 ok(
-  cssSource.includes(".app--windows-frameless.app--workbench-session .session-header__actions::before") &&
+  cssSource.includes(".app--windows-frameless.app--workbench-session .session-window-actions::before") &&
     cssSource.includes("inset: 0 calc(0px - var(--windows-window-controls-width)) 0 -3px;") &&
     cssSource.includes(".app--windows-frameless.app--workbench-work .wg2-work-top-actions::before") &&
-    cssSource.includes(".app--windows-frameless.app--workbench-room .collab-topic-actions::before") &&
+    cssSource.includes(".app--windows-frameless.app--workbench-room .session-window-actions::before") &&
     cssSource.includes("right: calc(14px + var(--windows-window-controls-width));") &&
     cssSource.includes(".collab-topic-actions {\n  display: flex;") &&
     workWorkspaceSource.includes('className="wg2-work-top-actions"') &&
     collaborationSource.includes('className="collab-topic-actions"'),
-  "Session, Work, and Room each join their existing actions to the caption rail",
+  "Session and Room share the same window rail while Work keeps its own; Room business actions stay in the topicbar",
 );
 ok(
   cssSource.includes(':root[data-theme="light"] .app--workbench {') &&
     cssSource.includes("--bg: #f7f8fb;") &&
     cssSource.includes(':root[data-theme="light"] .app--workbench .workspace-sidebar {') &&
     cssSource.includes(':root[data-theme="light"] .app--workbench .session-workspace {') &&
-    cssSource.includes(':root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-header__actions::before,') &&
+    cssSource.includes(':root[data-theme="light"] .app--windows-frameless.app--workbench-session .session-window-actions::before,') &&
     cssSource.includes(':root[data-theme="light"] .app--windows-frameless.app--workbench-work .wg2-work-top-actions::before,') &&
-    cssSource.includes(':root[data-theme="light"] .app--windows-frameless.app--workbench-room .collab-topic-actions::before'),
+    cssSource.includes(':root[data-theme="light"] .app--windows-frameless.app--workbench-room .session-window-actions::before'),
   "light mode restores a complete workbench palette and all three caption rails",
 );
 ok(
