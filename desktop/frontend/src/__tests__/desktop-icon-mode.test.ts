@@ -301,6 +301,13 @@ assert.match(css, /\.desktop-icon-popup textarea\s*\{[^}]*resize:\s*none/, "the 
 assert.match(css, /\.desktop-icon-popup__quick-chip\s*\{/, "model/approval chips are compact clickable controls");
 assert.match(css, /\.desktop-icon-popup__picker\s*\{[^}]*position:\s*absolute/, "the picker menus float above the QuickStart content");
 assert.match(css, /\.desktop-icon-popup__completion\s*\{[^}]*max-height:\s*128px/, "slash completion candidates stay in a compact roughly three-row scroll area");
+assert.match(css, /\.desktop-icon-popup__workspace\s*\{[^}]*grid-template-columns:\s*62px minmax\(0,\s*1fr\) 62px/, "workspace navigation reserves enough width for both shortcut controls");
+assert.match(css, /\.desktop-icon-popup__workspace button\s*\{[^}]*white-space:\s*nowrap/, "Ctrl+arrow workspace shortcuts stay on one line");
+assert.match(css, /\.desktop-icon-popup__quick-chip-copy strong\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/, "the selected model name wraps instead of truncating");
+assert.match(css, /\.desktop-icon-popup__picker-name\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/, "model picker rows show the complete model name");
+assert.match(css, /\.desktop-icon-popup__picker-meta\s*\{[^}]*display:\s*none/, "provider metadata yields its width to the model name");
+assert.match(css, /\.desktop-icon-popup__completion-item\s*\{[^}]*display:\s*grid[^}]*grid-template-areas:\s*"name kind" "desc kind"/, "slash completion gives the command name a dedicated row");
+assert.match(css, /\.desktop-icon-popup__completion-name\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/, "slash and skill completion names wrap without ellipsis");
 assert.match(css, /\.desktop-icon-popup__quick-composer\s*\{[^}]*position:\s*relative[^}]*overflow:\s*hidden/, "QuickStart clips the Session-style ghost suffix to the textarea");
 assert.match(css, /\.desktop-icon-popup__vocab-ghost\s*\{[^}]*color:\s*transparent[^}]*white-space:\s*pre-wrap[^}]*pointer-events:\s*none/, "the ghost mirrors multiline input without intercepting interaction");
 assert.match(css, /\.desktop-icon-popup__vocab-ghost b\s*\{[^}]*color:\s*#727784/, "only the suggested vocabulary suffix is visibly muted");
