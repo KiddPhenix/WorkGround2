@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"subagent.started","params":{"parentSessionId":"sess-1","childSessionId":"sub-1"}}
