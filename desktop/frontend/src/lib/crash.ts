@@ -96,7 +96,8 @@ const LONG_TASK_TOTAL_PROMPT_MS = 1_500;
 const EVENT_LOOP_LAG_PROMPT_MS = 1_200;
 const STARTUP_GRACE_MS = 15_000;
 const PERFORMANCE_LOG_COOLDOWN_MS = 10 * 60_000;
-const MAX_LAG_SAMPLES = 60;
+export const PERFORMANCE_MONITOR_INTERVAL_MS = 7_000;
+const MAX_LAG_SAMPLES = Math.ceil(60_000 / PERFORMANCE_MONITOR_INTERVAL_MS);
 const VISIBILITY_RESUME_GRACE_MS = 5_000;
 
 const longTasks: LongTaskSample[] = [];
@@ -537,7 +538,7 @@ export function installPerformancePressureMonitor() {
   const isHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
   const isFocused = () => typeof document === "undefined" || document.hasFocus?.() !== false;
   let visibleSince = isHidden() ? Number.POSITIVE_INFINITY : startedAt;
-  let expected = performance.now() + 1000;
+  let expected = performance.now() + PERFORMANCE_MONITOR_INTERVAL_MS;
 
   const pastGrace = () => performance.now() >= graceUntil;
   const inspectLongTasks = () => {
@@ -553,7 +554,7 @@ export function installPerformancePressureMonitor() {
     document.addEventListener("visibilitychange", () => {
       longTasks.length = 0;
       lagSamples.length = 0;
-      expected = performance.now() + 1000;
+      expected = performance.now() + PERFORMANCE_MONITOR_INTERVAL_MS;
       if (!isHidden()) visibleSince = performance.now();
     });
   }
@@ -577,14 +578,14 @@ export function installPerformancePressureMonitor() {
   window.setInterval(() => {
     const now = performance.now();
     const lagMs = Math.max(0, now - expected);
-    expected = now + 1000;
+    expected = now + PERFORMANCE_MONITOR_INTERVAL_MS;
     if (!pastGrace()) return;
     if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused())) return;
     lagSamples.push(lagMs);
     if (lagSamples.length > MAX_LAG_SAMPLES) lagSamples.shift();
     if (lagMs >= EVENT_LOOP_LAG_PROMPT_MS) recordPerformancePressure(`event loop lag ${fmtNumber(lagMs)}ms`, lagMs);
     maybePromptForHeapPressure();
-  }, 1000);
+  }, PERFORMANCE_MONITOR_INTERVAL_MS);
 }
 
 export function installGlobalCrashHandlers() {
