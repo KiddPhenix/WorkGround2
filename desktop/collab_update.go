@@ -140,14 +140,23 @@ func (c *desktopCollaboration) updateConnection(ctx context.Context) error {
 	conn := c.conn
 	state := c.state
 	c.mu.RUnlock()
-	if conn == nil {
-		if !state.Retryable || !completeCollaborationRecovery(state) {
+	if conn != nil {
+		// The stream and heartbeat loops are the healthy connection's fast path.
+		// A maintenance tick must stay a pure health check: retryLocked also syncs
+		// and, when conn is absent, performs a remote Join/Host. Re-entering it for
+		// every healthy Room made the periodic fallback look like activation.
+		if collaborationConnectionLoopRunning(conn) {
 			return nil
 		}
-	} else if state.Status == "failed" && !state.Retryable {
-		// A healthy connection normally has Retryable=false and is still polled.
-		// A terminal failure needs an explicit user retry, including a rejected
-		// Leave, so the maintenance loop must not override that decision.
+		// A stopped loop can be repaired in-place with the existing peer/session;
+		// this does not issue a remote Join. Preserve terminal/manual failures.
+		if state.Status == "failed" && !state.Retryable {
+			return nil
+		}
+		c.ensureConnectionLoop(conn)
+		return nil
+	}
+	if !state.Retryable || !completeCollaborationRecovery(state) {
 		return nil
 	}
 

@@ -83,6 +83,37 @@ type fakeCollaborationPeer struct {
 	heartbeats   int
 }
 
+type scriptedStreamPeer struct {
+	fakeCollaborationPeer
+	streamMu     sync.Mutex
+	streamErrors []error
+	streamCalls  int
+	streamCalled chan int
+}
+
+func (p *scriptedStreamPeer) Stream(ctx context.Context, _ uint64, _ func(collab.RoomEvent) error) error {
+	p.streamMu.Lock()
+	p.streamCalls++
+	call := p.streamCalls
+	var err error
+	if len(p.streamErrors) > 0 {
+		err = p.streamErrors[0]
+		p.streamErrors = p.streamErrors[1:]
+	}
+	p.streamMu.Unlock()
+	if p.streamCalled != nil {
+		select {
+		case p.streamCalled <- call:
+		default:
+		}
+	}
+	if err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func (p *fakeCollaborationPeer) Snapshot(context.Context) (collab.Snapshot, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -2251,6 +2282,203 @@ func TestCollaborationAutomaticUpdateRestoresPersistedClient(t *testing.T) {
 	}
 	if state := c.snapshot(); calls != 2 || state.Status != "connected" || c.conn == nil {
 		t.Fatalf("restored calls=%d state=%+v conn=%p", calls, state, c.conn)
+	}
+	c.close()
+}
+
+func TestCollaborationAutomaticUpdateHealthyConnectionHasNoRemoteActivation(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	conn := testConnection(&fakeCollaborationPeer{}, "client", "session-a")
+	conn.done = make(chan struct{})
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "connected", Mode: conn.mode, Host: conn.hostName, Port: conn.port, Room: conn.room,
+		MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	var joins, hosts atomic.Int32
+	c.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		joins.Add(1)
+		return nil, errors.New("healthy update must not join")
+	}
+	c.openHost = func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		hosts.Add(1)
+		return nil, errors.New("healthy update must not host")
+	}
+	for range 5 {
+		if err := c.updateConnection(context.Background()); err != nil {
+			t.Fatalf("healthy update: %v", err)
+		}
+	}
+	if joins.Load() != 0 || hosts.Load() != 0 {
+		t.Fatalf("healthy updates activated Room: joins=%d hosts=%d", joins.Load(), hosts.Load())
+	}
+	close(conn.done)
+}
+
+func TestCollaborationAutomaticUpdateRestartsStoppedLoopInPlaceOnce(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &fakeCollaborationPeer{}
+	conn := testConnection(peer, "client", "session-a")
+	stopped := make(chan struct{})
+	close(stopped)
+	conn.done = stopped
+	c.conn = conn
+	c.state = CollaborationState{
+		Status: "reconnecting", Retryable: true, Mode: conn.mode, Host: conn.hostName, Port: conn.port, Room: conn.room,
+		MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot,
+	}
+	var joins, hosts atomic.Int32
+	c.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		joins.Add(1)
+		return nil, errors.New("stopped loop repair must not join")
+	}
+	c.openHost = func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		hosts.Add(1)
+		return nil, errors.New("stopped loop repair must not host")
+	}
+	if err := c.updateConnection(context.Background()); err != nil {
+		t.Fatalf("restart stopped loop: %v", err)
+	}
+	restarted := conn.done
+	if restarted == stopped || !collaborationConnectionLoopRunning(conn) {
+		t.Fatalf("stopped loop was not restarted in place: old=%p new=%p", stopped, restarted)
+	}
+	for range 4 {
+		if err := c.updateConnection(context.Background()); err != nil {
+			t.Fatalf("idempotent stopped-loop update: %v", err)
+		}
+	}
+	if conn.done != restarted || joins.Load() != 0 || hosts.Load() != 0 {
+		t.Fatalf("repeated updates replaced connection: sameLoop=%v joins=%d hosts=%d", conn.done == restarted, joins.Load(), hosts.Load())
+	}
+	conn.cancel()
+	select {
+	case <-conn.done:
+	case <-time.After(time.Second):
+		t.Fatal("restarted loop did not stop")
+	}
+}
+
+func TestCollaborationAutomaticUpdateRestoresMissingConnectionOnce(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	c.state = CollaborationState{
+		Status: "failed", Retryable: true, Mode: "client", Host: "127.0.0.1", Port: 39170, Room: "room-a",
+		MemberID: "member-a", AgentID: "agent-a", SessionID: "session-a",
+	}
+	persisted := collaborationPersistedState{
+		Mode: "client", Host: "127.0.0.1", Port: 39170, Room: "room-a",
+		MemberID: "member-a", MemberName: "Alice", AgentID: "agent-a", AgentName: "Alice Agent", SessionID: "session-a",
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-a", Name: "Room A"}},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var joins, hosts atomic.Int32
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, _ string) (*collaborationConnection, error) {
+		joins.Add(1)
+		return testConnection(&fakeCollaborationPeer{}, "client", input.SessionID), nil
+	}
+	c.openHost = func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		hosts.Add(1)
+		return nil, errors.New("client recovery must not host")
+	}
+	for range 5 {
+		if err := c.updateConnection(context.Background()); err != nil {
+			t.Fatalf("recover missing connection: %v", err)
+		}
+	}
+	if joins.Load() != 1 || hosts.Load() != 0 {
+		t.Fatalf("missing connection recovery calls: joins=%d hosts=%d", joins.Load(), hosts.Load())
+	}
+	c.close()
+}
+
+func TestCollaborationStreamRetriesDoNotJoinForTransientEnd(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &scriptedStreamPeer{
+		streamErrors: []error{
+			&collaborationTransportError{message: "short stream reset 1", retryable: true},
+			&collaborationTransportError{message: "short stream reset 2", retryable: true},
+		},
+		streamCalled: make(chan int, 8),
+	}
+	conn := testConnection(peer, "client", "session-a")
+	conn.routes = []CollaborationRouteState{{
+		CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: "127.0.0.1", Port: 39170}, Status: "connected", Active: true,
+	}}
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Mode: "client", Host: conn.hostName, Port: conn.port, Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
+	c.streamRetryDelay = func(int, uint64) time.Duration { return time.Millisecond }
+	var joins atomic.Int32
+	c.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		joins.Add(1)
+		return nil, errors.New("single-route stream retry must not join")
+	}
+	c.opMu.Lock()
+	c.ensureConnectionLoop(conn)
+	c.opMu.Unlock()
+	deadline := time.After(time.Second)
+	for calls := 0; calls < 3; {
+		select {
+		case calls = <-peer.streamCalled:
+		case <-deadline:
+			t.Fatal("timed out waiting for in-place stream retries")
+		}
+	}
+	if joins.Load() != 0 {
+		t.Fatalf("transient stream retries joined Room %d times", joins.Load())
+	}
+	conn.cancel()
+	<-conn.done
+}
+
+func TestCollaborationStreamFailoverJoinsDifferentRouteOnce(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	peer := &scriptedStreamPeer{
+		streamErrors: []error{
+			&collaborationTransportError{message: "active route down 1", retryable: true},
+			&collaborationTransportError{message: "active route down 2", retryable: true},
+			&collaborationTransportError{message: "active route down 3", retryable: true},
+		},
+		streamCalled: make(chan int, 8),
+	}
+	conn := testConnection(peer, "client", "session-a")
+	conn.routes = []CollaborationRouteState{
+		{CollaborationRouteInput: CollaborationRouteInput{ID: "lan-primary", Kind: "lan", Host: "127.0.0.1", Port: 39170}, Status: "connected", Active: true},
+		{CollaborationRouteInput: CollaborationRouteInput{ID: "lan-backup", Kind: "lan", Host: "127.0.0.2", Port: 39171}, Status: "disabled"},
+	}
+	c.conn = conn
+	c.state = CollaborationState{Status: "connected", Mode: "client", Host: conn.hostName, Port: conn.port, Room: conn.room, MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: conn.initialSnapshot}
+	c.streamRetryDelay = func(int, uint64) time.Duration { return time.Millisecond }
+	joined := make(chan JoinCollaborationRoomInput, 2)
+	var joins atomic.Int32
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, _ string) (*collaborationConnection, error) {
+		joins.Add(1)
+		joined <- input
+		replacement := testConnection(&fakeCollaborationPeer{}, "client", input.SessionID)
+		replacement.hostName, replacement.port = input.Routes[0].Host, input.Routes[0].Port
+		replacement.routes = []CollaborationRouteState{{CollaborationRouteInput: input.Routes[0], Status: "connected", Active: true}}
+		return replacement, nil
+	}
+	c.opMu.Lock()
+	c.ensureConnectionLoop(conn)
+	c.opMu.Unlock()
+	var input JoinCollaborationRoomInput
+	select {
+	case input = <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for alternative route failover")
+	}
+	if len(input.Routes) != 1 || input.Routes[0].Host != "127.0.0.2" {
+		t.Fatalf("failover routes = %+v, want backup only", input.Routes)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if joins.Load() != 1 {
+		t.Fatalf("route failover joined %d times, want once", joins.Load())
 	}
 	c.close()
 }

@@ -2160,6 +2160,29 @@ func newRoomOpenTestApp(t *testing.T, sp string) *App {
 	return app
 }
 
+func TestDesktopIconSnapshotPollingDoesNotActivateRoom(t *testing.T) {
+	sp := roomTestSession(t)
+	app := newRoomOpenTestApp(t, sp)
+	runtime := app.collaborations["room-session"]
+	var joins, hosts int
+	runtime.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		joins++
+		return nil, fmt.Errorf("snapshot must not join")
+	}
+	runtime.openHost = func(context.Context, HostCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		hosts++
+		return nil, fmt.Errorf("snapshot must not host")
+	}
+	for range 5 {
+		if snapshot := app.GetDesktopIconSnapshot(); snapshot.Revision == "" {
+			t.Fatal("snapshot revision is empty")
+		}
+	}
+	if joins != 0 || hosts != 0 {
+		t.Fatalf("snapshot polling activated Room: joins=%d hosts=%d", joins, hosts)
+	}
+}
+
 // TestDesktopIconRoomOpenReadRoomWithoutNotice verifies that a read Room icon
 // (no notice at all) still opens its exact session through the snapshot
 // session ref: the open never consults the first notice's TabID or the active

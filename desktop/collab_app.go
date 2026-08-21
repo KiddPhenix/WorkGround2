@@ -427,6 +427,7 @@ type desktopCollaboration struct {
 	updateDone         chan struct{}
 	initialUpdateDelay func() time.Duration
 	updateDelay        func() time.Duration
+	streamRetryDelay   func(int, uint64) time.Duration
 	ownedParts         map[string]os.FileInfo
 	autoReceiveSem     chan struct{}
 	autoRetryDelay     func(int) time.Duration
@@ -467,6 +468,8 @@ type desktopCollaboration struct {
 
 type collaborationConnection struct {
 	syncMu              sync.Mutex
+	failoverMu          sync.Mutex
+	failoverActive      bool
 	peer                collaborationPeer
 	filePeer            collaborationFilePeer
 	host                *http.Server
