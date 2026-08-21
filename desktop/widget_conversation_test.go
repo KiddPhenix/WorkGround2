@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -237,4 +239,106 @@ func TestWidgetApprovalModePreservesOptionalDefault(t *testing.T) {
 	if _, err := widgetApprovalMode("sometimes"); err == nil {
 		t.Fatal("unknown approval mode must fail explicitly")
 	}
+}
+
+func TestWidgetWorkspaceCandidatesMarksPinnedTransient(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	pinnedTransient := transientProjectRoot(t, "pinned-transient")
+	unpinnedTransient := transientProjectRoot(t, "unpinned-transient")
+	normal := normalProjectRoot(t, "normal")
+
+	if err := saveProjectsFile(desktopProjectFile{
+		PinnedProjects: []string{pinnedTransient},
+		Projects: []desktopProject{
+			{Root: pinnedTransient, Title: "Pinned shell"},
+			{Root: unpinnedTransient, Title: "Unpinned shell"},
+			{Root: normal, Title: "Normal"},
+		},
+	}); err != nil {
+		t.Fatalf("save projects: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	candidates := app.widgetWorkspaceCandidates()
+
+	byRoot := map[string]widgetWorkspaceCandidate{}
+	for _, c := range candidates {
+		byRoot[c.Root] = c
+	}
+	if c := byRoot[pinnedTransient]; !c.Transient || !c.Pinned {
+		t.Fatalf("pinned transient candidate = %+v, want Transient && Pinned", c)
+	}
+	if c := byRoot[unpinnedTransient]; !c.Transient || c.Pinned {
+		t.Fatalf("unpinned transient candidate = %+v, want Transient && !Pinned", c)
+	}
+	if c := byRoot[normal]; c.Transient || c.Pinned {
+		t.Fatalf("normal candidate = %+v, want !Transient && !Pinned", c)
+	}
+}
+
+func TestListWidgetWorkspacesIncludesOnlyPinnedTransient(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	pinnedTransient := transientProjectRoot(t, "pinned-transient")
+	unpinnedTransient := transientProjectRoot(t, "unpinned-transient")
+	normal := normalProjectRoot(t, "normal")
+
+	if err := saveProjectsFile(desktopProjectFile{
+		PinnedProjects: []string{pinnedTransient},
+		Projects: []desktopProject{
+			{Root: pinnedTransient, Title: "Pinned shell"},
+			{Root: unpinnedTransient, Title: "Unpinned shell"},
+			{Root: normal, Title: "Normal"},
+		},
+	}); err != nil {
+		t.Fatalf("save projects: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+
+	// Repeating the call must stay stable (idempotent projection).
+	for i := 0; i < 2; i++ {
+		options := app.ListWidgetWorkspaces()
+		roots := map[string]WidgetWorkspaceOption{}
+		for _, opt := range options {
+			roots[opt.Root] = opt
+		}
+		if opt, ok := roots[pinnedTransient]; !ok || !opt.Pinned {
+			t.Fatalf("iteration %d: pinned transient must be listed with Pinned set: %+v", i, opt)
+		}
+		if _, ok := roots[unpinnedTransient]; ok {
+			t.Fatalf("iteration %d: unpinned transient must stay hidden", i)
+		}
+		if opt, ok := roots[normal]; !ok || opt.Pinned {
+			t.Fatalf("iteration %d: normal project must be listed unpinned: %+v", i, opt)
+		}
+	}
+}
+
+func transientProjectRoot(t *testing.T, name string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(filepath.Join(root, ".WorkGround2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !widgetIsTransientRoot(root, name) {
+		t.Fatalf("fixture root %s is not transient", root)
+	}
+	return root
+}
+
+func normalProjectRoot(t *testing.T, name string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("project"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if widgetIsTransientRoot(root, name) {
+		t.Fatalf("fixture root %s should not be transient", root)
+	}
+	return root
 }
