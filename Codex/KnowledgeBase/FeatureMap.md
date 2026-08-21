@@ -1,5 +1,7 @@
 # Feature Map
 
+> 2026-08-21 小组件已解决 Ask 提醒收敛：分支 `developping/widget-resolved-ask-notice+2026-08-21`；高优先级未读仅表达提醒紧急度，不再伪装成 Controller 的结构化 `needs_input`；同优先级下真实待回答/待确认交互优先展示，避免已回答问题仍以第二个输入框和角标出现。相关快照/Room/排序回归、Desktop vet 与 diff check 通过；DesktopIcon 宽回归仍命中既有 Wails `invalid context` 基线。状态：`done`。
+
 > 2026-07-27 Work 结构规划可靠性调整：分支 `developping/definition-planner-json-repair+2026-07-27`；首次提示在 system 与最终 user 尾部双重约束单一 DefinitionPlan JSON；结构解析失败后基于最近草稿有界自动修复，强调业务内容不变、仅纠正 JSON/schema，并保留显式失败与安全重试语义。状态：`done`。
 
 > 2026-07-23 Stage 6 Desktop back repair：正常 Session 与 Work 背面互斥复用同一 SessionSurface；attempt SessionRef 按已有 tab、topic metadata、blank+resume 三层导航，失败保留 WorkCard 并可重试；WorkCapable/List/Create/Get 的迟到 ACK 均按 tab/owner/disposed 隔离。

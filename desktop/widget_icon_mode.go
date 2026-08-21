@@ -2188,7 +2188,11 @@ func noticesForConversation(conversation unread.Conversation, presentations map[
 	for _, item := range conversation.Items {
 		kind, priority := "message", 3
 		if item.Priority == unread.PriorityHigh && item.Attention == unread.AttentionNone {
-			kind, priority = "needs_input", 1
+			// High-priority unread events report urgency, not a live structured
+			// interaction. Only Controller.PendingInteraction may project
+			// needs_input/needs_confirm; otherwise a resolved ask is rendered as
+			// a second answerable question until its unread watermark advances.
+			priority = 1
 		} else if item.Attention != unread.AttentionNone {
 			priority = 1
 		}
@@ -2244,6 +2248,11 @@ func sortDesktopIconNotices(notices []DesktopIconNotice) {
 	sort.SliceStable(notices, func(i, j int) bool {
 		if notices[i].Priority != notices[j].Priority {
 			return notices[i].Priority < notices[j].Priority
+		}
+		leftAction := notices[i].Kind == "needs_input" || notices[i].Kind == "needs_confirm"
+		rightAction := notices[j].Kind == "needs_input" || notices[j].Kind == "needs_confirm"
+		if leftAction != rightAction {
+			return leftAction
 		}
 		if notices[i].CreatedAt != notices[j].CreatedAt {
 			return notices[i].CreatedAt < notices[j].CreatedAt
