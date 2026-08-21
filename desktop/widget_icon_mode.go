@@ -1660,13 +1660,20 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	taskBySource := map[string]int{}
 	pinnedRoomBySession := map[string]int{}
 	roomBySession := map[string]desktopIconRoomDescriptor{}
+	addLiveRoom := func(room desktopIconRoomDescriptor) {
+		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+			if _, exists := roomBySession[key]; !exists {
+				roomBySession[key] = room
+			}
+		}
+	}
+	for _, room := range pinnedRooms {
+		addLiveRoom(room)
+	}
+	liveRoomGate := len(roomDescriptorSets) > 0
 	if len(roomDescriptorSets) > 0 {
 		for _, room := range roomDescriptorSets[0] {
-			for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
-				if _, exists := roomBySession[key]; !exists {
-					roomBySession[key] = room
-				}
-			}
+			addLiveRoom(room)
 		}
 	}
 	delegatedRunning := 0
@@ -1821,6 +1828,14 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 			kind = "person"
 		}
 		if kind == "room" {
+			_, live := desktopIconRoomForConversation(roomBySession, conversation)
+			if liveRoomGate && !live {
+				// The unread store is durable and intentionally outlives a Room
+				// membership. Only the current project-tree projection may turn
+				// that history back into a desktop icon; stale pins, read markers
+				// and notice presentations cannot resurrect a removed Room.
+				continue
+			}
 			if index, ok := desktopIconPinnedRoomIndex(pinnedRoomBySession, conversation); ok {
 				items[index].Notifications = noticesForConversation(conversation, roomPresentations[conversation.SessionID])
 				items[index].ConversationSequence = conversation.LatestSequence

@@ -6528,6 +6528,7 @@ func (a *App) emitRuntimeEvent(name string, payload ...interface{}) {
 
 // DeleteTopic removes a topic and its title metadata.
 func (a *App) DeleteTopic(topicID string) error {
+	roomSessionPaths := a.collaborationSessionPathsForTopic(topicID)
 	f := loadProjectsFile()
 	found := false
 	for _, p := range f.Projects {
@@ -6581,6 +6582,7 @@ func (a *App) DeleteTopic(topicID string) error {
 	if err := removeTopicFromProjectsFile(topicID); err != nil {
 		return err
 	}
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	a.emitProjectTreeChanged()
 	return nil
 }
@@ -6641,6 +6643,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err != nil {
 		return err
 	}
+	roomSessionPaths := make([]string, 0, len(targets))
+	for _, target := range targets {
+		roomSessionPaths = append(roomSessionPaths, target.sessionPath)
+	}
 	removed, fallback := a.removeTopicRuntimeBindings(topicID)
 	if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
 		a.closeRemovedSessionRuntimes(removed)
@@ -6679,6 +6685,10 @@ func (a *App) TrashTopic(topicID string) error {
 	if err := a.DeleteTopic(topicID); err != nil {
 		return err
 	}
+	// DeleteTopic cannot rediscover Room metadata after the session artifacts
+	// have already moved to trash, so converge the off-tab runtime map using
+	// the validated paths captured above.
+	a.closeCollaborationRuntimesForSessionPaths(roomSessionPaths)
 	if fallback.needs {
 		fallback.topicID = ""
 		if err := a.openFallbackRuntime(fallback); err != nil {

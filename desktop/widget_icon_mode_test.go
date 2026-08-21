@@ -255,6 +255,59 @@ func TestDesktopIconPinnedRoomsKeepSevenAndAppendEighthUnread(t *testing.T) {
 	}
 }
 
+func TestDesktopIconRoomsJoinHistoricalStateToLiveTree(t *testing.T) {
+	allRooms := map[string]desktopIconRoomDescriptor{
+		"live-a": {
+			TopicID: "live-a", Title: "Live A", SessionID: "session-a",
+			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: "live-a", SessionPath: "live-a.jsonl"},
+		},
+		"live-b": {
+			TopicID: "live-b", Title: "Live B", SessionID: "session-b",
+			Ref: &DesktopIconTaskRef{Scope: "global", TopicID: "live-b", SessionPath: "live-b.jsonl"},
+		},
+	}
+	pins := []string{"stale-1", "live-b", "stale-2", "stale-3", "stale-4", "stale-5", "stale-6"}
+	pinned := desktopIconPinnedRoomsFromDescriptors(allRooms, pins)
+	conversations := make([]unread.Conversation, 0, desktopRoomPinLimit)
+	for i := 1; i <= 5; i++ {
+		conversations = append(conversations, unread.Conversation{
+			Key: fmt.Sprintf("room:stale-%d", i), Source: unread.SourceRoom,
+			SessionID: fmt.Sprintf("stale-session-%d", i), Title: fmt.Sprintf("Stale %d", i),
+			LatestSequence: uint64(i), UnreadCount: i % 2,
+		})
+	}
+	conversations = append(conversations,
+		unread.Conversation{Key: "room:live-a", Source: unread.SourceRoom, SessionID: "session-a", Title: "Live A", LatestSequence: 8, UnreadCount: 1, Items: []unread.Item{{ID: "live-a-message", Sequence: 8, Kind: "chat"}}},
+		unread.Conversation{Key: "room:live-b", Source: unread.SourceRoom, SessionID: "session-b", Title: "Live B", LatestSequence: 4},
+	)
+
+	snapshot := buildDesktopIconSnapshotWithPresentations(
+		nil,
+		UnreadState{Available: true, Summary: unread.Summary{Revision: 9, Conversations: conversations}},
+		nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil, pinned, nil, allRooms,
+	)
+	rooms := make([]DesktopIconItem, 0, len(allRooms))
+	for _, item := range snapshot.Items {
+		if item.Kind == "room" {
+			rooms = append(rooms, item)
+		}
+	}
+	if len(rooms) != 2 {
+		t.Fatalf("Room icons = %d, want only two live Rooms: %+v", len(rooms), rooms)
+	}
+	if rooms[0].ID != "room:live-b" || rooms[1].ID != "conversation:room:live-a" {
+		t.Fatalf("live Room order = [%s, %s], want pinned Room first and unpinned unread Room second", rooms[0].ID, rooms[1].ID)
+	}
+	if rooms[1].UnreadCount != 1 || len(rooms[1].Notifications) != 1 {
+		t.Fatalf("live Room unread temporary presentation = %+v", rooms[1])
+	}
+	for i := 1; i <= 5; i++ {
+		if item := findDesktopIconItem(snapshot.Items, fmt.Sprintf("conversation:room:stale-%d", i)); item != nil {
+			t.Fatalf("stale Room %d was resurrected: %+v", i, item)
+		}
+	}
+}
+
 func TestDesktopIconPinnedRoomDescriptorsSkipStaleAndKeepDurableRef(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	if err := os.MkdirAll(desktopConfigDir(), 0o755); err != nil {
@@ -2055,6 +2108,22 @@ func roomTestSession(t *testing.T) string {
 func newRoomOpenTestApp(t *testing.T, sp string) *App {
 	t.Helper()
 	isolateDesktopUserDirs(t)
+	meta, ok, err := agent.LoadBranchMeta(sp)
+	if err != nil || !ok {
+		t.Fatalf("load Room branch meta: ok=%v err=%v", ok, err)
+	}
+	meta.Scope = "global"
+	meta.TopicTitle = "产品 Room"
+	meta.ID = "room-session"
+	if err := os.WriteFile(sp, []byte(`{"role":"user","content":"Room"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write Room session: %v", err)
+	}
+	if err := agent.SaveBranchMeta(sp, meta); err != nil {
+		t.Fatalf("save Room branch meta: %v", err)
+	}
+	if err := ensureTopicIndexed("global", "", meta.TopicID, meta.TopicTitle, topicTitleSourceAuto); err != nil {
+		t.Fatalf("index live Room topic: %v", err)
+	}
 	store, err := unread.Open(filepath.Join(t.TempDir(), "unread.json"))
 	if err != nil {
 		t.Fatal(err)

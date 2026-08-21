@@ -838,6 +838,78 @@ func (a *App) closeCollaborations() {
 	cancel()
 }
 
+// collaborationSessionPathsForTopic snapshots the live Room runtimes owned by
+// one topic before that topic's metadata is removed. Branch metadata is read
+// outside collaborationMu; runtime shutdown likewise happens outside the lock.
+func (a *App) collaborationSessionPathsForTopic(topicID string) []string {
+	topicID = strings.TrimSpace(topicID)
+	if a == nil || topicID == "" {
+		return nil
+	}
+	a.collaborationMu.Lock()
+	paths := make([]string, 0, len(a.collaborations))
+	for _, runtime := range a.collaborations {
+		if runtime != nil {
+			paths = append(paths, runtime.ownerSessionPath)
+		}
+	}
+	a.collaborationMu.Unlock()
+
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = collaborationOwnerSessionPath(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		meta, ok, err := agent.LoadBranchMeta(path)
+		if err != nil || !ok || meta.SessionKind != agent.SessionKindCollaboration || strings.TrimSpace(meta.TopicID) != topicID {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
+}
+
+// closeCollaborationRuntimesForSessionPaths removes matching Room runtimes
+// from the App before closing them. Repeated calls are safe, and close never
+// runs while collaborationMu is held, so a transport shutdown cannot block
+// unrelated Room lookup or create a lock-order cycle.
+func (a *App) closeCollaborationRuntimesForSessionPaths(sessionPaths []string) {
+	if a == nil || len(sessionPaths) == 0 {
+		return
+	}
+	targets := map[string]bool{}
+	for _, path := range sessionPaths {
+		if key := sessionRuntimeKey(collaborationOwnerSessionPath(path)); key != "" {
+			targets[key] = true
+		}
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	a.collaborationMu.Lock()
+	seen := map[*desktopCollaboration]bool{}
+	runtimes := make([]*desktopCollaboration, 0, len(targets))
+	for sessionID, runtime := range a.collaborations {
+		if runtime == nil || !targets[sessionRuntimeKey(runtime.ownerSessionPath)] {
+			continue
+		}
+		delete(a.collaborations, sessionID)
+		if !seen[runtime] {
+			seen[runtime] = true
+			runtimes = append(runtimes, runtime)
+		}
+	}
+	a.collaborationMu.Unlock()
+
+	for _, runtime := range runtimes {
+		runtime.close()
+	}
+}
+
 // restoreCollaborationRuntimes scans the persisted collaboration states on
 // disk and reinstantiates a desktopCollaboration runtime for each one, then
 // attempts an async reconnection. This is called during Desktop startup so
