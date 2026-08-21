@@ -4,14 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"workground2/internal/fileutil"
 )
 
 const journalName = "events.jsonl"
@@ -151,31 +155,20 @@ func (s *FileStore) loadJournal(path, expectedRoom string) error {
 		return retryable("read room journal", err)
 	}
 	complete := data
+	tailTrimmed := 0
 	if len(complete) > 0 && complete[len(complete)-1] != '\n' {
 		cut := 0
 		if i := bytes.LastIndexByte(complete, '\n'); i >= 0 {
 			cut = i + 1
 		}
+		tailTrimmed = len(complete) - cut
 		complete = complete[:cut]
-		if err := os.Truncate(path, int64(cut)); err != nil {
-			return retryable("repair incomplete journal tail", err)
-		}
-		f, err := os.OpenFile(path, os.O_WRONLY, 0o600)
-		if err != nil {
-			return retryable("open repaired room journal", err)
-		}
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			return retryable("sync repaired room journal", err)
-		}
-		if err := f.Close(); err != nil {
-			return retryable("close repaired room journal", err)
-		}
 	}
 	scanner := bufio.NewScanner(bytes.NewReader(complete))
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, 16*1024*1024)
 	line := 0
+	records := make([]journalRecord, 0)
 	for scanner.Scan() {
 		line++
 		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
@@ -188,19 +181,146 @@ func (s *FileStore) loadJournal(path, expectedRoom string) error {
 		if record.Event.Room != expectedRoom || !roomIDPattern.MatchString(record.Event.Room) {
 			return fmt.Errorf("collab: journal %s line %d has invalid room %q", path, line, record.Event.Room)
 		}
-		state := s.rooms[record.Event.Room]
-		if state == nil {
-			state = newRoomState()
-			s.rooms[record.Event.Room] = state
-		}
-		if err := applyRecord(state, record); err != nil {
-			return fmt.Errorf("collab: replay %s line %d: %w", path, line, err)
-		}
+		records = append(records, record)
 	}
 	if err := scanner.Err(); err != nil {
 		return retryable("scan room journal", err)
 	}
+	state, rebuilt, queued, err := rebuildJournal(records)
+	if err != nil {
+		return fmt.Errorf("collab: replay %s: %w", path, err)
+	}
+	if state.Room.ID != "" {
+		s.rooms[expectedRoom] = state
+	}
+	if queued > 0 || tailTrimmed > 0 {
+		encoded, err := encodeJournal(rebuilt)
+		if err != nil {
+			return fmt.Errorf("collab: encode repaired journal %s: %w", path, err)
+		}
+		backup, err := backupJournal(path, data)
+		if err != nil {
+			return retryable("backup room journal before repair", err)
+		}
+		if err := fileutil.AtomicWriteFile(path, encoded, 0o600); err != nil {
+			return retryable("commit repaired room journal", err)
+		}
+		slog.Warn("collab: repaired room journal",
+			"room", expectedRoom,
+			"path", path,
+			"queued", queued,
+			"trimmedBytes", tailTrimmed,
+			"backup", backup,
+		)
+	}
 	return nil
+}
+
+func rebuildJournal(records []journalRecord) (*roomState, []journalRecord, int, error) {
+	state := newRoomState()
+	rebuilt := make([]journalRecord, 0, len(records))
+	queued := make([]journalRecord, 0)
+	for _, record := range records {
+		if err := applyRecord(state, record); err != nil {
+			queued = append(queued, record)
+			continue
+		}
+		rebuilt = append(rebuilt, record)
+	}
+	for _, record := range queued {
+		if state.Room.ID != "" && (record.Room != nil || record.Event.Type == "room.created") {
+			continue
+		}
+		record, err := rebaseJournalRecord(state, record)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		if err := applyRecord(state, record); err != nil {
+			return nil, nil, 0, fmt.Errorf("apply repaired event %q: %w", record.Event.EventID, err)
+		}
+		rebuilt = append(rebuilt, record)
+	}
+	return state, rebuilt, len(queued), nil
+}
+
+func rebaseJournalRecord(state *roomState, record journalRecord) (journalRecord, error) {
+	sequence := uint64(1)
+	if state.Room.ID != "" {
+		sequence = state.Room.LatestSequence + 1
+	} else if record.Room == nil || record.Event.Type != "room.created" {
+		return journalRecord{}, fmt.Errorf("journal has no repairable room creation record")
+	}
+
+	requestID := strings.TrimSpace(record.Event.RequestID)
+	if _, exists := state.Receipts[requestID]; requestID == "" || exists {
+		requestID = newID("repair")
+		record.Event.RequestID = requestID
+		record.Receipt.RequestID = requestID
+		record.RequestHash = fingerprint(record.Event)
+	}
+	eventID := newID("event")
+	record.Event.EventID = eventID
+	record.Event.Sequence = sequence
+	record.Receipt.EventIDs = []string{eventID}
+	record.Receipt.LatestSequence = sequence
+	if record.Room != nil {
+		record.Room.LatestSequence = sequence
+		payload, err := json.Marshal(record.Room)
+		if err != nil {
+			return journalRecord{}, err
+		}
+		record.Event.Payload = payload
+	}
+	if record.Timeline != nil {
+		record.Timeline.Sequence = sequence
+		if record.Timeline.Type == TimelineChat && record.Timeline.Chat != nil && timelineIDExists(state, record.Timeline.ID) {
+			messageID := newID("message")
+			record.Timeline.ID = messageID
+			record.Timeline.Chat.ID = messageID
+		}
+		payload, err := json.Marshal(record.Timeline)
+		if err != nil {
+			return journalRecord{}, err
+		}
+		record.Event.Payload = payload
+	}
+	return record, nil
+}
+
+func timelineIDExists(state *roomState, id string) bool {
+	for _, item := range state.Timeline {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func encodeJournal(records []journalRecord) ([]byte, error) {
+	var result bytes.Buffer
+	for _, record := range records {
+		data, err := json.Marshal(record)
+		if err != nil {
+			return nil, err
+		}
+		result.Write(data)
+		result.WriteByte('\n')
+	}
+	return result.Bytes(), nil
+}
+
+func backupJournal(path string, data []byte) (string, error) {
+	sum := sha256.Sum256(data)
+	backup := fmt.Sprintf("%s.repair-%x.bak", path, sum[:8])
+	if _, err := os.Stat(backup); err == nil {
+		return backup, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := fileutil.AtomicWriteFile(backup, data, 0o600); err != nil {
+		return "", err
+	}
+	return backup, nil
 }
 
 func (s *FileStore) append(record journalRecord) error {
