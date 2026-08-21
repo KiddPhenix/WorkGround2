@@ -789,9 +789,10 @@ assert.match(component, /<WorkspaceGlyph icon=\{row\.icon\} \/>/, "the workspace
 assert.doesNotMatch(component, /row\.icon \? row\.icon/, "the workspace row never renders the raw icon string");
 assert.match(component, /onKeyDown=\{\(event\) => \{[\s\S]{0,80}if \(event\.key === "Enter" && !event\.nativeEvent\.isComposing\)[\s\S]+void commitRename\(row\)[\s\S]+if \(event\.key === "Escape"\) \{ event\.preventDefault\(\); event\.stopPropagation\(\); cancelRename\(\); \}/, "rename confirms with Enter and cancels with Escape without closing the dialog");
 assert.match(component, /if \(renamingBusy\) return;[\s\S]+setRenamingBusy\(true\)/, "rename guards against duplicate submission");
-assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*max-height:\s*var\(--popup-max-height, 420px\)/, "the workspace popup uses the measured space above its anchor");
+assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*height:\s*min\(620px, var\(--popup-max-height, 620px\)\)[^}]*max-height:\s*var\(--popup-max-height, 620px\)/, "async workspace, Room, and routine managers reserve one stable frame before their lists load");
+assert.match(css, /\.desktop-icon-popup__workspaces\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0[^}]*overflow:\s*hidden/, "workspace and Room manager contents stay inside the reserved outer frame");
 assert.match(css, /\.desktop-icon-popup:has\(\.desktop-icon-popup__workspaces\)[^}]*width:\s*min\(420px, calc\(100vw - 20px\)\)/, "the workspace popup is wider while still fitting narrow viewports");
-assert.match(css, /\.desktop-icon-popup__workspace-list[^}]*max-height:\s*calc\(5 \* 72px\)[^}]*overflow-y:\s*auto/, "the workspace list scrolls with a bounded height");
+assert.match(css, /\.desktop-icon-popup__workspace-list[^}]*max-height:\s*360px[^}]*overflow-y:\s*auto/, "workspace and Room rows scroll inside the stable five-row budget after async loading");
 assert.match(css, /\.desktop-icon-popup__workspace-name[^}]*min-width:\s*0[^}]*text-overflow:\s*ellipsis/, "long workspace names truncate instead of overflowing a narrow window");
 assert.match(css, /\.desktop-icon-popup__workspace-actions[^}]*flex-wrap:\s*wrap/, "row actions wrap on narrow windows");
 assert.match(css, /\.desktop-icon-popup__workspace-pin\[aria-pressed="true"\]/, "the pinned state has a distinct pressed style");
