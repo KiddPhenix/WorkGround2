@@ -817,23 +817,24 @@ func (a *App) restoreOrBuildTabs() {
 		for _, tab := range toBuild {
 			a.startTabControllerBuild(tab)
 		}
-		a.restoreCollaborationRuntimes()
-		a.startRecoveryGC()
-		a.startExternalSessionGC()
-		return
+	} else {
+		// First launch: create a default Global tab.
+		tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
+		a.trackSession(tab)
+		tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
+		tab.TopicTitle = "Global"
+		a.mu.Lock()
+		a.tabs[tab.ID] = tab
+		a.tabOrder = append(a.tabOrder, tab.ID)
+		a.activeTabID = tab.ID
+		a.mu.Unlock()
+		a.startTabControllerBuild(tab)
 	}
 
-	// First launch: create a default Global tab.
-	tab := a.createTabEntry("global", globalTabWorkspaceRoot(), "")
-	a.trackSession(tab)
-	tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: ctx}
-	tab.TopicTitle = "Global"
-	a.mu.Lock()
-	a.tabs[tab.ID] = tab
-	a.tabOrder = append(a.tabOrder, tab.ID)
-	a.activeTabID = tab.ID
-	a.mu.Unlock()
-	a.startTabControllerBuild(tab)
+	// Background Room residency is independent from the restored UI tabs.
+	// Reconcile it exactly once after either tab branch has established the
+	// Desktop's basic Session state.
+	a.restoreCollaborationRuntimes()
 	a.startRecoveryGC()
 	a.startExternalSessionGC()
 }

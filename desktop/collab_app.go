@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -1165,11 +1166,21 @@ func (a *App) restoreOneCollaborationWithRegistry(persistPath string, start coll
 	}
 }
 
-func (a *App) startCollaborationRestore(runtime *desktopCollaboration, _ string) {
+func (a *App) startCollaborationRestore(runtime *desktopCollaboration, sessionID string) {
 	go func() {
 		// Network residency is independent from Agent Controller readiness. The
 		// scheduler resolves Agent readiness only when it actually has work.
-		_, _ = runtime.retry(a.bootContext())
+		state, err := runtime.retry(a.bootContext())
+		if err != nil {
+			slog.Warn("desktop: collaboration startup restore failed",
+				"session", strings.TrimSpace(sessionID),
+				"room", state.Room,
+				"host", state.Host,
+				"port", state.Port,
+				"retryable", state.Retryable,
+				"err", err,
+			)
+		}
 	}()
 }
 
