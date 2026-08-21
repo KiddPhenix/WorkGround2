@@ -1714,9 +1714,8 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	}
 }
 
-func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	root := t.TempDir()
+func seedRestorableHostRoom(t *testing.T, root string) string {
+	t.Helper()
 	if err := addProject(root, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1757,6 +1756,13 @@ func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t 
 	if err := os.WriteFile(persistPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return sessionID
+}
+
+func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	sessionID := seedRestorableHostRoom(t, root)
 
 	app := NewApp()
 	app.sessionDirsOverride = []string{filepath.Join(root, "project-tree-cache-not-ready")}
@@ -1810,6 +1816,46 @@ func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t 
 	if runtime != first {
 		t.Fatalf("idempotent reconcile replaced Host runtime: first=%p next=%p", first, runtime)
 	}
+}
+
+func TestRestoreOrBuildTabsRestoresCollaborationHostWithoutPersistedTabs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	sessionID := seedRestorableHostRoom(t, root)
+	if tabs := loadTabsFile(); len(tabs.Tabs) != 0 {
+		t.Fatalf("persisted tabs = %d, want empty startup state", len(tabs.Tabs))
+	}
+
+	app := NewApp()
+	app.sessionDirsOverride = []string{filepath.Join(root, "project-tree-cache-not-ready")}
+	defer app.closeCollaborations()
+
+	app.restoreOrBuildTabs()
+
+	var runtime *desktopCollaboration
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		app.collaborationMu.Lock()
+		runtime = app.collaborations[sessionID]
+		app.collaborationMu.Unlock()
+		if runtime != nil && runtime.snapshot().Status == "connected" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime == nil || runtime.snapshot().Status != "connected" {
+		t.Fatalf("empty-tab startup did not activate Host Room: runtime=%p state=%+v", runtime, func() CollaborationState {
+			if runtime == nil {
+				return CollaborationState{}
+			}
+			return runtime.snapshot()
+		}())
+	}
+	probe, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port), time.Second)
+	if err != nil {
+		t.Fatalf("empty-tab startup Host listener is unavailable: %v", err)
+	}
+	_ = probe.Close()
 }
 
 func TestCollaborationMigratesRecoveryPathCacheToOwnerPath(t *testing.T) {
