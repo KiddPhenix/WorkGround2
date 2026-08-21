@@ -59,7 +59,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-anchor { --wails-draggable: drag; display: grid; place-items: center; width: 34px; height: 34px; padding: 4px; border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; background: rgb(22 25 33 / 92%); box-shadow: 0 6px 16px rgb(0 0 0 / 38%); cursor: grab; user-select: none; }
 .desktop-icon-anchor:hover { border-color: rgb(193 210 255 / 40%); }
 .desktop-icon-anchor--menu-open, .desktop-icon-anchor--quick-open { border-color: rgb(193 210 255 / 62%); }
-.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; will-change: transform; backface-visibility: hidden; animation: desktop-icon-anchor-keepalive 3600s ease-in-out infinite; }
+.desktop-icon-anchor img { width: 100%; height: 100%; pointer-events: none; user-select: none; will-change: transform; backface-visibility: hidden; animation: desktop-icon-anchor-keepalive 54000s ease-in-out infinite; }
 /* The quick toolbar renders inline in the control row between the collapse
    toggle and the WG2 anchor: it must never float above the cluster (no
    absolute positioning), so the toolbar scales and wraps with the cluster and
