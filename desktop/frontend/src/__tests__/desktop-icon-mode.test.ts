@@ -192,7 +192,23 @@ assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hi
 assert.match(component, /getClientRects\(\)\.length\s*>\s*0/, "popup visibility does not depend on offsetParent semantics");
 assert.match(component, /new ResizeObserver\(sync\)/, "native regions follow popup and menu content size changes");
 assert.match(component, /regionQueue\.current/, "native region updates are serialized instead of racing");
-assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}>改名<\/button><button[\s\S]{0,220}"randomize_icon"[\s\S]{0,80}>换个样子<\/button>/, "task/session context menus expose rename and explicit appearance randomization");
+assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}>改名<\/button><button[\s\S]{0,650}createRoutine\(item\)[\s\S]{0,320}"randomize_icon"[\s\S]{0,100}>换个样子<\/button>/, "task/session context menus expose rename, daily-routine extraction, and appearance randomization");
+assert.match(component, /CreateDailyRoutine\(\{ tabId: item\.sourceId, sessionRef: item\.sessionRef, requestId: stableRequest \}\)/, "daily routine extraction submits the backend-owned Session identity with a stable retry request");
+assert.match(component, /const requestKey = item\.sessionRef\?\.sessionPath \|\| item\.sourceId;[\s\S]{0,260}routineExtractRequests\.current\.set\(requestKey, stableRequest\)[\s\S]{0,180}writeDailyRoutineRequests\(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY/, "failed extraction and renderer restarts reuse a persisted per-Session request id");
+assert.match(component, /active && active\.kind === "workspace" && <DailyRoutinePanel key=\{active\.sourceId\} workspaceRoot=\{active\.sourceId\}/, "left-clicking a workspace icon renders its workspace-owned daily routines");
+assert.match(component, /const generation = useRef\(0\)[\s\S]{0,900}generation\.current === token && workspaceRoot === root/, "routine list responses are fenced by workspace generation");
+assert.match(component, /const requestKey = `\$\{root\}\\u0000\$\{routine\.id\}`;[\s\S]{0,300}writeDailyRoutineRequests\(DAILY_ROUTINE_RUN_REQUESTS_KEY[\s\S]{0,500}RunDailyRoutine\(\{ workspaceRoot: root, routineId: routine\.id, requestId: stableRequest \}\)/, "routine execution persists a workspace-and-ID-scoped retry request before sending");
+assert.match(component, /await app\.ExitWidgetMode\(result\.tabId\);[\s\S]{0,220}if \(result\.status === "pending"\) return;/, "an acknowledged but unconfirmed run opens its exact Session while retaining the retry ledger");
+assert.match(component, /const nextRequests = new Map\(runRequests\.current\);[\s\S]{0,100}nextRequests\.delete\(requestKey\);[\s\S]{0,220}requestStoreCleanupFailed[\s\S]{0,120}runRequests\.current = nextRequests;/, "terminal run cleanup only mutates the in-memory ledger after durable cleanup succeeds and exposes failures");
+assert.match(component, /function readDailyRoutineRequests[\s\S]{0,900}localStorage\.removeItem\(key\)[\s\S]{0,160}recovered: true/, "corrupt routine request ledgers are explicitly flagged and self-healed");
+assert.match(component, /requestStoreRecovered[\s\S]+requestStoreFailed/, "routine request persistence failures are visible instead of silently degrading idempotency");
+assert.match(component, /RenameDailyRoutine\(\{ workspaceRoot: root, routineId: routine\.id, name \}\)[\s\S]+DeleteDailyRoutine\(\{ workspaceRoot: root, routineId: routine\.id \}\)/, "rename and delete address routines by workspace and routine ID");
+assert.match(component, /setRenaming\(""\); setRenameDraft\(""\);[\s\S]{0,100}clearRoutineBusy\(routine\.id\);[\s\S]{0,80}await load\(\)/, "rename clears its per-routine busy state before list reload advances the generation");
+assert.match(component, /<DailyRoutinePanel key=\{active\.sourceId\} workspaceRoot=\{active\.sourceId\}/, "workspace switches remount the routine panel so stale rows are never interactive under a new workspace");
+assert.match(component, /await app\.ExitWidgetMode\(result\.tabId\)/, "successful routine execution opens the exact new Session returned by the backend");
+const dailyRoutineBridgeSource = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
+assert.match(dailyRoutineBridgeSource, /CreateDailyRoutine[\s\S]+ListDailyRoutines[\s\S]+RunDailyRoutine[\s\S]+RenameDailyRoutine[\s\S]+DeleteDailyRoutine/, "the Wails bridge exposes the complete daily-routine contract");
+assert.match(dailyRoutineBridgeSource, /DailyRoutineResult \{ status: [^;]+"pending"/, "the bridge distinguishes acknowledged pending delivery from terminal submission");
 assert.match(component, /const displayItems = useMemo\([\s\S]{0,240}previewDesktopIconMove\(visibleItems, dragPreview\.itemId, dragPreview\.order\)/, "drag insertion is projected locally before the backend snapshot changes");
 assert.match(component, /void run\(current\.item, "move"[\s\S]{0,180}\.finally\(\(\) => \{ setDraggingID\(""\); setDragPreview\(null\); \}\)/, "pointer release submits one durable move and clears the preview after the authoritative result");
 assert.match(css, /\.desktop-icon-wrap\.is-dragging\s*\{[^}]*translateY\(-6px\)[^}]*scale\(1\.035\)/, "the dragged icon has a restrained lifted state");
@@ -269,7 +285,7 @@ assert.match(jobsSource, /commit\(\{ kind: "remove", requestId \}, false\);/, "d
 assert.match(component, /quickTaskGate\.current\.open\(job, \(tabId\) => app\.ExitWidgetMode\(tabId\)\)/, "an accepted job opens its real task through the gate, passing the exact tabId once");
 assert.match(component, /const quickTaskGate = useRef\(createQuickStartOpenTaskGate\(\)\);/, "the accepted open-task action is gated against double invocation");
 // storage failures are explicit and visible (#5)
-assert.match(component, /quickJobs\.storageError[\s\S]{0,80}quickJobs\.clearStorageError\(\)/, "durable-storage failures surface in the toast and are dismissible");
+assert.match(component, /quickJobs\.storageError[\s\S]{0,600}quickJobs\.clearStorageError\(\)/, "durable-storage failures surface in the toast and are dismissible");
 assert.match(component, /decideConsumedDraft\(localStorage, localStorage\.getItem\(QUICK_DRAFT_KEY\) \|\| "", activeQuickStartDrafts\)/, "the PURE decision receives active prompt→requestId mappings so an already-enqueued draft is suppressed and can be cleaned durably");
 assert.match(component, /initialDraft=\{quickDraftDecision\.draft\}/, "QuickStart renders the pure decision's draft without mutating storage");
 assert.doesNotMatch(component, /initialDraft=\{\(\(\) => \{[\s\S]{0,300}(removeItem|setItem|clearConsumedDraftMarker|cleanupConsumedDraft)/, "the initial-draft render path never writes storage (an aborted or StrictMode render cannot remove the draft/marker)");
@@ -608,7 +624,7 @@ assert.match(css, /\.desktop-icon-row\s*\{[^}]*flex-wrap:\s*wrap/, "icon rows wr
 assert.match(component, /const \[quickError, setQuickError\] = useState\(""\);/, "quick-control failures use their own error channel");
 assert.match(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setError\(next\.error \|\| ""\);/, "the 1s snapshot poll writes only the snapshot error channel");
 assert.doesNotMatch(component, /const refresh = useCallback\(\(\) => \{[\s\S]{0,1200}setQuickError/, "the snapshot poll never touches the quick-error channel");
-assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError\) && <div className="desktop-icon-toast" role="alert">/, "the toast surfaces snapshot, quick-control, and durable-storage errors together");
+assert.match(component, /\(error \|\| quickError \|\| quickJobs\.storageError \|\| routineNotice\) && <div className="desktop-icon-toast" role=\{error \|\| quickError \|\| quickJobs\.storageError \? "alert" : "status"\}/, "the toast surfaces errors together and announces successful routine extraction as status");
 assert.match(component, /\.catch\(\(\) => \{ if \(alive\) \{ setTopmostReadFailed\(true\); setQuickError\(TOPMOST_READ_ERROR\); \} \}\)/, "an initial always-on-top read failure stays visible and never assumes false");
 assert.match(component, /disabled=\{exiting \|\| topmostBusy \|\| !topmostLoaded \|\| topmostReadFailed\}/, "the always-on-top switch stays disabled after a failed initial read and while exiting");
 assert.match(component, /const \[topmostAttempt, setTopmostAttempt\] = useState\(0\);/, "the always-on-top read retry is driven by an explicit attempt counter");
@@ -725,7 +741,7 @@ assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\
 assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
 assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
 assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}>修改图标<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
-assert.match(component, /active\.kind === "workspace" && <button onClick=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}>在此发起<\/button>/, "workspace 在此发起 preselects the clicked project while preserving that icon as the QuickStart anchor");
+assert.match(component, /<DailyRoutinePanel[\s\S]{0,180}onStartHere=\{\(\) => \{ setQuickWorkspace\(`project:\$\{active\.sourceId\}`\); setPopupAnchorID\(active\.id\); setActiveID\("fixed:new"\); \}\}/, "workspace 日常 panel keeps 在此发起 anchored to the clicked project icon");
 assert.match(component, /itemRefs\.current\.get\(popupAnchorID\) \|\| itemRefs\.current\.get\(popupItem\.id\)/, "popup placement prefers the explicit workspace anchor over the fixed 新建 icon");
 assert.match(component, /<QuickStart[\s\S]{0,300}initialWorkspace=\{quickWorkspace\}/, "the anchored QuickStart receives the selected workspace");
 assert.match(component, /openWorkspaceIconEditor[\s\S]{0,180}setWorkspaceIconRoot\(item\.sourceId\)[\s\S]{0,120}setActiveID\("fixed:workspace"\)/, "workspace context editing carries the clicked root into the shared manager");

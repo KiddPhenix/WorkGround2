@@ -309,8 +309,26 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__delegation-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-icon-popup__delegation-list small { color: #969ba8; }
 .desktop-icon-popup__delegation-list small b { color: #68bb86; }
-.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: var(--popup-max-height, 420px); }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: var(--popup-max-height, 420px); }
 .desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.desktop-icon-popup__routines { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+.desktop-icon-popup__routine-list { min-height: 0; margin-top: 8px; overflow-y: auto; }
+.desktop-icon-popup__routine-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
+.desktop-icon-popup__routine-row:last-child { border-bottom: 0; }
+.desktop-icon-popup__routine-copy { display: grid; flex: 1 1 auto; min-width: 0; gap: 2px; }
+.desktop-icon-popup__routine-copy strong, .desktop-icon-popup__routine-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-icon-popup__routine-copy strong { font-size: 13px; }
+.desktop-icon-popup__routine-copy small { color: #969ba8; font-size: 10px; }
+.desktop-icon-popup__routine-actions { display: flex; flex: 0 0 auto; gap: 5px; }
+.desktop-icon-popup__routine-actions button { min-height: 28px; padding: 3px 9px; font-size: 11px; }
+.desktop-icon-popup__routine-actions button.subtle { display: grid; place-items: center; width: 28px; padding: 0; }
+.desktop-icon-popup__routine-actions svg { width: 13px; height: 13px; }
+.desktop-icon-popup__routine-rename { display: grid; width: 100%; grid-template-columns: minmax(0, 1fr) auto auto; gap: 5px; }
+.desktop-icon-popup__routine-rename input { min-width: 0; min-height: 30px; padding: 4px 8px; }
+.desktop-icon-popup__routine-rename button { min-height: 30px; padding: 4px 8px; }
+.desktop-icon-popup__routine-error { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 7px 8px; border: 1px solid rgb(167 70 85 / 45%); border-radius: 7px; color: #ffacb7; background: rgb(87 34 43 / 38%); font-size: 11px; }
+.desktop-icon-popup__routine-error span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.desktop-icon-popup__routine-error button { min-height: 26px; padding: 3px 8px; }
 .desktop-icon-popup__workspace-head { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; }
 .desktop-icon-popup__workspace-head strong { font-size: 15px; }
 .desktop-icon-popup__workspace-head button { min-height: 30px; padding: 4px 12px; }

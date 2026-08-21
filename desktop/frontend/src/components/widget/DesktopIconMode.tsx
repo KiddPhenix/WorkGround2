@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { Bot, Bookmark, Check, ChevronDown, ChevronUp, CircleAlert, Code2, ExternalLink, Folder, HelpCircle, Loader2, MessageCircle, Pencil, Pin, PinOff, Search, Settings as SettingsIcon, SquareTerminal, Star, Trash2, Users, X, Zap, ZoomIn, ZoomOut } from "lucide-react";
-import { app, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
+import { app, type DailyRoutine, type DesktopIconActionInput, type DesktopIconActionResult, type DesktopIconDelegation, type DesktopIconItem, type DesktopIconNotice, type DesktopIconPosition, type DesktopIconSearchItem, type DesktopIconSnapshot, type WidgetWorkspaceOption } from "../../lib/bridge";
 import { asArray } from "../../lib/array";
 import { AgentIcon } from "../agent-icon/AgentIcon";
 import { buildAgentIconViewModel, isAgentIconItem } from "../../lib/agentIcon/viewModel";
@@ -24,11 +24,14 @@ import { roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconVisibility, visibleDesktopIcons, writeRoomIconVisibility } from "./roomIconVisibility";
 import { isWorkspaceMatteIcon, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
+import { useT } from "../../lib/i18n";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
 const CLUSTER_KEY = "wg2.icon-widget-cluster";
 const QUICK_ZOOM_KEY = "wg2.icon-widget-zoom";
+const DAILY_ROUTINE_RUN_REQUESTS_KEY = "wg2.daily-routine-run-requests-v1";
+const DAILY_ROUTINE_EXTRACT_REQUESTS_KEY = "wg2.daily-routine-extract-requests-v1";
 const HIT_REGION_SELECTOR = ".desktop-icon, .desktop-icon-popup, .desktop-icon-menu, .desktop-icon-anchor-menu, .desktop-icon-quick, .desktop-icon-toast, .desktop-icon-anchor, .desktop-icon-collapse";
 // Surfaces that own their own pointer handling: clicking them must never be
 // treated as an outside click. The document-level outside-click handler closes
@@ -60,6 +63,160 @@ function widgetWorkspaceKey(option: WidgetWorkspaceOption): string {
 
 function requestID(prefix: string): string {
   return `${prefix}:${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`;
+}
+
+function readDailyRoutineRequests(key: string): { requests: Map<string, string>; recovered: boolean } {
+	try {
+		const raw = localStorage.getItem(key);
+		if (!raw) return { requests: new Map(), recovered: false };
+		const parsed = JSON.parse(raw) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid request ledger");
+		const entries = Object.entries(parsed).filter((entry): entry is [string, string] => Boolean(entry[0]) && typeof entry[1] === "string" && Boolean(entry[1]));
+		if (entries.length !== Object.keys(parsed).length) throw new Error("invalid request ledger entry");
+		return { requests: new Map(entries), recovered: false };
+	} catch {
+		try { localStorage.removeItem(key); } catch { /* the caller surfaces storage recovery failure */ }
+		return { requests: new Map(), recovered: true };
+	}
+}
+
+function writeDailyRoutineRequests(key: string, requests: Map<string, string>): boolean {
+	try {
+		if (requests.size) localStorage.setItem(key, JSON.stringify(Object.fromEntries(requests)));
+		else localStorage.removeItem(key);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceRoot: string; onStartHere: () => void; onClose: () => void }) {
+	const t = useT();
+	const [routines, setRoutines] = useState<DailyRoutine[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [runRequestLoad] = useState(() => readDailyRoutineRequests(DAILY_ROUTINE_RUN_REQUESTS_KEY));
+	const [error, setError] = useState(() => runRequestLoad.recovered ? t("dailyRoutine.requestStoreRecovered") : "");
+	const [busy, setBusy] = useState<Record<string, string>>({});
+	const [renaming, setRenaming] = useState("");
+	const [renameDraft, setRenameDraft] = useState("");
+	const generation = useRef(0);
+	const runRequests = useRef(runRequestLoad.requests);
+
+	const load = useCallback(async () => {
+		const token = ++generation.current;
+		const root = workspaceRoot;
+		setLoading(true);
+		try {
+			const next = await app.ListDailyRoutines(root);
+			if (generation.current === token && workspaceRoot === root) {
+				setRoutines(next);
+				if (!runRequestLoad.recovered) setError("");
+			}
+		} catch (cause) {
+			if (generation.current === token && workspaceRoot === root) setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			if (generation.current === token && workspaceRoot === root) setLoading(false);
+		}
+	}, [runRequestLoad.recovered, workspaceRoot]);
+
+	useEffect(() => {
+		void load();
+		return () => { generation.current += 1; };
+	}, [load]);
+
+	const setRoutineBusy = (id: string, action: string) => setBusy((current) => ({ ...current, [id]: action }));
+	const clearRoutineBusy = (id: string) => setBusy((current) => { const next = { ...current }; delete next[id]; return next; });
+	const validResponse = (token: number, root: string) => generation.current === token && workspaceRoot === root;
+
+	const run = async (routine: DailyRoutine) => {
+		if (busy[routine.id]) return;
+		const root = workspaceRoot;
+		const token = generation.current;
+		const requestKey = `${root}\u0000${routine.id}`;
+		const stableRequest = runRequests.current.get(requestKey) || requestID(`daily-run:${routine.id}`);
+		if (!runRequests.current.has(requestKey)) {
+			runRequests.current.set(requestKey, stableRequest);
+			if (!writeDailyRoutineRequests(DAILY_ROUTINE_RUN_REQUESTS_KEY, runRequests.current)) {
+				runRequests.current.delete(requestKey);
+				setError(t("dailyRoutine.requestStoreFailed"));
+				return;
+			}
+		}
+		setRoutineBusy(routine.id, "run"); setError("");
+		try {
+			const result = await app.RunDailyRoutine({ workspaceRoot: root, routineId: routine.id, requestId: stableRequest });
+			if (!validResponse(token, root)) return;
+			if (result.status !== "accepted" && result.status !== "already_applied" && result.status !== "pending") throw new Error(result.error || t("dailyRoutine.runFailed"));
+			if (!result.tabId) throw new Error(t("dailyRoutine.missingSession"));
+			await app.ExitWidgetMode(result.tabId);
+			// pending means the Controller accepted the turn but durable history
+			// confirmation has not arrived. Keep the request ledger so the next
+			// click resumes the same receipt and never submits a second turn.
+			if (result.status === "pending") return;
+			const nextRequests = new Map(runRequests.current);
+			nextRequests.delete(requestKey);
+			if (!writeDailyRoutineRequests(DAILY_ROUTINE_RUN_REQUESTS_KEY, nextRequests)) {
+				setError(t("dailyRoutine.requestStoreCleanupFailed"));
+				return;
+			}
+			runRequests.current = nextRequests;
+		} catch (cause) {
+			if (validResponse(token, root)) setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			if (validResponse(token, root)) clearRoutineBusy(routine.id);
+		}
+	};
+
+	const rename = async (routine: DailyRoutine) => {
+		const name = renameDraft.trim();
+		if (!name || busy[routine.id]) return;
+		const root = workspaceRoot;
+		const token = generation.current;
+		setRoutineBusy(routine.id, "rename"); setError("");
+		try {
+			const result = await app.RenameDailyRoutine({ workspaceRoot: root, routineId: routine.id, name });
+			if (!validResponse(token, root)) return;
+			if (result.status !== "accepted" && result.status !== "already_applied") throw new Error(result.error || t("dailyRoutine.renameFailed"));
+			setRenaming(""); setRenameDraft("");
+			clearRoutineBusy(routine.id);
+			await load();
+		} catch (cause) {
+			if (validResponse(token, root)) setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			if (validResponse(token, root)) clearRoutineBusy(routine.id);
+		}
+	};
+
+	const remove = async (routine: DailyRoutine) => {
+		if (busy[routine.id]) return;
+		const root = workspaceRoot;
+		const token = generation.current;
+		setRoutineBusy(routine.id, "delete"); setError("");
+		try {
+			const result = await app.DeleteDailyRoutine({ workspaceRoot: root, routineId: routine.id });
+			if (!validResponse(token, root)) return;
+			if (result.status !== "accepted" && result.status !== "already_applied") throw new Error(result.error || t("dailyRoutine.deleteFailed"));
+			setRoutines((current) => current.filter((item) => item.id !== routine.id));
+		} catch (cause) {
+			if (validResponse(token, root)) setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			if (validResponse(token, root)) clearRoutineBusy(routine.id);
+		}
+	};
+
+	return <div className="desktop-icon-popup__routines">
+		<div className="desktop-icon-popup__workspace-head"><strong>{t("dailyRoutine.title")}</strong><button type="button" onClick={onStartHere}>{t("dailyRoutine.startHere")}</button></div>
+		{loading && <p className="desktop-icon-popup__workspace-note">{t("dailyRoutine.loading")}</p>}
+		{!loading && routines.length === 0 && <p className="desktop-icon-popup__workspace-note">{t("dailyRoutine.empty")}</p>}
+		{error && <div className="desktop-icon-popup__routine-error" role="alert"><span>{error}</span><button type="button" onClick={() => void load()}>{t("common.retry")}</button></div>}
+		<div className="desktop-icon-popup__routine-list">{routines.map((routine) => <div key={routine.id} className="desktop-icon-popup__routine-row">
+			{renaming === routine.id ? <div className="desktop-icon-popup__routine-rename"><input autoFocus value={renameDraft} disabled={Boolean(busy[routine.id])} aria-label={t("dailyRoutine.renameAria", { name: routine.name })} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void rename(routine); if (event.key === "Escape") { setRenaming(""); setRenameDraft(""); } }} /><button type="button" disabled={!renameDraft.trim() || Boolean(busy[routine.id])} onClick={() => void rename(routine)}>{t("common.save")}</button><button type="button" className="subtle" disabled={Boolean(busy[routine.id])} onClick={() => { setRenaming(""); setRenameDraft(""); }}>{t("common.cancel")}</button></div> : <>
+				<div className="desktop-icon-popup__routine-copy"><strong>{routine.name}</strong><small>{routine.goal}</small></div>
+				<div className="desktop-icon-popup__routine-actions"><button type="button" disabled={Boolean(busy[routine.id])} onClick={() => void run(routine)}>{busy[routine.id] === "run" ? t("dailyRoutine.starting") : t("dailyRoutine.run")}</button><button type="button" className="subtle" disabled={Boolean(busy[routine.id])} aria-label={t("dailyRoutine.renameAria", { name: routine.name })} onClick={() => { setRenaming(routine.id); setRenameDraft(routine.name); setError(""); }}><Pencil aria-hidden="true" /></button><button type="button" className="subtle danger" disabled={Boolean(busy[routine.id])} aria-label={t("dailyRoutine.deleteAria", { name: routine.name })} onClick={() => void remove(routine)}><Trash2 aria-hidden="true" /></button></div>
+			</>}
+		</div>)}</div>
+		<div className="desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick={onClose}>{t("common.close")}</button></div>
+	</div>;
 }
 
 function readLocalStorage(key: string): string {
@@ -889,6 +1046,7 @@ function pinnedIcon(row: { pinned: boolean }) {
 }
 
 export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenMain }: { onNewRoom: () => void; onOpenRoom: (tabID: string) => Promise<void>; onOpenSettings: () => Promise<void>; onOpenMain: () => Promise<void> }) {
+	const t = useT();
   const [snapshot, setSnapshot] = useState<DesktopIconSnapshot>({ items: [], delegations: [], revision: "", hoverStatusDelayMs: 1200, style: "icons", unreadRevision: 0 });
   const [desktopZoom, setDesktopZoom] = useState(1);
 	const [viewport, setViewport] = useState(() => widgetViewportSize(window.innerWidth, window.innerHeight, 1));
@@ -915,8 +1073,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const [topmostAttempt, setTopmostAttempt] = useState(0);
   const [exiting, setExiting] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+	const [extractRequestLoad] = useState(() => readDailyRoutineRequests(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY));
+  const [error, setError] = useState(() => extractRequestLoad.recovered ? t("dailyRoutine.requestStoreRecovered") : "");
   const [quickError, setQuickError] = useState("");
+	const [routineNotice, setRoutineNotice] = useState("");
   const [workspaces, setWorkspaces] = useState<WidgetWorkspaceOption[]>([]);
 	const [quickWorkspace, setQuickWorkspace] = useState("");
 	const [quickStartEditJob, setQuickStartEditJob] = useState<QuickStartJob | null>(null);
@@ -998,6 +1158,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	});
   const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean; targetOrder: number } | null>(null);
 	const actionRequests = useRef(new Map<string, string>());
+	const routineExtractRequests = useRef(extractRequestLoad.requests);
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
 	const popupRef = useRef<HTMLElement>(null);
 	const [popupWidth, setPopupWidth] = useState(0);
@@ -1321,6 +1482,32 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		if (!title || busy) return;
 		void finishMenuAction(item, "rename", [title]);
 	};
+	const createRoutine = async (item: DesktopIconItem) => {
+		if (busy) return;
+		const requestKey = item.sessionRef?.sessionPath || item.sourceId;
+		const stableRequest = routineExtractRequests.current.get(requestKey) || requestID(`daily-extract:${item.id}`);
+		if (!routineExtractRequests.current.has(requestKey)) {
+			routineExtractRequests.current.set(requestKey, stableRequest);
+			if (!writeDailyRoutineRequests(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY, routineExtractRequests.current)) {
+				routineExtractRequests.current.delete(requestKey);
+				setError(t("dailyRoutine.requestStoreFailed"));
+				return;
+			}
+		}
+		setBusy(true); setError(""); setRoutineNotice("");
+		try {
+			const result = await app.CreateDailyRoutine({ tabId: item.sourceId, sessionRef: item.sessionRef, requestId: stableRequest });
+			if (result.status !== "accepted" && result.status !== "already_applied") throw new Error(result.error || t("dailyRoutine.extractFailed"));
+			routineExtractRequests.current.delete(requestKey);
+			if (!writeDailyRoutineRequests(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY, routineExtractRequests.current)) setError(t("dailyRoutine.requestStoreCleanupFailed"));
+			setRoutineNotice(t("dailyRoutine.saved", { name: result.routine?.name || t("dailyRoutine.unnamed") }));
+			setMenuID("");
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setBusy(false);
+		}
+	};
 
   const renderItem = (item: DesktopIconItem) => {
 		const agentVM = agentIconViewModels.get(item.id);
@@ -1341,7 +1528,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			</div> : <>
 				<button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>
 				{item.kind === "workspace" && <button role="menuitem" onClick={() => openWorkspaceIconEditor(item)}>修改图标</button>}
-				{item.kind === "task" && <><button role="menuitem" onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
+				{item.kind === "task" && <><button role="menuitem" onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void createRoutine(item)}>{busy && routineExtractRequests.current.has(item.sessionRef?.sessionPath || item.sourceId) ? t("dailyRoutine.extracting") : t("dailyRoutine.make")}</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
 				{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}
 				{(item.retained || item.kind === "person") && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}
 			</>}
@@ -1546,12 +1733,13 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && active.sourceId === "delegate" && <DelegationPanel items={snapshot.delegations || []} error={snapshot.delegationError} busy={busy} onClose={() => setActiveID("")} onPick={(item) => run(active, "open_delegation", [item.id])} />}
       {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
+	  {active && active.kind === "workspace" && <DailyRoutinePanel key={active.sourceId} workspaceRoot={active.sourceId} onStartHere={() => { setQuickWorkspace(`project:${active.sourceId}`); setPopupAnchorID(active.id); setActiveID("fixed:new"); }} onClose={() => setActiveID("")} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setPopupAnchorID(active.id); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
+      {active && active.kind !== "workspace" && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button></div></>}
 
     </section>}
-    {(error || quickError || quickJobs.storageError) && <div className="desktop-icon-toast" role="alert">{error}{error && (quickError || quickJobs.storageError) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && quickJobs.storageError ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); quickJobs.clearStorageError(); }}><X /></button></div>}
+    {(error || quickError || quickJobs.storageError || routineNotice) && <div className="desktop-icon-toast" role={error || quickError || quickJobs.storageError ? "alert" : "status"}>{error}{error && (quickError || quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && (quickJobs.storageError || routineNotice) ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}{quickJobs.storageError && routineNotice ? <span aria-hidden="true">；</span> : null}{routineNotice}<button aria-label="关闭" onClick={() => { setError(""); setQuickError(""); setRoutineNotice(""); quickJobs.clearStorageError(); }}><X /></button></div>}
   </main>;
 }

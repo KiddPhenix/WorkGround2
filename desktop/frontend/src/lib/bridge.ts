@@ -329,6 +329,12 @@ export interface DesktopIconActionInput { itemId: string; noticeId?: string; rev
 export interface DesktopIconActionResult { status: "accepted" | "already_applied" | "stale" | "retryable_error" | "invalid"; error?: string; snapshot: DesktopIconSnapshot; }
 export interface DesktopIconRect { x: number; y: number; width: number; height: number; }
 export interface CreateBlankSessionInput { scope: string; workspaceRoot: string; requestId: string; }
+export interface DailyRoutine {
+  id: string; workspaceRoot?: string; name: string; prompt: string; goal: string;
+  successSteps?: string[]; failureLessons?: string[]; sourceSessionPath?: string;
+  sourceRevision: string; createdAt: number; updatedAt: number;
+}
+export interface DailyRoutineResult { status: "accepted" | "already_applied" | "pending" | "retryable_error" | "invalid"; error?: string; routine?: DailyRoutine; tabId?: string; }
 // DesktopIconDiagnosticsInput is one typed diagnostics record appended by the
 // icon widget for an idle-hover trace. It carries measurements and stable
 // widget markers only — never task content, prompts, icon titles or user
@@ -403,6 +409,11 @@ export interface AppBindings extends WailsWorkBindings {
 	GetDesktopWorkspaceSlots(): Promise<number>;
 	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
 	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
+	CreateDailyRoutine(input: { tabId?: string; sessionRef?: DesktopIconTaskRef; requestId: string }): Promise<DailyRoutineResult>;
+	ListDailyRoutines(workspaceRoot: string): Promise<DailyRoutine[]>;
+	RunDailyRoutine(input: { workspaceRoot: string; routineId: string; requestId: string }): Promise<DailyRoutineResult>;
+	RenameDailyRoutine(input: { workspaceRoot: string; routineId: string; name: string }): Promise<DailyRoutineResult>;
+	DeleteDailyRoutine(input: { workspaceRoot: string; routineId: string }): Promise<DailyRoutineResult>;
 	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
 	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
 	WriteDesktopIconDiagnostics(input: DesktopIconDiagnosticsInput): Promise<void>;
@@ -2660,6 +2671,15 @@ function makeMockApp(): AppBindings {
 			widgetRevision += 1;
 			return { status: "accepted", snapshot: mockDesktopIconSnapshot() };
 		},
+		async CreateDailyRoutine(input) {
+			return { status: "accepted", routine: { id: `mock-${input.requestId}`, workspaceRoot: "~/projects/WorkGround2", name: "启动测试", goal: "运行测试", prompt: "启动一轮测试", sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() } };
+		},
+		async ListDailyRoutines(workspaceRoot) {
+			return [{ id: "mock-routine", workspaceRoot, name: "启动测试", goal: "运行一轮测试", prompt: "启动一轮测试", successSteps: ["运行定向测试"], failureLessons: ["失败时保留日志并重试"], sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() }];
+		},
+		async RunDailyRoutine(input) { return { status: "accepted", tabId: `daily-${input.routineId}` }; },
+		async RenameDailyRoutine(input) { return { status: "accepted", routine: { id: input.routineId, workspaceRoot: input.workspaceRoot, name: input.name, goal: "运行一轮测试", prompt: "启动一轮测试", sourceRevision: "mock", createdAt: Date.now(), updatedAt: Date.now() } }; },
+		async DeleteDailyRoutine() { return { status: "accepted" }; },
 		async SetDesktopIconHitRegions() {},
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
