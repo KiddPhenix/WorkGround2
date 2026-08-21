@@ -1527,7 +1527,7 @@ func TestCollaborationRestartRecoveryKeepsSecretReferenceAndCursor(t *testing.T)
 }
 
 func TestCollaborationV2SessionIDRepairPreservesCachedRoom(t *testing.T) {
-	// A v2 persist file (keyed by hash of sessionID) with a mismatched
+	// A SessionPath-owned v2 persist file with a mismatched
 	// internal SessionID must be repaired rather than rejected, so the
 	// cached Room/Snapshot can render locally even when the network is down.
 	_, c, _ := newTestDesktopCollaboration(t)
@@ -1565,6 +1565,52 @@ func TestCollaborationV2SessionIDRepairPreservesCachedRoom(t *testing.T) {
 	}
 	if state.Status != "failed" || !state.Retryable {
 		t.Fatalf("v2 repaired state must be failed+retryable: status=%s retryable=%v lastError=%q", state.Status, state.Retryable, state.LastError)
+	}
+}
+
+func TestCollaborationRetryRepairsLateStaleSessionID(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	defer c.close()
+	persisted := collaborationPersistedState{
+		Mode: "host", Host: "127.0.0.1", Port: 39171, Room: "room-a", RoomName: "Room A",
+		MemberID: "member-a", MemberName: "Alice", AgentID: "agent-a", AgentName: "Alice Agent",
+		SessionID: "stale-runtime-id",
+		Runs:      []collaborationPersistedRun{{RunID: "run-a", SessionID: "stale-runtime-id"}},
+		Queue:     []collaborationPersistedRun{{RunID: "queued-a", SessionID: "stale-runtime-id"}},
+		Snapshot: collab.Snapshot{
+			Room:    collab.Room{ID: "room-a", Name: "Room A"},
+			Members: []collab.Member{{ID: "member-a", Name: "Alice", Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Alice Agent"}}},
+		},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(c.persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.validateAgent = func(sessionID string) error {
+		if sessionID != c.ownerSessionID {
+			return fmt.Errorf("session %q does not own this collaboration runtime", sessionID)
+		}
+		return nil
+	}
+	var opened HostCollaborationRoomInput
+	c.openHost = func(_ context.Context, input HostCollaborationRoomInput, _ collab.MemberDescriptor, _ string) (*collaborationConnection, error) {
+		opened = input
+		return testConnection(&fakeCollaborationPeer{}, "host", input.SessionID), nil
+	}
+
+	state, err := c.retry(context.Background())
+	if err != nil {
+		t.Fatalf("retry rejected a stale persisted SessionID: %v", err)
+	}
+	if opened.SessionID != c.ownerSessionID || state.SessionID != c.ownerSessionID || state.Status != "connected" {
+		t.Fatalf("retry identity did not converge: input=%q state=%+v", opened.SessionID, state)
+	}
+	repaired := c.repairPersisted(persisted)
+	if repaired.SessionID != c.ownerSessionID || repaired.Runs[0].SessionID != c.ownerSessionID || repaired.Queue[0].SessionID != c.ownerSessionID {
+		t.Fatalf("persisted Agent identities did not converge: %+v", repaired)
 	}
 }
 
