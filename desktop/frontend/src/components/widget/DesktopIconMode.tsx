@@ -561,9 +561,11 @@ function SearchPanel({ onClose, onPick }: { onClose: () => void; onPick: (item: 
 		<div className="desktop-icon-popup__search-content" role="region" aria-label="搜索结果" aria-busy={loading || opening}>
 			{error
 				? <p role="alert" className="desktop-icon-popup__error">{error}</p>
+				: loading
+					? <p role="status" className="desktop-icon-popup__empty">搜索中…</p>
 				: results.length
 					? <div className="desktop-icon-popup__results" role="listbox" aria-label="匹配结果">{results.map((item) => <button key={item.id} role="option" disabled={opening} onClick={() => { setOpening(true); void onPick(item).finally(() => setOpening(false)); }}><span>{item.title}</span><small>{item.subtitle || item.kind}</small></button>)}</div>
-					: !loading && <p role="status" className="desktop-icon-popup__empty">没有匹配结果</p>}
+					: <p role="status" className="desktop-icon-popup__empty">没有匹配结果</p>}
 		</div>
 	</div>;
 }
