@@ -986,6 +986,8 @@ func (c *desktopCollaboration) consumeStreamEvent(ctx context.Context, conn *col
 }
 
 func (c *desktopCollaboration) syncConnection(ctx context.Context, conn *collaborationConnection) {
+	conn.syncMu.Lock()
+	defer conn.syncMu.Unlock()
 	if !c.drainOutbox(ctx, conn) {
 		return
 	}

@@ -236,11 +236,11 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 - Updated: 2026-08-20
 
 ### 图标小组件
-- Location: `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/desktopIconLayout.ts`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
-- Summary: 图标小组件的任务图标、锚点、弹层布局、搜索、通知续聊、Workspace 和 Room 管理入口位于这些位置。
-- Keywords: DesktopIconMode, task icon, anchor, popup, search, NoticeBody, Workspace, Room
+- Location: `desktop/widget_icon_mode.go`, `desktop/widget_room_pins.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/components/widget/roomsManager.ts`, `desktop/frontend/src/components/widget/roomNotifications.ts`, `internal/unread`, `desktop/frontend/src/components/widget/desktop-icon-mode.css`
+- Summary: 图标小组件集中管理任务、Workspace 和 Room 图标及弹层；Room 子链路负责独立 Pin、自定义图标、常驻/未读强显、数字或逐条提醒与 @ 分类。
+- Keywords: DesktopIconMode, task icon, Workspace, Room, RoomsManager, roomNotifications, room pins, unread
 - Source: verified-by-search
-- Updated: 2026-08-20
+- Updated: 2026-08-21
 
 ### 图标小组件快速新建
 - Location: `desktop/widget_conversation.go`, `desktop/frontend/src/components/widget/widgetQuickStartJobs.ts`, `desktop/frontend/src/components/widget/quickStartPreferences.ts`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`

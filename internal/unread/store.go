@@ -31,15 +31,28 @@ const (
 	PriorityHigh   Priority = "high"
 )
 
+// ItemAttention preserves why one unread item needs distinct presentation.
+// It is intentionally narrower than Priority: other action-needed Room items
+// remain high priority without being presented as an explicit @mention.
+type ItemAttention string
+
+const (
+	AttentionNone          ItemAttention = ""
+	AttentionMentionMember ItemAttention = "mention_member"
+	AttentionMentionAgent  ItemAttention = "mention_agent"
+	AttentionMentionBoth   ItemAttention = "mention_both"
+)
+
 // Item is the minimum durable identity needed to count and navigate an unread
 // event. Full payloads intentionally remain in their authoritative source.
 type Item struct {
-	ID         string    `json:"id"`
-	Sequence   uint64    `json:"sequence"`
-	Kind       string    `json:"kind"`
-	Priority   Priority  `json:"priority"`
-	AuthorID   string    `json:"authorId,omitempty"`
-	OccurredAt time.Time `json:"occurredAt" ts_type:"string"`
+	ID         string        `json:"id"`
+	Sequence   uint64        `json:"sequence"`
+	Kind       string        `json:"kind"`
+	Priority   Priority      `json:"priority"`
+	Attention  ItemAttention `json:"attention,omitempty"`
+	AuthorID   string        `json:"authorId,omitempty"`
+	OccurredAt time.Time     `json:"occurredAt" ts_type:"string"`
 }
 
 // Conversation is a read-only projection returned to callers.
@@ -156,7 +169,7 @@ func validateState(state *diskState) error {
 		}
 		var previous uint64
 		for i, item := range conversation.Pending {
-			if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Kind) == "" || (item.Priority != PriorityNormal && item.Priority != PriorityHigh) || item.Sequence == 0 || item.Sequence > conversation.LatestSequence || (i > 0 && item.Sequence <= previous) {
+			if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Kind) == "" || (item.Priority != PriorityNormal && item.Priority != PriorityHigh) || !item.Attention.valid() || item.Sequence == 0 || item.Sequence > conversation.LatestSequence || (i > 0 && item.Sequence <= previous) {
 				return fmt.Errorf("unread conversation %q has invalid pending sequence", key)
 			}
 			if item.Sequence <= conversation.ReadSequence {
@@ -166,6 +179,15 @@ func validateState(state *diskState) error {
 		}
 	}
 	return nil
+}
+
+func (a ItemAttention) valid() bool {
+	switch a {
+	case AttentionNone, AttentionMentionMember, AttentionMentionAgent, AttentionMentionBoth:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Source) valid() bool {

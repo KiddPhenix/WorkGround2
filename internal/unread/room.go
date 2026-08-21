@@ -132,7 +132,17 @@ func roomUnreadItem(value collab.TimelineItem, localMemberID, localAgentID strin
 			return Item{}, false
 		}
 		item.AuthorID, item.OccurredAt = value.Chat.AuthorID, value.Chat.CreatedAt
-		if contains(value.Chat.MentionMemberIDs, localMemberID) || contains(value.Chat.MentionAgentIDs, localAgentID) {
+		memberMentioned := contains(value.Chat.MentionMemberIDs, localMemberID)
+		agentMentioned := contains(value.Chat.MentionAgentIDs, localAgentID)
+		switch {
+		case memberMentioned && agentMentioned:
+			item.Attention = AttentionMentionBoth
+		case memberMentioned:
+			item.Attention = AttentionMentionMember
+		case agentMentioned:
+			item.Attention = AttentionMentionAgent
+		}
+		if item.Attention != AttentionNone {
 			item.Priority = PriorityHigh
 		}
 	case collab.TimelineContribution:

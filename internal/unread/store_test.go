@@ -242,6 +242,67 @@ func TestRoomUsesBaselineAndProjectsOnlyRemoteReadableItems(t *testing.T) {
 	}
 }
 
+func TestRoomMentionAttentionPersistsAcrossOutOfOrderAndDuplicateSnapshots(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unread.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := collab.Snapshot{Room: collab.Room{ID: "room", LatestSequence: 10}, LatestSequence: 10}
+	input := RoomInput{ConversationKey: "mentions", LocalMemberID: "self", LocalAgentID: "agent-self", Snapshot: base}
+	if _, err := store.ObserveRoom(input); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 8, 21, 7, 0, 0, 0, time.UTC)
+	next := base
+	next.LatestSequence, next.Room.LatestSequence = 14, 14
+	// Deliberately reverse the authoritative timeline order. ObserveRoom must
+	// sort by sequence and persist each exact mention target once.
+	next.Timeline = []collab.TimelineItem{
+		{ID: "both", Sequence: 14, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "both", AuthorID: "other", MentionMemberIDs: []string{"self"}, MentionAgentIDs: []string{"agent-self"}, CreatedAt: at.Add(4 * time.Minute)}},
+		{ID: "high", Sequence: 13, Type: collab.TimelineContribution, Contribution: &collab.Contribution{ID: "high", AuthorID: "other", ActionNeeded: true, CreatedAt: at.Add(3 * time.Minute)}},
+		{ID: "agent", Sequence: 12, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "agent", AuthorID: "other", MentionAgentIDs: []string{"agent-self"}, CreatedAt: at.Add(2 * time.Minute)}},
+		{ID: "member", Sequence: 11, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "member", AuthorID: "other", MentionMemberIDs: []string{"self"}, CreatedAt: at.Add(time.Minute)}},
+	}
+	input.Snapshot = next
+	conversation, err := store.ObserveRoom(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.UnreadCount != 4 || conversation.HighPriorityCount != 4 {
+		t.Fatalf("mention projection = %+v", conversation)
+	}
+	want := []ItemAttention{AttentionMentionMember, AttentionMentionAgent, AttentionNone, AttentionMentionBoth}
+	for i, attention := range want {
+		if conversation.Items[i].Sequence != uint64(11+i) || conversation.Items[i].Attention != attention {
+			t.Fatalf("item %d = %+v, want sequence %d attention %q", i, conversation.Items[i], 11+i, attention)
+		}
+	}
+	beforeRevision := store.Summary().Revision
+	duplicate, err := store.ObserveRoom(input)
+	if err != nil || duplicate.UnreadCount != 4 || store.Summary().Revision != beforeRevision {
+		t.Fatalf("duplicate observation = %+v revision=%d err=%v", duplicate, store.Summary().Revision, err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := reopened.Summary().Conversations[0]
+	for i, attention := range want {
+		if persisted.Items[i].Attention != attention {
+			t.Fatalf("persisted item %d = %+v, want attention %q", i, persisted.Items[i], attention)
+		}
+	}
+	staleInput := input
+	staleInput.Snapshot = base
+	stale, err := reopened.ObserveRoom(staleInput)
+	if err != nil || stale.UnreadCount != 4 || stale.LatestSequence != 14 {
+		t.Fatalf("stale observation = %+v err=%v", stale, err)
+	}
+}
+
 func TestRoomRevisionUpdatesOnePendingItem(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "unread.json"))
 	if err != nil {

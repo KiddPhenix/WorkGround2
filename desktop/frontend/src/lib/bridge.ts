@@ -28,6 +28,7 @@ import type {
 } from "../collab/types";
 
 import { addBreadcrumb } from "./breadcrumbs";
+import { projectIconKey } from "./projectIcons";
 import { t } from "./i18n";
 import { providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
@@ -292,6 +293,7 @@ export interface DesktopIconNotice {
   id: string; revision: string; kind: "message" | "needs_input" | "needs_confirm" | "completed" | "failed";
   priority: number; title: string; body: string; createdAt: number; tabId?: string; conversation?: string;
   readSequence?: number; interactionId?: string; questionId?: string; options: WidgetOption[]; retryable?: boolean;
+  attention?: "mention_member" | "mention_agent" | "mention_both";
   summaryStatus?: "ready" | "failed";
 }
 
@@ -407,6 +409,8 @@ export interface AppBindings extends WailsWorkBindings {
 	ListWidgetWorkspaces(): Promise<WidgetWorkspaceOption[]>;
 	GetDesktopIconSnapshot(): Promise<DesktopIconSnapshot>;
 	GetDesktopWorkspaceSlots(): Promise<number>;
+	GetDesktopRoomPins(): Promise<string[]>;
+	GetDesktopRoomIcons(): Promise<Record<string, string>>;
 	DesktopIconSearch(query: string): Promise<DesktopIconSearchResult>;
 	ApplyDesktopIconAction(input: DesktopIconActionInput): Promise<DesktopIconActionResult>;
 	CreateDailyRoutine(input: { tabId?: string; sessionRef?: DesktopIconTaskRef; requestId: string }): Promise<DailyRoutineResult>;
@@ -416,6 +420,8 @@ export interface AppBindings extends WailsWorkBindings {
 	DeleteDailyRoutine(input: { workspaceRoot: string; routineId: string }): Promise<DailyRoutineResult>;
 	SetDesktopIconHitRegions(rects: DesktopIconRect[]): Promise<void>;
 	SetDesktopWorkspaceSlots(slots: number): Promise<void>;
+	SetDesktopRoomPinned(topicID: string, pinned: boolean): Promise<void>;
+	SetDesktopRoomIcon(topicID: string, icon: string): Promise<void>;
 	WriteDesktopIconDiagnostics(input: DesktopIconDiagnosticsInput): Promise<void>;
 	DesktopIconDiagnosticsPath(): Promise<string>;
 	RefreshWidgetWindowRegion(): Promise<void>;
@@ -1294,6 +1300,8 @@ function makeMockApp(): AppBindings {
   const desktopWidgetSkin = mockWidgetSkin();
 	let desktopWidgetStyle = mockWidgetStyle();
 	let desktopWorkspaceSlots = 4;
+	let desktopRoomPins: string[] = [];
+	let desktopRoomIcons: Record<string, string> = {};
   let widgetMode = widgetScenario.startsWith("widget-");
   let widgetRevision = 1;
 	let widgetConversationStarted = false;
@@ -1440,7 +1448,7 @@ function makeMockApp(): AppBindings {
 		unreadRevision: widgetRevision,
 		delegations: [],
 		items: [
-			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 3, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, options: [] }] },
+			{ id: "conversation:room-design", kind: "room", sourceId: "room-design", title: "产品 Room", status: "unread", unreadCount: 2, position: { row: "top", zone: "conversation", order: 0 }, revision: `room-${widgetRevision}`, notifications: [{ id: "room-msg", revision: "2", kind: "message", priority: 9, title: "小组件讨论", body: "收到一条新消息", createdAt: t0, conversation: "room-design", readSequence: 2, attention: "mention_agent", options: [] }] },
 			{ id: "task:tab-wg2", kind: "task", sourceId: "tab-wg2", title: "桌面图标模式", subtitle: "WorkGround2", status: widgetScenario === "widget-running" ? "running" : "thinking", unreadCount: 0, runtimeStatus: { phase: widgetScenario === "widget-running" ? "Running" : "Thinking", summary: widgetScenario === "widget-running" ? "read_file 执行中" : "正在核对真实状态投影", elapsedMs: 84_000, updatedAt: t0 }, position: { row: "bottom", zone: "running", order: 0 }, revision: `task-${widgetRevision}`, notifications: [] },
 			...(desktopWorkspaceSlots > 0 ? [{ id: "workspace:~/projects/WorkGround2", kind: "workspace", sourceId: "~/projects/WorkGround2", title: "WorkGround2", status: "idle", unreadCount: 0, position: { row: "bottom", zone: "workspace", order: 0 }, revision: "workspace", notifications: [] } satisfies DesktopIconItem] : []),
 			...(["new", "delegate", "search"] as const).map((id, order) => ({ id: `fixed:${id}`, kind: "fixed" as const, sourceId: id, title: { new: "新建", delegate: "委托", search: "搜索" }[id], icon: id, status: "idle" as const, unreadCount: 0, position: { row: "bottom" as const, zone: "fixed" as const, order }, revision: `fixed-${id}`, notifications: [] })),
@@ -2656,6 +2664,8 @@ function makeMockApp(): AppBindings {
 		},
 		async GetDesktopIconSnapshot() { return mockDesktopIconSnapshot(); },
 		async GetDesktopWorkspaceSlots() { return desktopWorkspaceSlots; },
+		async GetDesktopRoomPins() { return [...desktopRoomPins]; },
+		async GetDesktopRoomIcons() { return { ...desktopRoomIcons }; },
 		async DesktopIconSearch(query) {
 			const needle = query.trim().toLowerCase();
 			const items: DesktopIconSearchItem[] = [
@@ -2684,6 +2694,34 @@ function makeMockApp(): AppBindings {
 		async SetDesktopWorkspaceSlots(slots: number) {
 			if (!Number.isInteger(slots) || slots < 0 || slots > 4) throw new Error("desktop workspace slots must be between 0 and 4");
 			desktopWorkspaceSlots = slots;
+			widgetRevision += 1;
+		},
+		async SetDesktopRoomPinned(topicID: string, pinned: boolean) {
+			const id = topicID.trim();
+			if (!id) throw new Error("topicID is required");
+			const current = desktopRoomPins.includes(id);
+			if (current === pinned) return;
+			if (pinned) {
+				if (desktopRoomPins.length >= 7) throw new Error("desktop Room pin limit reached (7)");
+				desktopRoomPins = [id, ...desktopRoomPins];
+			} else {
+				desktopRoomPins = desktopRoomPins.filter((candidate) => candidate !== id);
+			}
+			widgetRevision += 1;
+		},
+		async SetDesktopRoomIcon(topicID: string, icon: string) {
+			const id = topicID.trim();
+			if (!id) throw new Error("topicID is required");
+			const raw = icon.trim().toLowerCase();
+			const normalized = projectIconKey(raw);
+			if (raw && !normalized) throw new Error(`unsupported Room icon ${icon}`);
+			if (desktopRoomIcons[id] === normalized || (!normalized && !(id in desktopRoomIcons))) return;
+			if (normalized) desktopRoomIcons = { ...desktopRoomIcons, [id]: normalized };
+			else {
+				const next = { ...desktopRoomIcons };
+				delete next[id];
+				desktopRoomIcons = next;
+			}
 			widgetRevision += 1;
 		},
 		async WriteDesktopIconDiagnostics() {},
