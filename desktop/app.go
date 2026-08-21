@@ -279,6 +279,14 @@ type App struct {
 	completionSummaryGen      completionSummaryGenerator
 	completionSummaryInFlight map[string]*completionSummaryCall
 
+	// dailyRoutineMu serializes the atomic workspace-owned routine store. The
+	// operation registry only coalesces the same request; unrelated workspaces
+	// remain concurrent while a provider or Controller call is in flight.
+	dailyRoutineMu   sync.Mutex
+	dailyRoutineOpMu sync.Mutex
+	dailyRoutineOps  map[string]*dailyRoutineOpLock
+	dailyRoutineGen  dailyRoutineGenerator
+
 	// widgetSessionNameGen is the test seam for QuickStart's one-shot session
 	// naming call. Nil uses the configured provider selected for the new turn.
 	widgetSessionNameGen widgetSessionNameGenerator

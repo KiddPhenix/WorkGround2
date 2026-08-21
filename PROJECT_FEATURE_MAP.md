@@ -11,6 +11,13 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 
 ## Entries
 
+### 日常 / Daily Routine
+- Location: `desktop/widget_icon_mode.go`, `desktop/widget_conversation.go`, `desktop/tabs.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/lib/bridge.ts`
+- Summary: 状态 `in_progress`；Session 图标菜单、Workspace 图标菜单和普通会话幂等创建/发送是日常模板功能的已验证接入点。
+- Keywords: 日常, Daily Routine, I will do it again, DesktopIconMode, CreateBlankSession, SubmitToTab
+- Source: verified-by-search
+- Updated: 2026-08-21
+
 ### AddOn 框架与插件包
 - Location: `internal/pluginpkg`, `internal/installsource`, `internal/config/plugin_packages.go`, `desktop/plugin_packages_app.go`, `docs/addons`, `pkg/drawaddon`
 - Summary: AddOn 的安装来源、包清单、启用状态、运行时能力合并、桌面管理和宿主接口集中在这些位置。
