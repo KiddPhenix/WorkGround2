@@ -1504,9 +1504,8 @@ func TestCollaborationRecoveryBranchUsesParentRoomPersistenceKey(t *testing.T) {
 }
 
 func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
-	supportDir := t.TempDir()
-	t.Setenv("WorkGround2_STATE_HOME", supportDir)
-	stateDir := filepath.Join(supportDir, "desktop-collaboration-v2")
+	isolateDesktopUserDirs(t)
+	stateDir := filepath.Join(os.Getenv("WorkGround2_STATE_HOME"), "desktop-collaboration-v2")
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1518,12 +1517,21 @@ func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := agent.SaveBranchMeta(parent, agent.BranchMeta{
+		ID: string(agent.BranchID(parent)), Scope: "global", TopicID: "topic-recovery-room",
+		TopicTitle: "Recovery Room", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := agent.SaveBranchMeta(recovery, agent.BranchMeta{
 		ID:            string(agent.BranchID(recovery)),
 		ParentID:      string(agent.BranchID(parent)),
 		Recovered:     true,
 		RecoveryDepth: 1,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTopicIndexed("global", "", "topic-recovery-room", "Recovery Room", topicTitleSourceAuto); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1565,13 +1573,13 @@ func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
+	app.restoreCollaborationRuntimesWithRegistry(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
 		starts++
 		startedRuntime = runtime
 		if restoredSessionID != sessionID {
 			t.Fatalf("restored SessionID = %q, want %q", restoredSessionID, sessionID)
 		}
-	}, collaborationLiveRooms{sessionRuntimeKey(parent): struct{}{}})
+	}, loadProjectsFile())
 	if starts != 1 {
 		t.Fatalf("startup restore starts = %d, want exactly 1 for duplicate owner caches", starts)
 	}
@@ -1591,9 +1599,8 @@ func TestRestoreCollaborationRuntimesDeduplicatesRecoveryCaches(t *testing.T) {
 }
 
 func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t *testing.T) {
-	supportDir := t.TempDir()
-	t.Setenv("WorkGround2_STATE_HOME", supportDir)
-	stateDir := filepath.Join(supportDir, "desktop-collaboration-v2")
+	supportDir := isolateDesktopUserDirs(t)
+	stateDir := filepath.Join(os.Getenv("WorkGround2_STATE_HOME"), "desktop-collaboration-v2")
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1604,10 +1611,14 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	workspaceRoot := filepath.Dir(filepath.Dir(sessionPath))
 	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
-		ID: "off-tab-room", Scope: "project", WorkspaceRoot: filepath.Dir(filepath.Dir(sessionPath)),
+		ID: "off-tab-room", Scope: "project", WorkspaceRoot: workspaceRoot,
 		TopicID: "topic-off-tab", TopicTitle: "Off-tab Room", SessionKind: agent.SessionKindCollaboration,
 	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTopicIndexed("project", workspaceRoot, "topic-off-tab", "Off-tab Room", topicTitleSourceAuto); err != nil {
 		t.Fatal(err)
 	}
 	sessionID := "session-off-tab-room"
@@ -1666,12 +1677,12 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
+	app.restoreCollaborationRuntimesWithRegistry(entries, stateDir, func(runtime *desktopCollaboration, restoredSessionID string) {
 		starts++
 		if restoredSessionID != sessionID {
 			t.Fatalf("restored SessionID = %q, want %q", restoredSessionID, sessionID)
 		}
-	}, collaborationLiveRooms{sessionRuntimeKey(sessionPath): struct{}{}})
+	}, loadProjectsFile())
 	defer app.closeCollaborations()
 
 	app.collaborationMu.Lock()
@@ -1703,7 +1714,7 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	}
 }
 
-func TestCollaborationRuntimeReconcileRestoresLateHostRoom(t *testing.T) {
+func TestCollaborationRuntimeRestoreActivatesHostWithoutProjectTreeProjection(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	root := t.TempDir()
 	if err := addProject(root, ""); err != nil {
@@ -1735,7 +1746,7 @@ func TestCollaborationRuntimeReconcileRestoresLateHostRoom(t *testing.T) {
 	persisted := collaborationPersistedState{
 		Mode: "host", Host: "127.0.0.1", Room: "room-late-host", RoomName: "Late Host",
 		MemberID: "host-member", MemberName: "Host", AgentID: "host-agent", AgentName: "Host Agent",
-		SessionID: sessionID, SessionPath: sessionPath, LANEnabled: true,
+		SessionID: sessionID, SessionPath: sessionPath, LANEnabled: true, ReachabilityVersion: 1, ProtocolVersion: collaborationProtocolV2,
 		Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-late-host", Name: "Late Host"}},
 	}
 	data, err := json.Marshal(persisted)
@@ -1748,34 +1759,11 @@ func TestCollaborationRuntimeReconcileRestoresLateHostRoom(t *testing.T) {
 	}
 
 	app := NewApp()
-	app.sessionDirsOverride = []string{sessionDir}
+	app.sessionDirsOverride = []string{filepath.Join(root, "project-tree-cache-not-ready")}
 	defer app.closeCollaborations()
-	entries, err := os.ReadDir(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Simulate the bounded cold-start project scan returning before this
-	// Session directory completed. The first authority snapshot cannot restore
-	// the Room; a later cache-completion request must do so without UI activity.
-	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, app.startCollaborationRestore, collaborationLiveRooms{})
-	app.collaborationMu.Lock()
-	missing := app.collaborations[sessionID]
-	app.collaborationMu.Unlock()
-	if missing != nil {
-		t.Fatal("Host Room restored from an empty authority snapshot")
-	}
-	app.collaborationReconcileMu.Lock()
-	app.collaborationReconcileEnabled = true
-	app.collaborationReconcileMu.Unlock()
-	projectSessionCache.invalidate()
-	if sessions, listErr := agent.ListSessions(sessionDir); listErr != nil || len(sessions) == 0 {
-		t.Fatalf("late Room session listing = %+v, %v", sessions, listErr)
-	}
-	tree := app.ListProjectTree()
-	if !desktopCollaborationLiveRooms(tree).contains(sessionPath) {
-		t.Fatalf("late Room is missing from authoritative project tree: %+v", tree)
-	}
-	app.scheduleCollaborationRuntimeReconcile()
+	// The project-tree directory is deliberately unavailable. Durable Session
+	// metadata plus the Topic registry must be sufficient to activate the Host.
+	app.restoreCollaborationRuntimesWith(app.startCollaborationRestore)
 
 	var runtime *desktopCollaboration
 	deadline := time.Now().Add(5 * time.Second)
@@ -1796,7 +1784,15 @@ func TestCollaborationRuntimeReconcileRestoresLateHostRoom(t *testing.T) {
 			return runtime.snapshot()
 		}())
 	}
+	probe, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", runtime.snapshot().Port), time.Second)
+	if err != nil {
+		t.Fatalf("restored Host listener is unavailable: %v", err)
+	}
+	_ = probe.Close()
 	first := runtime
+	app.collaborationReconcileMu.Lock()
+	app.collaborationReconcileEnabled = true
+	app.collaborationReconcileMu.Unlock()
 	app.scheduleCollaborationRuntimeReconcile()
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
