@@ -676,7 +676,7 @@ func newDesktopCollaborationForSession(app *App, sessionID, sessionPath, session
 	c.setSecret = func(key, value string) error { _, err := config.SetCredential(key, value); return err }
 	c.getSecret = func(key string) string { return config.ResolveCredential(key).Value }
 	c.removeSecret = config.RemoveCredential
-	c.validateAgent = c.validateLocalController
+	c.validateAgent = c.validateCollaborationIdentity
 	c.agentReady = app.collaborationAgentReady
 	c.waitAgentReady = app.waitCollaborationAgentReady
 	c.prepareAgentInput = app.prepareCollaborationAgentInput
@@ -923,6 +923,89 @@ func (a *App) closeCollaborationRuntimesForSessionPaths(sessionPaths []string) {
 // Errors are recorded in the runtime state and surfaced to the frontend when
 // the user eventually opens that Room tab.
 func (a *App) restoreCollaborationRuntimes() {
+	available, err := collaborationPersistedStatesAvailable()
+	if err != nil {
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "collaboration restore: inspect state dir: %v\n", err)
+		}
+		return
+	}
+	if !available {
+		return
+	}
+	a.collaborationReconcileMu.Lock()
+	a.collaborationReconcileEnabled = true
+	a.collaborationReconcileMu.Unlock()
+	a.reconcileCollaborationRuntimes()
+}
+
+func collaborationPersistedStatesAvailable() (bool, error) {
+	root := strings.TrimSpace(config.MemoryUserDir())
+	if root == "" {
+		return false, nil
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "desktop-collaboration-v2"))
+	if err != nil {
+		return false, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// scheduleCollaborationRuntimeReconcile coalesces project-tree changes and
+// late session-directory cache fills. A cold ListProjectTree call may return a
+// partial tree after its bounded timeout; the successful background load asks
+// for another authority scan so a Host Room cannot remain dormant until its UI
+// tab is opened. The pending bit prevents a completion that arrives during an
+// active scan from being lost.
+func (a *App) scheduleCollaborationRuntimeReconcile() {
+	if a == nil {
+		return
+	}
+	a.collaborationReconcileMu.Lock()
+	if !a.collaborationReconcileEnabled {
+		a.collaborationReconcileMu.Unlock()
+		return
+	}
+	a.collaborationReconcilePending = true
+	if a.collaborationReconcileRunning {
+		a.collaborationReconcileMu.Unlock()
+		return
+	}
+	a.collaborationReconcileRunning = true
+	a.collaborationReconcileMu.Unlock()
+
+	go a.collaborationRuntimeReconcileLoop()
+}
+
+func (a *App) collaborationRuntimeReconcileLoop() {
+	for {
+		a.collaborationReconcileMu.Lock()
+		a.collaborationReconcilePending = false
+		a.collaborationReconcileMu.Unlock()
+
+		a.reconcileCollaborationRuntimes()
+
+		a.collaborationReconcileMu.Lock()
+		if !a.collaborationReconcilePending {
+			a.collaborationReconcileRunning = false
+			a.collaborationReconcileMu.Unlock()
+			return
+		}
+		a.collaborationReconcileMu.Unlock()
+	}
+}
+
+func (a *App) reconcileCollaborationRuntimes() {
+	if a == nil {
+		return
+	}
+	a.collaborationRestoreMu.Lock()
+	defer a.collaborationRestoreMu.Unlock()
 	a.restoreCollaborationRuntimesWith(a.startCollaborationRestore)
 }
 
@@ -1051,34 +1134,20 @@ func (a *App) restoreOneCollaborationWithRooms(persistPath string, start collabo
 	// Loading it again here would duplicate recovered queue entries.
 	p := runtime.repairPersisted(runtime.readPersisted())
 	if p.Mode != "" && p.Host != "" && p.Room != "" && p.SessionID != "" {
-		if tab == nil {
-			// The resident update loop performs a short, stably-jittered first
-			// transport sync. Do not start an Agent-workspace restore for a Room
-			// whose Controller is intentionally not mounted.
-			return
-		}
-		// Old builds could leave both original-path and recovery-path cache
-		// files for one logical Room. The runtime is keyed by SessionID, so
-		// only one startup reconnect may run even when the scan sees both.
+		// Restore transport residency for every authoritative Room, regardless
+		// of whether a tab or Agent Controller is mounted. Old builds could leave
+		// both original-path and recovery-path caches; scheduleRestore keeps the
+		// startup activation idempotent for that logical Room.
 		runtime.scheduleRestore(func() {
 			start(runtime, persisted.SessionID)
 		})
 	}
 }
 
-func (a *App) startCollaborationRestore(runtime *desktopCollaboration, sessionID string) {
+func (a *App) startCollaborationRestore(runtime *desktopCollaboration, _ string) {
 	go func() {
-		// A closed Room tab has no Controller to await, but its transport and
-		// unread projection must stay resident. Agent readiness is required only
-		// when that local workspace is actually mounted.
-		if a.sessionByID(sessionID) != nil {
-			readyCtx, cancel := context.WithTimeout(a.bootContext(), 2*time.Minute)
-			defer cancel()
-			if err := a.waitCollaborationAgentReady(readyCtx, sessionID); err != nil {
-				runtime.failState("failed", fmt.Errorf("restore collaboration Agent workspace: %w", err), true)
-				return
-			}
-		}
+		// Network residency is independent from Agent Controller readiness. The
+		// scheduler resolves Agent readiness only when it actually has work.
 		_, _ = runtime.retry(a.bootContext())
 	}()
 }
@@ -2780,6 +2849,30 @@ func (c *desktopCollaboration) validateLocalController(sessionID string) error {
 	}
 	_, err := c.app.collaborationAgentReady(sessionID)
 	return err
+}
+
+// validateCollaborationIdentity keeps transport activation independent from a
+// mounted Agent Controller. Foreground Host/Join still validates the live tab;
+// a resident Room restored after restart instead proves that its durable owner
+// Session is registered as collaboration metadata. Agent execution continues
+// to use collaborationAgentReady and therefore cannot run without a Controller.
+func (c *desktopCollaboration) validateCollaborationIdentity(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if c == nil || sessionID == "" || sessionID != strings.TrimSpace(c.ownerSessionID) {
+		return fmt.Errorf("session %q does not own this collaboration runtime", sessionID)
+	}
+	if c.app != nil && c.app.sessionByID(sessionID) != nil {
+		return c.validateLocalController(sessionID)
+	}
+	path := collaborationOwnerSessionPath(c.ownerSessionPath)
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil {
+		return fmt.Errorf("load collaboration Session identity: %w", err)
+	}
+	if path == "" || !ok || meta.SessionKind != agent.SessionKindCollaboration {
+		return fmt.Errorf("session %q is not a registered collaboration Session", sessionID)
+	}
+	return nil
 }
 
 func (a *App) collaborationAgentReady(sessionID string) (bool, error) {

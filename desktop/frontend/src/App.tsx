@@ -4229,6 +4229,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                   activeWorkspaceRoot={activeTab?.workspaceRoot}
                   activeTopicId={activeTab?.topicId}
                   activeSessionPath={activeTab?.sessionPath}
+                  activeContentVisible={!widgetActive}
                   imTopicSources={imTopicSources}
                   onOpenTopic={handleOpenTopic}
                   onOpenCrewSession={handleOpenCrewSession}
@@ -4528,6 +4529,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
               activeWorkspaceRoot={activeTab?.workspaceRoot}
               activeTopicId={activeTab?.topicId}
               activeSessionPath={activeTab?.sessionPath}
+              activeContentVisible={!widgetActive}
               imTopicSources={imTopicSources}
               onOpenTopic={handleOpenTopic}
               onOpenCrewSession={handleOpenCrewSession}

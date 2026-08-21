@@ -6494,6 +6494,7 @@ func tailActivityText(text string, limit int) string {
 
 func (a *App) emitProjectTreeChanged() {
 	projectSessionCache.invalidate()
+	a.scheduleCollaborationRuntimeReconcile()
 	if a.projectTreeChangedHook != nil {
 		a.projectTreeChangedHook()
 		return
@@ -7010,6 +7011,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			result.orphans = orphanWorkSessionsForDir(dir)
 			projectSessionCache.put(dir, infos, titles, cacheToken)
 			projectSessionCache.putOrphans(dir, result.orphans, cacheToken)
+			a.scheduleCollaborationRuntimeReconcile()
 			result.infos = infos
 			result.titles = titles
 			result.ok = true

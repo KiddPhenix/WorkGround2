@@ -236,10 +236,15 @@ type App struct {
 	// collaborations owns one isolated Room runtime per collaboration Session.
 	// It has its own lock so network reconnects and Wails calls never contend
 	// with tab selection; each runtime owns its connection, outbox and Agent runs.
-	collaborationMu    sync.Mutex
-	collaborations     map[string]*desktopCollaboration
-	collaborationLANMu sync.Mutex
-	collaborationLAN   *collaborationLANHost
+	collaborationMu               sync.Mutex
+	collaborations                map[string]*desktopCollaboration
+	collaborationLANMu            sync.Mutex
+	collaborationLAN              *collaborationLANHost
+	collaborationRestoreMu        sync.Mutex
+	collaborationReconcileMu      sync.Mutex
+	collaborationReconcileEnabled bool
+	collaborationReconcileRunning bool
+	collaborationReconcilePending bool
 
 	configRebuildNeeded atomic.Bool // set by deferred config saves when a turn is running
 

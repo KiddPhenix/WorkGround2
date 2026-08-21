@@ -1610,7 +1610,6 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	}); err != nil {
 		t.Fatal(err)
 	}
-
 	sessionID := "session-off-tab-room"
 	createdAt := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
 	persisted := collaborationPersistedState{
@@ -1679,7 +1678,7 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	runtime := app.collaborations[sessionID]
 	staleRuntime := app.collaborations[stale.SessionID]
 	app.collaborationMu.Unlock()
-	if starts != 0 || runtime == nil || staleRuntime != nil {
+	if starts != 1 || runtime == nil || staleRuntime != nil {
 		t.Fatalf("off-tab Room restore starts=%d live=%p stale=%p", starts, runtime, staleRuntime)
 	}
 	if runtime.ownerSessionPath != sessionRuntimeKey(sessionPath) || runtime.persistPath != persistPath {
@@ -1701,6 +1700,119 @@ func TestRestoreCollaborationRuntimesKeepsCompleteOffTabRoomResidentForUnread(t 
 	got := app.UnreadState().Summary
 	if got.TotalUnread != 1 || len(got.Conversations) != 1 || got.Conversations[0].SessionID != sessionID || got.Conversations[0].Items[0].ID != "new-off-tab" {
 		t.Fatalf("off-tab Room unread = %+v", got)
+	}
+}
+
+func TestCollaborationRuntimeReconcileRestoresLateHostRoom(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	root := t.TempDir()
+	if err := addProject(root, ""); err != nil {
+		t.Fatal(err)
+	}
+	sessionDir := desktopSessionDir(root)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := agent.NewSessionPath(sessionDir, "late-host-room")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(sessionPath, agent.BranchMeta{
+		ID: string(agent.BranchID(sessionPath)), Scope: "project", WorkspaceRoot: root,
+		TopicID: "topic-late-host", TopicTitle: "Late Host", SessionKind: agent.SessionKindCollaboration,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTopicIndexed("project", root, "topic-late-host", "Late Host", topicTitleSourceAuto); err != nil {
+		t.Fatal(err)
+	}
+
+	stateDir := filepath.Join(os.Getenv("WorkGround2_STATE_HOME"), "desktop-collaboration-v2")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "session-late-host"
+	persisted := collaborationPersistedState{
+		Mode: "host", Host: "127.0.0.1", Room: "room-late-host", RoomName: "Late Host",
+		MemberID: "host-member", MemberName: "Host", AgentID: "host-agent", AgentName: "Host Agent",
+		SessionID: sessionID, SessionPath: sessionPath, LANEnabled: true,
+		Snapshot: collab.Snapshot{Room: collab.Room{ID: "room-late-host", Name: "Late Host"}},
+	}
+	data, err := json.Marshal(persisted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistPath := filepath.Join(stateDir, collaborationSessionStateName(collaborationPersistenceKey(sessionID, sessionPath)))
+	if err := os.WriteFile(persistPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.sessionDirsOverride = []string{sessionDir}
+	defer app.closeCollaborations()
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the bounded cold-start project scan returning before this
+	// Session directory completed. The first authority snapshot cannot restore
+	// the Room; a later cache-completion request must do so without UI activity.
+	app.restoreCollaborationRuntimesWithRooms(entries, stateDir, app.startCollaborationRestore, collaborationLiveRooms{})
+	app.collaborationMu.Lock()
+	missing := app.collaborations[sessionID]
+	app.collaborationMu.Unlock()
+	if missing != nil {
+		t.Fatal("Host Room restored from an empty authority snapshot")
+	}
+	app.collaborationReconcileMu.Lock()
+	app.collaborationReconcileEnabled = true
+	app.collaborationReconcileMu.Unlock()
+	projectSessionCache.invalidate()
+	if sessions, listErr := agent.ListSessions(sessionDir); listErr != nil || len(sessions) == 0 {
+		t.Fatalf("late Room session listing = %+v, %v", sessions, listErr)
+	}
+	tree := app.ListProjectTree()
+	if !desktopCollaborationLiveRooms(tree).contains(sessionPath) {
+		t.Fatalf("late Room is missing from authoritative project tree: %+v", tree)
+	}
+	app.scheduleCollaborationRuntimeReconcile()
+
+	var runtime *desktopCollaboration
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		app.collaborationMu.Lock()
+		runtime = app.collaborations[sessionID]
+		app.collaborationMu.Unlock()
+		if runtime != nil && runtime.snapshot().Status == "connected" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if runtime == nil || runtime.snapshot().Mode != "host" || runtime.snapshot().Status != "connected" {
+		t.Fatalf("late Host Room was not activated: runtime=%p state=%+v", runtime, func() CollaborationState {
+			if runtime == nil {
+				return CollaborationState{}
+			}
+			return runtime.snapshot()
+		}())
+	}
+	first := runtime
+	app.scheduleCollaborationRuntimeReconcile()
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		app.collaborationReconcileMu.Lock()
+		running := app.collaborationReconcileRunning
+		app.collaborationReconcileMu.Unlock()
+		if !running {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	app.collaborationMu.Lock()
+	runtime = app.collaborations[sessionID]
+	app.collaborationMu.Unlock()
+	if runtime != first {
+		t.Fatalf("idempotent reconcile replaced Host runtime: first=%p next=%p", first, runtime)
 	}
 }
 
@@ -2293,6 +2405,35 @@ func TestCollaborationAutomaticUpdateRestoresPersistedClient(t *testing.T) {
 	}
 	if state := c.snapshot(); calls != 2 || state.Status != "connected" || c.conn == nil {
 		t.Fatalf("restored calls=%d state=%+v conn=%p", calls, state, c.conn)
+	}
+	c.close()
+}
+
+func TestCollaborationAutomaticUpdateRejoinsAfterHostInvalidatesSession(t *testing.T) {
+	_, c, _ := newTestDesktopCollaboration(t)
+	first := testConnection(&fakeCollaborationPeer{}, "client", "session-a")
+	if _, err := c.installConnection(first); err != nil {
+		t.Fatal(err)
+	}
+
+	c.markReconnect(first, &collab.Error{Code: collab.CodeUnauthorized, Message: "connection session expired after Host restart", Retryable: true})
+	if state := c.snapshot(); c.conn != nil || state.Status != "failed" || !state.Retryable {
+		t.Fatalf("invalidated connection was not released for recovery: conn=%p state=%+v", c.conn, state)
+	}
+
+	joins := 0
+	c.openJoin = func(_ context.Context, input JoinCollaborationRoomInput, _ collab.MemberDescriptor, resume string) (*collaborationConnection, error) {
+		joins++
+		if input.Room != first.room || input.SessionID != first.sessionID || resume != first.connectionSession {
+			t.Fatalf("Host restart recovery input=%+v resume=%q", input, resume)
+		}
+		return testConnection(&fakeCollaborationPeer{}, "client", input.SessionID), nil
+	}
+	if err := c.updateConnection(context.Background()); err != nil {
+		t.Fatalf("recover after Host restart: %v", err)
+	}
+	if state := c.snapshot(); joins != 1 || c.conn == nil || state.Status != "connected" {
+		t.Fatalf("Host restart recovery joins=%d conn=%p state=%+v", joins, c.conn, state)
 	}
 	c.close()
 }
