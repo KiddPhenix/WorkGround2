@@ -28,7 +28,7 @@ func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, firstPort, releaseFirst, err := host.register(firstInput, firstAuthority)
+	firstPort, releaseFirst, err := host.register(firstInput, firstAuthority, "session-path:a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, secondPort, releaseSecond, err := host.register(secondInput, secondAuthority)
+	secondPort, releaseSecond, err := host.register(secondInput, secondAuthority, "session-path:b")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,91 @@ func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := host.register(conflictInput, conflictAuthority); err == nil {
+	if _, _, err := host.register(conflictInput, conflictAuthority, "session-path:c"); err == nil {
 		t.Fatal("different explicit port did not report the shared-listener conflict")
+	}
+}
+
+func TestCollaborationV2LANHostUsesDurableRoomOwner(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	ctx := context.Background()
+	app := &App{}
+	host := &collaborationLANHost{}
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := host.Close(shutdown); err != nil {
+			t.Errorf("close shared LAN host: %v", err)
+		}
+	}()
+
+	input := HostCollaborationRoomInput{
+		ListenHost: "127.0.0.1", Room: "room-a", RoomName: "Room A", SessionID: "old-runtime-id",
+	}
+	authority, err := app.openCollaborationAuthority(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, releaseOld, err := host.register(input, authority, "session-path:room-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.SessionID = "new-runtime-id"
+	nextPort, releaseNew, err := host.register(input, authority, "session-path:room-owner")
+	if err != nil {
+		t.Fatalf("same durable Room owner was rejected after SessionID rotation: %v", err)
+	}
+	if port == 0 || nextPort != port {
+		t.Fatalf("ports = %d, %d", port, nextPort)
+	}
+
+	releaseOld()
+	if !host.roomActive(input.Room) {
+		t.Fatal("stale runtime release removed the replacement Room registration")
+	}
+	releaseNew()
+	if host.roomActive(input.Room) {
+		t.Fatal("latest Room registration remained active after release")
+	}
+}
+
+func TestOpenHostedRoomKeepsAuthorityWhenLANRegistrationFails(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app, runtime, _ := newTestDesktopCollaboration(t)
+	ctx := context.Background()
+	input := HostCollaborationRoomInput{
+		ListenHost: "127.0.0.1", Room: "room-a", RoomName: "Room A", SessionID: "session-a", ProtocolVersion: collaborationProtocolV2,
+	}
+	authority, err := app.openCollaborationAuthority(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := app.sharedCollaborationLAN()
+	_, release, err := host.register(input, authority, "different-room-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		release()
+		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := app.closeCollaborationLAN(shutdown); err != nil {
+			t.Errorf("close shared LAN host: %v", err)
+		}
+	}()
+
+	identity := collab.MemberDescriptor{
+		ID: "member-a", Name: "Alice", Agent: collab.AgentDescriptor{ID: "agent-a", Name: "Alice Agent", Status: collab.AgentIdle},
+	}
+	conn, err := runtime.openHostedRoom(ctx, input, identity, "")
+	if err != nil {
+		t.Fatalf("LAN registration conflict discarded the local authority: %v", err)
+	}
+	if conn.authority != authority || len(conn.routes) != 1 || conn.routes[0].Status != "failed" {
+		t.Fatalf("unexpected fallback connection: authority=%p routes=%+v", conn.authority, conn.routes)
+	}
+	if err := conn.close(ctx, false); err != nil {
+		t.Fatal(err)
 	}
 }
 

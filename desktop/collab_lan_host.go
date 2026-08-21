@@ -55,19 +55,19 @@ func (a *App) closeCollaborationLAN(ctx context.Context) error {
 	return host.Close(ctx)
 }
 
-func (h *collaborationLANHost) register(input HostCollaborationRoomInput, authority *collaborationAuthority) (*collaborationAuthority, int, func(), error) {
+func (h *collaborationLANHost) register(input HostCollaborationRoomInput, authority *collaborationAuthority, owner string) (int, func(), error) {
 	room := strings.TrimSpace(input.Room)
-	owner := strings.TrimSpace(input.SessionID)
+	owner = strings.TrimSpace(owner)
 	if room == "" || owner == "" {
-		return nil, 0, nil, fmt.Errorf("room and sessionId are required")
+		return 0, nil, fmt.Errorf("room and owner are required")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.ensureStartedLocked(input.ListenHost, input.Port, authority); err != nil {
-		return nil, 0, nil, err
+		return 0, nil, err
 	}
 	if current, ok := h.rooms[room]; ok && current.owner != owner {
-		return nil, 0, nil, fmt.Errorf("Room %q is already active in another Session", room)
+		return 0, nil, fmt.Errorf("Room %q is already active in another Session", room)
 	}
 	h.nextGen++
 	registration := collaborationLANRoom{owner: owner, generation: h.nextGen}
@@ -82,7 +82,7 @@ func (h *collaborationLANHost) register(input HostCollaborationRoomInput, author
 			h.mu.Unlock()
 		})
 	}
-	return authority, h.port, release, nil
+	return h.port, release, nil
 }
 
 func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort int, authority *collaborationAuthority) error {

@@ -62,7 +62,8 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		return nil, err
 	}
 	if lanEnabled && protocolVersion == collaborationProtocolV2 {
-		authority, actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(input, authority)
+		owner := collaborationPersistenceKey(c.ownerSessionID, c.ownerSessionPath)
+		actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(input, authority, owner)
 		if err != nil {
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
