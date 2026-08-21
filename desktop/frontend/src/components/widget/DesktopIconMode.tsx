@@ -151,11 +151,13 @@ function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceR
 			if (!validResponse(token, root)) return;
 			if (result.status !== "accepted" && result.status !== "already_applied" && result.status !== "pending") throw new Error(result.error || t("dailyRoutine.runFailed"));
 			if (!result.tabId) throw new Error(t("dailyRoutine.missingSession"));
-			await app.ExitWidgetMode(result.tabId);
-			// pending means the Controller accepted the turn but durable history
-			// confirmation has not arrived. Keep the request ledger so the next
-			// click resumes the same receipt and never submits a second turn.
-			if (result.status === "pending") return;
+			// Settle the request ledger BEFORE the window switch can unmount this
+			// renderer. accepted and already_applied are terminal, and pending
+			// still means the Controller acknowledged the turn and the Session
+			// exists — the run is visible, so the next explicit click must start
+			// a fresh requestId and a new Session. A lost response never reaches
+			// this point, so its ledger entry survives and a retry resumes the
+			// same receipt instead of submitting a second turn.
 			const nextRequests = new Map(runRequests.current);
 			nextRequests.delete(requestKey);
 			if (!writeDailyRoutineRequests(DAILY_ROUTINE_RUN_REQUESTS_KEY, nextRequests)) {
@@ -163,6 +165,18 @@ function DailyRoutinePanel({ workspaceRoot, onStartHere, onClose }: { workspaceR
 				return;
 			}
 			runRequests.current = nextRequests;
+			try {
+				await app.ExitWidgetMode(result.tabId);
+			} catch (exitCause) {
+				// The Session already exists even when the window switch fails.
+				// Restore the ledger so the next click resumes the same receipt
+				// (reopen, not re-run) instead of submitting a duplicate Session.
+				runRequests.current.set(requestKey, stableRequest);
+				if (!writeDailyRoutineRequests(DAILY_ROUTINE_RUN_REQUESTS_KEY, runRequests.current)) {
+					throw new Error(`${exitCause instanceof Error ? exitCause.message : String(exitCause)}；${t("dailyRoutine.requestStoreFailed")}`);
+				}
+				throw exitCause;
+			}
 		} catch (cause) {
 			if (validResponse(token, root)) setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
