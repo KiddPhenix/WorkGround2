@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2181,6 +2182,120 @@ func TestDesktopIconSnapshotPollingDoesNotActivateRoom(t *testing.T) {
 	if joins != 0 || hosts != 0 {
 		t.Fatalf("snapshot polling activated Room: joins=%d hosts=%d", joins, hosts)
 	}
+}
+
+// TestDesktopIconRestoredRoomUpdateProjectsNewUnread verifies the complete
+// resident-Room fallback path: after startup established an already-read
+// baseline, a low-frequency update pulls a missed event through the existing
+// connection, ObserveRoom advances the durable unread source, and the next
+// icon snapshot carries the exact message and mention classification. The
+// reconcile must never reactivate the Room with another Join.
+func TestDesktopIconRestoredRoomUpdateProjectsNewUnread(t *testing.T) {
+	sp := roomTestSession(t)
+	app := newRoomOpenTestApp(t, sp)
+	store, err := unread.Open(filepath.Join(t.TempDir(), "restored-room-unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.unreadStore = store
+
+	createdAt := time.Date(2026, 8, 21, 10, 0, 0, 0, time.UTC)
+	baseline := collab.Snapshot{
+		Room:           collab.Room{ID: "room-a", Name: "产品 Room", CreatedAt: createdAt, LatestSequence: 2},
+		LatestSequence: 2,
+		Members: []collab.Member{
+			{ID: "self", Name: "Me", Agent: collab.AgentDescriptor{ID: "self-agent", Name: "My Agent"}},
+			{ID: "alice", Name: "Alice", Agent: collab.AgentDescriptor{ID: "alice-agent", Name: "Alice Agent"}},
+		},
+	}
+	message := collab.TimelineItem{
+		ID: "missed-after-startup", Sequence: 3, Type: collab.TimelineChat,
+		Chat: &collab.ChatMessage{
+			ID: "missed-after-startup", AuthorID: "alice", Text: "启动后收到的新消息",
+			MentionMemberIDs: []string{"self"}, MentionAgentIDs: []string{"self-agent"}, CreatedAt: createdAt.Add(time.Minute),
+		},
+	}
+	payload, err := json.Marshal(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &fakeCollaborationPeer{events: []collab.RoomEvent{{
+		EventID: "event-3", Room: "room-a", Sequence: 3, Type: "chat.posted", Payload: payload,
+	}}}
+	conn := &collaborationConnection{
+		peer: peer, mode: "client", hostName: "127.0.0.1", port: 39170, room: "room-a",
+		memberID: "self", agentID: "self-agent", sessionID: "room-session",
+		connectionSession: "existing-session", initialSnapshot: baseline, done: make(chan struct{}),
+	}
+	runtime := &desktopCollaboration{
+		app: app, ownerSessionID: "room-session", ownerSessionPath: sp, conn: conn,
+		state: CollaborationState{
+			Status: "connected", Mode: "client", Host: conn.hostName, Port: conn.port, Room: conn.room,
+			MemberID: conn.memberID, AgentID: conn.agentID, SessionID: conn.sessionID, Snapshot: baseline,
+		},
+		starts: map[string]collaborationStartRecord{}, runs: map[string]*collaborationAgentRun{},
+		outboxFailures: map[string]string{},
+	}
+	app.collaborations = map[string]*desktopCollaboration{"room-session": runtime}
+	persistenceKey := collaborationPersistenceKey(runtime.ownerSessionID, runtime.ownerSessionPath)
+	legacyKey := func(created time.Time) string {
+		identity := strings.Join([]string{persistenceKey, conn.room, created.UTC().Format(time.RFC3339Nano)}, "\x00")
+		return stableCollaborationID("room_unread", identity)
+	}
+	// Reproduce both identities written by the previous build: startup first
+	// observed a cached snapshot without CreatedAt, then the connected snapshot
+	// supplied CreatedAt and incorrectly established another read baseline at 3.
+	cached := baseline
+	cached.Room.CreatedAt = time.Time{}
+	if _, err := store.ObserveRoom(unread.RoomInput{
+		ConversationKey: legacyKey(time.Time{}), SessionID: "room-session", Title: "产品 Room", LocalMemberID: "self", LocalAgentID: "self-agent", Snapshot: cached,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connected := baseline
+	connected.Room.CreatedAt = createdAt
+	connected.Room.LatestSequence = 3
+	connected.LatestSequence = 3
+	connected.Timeline = []collab.TimelineItem{message}
+	if _, err := store.ObserveRoom(unread.RoomInput{
+		ConversationKey: legacyKey(createdAt), SessionID: "room-session", Title: "产品 Room", LocalMemberID: "self", LocalAgentID: "self-agent", Snapshot: connected,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.UnreadState().Summary; got.TotalUnread != 0 || len(got.Conversations) != 2 {
+		t.Fatalf("legacy Room baselines = %+v, want two read identities", got)
+	}
+	var joins int
+	runtime.openJoin = func(context.Context, JoinCollaborationRoomInput, collab.MemberDescriptor, string) (*collaborationConnection, error) {
+		joins++
+		return nil, errors.New("resident Room update must not Join")
+	}
+	if err := runtime.updateConnection(context.Background()); err != nil {
+		t.Fatalf("resident Room update: %v", err)
+	}
+	if joins != 0 {
+		t.Fatalf("resident Room update joined %d times", joins)
+	}
+
+	snapshot := app.GetDesktopIconSnapshot()
+	if got := app.UnreadState().Summary; got.TotalUnread != 1 || len(got.Conversations) != 1 || got.Conversations[0].ReadSequence != 2 || got.Conversations[0].LatestSequence != 3 {
+		t.Fatalf("canonical restored Room unread = %+v", got)
+	}
+	var room *DesktopIconItem
+	for i := range snapshot.Items {
+		if snapshot.Items[i].Kind == "room" && len(snapshot.Items[i].Notifications) > 0 && snapshot.Items[i].Notifications[0].ID == message.ID {
+			room = &snapshot.Items[i]
+			break
+		}
+	}
+	if room == nil || room.UnreadCount != 1 || room.Status != "unread" {
+		t.Fatalf("restored Room icon unread = %#v, all=%+v", room, snapshot.Items)
+	}
+	notice := room.Notifications[0]
+	if notice.Body != message.Chat.Text || notice.Title != "Alice @ 了你和你的 Agent" || notice.Attention != unread.AttentionMentionBoth {
+		t.Fatalf("restored Room notice = %+v", notice)
+	}
+	close(conn.done)
 }
 
 // TestDesktopIconRoomOpenReadRoomWithoutNotice verifies that a read Room icon

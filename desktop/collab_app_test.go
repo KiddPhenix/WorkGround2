@@ -75,6 +75,8 @@ func (s *semanticIntentSession) ClassifySemanticIntent(context.Context, string) 
 type fakeCollaborationPeer struct {
 	mu           sync.Mutex
 	snapshot     collab.Snapshot
+	events       []collab.RoomEvent
+	eventCalls   int
 	submitted    []collab.CommandEnvelope
 	failSubmit   int
 	failNonRetry int
@@ -120,8 +122,17 @@ func (p *fakeCollaborationPeer) Snapshot(context.Context) (collab.Snapshot, erro
 	return cloneCollaborationState(CollaborationState{Snapshot: p.snapshot}).Snapshot, nil
 }
 
-func (p *fakeCollaborationPeer) Events(context.Context, uint64) ([]collab.RoomEvent, error) {
-	return []collab.RoomEvent{}, nil
+func (p *fakeCollaborationPeer) Events(_ context.Context, after uint64) ([]collab.RoomEvent, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.eventCalls++
+	out := make([]collab.RoomEvent, 0, len(p.events))
+	for _, value := range p.events {
+		if value.Sequence > after {
+			out = append(out, value)
+		}
+	}
+	return out, nil
 }
 
 func (p *fakeCollaborationPeer) Stream(ctx context.Context, _ uint64, _ func(collab.RoomEvent) error) error {
@@ -2311,6 +2322,13 @@ func TestCollaborationAutomaticUpdateHealthyConnectionHasNoRemoteActivation(t *t
 	}
 	if joins.Load() != 0 || hosts.Load() != 0 {
 		t.Fatalf("healthy updates activated Room: joins=%d hosts=%d", joins.Load(), hosts.Load())
+	}
+	peer := conn.peer.(*fakeCollaborationPeer)
+	peer.mu.Lock()
+	eventCalls := peer.eventCalls
+	peer.mu.Unlock()
+	if eventCalls != 5 {
+		t.Fatalf("healthy updates pulled events %d times, want one bounded reconcile per tick", eventCalls)
 	}
 	close(conn.done)
 }

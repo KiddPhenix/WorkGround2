@@ -177,16 +177,30 @@ func (c *desktopCollaboration) observeUnread() {
 	}
 	before := store.Summary().Revision
 	created := snapshot.Room.CreatedAt.UTC().Format(time.RFC3339Nano)
-	identity := strings.Join([]string{persistenceKey, room, created}, "\x00")
+	// Room.CreatedAt is optional in older cached snapshots and can arrive only
+	// after the first reconnect. It must not participate in the canonical key:
+	// otherwise one real Room becomes a second unread conversation precisely
+	// when the first new message arrives, and ObserveRoom treats that message as
+	// an already-read first baseline. Pass both legacy key shapes so the store
+	// atomically folds existing waterlines into the stable Room identity.
+	identity := strings.Join([]string{persistenceKey, room}, "\x00")
+	missingCreated := time.Time{}.UTC().Format(time.RFC3339Nano)
+	legacy := []string{
+		stableCollaborationID("room_unread", strings.Join([]string{persistenceKey, room, missingCreated}, "\x00")),
+	}
+	if created != missingCreated {
+		legacy = append(legacy, stableCollaborationID("room_unread", strings.Join([]string{persistenceKey, room, created}, "\x00")))
+	}
 	_, err = store.ObserveRoom(unread.RoomInput{
-		ConversationKey: stableCollaborationID("room_unread", identity),
-		SessionID:       sessionID,
-		Title:           firstNonEmpty(strings.TrimSpace(snapshot.Room.Name), strings.TrimSpace(room)),
-		LocalMemberID:   memberID,
-		LocalAgentID:    agentID,
-		Snapshot:        snapshot,
-		ObservedAt:      time.Now().UTC(),
-		Read:            c.app.unreadTargetVisible(sessionID, ""),
+		ConversationKey:        stableCollaborationID("room_unread", identity),
+		LegacyConversationKeys: legacy,
+		SessionID:              sessionID,
+		Title:                  firstNonEmpty(strings.TrimSpace(snapshot.Room.Name), strings.TrimSpace(room)),
+		LocalMemberID:          memberID,
+		LocalAgentID:           agentID,
+		Snapshot:               snapshot,
+		ObservedAt:             time.Now().UTC(),
+		Read:                   c.app.unreadTargetVisible(sessionID, ""),
 	})
 	if err != nil {
 		c.app.recordUnreadError(fmt.Errorf("project Room unread: %w", err))

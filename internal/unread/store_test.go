@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -328,6 +329,78 @@ func TestRoomRevisionUpdatesOnePendingItem(t *testing.T) {
 	}
 	if conversation.UnreadCount != 1 || conversation.Items[0].Sequence != 3 {
 		t.Fatalf("revision created duplicate unread: %+v", conversation)
+	}
+}
+
+func TestRoomLegacyIdentityMigrationKeepsOldWaterlineAndRemovesDuplicate(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := collab.Snapshot{Room: collab.Room{ID: "room", LatestSequence: 2}, LatestSequence: 2}
+	if _, err := store.ObserveRoom(RoomInput{ConversationKey: "legacy-missing-created", LocalMemberID: "self", Snapshot: base}); err != nil {
+		t.Fatal(err)
+	}
+	next := base
+	next.LatestSequence, next.Room.LatestSequence = 3, 3
+	next.Timeline = []collab.TimelineItem{{
+		ID: "new-after-startup", Sequence: 3, Type: collab.TimelineChat,
+		Chat: &collab.ChatMessage{ID: "new-after-startup", AuthorID: "other", Text: "new", CreatedAt: time.Now().UTC()},
+	}}
+	// This duplicate models the old key changing when optional CreatedAt became
+	// available. Its first observation incorrectly established sequence 3 as a
+	// read baseline.
+	if _, err := store.ObserveRoom(RoomInput{ConversationKey: "legacy-with-created", LocalMemberID: "self", Snapshot: next}); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := store.ObserveRoom(RoomInput{
+		ConversationKey: "canonical", LegacyConversationKeys: []string{"legacy-missing-created", "legacy-with-created"},
+		LocalMemberID: "self", Snapshot: next,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conversation.Key != "room:canonical" || conversation.ReadSequence != 2 || conversation.LatestSequence != 3 || conversation.UnreadCount != 1 || conversation.Items[0].ID != "new-after-startup" {
+		t.Fatalf("migrated Room conversation = %+v", conversation)
+	}
+	summary := store.Summary()
+	if len(summary.Conversations) != 1 || summary.TotalUnread != 1 || summary.Conversations[0].Key != "room:canonical" {
+		t.Fatalf("legacy Room identities were not folded atomically: %+v", summary)
+	}
+}
+
+func TestRoomLegacyIdentityMigrationWriteFailureKeepsPublishedState(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "unread.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := collab.Snapshot{Room: collab.Room{ID: "room", LatestSequence: 2}, LatestSequence: 2}
+	if _, err := store.ObserveRoom(RoomInput{ConversationKey: "legacy-missing-created", LocalMemberID: "self", Snapshot: base}); err != nil {
+		t.Fatal(err)
+	}
+	next := base
+	next.LatestSequence, next.Room.LatestSequence = 3, 3
+	next.Timeline = []collab.TimelineItem{{
+		ID: "new-after-startup", Sequence: 3, Type: collab.TimelineChat,
+		Chat: &collab.ChatMessage{ID: "new-after-startup", AuthorID: "other", Text: "new", CreatedAt: time.Now().UTC()},
+	}}
+	if _, err := store.ObserveRoom(RoomInput{ConversationKey: "legacy-with-created", LocalMemberID: "self", Snapshot: next}); err != nil {
+		t.Fatal(err)
+	}
+	published := store.Summary()
+	store.writeFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	conversation, err := store.ObserveRoom(RoomInput{
+		ConversationKey: "canonical", LegacyConversationKeys: []string{"legacy-missing-created", "legacy-with-created"},
+		LocalMemberID: "self", Snapshot: next,
+	})
+	if err == nil {
+		t.Fatal("legacy Room migration unexpectedly persisted")
+	}
+	if conversation.Key != "room:legacy-missing-created" || conversation.ReadSequence != 2 || conversation.LatestSequence != 2 || conversation.UnreadCount != 0 {
+		t.Fatalf("migration failure exposed uncommitted conversation: %+v", conversation)
+	}
+	if after := store.Summary(); !reflect.DeepEqual(after, published) {
+		t.Fatalf("migration failure changed published summary:\nafter=%+v\nbefore=%+v", after, published)
 	}
 }
 
