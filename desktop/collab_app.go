@@ -422,6 +422,10 @@ type desktopCollaboration struct {
 	transferRun     map[string]uint64
 	transferLocks   map[string]*sync.Mutex
 	restoreOnce     sync.Once
+	updateOnce      sync.Once
+	updateCancel    context.CancelFunc
+	updateDone      chan struct{}
+	updateDelay     func() time.Duration
 	ownedParts      map[string]os.FileInfo
 	autoReceiveSem  chan struct{}
 	autoRetryDelay  func(int) time.Duration
@@ -461,6 +465,7 @@ type desktopCollaboration struct {
 }
 
 type collaborationConnection struct {
+	syncMu              sync.Mutex
 	peer                collaborationPeer
 	filePeer            collaborationFilePeer
 	host                *http.Server
@@ -753,6 +758,7 @@ func (a *App) collaborationRuntime(sessionID string) (*desktopCollaboration, err
 	}
 	runtime := newDesktopCollaboration(a, sessionID)
 	a.collaborations[sessionID] = runtime
+	runtime.startUpdateLoop(a.bootContext())
 	return runtime, nil
 }
 
@@ -1974,8 +1980,8 @@ func (c *desktopCollaboration) leaveCurrent(ctx context.Context) error {
 }
 
 func (c *desktopCollaboration) close() {
+	c.stopUpdateLoop()
 	c.opMu.Lock()
-	defer c.opMu.Unlock()
 	c.mu.Lock()
 	conn := c.conn
 	c.persistLocked()
@@ -1991,6 +1997,8 @@ func (c *desktopCollaboration) close() {
 		cancel()
 	}
 	c.closeFileTransfers()
+	c.opMu.Unlock()
+	c.waitUpdateLoop()
 }
 
 func (c *desktopCollaboration) post(ctx context.Context, input PostCollaborationMessageInput) (CollaborationActionResult, error) {
@@ -2011,6 +2019,15 @@ func (c *desktopCollaboration) post(ctx context.Context, input PostCollaboration
 func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, error) {
 	c.opMu.Lock()
 	defer c.opMu.Unlock()
+	return c.retryLocked(ctx, true)
+}
+
+// retryLocked refreshes or rebuilds the current Room connection. manual is
+// deliberately explicit: only a user-requested retry may release commands
+// that previously failed with a non-retryable response.
+//
+// c.opMu must be held by the caller.
+func (c *desktopCollaboration) retryLocked(ctx context.Context, manual bool) (CollaborationState, error) {
 	c.mu.Lock()
 	conn := c.conn
 	pendingLeave := c.leaveError != ""
@@ -2019,8 +2036,10 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		err := c.leaveCurrent(ctx)
 		return c.snapshot(), err
 	}
-	for requestID := range c.outboxFailures {
-		delete(c.outboxFailures, requestID)
+	if manual {
+		for requestID := range c.outboxFailures {
+			delete(c.outboxFailures, requestID)
+		}
 	}
 	c.state.Status = "reconnecting"
 	c.state.LastError = ""
@@ -2032,7 +2051,8 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 	if conn == nil {
 		p := c.repairPersisted(c.readPersisted())
 		if p.Mode == "" || p.Host == "" || p.Room == "" || p.SessionID == "" {
-			return c.snapshot(), fmt.Errorf("collaboration connection must be joined again")
+			err := fmt.Errorf("collaboration connection must be joined again")
+			return c.failState("failed", err, true), err
 		}
 		identity, err := c.localIdentity(p.MemberID, p.MemberName, p.MemberAvatar, p.MemberRole, p.AgentID, p.AgentName, p.AgentAvatar, p.AgentRole, p.SessionID, p.Room)
 		if err != nil {
@@ -2084,6 +2104,7 @@ func (c *desktopCollaboration) retry(ctx context.Context) (CollaborationState, e
 		c.retryRelayBindings(ctx, conn)
 	}
 	c.syncConnection(ctx, conn)
+	c.ensureConnectionLoop(conn)
 	return c.snapshot(), nil
 }
 
@@ -2768,10 +2789,7 @@ func (c *desktopCollaboration) installConnection(conn *collaborationConnection) 
 		go c.scheduler.run(schedCtx, c)
 	}
 
-	loopCtx, cancel := context.WithCancel(c.app.bootContext())
-	conn.cancel = cancel
-	conn.done = make(chan struct{})
-	go c.connectionLoop(loopCtx, conn)
+	c.ensureConnectionLoop(conn)
 	go c.restoreFileOrigins(conn)
 	c.signalAutoReceiveFiles()
 	go c.resumeWaitingFileTransfers()
