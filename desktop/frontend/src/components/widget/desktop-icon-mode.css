@@ -314,7 +314,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__delegation-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-icon-popup__delegation-list small { color: #969ba8; }
 .desktop-icon-popup__delegation-list small b { color: #68bb86; }
-.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); height: min(620px, var(--popup-max-height, 620px)); max-height: var(--popup-max-height, 620px); }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: min(620px, var(--popup-max-height, 620px)); }
 .desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .desktop-icon-popup__routines { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .desktop-icon-popup__routine-list { min-height: 0; margin-top: 8px; overflow-y: auto; }
