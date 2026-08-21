@@ -314,8 +314,8 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__delegation-list span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-icon-popup__delegation-list small { color: #969ba8; }
 .desktop-icon-popup__delegation-list small b { color: #68bb86; }
-.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); max-height: var(--popup-max-height, 420px); }
-.desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.desktop-icon-popup:has(.desktop-icon-popup__workspaces), .desktop-icon-popup:has(.desktop-icon-popup__rooms), .desktop-icon-popup:has(.desktop-icon-popup__routines) { box-sizing: border-box; display: flex; width: min(420px, calc(100vw - 20px)); height: min(620px, var(--popup-max-height, 620px)); max-height: var(--popup-max-height, 620px); }
+.desktop-icon-popup__workspaces { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .desktop-icon-popup__routines { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .desktop-icon-popup__routine-list { min-height: 0; margin-top: 8px; overflow-y: auto; }
 .desktop-icon-popup__routine-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
@@ -353,7 +353,7 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-popup__room-notification button[aria-checked="true"] { border-color: #9b82ed; color: #f3efff; background: #6045ad; }
 .desktop-icon-popup__room-notification button:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
 .desktop-icon-popup__workspace-note { margin: 14px 0 4px; color: #969ba8; font-size: 12px; text-align: center; }
-.desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: calc(5 * 72px); overflow-x: hidden; overflow-y: auto; margin-top: 8px; padding-right: 2px; }
+.desktop-icon-popup__workspace-list { flex: 1 1 auto; min-height: 0; max-height: 360px; overflow-x: hidden; overflow-y: auto; margin-top: 8px; padding-right: 2px; }
 .desktop-icon-popup__workspace-row { padding: 7px 0; border-bottom: 1px solid rgb(255 255 255 / 8%); }
 .desktop-icon-popup__workspace-row.is-armed { margin: 0 -6px; padding: 7px 6px; border-radius: 8px; background: rgb(167 70 85 / 12%); }
 .desktop-icon-popup__workspace-row:last-child { border-bottom: 0; }
