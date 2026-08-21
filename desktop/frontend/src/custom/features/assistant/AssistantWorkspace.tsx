@@ -5,6 +5,7 @@ import {
   Brain,
   CalendarClock,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   ExternalLink,
@@ -35,8 +36,8 @@ import {
 import { assistantCopy } from "./assistant.copy";
 import { attentionInboxAction, attentionRejectResolution, attentionResolution, formatAssistantDate, formatTimelineTime, runHistoryAction, runStateLabel, scheduleLabel, timelineEntries } from "./assistant.model";
 import { assistantIntentKey, assistantMutationKey, assistantOutcomeKey, completeAssistantRequest, pendingAssistantRequest, runAssistantApproval, runAssistantCASMutation, runAssistantMutation, runAssistantOutcome, runAssistantRejection, runAssistantResume } from "./assistant.requests";
+import { assistantTemplate, assistantTemplateContent, templateRoutine, templateRoutines, type AssistantTemplateID } from "./assistant.templates";
 import {
-  DEFAULT_ASSISTANT_POLICY,
   assistantEntityID,
   type AssistantMemoryKind,
   type AssistantDiagnostic,
@@ -51,6 +52,7 @@ type ManageTab = "overview" | "routines" | "memory" | "history" | "attention";
 
 interface AssistantWorkspaceProps {
   onOpenSession?: (scope: string, workspaceRoot: string, sessionPath: string) => void;
+  focusAssistantID?: string;
 }
 
 export function AssistantSidebarEntry({ active, collapsed = false, onClick }: { active: boolean; collapsed?: boolean; onClick: () => void }) {
@@ -77,7 +79,7 @@ function lifecycleLabel(assistant: AssistantRecord, copy: ReturnType<typeof assi
   return copy.awake;
 }
 
-function useAssistantData() {
+function useAssistantData(focusAssistantID?: string) {
   const [assistants, setAssistants] = useState<AssistantRecord[]>([]);
   const [diagnostics, setDiagnostics] = useState<AssistantDiagnostic[]>([]);
   const [selectedID, setSelectedID] = useState("");
@@ -151,6 +153,10 @@ function useAssistantData() {
 
   useEffect(() => { void loadList(); }, []);
   useEffect(() => {
+    if (!focusAssistantID) return;
+    void loadList(focusAssistantID);
+  }, [focusAssistantID]);
+  useEffect(() => {
     if (!selectedID) return;
     const timer = window.setInterval(() => { void refresh(); }, 4000);
     return () => window.clearInterval(timer);
@@ -159,11 +165,11 @@ function useAssistantData() {
   return { assistants, diagnostics, selectedID, snapshot, loading, error, loadList, refresh, select };
 }
 
-export function AssistantWorkspace({ onOpenSession }: AssistantWorkspaceProps) {
+export function AssistantWorkspace({ onOpenSession, focusAssistantID }: AssistantWorkspaceProps) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const { showToast } = useToast();
-  const data = useAssistantData();
+  const data = useAssistantData(focusAssistantID);
   const [manageTab, setManageTab] = useState<ManageTab | null>(null);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState("");
@@ -442,7 +448,27 @@ function RoutineEditor({ snapshot, busy, act, onRun }: { snapshot: AssistantSnap
   const source = snapshot.routines.find((item) => item.id === selected) ?? snapshot.routines[0];
   const [draft, setDraft] = useState<AssistantRoutine | null>(source ?? null);
   useEffect(() => setDraft(source ? { ...source, schedule: { ...source.schedule } } : null), [source?.id, source?.revision]);
-  if (!draft) return <p className="assistant-empty-copy">{copy.noHistory}</p>;
+  if (!draft) {
+    return (
+      <div className="assistant-form">
+        <p className="assistant-empty-copy">{copy.noRoutines}</p>
+        <div className="assistant-form__actions">
+          <button className="assistant-button assistant-button--accent" type="button" onClick={() => setDraft({
+            id: assistantEntityID("routine"),
+            assistant_id: snapshot.assistant.id,
+            title: "",
+            prompt: "",
+            schedule: { kind: "manual", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
+            enabled: true,
+            catch_up: "coalesce_latest",
+            revision: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })}><Plus size={14} />{copy.addRoutine}</button>
+        </div>
+      </div>
+    );
+  }
   const setSchedule = (kind: AssistantScheduleKind, patch: Partial<AssistantRoutine["schedule"]> = {}) => setDraft((current) => current ? { ...current, schedule: { kind, timezone: current.schedule.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", ...patch } } : current);
   const save = () => {
     const intent = { title: draft.title.trim(), prompt: draft.prompt.trim(), schedule: draft.schedule, enabled: draft.enabled, catch_up: draft.catch_up };
@@ -581,42 +607,186 @@ export function AttentionInbox({ snapshot, busy, act, onOverview }: { snapshot: 
   })}</div>;
 }
 
-function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+export function CreateAssistantDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
   const { locale } = useI18n();
   const copy = assistantCopy(locale);
   const { showToast } = useToast();
   const nameRef = useRef<HTMLInputElement>(null);
+  const [templateID, setTemplateID] = useState<AssistantTemplateID | null>(null);
   const [name, setName] = useState("");
   const [mission, setMission] = useState("");
   const [workspace, setWorkspace] = useState("");
-  const [kind, setKind] = useState<"manual" | "daily">("daily");
-  const [at, setAt] = useState("09:00");
   const [busy, setBusy] = useState(false);
-  const [identity] = useState(() => ({ assistantID: assistantEntityID("assistant"), routineID: assistantEntityID("routine"), createdAt: new Date().toISOString() }));
+  const [confirmed, setConfirmed] = useState(false);
+  const [routineTitle, setRoutineTitle] = useState("");
+  const [routinePrompt, setRoutinePrompt] = useState("");
+  const [routineKind, setRoutineKind] = useState<"manual" | "daily" | "interval">("daily");
+  const [routineAt, setRoutineAt] = useState("09:00");
+  const [routineHours, setRoutineHours] = useState(4);
+  const [identity] = useState(() => ({
+    assistantID: assistantEntityID("assistant"),
+    routineID: assistantEntityID("routine"),
+    createdAt: new Date().toISOString(),
+  }));
   useEffect(() => { nameRef.current?.focus(); }, []);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
   }, [onClose]);
+
+  const template = templateID ? assistantTemplate(templateID, locale) : null;
+  const templates = assistantTemplateContent(locale);
+  const templateLabels: Record<AssistantTemplateID, string> = {
+    code: copy.templateCode,
+    general: copy.templateGeneral,
+    promo: copy.templatePromo,
+  };
+  const templateDescriptions: Record<AssistantTemplateID, string> = {
+    code: copy.templateCodeDesc,
+    general: copy.templateGeneralDesc,
+    promo: copy.templatePromoDesc,
+  };
+
+  const pickTemplate = (id: AssistantTemplateID) => {
+    const chosen = assistantTemplate(id, locale);
+    if (!chosen.available) return;
+    setTemplateID(id);
+    setName(chosen.defaultName);
+    setMission(chosen.mission);
+    setConfirmed(false);
+  };
+
+  const generalRoutineSchedule = (): AssistantRoutine["schedule"] => {
+    if (routineKind === "manual") return { kind: "manual", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" };
+    if (routineKind === "interval") return { kind: "interval", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", interval_seconds: Math.max(1, routineHours) * 3600 };
+    return { kind: "daily", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", at: routineAt };
+  };
+
+  const routinesFor = (): AssistantRoutine[] => {
+    if (!template) return [];
+    if (template.id === "code") return templateRoutines(identity.assistantID, template, identity.createdAt);
+    if (template.id === "general") {
+      return [templateRoutine(identity.assistantID, identity.routineID, routineTitle.trim(), routinePrompt.trim(), generalRoutineSchedule(), identity.createdAt)];
+    }
+    return [];
+  };
+
   const submit = async () => {
-    const { assistantID: id, routineID, createdAt } = identity;
-    const assistant: AssistantRecord = { id, name: name.trim(), mission: mission.trim(), description: "", scope: workspace.trim() ? "workspace" : "global", workspace_root: workspace.trim() || undefined, lifecycle: "active", policy: DEFAULT_ASSISTANT_POLICY, memory_revision: 0, revision: 0, created_at: createdAt, updated_at: createdAt };
-    const routines: AssistantRoutine[] = [{ id: routineID, assistant_id: id, title: "日常推进", prompt: mission.trim(), schedule: { kind, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", at: kind === "daily" ? at : undefined }, enabled: true, catch_up: "coalesce_latest", revision: 0, created_at: createdAt, updated_at: createdAt }];
-    const key = assistantMutationKey("create", id, id, { assistant, routines });
+    if (!template || !template.available) return;
+    const routines = routinesFor();
+    if (routines.length === 0) return;
+    const { assistantID: id, createdAt } = identity;
+    const assistant: AssistantRecord = {
+      id,
+      name: name.trim() || template.defaultName,
+      mission: mission.trim() || template.mission,
+      description: "",
+      scope: workspace.trim() ? "workspace" : "global",
+      workspace_root: workspace.trim() || undefined,
+      lifecycle: "active",
+      policy: { ...template.policy },
+      memory_revision: 0,
+      revision: 0,
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    const key = assistantMutationKey("create", id, id, { assistant, routines, template: template.id });
     setBusy(true);
     try { await runAssistantMutation(key, (requestId) => assistantCreate({ requestId, assistant, routines })); onCreated(id); }
     catch (cause) { showToast(cause instanceof Error ? cause.message : copy.error, "error"); setBusy(false); }
   };
+
+  const accessLabel = (access: AssistantRecord["policy"][keyof AssistantRecord["policy"]]): string => {
+    if (access === "allow") return copy.accessAllow;
+    if (access === "deny") return copy.accessDeny;
+    return copy.accessApprove;
+  };
+  const permissionRows = template ? [
+    { label: copy.policyLocalWrite, access: accessLabel(template.policy.local_write) },
+    { label: copy.policyNetwork, access: accessLabel(template.policy.network) },
+    { label: copy.policyPublish, access: accessLabel(template.policy.publish) },
+    { label: copy.policyHighRisk, access: accessLabel(template.policy.delete) },
+  ] : [];
+  const needsConfirmation = template?.id === "code";
+  const generalRoutineValid = template?.id !== "general" || (routineTitle.trim() !== "" && routinePrompt.trim() !== "");
+
   return (
     <div className="assistant-manager-backdrop assistant-manager-backdrop--create" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <form className="assistant-create" role="dialog" aria-modal="true" aria-label={copy.createTitle} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <header><div><h2>{copy.createTitle}</h2><p>{copy.createBody}</p></div><button className="assistant-icon-button" type="button" aria-label={copy.close} onClick={onClose}><X size={18} /></button></header>
-        <label>{copy.name}<input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.createName} required /></label>
-        <label>{copy.mission}<textarea rows={5} value={mission} onChange={(event) => setMission(event.target.value)} placeholder={copy.createMission} required /></label>
-        <label>{copy.workspace}<input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="D:\\Work\\Project" /></label>
-        <div className="assistant-create__schedule"><label>{copy.frequency}<select value={kind} onChange={(event) => setKind(event.target.value as "manual" | "daily")}><option value="daily">{copy.daily}</option><option value="manual">{copy.manual}</option></select></label>{kind === "daily" && <label>{copy.at}<input type="time" value={at} onChange={(event) => setAt(event.target.value)} /></label>}</div>
-        <footer><button className="assistant-button" type="button" onClick={onClose}>{copy.cancel}</button><button className="assistant-button assistant-button--accent" type="submit" disabled={busy || !name.trim() || !mission.trim()}>{busy && <RefreshCw className="assistant-spin" size={14} />}{copy.create}</button></footer>
+
+        {!templateID ? (
+          <div className="assistant-templates">
+            <h3>{copy.templates}</h3>
+            {templates.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`assistant-template${item.available ? "" : " assistant-template--disabled"}`}
+                disabled={!item.available}
+                onClick={() => pickTemplate(item.id)}
+              >
+                <span className="assistant-template__name">
+                  {templateLabels[item.id]}
+                  {!item.available && <span className="assistant-template__badge">{copy.phase4Preview}</span>}
+                </span>
+                <span className="assistant-template__desc">{templateDescriptions[item.id]}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="assistant-create__template-bar">
+              <span>{templateLabels[templateID]}</span>
+              <button className="assistant-text-action" type="button" onClick={() => setTemplateID(null)}><ChevronLeft size={13} />{copy.templates}</button>
+            </div>
+            <label>{copy.name}<input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} placeholder={copy.createName} required /></label>
+            <label>{copy.mission}<textarea rows={5} value={mission} onChange={(event) => setMission(event.target.value)} placeholder={copy.createMission} required /></label>
+            <label>{copy.workspace}<input value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="D:\\Work\\Project" /></label>
+
+            {template && template.id === "code" && (
+              <div className="assistant-create__routines">
+                <span className="assistant-create__routines-label">{copy.routinePreview}</span>
+                {template.routines.map((routine) => (
+                  <span key={routine.title} className="assistant-create__routine"><Check size={13} />{routine.title}</span>
+                ))}
+              </div>
+            )}
+
+            {template && template.id === "general" && (
+              <div className="assistant-create__routines">
+                <span className="assistant-create__routines-label">{copy.routinePreview}</span>
+                <label className="assistant-create__routine-label">{copy.routineTitle}<input value={routineTitle} onChange={(event) => setRoutineTitle(event.target.value)} placeholder={copy.routineTitle} /></label>
+                <label className="assistant-create__routine-label">{copy.routinePrompt}<textarea rows={3} value={routinePrompt} onChange={(event) => setRoutinePrompt(event.target.value)} placeholder={copy.routinePrompt} /></label>
+                <label className="assistant-create__routine-label">{copy.frequency}<select value={routineKind} onChange={(event) => setRoutineKind(event.target.value as "manual" | "daily" | "interval")}><option value="daily">{copy.daily}</option><option value="interval">{copy.interval}</option><option value="manual">{copy.routineFrequencyManual}</option></select></label>
+                {routineKind === "daily" && <label className="assistant-create__routine-label">{copy.at}<input type="time" value={routineAt} onChange={(event) => setRoutineAt(event.target.value)} /></label>}
+                {routineKind === "interval" && <label className="assistant-create__routine-label">{copy.hour}<input type="number" min={1} max={720} value={routineHours} onChange={(event) => setRoutineHours(Number(event.target.value))} /></label>}
+              </div>
+            )}
+
+            {template && (
+              <div className="assistant-create__permissions" role="status">
+                <span className="assistant-create__routines-label">{copy.permissionTitle}</span>
+                {permissionRows.map((row) => (
+                  <span key={row.label} className="assistant-create__permission-row"><span>{row.label}</span><strong>{row.access}</strong></span>
+                ))}
+              </div>
+            )}
+
+            {needsConfirmation && (
+              <label className="assistant-check assistant-create__confirm">
+                <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
+                {copy.permissionConfirm}
+              </label>
+            )}
+
+            <footer>
+              <button className="assistant-button" type="button" onClick={() => setTemplateID(null)}>{copy.cancel}</button>
+              <button className="assistant-button assistant-button--accent" type="submit" disabled={busy || !name.trim() || !mission.trim() || !generalRoutineValid || (needsConfirmation && !confirmed)}>{busy && <RefreshCw className="assistant-spin" size={14} />}{copy.create}</button>
+            </footer>
+          </>
+        )}
       </form>
     </div>
   );

@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Activity,
+  AlertTriangle,
+  Bot,
   ChevronLeft,
   ChevronsUpDown,
   Clock,
@@ -14,20 +16,24 @@ import {
   MessageSquare,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   X,
 } from "lucide-react";
 import { app } from "../../../lib/bridge";
 import { useT } from "../../../lib/i18n";
+import { useToast } from "../../../lib/toast";
 import { AnchoredPopover } from "../../../components/AnchoredPopover";
 import {
   heartbeatListTasks,
   heartbeatSaveTasks,
   heartbeatTriggerNow,
   heartbeatGenerateID,
+  heartbeatListConversions,
+  heartbeatConvertToAssistant,
 } from "./heartbeat.bridge";
-import type { HeartbeatTask } from "./heartbeat.types";
+import type { HeartbeatConversionStatus, HeartbeatTask } from "./heartbeat.types";
 import type { WorkspaceView } from "../../../lib/types";
 
 const INTERVAL_MS: Record<"s" | "m" | "h", number> = {
@@ -128,10 +134,12 @@ interface HeartbeatPanelProps {
   onClose: () => void;
   startNew?: boolean;
   onOpenTopic: (scope: string, workspaceRoot: string, topicId: string) => void;
+  onOpenAssistant?: (assistantId: string) => void;
 }
 
-export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: HeartbeatPanelProps) {
+export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic, onOpenAssistant }: HeartbeatPanelProps) {
   const t = useT();
+  const { showToast } = useToast();
   const [tasks, setTasks] = useState<HeartbeatTask[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<HeartbeatTask | null>(null);
@@ -143,10 +151,16 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
   const [statusFilterOpen, setStatusFilterOpen] = useState(false);
   const statusFilterRef = useRef<HTMLButtonElement>(null);
   const [workspaceMap, setWorkspaceMap] = useState<Record<string, string>>({});
+  const [conversions, setConversions] = useState<Record<string, HeartbeatConversionStatus>>({});
+  const [converting, setConverting] = useState("");
+  const [conversionError, setConversionError] = useState<Record<string, string>>({});
+  const [conversionLoadError, setConversionLoadError] = useState("");
   const backdropRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
 
-  const loadTasks = useCallback(async () => {
+  // Tasks and workspaces load independently from conversion status so a broken
+  // conversion journal never blocks the legacy heartbeat panel.
+  const loadTasksAndWorkspaces = useCallback(async () => {
     setLoading(true);
     try {
       const [taskList, wsList] = await Promise.all([
@@ -159,12 +173,28 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
         wsList.forEach((ws) => { if (ws.path) map[ws.path] = ws.name; });
       }
       setWorkspaceMap(map);
-    } catch {
-      // ignore
+    } catch (cause) {
+      showToast(cause instanceof Error ? cause.message : String(cause), "error");
     } finally {
       setLoading(false);
     }
+  }, [showToast]);
+
+  const loadConversions = useCallback(async () => {
+    try {
+      const conversionList = await heartbeatListConversions();
+      const conversionMap: Record<string, HeartbeatConversionStatus> = {};
+      (conversionList ?? []).forEach((status) => { conversionMap[status.taskId] = status; });
+      setConversions(conversionMap);
+      setConversionLoadError("");
+    } catch (cause) {
+      setConversionLoadError(cause instanceof Error ? cause.message : String(cause));
+    }
   }, []);
+
+  const loadTasks = useCallback(async () => {
+    await Promise.all([loadTasksAndWorkspaces(), loadConversions()]);
+  }, [loadTasksAndWorkspaces, loadConversions]);
 
   useEffect(() => {
     if (open) {
@@ -197,16 +227,21 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
     }
   }, [open, startNew]);
 
+  // Persist first, then reflect success. Failures stay visible and never
+  // optimistically swap the task list or close the editor.
   const save = useCallback(
-    async (next: HeartbeatTask[]) => {
-      setTasks(next);
+    async (next: HeartbeatTask[]): Promise<boolean> => {
       try {
         await heartbeatSaveTasks(next);
-      } catch {
-        // ignore
+        setTasks(next);
+        return true;
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        showToast(message, "error");
+        return false;
       }
     },
-    [],
+    [showToast],
   );
 
   const handleAdd = useCallback(async () => {
@@ -229,9 +264,9 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
   }, []);
 
   const handleDelete = useCallback(
-    async (id: string) => {
+    async (id: string): Promise<boolean> => {
       const next = tasks.filter((t) => t.id !== id);
-      await save(next);
+      return save(next);
     },
     [tasks, save],
   );
@@ -239,9 +274,26 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
   const handleTrigger = useCallback(
     async (id: string) => {
       await heartbeatTriggerNow(id);
-      void loadTasks();
+      void loadTasksAndWorkspaces();
     },
-    [loadTasks],
+    [loadTasksAndWorkspaces],
+  );
+
+  const handleConvert = useCallback(
+    async (id: string) => {
+      setConverting(id);
+      setConversionError((current) => { const next = { ...current }; delete next[id]; return next; });
+      try {
+        const result = await heartbeatConvertToAssistant(id);
+        setConversions((current) => ({ ...current, [id]: { taskId: id, state: result.state, assistantId: result.assistantId, assistantName: result.assistantName, reason: result.reason, approvalMode: result.approvalMode } }));
+        void loadTasksAndWorkspaces();
+      } catch (cause) {
+        setConversionError((current) => ({ ...current, [id]: cause instanceof Error ? cause.message : String(cause) }));
+      } finally {
+        setConverting("");
+      }
+    },
+    [loadTasksAndWorkspaces],
   );
 
   const handleSaveEdit = useCallback(
@@ -253,8 +305,8 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
       } else {
         next.push(task);
       }
-      await save(next);
-      setEditing(null);
+      const ok = await save(next);
+      if (ok) setEditing(null);
     },
     [tasks, save],
   );
@@ -311,9 +363,19 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
         </header>
 
         {editing ? (
-          <TaskEditor key={editing.id} task={editing} onSave={handleSaveEdit} onCancel={() => setEditing(null)} onDelete={() => { handleDelete(editing.id); setEditing(null); }} />
+          <TaskEditor key={editing.id} task={editing} onSave={handleSaveEdit} onCancel={() => setEditing(null)} onDelete={() => { void handleDelete(editing.id).then((ok) => { if (ok) setEditing(null); }); }} />
         ) : (
           <div className="heartbeat-modal__body">
+            {conversionLoadError && (
+              <div className="heartbeat-convert heartbeat-convert--error heartbeat-convert-load-error" role="alert">
+                <AlertTriangle size={13} />
+                <span>{conversionLoadError}</span>
+                <button className="heartbeat-convert__btn" type="button" onClick={() => void loadConversions()}>
+                  <RefreshCw size={12} />
+                  {t("heartbeat.refresh")}
+                </button>
+              </div>
+            )}
             <div className="heartbeat-toolbar">
               <div className="heartbeat-toolbar__search">
                 <Search size={13} className="heartbeat-toolbar__search-icon" />
@@ -478,15 +540,21 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
                       key={task.id}
                       task={task}
                       scopeLabel={scopeLabel(task)}
+                      conversion={conversions[task.id]}
+                      converting={converting === task.id}
+                      conversionError={conversionError[task.id]}
+                      locked={conversions[task.id]?.state === "converted" || conversions[task.id]?.state === "in_progress" || conversions[task.id]?.state === "conflict"}
                       onToggle={() => {
                         const next = tasks.map((t) =>
                           t.id === task.id ? { ...t, enabled: !t.enabled } : t,
                         );
-                        save(next);
+                        void save(next);
                       }}
                       onEdit={() => handleEdit(task)}
                       onTrigger={() => void handleTrigger(task.id)}
+                      onConvert={() => void handleConvert(task.id)}
                       onOpenTopic={onOpenTopic}
+                      onOpenAssistant={onOpenAssistant}
                       onClose={onClose}
                     />
                   ))}
@@ -505,18 +573,30 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
 function TaskCard({
   task,
   scopeLabel,
+  conversion,
+  converting,
+  conversionError,
+  locked,
   onToggle,
   onEdit,
   onTrigger,
+  onConvert,
   onOpenTopic,
+  onOpenAssistant,
   onClose,
 }: {
   task: HeartbeatTask;
   scopeLabel: string;
+  conversion?: HeartbeatConversionStatus;
+  converting: boolean;
+  conversionError?: string;
+  locked: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onTrigger: () => void;
+  onConvert: () => void;
   onOpenTopic: (scope: string, workspaceRoot: string, topicId: string) => void;
+  onOpenAssistant?: (assistantId: string) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -558,6 +638,7 @@ function TaskCard({
             type="button"
             className="heartbeat-card__title-btn"
             onClick={onEdit}
+            disabled={locked}
           >
             <span className="heartbeat-card__title-text">{task.title || t("heartbeat.untitled")}</span>
             <span className="heartbeat-card__title-scope">{scopeLabel}</span>
@@ -573,6 +654,7 @@ function TaskCard({
           <button
             className="heartbeat-card__open-btn heartbeat-card__open-btn--play"
             onClick={onTrigger}
+            disabled={locked}
             title={t("heartbeat.runNow")}
           >
             <Play size={12} />
@@ -594,13 +676,109 @@ function TaskCard({
           <button
             className={`heartbeat-card__toggle${task.enabled ? " heartbeat-card__toggle--on" : ""}`}
             onClick={onToggle}
+            disabled={locked}
             aria-label={task.enabled ? t("heartbeat.disable") : t("heartbeat.enabled")}
           >
             <span className="heartbeat-card__toggle-knob" />
           </button>
         </span>
       </div>
+      <div className="heartbeat-card__convert">
+        <HeartbeatConversionAction
+          conversion={conversion}
+          converting={converting}
+          error={conversionError}
+          onConvert={onConvert}
+          onOpenAssistant={onOpenAssistant}
+        />
+      </div>
     </li>
+  );
+}
+
+export function HeartbeatConversionAction({
+  conversion,
+  converting,
+  error,
+  onConvert,
+  onOpenAssistant,
+}: {
+  conversion?: HeartbeatConversionStatus;
+  converting: boolean;
+  error?: string;
+  onConvert: () => void;
+  onOpenAssistant?: (assistantId: string) => void;
+}) {
+  const t = useT();
+  const state = conversion?.state;
+  const approvalMode = conversion?.approvalMode || "";
+  // Both yolo and auto map local_write/network to "allow" on conversion, so
+  // both need the same explicit risk warning.
+  const risky = !approvalMode || approvalMode === "yolo" || approvalMode === "auto";
+
+  if (error) {
+    return (
+      <div className="heartbeat-convert heartbeat-convert--error" role="alert">
+        <AlertTriangle size={13} />
+        <span>{error}</span>
+        <button className="heartbeat-convert__btn" type="button" onClick={onConvert} disabled={converting}>
+          {converting ? <RefreshCw size={12} className="heartbeat-spin" /> : <RefreshCw size={12} />}
+          {t("heartbeat.convertRetry")}
+        </button>
+      </div>
+    );
+  }
+
+  if (state === "converted") {
+    return (
+      <div className="heartbeat-convert heartbeat-convert--done">
+        <Check size={13} />
+        <span>{conversion?.assistantName ? `${t("heartbeat.converted")}：${conversion.assistantName}` : t("heartbeat.converted")}</span>
+        {onOpenAssistant && (
+          <button className="heartbeat-convert__btn" type="button" onClick={() => onOpenAssistant(conversion?.assistantId ?? "")}>
+            <Bot size={12} />
+            {t("heartbeat.openAssistant")}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (state === "conflict" || state === "unmappable") {
+    return (
+      <div className="heartbeat-convert heartbeat-convert--warning" role="status">
+        <AlertTriangle size={13} />
+        <span>{state === "conflict" ? t("heartbeat.convertConflict") : t("heartbeat.convertUnmappable")}</span>
+        {conversion?.reason ? <span className="heartbeat-convert__reason">{conversion.reason}</span> : null}
+      </div>
+    );
+  }
+
+  if (state === "in_progress") {
+    return (
+      <div className="heartbeat-convert heartbeat-convert--pending">
+        <RefreshCw size={12} className="heartbeat-spin" />
+        <span>{t("heartbeat.convertRetry")}</span>
+        <button className="heartbeat-convert__btn" type="button" onClick={onConvert} disabled={converting}>
+          {t("heartbeat.convertRetry")}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="heartbeat-convert">
+      {risky && (
+        <span className="heartbeat-convert__risk" role="note">
+          <AlertTriangle size={12} />
+          {t("heartbeat.convertRiskYolo")}
+        </span>
+      )}
+      <button className="heartbeat-convert__btn" type="button" onClick={onConvert} disabled={converting}>
+        {converting ? <RefreshCw size={12} className="heartbeat-spin" /> : <Bot size={12} />}
+        {t("heartbeat.convertToAssistant")}
+      </button>
+    </div>
   );
 }
 

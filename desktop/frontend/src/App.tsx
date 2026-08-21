@@ -1207,6 +1207,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
   const heartbeatOpen = useOverlayStore((s) => s.heartbeatOpen);
   const setHeartbeatOpen = useOverlayStore((s) => s.setHeartbeatOpen);
   const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantFocusID, setAssistantFocusID] = useState("");
   const [collaborationDialog, setCollaborationDialog] = useState<{
     sessionID?: string;
     workspaces: CollaborationWorkspaceOption[];
@@ -4204,7 +4205,11 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
                 <span>{collaborationLabel}</span>
               </button>
 
-              <AssistantSidebarEntry active={showAssistantSurface} onClick={() => { closeTransientOverlays(); setAssistantOpen(true); }} />
+              <AssistantSidebarEntry active={showAssistantSurface} onClick={() => {
+                closeTransientOverlays();
+                setAssistantFocusID("");
+                setAssistantOpen(true);
+              }} />
 
               <div className="workspace-sidebar__tree" ref={workspaceTreeRef}>
                 {irisFixtureActive ? (
@@ -4265,7 +4270,7 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
             {workbenchSidebarRestoreControl}
 
             {showAssistantSurface ? (
-              <AssistantWorkspace onOpenSession={(scope, workspaceRoot, sessionPath) => {
+              <AssistantWorkspace focusAssistantID={assistantFocusID} onOpenSession={(scope, workspaceRoot, sessionPath) => {
                 setAssistantOpen(false);
                 void app.OpenLinkedSession(scope, workspaceRoot, "", sessionPath)
                   .then(() => refreshProjectsAndTabs())
@@ -5286,6 +5291,11 @@ function MainApp({ widgetEnabled, widgetActive, ownerDecisionEnabled, onEnterWid
 
       <HeartbeatPanel open={heartbeatOpen} onClose={() => setHeartbeatOpen(false)} onOpenTopic={(scope, workspaceRoot, topicId) => {
         void handleOpenTopic(scope, workspaceRoot, topicId);
+      }} onOpenAssistant={(assistantId) => {
+        setHeartbeatOpen(false);
+        closeTransientOverlays();
+        setAssistantFocusID(assistantId);
+        setAssistantOpen(true);
       }} />
       {collaborationDialog && (
         <CollaborationWorkspace

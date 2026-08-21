@@ -1,6 +1,6 @@
 # WorkGround2 助理模式设计
 
-> 状态：实现中
+> 状态：阶段 1～3 已实现，阶段 4 暂不实施
 >
 > 分支：`developping/assistant-mode+2026-08-17`
 >

@@ -90,6 +90,27 @@ const zh = {
   saved: "已保存",
   resolveNote: "由桌面端处理",
   rejectNote: "用户拒绝回答",
+  templates: "选择模板",
+  templateCode: "代码项目",
+  templateGeneral: "通用",
+  templatePromo: "推广",
+  templateCodeDesc: "项目健康检查、测试/构建、发布准备，发布前必须审批。",
+  templateGeneralDesc: "使命与例行任务由你填写，默认只读。",
+  templatePromoDesc: "外部渠道连接与效果采集属于阶段 4 能力。",
+  phase4Preview: "阶段 4 预告",
+  routinePreview: "将创建以下例行任务",
+  permissionTitle: "权限摘要",
+  permissionConfirm: "我已了解并确认以上权限设置",
+  policyLocalWrite: "本地写入",
+  policyNetwork: "网络",
+  policyPublish: "对外发布",
+  policyHighRisk: "删除 / 付费 / 凭据",
+  accessAllow: "自动允许",
+  accessDeny: "拒绝",
+  accessApprove: "逐次审批",
+  routineFrequencyManual: "仅手动",
+  noRoutines: "还没有例行任务。",
+  addRoutine: "新增例行任务",
 };
 
 const en: typeof zh = {
@@ -107,6 +128,13 @@ const en: typeof zh = {
   approve: "Approve", continueRun: "Continue run", reject: "Reject", answer: "Answer", answerPlaceholder: "Enter a clear answer for the assistant…", confirmRetry: "Confirm retry", markSucceeded: "Mark succeeded", markFailed: "Mark failed", cancel: "Cancel", retryRun: "Retry", rerun: "Run again", waitingRetry: "The system will retry on schedule, or you can cancel this run.", handleAttention: "Review", changeProject: "Change project", cancelOldRun: "Cancel old run", rebindWarning: "This run froze the previous project path. Save the new path, then run again; approving this run would still use the old path.", stopRun: "Stop", openSession: "Open session", createTitle: "Create an ongoing assistant",
   createBody: "Give it a clear mission, then choose how often it should wake up.", create: "Create assistant", createName: "e.g. Code project assistant",
   createMission: "e.g. Track project health and ask before publishing when ready.", error: "That didn't work. Please retry.", saved: "Saved", resolveNote: "Resolved from Desktop", rejectNote: "The user declined to answer",
+  templates: "Choose a template", templateCode: "Code project", templateGeneral: "General", templatePromo: "Promotion",
+  templateCodeDesc: "Project health, test/build, release readiness; publishing always asks first.", templateGeneralDesc: "Mission and routines are yours to fill; read-only by default.",
+  templatePromoDesc: "External channels and effect collection are a phase-4 capability.", phase4Preview: "Phase 4 preview", routinePreview: "It will create these routines",
+  permissionTitle: "Permissions", permissionConfirm: "I understand and confirm these permissions",
+  policyLocalWrite: "Local writes", policyNetwork: "Network", policyPublish: "Publishing", policyHighRisk: "Delete / payment / credentials",
+  accessAllow: "Auto-allow", accessDeny: "Deny", accessApprove: "Per-action approval", routineFrequencyManual: "Manual only",
+  noRoutines: "No routines yet.", addRoutine: "Add routine",
 };
 
 const zhTW: typeof zh = { ...zh, entry: "助理", newAssistant: "新增助理", memory: "明確記憶", history: "執行記錄", attention: "待處理", save: "儲存" };

@@ -452,6 +452,8 @@ export interface AppBindings extends WailsWorkBindings {
   HeartbeatSaveTasks(tasks: unknown): Promise<void>;
   HeartbeatTriggerNow(id: string): Promise<void>;
   HeartbeatGenerateID(): Promise<string>;
+  HeartbeatListConversions(): Promise<unknown>;
+  HeartbeatConvertToAssistant(id: string): Promise<unknown>;
   // ── Assistant mode ──
   AssistantList(): Promise<AssistantListResult>;
   AssistantGet(assistantId: string): Promise<AssistantSnapshot>;
@@ -4851,6 +4853,8 @@ function makeMockApp(): AppBindings {
     async HeartbeatSaveTasks(_tasks: unknown) {},
     async HeartbeatTriggerNow(_id: string) {},
     async HeartbeatGenerateID() { return "mock-" + Date.now().toString(36); },
+    async HeartbeatListConversions() { return []; },
+    async HeartbeatConvertToAssistant(_id: string) { return { taskId: _id, state: "convertible" }; },
     // ── Assistant mode mock ──
     async AssistantList() {
       return cloneAssistant({

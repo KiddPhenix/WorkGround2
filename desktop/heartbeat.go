@@ -12,9 +12,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,6 +22,7 @@ import (
 
 	"workground2/internal/config"
 	"workground2/internal/control"
+	"workground2/internal/fileutil"
 )
 
 // ── Data model ──────────────────────────────────────────────────────────────
@@ -109,16 +110,7 @@ func (e *HeartbeatEngine) saveTasks(tasks []HeartbeatTask) error {
 	if err != nil {
 		return err
 	}
-	path := e.configPath()
-	// Ensure the parent directory exists before writing.
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return fileutil.AtomicWriteFile(e.configPath(), b, 0o644)
 }
 
 // Start launches the scheduler goroutine.
@@ -360,6 +352,44 @@ func (e *HeartbeatEngine) executeTask(t HeartbeatTask) HeartbeatTask {
 	return t
 }
 
+// TaskByID returns a single task by ID.
+func (e *HeartbeatEngine) TaskByID(id string) (HeartbeatTask, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, task := range e.tasks {
+		if task.ID == id {
+			return task, true
+		}
+	}
+	return HeartbeatTask{}, false
+}
+
+// SetTaskEnabled toggles a single task's enabled flag and persists it. The
+// write lands on disk before the in-memory list is updated, so a failed save
+// leaves the previous state untouched.
+func (e *HeartbeatEngine) SetTaskEnabled(id string, enabled bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	tasks := append([]HeartbeatTask(nil), e.tasks...)
+	found := false
+	for i := range tasks {
+		if tasks[i].ID == id {
+			tasks[i].Enabled = enabled
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("heartbeat task %q not found", id)
+	}
+	if err := e.saveTasks(tasks); err != nil {
+		return err
+	}
+	e.tasks = tasks
+	e.prunePendingTopicsLocked(tasks)
+	return nil
+}
+
 // ListTasks returns a copy of the current tasks (in-memory).
 func (e *HeartbeatEngine) ListTasks() []HeartbeatTask {
 	e.mu.Lock()
@@ -380,13 +410,18 @@ func (e *HeartbeatEngine) ReloadTasks() []HeartbeatTask {
 	return out
 }
 
-// ReplaceTasks atomically replaces the task list and persists it.
+// ReplaceTasks atomically replaces the task list and persists it. The write
+// lands on disk before the in-memory list is updated, so a failed save leaves
+// the previous in-memory state intact.
 func (e *HeartbeatEngine) ReplaceTasks(tasks []HeartbeatTask) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.saveTasks(tasks); err != nil {
+		return err
+	}
 	e.tasks = tasks
 	e.prunePendingTopicsLocked(tasks)
-	return e.saveTasks(tasks)
+	return nil
 }
 
 func (e *HeartbeatEngine) prunePendingTopicsLocked(tasks []HeartbeatTask) {
@@ -794,10 +829,32 @@ func (a *App) HeartbeatReloadTasks() []HeartbeatTask {
 	return a.heartbeat.ReloadTasks()
 }
 
-// HeartbeatSaveTasks replaces the full task list and persists it.
+// HeartbeatSaveTasks replaces the full task list and persists it. Edits to a
+// task that already has a conversion receipt (created/disabled/activated) are
+// rejected: its content fingerprint may not change and it must stay disabled.
 func (a *App) HeartbeatSaveTasks(tasks []HeartbeatTask) error {
 	if a.heartbeat == nil {
 		return nil
+	}
+	a.conversionMu.Lock()
+	defer a.conversionMu.Unlock()
+	receipts, err := loadHeartbeatConversions(a.heartbeatConversionPath())
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, task := range tasks {
+		receipt, exists := receipts[task.ID]
+		if !exists {
+			continue
+		}
+		fingerprint, fpErr := heartbeatTaskFingerprint(task, now)
+		if fpErr != nil || fingerprint != receipt.Fingerprint {
+			return fmt.Errorf("heartbeat task %q 已转换为助理，内容不可再编辑", task.ID)
+		}
+		if task.Enabled {
+			return fmt.Errorf("heartbeat task %q 已转换为助理，必须保持停用", task.ID)
+		}
 	}
 	return a.heartbeat.ReplaceTasks(tasks)
 }

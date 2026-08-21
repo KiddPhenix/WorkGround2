@@ -555,3 +555,26 @@
 @media (prefers-reduced-motion: reduce) {
   .assistant-spin { animation: none; }
 }
+
+/* ── create assistant templates ──────────────────────────────── */
+
+.assistant-templates { display: flex; flex-direction: column; gap: 10px; }
+.assistant-templates h3 { margin: 0; color: #96918b; font-size: 12px; font-weight: 600; }
+.assistant-template { display: flex; flex-direction: column; gap: 6px; padding: 14px 15px; border: 1px solid #34373a; border-radius: 9px; background: #131518; color: #e7dfd4; text-align: left; cursor: pointer; }
+.assistant-template:hover:not(:disabled) { border-color: #9f67d0; }
+.assistant-template--disabled { opacity: 0.55; cursor: default; }
+.assistant-template__name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; }
+.assistant-template__desc { color: #797570; font-size: 12px; }
+.assistant-template__badge { padding: 1px 7px; border: 1px solid #5d4930; border-radius: 10px; color: #c9b18e; background: #201b14; font-size: 10px; font-weight: 500; }
+.assistant-create__template-bar { display: flex; align-items: center; justify-content: space-between; padding: 4px 0 0; color: #e7dfd4; font-size: 13px; font-weight: 600; }
+.assistant-create__routines { display: flex; flex-direction: column; gap: 6px; }
+.assistant-create__routines-label { color: #96918b; font-size: 12px; font-weight: 600; }
+.assistant-create__routine { display: flex; align-items: center; gap: 7px; color: #8f8b86; font-size: 12px; }
+.assistant-create__routine-label { display: flex; flex-direction: column; gap: 6px; color: #96918b; font-size: 12px; font-weight: 600; }
+.assistant-create__routine-label input,
+.assistant-create__routine-label textarea,
+.assistant-create__routine-label select { box-sizing: border-box; width: 100%; min-height: 36px; padding: 8px 10px; border: 1px solid #34373a; border-radius: 7px; outline: none; color: #e7dfd4; background: #101214; }
+.assistant-create__permissions { display: flex; flex-direction: column; gap: 6px; padding: 12px 13px; border: 1px solid #5d4930; border-radius: 7px; background: #201b14; }
+.assistant-create__permission-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #8f8b86; font-size: 12px; }
+.assistant-create__permission-row strong { color: #c9b18e; font-weight: 600; }
+.assistant-create__confirm { color: #8f8b86 !important; }

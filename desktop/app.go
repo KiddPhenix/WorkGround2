@@ -230,6 +230,8 @@ type App struct {
 	assistant    *AssistantRuntime // long-lived assistant scheduler and background runner
 	assistantErr error             // explicit startup failure surfaced by bound APIs
 
+	conversionMu sync.Mutex // serializes heartbeat→assistant conversions and their journal
+
 	externalSessionGCRunning atomic.Bool
 
 	sessionWatcher *sessionWatcher // filesystem watcher for session dir changes
