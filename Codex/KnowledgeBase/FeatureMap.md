@@ -8,6 +8,7 @@
 
 | 功能名 | 状态 | 分支 | 负责人 | 主要文件 | 备注 |
 |---|---|---|---|---|---|
+| Room Journal 序列自愈与单写者 | `in_progress` | `developping/room-journal-repair+2026-08-21` | `Codex` | `internal/collab/store.go`、Desktop Collaboration Authority 及相关测试 | 调整功能：Journal 回放遇到迟到/冲突 Sequence 时不再让整个 Room 启动失败；异常记录进入修复队列，重分配事件标识与 Sequence 后追加到逻辑尾部，并以备份加原子重写提交。Desktop 内 V1/V2 Host 收敛为唯一 Authority/FileStore，阻断多个内存写者重复分配 Sequence。未使用 WorkGround2 Worker。 |
 | Room Runtime 启动对账闭环 | `done` | `developping/room-runtime-startup-reconcile+2026-08-21` | `Codex` | `desktop/app.go`、`desktop/collab_app.go`、`desktop/collab_app_test.go` | Room runtime 恢复已从 UI Tab 分支移到共同启动尾部，Desktop 无论是否存在历史 tab 都恰好执行一次持久化 Room 对账；首次 Host/Client 恢复错误记录 Session、Room、Host、Port 与 retryable，既有 updateLoop 继续负责低频自愈，重试时间未改。空 Tab 冷启动专项实际 TCP 探测 Host Listener，Collaboration 全组、Tab＋Collaboration 宽回归、`go vet ./...` 与 diff check 通过。未使用 WorkGround2 Worker。 |
 | 小组件重启后首次点击误移动 | `done` | `developping/widget-first-click-drag+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 调整功能：首次点击使图标获焦并打开预览时，右下锚定的透明画布会首次扩张；拖拽位移现统一使用屏幕坐标，窗口原点变化不会再导致 viewport client 坐标跳变并误判为图标拖动。图标专项与 TypeScript 检查通过。 |
 | 小组件异步弹窗命中区域重同步 | `done` | `developping/widget-popup-region-resync+2026-08-21` | `Codex` | `desktop/frontend/src/components/widget/DesktopIconMode.tsx`、`desktop-icon-mode.test.ts` | 调整功能：透明画布已扩张时，新弹窗会在异步 render gate 后才挂载；命中区域观察器现随 overlay ready 状态重启并观察真实弹窗节点，后续列表增高由 ResizeObserver 持续同步，避免原生窗口区域沿用初始小弹窗矩形而裁切顶部。图标专项与 TypeScript 检查通过。 |
