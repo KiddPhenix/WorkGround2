@@ -4,12 +4,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clusterGridMaxWidth, iconHitRect, ICON_ZOOM_MAX, ICON_ZOOM_MIN, ICON_ZOOM_STEP, normalizeIconZoom, parseCollapseState, parseIconZoom, placeIconPopup, quickStartWorkspaceIndex, scaleIconRect, serializeCollapseState, serializeIconZoom, stepIconZoom, widgetViewportSize } from "../components/widget/desktopIconLayout";
 import { CLICK_DELAY, DRAG_THRESHOLD, IconTimers, PREVIEW_CLOSE_DELAY, type TimerHost } from "../components/widget/desktopIconTimers";
+import { desktopIconDragOrder, previewDesktopIconMove } from "../components/widget/desktopIconDrag";
 import { nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, sameQuickStartIntent } from "../components/widget/quickStartPreferences";
 import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTitle, WORKSPACE_PIN_LIMIT, workspacePinsFull } from "../components/widget/workspaceManager";
 import { roomRows } from "../components/widget/roomsManager";
 import { parseRoomIconVisibility, readRoomIconVisibility, ROOM_ICON_VISIBILITY_KEY, visibleDesktopIcons, writeRoomIconVisibility } from "../components/widget/roomIconVisibility";
 import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
-import type { DesktopIconDiagnosticsInput } from "../lib/bridge";
+import type { DesktopIconDiagnosticsInput, DesktopIconItem } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
 import type { ProjectNode } from "../lib/types";
 
@@ -51,6 +52,30 @@ const workspaceKeys = ["auto", "project:D:/Work/A", "project:D:/Work/B", "global
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "project:D:/Work/B", "project:D:/Work/A", "global"), 2, "pending retry wins over requested and remembered workspaces");
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "project:D:/Work/A", "global"), 1, "source workspace wins over remembered selection");
 assert.equal(quickStartWorkspaceIndex(workspaceKeys, "", "", "global"), 3, "QuickStart remembers its last workspace");
+
+const dragItems: DesktopIconItem[] = [0, 1, 2].map((order) => ({
+  id: `task:${order}`, kind: "task", sourceId: String(order), title: String(order), status: "idle", unreadCount: 0,
+  notifications: [], revision: String(order), position: { row: "bottom", zone: "running", order },
+}));
+assert.equal(desktopIconDragOrder(1, 100, 170, 3), 2, "dragging across one icon slot previews the next insertion order");
+assert.equal(desktopIconDragOrder(1, 100, -100, 3), 0, "drag preview clamps at the start of its own zone");
+const dragged = previewDesktopIconMove(dragItems, "task:0", 2);
+assert.deepEqual(dragged.map((item) => item.id), ["task:1", "task:2", "task:0"], "drag preview reorders its zone immediately");
+assert.deepEqual(dragItems.map((item) => item.id), ["task:0", "task:1", "task:2"], "drag preview never mutates the authoritative snapshot array");
+const mixedDragItems: DesktopIconItem[] = [
+  { ...dragItems[0], id: "room:0", kind: "room", position: { row: "top", zone: "conversation", order: 0 } },
+  dragItems[0],
+  { ...dragItems[0], id: "fixed:new", kind: "fixed", position: { row: "bottom", zone: "fixed", order: 0 } },
+  dragItems[1],
+];
+const mixedDragged = previewDesktopIconMove(mixedDragItems, "task:0", 1);
+assert.deepEqual(mixedDragged.map((item) => item.id), ["room:0", "task:1", "fixed:new", "task:0"], "drag preview reorders only the dragged item's row and zone");
+assert.deepEqual(mixedDragItems.map((item) => [item.id, item.position]), [
+  ["room:0", { row: "top", zone: "conversation", order: 0 }],
+  ["task:0", { row: "bottom", zone: "running", order: 0 }],
+  ["fixed:new", { row: "bottom", zone: "fixed", order: 0 }],
+  ["task:1", { row: "bottom", zone: "running", order: 1 }],
+], "mixed-zone drag preview leaves the authoritative array and positions untouched");
 
 const left = placeIconPopup({ left: 0, top: 480, width: 64, height: 72 }, 900, 600, 330);
 assert.equal(left.left, 10, "left-edge popup clamps to the safe margin");
@@ -167,6 +192,10 @@ assert.match(component, /SetDesktopIconHitRegions/, "frontend reports visible hi
 assert.match(component, /getClientRects\(\)\.length\s*>\s*0/, "popup visibility does not depend on offsetParent semantics");
 assert.match(component, /new ResizeObserver\(sync\)/, "native regions follow popup and menu content size changes");
 assert.match(component, /regionQueue\.current/, "native region updates are serialized instead of racing");
+assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}>改名<\/button><button[\s\S]{0,220}"randomize_icon"[\s\S]{0,80}>换个样子<\/button>/, "task/session context menus expose rename and explicit appearance randomization");
+assert.match(component, /const displayItems = useMemo\([\s\S]{0,240}previewDesktopIconMove\(visibleItems, dragPreview\.itemId, dragPreview\.order\)/, "drag insertion is projected locally before the backend snapshot changes");
+assert.match(component, /void run\(current\.item, "move"[\s\S]{0,180}\.finally\(\(\) => \{ setDraggingID\(""\); setDragPreview\(null\); \}\)/, "pointer release submits one durable move and clears the preview after the authoritative result");
+assert.match(css, /\.desktop-icon-wrap\.is-dragging\s*\{[^}]*translateY\(-6px\)[^}]*scale\(1\.035\)/, "the dragged icon has a restrained lifted state");
 assert.match(component, /nativeHitPadding\(node\)/, "native regions retain CSS shadows beyond element border boxes");
 assert.match(component, /app\.GetDesktopZoomFactor\(\)/, "icon mode reads the active WebView zoom factor");
 assert.match(component, /resolveWidgetZoomFrame\(desktopZoom\)/, "icon mode neutralizes WebView zoom for stable desktop-sized icons");
@@ -197,8 +226,8 @@ assert.match(component, /quickJobs\.reconcile\(next\.items\)/, "each refreshed s
 assert.match(component, /const optimisticItems = useMemo\([\s\S]{0,120}quickStartJobItem[\s\S]{0,120}\)/, "optimistic job icons are projected from the job ledger");
 assert.match(component, /const mergedItems = useMemo\(\(\) => mergeQuickStartItems\(snapshot\.items, optimisticItems\)/, "optimistic icons merge with the authoritative snapshot items");
 assert.match(component, /isQuickStartJobItem\(item\)\) openQuickStartJob\(item\); else void run\(item, "open"\)/, "double-clicking an optimistic job opens its popup (or the real task for an accepted job) instead of dispatching a backend open on the fake opt: id");
-assert.match(component, /isQuickStartJobItem\(item\)\) return;[\s\S]{0,80}void run\(item, "move"/, "dragging an optimistic job never dispatches a backend move");
-assert.match(component, /setPreviewID\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job closes the hover preview and opens its popup instead of the backend context menu");
+assert.match(component, /isQuickStartJobItem\(current\.item\)\) \{ setDraggingID\(""\); setDragPreview\(null\); return; \}[\s\S]{0,180}void run\(current\.item, "move"/, "dragging an optimistic job never dispatches a backend move");
+assert.match(component, /setPreviewID\(""\); setRenamingID\(""\); setRenameDraft\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \}/, "right-clicking an optimistic job closes the hover preview and opens its popup instead of the backend context menu");
 assert.match(component, /<QuickStartJobBody job=\{activeQuickJob\}[\s\S]{0,260}onRetry=\{\(requestId\) => \{ quickJobs\.retry\(requestId\); \}\}[\s\S]{0,120}onEdit=\{editQuickStartJob\}[\s\S]{0,120}onDismiss=\{\(requestId\) => \{ if \(quickJobs\.dismiss\(requestId\)\) \{ setActiveID\(""\); setPreviewID\(""\); \} \}\}[\s\S]{0,80}onOpenMain=\{openMainWindow\}[\s\S]{0,160}onOpenTask=\{activeQuickJob\?\.phase === "accepted" && activeQuickJob\.tabId \? \(\) => void openQuickStartTask\(activeQuickJob\) : undefined\}/, "the optimistic popup exposes retry/edit/dismiss wired to the runner, an open-main action for running jobs, and open-task for accepted jobs");
 assert.match(component, /const editQuickStartJob = \(job: QuickStartJob\) => \{[\s\S]{0,80}setQuickStartEditJob\(job\);[\s\S]{0,80}setQuickWorkspace\(job\.intent\.workspace \|\| ""\);[\s\S]{0,80}setActiveID\("fixed:new"\);[\s\S]{0,20}\};/, "editing a failed job passes the frozen intent through state/props (never localStorage) and tracks the source requestId");
 const jobsSource = readFileSync(resolve(import.meta.dirname, "../components/widget/widgetQuickStartJobs.ts"), "utf8");
@@ -267,7 +296,7 @@ assert.match(component, /item\.kind === "room" \|\| item\.kind === "person"/, "R
 assert.match(component, /conversation:\s*notice\?\.conversation[\s\S]+readSequence:\s*notice\?\.readSequence/, "reply retries carry the stable conversation business key before snapshot recovery");
 assert.match(component, /addEventListener\("blur", close\)/, "losing desktop-window focus closes menus and popups");
 assert.match(component, /const pointerUp =[\s\S]+const current = drag\.current; drag\.current = null;\s*if \(!current\) return;[\s\S]+timers\.current\?\.scheduleClick/, "pointer up schedules a click only after a matching primary pointer down");
-assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); setPreviewID\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \} \}\}/, "opening an icon context menu immediately closes the hover preview, cancels every delayed timer, and closes the anchor menu and quick toolbar before showing right-click actions; an optimistic job opens its popup instead of the backend menu");
+assert.match(component, /onContextMenu=\{\(event\) => \{ event\.preventDefault\(\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\); setPreviewID\(""\); setRenamingID\(""\); setRenameDraft\(""\); if \(isQuickStartJobItem\(item\)\) \{ setActiveID\(item\.id\); setMenuID\(""\); \} else \{ setMenuID\(item\.id\); setActiveID\(""\); \} \}\}/, "opening an icon context menu immediately closes the hover preview, cancels every delayed timer, and closes the anchor menu and quick toolbar before showing right-click actions; an optimistic job opens its popup instead of the backend menu");
 assert.match(component, /QUICK_WORKSPACE_KEY\s*=\s*"wg2\.icon-widget-workspace"/, "QuickStart uses a stable last-workspace key");
 assert.match(component, /setQuickWorkspace\(`project:\$\{active\.sourceId\}`\)/, "workspace icons preselect their own workspace in QuickStart");
 assert.doesNotMatch(component, /CornerUpRight|desktop-icon__shortcut/, "desktop icons do not render shortcut-arrow badges");
@@ -550,7 +579,11 @@ assert.match(css, /\.desktop-icon-controls[\s\S]*justify-content:\s*flex-end/, "
 assert.match(component, /desktop-icon-anchor[^>]*onClick=\{toggleQuick\}/, "left-clicking the WG2 anchor toggles the quick toolbar without pointer handlers, so native window dragging is preserved");
 assert.doesNotMatch(component, /desktop-icon-anchor[^>]*onPointerDown/, "the anchor keeps no pointer handlers, so left-button window dragging stays native Wails drag");
 assert.match(component, /const cancelTransientTimers = useCallback\(\(\) => \{[\s\S]*timers\.current\?\.cancel\(\);[\s\S]*drag\.current = null;[\s\S]*\}, \[\]\)/, "the central timer cancel clears every scheduled click/hover/preview and the in-flight drag");
-assert.match(component, /const closeTransient = useCallback\(\(\) => \{[\s\S]*cancelTransientTimers\(\);[\s\S]*setActiveID\(""\); setPreviewID\(""\); setMenuID\(""\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "the central close path cancels the timers before clearing every transient surface");
+const closeTransientSource = component.slice(component.indexOf("const closeTransient = useCallback"), component.indexOf("// Share one in-flight snapshot request"));
+assert.ok(closeTransientSource.indexOf("cancelTransientTimers();") >= 0 && closeTransientSource.indexOf("cancelTransientTimers();") < closeTransientSource.indexOf('setActiveID("")'), "the central close path cancels timers before clearing transient state");
+for (const clear of ['setActiveID("")', 'setPreviewID("")', 'setMenuID("")', 'setRenamingID("")', 'setRenameDraft("")', 'setWorkspaceIconRoot("")', 'setDraggingID("")', "setDragPreview(null)", "setAnchorMenuOpen(false)", "setQuickOpen(false)"]) {
+  assert.ok(closeTransientSource.includes(clear), `the central close path clears ${clear}`);
+}
 assert.match(component, /const toggleQuick = \(\) => \{[\s\S]*closeTransient\(\);[\s\S]*const next = !quickOpen;[\s\S]*setQuickOpen\(next\);[\s\S]*if \(next && topmostReadFailed\) setTopmostAttempt\(\(attempt\) => attempt \+ 1\);/, "anchor left-click closes every transient surface through the central path before toggling the toolbar, and reopening retries a failed always-on-top read");
 assert.match(component, /closeTransient\(\);[\s\S]*setAnchorMenuOpen\(true\)/, "anchor right-click closes every transient surface before opening its settings menu");
 assert.match(component, /aria-expanded=\{quickOpen\} aria-controls="desktop-icon-quick"/, "the anchor's aria-expanded/controls describe only its own left-click surface (the quick toolbar)");
@@ -583,7 +616,7 @@ assert.match(component, /const \[topmostAttempt, setTopmostAttempt\] = useState\
 // --- transient anchor UI closes on any real interaction, and hover preview
 // is suppressed while the quick toolbar or anchor menu is open ---
 assert.match(component, /if \(!snapshot\.hoverStatusDelayMs \|\| activeID \|\| menuID \|\| drag\.current \|\| anchorMenuOpen \|\| quickOpen\) return;/, "hover preview is suppressed while the quick toolbar or anchor menu is open");
-assert.match(component, /drag\.current = \{ item, x: event\.clientX, y: event\.clientY, moved: false \};[\s\S]*setAnchorMenuOpen\(false\);[\s\S]*setQuickOpen\(false\);/, "pointer-down on an icon closes the transient anchor UI immediately");
+assert.match(component, /drag\.current = \{ item, x: event\.clientX, y: event\.clientY, moved: false, targetOrder: item\.position\.order \};[\s\S]*setAnchorMenuOpen\(false\);[\s\S]*setQuickOpen\(false\);/, "pointer-down on an icon closes the transient anchor UI immediately and records its authoritative start order");
 assert.match(component, /const doubleClick = \(item: DesktopIconItem\) => \{ timers\.current\?\.cancel\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "double-click cancels every delayed timer before running the icon action");
 assert.match(component, /setBusy\(true\); setError\(""\); cancelTransientTimers\(\); setAnchorMenuOpen\(false\); setQuickOpen\(false\);/, "a normal icon action cancels the delayed timers and closes the transient anchor UI");
 assert.match(component, /const onPointerDown = \(event: PointerEvent\) => \{[\s\S]*if \(target\.closest\(TRANSIENT_PROTECTED_SELECTOR\)\) return;[\s\S]*closeTransient\(\);[\s\S]*document\.addEventListener\("pointerdown", onPointerDown\)/, "a document-level outside-click handler closes every transient surface (timers included) on any container/grid/control gap");
@@ -686,7 +719,9 @@ assert.doesNotMatch(component, /RemoveWorkspace[\s\S]{0,60}setRows/, "delete nev
 assert.match(component, /catch \(cause\) \{\s*\/\/ The row stays[\s\S]+setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "delete failure keeps the row and the armed retry entry");
 assert.match(component, /WORKSPACE_MATTE_ICON_OPTIONS\.map\(\(option\)[\s\S]{0,400}<WorkspaceMatteIcon icon=\{option\.key\}/, "the workspace editor exposes every matte PNG through one typed catalog");
 assert.match(component, /await app\.SetProjectIcon\(row\.root, icon\)[\s\S]{0,100}await reload\(\)[\s\S]{0,100}await onChanged\(\)[\s\S]{0,100}setIconEditing\(null\)/, "a successful icon assignment persists, reloads the manager, and refreshes the widget snapshot before closing");
-assert.match(component, /<WorkspaceManager onClose=\{\(\) => setActiveID\(""\)\} onChanged=\{refresh\}/, "the workspace manager refreshes the live desktop snapshot through its parent-owned refresh entry");
+assert.match(component, /item\.kind === "workspace" && <button[\s\S]{0,160}openWorkspaceIconEditor\(item\)[\s\S]{0,160}>修改图标<\/button>/, "a workspace icon context menu exposes 修改图标 for the clicked workspace");
+assert.match(component, /openWorkspaceIconEditor[\s\S]{0,180}setWorkspaceIconRoot\(item\.sourceId\)[\s\S]{0,120}setActiveID\("fixed:workspace"\)/, "workspace context editing carries the clicked root into the shared manager");
+assert.match(component, /<WorkspaceManager initialIconRoot=\{workspaceIconRoot\}[\s\S]{0,180}onChanged=\{refresh\}/, "the workspace manager receives the clicked root and refreshes the live desktop snapshot through its parent-owned entry");
 assert.match(component, /Keep the palette open[\s\S]{0,220}setError\(cause instanceof Error \? cause\.message : String\(cause\)\)/, "an icon write failure stays visible and retryable without closing the palette");
 assert.match(component, /function WorkspaceGlyph[\s\S]+isWorkspaceMatteIcon\(icon\)[\s\S]+case "star": return <Star[\s\S]+default: return <Folder/, "workspace rows render matte assets while preserving legacy Lucide keys and folder fallback");
 assert.match(component, /<WorkspaceGlyph icon=\{row\.icon\} \/>/, "the workspace row renders the icon through the dedicated glyph component");
@@ -1173,10 +1208,10 @@ assert.equal(
   assert.match(mode, /item\.kind === "fixed" \? openItem\(item\) : void run\(item, "open"\)/, "menu open path unchanged");
 }
 
-// bridge 快照类型携带 Agent Icon 展示字段（sessionId/workspaceIcon/sessionRef）。
+// bridge 快照类型携带 Agent Icon 展示字段（稳定身份、显式外观、workspace/ref）。
 {
   const bridge = readFileSync(resolve(testDir, "../lib/bridge.ts"), "utf8");
-  assert.match(bridge, /sessionId\?: string;\s*\n\s*workspaceIcon\?: string;[\s\S]{0,120}sessionRef\?: DesktopIconTaskRef;/, "DesktopIconItem exposes the Agent Icon display fields");
+  assert.match(bridge, /sessionId\?: string;\s*\n\s*appearanceSeed\?: string;\s*\n\s*workspaceIcon\?: string;[\s\S]{0,120}sessionRef\?: DesktopIconTaskRef;/, "DesktopIconItem exposes the Agent Icon display fields");
 }
 
 console.log("desktop icon mode tests passed");

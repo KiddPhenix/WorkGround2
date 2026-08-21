@@ -1852,3 +1852,70 @@ func TestDesktopIconOpenWorkspaceActivatesSelectedWorkspace(t *testing.T) {
 		t.Fatalf("active workspace = %q, want %q", got, rootB)
 	}
 }
+
+func unwritableDesktopIconStateHome(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "state-file")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestDesktopIconRandomizeRollsBackFailedWriteAndRetries(t *testing.T) {
+	tab, _ := completionTestTab(t, 1000)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "task:"+tab.ID)
+	if item == nil {
+		t.Fatal("task icon missing")
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-randomize", Action: "randomize_icon"}
+	t.Setenv("WorkGround2_STATE_HOME", unwritableDesktopIconStateHome(t))
+	failed := app.ApplyDesktopIconAction(input)
+	if failed.Status != "retryable_error" || len(app.iconWidgetState.AppearanceSeeds) != 0 || len(app.iconWidgetState.Applied) != 0 {
+		t.Fatalf("failed randomize mutated state: result=%+v state=%+v", failed, app.iconWidgetState)
+	}
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	retried := app.ApplyDesktopIconAction(input)
+	changed := findDesktopIconItem(retried.Snapshot.Items, item.ID)
+	if retried.Status != "accepted" || changed == nil || changed.AppearanceSeed == "" || changed.AppearanceSeed == item.AppearanceSeed {
+		t.Fatalf("randomize retry did not commit one new appearance: result=%+v item=%+v", retried, changed)
+	}
+	seed := changed.AppearanceSeed
+	duplicate := app.ApplyDesktopIconAction(input)
+	dupItem := findDesktopIconItem(duplicate.Snapshot.Items, item.ID)
+	if duplicate.Status != "already_applied" || dupItem == nil || dupItem.AppearanceSeed != seed {
+		t.Fatalf("randomize duplicate was not idempotent: result=%+v item=%+v", duplicate, dupItem)
+	}
+}
+
+func TestDesktopIconRenameRollsBackFailedPrepareAndRetries(t *testing.T) {
+	tab, sp := completionTestTab(t, 1000)
+	app := newSummaryTestApp(t, tab, fakeCompletionSummaryGenerator{})
+	app.sessionDirsOverride = []string{filepath.Dir(sp)}
+	item := findDesktopIconItem(app.GetDesktopIconSnapshot().Items, "task:"+tab.ID)
+	if item == nil {
+		t.Fatal("task icon missing")
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-rename", Action: "rename", Values: []string{"新的名字"}}
+	t.Setenv("WorkGround2_STATE_HOME", unwritableDesktopIconStateHome(t))
+	failed := app.ApplyDesktopIconAction(input)
+	if failed.Status != "retryable_error" || len(app.iconWidgetState.Applied) != 0 {
+		t.Fatalf("failed rename prepare mutated receipts: result=%+v receipts=%+v", failed, app.iconWidgetState.Applied)
+	}
+	t.Setenv("WorkGround2_STATE_HOME", t.TempDir())
+	retried := app.ApplyDesktopIconAction(input)
+	if retried.Status != "accepted" {
+		t.Fatalf("rename retry = %+v", retried)
+	}
+	if title := loadSessionTitles(filepath.Dir(sp))[filepath.Base(sp)]; title != "新的名字" {
+		t.Fatalf("renamed session title = %q", title)
+	}
+	renamed := findDesktopIconItem(retried.Snapshot.Items, item.ID)
+	if renamed == nil || renamed.Title != "新的名字" {
+		t.Fatalf("rename response snapshot item = %+v", renamed)
+	}
+	if duplicate := app.ApplyDesktopIconAction(input); duplicate.Status != "already_applied" {
+		t.Fatalf("rename duplicate = %+v", duplicate)
+	}
+}

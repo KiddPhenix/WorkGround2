@@ -84,7 +84,9 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
   --wails-draggable: no-drag;
 }
 .desktop-icon-collapse:focus-visible, .desktop-icon-anchor:focus-visible { outline: 2px solid #70dfe8; outline-offset: 2px; }
-.desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; }
+.desktop-icon-wrap { position: relative; width: 62px; flex: 0 0 62px; transition: transform 120ms ease, filter 120ms ease; }
+.desktop-icon-wrap.is-dragging { z-index: 7; filter: drop-shadow(0 9px 8px rgb(0 0 0 / 38%)); transform: translateY(-6px) scale(1.035); }
+.desktop-icon-wrap.is-dragging .desktop-icon { cursor: grabbing; }
 
 .desktop-icon {
   position: relative;
@@ -361,6 +363,11 @@ body:has(.desktop-icon-mode) .app--widget-hidden {
 .desktop-icon-menu { position: absolute; right: 0; bottom: 78px; z-index: 4; display: grid; min-width: 126px; padding: 5px; border: 1px solid #414550; border-radius: 8px; background: #1c1f27; box-shadow: 0 10px 28px rgb(0 0 0 / 48%); }
 .desktop-icon-menu button { padding: 6px 9px; border: 0; color: #e8eaf0; background: transparent; text-align: left; }
 .desktop-icon-menu button:hover { background: #353947; }
+.desktop-icon-menu__rename { display: grid; gap: 5px; padding: 3px; }
+.desktop-icon-menu__rename input { box-sizing: border-box; width: 190px; min-height: 30px; padding: 4px 7px; border: 1px solid #575c6a; border-radius: 6px; color: #f4f5f9; background: #151820; outline: none; }
+.desktop-icon-menu__rename input:focus { border-color: #9b82ed; box-shadow: 0 0 0 2px rgb(155 130 237 / 18%); }
+.desktop-icon-menu__rename > div { display: flex; justify-content: flex-end; gap: 4px; }
+.desktop-icon-menu__rename > div button { border: 1px solid rgb(255 255 255 / 12%); border-radius: 5px; }
 .desktop-icon-toast { position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 8px; max-width: 420px; padding: 9px 12px; border: 1px solid #8f3949; border-radius: 8px; background: #321c23; }
 .desktop-icon-toast button { width: 28px; height: 28px; border: 0; color: inherit; background: transparent; }
 .desktop-icon-toast svg { width: 16px; }

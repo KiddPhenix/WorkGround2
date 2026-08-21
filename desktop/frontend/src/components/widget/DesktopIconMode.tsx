@@ -15,6 +15,7 @@ import logoSymbol from "../../assets/logo-symbol.svg";
 import { QUICK_APPROVAL_KEY, QUICK_MODEL_KEY, nextQuickStartApproval, quickStartApprovalLabel, quickStartModelLabel, quickStartModelOptions, quickStartPreferences, resolveQuickStartApproval, resolveQuickStartModel, type QuickStartPreferences } from "./quickStartPreferences";
 import { quickStartAcceptCompletion, quickStartAtItems, quickStartCompletionKey, quickStartCompletionMove, quickStartPickMenu, quickStartSkillMatches, quickStartSkillQuery, quickStartSlashMatches, quickStartSlashQuery, quickStartVocabularyToken, type QuickStartCompletion } from "./quickStartCompletion";
 import { DRAG_THRESHOLD, IconTimers, windowTimerHost } from "./desktopIconTimers";
+import { desktopIconDragOrder, previewDesktopIconMove } from "./desktopIconDrag";
 import { IdleHoverTracer } from "./idleHoverTrace";
 import { QUICK_DRAFT_KEY, cleanupConsumedDraft, clearConsumedDraftMarker, createQuickStartOpenTaskGate, decideConsumedDraft, isQuickStartJobItem, mergeQuickStartItems, quickStartJobItem, quickStartJobPromptLabel, quickStartJobRequestIDFromItem, quickStartJobStateLabel, quickStartJobWorkspaceLabel, recordConsumedDraftMarker, useWidgetQuickStartJobs, type QuickStartConsumedDraftDecision, type QuickStartJob, type QuickStartJobIntent, type WidgetQuickStartJobsApi } from "./widgetQuickStartJobs";
 import { resolveWidgetZoomFrame } from "./widgetZoom";
@@ -581,7 +582,7 @@ function WorkspaceGlyph({ icon, size = 16 }: { icon: ProjectIconKey; size?: numb
   }
 }
 
-function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChanged: () => Promise<void> }) {
+function WorkspaceManager({ onClose, onChanged, initialIconRoot = "" }: { onClose: () => void; onChanged: () => Promise<void>; initialIconRoot?: string }) {
   const [rows, setRows] = useState<WorkspaceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -594,7 +595,7 @@ function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChang
   const [pinning, setPinning] = useState<string | null>(null);
 	const [workspaceSlots, setWorkspaceSlots] = useState(WORKSPACE_PIN_LIMIT);
 	const [slotsBusy, setSlotsBusy] = useState(false);
-  const [iconEditing, setIconEditing] = useState<string | null>(null);
+  const [iconEditing, setIconEditing] = useState<string | null>(() => initialIconRoot || null);
   const [iconBusy, setIconBusy] = useState(false);
   const pinnedRows = pinnedWorkspaceRows(rows);
   const pinsFull = workspacePinsFull(rows);
@@ -609,6 +610,7 @@ function WorkspaceManager({ onClose, onChanged }: { onClose: () => void; onChang
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (initialIconRoot) setIconEditing(initialIconRoot); }, [initialIconRoot]);
   const add = async () => {
     if (adding) return;
     setAdding(true);
@@ -875,6 +877,11 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const [activeID, setActiveID] = useState("");
   const [previewID, setPreviewID] = useState("");
   const [menuID, setMenuID] = useState("");
+  const [renamingID, setRenamingID] = useState("");
+  const [renameDraft, setRenameDraft] = useState("");
+  const [workspaceIconRoot, setWorkspaceIconRoot] = useState("");
+  const [draggingID, setDraggingID] = useState("");
+  const [dragPreview, setDragPreview] = useState<{ itemId: string; order: number } | null>(null);
   const [anchorMenuOpen, setAnchorMenuOpen] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [clusterZoom, setClusterZoom] = useState(readClusterZoom);
@@ -946,16 +953,20 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	);
 	const mergedItems = useMemo(() => mergeQuickStartItems(snapshot.items, optimisticItems), [optimisticItems, snapshot.items]);
 	const visibleItems = useMemo(() => visibleDesktopIcons(mergedItems, roomIconsVisible), [mergedItems, roomIconsVisible]);
+	const displayItems = useMemo(
+		() => dragPreview ? previewDesktopIconMove(visibleItems, dragPreview.itemId, dragPreview.order) : visibleItems,
+		[dragPreview, visibleItems],
+	);
 	// Agent Icon ViewModel 按真实 task 条目 memoize：身份/任务/状态推导只算
 	// 一次（每 session 一个），重复渲染、live→retained、重启后同 seed 输出
 	// 完全一致。动画帧不在这里 —— 由 AgentIcon 内部共享时钟推导。
 	const agentIconViewModels = useMemo(() => {
 		const map = new Map<string, AgentIconViewModel>();
-		for (const item of visibleItems) {
+		for (const item of displayItems) {
 			if (isAgentIconItem(item)) map.set(item.id, buildAgentIconViewModel(item));
 		}
 		return map;
-	}, [visibleItems]);
+	}, [displayItems]);
 	const timers = useRef<IconTimers | null>(null);
 	if (timers.current === null) timers.current = new IconTimers(windowTimerHost);
 	// idleTrace runs the low-overhead "first hover after idle" performance
@@ -966,7 +977,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	if (idleTrace.current === null) idleTrace.current = new IdleHoverTracer({
 		write: (record) => { void app.WriteDesktopIconDiagnostics(record).catch(() => {}); },
 	});
-  const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean } | null>(null);
+  const drag = useRef<{ item: DesktopIconItem; x: number; y: number; moved: boolean; targetOrder: number } | null>(null);
 	const actionRequests = useRef(new Map<string, string>());
   const itemRefs = useRef(new Map<string, HTMLButtonElement>());
 	const popupRef = useRef<HTMLElement>(null);
@@ -990,7 +1001,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	// precedes the state clearing.
 	const closeTransient = useCallback(() => {
 		cancelTransientTimers();
-		setActiveID(""); setPreviewID(""); setMenuID(""); setAnchorMenuOpen(false); setQuickOpen(false);
+		setActiveID(""); setPreviewID(""); setMenuID(""); setRenamingID(""); setRenameDraft(""); setWorkspaceIconRoot(""); setDraggingID(""); setDragPreview(null); setAnchorMenuOpen(false); setQuickOpen(false);
 	}, [cancelTransientTimers]);
 
 	// Share one in-flight snapshot request across every caller. Polling waits for
@@ -1164,7 +1175,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		else if (item.kind === "fixed" && item.sourceId === "workspace") {
 			// Single click opens the management dialog; it never runs the
 			// generic fixed action (which would exit widget mode).
-			setActiveID(item.id);
+			setWorkspaceIconRoot(""); setActiveID(item.id);
 		}
 		else if (item.kind === "fixed" && item.sourceId === "rooms") {
 			// Single click opens the Rooms management dialog; it never runs
@@ -1187,28 +1198,36 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
     // Drag start must cancel any pending click/hover/preview so a delayed open
     // or preview cannot resurrect while the pointer is down or mid-drag.
     timers.current?.cancel();
-    drag.current = { item, x: event.clientX, y: event.clientY, moved: false };
+    drag.current = { item, x: event.clientX, y: event.clientY, moved: false, targetOrder: item.position.order };
     setAnchorMenuOpen(false);
     setQuickOpen(false);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
   const pointerMove = (event: ReactPointerEvent) => {
-    if (!drag.current) return;
-    if (Math.hypot(event.clientX - drag.current.x, event.clientY - drag.current.y) > DRAG_THRESHOLD) { timers.current?.cancel(); drag.current.moved = true; setPreviewID(""); }
+    const current = drag.current;
+    if (!current) return;
+    if (Math.hypot(event.clientX - current.x, event.clientY - current.y) > DRAG_THRESHOLD) {
+		timers.current?.cancel(); current.moved = true; setPreviewID(""); setDraggingID(current.item.id);
+		const count = displayItems.filter((candidate) => candidate.position.row === current.item.position.row && candidate.position.zone === current.item.position.zone).length;
+		const order = desktopIconDragOrder(current.item.position.order, current.x, event.clientX, count);
+		if (order !== current.targetOrder) { current.targetOrder = order; setDragPreview({ itemId: current.item.id, order }); }
+	}
   };
   const pointerUp = (event: ReactPointerEvent, item: DesktopIconItem) => {
+	void event;
     const current = drag.current; drag.current = null;
     if (!current) return;
     if (current.moved) {
       // Optimistic jobs have no backend identity yet: dragging them must not
       // dispatch a move against the backend.
-      if (isQuickStartJobItem(item)) return;
-      const delta = Math.round((event.clientX - current.x) / 72);
-      void run(item, "move", [], undefined, { ...item.position, order: Math.max(0, item.position.order + delta) });
+      if (isQuickStartJobItem(current.item)) { setDraggingID(""); setDragPreview(null); return; }
+		const target = { ...current.item.position, order: current.targetOrder };
+		void run(current.item, "move", [], undefined, target).finally(() => { setDraggingID(""); setDragPreview(null); });
       return;
     }
     timers.current?.scheduleClick(() => openItem(item));
   };
+	const pointerCancel = () => { drag.current = null; setDraggingID(""); setDragPreview(null); };
 	// openQuickStartTask opens the real backend task behind an accepted job:
 	// ExitWidgetMode(tabId) is exactly what the existing run(item, "open")
 	// action performs for a real task icon, and it stays safe even when the
@@ -1237,9 +1256,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	};
 	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else if (isQuickStartJobItem(item)) openQuickStartJob(item); else void run(item, "open"); };
 
-  const rows = { top: visibleItems.filter((item) => item.position.row === "top"), bottom: visibleItems.filter((item) => item.position.row === "bottom") };
-  const active = visibleItems.find((item) => item.id === activeID);
-  const preview = visibleItems.find((item) => item.id === previewID);
+  const rows = { top: displayItems.filter((item) => item.position.row === "top"), bottom: displayItems.filter((item) => item.position.row === "bottom") };
+  const active = displayItems.find((item) => item.id === activeID);
+  const preview = displayItems.find((item) => item.id === previewID);
   const popupItem = active || preview;
 	useLayoutEffect(() => {
 		const node = popupRef.current;
@@ -1265,20 +1284,48 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		const placed = placeIconPopup(rect, viewport.width, viewport.height, width);
 		return { left: `${placed.left}px`, bottom: `${placed.bottom}px`, "--arrow-left": `${placed.arrowLeft}px`, "--popup-max-height": `${placed.maxHeight}px` } as CSSProperties;
 	}, [active, desktopZoom, popupItem, popupWidth, snapshot.revision, viewport.height, viewport.width]);
+	const finishMenuAction = async (item: DesktopIconItem, action: string, values: string[] = []) => {
+		const status = await run(item, action, values);
+		if (status === "accepted" || status === "already_applied") {
+			setMenuID(""); setRenamingID(""); setRenameDraft("");
+		}
+	};
+	const openWorkspaceIconEditor = (item: DesktopIconItem) => {
+		setWorkspaceIconRoot(item.sourceId); setMenuID(""); setActiveID("fixed:workspace");
+	};
+	const startSessionRename = (item: DesktopIconItem) => {
+		setRenamingID(item.id); setRenameDraft(item.title); setError("");
+	};
+	const commitSessionRename = (item: DesktopIconItem) => {
+		const title = renameDraft.trim();
+		if (!title || busy) return;
+		void finishMenuAction(item, "rename", [title]);
+	};
 
   const renderItem = (item: DesktopIconItem) => {
 		const agentVM = agentIconViewModels.get(item.id);
 		const agentIcon = Boolean(agentVM);
-		return <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}`}>
+		return <div key={item.id} className={`desktop-icon-wrap desktop-icon-wrap--${item.position.zone}${draggingID === item.id ? " is-dragging" : ""}`}>
 		<RuntimeIndicator item={item} />
-		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}${item.unreadCount > 0 ? " desktop-icon--pending" : ""}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
+		<button ref={(node) => { if (node) itemRefs.current.set(item.id, node); else itemRefs.current.delete(item.id); }} type="button" className={`desktop-icon desktop-icon--${item.status}${item.unreadCount > 0 ? " desktop-icon--pending" : ""}`} aria-label={`${item.title}，${previewText(item)}`} title={isQuickStartJobItem(item) ? `${item.title}，${quickStartJobStateLabel(item)}` : undefined} aria-expanded={activeID === item.id} onPointerDown={(event) => pointerDown(event, item)} onPointerMove={pointerMove} onPointerUp={(event) => pointerUp(event, item)} onPointerCancel={pointerCancel} onDoubleClick={() => doubleClick(item)} onContextMenu={(event) => { event.preventDefault(); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false); setPreviewID(""); setRenamingID(""); setRenameDraft(""); if (isQuickStartJobItem(item)) { setActiveID(item.id); setMenuID(""); } else { setMenuID(item.id); setActiveID(""); } }} onMouseEnter={() => enter(item)} onMouseLeave={() => { timers.current?.clearHover(); if (previewID === item.id) closePreviewSoon(); }} onFocus={() => { timers.current?.clearPreviewClose(); if (!activeID && !anchorMenuOpen && !quickOpen) setPreviewID(item.id); }} onBlur={() => { if (!activeID) closePreviewSoon(); }}>
       <span className={`desktop-icon__art${agentIcon ? " desktop-icon__art--agent" : ""}`}>{itemGlyph(item, agentVM)}{!agentIcon && (item.status === "running" || item.status === "thinking") && <span className={`desktop-icon__motion desktop-icon__motion--${item.status}`} aria-hidden="true">{item.status === "running" && <><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /><i className="desktop-icon__motion-corner" /></>}</span>}{isQuickStartJobItem(item) && item.status === "idle" && <span className="desktop-icon__queued" aria-hidden="true" />}</span>
       <span className="desktop-icon__label">{item.title}</span>
       {item.unreadCount > 0 && <span className="desktop-icon__unread" aria-label={`${item.unreadCount} 条未读`}>{item.unreadCount > 99 ? "99+" : item.unreadCount}</span>}
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
     </button>
-		{menuID === item.id && <div className="desktop-icon-menu" role="menu"><button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}</div>}
+		{menuID === item.id && <div className="desktop-icon-menu" role="menu">
+			{renamingID === item.id ? <div className="desktop-icon-menu__rename">
+				<input autoFocus value={renameDraft} disabled={busy} aria-label={`改名 ${item.title}`} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); commitSessionRename(item); } else if (event.key === "Escape") { event.preventDefault(); setRenamingID(""); setRenameDraft(""); } }} />
+				<div><button type="button" disabled={busy || !renameDraft.trim()} onClick={() => commitSessionRename(item)}>{busy ? "保存中…" : "保存"}</button><button type="button" disabled={busy} onClick={() => { setRenamingID(""); setRenameDraft(""); }}>取消</button></div>
+			</div> : <>
+				<button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>
+				{item.kind === "workspace" && <button role="menuitem" onClick={() => openWorkspaceIconEditor(item)}>修改图标</button>}
+				{item.kind === "task" && <><button role="menuitem" onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
+				{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}
+				{item.retained && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}
+			</>}
+		</div>}
   </div>;
 	};
 
@@ -1476,7 +1523,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {!active && <p tabIndex={0} aria-label={`${popupItem.title}，${previewText(popupItem)}`} onFocus={() => timers.current?.clearPreviewClose()} onBlur={closePreviewSoon}>{previewText(popupItem)}</p>}
       {active && active.sourceId === "new" && <QuickStart workspaces={workspaces} initialWorkspace={quickWorkspace} editJob={quickStartEditJob} initialDraft={quickDraftDecision.draft} submitJob={submitQuickStart} onClose={() => { setQuickStartEditJob(null); setActiveID(""); }} />}
       {active && active.sourceId === "search" && <SearchPanel onClose={() => setActiveID("")} onPick={(result) => run(active, "open_search", [result.id])} />}
-      {active && active.sourceId === "workspace" && <WorkspaceManager onClose={() => setActiveID("")} onChanged={refresh} />}
+      {active && active.sourceId === "workspace" && <WorkspaceManager initialIconRoot={workspaceIconRoot} onClose={() => { setWorkspaceIconRoot(""); setActiveID(""); }} onChanged={refresh} />}
       {active && active.sourceId === "rooms" && <RoomsManager roomIconsVisible={roomIconsVisible} onRoomIconsVisibleChange={setRoomIconsVisible} onClose={() => setActiveID("")} onNewRoom={onNewRoom} onOpenRoom={onOpenRoom} />}
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}

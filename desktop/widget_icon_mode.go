@@ -167,6 +167,10 @@ type DesktopIconItem struct {
 	// empty and the frontend falls back to sessionRef/sessionPath). It is
 	// display-only: opening an icon still routes through SessionRef.
 	SessionID string `json:"sessionId,omitempty"`
+	// AppearanceSeed overrides the stable session identity only for Agent Icon
+	// appearance selection. It is persisted by durable session path and changes
+	// only after an explicit "换个样子" action succeeds.
+	AppearanceSeed string `json:"appearanceSeed,omitempty"`
 	// WorkspaceIcon is the normalized project icon key of the task's workspace
 	// (global-scope tasks carry the global project icon). The frontend reuses
 	// it for the Agent Icon workspace badge; display-only, stable per session.
@@ -268,7 +272,10 @@ type desktopIconKept struct {
 type desktopIconPersistedState struct {
 	Positions map[string]DesktopIconPosition `json:"positions,omitempty"`
 	Kept      map[string]desktopIconKept     `json:"kept,omitempty"`
-	Applied   []desktopIconReceipt           `json:"applied,omitempty"`
+	// AppearanceSeeds is keyed by durable session identity, so live and retained
+	// projections render the same explicitly randomized Agent Icon after restart.
+	AppearanceSeeds map[string]string    `json:"appearanceSeeds,omitempty"`
+	Applied         []desktopIconReceipt `json:"applied,omitempty"`
 	// WorkspaceSlots is the user-selected number of project shortcuts shown on
 	// the desktop. Zero is a valid explicit value; legacy files default to four
 	// by being unmarshaled into newDesktopIconState's initialized value.
@@ -283,6 +290,7 @@ func newDesktopIconState() desktopIconPersistedState {
 	return desktopIconPersistedState{
 		Positions:           map[string]DesktopIconPosition{},
 		Kept:                map[string]desktopIconKept{},
+		AppearanceSeeds:     map[string]string{},
 		WorkspaceSlots:      desktopWorkspacePinLimit,
 		CompletionSummaries: map[string]desktopIconCompletionSummary{},
 	}
@@ -359,6 +367,9 @@ func (a *App) loadDesktopIconStateLocked() {
 	}
 	if a.iconWidgetState.Kept == nil {
 		a.iconWidgetState.Kept = map[string]desktopIconKept{}
+	}
+	if a.iconWidgetState.AppearanceSeeds == nil {
+		a.iconWidgetState.AppearanceSeeds = map[string]string{}
 	}
 	if a.iconWidgetState.CompletionSummaries == nil {
 		a.iconWidgetState.CompletionSummaries = map[string]desktopIconCompletionSummary{}
@@ -979,6 +990,15 @@ func (a *App) recoverDesktopIconActionsLocked() error {
 			changed = true
 			continue
 		}
+		if receipt.Action == "rename" && receipt.SessionPath != "" && receipt.Text != "" {
+			if err := a.RenameSession(receipt.SessionPath, receipt.Text); err != nil {
+				recoveryErr = errors.Join(recoveryErr, fmt.Errorf("recover icon session rename %s: %w", receipt.RequestID, err))
+				continue
+			}
+			receipt.Status = "applied"
+			changed = true
+			continue
+		}
 		if receipt.Action != "ok" && receipt.Action != "dismiss" {
 			continue
 		}
@@ -1364,6 +1384,9 @@ func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, s
 		if position, ok := persisted.Positions[item.ID]; ok && validDesktopIconPosition(*item, position) {
 			item.Position = position
 		}
+		if key := desktopIconAppearanceKey(*item); key != "" {
+			item.AppearanceSeed = persisted.AppearanceSeeds[key]
+		}
 		sortDesktopIconNotices(item.Notifications)
 		item.UnreadCount = desktopIconUnreadCount(*item)
 		if item.UnreadCount > 0 {
@@ -1566,7 +1589,7 @@ func desktopIconItemRevision(item DesktopIconItem) string {
 	}
 	// Identity seed and workspace icon are display-only but revision-bearing:
 	// a changed session identity or project icon must refresh the frontend icon.
-	parts = append(parts, item.SessionID, item.WorkspaceIcon)
+	parts = append(parts, item.SessionID, item.AppearanceSeed, item.WorkspaceIcon)
 	if item.SessionRef != nil {
 		parts = append(parts, item.SessionRef.Scope, item.SessionRef.WorkspaceRoot, item.SessionRef.TopicID, item.SessionRef.SessionPath)
 	}
@@ -1574,6 +1597,27 @@ func desktopIconItemRevision(item DesktopIconItem) string {
 		parts = append(parts, notice.ID, notice.Revision)
 	}
 	return widgetRevision(parts...)
+}
+
+// desktopIconAppearanceKey binds explicit appearance changes to a durable
+// session identity. Session path wins because tab IDs change when a retained
+// session is reopened; older entries safely fall back to SessionID/item ID.
+func desktopIconAppearanceKey(item DesktopIconItem) string {
+	if item.Kind != "task" {
+		return ""
+	}
+	if item.SessionRef != nil {
+		if path := strings.TrimSpace(item.SessionRef.SessionPath); path != "" {
+			return "path:" + filepath.Clean(path)
+		}
+		if topic := strings.TrimSpace(item.SessionRef.TopicID); topic != "" {
+			return "topic:" + topic
+		}
+	}
+	if sessionID := strings.TrimSpace(item.SessionID); sessionID != "" {
+		return "session:" + sessionID
+	}
+	return strings.TrimSpace(item.ID)
 }
 
 func desktopIconSnapshotRevision(snapshot DesktopIconSnapshot) string {
@@ -1624,6 +1668,7 @@ func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersisted
 	clone := desktopIconPersistedState{
 		Positions:           make(map[string]DesktopIconPosition, len(state.Positions)),
 		Kept:                make(map[string]desktopIconKept, len(state.Kept)),
+		AppearanceSeeds:     make(map[string]string, len(state.AppearanceSeeds)),
 		Applied:             append([]desktopIconReceipt(nil), state.Applied...),
 		WorkspaceSlots:      state.WorkspaceSlots,
 		CompletionSummaries: make(map[string]desktopIconCompletionSummary, len(state.CompletionSummaries)),
@@ -1633,6 +1678,9 @@ func cloneDesktopIconState(state desktopIconPersistedState) desktopIconPersisted
 	}
 	for id, kept := range state.Kept {
 		clone.Kept[id] = kept
+	}
+	for key, seed := range state.AppearanceSeeds {
+		clone.AppearanceSeeds[key] = seed
 	}
 	for key, summary := range state.CompletionSummaries {
 		clone.CompletionSummaries[key] = summary
@@ -1789,6 +1837,17 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 				}
 				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
 			}
+			if input.Action == "rename" && receipt.SessionPath != "" && receipt.Text != "" {
+				if err := a.RenameSession(receipt.SessionPath, receipt.Text); err != nil {
+					return a.desktopIconActionErrorLocked("retryable_error", err)
+				}
+				receipt.Status = "applied"
+				if err := a.saveDesktopIconStateLocked(); err != nil {
+					receipt.Status = "pending"
+					return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish session rename: %w", err))
+				}
+				return DesktopIconActionResult{Status: "already_applied", Snapshot: a.desktopIconSnapshotLocked()}
+			}
 			if input.Action != "ok" && input.Action != "dismiss" {
 				return a.desktopIconActionErrorLocked("retryable_error", errors.New("action receipt is pending recovery"))
 			}
@@ -1895,6 +1954,47 @@ func (a *App) ApplyDesktopIconAction(input DesktopIconActionInput) DesktopIconAc
 			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish search navigation: %w", err))
 		}
 		return DesktopIconActionResult{Status: "accepted", Snapshot: snapshot}
+	}
+	if input.Action == "rename" {
+		if item.Kind != "task" || item.SessionRef == nil || strings.TrimSpace(item.SessionRef.SessionPath) == "" || len(input.Values) != 1 || strings.TrimSpace(input.Values[0]) == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("task session path and non-empty title are required"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		title := strings.TrimSpace(input.Values[0])
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{
+			RequestID: input.RequestID, Intent: intent, Status: "pending", Action: "rename", ItemID: item.ID,
+			SessionPath: item.SessionRef.SessionPath, Text: title, AppliedAt: time.Now().UnixMilli(),
+		})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("prepare session rename: %w", err))
+		}
+		if err := a.RenameSession(item.SessionRef.SessionPath, title); err != nil {
+			return a.desktopIconActionErrorLocked("retryable_error", err)
+		}
+		a.markDesktopIconReceiptApplied(input.RequestID)
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.markDesktopIconReceiptPending(input.RequestID)
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("finish session rename: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
+	}
+	if input.Action == "randomize_icon" {
+		key := desktopIconAppearanceKey(*item)
+		if key == "" {
+			return a.desktopIconActionErrorLocked("invalid", errors.New("only task session icons can change appearance"))
+		}
+		before := cloneDesktopIconState(a.iconWidgetState)
+		if a.iconWidgetState.AppearanceSeeds == nil {
+			a.iconWidgetState.AppearanceSeeds = map[string]string{}
+		}
+		a.iconWidgetState.AppearanceSeeds[key] = widgetRevision("appearance", key, input.RequestID)
+		a.iconWidgetState.Applied = append(a.iconWidgetState.Applied, desktopIconReceipt{RequestID: input.RequestID, Intent: intent, Status: "applied", Action: input.Action, ItemID: item.ID, AppliedAt: time.Now().UnixMilli()})
+		if err := a.saveDesktopIconStateLocked(); err != nil {
+			a.iconWidgetState = before
+			return a.desktopIconActionErrorLocked("retryable_error", fmt.Errorf("save session icon appearance: %w", err))
+		}
+		return DesktopIconActionResult{Status: "accepted", Snapshot: a.desktopIconSnapshotLocked()}
 	}
 	if input.Action == "move" {
 		before := cloneDesktopIconState(a.iconWidgetState)
@@ -2304,6 +2404,15 @@ func (a *App) markDesktopIconReceiptApplied(requestID string) {
 	for i := range a.iconWidgetState.Applied {
 		if a.iconWidgetState.Applied[i].RequestID == requestID {
 			a.iconWidgetState.Applied[i].Status = "applied"
+			return
+		}
+	}
+}
+
+func (a *App) markDesktopIconReceiptPending(requestID string) {
+	for i := range a.iconWidgetState.Applied {
+		if a.iconWidgetState.Applied[i].RequestID == requestID {
+			a.iconWidgetState.Applied[i].Status = "pending"
 			return
 		}
 	}

@@ -310,6 +310,7 @@ export interface DesktopIconItem {
   // 纯展示字段（Agent Icon）：稳定身份 seed 与 workspace 图标键；旧 retained
   // 数据可能缺 sessionId，前端按 sessionRef/sessionPath 稳定回退。
   sessionId?: string;
+  appearanceSeed?: string;
   workspaceIcon?: string;
   sessionRef?: DesktopIconTaskRef;
 }
