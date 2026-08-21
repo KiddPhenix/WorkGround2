@@ -12,9 +12,9 @@ WorkGround2 功能到代码位置的快速索引。用于先定位入口，再�
 ## Entries
 
 ### 日常 / Daily Routine
-- Location: `desktop/widget_icon_mode.go`, `desktop/widget_conversation.go`, `desktop/tabs.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/lib/bridge.ts`
-- Summary: 状态 `in_progress`；Session 图标菜单、Workspace 图标菜单和普通会话幂等创建/发送是日常模板功能的已验证接入点。
-- Keywords: 日常, Daily Routine, I will do it again, DesktopIconMode, CreateBlankSession, SubmitToTab
+- Location: `desktop/daily_routine.go`, `desktop/daily_routine_test.go`, `desktop/app.go`, `desktop/widget_icon_mode.go`, `desktop/frontend/src/components/widget/DesktopIconMode.tsx`, `desktop/frontend/src/lib/bridge.ts`, `desktop/frontend/src/__tests__/desktop-icon-mode.test.ts`
+- Summary: Workspace 级日常模板支持从 Session 对话/工具记录严格提炼、本地原子持久化与损坏恢复；Workspace 图标可列出、执行、改名和幂等删除，执行通过可确认的普通 user-turn 链路创建并恢复 Session。前后端 requestId、迟到结果、busy、renderer 重启和 workspace 切换均有隔离与安全重试。
+- Keywords: 日常, Daily Routine, I will do it again, DesktopIconMode, CreateBlankSession, TrySubmitUserTurn, daily-routines-v1.json
 - Source: verified-by-search
 - Updated: 2026-08-21
 
