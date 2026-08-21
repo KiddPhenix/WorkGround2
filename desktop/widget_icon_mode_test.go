@@ -109,7 +109,7 @@ func TestDesktopRoomNoticesUseExactMessageAuthorAndMentionPresentation(t *testin
 		"member": {body: "member exact message", attention: unread.AttentionMentionMember, title: "Alice @ 了你", kind: "message"},
 		"agent":  {body: "agent exact message", attention: unread.AttentionMentionAgent, title: "Alice @ 了你的 Agent", kind: "message"},
 		"both":   {body: "both exact message", attention: unread.AttentionMentionBoth, title: "Alice @ 了你和你的 Agent", kind: "message"},
-		"action": {body: "ordinary high action", title: "Alice · Design Room", kind: "needs_input"},
+		"action": {body: "ordinary high action", title: "Alice · Design Room", kind: "message"},
 	}
 	for id, expected := range want {
 		notice := byID[id]
@@ -641,6 +641,24 @@ func TestBuildDesktopIconSnapshotDoesNotDoubleCountTaskUnread(t *testing.T) {
 	}
 }
 
+func TestBuildDesktopIconSnapshotResolvedAskUnreadIsNotAnswerable(t *testing.T) {
+	sources := []widgetSource{{meta: TabMeta{ID: "task-1", SessionID: "session-1", TopicTitle: "提交改动", RunningWork: true}}}
+	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 5, Conversations: []unread.Conversation{{
+		Key: "session:session-1", Source: unread.SourceSession, SessionID: "session-1", LatestSequence: 1, UnreadCount: 1, HighPriorityCount: 1,
+		Items: []unread.Item{{ID: "ask:1", Sequence: 1, Kind: "ask", Priority: unread.PriorityHigh, OccurredAt: time.UnixMilli(10)}},
+	}}}}
+	presentations := desktopRoomNoticePresentations{"session-1": {"ask:1": {Body: "已经回答的问题"}}}
+
+	snapshot := buildDesktopIconSnapshot(sources, state, nil, desktopIconPersistedState{}, 1200, presentations, nil, nil, nil)
+	task := findDesktopIconItem(snapshot.Items, "task:task-1")
+	if task == nil || task.Status != "unread" || task.UnreadCount != 1 || len(task.Notifications) != 1 {
+		t.Fatalf("resolved ask projection = %#v", task)
+	}
+	if notice := task.Notifications[0]; notice.Kind != "message" || notice.InteractionID != "" || notice.QuestionID != "" {
+		t.Fatalf("resolved ask remained answerable = %+v", notice)
+	}
+}
+
 func TestBuildDesktopIconSnapshotAggregatesDelegatedActivity(t *testing.T) {
 	sources := []widgetSource{{meta: TabMeta{ID: "delegated", RunningWork: true, BackgroundOnly: true}}}
 	snapshot := buildDesktopIconSnapshot(sources, UnreadState{}, nil, desktopIconPersistedState{}, 1200, nil, nil, nil, nil)
@@ -951,9 +969,15 @@ func writeRunningSubagentMeta(t *testing.T, metaPath, parentSession string) {
 }
 
 func TestDesktopIconNoticesPriorityAndFIFO(t *testing.T) {
-	notices := []DesktopIconNotice{{ID: "message", Priority: 3, CreatedAt: 1}, {ID: "newer-input", Priority: 1, CreatedAt: 3}, {ID: "older-input", Priority: 1, CreatedAt: 2}, {ID: "confirm", Priority: 2, CreatedAt: 0}}
+	notices := []DesktopIconNotice{
+		{ID: "stale-unread", Kind: "message", Priority: 1, CreatedAt: 1},
+		{ID: "newer-input", Kind: "needs_input", Priority: 1, CreatedAt: 3},
+		{ID: "older-input", Kind: "needs_input", Priority: 1, CreatedAt: 2},
+		{ID: "confirm", Kind: "needs_confirm", Priority: 2, CreatedAt: 0},
+		{ID: "message", Kind: "message", Priority: 3, CreatedAt: 1},
+	}
 	sortDesktopIconNotices(notices)
-	want := []string{"older-input", "newer-input", "confirm", "message"}
+	want := []string{"older-input", "newer-input", "stale-unread", "confirm", "message"}
 	for i := range want {
 		if notices[i].ID != want[i] {
 			t.Fatalf("notice[%d] = %q, want %q", i, notices[i].ID, want[i])
