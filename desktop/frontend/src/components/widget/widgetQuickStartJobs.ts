@@ -246,6 +246,28 @@ export interface QuickStartJob {
 
 export type QuickStartJobs = Record<string, QuickStartJob>;
 
+function sameQuickStartJob(a: QuickStartJob | undefined, b: QuickStartJob | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return a.requestId === b.requestId
+		&& a.phase === b.phase
+		&& a.error === b.error
+		&& a.tabId === b.tabId
+		&& a.createdAt === b.createdAt
+		&& a.updatedAt === b.updatedAt
+		&& a.intent.prompt === b.intent.prompt
+		&& a.intent.workspace === b.intent.workspace
+		&& a.intent.model === b.intent.model
+		&& a.intent.approvalMode === b.intent.approvalMode;
+}
+
+function sameQuickStartJobs(a: QuickStartJobs, b: QuickStartJobs): boolean {
+	if (a === b) return true;
+	const keys = Object.keys(a);
+	if (keys.length !== Object.keys(b).length) return false;
+	return keys.every((key) => sameQuickStartJob(a[key], b[key]));
+}
+
 export interface QuickStartJobLedger {
 	version: 1;
 	jobs: QuickStartJobs;
@@ -704,7 +726,12 @@ export function createQuickStartJobRunner(options: QuickStartJobRunnerOptions): 
 			// instead of being erased by a stale removal intent.
 			if (!fallbackToMemory) next = jobs;
 		}
-		notify(next);
+		// readQuickStartJobs parses a fresh object on every one-second snapshot
+		// reconcile. Preserve the current reference and skip subscribers when the
+		// typed job state is equivalent, otherwise a no-op poll forces React to
+		// rerender and re-run hit-region rAF/layout measurement forever.
+		if (sameQuickStartJobs(jobs, next)) next = jobs;
+		else notify(next);
 		return { next, saved, error };
 	};
 

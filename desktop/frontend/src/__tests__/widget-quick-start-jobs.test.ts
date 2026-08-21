@@ -358,6 +358,38 @@ function realTask(id: string): DesktopIconItem {
 	assert.ok(!runner.jobs()[submitted.requestId], "old(no-real) resolving later never resurrects the reconciled job");
 }
 
+{
+	// A one-second authoritative poll reads a fresh object from localStorage.
+	// Equivalent content must keep the runner reference and skip subscribers,
+	// otherwise every idle poll forces DesktopIconMode + hit-region layout work.
+	const storage = fakeStorage();
+	const runner = createQuickStartJobRunner({
+		deliver: async () => accepted("tab-1"),
+		storage,
+		wait: async () => {},
+	});
+	const seen: QuickStartJobs[] = [];
+	runner.subscribe((jobs) => seen.push(jobs));
+	const initial = runner.jobs();
+	runner.reconcile([]);
+	runner.reconcile([realTask("task:unrelated")]);
+	assert.equal(seen.length, 1, "equivalent empty polls do not notify subscribers");
+	assert.equal(runner.jobs(), initial, "equivalent polls preserve the current jobs reference");
+
+	const submitted = runner.submit(intent);
+	if (!submitted.ok) throw new Error("submit failed");
+	assert.equal(seen.length, 2, "a real job addition still notifies subscribers");
+	const running = runner.jobs();
+	runner.reconcile([]);
+	assert.equal(seen.length, 2, "an equivalent running-job poll stays silent");
+	assert.equal(runner.jobs(), running, "an equivalent populated poll also preserves identity");
+	await flush();
+	assert.equal(seen.length, 3, "the real running-to-accepted transition still notifies");
+	runner.reconcile([realTask("task:tab-1")]);
+	assert.equal(seen.length, 4, "the authoritative handoff deletion still notifies");
+	assert.ok(!runner.jobs()[submitted.requestId], "the real task handoff still removes the optimistic job");
+}
+
 // --- runner: submit is synchronous and delivery is background ---
 
 {
