@@ -1069,6 +1069,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			spec := agent.SubagentSpec{
 				Kind:             "skill",
 				Name:             sk.Name,
+				Description:      task,
 				WorkspaceRoot:    root,
 				ParentSession:    parentSession,
 				ParentToolCallID: parentID,

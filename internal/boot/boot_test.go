@@ -446,6 +446,9 @@ model = "x"
 	if meta.ParentSession != agent.BranchID(sessionPath) {
 		t.Fatalf("parent session = %q, want %q", meta.ParentSession, agent.BranchID(sessionPath))
 	}
+	if meta.Description != "second skill task" {
+		t.Fatalf("continued skill description = %q, want current task", meta.Description)
+	}
 	sess, err := agent.LoadSession(filepath.Join(config.SessionDir(), "subagents", ref+".jsonl"))
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
@@ -497,6 +500,9 @@ model = "x"
 	}
 	if meta.ParentSession != agent.BranchID(sessionPath) {
 		t.Fatalf("parent session = %q, want %q", meta.ParentSession, agent.BranchID(sessionPath))
+	}
+	if meta.Description != "first skill task" {
+		t.Fatalf("skill description = %q, want invoked task", meta.Description)
 	}
 	if _, err := os.Stat(filepath.Join(config.SessionDir(), "subagents", ref+".meta.json")); !os.IsNotExist(err) {
 		t.Fatalf("subagent metadata should not be written to global session dir, stat err = %v", err)

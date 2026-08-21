@@ -699,6 +699,11 @@ assert.match(css, /button:disabled\s*\{\s*opacity: \.55/, "disabled buttons stay
 // --- workspace management: the fixed workspace icon between 新建 and Rooms ---
 // The backend fixed bar is the declared Go contract: 新建 → 工作区 → Rooms → 委托 → 搜索.
 assert.match(backend, /\{"new", "新建", "plus"\},\s*\{"workspace", "工作区", "workspace"\},\s*\{"rooms", "Rooms", "rooms"\},\s*\{"delegate", "委托", "users"\},\s*\{"search", "搜索", "search"\}/, "backend fixed bar order is 新建 → 工作区 → Rooms → 委托 → 搜索 by declaration");
+assert.match(component, /function DelegationPanel\([\s\S]*正在运行的委托[\s\S]*当前没有运行中的委托/, "delegate fixed entry renders a running-list panel with an explicit empty state");
+assert.match(component, /error && <p role="alert" className="desktop-icon-popup__delegation-error">委托扫描失败：[\s\S]*列表保留已读取结果，将自动重试/, "delegate panel exposes partial scan failures and automatic retry state inline");
+assert.match(component, /active\.sourceId === "delegate"[\s\S]*items=\{snapshot\.delegations \|\| \[\]\}[\s\S]*run\(active, "open_delegation", \[item\.id\]\)/, "delegate list opens the exact typed snapshot item through the idempotent backend action");
+const delegationBridge = readFileSync(resolve(import.meta.dirname, "../lib/bridge.ts"), "utf8");
+assert.match(delegationBridge, /interface DesktopIconDelegation[\s\S]*sessionRef\?: DesktopIconTaskRef;[\s\S]*interface DesktopIconSnapshot \{ items: DesktopIconItem\[\]; delegations: DesktopIconDelegation\[\]/, "bridge exposes the typed delegation view only through DesktopIconSnapshot");
 assert.match(component, /item\.kind === "workspace"[\s\S]{0,180}isWorkspaceMatteIcon\(item\.icon\)[\s\S]{0,120}"folder"/, "workspace desktop icons render their assigned matte asset and fall back to the matte folder");
 assert.match(component, /item\.kind === "fixed" && item\.sourceId === "workspace"[\s\S]{0,200}setActiveID\(item\.id\)/, "single click on the workspace icon opens the management dialog");
 assert.doesNotMatch(component, /item\.sourceId === "workspace"[\s\S]{0,80}run\(item, "open"\)/, "the workspace icon never runs the generic fixed action");
