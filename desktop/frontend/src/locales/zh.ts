@@ -20,7 +20,7 @@ export const zh: Record<DictKey, string> = {
   "common.copy": "复制",
   "common.retry": "重试",
   "dailyRoutine.title": "日常",
-  "dailyRoutine.make": "成为日常（I will do it again）",
+  "dailyRoutine.make": "固化流程",
   "dailyRoutine.extracting": "正在提炼日常…",
   "dailyRoutine.extractFailed": "日常提炼失败，可安全重试。",
   "dailyRoutine.saved": "已保存日常：{name}",

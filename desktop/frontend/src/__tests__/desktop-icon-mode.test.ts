@@ -197,6 +197,8 @@ assert.deepEqual(iconHitRect(physicalRect, 1.5), { x: 445, y: 625, width: 108, h
 const component = readFileSync(resolve(import.meta.dirname, "../components/widget/DesktopIconMode.tsx"), "utf8");
 const css = readFileSync(resolve(import.meta.dirname, "../components/widget/desktop-icon-mode.css"), "utf8");
 const backend = readFileSync(resolve(import.meta.dirname, "../../../widget_icon_mode.go"), "utf8");
+const zhSource = readFileSync(resolve(import.meta.dirname, "../locales/zh.ts"), "utf8");
+assert.match(zhSource, /"dailyRoutine\.make": "固化流程"/, "task menu uses the compact 固化流程 label");
 assert.doesNotMatch(component, /desktop-icon-exit/, "icon mode CSS carries no legacy exit-button class");
 assert.doesNotMatch(css, /desktop-icon-exit/, "icon mode CSS carries no exit-button styles");
 assert.match(component, /onOpenMain: \(\) => Promise<void>/, "the quick toolbar receives the open-main callback from the root App");
@@ -224,6 +226,8 @@ assert.match(component, /item\.kind === "task" && <><button[\s\S]{0,220}>改名<
 assert.match(component, /CreateDailyRoutine\(\{ tabId: item\.sourceId, sessionRef: item\.sessionRef, requestId: stableRequest \}\)/, "daily routine extraction submits the backend-owned Session identity with a stable retry request");
 assert.match(component, /const requestKey = item\.sessionRef\?\.sessionPath \|\| item\.sourceId;[\s\S]{0,260}routineExtractRequests\.current\.set\(requestKey, stableRequest\)[\s\S]{0,180}writeDailyRoutineRequests\(DAILY_ROUTINE_EXTRACT_REQUESTS_KEY/, "failed extraction and renderer restarts reuse a persisted per-Session request id");
 assert.match(component, /active && active\.kind === "workspace" && <DailyRoutinePanel key=\{active\.sourceId\} workspaceRoot=\{active\.sourceId\}/, "left-clicking a workspace icon renders its workspace-owned daily routines");
+assert.doesNotMatch(component, /desktop-icon-popup__workspace-head"><strong>\{t\("dailyRoutine\.title"\)\}<\/strong><button/, "workspace 日常 header only contains its title");
+assert.match(component, /desktop-icon-popup__workspace-foot"><button type="button" className="subtle" onClick=\{onClose\}>\{t\("common\.close"\)\}<\/button><button type="button" onClick=\{onStartHere\}>\{t\("dailyRoutine\.startHere"\)\}<\/button><\/div>/, "workspace 日常 keeps 在此发起 in the bottom action row beside 关闭");
 assert.match(component, /const generation = useRef\(0\)[\s\S]{0,900}generation\.current === token && workspaceRoot === root/, "routine list responses are fenced by workspace generation");
 assert.match(component, /const requestKey = `\$\{root\}\\u0000\$\{routine\.id\}`;[\s\S]{0,300}writeDailyRoutineRequests\(DAILY_ROUTINE_RUN_REQUESTS_KEY[\s\S]{0,500}RunDailyRoutine\(\{ workspaceRoot: root, routineId: routine\.id, requestId: stableRequest \}\)/, "routine execution persists a workspace-and-ID-scoped retry request before sending");
 assert.match(component, /await app\.ExitWidgetMode\(result\.tabId\);[\s\S]{0,220}if \(result\.status === "pending"\) return;/, "an acknowledged but unconfirmed run opens its exact Session while retaining the retry ledger");
