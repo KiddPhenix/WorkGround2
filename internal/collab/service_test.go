@@ -194,6 +194,47 @@ func TestJoinExposesTypedResumeRequirement(t *testing.T) {
 	requireCode(t, err, CodeResumeNeeded)
 }
 
+func TestRecoverHostMemberRotatesStaleSessionWithoutRelaxingJoin(t *testing.T) {
+	service, _, original := newTestService(t, "")
+	newer, err := service.Join(context.Background(), JoinInput{
+		RequestID: "join-newer", Room: "room", Member: memberDesc("a", "agent-a"), ResumeSession: original.ConnectionSession,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staleInput := JoinInput{
+		RequestID: "join-stale", Room: "room", Member: memberDesc("a", "agent-a"), ResumeSession: original.ConnectionSession,
+	}
+	if _, err := service.Join(context.Background(), staleInput); err == nil {
+		t.Fatal("ordinary Join accepted a revoked session")
+	} else {
+		requireCode(t, err, CodeResumeNeeded)
+	}
+	recovered, err := service.RecoverHostMember(context.Background(), staleInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered.Rejoined || recovered.LatestSequence != newer.LatestSequence+1 || recovered.ConnectionSession == original.ConnectionSession || recovered.ConnectionSession == newer.ConnectionSession {
+		t.Fatalf("recovered Host member has invalid rejoin state or sequence: rejoined=%v sequence=%d", recovered.Rejoined, recovered.LatestSequence)
+	}
+	duplicate, err := service.RecoverHostMember(context.Background(), staleInput)
+	if err != nil || duplicate.ConnectionSession != recovered.ConnectionSession || duplicate.LatestSequence != recovered.LatestSequence {
+		t.Fatalf("repeated Host recovery was not idempotent: sequence=%d err=%v", duplicate.LatestSequence, err)
+	}
+	if _, err := service.Snapshot(context.Background(), "room", original.ConnectionSession); err == nil {
+		t.Fatal("original revoked session remained valid")
+	}
+	if _, err := service.Snapshot(context.Background(), "room", newer.ConnectionSession); err == nil {
+		t.Fatal("superseded session remained valid")
+	}
+	if _, err := service.Snapshot(context.Background(), "room", recovered.ConnectionSession); err != nil {
+		t.Fatalf("recovered session is invalid: %v", err)
+	}
+	_, err = service.RecoverHostMember(context.Background(), JoinInput{RequestID: "recover-missing", Room: "room", Member: memberDesc("missing", "agent-missing")})
+	requireCode(t, err, CodeNotFound)
+}
+
 func TestMemberCanRenameOwnAgentIdempotently(t *testing.T) {
 	service, dir, joined := newTestService(t, "")
 	memberAvatar := "data:image/png;base64,iVBORw0KGgo="

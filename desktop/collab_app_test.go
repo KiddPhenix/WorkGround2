@@ -708,6 +708,68 @@ func TestCollaborationHostUsesInProcessAuthoritativePeer(t *testing.T) {
 	}
 }
 
+func TestCollaborationHostRecoversStalePersistedSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app, c, secrets := newTestDesktopCollaboration(t)
+	defer c.close()
+	ctx := context.Background()
+	defer func() {
+		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := app.closeCollaborationLAN(shutdown); err != nil {
+			t.Errorf("close shared LAN host: %v", err)
+		}
+	}()
+	identity := collab.MemberDescriptor{ID: "member-host", Name: "Host", Agent: collab.AgentDescriptor{ID: "agent-host", Name: "Host Agent", Status: collab.AgentIdle}}
+	input := HostCollaborationRoomInput{
+		ListenHost: "127.0.0.1", Room: "host-room", RoomName: "Host Room", SessionID: "session-a", ProtocolVersion: collaborationProtocolV2,
+	}
+	first, err := c.openHostedRoom(ctx, input, identity, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleSession := first.connectionSession
+	newer, err := first.authority.service.RecoverHostMember(ctx, collab.JoinInput{
+		RequestID: "newer-host-session", Room: input.Room, Member: identity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.close(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := c.openHostedRoom(ctx, input, identity, staleSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.close(context.Background(), false)
+	if recovered.connectionSession == staleSession || recovered.connectionSession == newer.ConnectionSession {
+		t.Fatal("Host session was not rotated")
+	}
+	if !app.sharedCollaborationLAN().roomActive(input.Room) {
+		t.Fatal("recovered Host Room was released from the shared Listener")
+	}
+	if _, err := recovered.peer.Snapshot(ctx); err != nil {
+		t.Fatalf("recovered Host peer is unusable: %v", err)
+	}
+	state, err := c.installConnection(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretRef := collaborationSecretRef(state.Host, state.Port, state.Room, state.MemberID)
+	if got := secrets.get(secretRef); got != recovered.connectionSession {
+		t.Fatal("recovered Host session was not persisted")
+	}
+	_, err = first.authority.service.Join(ctx, collab.JoinInput{
+		RequestID: "remote-stale-session", Room: input.Room, Member: identity, ResumeSession: staleSession,
+	})
+	var protocolErr *collab.Error
+	if !errors.As(err, &protocolErr) || protocolErr.Code != collab.CodeResumeNeeded {
+		t.Fatalf("ordinary Join with stale session = %v, want resume_required", err)
+	}
+}
+
 func TestCollaborationExplicitSessionRoutingAndStartIdempotency(t *testing.T) {
 	_, c, _ := newTestDesktopCollaboration(t)
 	peer := &fakeCollaborationPeer{}

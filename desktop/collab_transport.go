@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -85,9 +86,16 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "disabled"})
 	}
 	service, hub := authority.service, authority.hub
-	joined, err := service.Join(ctx, collab.JoinInput{
+	joinInput := collab.JoinInput{
 		RequestID: newCollaborationRequestID("join"), Room: room, Token: strings.TrimSpace(input.Token), Member: identity, ResumeSession: strings.TrimSpace(resume),
-	})
+	}
+	joined, err := service.Join(ctx, joinInput)
+	if err != nil && collaborationMemberResumeRequired(err) {
+		joined, err = service.RecoverHostMember(ctx, joinInput)
+		if err == nil {
+			slog.Warn("desktop: recovered stale collaboration Host session", "room", room, "member", identity.ID)
+		}
+	}
 	if err != nil {
 		if server != nil {
 			_ = server.Shutdown(context.Background())
