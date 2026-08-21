@@ -120,6 +120,72 @@ func (a *App) SetDesktopIconHitRegions(rects []DesktopIconRect) error {
 	return setDesktopIconHitRegions(rects)
 }
 
+// DesktopIconSurfaceInput is one monotonic request to resize the native icon
+// canvas. Width/Height are the content's logical bounds (icons plus any open
+// transient surface) and Envelope is the safety margin added on every side so
+// content never sits on the transparent edge. Generation is the frontend's
+// request token; it is echoed back unchanged so late responses can be dropped.
+type DesktopIconSurfaceInput struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	Envelope   int   `json:"envelope"`
+	Generation int64 `json:"generation"`
+}
+
+// DesktopIconSurfaceResult reports the geometry that actually took effect.
+type DesktopIconSurfaceResult struct {
+	Width      int   `json:"width"`
+	Height     int   `json:"height"`
+	X          int   `json:"x"`
+	Y          int   `json:"y"`
+	Generation int64 `json:"generation"`
+}
+
+// SetDesktopIconSurface applies a bounded icon-surface geometry request and
+// returns the geometry that actually took effect. It is idempotent: repeating
+// the same request reapplies the same clamped bounds with no drift, and every
+// request is anchored to the current monitor work area's bottom-right corner.
+func (a *App) SetDesktopIconSurface(input DesktopIconSurfaceInput) (DesktopIconSurfaceResult, error) {
+	if a.ctx == nil {
+		return DesktopIconSurfaceResult{}, errors.New("desktop window is not ready")
+	}
+	a.widgetMu.Lock()
+	defer a.widgetMu.Unlock()
+	if !a.widgetMode || a.widgetStyle != "icons" {
+		return DesktopIconSurfaceResult{}, errors.New("desktop icon surface is not active")
+	}
+	if input.Generation < a.widgetSurfaceGen {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	if input.Generation == a.widgetSurfaceGen && a.widgetSurfaceGen > 0 {
+		state := a.widgetSurfaceState
+		return DesktopIconSurfaceResult{Width: state.Width, Height: state.Height, X: state.X, Y: state.Y, Generation: input.Generation}, nil
+	}
+	a.widgetRegionMu.Lock()
+	defer a.widgetRegionMu.Unlock()
+	state, err := applyDesktopIconSurface(a.ctx, input)
+	if err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	// A Win32 HRGN uses coordinates relative to the old client origin. Resizing
+	// a bottom-right anchored window moves that origin, so clear the old region
+	// before React mounts the prepared content; the normal hit-region sync will
+	// install the new precise union immediately after commit.
+	if err := clearWidgetWindowRegion(); err != nil {
+		return DesktopIconSurfaceResult{}, err
+	}
+	a.widgetSurfaceGen = input.Generation
+	a.widgetSurfaceState = state
+	return DesktopIconSurfaceResult{
+		Width:      state.Width,
+		Height:     state.Height,
+		X:          state.X,
+		Y:          state.Y,
+		Generation: input.Generation,
+	}, nil
+}
+
 // DesktopIconTaskRef is the typed session identity every task icon snapshot
 // carries: scope/workspaceRoot/topicID/sessionPath. Live and retained icons
 // share the same ref, which the backend generates from the live tab meta or

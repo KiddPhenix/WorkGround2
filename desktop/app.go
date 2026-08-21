@@ -252,6 +252,8 @@ type App struct {
 	widgetConversationMu sync.Mutex
 	widgetMode           bool
 	widgetStyle          string
+	widgetSurfaceGen     int64 // protected by widgetMu; rejects stale resize calls
+	widgetSurfaceState   WidgetWindowState
 	widgetStateLoaded    bool
 	widgetState          widgetPersistedState
 	widgetIdleSince      int64 // protected by widgetActionMu

@@ -27,6 +27,7 @@ import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS, typ
 import { canRenameTaskIcon } from "./desktopIconRename";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import { useT } from "../../lib/i18n";
+import { DESKTOP_ICON_OVERLAY_BOUNDS, desktopIconLayoutBounds, useDesktopIconSurface } from "../../lib/desktopIconSurface";
 import "./desktop-icon-mode.css";
 
 const QUICK_WORKSPACE_KEY = "wg2.icon-widget-workspace";
@@ -1277,6 +1278,10 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const regionQueue = useRef<Promise<void>>(Promise.resolve());
 	const [collapsed, setCollapsed] = useState(readCollapsedState);
 	const exitRequest = useRef(false);
+	// surface owns the native icon-canvas bounds: every caller funnels through
+	// it, so growth is immediate and shrinkage is deferred/cancellable.
+	const surface = useDesktopIconSurface((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+	const [overlayReadyKey, setOverlayReadyKey] = useState("");
 
 	// cancelTransientTimers cancels every scheduled click/hover/preview and the
 	// in-flight drag: a delayed open or preview can never resurrect transient UI
@@ -1304,6 +1309,9 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		const pending = (async () => {
 			try {
 				const next = await app.GetDesktopIconSnapshot();
+				const nextItems = visibleDesktopIcons(mergeQuickStartItems(next.items, optimisticItems), roomIconsVisible);
+				const prepared = await surface.prepare(desktopIconLayoutBounds(nextItems, collapsed, clusterZoom * desktopZoom));
+				if (!prepared) return;
 				setSnapshot((current) => current.revision === next.revision && (current.error || "") === (next.error || "") ? current : next);
 				setSnapshotLoaded(true);
 				setError(next.error || "");
@@ -1320,7 +1328,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		refreshPending.current = pending;
 		void pending.finally(() => { if (refreshPending.current === pending) refreshPending.current = null; });
 		return pending;
-	}, [quickJobs.reconcile]);
+	}, [collapsed, clusterZoom, desktopZoom, optimisticItems, quickJobs.reconcile, roomIconsVisible, surface]);
   useEffect(() => {
 		let stopped = false;
 		let timer = 0;
@@ -1415,6 +1423,30 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 		void document.fonts?.ready.then(() => { if (alive) sync(); });
 		return () => { alive = false; cancelAnimationFrame(frame); observer.disconnect(); window.removeEventListener("resize", sync); };
 	}, [activeID, menuID, previewID, snapshot.revision, collapsed, anchorMenuOpen, quickOpen, clusterZoom, optimisticItems, roomIconsVisible]);
+
+	// Surface size comes from the next layout intent, never from animated DOM.
+	// A transient key is only render-ready after native expansion succeeds.
+	const layoutBounds = useMemo(() => desktopIconLayoutBounds(displayItems, collapsed, clusterZoom * desktopZoom), [collapsed, clusterZoom, desktopZoom, displayItems]);
+	const overlayKey = activeID ? `active:${activeID}` : menuID ? `menu:${menuID}` : previewID ? `preview:${previewID}` : anchorMenuOpen ? "anchor-menu" : quickOpen ? "quick" : "";
+	const overlayReady = Boolean(overlayKey && overlayReadyKey === overlayKey);
+	useEffect(() => {
+		surface.setLayoutStable(!draggingID && !dragPreview);
+		surface.settle(layoutBounds);
+	}, [dragPreview, draggingID, layoutBounds, surface]);
+	useEffect(() => {
+		let alive = true;
+		if (!overlayKey) {
+			setOverlayReadyKey("");
+			surface.setOverlay(false);
+			surface.settle(layoutBounds);
+			return () => { alive = false; };
+		}
+		surface.setOverlay(true);
+		void surface.prepare(DESKTOP_ICON_OVERLAY_BOUNDS).then((ready) => {
+			if (alive && ready) setOverlayReadyKey(overlayKey);
+		});
+		return () => { alive = false; };
+	}, [layoutBounds, overlayKey, surface]);
 
   const run = useCallback(async (item: DesktopIconItem, action: string, values: string[] = [], notice = item.notifications[0], position?: DesktopIconPosition) => {
     setBusy(true); setError(""); cancelTransientTimers(); setAnchorMenuOpen(false); setQuickOpen(false);
@@ -1567,8 +1599,8 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 	const doubleClick = (item: DesktopIconItem) => { timers.current?.cancel(); setAnchorMenuOpen(false); setQuickOpen(false); if (item.kind === "fixed") openItem(item); else if (isQuickStartJobItem(item)) openQuickStartJob(item); else void run(item, "open"); };
 
   const rows = { top: displayItems.filter((item) => item.position.row === "top"), bottom: displayItems.filter((item) => item.position.row === "bottom") };
-  const active = displayItems.find((item) => item.id === activeID);
-  const preview = displayItems.find((item) => item.id === previewID);
+  const active = overlayReady && activeID ? displayItems.find((item) => item.id === activeID) : undefined;
+  const preview = overlayReady && previewID ? displayItems.find((item) => item.id === previewID) : undefined;
   const popupItem = active || preview;
 	const activeNotice = active?.notifications.find((notice) => notice.id === activeNoticeID) ?? active?.notifications[0];
 	const popupAttention = active?.kind === "room" && activeNotice?.kind === "message" ? activeNotice.attention : undefined;
@@ -1652,7 +1684,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {item.activityCount ? <span className="desktop-icon__activity" aria-label={`${item.activityCount} 个活动任务`}>{item.activityCount}</span> : null}
       {!agentIcon && statusGlyph(item) && <span className="desktop-icon__status">{statusGlyph(item)}</span>}
     </button>
-		{menuID === item.id && <div className="desktop-icon-menu" role="menu">
+		{overlayReady && menuID === item.id && <div className="desktop-icon-menu" role="menu">
 			{renamingID === item.id ? <div className="desktop-icon-menu__rename">
 				<input autoFocus value={renameDraft} disabled={busy} aria-label={`改名 ${item.title}`} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); commitSessionRename(item); } else if (event.key === "Escape") { event.preventDefault(); setRenamingID(""); setRenameDraft(""); } }} />
 				<div><button type="button" disabled={busy || !renameDraft.trim()} onClick={() => commitSessionRename(item)}>{busy ? "保存中…" : "保存"}</button><button type="button" disabled={busy} onClick={() => { setRenamingID(""); setRenameDraft(""); }}>取消</button></div>
@@ -1841,7 +1873,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			</div>
 			<div className="desktop-icon-controls">
 				<button type="button" className="desktop-icon-collapse" title={collapsed ? "展开图标组" : "收起图标组"} aria-label={collapsed ? "展开图标组" : "收起图标组"} aria-expanded={!collapsed} aria-controls="desktop-icon-grid" onClick={toggleCollapsed}>{collapsed ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}</button>
-				{quickOpen && <div id="desktop-icon-quick" className="desktop-icon-quick" role="toolbar" aria-label="小组件快捷操作" aria-busy={exiting} onKeyDown={quickRove} onClick={(event) => event.stopPropagation()}>
+				{overlayReady && quickOpen && <div id="desktop-icon-quick" className="desktop-icon-quick" role="toolbar" aria-label="小组件快捷操作" aria-busy={exiting} onKeyDown={quickRove} onClick={(event) => event.stopPropagation()}>
 					<button type="button" className="desktop-icon-quick__btn" aria-label="缩小图标" title="缩小图标" disabled={exiting || clusterZoom <= ICON_ZOOM_MIN} onClick={() => applyClusterZoom(stepIconZoom(clusterZoom, -ICON_ZOOM_STEP))}><ZoomOut aria-hidden="true" /></button>
 					<button type="button" className="desktop-icon-quick__btn" aria-label="放大图标" title="放大图标" disabled={exiting || clusterZoom >= ICON_ZOOM_MAX} onClick={() => applyClusterZoom(stepIconZoom(clusterZoom, ICON_ZOOM_STEP))}><ZoomIn aria-hidden="true" /></button>
 					<button type="button" className={`desktop-icon-quick__btn${topmost ? " desktop-icon-quick__btn--on" : ""}`} role="switch" aria-checked={topmost} aria-label={topmost ? "取消保持置顶" : "保持置顶"} title={topmost ? "取消保持置顶" : "保持置顶"} disabled={exiting || topmostBusy || !topmostLoaded || topmostReadFailed} onClick={() => void toggleTopmost()}>{topmostBusy ? <Loader2 className="desktop-icon-quick__spin" aria-hidden="true" /> : topmost ? <Pin aria-hidden="true" /> : <PinOff aria-hidden="true" />}</button>
@@ -1853,7 +1885,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 					closeTransient();
 					setAnchorMenuOpen(true);
 				}}><img src={logoSymbol} alt="" draggable={false} /></button>
-				{anchorMenuOpen && <div id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" disabled={exiting} onClick={() => void openSettingsWindow()}>设置</button></div>}
+				{overlayReady && anchorMenuOpen && <div id="desktop-icon-anchor-menu" className="desktop-icon-anchor-menu" role="menu" onClick={(event) => event.stopPropagation()}><button type="button" role="menuitem" disabled={exiting} onClick={() => void openSettingsWindow()}>设置</button></div>}
 			</div>
 		</div>
 		{popupItem && <section ref={popupRef} className={`desktop-icon-popup${active ? " desktop-icon-popup--interactive" : " desktop-icon-popup--preview"}${popupAttention ? " desktop-icon-popup--mention" : ""}`} style={popupStyle} role={popupAttention ? "alertdialog" : active ? "dialog" : "status"} aria-label={active ? popupAttention ? `${popupItem.title}，${roomAttentionLabel(popupAttention)}` : `${popupItem.title} 操作` : undefined} aria-live={popupAttention || popupItem.status === "failed" || popupItem.status === "needs_input" ? "assertive" : "polite"} onMouseEnter={() => timers.current?.clearPreviewClose()} onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) closePreviewSoon(); }}>
