@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/collab"
 	"workground2/internal/fileutil"
 	"workground2/internal/provider"
 	"workground2/internal/unread"
@@ -20,7 +21,7 @@ import (
 
 const (
 	desktopIconActionLimit = 128
-	desktopIconMaxRooms    = 6
+	desktopIconMaxPeople   = 6
 	desktopIconMaxTasks    = 8
 	desktopIconMaxSpaces   = desktopWorkspacePinLimit
 	desktopIconWidth       = 1080
@@ -35,20 +36,21 @@ const (
 // source icon. Runtime progress is deliberately separate and never increments
 // UnreadCount.
 type DesktopIconNotice struct {
-	ID            string         `json:"id"`
-	Revision      string         `json:"revision"`
-	Kind          string         `json:"kind"`
-	Priority      int            `json:"priority"`
-	Title         string         `json:"title"`
-	Body          string         `json:"body"`
-	CreatedAt     int64          `json:"createdAt"`
-	TabID         string         `json:"tabId,omitempty"`
-	Conversation  string         `json:"conversation,omitempty"`
-	ReadSequence  uint64         `json:"readSequence,omitempty"`
-	InteractionID string         `json:"interactionId,omitempty"`
-	QuestionID    string         `json:"questionId,omitempty"`
-	Options       []WidgetOption `json:"options"`
-	Retryable     bool           `json:"retryable,omitempty"`
+	ID            string               `json:"id"`
+	Revision      string               `json:"revision"`
+	Kind          string               `json:"kind"`
+	Priority      int                  `json:"priority"`
+	Attention     unread.ItemAttention `json:"attention,omitempty"`
+	Title         string               `json:"title"`
+	Body          string               `json:"body"`
+	CreatedAt     int64                `json:"createdAt"`
+	TabID         string               `json:"tabId,omitempty"`
+	Conversation  string               `json:"conversation,omitempty"`
+	ReadSequence  uint64               `json:"readSequence,omitempty"`
+	InteractionID string               `json:"interactionId,omitempty"`
+	QuestionID    string               `json:"questionId,omitempty"`
+	Options       []WidgetOption       `json:"options"`
+	Retryable     bool                 `json:"retryable,omitempty"`
 	// SummaryStatus reports the news-style summary state for completion
 	// notices: empty while generating (mechanical body), "ready" once the
 	// LLM summary is cached, or "failed" after a visible generation error.
@@ -828,15 +830,19 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	projectTree := a.ListProjectTree()
 	spaces := desktopIconWorkspaces(projectTree, desktopIconActiveWorkspace(sources), a.iconWidgetState.WorkspaceSlots)
 	style, hover := a.desktopIconPreferences()
-	roomSummaries := a.desktopRoomSummaries()
+	roomPresentations := a.desktopRoomNoticePresentations()
 	roomRefs := a.desktopIconRoomRefs(projectTree)
+	roomPins, roomPinsErr := a.GetDesktopRoomPins()
+	roomIcons, roomIconsErr := a.GetDesktopRoomIcons()
+	roomDescriptors := desktopIconRoomDescriptors(projectTree, roomIcons)
+	pinnedRooms := desktopIconPinnedRoomsFromDescriptors(roomDescriptors, roomPins)
 	sessionPresentations := desktopIconSessionPresentations(sources, projectTree)
-	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts, sessionPresentations, delegations)
+	snapshot := buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 	if a.pinNewDesktopIconTaskOrdersLocked(snapshot) {
 		// The snapshot just pinned brand-new task icons, so rebuild once: the
 		// current response must already reflect the pinned (stable) orders,
 		// otherwise the very first render would still use the ephemeral ones.
-		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomSummaries, roomRefs, subagentCounts, sessionPresentations, delegations)
+		snapshot = buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, a.iconWidgetState, hover, roomPresentations, roomRefs, subagentCounts, sessionPresentations, pinnedRooms, delegations, roomDescriptors)
 	}
 	snapshot.Style = style
 	if recoveryErr != nil {
@@ -852,6 +858,12 @@ func (a *App) desktopIconSnapshotLocked() DesktopIconSnapshot {
 	}
 	if a.iconWidgetWindowErr != nil {
 		snapshot.Error = firstNonEmpty(snapshot.Error, a.iconWidgetWindowErr.Error())
+	}
+	if roomPinsErr != nil {
+		snapshot.Error = firstNonEmpty(snapshot.Error, roomPinsErr.Error())
+	}
+	if roomIconsErr != nil {
+		snapshot.Error = firstNonEmpty(snapshot.Error, roomIconsErr.Error())
 	}
 	return snapshot
 }
@@ -931,8 +943,31 @@ func (a *App) pinNewDesktopIconTaskOrdersLocked(snapshot DesktopIconSnapshot) bo
 	return true
 }
 
-func (a *App) desktopRoomSummaries() map[string]string {
-	out := map[string]string{}
+type desktopRoomNoticePresentation struct {
+	Author string
+	Body   string
+}
+
+type desktopRoomNoticePresentations map[string]map[string]desktopRoomNoticePresentation
+
+func addDesktopRoomNoticePresentation(out desktopRoomNoticePresentations, sessionID, itemID string, value desktopRoomNoticePresentation) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.TrimSpace(value.Body) == "" {
+		return
+	}
+	if out[sessionID] == nil {
+		out[sessionID] = map[string]desktopRoomNoticePresentation{}
+	}
+	out[sessionID][strings.TrimSpace(itemID)] = value
+}
+
+// desktopRoomNoticePresentations reads display text from the authoritative
+// Room snapshot. Presentations are keyed by Session and timeline item ID so
+// multiple pending messages never reuse whichever chat happened to be latest.
+// The empty item ID remains a compatibility fallback for non-Room conversation
+// sources whose complete payload lives in their bound Session history.
+func (a *App) desktopRoomNoticePresentations() desktopRoomNoticePresentations {
+	out := desktopRoomNoticePresentations{}
 	a.mu.RLock()
 	for _, tab := range a.runtimeTabsLocked() {
 		if tab == nil || tab.Ctrl == nil {
@@ -950,9 +985,7 @@ func (a *App) desktopRoomSummaries() map[string]string {
 			continue
 		}
 		for _, key := range []string{tab.ID, tab.SessionID, tab.currentSessionPath(), "path:" + tab.currentSessionPath()} {
-			if strings.TrimSpace(key) != "" {
-				out[key] = text
-			}
+			addDesktopRoomNoticePresentation(out, key, "", desktopRoomNoticePresentation{Body: text})
 		}
 	}
 	a.mu.RUnlock()
@@ -965,16 +998,59 @@ func (a *App) desktopRoomSummaries() map[string]string {
 	for _, runtime := range runtimes {
 		runtime.mu.RLock()
 		sessionID := firstNonEmpty(runtime.ownerSessionID, runtime.state.SessionID)
-		for i := len(runtime.state.Snapshot.Timeline) - 1; i >= 0; i-- {
-			chat := runtime.state.Snapshot.Timeline[i].Chat
-			if chat != nil && chat.AuthorID != runtime.state.MemberID && chat.AuthorID != runtime.state.AgentID && strings.TrimSpace(chat.Text) != "" {
-				out[sessionID] = conciseWidgetText(chat.Text, 100)
-				break
+		authors := map[string]string{}
+		for _, member := range runtime.state.Snapshot.Members {
+			authors[member.ID] = firstNonEmpty(strings.TrimSpace(member.Name), strings.TrimSpace(member.ID))
+			if agentID := strings.TrimSpace(member.Agent.ID); agentID != "" {
+				authors[agentID] = firstNonEmpty(strings.TrimSpace(member.Agent.Name), agentID)
+			}
+		}
+		for _, item := range runtime.state.Snapshot.Timeline {
+			presentation := desktopRoomTimelinePresentation(item, authors)
+			if strings.TrimSpace(presentation.Body) != "" {
+				addDesktopRoomNoticePresentation(out, sessionID, desktopRoomTimelineItemID(item), presentation)
 			}
 		}
 		runtime.mu.RUnlock()
 	}
 	return out
+}
+
+func desktopRoomTimelineItemID(item collab.TimelineItem) string {
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return id
+	}
+	return string(item.Type) + ":" + strconv.FormatUint(item.Sequence, 10)
+}
+
+func desktopRoomTimelinePresentation(item collab.TimelineItem, authors map[string]string) desktopRoomNoticePresentation {
+	author := ""
+	body := ""
+	switch item.Type {
+	case collab.TimelineChat:
+		if item.Chat != nil {
+			author, body = item.Chat.AuthorID, item.Chat.Text
+		}
+	case collab.TimelineContribution:
+		if item.Contribution != nil {
+			author = item.Contribution.AuthorID
+			body = firstNonEmpty(strings.TrimSpace(item.Contribution.Body), strings.TrimSpace(item.Contribution.Title))
+		}
+	case collab.TimelineAgentRequest:
+		if item.AgentRequest != nil {
+			author, body = item.AgentRequest.AuthorID, item.AgentRequest.Instruction
+		}
+	case collab.TimelineAgentResult:
+		if item.AgentResult != nil {
+			author, body = item.AgentResult.OwnerID, item.AgentResult.Summary
+		}
+	case collab.TimelineFile:
+		if item.File != nil {
+			author, body = item.File.OwnerID, item.File.Name
+		}
+	}
+	author = firstNonEmpty(strings.TrimSpace(authors[author]), strings.TrimSpace(author))
+	return desktopRoomNoticePresentation{Author: author, Body: strings.TrimSpace(body)}
 }
 
 // desktopIconRoomRefs maps every persisted or live collaboration session ID to
@@ -1025,6 +1101,106 @@ func (a *App) desktopIconRoomRefs(tree []ProjectNode) map[string]*DesktopIconTas
 		}
 	}
 	return out
+}
+
+type desktopIconRoomDescriptor struct {
+	TopicID   string
+	Title     string
+	SessionID string
+	Icon      string
+	Ref       *DesktopIconTaskRef
+}
+
+// desktopIconPinnedRooms joins the durable pin order onto authoritative Room
+// topic nodes. Missing/deleted topics are skipped without mutating the pin
+// file, allowing a later restore or project reappearance to recover the pin.
+func desktopIconPinnedRooms(tree []ProjectNode, topicIDs []string) []desktopIconRoomDescriptor {
+	return desktopIconPinnedRoomsFromDescriptors(desktopIconRoomDescriptors(tree, nil), topicIDs)
+}
+
+func desktopIconRoomDescriptors(tree []ProjectNode, icons map[string]string) map[string]desktopIconRoomDescriptor {
+	byTopic := map[string]desktopIconRoomDescriptor{}
+	var walk func([]ProjectNode)
+	walk = func(nodes []ProjectNode) {
+		for _, node := range nodes {
+			kind := strings.TrimSpace(node.Kind)
+			topicID := strings.TrimSpace(node.TopicID)
+			sessionPath := strings.TrimSpace(node.SessionPath)
+			if (kind == "topic" || kind == "global_topic") && topicID != "" && sessionPath != "" && node.SessionKind == string(agent.SessionKindCollaboration) {
+				if _, exists := byTopic[topicID]; !exists {
+					ref, meta := desktopIconRoomRef(sessionPath)
+					byTopic[topicID] = desktopIconRoomDescriptor{
+						TopicID:   topicID,
+						Title:     firstNonEmpty(strings.TrimSpace(node.Label), strings.TrimSpace(meta.CustomTitle), "Room"),
+						SessionID: firstNonEmpty(strings.TrimSpace(node.SessionID), strings.TrimSpace(meta.ID)),
+						Icon:      normalizeProjectIcon(icons[topicID]),
+						Ref:       ref,
+					}
+				}
+			}
+			walk(node.Children)
+		}
+	}
+	walk(tree)
+	return byTopic
+}
+
+func desktopIconPinnedRoomsFromDescriptors(byTopic map[string]desktopIconRoomDescriptor, topicIDs []string) []desktopIconRoomDescriptor {
+	out := make([]desktopIconRoomDescriptor, 0, min(len(topicIDs), desktopRoomPinLimit))
+	for _, topicID := range topicIDs {
+		if len(out) == desktopRoomPinLimit {
+			break
+		}
+		if room, ok := byTopic[strings.TrimSpace(topicID)]; ok {
+			out = append(out, room)
+		}
+	}
+	return out
+}
+
+func desktopIconRoomForConversation(index map[string]desktopIconRoomDescriptor, conversation unread.Conversation) (desktopIconRoomDescriptor, bool) {
+	for _, key := range desktopIconRoomSessionKeys(conversation.SessionID, nil) {
+		if room, ok := index[key]; ok {
+			return room, true
+		}
+	}
+	return desktopIconRoomDescriptor{}, false
+}
+
+func desktopIconRoomSessionKeys(sessionID string, ref *DesktopIconTaskRef) []string {
+	seen := map[string]bool{}
+	keys := make([]string, 0, 6)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || value == "path:" || seen[value] {
+			return
+		}
+		seen[value] = true
+		keys = append(keys, value)
+	}
+	add(sessionID)
+	path := strings.TrimSpace(strings.TrimPrefix(sessionID, "path:"))
+	add(path)
+	add("path:" + path)
+	add(sessionRuntimeKey(path))
+	add("path:" + sessionRuntimeKey(path))
+	if ref != nil {
+		path = strings.TrimSpace(ref.SessionPath)
+		add(path)
+		add("path:" + path)
+		add(sessionRuntimeKey(path))
+		add("path:" + sessionRuntimeKey(path))
+	}
+	return keys
+}
+
+func desktopIconPinnedRoomIndex(index map[string]int, conversation unread.Conversation) (int, bool) {
+	for _, key := range desktopIconRoomSessionKeys(conversation.SessionID, nil) {
+		if i, ok := index[key]; ok {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // desktopIconRoomRef derives the Room identity from its persisted sidecar.
@@ -1442,17 +1618,28 @@ func desktopIconSessionPresentationFor(presentations map[string]desktopIconSessi
 	return desktopIconSessionPresentation{}, false
 }
 
-func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, delegations []DesktopIconDelegation) DesktopIconSnapshot {
-	return buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, persisted, hover, roomSummaries, roomRefs, subagentCounts, desktopIconSessionPresentations(sources, nil), delegations)
+func buildDesktopIconSnapshot(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomPresentations desktopRoomNoticePresentations, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, delegations []DesktopIconDelegation) DesktopIconSnapshot {
+	return buildDesktopIconSnapshotWithPresentations(sources, unreadState, spaces, persisted, hover, roomPresentations, roomRefs, subagentCounts, desktopIconSessionPresentations(sources, nil), nil, delegations)
 }
 
-func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomSummaries map[string]string, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, sessionPresentations map[string]desktopIconSessionPresentation, delegations []DesktopIconDelegation) DesktopIconSnapshot {
+func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadState UnreadState, spaces []WidgetWorkspaceOption, persisted desktopIconPersistedState, hover int, roomPresentations desktopRoomNoticePresentations, roomRefs map[string]*DesktopIconTaskRef, subagentCounts map[widgetSubagentKey]int, sessionPresentations map[string]desktopIconSessionPresentation, pinnedRooms []desktopIconRoomDescriptor, delegations []DesktopIconDelegation, roomDescriptorSets ...map[string]desktopIconRoomDescriptor) DesktopIconSnapshot {
 	snapshot := DesktopIconSnapshot{HoverStatusDelayMs: hover, UnreadRevision: unreadState.Summary.Revision, Delegations: []DesktopIconDelegation{}}
 	if delegations != nil {
 		snapshot.Delegations = append(snapshot.Delegations, delegations...)
 	}
 	items := make([]DesktopIconItem, 0, len(sources)+len(spaces)+8)
 	taskBySource := map[string]int{}
+	pinnedRoomBySession := map[string]int{}
+	roomBySession := map[string]desktopIconRoomDescriptor{}
+	if len(roomDescriptorSets) > 0 {
+		for _, room := range roomDescriptorSets[0] {
+			for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+				if _, exists := roomBySession[key]; !exists {
+					roomBySession[key] = room
+				}
+			}
+		}
+	}
 	delegatedRunning := 0
 	countedParents := map[widgetSubagentKey]bool{}
 	countedBackground := map[string]bool{}
@@ -1479,6 +1666,21 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 	}
 	taskLimit := min(desktopIconMaxTasks, max(1, (desktopIconWidth-36)/68-4-spaceCount))
 	taskCount := 0
+	for order, room := range pinnedRooms {
+		item := DesktopIconItem{
+			ID: "room:" + room.TopicID, Kind: "room", SourceID: room.TopicID,
+			Title: firstNonEmpty(strings.TrimSpace(room.Title), "Room"), Icon: room.Icon, Status: "idle",
+			SessionID: strings.TrimSpace(room.SessionID), Notifications: []DesktopIconNotice{},
+			Position: DesktopIconPosition{Row: "top", Zone: "conversation", Order: order}, SessionRef: room.Ref,
+		}
+		items = append(items, item)
+		index := len(items) - 1
+		for _, key := range desktopIconRoomSessionKeys(room.SessionID, room.Ref) {
+			if _, exists := pinnedRoomBySession[key]; !exists {
+				pinnedRoomBySession[key] = index
+			}
+		}
+	}
 
 	for _, source := range sources {
 		meta := source.meta
@@ -1560,7 +1762,9 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 		taskCount++
 	}
 
-	roomCount := 0
+	roomOrder := len(pinnedRooms)
+	regularRoomCount := len(pinnedRooms)
+	personCount := 0
 	for _, conversation := range unreadState.Summary.Conversations {
 		if sequence, dismissed := persisted.DismissedConversations[conversation.Key]; dismissed && sequence >= conversation.LatestSequence && !desktopIconConversationRemovePending(persisted.Applied, conversation.Key) {
 			continue
@@ -1576,25 +1780,46 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 				items[index].Notifications[0].Conversation = conversation.Key
 				items[index].Notifications[0].ReadSequence = conversation.LatestSequence
 			} else {
-				items[index].Notifications = noticesForConversation(conversation, roomSummaries[conversation.SessionID])
+				items[index].Notifications = noticesForConversation(conversation, roomPresentations[conversation.SessionID])
 			}
 			continue
 		}
 		if conversation.Source != unread.SourceRoom && conversation.Source != unread.SourceIM {
 			continue
 		}
-		if roomCount >= desktopIconMaxRooms {
-			continue
-		}
 		kind := "room"
 		if conversation.Source == unread.SourceIM {
 			kind = "person"
 		}
+		if kind == "room" {
+			if index, ok := desktopIconPinnedRoomIndex(pinnedRoomBySession, conversation); ok {
+				items[index].Notifications = noticesForConversation(conversation, roomPresentations[conversation.SessionID])
+				items[index].ConversationSequence = conversation.LatestSequence
+				if conversation.UnreadCount > 0 {
+					items[index].Status = "unread"
+				}
+				continue
+			}
+			// Pins own the seven durable Room slots. Legacy/read Room projections
+			// may fill remaining slots, while every unread Room is appended even
+			// when all seven durable positions are occupied.
+			if conversation.UnreadCount == 0 {
+				if regularRoomCount >= desktopRoomPinLimit {
+					continue
+				}
+				regularRoomCount++
+			}
+		} else {
+			if personCount >= desktopIconMaxPeople {
+				continue
+			}
+			personCount++
+		}
 		item := DesktopIconItem{
 			ID: "conversation:" + conversation.Key, Kind: kind, SourceID: conversation.Key,
 			Title: firstNonEmpty(strings.TrimSpace(conversation.Title), "消息"), Status: "unread",
-			Notifications:        noticesForConversation(conversation, roomSummaries[conversation.SessionID]),
-			Position:             DesktopIconPosition{Row: "top", Zone: "conversation", Order: roomCount},
+			Notifications:        noticesForConversation(conversation, roomPresentations[conversation.SessionID]),
+			Position:             DesktopIconPosition{Row: "top", Zone: "conversation", Order: roomOrder},
 			ConversationSequence: conversation.LatestSequence,
 		}
 		if kind == "room" {
@@ -1603,6 +1828,13 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 			// never depends on the first notice's TabID, a read Room with no
 			// notice, or whatever tab happens to be active.
 			item.SessionRef = roomRefs[conversation.SessionID]
+			if room, ok := desktopIconRoomForConversation(roomBySession, conversation); ok {
+				item.Icon = room.Icon
+				item.SessionID = room.SessionID
+				if room.Ref != nil {
+					item.SessionRef = room.Ref
+				}
+			}
 		} else if presentation, ok := desktopIconSessionPresentationFor(sessionPresentations, conversation.SessionID); ok {
 			// Reuse the corresponding session's exact Agent Icon seed, workspace
 			// badge and durable ref. Opening still uses ResolveUnreadSession so a
@@ -1612,7 +1844,7 @@ func buildDesktopIconSnapshotWithPresentations(sources []widgetSource, unreadSta
 			item.SessionRef = presentation.ref
 		}
 		items = append(items, item)
-		roomCount++
+		roomOrder++
 	}
 
 	spaceOrder := 0
@@ -1817,25 +2049,51 @@ func desktopNoticeForMessage(message WidgetMessage, kind string, priority int, a
 	}
 }
 
-func noticesForConversation(conversation unread.Conversation, summary string) []DesktopIconNotice {
+func noticesForConversation(conversation unread.Conversation, presentations map[string]desktopRoomNoticePresentation) []DesktopIconNotice {
 	out := make([]DesktopIconNotice, 0, len(conversation.Items))
 	for _, item := range conversation.Items {
 		kind, priority := "message", 3
-		if item.Priority == unread.PriorityHigh {
+		if item.Priority == unread.PriorityHigh && item.Attention == unread.AttentionNone {
 			kind, priority = "needs_input", 1
+		} else if item.Attention != unread.AttentionNone {
+			priority = 1
 		}
-		body := strings.TrimSpace(summary)
+		presentation := presentations[item.ID]
+		body := strings.TrimSpace(presentation.Body)
+		if body == "" {
+			body = strings.TrimSpace(presentations[""].Body)
+		}
 		if body == "" {
 			body = "收到一条新消息（摘要需在完整会话中查看）"
 		}
 		out = append(out, DesktopIconNotice{
-			ID: item.ID, Revision: strconv.FormatUint(item.Sequence, 10), Kind: kind, Priority: priority,
-			Title: firstNonEmpty(conversation.Title, "新消息"), Body: body, TabID: conversation.SessionID,
+			ID: item.ID, Revision: strconv.FormatUint(item.Sequence, 10), Kind: kind, Priority: priority, Attention: item.Attention,
+			Title: desktopRoomNoticeTitle(conversation.Title, presentation.Author, item.Attention), Body: body, TabID: conversation.SessionID,
 			CreatedAt: item.OccurredAt.UnixMilli(), Conversation: conversation.Key, ReadSequence: item.Sequence,
 			Options: []WidgetOption{},
 		})
 	}
 	return out
+}
+
+func desktopRoomNoticeTitle(room, author string, attention unread.ItemAttention) string {
+	author = strings.TrimSpace(author)
+	prefix := author
+	if prefix == "" {
+		prefix = "Room 成员"
+	}
+	switch attention {
+	case unread.AttentionMentionMember:
+		return prefix + " @ 了你"
+	case unread.AttentionMentionAgent:
+		return prefix + " @ 了你的 Agent"
+	case unread.AttentionMentionBoth:
+		return prefix + " @ 了你和你的 Agent"
+	}
+	if author != "" {
+		return author + " · " + firstNonEmpty(strings.TrimSpace(room), "新消息")
+	}
+	return firstNonEmpty(strings.TrimSpace(room), "新消息")
 }
 
 func desktopTaskIndex(index map[string]int, conversation unread.Conversation) (int, bool) {
@@ -1891,12 +2149,12 @@ func desktopIconItemRevision(item DesktopIconItem) string {
 	}
 	// Identity seed and workspace icon are display-only but revision-bearing:
 	// a changed session identity or project icon must refresh the frontend icon.
-	parts = append(parts, item.SessionID, item.AppearanceSeed, item.WorkspaceIcon)
+	parts = append(parts, item.SessionID, item.AppearanceSeed, item.WorkspaceIcon, item.Icon)
 	if item.SessionRef != nil {
 		parts = append(parts, item.SessionRef.Scope, item.SessionRef.WorkspaceRoot, item.SessionRef.TopicID, item.SessionRef.SessionPath)
 	}
 	for _, notice := range item.Notifications {
-		parts = append(parts, notice.ID, notice.Revision)
+		parts = append(parts, notice.ID, notice.Revision, notice.Kind, string(notice.Attention), notice.Title, notice.Body)
 	}
 	return widgetRevision(parts...)
 }

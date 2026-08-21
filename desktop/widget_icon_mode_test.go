@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"workground2/internal/agent"
+	"workground2/internal/collab"
 	"workground2/internal/control"
 	"workground2/internal/provider"
 	"workground2/internal/unread"
@@ -49,6 +50,246 @@ func TestBuildDesktopIconSnapshotKeepsReadConversationAndTwoRows(t *testing.T) {
 	}
 	if findDesktopIconItem(snapshot.Items, "fixed:knowledge") != nil {
 		t.Fatal("knowledge entry should stay hidden until the feature is ready")
+	}
+}
+
+func TestDesktopRoomNoticesUseExactMessageAuthorAndMentionPresentation(t *testing.T) {
+	runtime := &desktopCollaboration{
+		ownerSessionID: "room-session",
+		state: CollaborationState{
+			MemberID: "self", AgentID: "agent-self",
+			Snapshot: collab.Snapshot{
+				Members: []collab.Member{
+					{ID: "self", Name: "Me", Agent: collab.AgentDescriptor{ID: "agent-self", Name: "My Agent"}},
+					{ID: "alice", Name: "Alice", Agent: collab.AgentDescriptor{ID: "agent-alice", Name: "Alice Agent"}},
+				},
+				Timeline: []collab.TimelineItem{
+					{ID: "normal", Sequence: 1, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "normal", AuthorID: "alice", Text: "first exact message"}},
+					{ID: "member", Sequence: 2, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "member", AuthorID: "alice", Text: "member exact message", MentionMemberIDs: []string{"self"}}},
+					{ID: "agent", Sequence: 3, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "agent", AuthorID: "alice", Text: "agent exact message", MentionAgentIDs: []string{"agent-self"}}},
+					{ID: "both", Sequence: 4, Type: collab.TimelineChat, Chat: &collab.ChatMessage{ID: "both", AuthorID: "alice", Text: "both exact message", MentionMemberIDs: []string{"self"}, MentionAgentIDs: []string{"agent-self"}}},
+					{ID: "action", Sequence: 5, Type: collab.TimelineContribution, Contribution: &collab.Contribution{ID: "action", AuthorID: "alice", Body: "ordinary high action", ActionNeeded: true}},
+				},
+			},
+		},
+	}
+	app := &App{collaborations: map[string]*desktopCollaboration{"room-session": runtime}}
+	runtime.app = app
+	presentations := app.desktopRoomNoticePresentations()
+
+	at := time.Date(2026, 8, 21, 8, 0, 0, 0, time.UTC)
+	conversation := unread.Conversation{
+		Key: "room:exact", Source: unread.SourceRoom, SessionID: "room-session", Title: "Design Room",
+		LatestSequence: 5, UnreadCount: 5, HighPriorityCount: 4,
+		Items: []unread.Item{
+			{ID: "normal", Sequence: 1, Kind: "chat", Priority: unread.PriorityNormal, AuthorID: "alice", OccurredAt: at},
+			{ID: "member", Sequence: 2, Kind: "chat", Priority: unread.PriorityHigh, Attention: unread.AttentionMentionMember, AuthorID: "alice", OccurredAt: at.Add(time.Minute)},
+			{ID: "agent", Sequence: 3, Kind: "chat", Priority: unread.PriorityHigh, Attention: unread.AttentionMentionAgent, AuthorID: "alice", OccurredAt: at.Add(2 * time.Minute)},
+			{ID: "both", Sequence: 4, Kind: "chat", Priority: unread.PriorityHigh, Attention: unread.AttentionMentionBoth, AuthorID: "alice", OccurredAt: at.Add(3 * time.Minute)},
+			{ID: "action", Sequence: 5, Kind: "contribution", Priority: unread.PriorityHigh, AuthorID: "alice", OccurredAt: at.Add(4 * time.Minute)},
+		},
+	}
+	snapshot := buildDesktopIconSnapshot(nil, UnreadState{Available: true, Summary: unread.Summary{Revision: 1, Conversations: []unread.Conversation{conversation}}}, nil, desktopIconPersistedState{}, 0, presentations, nil, nil, nil)
+	room := findDesktopIconItem(snapshot.Items, "conversation:room:exact")
+	if room == nil || len(room.Notifications) != 5 {
+		t.Fatalf("Room notices = %#v", room)
+	}
+	byID := map[string]DesktopIconNotice{}
+	for _, notice := range room.Notifications {
+		byID[notice.ID] = notice
+	}
+	want := map[string]struct {
+		body      string
+		attention unread.ItemAttention
+		title     string
+		kind      string
+	}{
+		"normal": {body: "first exact message", title: "Alice · Design Room", kind: "message"},
+		"member": {body: "member exact message", attention: unread.AttentionMentionMember, title: "Alice @ 了你", kind: "message"},
+		"agent":  {body: "agent exact message", attention: unread.AttentionMentionAgent, title: "Alice @ 了你的 Agent", kind: "message"},
+		"both":   {body: "both exact message", attention: unread.AttentionMentionBoth, title: "Alice @ 了你和你的 Agent", kind: "message"},
+		"action": {body: "ordinary high action", title: "Alice · Design Room", kind: "needs_input"},
+	}
+	for id, expected := range want {
+		notice := byID[id]
+		if notice.Body != expected.body || notice.Attention != expected.attention || notice.Title != expected.title || notice.Kind != expected.kind {
+			t.Fatalf("notice %s = %+v, want body=%q attention=%q title=%q kind=%q", id, notice, expected.body, expected.attention, expected.title, expected.kind)
+		}
+	}
+	if byID["member"].Priority != 1 || byID["normal"].Priority != 3 {
+		t.Fatalf("Room notice priorities = member %d normal %d", byID["member"].Priority, byID["normal"].Priority)
+	}
+}
+
+func TestDesktopRoomMentionNoticeKeepsOpenAndReplyActions(t *testing.T) {
+	sp := roomTestSession(t)
+	openApp := newRoomOpenTestApp(t, sp)
+	openNotice := &DesktopIconNotice{
+		ID: "mention", Revision: "2", Kind: "message", Attention: unread.AttentionMentionAgent,
+		TabID: "room-session", Conversation: "room:exact", ReadSequence: 2,
+	}
+	err := openApp.applyDesktopIconActionLocked(
+		DesktopIconItem{
+			ID: "conversation:room:exact", Kind: "room", SourceID: "room:exact",
+			SessionRef: &DesktopIconTaskRef{Scope: "global", TopicID: "room-topic", SessionPath: sp},
+		},
+		openNotice,
+		DesktopIconActionInput{Action: "open", RequestID: "open-mention"},
+	)
+	if err != nil || openApp.activeTabID != "room-tab" {
+		t.Fatalf("open mention Room: active=%q err=%v", openApp.activeTabID, err)
+	}
+
+	app := &App{}
+	runtime := &desktopCollaboration{
+		app: app, ownerSessionID: "room-session",
+		state: CollaborationState{Status: "failed", Room: "room-a", MemberID: "self", SessionID: "room-session"},
+	}
+	app.collaborations = map[string]*desktopCollaboration{"room-session": runtime}
+	notice := &DesktopIconNotice{
+		ID: "mention", Revision: "2", Kind: "message", Attention: unread.AttentionMentionAgent,
+		TabID: "room-session", Conversation: "room:exact", ReadSequence: 2,
+	}
+	err = app.applyDesktopIconActionLocked(
+		DesktopIconItem{ID: "conversation:room:exact", Kind: "room", SourceID: "room:exact"},
+		notice,
+		DesktopIconActionInput{Action: "reply", RequestID: "reply-mention", Values: []string{"收到，我来处理"}},
+	)
+	if err != nil {
+		t.Fatalf("reply to mention: %v", err)
+	}
+	if len(runtime.outbox) != 1 || runtime.outbox[0].Command.Chat == nil || runtime.outbox[0].Command.Chat.Text != "收到，我来处理" {
+		t.Fatalf("queued mention reply = %+v", runtime.outbox)
+	}
+	if !runtime.state.Retryable || runtime.state.OutboxCount != 1 {
+		t.Fatalf("retryable reply state = %+v", runtime.state)
+	}
+}
+
+func TestDesktopIconPinnedRoomsKeepSevenAndAppendEighthUnread(t *testing.T) {
+	pinned := make([]desktopIconRoomDescriptor, 0, desktopRoomPinLimit)
+	for i := 0; i < desktopRoomPinLimit; i++ {
+		pinned = append(pinned, desktopIconRoomDescriptor{
+			TopicID: fmt.Sprintf("topic-%d", i), Title: fmt.Sprintf("Room %d", i), SessionID: fmt.Sprintf("session-%d", i),
+			Icon: "discussion",
+			Ref:  &DesktopIconTaskRef{Scope: "global", TopicID: fmt.Sprintf("topic-%d", i), SessionPath: fmt.Sprintf("room-%d.jsonl", i)},
+		})
+	}
+	allRooms := map[string]desktopIconRoomDescriptor{"topic-8": {TopicID: "topic-8", SessionID: "session-8", Icon: "python"}}
+	at := time.Date(2026, 8, 21, 9, 0, 0, 0, time.UTC)
+	state := UnreadState{Available: true, Summary: unread.Summary{Revision: 2, Conversations: []unread.Conversation{
+		{
+			Key: "room:pinned", Source: unread.SourceRoom, SessionID: "session-3", Title: "Room 3", LatestSequence: 4, UnreadCount: 1,
+			Items: []unread.Item{{ID: "pinned-message", Sequence: 4, Kind: "chat", Priority: unread.PriorityNormal, OccurredAt: at}},
+		},
+		{
+			Key: "room:eighth", Source: unread.SourceRoom, SessionID: "session-8", Title: "Room 8", LatestSequence: 8, UnreadCount: 1,
+			Items: []unread.Item{{ID: "eighth-message", Sequence: 8, Kind: "chat", Priority: unread.PriorityNormal, OccurredAt: at.Add(time.Minute)}},
+		},
+	}}}
+	snapshot := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, nil, pinned, nil, allRooms)
+	rooms := make([]DesktopIconItem, 0, desktopRoomPinLimit+1)
+	for _, item := range snapshot.Items {
+		if item.Kind == "room" {
+			rooms = append(rooms, item)
+		}
+	}
+	if len(rooms) != desktopRoomPinLimit+1 {
+		t.Fatalf("Room icons = %d, want seven pinned plus unread: %+v", len(rooms), rooms)
+	}
+	for i := 0; i < desktopRoomPinLimit; i++ {
+		if rooms[i].ID != fmt.Sprintf("room:topic-%d", i) || rooms[i].Position.Order != i {
+			t.Fatalf("pinned Room %d = %+v", i, rooms[i])
+		}
+	}
+	pinnedUnread := findDesktopIconItem(snapshot.Items, "room:topic-3")
+	if pinnedUnread == nil || pinnedUnread.Icon != "discussion" || pinnedUnread.UnreadCount != 1 || len(pinnedUnread.Notifications) != 1 || pinnedUnread.Notifications[0].ID != "pinned-message" {
+		t.Fatalf("merged pinned unread = %+v", pinnedUnread)
+	}
+	if findDesktopIconItem(snapshot.Items, "conversation:room:pinned") != nil {
+		t.Fatal("pinned unread Room was projected twice")
+	}
+	eighth := findDesktopIconItem(snapshot.Items, "conversation:room:eighth")
+	if eighth == nil || eighth.Icon != "python" || eighth.Position.Order != desktopRoomPinLimit || eighth.UnreadCount != 1 {
+		t.Fatalf("eighth unread Room = %+v", eighth)
+	}
+}
+
+func TestDesktopIconPinnedRoomDescriptorsSkipStaleAndKeepDurableRef(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(desktopConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveDesktopRoomPins(desktopRoomPinState{TopicIDs: []string{"stale-topic", "room-topic"}}); err != nil {
+		t.Fatalf("save Room pins: %v", err)
+	}
+	sp := roomTestSession(t)
+	meta, ok, err := agent.LoadBranchMeta(sp)
+	if err != nil || !ok {
+		t.Fatalf("load Room meta: ok=%v err=%v", ok, err)
+	}
+	meta.ID = "room-session"
+	meta.Scope = "project"
+	meta.WorkspaceRoot = t.TempDir()
+	meta.TopicID = "room-topic"
+	meta.CustomTitle = "Durable Room"
+	meta.SessionKind = agent.SessionKindCollaboration
+	if err := agent.SaveBranchMeta(sp, meta); err != nil {
+		t.Fatalf("save Room meta: %v", err)
+	}
+	tree := []ProjectNode{{Kind: "project", Root: meta.WorkspaceRoot, Children: []ProjectNode{{
+		Kind: "topic", Label: "Durable Room", Root: meta.WorkspaceRoot, TopicID: "room-topic", SessionID: "room-session", SessionPath: sp, SessionKind: string(agent.SessionKindCollaboration),
+	}}}}
+	descriptors := desktopIconPinnedRoomsFromDescriptors(desktopIconRoomDescriptors(tree, map[string]string{"room-topic": "discussion", "stale-topic": "python"}), []string{"stale-topic", "room-topic"})
+	if len(descriptors) != 1 {
+		t.Fatalf("pinned descriptors = %+v", descriptors)
+	}
+	descriptor := descriptors[0]
+	if descriptor.TopicID != "room-topic" || descriptor.Title != "Durable Room" || descriptor.SessionID != "room-session" || descriptor.Icon != "discussion" || descriptor.Ref == nil || descriptor.Ref.SessionPath != sp || descriptor.Ref.TopicID != "room-topic" || descriptor.Ref.Scope != "project" || descriptor.Ref.WorkspaceRoot != meta.WorkspaceRoot {
+		t.Fatalf("durable Room descriptor = %+v", descriptor)
+	}
+	persisted, err := loadDesktopRoomPins()
+	if err != nil || !reflect.DeepEqual(persisted.TopicIDs, []string{"stale-topic", "room-topic"}) {
+		t.Fatalf("stale pin was not preserved: %+v err=%v", persisted, err)
+	}
+
+	app := newRoomOpenTestApp(t, sp)
+	item := DesktopIconItem{
+		ID: "room:" + descriptor.TopicID, Kind: "room", SourceID: descriptor.TopicID, Title: descriptor.Title,
+		SessionID: descriptor.SessionID, SessionRef: descriptor.Ref,
+	}
+	if err := app.applyDesktopIconActionLocked(item, nil, DesktopIconActionInput{Action: "open", RequestID: "open-pinned"}); err != nil || app.activeTabID != "room-tab" {
+		t.Fatalf("open pinned Room: active=%q err=%v", app.activeTabID, err)
+	}
+
+	withoutMeta := desktopIconRoomDescriptors([]ProjectNode{{
+		Kind: "global_topic", Label: "Recoverable Room", TopicID: "recoverable", SessionID: "recoverable-session",
+		SessionPath: filepath.Join(t.TempDir(), "temporarily-missing.jsonl"), SessionKind: string(agent.SessionKindCollaboration),
+	}}, map[string]string{"recoverable": "python"})["recoverable"]
+	if withoutMeta.Icon != "python" || withoutMeta.SessionID != "recoverable-session" {
+		t.Fatalf("Room descriptor without readable meta = %+v, want tree identity and retained icon preference", withoutMeta)
+	}
+}
+
+func TestDesktopIconSnapshotReportsRoomPinReadFailureWithoutDroppingIcons(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(desktopConfigDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktopRoomPinsPath(), []byte(`{"topicIds":["duplicate","duplicate"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{iconWidgetStateLoaded: true, iconWidgetState: newDesktopIconState()}
+	snapshot := app.GetDesktopIconSnapshot()
+	if !strings.Contains(snapshot.Error, "load desktop Room pins") || !strings.Contains(snapshot.Error, "duplicate") {
+		t.Fatalf("snapshot pin error = %q", snapshot.Error)
+	}
+	if findDesktopIconItem(snapshot.Items, "fixed:new") == nil || findDesktopIconItem(snapshot.Items, "fixed:rooms") == nil {
+		t.Fatalf("pin read failure dropped unrelated icons: %+v", snapshot.Items)
+	}
+	raw, err := os.ReadFile(desktopRoomPinsPath())
+	if err != nil || string(raw) != `{"topicIds":["duplicate","duplicate"]}` {
+		t.Fatalf("corrupt pin file was changed: %q err=%v", raw, err)
 	}
 }
 
@@ -1999,7 +2240,7 @@ func TestBuildDesktopIconSnapshotPersonReusesSessionAgentIdentity(t *testing.T) 
 		Kind: "session", Root: `D:\Work\WG2`, TopicID: "topic-im", SessionID: "persisted-session-im",
 		SessionPath: sp, ProjectIcon: "python",
 	}})
-	restarted := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, treePresentations, nil)
+	restarted := buildDesktopIconSnapshotWithPresentations(nil, state, nil, desktopIconPersistedState{}, 0, nil, nil, nil, treePresentations, nil, nil)
 	restartedPerson := findDesktopIconItem(restarted.Items, "conversation:im:user-1")
 	if restartedPerson == nil || restartedPerson.SessionID != "persisted-session-im" || restartedPerson.WorkspaceIcon != "python" || restartedPerson.SessionRef == nil || restartedPerson.SessionRef.SessionPath != sp {
 		t.Fatalf("restarted person session identity = %#v", restartedPerson)
@@ -2166,6 +2407,11 @@ func TestDesktopIconAgentIdentityFields(t *testing.T) {
 	item.WorkspaceIcon = "python"
 	if desktopIconItemRevision(item) == base {
 		t.Fatal("a changed workspace icon must change the item revision")
+	}
+	beforeRoomIcon := desktopIconItemRevision(item)
+	item.Icon = "discussion"
+	if desktopIconItemRevision(item) == beforeRoomIcon {
+		t.Fatal("a changed Room icon must change the item revision")
 	}
 }
 
