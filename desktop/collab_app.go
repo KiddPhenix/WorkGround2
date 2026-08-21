@@ -1013,31 +1013,53 @@ type collaborationRestoreStart func(*desktopCollaboration, string)
 
 var errCollaborationSessionUnregistered = errors.New("persisted collaboration Session is no longer registered")
 
-type collaborationLiveRooms map[string]struct{}
-
-func desktopCollaborationLiveRooms(tree []ProjectNode) collaborationLiveRooms {
-	rooms := collaborationLiveRooms{}
-	var walk func([]ProjectNode)
-	walk = func(nodes []ProjectNode) {
-		for _, node := range nodes {
-			kind := strings.TrimSpace(node.Kind)
-			if (kind == "topic" || kind == "global_topic") &&
-				strings.TrimSpace(node.TopicID) != "" &&
-				node.SessionKind == string(agent.SessionKindCollaboration) {
-				if path := collaborationOwnerSessionPath(node.SessionPath); path != "" {
-					rooms[path] = struct{}{}
-				}
-			}
-			walk(node.Children)
-		}
+// collaborationSessionRegistered checks the durable Room ownership records
+// directly. ListProjectTree is a UI projection with a bounded cache-backed
+// scan; using it as startup authority can leave a valid Host dormant until the
+// Room UI happens to trigger another runtime lookup.
+func collaborationSessionRegistered(sessionPath string, projects desktopProjectFile) bool {
+	ownerPath := collaborationOwnerSessionPath(sessionPath)
+	if ownerPath == "" || collaborationSessionPathInTrash(ownerPath) {
+		return false
 	}
-	walk(tree)
-	return rooms
+	info, err := os.Stat(ownerPath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	meta, ok, err := agent.LoadBranchMeta(ownerPath)
+	if err != nil || !ok || meta.SessionKind != agent.SessionKindCollaboration {
+		return false
+	}
+	topicID := strings.TrimSpace(meta.TopicID)
+	if topicID == "" {
+		return false
+	}
+	root := normalizeProjectRoot(meta.WorkspaceRoot)
+	if strings.TrimSpace(meta.Scope) == "global" || (strings.TrimSpace(meta.Scope) == "" && root == "") {
+		return containsDesktopString(projects.GlobalTopics, topicID) || containsDesktopString(projects.GlobalPinnedTopics, topicID)
+	}
+	if root == "" {
+		return false
+	}
+	for _, project := range projects.Projects {
+		if normalizeProjectRoot(project.Root) != root {
+			continue
+		}
+		return containsDesktopString(project.Topics, topicID) || containsDesktopString(project.PinnedTopics, topicID)
+	}
+	return false
 }
 
-func (rooms collaborationLiveRooms) contains(sessionPath string) bool {
-	_, ok := rooms[collaborationOwnerSessionPath(sessionPath)]
-	return ok
+func collaborationSessionPathInTrash(sessionPath string) bool {
+	for path := filepath.Clean(sessionPath); ; path = filepath.Dir(path) {
+		if strings.EqualFold(filepath.Base(path), sessionTrashDir) {
+			return true
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return false
+		}
+	}
 }
 
 func (a *App) restoreCollaborationRuntimesWith(start collaborationRestoreStart) {
@@ -1053,20 +1075,19 @@ func (a *App) restoreCollaborationRuntimesWith(start collaborationRestoreStart) 
 		}
 		return
 	}
-	// Build the current Room authority once. The cache directory deliberately
-	// retains old states for recovery, so a complete cache alone must never
-	// resurrect a Room that was left, deleted, trashed, or removed from a topic.
-	liveRooms := desktopCollaborationLiveRooms(a.ListProjectTree())
-	a.restoreCollaborationRuntimesWithRooms(entries, stateDir, start, liveRooms)
+	// Build the current durable Topic registry once. The cache directory retains
+	// old states for recovery, so a complete cache alone must never resurrect a
+	// Room that was left, deleted, trashed, or removed from a topic.
+	a.restoreCollaborationRuntimesWithRegistry(entries, stateDir, start, loadProjectsFile())
 }
 
-func (a *App) restoreCollaborationRuntimesWithRooms(entries []os.DirEntry, stateDir string, start collaborationRestoreStart, liveRooms collaborationLiveRooms) {
+func (a *App) restoreCollaborationRuntimesWithRegistry(entries []os.DirEntry, stateDir string, start collaborationRestoreStart, projects desktopProjectFile) {
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		persistPath := filepath.Join(stateDir, entry.Name())
-		a.restoreOneCollaborationWithRooms(persistPath, start, liveRooms)
+		a.restoreOneCollaborationWithRegistry(persistPath, start, projects)
 	}
 }
 
@@ -1075,10 +1096,10 @@ func (a *App) restoreOneCollaboration(persistPath string) {
 }
 
 func (a *App) restoreOneCollaborationWith(persistPath string, start collaborationRestoreStart) {
-	a.restoreOneCollaborationWithRooms(persistPath, start, desktopCollaborationLiveRooms(a.ListProjectTree()))
+	a.restoreOneCollaborationWithRegistry(persistPath, start, loadProjectsFile())
 }
 
-func (a *App) restoreOneCollaborationWithRooms(persistPath string, start collaborationRestoreStart, liveRooms collaborationLiveRooms) {
+func (a *App) restoreOneCollaborationWithRegistry(persistPath string, start collaborationRestoreStart, projects desktopProjectFile) {
 	var persisted collaborationPersistedState
 	if err := readPersistFile(persistPath, &persisted); err != nil {
 		fmt.Fprintf(os.Stderr, "collaboration restore: read %s: %v\n", persistPath, err)
@@ -1095,7 +1116,7 @@ func (a *App) restoreOneCollaborationWithRooms(persistPath string, start collabo
 	if ownerPath == "" && tab != nil {
 		ownerPath = tab.currentSessionPath()
 	}
-	if !liveRooms.contains(ownerPath) {
+	if !collaborationSessionRegistered(ownerPath, projects) {
 		return
 	}
 	// Recovery branches are an implementation detail of durable Session saves.
