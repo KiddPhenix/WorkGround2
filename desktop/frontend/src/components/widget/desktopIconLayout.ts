@@ -38,11 +38,25 @@ export function iconHitRect(rect: IconRect, devicePixelRatio: unknown, padding =
 	};
 }
 
+// comparableWorkspaceKey normalizes a workspace key for matching only. `auto`
+// and `global` compare verbatim; `project:<root>` folds the Windows drive-letter
+// case and treats `/` and `\` as one separator. Callers keep submitting the
+// original key so the backend receives the candidate list's authoritative root.
+export function comparableWorkspaceKey(key: string): string {
+  if (!key.startsWith("project:")) return key;
+  const path = key.slice("project:".length).replace(/\\/g, "/");
+  return `project:${path.replace(/^([A-Za-z]):/, (_, drive: string) => `${drive.toLowerCase()}:`)}`;
+}
+
 // Pending intent wins because changing its workspace would change an idempotent
 // retry. An explicit source icon wins over the remembered idle preference.
+// Comparison is drive-case/separator tolerant so a clicked icon root still
+// matches the candidate list; the returned index points at the authoritative
+// key, so the submitted root is the candidate's exact value.
 export function quickStartWorkspaceIndex(keys: string[], pending = "", requested = "", remembered = ""): number {
+  const comparable = keys.map(comparableWorkspaceKey);
   for (const candidate of [pending, requested, remembered]) {
-    const index = keys.indexOf(candidate);
+    const index = comparable.indexOf(comparableWorkspaceKey(candidate));
     if (index >= 0) return index;
   }
   return 0;

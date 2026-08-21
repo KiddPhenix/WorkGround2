@@ -103,6 +103,7 @@ type widgetWorkspaceCandidate struct {
 	Topics    []string
 	Active    bool
 	Transient bool
+	Pinned    bool
 	Order     int
 }
 
@@ -467,6 +468,13 @@ func (a *App) widgetWorkspaceCandidates() []widgetWorkspaceCandidate {
 	}
 	a.mu.RUnlock()
 
+	pinned := make(map[string]bool, len(projects.PinnedProjects))
+	for _, root := range projects.PinnedProjects {
+		if root = normalizeProjectRoot(root); root != "" {
+			pinned[root] = true
+		}
+	}
+
 	candidates := make([]widgetWorkspaceCandidate, 0, len(projects.Projects))
 	for order, project := range projects.Projects {
 		root := normalizeProjectRoot(project.Root)
@@ -492,6 +500,7 @@ func (a *App) widgetWorkspaceCandidates() []widgetWorkspaceCandidate {
 			Aliases: uniqueWidgetStrings(name, filepath.Base(root)), Topics: topics,
 			Active: root == activeRoot, Order: order,
 			Transient: widgetIsTransientRoot(root, name),
+			Pinned:    pinned[root],
 		})
 	}
 	return candidates
@@ -550,15 +559,16 @@ func chooseWidgetWorkspace(prompt string, candidates []widgetWorkspaceCandidate)
 }
 
 // ListWidgetWorkspaces returns the selectable workspace options for the widget
-// dropdown: "auto", every non-transient project, and Global.
+// dropdown: "auto", every non-transient project, explicitly pinned transient
+// projects, and Global.
 func (a *App) ListWidgetWorkspaces() []WidgetWorkspaceOption {
 	candidates := a.widgetWorkspaceCandidates()
 	out := []WidgetWorkspaceOption{{Scope: widgetWorkspaceAuto, Name: "自动"}}
 	for _, c := range candidates {
-		if c.Transient {
+		if c.Transient && !c.Pinned {
 			continue
 		}
-		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root, Icon: projectIcon(c.Root)})
+		out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceProject, Name: c.Name, Root: c.Root, Icon: projectIcon(c.Root), Pinned: c.Pinned})
 	}
 	out = append(out, WidgetWorkspaceOption{Scope: widgetWorkspaceGlobal, Name: globalProjectTitle(), Icon: globalProjectIcon()})
 	return out
@@ -566,7 +576,8 @@ func (a *App) ListWidgetWorkspaces() []WidgetWorkspaceOption {
 
 // resolveWidgetWorkspace turns a workspace selection into a concrete route.
 // "auto" delegates to the existing smart routing; "global" goes to Global;
-// "project:<root>" validates the root is a known non-transient candidate.
+// "project:<root>" validates the root is a known candidate that is either
+// non-transient or explicitly pinned into a desktop workspace slot.
 func resolveWidgetWorkspace(selection, prompt string, candidates []widgetWorkspaceCandidate) (widgetWorkspaceRoute, error) {
 	switch {
 	case selection == widgetWorkspaceAuto:
@@ -581,7 +592,7 @@ func resolveWidgetWorkspace(selection, prompt string, candidates []widgetWorkspa
 		root = normalizeProjectRoot(root)
 		for _, c := range candidates {
 			if c.Root == root {
-				if c.Transient {
+				if c.Transient && !c.Pinned {
 					return widgetWorkspaceRoute{}, fmt.Errorf("临时工作区 %q 不可手动选择", c.Name)
 				}
 				return widgetWorkspaceRoute{Scope: c.Scope, Root: c.Root, Name: c.Name, Reason: "手动选择", ReasonCode: widgetRouteManual}, nil

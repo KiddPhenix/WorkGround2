@@ -1148,7 +1148,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       // Escape inside the resident continuation input stays local (the
       // textarea stops propagation as well): it must never close the popup.
       if (event.key === "Escape" && !(event.target instanceof HTMLElement && event.target.closest(".desktop-icon-popup__continue"))) { closeTransient(); }
-		if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setPopupAnchorID(""); setActiveID("fixed:new"); }
+		if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") { event.preventDefault(); setQuickWorkspace(""); setQuickStartEditJob(null); setPopupAnchorID(""); setActiveID("fixed:new"); }
     };
     window.addEventListener("keydown", key); return () => window.removeEventListener("keydown", key);
   }, [closeTransient]);
@@ -1188,7 +1188,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
   const openItem = (item: DesktopIconItem) => {
     cancelTransientTimers();
     setPopupAnchorID("");
-    if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setActiveID(item.id); }
+    if (item.kind === "fixed" && item.sourceId === "new") { setQuickWorkspace(""); setQuickStartEditJob(null); setActiveID(item.id); }
 		else if (item.kind === "fixed" && item.sourceId === "search") {
 			setActiveID(item.id);
 		}
@@ -1549,7 +1549,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
       {active && isQuickStartJobItem(active) && <QuickStartJobBody job={activeQuickJob} onRetry={(requestId) => { quickJobs.retry(requestId); }} onEdit={editQuickStartJob} onDismiss={(requestId) => { if (quickJobs.dismiss(requestId)) { setActiveID(""); setPreviewID(""); } }} onOpenMain={openMainWindow} onOpenTask={activeQuickJob?.phase === "accepted" && activeQuickJob.tabId ? () => void openQuickStartTask(activeQuickJob) : undefined} />}
       {active && active.notifications[0] && <NoticeBody item={active} notice={active.notifications[0]} busy={busy} run={(action, values) => run(active, action, values)} onClose={() => { setActiveID(""); setPreviewID(""); }} />}
       {active && !active.notifications[0] && active.runtimeStatus && <RuntimeBody item={active} busy={busy} run={(action) => void run(active, action)} />}
-      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setPopupAnchorID(active.id); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
+      {active && !isQuickStartJobItem(active) && !active.notifications[0] && !active.runtimeStatus && active.sourceId !== "new" && active.sourceId !== "search" && active.sourceId !== "workspace" && active.sourceId !== "rooms" && active.sourceId !== "delegate" && <><strong>{active.title}</strong><p>{previewText(active)}</p><div className="desktop-icon-popup__actions"><button onClick={() => void run(active, "open")}>打开</button>{active.kind === "workspace" && <button onClick={() => { setQuickWorkspace(`project:${active.sourceId}`); setQuickStartEditJob(null); setPopupAnchorID(active.id); setActiveID("fixed:new"); }}>在此发起</button>}</div></>}
 
     </section>}
     {(error || quickError || quickJobs.storageError) && <div className="desktop-icon-toast" role="alert">{error}{error && (quickError || quickJobs.storageError) ? <span aria-hidden="true">；</span> : null}{quickError}{quickError && quickJobs.storageError ? <span aria-hidden="true">；</span> : null}{quickJobs.storageError}<button aria-label="关闭错误" onClick={() => { setError(""); setQuickError(""); quickJobs.clearStorageError(); }}><X /></button></div>}
