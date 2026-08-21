@@ -23,6 +23,7 @@ import { deleteConfirmNext, pinnedWorkspaceRows, projectWorkspaceRows, renameTit
 import { roomRows, type RoomRow } from "./roomsManager";
 import { readRoomIconVisibility, visibleDesktopIcons, writeRoomIconVisibility } from "./roomIconVisibility";
 import { isWorkspaceMatteIcon, WORKSPACE_MATTE_ICON_OPTIONS, type ProjectIconKey, type WorkspaceMatteIconKey } from "../../lib/projectIcons";
+import { canRenameTaskIcon } from "./desktopIconRename";
 import { WorkspaceMatteIcon } from "./WorkspaceMatteIcon";
 import "./desktop-icon-mode.css";
 
@@ -1341,7 +1342,7 @@ export function DesktopIconMode({ onNewRoom, onOpenRoom, onOpenSettings, onOpenM
 			</div> : <>
 				<button role="menuitem" onClick={() => item.kind === "fixed" ? openItem(item) : void run(item, "open")}>打开</button>
 				{item.kind === "workspace" && <button role="menuitem" onClick={() => openWorkspaceIconEditor(item)}>修改图标</button>}
-				{item.kind === "task" && <><button role="menuitem" onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
+				{item.kind === "task" && <><button role="menuitem" disabled={!canRenameTaskIcon(item)} title={canRenameTaskIcon(item) ? undefined : "该任务没有可改名的 Session"} onClick={() => startSessionRename(item)}>改名</button><button role="menuitem" disabled={busy} onClick={() => void finishMenuAction(item, "randomize_icon")}>换个样子</button></>}
 				{item.unreadCount > 0 && <button role="menuitem" onClick={() => void run(item, "mark_read")}>标记已读</button>}
 				{(item.retained || item.kind === "person") && <button role="menuitem" onClick={() => void run(item, "remove")}>移除</button>}
 			</>}

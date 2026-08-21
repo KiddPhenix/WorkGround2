@@ -12,7 +12,22 @@ import { parseRoomIconVisibility, readRoomIconVisibility, ROOM_ICON_VISIBILITY_K
 import { IDLE_HOVER_BURST_WINDOW_MS, IDLE_HOVER_HEALTHY_FRAMES, IDLE_HOVER_HEALTHY_GAP_MS, IDLE_HOVER_RECOVERY_WINDOW_MS, IDLE_HOVER_THRESHOLD_MS, IdleHoverTracer, type IdleHoverSensors } from "../components/widget/idleHoverTrace";
 import type { DesktopIconDiagnosticsInput, DesktopIconItem } from "../lib/bridge";
 import { isWorkspaceMatteIcon, projectIconKey, WORKSPACE_MATTE_ICON_OPTIONS } from "../lib/projectIcons";
+import { canRenameTaskIcon } from "../components/widget/desktopIconRename";
 import type { ProjectNode } from "../lib/types";
+
+// --- rename eligibility: a task icon is only renameable when it carries a
+// usable SessionRef.SessionPath, matching the backend rename gate so the menu
+// never presents a guaranteed-failure entry ---
+const taskIcon = (overrides: Partial<DesktopIconItem> = {}): DesktopIconItem => ({
+  id: "task:1", kind: "task", sourceId: "s", title: "任务", status: "idle", unreadCount: 0,
+  notifications: [], position: { row: "bottom", zone: "running", order: 0 }, revision: "r",
+  ...overrides,
+});
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global", sessionPath: "sp-1" } })), true, "task with a session path can rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global", sessionPath: "   " } })), false, "blank session path cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: { scope: "global" } })), false, "task without a session path cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ sessionRef: undefined })), false, "task without a sessionRef cannot rename");
+assert.equal(canRenameTaskIcon(taskIcon({ kind: "workspace", sessionRef: { scope: "global", sessionPath: "sp-1" } })), false, "non-task icons never rename");
 
 assert.equal(quickStartModelLabel("deepseek-pro/deepseek-v4-pro"), "deepseek-v4-pro", "QuickStart shows the selected model name without a redundant provider prefix");
 assert.equal(quickStartModelLabel(""), "未配置", "QuickStart exposes a missing default model explicitly");

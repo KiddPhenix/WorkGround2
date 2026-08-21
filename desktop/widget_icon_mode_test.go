@@ -2365,3 +2365,103 @@ func TestDesktopIconRenameRollsBackFailedPrepareAndRetries(t *testing.T) {
 		t.Fatalf("rename duplicate = %+v", duplicate)
 	}
 }
+
+// retainedRenameFixture builds an App whose only task icon is a retained entry
+// whose live tab is gone, so the retained Kept projection is the visible title.
+func retainedRenameFixture(t *testing.T) (*App, DesktopIconItem, string) {
+	t.Helper()
+	_, sp := completionTestTab(t, 0)
+	app := newSummaryTestApp(t, nil, fakeCompletionSummaryGenerator{})
+	app.sessionDirsOverride = []string{filepath.Dir(sp)}
+	app.iconWidgetState.Kept["task:stale"] = desktopIconKept{
+		ItemID: "task:stale", SourceID: "stale", Title: "原标题", Summary: "旧摘要", Order: 0,
+		Scope: "global", TopicID: "topic-a", SessionPath: sp,
+	}
+	snapshot := app.GetDesktopIconSnapshot()
+	item := findDesktopIconItem(snapshot.Items, "task:stale")
+	if item == nil {
+		t.Fatalf("retained icon missing: %+v", snapshot.Items)
+	}
+	return app, *item, sp
+}
+
+// TestDesktopIconRenameRetainedUpdatesKeptTitleAndSnapshot reproduces the bug:
+// a retained icon reads its title from Kept.Title, so a successful Session
+// rename must update that projection and change the item revision immediately.
+func TestDesktopIconRenameRetainedUpdatesKeptTitleAndSnapshot(t *testing.T) {
+	app, item, sp := retainedRenameFixture(t)
+
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-rename-retained", Action: "rename", Values: []string{"新的名字"}}
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "accepted" {
+		t.Fatalf("retained rename = %+v", result)
+	}
+	if kept := app.iconWidgetState.Kept["task:stale"]; kept.Title != "新的名字" {
+		t.Fatalf("retained Kept title = %q, want 新的名字", kept.Title)
+	}
+	if title := loadSessionTitles(filepath.Dir(sp))[filepath.Base(sp)]; title != "新的名字" {
+		t.Fatalf("session sidecar title = %q", title)
+	}
+	renamed := findDesktopIconItem(result.Snapshot.Items, item.ID)
+	if renamed == nil || renamed.Title != "新的名字" {
+		t.Fatalf("rename response snapshot item = %+v", renamed)
+	}
+	if renamed.Revision == item.Revision {
+		t.Fatalf("rename did not change the item revision: %q", renamed.Revision)
+	}
+	if duplicate := app.ApplyDesktopIconAction(input); duplicate.Status != "already_applied" {
+		t.Fatalf("retained rename duplicate = %+v", duplicate)
+	}
+	if kept := app.iconWidgetState.Kept["task:stale"]; kept.Title != "新的名字" {
+		t.Fatalf("duplicate rename changed Kept title to %q", kept.Title)
+	}
+}
+
+// TestDesktopIconRenameRetainedRecoversFromPendingReceipt covers startup
+// recovery: the sidecar already carries the new title, but the retained Kept
+// projection is stale. Recovery must project it without a second write failure.
+func TestDesktopIconRenameRetainedRecoversFromPendingReceipt(t *testing.T) {
+	app, item, sp := retainedRenameFixture(t)
+	if err := setSessionTitle(filepath.Dir(sp), sp, "新的名字"); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	app.iconWidgetState.Applied = []desktopIconReceipt{{
+		RequestID: "req-rename-retained", Intent: "intent", Status: "pending", Action: "rename",
+		ItemID: item.ID, SessionPath: sp, Text: "新的名字", AppliedAt: time.Now().UnixMilli(),
+	}}
+	if err := app.recoverDesktopIconActionsLocked(); err != nil {
+		t.Fatalf("recover retained rename: %v", err)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("recovered rename receipt = %+v", app.iconWidgetState.Applied[0])
+	}
+	if kept := app.iconWidgetState.Kept["task:stale"]; kept.Title != "新的名字" {
+		t.Fatalf("recovery did not project retained title: %+v", kept)
+	}
+}
+
+// TestDesktopIconRenameRetainedPendingReceiptRetriesSameRequest covers a final
+// state save failure: the receipt stays pending while the sidecar already has
+// the new title. Retrying the same requestId must converge the retained title
+// and settle idempotently instead of silently succeeding or double-applying.
+func TestDesktopIconRenameRetainedPendingReceiptRetriesSameRequest(t *testing.T) {
+	app, item, sp := retainedRenameFixture(t)
+	if err := setSessionTitle(filepath.Dir(sp), sp, "新的名字"); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	input := DesktopIconActionInput{ItemID: item.ID, Revision: item.Revision, RequestID: "req-rename-retained", Action: "rename", Values: []string{"新的名字"}}
+	app.iconWidgetState.Applied = []desktopIconReceipt{{
+		RequestID: input.RequestID, Intent: desktopIconIntent(input), Status: "pending", Action: "rename",
+		ItemID: item.ID, SessionPath: sp, Text: "新的名字", AppliedAt: time.Now().UnixMilli(),
+	}}
+	result := app.ApplyDesktopIconAction(input)
+	if result.Status != "already_applied" {
+		t.Fatalf("pending rename retry = %+v", result)
+	}
+	if kept := app.iconWidgetState.Kept["task:stale"]; kept.Title != "新的名字" {
+		t.Fatalf("retry did not project retained title: %+v", kept)
+	}
+	if app.iconWidgetState.Applied[0].Status != "applied" {
+		t.Fatalf("retry did not settle the receipt: %+v", app.iconWidgetState.Applied[0])
+	}
+}
