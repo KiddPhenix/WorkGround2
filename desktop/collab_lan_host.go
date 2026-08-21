@@ -7,14 +7,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"workground2/internal/collab"
-	"workground2/internal/config"
 )
 
 type collaborationLANRoom struct {
@@ -27,16 +25,14 @@ type collaborationLANRoom struct {
 type collaborationLANHost struct {
 	mu sync.Mutex
 
-	listener net.Listener
-	server   *http.Server
-	store    *collab.FileStore
-	hub      *collab.Hub
-	service  *collab.Service
-	host     string
-	port     int
-	rooms    map[string]collaborationLANRoom
-	nextGen  uint64
-	serveErr error
+	listener  net.Listener
+	server    *http.Server
+	authority *collaborationAuthority
+	host      string
+	port      int
+	rooms     map[string]collaborationLANRoom
+	nextGen   uint64
+	serveErr  error
 }
 
 func (a *App) sharedCollaborationLAN() *collaborationLANHost {
@@ -59,7 +55,7 @@ func (a *App) closeCollaborationLAN(ctx context.Context) error {
 	return host.Close(ctx)
 }
 
-func (h *collaborationLANHost) register(ctx context.Context, input HostCollaborationRoomInput) (*collaborationAuthority, int, func(), error) {
+func (h *collaborationLANHost) register(input HostCollaborationRoomInput, authority *collaborationAuthority) (*collaborationAuthority, int, func(), error) {
 	room := strings.TrimSpace(input.Room)
 	owner := strings.TrimSpace(input.SessionID)
 	if room == "" || owner == "" {
@@ -67,26 +63,15 @@ func (h *collaborationLANHost) register(ctx context.Context, input HostCollabora
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if err := h.ensureStartedLocked(input.ListenHost, input.Port); err != nil {
+	if err := h.ensureStartedLocked(input.ListenHost, input.Port, authority); err != nil {
 		return nil, 0, nil, err
 	}
 	if current, ok := h.rooms[room]; ok && current.owner != owner {
 		return nil, 0, nil, fmt.Errorf("Room %q is already active in another Session", room)
 	}
-	roomName := strings.TrimSpace(input.RoomName)
-	if roomName == "" {
-		roomName = room
-	}
-	if _, err := h.service.CreateRoom(ctx, collab.CreateRoomInput{
-		RequestID: stableCollaborationID("create", room), ID: room, Name: roomName,
-		Description: strings.TrimSpace(input.Description), Token: strings.TrimSpace(input.Token),
-	}); err != nil {
-		return nil, 0, nil, err
-	}
 	h.nextGen++
 	registration := collaborationLANRoom{owner: owner, generation: h.nextGen}
 	h.rooms[room] = registration
-	authority := &collaborationAuthority{store: h.store, hub: h.hub, service: h.service}
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
@@ -100,12 +85,18 @@ func (h *collaborationLANHost) register(ctx context.Context, input HostCollabora
 	return authority, h.port, release, nil
 }
 
-func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort int) error {
+func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort int, authority *collaborationAuthority) error {
+	if authority == nil || authority.service == nil || authority.hub == nil {
+		return fmt.Errorf("collaboration authority is unavailable")
+	}
 	host = strings.TrimSpace(host)
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	if h.server != nil {
+		if h.authority != authority {
+			return fmt.Errorf("shared collaboration V2 listener already uses another authority")
+		}
 		if h.serveErr != nil {
 			return fmt.Errorf("shared collaboration V2 listener stopped: %w", h.serveErr)
 		}
@@ -117,16 +108,6 @@ func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort in
 		}
 		return nil
 	}
-	root := strings.TrimSpace(config.MemoryUserDir())
-	if root == "" {
-		return fmt.Errorf("collaboration data directory is unavailable")
-	}
-	store, err := collab.OpenFileStore(filepath.Join(root, "collaboration-host-v1"))
-	if err != nil {
-		return err
-	}
-	hub := collab.NewHub()
-	service := collab.NewService(store, hub)
 	if h.rooms == nil {
 		h.rooms = make(map[string]collaborationLANRoom)
 	}
@@ -134,11 +115,11 @@ func (h *collaborationLANHost) ensureStartedLocked(host string, requestedPort in
 	if err != nil {
 		return err
 	}
-	h.listener, h.store, h.hub, h.service = listener, store, hub, service
+	h.listener, h.authority = listener, authority
 	h.host = host
 	h.port = listener.Addr().(*net.TCPAddr).Port
 	h.serveErr = nil
-	h.server = &http.Server{Handler: collab.NewV2Handler(service, h.roomActive, hub), ReadHeaderTimeout: 10 * time.Second}
+	h.server = &http.Server{Handler: collab.NewV2Handler(authority.service, h.roomActive, authority.hub), ReadHeaderTimeout: 10 * time.Second}
 	server := h.server
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -165,7 +146,7 @@ func (h *collaborationLANHost) Close(ctx context.Context) error {
 	server := h.server
 	h.server, h.listener = nil, nil
 	h.rooms = nil
-	h.store, h.hub, h.service = nil, nil, nil
+	h.authority = nil
 	h.host, h.port, h.serveErr = "", 0, nil
 	h.mu.Unlock()
 	if server == nil {

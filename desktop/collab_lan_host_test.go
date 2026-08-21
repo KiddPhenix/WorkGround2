@@ -11,6 +11,7 @@ import (
 func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	ctx := context.Background()
+	app := &App{}
 	host := &collaborationLANHost{}
 	defer func() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -20,15 +21,25 @@ func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 		}
 	}()
 
-	_, firstPort, releaseFirst, err := host.register(ctx, HostCollaborationRoomInput{
+	firstInput := HostCollaborationRoomInput{
 		ListenHost: "127.0.0.1", Room: "room-a", RoomName: "Room A", SessionID: "session-a",
-	})
+	}
+	firstAuthority, err := app.openCollaborationAuthority(ctx, firstInput)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, secondPort, releaseSecond, err := host.register(ctx, HostCollaborationRoomInput{
+	_, firstPort, releaseFirst, err := host.register(firstInput, firstAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInput := HostCollaborationRoomInput{
 		ListenHost: "127.0.0.1", Room: "room-b", RoomName: "Room B", SessionID: "session-b",
-	})
+	}
+	secondAuthority, err := app.openCollaborationAuthority(ctx, secondInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondPort, releaseSecond, err := host.register(secondInput, secondAuthority)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,10 +90,31 @@ func TestCollaborationV2LANHostMultiplexesRooms(t *testing.T) {
 	if firstPort == conflictPort {
 		conflictPort++
 	}
-	if _, _, _, err := host.register(ctx, HostCollaborationRoomInput{
+	conflictInput := HostCollaborationRoomInput{
 		ListenHost: "127.0.0.1", Port: conflictPort, Room: "room-c", RoomName: "Room C", SessionID: "session-c",
-	}); err == nil {
+	}
+	conflictAuthority, err := app.openCollaborationAuthority(ctx, conflictInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := host.register(conflictInput, conflictAuthority); err == nil {
 		t.Fatal("different explicit port did not report the shared-listener conflict")
+	}
+}
+
+func TestCollaborationAuthorityIsSharedByHostedRooms(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	app := &App{}
+	first, err := app.openCollaborationAuthority(context.Background(), HostCollaborationRoomInput{Room: "room-a", RoomName: "Room A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := app.openCollaborationAuthority(context.Background(), HostCollaborationRoomInput{Room: "room-b", RoomName: "Room B"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || first.store != second.store || first.service != second.service || first.hub != second.hub {
+		t.Fatal("hosted rooms did not share one process authority")
 	}
 }
 

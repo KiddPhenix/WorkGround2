@@ -238,6 +238,8 @@ type App struct {
 	// with tab selection; each runtime owns its connection, outbox and Agent runs.
 	collaborationMu               sync.Mutex
 	collaborations                map[string]*desktopCollaboration
+	collaborationAuthorityMu      sync.Mutex
+	collaborationAuthority        *collaborationAuthority
 	collaborationLANMu            sync.Mutex
 	collaborationLAN              *collaborationLANHost
 	collaborationRestoreMu        sync.Mutex

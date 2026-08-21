@@ -53,13 +53,15 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 	var err error
 	actualPort := 0
 	routes := make([]CollaborationRouteState, 0, 1+len(input.RelayIDs))
-	var authority *collaborationAuthority
+	if c.app == nil {
+		return nil, fmt.Errorf("collaboration authority owner is unavailable")
+	}
+	authority, err := c.app.openCollaborationAuthority(ctx, input)
+	if err != nil {
+		return nil, err
+	}
 	if lanEnabled && protocolVersion == collaborationProtocolV2 {
-		if c.app == nil {
-			err = fmt.Errorf("shared collaboration V2 listener is unavailable")
-		} else {
-			authority, actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(ctx, input)
-		}
+		authority, actualPort, releaseLAN, err = c.app.sharedCollaborationLAN().register(input, authority)
 		if err != nil {
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
@@ -71,11 +73,6 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 			routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: collaborationProtocolV1}, Status: "failed", LastError: err.Error(), Retryable: true})
 		} else {
 			actualPort = listener.Addr().(*net.TCPAddr).Port
-			authority, err = openCollaborationAuthority(ctx, input)
-			if err != nil {
-				_ = listener.Close()
-				return nil, err
-			}
 			server = &http.Server{Handler: collab.NewHandler(authority.service, authority.hub), ReadHeaderTimeout: 10 * time.Second}
 			go func() {
 				if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -86,18 +83,6 @@ func (c *desktopCollaboration) openHostedRoom(ctx context.Context, input HostCol
 		}
 	} else {
 		routes = append(routes, CollaborationRouteState{CollaborationRouteInput: CollaborationRouteInput{ID: "lan", Kind: "lan", Host: listenHost, Port: input.Port, ProtocolVersion: protocolVersion}, Status: "disabled"})
-	}
-	if authority == nil {
-		authority, err = openCollaborationAuthority(ctx, input)
-		if err != nil {
-			if server != nil {
-				_ = server.Shutdown(context.Background())
-			}
-			if releaseLAN != nil {
-				releaseLAN()
-			}
-			return nil, err
-		}
 	}
 	service, hub := authority.service, authority.hub
 	joined, err := service.Join(ctx, collab.JoinInput{
